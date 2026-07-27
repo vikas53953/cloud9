@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gate 1 — Agent Chat requirements review</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1c2330; --muted:#5b6577;
+    --line:#e3e7ee; --accent:#4256d0; --accent-soft:#eef0fb;
+    --good:#177a4c; --warn:#a05a00; --warn-soft:#fdf3e3;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg);
+       color:var(--ink); line-height:1.55; padding:32px 16px 80px;}
+  .wrap{max-width:880px; margin:0 auto;}
+  h1{font-size:1.6rem; margin-bottom:4px;}
+  .sub{color:var(--muted); margin-bottom:28px;}
+  h2{font-size:1.15rem; margin:34px 0 12px;}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:12px;
+        padding:18px 20px; margin-bottom:14px;}
+  .pill{display:inline-block; font-size:.75rem; font-weight:600; padding:2px 10px;
+        border-radius:99px; background:var(--accent-soft); color:var(--accent);
+        margin-bottom:8px;}
+  ul{padding-left:20px;} li{margin:6px 0;}
+  .muted{color:var(--muted);}
+  .gloss{border-bottom:1px dotted var(--muted); cursor:help;}
+  .score{display:flex; align-items:center; gap:14px;}
+  .score-num{font-size:2.2rem; font-weight:700; color:var(--accent);}
+  table{width:100%; border-collapse:collapse; font-size:.95rem;}
+  td,th{padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top;}
+  th{color:var(--muted); font-weight:600; font-size:.8rem; text-transform:uppercase; letter-spacing:.04em;}
+  .warnbox{background:var(--warn-soft); border:1px solid #f0ddb8; border-radius:12px;
+           padding:14px 18px; margin-bottom:14px;}
+  .warnbox b{color:var(--warn);}
+  .choices{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; margin-top:10px;}
+  .choice{border:2px solid var(--line); border-radius:12px; padding:14px 16px; cursor:pointer;
+          background:var(--card); transition:border-color .12s, background .12s;}
+  .choice:hover{border-color:#b9c2f2;}
+  .choice.picked{border-color:var(--accent); background:var(--accent-soft);}
+  .choice .tag{font-size:.72rem; font-weight:700; color:var(--good); text-transform:uppercase;
+               letter-spacing:.05em; margin-bottom:4px;}
+  .choice h3{font-size:.98rem; margin-bottom:6px;}
+  .choice p{font-size:.87rem; color:var(--muted);}
+  .stake{font-size:.85rem; margin-top:8px; color:var(--warn);}
+  .exportbar{position:sticky; bottom:0; margin-top:36px; background:var(--card);
+             border:1px solid var(--line); border-radius:12px; padding:14px 18px;
+             box-shadow:0 -4px 18px rgba(20,28,50,.08);}
+  .exportbar button{background:var(--accent); color:#fff; border:0; border-radius:8px;
+                    padding:10px 18px; font-size:.95rem; font-weight:600; cursor:pointer;}
+  .exportbar button:hover{filter:brightness(1.1);}
+  #summary{margin-top:10px; font-family:ui-monospace,Menlo,monospace; font-size:.85rem;
+           background:var(--bg); border-radius:8px; padding:10px 12px; white-space:pre-wrap;
+           display:none;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Gate 1 — what we're building</h1>
+  <div class="sub">Agent Chat (working name) · requirements review · 2026-07-27</div>
+
+  <div class="card">
+    <span class="pill">The idea in one breath</span>
+    <p>A private Slack-style chat app on your <b>Mac/PC and iPhone, kept in sync</b>,
+    where every coworker is an <b>agent you created</b> — its own name, personality and
+    skills. Some work for you in the background and message you first. Any agent is one
+    hotkey away. You and a few friends each connect your <b>own Claude subscription</b>,
+    so everyone's usage bills to their own plan.</p>
+  </div>
+
+  <h2>What version 1 includes</h2>
+  <div class="card"><ul>
+    <li><b>Connect your Claude subscription</b> — sign in once; your agents run on your plan.</li>
+    <li><b>Create agents</b> — name, avatar, written personality, and per-agent ability switches.</li>
+    <li><b>Abilities</b> — web search, open links, read/write files in a folder you choose,
+        scheduled tasks (“daily 9am summary”), and background jobs (“work on this, ping me when done”).</li>
+    <li><b>Proactive agents</b> — they can message <i>you</i> first; on iPhone that arrives as a push notification.</li>
+    <li><b>Chat everywhere</b> — 1-on-1 chats, channels holding several agents addressed by
+        <span class="gloss" title="Typing @ plus the agent's name to direct your message at it, like tagging a coworker in Slack">@mention</span>,
+        and a desktop <b>global hotkey popup</b> to message any agent from anywhere.</li>
+    <li><b>iPhone app via TestFlight</b> — full chat + notifications, synced with desktop.</li>
+  </ul></div>
+
+  <h2>What version 1 leaves out (on purpose)</h2>
+  <div class="card"><ul>
+    <li>Android (later), public App Store launch, voice/video, sharing agents with others.</li>
+    <li><b>Agents sleep when your desktop app is closed.</b> The engine is built so we can
+        move it to an always-on server later — but v1 doesn't rent that server.</li>
+  </ul></div>
+
+  <h2>What it costs to run</h2>
+  <div class="card"><table>
+    <tr><th>Item</th><th>Cost</th><th>Why</th></tr>
+    <tr><td>Apple Developer account</td><td><b>$99 / year</b></td>
+        <td>Required for friends to install on iPhone (TestFlight) and for push notifications. No free route exists.</td></tr>
+    <tr><td>Small relay server</td><td><b>$0–10 / month</b></td>
+        <td>The tiny always-on middleman that syncs desktop ↔ iPhone and delivers pushes. Unavoidable once a phone is involved.</td></tr>
+    <tr><td>Claude usage</td><td><b>$0 extra</b></td><td>Each person's own subscription covers their agents.</td></tr>
+  </table></div>
+
+  <h2>Honest risks</h2>
+  <div class="warnbox"><b>Biggest one:</b> letting an app sign users in with their Claude
+    <i>subscription</i> (rather than a pay-per-use API key) is a newer mechanism, and we must
+    verify it's allowed and working for third-party apps before building on it. That check is
+    the first task of the architecture stage. <b>Fallback if blocked:</b> each user pastes an
+    API key instead — everything else stays the same, but usage becomes pay-per-use.</div>
+  <div class="card"><ul>
+    <li>iPhones don't allow apps to keep working in the background — so the phone is a
+        window to your agents, not their home. Desktop off = agents pause (until the future server upgrade).</li>
+    <li>Agents talking freely to each other could loop and eat through a subscription's usage
+        limits — the decision below caps that.</li>
+  </ul></div>
+
+  <h2>Three decisions — tap your picks</h2>
+
+  <div class="card" data-q="Workspaces">
+    <b>1. When friends join, do they get their own private space, or do you all share rooms?</b>
+    <div class="choices">
+      <div class="choice" data-v="Private workspaces"><div class="tag">Recommended</div>
+        <h3>Private workspaces</h3>
+        <p>Each person gets their own world: their agents, their chats. Friends are testers, not roommates.</p>
+        <div class="stake">If wrong: adding shared rooms later is work, but doable.</div></div>
+      <div class="choice" data-v="Shared channels with friends">
+        <h3>Shared rooms with friends</h3>
+        <p>You and friends can be in the same channels alongside agents — a real group-chat product.</p>
+        <div class="stake">If chosen: v1 gets noticeably bigger (real human-to-human messaging, moderation, privacy).</div></div>
+    </div>
+  </div>
+
+  <div class="card" data-q="Agent chatter">
+    <b>2. In a channel with several agents, when may an agent speak?</b>
+    <div class="choices">
+      <div class="choice" data-v="Only when mentioned, chains capped at 3"><div class="tag">Recommended</div>
+        <h3>When @mentioned, capped</h3>
+        <p>An agent replies when you tag it or it's clearly addressed; agent-to-agent back-and-forth stops after 3 turns.</p>
+        <div class="stake">If wrong: caps are a dial — easy to loosen later.</div></div>
+      <div class="choice" data-v="Free agent-to-agent conversation">
+        <h3>Free conversation</h3>
+        <p>Agents may chime in and debate each other freely. Livelier, but loops can silently burn your usage limits.</p>
+        <div class="stake">If chosen: expect to hit subscription limits much faster.</div></div>
+    </div>
+  </div>
+
+  <div class="card" data-q="Name">
+    <b>3. The name?</b>
+    <div class="choices">
+      <div class="choice" data-v="Keep working name, decide at ship"><div class="tag">Recommended</div>
+        <h3>Decide later</h3><p>Keep “Agent Chat” as the working name; pick the real one when it ships.</p></div>
+      <div class="choice" data-v="Pick a name now"><h3>Pick now</h3>
+        <p>Tell me names you like in chat (or ask for suggestions) and it's settled today.</p></div>
+    </div>
+  </div>
+
+  <h2>How complete is this plan?</h2>
+  <div class="card score">
+    <div class="score-num">8/10</div>
+    <div class="muted">10 would mean agents also run 24/7 in the cloud, Android included, richer abilities.
+      8 means: the whole core idea — agents, channels, hotkey, proactive pings, iPhone sync — works end-to-end,
+      with the sleep-when-desktop-off limitation and a starter ability set.</div>
+  </div>
+
+  <div class="exportbar">
+    <button onclick="exportChoices()">Copy my picks for the chat</button>
+    <span class="muted" style="margin-left:10px">Tap choices above, then copy this and paste it back to Claude with “approved”.</span>
+    <div id="summary"></div>
+  </div>
+
+</div>
+<script>
+  document.querySelectorAll('.card[data-q]').forEach(card=>{
+    card.querySelectorAll('.choice').forEach(ch=>{
+      ch.addEventListener('click',()=>{
+        card.querySelectorAll('.choice').forEach(c=>c.classList.remove('picked'));
+        ch.classList.add('picked');
+      });
+    });
+  });
+  function exportChoices(){
+    const lines=[];
+    document.querySelectorAll('.card[data-q]').forEach(card=>{
+      const p=card.querySelector('.choice.picked');
+      lines.push(card.dataset.q+': '+(p?p.dataset.v:'(no pick — using your recommendation)'));
+    });
+    const box=document.getElementById('summary');
+    box.style.display='block';
+    box.textContent='Gate 1 picks — '+lines.join(' | ');
+    navigator.clipboard&&navigator.clipboard.writeText(box.textContent).catch(()=>{});
+  }
+</script>
+</body>
+</html>

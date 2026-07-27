@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Name board — pick your favorite</title>
+<style>
+  :root{--bg:#0f1117; --card:#1a1e29; --ink:#eef1f8; --muted:#8b93a7;
+        --line:#2a3040; --accent:#8ea2ff; --accent-soft:#232a45;}
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg);
+       color:var(--ink); line-height:1.5; padding:36px 18px 90px;}
+  .wrap{max-width:920px; margin:0 auto;}
+  h1{font-size:1.5rem; margin-bottom:6px;}
+  .sub{color:var(--muted); margin-bottom:30px;}
+  h2{font-size:.85rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted);
+     margin:28px 0 12px;}
+  .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px;}
+  .name{background:var(--card); border:2px solid var(--line); border-radius:14px;
+        padding:16px 18px; cursor:pointer; transition:.12s;}
+  .name:hover{border-color:#4a5578;}
+  .name.picked{border-color:var(--accent); background:var(--accent-soft);}
+  .name b{font-size:1.15rem; display:block; margin-bottom:3px;}
+  .name span{font-size:.82rem; color:var(--muted);}
+  .rec{font-size:.68rem; font-weight:700; color:#7ee2a8; text-transform:uppercase;
+       letter-spacing:.06em;}
+  .bar{position:fixed; left:0; right:0; bottom:0; background:var(--card);
+       border-top:1px solid var(--line); padding:14px 18px; text-align:center;}
+  .bar button{background:var(--accent); color:#0f1117; border:0; border-radius:8px;
+              padding:10px 20px; font-weight:700; font-size:.95rem; cursor:pointer;}
+  #out{margin-top:8px; color:var(--muted); font-family:ui-monospace,Menlo,monospace;
+       font-size:.85rem;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>The name board</h1>
+  <div class="sub">Twenty candidates, five vibes. Tap the one that feels right — or tap the <i>closest</i> one and tell me in chat what to change about it.</div>
+
+  <h2>Zen &amp; calm</h2>
+  <div class="grid">
+    <div class="name" data-n="Sora"><b>Sora</b><span>Japanese for “sky”. Open, weightless, effortless.</span></div>
+    <div class="name" data-n="Drift"><b>Drift</b><span>Messages and agents drifting to you. Very low-pressure.</span></div>
+    <div class="name" data-n="Haven"><b>Haven</b><span>A safe, quiet place where your people and agents live.</span></div>
+    <div class="name" data-n="Reverie"><b>Reverie</b><span>A pleasant daydream. Soft and a little poetic.</span></div>
+    <div class="name" data-n="Sanctum"><b>Sanctum</b><span>Your private inner chamber. Zen with weight.</span></div>
+  </div>
+
+  <h2>Fancy &amp; elevated</h2>
+  <div class="grid">
+    <div class="name" data-n="Zenith"><div class="rec">Claude's pick</div><b>Zenith</b><span>Literally “the highest point” — and it starts with zen.</span></div>
+    <div class="name" data-n="Elysium"><b>Elysium</b><span>The mythic paradise. Maximum fancy.</span></div>
+    <div class="name" data-n="Meridian"><b>Meridian</b><span>Elegant, worldly, balanced.</span></div>
+    <div class="name" data-n="Nocturne"><b>Nocturne</b><span>Night-music. Moody and refined — agents working while you sleep.</span></div>
+    <div class="name" data-n="Solstice"><b>Solstice</b><span>A turning point of light. Grand but warm.</span></div>
+  </div>
+
+  <h2>Cosmic</h2>
+  <div class="grid">
+    <div class="name" data-n="Orbit"><b>Orbit</b><span>Your agents orbiting around you, always in reach.</span></div>
+    <div class="name" data-n="Nova"><b>Nova</b><span>A new star igniting. Short, bright, premium.</span></div>
+    <div class="name" data-n="Eclipse"><b>Eclipse</b><span>Sleek, cinematic, a little mysterious.</span></div>
+    <div class="name" data-n="Cosmo"><b>Cosmo</b><span>The friendly end of cosmic. Easy to say daily.</span></div>
+  </div>
+
+  <h2>Playful gen-z</h2>
+  <div class="grid">
+    <div class="name" data-n="Cloud9"><b>Cloud9</b><span>Where you are when everything's handled for you.</span></div>
+    <div class="name" data-n="Lowkey"><b>Lowkey</b><span>“Lowkey handled it.” Understated flex energy.</span></div>
+    <div class="name" data-n="Moodring"><b>Moodring</b><span>Nostalgic-cool, colorful, personality-forward.</span></div>
+  </div>
+
+  <h2>Your circle</h2>
+  <div class="grid">
+    <div class="name" data-n="Circle"><b>Circle</b><span>Your inner circle — friends and agents in one ring.</span></div>
+    <div class="name" data-n="Entourage"><b>Entourage</b><span>You roll with a crew that handles things. Fancy + fun.</span></div>
+    <div class="name" data-n="Cohort"><b>Cohort</b><span>Your hand-picked team. Smart, slightly academic.</span></div>
+  </div>
+</div>
+
+<div class="bar">
+  <button onclick="pick()">Copy my pick for the chat</button>
+  <div id="out"></div>
+</div>
+<script>
+  let sel=null;
+  document.querySelectorAll('.name').forEach(n=>n.addEventListener('click',()=>{
+    document.querySelectorAll('.name').forEach(x=>x.classList.remove('picked'));
+    n.classList.add('picked'); sel=n.dataset.n;
+  }));
+  function pick(){
+    const t=sel?('Name pick: '+sel):'No pick yet — tap a card first';
+    document.getElementById('out').textContent=t;
+    navigator.clipboard&&navigator.clipboard.writeText(t).catch(()=>{});
+  }
+</script>
+</body>
+</html>
