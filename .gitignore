@@ -1,0 +1,5 @@
+node_modules/
+dist/
+*.db
+*.db-*
+cloud9-engine-data/

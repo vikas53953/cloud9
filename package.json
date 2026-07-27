@@ -1,0 +1,19 @@
+{
+  "name": "cloud9",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cloud9 — chat with your crew of agents and friends, everywhere.",
+  "workspaces": [
+    "packages/*",
+    "apps/relay",
+    "apps/desktop"
+  ],
+  "scripts": {
+    "build": "npm run build -w @cloud9/shared -w @cloud9/engine -w @cloud9/relay",
+    "test": "npm test -w @cloud9/engine -w @cloud9/relay",
+    "dev:relay": "npm run dev -w @cloud9/relay"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
