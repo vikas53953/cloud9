@@ -17,11 +17,11 @@ morning review page. He can redirect anything then.
 | 2 | Requirements  | APPROVED by Vikas (2026-07-27)  | docs/plans/agent-chat-prd.md + docs/gates/gate1-review.html |
 | 3 | UX mock       | built — morning review (3 directions; building on A) | docs/mocks/directions.html |
 | 4 | Architecture  | decided (overnight, logged)     | docs/plans/architecture.md |
-| 5 | Build         | in progress                     | packages/, apps/ |
-| 6 | Code review   | not started                     | — |
-| 7 | Browser QA    | not started                     | — |
-| 8 | Ship          | not started (local commits only — no git remote) | — |
-| 9 | Learn         | not started                     | — |
+| 5 | Build         | done (overnight) — schedules UI + Electron smoke pending | packages/, apps/ |
+| 6 | Code review   | plan-vs-built audit done        | docs/gates/morning-review.html |
+| 7 | Browser QA    | 14/14 green + screenshots       | docs/qa/ |
+| 8 | Ship          | local commits; GitHub push = morning decision | git log |
+| 9 | Learn         | logged                          | implementation-notes.md |
 
 ## Stage-1 answers (locked, 2026-07-27)
 1. Core UX: global hotkey quick-chat popup + shared channels with @mentions + cross-device sync — all three.

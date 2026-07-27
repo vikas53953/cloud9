@@ -28,3 +28,11 @@ Running log of deviations and lessons. One line each, newest last.
   directive; building against Direction A (Slack Classic + ⌘K overlay, the
   recommended default). UI is componentized so a different morning pick is a
   reskin, not a rebuild.
+- 2026-07-28 (early): Stage-9 lessons: (1) Playwright `text=` is substring +
+  case-insensitive — cost ~40 min on a phantom overlay bug; always scope
+  selectors. (2) node:sqlite removed the native-build risk entirely. (3) The
+  channel-kind-by-member-count inference was a real design bug QA caught —
+  clients now state intent explicitly. (4) Mock provider made full-stack QA
+  possible with zero credentials; keep it forever as demo mode.
+- 2026-07-28 (early): Schedules have engine support + tests but no creation UI
+  yet — first build item for the next session.

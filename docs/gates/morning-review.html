@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud9 — morning review</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#f6f7f9;color:#1c2330;
+    line-height:1.55;padding:32px 16px 80px;}
+  .wrap{max-width:900px;margin:0 auto;}
+  h1{font-size:1.6rem;margin-bottom:4px;}
+  .sub{color:#5b6577;margin-bottom:24px;}
+  h2{font-size:1.12rem;margin:32px 0 12px;}
+  .card{background:#fff;border:1px solid #e3e7ee;border-radius:12px;padding:18px 20px;margin-bottom:14px;}
+  .tldr{border-left:4px solid #4256d0;}
+  table{width:100%;border-collapse:collapse;font-size:.92rem;}
+  td,th{padding:8px 10px;border-bottom:1px solid #e3e7ee;text-align:left;vertical-align:top;}
+  th{color:#5b6577;font-weight:600;font-size:.76rem;text-transform:uppercase;letter-spacing:.05em;}
+  .ok{color:#177a4c;font-weight:700;}
+  .part{color:#a05a00;font-weight:700;}
+  .not{color:#b3261e;font-weight:700;}
+  .chg{color:#4256d0;font-weight:700;}
+  .warnbox{background:#fdf3e3;border:1px solid #f0ddb8;border-radius:12px;padding:14px 18px;margin-bottom:14px;}
+  .warnbox b{color:#a05a00;}
+  ul,ol{padding-left:20px;} li{margin:5px 0;}
+  code{background:#eef0f5;border-radius:4px;padding:1px 5px;font-size:.85em;font-family:ui-monospace,Menlo,monospace;}
+  .gates{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;}
+  .gate{background:#fff;border:1px solid #e3e7ee;border-radius:12px;padding:12px 14px;font-size:.85rem;}
+  .gate b{display:block;font-size:.78rem;color:#5b6577;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;}
+  .quiz .q{margin-bottom:12px;}
+  .quiz details{margin-top:4px;}
+  .quiz summary{cursor:pointer;color:#4256d0;font-size:.85rem;}
+  .muted{color:#5b6577;font-size:.88rem;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>☁️ Cloud9 — morning review</h1>
+  <div class="sub">Built overnight while you slept · 2026-07-27 → 28 · everything below ran and was verified tonight unless marked otherwise</div>
+
+  <div class="card tldr">
+    <p><b>TL;DR: Cloud9 works.</b> Agents with personalities and abilities chat with you and your
+    friends in shared channels, reply to @mentions, chime in on their own, run background tasks,
+    post proactive pings, and stay leashed by the runaway brake. A friend joined via invite and
+    chatted across two live clients. <b>13 unit/integration tests + 14 browser QA checks — all green,
+    with screenshots.</b> One reality check needs your eyes: subscription login (details below).</p>
+  </div>
+
+  <h2>Pipeline scoreboard</h2>
+  <div class="gates">
+    <div class="gate"><b>Gate 1 · Requirements</b>✅ Approved by you</div>
+    <div class="gate"><b>Gate 2 · Design</b>🌓 3 directions built — <b>your pick still open</b>; built on A (Slack Classic)</div>
+    <div class="gate"><b>Gate 3 · Green light</b>🌓 Converted to this review per your overnight directive</div>
+    <div class="gate"><b>Gate 4 · Ship</b>🌓 Built + QA'd; lives in this session (no GitHub remote yet)</div>
+  </div>
+
+  <h2>The one reality check ⚠️</h2>
+  <div class="warnbox">
+    <b>"Connect your Claude subscription" hit an official wall.</b> Anthropic's docs state third-party
+    apps may <b>not</b> offer claude.ai subscription login without prior approval. So Cloud9 ships two
+    credential options per user in Settings: <b>(a) your own Anthropic API key</b> — fully sanctioned,
+    pay-per-use — and <b>(b) a token you generate yourself with <code>claude setup-token</code></b>
+    (bills to Pro/Max; the policy gray zone is disclosed in-app). Without a credential, agents run in a
+    free demo mode — that's what tonight's QA used, so agent replies in screenshots are canned.
+  </div>
+
+  <h2>Plan vs. built — the honest audit</h2>
+  <div class="card"><table>
+    <tr><th>Planned</th><th>Status</th><th>Notes</th></tr>
+    <tr><td>Create agents: persona + ability toggles</td><td class="ok">DONE</td><td>UI + engine + QA</td></tr>
+    <tr><td>Shared channels: friends + agents, invites</td><td class="ok">DONE</td><td>Invite → join → chat verified across 2 live clients</td></tr>
+    <tr><td>@mention replies</td><td class="ok">DONE</td><td>QA'd</td></tr>
+    <tr><td>Free agent-to-agent conversation + brake</td><td class="ok">DONE*</td><td>*Agents chime in when relevant and answer mentions; agent→agent replies need a mention. Brake: 25 consecutive agent msgs or 60/hour pauses them until a human speaks (both tested).</td></tr>
+    <tr><td>Background tasks</td><td class="ok">DONE</td><td><code>!bg task</code> → ack now, proactive result later (QA'd)</td></tr>
+    <tr><td>Schedules ("daily 06:30", "every 15m")</td><td class="part">PARTIAL</td><td>Engine + tests done; no UI yet to create them (next build item)</td></tr>
+    <tr><td>Quick-chat hotkey</td><td class="part">DONE / PARTIAL</td><td>In-app ⌘K popup QA'd; OS-global hotkey code written (Electron), not yet run — this cloud box has no display</td></tr>
+    <tr><td>Desktop app (Electron)</td><td class="part">PARTIAL</td><td>Shell + engine-hosting code complete; smoke test pending (same reason)</td></tr>
+    <tr><td>iPhone app</td><td class="part">PARTIAL</td><td>Expo app written (join, channels, chat, notifications); run it via Expo Go on your Mac+iPhone — untested here</td></tr>
+    <tr><td>Cross-device sync</td><td class="ok">DONE</td><td>Protocol-level: two clients live-synced in QA</td></tr>
+    <tr><td>Proactive pings → iPhone push</td><td class="part">PARTIAL</td><td>Relay flags + delivers to mobile clients; real APNs needs the Apple account</td></tr>
+    <tr><td>Connect Claude subscription</td><td class="chg">CHANGED</td><td>See reality check above; live-credential run is <b>UNVERIFIED</b> (no credentials overnight — demo mode only)</td></tr>
+    <tr><td>Engine liftable to a server later</td><td class="ok">DONE</td><td>Engine is a plain Node WS client, zero desktop imports</td></tr>
+    <tr><td>TestFlight / Apple setup</td><td class="not">NOT DONE</td><td>Needs your Apple developer account ($99/yr) — can't be done for you</td></tr>
+  </table></div>
+
+  <h2>QA evidence</h2>
+  <div class="card">
+    <p>14 browser checks, all green (screenshots attached alongside this page; full list in
+    <code>docs/qa/qa-results.json</code>): join screen · owner connect · agent creation · channel
+    creation · @mention reply · free chatter · background task · quick chat · settings + policy note ·
+    invite code · friend joins · human↔human sync · empty-message edge · zero console errors.</p>
+    <p class="muted">Plus 13 engine/relay tests (brake, reply rules, scheduler, full socket round-trip).
+    Two real bugs were found by QA tonight and fixed: single-member channels were misfiled as DMs, and
+    the quick-chat "sent" confirmation was invisible.</p>
+  </div>
+
+  <h2>Try it yourself (TEST IT)</h2>
+  <div class="card"><ol>
+    <li><b>Right here, right now:</b> tell me "start the demo" and I'll boot relay + agents + UI in
+      this session and screenshot any flow you want to see.</li>
+    <li><b>On your Mac:</b> say "push it to GitHub" (I'll set that up with you), then:
+      <code>npm install && npm run build</code> → <code>node apps/relay/dist/server.js</code> →
+      <code>node scripts/engine-host.mjs</code> → <code>cd apps/desktop && npx vite dev</code> →
+      open localhost:5173.</li>
+    <li>Add your API key in ⚙ Settings to switch agents from demo mode to real Claude.</li>
+  </ol></div>
+
+  <h2>Morning decisions (in order of importance)</h2>
+  <div class="card"><ol>
+    <li><b>Design pick</b> — open <code>docs/mocks/directions.html</code> (sent to you earlier):
+      keep A, or reskin to B/C/mix.</li>
+    <li><b>Auth stance</b> — API-key-only (safest) or keep the setup-token option too?</li>
+    <li><b>GitHub</b> — the repo currently lives only in this session; let's push it so nothing is lost.</li>
+    <li><b>Apple account</b> — start the $99/yr enrollment to unlock TestFlight + real push.</li>
+  </ol></div>
+
+  <h2>Quick quiz (30 seconds — checks we're on the same page)</h2>
+  <div class="card quiz">
+    <div class="q">1. Your laptop is closed. What are your agents doing?
+      <details><summary>answer</summary>Nothing — they pause. In v1 agents live in the desktop app;
+      the engine was built so we can move it to an always-on server later.</details></div>
+    <div class="q">2. Priya wants in. What does she need?
+      <details><summary>answer</summary>An invite code from you (People ＋), the app or web UI, and —
+      only if she wants <i>her own</i> agents — her own Claude credential.</details></div>
+    <div class="q">3. Two agents start talking to each other in a loop at 3 AM. What happens?
+      <details><summary>answer</summary>After 25 back-and-forth agent messages with no human (or 60 in
+      an hour), the brake pauses them until a human speaks. Both limits are configurable.</details></div>
+  </div>
+
+  <p class="muted">Everything is committed locally (7 commits). Full docs: PRD, architecture,
+  implementation-notes (all deviations logged), QA screenshots — all in <code>docs/</code>.</p>
+</div>
+</body>
+</html>

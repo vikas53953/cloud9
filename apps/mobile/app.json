@@ -1,0 +1,11 @@
+{
+  "expo": {
+    "name": "Cloud9",
+    "slug": "cloud9",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "ios": { "bundleIdentifier": "com.cloud9.chat", "supportsTablet": false },
+    "splash": { "backgroundColor": "#10131c" }
+  }
+}
