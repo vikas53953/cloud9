@@ -15,9 +15,9 @@ morning review page. He can redirect anything then.
 | 0 | Intake        | done                            | this file |
 | 1 | Unknowns      | done (2026-07-27)               | answers below |
 | 2 | Requirements  | APPROVED by Vikas (2026-07-27)  | docs/plans/agent-chat-prd.md + docs/gates/gate1-review.html |
-| 3 | UX mock       | in progress (overnight)         | docs/mocks/directions.html |
-| 4 | Architecture  | not started                     | — |
-| 5 | Build         | not started                     | — |
+| 3 | UX mock       | built — morning review (3 directions; building on A) | docs/mocks/directions.html |
+| 4 | Architecture  | decided (overnight, logged)     | docs/plans/architecture.md |
+| 5 | Build         | in progress                     | packages/, apps/ |
 | 6 | Code review   | not started                     | — |
 | 7 | Browser QA    | not started                     | — |
 | 8 | Ship          | not started (local commits only — no git remote) | — |
@@ -36,5 +36,5 @@ morning review page. He can redirect anything then.
 - Agent chatter: FREE agent-to-agent conversation (mechanical runaway brake logged in PRD).
 - Name: **Cloud9**.
 
-Open questions: none blocking — subscription-auth feasibility being verified at Stage 4.
+Open questions: none. Subscription-auth verdict: third-party claude.ai login NOT permitted; shipping API-key + setup-token options (see implementation-notes).
 Deviations: see implementation-notes.md

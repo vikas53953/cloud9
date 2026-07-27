@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud9 — three design directions</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}
+  body{background:#10131c;color:#e8ebf4;min-height:100vh;}
+  /* ===== switcher shell ===== */
+  .shell-bar{position:sticky;top:0;z-index:50;background:#171b28;border-bottom:1px solid #262c3f;
+    padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+  .shell-bar h1{font-size:1rem;font-weight:700;margin-right:8px;}
+  .tabs{display:flex;gap:6px;}
+  .tab{border:1px solid #303952;background:#1d2334;color:#aab3cd;border-radius:8px;
+    padding:7px 14px;font-size:.85rem;cursor:pointer;font-weight:600;}
+  .tab.on{background:#4a5df0;border-color:#4a5df0;color:#fff;}
+  .pickbtn{margin-left:auto;background:#22c55e;color:#06230f;border:0;border-radius:8px;
+    padding:8px 14px;font-weight:700;font-size:.85rem;cursor:pointer;}
+  #picked{font-size:.8rem;color:#8b93a7;}
+  .note{background:#171b28;border-bottom:1px solid #262c3f;padding:8px 16px;font-size:.82rem;color:#8b93a7;}
+  .mock{display:none;height:calc(100vh - 96px);min-height:560px;}
+  .mock.on{display:flex;}
+  .avatar{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+    font-size:1.05rem;flex-shrink:0;}
+  .mention{color:#7ea2ff;background:rgba(74,93,240,.15);border-radius:4px;padding:0 4px;font-weight:600;}
+  .msg{display:flex;gap:10px;padding:8px 18px;}
+  .msg:hover{background:rgba(255,255,255,.02);}
+  .msg .who{font-weight:700;font-size:.88rem;margin-right:6px;}
+  .msg .when{font-size:.72rem;color:#69718a;}
+  .msg p{font-size:.9rem;color:#ccd3e8;line-height:1.45;margin-top:2px;}
+  .agentchip{font-size:.62rem;font-weight:700;background:#2b3350;color:#9db1ff;border-radius:4px;
+    padding:1px 5px;vertical-align:middle;letter-spacing:.04em;}
+  .inputbar{margin:12px 18px;background:#1d2334;border:1px solid #303952;border-radius:12px;
+    padding:12px 14px;color:#69718a;font-size:.9rem;}
+  /* ===== Direction A: Slack Classic ===== */
+  #mockA .sidebar{width:240px;background:#151928;border-right:1px solid #262c3f;padding:14px 0;
+    display:flex;flex-direction:column;overflow-y:auto;}
+  #mockA .ws{font-weight:800;font-size:1.05rem;padding:0 16px 12px;}
+  #mockA .sect{font-size:.7rem;font-weight:700;color:#69718a;text-transform:uppercase;
+    letter-spacing:.08em;padding:14px 16px 6px;}
+  #mockA .item{padding:5px 16px;font-size:.88rem;color:#aab3cd;cursor:pointer;display:flex;gap:8px;align-items:center;}
+  #mockA .item.on{background:#4a5df0;color:#fff;border-radius:0 6px 6px 0;margin-right:8px;}
+  #mockA .dot{width:8px;height:8px;border-radius:50%;background:#22c55e;}
+  #mockA .dot.busy{background:#f59e0b;}
+  #mockA .main{flex:1;display:flex;flex-direction:column;}
+  #mockA .chathead{padding:12px 18px;border-bottom:1px solid #262c3f;display:flex;align-items:center;gap:10px;}
+  #mockA .chathead b{font-size:.95rem;}
+  #mockA .chathead span{font-size:.78rem;color:#69718a;}
+  #mockA .stream{flex:1;overflow-y:auto;padding:10px 0;}
+  #mockA .kbtn{margin-left:auto;background:#1d2334;border:1px solid #303952;color:#aab3cd;
+    border-radius:8px;padding:6px 12px;font-size:.78rem;cursor:pointer;}
+  /* quick chat overlay */
+  #qc{display:none;position:fixed;inset:0;background:rgba(5,8,15,.7);z-index:99;
+    align-items:flex-start;justify-content:center;padding-top:12vh;}
+  #qc.on{display:flex;}
+  #qc .panel{background:#1d2334;border:1px solid #3a4468;border-radius:14px;width:min(560px,92vw);
+    box-shadow:0 24px 70px rgba(0,0,0,.6);overflow:hidden;}
+  #qc input{width:100%;background:transparent;border:0;outline:0;color:#e8ebf4;font-size:1.05rem;
+    padding:16px 18px;border-bottom:1px solid #303952;}
+  #qc .opt{padding:10px 18px;display:flex;gap:10px;align-items:center;font-size:.9rem;cursor:pointer;}
+  #qc .opt:hover,#qc .opt.on{background:#262e47;}
+  #qc .hint{padding:10px 18px;font-size:.72rem;color:#69718a;border-top:1px solid #303952;}
+  /* ===== Direction B: Mission Control ===== */
+  #mockB{flex-direction:column;background:#0d1017;}
+  #mockB .topnav{display:flex;gap:4px;padding:12px 20px;border-bottom:1px solid #262c3f;align-items:center;}
+  #mockB .brand{font-weight:800;margin-right:16px;}
+  #mockB .navitem{padding:6px 14px;border-radius:8px;font-size:.85rem;color:#aab3cd;cursor:pointer;}
+  #mockB .navitem.on{background:#1d2334;color:#fff;font-weight:600;}
+  #mockB .body{flex:1;display:flex;overflow:hidden;}
+  #mockB .grid{flex:1;padding:20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));
+    gap:14px;align-content:start;overflow-y:auto;}
+  #mockB .card{background:#171b28;border:1px solid #262c3f;border-radius:14px;padding:16px;cursor:pointer;transition:.12s;}
+  #mockB .card:hover{border-color:#4a5df0;}
+  #mockB .card .avatar{width:42px;height:42px;font-size:1.4rem;border-radius:12px;margin-bottom:10px;}
+  #mockB .card b{display:block;font-size:.95rem;}
+  #mockB .card small{color:#8b93a7;font-size:.76rem;display:block;margin-top:2px;}
+  #mockB .status{display:inline-flex;align-items:center;gap:5px;font-size:.7rem;font-weight:700;
+    margin-top:10px;padding:2px 8px;border-radius:99px;}
+  #mockB .working{background:rgba(245,158,11,.15);color:#f5b04b;}
+  #mockB .online{background:rgba(34,197,94,.14);color:#4ade80;}
+  #mockB .sched{background:rgba(126,162,255,.13);color:#7ea2ff;}
+  #mockB .feed{width:300px;border-left:1px solid #262c3f;padding:16px;overflow-y:auto;}
+  #mockB .feed h3{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#69718a;margin-bottom:12px;}
+  #mockB .fitem{padding:10px 12px;background:#171b28;border:1px solid #262c3f;border-radius:10px;
+    margin-bottom:10px;font-size:.82rem;color:#ccd3e8;line-height:1.4;}
+  #mockB .fitem b{color:#fff;}
+  #mockB .fitem .when{display:block;color:#69718a;font-size:.7rem;margin-top:4px;}
+  #mockB .drawer{display:none;width:380px;border-left:1px solid #262c3f;background:#12151f;
+    flex-direction:column;}
+  #mockB .drawer.on{display:flex;}
+  #mockB .dhead{padding:14px 16px;border-bottom:1px solid #262c3f;display:flex;align-items:center;gap:10px;}
+  #mockB .dhead .x{margin-left:auto;cursor:pointer;color:#69718a;}
+  #mockB .dstream{flex:1;overflow-y:auto;padding:8px 0;}
+  /* ===== Direction C: Zen Sky ===== */
+  #mockC{background:linear-gradient(180deg,#c8d9f5 0%,#e9eff9 45%,#fdf6ec 100%);color:#2a3348;
+    flex-direction:column;align-items:center;}
+  #mockC .cmd{margin-top:26px;background:rgba(255,255,255,.85);backdrop-filter:blur(8px);
+    border:1px solid #d5deee;border-radius:16px;width:min(640px,92%);padding:14px 20px;
+    display:flex;align-items:center;gap:12px;box-shadow:0 8px 30px rgba(90,110,150,.12);}
+  #mockC .cmd input{flex:1;border:0;outline:0;background:transparent;font-size:1rem;color:#2a3348;}
+  #mockC .cmd kbd{background:#eef2fa;border:1px solid #d5deee;border-radius:6px;padding:2px 8px;
+    font-size:.72rem;color:#68738f;}
+  #mockC .thread{width:min(640px,92%);flex:1;overflow-y:auto;margin-top:18px;padding-bottom:20px;}
+  #mockC .bubble{max-width:82%;border-radius:16px;padding:12px 16px;margin:10px 0;font-size:.92rem;
+    line-height:1.5;box-shadow:0 3px 14px rgba(90,110,150,.08);}
+  #mockC .them{background:rgba(255,255,255,.9);border:1px solid #e2e8f4;}
+  #mockC .me{background:#4a5df0;color:#fff;margin-left:auto;}
+  #mockC .meta{font-size:.72rem;color:#68738f;margin:14px 0 2px;display:flex;gap:8px;align-items:center;}
+  #mockC .pill-row{width:min(640px,92%);display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;}
+  #mockC .apill{background:rgba(255,255,255,.8);border:1px solid #d5deee;border-radius:99px;
+    padding:6px 14px;font-size:.82rem;color:#3c476b;cursor:pointer;display:flex;gap:6px;align-items:center;}
+  #mockC .apill.on{background:#4a5df0;color:#fff;border-color:#4a5df0;}
+</style>
+</head>
+<body>
+
+<div class="shell-bar">
+  <h1>Cloud9 — pick a direction</h1>
+  <div class="tabs">
+    <button class="tab on" data-m="A">A · Slack Classic</button>
+    <button class="tab" data-m="B">B · Mission Control</button>
+    <button class="tab" data-m="C">C · Zen Sky</button>
+  </div>
+  <button class="pickbtn" onclick="pick()">This one → copy my pick</button>
+  <span id="picked"></span>
+</div>
+<div class="note">All data is fake. Click around — each direction is lightly interactive. Mixing is welcome: "layout from A, agent cards from B, colors from C" is a valid answer.</div>
+
+<!-- ============ DIRECTION A ============ -->
+<div class="mock on" id="mockA">
+  <div class="sidebar">
+    <div class="ws">☁️ Cloud9</div>
+    <div class="sect">Channels</div>
+    <div class="item on"># trip-goa</div>
+    <div class="item"># daily-life</div>
+    <div class="item"># startup-ideas</div>
+    <div class="sect">Agents</div>
+    <div class="item"><span class="dot busy"></span>🔭 Scout <span class="agentchip">AGENT</span></div>
+    <div class="item"><span class="dot"></span>🍳 Chef <span class="agentchip">AGENT</span></div>
+    <div class="item"><span class="dot"></span>🏋️ Coach <span class="agentchip">AGENT</span></div>
+    <div class="item"><span class="dot"></span>✨ Nova <span class="agentchip">AGENT</span></div>
+    <div class="sect">People</div>
+    <div class="item"><span class="dot"></span>Priya</div>
+  </div>
+  <div class="main">
+    <div class="chathead"><b># trip-goa</b><span>you, Priya + 2 agents</span>
+      <button class="kbtn" onclick="document.getElementById('qc').classList.add('on')">⌘K Quick chat</button></div>
+    <div class="stream">
+      <div class="msg"><div class="avatar" style="background:#31406b">🧑</div>
+        <div><span class="who">Vikas</span><span class="when">9:14 PM</span>
+        <p><span class="mention">@Scout</span> find us 3 beach villas in Goa under ₹8k/night for Dec 12–15</p></div></div>
+      <div class="msg"><div class="avatar" style="background:#274060">🔭</div>
+        <div><span class="who">Scout <span class="agentchip">AGENT</span></span><span class="when">9:14 PM</span>
+        <p>On it — searching now. I'll compare Anjuna, Vagator and Palolem and post a shortlist here. 🔎</p></div></div>
+      <div class="msg"><div class="avatar" style="background:#5b3a29">🍳</div>
+        <div><span class="who">Chef <span class="agentchip">AGENT</span></span><span class="when">9:15 PM</span>
+        <p>While Scout hunts villas — want me to draft a food crawl for those areas? Anjuna's Wednesday market has amazing seafood shacks.</p></div></div>
+      <div class="msg"><div class="avatar" style="background:#274060">🔭</div>
+        <div><span class="who">Scout <span class="agentchip">AGENT</span></span><span class="when">9:16 PM</span>
+        <p><span class="mention">@Chef</span> good idea — two of my villa picks are walkable to Anjuna market, I'll flag them for you.</p></div></div>
+      <div class="msg"><div class="avatar" style="background:#4b3164">🧕</div>
+        <div><span class="who">Priya</span><span class="when">9:18 PM</span>
+        <p>ok I love that these two are just planning our trip by themselves 😂 keep the budget under 8k pls</p></div></div>
+      <div class="msg"><div class="avatar" style="background:#274060">🔭</div>
+        <div><span class="who">Scout <span class="agentchip">AGENT</span></span><span class="when">9:21 PM</span>
+        <p>Shortlist ready ✅ — 3 villas, all under budget: <b>Casa Sereno</b> (₹7.2k, Anjuna, 4.8★), <b>Palm Tide</b> (₹6.5k, Vagator), <b>Sol Mar</b> (₹7.9k, Palolem, beachfront). Links + pros/cons in thread.</p></div></div>
+    </div>
+    <div class="inputbar">Message # trip-goa — type @ to call an agent…</div>
+  </div>
+</div>
+
+<!-- quick chat overlay (Direction A demo) -->
+<div id="qc" onclick="if(event.target===this)this.classList.remove('on')">
+  <div class="panel">
+    <input placeholder="Quick chat — pick an agent, type your message…" autofocus>
+    <div class="opt on"><div class="avatar" style="background:#274060">🔭</div> Scout — research anything</div>
+    <div class="opt"><div class="avatar" style="background:#5b3a29">🍳</div> Chef — meals &amp; recipes</div>
+    <div class="opt"><div class="avatar" style="background:#3a5232">🏋️</div> Coach — fitness &amp; habits</div>
+    <div class="opt"><div class="avatar" style="background:#54325e">✨</div> Nova — general assistant</div>
+    <div class="hint">This popup opens from ANYWHERE on your computer with a global hotkey — even outside Cloud9. Esc to close.</div>
+  </div>
+</div>
+
+<!-- ============ DIRECTION B ============ -->
+<div class="mock" id="mockB">
+  <div class="topnav">
+    <span class="brand">☁️ Cloud9</span>
+    <span class="navitem on">Crew</span>
+    <span class="navitem">Channels</span>
+    <span class="navitem">People</span>
+    <span class="navitem" style="margin-left:auto">⌘K</span>
+  </div>
+  <div class="body">
+    <div class="grid">
+      <div class="card" onclick="document.getElementById('drawer').classList.add('on')">
+        <div class="avatar" style="background:#274060">🔭</div><b>Scout</b>
+        <small>Researcher · web search, files</small>
+        <span class="status working">● working — villa hunt</span></div>
+      <div class="card"><div class="avatar" style="background:#5b3a29">🍳</div><b>Chef</b>
+        <small>Meal planner · web search</small>
+        <span class="status online">● idle</span></div>
+      <div class="card"><div class="avatar" style="background:#3a5232">🏋️</div><b>Coach</b>
+        <small>Fitness · schedules, files</small>
+        <span class="status sched">◔ daily 6:30 AM check-in</span></div>
+      <div class="card"><div class="avatar" style="background:#54325e">✨</div><b>Nova</b>
+        <small>General assistant</small>
+        <span class="status online">● idle</span></div>
+      <div class="card" style="border-style:dashed;display:flex;align-items:center;justify-content:center;color:#69718a;font-size:.9rem;min-height:140px;">＋ New agent</div>
+    </div>
+    <div class="feed">
+      <h3>Activity</h3>
+      <div class="fitem"><b>🔭 Scout</b> posted a villa shortlist in <b># trip-goa</b><span class="when">2 min ago</span></div>
+      <div class="fitem"><b>🏋️ Coach</b> scheduled your 6:30 AM check-in<span class="when">1 h ago</span></div>
+      <div class="fitem"><b>Priya</b> joined <b># trip-goa</b><span class="when">3 h ago</span></div>
+      <div class="fitem"><b>🍳 Chef</b> → 📱 sent to your iPhone: "Grocery list ready for the week"<span class="when">5 h ago</span></div>
+    </div>
+    <div class="drawer" id="drawer">
+      <div class="dhead"><div class="avatar" style="background:#274060">🔭</div><b>Scout</b>
+        <span class="x" onclick="this.closest('.drawer').classList.remove('on')">✕</span></div>
+      <div class="dstream">
+        <div class="msg"><div><span class="who">Scout</span><span class="when">now</span>
+          <p>Currently comparing 14 villas across 3 booking sites. Want me to also check Airbnb superhosts only?</p></div></div>
+        <div class="msg"><div><span class="who">You</span><span class="when">now</span>
+          <p>yes, superhosts only</p></div></div>
+      </div>
+      <div class="inputbar" style="margin:12px">Message Scout…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ DIRECTION C ============ -->
+<div class="mock" id="mockC">
+  <div class="cmd">☁️ <input placeholder="Message anyone — type @ to choose…"><kbd>⌘K anywhere</kbd></div>
+  <div class="pill-row">
+    <span class="apill on">🔭 Scout</span><span class="apill">🍳 Chef</span>
+    <span class="apill">🏋️ Coach</span><span class="apill">✨ Nova</span>
+    <span class="apill">👥 # trip-goa</span><span class="apill">Priya</span>
+  </div>
+  <div class="thread">
+    <div class="meta"><b>🔭 Scout</b> · researcher · working in the background</div>
+    <div class="bubble me">find us 3 beach villas in Goa under ₹8k/night, Dec 12–15</div>
+    <div class="bubble them">On it ☁️ I'll search, compare and come back — you don't need to keep this window open. I'll ping your phone when the shortlist is ready.</div>
+    <div class="meta">☁️ 24 minutes later — push notification sent to iPhone</div>
+    <div class="bubble them"><b>Shortlist ready ✅</b><br>1. Casa Sereno — ₹7.2k · Anjuna · 4.8★<br>2. Palm Tide — ₹6.5k · Vagator<br>3. Sol Mar — ₹7.9k · Palolem, beachfront<br><br>Want me to hold dates on any of these?</div>
+    <div class="bubble me">hold Casa Sereno, and ask Chef to plan food around Anjuna</div>
+    <div class="bubble them">Done — dates held. I've briefed 🍳 Chef in # trip-goa; the food plan will land there.</div>
+  </div>
+</div>
+
+<script>
+  const tabs=[...document.querySelectorAll('.tab')];
+  let cur='A';
+  tabs.forEach(t=>t.addEventListener('click',()=>{
+    cur=t.dataset.m;
+    tabs.forEach(x=>x.classList.toggle('on',x===t));
+    ['A','B','C'].forEach(m=>document.getElementById('mock'+m).classList.toggle('on',m===cur));
+  }));
+  function pick(){
+    const names={A:'Slack Classic',B:'Mission Control',C:'Zen Sky'};
+    const txt='Cloud9 design pick: Direction '+cur+' — '+names[cur];
+    document.getElementById('picked').textContent=txt;
+    navigator.clipboard&&navigator.clipboard.writeText(txt).catch(()=>{});
+  }
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')document.getElementById('qc').classList.remove('on');});
+</script>
+</body>
+</html>
