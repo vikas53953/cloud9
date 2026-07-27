@@ -162,7 +162,7 @@ export class Relay {
         const memberIds = Array.from(new Set([conn.userId, ...frame.memberIds]));
         const channel: Channel = {
           id: newId("ch"), name: frame.name,
-          kind: frame.memberIds.length === 1 ? "dm" : "channel",
+          kind: frame.kind ?? (frame.memberIds.length === 1 ? "dm" : "channel"),
           memberIds, createdAt: Date.now(),
         };
         this.store.saveChannel(channel);

@@ -1,0 +1,132 @@
+// Renderer-side relay client: one WebSocket, one mutable world, subscribers.
+import {
+  AgentDef, AgentStatus, Channel, ClientFrame, ID, Message, ServerFrame, User,
+} from "@cloud9/shared";
+
+export interface World {
+  connected: boolean;
+  authFailed: boolean;
+  me?: User;
+  users: User[];
+  agents: AgentDef[];
+  channels: Channel[];
+  messages: Record<ID, Message[]>; // by channel
+  agentStatus: Record<ID, AgentStatus>;
+  inviteCode?: string;
+}
+
+type Listener = () => void;
+
+const params = new URLSearchParams(location.search);
+export const RELAY_URL =
+  params.get("relay") ?? localStorage.getItem("cloud9.relay") ?? "ws://127.0.0.1:8787";
+
+export class RelayClient {
+  world: World = {
+    connected: false, authFailed: false, users: [], agents: [], channels: [],
+    messages: {}, agentStatus: {},
+  };
+  private ws?: WebSocket;
+  private listeners = new Set<Listener>();
+  private snapshotCache: World = { ...this.world };
+
+  subscribe = (fn: Listener): (() => void) => {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  };
+  getSnapshot = (): World => this.snapshotCache;
+
+  private emit(): void {
+    this.snapshotCache = { ...this.world };
+    for (const fn of this.listeners) fn();
+  }
+
+  connect(token: string): void {
+    this.ws?.close();
+    const ws = new WebSocket(RELAY_URL);
+    this.ws = ws;
+    ws.onopen = () => this.send({ type: "hello", token, client: "desktop" });
+    ws.onclose = () => {
+      this.world.connected = false;
+      this.emit();
+      if (!this.world.authFailed) setTimeout(() => this.connect(this.token()), 2500);
+    };
+    ws.onmessage = ev => this.onFrame(JSON.parse(ev.data) as ServerFrame);
+  }
+
+  token(): string {
+    return localStorage.getItem("cloud9.token") ?? "";
+  }
+  setToken(token: string): void {
+    localStorage.setItem("cloud9.token", token);
+  }
+
+  send(frame: ClientFrame): void {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(frame));
+  }
+
+  private onFrame(frame: ServerFrame): void {
+    const w = this.world;
+    switch (frame.type) {
+      case "welcome": {
+        w.connected = true;
+        w.authFailed = false;
+        w.me = frame.state.me;
+        w.users = frame.state.users;
+        w.agents = frame.state.agents;
+        w.channels = frame.state.channels;
+        w.agentStatus = frame.state.agentStatus;
+        w.messages = {};
+        for (const m of frame.state.messages) {
+          (w.messages[m.channelId] ??= []).push(m);
+        }
+        break;
+      }
+      case "token":
+        this.setToken(frame.token);
+        break;
+      case "message": {
+        (w.messages[frame.message.channelId] ??= []).push(frame.message);
+        break;
+      }
+      case "channel": {
+        const i = w.channels.findIndex(c => c.id === frame.channel.id);
+        if (i >= 0) w.channels[i] = frame.channel; else w.channels.push(frame.channel);
+        break;
+      }
+      case "agent": {
+        const i = w.agents.findIndex(a => a.id === frame.agent.id);
+        if (i >= 0) w.agents[i] = frame.agent; else w.agents.push(frame.agent);
+        break;
+      }
+      case "agentDeleted":
+        w.agents = w.agents.filter(a => a.id !== frame.agentId);
+        break;
+      case "agentStatus":
+        w.agentStatus = { ...w.agentStatus, [frame.agentId]: frame.status };
+        break;
+      case "invite":
+        w.inviteCode = frame.code;
+        break;
+      case "history": {
+        const existing = w.messages[frame.channelId] ?? [];
+        const known = new Set(existing.map(m => m.id));
+        w.messages[frame.channelId] = [
+          ...frame.messages.filter(m => !known.has(m.id)), ...existing,
+        ];
+        break;
+      }
+      case "userJoined":
+        w.users = [...w.users, frame.user];
+        break;
+      case "error":
+        if (frame.error === "bad token") w.authFailed = true;
+        break;
+      default:
+        break;
+    }
+    this.emit();
+  }
+}
+
+export const client = new RelayClient();

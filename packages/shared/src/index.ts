@@ -67,7 +67,7 @@ export interface Message {
 export type ClientFrame =
   | { type: "hello"; token: string; client: "desktop" | "mobile" | "engine" }
   | { type: "send"; channelId: ID; text: string; tempId?: string }
-  | { type: "createChannel"; name: string; memberIds: ID[] }
+  | { type: "createChannel"; name: string; memberIds: ID[]; kind?: ChannelKind }
   | { type: "addMembers"; channelId: ID; memberIds: ID[] }
   | { type: "createAgent"; agent: Omit<AgentDef, "id" | "ownerId" | "createdAt"> }
   | { type: "updateAgent"; agent: AgentDef }

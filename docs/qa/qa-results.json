@@ -1,0 +1,75 @@
+{
+  "ranAt": "2026-07-27T19:55:26.568Z",
+  "results": [
+    {
+      "name": "join screen renders",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "owner connects, #general visible",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "agent created and listed",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "channel created with agent member",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "@mention draws agent reply",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "free chatter: relevant agent chimes in unmentioned",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "background task acks then posts proactive result",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "quick chat (Ctrl/Cmd+K) sends",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "settings shows credential options + policy note",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "invite code generated",
+      "pass": true,
+      "detail": "inv_ms3ncfdj6vwmvn"
+    },
+    {
+      "name": "friend joins via invite",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "human-to-human message syncs across clients",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "empty message is not sent",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "no console errors",
+      "pass": true,
+      "detail": ""
+    }
+  ]
+}
