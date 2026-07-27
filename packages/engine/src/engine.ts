@@ -138,8 +138,12 @@ export class Engine {
 
     for (const agent of this.myAgents) {
       if (!shouldReply(agent, message, channel, channelAgents)) continue;
+      const bare = message.text.replace(/@[\w-]+\s*/g, "");
+      // schedule commands: "@Agent !schedule daily 06:30 do X" / "every 15m do X",
+      // "@Agent !schedules", "@Agent !unschedule <id>"
+      if (message.authorKind === "human" && this.handleScheduleCommand(agent, channel.id, bare)) continue;
       // background task command: "!bg <task>" with a mention
-      const bg = message.authorKind === "human" && /^!bg\s+/i.test(message.text.replace(/@[\w-]+\s*/g, ""));
+      const bg = message.authorKind === "human" && /^!bg\s+/i.test(bare);
       if (bg) {
         this.agentSend(agent.id, channel.id, `On it — I'll work on this in the background and post here when done. ⏳`);
         this.enqueue(() => this.backgroundTask(agent, channel.id, message));
@@ -230,6 +234,42 @@ export class Engine {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(frame));
     }
+  }
+
+  /** returns true when the message was a schedule command (handled, no LLM turn) */
+  handleScheduleCommand(agent: AgentDef, channelId: ID, text: string): boolean {
+    const t = text.trim();
+    const create = /^!schedule\s+(daily \d{1,2}:\d{2}|every \d+m)\s*:?\s+(.+)$/i.exec(t);
+    if (create) {
+      const s: AgentSchedule = {
+        id: `s_${Date.now().toString(36)}`, agentId: agent.id, channelId,
+        when: create[1].toLowerCase(), prompt: create[2], enabled: true,
+      };
+      this.saveSchedule(s);
+      this.agentSend(agent.id, channelId,
+        `⏰ Scheduled! I'll do this ${s.when}: "${s.prompt}" (id ${s.id} — "@${agent.name} !unschedule ${s.id}" to cancel)`);
+      return true;
+    }
+    if (/^!schedules$/i.test(t)) {
+      const mine = this.schedules.filter(s => s.agentId === agent.id);
+      this.agentSend(agent.id, channelId, mine.length
+        ? `My schedules:\n${mine.map(s => `• ${s.id}: ${s.when} — ${s.prompt}`).join("\n")}`
+        : "I have no schedules yet. Try: `!schedule daily 06:30 post a morning check-in`");
+      return true;
+    }
+    const remove = /^!unschedule\s+(\S+)$/i.exec(t);
+    if (remove) {
+      const existed = this.schedules.some(s => s.id === remove[1] && s.agentId === agent.id);
+      if (existed) this.deleteSchedule(remove[1]);
+      this.agentSend(agent.id, channelId, existed ? `Cancelled ${remove[1]} ✅` : `I don't have a schedule ${remove[1]}.`);
+      return true;
+    }
+    if (/^!schedule\b/i.test(t)) {
+      this.agentSend(agent.id, channelId,
+        'Schedule format: `!schedule daily HH:MM <what to do>` or `!schedule every Nm <what to do>`');
+      return true;
+    }
+    return false;
   }
 
   // ---- schedules persistence (JSON file in dataDir) ----

@@ -116,3 +116,40 @@ test("cloud9 end-to-end: agents chat with humans across the relay", async () => 
   friend.close();
   relay.close();
 });
+
+test("schedule commands via chat", async () => {
+  const relay = new Relay({ dbPath: tmp("relay2.db"), ownerToken: "tok-o2", ownerName: "Vikas" });
+  const port = await relay.listen(0);
+  const url = `ws://127.0.0.1:${port}`;
+  const owner = new TestClient(url, "tok-o2");
+  const welcome = await owner.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
+  const general = welcome.state.channels.find(c => c.name === "general")!;
+  owner.send({ type: "createAgent", agent: {
+    name: "Coach", emoji: "🏋️", persona: "You are a fitness coach",
+    abilities: { webSearch: false, files: false, schedules: true, background: false },
+  }});
+  const agent = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
+  const engine = new Engine({ relayUrl: url, token: "tok-o2", dataDir: tmp("engine2") });
+  engine.connect();
+  await new Promise<void>(resolve => { engine.onReady = resolve; });
+  owner.send({ type: "addMembers", channelId: general.id, memberIds: [agent.id] });
+  await owner.wait(f => f.type === "channel" && f.channel.memberIds.includes(agent.id));
+
+  owner.send({ type: "send", channelId: general.id, text: "@Coach !schedule daily 06:30 post my workout" });
+  const ack = await owner.wait<Extract<ServerFrame, { type: "message" }>>(
+    f => f.type === "message" && f.message.authorKind === "agent" && /Scheduled!/.test(f.message.text));
+  assert.match(ack.message.text, /daily 06:30/);
+  assert.equal(engine.schedules.length, 1);
+
+  owner.send({ type: "send", channelId: general.id, text: "@Coach !schedules" });
+  await owner.wait(f => f.type === "message" && f.message.authorKind === "agent" && /My schedules/.test(f.message.text));
+
+  const id = engine.schedules[0].id;
+  owner.send({ type: "send", channelId: general.id, text: `@Coach !unschedule ${id}` });
+  await owner.wait(f => f.type === "message" && f.message.authorKind === "agent" && /Cancelled/.test(f.message.text));
+  assert.equal(engine.schedules.length, 0);
+
+  engine.stop();
+  owner.close();
+  relay.close();
+});

@@ -17,7 +17,7 @@ morning review page. He can redirect anything then.
 | 2 | Requirements  | APPROVED by Vikas (2026-07-27)  | docs/plans/agent-chat-prd.md + docs/gates/gate1-review.html |
 | 3 | UX mock       | built — morning review (3 directions; building on A) | docs/mocks/directions.html |
 | 4 | Architecture  | decided (overnight, logged)     | docs/plans/architecture.md |
-| 5 | Build         | done (overnight) — schedules UI + Electron smoke pending | packages/, apps/ |
+| 5 | Build         | done (overnight) — incl. chat-based schedules + Electron smoke | packages/, apps/ |
 | 6 | Code review   | plan-vs-built audit done        | docs/gates/morning-review.html |
 | 7 | Browser QA    | 14/14 green + screenshots       | docs/qa/ |
 | 8 | Ship          | local commits; GitHub push = morning decision | git log |

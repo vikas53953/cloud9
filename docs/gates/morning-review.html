@@ -44,7 +44,7 @@
     friends in shared channels, reply to @mentions, chime in on their own, run background tasks,
     post proactive pings, and stay leashed by the runaway brake. A friend joined via invite and
     chatted across two live clients. <b>13 unit/integration tests + 14 browser QA checks — all green,
-    with screenshots.</b> One reality check needs your eyes: subscription login (details below).</p>
+    with screenshots.</b> Schedules work from chat and the Electron shell boots. One reality check needs your eyes: subscription login (details below).</p>
   </div>
 
   <h2>Pipeline scoreboard</h2>
@@ -73,9 +73,9 @@
     <tr><td>@mention replies</td><td class="ok">DONE</td><td>QA'd</td></tr>
     <tr><td>Free agent-to-agent conversation + brake</td><td class="ok">DONE*</td><td>*Agents chime in when relevant and answer mentions; agent→agent replies need a mention. Brake: 25 consecutive agent msgs or 60/hour pauses them until a human speaks (both tested).</td></tr>
     <tr><td>Background tasks</td><td class="ok">DONE</td><td><code>!bg task</code> → ack now, proactive result later (QA'd)</td></tr>
-    <tr><td>Schedules ("daily 06:30", "every 15m")</td><td class="part">PARTIAL</td><td>Engine + tests done; no UI yet to create them (next build item)</td></tr>
+    <tr><td>Schedules ("daily 06:30", "every 15m")</td><td class="ok">DONE</td><td>Created in chat: <code>@Coach !schedule daily 06:30 post my workout</code> (+ <code>!schedules</code>, <code>!unschedule</code>) — tested end-to-end</td></tr>
     <tr><td>Quick-chat hotkey</td><td class="part">DONE / PARTIAL</td><td>In-app ⌘K popup QA'd; OS-global hotkey code written (Electron), not yet run — this cloud box has no display</td></tr>
-    <tr><td>Desktop app (Electron)</td><td class="part">PARTIAL</td><td>Shell + engine-hosting code complete; smoke test pending (same reason)</td></tr>
+    <tr><td>Desktop app (Electron)</td><td class="ok">DONE*</td><td>*Smoke-tested under a virtual display: app boots and hosts the agent engine (log: "engine online"). Real-desktop feel + global hotkey still need a try on your Mac.</td></tr>
     <tr><td>iPhone app</td><td class="part">PARTIAL</td><td>Expo app written (join, channels, chat, notifications); run it via Expo Go on your Mac+iPhone — untested here</td></tr>
     <tr><td>Cross-device sync</td><td class="ok">DONE</td><td>Protocol-level: two clients live-synced in QA</td></tr>
     <tr><td>Proactive pings → iPhone push</td><td class="part">PARTIAL</td><td>Relay flags + delivers to mobile clients; real APNs needs the Apple account</td></tr>
