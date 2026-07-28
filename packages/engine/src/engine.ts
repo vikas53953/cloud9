@@ -213,6 +213,7 @@ export class Engine {
     if (this.claimed.has(task.id)) return;
     const agent = this.myAgents.find(a => a.id === task.agentId);
     if (!agent) return;
+    if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") return; // FR-AG-007
     this.claimed.add(task.id);
     this.enqueue(() => this.runTask(agent, task));
   }
@@ -269,6 +270,7 @@ export class Engine {
   private async fireSchedule(s: AgentSchedule): Promise<void> {
     const agent = this.myAgents.find(a => a.id === s.agentId);
     if (!agent) return;
+    if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") return; // FR-AG-007
     this.setStatus(agent.id, "working");
     try {
       const text = await this.provider.respond({

@@ -127,3 +127,11 @@ button{cursor:pointer;}
 .actwho{font-weight:700;white-space:nowrap;}
 .actdetail{flex:1;color:var(--muted);min-width:0;}
 .actwhen{color:var(--dim);font-size:.72rem;white-space:nowrap;}
+
+.agentrow{padding:0;display:flex;align-items:center;}
+.agentrow .agentmain{flex:1;display:flex;gap:8px;align-items:center;background:none;
+  border:0;color:inherit;font-size:.88rem;padding:5px 0 5px 16px;text-align:left;cursor:pointer;}
+.agentrow .editbtn{background:none;border:0;color:var(--dim);padding:5px 12px 5px 4px;font-size:.85rem;visibility:hidden;}
+.agentrow:hover .editbtn{visibility:visible;}
+.agentrow .editbtn:hover{color:var(--ink);}
+.dot.off{background:#555c70;}

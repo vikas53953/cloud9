@@ -41,6 +41,7 @@ export function shouldReply(
   channel: Channel,
   channelAgents: AgentDef[],
 ): boolean {
+  if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") return false;
   if (message.authorId === agent.id) return false;
   if (!channel.memberIds.includes(agent.id)) return false;
   if (channel.kind === "dm") return true;

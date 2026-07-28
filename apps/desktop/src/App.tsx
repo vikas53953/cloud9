@@ -76,6 +76,7 @@ function Workspace(): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [activeId, setActiveId] = useState<ID | null>(null);
   const [modal, setModal] = useState<null | "agent" | "invite" | "settings" | "channel" | "tasks" | "activity">(null);
+  const [editAgent, setEditAgent] = useState<AgentDef | null>(null);
   const [quick, setQuick] = useState(false);
 
   const active = world.channels.find(c => c.id === activeId) ?? world.channels[0];
@@ -118,10 +119,14 @@ function Workspace(): React.JSX.Element {
         ))}
         <div className="sect">Agents <button title="New agent" onClick={() => setModal("agent")}>＋</button></div>
         {world.agents.map(a => (
-          <button key={a.id} className="item" onClick={() => dmFor(a.id, a.name)} title={a.persona}>
-            <span className={`dot ${world.agentStatus[a.id] ?? "idle"}`}></span>
-            {a.emoji} {a.name} <span className="chip">AGENT</span>
-          </button>
+          <div key={a.id} className="item agentrow" title={a.persona}>
+            <button className="agentmain" onClick={() => dmFor(a.id, a.name)}>
+              <span className={`dot ${a.lifecycle === "paused" || a.lifecycle === "disabled" ? "off" : world.agentStatus[a.id] ?? "idle"}`}></span>
+              {a.emoji} {a.name} <span className="chip">{a.lifecycle === "paused" ? "PAUSED" : a.lifecycle === "disabled" ? "OFF" : "AGENT"}</span>
+            </button>
+            {a.ownerId === world.me?.id &&
+              <button className="editbtn" title="Edit agent" onClick={() => setEditAgent(a)}>✎</button>}
+          </div>
         ))}
         <div className="sect">People <button title="Invite a friend" onClick={() => { client.send({ type: "createInvite" }); setModal("invite"); }}>＋</button></div>
         {world.users.map(u => (
@@ -150,6 +155,7 @@ function Workspace(): React.JSX.Element {
       {modal === "channel" && <ChannelModal onClose={() => setModal(null)} />}
       {modal === "tasks" && <TasksModal onClose={() => setModal(null)} />}
       {modal === "activity" && <ActivityModal onClose={() => setModal(null)} />}
+      {editAgent && <AgentEditModal agent={editAgent} onClose={() => setEditAgent(null)} />}
     </div>
   );
 }
@@ -567,6 +573,67 @@ function ActivityModal({ onClose }: { onClose: () => void }): React.JSX.Element 
           ))}
         </div>
         <div className="foot"><button className="primary" onClick={onClose}>Close</button></div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= agent edit (FR-AG-007/008) ================= */
+
+function AgentEditModal({ agent, onClose }: { agent: AgentDef; onClose: () => void }): React.JSX.Element {
+  const [persona, setPersona] = useState(agent.persona);
+  const [emoji, setEmoji] = useState(agent.emoji);
+  const [ab, setAb] = useState(agent.abilities);
+  const [ap, setAp] = useState(agent.approvals ?? { background: false, schedules: false });
+  const [life, setLife] = useState(agent.lifecycle ?? "enabled");
+
+  const save = () => {
+    client.send({
+      type: "updateAgent",
+      agent: { ...agent, emoji, persona: persona.trim() || agent.persona, abilities: ab, approvals: ap, lifecycle: life as AgentDef["lifecycle"] },
+    });
+    onClose();
+  };
+  const del = () => {
+    client.send({ type: "deleteAgent", agentId: agent.id });
+    onClose();
+  };
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="panel" onClick={e => e.stopPropagation()}>
+        <div className="head">Edit {agent.emoji} {agent.name}</div>
+        <div className="body">
+          <div className="row">
+            <div><label>Status</label>
+              <select value={life} onChange={e => setLife(e.target.value as typeof life)}>
+                <option value="enabled">▶ Enabled — responds and works</option>
+                <option value="paused">⏸ Paused — silent until re-enabled</option>
+                <option value="disabled">⏹ Disabled — off entirely</option>
+              </select></div>
+            <div style={{ maxWidth: 90 }}><label>Emoji</label>
+              <input type="text" value={emoji} onChange={e => setEmoji(e.target.value)} /></div>
+          </div>
+          <div><label>Personality</label>
+            <textarea rows={4} value={persona} onChange={e => setPersona(e.target.value)} /></div>
+          <div><label>Abilities</label>
+            <div className="checks">
+              <label><input type="checkbox" checked={ab.webSearch} onChange={e => setAb({ ...ab, webSearch: e.target.checked })} /> 🔎 Web search</label>
+              <label><input type="checkbox" checked={ab.files} onChange={e => setAb({ ...ab, files: e.target.checked })} /> 📁 Files folder</label>
+              <label><input type="checkbox" checked={ab.schedules} onChange={e => setAb({ ...ab, schedules: e.target.checked })} /> ⏰ Schedules</label>
+              <label><input type="checkbox" checked={ab.background} onChange={e => setAb({ ...ab, background: e.target.checked })} /> 📦 Background tasks</label>
+            </div></div>
+          <div><label>Ask me for approval before…</label>
+            <div className="checks">
+              <label><input type="checkbox" checked={ap.background} onChange={e => setAp({ ...ap, background: e.target.checked })} /> 🔒 Background work</label>
+              <label><input type="checkbox" checked={ap.schedules} onChange={e => setAp({ ...ap, schedules: e.target.checked })} /> 🔒 Creating schedules</label>
+            </div></div>
+        </div>
+        <div className="foot">
+          <button className="subtle" style={{ marginRight: "auto", color: "#ef4444" }} onClick={del}>Delete agent</button>
+          <button className="subtle" onClick={onClose}>Cancel</button>
+          <button className="primary" onClick={save}>Save</button>
+        </div>
       </div>
     </div>
   );

@@ -73,3 +73,12 @@ test("hourly cap trips independently", () => {
   }
   assert.equal(isBraked(history, DEFAULT_BRAKE), true);
 });
+
+test("paused and disabled agents never reply (FR-AG-007)", () => {
+  const paused = mk({ lifecycle: "paused" });
+  const disabled = mk({ lifecycle: "disabled" });
+  const m = msg({ text: "@Scout find villas", mentions: ["a1"] });
+  assert.equal(shouldReply(paused, m, chan, [paused]), false);
+  assert.equal(shouldReply(disabled, m, chan, [disabled]), false);
+  assert.equal(shouldReply(mk({ lifecycle: "enabled" }), m, chan, [mk()]), true);
+});

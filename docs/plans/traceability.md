@@ -29,8 +29,8 @@ Status: DONE (implemented + tested) · PARTIAL · NOT BUILT · BLOCKED-TBD
 | FR-AG-001..004 create/identity/role/instructions | DONE | `AgentModal` in `App.tsx`; `createAgent` in `server.ts`; QA screenshot 02. |
 | FR-AG-005 provider association | PARTIAL | All agents use the owner's single provider; per-agent provider choice not built. |
 | FR-AG-006 explicit permission scope | PARTIAL | Ability toggles → `allowedTools` mapping (`provider.ts`); Bash always disallowed. Not a full policy model. |
-| FR-AG-007 enable/pause/disable | NOT BUILT | Only delete exists today. |
-| FR-AG-008 edit after creation | PARTIAL | `updateAgent` frame exists in relay + protocol; no edit UI. |
+| FR-AG-007 enable/pause/disable | DONE | `lifecycle` field; paused/disabled agents never reply, run tasks, or fire schedules (unit + browser tested); edit modal control. |
+| FR-AG-008 edit after creation | DONE | ✎ AgentEditModal: persona, emoji, abilities, approvals, lifecycle, delete. |
 | FR-AG-009..012 duplicate/templates/marketplace/versioning | NOT BUILT / TBD | |
 
 ## 10.4 Communication

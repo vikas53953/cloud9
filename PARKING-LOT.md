@@ -18,8 +18,8 @@ being built until it leaves the lot.
 | B2 | Global OS-level ⌘K hotkey verification | Needs a real desktop (your Mac); code is written and Electron boots. |
 | B3 | iPhone app run via Expo Go | Needs your Mac + iPhone; code is written. |
 | B4 | Real APNs push delivery | Blocked on A4. |
-| B5 | Agent edit UI (protocol already supports `updateAgent`) | Small; queued behind v2 planning. |
-| B6 | Agent enable/pause/disable (spec FR-AG-007) | New since spec adoption. |
+| B5 | ~~Agent edit UI~~ **BUILT 2026-07-28** (✎ on agent row) | — |
+| B6 | ~~Agent enable/pause/disable~~ **BUILT 2026-07-28** (edit modal status) | — |
 | B7 | Engine lift to always-on server (agents work while desktop is off) | Designed-for; build when wanted. Small monthly cost. |
 | B8 | Android app | You chose iPhone-first. |
 

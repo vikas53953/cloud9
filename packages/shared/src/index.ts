@@ -31,6 +31,8 @@ export interface AgentDef {
   abilities: AgentAbilities;
   /** optional — absent means no approvals required (v1 agents) */
   approvals?: AgentApprovals;
+  /** FR-AG-007 — absent means "enabled" (v1 agents) */
+  lifecycle?: "enabled" | "paused" | "disabled";
   model?: string;
   createdAt: number;
 }

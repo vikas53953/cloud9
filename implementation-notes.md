@@ -51,3 +51,6 @@ Running log of deviations and lessons. One line each, newest last.
 - 2026-07-28: Lesson: engine test hangs came from a leaked reconnect timer +
   scheduler interval after an assertion failure; fixed with stopped-flag +
   timer cleanup — always make async loops cancellable before testing them.
+- 2026-07-28 (v2 cont.): FR-AG-007 lifecycle (enabled/paused/disabled) +
+  FR-AG-008 edit UI built and QA'd (3/3 lifecycle checks). Remaining spec work
+  is all BLOCKED-TBD or needs Vikas — clean autonomous stopping point.
