@@ -36,5 +36,12 @@ morning review page. He can redirect anything then.
 - Agent chatter: FREE agent-to-agent conversation (mechanical runaway brake logged in PRD).
 - Name: **Cloud9**.
 
+## v2 — Agent Workforce Platform (spec adopted 2026-07-28)
+Vikas adopted docs/plans/spec.md as the v2 north star. Coverage map:
+docs/plans/traceability.md (11/16 acceptance criteria already met by v1).
+Build queue + blocking TBDs: PARKING-LOT.md (sections C and D). No v2 code
+until the relevant TBDs are resolved and a green light is given — per the
+spec's own rules.
+
 Open questions: none. Subscription-auth verdict: third-party claude.ai login NOT permitted; shipping API-key + setup-token options (see implementation-notes).
 Deviations: see implementation-notes.md

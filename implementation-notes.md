@@ -36,3 +36,8 @@ Running log of deviations and lessons. One line each, newest last.
   possible with zero credentials; keep it forever as demo mode.
 - 2026-07-28 (early): Schedules have engine support + tests but no creation UI
   yet — first build item for the next session.
+- 2026-07-28: Vikas adopted the external Agent Workforce Platform spec
+  (docs/plans/spec.md) as the v2 direction. Produced traceability.md per its
+  §26.4 and PARKING-LOT.md holding morning decisions (A), deferred work (B),
+  v2 queue (C), and blocking TBDs (D). Spec rules honored: no TBD guessed,
+  no v2 implementation started.
