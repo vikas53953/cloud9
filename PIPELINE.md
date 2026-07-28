@@ -50,8 +50,10 @@ after a code review returned NOT READY and was fully addressed (3 P0s —
 command injection, per-harness credentials, relay authorization — plus 4 P1s
 and the named P2/P3 items; see implementation-notes.md).
 Left for Vikas: click both sign-in buttons for real (an agent must not authorise
-in his browser). C5 workspaces still blocked on TBD D6 (PARKING-LOT). GitHub
-push blocked by session security (see A3).
+in his browser). C5 workspaces still blocked on TBD D6 (PARKING-LOT).
+GitHub push: UNBLOCKED 2026-07-28 — repo github.com/vikas53953/cloud9 exists and
+the local checkout pushes over HTTPS via the gh keyring login (no SSH key on
+this machine). Everything through 3d68926 is pushed.
 
 ## v2.1 — harness sign-in + Workbench reskin (2026-07-28, Vikas directed)
 Approved order delivered: (1) Sign in with Claude, (2) Sign in with Codex,
@@ -66,6 +68,18 @@ Approved order delivered: (1) Sign in with Claude, (2) Sign in with Codex,
   sign-in buttons, and the first real Codex agent answer.
 - Next up per Vikas: "then we will pick up the other things" — remaining
   spec items (C5 workspaces/roles/governance, D1 outcome wording, mobile).
+
+House rule for delegated builds (added 2026-07-28): worker agents are told NOT
+to commit. The conductor commits after it re-runs the evidence itself. If a
+worker sees commits it did not make, that is the conductor doing its job — not
+an intrusion. Nothing needs rolling back.
+
+Starting the app: double-click `Start Cloud9.cmd` in the repo root. It starts
+the hub, the agents and the screen in order (waiting on each), opens the
+desktop window, and shuts the background parts down when the window closes.
+Dev flags CLOUD9_DEV=1 / CLOUD9_DEMO=1 are set by the script; they exist
+because of the P0#3 (no default-token access) and P1#7 (no implicit fake
+answers) security fixes.
 
 Open questions: none. Subscription-auth verdict: third-party claude.ai login NOT permitted; shipping API-key + setup-token options (see implementation-notes).
 Deviations: see implementation-notes.md
