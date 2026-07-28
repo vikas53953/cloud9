@@ -8,7 +8,7 @@ import path from "node:path";
 import fs from "node:fs";
 import WebSocket from "ws";
 import { ClientFrame, ServerFrame } from "@cloud9/shared";
-import { Engine } from "@cloud9/engine";
+import { Engine, MockProvider } from "@cloud9/engine";
 import { Relay } from "./server.js";
 
 function tmp(name: string): string {
@@ -21,7 +21,7 @@ class TestClient {
   frames: ServerFrame[] = [];
   private waiters: { pred: (f: ServerFrame) => boolean; resolve: (f: ServerFrame) => void }[] = [];
 
-  constructor(url: string, token: string, client: "desktop" | "mobile" = "desktop") {
+  constructor(url: string, token: string, client: "desktop" | "mobile" | "engine" = "desktop") {
     this.ws = new WebSocket(url);
     this.ws.on("open", () => this.send({ type: "hello", token, client }));
     this.ws.on("message", raw => {
@@ -73,7 +73,7 @@ test("cloud9 end-to-end: agents chat with humans across the relay", async () => 
   const scout = agentFrame.agent;
 
   // engine host comes online for the owner (mock provider)
-  const engine = new Engine({ relayUrl: url, token: "tok-owner", dataDir: tmp("engine") });
+  const engine = new Engine({ relayUrl: url, token: "tok-owner", dataDir: tmp("engine"), provider: new MockProvider() });
   engine.connect();
   await new Promise<void>(resolve => { engine.onReady = resolve; });
 
@@ -129,7 +129,7 @@ test("schedule commands via chat", async () => {
     abilities: { webSearch: false, files: false, schedules: true, background: false },
   }});
   const agent = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
-  const engine = new Engine({ relayUrl: url, token: "tok-o2", dataDir: tmp("engine2") });
+  const engine = new Engine({ relayUrl: url, token: "tok-o2", dataDir: tmp("engine2"), provider: new MockProvider() });
   engine.connect();
   await new Promise<void>(resolve => { engine.onReady = resolve; });
   owner.send({ type: "addMembers", channelId: general.id, memberIds: [agent.id] });
@@ -168,7 +168,7 @@ test("v2: task lifecycle with approvals and audit trail", async () => {
     approvals: { background: true, schedules: false },
   }});
   const agent = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
-  const engine = new Engine({ relayUrl: url, token: "tok-o3", dataDir: tmp("engine3") });
+  const engine = new Engine({ relayUrl: url, token: "tok-o3", dataDir: tmp("engine3"), provider: new MockProvider() });
   engine.connect();
   await new Promise<void>(resolve => { engine.onReady = resolve; });
   owner.send({ type: "addMembers", channelId: general.id, memberIds: [agent.id] });
@@ -233,4 +233,145 @@ test("v2: task lifecycle with approvals and audit trail", async () => {
   owner.close();
   friend.close();
   relay.close();
+});
+
+// --- harness sign-in frames (docs/plans/harness-signin.md decision 5) ---
+test("harness status is asked for by clients, answered by the engine, broadcast to the owner", async () => {
+  const relay = new Relay({ dbPath: tmp("relay-harness.db"), ownerToken: "tok-owner", ownerName: "Vikas" });
+  const port = await relay.listen(0);
+  const url = `ws://127.0.0.1:${port}`;
+
+  const desktop = new TestClient(url, "tok-owner");
+  await desktop.wait(f => f.type === "welcome");
+  // stand-in for the engine host: it owns the CLIs and answers harness requests
+  const host = new TestClient(url, "tok-owner", "engine");
+  await host.wait(f => f.type === "welcome");
+
+  const state = {
+    claude: { name: "claude" as const, installed: true, signedIn: true, account: "vikas@example.com", version: "2.1.220" },
+    codex: { name: "codex" as const, installed: true, signedIn: false, detail: "installed, but not signed in yet" },
+    updatedAt: Date.now(),
+  };
+
+  // 1. the desktop asks; the request lands on the engine, not on other clients
+  desktop.send({ type: "harnessStatus" });
+  const asked = await host.wait<Extract<ServerFrame, { type: "harnessRequest" }>>(
+    f => f.type === "harnessRequest" && f.action === "status");
+  assert.equal(asked.harness, undefined);
+  assert.ok(!desktop.frames.some(f => f.type === "harnessRequest"), "requests go to the engine only");
+
+  // 2. the engine reports status; the desktop sees it
+  host.send({ type: "harnessState", state });
+  const broadcast = await desktop.wait<Extract<ServerFrame, { type: "harness" }>>(f => f.type === "harness");
+  assert.equal(broadcast.state.claude.signedIn, true);
+  assert.equal(broadcast.state.claude.account, "vikas@example.com");
+  assert.equal(broadcast.state.codex.signedIn, false);
+  // status only — nothing token-shaped may cross the wire
+  assert.ok(!JSON.stringify(broadcast).includes("sk-"));
+
+  // 3. "Sign in with Codex" reaches the engine, naming the harness
+  desktop.send({ type: "harnessSignIn", harness: "codex" });
+  const signIn = await host.wait<Extract<ServerFrame, { type: "harnessRequest" }>>(
+    f => f.type === "harnessRequest" && f.action === "signIn");
+  assert.equal(signIn.harness, "codex");
+
+  // 4. a later asker gets the cached status straight away
+  const second = new TestClient(url, "tok-owner");
+  await second.wait(f => f.type === "welcome");
+  second.send({ type: "harnessStatus" });
+  const cached = await second.wait<Extract<ServerFrame, { type: "harness" }>>(f => f.type === "harness");
+  assert.equal(cached.state.claude.version, "2.1.220");
+
+  // 5. a plain client may not fake harness status
+  desktop.send({ type: "harnessState", state });
+  const err = await desktop.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(err.error, /only the engine/);
+
+  desktop.close();
+  second.close();
+  host.close();
+  relay.close();
+});
+
+// --- harness control is privileged: it starts programs on the owner's computer ---
+test("only the owner, on a non-default token, can drive the harnesses", async () => {
+  const relay = new Relay({ dbPath: tmp("relay-harness2.db"), ownerToken: "tok-secret", ownerName: "Vikas" });
+  const port = await relay.listen(0);
+  const url = `ws://127.0.0.1:${port}`;
+
+  const owner = new TestClient(url, "tok-secret");
+  await owner.wait(f => f.type === "welcome");
+  const host = new TestClient(url, "tok-secret", "engine");
+  await host.wait(f => f.type === "welcome");
+
+  // an invited friend joins
+  owner.send({ type: "createInvite" });
+  const inv = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
+  const friend = new TestClient(url, `invite:${inv.code}:Priya`);
+  await friend.wait(f => f.type === "welcome");
+
+  // the friend may not start a sign-in on the owner's machine
+  friend.send({ type: "harnessSignIn", harness: "codex" });
+  const denied = await friend.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(denied.error, /only the owner/);
+  assert.ok(!host.frames.some(f => f.type === "harnessRequest"), "nothing reached the engine host");
+
+  // ...nor read the owner's harness status
+  friend.send({ type: "harnessStatus" });
+  await friend.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error" && /only the owner/.test(f.error), 3000);
+  assert.ok(!friend.frames.some(f => f.type === "harness"), "no status leaked to the friend");
+
+  // the owner can, and it is rate-limited to one at a time
+  owner.send({ type: "harnessSignIn", harness: "codex" });
+  await host.wait(f => f.type === "harnessRequest" && f.action === "signIn");
+  owner.send({ type: "harnessSignIn", harness: "codex" });
+  const busy = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(busy.error, /already running|give the last sign-in/);
+
+  owner.close(); friend.close(); host.close(); relay.close();
+});
+
+test("the shipped default owner token cannot drive the harnesses", async () => {
+  const relay = new Relay({ dbPath: tmp("relay-harness3.db"), ownerToken: "dev-owner-token", ownerName: "Vikas" });
+  const port = await relay.listen(0);
+  const owner = new TestClient(`ws://127.0.0.1:${port}`, "dev-owner-token");
+  await owner.wait(f => f.type === "welcome");
+
+  owner.send({ type: "harnessSignIn", harness: "claude" });
+  const err = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(err.error, /own owner token/);
+
+  owner.close(); relay.close();
+});
+
+test("dev mode allows the default token, and harness status is dropped when the engine leaves", async () => {
+  const relay = new Relay({
+    dbPath: tmp("relay-harness4.db"), ownerToken: "dev-owner-token", ownerName: "Vikas", devMode: true,
+  });
+  const port = await relay.listen(0);
+  const url = `ws://127.0.0.1:${port}`;
+  const owner = new TestClient(url, "dev-owner-token");
+  await owner.wait(f => f.type === "welcome");
+  const host = new TestClient(url, "dev-owner-token", "engine");
+  await host.wait(f => f.type === "welcome");
+
+  host.send({
+    type: "harnessState",
+    state: {
+      claude: { name: "claude", installed: true, signedIn: true, account: "vikas@example.com" },
+      codex: { name: "codex", installed: true, signedIn: true },
+      updatedAt: Date.now(),
+    },
+  });
+  const live = await owner.wait<Extract<ServerFrame, { type: "harness" }>>(f => f.type === "harness");
+  assert.equal(live.state.claude.signedIn, true);
+
+  // the engine host goes away — its status is now a claim about nothing
+  host.close();
+  const stale = await owner.wait<Extract<ServerFrame, { type: "harness" }>>(
+    f => f.type === "harness" && !f.state.claude.signedIn, 5000);
+  assert.match(stale.state.claude.detail ?? "", /isn't running/);
+
+  owner.close(); relay.close();
 });

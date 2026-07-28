@@ -41,8 +41,17 @@ Vikas adopted docs/plans/spec.md as the v2 north star. Coverage map:
 docs/plans/traceability.md (11/16 acceptance criteria already met by v1).
 v2 progress (autonomous, per Vikas's directive 2026-07-28): C1 Tasks, C2
 Approvals, C3 Audit BUILT — 15 unit/integration tests + 14/14 v1 regression +
-8/8 v2 browser QA green. C4 Codex + C5 workspaces remain blocked on TBDs D2/
-D6 (PARKING-LOT). GitHub push blocked by session security (see A3).
+8/8 v2 browser QA green. C4 Codex BUILT 2026-07-28 — "Sign in with Claude" +
+"Sign in with Codex" per docs/plans/harness-signin.md (D2 resolved by Vikas):
+per-agent provider picker, CodexProvider, harness detection/sign-in in the
+engine host, and the secrets class fix (safeStorage replaces all localStorage
+credential code). 64 tests green (57 engine + 7 relay) + browser QA 19/19,
+after a code review returned NOT READY and was fully addressed (3 P0s —
+command injection, per-harness credentials, relay authorization — plus 4 P1s
+and the named P2/P3 items; see implementation-notes.md).
+Left for Vikas: click both sign-in buttons for real (an agent must not authorise
+in his browser). C5 workspaces still blocked on TBD D6 (PARKING-LOT). GitHub
+push blocked by session security (see A3).
 
 Open questions: none. Subscription-auth verdict: third-party claude.ai login NOT permitted; shipping API-key + setup-token options (see implementation-notes).
 Deviations: see implementation-notes.md

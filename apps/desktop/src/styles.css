@@ -135,3 +135,23 @@ button{cursor:pointer;}
 .agentrow:hover .editbtn{visibility:visible;}
 .agentrow .editbtn:hover{color:var(--ink);}
 .dot.off{background:#555c70;}
+
+/* ---------- settings: harness (Claude / Codex) cards ---------- */
+.harnesscard{background:#151928;border:1px solid var(--line2);border-radius:12px;
+  padding:12px 14px;display:flex;flex-direction:column;gap:10px;}
+.harnesshead{display:flex;align-items:center;gap:8px;}
+.harnessname{font-weight:700;font-size:.95rem;}
+.harnessdot{width:9px;height:9px;border-radius:50%;background:var(--dim);flex-shrink:0;}
+.harnessdot.ok{background:var(--good);}
+.harnessdot.warn{background:var(--warn);}
+.harnessdot.off{background:#555c70;}
+.harnessstate{font-size:.8rem;color:var(--muted);}
+.harnessfacts{display:flex;gap:16px;font-size:.78rem;color:var(--dim);}
+.harnessbtns{display:flex;gap:8px;align-items:center;}
+.harnessbtns .primary:disabled{opacity:.45;cursor:not-allowed;}
+.harnessfallback{display:flex;flex-direction:column;gap:8px;
+  border-left:2px solid var(--line2);padding-left:10px;}
+.linkbtn{background:none;border:0;color:var(--muted);font-size:.8rem;text-align:left;padding:0;}
+.linkbtn:hover{color:var(--ink);}
+.hint{font-size:.75rem;color:var(--dim);margin-top:5px;line-height:1.45;}
+.providerpick{margin-top:2px;}

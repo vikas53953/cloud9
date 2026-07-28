@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud9 — Zen Sky</title>
+<style>
+/* ============================================================
+   CLOUD9 · "ZEN SKY"
+   Palette  : Mist #EEF3F6 · Paper #FBFCFD · Ink #1D2B34
+              Horizon #2E6F8E · Lichen #6E9A7E · Sand #D8B26A
+   Type     : Display = humanist sans (Optima / Candara / Gill Sans)
+              Body    = system UI  ·  Utility = mono for time & tasks
+   Signature: the horizon band — a pale dawn gradient sits behind the
+              top of the conversation and a matching ground-glow under
+              the composer, so the room has a sky and a floor.
+   ============================================================ */
+
+:root{
+  --paper:#FBFCFD;
+  --mist:#EDF2F6;
+  --mist-deep:#E2EAF0;
+  --ink:#1D2B34;
+  --ink-2:#4A5E6B;
+  --ink-3:#7E919D;
+  --horizon:#2E6F8E;
+  --horizon-soft:#E4EFF4;
+  --lichen:#6E9A7E;
+  --lichen-soft:#E7F0E9;
+  --sand:#C79A46;
+  --sand-soft:#F7EEDC;
+  --rule:rgba(29,43,52,.075);
+
+  --sky-1:rgba(139,183,206,.40);
+  --sky-2:rgba(190,216,230,.18);
+  --glow:rgba(139,183,206,.22);
+
+  --lift-1:0 1px 2px rgba(29,43,52,.05), 0 4px 14px -6px rgba(29,43,52,.10);
+  --lift-2:0 2px 4px rgba(29,43,52,.05), 0 14px 34px -14px rgba(29,43,52,.20);
+  --lift-in:inset 0 0 0 1px rgba(29,43,52,.05);
+
+  --display:Optima, Candara, "Gill Sans MT", "Gill Sans", "Trebuchet MS", "Segoe UI", sans-serif;
+  --body:"Segoe UI", -apple-system, BlinkMacSystemFont, "Inter", Roboto, "Helvetica Neue", sans-serif;
+  --mono:"Cascadia Mono", ui-monospace, "SF Mono", "JetBrains Mono", Consolas, monospace;
+  --emoji:"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif;
+
+  --r-sm:8px; --r-md:14px; --r-lg:20px; --r-xl:28px;
+  --rail:264px; --aside:292px;
+}
+
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#18242D;
+    --mist:#111B22;
+    --mist-deep:#0C1419;
+    --ink:#DCE7ED;
+    --ink-2:#A2B6C2;
+    --ink-3:#718896;
+    --horizon:#7CB8D2;
+    --horizon-soft:#1B3541;
+    --lichen:#8FBC9D;
+    --lichen-soft:#1A2C24;
+    --sand:#DCB56C;
+    --sand-soft:#2C2519;
+    --rule:rgba(220,231,237,.09);
+    --sky-1:rgba(76,124,151,.30);
+    --sky-2:rgba(40,72,92,.22);
+    --glow:rgba(64,106,131,.22);
+    --lift-1:0 1px 2px rgba(0,0,0,.30), 0 4px 14px -6px rgba(0,0,0,.45);
+    --lift-2:0 2px 6px rgba(0,0,0,.34), 0 16px 38px -16px rgba(0,0,0,.60);
+    --lift-in:inset 0 0 0 1px rgba(220,231,237,.06);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#18242D;
+  --mist:#111B22;
+  --mist-deep:#0C1419;
+  --ink:#DCE7ED;
+  --ink-2:#A2B6C2;
+  --ink-3:#718896;
+  --horizon:#7CB8D2;
+  --horizon-soft:#1B3541;
+  --lichen:#8FBC9D;
+  --lichen-soft:#1A2C24;
+  --sand:#DCB56C;
+  --sand-soft:#2C2519;
+  --rule:rgba(220,231,237,.09);
+  --sky-1:rgba(76,124,151,.30);
+  --sky-2:rgba(40,72,92,.22);
+  --glow:rgba(64,106,131,.22);
+  --lift-1:0 1px 2px rgba(0,0,0,.30), 0 4px 14px -6px rgba(0,0,0,.45);
+  --lift-2:0 2px 6px rgba(0,0,0,.34), 0 16px 38px -16px rgba(0,0,0,.60);
+  --lift-in:inset 0 0 0 1px rgba(220,231,237,.06);
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; overflow:hidden;
+  background:var(--mist); color:var(--ink);
+  font-family:var(--body); font-size:14.5px; line-height:1.62;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--horizon); outline-offset:2px; border-radius:6px}
+
+/* ---------- shell ---------- */
+.app{
+  display:grid; grid-template-columns:var(--rail) minmax(0,1fr) var(--aside);
+  height:100vh; gap:0;
+}
+
+/* ---------- rail ---------- */
+.rail{
+  background:var(--mist-deep);
+  padding:22px 14px 16px; display:flex; flex-direction:column; gap:26px;
+  overflow-y:auto; min-width:0;
+}
+.brand{display:flex; align-items:center; gap:11px; padding:0 8px 0 6px}
+.brand .mark{
+  width:34px;height:34px;border-radius:12px;flex:none;
+  background:linear-gradient(160deg,#8FBFD6,#3E7C99 62%,#2E6F8E);
+  box-shadow:0 4px 12px -4px rgba(46,111,142,.55);
+  display:grid;place-items:center;color:#fff;font-size:16px;
+}
+.brand h1{
+  margin:0; font-family:var(--display); font-size:19.5px; font-weight:600;
+  letter-spacing:.028em; line-height:1.1;
+}
+.brand small{display:block;font-family:var(--body);font-size:11.5px;letter-spacing:.02em;color:var(--ink-3);font-weight:400}
+
+.section-label{
+  font-family:var(--mono); font-size:10px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--ink-3); padding:0 10px; margin:0 0 8px; font-weight:500;
+}
+.nav{display:flex;flex-direction:column;gap:1px}
+.nav a{
+  display:flex;align-items:center;gap:10px; text-decoration:none; color:var(--ink-2);
+  padding:7px 10px; border-radius:11px; font-size:14px; line-height:1.4;
+  transition:background .16s ease,color .16s ease;
+}
+.nav a:hover{background:rgba(46,111,142,.07); color:var(--ink)}
+.nav a .hash{color:var(--ink-3); font-family:var(--mono); font-size:13.5px}
+.nav a.on{background:var(--paper); color:var(--ink); font-weight:600; box-shadow:var(--lift-1)}
+.nav a.on .hash{color:var(--horizon)}
+.nav .count{
+  margin-left:auto; font-family:var(--mono); font-size:10.5px; color:#fff;
+  background:var(--horizon); padding:1px 7px; border-radius:999px; letter-spacing:.02em;
+}
+:root[data-theme="dark"] .nav .count, :root:not([data-theme="light"]) .nav .count{color:#0C1419}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]) .nav .count{color:#fff}}
+
+.roster{display:flex;flex-direction:column;gap:2px}
+.roster .row{
+  display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:11px;
+  transition:background .16s ease;
+}
+.roster .row:hover{background:rgba(46,111,142,.07)}
+.av{
+  width:30px;height:30px;border-radius:50%;flex:none;display:grid;place-items:center;
+  font-family:var(--emoji); font-size:15px; background:var(--horizon-soft);
+  box-shadow:var(--lift-in);
+}
+.av.human{font-family:var(--display);font-size:12.5px;font-weight:600;letter-spacing:.04em;color:var(--horizon);background:var(--mist)}
+.av.lichen{background:var(--lichen-soft)}
+.av.sand{background:var(--sand-soft)}
+.who{min-width:0}
+.who b{display:block;font-weight:600;font-size:13.5px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.who span{display:block;font-size:11.5px;color:var(--ink-3);line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dot{width:7px;height:7px;border-radius:50%;margin-left:auto;flex:none;background:var(--ink-3);opacity:.4}
+.dot.live{background:var(--lichen);opacity:1}
+.dot.busy{background:var(--sand);opacity:1}
+
+.rail-foot{margin-top:auto;display:flex;align-items:center;gap:10px;padding:10px 8px 2px;border-top:1px solid var(--rule)}
+.rail-foot .who b{font-size:13px}
+.themeswap{
+  margin-left:auto;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-3);padding:5px 9px;border-radius:9px;transition:background .16s,color .16s;
+}
+.themeswap:hover{background:rgba(46,111,142,.08);color:var(--ink-2)}
+
+/* ---------- centre ---------- */
+.room{
+  background:var(--paper); min-width:0; min-height:0; display:flex; flex-direction:column;
+  position:relative; box-shadow:var(--lift-2); z-index:2; overflow:hidden;
+}
+.room-head{
+  padding:18px 34px 15px; display:flex; align-items:flex-start; gap:16px;
+  position:relative; z-index:3;
+}
+.room-head h2{
+  margin:0; font-family:var(--display); font-size:22px; font-weight:600; letter-spacing:.015em;
+  display:flex;align-items:baseline;gap:7px;
+}
+.room-head h2 .hash{color:var(--horizon);font-family:var(--mono);font-size:18px;font-weight:400}
+.room-head p{margin:2px 0 0;font-size:13px;color:var(--ink-3);line-height:1.5}
+.facepile{margin-left:auto;display:flex;align-items:center;gap:8px;flex:none}
+.facepile .stack{display:flex}
+.facepile .stack .av{width:28px;height:28px;font-size:14px;margin-left:-5px;box-shadow:0 0 0 2.5px var(--paper)}
+.facepile .stack .av.human{font-size:10.5px;letter-spacing:.02em}
+.facepile .stack .av:first-child{margin-left:0}
+.facepile .n{font-family:var(--mono);font-size:11px;color:var(--ink-3);letter-spacing:.04em}
+
+/* the horizon: dawn band behind the top of the conversation */
+.sky{
+  position:absolute; inset:0 0 auto; height:290px; pointer-events:none; z-index:1;
+  background:
+    linear-gradient(180deg, var(--sky-1) 0%, var(--sky-2) 40%, transparent 100%);
+}
+
+.stream{
+  flex:1 1 auto; min-height:0; overflow-y:auto; padding:8px 34px 26px;
+  position:relative; z-index:2; scrollbar-width:thin;
+}
+.room-head, .deck{flex:none}
+.stream::-webkit-scrollbar{width:10px}
+.stream::-webkit-scrollbar-thumb{background:var(--mist-deep);border-radius:99px;border:3px solid var(--paper)}
+
+.daymark{display:flex;align-items:center;gap:14px;margin:16px 0 22px}
+.daymark::before,.daymark::after{content:"";height:1px;flex:1;background:var(--rule)}
+.daymark span{
+  font-family:var(--mono);font-size:10px;letter-spacing:.17em;text-transform:uppercase;color:var(--ink-3);
+}
+
+.msg{display:grid;grid-template-columns:44px minmax(0,1fr);gap:14px;padding:9px 0}
+.msg .av{width:38px;height:38px;font-size:19.5px}
+.msg .meta{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:1px}
+.msg .name{font-family:var(--display);font-size:15.5px;font-weight:600;letter-spacing:.012em}
+.msg .time{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);letter-spacing:.03em}
+.msg .body{color:var(--ink-2);max-width:66ch}
+.msg .body p{margin:0 0 8px}
+.msg .body p:last-child{margin-bottom:0}
+.mention{
+  color:var(--horizon); background:var(--horizon-soft); font-weight:600;
+  padding:1px 6px; border-radius:6px; font-size:.94em;
+}
+.tag{
+  font-family:var(--mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
+  padding:2px 7px; border-radius:6px; color:var(--horizon); background:var(--horizon-soft);
+}
+.tag.leaf{color:var(--lichen);background:var(--lichen-soft)}
+
+/* agent reply card — quiet, cloud-like */
+.cloud{
+  margin-top:9px; background:var(--paper); border-radius:var(--r-lg);
+  box-shadow:var(--lift-1), var(--lift-in); padding:16px 18px 14px; max-width:60ch;
+}
+:root[data-theme="dark"] .cloud, :root:not([data-theme="light"]) .cloud{background:rgba(255,255,255,.028)}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]) .cloud{background:var(--paper)}}
+.cloud h4{
+  margin:0 0 12px; font-family:var(--display); font-size:13px; font-weight:600;
+  letter-spacing:.05em; text-transform:uppercase; color:var(--ink-3);
+}
+.pick{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 16px;padding:11px 0;border-top:1px solid var(--rule)}
+.pick:first-of-type{border-top:0;padding-top:0}
+.pick .nm{font-weight:600;font-size:14.5px;color:var(--ink);min-width:0}
+.pick .pr{font-family:var(--mono);font-size:13px;color:var(--horizon);text-align:right;white-space:nowrap}
+.pick .nt{font-size:12.5px;color:var(--ink-3);line-height:1.5;grid-column:1/-1}
+.cloud-foot{display:flex;align-items:center;gap:9px;margin-top:13px;padding-top:11px;border-top:1px solid var(--rule);flex-wrap:wrap}
+.chip{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;color:var(--ink-3);
+  background:var(--mist);padding:4px 10px;border-radius:999px;
+}
+.linkish{font-size:12.5px;color:var(--horizon);font-weight:600;margin-left:auto}
+
+/* proactive background result */
+.msg.proactive .body::before{
+  content:""; position:absolute; left:-14px; top:4px; bottom:4px; width:2px;
+  border-radius:2px; background:var(--lichen); opacity:.5;
+}
+.msg.proactive .body{position:relative}
+
+/* approval — soft, not alarming */
+.approve{
+  margin:16px 0 8px 58px; max-width:66ch; background:var(--sand-soft);
+  border-radius:var(--r-lg); padding:15px 18px; display:flex; gap:14px; align-items:center;
+  box-shadow:var(--lift-in);
+}
+.approve .txt{flex:1 1 auto}
+.approve .ico{font-family:var(--emoji);font-size:17px;line-height:1.5;flex:none}
+.approve .txt{min-width:0}
+.approve b{display:block;font-family:var(--display);font-size:15px;font-weight:600;letter-spacing:.012em}
+.approve p{margin:2px 0 0;font-size:13px;color:var(--ink-2);line-height:1.55}
+.approve .acts{margin-left:auto;display:flex;gap:8px;align-items:center;flex:none;padding-top:2px}
+.btn{
+  padding:7px 15px;border-radius:11px;font-size:13px;font-weight:600;
+  transition:transform .12s ease, box-shadow .16s ease, background .16s ease;
+}
+.btn.primary{background:var(--ink);color:var(--paper);box-shadow:var(--lift-1)}
+.btn.primary:hover{transform:translateY(-1px);box-shadow:var(--lift-2)}
+.btn.ghost{color:var(--ink-2)}
+.btn.ghost:hover{background:rgba(29,43,52,.06)}
+
+/* working line */
+.working{display:flex;align-items:center;gap:11px;padding:12px 0 4px;color:var(--ink-3);font-size:13px}
+.working .av{width:26px;height:26px;font-size:13px}
+.breath{display:inline-flex;gap:4px;align-items:center;margin-left:2px}
+.breath i{width:5px;height:5px;border-radius:50%;background:var(--horizon);opacity:.35;animation:breath 1.8s ease-in-out infinite}
+.breath i:nth-child(2){animation-delay:.22s}
+.breath i:nth-child(3){animation-delay:.44s}
+@keyframes breath{0%,100%{opacity:.25;transform:translateY(0)}45%{opacity:.9;transform:translateY(-2px)}}
+
+/* composer, sitting on the ground-glow */
+.deck{padding:0 34px 24px; position:relative; z-index:2}
+.deck::before{
+  content:"";position:absolute;inset:auto 0 0;height:150px;z-index:-1;pointer-events:none;
+  background:radial-gradient(90% 130% at 50% 120%, var(--glow) 0%, transparent 70%);
+}
+.composer{
+  background:var(--paper); border-radius:var(--r-xl); box-shadow:var(--lift-2), var(--lift-in);
+  padding:14px 16px 11px;
+}
+.composer .field{color:var(--ink-3);font-size:14.5px;padding:2px 4px 10px;line-height:1.6}
+.composer .field .caret{
+  display:inline-block;width:1.5px;height:16px;background:var(--horizon);vertical-align:-3px;
+  animation:blink 1.15s steps(2,start) infinite;
+}
+@keyframes blink{50%{opacity:0}}
+.composer .bar{display:flex;align-items:center;gap:6px;border-top:1px solid var(--rule);padding-top:9px}
+.tool{
+  width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
+  color:var(--ink-3);font-size:15px;font-family:var(--emoji);transition:background .16s,color .16s;
+}
+.tool:hover{background:var(--mist);color:var(--ink-2)}
+.hint{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);letter-spacing:.04em;margin-left:6px}
+.send{
+  margin-left:auto;background:var(--horizon);color:#fff;width:34px;height:34px;border-radius:12px;
+  display:grid;place-items:center;font-size:14px;box-shadow:var(--lift-1);
+  transition:transform .12s ease,box-shadow .16s ease;
+}
+:root[data-theme="dark"] .send, :root:not([data-theme="light"]) .send{color:#0C1419}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]) .send{color:#fff}}
+.send:hover{transform:translateY(-1px);box-shadow:var(--lift-2)}
+
+/* ---------- aside ---------- */
+.aside{
+  background:var(--mist-deep); padding:22px 18px; overflow-y:auto; min-width:0;
+  display:flex;flex-direction:column;gap:24px;
+}
+.card{
+  background:var(--paper); border-radius:var(--r-md); padding:14px 15px; box-shadow:var(--lift-1);
+}
+.card + .card{margin-top:10px}
+.card .top{display:flex;align-items:center;gap:10px}
+.card .top .av{width:28px;height:28px;font-size:14px}
+.card .top b{font-family:var(--display);font-size:14.5px;font-weight:600;letter-spacing:.012em}
+.card .top .st{margin-left:auto;font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3)}
+.card .st.on{color:var(--lichen)}
+.card p{margin:9px 0 0;font-size:12.5px;color:var(--ink-2);line-height:1.55}
+.track{height:3px;border-radius:99px;background:var(--mist);margin-top:11px;overflow:hidden}
+.track i{display:block;height:100%;border-radius:99px;background:var(--horizon);width:64%}
+.track.done i{background:var(--lichen);width:100%}
+.quiet{
+  font-size:12.5px;color:var(--ink-3);line-height:1.6;padding:13px 15px;border-radius:var(--r-md);
+  background:rgba(46,111,142,.05); box-shadow:var(--lift-in);
+}
+.quiet b{display:block;font-family:var(--display);font-size:13.5px;color:var(--ink-2);font-weight:600;margin-bottom:3px;letter-spacing:.015em}
+
+/* ---------- responsive ---------- */
+@media (max-width:1240px){
+  .app{grid-template-columns:var(--rail) minmax(0,1fr)}
+  .aside{display:none}
+}
+@media (max-width:900px){
+  .app{grid-template-columns:minmax(0,1fr)}
+  .rail{display:none}
+  .room-head,.stream,.deck{padding-left:18px;padding-right:18px}
+  .approve{margin-left:0;flex-wrap:wrap}
+  .approve .acts{margin-left:0;width:100%}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none !important; transition:none !important}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ RAIL ============ -->
+  <nav class="rail" aria-label="Workspace">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">☁</div>
+      <div><h1>Cloud9<small>Vikas's workspace</small></h1></div>
+    </div>
+
+    <div>
+      <p class="section-label">Channels</p>
+      <div class="nav">
+        <a href="#"><span class="hash">#</span>general</a>
+        <a href="#" class="on" aria-current="page"><span class="hash">#</span>trip-planning<span class="count">3</span></a>
+        <a href="#"><span class="hash">#</span>dev</a>
+      </div>
+    </div>
+
+    <div>
+      <p class="section-label">Your agents</p>
+      <div class="roster">
+        <div class="row">
+          <div class="av" aria-hidden="true">🧭</div>
+          <div class="who"><b>Scout</b><span>Travel research · working…</span></div>
+          <span class="dot busy" title="Working"></span>
+        </div>
+        <div class="row">
+          <div class="av lichen" aria-hidden="true">📊</div>
+          <div class="who"><b>Ledger</b><span>Money &amp; budgets · listening</span></div>
+          <span class="dot live" title="Listening"></span>
+        </div>
+        <div class="row">
+          <div class="av sand" aria-hidden="true">🎨</div>
+          <div class="who"><b>Pixel</b><span>Design &amp; layout · resting</span></div>
+          <span class="dot" title="Resting"></span>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <p class="section-label">People</p>
+      <div class="roster">
+        <div class="row">
+          <div class="av human" aria-hidden="true">VM</div>
+          <div class="who"><b>Vikas</b><span>you</span></div>
+          <span class="dot live"></span>
+        </div>
+        <div class="row">
+          <div class="av human" aria-hidden="true">NS</div>
+          <div class="who"><b>Neha</b><span>online</span></div>
+          <span class="dot live"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="rail-foot">
+      <div class="av human" aria-hidden="true">VM</div>
+      <div class="who"><b>Vikas</b><span>Clear skies today</span></div>
+      <button class="themeswap" id="swap" type="button">Dusk</button>
+    </div>
+  </nav>
+
+  <!-- ============ ROOM ============ -->
+  <main class="room">
+    <div class="sky" aria-hidden="true"></div>
+
+    <header class="room-head">
+      <div>
+        <h2><span class="hash">#</span>trip-planning</h2>
+        <p>Bali, first week of September · Scout and Ledger are in this channel</p>
+      </div>
+      <div class="facepile">
+        <div class="stack" aria-hidden="true">
+          <div class="av human">VM</div>
+          <div class="av human">NS</div>
+          <div class="av">🧭</div>
+          <div class="av lichen">📊</div>
+        </div>
+        <span class="n">4 here</span>
+      </div>
+    </header>
+
+    <div class="stream">
+      <div class="daymark"><span>Today · Tuesday 28 July</span></div>
+
+      <article class="msg">
+        <div class="av human" aria-hidden="true">NS</div>
+        <div>
+          <div class="meta"><span class="name">Neha</span><span class="time">09:12</span></div>
+          <div class="body"><p>Flights are on hold for Sep 3–11, they release tomorrow evening. We still have nowhere to sleep.</p></div>
+        </div>
+      </article>
+
+      <article class="msg">
+        <div class="av human" aria-hidden="true">VM</div>
+        <div>
+          <div class="meta"><span class="name">Vikas</span><span class="time">09:14</span></div>
+          <div class="body"><p><span class="mention">@Scout</span> find us a villa in Ubud — two bedrooms, private pool, under ₹18,000 a night, close enough to walk into town.</p></div>
+        </div>
+      </article>
+
+      <article class="msg">
+        <div class="av" aria-hidden="true">🧭</div>
+        <div>
+          <div class="meta"><span class="name">Scout</span><span class="tag">Agent</span><span class="time">09:16</span></div>
+          <div class="body">
+            <p>Three that fit everything you asked for. All free to cancel up to seven days out.</p>
+            <div class="cloud">
+              <h4>Ubud · Sep 3–11 · 2 bed, private pool</h4>
+              <div class="pick">
+                <span class="nm">Villa Kayu</span><span class="pr">₹14,200 / night</span>
+                <span class="nt">9 min walk to Jalan Raya. Quietest of the three — set back off the lane.</span>
+              </div>
+              <div class="pick">
+                <span class="nm">Padi House</span><span class="pr">₹16,800 / night</span>
+                <span class="nt">Rice-field view, 14 min walk. Pool is smaller than the photos suggest.</span>
+              </div>
+              <div class="pick">
+                <span class="nm">Sungai Retreat</span><span class="pr">₹17,500 / night</span>
+                <span class="nt">River side, 6 min walk. Two recent reviews mention road noise at dawn.</span>
+              </div>
+              <div class="cloud-foot">
+                <span class="chip">4 sites checked</span>
+                <span class="chip">prices incl. tax</span>
+                <a class="linkish" href="#">See how I picked these</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <div class="approve">
+        <span class="ico" aria-hidden="true">✋</span>
+        <div class="txt">
+          <b>Scout wants to hold Villa Kayu for 24 hours</b>
+          <p>Nothing is charged and the hold cancels itself if you don't confirm.</p>
+        </div>
+        <div class="acts">
+          <button class="btn ghost" type="button">Not now</button>
+          <button class="btn primary" type="button">Hold it</button>
+        </div>
+      </div>
+
+      <article class="msg proactive">
+        <div class="av lichen" aria-hidden="true">📊</div>
+        <div>
+          <div class="meta"><span class="name">Ledger</span><span class="tag leaf">Ran on its own</span><span class="time">09:21</span></div>
+          <div class="body">
+            <p>You asked me last week to watch the Sep 3 fare. It dropped ₹4,300 overnight, so the villa budget has room now — ₹18,400 a night still lands inside the trip total.</p>
+            <p><span class="chip">Fare watch · since 21 Jul</span></p>
+          </div>
+        </div>
+      </article>
+
+      <article class="msg">
+        <div class="av human" aria-hidden="true">NS</div>
+        <div>
+          <div class="meta"><span class="name">Neha</span><span class="time">09:23</span></div>
+          <div class="body"><p>Kayu, easily. The dawn-noise one is out — you know what I'm like at 5am.</p></div>
+        </div>
+      </article>
+
+      <div class="working">
+        <div class="av" aria-hidden="true">🧭</div>
+        <span>Scout is checking Villa Kayu's calendar</span>
+        <span class="breath" aria-hidden="true"><i></i><i></i><i></i></span>
+      </div>
+    </div>
+
+    <div class="deck">
+      <div class="composer">
+        <div class="field">Message #trip-planning — type <b>@</b> to bring in an agent<span class="caret"></span></div>
+        <div class="bar">
+          <button class="tool" type="button" title="Attach a file" aria-label="Attach a file">📎</button>
+          <button class="tool" type="button" title="Add emoji" aria-label="Add emoji">🙂</button>
+          <button class="tool" type="button" title="Give an agent a task" aria-label="Give an agent a task">🧭</button>
+          <span class="hint">Enter sends · Shift+Enter new line</span>
+          <button class="send" type="button" aria-label="Send message">↑</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ============ ASIDE ============ -->
+  <aside class="aside" aria-label="Agent activity">
+    <div>
+      <p class="section-label">Working today</p>
+
+      <div class="card">
+        <div class="top"><div class="av" aria-hidden="true">🧭</div><b>Scout</b><span class="st">2 min</span></div>
+        <p>Checking Sep 3–11 availability across three villas.</p>
+        <div class="track"><i></i></div>
+      </div>
+
+      <div class="card">
+        <div class="top"><div class="av lichen" aria-hidden="true">📊</div><b>Ledger</b><span class="st on">Done</span></div>
+        <p>Fare watch reported in — flights down ₹4,300.</p>
+        <div class="track done"><i></i></div>
+      </div>
+
+      <div class="card">
+        <div class="top"><div class="av sand" aria-hidden="true">🎨</div><b>Pixel</b><span class="st">Resting</span></div>
+        <p>Nothing queued. Last job: the itinerary card, Friday.</p>
+      </div>
+    </div>
+
+    <div>
+      <p class="section-label">House rules</p>
+      <div class="quiet">
+        <b>Quiet hours, 10pm–7am</b>
+        Agents keep working but hold their messages until morning. Anything urgent still comes through.
+      </div>
+      <div class="quiet" style="margin-top:10px">
+        <b>Ask before spending</b>
+        Any agent action that costs money or books something waits for your yes.
+      </div>
+    </div>
+  </aside>
+
+</div>
+
+<script>
+// Only interactive piece: light ⇄ dusk.
+(function(){
+  var root=document.documentElement, b=document.getElementById('swap');
+  function apply(t){root.setAttribute('data-theme',t); b.textContent = t==='dark' ? 'Daylight' : 'Dusk';}
+  var start = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  apply(start);
+  b.addEventListener('click',function(){apply(root.getAttribute('data-theme')==='dark'?'light':'dark');});
+  var s=document.querySelector('.stream'); s.scrollTop=s.scrollHeight;
+})();
+</script>
+</body>
+</html>

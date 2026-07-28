@@ -3,7 +3,8 @@ import fs from "node:fs";
 
 const SHOTS = new URL("../docs/qa", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 fs.mkdirSync(SHOTS, { recursive: true });
-const UI = `http://127.0.0.1:${process.env.CLOUD9_UI_PORT ?? "4173"}/?relay=ws://127.0.0.1:8787`;
+const RELAY_PORT = process.env.CLOUD9_RELAY_PORT ?? "8787";
+const UI = `http://127.0.0.1:${process.env.CLOUD9_UI_PORT ?? "4173"}/?relay=ws://127.0.0.1:${RELAY_PORT}`;
 const results = [];
 const consoleErrors = [];
 
@@ -35,6 +36,12 @@ try {
   await page.click('button[title="New agent"]');
   await page.fill('.panel input[placeholder="Scout"]', "Scout");
   await page.fill(".panel textarea", "You research travel, villas, flights and hotels for trips, always with prices");
+  // provider picker (FR-AG-005): Claude default, Codex offered
+  const pickerOptions = await page.$$eval(".panel select.providerpick option", os => os.map(o => o.value));
+  const pickerValue = await page.inputValue(".panel select.providerpick");
+  ok("agent create offers a provider picker (Claude default)",
+    pickerOptions.join(",") === "claude,codex" && pickerValue === "claude",
+    `${pickerOptions.join("/")} value=${pickerValue}`);
   await page.screenshot({ path: `${SHOTS}/02-create-agent.png` });
   await page.click(".panel .foot >> text=Create agent");
   await page.waitForSelector(".sidebar >> text=Scout");
@@ -84,13 +91,57 @@ try {
   ok("quick chat (Ctrl/Cmd+K) sends", true);
   await page.waitForTimeout(1100);
 
-  // settings + policy note
+  // settings: two harness cards with live status from the engine host
   await page.click('.sidebar-foot button:has-text("⚙")');
-  await page.waitForSelector("text=connect Claude");
-  await page.selectOption("select", "oauthToken");
+  await page.waitForSelector("text=connect your AI apps");
+  await page.waitForSelector('.harnesscard[data-harness="claude"]');
+  await page.waitForSelector('.harnesscard[data-harness="codex"]');
+  // status arrives over the relay from the engine host — wait for a real verdict
+  await page.waitForFunction(() =>
+    ![...document.querySelectorAll(".harnessstate")].some(e => e.textContent.includes("checking")),
+  { timeout: 15000 });
+  const claudeState = (await page.textContent('.harnesscard[data-harness="claude"] .harnessstate')).trim();
+  const codexState = (await page.textContent('.harnesscard[data-harness="codex"] .harnessstate')).trim();
+  ok("settings shows live Claude + Codex status", !!claudeState && !!codexState,
+    `claude: ${claudeState} | codex: ${codexState}`);
+
+  const buttons = await page.$$eval(".harnesscard .primary, .harnesscard .linkbtn", bs => bs.map(b => b.textContent.trim()));
+  ok("settings offers both sign-in buttons and the API-key fallback",
+    buttons.some(b => /with Claude/.test(b)) && buttons.some(b => /with Codex/.test(b)) &&
+    buttons.filter(b => /API key instead/.test(b)).length === 2,
+    buttons.join(" · "));
+
+  // the policy disclosure (FR-PC-004) stays visible
   await page.waitForSelector("text=Heads up");
+  // credentials must never be kept in the browser (secrets class fix)
+  const leaked = await page.evaluate(() =>
+    Object.keys(localStorage).filter(k => /cred|token|key/i.test(k) && k !== "cloud9.token"));
+  ok("no credential is stored in the browser", leaked.length === 0, leaked.join(","));
+
+  // an upgraded install must have its old plain-text credential wiped on start
+  await page.evaluate(() => {
+    localStorage.setItem("cloud9.claudeCred", "sk-ant-leftover-from-v1");
+    localStorage.setItem("cloud9.claudeCredKind", "apiKey");
+  });
+  await page.reload();
+  await page.waitForSelector("text=# general", { timeout: 10000 });
+  const purged = await page.evaluate(() => [
+    localStorage.getItem("cloud9.claudeCred"),
+    localStorage.getItem("cloud9.claudeCredKind"),
+  ]);
+  ok("an old browser-stored credential is wiped on startup",
+    purged[0] === null && purged[1] === null, JSON.stringify(purged));
+  await page.click('.sidebar-foot button:has-text("⚙")');
+  await page.waitForSelector("text=connect your AI apps");
   await page.screenshot({ path: `${SHOTS}/06-settings.png` });
-  ok("settings shows credential options + policy note", true);
+  await page.click('.overlay .foot button:has-text("Done")');
+
+  // agent edit also lets you change which app an agent runs on
+  await page.hover(".sidebar .agentrow");
+  await page.click('.sidebar .agentrow button[title="Edit agent"]');
+  await page.waitForSelector(".panel select.providerpick");
+  const editPicker = await page.$$eval(".panel select.providerpick option", os => os.map(o => o.value));
+  ok("agent edit offers a provider picker", editPicker.join(",") === "claude,codex", editPicker.join("/"));
   await page.click('.overlay .foot button:has-text("Cancel")');
 
   // invite flow

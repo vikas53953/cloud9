@@ -5,17 +5,28 @@ import fs from "node:fs";
 import path from "node:path";
 import WebSocket from "ws";
 import {
-  AgentDef, AgentSchedule, Channel, ClientFrame, ID, Message, ServerFrame,
-  Task, WorldState,
+  AgentDef, AgentSchedule, Channel, ClientFrame, HarnessName, HarnessState, ID,
+  Message, ServerFrame, Task, WorldState, validateAgentInput,
 } from "@cloud9/shared";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
-import { ClaudeProvider, MockProvider } from "./provider.js";
+import {
+  ClaudeProvider, HarnessUnavailableError, MockProvider, sanitizeForChat,
+} from "./provider.js";
 import { Scheduler } from "./scheduler.js";
 
 export interface EngineOptions {
   relayUrl: string;      // ws://host:port
   token: string;         // this user's relay token
+  /** runs agents whose provider is "claude" (the default) */
   provider?: ClaudeProvider;
+  /** runs agents whose provider is "codex" — absent means Codex isn't connected */
+  codexProvider?: ClaudeProvider;
+  /**
+   * Demo mode: agents answer with canned replies and no harness is needed.
+   * Must be asked for explicitly — a signed-out harness must never quietly
+   * turn into fake answers that look real.
+   */
+  demoMode?: boolean;
   dataDir?: string;      // schedules + per-agent working folders
   brake?: BrakeConfig;
   contextMessages?: number;
@@ -25,7 +36,10 @@ export interface EngineOptions {
 export class Engine {
   ws?: WebSocket;
   state?: WorldState;
-  provider: ClaudeProvider;
+  /** the Claude-side provider (SdkProvider live, MockProvider in demo mode) */
+  provider?: ClaudeProvider;
+  /** the Codex-side provider — undefined until Codex is signed in */
+  codexProvider?: ClaudeProvider;
   dataDir: string;
   brake: BrakeConfig;
   schedules: AgentSchedule[] = [];
@@ -39,10 +53,13 @@ export class Engine {
   private stopped = false;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   onReady?: () => void;
+  /** the engine host answers these — it owns the local CLIs */
+  onHarnessRequest?: (action: "status" | "signIn", harness?: HarnessName) => void;
 
   constructor(opts: EngineOptions) {
     this.opts = opts;
-    this.provider = opts.provider ?? new MockProvider();
+    this.provider = opts.provider ?? (opts.demoMode ? new MockProvider() : undefined);
+    this.codexProvider = opts.codexProvider ?? (opts.demoMode ? new MockProvider() : undefined);
     this.dataDir = opts.dataDir ?? path.join(process.cwd(), "cloud9-engine-data");
     this.brake = opts.brake ?? DEFAULT_BRAKE;
     fs.mkdirSync(this.dataDir, { recursive: true });
@@ -111,6 +128,9 @@ export class Engine {
         break;
       case "userJoined":
         this.state?.users.push(frame.user);
+        break;
+      case "harnessRequest":
+        this.onHarnessRequest?.(frame.action, frame.harness);
         break;
       default:
         break;
@@ -190,18 +210,41 @@ export class Engine {
     }
   }
 
-  private async takeTurn(agent: AgentDef, channelId: ID, trigger: Message): Promise<void> {
+  /**
+   * Which harness runs this agent's turn (FR-AG-005). Absent provider means
+   * "claude", the v1 behaviour. Undefined result = that harness isn't connected.
+   */
+  providerFor(agent: AgentDef): ClaudeProvider | undefined {
+    return (agent.provider ?? "claude") === "codex" ? this.codexProvider : this.provider;
+  }
+
+  /** Run one turn on the agent's own harness. */
+  private async respondAs(
+    agent: AgentDef, input: { context: string; trigger: string; triggerAuthor: string },
+  ): Promise<string> {
+    const harness = agent.provider ?? "claude";
+    // last-gate validation: this agent definition arrived from a client
+    const problem = validateAgentInput(agent);
+    if (problem) throw new Error(`refusing to run agent ${agent.id}: ${problem}`);
+    const provider = this.providerFor(agent);
+    if (!provider) {
+      throw new HarnessUnavailableError(harness, `${harness} is not connected on this machine`);
+    }
+    return provider.respond({ agent, ...input });
+  }
+
+  /** Run one chat turn for an agent on its own harness. Public so tests can drive it. */
+  async takeTurn(agent: AgentDef, channelId: ID, trigger: Message): Promise<void> {
     this.setStatus(agent.id, "working");
     try {
-      const text = await this.provider.respond({
-        agent,
+      const text = await this.respondAs(agent, {
         context: this.renderContext(channelId),
         trigger: trigger.text,
         triggerAuthor: trigger.authorName,
       });
       this.agentSend(agent.id, channelId, text);
     } catch (err) {
-      this.agentSend(agent.id, channelId, `⚠️ I hit an error and couldn't respond (${truncate(String(err), 120)})`);
+      this.agentSend(agent.id, channelId, sanitizeForChat(err, `${agent.name} could not take a turn`));
     } finally {
       this.setStatus(agent.id, "idle");
     }
@@ -234,8 +277,7 @@ export class Engine {
         this.agentSend(agent.id, task.channelId, `⏰ Approved & scheduled: ${s.when} — "${s.prompt}" (id ${s.id})`);
         return;
       }
-      const text = await this.provider.respond({
-        agent,
+      const text = await this.respondAs(agent, {
         context: this.renderContext(task.channelId),
         trigger: `Background task: ${task.title}. Do the work and report the outcome.`,
         triggerAuthor: task.requesterName,
@@ -245,8 +287,9 @@ export class Engine {
       this.sendFrame({ type: "updateTask", taskId: task.id, status: "completed", result: text.slice(0, 2000) });
       this.agentSend(agent.id, task.channelId, `📦 Task done:\n${text}`, true);
     } catch (err) {
-      this.sendFrame({ type: "updateTask", taskId: task.id, status: "failed", error: String(err).slice(0, 300) });
-      this.agentSend(agent.id, task.channelId, `⚠️ Task failed: ${String(err).slice(0, 160)}`);
+      const said = sanitizeForChat(err, `task "${task.title}" failed`);
+      this.sendFrame({ type: "updateTask", taskId: task.id, status: "failed", error: said });
+      this.agentSend(agent.id, task.channelId, said);
     } finally {
       this.setStatus(agent.id, "idle");
     }
@@ -255,8 +298,7 @@ export class Engine {
   private async backgroundTask(agent: AgentDef, channelId: ID, trigger: Message): Promise<void> {
     this.setStatus(agent.id, "working");
     try {
-      const text = await this.provider.respond({
-        agent,
+      const text = await this.respondAs(agent, {
         context: this.renderContext(channelId),
         trigger: `Background task: ${trigger.text.replace(/^!bg\s+/i, "")}. Do the work and report the outcome.`,
         triggerAuthor: trigger.authorName,
@@ -273,13 +315,14 @@ export class Engine {
     if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") return; // FR-AG-007
     this.setStatus(agent.id, "working");
     try {
-      const text = await this.provider.respond({
-        agent,
+      const text = await this.respondAs(agent, {
         context: this.renderContext(s.channelId),
         trigger: `Scheduled task fired: ${s.prompt}`,
         triggerAuthor: "schedule",
       });
       this.agentSend(agent.id, s.channelId, `⏰ ${text}`, true);
+    } catch (err) {
+      this.agentSend(agent.id, s.channelId, sanitizeForChat(err, `scheduled check-in ${s.id} failed`));
     } finally {
       this.setStatus(agent.id, "idle");
     }
@@ -288,6 +331,14 @@ export class Engine {
   private renderContext(channelId: ID, n = this.opts.contextMessages ?? 20): string {
     const history = this.history.get(channelId) ?? [];
     return history.slice(-n).map(m => `${m.authorName}: ${m.text}`).join("\n");
+  }
+
+  /**
+   * Tell the relay (and through it, this owner's other clients) what the local
+   * harnesses look like. Status only — no credential material (decision 5/6).
+   */
+  reportHarness(state: HarnessState): void {
+    this.sendFrame({ type: "harnessState", state });
   }
 
   agentSend(agentId: ID, channelId: ID, text: string, proactive = false): void {
@@ -377,6 +428,3 @@ function isBrakedReset(history: Message[]): boolean {
   return history.length > 0 && history[history.length - 1].authorKind === "human";
 }
 
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + "…" : s;
-}

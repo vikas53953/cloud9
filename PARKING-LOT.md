@@ -6,7 +6,7 @@ being built until it leaves the lot.
 ## A. Decisions waiting on Vikas (from the morning review)
 | # | Decision | Options / recommendation |
 |---|---|---|
-| A1 | **Design direction pick** (Gate 2 still open) | Built on A (Slack Classic). Keep A / reskin to B Mission Control / C Zen Sky / mix. Rec: keep A, add B's agent-cards as a "Crew" tab later. |
+| A1 | ~~Design direction pick~~ **RESOLVED 2026-07-28: Vikas picked WORKBENCH** (docs/mocks/v2-workbench.html) from the v2 design round. It is now the design law for every screen. Reskin queued behind the harness sign-in build. | — |
 | A2 | **Auth stance** | API-key-only (safest) vs also keep the `claude setup-token` option (policy gray zone, disclosed in-app). Rec: keep both, disclosure stays. |
 | A3 | **Push to GitHub** | BLOCKED in-session: this cloud session has no configured source repo, so its GitHub token can't create/reach one. Unblock (2 min): create an empty repo `cloud9` at github.com/new, then either (a) open a new claude.ai/code session on that repo and say "pull in the bundle", or (b) locally: `git clone cloud9.bundle cloud9 && cd cloud9 && git remote add origin <url> && git push -u origin master`. |
 | A4 | **Apple developer account** ($99/yr) | Unlocks TestFlight + real APNs push. Only you can enroll. |
@@ -42,10 +42,14 @@ Per docs/plans/spec.md; see docs/plans/traceability.md for current coverage.
 - D4 (approvals): categories = background work + schedule creation, configured
   per agent at creation; only the agent's OWNER may approve/reject (their
   credential pays). Both easily changed.
+- D2 + A2 (2026-07-28, Vikas's words): connect Claude AND Codex "the Buzz way" —
+  sign-in buttons driving the locally installed Claude Code / Codex CLIs
+  (their own browser OAuth). API key = fallback only. See
+  docs/plans/harness-signin.md. RESOLVED.
+
 | # | TBD | Blocks |
 |---|---|---|
 | D1 | Exact wording of the 4 confirmed outcomes (spec §6) + 4 target users (§7) — from your original intake in the other tool | Acceptance criteria for v2 |
-| D2 | What "connect Codex subscription" means to you (OpenAI account? Codex CLI? API key?) — provider rules must then be verified officially, like we did for Claude | C4 |
 | D3 | Task state names + workflow (spec §20 lists candidates) | C1 |
 | D4 | Which actions require approval (categories/risk levels, §9.8) | C2 |
 | D5 | Audit retention/depth/export (§8.8, FR-AU-005) | C3 |

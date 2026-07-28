@@ -1,7 +1,7 @@
 // Renderer-side relay client: one WebSocket, one mutable world, subscribers.
 import {
-  ActivityRecord, AgentDef, AgentStatus, Approval, Channel, ClientFrame, ID,
-  Message, ServerFrame, Task, User,
+  ActivityRecord, AgentDef, AgentStatus, Approval, Channel, ClientFrame,
+  HarnessState, ID, Message, ServerFrame, Task, User,
 } from "@cloud9/shared";
 
 export interface World {
@@ -17,6 +17,8 @@ export interface World {
   tasks: Task[];
   approvals: Approval[];
   activity: ActivityRecord[];
+  /** status of the local Claude/Codex apps — booleans and labels, never secrets */
+  harness?: HarnessState;
 }
 
 type Listener = () => void;
@@ -24,6 +26,25 @@ type Listener = () => void;
 const params = new URLSearchParams(location.search);
 export const RELAY_URL =
   params.get("relay") ?? localStorage.getItem("cloud9.relay") ?? "ws://127.0.0.1:8787";
+
+/**
+ * v1 kept the Claude credential in localStorage. That was wrong, and simply
+ * removing the code that writes it does not remove the copy already sitting in
+ * an existing install's browser storage — so wipe it, unconditionally, on every
+ * start. Listed by name (not by pattern) so the session token survives.
+ */
+const LEGACY_SECRET_KEYS = ["cloud9.claudeCred", "cloud9.claudeCredKind"];
+
+export function purgeLegacySecrets(): void {
+  try {
+    for (const key of LEGACY_SECRET_KEYS) {
+      if (localStorage.getItem(key) !== null) {
+        localStorage.removeItem(key);
+        console.warn(`[cloud9] removed an old credential (${key}) from browser storage`);
+      }
+    }
+  } catch { /* storage unavailable — nothing to purge */ }
+}
 
 export class RelayClient {
   world: World = {
@@ -128,6 +149,9 @@ export class RelayClient {
       }
       case "activity":
         w.activity = frame.records;
+        break;
+      case "harness":
+        w.harness = frame.state;
         break;
       case "history": {
         const existing = w.messages[frame.channelId] ?? [];

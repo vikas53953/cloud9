@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud9 — Mission Control</title>
+<style>
+/* ============================================================
+   Cloud9 · direction "MISSION CONTROL"
+   Reference world: a rail / air-traffic dispatch board crossed
+   with a NOC link-status wall. Bahnschrift (DIN, ships with
+   Windows) carries signage-grade labels; Cascadia/Consolas
+   carries every number so columns line up. No gradients-as-
+   decoration: colour only ever means link state.
+   ============================================================ */
+
+/* ---- tokens: dark is primary ---- */
+:root,
+:root[data-theme="dark"]{
+  --bg:#0B141B;
+  --panel:#101C25;
+  --panel-2:#15222D;
+  --panel-3:#192935;
+  --line:#1F3140;
+  --line-soft:#182734;
+  --ink:#E3EDF3;
+  --ink-2:#94AABA;
+  --ink-3:#5F788A;
+  --brand:#F2A93B;      /* dispatch amber — attention that belongs to you */
+  --run:#37B7E9;        /* working */
+  --ok:#4CC79B;         /* ready / idle */
+  --wait:#F2A93B;       /* waiting on a human */
+  --on-wait:#16200F;    /* text that sits on the amber */
+  --stop:#E4695E;       /* failed / rejected */
+  --run-wash:rgba(55,183,233,.13);
+  --wait-wash:rgba(242,169,59,.13);
+  --ok-wash:rgba(76,199,155,.12);
+  --sel:rgba(55,183,233,.14);
+  --shadow:0 12px 34px rgba(0,0,0,.42);
+  --board:#0E1A22;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#E9EEF2; --panel:#FFFFFF; --panel-2:#F3F7F9; --panel-3:#EAF1F5;
+    --line:#D0DBE3; --line-soft:#E1E9EE;
+    --ink:#132029; --ink-2:#536877; --ink-3:#7B909E;
+    --brand:#A96608; --run:#0E7BAC; --ok:#0F8265; --wait:#A96608; --stop:#BF3A2B; --on-wait:#FFFFFF;
+    --run-wash:rgba(14,123,172,.10); --wait-wash:rgba(169,102,8,.10); --ok-wash:rgba(15,130,101,.10);
+    --sel:rgba(14,123,172,.10);
+    --shadow:0 10px 26px rgba(23,45,61,.13);
+    --board:#F0F4F7;
+    color-scheme:light;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#E9EEF2; --panel:#FFFFFF; --panel-2:#F3F7F9; --panel-3:#EAF1F5;
+  --line:#D0DBE3; --line-soft:#E1E9EE;
+  --ink:#132029; --ink-2:#536877; --ink-3:#7B909E;
+  --brand:#A96608; --run:#0E7BAC; --ok:#0F8265; --wait:#A96608; --stop:#BF3A2B; --on-wait:#FFFFFF;
+  --run-wash:rgba(14,123,172,.10); --wait-wash:rgba(169,102,8,.10); --ok-wash:rgba(15,130,101,.10);
+  --sel:rgba(14,123,172,.10);
+  --shadow:0 10px 26px rgba(23,45,61,.13);
+  --board:#F0F4F7;
+  color-scheme:light;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,"Helvetica Neue",sans-serif;
+  font-size:14px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+}
+/* signage face: Bahnschrift is DIN, local on Windows; DIN Alternate on mac */
+.sign{
+  font-family:"Bahnschrift","DIN Alternate","Haettenschweiler","Segoe UI",system-ui,sans-serif;
+  font-stretch:87.5%;
+  letter-spacing:.06em;
+}
+.num{ font-family:"Cascadia Mono",Consolas,"SF Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums; }
+
+/* eyebrow labels read like board headers, not headings */
+.eyebrow{
+  font-family:"Bahnschrift","DIN Alternate","Segoe UI",system-ui,sans-serif;
+  font-stretch:75%;
+  font-size:10.5px; letter-spacing:.18em; text-transform:uppercase;
+  color:var(--ink-3);
+}
+
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--run); outline-offset:2px; border-radius:4px}
+
+/* ============ frame ============ */
+.app{height:100%; display:grid; grid-template-rows:48px 1fr; min-width:0}
+
+.topbar{
+  display:flex; align-items:center; gap:14px;
+  padding:0 14px; background:var(--panel); border-bottom:1px solid var(--line);
+  min-width:0;
+}
+.mark{display:flex; align-items:baseline; gap:9px; flex:0 0 auto}
+.mark b{
+  font-family:"Bahnschrift","DIN Alternate","Segoe UI",sans-serif; font-stretch:75%;
+  font-size:17px; font-weight:600; letter-spacing:.1em; text-transform:uppercase;
+}
+.mark span{ font-size:10.5px; letter-spacing:.16em; color:var(--ink-3); text-transform:uppercase }
+
+/* the board strip: three fleet counters, dispatch-board style */
+.fleet{display:flex; align-items:stretch; gap:0; border:1px solid var(--line); border-radius:6px; overflow:hidden; background:var(--board); flex:0 0 auto}
+.fleet div{display:flex; align-items:center; gap:7px; padding:0 11px; height:28px; border-right:1px solid var(--line)}
+.fleet div:last-child{border-right:0}
+.fleet .k{font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--ink-3)}
+.fleet .v{font-size:13px; font-weight:600}
+.fleet .v.run{color:var(--run)} .fleet .v.wait{color:var(--wait)} .fleet .v.ok{color:var(--ok)}
+
+.palette{
+  margin-left:auto; display:flex; align-items:center; gap:10px;
+  height:28px; padding:0 10px 0 11px; min-width:0; flex:0 1 320px;
+  background:var(--board); border:1px solid var(--line); border-radius:6px; color:var(--ink-3);
+}
+.palette:hover{border-color:var(--ink-3)}
+.palette .txt{font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+kbd{
+  font-family:"Cascadia Mono",Consolas,ui-monospace,monospace; font-size:10.5px;
+  padding:2px 5px; border:1px solid var(--line); border-bottom-width:2px; border-radius:4px;
+  background:var(--panel-2); color:var(--ink-2); white-space:nowrap;
+}
+.me{display:flex; align-items:center; gap:8px; flex:0 0 auto}
+.me .av{width:26px; height:26px; border-radius:6px; background:var(--panel-3); display:grid; place-items:center; font-size:11px; font-weight:600; color:var(--ink-2); border:1px solid var(--line)}
+.ghost{height:28px; padding:0 10px; border:1px solid var(--line); border-radius:6px; font-size:11.5px; color:var(--ink-2); background:var(--board)}
+.ghost:hover{color:var(--ink); border-color:var(--ink-3)}
+
+.workspace{display:grid; grid-template-columns:224px minmax(0,1fr) 304px; min-width:0; min-height:0}
+
+/* ============ left: channels + people ============ */
+.rail{background:var(--panel); border-right:1px solid var(--line); overflow-y:auto; padding:14px 0 20px; min-width:0}
+.rail section{margin-bottom:22px}
+.rail .eyebrow{padding:0 16px 8px; display:block}
+.row{
+  display:flex; align-items:center; gap:9px; width:100%;
+  padding:6px 16px; text-align:left; color:var(--ink-2); font-size:13.5px; border-left:2px solid transparent;
+}
+.row:hover{background:var(--panel-2); color:var(--ink)}
+.row.on{background:var(--sel); color:var(--ink); border-left-color:var(--run); font-weight:600}
+.row .hash{color:var(--ink-3); font-size:14px}
+.row.on .hash{color:var(--run)}
+.row .name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.badge{
+  font-family:"Cascadia Mono",Consolas,ui-monospace,monospace; font-size:10.5px; font-variant-numeric:tabular-nums;
+  padding:1px 6px; border-radius:9px; background:var(--panel-3); color:var(--ink-2);
+}
+.badge.hot{background:var(--wait-wash); color:var(--wait); font-weight:600}
+.who{width:8px; height:8px; border-radius:50%; flex:0 0 auto}
+.who.on{background:var(--ok)} .who.off{background:var(--ink-3); opacity:.5}
+.avatar{
+  width:22px; height:22px; border-radius:6px; flex:0 0 auto;
+  display:grid; place-items:center; font-size:12px; background:var(--panel-3); border:1px solid var(--line);
+}
+
+/* ============ centre: chat ============ */
+.chat{display:grid; grid-template-rows:auto auto minmax(0,1fr) auto; min-width:0; min-height:0; background:var(--bg)}
+.chat-head{
+  display:flex; align-items:center; gap:12px; padding:11px 20px;
+  border-bottom:1px solid var(--line); background:var(--panel); min-width:0;
+}
+.chat-head h1{margin:0; font-size:15.5px; font-weight:600; letter-spacing:.01em; white-space:nowrap}
+.chat-head h1 span{color:var(--ink-3); font-weight:400}
+.topic{
+  color:var(--ink-3); font-size:12.5px; padding-left:12px; border-left:1px solid var(--line);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;
+}
+.heads{margin-left:auto; display:flex; align-items:center; flex:0 0 auto; padding-left:6px}
+.heads .avatar{margin-left:-6px; box-shadow:0 0 0 2px var(--panel)}
+
+/* approval — a change ticket docked to the top of the room */
+.approval{
+  margin:12px 20px 0; display:flex; align-items:center; gap:14px;
+  padding:11px 14px; background:var(--wait-wash);
+  border:1px solid color-mix(in srgb, var(--wait) 42%, transparent);
+  border-left:3px solid var(--wait); border-radius:8px; min-width:0;
+}
+.approval .avatar{width:30px; height:30px; font-size:15px; background:var(--panel); border-color:var(--wait)}
+.approval .body{min-width:0; flex:1}
+.approval .line1{display:flex; align-items:baseline; gap:8px; flex-wrap:wrap}
+.approval .line1 b{font-size:13.5px}
+.approval .line2{color:var(--ink-2); font-size:12.5px; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.approval .line2 code{font-family:"Cascadia Mono",Consolas,ui-monospace,monospace; font-size:11.5px; color:var(--ink)}
+.acts{display:flex; gap:8px; flex:0 0 auto}
+.btn{height:30px; padding:0 14px; border-radius:6px; font-size:12.5px; font-weight:600; border:1px solid var(--line)}
+.btn.approve{background:var(--wait); color:var(--on-wait); border-color:var(--wait)}
+.btn.approve:hover{filter:brightness(1.08)}
+.btn.reject{color:var(--ink-2); background:transparent}
+.btn.reject:hover{color:var(--stop); border-color:var(--stop)}
+
+.stream{overflow-y:auto; padding:6px 20px 18px; min-width:0}
+.daymark{display:flex; align-items:center; gap:14px; margin:18px 0 12px; color:var(--ink-3)}
+.daymark::before,.daymark::after{content:""; height:1px; background:var(--line); flex:1}
+
+.msg{display:grid; grid-template-columns:34px minmax(0,1fr); gap:11px; padding:7px 0; min-width:0}
+.msg .avatar{width:34px; height:34px; border-radius:8px; font-size:17px}
+.msg .hd{display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; margin-bottom:1px}
+.msg .hd b{font-size:13.5px; font-weight:600}
+.msg .hd .t{font-size:11px; color:var(--ink-3)}
+.msg p{margin:0; color:var(--ink); font-size:13.5px}
+.msg p + p{margin-top:6px}
+.mention{color:var(--run); background:var(--run-wash); padding:1px 4px; border-radius:4px; font-weight:600}
+
+.tag{
+  font-family:"Bahnschrift","DIN Alternate","Segoe UI",sans-serif; font-stretch:75%;
+  font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; font-weight:600;
+  padding:2px 6px; border-radius:3px; background:var(--panel-3); color:var(--ink-2); border:1px solid var(--line);
+}
+.tag.agent{background:var(--run-wash); color:var(--run); border-color:color-mix(in srgb, var(--run) 40%, transparent)}
+
+/* agent output panel — reads like a report the crew filed */
+.card{
+  margin-top:8px; background:var(--panel); border:1px solid var(--line); border-radius:9px; overflow:hidden;
+  box-shadow:var(--shadow);
+}
+.card-top{
+  display:flex; align-items:center; gap:10px; padding:8px 12px;
+  border-bottom:1px solid var(--line-soft); background:var(--panel-2); flex-wrap:wrap;
+}
+.card-top .ttl{font-size:12.5px; font-weight:600}
+.card-top .meta{margin-left:auto; font-size:11px; color:var(--ink-3); display:flex; gap:12px}
+table{width:100%; border-collapse:collapse; font-size:12.5px}
+th,td{padding:7px 12px; text-align:left; border-bottom:1px solid var(--line-soft)}
+th{font-family:"Bahnschrift","DIN Alternate","Segoe UI",sans-serif; font-stretch:75%; font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3); font-weight:600}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--panel-2)}
+td.n{text-align:right; font-family:"Cascadia Mono",Consolas,ui-monospace,monospace; font-variant-numeric:tabular-nums}
+td.pick{color:var(--ok); font-weight:600}
+.card-foot{display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--panel-2); border-top:1px solid var(--line-soft); flex-wrap:wrap}
+.chip{height:26px; padding:0 11px; border:1px solid var(--line); border-radius:6px; font-size:12px; color:var(--ink-2); background:var(--panel)}
+.chip:hover{color:var(--ink); border-color:var(--ink-3)}
+.card-foot .src{margin-left:auto; font-size:11px; color:var(--ink-3)}
+
+/* running task line inside a message */
+.taskline{
+  display:inline-flex; align-items:center; gap:9px; margin-top:8px;
+  padding:5px 11px 5px 9px; border:1px solid var(--line); border-radius:20px; background:var(--panel);
+  font-size:11.5px; color:var(--ink-2); max-width:100%; flex-wrap:wrap;
+}
+.taskline .id{font-family:"Cascadia Mono",Consolas,ui-monospace,monospace; color:var(--ink); font-variant-numeric:tabular-nums}
+.bar{width:78px; height:3px; border-radius:2px; background:var(--panel-3); overflow:hidden; flex:0 0 auto}
+.bar i{display:block; height:100%; background:var(--run); width:62%}
+
+.composer{padding:12px 20px 16px; background:var(--bg)}
+.composer .box{
+  background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:10px 12px;
+}
+.composer .box:focus-within{border-color:var(--run)}
+.composer .ph{color:var(--ink-3); font-size:13.5px; min-height:20px}
+.composer .tools{display:flex; align-items:center; gap:8px; margin-top:9px; color:var(--ink-3); font-size:11.5px}
+.composer .tools .sp{margin-left:auto}
+
+/* ============ right: crew + queue ============ */
+.crew{background:var(--panel); border-left:1px solid var(--line); overflow-y:auto; min-width:0; padding-bottom:20px}
+.crew-head{display:flex; align-items:center; gap:8px; padding:13px 16px 9px; position:sticky; top:0; background:var(--panel); border-bottom:1px solid var(--line-soft); z-index:1}
+.crew-head .eyebrow{padding:0}
+.crew-head .count{margin-left:auto; font-size:11px; color:var(--ink-3)}
+.crewlist{padding:10px 12px; display:grid; gap:8px}
+
+.agent{
+  position:relative; display:grid; grid-template-columns:34px minmax(0,1fr); gap:10px;
+  padding:11px 12px 11px 13px; background:var(--panel-2); border:1px solid var(--line); border-radius:9px;
+  min-width:0;
+}
+/* the spine: link-state indicator down the card's left edge */
+.agent::before{
+  content:""; position:absolute; left:0; top:9px; bottom:9px; width:3px; border-radius:0 3px 3px 0; background:var(--ink-3); opacity:.45;
+}
+.agent.working::before{background:var(--run); opacity:1; animation:pulse 2.4s ease-in-out infinite}
+.agent.waiting::before{background:var(--wait); opacity:1}
+.agent.idle::before{background:var(--ok); opacity:.7}
+.agent.waiting{border-color:color-mix(in srgb, var(--wait) 40%, transparent); background:color-mix(in srgb, var(--wait) 7%, var(--panel-2))}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){ .agent.working::before{animation:none} }
+
+.agent .avatar{width:34px; height:34px; border-radius:8px; font-size:17px; background:var(--panel); }
+.agent .nm{display:flex; align-items:baseline; gap:7px; min-width:0}
+.agent .nm b{font-size:13.5px}
+.agent .nm i{font-style:normal; font-size:11px; color:var(--ink-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.state{display:inline-flex; align-items:center; gap:6px; margin-top:5px; font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; font-weight:600}
+.state .dot{width:6px; height:6px; border-radius:50%}
+.state.working{color:var(--run)} .state.working .dot{background:var(--run)}
+.state.idle{color:var(--ok)} .state.idle .dot{background:var(--ok)}
+.state.waiting{color:var(--wait)} .state.waiting .dot{background:var(--wait)}
+.agent .task{margin-top:5px; font-size:12.5px; color:var(--ink-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.agent .foot{margin-top:7px; display:flex; align-items:center; gap:10px; font-size:11px; color:var(--ink-3); white-space:nowrap}
+.agent .foot .sep{flex:1; height:1px; background:var(--line)}
+.mini{display:flex; align-items:flex-end; gap:2px; height:12px}
+.mini i{width:3px; background:var(--run); opacity:.5; border-radius:1px}
+.agent.idle .mini i{background:var(--ok)} .agent.waiting .mini i{background:var(--wait)}
+
+.queue{padding:4px 12px}
+.qhead{display:flex; align-items:center; padding:14px 4px 8px}
+.qhead .count{margin-left:auto; font-size:11px; color:var(--ink-3)}
+.q{display:grid; grid-template-columns:8px minmax(0,1fr) auto; gap:9px; align-items:center; padding:8px 6px; border-bottom:1px solid var(--line-soft); min-width:0}
+.q:last-child{border-bottom:0}
+.q .dot{width:7px; height:7px; border-radius:50%}
+.q.run .dot{background:var(--run)} .q.done .dot{background:var(--ok)} .q.wait .dot{background:var(--wait)} .q.fail .dot{background:var(--stop)}
+.q .t{min-width:0}
+.q .t b{display:block; font-size:12.5px; font-weight:500; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.q .t span{font-size:11px; color:var(--ink-3)}
+.q .r{font-size:11px; color:var(--ink-3); text-align:right; white-space:nowrap}
+.q.run .r{color:var(--run)}
+.q.fail .t b{color:var(--ink)}
+
+/* scrollbars */
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-thumb{background:var(--line); border-radius:6px; border:3px solid transparent; background-clip:content-box}
+*::-webkit-scrollbar-thumb:hover{background:var(--ink-3); background-clip:content-box; border:3px solid transparent}
+*::-webkit-scrollbar-track{background:transparent}
+
+@media (max-width:1180px){ .workspace{grid-template-columns:200px minmax(0,1fr) 280px} }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="mark"><b class="sign">Cloud9</b><span class="sign">Vikas · Home</span></div>
+
+    <div class="fleet">
+      <div><span class="k sign">Working</span><span class="v run num">1</span></div>
+      <div><span class="k sign">Waiting on you</span><span class="v wait num">1</span></div>
+      <div><span class="k sign">Ready</span><span class="v ok num">1</span></div>
+    </div>
+
+    <button class="palette" aria-label="Search or run a command">
+      <span class="txt">Search messages, agents, tasks…</span>
+      <kbd style="margin-left:auto">Ctrl</kbd><kbd>K</kbd>
+    </button>
+    <button class="ghost sign" id="themeBtn">Light</button>
+    <div class="me"><span class="avatar">VM</span></div>
+  </header>
+
+  <div class="workspace">
+
+    <!-- rooms and people -->
+    <nav class="rail">
+      <section>
+        <span class="eyebrow">Channels</span>
+        <button class="row"><span class="hash">#</span><span class="name">general</span></button>
+        <button class="row on"><span class="hash">#</span><span class="name">trip-planning</span><span class="badge num">3</span></button>
+        <button class="row"><span class="hash">#</span><span class="name">dev</span><span class="badge hot num">1</span></button>
+      </section>
+
+      <section>
+        <span class="eyebrow">Direct messages</span>
+        <button class="row"><span class="who on"></span><span class="name">Neha</span></button>
+        <button class="row"><span class="who off"></span><span class="name">Vikas (you)</span></button>
+      </section>
+
+      <section>
+        <span class="eyebrow">Agents</span>
+        <button class="row"><span class="avatar">🧭</span><span class="name">Scout</span><span class="badge num">4m</span></button>
+        <button class="row"><span class="avatar">📊</span><span class="name">Ledger</span></button>
+        <button class="row"><span class="avatar">🎨</span><span class="name">Pixel</span><span class="badge hot num">1</span></button>
+      </section>
+    </nav>
+
+    <!-- the room -->
+    <main class="chat">
+      <div class="chat-head">
+        <h1><span>#</span> trip-planning</h1>
+        <div class="topic">Bali, 14–18 March · 4 people · budget ₹1,20,000</div>
+        <div class="heads">
+          <span class="avatar">VM</span><span class="avatar">NK</span><span class="avatar">🧭</span><span class="avatar">📊</span>
+        </div>
+      </div>
+
+      <!-- one thing needs a human -->
+      <div class="approval" role="region" aria-label="Approval needed">
+        <span class="avatar">🎨</span>
+        <div class="body">
+          <div class="line1">
+            <b>Pixel wants to post to #dev</b>
+            <span class="tag">Approval</span>
+            <span class="num" style="font-size:11px;color:var(--ink-3)">asked 11:02 · 18m ago</span>
+          </div>
+          <div class="line2">Share <code>booking-card-v3.png</code> and the spacing notes with the dev channel.</div>
+        </div>
+        <div class="acts">
+          <button class="btn reject">Reject</button>
+          <button class="btn approve">Approve</button>
+        </div>
+      </div>
+
+      <div class="stream">
+        <div class="daymark"><span class="eyebrow">Today · Tuesday 28 July</span></div>
+
+        <div class="msg">
+          <span class="avatar">NK</span>
+          <div>
+            <div class="hd"><b>Neha</b><span class="t num">09:41</span></div>
+            <p>Villa or hotel for the Bali leg? We have ₹1.2L for four nights and I'd rather spend it on space than on a pool bar.</p>
+          </div>
+        </div>
+
+        <div class="msg">
+          <span class="avatar">VM</span>
+          <div>
+            <div class="hd"><b>Vikas</b><span class="t num">09:42</span></div>
+            <p><span class="mention">@Scout</span> compare villa prices in Ubud and Canggu for 14–18 March, 4 people, walkable to food. Flag anything with a cleaning fee over ₹5,000.</p>
+          </div>
+        </div>
+
+        <div class="msg">
+          <span class="avatar">🧭</span>
+          <div>
+            <div class="hd"><b>Scout</b><span class="tag agent">Agent</span><span class="t num">09:42</span></div>
+            <p>Taking it. Checking three booking sites plus the two villa groups you saved last year. I'll post a table, not a wall of links.</p>
+            <div class="taskline">
+              <span class="id">TASK-1042</span>
+              <span>comparing Bali villa prices</span>
+              <span class="bar"><i></i></span>
+              <span class="num">04:12 elapsed</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="msg">
+          <span class="avatar">🧭</span>
+          <div>
+            <div class="hd"><b>Scout</b><span class="tag agent">Agent</span><span class="t num">09:51</span></div>
+            <p>Eleven villas fit the dates. Four cleared your rules — cleaning fee under ₹5,000 and under 600 m from a food street.</p>
+
+            <div class="card">
+              <div class="card-top">
+                <span class="ttl">Villas · 14–18 Mar · 4 guests</span>
+                <span class="tag">4 nights</span>
+                <span class="meta"><span class="num">11 checked</span><span class="num">4 passed</span></span>
+              </div>
+              <table>
+                <thead>
+                  <tr><th>Villa</th><th>Area</th><th style="text-align:right">Per night</th><th style="text-align:right">Cleaning</th><th style="text-align:right">4-night total</th><th style="text-align:right">To food</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td class="pick">Villa Ananda</td><td>Ubud</td><td class="n">₹24,100</td><td class="n">₹3,200</td><td class="n pick">₹99,600</td><td class="n">240 m</td></tr>
+                  <tr><td>Rumah Padi</td><td>Ubud</td><td class="n">₹26,800</td><td class="n">₹2,900</td><td class="n">₹1,10,100</td><td class="n">410 m</td></tr>
+                  <tr><td>Batu Bolong House</td><td>Canggu</td><td class="n">₹28,400</td><td class="n">₹4,600</td><td class="n">₹1,18,200</td><td class="n">150 m</td></tr>
+                  <tr><td>Tegal Sari Loft</td><td>Canggu</td><td class="n">₹29,900</td><td class="n">₹4,100</td><td class="n">₹1,23,700</td><td class="n">520 m</td></tr>
+                </tbody>
+              </table>
+              <div class="card-foot">
+                <button class="chip">Open all four</button>
+                <button class="chip">Ask Ledger to check the budget</button>
+                <button class="chip">Hold Villa Ananda</button>
+                <span class="src num">sources: 3 · checked 09:51</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="msg">
+          <span class="avatar">🧭</span>
+          <div>
+            <div class="hd"><b>Scout</b><span class="tag agent">Agent</span><span class="tag">Unprompted</span><span class="t num">10:57</span></div>
+            <p>Following up on my own — Villa Ananda dropped to <b>₹22,400</b> a night for your dates, so the four-night total is now <b>₹92,800</b>. Two of the four are down to one room left. I did not book anything.</p>
+            <div class="taskline">
+              <span class="id">WATCH-0031</span>
+              <span>price watch on 4 villas · rechecks hourly</span>
+              <span class="num">next 11:57</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="msg">
+          <span class="avatar">NK</span>
+          <div>
+            <div class="hd"><b>Neha</b><span class="t num">11:04</span></div>
+            <p>Ananda it is. Hold it before someone else does.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="box">
+          <div class="ph">Message #trip-planning — type @ to bring in an agent</div>
+          <div class="tools">
+            <span>@ mention</span><span>Attach</span>
+            <span class="sp num">Scout is working · 1 approval waiting</span>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- the crew -->
+    <aside class="crew">
+      <div class="crew-head">
+        <span class="eyebrow">Crew</span>
+        <span class="count num">3 agents · 1 needs you</span>
+      </div>
+
+      <div class="crewlist">
+        <article class="agent working">
+          <span class="avatar">🧭</span>
+          <div>
+            <div class="nm"><b>Scout</b><i>travel researcher</i></div>
+            <div class="state working"><span class="dot"></span>Working</div>
+            <div class="task">Comparing Bali villa prices</div>
+            <div class="foot">
+              <span class="num">04:12</span>
+              <span class="mini" aria-hidden="true"><i style="height:4px"></i><i style="height:7px"></i><i style="height:5px"></i><i style="height:10px"></i><i style="height:8px"></i><i style="height:12px"></i><i style="height:9px"></i></span>
+              <span class="sep"></span>
+              <span class="num">3 sources</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="agent idle">
+          <span class="avatar">📊</span>
+          <div>
+            <div class="nm"><b>Ledger</b><i>finance</i></div>
+            <div class="state idle"><span class="dot"></span>Ready</div>
+            <div class="task">Idle — last ran the July spend recap</div>
+            <div class="foot">
+              <span class="num">idle 2h 08m</span>
+              <span class="sep"></span>
+              <span class="num">12 this week</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="agent waiting">
+          <span class="avatar">🎨</span>
+          <div>
+            <div class="nm"><b>Pixel</b><i>designer</i></div>
+            <div class="state waiting"><span class="dot"></span>Waiting on you</div>
+            <div class="task">Post design to #dev?</div>
+            <div class="foot">
+              <span class="num">asked 18m ago</span>
+              <span class="sep"></span>
+              <span class="num">paused</span>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div class="queue">
+        <div class="qhead"><span class="eyebrow">Activity</span><span class="count num">last 3 hours</span></div>
+
+        <div class="q wait">
+          <span class="dot"></span>
+          <div class="t"><b>Post booking-card-v3 to #dev</b><span>Pixel · needs approval</span></div>
+          <div class="r num">11:02</div>
+        </div>
+        <div class="q run">
+          <span class="dot"></span>
+          <div class="t"><b>Compare Bali villa prices</b><span>Scout · TASK-1042</span></div>
+          <div class="r num">04:12</div>
+        </div>
+        <div class="q run">
+          <span class="dot"></span>
+          <div class="t"><b>Price watch · 4 villas</b><span>Scout · WATCH-0031 · hourly</span></div>
+          <div class="r num">next 11:57</div>
+        </div>
+        <div class="q done">
+          <span class="dot"></span>
+          <div class="t"><b>Flight options MAA → DPS</b><span>Scout · posted to #trip-planning</span></div>
+          <div class="r num">09:18</div>
+        </div>
+        <div class="q done">
+          <span class="dot"></span>
+          <div class="t"><b>July spend recap</b><span>Ledger · posted to #general</span></div>
+          <div class="r num">08:55</div>
+        </div>
+        <div class="q fail">
+          <span class="dot"></span>
+          <div class="t"><b>Visa rules for Indonesia</b><span>Scout · source timed out, retrying at 12:00</span></div>
+          <div class="r num">08:31</div>
+        </div>
+        <div class="q done">
+          <span class="dot"></span>
+          <div class="t"><b>Booking card v2 revisions</b><span>Pixel · approved by you</span></div>
+          <div class="r num">08:04</div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<script>
+  // Only interactive bit in the mock: flip the theme so both token sets are reviewable.
+  var btn = document.getElementById('themeBtn'), root = document.documentElement;
+  btn.addEventListener('click', function(){
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    btn.textContent = next === 'light' ? 'Dark' : 'Light';
+  });
+</script>
+</body>
+</html>

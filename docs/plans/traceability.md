@@ -16,10 +16,10 @@ Status: DONE (implemented + tested) · PARTIAL · NOT BUILT · BLOCKED-TBD
 | ID | Status | Where |
 |---|---|---|
 | FR-PC-001 provider-connectable architecture | DONE | `packages/engine/src/provider.ts` — `ClaudeProvider` interface; Mock + SDK implementations behind it (the spec's adapter seam). |
-| FR-PC-002 Claude intended provider | DONE | `SdkProvider` (Claude Agent SDK). Live-credential run still unverified. |
-| FR-PC-003 Codex intended provider | NOT BUILT | Adapter interface exists; no Codex implementation. Meaning of "connect Codex subscription" is a spec TBD. |
-| FR-PC-004 no unverified subscription claims | DONE | Verified against official docs 2026-07-27; both options disclosed in-app (`SettingsModal`, `App.tsx`) + `implementation-notes.md`. |
-| FR-PC-005 credentials not exposed to others | DONE | Credential stays on the owner's machine (localStorage/Electron settings → env for SDK subprocess); never sent to relay. |
+| FR-PC-002 Claude intended provider | DONE | `SdkProvider` + "Sign in with Claude": `packages/engine/src/harness.ts` runs `claude setup-token`, the token feeds `CLAUDE_CODE_OAUTH_TOKEN`. Detection (`claude --version` / `auth status`) verified live on Vikas's machine 2026-07-28. A real setup-token run is still Vikas's own TEST IT step. |
+| FR-PC-003 Codex intended provider | DONE | `CodexProvider` (`packages/engine/src/codex.ts`) spawns `codex exec --json … --ephemeral` with the prompt on stdin and parses the JSONL transcript; "Sign in with Codex" spawns `codex login` and polls `codex login status`. Unit tests (fixture transcript, sandbox mapping, failure modes) + mock-shim integration tests. |
+| FR-PC-004 no unverified subscription claims | DONE | Verified against official docs 2026-07-27/28; sign-in uses each provider's own approved flow, the API-key fallback and the Anthropic policy disclosure both stay in the settings cards (`App.tsx`) + `implementation-notes.md`. |
+| FR-PC-005 credentials not exposed to others | DONE | Secrets class fix 2026-07-28: no credential in the renderer at all (localStorage code removed, and `purgeLegacySecrets()` wipes an upgraded install's old copy on every start). Electron main encrypts each app's credential separately with `safeStorage` under `userData` and injects it into the engine — a Codex key goes to `CODEX_API_KEY` only, never to an `ANTHROPIC_*` variable. The relay only ever carries status booleans and display labels (`harness` frame), binds loopback by default, and limits harness control to the owner on a non-default token. Codex credentials are never read — only its CLI is spawned. |
 | FR-PC-006 more providers later | DONE | Same interface. |
 | FR-PC-007/008 ownership, metering | BLOCKED-TBD | |
 
@@ -27,8 +27,8 @@ Status: DONE (implemented + tested) · PARTIAL · NOT BUILT · BLOCKED-TBD
 | ID | Status | Where |
 |---|---|---|
 | FR-AG-001..004 create/identity/role/instructions | DONE | `AgentModal` in `App.tsx`; `createAgent` in `server.ts`; QA screenshot 02. |
-| FR-AG-005 provider association | PARTIAL | All agents use the owner's single provider; per-agent provider choice not built. |
-| FR-AG-006 explicit permission scope | PARTIAL | Ability toggles → `allowedTools` mapping (`provider.ts`); Bash always disallowed. Not a full policy model. |
+| FR-AG-005 provider association | DONE | `AgentDef.provider` ("claude" \| "codex", absent = claude); picker in the create AND edit modals (`App.tsx`); `Engine.providerFor` routes each turn (`engine.ts`), unit-tested in `routing.test.ts`; an agent whose harness isn't connected says so in plain words instead of failing. |
+| FR-AG-006 explicit permission scope | PARTIAL | Ability toggles → `allowedTools` mapping (`provider.ts`) and the Codex sandbox flag (`codex.ts`); Bash always disallowed. Agent fields are validated at the relay and again in the engine (`validateAgentInput`), so a crafted agent cannot reach a shell (`run.test.ts`). Not a full policy model. |
 | FR-AG-007 enable/pause/disable | DONE | `lifecycle` field; paused/disabled agents never reply, run tasks, or fire schedules (unit + browser tested); edit modal control. |
 | FR-AG-008 edit after creation | DONE | ✎ AgentEditModal: persona, emoji, abilities, approvals, lifecycle, delete. |
 | FR-AG-009..012 duplicate/templates/marketplace/versioning | NOT BUILT / TBD | |
@@ -76,7 +76,10 @@ Status: DONE (implemented + tested) · PARTIAL · NOT BUILT · BLOCKED-TBD
 | FR-CL-006 native mobile | PARTIAL | Expo scaffold (`apps/mobile`) — untested on device; spec marks native mobile TBD anyway. |
 | FR-NT-001/002 notifications | PARTIAL | Proactive `push` frames + pushlog; APNs pending Apple account. |
 
-## Acceptance criteria (spec §24) scorecard: 14 of 16 satisfied (2026-07-28 v2 build)
-Newly met: #10 traceable tasks · #12 approvals · #13 attribution/audit.
-Unmet: #15 Codex adapter proof (blocked on TBD D2) · #2 arguably met (web GUI)
-pending Vikas's confirmation.
+## Acceptance criteria (spec §24) scorecard: 15 of 16 satisfied (2026-07-28 C4 build)
+Newly met: #10 traceable tasks · #12 approvals · #13 attribution/audit ·
+#15 Codex adapter proof (C4 harness sign-in — TBD D2 resolved by Vikas's
+"connect it the way Buzz does" directive, see docs/plans/harness-signin.md).
+Unmet: #2 arguably met (web GUI) pending Vikas's confirmation. Live click-through
+of both sign-in buttons is Vikas's own TEST IT step (an agent must not open his
+browser and authorise on his behalf).

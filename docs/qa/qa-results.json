@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-07-28T04:41:14.661Z",
+  "ranAt": "2026-07-28T07:58:37.374Z",
   "results": [
     {
       "name": "join screen renders",
@@ -10,6 +10,11 @@
       "name": "owner connects, #general visible",
       "pass": true,
       "detail": ""
+    },
+    {
+      "name": "agent create offers a provider picker (Claude default)",
+      "pass": true,
+      "detail": "claude/codex value=claude"
     },
     {
       "name": "agent created and listed",
@@ -42,14 +47,34 @@
       "detail": ""
     },
     {
-      "name": "settings shows credential options + policy note",
+      "name": "settings shows live Claude + Codex status",
+      "pass": true,
+      "detail": "claude: signed in as vikas53953@gmail.com | codex: signed in as ChatGPT account"
+    },
+    {
+      "name": "settings offers both sign-in buttons and the API-key fallback",
+      "pass": true,
+      "detail": "Sign in again with Claude · ▸ Use an API key instead · Sign in again with Codex · ▸ Use an API key instead"
+    },
+    {
+      "name": "no credential is stored in the browser",
       "pass": true,
       "detail": ""
     },
     {
+      "name": "an old browser-stored credential is wiped on startup",
+      "pass": true,
+      "detail": "[null,null]"
+    },
+    {
+      "name": "agent edit offers a provider picker",
+      "pass": true,
+      "detail": "claude/codex"
+    },
+    {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_ms464lisoleu1g"
+      "detail": "inv_ms4d6f5lmrejrf"
     },
     {
       "name": "friend joins via invite",

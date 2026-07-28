@@ -1,7 +1,7 @@
 import React, {
   useEffect, useMemo, useRef, useState, useSyncExternalStore,
 } from "react";
-import { AgentDef, Channel, ID, Message } from "@cloud9/shared";
+import { AgentDef, Channel, HarnessInfo, ID, Message } from "@cloud9/shared";
 import { client } from "./store.js";
 
 const isQuickWindow = location.hash === "#quick";
@@ -364,6 +364,7 @@ function AgentModal({ onClose }: { onClose: () => void }): React.JSX.Element {
   const [persona, setPersona] = useState("");
   const [ab, setAb] = useState({ webSearch: true, files: false, schedules: false, background: true });
   const [ap, setAp] = useState({ background: false, schedules: false });
+  const [provider, setProvider] = useState<"claude" | "codex">("claude");
 
   const create = () => {
     if (!name.trim() || !persona.trim()) return;
@@ -371,7 +372,7 @@ function AgentModal({ onClose }: { onClose: () => void }): React.JSX.Element {
       type: "createAgent",
       agent: {
         name: name.trim().replace(/\s+/g, "-"), emoji, persona: persona.trim(),
-        abilities: ab, approvals: ap,
+        abilities: ab, approvals: ap, provider,
       },
     });
     onClose();
@@ -391,6 +392,13 @@ function AgentModal({ onClose }: { onClose: () => void }): React.JSX.Element {
           <div><label>Personality — who is this agent, how should it behave?</label>
             <textarea rows={4} value={persona} onChange={e => setPersona(e.target.value)}
               placeholder="You're my travel researcher. You find flights, villas and hidden gems, always with prices and links, always under budget." /></div>
+          <div><label>Runs on</label>
+            <select className="providerpick" value={provider} onChange={e => setProvider(e.target.value as "claude" | "codex")}>
+              <option value="claude">🟣 Claude — your Claude app</option>
+              <option value="codex">🟢 Codex — your Codex app</option>
+            </select>
+            <div className="hint">Connect these under ⚙ Settings. An agent whose app isn't signed in will say so when you ask it something.</div>
+          </div>
           <div><label>Abilities</label>
             <div className="checks">
               <label><input type="checkbox" checked={ab.webSearch} onChange={e => setAb({ ...ab, webSearch: e.target.checked })} /> 🔎 Web search</label>
@@ -464,44 +472,195 @@ function ChannelModal({ onClose }: { onClose: () => void }): React.JSX.Element {
   );
 }
 
+/* ---- Settings: connect the Claude and Codex apps ----
+ * No credential ever lives in the browser. The buttons ask the engine host to
+ * run the provider's own sign-in; the app only ever displays status, and any
+ * fallback key is handed straight to the desktop shell for encrypted storage
+ * (docs/plans/harness-signin.md decision 4). */
+
+type Harness = "claude" | "codex";
+
+interface IpcResult { ok: boolean; error?: string }
+interface CredentialStatus {
+  canEncrypt: boolean;
+  claude?: { hasCredential: boolean; kind: string | null };
+  codex?: { hasCredential: boolean; kind: string | null };
+}
+interface DesktopBridge {
+  isDesktop?: boolean;
+  setApiKey?: (harness: Harness, kind: string, value: string) => Promise<IpcResult>;
+  clearCredential?: (harness: Harness) => Promise<IpcResult>;
+  credentialStatus?: () => Promise<CredentialStatus>;
+}
+const desktop = (): DesktopBridge | undefined =>
+  (window as unknown as { cloud9?: DesktopBridge }).cloud9;
+
 function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.Element {
-  const [cred, setCred] = useState(localStorage.getItem("cloud9.claudeCred") ?? "");
-  const [kind, setKind] = useState(localStorage.getItem("cloud9.claudeCredKind") ?? "apiKey");
-  const save = () => {
-    localStorage.setItem("cloud9.claudeCred", cred.trim());
-    localStorage.setItem("cloud9.claudeCredKind", kind);
-    // the Electron main process (engine host) picks these up via IPC bridge
-    (window as unknown as { cloud9?: { setCred?: (k: string, v: string) => void } })
-      .cloud9?.setCred?.(kind, cred.trim());
-    onClose();
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [stored, setStored] = useState<CredentialStatus | null>(null);
+
+  const refreshStored = () => {
+    void desktop()?.credentialStatus?.().then(setStored).catch(() => setStored(null));
   };
+  useEffect(() => {
+    client.send({ type: "harnessStatus" });
+    refreshStored();
+  }, []);
+
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="panel" onClick={e => e.stopPropagation()}>
-        <div className="head">Settings — connect Claude</div>
+      <div className="panel" style={{ width: "min(640px,94vw)" }} onClick={e => e.stopPropagation()}>
+        <div className="head">Settings — connect your AI apps</div>
         <div className="body">
-          <div><label>Credential type</label>
-            <select value={kind} onChange={e => setKind(e.target.value)}>
-              <option value="apiKey">Anthropic API key (pay-per-use — fully supported)</option>
-              <option value="oauthToken">Claude subscription token (from `claude setup-token`)</option>
-            </select></div>
-          <div><label>{kind === "apiKey" ? "API key (sk-ant-…)" : "OAuth token"}</label>
-            <input type="password" value={cred} onChange={e => setCred(e.target.value)} /></div>
-          {kind === "oauthToken" ? (
-            <div className="notice"><b>Heads up:</b> Anthropic's docs say third-party apps may not offer
-              claude.ai subscription login without approval. Generating a token yourself with
-              <code> claude setup-token</code> (needs Claude Pro/Max) and pasting it here is your call —
-              the safe, fully-supported option is an API key.</div>
-          ) : (
-            <div className="notice">Create a key at platform.claude.com — usage bills to your own account.
-              Without a credential, agents run in demo mode (canned replies).</div>
+          <div className="notice">
+            Cloud9 runs your agents through apps already installed on this computer.
+            Sign in once here and your agents can work.
+          </div>
+          <HarnessCard
+            harness="claude" title="Claude" emoji="🟣"
+            info={world.harness?.claude}
+            checking={world.harness?.checking}
+            savedKey={stored?.claude?.hasCredential ?? false}
+            onStoredChanged={refreshStored}
+            signInLabel="Sign in with Claude"
+            fallbackLabel="Use an API key instead"
+            fallbackHelp="Create a key at platform.claude.com — usage bills to your own account."
+            disclosure={
+              <>
+                <b>Heads up:</b> Anthropic's docs say apps may not offer claude.ai
+                subscription login on your behalf. The button above runs Claude's own
+                approved sign-in on this computer (<code>claude setup-token</code>, needs
+                Claude Pro/Max) — nothing is shared with anyone else.
+              </>
+            }
+          />
+          <HarnessCard
+            harness="codex" title="Codex" emoji="🟢"
+            info={world.harness?.codex}
+            checking={world.harness?.checking}
+            savedKey={stored?.codex?.hasCredential ?? false}
+            onStoredChanged={refreshStored}
+            signInLabel="Sign in with Codex"
+            fallbackLabel="Use an API key instead"
+            fallbackHelp="Codex signs in with your ChatGPT account. A key is only for accounts without one."
+            disclosure={
+              <>The button above runs Codex's own sign-in on this computer. Your Codex
+                login stays in Codex — Cloud9 never reads or copies it.</>
+            }
+          />
+          {!desktop()?.isDesktop && (
+            <div className="notice">
+              You're using Cloud9 in a browser. Sign-in buttons work here and run on the
+              computer hosting your agents. Saving a key needs the desktop app, which can
+              lock it away safely.
+            </div>
           )}
         </div>
         <div className="foot">
-          <button className="subtle" onClick={onClose}>Cancel</button>
-          <button className="primary" onClick={save}>Save</button>
+          <button className="primary" onClick={onClose}>Done</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function HarnessCard({
+  harness, title, emoji, info, checking, savedKey, onStoredChanged,
+  signInLabel, fallbackLabel, fallbackHelp, disclosure,
+}: {
+  harness: Harness;
+  title: string;
+  emoji: string;
+  info?: HarnessInfo;
+  checking?: boolean;
+  /** a fallback key for THIS app is stored on this computer */
+  savedKey: boolean;
+  onStoredChanged: () => void;
+  signInLabel: string;
+  fallbackLabel: string;
+  fallbackHelp: string;
+  disclosure: React.ReactNode;
+}): React.JSX.Element {
+  const [showKey, setShowKey] = useState(false);
+  const [key, setKey] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+
+  const installed = info?.installed ?? false;
+  const signedIn = info?.signedIn ?? false;
+  const state = !info ? "checking…"
+    : info.signingIn ? "waiting for you in the browser…"
+    : !installed ? "not installed on this computer"
+    : signedIn ? `signed in${info.account ? ` as ${info.account}` : ""}`
+    : info.detail ?? "installed, not signed in";
+
+  const saveKey = async () => {
+    const result = await desktop()?.setApiKey?.(harness, "apiKey", key.trim());
+    setKey("");
+    if (result?.ok) {
+      setShowKey(false);
+      setMessage(`Saved. Your ${title} key is locked in this computer's secure storage.`);
+    } else {
+      setMessage(result?.error ?? "That key could not be saved.");
+    }
+    onStoredChanged();
+  };
+
+  const clearKey = async () => {
+    const result = await desktop()?.clearCredential?.(harness);
+    setMessage(result?.ok ? `Removed the saved ${title} key from this computer.`
+      : result?.error ?? "That key could not be removed.");
+    onStoredChanged();
+  };
+
+  return (
+    <div className="harnesscard" data-harness={harness}>
+      <div className="harnesshead">
+        <span className="harnessname">{emoji} {title}</span>
+        <span className={`harnessdot ${signedIn ? "ok" : installed ? "warn" : "off"}`}></span>
+        <span className="harnessstate">{state}</span>
+      </div>
+      <div className="harnessfacts">
+        <span>{installed ? `✓ app found${info?.version ? ` (${info.version})` : ""}` : "✗ app not found"}</span>
+        <span>{signedIn ? "✓ signed in" : "✗ not signed in"}</span>
+        {savedKey && <span>✓ key saved on this computer</span>}
+      </div>
+      <div className="harnessbtns">
+        <button
+          className="primary"
+          disabled={!installed || info?.signingIn}
+          onClick={() => client.send({ type: "harnessSignIn", harness })}
+        >
+          {signedIn ? `Sign in again with ${title}` : signInLabel}
+        </button>
+        <button
+          className="ghostbtn"
+          disabled={checking}
+          onClick={() => client.send({ type: "harnessStatus" })}
+        >
+          {checking ? "Checking…" : "Re-check"}
+        </button>
+      </div>
+      {!installed && <div className="notice">Install the {title} app on this computer first, then press Re-check.</div>}
+      <button className="linkbtn" onClick={() => setShowKey(s => !s)}>
+        {showKey ? "▾" : "▸"} {fallbackLabel}
+      </button>
+      {showKey && (
+        <div className="harnessfallback">
+          <label>{title} API key</label>
+          <input type="password" value={key} onChange={e => setKey(e.target.value)} placeholder="sk-…" />
+          <div className="harnessbtns">
+            <button className="primary" disabled={!key.trim() || !desktop()?.isDesktop} onClick={() => void saveKey()}>
+              Save key
+            </button>
+            {savedKey && (
+              <button className="ghostbtn" onClick={() => void clearKey()}>Remove saved key</button>
+            )}
+          </div>
+          <div className="notice">{fallbackHelp}</div>
+        </div>
+      )}
+      {message && <div className="notice">{message}</div>}
+      <div className="notice">{disclosure}</div>
     </div>
   );
 }
@@ -586,11 +745,15 @@ function AgentEditModal({ agent, onClose }: { agent: AgentDef; onClose: () => vo
   const [ab, setAb] = useState(agent.abilities);
   const [ap, setAp] = useState(agent.approvals ?? { background: false, schedules: false });
   const [life, setLife] = useState(agent.lifecycle ?? "enabled");
+  const [provider, setProvider] = useState<"claude" | "codex">(agent.provider ?? "claude");
 
   const save = () => {
     client.send({
       type: "updateAgent",
-      agent: { ...agent, emoji, persona: persona.trim() || agent.persona, abilities: ab, approvals: ap, lifecycle: life as AgentDef["lifecycle"] },
+      agent: {
+        ...agent, emoji, persona: persona.trim() || agent.persona, abilities: ab,
+        approvals: ap, provider, lifecycle: life as AgentDef["lifecycle"],
+      },
     });
     onClose();
   };
@@ -616,6 +779,11 @@ function AgentEditModal({ agent, onClose }: { agent: AgentDef; onClose: () => vo
           </div>
           <div><label>Personality</label>
             <textarea rows={4} value={persona} onChange={e => setPersona(e.target.value)} /></div>
+          <div><label>Runs on</label>
+            <select className="providerpick" value={provider} onChange={e => setProvider(e.target.value as "claude" | "codex")}>
+              <option value="claude">🟣 Claude — your Claude app</option>
+              <option value="codex">🟢 Codex — your Codex app</option>
+            </select></div>
           <div><label>Abilities</label>
             <div className="checks">
               <label><input type="checkbox" checked={ab.webSearch} onChange={e => setAb({ ...ab, webSearch: e.target.checked })} /> 🔎 Web search</label>

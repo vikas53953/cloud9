@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud9 — Workbench</title>
+<style>
+/* ============================================================
+   CLOUD9 · "WORKBENCH"
+   Direction: an instrument panel you can talk in.
+   Humans are set in ink. Agents are tagged in brass and carry a
+   monospace run-strip — the machine's paper trail, always legible,
+   never shouting.
+   ============================================================ */
+
+:root{
+  /* --- surfaces --- */
+  --rail:        #12191F;   /* deep slate — sidebar body            */
+  --rail-top:    #0C1217;   /* sidebar header, one notch darker     */
+  --rail-line:   #24313B;
+  --rail-text:   #A9B8C4;
+  --rail-text-hi:#F2F6F8;
+  --rail-hover:  #1B242C;
+  --rail-active: #223039;
+
+  --paper:       #FCFCFB;   /* message pane                         */
+  --panel:       #F4F5F4;   /* rails, composer well                 */
+  --card:        #FFFFFF;
+  --line:        #E3E5E4;
+  --line-soft:   #EDEEED;
+
+  /* --- ink --- */
+  --ink:         #171C1F;
+  --ink-2:       #4A555C;
+  --ink-3:       #77848C;
+
+  /* --- signals --- */
+  --brass:       #8A6A22;   /* agents: badges, run strips           */
+  --brass-bg:    #FBF4E2;
+  --brass-line:  #E8D9AE;
+  --pine:        #0E6B62;   /* primary action, human presence       */
+  --pine-bg:     #E4F1EE;
+  --on-pine:     #FFFFFF;
+  --ember:       #B0431C;   /* awaiting you                         */
+  --ember-bg:    #FDEEE7;
+  --ember-line:  #F2CDBC;
+
+  --focus:       #0E6B62;
+
+  --font-ui: "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --font-dis:"Segoe UI Variable Display","Segoe UI Semibold","Segoe UI",system-ui,-apple-system,Arial,sans-serif;
+  --font-mono:"Cascadia Mono",Consolas,ui-monospace,"SF Mono","Roboto Mono",monospace;
+
+  --r: 7px;
+  --shadow: 0 1px 2px rgba(16,25,31,.05), 0 6px 18px -10px rgba(16,25,31,.22);
+}
+
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --rail:#0B1015; --rail-top:#080C10; --rail-line:#1D272E;
+    --rail-text:#8E9DA9; --rail-text-hi:#EAF1F5; --rail-hover:#141C22; --rail-active:#1B252C;
+    --paper:#11171B; --panel:#151C21; --card:#1A2228; --line:#263138; --line-soft:#1E272D;
+    --ink:#E8EEF1; --ink-2:#A5B2BB; --ink-3:#7A8892;
+    --brass:#D6B05C; --brass-bg:#241E10; --brass-line:#463A1C;
+    --pine:#4FBFAE; --pine-bg:#0F2925; --on-pine:#06201C;
+    --ember:#E8825C; --ember-bg:#2A1610; --ember-line:#4A2618;
+    --focus:#4FBFAE;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 22px -12px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --rail:#0B1015; --rail-top:#080C10; --rail-line:#1D272E;
+  --rail-text:#8E9DA9; --rail-text-hi:#EAF1F5; --rail-hover:#141C22; --rail-active:#1B252C;
+  --paper:#11171B; --panel:#151C21; --card:#1A2228; --line:#263138; --line-soft:#1E272D;
+  --ink:#E8EEF1; --ink-2:#A5B2BB; --ink-3:#7A8892;
+  --brass:#D6B05C; --brass-bg:#241E10; --brass-line:#463A1C;
+  --pine:#4FBFAE; --pine-bg:#0F2925; --on-pine:#06201C;
+  --ember:#E8825C; --ember-bg:#2A1610; --ember-line:#4A2618;
+  --focus:#4FBFAE;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 22px -12px rgba(0,0,0,.7);
+}
+
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--font-ui); font-size:14px; line-height:1.5;
+  -webkit-font-smoothing:antialiased; overflow:hidden;
+}
+:focus-visible{outline:2px solid var(--focus); outline-offset:2px; border-radius:3px;}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;}
+
+/* small-caps utility label — the instrument vernacular */
+.tag{
+  font-family:var(--font-mono); font-size:10px; letter-spacing:.09em;
+  text-transform:uppercase; font-weight:600;
+}
+
+/* ============ SHELL ============ */
+.app{
+  height:100vh; display:grid;
+  grid-template-columns: 268px minmax(0,1fr) 312px;
+}
+@media (max-width:1330px){ .app{grid-template-columns:252px minmax(0,1fr) 288px;} }
+
+/* ============ SIDEBAR ============ */
+.rail{
+  background:var(--rail); color:var(--rail-text);
+  display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden;
+  border-right:1px solid var(--rail-line);
+}
+.rail-head{
+  padding:14px 16px 13px; background:var(--rail-top);
+  border-bottom:1px solid var(--rail-line);
+  display:flex; align-items:center; gap:10px;
+}
+.mark{
+  width:26px;height:26px;border-radius:6px;flex:none;
+  background:linear-gradient(160deg,#2E4A52,#16232A);
+  border:1px solid #3A5860; position:relative;
+}
+.mark::after{
+  content:""; position:absolute; inset:7px 6px auto 6px; height:2px;
+  background:var(--brass); border-radius:2px;
+  box-shadow:0 5px 0 rgba(169,184,196,.55), 0 10px 0 rgba(169,184,196,.28);
+}
+.wordmark{
+  font-family:var(--font-dis); font-size:15px; font-weight:700;
+  letter-spacing:-.015em; color:var(--rail-text-hi); line-height:1.15;
+}
+.wordmark span{display:block; font-family:var(--font-mono); font-size:9.5px;
+  letter-spacing:.11em; text-transform:uppercase; font-weight:500; color:#69808E; margin-top:1px;}
+.rail-head .kbd{margin-left:auto;}
+.kbd{
+  font-family:var(--font-mono); font-size:10px; color:#7E919E;
+  border:1px solid var(--rail-line); border-radius:4px; padding:2px 5px;
+  background:rgba(255,255,255,.03);
+}
+
+.rail-scroll{flex:1; min-height:0; overflow-y:auto; padding:12px 8px 18px;}
+.rail-scroll::-webkit-scrollbar{width:9px;}
+.rail-scroll::-webkit-scrollbar-thumb{background:#26333C;border-radius:9px;border:3px solid var(--rail);}
+
+.sect{
+  display:flex; align-items:center; gap:7px;
+  padding:15px 8px 6px; color:#6D818E;
+}
+.sect .tag{color:#6D818E;}
+.sect .rule{flex:1; height:1px; background:var(--rail-line);}
+.sect .count{font-family:var(--font-mono); font-size:10px; color:#5C6E7A;}
+
+.row{
+  display:flex; align-items:center; gap:9px; width:100%;
+  padding:6px 9px; border-radius:6px; color:var(--rail-text);
+  font-size:13.5px; text-align:left; min-width:0;
+}
+.row:hover{background:var(--rail-hover); color:var(--rail-text-hi);}
+.row.on{background:var(--rail-active); color:var(--rail-text-hi); font-weight:600;}
+.row.on .hash{color:var(--brass);}
+.hash{font-family:var(--font-mono); font-size:14px; color:#5F7481; flex:none;}
+.row .name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.pill{
+  font-family:var(--font-mono); font-size:10px; font-weight:600;
+  background:#2A3942; color:#B8C7D2; border-radius:9px; padding:1px 6px; flex:none;
+}
+.row.on .pill{background:var(--brass); color:#1A1305;}
+.row.muted{color:#657884;}
+
+/* agents in the rail read like link-state on a switch port */
+.agent-row{align-items:flex-start; padding:7px 9px;}
+.av{
+  width:24px;height:24px;border-radius:6px;flex:none;
+  display:grid;place-items:center;font-size:13px;
+  background:#1E2A32; border:1px solid #2C3B45; position:relative;
+}
+.dot{
+  position:absolute; right:-3px; bottom:-3px; width:9px;height:9px;border-radius:50%;
+  border:2px solid var(--rail);
+}
+.dot.run{background:#D6B05C;}
+.dot.idle{background:#4E606C;}
+.dot.live{background:#3FB79F;}
+.agent-meta{flex:1;min-width:0;}
+.agent-name{
+  display:block;
+  font-size:13.5px; color:var(--rail-text-hi); font-weight:600;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.agent-sub{
+  display:block;
+  font-family:var(--font-mono); font-size:10.5px; color:#6E828F; letter-spacing:.01em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap; margin-top:1px;
+}
+.agent-sub.busy{color:#D6B05C;}
+
+.rail-foot{
+  border-top:1px solid var(--rail-line); background:var(--rail-top);
+  padding:9px 12px; display:flex; align-items:center; gap:9px;
+}
+.me{width:26px;height:26px;border-radius:6px;background:#2F4149;display:grid;place-items:center;
+  color:#DCE6EB;font-weight:700;font-size:11.5px;font-family:var(--font-dis);flex:none;}
+.me-name{font-size:13px;color:var(--rail-text-hi);font-weight:600;line-height:1.2;}
+.me-sub{font-family:var(--font-mono);font-size:10px;color:#6E828F;}
+.newagent{
+  margin-left:auto; border:1px dashed #3A4C57; border-radius:6px;
+  padding:4px 8px; color:#9DB0BC;
+}
+.newagent:hover{border-color:var(--brass); color:var(--brass);}
+
+/* ============ MAIN ============ */
+.main{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:var(--paper);}
+.topbar{
+  display:flex;align-items:center;gap:12px;padding:0 18px;height:53px;flex:none;
+  border-bottom:1px solid var(--line); background:var(--paper);
+}
+.ch-title{font-family:var(--font-dis);font-size:16px;font-weight:700;letter-spacing:-.015em;
+  display:flex;align-items:center;gap:5px;}
+.ch-title .h{color:var(--ink-3);font-family:var(--font-mono);font-weight:500;}
+.topbar .meta{
+  font-family:var(--font-mono);font-size:11px;color:var(--ink-3);
+  border-left:1px solid var(--line);padding-left:12px;margin-left:2px;
+}
+.topbar .spacer{flex:1;}
+.face-stack{display:flex;}
+.face{
+  width:24px;height:24px;border-radius:6px;margin-left:-6px;
+  border:2px solid var(--paper); display:grid;place-items:center;font-size:11px;
+  background:var(--panel); color:var(--ink-2); font-weight:700;
+}
+.face:first-child{margin-left:0;}
+.tbtn{
+  padding:5px 10px;border:1px solid var(--line);border-radius:6px;color:var(--ink-2);
+  font-size:12.5px; background:var(--card);
+}
+.tbtn:hover{border-color:var(--ink-3);color:var(--ink);}
+
+.stream{flex:1;min-height:0;overflow-y:auto;padding:6px 0 10px;min-width:0;}
+.stream::-webkit-scrollbar{width:11px;}
+.stream::-webkit-scrollbar-thumb{background:#CDD3D6;border-radius:9px;border:3px solid var(--paper);}
+:root[data-theme="dark"] .stream::-webkit-scrollbar-thumb{background:#2C3841;border-color:var(--paper);}
+
+.day{display:flex;align-items:center;gap:12px;padding:18px 26px 12px;}
+.day .rule{flex:1;height:1px;background:var(--line);}
+.day .tag{
+  color:var(--ink-3); background:var(--paper); border:1px solid var(--line);
+  border-radius:20px; padding:3px 11px;
+}
+
+/* --- message atom --- */
+.msg{display:grid;grid-template-columns:38px minmax(0,1fr);gap:11px;padding:5px 26px 5px 22px;position:relative;}
+.msg:hover{background:var(--line-soft);}
+.msg .slot{grid-column:1;}
+.msg .body{grid-column:2;min-width:0;}
+.mav{
+  width:34px;height:34px;border-radius:8px;display:grid;place-items:center;font-size:16px;
+  background:var(--panel);border:1px solid var(--line);
+}
+.mav.human{font-family:var(--font-dis);font-weight:700;font-size:13px;color:var(--ink-2);}
+.mav.agent{background:var(--brass-bg);border-color:var(--brass-line);}
+.hdr{display:flex;align-items:baseline;gap:8px;margin-bottom:1px;flex-wrap:wrap;}
+.who{font-family:var(--font-dis);font-weight:700;font-size:14px;letter-spacing:-.005em;}
+.badge{
+  font-family:var(--font-mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+  font-weight:700;color:var(--brass);background:var(--brass-bg);
+  border:1px solid var(--brass-line);border-radius:3px;padding:1px 4px 0;position:relative;top:-1px;
+}
+.when{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);}
+.txt{color:var(--ink);font-size:14px;}
+.txt p{margin:0 0 5px;}
+.txt p:last-child{margin-bottom:0;}
+.mention{color:var(--pine);background:var(--pine-bg);border-radius:3px;padding:0 3px;font-weight:600;}
+.mention.agent{color:var(--brass);background:var(--brass-bg);}
+/* grouped follow-on: hovering reveals the timestamp in the gutter */
+.msg.cont .when-gutter{
+  grid-column:1;font-family:var(--font-mono);font-size:9.5px;color:var(--ink-3);
+  text-align:right;padding-right:2px;line-height:22px;opacity:0;
+}
+.msg.cont:hover .when-gutter{opacity:1;}
+
+/* --- agent message: brass rule + run strip --- */
+.msg.from-agent .body{
+  border-left:2px solid var(--brass-line);padding-left:12px;margin-left:-2px;
+}
+.runstrip{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);
+  margin:2px 0 7px;
+}
+.runstrip b{color:var(--brass);font-weight:600;}
+.runstrip .sep{width:3px;height:3px;border-radius:50%;background:var(--line);}
+.runstrip .ok{color:var(--pine);}
+
+/* --- result card: the flight table --- */
+.card{
+  border:1px solid var(--line);border-radius:var(--r);background:var(--card);
+  margin-top:9px;overflow:hidden;box-shadow:var(--shadow);max-width:640px;
+}
+.card-head{
+  padding:9px 13px;border-bottom:1px solid var(--line-soft);
+  display:flex;align-items:center;gap:9px;background:var(--panel);
+}
+.card-head .t{font-family:var(--font-dis);font-weight:700;font-size:13px;}
+.card-head .tag{color:var(--ink-3);margin-left:auto;}
+.opt{
+  display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:12px;align-items:center;
+  padding:10px 13px;border-bottom:1px solid var(--line-soft);
+}
+.opt:last-child{border-bottom:0;}
+.opt .rt{font-weight:600;font-size:13.5px;}
+.opt .sub{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);margin-top:1px;}
+.opt .price{font-family:var(--font-dis);font-weight:700;font-size:14px;white-space:nowrap;}
+.opt .flag{
+  font-family:var(--font-mono);font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;
+  border:1px solid var(--line);border-radius:3px;padding:2px 5px;color:var(--ink-3);white-space:nowrap;
+}
+.opt .flag.best{color:var(--pine);border-color:var(--pine);background:var(--pine-bg);}
+
+.srcs{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
+.src{
+  font-family:var(--font-mono);font-size:10px;color:var(--ink-2);
+  border:1px solid var(--line);border-radius:20px;padding:2px 8px;background:var(--card);
+}
+
+/* --- proactive (unprompted) agent post --- */
+.msg.proactive .body{border-left-color:var(--brass);}
+.selfstart{
+  display:inline-flex;align-items:center;gap:6px;
+  font-family:var(--font-mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--brass);font-weight:700;
+}
+.selfstart::before{
+  content:"";width:5px;height:5px;border-radius:50%;background:var(--brass);
+  box-shadow:0 0 0 3px var(--brass-bg);
+}
+
+/* --- typing --- */
+.typing{
+  display:flex;align-items:center;gap:9px;padding:8px 26px 4px 22px;
+  font-family:var(--font-mono);font-size:11px;color:var(--ink-3);
+}
+.typing .av2{width:34px;display:flex;justify-content:center;}
+.bars{display:flex;gap:3px;align-items:flex-end;height:11px;}
+.bars i{width:3px;background:var(--brass);border-radius:2px;display:block;}
+.bars i:nth-child(1){height:5px;}
+.bars i:nth-child(2){height:11px;}
+.bars i:nth-child(3){height:7px;}
+@media (prefers-reduced-motion:no-preference){
+  .bars i{animation:pulse 1.05s ease-in-out infinite;}
+  .bars i:nth-child(2){animation-delay:.14s;}
+  .bars i:nth-child(3){animation-delay:.28s;}
+  @keyframes pulse{0%,100%{transform:scaleY(.45);}50%{transform:scaleY(1);}}
+}
+
+/* ============ APPROVAL + COMPOSER ============ */
+.dock{flex:none;padding:0 22px 16px;background:var(--paper);}
+.approve{
+  border:1px solid var(--ember-line);border-left:3px solid var(--ember);
+  background:var(--ember-bg);border-radius:var(--r);
+  padding:11px 13px;display:flex;align-items:center;gap:13px;margin-bottom:9px;
+}
+.approve .ic{
+  width:28px;height:28px;border-radius:7px;background:var(--card);border:1px solid var(--ember-line);
+  display:grid;place-items:center;font-size:14px;flex:none;
+}
+.approve .copy{flex:1;min-width:0;}
+.approve .h{font-family:var(--font-dis);font-weight:700;font-size:13px;color:var(--ink);}
+.approve .d{font-size:12.5px;color:var(--ink-2);margin-top:1px;}
+.approve .d b{color:var(--ink);font-weight:600;}
+.approve .clock{font-family:var(--font-mono);font-size:10.5px;color:var(--ember);font-weight:600;}
+.btn{
+  padding:6px 13px;border-radius:6px;font-size:13px;font-weight:600;
+  border:1px solid var(--line);background:var(--card);color:var(--ink-2);white-space:nowrap;
+}
+.btn:hover{border-color:var(--ink-3);color:var(--ink);}
+.btn.go{background:var(--pine);border-color:var(--pine);color:var(--on-pine);}
+.btn.go:hover{filter:brightness(1.08);}
+
+.composer{
+  border:1px solid var(--line);border-radius:9px;background:var(--card);
+  box-shadow:var(--shadow);overflow:hidden;
+}
+.composer:focus-within{border-color:var(--focus);box-shadow:0 0 0 3px var(--pine-bg);}
+.ctools{display:flex;align-items:center;gap:2px;padding:6px 8px;border-bottom:1px solid var(--line-soft);}
+.ct{padding:3px 7px;border-radius:5px;color:var(--ink-3);font-size:13px;line-height:1.4;}
+.ct:hover{background:var(--panel);color:var(--ink);}
+.ct.mono{font-family:var(--font-mono);font-size:12px;}
+.cdiv{width:1px;height:15px;background:var(--line);margin:0 5px;}
+.ctools .hint{margin-left:auto;font-family:var(--font-mono);font-size:10px;color:var(--ink-3);}
+.cfield{padding:11px 13px 12px;color:var(--ink-3);font-size:14px;min-height:44px;}
+.cfield .caret{
+  display:inline-block;width:1.5px;height:15px;background:var(--pine);
+  vertical-align:-3px;margin-right:1px;
+}
+.cbar{display:flex;align-items:center;gap:9px;padding:0 10px 10px;}
+.cbar .who-as{
+  font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);
+  border:1px solid var(--line);border-radius:20px;padding:3px 9px;
+}
+.cbar .spacer{flex:1;}
+.send{
+  background:var(--pine);color:var(--on-pine);border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600;
+  display:flex;align-items:center;gap:7px;
+}
+.send .k{font-family:var(--font-mono);font-size:9.5px;opacity:.75;}
+
+/* ============ DETAILS RAIL ============ */
+.details{
+  border-left:1px solid var(--line);background:var(--panel);
+  display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;
+}
+.d-head{
+  height:53px;flex:none;display:flex;align-items:center;gap:8px;padding:0 15px;
+  border-bottom:1px solid var(--line);
+}
+.d-head .t{font-family:var(--font-dis);font-weight:700;font-size:13.5px;}
+.d-head .x{margin-left:auto;color:var(--ink-3);font-size:15px;line-height:1;}
+.d-scroll{flex:1;min-height:0;overflow-y:auto;padding:15px;}
+.d-scroll::-webkit-scrollbar{width:9px;}
+.d-scroll::-webkit-scrollbar-thumb{background:#CDD3D6;border-radius:9px;border:3px solid var(--panel);}
+:root[data-theme="dark"] .d-scroll::-webkit-scrollbar-thumb{background:#2C3841;border-color:var(--panel);}
+.d-sect{margin-bottom:19px;}
+.d-sect > .tag{color:var(--ink-3);display:block;margin-bottom:8px;}
+.brief{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:11px 12px;
+}
+.brief dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:5px 12px;}
+.brief dt{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em;}
+.brief dd{margin:0;font-size:13px;font-weight:600;}
+.d-agent{
+  display:flex;gap:9px;align-items:flex-start;background:var(--card);
+  border:1px solid var(--line);border-radius:var(--r);padding:9px 10px;margin-bottom:7px;
+}
+.d-agent .av{background:var(--brass-bg);border-color:var(--brass-line);}
+.d-agent .dot{border-color:var(--card);}
+.d-agent .n{font-size:13px;font-weight:600;}
+.d-agent .s{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);margin-top:2px;}
+.d-agent .s.busy{color:var(--brass);}
+/* thin progress bar = how far the current run is */
+.prog{height:2px;background:var(--line);border-radius:2px;margin-top:6px;overflow:hidden;}
+.prog i{display:block;height:100%;background:var(--brass);width:62%;}
+.file{
+  display:flex;align-items:center;gap:9px;padding:7px 2px;border-bottom:1px solid var(--line);
+}
+.file:last-child{border-bottom:0;}
+.file .ic{width:26px;height:26px;border-radius:5px;background:var(--card);border:1px solid var(--line);
+  display:grid;place-items:center;font-size:12px;flex:none;}
+.file .n{font-size:12.5px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.file .s{font-family:var(--font-mono);font-size:10px;color:var(--ink-3);}
+.member{display:flex;align-items:center;gap:9px;padding:5px 2px;}
+.member .av{background:var(--panel);border-color:var(--line);font-family:var(--font-dis);font-weight:700;font-size:11px;color:var(--ink-2);}
+.member .dot{border-color:var(--panel);}
+.member .n{font-size:13px;font-weight:600;}
+.member .r{font-family:var(--font-mono);font-size:10px;color:var(--ink-3);margin-left:auto;}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ SIDEBAR ============ -->
+  <nav class="rail" aria-label="Workspace">
+    <div class="rail-head">
+      <div class="mark" aria-hidden="true"></div>
+      <div class="wordmark">Cloud9<span>Vikas · workbench</span></div>
+      <div class="kbd">Ctrl K</div>
+    </div>
+
+    <div class="rail-scroll">
+      <button class="row muted"><span class="hash">⌕</span><span class="name">Search everything</span></button>
+      <button class="row muted"><span class="hash">☑</span><span class="name">Waiting on you</span><span class="pill">1</span></button>
+      <button class="row muted"><span class="hash">⟳</span><span class="name">Agent runs</span><span class="pill">3</span></button>
+
+      <div class="sect"><span class="tag">Channels</span><span class="rule"></span><span class="count">4</span></div>
+      <button class="row"><span class="hash">#</span><span class="name">general</span></button>
+      <button class="row on"><span class="hash">#</span><span class="name">trip-planning</span><span class="pill">2</span></button>
+      <button class="row"><span class="hash">#</span><span class="name">dev</span><span class="pill">9</span></button>
+      <button class="row muted"><span class="hash">#</span><span class="name">home-lab</span></button>
+      <button class="row muted"><span class="hash">+</span><span class="name">Add a channel</span></button>
+
+      <div class="sect"><span class="tag">Your agents</span><span class="rule"></span><span class="count">3</span></div>
+
+      <button class="row agent-row">
+        <span class="av">🧭<span class="dot run"></span></span>
+        <span class="agent-meta">
+          <span class="agent-name">Scout</span>
+          <span class="agent-sub busy">working · 41s</span>
+        </span>
+      </button>
+      <button class="row agent-row">
+        <span class="av">📊<span class="dot live"></span></span>
+        <span class="agent-meta">
+          <span class="agent-name">Ledger</span>
+          <span class="agent-sub">watching budget</span>
+        </span>
+      </button>
+      <button class="row agent-row">
+        <span class="av">🎨<span class="dot idle"></span></span>
+        <span class="agent-meta">
+          <span class="agent-name">Pixel</span>
+          <span class="agent-sub">idle · last run 2h</span>
+        </span>
+      </button>
+
+      <div class="sect"><span class="tag">Direct messages</span><span class="rule"></span></div>
+      <button class="row agent-row">
+        <span class="av" style="font-family:var(--font-dis);font-weight:700;font-size:11px;color:#CBD8E0">N<span class="dot live"></span></span>
+        <span class="agent-meta"><span class="agent-name">Neha</span><span class="agent-sub">online</span></span>
+      </button>
+      <button class="row agent-row">
+        <span class="av" style="font-family:var(--font-dis);font-weight:700;font-size:11px;color:#CBD8E0">R<span class="dot idle"></span></span>
+        <span class="agent-meta"><span class="agent-name">Rohit</span><span class="agent-sub">away · 6:40 pm local</span></span>
+      </button>
+    </div>
+
+    <div class="rail-foot">
+      <div class="me">VM</div>
+      <div>
+        <div class="me-name">Vikas</div>
+        <div class="me-sub">3 agents · 1 waiting</div>
+      </div>
+      <button class="newagent tag">+ Agent</button>
+    </div>
+  </nav>
+
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+    <header class="topbar">
+      <div class="ch-title"><span class="h">#</span>trip-planning</div>
+      <div class="meta">2 people · 2 agents</div>
+      <div class="spacer"></div>
+      <div class="face-stack" aria-label="Members">
+        <span class="face">VM</span><span class="face">N</span>
+        <span class="face" style="background:var(--brass-bg);border-color:var(--paper)">🧭</span>
+        <span class="face" style="background:var(--brass-bg);border-color:var(--paper)">📊</span>
+      </div>
+      <button class="tbtn">Pin a brief</button>
+      <button class="tbtn">Details</button>
+    </header>
+
+    <div class="stream">
+
+      <div class="day"><span class="rule"></span><span class="tag">Thursday · 23 July</span><span class="rule"></span></div>
+
+      <article class="msg">
+        <div class="slot"><div class="mav human">N</div></div>
+        <div class="body">
+          <div class="hdr"><span class="who">Neha</span><span class="when">4:12 PM</span></div>
+          <div class="txt"><p>Locking the Ladakh dates finally — 12 to 19 September. Flights out of Bengaluru, and I'd rather not fly the red-eye this time.</p></div>
+        </div>
+      </article>
+
+      <article class="msg">
+        <div class="slot"><div class="mav human">VM</div></div>
+        <div class="body">
+          <div class="hdr"><span class="who">Vikas</span><span class="when">4:15 PM</span></div>
+          <div class="txt"><p>Works for me. Ceiling is ₹22k a head for the flights, everything else we can stretch.</p></div>
+        </div>
+      </article>
+
+      <article class="msg cont">
+        <div class="when-gutter">4:16</div>
+        <div class="body">
+          <div class="txt"><p><span class="mention agent">@Scout</span> find morning departures BLR → Leh for 12 Sep, one stop max, under ₹22,000. Compare against last week's prices.</p></div>
+        </div>
+      </article>
+
+      <div class="day"><span class="rule"></span><span class="tag">Today</span><span class="rule"></span></div>
+
+      <article class="msg from-agent">
+        <div class="slot"><div class="mav agent">🧭</div></div>
+        <div class="body">
+          <div class="hdr">
+            <span class="who">Scout</span><span class="badge">Agent</span>
+            <span class="when">9:02 AM</span>
+          </div>
+          <div class="runstrip">
+            <b>RUN 07</b><span class="sep"></span>asked by @Vikas<span class="sep"></span>
+            4 sources<span class="sep"></span>2m 14s<span class="sep"></span><span class="ok">finished</span>
+          </div>
+          <div class="txt">
+            <p>Three morning options clear your ceiling. Prices moved down about 6% since last Thursday, mostly on the Delhi connection.</p>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <span>🧭</span><span class="t">BLR → Leh · Fri 12 Sep · morning</span>
+              <span class="tag">Checked 9:01 AM</span>
+            </div>
+            <div class="opt">
+              <div><div class="rt">IndiGo 6E-6202 → 6E-2029</div><div class="sub">05:55 → 11:20 · 1 stop DEL · 5h 25m</div></div>
+              <div class="price">₹17,840</div>
+              <div class="flag best">Best value</div>
+            </div>
+            <div class="opt">
+              <div><div class="rt">Air India AI-2984 → AI-445</div><div class="sub">06:40 → 12:05 · 1 stop DEL · 5h 25m</div></div>
+              <div class="price">₹18,400</div>
+              <div class="flag">Free changes</div>
+            </div>
+            <div class="opt">
+              <div><div class="rt">Vistara UK-864 → UK-611</div><div class="sub">07:15 → 13:40 · 1 stop DEL · 6h 25m</div></div>
+              <div class="price">₹21,150</div>
+              <div class="flag">Longer layover</div>
+            </div>
+          </div>
+
+          <div class="srcs">
+            <span class="src">indigo.in</span><span class="src">airindia.com</span>
+            <span class="src">airvistara.com</span><span class="src">your 18 Jul search</span>
+          </div>
+        </div>
+      </article>
+
+      <article class="msg">
+        <div class="slot"><div class="mav human">N</div></div>
+        <div class="body">
+          <div class="hdr"><span class="who">Neha</span><span class="when">9:07 AM</span></div>
+          <div class="txt"><p>Air India for me — the free change is worth the extra ₹560 with September weather up there.</p></div>
+        </div>
+      </article>
+
+      <article class="msg from-agent proactive">
+        <div class="slot"><div class="mav agent">📊</div></div>
+        <div class="body">
+          <div class="hdr">
+            <span class="who">Ledger</span><span class="badge">Agent</span>
+            <span class="when">9:11 AM</span>
+          </div>
+          <div class="runstrip">
+            <span class="selfstart">Started on its own</span><span class="sep"></span>
+            watch: trip budget<span class="sep"></span>ran 9:10 AM<span class="sep"></span><span class="ok">finished</span>
+          </div>
+          <div class="txt">
+            <p>Heads up before you book. At ₹18,400 a head the flights take <b>₹36,800</b> of the ₹1,20,000 trip budget — that leaves ₹83,200 for stays, permits and the car.</p>
+            <p>Last year the same eight days ran ₹94,000 after flights. You're about ₹10,800 short at that pace.</p>
+          </div>
+          <div class="srcs">
+            <span class="src">trip-budget · Sheets</span><span class="src">Sep 2025 actuals</span>
+          </div>
+        </div>
+      </article>
+
+      <article class="msg">
+        <div class="slot"><div class="mav human">VM</div></div>
+        <div class="body">
+          <div class="hdr"><span class="who">Vikas</span><span class="when">9:14 AM</span></div>
+          <div class="txt"><p>Good catch. <span class="mention agent">@Pixel</span> put the day-by-day route on one page so we can see where the money actually goes.</p></div>
+        </div>
+      </article>
+
+      <div class="typing">
+        <span class="av2"><span class="bars"><i></i><i></i><i></i></span></span>
+        <span>Pixel is drafting the route page · 18s</span>
+      </div>
+    </div>
+
+    <!-- ==== dock: approval + composer ==== -->
+    <div class="dock">
+      <div class="approve" role="status">
+        <div class="ic">🧭</div>
+        <div class="copy">
+          <div class="h">Scout needs your go-ahead to hold seats</div>
+          <div class="d">2 seats on <b>Air India AI-2984</b>, 12 Sep · <b>₹36,800</b> total. Holding is free and does not charge your card.</div>
+        </div>
+        <div class="clock">Hold expires 6:00 PM</div>
+        <button class="btn">Not now</button>
+        <button class="btn go">Hold the seats</button>
+      </div>
+
+      <div class="composer">
+        <div class="ctools">
+          <button class="ct" title="Attach a file">📎</button>
+          <button class="ct mono" title="Mention someone">@</button>
+          <button class="ct mono" title="Code">&lt;/&gt;</button>
+          <span class="cdiv"></span>
+          <button class="ct" style="font-weight:700">B</button>
+          <button class="ct" style="font-style:italic">I</button>
+          <button class="ct">• List</button>
+          <span class="hint">@agent to hand off a task</span>
+        </div>
+        <div class="cfield"><span class="caret"></span>Message #trip-planning</div>
+        <div class="cbar">
+          <span class="who-as">posting as Vikas</span>
+          <span class="spacer"></span>
+          <button class="btn">Save as draft</button>
+          <button class="send">Send <span class="k">↵</span></button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ============ DETAILS RAIL ============ -->
+  <aside class="details" aria-label="Channel details">
+    <div class="d-head">
+      <span class="t">#trip-planning</span>
+      <span class="x">✕</span>
+    </div>
+    <div class="d-scroll">
+
+      <div class="d-sect">
+        <span class="tag">Pinned brief</span>
+        <div class="brief">
+          <dl>
+            <dt>Where</dt><dd>Leh — Ladakh</dd>
+            <dt>When</dt><dd>12 – 19 September</dd>
+            <dt>Who</dt><dd>Vikas, Neha</dd>
+            <dt>Budget</dt><dd>₹1,20,000</dd>
+            <dt>Rule</dt><dd>No red-eyes</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="d-sect">
+        <span class="tag">Agents on this channel</span>
+        <div class="d-agent">
+          <span class="av">🧭<span class="dot run"></span></span>
+          <span style="min-width:0;flex:1">
+            <div class="n">Scout</div>
+            <div class="s busy">Pricing Leh guesthouses · 41s</div>
+            <div class="prog"><i></i></div>
+          </span>
+        </div>
+        <div class="d-agent">
+          <span class="av">📊<span class="dot live"></span></span>
+          <span style="min-width:0;flex:1">
+            <div class="n">Ledger</div>
+            <div class="s">Watching trip budget · checks hourly</div>
+          </span>
+        </div>
+      </div>
+
+      <div class="d-sect">
+        <span class="tag">People</span>
+        <div class="member">
+          <span class="av" style="width:24px;height:24px;border-radius:6px;display:grid;place-items:center;position:relative">VM<span class="dot live"></span></span>
+          <span class="n">Vikas</span><span class="r">owner</span>
+        </div>
+        <div class="member">
+          <span class="av" style="width:24px;height:24px;border-radius:6px;display:grid;place-items:center;position:relative">N<span class="dot live"></span></span>
+          <span class="n">Neha</span><span class="r">member</span>
+        </div>
+      </div>
+
+      <div class="d-sect">
+        <span class="tag">What agents made here</span>
+        <div class="file">
+          <span class="ic">📄</span>
+          <span style="min-width:0"><div class="n">Flight options · 12 Sep</div><div class="s">Scout · 9:02 AM</div></span>
+        </div>
+        <div class="file">
+          <span class="ic">📈</span>
+          <span style="min-width:0"><div class="n">Trip budget vs last year</div><div class="s">Ledger · 9:11 AM</div></span>
+        </div>
+        <div class="file">
+          <span class="ic">🗺️</span>
+          <span style="min-width:0"><div class="n">Route page (drafting)</div><div class="s">Pixel · just now</div></span>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+</div>
+<script>
+  /* only script on the page: open on the newest message, like the real app does */
+  var s = document.querySelector('.stream'); s.scrollTop = s.scrollHeight;
+</script>
+</body>
+</html>

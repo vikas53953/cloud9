@@ -1,0 +1,175 @@
+// Spawning local CLI harnesses (claude / codex), safely and with a hard leash.
+//
+// Windows note (verified on this machine 2026-07-28): both CLIs are npm shims
+// (`%APPDATA%\npm\claude.ps1` / `codex.cmd`). Node cannot exec a .cmd/.ps1
+// directly since the 2024 spawn hardening, so every call goes through
+// `shell: true`. That makes the argument list a SHELL STRING, so this module
+// treats every argument as hostile: anything outside a strict allowlist is
+// REJECTED, never escaped. Quoting rules differ per shell and get outsmarted;
+// refusing does not. Untrusted text (prompts) goes on STDIN, never in argv.
+import { spawn } from "node:child_process";
+
+export interface RunResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  /** we killed it because it blew the wall-clock leash */
+  timedOut: boolean;
+  /** the command could not be started / is not on PATH */
+  notFound: boolean;
+}
+
+export interface RunOptions {
+  cwd?: string;
+  timeoutMs?: number;
+  stdin?: string;
+  env?: NodeJS.ProcessEnv;
+  /** don't wait — used for `codex login`, which owns the user's browser */
+  detached?: boolean;
+}
+
+/** Characters that may appear in a command-line argument. Nothing else. */
+const SAFE_ARG_RE = /^[A-Za-z0-9._:\\/=+@-]*$/;
+/** Same, but a path may also contain spaces (it gets quoted). */
+const SAFE_PATH_RE = /^[A-Za-z0-9._:\\/=+@ -]*$/;
+
+export class UnsafeArgumentError extends Error {
+  constructor(value: string) {
+    super(`refusing to run a command containing unsafe characters: ${JSON.stringify(value.slice(0, 40))}`);
+    this.name = "UnsafeArgumentError";
+  }
+}
+
+/**
+ * Check one plain argument (flags, model ids, sandbox names).
+ * Throws rather than trying to escape — see the module note.
+ */
+export function safeArg(value: string): string {
+  if (!SAFE_ARG_RE.test(value)) throw new UnsafeArgumentError(value);
+  return value;
+}
+
+/**
+ * Check a filesystem path and quote it if it contains spaces. Still refuses
+ * every shell metacharacter — a path with a `&` in it does not get to run.
+ */
+export function shellQuote(value: string): string {
+  if (!SAFE_PATH_RE.test(value)) throw new UnsafeArgumentError(value);
+  return /\s/.test(value) ? `"${value}"` : value;
+}
+
+/** Stop a runaway harness from eating memory through its own output. */
+const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Run a CLI and collect its output. Never throws for a non-zero exit — the
+ * caller decides what a failure means. Throws UnsafeArgumentError if the
+ * command or any argument is not allowlist-clean.
+ */
+export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<RunResult> {
+  const timeoutMs = opts.timeoutMs ?? 20_000;
+  // validate BEFORE anything is concatenated. Reported as a rejection, not a
+  // synchronous throw, so every caller's `await` handles it the same way.
+  let line: string;
+  try {
+    line = [shellQuote(cmd), ...args.map(a => checkArg(a))].join(" ");
+  } catch (err) {
+    return Promise.reject(err);
+  }
+
+  return new Promise<RunResult>(resolve => {
+    let settled = false;
+    const finish = (r: RunResult) => { if (!settled) { settled = true; resolve(r); } };
+
+    let child;
+    try {
+      child = spawn(line, {
+        shell: true,
+        windowsHide: true,
+        cwd: opts.cwd,
+        env: opts.env,
+        detached: opts.detached ?? false,
+        stdio: opts.detached ? "ignore" : ["pipe", "pipe", "pipe"],
+      });
+    } catch (err) {
+      finish({ code: null, stdout: "", stderr: String(err), timedOut: false, notFound: true });
+      return;
+    }
+
+    if (opts.detached) {
+      // attach the handler FIRST: a spawn failure emits 'error' asynchronously,
+      // and an unhandled 'error' event would take the whole process down.
+      child.on("error", () => { /* nothing waits on this; the poller finds out */ });
+      child.unref();
+      finish({ code: 0, stdout: "", stderr: "", timedOut: false, notFound: false });
+      return;
+    }
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", d => { stdout = cap(stdout + d); });
+    child.stderr?.on("data", d => { stderr = cap(stderr + d); });
+
+    const timer = setTimeout(() => {
+      killTree(child.pid);
+      finish({ code: null, stdout, stderr, timedOut: true, notFound: false });
+    }, timeoutMs);
+
+    child.on("error", err => {
+      clearTimeout(timer);
+      finish({ code: null, stdout, stderr: String(err), timedOut: false, notFound: true });
+    });
+    child.on("close", code => {
+      clearTimeout(timer);
+      finish({ code, stdout, stderr, timedOut: false, notFound: isNotFound(code, stderr) });
+    });
+
+    if (opts.stdin !== undefined) {
+      child.stdin?.on("error", () => { /* closed early — the exit code tells the story */ });
+      child.stdin?.end(opts.stdin);
+    } else {
+      child.stdin?.end();
+    }
+  });
+}
+
+function checkArg(arg: string): string {
+  // an argument that is a path may contain spaces; anything else may not
+  return /\s/.test(arg) ? shellQuote(arg) : safeArg(arg);
+}
+
+function cap(s: string): string {
+  return s.length > MAX_CAPTURE_BYTES ? s.slice(0, MAX_CAPTURE_BYTES) : s;
+}
+
+/**
+ * With `shell: true` the child IS the shell, so killing it can leave the real
+ * CLI (and whatever it spawned) running. Kill the whole tree.
+ */
+export function killTree(pid: number | undefined): void {
+  if (!pid) return;
+  if (process.platform === "win32") {
+    try {
+      spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" })
+        .on("error", () => { /* best effort */ });
+    } catch { /* best effort */ }
+    return;
+  }
+  try { process.kill(-pid, "SIGKILL"); } catch { /* not a group leader */ }
+  try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+}
+
+/**
+ * With `shell: true` a missing command is reported by the shell, not by Node,
+ * so "not installed" has to be read off the shell's complaint.
+ */
+function isNotFound(code: number | null, stderr: string): boolean {
+  if (code === 0) return false;
+  return /is not recognized as an internal or external command|command not found|: not found/i
+    .test(stderr);
+}
+
+/** A `run`-shaped function — tests inject a fake one. */
+export type Runner = typeof run;

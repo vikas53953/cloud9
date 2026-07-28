@@ -17,6 +17,49 @@ export interface ClaudeProvider {
   respond(input: RespondInput): Promise<string>;
 }
 
+/**
+ * The agent's harness (Claude or Codex) is missing, signed out, or refused the
+ * turn. The engine turns this into a plain-words chat reply rather than a stack
+ * trace (harness-signin.md decision 3, FR-TL-005).
+ */
+export class HarnessUnavailableError extends Error {
+  constructor(public harness: string, message: string) {
+    super(message);
+    this.name = "HarnessUnavailableError";
+  }
+}
+
+/** What the agent says when its harness isn't connected. No jargon. */
+export const HARNESS_DISCONNECTED_REPLY =
+  "my engine isn't connected — open Settings and sign in, then ask me again.";
+
+/**
+ * The ONE place raw error text is turned into something a chat message may
+ * contain. Raw errors can carry file paths, command lines, argv and other
+ * internals, and a chat message can be read by everyone in the channel — so
+ * nothing from the error itself is ever forwarded. The full detail goes to the
+ * console for the person running the app.
+ */
+export function sanitizeForChat(err: unknown, where: string): string {
+  console.error(`[engine] ${where}:`, err);
+  if (err instanceof HarnessUnavailableError) return HARNESS_DISCONNECTED_REPLY;
+  return "something went wrong on my side and I couldn't finish that — " +
+    "the details are in the app's log.";
+}
+
+/** The chat prompt an agent turn becomes. Shared by every provider. */
+export function buildAgentPrompt(agent: AgentDef, context: string): string {
+  return (
+    `You are "${agent.name}", an agent in the Cloud9 group chat.\n` +
+    `Your persona/brief: ${agent.persona}\n\n` +
+    `Recent conversation (oldest first):\n${context}\n\n` +
+    `Write your next chat message as ${agent.name}. Stay in persona, be genuinely useful, ` +
+    `and keep it chat-length (1-4 sentences unless a list is clearly needed). ` +
+    `Mention other participants with @Name only when addressing them. ` +
+    `Do not prefix your reply with your own name.`
+  );
+}
+
 export class MockProvider implements ClaudeProvider {
   async respond({ agent, trigger, triggerAuthor }: RespondInput): Promise<string> {
     const gist = trigger.replace(/@[\w-]+/g, "").trim().slice(0, 80) || "that";
@@ -60,14 +103,7 @@ export class SdkProvider implements ClaudeProvider {
     if (this.creds.apiKey) env.ANTHROPIC_API_KEY = this.creds.apiKey;
     if (this.creds.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = this.creds.oauthToken;
 
-    const prompt =
-      `You are "${agent.name}", an agent in the Cloud9 group chat.\n` +
-      `Your persona/brief: ${agent.persona}\n\n` +
-      `Recent conversation (oldest first):\n${context}\n\n` +
-      `Write your next chat message as ${agent.name}. Stay in persona, be genuinely useful, ` +
-      `and keep it chat-length (1-4 sentences unless a list is clearly needed). ` +
-      `Mention other participants with @Name only when addressing them. ` +
-      `Do not prefix your reply with your own name.`;
+    const prompt = buildAgentPrompt(agent, context);
 
     let result = "";
     for await (const message of query({

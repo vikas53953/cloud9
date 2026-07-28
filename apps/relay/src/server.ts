@@ -3,8 +3,8 @@
 import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import {
-  AgentDef, AgentStatus, Approval, Channel, ClientFrame, ID, Message,
-  ServerFrame, Task, WorldState, extractMentions, newId,
+  AgentDef, AgentStatus, Approval, Channel, ClientFrame, HarnessState, ID, Message,
+  ServerFrame, Task, WorldState, extractMentions, newId, validateAgentInput,
 } from "@cloud9/shared";
 import { Store } from "./store.js";
 
@@ -19,23 +19,54 @@ export interface RelayOptions {
   dbPath?: string;
   ownerToken?: string;
   ownerName?: string;
+  /** interface to bind — defaults to loopback only */
+  bind?: string;
+  /** allow harness control with the well-known default token (dev/QA only) */
+  devMode?: boolean;
 }
+
+/**
+ * The token every fresh checkout starts with. Harness frames can spawn
+ * processes on the owner's computer, so this token alone must never be enough
+ * to trigger them outside dev mode.
+ */
+export const DEFAULT_OWNER_TOKEN = "dev-owner-token";
+
+/** A sign-in may be asked for once every 30s per user, one at a time. */
+const SIGNIN_COOLDOWN_MS = 30_000;
+/** If an engine never reports back, stop blocking the user after this long. */
+const SIGNIN_STUCK_MS = 6 * 60_000;
 
 export class Relay {
   store: Store;
   conns = new Set<Conn>();
   agentStatus: Record<ID, AgentStatus> = {};
+  /**
+   * Last harness status reported by each user's engine host. Status only —
+   * booleans and display labels; credentials never cross the wire
+   * (docs/plans/harness-signin.md decision 5).
+   */
+  harness: Record<ID, HarnessState> = {};
   server: http.Server;
   wss: WebSocketServer;
   ownerToken: string;
   ownerName: string;
+  ownerId: ID;
+  bind: string;
+  devMode: boolean;
+  /** last sign-in request per user, and whether one is still running */
+  private signInAt: Record<ID, number> = {};
+  private signInFlight: Record<ID, number> = {};
 
   constructor(opts: RelayOptions = {}) {
     this.store = new Store(opts.dbPath ?? "cloud9-relay.db");
     this.ownerToken = opts.ownerToken ?? process.env.CLOUD9_OWNER_TOKEN ?? "dev-owner-token";
     this.ownerName = opts.ownerName ?? process.env.CLOUD9_OWNER_NAME ?? "Vikas";
+    this.bind = opts.bind ?? process.env.CLOUD9_BIND ?? "127.0.0.1";
+    this.devMode = opts.devMode ?? process.env.CLOUD9_DEV === "1";
     // Owner exists from first boot; a default #general channel too.
     const owner = this.store.ensureOwner(this.ownerName, this.ownerToken);
+    this.ownerId = owner.id;
     if (this.store.channels().length === 0) {
       this.store.saveChannel({
         id: newId("ch"), name: "general", kind: "channel",
@@ -50,9 +81,13 @@ export class Relay {
     this.wss.on("connection", ws => this.onConnection(ws));
   }
 
+  /**
+   * Loopback only unless told otherwise. Harness frames can start processes on
+   * this computer, so the hub does not answer the network by default.
+   */
   listen(port = 8787): Promise<number> {
     return new Promise(resolve => {
-      this.server.listen(port, () => {
+      this.server.listen(port, this.bind, () => {
         const addr = this.server.address();
         resolve(typeof addr === "object" && addr ? addr.port : port);
       });
@@ -81,7 +116,24 @@ export class Relay {
         send(ws, { type: "error", error: String(err) });
       }
     });
-    ws.on("close", () => { if (conn) this.conns.delete(conn); });
+    ws.on("close", () => {
+      if (!conn) return;
+      this.conns.delete(conn);
+      // The engine host owns the CLIs. Once it's gone, its last status report is
+      // a stale claim about a machine nobody is watching — drop it and say so.
+      if (conn.client === "engine" && !this.hasEngine(conn.userId)) {
+        delete this.harness[conn.userId];
+        delete this.signInFlight[conn.userId];
+        this.toUser(conn.userId, {
+          type: "harness",
+          state: {
+            claude: { name: "claude", installed: false, signedIn: false, detail: "your agent engine isn't running" },
+            codex: { name: "codex", installed: false, signedIn: false, detail: "your agent engine isn't running" },
+            updatedAt: Date.now(),
+          },
+        });
+      }
+    });
   }
 
   private handleHello(ws: WebSocket, frame: Extract<ClientFrame, { type: "hello" }>): Conn | undefined {
@@ -182,6 +234,10 @@ export class Relay {
         break;
       }
       case "createAgent": {
+        // first gate on untrusted input: some of these fields end up on a
+        // command line in the engine host (the engine re-checks too)
+        const bad = validateAgentInput(frame.agent);
+        if (bad) throw new Error(bad);
         const agent: AgentDef = {
           ...frame.agent, id: newId("a"), ownerId: conn.userId, createdAt: Date.now(),
         };
@@ -191,6 +247,8 @@ export class Relay {
         break;
       }
       case "updateAgent": {
+        const bad = validateAgentInput(frame.agent);
+        if (bad) throw new Error(bad);
         const existing = this.store.agents().find(a => a.id === frame.agent.id);
         if (!existing || existing.ownerId !== conn.userId) throw new Error("not your agent");
         this.store.saveAgent({ ...frame.agent, ownerId: existing.ownerId });
@@ -297,6 +355,50 @@ export class Relay {
         });
         break;
       }
+      // ---- harness sign-in (docs/plans/harness-signin.md) ----
+      // These frames make the engine host start programs on the owner's
+      // computer, so they are the most privileged in the protocol: owner only,
+      // never on the shipped default token, and rate-limited.
+      case "harnessStatus": {
+        this.assertHarnessAllowed(conn);
+        // answer immediately from cache, and ask this user's engine to re-check
+        const cached = this.harness[conn.userId];
+        if (cached) send(conn.ws, { type: "harness", state: cached });
+        this.toEngines(conn.userId, { type: "harnessRequest", action: "status" });
+        break;
+      }
+      case "harnessSignIn": {
+        this.assertHarnessAllowed(conn);
+        if (frame.harness !== "claude" && frame.harness !== "codex") {
+          throw new Error("unknown harness");
+        }
+        const now = Date.now();
+        const flight = this.signInFlight[conn.userId];
+        if (flight && now - flight < SIGNIN_STUCK_MS) {
+          throw new Error("a sign-in is already running — finish it in your browser first");
+        }
+        if (now - (this.signInAt[conn.userId] ?? 0) < SIGNIN_COOLDOWN_MS) {
+          throw new Error("give the last sign-in a moment before trying again");
+        }
+        this.signInAt[conn.userId] = now;
+        this.signInFlight[conn.userId] = now;
+        // only this user's own engine host may be told to sign in
+        this.toEngines(conn.userId, {
+          type: "harnessRequest", action: "signIn", harness: frame.harness,
+        });
+        break;
+      }
+      case "harnessState": {
+        if (conn.client !== "engine") throw new Error("only the engine reports harness state");
+        this.assertHarnessAllowed(conn);
+        this.harness[conn.userId] = frame.state;
+        // the engine says nothing is signing in any more → release the lock
+        if (!frame.state.claude.signingIn && !frame.state.codex.signingIn) {
+          delete this.signInFlight[conn.userId];
+        }
+        this.toUser(conn.userId, { type: "harness", state: frame.state });
+        break;
+      }
       case "history": {
         send(conn.ws, {
           type: "history", channelId: frame.channelId,
@@ -357,6 +459,41 @@ export class Relay {
 
   private broadcast(frame: ServerFrame): void {
     for (const conn of this.conns) send(conn.ws, frame);
+  }
+
+  /**
+   * Harness control is limited to the person who runs this Cloud9, on a relay
+   * that isn't using the token every checkout ships with. Invited friends can
+   * chat; they cannot start programs on the owner's machine.
+   */
+  private assertHarnessAllowed(conn: Conn): void {
+    if (conn.userId !== this.ownerId) {
+      throw new Error("only the owner of this Cloud9 can connect the AI apps");
+    }
+    if (this.ownerToken === DEFAULT_OWNER_TOKEN && !this.devMode) {
+      throw new Error(
+        "set your own owner token before connecting the AI apps (the default one isn't private)",
+      );
+    }
+  }
+
+  /** Send to one user's engine host connection(s) only. */
+  private toEngines(userId: ID, frame: ServerFrame): void {
+    for (const conn of this.conns) {
+      if (conn.userId === userId && conn.client === "engine") send(conn.ws, frame);
+    }
+  }
+
+  private hasEngine(userId: ID): boolean {
+    for (const c of this.conns) if (c.userId === userId && c.client === "engine") return true;
+    return false;
+  }
+
+  /** Send to every client (desktop/mobile/engine) belonging to one user. */
+  private toUser(userId: ID, frame: ServerFrame): void {
+    for (const conn of this.conns) {
+      if (conn.userId === userId) send(conn.ws, frame);
+    }
   }
 }
 

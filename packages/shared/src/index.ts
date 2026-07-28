@@ -22,6 +22,9 @@ export interface AgentApprovals {
   schedules: boolean;    // creating a schedule
 }
 
+/** Which locally-installed AI harness runs this agent's turns (FR-PC-002/003). */
+export type HarnessName = "claude" | "codex";
+
 export interface AgentDef {
   id: ID;
   ownerId: ID; // the human whose runtime hosts this agent (and whose Claude account pays)
@@ -29,6 +32,8 @@ export interface AgentDef {
   emoji: string;
   persona: string;
   abilities: AgentAbilities;
+  /** FR-AG-005 — absent means "claude" (v1 agents) */
+  provider?: HarnessName;
   /** optional — absent means no approvals required (v1 agents) */
   approvals?: AgentApprovals;
   /** FR-AG-007 — absent means "enabled" (v1 agents) */
@@ -99,6 +104,37 @@ export interface ActivityRecord {
   detail: string;          // plain-language summary (FR-AU-003)
 }
 
+// ---------- harness sign-in (docs/plans/harness-signin.md) ----------
+
+/**
+ * What the app knows about one locally installed AI harness.
+ * STATUS ONLY — booleans and display strings. No token, key or credential
+ * material may ever appear in this object (harness-signin.md decision 6).
+ */
+export interface HarnessInfo {
+  name: HarnessName;
+  /** the CLI is on this machine */
+  installed: boolean;
+  /** the CLI reports a logged-in account */
+  signedIn: boolean;
+  /** display label, e.g. an email or "ChatGPT account" — never a secret */
+  account?: string;
+  /** CLI version string, for the settings card */
+  version?: string;
+  /** a sign-in is in progress (browser window open, waiting) */
+  signingIn?: boolean;
+  /** plain-words note for the UI, e.g. "not installed" */
+  detail?: string;
+}
+
+export interface HarnessState {
+  claude: HarnessInfo;
+  codex: HarnessInfo;
+  /** a detection round is running right now — the UI disables "Re-check" */
+  checking?: boolean;
+  updatedAt: number;
+}
+
 export type ChannelKind = "channel" | "dm";
 
 export interface Channel {
@@ -144,7 +180,12 @@ export type ClientFrame =
   | { type: "updateTask"; taskId: ID; status: TaskStatus; result?: string; error?: string } // engine (agent owner) only
   | { type: "cancelTask"; taskId: ID }
   | { type: "decideApproval"; approvalId: ID; decision: "approved" | "rejected" }
-  | { type: "activity"; before?: number; limit?: number };
+  | { type: "activity"; before?: number; limit?: number }
+  // harness sign-in — asked by any of the owner's clients, answered by the engine host
+  | { type: "harnessStatus" }
+  | { type: "harnessSignIn"; harness: HarnessName }
+  // engine-host only: report detected harness status (status strings only, never secrets)
+  | { type: "harnessState"; state: HarnessState };
 
 export type AgentStatus = "idle" | "working" | "braked";
 
@@ -175,7 +216,62 @@ export type ServerFrame =
   | { type: "approval"; approval: Approval }
   | { type: "activity"; records: ActivityRecord[] }
   | { type: "push"; message: Message } // relay → mobile: delivered as notification
+  // harness status broadcast to the owner's clients
+  | { type: "harness"; state: HarnessState }
+  // relay → engine host: do the harness work (the engine owns the CLIs)
+  | { type: "harnessRequest"; action: "status" | "signIn"; harness?: HarnessName }
   | { type: "error"; error: string };
+
+// ---------- untrusted input validation ----------
+//
+// Agent fields are written by clients and some of them (model) end up on a
+// command line. They are validated at BOTH boundaries: the relay refuses to
+// store a bad one, and the engine refuses to run one. Same function, so the two
+// checks can never drift apart.
+
+/** Model ids are vendor slugs — letters, digits, dot, dash, underscore. */
+export const MODEL_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+export const AGENT_LIMITS = { name: 64, emoji: 16, persona: 8000 } as const;
+
+export interface AgentInput {
+  name?: string;
+  emoji?: string;
+  persona?: string;
+  model?: string;
+  provider?: string;
+}
+
+/**
+ * Check an agent's user-supplied fields.
+ * Returns a plain-words problem description, or null when the agent is fine.
+ */
+export function validateAgentInput(agent: AgentInput): string | null {
+  if (typeof agent.name !== "string" || agent.name.trim().length === 0) {
+    return "an agent needs a name";
+  }
+  if (agent.name.length > AGENT_LIMITS.name) {
+    return `that name is too long (max ${AGENT_LIMITS.name} characters)`;
+  }
+  if (typeof agent.emoji === "string" && agent.emoji.length > AGENT_LIMITS.emoji) {
+    return `that emoji is too long (max ${AGENT_LIMITS.emoji} characters)`;
+  }
+  if (typeof agent.persona === "string" && agent.persona.length > AGENT_LIMITS.persona) {
+    return `that personality is too long (max ${AGENT_LIMITS.persona} characters)`;
+  }
+  if (agent.model !== undefined && agent.model !== "" && !MODEL_ID_RE.test(agent.model)) {
+    return "that model name isn't a valid model id";
+  }
+  if (agent.provider !== undefined && agent.provider !== "claude" && agent.provider !== "codex") {
+    return "an agent must run on either Claude or Codex";
+  }
+  return null;
+}
+
+/** A harness we know nothing about yet — used before the first detection run. */
+export function unknownHarness(name: HarnessName): HarnessInfo {
+  return { name, installed: false, signedIn: false, detail: "checking…" };
+}
 
 // ---------- helpers ----------
 
