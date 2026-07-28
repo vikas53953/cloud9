@@ -17,6 +17,7 @@ export class Scheduler {
   ) {}
 
   start(): void {
+    if (this.timer) clearInterval(this.timer); // reconnects must not leak intervals
     this.timer = setInterval(() => this.tick(new Date()), this.tickMs);
   }
   stop(): void {

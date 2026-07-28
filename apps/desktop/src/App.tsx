@@ -75,10 +75,13 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 function Workspace(): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [activeId, setActiveId] = useState<ID | null>(null);
-  const [modal, setModal] = useState<null | "agent" | "invite" | "settings" | "channel">(null);
+  const [modal, setModal] = useState<null | "agent" | "invite" | "settings" | "channel" | "tasks" | "activity">(null);
   const [quick, setQuick] = useState(false);
 
   const active = world.channels.find(c => c.id === activeId) ?? world.channels[0];
+  const pendingApprovals = world.approvals.filter(
+    a => a.status === "pending" && a.ownerId === world.me?.id,
+  ).length;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -127,7 +130,11 @@ function Workspace(): React.JSX.Element {
           </button>
         ))}
         <div className="sidebar-foot">
-          <button className="ghostbtn" onClick={() => setQuick(true)}>⌘K Quick chat</button>
+          <button className="ghostbtn" onClick={() => setQuick(true)}>⌘K</button>
+          <button className="ghostbtn" onClick={() => setModal("tasks")}>
+            ☑ Tasks{pendingApprovals > 0 ? ` (${pendingApprovals})` : ""}
+          </button>
+          <button className="ghostbtn" onClick={() => { client.send({ type: "activity", limit: 100 }); setModal("activity"); }}>🕘</button>
           <button className="ghostbtn" onClick={() => setModal("settings")}>⚙</button>
         </div>
       </div>
@@ -141,6 +148,8 @@ function Workspace(): React.JSX.Element {
       {modal === "invite" && <InviteModal onClose={() => setModal(null)} />}
       {modal === "settings" && <SettingsModal onClose={() => setModal(null)} />}
       {modal === "channel" && <ChannelModal onClose={() => setModal(null)} />}
+      {modal === "tasks" && <TasksModal onClose={() => setModal(null)} />}
+      {modal === "activity" && <ActivityModal onClose={() => setModal(null)} />}
     </div>
   );
 }
@@ -348,12 +357,16 @@ function AgentModal({ onClose }: { onClose: () => void }): React.JSX.Element {
   const [emoji, setEmoji] = useState("✨");
   const [persona, setPersona] = useState("");
   const [ab, setAb] = useState({ webSearch: true, files: false, schedules: false, background: true });
+  const [ap, setAp] = useState({ background: false, schedules: false });
 
   const create = () => {
     if (!name.trim() || !persona.trim()) return;
     client.send({
       type: "createAgent",
-      agent: { name: name.trim().replace(/\s+/g, "-"), emoji, persona: persona.trim(), abilities: ab },
+      agent: {
+        name: name.trim().replace(/\s+/g, "-"), emoji, persona: persona.trim(),
+        abilities: ab, approvals: ap,
+      },
     });
     onClose();
   };
@@ -378,6 +391,11 @@ function AgentModal({ onClose }: { onClose: () => void }): React.JSX.Element {
               <label><input type="checkbox" checked={ab.files} onChange={e => setAb({ ...ab, files: e.target.checked })} /> 📁 Files folder</label>
               <label><input type="checkbox" checked={ab.schedules} onChange={e => setAb({ ...ab, schedules: e.target.checked })} /> ⏰ Schedules</label>
               <label><input type="checkbox" checked={ab.background} onChange={e => setAb({ ...ab, background: e.target.checked })} /> 📦 Background tasks</label>
+            </div></div>
+          <div><label>Ask me for approval before…</label>
+            <div className="checks">
+              <label><input type="checkbox" checked={ap.background} onChange={e => setAp({ ...ap, background: e.target.checked })} /> 🔒 Background work</label>
+              <label><input type="checkbox" checked={ap.schedules} onChange={e => setAp({ ...ap, schedules: e.target.checked })} /> 🔒 Creating schedules</label>
             </div></div>
         </div>
         <div className="foot">
@@ -477,6 +495,78 @@ function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.Element 
           <button className="subtle" onClick={onClose}>Cancel</button>
           <button className="primary" onClick={save}>Save</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= v2: tasks & activity ================= */
+
+const STATUS_LABEL: Record<string, string> = {
+  not_started: "queued", working: "working", waiting_user: "waiting for you",
+  waiting_approval: "needs approval", blocked: "blocked",
+  completed: "done", failed: "failed", cancelled: "cancelled",
+};
+
+function TasksModal({ onClose }: { onClose: () => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const agentName = (id: ID) => world.agents.find(a => a.id === id);
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="panel" style={{ width: "min(680px,94vw)" }} onClick={e => e.stopPropagation()}>
+        <div className="head">☑ Tasks</div>
+        <div className="body">
+          {world.tasks.length === 0 && <div className="notice">No tasks yet. Ask an agent with <code>@Agent !bg your task</code>.</div>}
+          {world.tasks.map(t => {
+            const approval = t.approvalId ? world.approvals.find(a => a.id === t.approvalId) : undefined;
+            const agent = agentName(t.agentId);
+            const mine = approval && approval.status === "pending" && approval.ownerId === world.me?.id;
+            const cancellable = ["not_started", "working", "waiting_approval", "blocked"].includes(t.status);
+            return (
+              <div key={t.id} className="taskrow">
+                <div className="taskmain">
+                  <b>{agent ? `${agent.emoji} ${agent.name}` : "?"}</b> — {t.title}
+                  <div className="taskmeta">
+                    asked by {t.requesterName} · <span className={`tstatus ${t.status}`}>{STATUS_LABEL[t.status] ?? t.status}</span>
+                    {t.error ? ` · ${t.error}` : ""}
+                  </div>
+                  {t.result && <div className="taskresult">{t.result.slice(0, 240)}</div>}
+                </div>
+                <div className="taskbtns">
+                  {mine && <>
+                    <button className="primary" onClick={() => client.send({ type: "decideApproval", approvalId: approval!.id, decision: "approved" })}>Approve</button>
+                    <button className="ghostbtn" onClick={() => client.send({ type: "decideApproval", approvalId: approval!.id, decision: "rejected" })}>Reject</button>
+                  </>}
+                  {cancellable && !mine &&
+                    <button className="ghostbtn" onClick={() => client.send({ type: "cancelTask", taskId: t.id })}>Cancel</button>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="foot"><button className="primary" onClick={onClose}>Close</button></div>
+      </div>
+    </div>
+  );
+}
+
+function ActivityModal({ onClose }: { onClose: () => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="panel" style={{ width: "min(680px,94vw)" }} onClick={e => e.stopPropagation()}>
+        <div className="head">🕘 Activity — who did what</div>
+        <div className="body">
+          {world.activity.length === 0 && <div className="notice">No activity yet.</div>}
+          {[...world.activity].reverse().map(r => (
+            <div key={r.id} className="actrow">
+              <span className="actwho">{r.actorKind === "agent" ? "🤖" : "🧑"} {r.actorName}</span>
+              <span className="actdetail">{r.detail}</span>
+              <span className="actwhen">{new Date(r.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+            </div>
+          ))}
+        </div>
+        <div className="foot"><button className="primary" onClick={onClose}>Close</button></div>
       </div>
     </div>
   );

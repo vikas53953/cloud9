@@ -1,0 +1,45 @@
+{
+  "ranAt": "2026-07-28T04:40:41.882Z",
+  "results": [
+    {
+      "name": "agent created with approval requirement",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "agent announces it is waiting for approval",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "tasks button shows pending-approval badge",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "rejected task becomes cancelled and never runs",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "approved task runs to completed with result",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "completion posts a proactive message in the channel",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "activity shows approval decisions attributed to Vikas",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "no console errors",
+      "pass": true,
+      "detail": ""
+    }
+  ]
+}

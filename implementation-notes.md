@@ -41,3 +41,13 @@ Running log of deviations and lessons. One line each, newest last.
   §26.4 and PARKING-LOT.md holding morning decisions (A), deferred work (B),
   v2 queue (C), and blocking TBDs (D). Spec rules honored: no TBD guessed,
   no v2 implementation started.
+- 2026-07-28 (v2 build): Vikas directed autonomous work on the adopted spec.
+  Built C1 Tasks + C2 Approvals + C3 Audit end-to-end (shared types, relay
+  storage/handlers, engine task runner, UI Tasks/Activity panels). Provisional
+  TBD resolutions logged in PARKING-LOT.md section D. C4 Codex NOT built —
+  spec rule 3/FR-PC-004 forbids guessing provider auth; needs D2 answered.
+- 2026-07-28: GitHub push attempted; session token is repo-scoped with no
+  configured repo → cannot create/reach any repo. Unblock steps in A3.
+- 2026-07-28: Lesson: engine test hangs came from a leaked reconnect timer +
+  scheduler interval after an assertion failure; fixed with stopped-flag +
+  timer cleanup — always make async loops cancellable before testing them.

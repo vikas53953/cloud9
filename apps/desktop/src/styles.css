@@ -110,3 +110,20 @@ button{cursor:pointer;}
 .join .panel input{background:#f4f7fc;border-color:#d5deee;color:#2a3348;}
 .join .panel .foot{border-color:#e2e8f4;}
 .join .notice{background:#f4f7fc;border-color:#d5deee;color:#68738f;}
+
+/* ---------- v2: tasks & activity ---------- */
+.taskrow{display:flex;gap:10px;align-items:flex-start;background:#151928;
+  border:1px solid var(--line2);border-radius:10px;padding:10px 12px;}
+.taskmain{flex:1;font-size:.88rem;min-width:0;}
+.taskmeta{font-size:.76rem;color:var(--dim);margin-top:2px;}
+.taskresult{font-size:.8rem;color:var(--muted);margin-top:6px;border-left:2px solid var(--line2);padding-left:8px;}
+.taskbtns{display:flex;flex-direction:column;gap:6px;}
+.tstatus{font-weight:700;}
+.tstatus.completed{color:var(--good);}
+.tstatus.working{color:var(--warn);}
+.tstatus.waiting_approval{color:#f0709b;}
+.tstatus.failed,.tstatus.cancelled{color:#ef4444;}
+.actrow{display:flex;gap:10px;font-size:.82rem;padding:5px 2px;border-bottom:1px solid #1d2334;}
+.actwho{font-weight:700;white-space:nowrap;}
+.actdetail{flex:1;color:var(--muted);min-width:0;}
+.actwhen{color:var(--dim);font-size:.72rem;white-space:nowrap;}

@@ -83,7 +83,7 @@ try {
   await page.waitForTimeout(1100);
 
   // settings + policy note
-  await page.click("text=⚙");
+  await page.click('.sidebar-foot button:has-text("⚙")');
   await page.waitForSelector("text=connect Claude");
   await page.selectOption("select", "oauthToken");
   await page.waitForSelector("text=Heads up");

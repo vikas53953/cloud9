@@ -1,7 +1,7 @@
 // Relay persistence on node:sqlite (built into Node 22+, no native build).
 import { DatabaseSync } from "node:sqlite";
 import {
-  AgentDef, Channel, ID, Message, User, newId,
+  ActivityRecord, AgentDef, Approval, Channel, ID, Message, Task, User, newId,
 } from "@cloud9/shared";
 
 export class Store {
@@ -31,6 +31,16 @@ export class Store {
         json TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS msg_chan_ts ON messages(channelId, ts);
+      CREATE TABLE IF NOT EXISTS tasks(
+        id TEXT PRIMARY KEY, updatedAt INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS approvals(
+        id TEXT PRIMARY KEY, json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS activity(
+        id TEXT PRIMARY KEY, ts INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS act_ts ON activity(ts);
       CREATE TABLE IF NOT EXISTS pushlog(
         id TEXT PRIMARY KEY, userId TEXT NOT NULL, messageId TEXT NOT NULL,
         ts INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT 0
@@ -124,6 +134,41 @@ export class Store {
       .prepare("SELECT json FROM messages WHERE channelId=? AND ts<? ORDER BY ts DESC LIMIT ?")
       .all(channelId, before, limit) as { json: string }[];
     return rows.map(r => JSON.parse(r.json) as Message).reverse();
+  }
+
+  // ---- v2: tasks / approvals / activity ----
+  saveTask(t: Task): void {
+    this.db.prepare("INSERT OR REPLACE INTO tasks(id,updatedAt,json) VALUES(?,?,?)")
+      .run(t.id, t.updatedAt, JSON.stringify(t));
+  }
+  task(id: ID): Task | undefined {
+    const row = this.db.prepare("SELECT json FROM tasks WHERE id=?").get(id) as { json: string } | undefined;
+    return row ? (JSON.parse(row.json) as Task) : undefined;
+  }
+  tasks(limit = 200): Task[] {
+    return (this.db.prepare("SELECT json FROM tasks ORDER BY updatedAt DESC LIMIT ?").all(limit) as { json: string }[])
+      .map(r => JSON.parse(r.json) as Task);
+  }
+  saveApproval(a: Approval): void {
+    this.db.prepare("INSERT OR REPLACE INTO approvals(id,json) VALUES(?,?)").run(a.id, JSON.stringify(a));
+  }
+  approval(id: ID): Approval | undefined {
+    const row = this.db.prepare("SELECT json FROM approvals WHERE id=?").get(id) as { json: string } | undefined;
+    return row ? (JSON.parse(row.json) as Approval) : undefined;
+  }
+  approvals(limit = 200): Approval[] {
+    return (this.db.prepare("SELECT json FROM approvals").all() as { json: string }[])
+      .map(r => JSON.parse(r.json) as Approval).slice(-limit);
+  }
+  logActivity(rec: Omit<ActivityRecord, "id" | "ts">): ActivityRecord {
+    const full: ActivityRecord = { ...rec, id: newId("act"), ts: Date.now() };
+    this.db.prepare("INSERT INTO activity(id,ts,json) VALUES(?,?,?)").run(full.id, full.ts, JSON.stringify(full));
+    return full;
+  }
+  activity(before: number, limit: number): ActivityRecord[] {
+    return (this.db.prepare("SELECT json FROM activity WHERE ts<? ORDER BY ts DESC LIMIT ?")
+      .all(before, limit) as { json: string }[])
+      .map(r => JSON.parse(r.json) as ActivityRecord).reverse();
   }
 
   // ---- push (stub until APNs) ----

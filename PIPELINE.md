@@ -39,9 +39,10 @@ morning review page. He can redirect anything then.
 ## v2 — Agent Workforce Platform (spec adopted 2026-07-28)
 Vikas adopted docs/plans/spec.md as the v2 north star. Coverage map:
 docs/plans/traceability.md (11/16 acceptance criteria already met by v1).
-Build queue + blocking TBDs: PARKING-LOT.md (sections C and D). No v2 code
-until the relevant TBDs are resolved and a green light is given — per the
-spec's own rules.
+v2 progress (autonomous, per Vikas's directive 2026-07-28): C1 Tasks, C2
+Approvals, C3 Audit BUILT — 15 unit/integration tests + 14/14 v1 regression +
+8/8 v2 browser QA green. C4 Codex + C5 workspaces remain blocked on TBDs D2/
+D6 (PARKING-LOT). GitHub push blocked by session security (see A3).
 
 Open questions: none. Subscription-auth verdict: third-party claude.ai login NOT permitted; shipping API-key + setup-token options (see implementation-notes).
 Deviations: see implementation-notes.md

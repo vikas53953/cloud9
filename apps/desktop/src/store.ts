@@ -1,6 +1,7 @@
 // Renderer-side relay client: one WebSocket, one mutable world, subscribers.
 import {
-  AgentDef, AgentStatus, Channel, ClientFrame, ID, Message, ServerFrame, User,
+  ActivityRecord, AgentDef, AgentStatus, Approval, Channel, ClientFrame, ID,
+  Message, ServerFrame, Task, User,
 } from "@cloud9/shared";
 
 export interface World {
@@ -13,6 +14,9 @@ export interface World {
   messages: Record<ID, Message[]>; // by channel
   agentStatus: Record<ID, AgentStatus>;
   inviteCode?: string;
+  tasks: Task[];
+  approvals: Approval[];
+  activity: ActivityRecord[];
 }
 
 type Listener = () => void;
@@ -24,7 +28,7 @@ export const RELAY_URL =
 export class RelayClient {
   world: World = {
     connected: false, authFailed: false, users: [], agents: [], channels: [],
-    messages: {}, agentStatus: {},
+    messages: {}, agentStatus: {}, tasks: [], approvals: [], activity: [],
   };
   private ws?: WebSocket;
   private listeners = new Set<Listener>();
@@ -76,6 +80,8 @@ export class RelayClient {
         w.agents = frame.state.agents;
         w.channels = frame.state.channels;
         w.agentStatus = frame.state.agentStatus;
+        w.tasks = frame.state.tasks;
+        w.approvals = frame.state.approvals;
         w.messages = {};
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
@@ -107,6 +113,21 @@ export class RelayClient {
         break;
       case "invite":
         w.inviteCode = frame.code;
+        break;
+      case "task": {
+        const i = w.tasks.findIndex(t => t.id === frame.task.id);
+        if (i >= 0) w.tasks[i] = frame.task; else w.tasks.unshift(frame.task);
+        w.tasks = [...w.tasks];
+        break;
+      }
+      case "approval": {
+        const i = w.approvals.findIndex(a => a.id === frame.approval.id);
+        if (i >= 0) w.approvals[i] = frame.approval; else w.approvals.push(frame.approval);
+        w.approvals = [...w.approvals];
+        break;
+      }
+      case "activity":
+        w.activity = frame.records;
         break;
       case "history": {
         const existing = w.messages[frame.channelId] ?? [];

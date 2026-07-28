@@ -6,7 +6,7 @@ import path from "node:path";
 import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, Channel, ClientFrame, ID, Message, ServerFrame,
-  WorldState,
+  Task, WorldState,
 } from "@cloud9/shared";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import { ClaudeProvider, MockProvider } from "./provider.js";
@@ -31,9 +31,13 @@ export class Engine {
   schedules: AgentSchedule[] = [];
   scheduler: Scheduler;
   private history = new Map<ID, Message[]>();
+  tasks = new Map<ID, Task>();
+  private claimed = new Set<ID>();
   private turnsInFlight = 0;
   private queue: (() => Promise<void>)[] = [];
   private opts: EngineOptions;
+  private stopped = false;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
   onReady?: () => void;
 
   constructor(opts: EngineOptions) {
@@ -55,11 +59,16 @@ export class Engine {
       this.sendFrame({ type: "hello", token: this.opts.token, client: "engine" });
     });
     this.ws.on("message", raw => this.onFrame(JSON.parse(String(raw)) as ServerFrame));
-    this.ws.on("close", () => setTimeout(() => this.connect(), 2000));
+    this.ws.on("close", () => {
+      if (this.stopped) return;
+      this.reconnectTimer = setTimeout(() => this.connect(), 2000);
+    });
     this.ws.on("error", () => { /* close handler reconnects */ });
   }
 
   stop(): void {
+    this.stopped = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.scheduler.stop();
     this.ws?.removeAllListeners("close");
     this.ws?.close();
@@ -70,8 +79,14 @@ export class Engine {
       case "welcome":
         this.state = frame.state;
         for (const m of frame.state.messages) this.pushHistory(m);
+        for (const t of frame.state.tasks) this.tasks.set(t.id, t);
         this.scheduler.start();
+        for (const t of frame.state.tasks) this.maybeRunTask(t);
         this.onReady?.();
+        break;
+      case "task":
+        this.tasks.set(frame.task.id, frame.task);
+        this.maybeRunTask(frame.task);
         break;
       case "message":
         this.pushHistory(frame.message);
@@ -142,11 +157,18 @@ export class Engine {
       // schedule commands: "@Agent !schedule daily 06:30 do X" / "every 15m do X",
       // "@Agent !schedules", "@Agent !unschedule <id>"
       if (message.authorKind === "human" && this.handleScheduleCommand(agent, channel.id, bare)) continue;
-      // background task command: "!bg <task>" with a mention
-      const bg = message.authorKind === "human" && /^!bg\s+/i.test(bare);
+      // delegated work: "!bg <task>" or "!task <task>" → tracked Task (spec FR-TS-002)
+      const bg = message.authorKind === "human" && /^!(bg|task)\s+/i.test(bare);
       if (bg) {
-        this.agentSend(agent.id, channel.id, `On it — I'll work on this in the background and post here when done. ⏳`);
-        this.enqueue(() => this.backgroundTask(agent, channel.id, message));
+        const title = bare.replace(/^!(bg|task)\s+/i, "").trim();
+        const needsApproval = agent.approvals?.background === true;
+        this.sendFrame({
+          type: "createTask", agentId: agent.id, channelId: channel.id, title,
+          needsApproval, action: needsApproval ? `Run background task: ${title}` : undefined,
+        });
+        this.agentSend(agent.id, channel.id, needsApproval
+          ? `I can do that — waiting for my owner's approval first. 🔒 (see Tasks panel)`
+          : `On it — I'll work on this in the background and post here when done. ⏳`);
         continue;
       }
       this.enqueue(() => this.takeTurn(agent, channel.id, message));
@@ -180,6 +202,50 @@ export class Engine {
       this.agentSend(agent.id, channelId, text);
     } catch (err) {
       this.agentSend(agent.id, channelId, `⚠️ I hit an error and couldn't respond (${truncate(String(err), 120)})`);
+    } finally {
+      this.setStatus(agent.id, "idle");
+    }
+  }
+
+  /** Claim and execute tasks assigned to my agents (status not_started). */
+  private maybeRunTask(task: Task): void {
+    if (task.status !== "not_started") return;
+    if (this.claimed.has(task.id)) return;
+    const agent = this.myAgents.find(a => a.id === task.agentId);
+    if (!agent) return;
+    this.claimed.add(task.id);
+    this.enqueue(() => this.runTask(agent, task));
+  }
+
+  private async runTask(agent: AgentDef, task: Task): Promise<void> {
+    this.setStatus(agent.id, "working");
+    this.sendFrame({ type: "updateTask", taskId: task.id, status: "working" });
+    try {
+      // schedule-creation tasks (approved via the task machine)
+      const sched = /^!schedule (daily \d{1,2}:\d{2}|every \d+m):\s*(.+)$/i.exec(task.title);
+      if (sched) {
+        const s: AgentSchedule = {
+          id: `s_${Date.now().toString(36)}`, agentId: agent.id, channelId: task.channelId,
+          when: sched[1].toLowerCase(), prompt: sched[2], enabled: true,
+        };
+        this.saveSchedule(s);
+        this.sendFrame({ type: "updateTask", taskId: task.id, status: "completed", result: `schedule ${s.id} created` });
+        this.agentSend(agent.id, task.channelId, `⏰ Approved & scheduled: ${s.when} — "${s.prompt}" (id ${s.id})`);
+        return;
+      }
+      const text = await this.provider.respond({
+        agent,
+        context: this.renderContext(task.channelId),
+        trigger: `Background task: ${task.title}. Do the work and report the outcome.`,
+        triggerAuthor: task.requesterName,
+      });
+      // FR-TS-005: if cancelled while we worked, discard the result
+      if (this.tasks.get(task.id)?.status === "cancelled") return;
+      this.sendFrame({ type: "updateTask", taskId: task.id, status: "completed", result: text.slice(0, 2000) });
+      this.agentSend(agent.id, task.channelId, `📦 Task done:\n${text}`, true);
+    } catch (err) {
+      this.sendFrame({ type: "updateTask", taskId: task.id, status: "failed", error: String(err).slice(0, 300) });
+      this.agentSend(agent.id, task.channelId, `⚠️ Task failed: ${String(err).slice(0, 160)}`);
     } finally {
       this.setStatus(agent.id, "idle");
     }
@@ -240,6 +306,15 @@ export class Engine {
   handleScheduleCommand(agent: AgentDef, channelId: ID, text: string): boolean {
     const t = text.trim();
     const create = /^!schedule\s+(daily \d{1,2}:\d{2}|every \d+m)\s*:?\s+(.+)$/i.exec(t);
+    if (create && agent.approvals?.schedules === true) {
+      this.sendFrame({
+        type: "createTask", agentId: agent.id, channelId,
+        title: `!schedule ${create[1].toLowerCase()}: ${create[2]}`,
+        needsApproval: true, action: `Create schedule (${create[1]}): ${create[2]}`,
+      });
+      this.agentSend(agent.id, channelId, `Schedule request sent for approval. 🔒`);
+      return true;
+    }
     if (create) {
       const s: AgentSchedule = {
         id: `s_${Date.now().toString(36)}`, agentId: agent.id, channelId,

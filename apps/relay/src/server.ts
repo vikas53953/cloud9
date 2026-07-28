@@ -3,8 +3,8 @@
 import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import {
-  AgentDef, AgentStatus, Channel, ClientFrame, ID, Message, ServerFrame,
-  WorldState, extractMentions, newId,
+  AgentDef, AgentStatus, Approval, Channel, ClientFrame, ID, Message,
+  ServerFrame, Task, WorldState, extractMentions, newId,
 } from "@cloud9/shared";
 import { Store } from "./store.js";
 
@@ -119,6 +119,8 @@ export class Relay {
       channels: this.visibleChannels(userId),
       messages: this.store.recentMessages(),
       agentStatus: this.agentStatus,
+      tasks: this.store.tasks(),
+      approvals: this.store.approvals(),
     };
   }
 
@@ -166,6 +168,7 @@ export class Relay {
           memberIds, createdAt: Date.now(),
         };
         this.store.saveChannel(channel);
+        this.audit(conn, "channel_created", channel.id, `created ${channel.kind} ${channel.name}`);
         this.broadcast({ type: "channel", channel });
         break;
       }
@@ -174,6 +177,7 @@ export class Relay {
         if (!ch) throw new Error("no such channel");
         ch.memberIds = Array.from(new Set([...ch.memberIds, ...frame.memberIds]));
         this.store.saveChannel(ch);
+        this.audit(conn, "member_added", ch.id, `added ${frame.memberIds.length} member(s) to ${ch.name}`);
         this.broadcast({ type: "channel", channel: ch });
         break;
       }
@@ -182,6 +186,7 @@ export class Relay {
           ...frame.agent, id: newId("a"), ownerId: conn.userId, createdAt: Date.now(),
         };
         this.store.saveAgent(agent);
+        this.audit(conn, "agent_created", agent.id, `created agent ${agent.name}`);
         this.broadcast({ type: "agent", agent });
         break;
       }
@@ -189,6 +194,7 @@ export class Relay {
         const existing = this.store.agents().find(a => a.id === frame.agent.id);
         if (!existing || existing.ownerId !== conn.userId) throw new Error("not your agent");
         this.store.saveAgent({ ...frame.agent, ownerId: existing.ownerId });
+        this.audit(conn, "agent_updated", frame.agent.id, `updated agent ${frame.agent.name}`);
         this.broadcast({ type: "agent", agent: frame.agent });
         break;
       }
@@ -196,11 +202,99 @@ export class Relay {
         const existing = this.store.agents().find(a => a.id === frame.agentId);
         if (!existing || existing.ownerId !== conn.userId) throw new Error("not your agent");
         this.store.deleteAgent(frame.agentId);
+        this.audit(conn, "agent_deleted", frame.agentId, `deleted agent ${existing.name}`);
         this.broadcast({ type: "agentDeleted", agentId: frame.agentId });
         break;
       }
       case "createInvite": {
-        send(conn.ws, { type: "invite", code: this.store.createInvite(conn.userId) });
+        const code = this.store.createInvite(conn.userId);
+        this.audit(conn, "invite_created", code, "created an invite");
+        send(conn.ws, { type: "invite", code });
+        break;
+      }
+      case "createTask": {
+        const agent = this.store.agents().find(a => a.id === frame.agentId);
+        if (!agent) throw new Error("no such agent");
+        const requester = this.store.users().find(u => u.id === conn.userId)!;
+        const now = Date.now();
+        const task: Task = {
+          id: newId("t"), title: frame.title,
+          requesterId: requester.id, requesterName: requester.name,
+          agentId: agent.id, channelId: frame.channelId,
+          status: frame.needsApproval ? "waiting_approval" : "not_started",
+          createdAt: now, updatedAt: now,
+        };
+        if (frame.needsApproval) {
+          const approval: Approval = {
+            id: newId("ap"), taskId: task.id, agentId: agent.id, ownerId: agent.ownerId,
+            action: frame.action ?? `Run task: ${frame.title}`,
+            status: "pending", createdAt: now,
+          };
+          task.approvalId = approval.id;
+          this.store.saveApproval(approval);
+          this.audit(conn, "approval_requested", approval.id,
+            `${agent.name} requests approval: ${approval.action}`);
+          this.broadcast({ type: "approval", approval });
+        }
+        this.store.saveTask(task);
+        this.audit(conn, "task_created", task.id, `task for ${agent.name}: ${task.title}`);
+        this.broadcast({ type: "task", task });
+        break;
+      }
+      case "updateTask": {
+        const task = this.store.task(frame.taskId);
+        if (!task) throw new Error("no such task");
+        const agent = this.store.agents().find(a => a.id === task.agentId);
+        if (!agent || agent.ownerId !== conn.userId) throw new Error("not your agent's task");
+        if (task.status === "cancelled") break; // FR-TS-005: cancelled stays cancelled
+        task.status = frame.status;
+        if (frame.result !== undefined) task.result = frame.result;
+        if (frame.error !== undefined) task.error = frame.error;
+        task.updatedAt = Date.now();
+        this.store.saveTask(task);
+        this.audit(conn, "task_status", task.id, `task "${task.title}" → ${task.status}`, agent);
+        this.broadcast({ type: "task", task });
+        break;
+      }
+      case "cancelTask": {
+        const task = this.store.task(frame.taskId);
+        if (!task) throw new Error("no such task");
+        if (task.status === "completed" || task.status === "failed") break;
+        task.status = "cancelled";
+        task.updatedAt = Date.now();
+        this.store.saveTask(task);
+        this.audit(conn, "task_status", task.id, `task "${task.title}" cancelled`);
+        this.broadcast({ type: "task", task });
+        break;
+      }
+      case "decideApproval": {
+        const approval = this.store.approval(frame.approvalId);
+        if (!approval) throw new Error("no such approval");
+        // Provisional policy (PARKING-LOT D4): only the agent's owner decides.
+        if (approval.ownerId !== conn.userId) throw new Error("only the agent's owner can decide this");
+        if (approval.status !== "pending") break; // FR-AP-004: no re-execution through decided approvals
+        approval.status = frame.decision;
+        approval.decidedBy = conn.userId;
+        approval.decidedAt = Date.now();
+        this.store.saveApproval(approval);
+        this.audit(conn, "approval_decided", approval.id, `${frame.decision}: ${approval.action}`);
+        const task = this.store.task(approval.taskId);
+        if (task && task.status === "waiting_approval") {
+          task.status = frame.decision === "approved" ? "not_started" : "cancelled";
+          if (frame.decision === "rejected") task.error = "rejected by owner";
+          task.updatedAt = Date.now();
+          this.store.saveTask(task);
+          this.audit(conn, "task_status", task.id, `task "${task.title}" → ${task.status}`);
+          this.broadcast({ type: "task", task });
+        }
+        this.broadcast({ type: "approval", approval });
+        break;
+      }
+      case "activity": {
+        send(conn.ws, {
+          type: "activity",
+          records: this.store.activity(frame.before ?? Date.now() + 1, frame.limit ?? 100),
+        });
         break;
       }
       case "history": {
@@ -213,6 +307,16 @@ export class Relay {
     }
   }
 
+  private audit(conn: Conn, kind: Parameters<Store["logActivity"]>[0]["kind"], refId: string, detail: string, asAgent?: AgentDef): void {
+    const user = this.store.users().find(u => u.id === conn.userId);
+    this.store.logActivity({
+      actorKind: asAgent ? "agent" : "human",
+      actorId: asAgent ? asAgent.id : conn.userId,
+      actorName: asAgent ? asAgent.name : user?.name ?? "?",
+      kind, refId, detail,
+    });
+  }
+
   private directory(): { id: ID; name: string }[] {
     return [...this.store.users(), ...this.store.agents()].map(x => ({ id: x.id, name: x.name }));
   }
@@ -221,6 +325,13 @@ export class Relay {
     const ch = this.store.channel(message.channelId);
     if (!ch) throw new Error("no such channel");
     this.store.saveMessage(message);
+    if (message.authorKind === "agent") {
+      this.store.logActivity({
+        actorKind: "agent", actorId: message.authorId, actorName: message.authorName,
+        kind: "message", refId: message.id,
+        detail: `posted in channel ${message.channelId}${message.proactive ? " (proactive)" : ""}`,
+      });
+    }
     const agents = this.store.agents();
     const memberUserIds = new Set<ID>();
     for (const m of ch.memberIds) {

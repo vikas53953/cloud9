@@ -8,7 +8,7 @@ being built until it leaves the lot.
 |---|---|---|
 | A1 | **Design direction pick** (Gate 2 still open) | Built on A (Slack Classic). Keep A / reskin to B Mission Control / C Zen Sky / mix. Rec: keep A, add B's agent-cards as a "Crew" tab later. |
 | A2 | **Auth stance** | API-key-only (safest) vs also keep the `claude setup-token` option (policy gray zone, disclosed in-app). Rec: keep both, disclosure stays. |
-| A3 | **Push to GitHub** | Repo lives only in this session + the cloud9.bundle backup sent in chat. Rec: do this first. |
+| A3 | **Push to GitHub** | BLOCKED in-session: this cloud session has no configured source repo, so its GitHub token can't create/reach one. Unblock (2 min): create an empty repo `cloud9` at github.com/new, then either (a) open a new claude.ai/code session on that repo and say "pull in the bundle", or (b) locally: `git clone cloud9.bundle cloud9 && cd cloud9 && git remote add origin <url> && git push -u origin master`. |
 | A4 | **Apple developer account** ($99/yr) | Unlocks TestFlight + real APNs push. Only you can enroll. |
 
 ## B. Deferred work items (not blocked on decisions, just not done yet)
@@ -27,14 +27,21 @@ being built until it leaves the lot.
 Per docs/plans/spec.md; see docs/plans/traceability.md for current coverage.
 | # | Item | Spec refs |
 |---|---|---|
-| C1 | **Task entity + state machine** (delegated work: status, result, cancel, history) | FR-TS-002..005, §20 |
-| C2 | **Approvals** (human sign-off before configured sensitive actions) | FR-AP-001..005, FR-TL-004 |
-| C3 | **Activity/audit records** (action-level attribution, inspectable) | FR-AU-001..004 |
+| C1 | ~~Task entity + state machine~~ **BUILT 2026-07-28** (tests + browser QA green) | FR-TS-002..005, §20 |
+| C2 | ~~Approvals~~ **BUILT 2026-07-28** (owner-only decisions; reject blocks execution) | FR-AP-001..005, FR-TL-004 |
+| C3 | ~~Activity/audit records~~ **BUILT 2026-07-28** (Activity viewer + attribution) | FR-AU-001..004 |
 | C4 | **Codex provider adapter** (second provider behind the existing interface) | FR-PC-003, §17 |
 | C5 | Workspaces/roles/governance | §9.2, FR-UW-004..006, §22.6 |
 
 ## D. Spec TBDs that need YOUR words before the affected item is built
 (The spec forbids guessing these — spec.md rules 4–6.)
+
+### Provisional resolutions made during the autonomous v2 build (reversible — say the word):
+- D3 (task states): adopted the spec §20 candidate list verbatim
+  (not_started, working, waiting_user, waiting_approval, blocked, completed, failed, cancelled).
+- D4 (approvals): categories = background work + schedule creation, configured
+  per agent at creation; only the agent's OWNER may approve/reject (their
+  credential pays). Both easily changed.
 | # | TBD | Blocks |
 |---|---|---|
 | D1 | Exact wording of the 4 confirmed outcomes (spec §6) + 4 target users (§7) — from your original intake in the other tool | Acceptance criteria for v2 |

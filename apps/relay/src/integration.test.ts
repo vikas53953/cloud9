@@ -109,7 +109,7 @@ test("cloud9 end-to-end: agents chat with humans across the relay", async () => 
   const done = await owner.wait<Extract<ServerFrame, { type: "message" }>>(
     f => f.type === "message" && !!f.message.proactive,
   );
-  assert.match(done.message.text, /Background task done/);
+  assert.match(done.message.text, /Task done/);
 
   engine.stop();
   owner.close();
@@ -151,5 +151,86 @@ test("schedule commands via chat", async () => {
 
   engine.stop();
   owner.close();
+  relay.close();
+});
+
+test("v2: task lifecycle with approvals and audit trail", async () => {
+  const relay = new Relay({ dbPath: tmp("relay3.db"), ownerToken: "tok-o3", ownerName: "Vikas" });
+  const port = await relay.listen(0);
+  const url = `ws://127.0.0.1:${port}`;
+  const owner = new TestClient(url, "tok-o3");
+  const welcome = await owner.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
+  const general = welcome.state.channels.find(c => c.name === "general")!;
+
+  owner.send({ type: "createAgent", agent: {
+    name: "Guard", emoji: "🛡️", persona: "You handle sensitive research work",
+    abilities: { webSearch: true, files: false, schedules: true, background: true },
+    approvals: { background: true, schedules: false },
+  }});
+  const agent = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
+  const engine = new Engine({ relayUrl: url, token: "tok-o3", dataDir: tmp("engine3") });
+  engine.connect();
+  await new Promise<void>(resolve => { engine.onReady = resolve; });
+  owner.send({ type: "addMembers", channelId: general.id, memberIds: [agent.id] });
+  await owner.wait(f => f.type === "channel" && f.channel.memberIds.includes(agent.id));
+
+  // --- rejected path: FR-AP-003/004 ---
+  owner.send({ type: "send", channelId: general.id, text: "@Guard !bg dig into the risky thing" });
+  const pend1 = await owner.wait<Extract<ServerFrame, { type: "approval" }>>(
+    f => f.type === "approval" && f.approval.status === "pending");
+  const t1 = await owner.wait<Extract<ServerFrame, { type: "task" }>>(
+    f => f.type === "task" && f.task.status === "waiting_approval");
+  assert.equal(t1.task.approvalId, pend1.approval.id);
+  await owner.wait(f => f.type === "message" && /approval/i.test(f.message.text)); // agent said it's waiting
+
+  owner.send({ type: "decideApproval", approvalId: pend1.approval.id, decision: "rejected" });
+  const t1done = await owner.wait<Extract<ServerFrame, { type: "task" }>>(
+    f => f.type === "task" && f.task.id === t1.task.id && f.task.status === "cancelled");
+  assert.equal(t1done.task.error, "rejected by owner");
+
+  // rejected work must never produce a completed task or a result message
+  await new Promise(r => setTimeout(r, 400));
+  assert.equal(engine.tasks.get(t1.task.id)?.status, "cancelled");
+
+  // --- approved path ---
+  owner.send({ type: "send", channelId: general.id, text: "@Guard !bg summarise the safe thing" });
+  const pend2 = await owner.wait<Extract<ServerFrame, { type: "approval" }>>(
+    f => f.type === "approval" && f.approval.status === "pending" && f.approval.id !== pend1.approval.id);
+  owner.send({ type: "decideApproval", approvalId: pend2.approval.id, decision: "approved" });
+  const done = await owner.wait<Extract<ServerFrame, { type: "task" }>>(
+    f => f.type === "task" && f.task.approvalId === pend2.approval.id && f.task.status === "completed", 8000);
+  assert.ok(done.task.result && done.task.result.length > 0);
+  await owner.wait(f => f.type === "message" && !!f.message.proactive && /Task done/.test(f.message.text));
+
+  // --- only the owner may decide (provisional D4 policy) ---
+  owner.send({ type: "createInvite" });
+  const invite = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
+  const friend = new TestClient(url, `invite:${invite.code}:Priya`);
+  await friend.wait(f => f.type === "welcome");
+  owner.send({ type: "send", channelId: general.id, text: "@Guard !bg third thing" });
+  const pend3 = await friend.wait<Extract<ServerFrame, { type: "approval" }>>(
+    f => f.type === "approval" && f.approval.status === "pending" &&
+         f.approval.id !== pend1.approval.id && f.approval.id !== pend2.approval.id);
+  friend.send({ type: "decideApproval", approvalId: pend3.approval.id, decision: "approved" });
+  const err = await friend.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(err.error, /owner/);
+
+  // --- cancel a pending task directly (FR-TS-005) ---
+  owner.send({ type: "cancelTask", taskId: pend3.approval.taskId });
+  await owner.wait(f => f.type === "task" && f.task.id === pend3.approval.taskId && f.task.status === "cancelled");
+
+  // --- audit trail (FR-AU-001..004) ---
+  owner.send({ type: "activity", limit: 100 });
+  const act = await owner.wait<Extract<ServerFrame, { type: "activity" }>>(f => f.type === "activity");
+  const kinds = act.records.map(r => r.kind);
+  for (const k of ["agent_created", "task_created", "approval_requested", "approval_decided", "task_status", "message"]) {
+    assert.ok(kinds.includes(k as never), `missing activity kind ${k}`);
+  }
+  const decided = act.records.find(r => r.kind === "approval_decided")!;
+  assert.equal(decided.actorName, "Vikas"); // attribution (FR-AU-002)
+
+  engine.stop();
+  owner.close();
+  friend.close();
   relay.close();
 });

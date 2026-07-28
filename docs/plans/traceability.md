@@ -42,11 +42,12 @@ Status: DONE (implemented + tested) · PARTIAL · NOT BUILT · BLOCKED-TBD
 | FR-CM-008 working/waiting status | DONE | `agentStatus` frames; idle/working/braked dots. |
 | FR-CM-009/010 threads, voice… | BLOCKED-TBD | |
 
-## 10.5 Task Delegation  ← biggest v2 gap
+## 10.5 Task Delegation  ← built 2026-07-28
 | ID | Status | Where |
 |---|---|---|
-| FR-TS-001 request an outcome | PARTIAL | Via chat + `!bg`; no formal request object. |
-| FR-TS-002..005 traceable task, status, result, cancel | NOT BUILT | No Task entity/state machine. First v2 build item. |
+| FR-TS-001 request an outcome | DONE | `!bg`/`!task` in chat → Task record (`engine.ts`), Tasks panel in UI. |
+| FR-TS-002..004 traceable task, status, result | DONE | `Task` entity + §20 states (`packages/shared`), relay `createTask/updateTask` handlers + SQLite `tasks` table; integration test "v2: task lifecycle". |
+| FR-TS-005 cancel where possible | DONE | `cancelTask` frame + UI Cancel; engine discards results of cancelled tasks. |
 | FR-TS-006 tools within scope | DONE | `allowedTools` enforced per agent turn. |
 | FR-TS-009/010 scheduling model | PARTIAL | Chat-created schedules + background tasks exist (`scheduler.ts`, `!bg`); formal model TBD. |
 
@@ -55,14 +56,15 @@ Status: DONE (implemented + tested) · PARTIAL · NOT BUILT · BLOCKED-TBD
 |---|---|---|
 | FR-AA-001..004 delegation traceability | PARTIAL | Conversation-level only; no delegation records. |
 | FR-TL-001..003 tool access, explicit grant, attribution | PARTIAL | Grants per agent (abilities); attribution at message level, not tool-call level. |
-| FR-TL-004 approval before sensitive tools | NOT BUILT | Second v2 build item. |
+| FR-TL-004 approval before configured actions | DONE | Per-agent approval config (background work, schedules) gates execution through the approval flow. |
 | FR-ME-001..003 authorised context | PARTIAL | Channel context windows + per-agent files dir (`engine.ts renderContext`, `agentDataDir`). |
 
 ## 10.9 Approvals · 10.12 Audit  ← v2 gaps
 | ID | Status |
 |---|---|
-| FR-AP-001..005 approvals | NOT BUILT (v2 item 2) |
-| FR-AU-001..004 attributable activity records | PARTIAL — chat history is attributable; no action-level audit log (v2 item 3) |
+| FR-AP-001..004 approvals | DONE — `Approval` entity, owner-only decision (provisional D4), rejected work never executes (tested), Approve/Reject in Tasks panel |
+| FR-AP-005 decisions in history | DONE — `approval_decided` activity records with decider attribution |
+| FR-AU-001..004 attributable activity records | DONE — relay `activity` table logs agent messages, task transitions, approvals, agent/channel/invite events; Activity viewer in UI; tested |
 
 ## 10.10 Clients · 10.11 Notifications
 | ID | Status | Where |
@@ -74,6 +76,7 @@ Status: DONE (implemented + tested) · PARTIAL · NOT BUILT · BLOCKED-TBD
 | FR-CL-006 native mobile | PARTIAL | Expo scaffold (`apps/mobile`) — untested on device; spec marks native mobile TBD anyway. |
 | FR-NT-001/002 notifications | PARTIAL | Proactive `push` frames + pushlog; APNs pending Apple account. |
 
-## Acceptance criteria (spec §24) scorecard: 11 of 16 satisfied today
-Unmet: #10 traceable task · #12 approvals · #13 full attribution/audit ·
-#15 Codex adapter proof · #2 arguably met (web GUI) pending Vikas's confirmation.
+## Acceptance criteria (spec §24) scorecard: 14 of 16 satisfied (2026-07-28 v2 build)
+Newly met: #10 traceable tasks · #12 approvals · #13 attribution/audit.
+Unmet: #15 Codex adapter proof (blocked on TBD D2) · #2 arguably met (web GUI)
+pending Vikas's confirmation.
