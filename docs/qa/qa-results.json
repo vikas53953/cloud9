@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-07-28T07:58:37.374Z",
+  "ranAt": "2026-07-28T08:26:52.724Z",
   "results": [
     {
       "name": "join screen renders",
@@ -74,7 +74,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_ms4d6f5lmrejrf"
+      "detail": "inv_ms4e6ra8qqdo77"
     },
     {
       "name": "friend joins via invite",

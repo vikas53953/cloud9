@@ -6,6 +6,39 @@ import { client } from "./store.js";
 
 const isQuickWindow = location.hash === "#quick";
 
+/* ================= small formatters (Workbench vernacular) ================= */
+
+const initials = (name: string): string =>
+  name.trim().split(/[\s._-]+/).slice(0, 2).map(p => p[0] ?? "").join("").toUpperCase() || "?";
+
+const clock = (ts: number): string =>
+  new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+const sameDay = (a: number, b: number): boolean => {
+  const x = new Date(a), y = new Date(b);
+  return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate();
+};
+
+const dayLabel = (ts: number): string => {
+  const now = Date.now();
+  if (sameDay(ts, now)) return "Today";
+  if (sameDay(ts, now - 86400000)) return "Yesterday";
+  const d = new Date(ts);
+  return `${d.toLocaleDateString([], { weekday: "long" })} · ${d.getDate()} ${d.toLocaleDateString([], { month: "long" })}`;
+};
+
+/** how long the agent took, from the ask to the answer */
+const elapsed = (ms: number): string => {
+  const s = Math.round(ms / 1000);
+  if (s < 1) return "under 1s";
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+};
+
+const PROVIDER_LABEL: Record<string, string> = { claude: "Claude", codex: "Codex" };
+
 export function App(): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [joined, setJoined] = useState(!!client.token());
@@ -41,9 +74,9 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
       <div className="panel">
         <div className="head">☁️ Welcome to Cloud9</div>
         <div className="body">
-          <div className="row">
-            <button className={mode === "owner" ? "primary" : "ghostbtn"} onClick={() => setMode("owner")}>I run this Cloud9</button>
-            <button className={mode === "invite" ? "primary" : "ghostbtn"} onClick={() => setMode("invite")}>I have an invite</button>
+          <div className="modeswitch">
+            <button className={mode === "owner" ? "on" : ""} onClick={() => setMode("owner")}>I run this Cloud9</button>
+            <button className={mode === "invite" ? "on" : ""} onClick={() => setMode("invite")}>I have an invite</button>
           </div>
           {mode === "owner" ? (
             <div>
@@ -78,6 +111,7 @@ function Workspace(): React.JSX.Element {
   const [modal, setModal] = useState<null | "agent" | "invite" | "settings" | "channel" | "tasks" | "activity">(null);
   const [editAgent, setEditAgent] = useState<AgentDef | null>(null);
   const [quick, setQuick] = useState(false);
+  const [details, setDetails] = useState(true);
 
   const active = world.channels.find(c => c.id === activeId) ?? world.channels[0];
   const pendingApprovals = world.approvals.filter(
@@ -104,49 +138,131 @@ function Workspace(): React.JSX.Element {
     client.send({ type: "createChannel", name: `dm-${peerName.toLowerCase()}`, memberIds: [peerId], kind: "dm" });
   };
 
-  return (
-    <div className="app">
-      <div className="sidebar">
-        <div className="ws-name">☁️ Cloud9</div>
-        <div className={`conn ${world.connected ? "ok" : ""}`}>
-          {world.connected ? `● connected as ${world.me?.name}` : "○ connecting…"}
-        </div>
-        <div className="sect">Channels <button title="New channel" onClick={() => setModal("channel")}>＋</button></div>
-        {world.channels.filter(c => c.kind === "channel").map(c => (
-          <button key={c.id} className={`item ${active?.id === c.id ? "on" : ""}`} onClick={() => setActiveId(c.id)}>
-            # {c.name}
-          </button>
-        ))}
-        <div className="sect">Agents <button title="New agent" onClick={() => setModal("agent")}>＋</button></div>
-        {world.agents.map(a => (
-          <div key={a.id} className="item agentrow" title={a.persona}>
-            <button className="agentmain" onClick={() => dmFor(a.id, a.name)}>
-              <span className={`dot ${a.lifecycle === "paused" || a.lifecycle === "disabled" ? "off" : world.agentStatus[a.id] ?? "idle"}`}></span>
-              {a.emoji} {a.name} <span className="chip">{a.lifecycle === "paused" ? "PAUSED" : a.lifecycle === "disabled" ? "OFF" : "AGENT"}</span>
-            </button>
-            {a.ownerId === world.me?.id &&
-              <button className="editbtn" title="Edit agent" onClick={() => setEditAgent(a)}>✎</button>}
-          </div>
-        ))}
-        <div className="sect">People <button title="Invite a friend" onClick={() => { client.send({ type: "createInvite" }); setModal("invite"); }}>＋</button></div>
-        {world.users.map(u => (
-          <button key={u.id} className="item" onClick={() => u.id !== world.me?.id && dmFor(u.id, u.name)}>
-            <span className="dot"></span>{u.name}{u.id === world.me?.id ? " (you)" : ""}
-          </button>
-        ))}
-        <div className="sidebar-foot">
-          <button className="ghostbtn" onClick={() => setQuick(true)}>⌘K</button>
-          <button className="ghostbtn" onClick={() => setModal("tasks")}>
-            ☑ Tasks{pendingApprovals > 0 ? ` (${pendingApprovals})` : ""}
-          </button>
-          <button className="ghostbtn" onClick={() => { client.send({ type: "activity", limit: 100 }); setModal("activity"); }}>🕘</button>
-          <button className="ghostbtn" onClick={() => setModal("settings")}>⚙</button>
-        </div>
-      </div>
+  const channels = world.channels.filter(c => c.kind === "channel");
+  const dms = world.channels.filter(c => c.kind === "dm");
+  const peerOf = (c: Channel) => {
+    const id = c.memberIds.find(i => i !== world.me?.id);
+    const user = world.users.find(u => u.id === id);
+    const agent = world.agents.find(a => a.id === id);
+    const status = agent ? agentStatusLine(agent, world.agentStatus[agent.id]) : null;
+    return {
+      name: user?.name ?? agent?.name ?? c.name,
+      emoji: agent?.emoji,
+      sub: status ? status.line : "just the two of you",
+      lamp: status ? status.lamp : "live",
+      busy: status?.busy ?? false,
+    };
+  };
 
-      {active ? <ChatView channel={active} /> : (
-        <div className="main"><div className="empty">No channel yet — create one with ＋</div></div>
+  return (
+    <div className="app" data-details={details && active ? "on" : "off"}>
+      <nav className="sidebar rail" aria-label="Workspace">
+        <div className="rail-head">
+          <div className="mark" aria-hidden="true" />
+          <div className="wordmark">
+            Cloud9
+            <span className={`conn ${world.connected ? "ok" : ""}`}>
+              {world.connected ? `connected as ${world.me?.name}` : "connecting…"}
+            </span>
+          </div>
+          <div className="kbd" aria-hidden="true">Ctrl K</div>
+        </div>
+
+        <div className="rail-scroll">
+          <div className="sect">
+            <span>Channels</span><span className="rule" /><span className="count">{channels.length}</span>
+            <button title="New channel" aria-label="New channel" onClick={() => setModal("channel")}>＋</button>
+          </div>
+          {channels.map(c => (
+            <button key={c.id} className={`row ${active?.id === c.id ? "on" : ""}`} onClick={() => setActiveId(c.id)}>
+              <span className="hash">#</span>{" "}
+              <span className="name">{c.name}</span>
+            </button>
+          ))}
+
+          <div className="sect">
+            <span>Your agents</span><span className="rule" /><span className="count">{world.agents.length}</span>
+            <button title="New agent" aria-label="New agent" onClick={() => setModal("agent")}>＋</button>
+          </div>
+          {world.agents.map(a => {
+            const s = agentStatusLine(a, world.agentStatus[a.id]);
+            return (
+              <div key={a.id} className={`row agent-row agentrow`} title={a.persona}>
+                <button className="agentmain" onClick={() => dmFor(a.id, a.name)}>
+                  <span className="av">{a.emoji}<span className={`dot ${s.lamp}`} /></span>
+                  <span className="agent-meta">
+                    <span className="agent-name">{a.name}</span>
+                    <span className={`agent-sub ${s.busy ? "busy" : ""}`}>{s.line}</span>
+                  </span>
+                </button>
+                {a.ownerId === world.me?.id &&
+                  <button className="editbtn" title="Edit agent" onClick={() => setEditAgent(a)}>✎</button>}
+              </div>
+            );
+          })}
+
+          {dms.length > 0 && <div className="sect"><span>Direct messages</span><span className="rule" /></div>}
+          {dms.map(c => {
+            const p = peerOf(c);
+            return (
+              <div key={c.id} className={`row agent-row ${active?.id === c.id ? "on" : ""}`}>
+                <button className="agentmain" onClick={() => setActiveId(c.id)}>
+                  <span className={`av ${p.emoji ? "" : "initials"}`}>
+                    {p.emoji ?? initials(p.name)}
+                    <span className={`dot ${p.lamp}`} />
+                  </span>
+                  <span className="agent-meta">
+                    <span className="agent-name">{p.name}</span>
+                    <span className={`agent-sub ${p.busy ? "busy" : ""}`}>{p.sub}</span>
+                  </span>
+                </button>
+              </div>
+            );
+          })}
+
+          <div className="sect">
+            <span>People</span><span className="rule" /><span className="count">{world.users.length}</span>
+            <button title="Invite a friend" aria-label="Invite a friend"
+              onClick={() => { client.send({ type: "createInvite" }); setModal("invite"); }}>＋</button>
+          </div>
+          {world.users.map(u => (
+            <button key={u.id} className="row" onClick={() => u.id !== world.me?.id && dmFor(u.id, u.name)}>
+              <span className="av initials">{initials(u.name)}<span className="dot live" /></span>
+              <span className="name">{u.name}{u.id === world.me?.id ? " (you)" : ""}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="sidebar-foot rail-foot">
+          <div className="me-line">
+            <div className="me">{initials(world.me?.name ?? "?")}</div>
+            <div style={{ minWidth: 0 }}>
+              <div className="me-name">{world.me?.name ?? "—"}</div>
+              <div className="me-sub">
+                {world.agents.length} {world.agents.length === 1 ? "agent" : "agents"}
+                {pendingApprovals > 0 ? ` · ${pendingApprovals} waiting` : ""}
+              </div>
+            </div>
+          </div>
+          <div className="railtools">
+            <button className="railtool" title="Quick chat" onClick={() => setQuick(true)}>⌘K Quick chat</button>
+            <button className={`railtool ${pendingApprovals > 0 ? "alert" : ""}`} onClick={() => setModal("tasks")}>
+              ☑ Tasks{pendingApprovals > 0 ? ` (${pendingApprovals})` : ""}
+            </button>
+            <button className="railtool" title="Activity"
+              onClick={() => { client.send({ type: "activity", limit: 100 }); setModal("activity"); }}>🕘 Activity</button>
+            <button className="railtool" title="Settings" onClick={() => setModal("settings")}>⚙ Settings</button>
+          </div>
+        </div>
+      </nav>
+
+      {active ? (
+        <ChatView channel={active} showDetails={details} onToggleDetails={() => setDetails(d => !d)} />
+      ) : (
+        <div className="main"><div className="empty">No channel yet.<br />Make one with ＋ next to Channels.</div></div>
       )}
+
+      {active && details && <DetailsRail channel={active} onClose={() => setDetails(false)} />}
 
       {quick && <QuickChat onClose={() => setQuick(false)} />}
       {modal === "agent" && <AgentModal onClose={() => setModal(null)} />}
@@ -160,9 +276,45 @@ function Workspace(): React.JSX.Element {
   );
 }
 
+/** Presence line for the rail — built only from what the app really knows. */
+function agentStatusLine(a: AgentDef, status?: string): { line: string; lamp: string; busy: boolean } {
+  const runsOn = PROVIDER_LABEL[a.provider ?? "claude"] ?? "Claude";
+  if (a.lifecycle === "paused") return { line: "paused", lamp: "off", busy: false };
+  if (a.lifecycle === "disabled") return { line: "switched off", lamp: "off", busy: false };
+  if (status === "working") return { line: "working now", lamp: "run", busy: true };
+  if (status === "braked") return { line: "taking a break", lamp: "off", busy: false };
+  return { line: `ready · ${runsOn}`, lamp: "live", busy: false };
+}
+
 /* ================= chat ================= */
 
-function ChatView({ channel }: { channel: Channel }): React.JSX.Element {
+interface Row {
+  m: Message;
+  cont: boolean;
+  dayStart: boolean;
+  /** the human message that asked for this agent run, when one is on record */
+  ask?: Message;
+}
+
+/**
+ * Walk back for the human message that put this agent to work. Stops at the
+ * agent's own previous post — that ask was already answered, so claiming it
+ * again would be inventing a link the app does not have.
+ */
+function findAsk(messages: Message[], i: number, agent: Message): Message | undefined {
+  const at = new RegExp(`@${agent.authorName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+  for (let j = i - 1; j >= 0 && j >= i - 15; j--) {
+    const p = messages[j];
+    if (p.authorKind === "agent" && p.authorId === agent.authorId) return undefined;
+    if (p.authorKind === "human" && at.test(p.text)) return p;
+  }
+  return undefined;
+}
+
+function ChatView(
+  { channel, showDetails, onToggleDetails }:
+  { channel: Channel; showDetails: boolean; onToggleDetails: () => void },
+): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const messages = world.messages[channel.id] ?? [];
   const streamRef = useRef<HTMLDivElement>(null);
@@ -171,43 +323,156 @@ function ChatView({ channel }: { channel: Channel }): React.JSX.Element {
     streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight });
   }, [messages.length, channel.id]);
 
-  const memberNames = channel.memberIds
-    .map(id => world.users.find(u => u.id === id)?.name ?? world.agents.find(a => a.id === id)?.name)
-    .filter(Boolean).join(", ");
+  const people = channel.memberIds.map(id => world.users.find(u => u.id === id)).filter(Boolean);
+  const agents = channel.memberIds.map(id => world.agents.find(a => a.id === id)).filter(Boolean) as AgentDef[];
 
-  const title = channel.kind === "dm"
-    ? memberNames.split(", ").filter(n => n !== world.me?.name).join(", ") || channel.name
-    : `# ${channel.name}`;
+  const peer = channel.kind === "dm"
+    ? people.find(u => u!.id !== world.me?.id)?.name ?? agents.find(a => a.id !== world.me?.id)?.name ?? channel.name
+    : null;
+
+  const rows: Row[] = messages.map((m, i) => {
+    const prev = messages[i - 1];
+    const dayStart = i === 0 || !sameDay(prev.ts, m.ts);
+    const cont = !dayStart && !!prev && prev.authorKind === "human" && m.authorKind === "human"
+      && prev.authorId === m.authorId && m.ts - prev.ts < 5 * 60 * 1000;
+    const ask = m.authorKind === "agent" && !m.proactive ? findAsk(messages, i, m) : undefined;
+    return { m, cont, dayStart, ask };
+  });
+
+  const working = agents.filter(a => world.agentStatus[a.id] === "working");
+
+  const myApprovals = world.approvals.filter(ap => {
+    if (ap.status !== "pending" || ap.ownerId !== world.me?.id) return false;
+    const task = world.tasks.find(t => t.id === ap.taskId);
+    return task?.channelId === channel.id;
+  });
 
   return (
     <div className="main">
-      <div className="chathead">
-        <b>{title}</b><span>{memberNames}</span>
+      <header className="chathead">
+        <div className="ch-title">
+          {channel.kind === "dm"
+            ? <span className="n">{peer}</span>
+            : <><span className="h">#</span><span className="n">{channel.name}</span></>}
+        </div>
+        <div className="meta">
+          {people.length} {people.length === 1 ? "person" : "people"} · {agents.length} {agents.length === 1 ? "agent" : "agents"}
+        </div>
         <div className="spacer" />
+        <div className="face-stack" aria-label="Who is here">
+          {people.slice(0, 3).map(u => <span key={u!.id} className="face">{initials(u!.name)}</span>)}
+          {agents.slice(0, 3).map(a => <span key={a.id} className="face agent">{a.emoji}</span>)}
+        </div>
         <AddToChannel channel={channel} />
-      </div>
+        <button className="tbtn" onClick={onToggleDetails} aria-pressed={showDetails}>
+          {showDetails ? "Hide details" : "Details"}
+        </button>
+      </header>
+
       <div className="stream" ref={streamRef}>
         {messages.length === 0 && <div className="empty">Quiet in here.<br />Say something — or @mention an agent.</div>}
-        {messages.map(m => <MessageRow key={m.id} m={m} />)}
+        {rows.map(r => (
+          <React.Fragment key={r.m.id}>
+            {r.dayStart && (
+              <div className="day"><span className="rule" /><span className="tag">{dayLabel(r.m.ts)}</span><span className="rule" /></div>
+            )}
+            <MessageRow row={r} agent={world.agents.find(a => a.id === r.m.authorId)} />
+          </React.Fragment>
+        ))}
+        {working.map(a => (
+          <div className="typing" key={a.id}>
+            <span className="av2"><span className="bars" aria-hidden="true"><i /><i /><i /></span></span>
+            <span>{a.name} is working</span>
+          </div>
+        ))}
       </div>
-      <Composer channel={channel} />
+
+      <div className="dock">
+        {myApprovals.length > 0 && <div className="approvals">
+        {myApprovals.map(ap => {
+          const agent = world.agents.find(a => a.id === ap.agentId);
+          const task = world.tasks.find(t => t.id === ap.taskId);
+          const extra = task && !ap.action.includes(task.title) ? task.title : null;
+          return (
+            <div className="approve" key={ap.id} role="status">
+              <div className="ic">{agent?.emoji ?? "🤖"}</div>
+              <div className="copy">
+                <div className="h">{agent?.name ?? "An agent"} needs your go-ahead</div>
+                <div className="d">{ap.action}{extra ? <> — <b>{extra}</b></> : null}</div>
+              </div>
+              <button className="btn"
+                onClick={() => client.send({ type: "decideApproval", approvalId: ap.id, decision: "rejected" })}>
+                Not now
+              </button>
+              <button className="btn go"
+                onClick={() => client.send({ type: "decideApproval", approvalId: ap.id, decision: "approved" })}>
+                Go ahead
+              </button>
+            </div>
+          );
+        })}
+        </div>}
+        <Composer channel={channel} />
+      </div>
     </div>
   );
 }
 
-function MessageRow({ m }: { m: Message }): React.JSX.Element {
+function MessageRow({ row, agent }: { row: Row; agent?: AgentDef }): React.JSX.Element {
+  const { m, cont, ask } = row;
   const parts = m.text.split(/(@[\w-]+)/g);
+  const isAgent = m.authorKind === "agent";
+
+  const text = (
+    <p>{parts.map((p, i) => p.startsWith("@")
+      ? <span key={i} className="mention">{p}</span>
+      : p)}</p>
+  );
+
+  if (cont) {
+    return (
+      <article className="msg cont">
+        <div className="when-gutter">{clock(m.ts)}</div>
+        <div className="body">{text}</div>
+      </article>
+    );
+  }
+
+  /* RUN STRIP — only the facts the app actually holds. */
+  const strip: React.ReactNode[] = [];
+  if (isAgent) {
+    if (m.proactive) strip.push(<span className="selfstart" key="self">Started on its own</span>);
+    else if (ask) strip.push(<span key="ask">asked by <b>@{ask.authorName}</b></span>);
+    if (ask && m.ts >= ask.ts) strip.push(<span key="took">{elapsed(m.ts - ask.ts)} to answer</span>);
+    if (agent) strip.push(<span key="prov">runs on {PROVIDER_LABEL[agent.provider ?? "claude"] ?? "Claude"}</span>);
+  }
+
   return (
-    <div className="msg">
-      <div className={`avatar ${m.authorKind}`}>{m.authorEmoji ?? (m.authorKind === "agent" ? "🤖" : "🧑")}</div>
-      <div style={{ minWidth: 0 }}>
-        <span className="who">{m.authorName}</span>
-        {m.authorKind === "agent" && <span className="chip">AGENT</span>}
-        <span className="when"> {new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-        {m.proactive && <span className="proactive-tag">⏰ proactive</span>}
-        <p>{parts.map((p, i) => p.startsWith("@") ? <span key={i} className="mention">{p}</span> : p)}</p>
+    <article className={`msg ${isAgent ? "from-agent" : ""} ${m.proactive ? "proactive" : ""}`}>
+      <div className="slot">
+        <div className={`avatar ${m.authorKind}`}>
+          {m.authorEmoji ?? (isAgent ? "🤖" : initials(m.authorName))}
+        </div>
       </div>
-    </div>
+      <div className="body">
+        <div className="hdr">
+          <span className="who">{m.authorName}</span>
+          {isAgent && <span className="badge">Agent</span>}
+          <span className="when">{clock(m.ts)}</span>
+        </div>
+        {strip.length > 0 && (
+          <div className="runstrip">
+            {strip.map((node, i) => (
+              <React.Fragment key={i}>
+                {i > 0 && <span className="sep" />}
+                {node}
+              </React.Fragment>
+            ))}
+          </div>
+        )}
+        {text}
+      </div>
+    </article>
   );
 }
 
@@ -221,7 +486,8 @@ function AddToChannel({ channel }: { channel: Channel }): React.JSX.Element | nu
   if (candidates.length === 0) return null;
   return (
     <select
-      className="ghostbtn"
+      className="tbtn"
+      aria-label="Add someone to this channel"
       value=""
       onChange={e => { if (e.target.value) client.send({ type: "addMembers", channelId: channel.id, memberIds: [e.target.value] }); }}
     >
@@ -255,6 +521,11 @@ function Composer({ channel }: { channel: Channel }): React.JSX.Element {
     taRef.current?.focus();
   };
 
+  const insert = (snippet: string) => {
+    setText(t => (t && !t.endsWith(" ") ? `${t} ${snippet}` : `${t}${snippet}`));
+    taRef.current?.focus();
+  };
+
   const sendNow = () => {
     const t = text.trim();
     if (!t) return;
@@ -274,10 +545,15 @@ function Composer({ channel }: { channel: Channel }): React.JSX.Element {
           ))}
         </div>
       )}
+      <div className="ctools">
+        <button className="ct mono" title="Call an agent by name" onClick={() => insert("@")}>@</button>
+        <button className="ct mono" title="Hand this over as background work" onClick={() => insert("!bg ")}>!bg</button>
+        <span className="chint">@ an agent to hand it a job</span>
+      </div>
       <textarea
         ref={taRef}
         value={text}
-        placeholder={`Message ${channel.kind === "dm" ? "" : "#"}${channel.name} — @ to call an agent, "!bg task" for background work`}
+        placeholder={`Message ${channel.kind === "dm" ? "" : "#"}${channel.name}`}
         onChange={e => { setText(e.target.value); setAcIndex(0); }}
         onKeyDown={e => {
           if (suggestions.length > 0) {
@@ -288,7 +564,77 @@ function Composer({ channel }: { channel: Channel }): React.JSX.Element {
           if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendNow(); }
         }}
       />
+      <div className="cbar">
+        <span className="who-as">posting as {world.me?.name ?? "you"}</span>
+        <span className="spacer" />
+        <button className="send" onClick={sendNow}>Send <span className="k">↵</span></button>
+      </div>
     </div>
+  );
+}
+
+/* ================= details rail ================= */
+
+function DetailsRail({ channel, onClose }: { channel: Channel; onClose: () => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const agents = channel.memberIds.map(id => world.agents.find(a => a.id === id)).filter(Boolean) as AgentDef[];
+  const people = channel.memberIds.map(id => world.users.find(u => u.id === id)).filter(Boolean);
+  const tasks = world.tasks.filter(t => t.channelId === channel.id);
+
+  return (
+    <aside className="details" aria-label="Channel details">
+      <div className="d-head">
+        <span className="t">{channel.kind === "dm" ? channel.name : `#${channel.name}`}</span>
+        <button className="x" title="Hide details" aria-label="Hide details" onClick={onClose}>✕</button>
+      </div>
+      <div className="d-scroll">
+        <div className="d-sect">
+          <span className="tag">Agents here</span>
+          {agents.length === 0 && <div className="d-empty">No agents in this channel yet.</div>}
+          {agents.map(a => {
+            const s = agentStatusLine(a, world.agentStatus[a.id]);
+            return (
+              <div className="d-agent" key={a.id}>
+                <span className="av">{a.emoji}<span className={`dot ${s.lamp}`} /></span>
+                <span style={{ minWidth: 0, flex: 1 }}>
+                  <div className="n">{a.name}</div>
+                  <div className={`s ${s.busy ? "busy" : ""}`}>{s.line}</div>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="d-sect">
+          <span className="tag">People</span>
+          {people.map(u => (
+            <div className="member" key={u!.id}>
+              <span className="av initials">{initials(u!.name)}<span className="dot live" /></span>
+              <span className="n">{u!.name}</span>
+              <span className="r">{u!.invitedBy ? "member" : "owner"}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="d-sect">
+          <span className="tag">Jobs from this channel</span>
+          {tasks.length === 0 && <div className="d-empty">Nothing handed over yet. Ask an agent with @name !bg.</div>}
+          {tasks.map(t => {
+            const agent = world.agents.find(a => a.id === t.agentId);
+            return (
+              <div className="d-task" key={t.id}>
+                <span style={{ minWidth: 0 }}>
+                  <div className="n">{t.title}</div>
+                  <div className="s">
+                    {agent?.name ?? "agent"} · <span className={`tstatus ${t.status}`}>{STATUS_LABEL[t.status] ?? t.status}</span>
+                  </div>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </aside>
   );
 }
 
@@ -344,10 +690,12 @@ function QuickChat({ onClose, standalone }: { onClose?: () => void; standalone?:
           if (e.key === "Escape") { onClose?.(); if (standalone) window.close(); }
         }}
       />
-      {sent && <div className="qc-hint" style={{ color: "var(--good)" }}>{sent}</div>}
-      {targets.map((t, i) => (
-        <div key={t.id} className={`qc-opt ${i === sel ? "on" : ""}`} onClick={() => setSel(i)}>{t.label}</div>
-      ))}
+      {sent && <div className="qc-hint sent">{sent}</div>}
+      <div className="qc-list">
+        {targets.map((t, i) => (
+          <div key={t.id} className={`qc-opt ${i === sel ? "on" : ""}`} onClick={() => setSel(i)}>{t.label}</div>
+        ))}
+      </div>
       <div className="qc-hint">↑↓ choose · Enter send · Esc close — works from anywhere with the global hotkey</div>
     </div>
   );
@@ -404,12 +752,12 @@ function AgentModal({ onClose }: { onClose: () => void }): React.JSX.Element {
               <label><input type="checkbox" checked={ab.webSearch} onChange={e => setAb({ ...ab, webSearch: e.target.checked })} /> 🔎 Web search</label>
               <label><input type="checkbox" checked={ab.files} onChange={e => setAb({ ...ab, files: e.target.checked })} /> 📁 Files folder</label>
               <label><input type="checkbox" checked={ab.schedules} onChange={e => setAb({ ...ab, schedules: e.target.checked })} /> ⏰ Schedules</label>
-              <label><input type="checkbox" checked={ab.background} onChange={e => setAb({ ...ab, background: e.target.checked })} /> 📦 Background tasks</label>
+              <label><input type="checkbox" checked={ab.background} onChange={e => setAb({ ...ab, background: e.target.checked })} /> 📦 Background jobs</label>
             </div></div>
-          <div><label>Ask me for approval before…</label>
+          <div><label>Ask me first before…</label>
             <div className="checks">
               <label><input type="checkbox" checked={ap.background} onChange={e => setAp({ ...ap, background: e.target.checked })} /> 🔒 Background work</label>
-              <label><input type="checkbox" checked={ap.schedules} onChange={e => setAp({ ...ap, schedules: e.target.checked })} /> 🔒 Creating schedules</label>
+              <label><input type="checkbox" checked={ap.schedules} onChange={e => setAp({ ...ap, schedules: e.target.checked })} /> 🔒 Making a schedule</label>
             </div></div>
         </div>
         <div className="foot">
@@ -665,11 +1013,11 @@ function HarnessCard({
   );
 }
 
-/* ================= v2: tasks & activity ================= */
+/* ================= tasks & activity ================= */
 
 const STATUS_LABEL: Record<string, string> = {
   not_started: "queued", working: "working", waiting_user: "waiting for you",
-  waiting_approval: "needs approval", blocked: "blocked",
+  waiting_approval: "needs your go-ahead", blocked: "blocked",
   completed: "done", failed: "failed", cancelled: "cancelled",
 };
 
@@ -679,9 +1027,9 @@ function TasksModal({ onClose }: { onClose: () => void }): React.JSX.Element {
   return (
     <div className="overlay" onClick={onClose}>
       <div className="panel" style={{ width: "min(680px,94vw)" }} onClick={e => e.stopPropagation()}>
-        <div className="head">☑ Tasks</div>
+        <div className="head">☑ Jobs you handed over</div>
         <div className="body">
-          {world.tasks.length === 0 && <div className="notice">No tasks yet. Ask an agent with <code>@Agent !bg your task</code>.</div>}
+          {world.tasks.length === 0 && <div className="notice">Nothing handed over yet. Ask an agent with <code>@Agent !bg your job</code>.</div>}
           {world.tasks.map(t => {
             const approval = t.approvalId ? world.approvals.find(a => a.id === t.approvalId) : undefined;
             const agent = agentName(t.agentId);
@@ -722,12 +1070,12 @@ function ActivityModal({ onClose }: { onClose: () => void }): React.JSX.Element 
       <div className="panel" style={{ width: "min(680px,94vw)" }} onClick={e => e.stopPropagation()}>
         <div className="head">🕘 Activity — who did what</div>
         <div className="body">
-          {world.activity.length === 0 && <div className="notice">No activity yet.</div>}
+          {world.activity.length === 0 && <div className="notice">Nothing has happened yet.</div>}
           {[...world.activity].reverse().map(r => (
             <div key={r.id} className="actrow">
               <span className="actwho">{r.actorKind === "agent" ? "🤖" : "🧑"} {r.actorName}</span>
               <span className="actdetail">{r.detail}</span>
-              <span className="actwhen">{new Date(r.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+              <span className="actwhen">{clock(r.ts)}</span>
             </div>
           ))}
         </div>
@@ -771,8 +1119,8 @@ function AgentEditModal({ agent, onClose }: { agent: AgentDef; onClose: () => vo
             <div><label>Status</label>
               <select value={life} onChange={e => setLife(e.target.value as typeof life)}>
                 <option value="enabled">▶ Enabled — responds and works</option>
-                <option value="paused">⏸ Paused — silent until re-enabled</option>
-                <option value="disabled">⏹ Disabled — off entirely</option>
+                <option value="paused">⏸ Paused — silent until you switch it back on</option>
+                <option value="disabled">⏹ Switched off — does nothing at all</option>
               </select></div>
             <div style={{ maxWidth: 90 }}><label>Emoji</label>
               <input type="text" value={emoji} onChange={e => setEmoji(e.target.value)} /></div>
@@ -789,16 +1137,16 @@ function AgentEditModal({ agent, onClose }: { agent: AgentDef; onClose: () => vo
               <label><input type="checkbox" checked={ab.webSearch} onChange={e => setAb({ ...ab, webSearch: e.target.checked })} /> 🔎 Web search</label>
               <label><input type="checkbox" checked={ab.files} onChange={e => setAb({ ...ab, files: e.target.checked })} /> 📁 Files folder</label>
               <label><input type="checkbox" checked={ab.schedules} onChange={e => setAb({ ...ab, schedules: e.target.checked })} /> ⏰ Schedules</label>
-              <label><input type="checkbox" checked={ab.background} onChange={e => setAb({ ...ab, background: e.target.checked })} /> 📦 Background tasks</label>
+              <label><input type="checkbox" checked={ab.background} onChange={e => setAb({ ...ab, background: e.target.checked })} /> 📦 Background jobs</label>
             </div></div>
-          <div><label>Ask me for approval before…</label>
+          <div><label>Ask me first before…</label>
             <div className="checks">
               <label><input type="checkbox" checked={ap.background} onChange={e => setAp({ ...ap, background: e.target.checked })} /> 🔒 Background work</label>
-              <label><input type="checkbox" checked={ap.schedules} onChange={e => setAp({ ...ap, schedules: e.target.checked })} /> 🔒 Creating schedules</label>
+              <label><input type="checkbox" checked={ap.schedules} onChange={e => setAp({ ...ap, schedules: e.target.checked })} /> 🔒 Making a schedule</label>
             </div></div>
         </div>
         <div className="foot">
-          <button className="subtle" style={{ marginRight: "auto", color: "#ef4444" }} onClick={del}>Delete agent</button>
+          <button className="subtle danger" onClick={del}>Delete agent</button>
           <button className="subtle" onClick={onClose}>Cancel</button>
           <button className="primary" onClick={save}>Save</button>
         </div>

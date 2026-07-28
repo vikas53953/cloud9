@@ -60,7 +60,8 @@ try {
   const box = page.locator(".composer textarea");
   await box.fill("@Scout find beach villas in Goa under 8k");
   await box.press("Enter");
-  await page.waitForSelector(".msg:has-text('Scout') .chip", { timeout: 8000 });
+  // the AGENT tag on an agent message (Workbench reskin renamed .chip -> .badge)
+  await page.waitForSelector(".msg:has-text('Scout') .badge", { timeout: 8000 });
   await page.waitForSelector(".msg p:has-text('villas')", { timeout: 8000 });
   ok("@mention draws agent reply", true);
   await page.screenshot({ path: `${SHOTS}/03-chat-reply.png` });
@@ -77,7 +78,8 @@ try {
   await box.fill("@Scout !bg compare 14 villas and shortlist 3");
   await box.press("Enter");
   await page.waitForSelector(".msg p:has-text('background')", { timeout: 8000 });
-  await page.waitForSelector(".proactive-tag", { timeout: 10000 });
+  // the "started on its own" marker in the run strip (was .proactive-tag)
+  await page.waitForSelector(".msg.proactive .selfstart", { timeout: 10000 });
   ok("background task acks then posts proactive result", true);
   await page.screenshot({ path: `${SHOTS}/04-background-task.png` });
 
