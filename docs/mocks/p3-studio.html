@@ -1,0 +1,2067 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cloud9 — Studio</title>
+<style>
+/* ============================================================
+   CLOUD9 · direction "STUDIO"
+   Display  : Constantia / Iowan Old Style  (warm humanist serif, old-style figures)
+   Body     : Corbel / Avenir Next          (humanist sans, same era, quietly characterful)
+   Data     : Cascadia Mono / Consolas
+   Palette  : plaster + pine ink + marigold + ultramarine + madder
+   ============================================================ */
+
+:root{
+  --display:"Constantia","Iowan Old Style","Charter","Bookman Old Style",Georgia,serif;
+  --body:"Corbel","Avenir Next","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono",Consolas,"SF Mono",ui-monospace,monospace;
+
+  --bg:#E3E6DD;
+  --bg-2:#D8DCD1;
+  --surface:#F7F8F3;
+  --surface-2:#EFF1EA;
+  --sunk:#DDE1D6;
+  --line:#C9CFC0;
+  --line-soft:#D9DED0;
+  --ink:#151F1B;
+  --ink-2:#4E5B54;
+  --ink-3:#79857D;
+
+  --pine:#125347;
+  --pine-soft:#D3E4DC;
+  --marigold:#B77A0C;
+  --marigold-hi:#E9A227;
+  --marigold-soft:#F6E6C4;
+  --ultra:#2B3CA0;
+  --ultra-soft:#DCE0F6;
+  --madder:#B32A42;
+  --madder-soft:#F6DCE0;
+
+  --shadow:0 1px 2px rgba(21,31,27,.06), 0 12px 30px -18px rgba(21,31,27,.45);
+  --shadow-lg:0 2px 4px rgba(21,31,27,.06), 0 34px 60px -30px rgba(21,31,27,.5);
+  --radius:14px;
+  --radius-s:9px;
+  --grain:.05;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0F1512;
+    --bg-2:#0A0F0D;
+    --surface:#171F1B;
+    --surface-2:#1E2723;
+    --sunk:#121815;
+    --line:#2C3833;
+    --line-soft:#232D29;
+    --ink:#ECEFE5;
+    --ink-2:#A3B0A8;
+    --ink-3:#74827A;
+
+    --pine:#4FC7A6;
+    --pine-soft:#16332C;
+    --marigold:#EFB447;
+    --marigold-hi:#F5C463;
+    --marigold-soft:#3A2C10;
+    --ultra:#96A6FF;
+    --ultra-soft:#1D2352;
+    --madder:#F4788C;
+    --madder-soft:#40151F;
+
+    --shadow:0 1px 2px rgba(0,0,0,.5), 0 14px 34px -20px rgba(0,0,0,.9);
+    --shadow-lg:0 2px 6px rgba(0,0,0,.5), 0 40px 70px -34px rgba(0,0,0,1);
+    --grain:.09;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0F1512; --bg-2:#0A0F0D; --surface:#171F1B; --surface-2:#1E2723; --sunk:#121815;
+  --line:#2C3833; --line-soft:#232D29;
+  --ink:#ECEFE5; --ink-2:#A3B0A8; --ink-3:#74827A;
+  --pine:#4FC7A6; --pine-soft:#16332C;
+  --marigold:#EFB447; --marigold-hi:#F5C463; --marigold-soft:#3A2C10;
+  --ultra:#96A6FF; --ultra-soft:#1D2352;
+  --madder:#F4788C; --madder-soft:#40151F;
+  --shadow:0 1px 2px rgba(0,0,0,.5), 0 14px 34px -20px rgba(0,0,0,.9);
+  --shadow-lg:0 2px 6px rgba(0,0,0,.5), 0 40px 70px -34px rgba(0,0,0,1);
+  --grain:.09;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:var(--body); font-size:14.5px; line-height:1.5;
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+/* paper tooth — authored, no images */
+body::before{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:9999;
+  opacity:var(--grain); mix-blend-mode:multiply;
+  background-image:radial-gradient(circle at 1px 1px, rgba(21,31,27,.55) .5px, transparent 0);
+  background-size:3px 3px;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) body::before{mix-blend-mode:screen}
+}
+:root[data-theme="dark"] body::before{mix-blend-mode:screen}
+:root[data-theme="light"] body::before{mix-blend-mode:multiply}
+
+h1,h2,h3,h4{font-family:var(--display); font-weight:600; margin:0; letter-spacing:-.012em}
+button,input,select,textarea{font:inherit; color:inherit}
+button{cursor:pointer}
+a{color:var(--ultra)}
+:focus-visible{outline:2.5px solid var(--marigold-hi); outline-offset:2px; border-radius:4px}
+::selection{background:var(--marigold-soft); color:var(--ink)}
+
+/* scrollbars */
+*::-webkit-scrollbar{width:11px;height:11px}
+*::-webkit-scrollbar-thumb{background:var(--line); border-radius:99px; border:3px solid transparent; background-clip:content-box}
+*::-webkit-scrollbar-thumb:hover{background:var(--ink-3); background-clip:content-box}
+*::-webkit-scrollbar-track{background:transparent}
+
+/* ---------- shared atoms ---------- */
+.eyebrow{
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--ink-3);
+}
+.rule{height:1px;background:var(--line-soft);border:0;margin:0}
+.chip{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:3px 9px;border-radius:99px;border:1px solid var(--line);
+  font-size:11.5px;font-family:var(--mono);letter-spacing:.02em;color:var(--ink-2);
+  background:var(--surface); white-space:nowrap;
+}
+.chip.is-pine{color:var(--pine);border-color:color-mix(in srgb,var(--pine) 35%,transparent);background:var(--pine-soft)}
+.chip.is-gold{color:var(--marigold);border-color:color-mix(in srgb,var(--marigold) 40%,transparent);background:var(--marigold-soft)}
+.chip.is-ultra{color:var(--ultra);border-color:color-mix(in srgb,var(--ultra) 35%,transparent);background:var(--ultra-soft)}
+.chip.is-madder{color:var(--madder);border-color:color-mix(in srgb,var(--madder) 35%,transparent);background:var(--madder-soft)}
+.dot{width:7px;height:7px;border-radius:99px;background:var(--ink-3);flex:none}
+.dot.live{background:var(--pine);box-shadow:0 0 0 3px color-mix(in srgb,var(--pine) 22%,transparent)}
+.dot.wait{background:var(--marigold-hi);box-shadow:0 0 0 3px color-mix(in srgb,var(--marigold-hi) 22%,transparent)}
+.dot.off{background:var(--ink-3);opacity:.6}
+
+.btn{
+  display:inline-flex;align-items:center;gap:7px;justify-content:center;
+  border:1px solid var(--line);background:var(--surface);color:var(--ink);
+  padding:8px 14px;border-radius:var(--radius-s);font-size:13.5px;
+  transition:background .15s,border-color .15s,transform .12s;
+}
+.btn:hover{background:var(--surface-2);border-color:var(--ink-3)}
+.btn:active{transform:translateY(1px)}
+.btn-primary{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+.btn-primary:hover{background:var(--pine);border-color:var(--pine);color:#fff}
+:root[data-theme="dark"] .btn-primary:hover{color:#08120F}
+.btn-gold{background:var(--marigold-hi);border-color:var(--marigold);color:#221703;font-weight:600}
+.btn-gold:hover{background:var(--marigold);color:#fff}
+.btn-ghost{background:transparent}
+.btn-danger{color:var(--madder);border-color:color-mix(in srgb,var(--madder) 40%,transparent)}
+.btn-danger:hover{background:var(--madder-soft);border-color:var(--madder)}
+.btn-sm{padding:5px 10px;font-size:12.5px}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+
+/* ============================================================
+   APP SHELL
+   ============================================================ */
+.app{display:grid;grid-template-columns:78px minmax(0,1fr);height:100vh;overflow:hidden}
+.screen{display:none;min-width:0;height:100vh;overflow:hidden}
+.screen.on{display:block}
+body[data-fullbleed="1"] .app{grid-template-columns:minmax(0,1fr)}
+body[data-fullbleed="1"] .rail{display:none}
+
+.rail{
+  background:var(--bg-2);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;align-items:center;gap:4px;padding:14px 0 12px;
+}
+.brand{
+  width:40px;height:40px;border-radius:12px;display:grid;place-items:center;margin-bottom:12px;
+  background:var(--ink);color:var(--bg);flex:none;
+}
+:root[data-theme="dark"] .brand{background:var(--pine);color:#08120F}
+.rail-btn{
+  width:56px;padding:8px 0 6px;border:0;background:transparent;border-radius:12px;
+  display:grid;justify-items:center;gap:4px;color:var(--ink-2);
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;
+  transition:background .15s,color .15s;
+}
+.rail-btn svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.rail-btn:hover{background:var(--surface-2);color:var(--ink)}
+.rail-btn[aria-current="true"]{background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
+.rail-btn[aria-current="true"]::after{content:"";position:absolute}
+.rail-spacer{flex:1}
+.rail-badge{
+  position:relative;
+}
+.rail-badge b{
+  position:absolute;top:2px;right:6px;min-width:16px;height:16px;border-radius:99px;
+  background:var(--marigold-hi);color:#221703;font-family:var(--mono);font-size:9.5px;
+  display:grid;place-items:center;padding:0 4px;border:1.5px solid var(--bg-2);
+}
+
+/* topbar shared by screens */
+.topbar{
+  height:60px;flex:none;display:flex;align-items:center;gap:14px;padding:0 22px;
+  border-bottom:1px solid var(--line);background:var(--surface);
+}
+.topbar h2{font-size:19px}
+.topbar .sub{color:var(--ink-3);font-size:12.5px}
+.grow{flex:1}
+
+/* ============================================================
+   PORTRAITS  (authored SVG "cast plates")
+   ============================================================ */
+.portrait{display:block;border-radius:11px;overflow:hidden;flex:none;background:var(--sunk)}
+.portrait svg{display:block;width:100%;height:100%}
+.avatar{position:relative;flex:none;display:inline-flex;align-self:start;line-height:0}
+.avatar .status{
+  position:absolute;right:-3px;bottom:-3px;width:13px;height:13px;border-radius:99px;
+  border:2.5px solid var(--surface);
+}
+.st-working{background:var(--pine)}
+.st-waiting{background:var(--marigold-hi)}
+.st-idle{background:var(--ink-3)}
+.st-asleep{background:var(--ink-3);opacity:.5}
+@keyframes blink{0%,92%,100%{transform:scaleY(1)}96%{transform:scaleY(.08)}}
+.p-eyes{transform-origin:50% 44%}
+.is-thinking .p-eyes{animation:blink 3.4s infinite}
+@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-2.5px)}}
+.is-thinking .p-head{animation:bob 2.8s ease-in-out infinite}
+
+/* ============================================================
+   1 · WELCOME
+   ============================================================ */
+.welcome{height:100vh;overflow:auto;display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr)}
+.welcome-left{padding:52px 56px;display:flex;flex-direction:column;min-width:0}
+.welcome-right{
+  background:var(--bg-2);border-left:1px solid var(--line);padding:44px;
+  display:flex;align-items:center;justify-content:center;min-width:0;
+}
+.wordmark{font-family:var(--display);font-size:15px;letter-spacing:.02em}
+.welcome h1{
+  font-size:clamp(38px,4.4vw,58px);line-height:1.02;margin:26px 0 14px;letter-spacing:-.026em;
+}
+.welcome h1 em{font-style:italic;color:var(--pine)}
+.welcome .lede{font-size:16.5px;color:var(--ink-2);max-width:46ch;margin:0 0 30px}
+.connect-list{display:grid;gap:12px;max-width:520px}
+.connect{
+  display:flex;align-items:center;gap:14px;padding:16px;border-radius:var(--radius);
+  border:1px solid var(--line);background:var(--surface);box-shadow:var(--shadow);
+  transition:border-color .2s,box-shadow .2s;
+}
+.connect[data-state="on"]{border-color:color-mix(in srgb,var(--pine) 45%,transparent)}
+.connect .mark{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;flex:none;border:1px solid var(--line)}
+.connect .mark svg{width:24px;height:24px}
+.connect .name{font-family:var(--display);font-size:17px}
+.connect .meta{font-size:12.5px;color:var(--ink-3);font-family:var(--mono)}
+.tick{width:26px;height:26px;border-radius:99px;display:grid;place-items:center;flex:none;
+  background:var(--pine);color:var(--surface)}
+:root[data-theme="dark"] .tick{color:#08120F}
+.tick svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}
+.welcome-foot{margin-top:auto;padding-top:32px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.stage-scene{width:100%;max-width:460px}
+
+/* ============================================================
+   2/3 · CHAT + DM
+   ============================================================ */
+.chatgrid{display:grid;grid-template-columns:250px minmax(0,1fr) 292px;height:100vh;min-width:0}
+.chatgrid.no-aside{grid-template-columns:250px minmax(0,1fr)}
+.sidebar{border-right:1px solid var(--line);background:var(--bg-2);display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.sidebar-head{padding:16px 16px 10px}
+.side-scroll{overflow:auto;padding:0 10px 16px;flex:1}
+.side-group{margin-top:16px}
+.side-group .eyebrow{padding:0 8px 7px;display:block}
+.side-item{
+  width:100%;display:flex;align-items:center;gap:9px;padding:7px 9px;border:0;border-radius:9px;
+  background:transparent;text-align:left;color:var(--ink-2);font-size:13.5px;min-width:0;
+}
+.side-item:hover{background:var(--surface-2);color:var(--ink)}
+.side-item[aria-current="true"]{background:var(--surface);color:var(--ink);box-shadow:var(--shadow);font-weight:600}
+.side-item .hash{font-family:var(--mono);color:var(--ink-3)}
+.side-item .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-item .cnt{font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+.side-item .cnt.hot{background:var(--marigold-hi);color:#221703;border-radius:99px;padding:1px 6px}
+
+.thread{display:flex;flex-direction:column;min-width:0;background:var(--bg);overflow:hidden}
+.msgs{flex:1;overflow:auto;padding:26px 34px 14px;min-width:0}
+.daymark{display:flex;align-items:center;gap:14px;margin:6px 0 22px}
+.daymark::before,.daymark::after{content:"";height:1px;background:var(--line);flex:1}
+
+.msg{display:grid;grid-template-columns:38px minmax(0,1fr);gap:13px;margin-bottom:22px;min-width:0;max-width:880px}
+.msg .who{display:flex;align-items:baseline;gap:9px;margin-bottom:4px;flex-wrap:wrap}
+.msg .who b{font-family:var(--display);font-size:15.5px;font-weight:600}
+.msg .who .t{font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+.msg .body{min-width:0}
+.msg .body p{margin:0 0 8px}
+.msg .body p:last-child{margin-bottom:0}
+.msg.agent .who b{color:var(--pine)}
+.msg .badge-agent{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--pine);border:1px solid color-mix(in srgb,var(--pine) 35%,transparent);
+  background:var(--pine-soft);padding:1px 5px;border-radius:4px;
+}
+.hair{width:34px;height:34px}
+
+/* agent answer block */
+.answer{
+  border-left:2px solid color-mix(in srgb,var(--pine) 45%,transparent);
+  padding-left:14px;margin-top:2px;
+}
+.tbl-wrap{overflow-x:auto;margin:12px 0;border:1px solid var(--line);border-radius:var(--radius-s);background:var(--surface)}
+table{border-collapse:collapse;width:100%;min-width:520px;font-size:13px}
+th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--line-soft)}
+thead th{
+  font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-3);background:var(--surface-2);border-bottom:1px solid var(--line);
+}
+tbody tr:last-child td{border-bottom:0}
+td.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.pick{background:color-mix(in srgb,var(--marigold-soft) 60%,transparent)}
+.pick td:first-child{box-shadow:inset 3px 0 0 var(--marigold-hi)}
+
+.callout{
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);
+  padding:15px 17px;margin:12px 0;box-shadow:var(--shadow);
+}
+.callout .hd{display:flex;align-items:center;gap:9px;margin-bottom:9px}
+.callout .hd h4{font-size:15px}
+.callout.proactive{border-color:color-mix(in srgb,var(--ultra) 32%,transparent)}
+.callout.proactive .hd h4{color:var(--ultra)}
+.callout.approval{border-color:color-mix(in srgb,var(--marigold) 55%,transparent);background:
+  linear-gradient(180deg,color-mix(in srgb,var(--marigold-soft) 55%,var(--surface)),var(--surface))}
+.spend{display:flex;align-items:baseline;gap:10px;margin:10px 0 4px}
+.spend .amt{font-family:var(--display);font-size:30px;letter-spacing:-.02em}
+.spend .per{color:var(--ink-3);font-size:12.5px;font-family:var(--mono)}
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 14px;font-size:12.5px;margin:10px 0}
+.kv dt{color:var(--ink-3);font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase}
+.kv dd{margin:0}
+.actions{display:flex;gap:9px;align-items:center;margin-top:13px;flex-wrap:wrap}
+.resolved{
+  display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink-2);
+  padding:9px 12px;border-radius:var(--radius-s);background:var(--surface-2);margin-top:10px;
+}
+
+/* thinking */
+.thinking{display:flex;align-items:center;gap:10px;color:var(--ink-2);font-size:13px}
+.bars{display:flex;gap:3px;align-items:flex-end;height:14px}
+.bars i{width:3px;height:5px;background:var(--pine);border-radius:2px;animation:think 1.15s ease-in-out infinite}
+.bars i:nth-child(2){animation-delay:.13s}.bars i:nth-child(3){animation-delay:.26s}
+.bars i:nth-child(4){animation-delay:.39s}.bars i:nth-child(5){animation-delay:.52s}
+@keyframes think{0%,100%{height:5px;opacity:.45}50%{height:14px;opacity:1}}
+
+/* composer */
+.composer{padding:12px 34px 20px;border-top:1px solid var(--line);background:var(--bg)}
+.composer-box{
+  border:1px solid var(--line);background:var(--surface);border-radius:var(--radius);
+  padding:11px 13px;box-shadow:var(--shadow);
+}
+.composer-box:focus-within{border-color:var(--pine)}
+.composer .field{
+  width:100%;border:0;background:transparent;resize:none;outline:none;font-size:14.5px;min-height:22px;
+}
+.composer .tools{display:flex;align-items:center;gap:8px;margin-top:9px}
+.mini{
+  border:1px solid var(--line);background:transparent;border-radius:7px;padding:3px 8px;
+  font-family:var(--mono);font-size:11px;color:var(--ink-2);
+}
+.mini:hover{background:var(--surface-2);color:var(--ink)}
+
+/* right aside */
+.aside{border-left:1px solid var(--line);background:var(--bg-2);overflow:auto;min-width:0}
+.aside-sec{padding:16px 16px 18px;border-bottom:1px solid var(--line-soft)}
+.aside-sec .eyebrow{display:block;margin-bottom:11px}
+.mini-agent{display:flex;gap:10px;align-items:center;padding:7px;border-radius:10px;min-width:0}
+.mini-agent:hover{background:var(--surface-2)}
+.mini-agent .nm{font-family:var(--display);font-size:14.5px;line-height:1.15}
+.mini-agent .rl{font-size:11.5px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.job{font-size:12.5px;color:var(--ink-2);padding:9px 11px;border-radius:10px;background:var(--surface);border:1px solid var(--line-soft);margin-bottom:8px}
+.job b{font-family:var(--display);font-size:13.5px;display:block;color:var(--ink)}
+.bar{height:5px;border-radius:99px;background:var(--sunk);overflow:hidden;margin-top:7px}
+.bar i{display:block;height:100%;background:var(--pine);border-radius:99px}
+
+/* DM header */
+.dm-head{
+  display:flex;align-items:center;gap:14px;padding:18px 34px;border-bottom:1px solid var(--line);
+  background:var(--surface);
+}
+.dm-head h2{font-size:21px}
+.dm-head .role{color:var(--ink-3);font-size:12.5px}
+
+/* ============================================================
+   4 · AGENTS  (the crew — hero screen)
+   ============================================================ */
+.crew{height:100vh;overflow:auto;background:
+  radial-gradient(120% 70% at 88% -10%, color-mix(in srgb,var(--marigold-soft) 55%,transparent), transparent 60%),
+  var(--bg);
+}
+.crew-hero{padding:44px 46px 26px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:26px;align-items:end}
+.crew-hero h1{font-size:clamp(40px,4.6vw,60px);line-height:.98;letter-spacing:-.03em}
+.crew-hero h1 em{font-style:italic;color:var(--pine)}
+.crew-hero p{margin:12px 0 0;color:var(--ink-2);max-width:52ch;font-size:15.5px}
+.crew-stats{display:flex;gap:26px;align-items:flex-end}
+.stat .n{font-family:var(--display);font-size:34px;line-height:1;letter-spacing:-.02em}
+.stat .l{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin-top:5px}
+.crew-bar{display:flex;gap:8px;align-items:center;padding:0 46px 20px;flex-wrap:wrap}
+.seg{display:flex;border:1px solid var(--line);border-radius:99px;overflow:hidden;background:var(--surface)}
+.seg button{border:0;background:transparent;padding:6px 14px;font-size:12.5px;color:var(--ink-2)}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+:root[data-theme="dark"] .seg button[aria-pressed="true"]{background:var(--pine);color:#08120F}
+
+.crew-grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(288px,1fr));gap:20px;padding:0 46px 52px;
+}
+.cast{
+  position:relative;background:var(--surface);border:1px solid var(--line);border-radius:18px;
+  overflow:hidden;box-shadow:var(--shadow);display:flex;flex-direction:column;min-width:0;
+  transition:transform .22s cubic-bezier(.2,.8,.3,1),box-shadow .22s,border-color .22s;
+}
+.cast:hover{transform:translateY(-4px);box-shadow:var(--shadow-lg);border-color:var(--ink-3)}
+.cast .plate{aspect-ratio:1/1;position:relative;overflow:hidden;border-bottom:1px solid var(--line)}
+.cast .plate svg{position:absolute;inset:0;width:100%;height:100%}
+.cast .no{
+  position:absolute;top:11px;left:13px;font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+  color:var(--ink);opacity:.55;
+}
+.cast .flag{position:absolute;top:10px;right:11px}
+.cast .info{padding:15px 16px 16px;display:flex;flex-direction:column;gap:9px;flex:1;min-width:0}
+.cast h3{font-size:23px;line-height:1;letter-spacing:-.02em}
+.cast .role{font-size:13px;color:var(--ink-2);margin-top:-3px}
+.cast .runs{display:flex;flex-wrap:wrap;gap:6px}
+.cast .now{
+  font-size:12.5px;color:var(--ink-2);border-top:1px dashed var(--line);padding-top:10px;margin-top:auto;
+  display:flex;gap:8px;align-items:flex-start;min-width:0;
+}
+.cast .now span{min-width:0;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.cast-new{
+  border:1.5px dashed var(--line);background:transparent;box-shadow:none;
+  display:grid;place-items:center;min-height:280px;color:var(--ink-2);gap:10px;padding:26px;text-align:center;
+}
+.cast-new:hover{border-color:var(--pine);color:var(--pine);transform:translateY(-4px);box-shadow:none}
+.cast-new h3{font-size:20px}
+
+/* ============================================================
+   5 · EDITOR
+   ============================================================ */
+.editor{height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.editor-body{flex:1;overflow:auto;display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:0;min-width:0}
+.form-col{padding:28px 34px 60px;min-width:0;max-width:800px}
+.preview-col{border-left:1px solid var(--line);background:var(--bg-2);padding:24px;min-width:0}
+.preview-sticky{position:sticky;top:0}
+fieldset{border:0;padding:0;margin:0 0 34px}
+legend{padding:0}
+.sec-head{display:flex;align-items:baseline;gap:12px;margin-bottom:4px}
+.sec-head h3{font-size:20px}
+.sec-note{color:var(--ink-3);font-size:12.5px;margin:0 0 16px}
+.field-row{display:grid;gap:6px;margin-bottom:16px;min-width:0}
+label{font-size:13px;font-weight:600}
+.hint{font-size:12px;color:var(--ink-3);font-weight:400}
+.input,.select,.textarea{
+  width:100%;border:1px solid var(--line);background:var(--surface);border-radius:var(--radius-s);
+  padding:9px 11px;font-size:14px;outline:none;
+}
+.textarea{resize:vertical;min-height:78px;line-height:1.55}
+.input:focus,.select:focus,.textarea:focus{border-color:var(--pine);box-shadow:0 0 0 3px color-mix(in srgb,var(--pine) 16%,transparent)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px;min-width:0}
+.pick-apps{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.app-pick{
+  display:flex;gap:11px;align-items:center;padding:13px;border:1.5px solid var(--line);border-radius:var(--radius);
+  background:var(--surface);text-align:left;min-width:0;
+}
+.app-pick[aria-pressed="true"]{border-color:var(--pine);background:var(--pine-soft)}
+.app-pick .mark{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;flex:none;border:1px solid var(--line);background:var(--surface)}
+.app-pick .nm{font-family:var(--display);font-size:15px}
+.app-pick .ms{font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+
+.toggle-row{
+  display:flex;align-items:center;gap:13px;padding:12px 0;border-bottom:1px solid var(--line-soft);min-width:0;
+}
+.toggle-row:last-child{border-bottom:0}
+.toggle-row .tx{flex:1;min-width:0}
+.toggle-row .tx b{display:block;font-weight:600;font-size:13.5px}
+.toggle-row .tx span{font-size:12.5px;color:var(--ink-3)}
+.sw{width:42px;height:24px;border-radius:99px;border:1px solid var(--line);background:var(--sunk);position:relative;flex:none;transition:background .18s,border-color .18s}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:99px;background:var(--surface);box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .18s}
+.sw[aria-pressed="true"]{background:var(--pine);border-color:var(--pine)}
+.sw[aria-pressed="true"]::after{transform:translateX(18px)}
+
+.skill{border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);margin-bottom:11px;overflow:hidden}
+.skill-hd{display:flex;align-items:center;gap:11px;padding:12px 14px;width:100%;border:0;background:transparent;text-align:left;min-width:0}
+.skill-hd .nm{font-family:var(--display);font-size:15.5px;flex:none}
+.skill-hd .sm{font-size:12.5px;color:var(--ink-3);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.skill-hd .car{transition:transform .2s;color:var(--ink-3)}
+.skill[data-open="1"] .skill-hd .car{transform:rotate(90deg)}
+.skill-bd{display:none;padding:0 14px 14px;border-top:1px solid var(--line-soft)}
+.skill[data-open="1"] .skill-bd{display:block;padding-top:13px}
+.dropzone{
+  border:1.5px dashed var(--line);border-radius:var(--radius);padding:20px;text-align:center;color:var(--ink-2);
+  display:grid;gap:7px;justify-items:center;background:var(--surface-2);
+}
+.dropzone:hover{border-color:var(--pine);color:var(--pine)}
+.dropzone code{font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
+
+.preview-card{background:var(--surface);border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:var(--shadow)}
+.preview-card .plate{aspect-ratio:1/1;position:relative}
+.preview-card .plate svg{position:absolute;inset:0;width:100%;height:100%}
+.swatches{display:flex;gap:7px;margin-top:12px;flex-wrap:wrap}
+.swatch{width:30px;height:30px;border-radius:8px;border:1.5px solid var(--line)}
+.swatch[aria-pressed="true"]{border-color:var(--ink);box-shadow:0 0 0 2px var(--surface),0 0 0 3.5px var(--ink)}
+
+/* ============================================================
+   6 · TASKS
+   ============================================================ */
+.tasks{height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.tasks-body{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 340px;overflow:hidden;min-width:0}
+.tasks-main{overflow:auto;padding:22px 28px 44px;min-width:0}
+.tasks-side{border-left:1px solid var(--line);background:var(--bg-2);overflow:auto;padding:20px;min-width:0}
+.task{
+  display:grid;grid-template-columns:40px minmax(0,1fr) auto;gap:14px;align-items:start;
+  padding:15px 16px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);
+  margin-bottom:11px;box-shadow:var(--shadow);min-width:0;
+}
+.task h4{font-size:16px;margin-bottom:3px}
+.task .meta{font-size:12.5px;color:var(--ink-3);display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.task .out{
+  margin-top:10px;padding:11px 13px;border-radius:10px;background:var(--surface-2);font-size:13px;color:var(--ink-2);
+  border:1px solid var(--line-soft);
+}
+.task .out b{color:var(--ink);font-family:var(--display);font-size:13.5px}
+.task .right{display:grid;gap:8px;justify-items:end}
+.approval{
+  border:1px solid color-mix(in srgb,var(--marigold) 55%,transparent);border-radius:var(--radius);
+  background:linear-gradient(180deg,color-mix(in srgb,var(--marigold-soft) 60%,var(--surface)),var(--surface));
+  padding:14px;margin-bottom:12px;box-shadow:var(--shadow);
+}
+.approval h4{font-size:15.5px;margin-bottom:2px}
+.empty{display:grid;justify-items:center;text-align:center;gap:10px;padding:26px 12px;color:var(--ink-2)}
+.empty h4{font-size:17px;color:var(--ink)}
+.empty p{margin:0;font-size:13px;max-width:30ch}
+
+/* ============================================================
+   7 · ACTIVITY
+   ============================================================ */
+.activity{height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.act-body{flex:1;overflow:auto;padding:24px 34px 50px;min-width:0}
+.timeline{position:relative;max-width:960px;padding-left:26px}
+.timeline::before{content:"";position:absolute;left:7px;top:6px;bottom:6px;width:1px;background:var(--line)}
+.ev{position:relative;display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:12px;align-items:start;padding:11px 0;min-width:0}
+.ev::before{
+  content:"";position:absolute;left:-23px;top:19px;width:9px;height:9px;border-radius:99px;
+  background:var(--surface);border:2px solid var(--ink-3);
+}
+.ev.by-agent::before{border-color:var(--pine)}
+.ev.by-human::before{border-color:var(--ultra)}
+.ev.by-money::before{border-color:var(--marigold-hi)}
+.ev .tx{min-width:0}
+.ev .tx b{font-family:var(--display);font-size:15px}
+.ev .tx p{margin:2px 0 0;font-size:13px;color:var(--ink-2)}
+.ev .when{font-family:var(--mono);font-size:11px;color:var(--ink-3);white-space:nowrap;padding-top:3px}
+.act-day{display:flex;align-items:center;gap:12px;margin:22px 0 6px}
+.act-day::after{content:"";flex:1;height:1px;background:var(--line)}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+/* ============================================================
+   8 · SETTINGS
+   ============================================================ */
+.settings{height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.set-body{flex:1;display:grid;grid-template-columns:206px minmax(0,1fr);overflow:hidden;min-width:0}
+.set-nav{border-right:1px solid var(--line);background:var(--bg-2);padding:16px 10px;overflow:auto}
+.set-nav button{
+  width:100%;text-align:left;border:0;background:transparent;padding:8px 11px;border-radius:9px;
+  font-size:13.5px;color:var(--ink-2);
+}
+.set-nav button:hover{background:var(--surface-2);color:var(--ink)}
+.set-nav button[aria-current="true"]{background:var(--surface);color:var(--ink);font-weight:600;box-shadow:var(--shadow)}
+.set-main{overflow:auto;padding:26px 34px 60px;min-width:0}
+.set-sec{max-width:720px;margin-bottom:38px}
+.set-sec h3{font-size:21px;margin-bottom:3px}
+.set-sec .sec-note{margin-bottom:14px}
+.panel{border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);padding:4px 16px;box-shadow:var(--shadow)}
+.theme-picks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.theme-pick{border:1.5px solid var(--line);border-radius:var(--radius);padding:9px;background:var(--surface);display:grid;gap:8px;min-width:0}
+.theme-pick[aria-pressed="true"]{border-color:var(--pine)}
+.theme-pick .prev{height:58px;border-radius:8px;border:1px solid var(--line);overflow:hidden;display:grid;grid-template-columns:26% 1fr}
+.theme-pick .nm{font-size:13px;text-align:center}
+.danger{border-color:color-mix(in srgb,var(--madder) 45%,transparent)}
+.danger .toggle-row{border-color:color-mix(in srgb,var(--madder) 22%,transparent)}
+.path{
+  display:flex;gap:9px;align-items:center;font-family:var(--mono);font-size:12.5px;color:var(--ink-2);
+  background:var(--sunk);border:1px solid var(--line);border-radius:9px;padding:8px 11px;min-width:0;
+}
+.path span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ============================================================
+   9 · QUICK CHAT
+   ============================================================ */
+.qc-veil{
+  position:fixed;inset:0;z-index:200;display:none;
+  background:color-mix(in srgb,var(--bg-2) 62%,transparent);backdrop-filter:blur(7px);
+  align-items:flex-start;justify-content:center;padding-top:11vh;
+}
+.qc-veil.on{display:flex}
+.qc{
+  width:min(680px,92vw);background:var(--surface);border:1px solid var(--line);border-radius:18px;
+  box-shadow:var(--shadow-lg);overflow:hidden;animation:pop .18s cubic-bezier(.2,.9,.3,1);
+}
+@keyframes pop{from{transform:translateY(-10px) scale(.985);opacity:0}to{transform:none;opacity:1}}
+.qc-top{display:flex;align-items:center;gap:12px;padding:15px 18px;border-bottom:1px solid var(--line-soft)}
+.qc-top input{flex:1;border:0;background:transparent;outline:none;font-size:17px}
+.qc-top input::placeholder{color:var(--ink-3)}
+.qc-list{max-height:44vh;overflow:auto;padding:8px}
+.qc-row{
+  display:flex;align-items:center;gap:12px;padding:9px 11px;border-radius:10px;width:100%;border:0;
+  background:transparent;text-align:left;min-width:0;color:var(--ink);
+}
+.qc-row[data-sel="1"],.qc-row:hover{background:var(--surface-2)}
+.qc-row .nm{font-family:var(--display);font-size:15px}
+.qc-row .ds{font-size:12.5px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qc-row .k{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+.qc-foot{display:flex;gap:14px;align-items:center;padding:10px 16px;border-top:1px solid var(--line-soft);background:var(--surface-2)}
+.kbd{font-family:var(--mono);font-size:10.5px;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:1px 5px;color:var(--ink-2);background:var(--surface)}
+
+/* ============================================================
+   PROTOTYPE PICKER
+   ============================================================ */
+.picker{
+  position:fixed;right:20px;bottom:20px;z-index:400;width:236px;
+  background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow-lg);
+  overflow:hidden;font-family:var(--body);
+}
+.picker-hd{display:flex;align-items:center;gap:8px;padding:9px 11px;background:var(--bg-2);cursor:grab;border-bottom:1px solid var(--line)}
+.picker-hd:active{cursor:grabbing}
+.picker-hd .t{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);flex:1}
+.picker-list{max-height:46vh;overflow:auto;padding:6px}
+.picker-list button{
+  width:100%;display:flex;gap:9px;align-items:center;border:0;background:transparent;border-radius:8px;
+  padding:6px 8px;text-align:left;font-size:13px;color:var(--ink-2);
+}
+.picker-list button:hover{background:var(--surface-2);color:var(--ink)}
+.picker-list button[aria-current="true"]{background:var(--ink);color:var(--bg)}
+:root[data-theme="dark"] .picker-list button[aria-current="true"]{background:var(--pine);color:#08120F}
+.picker-list .n{font-family:var(--mono);font-size:10px;opacity:.7}
+.picker-foot{display:flex;gap:6px;padding:8px;border-top:1px solid var(--line-soft)}
+.picker-foot button{flex:1}
+.picker.min .picker-list,.picker.min .picker-foot{display:none}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
+}
+
+/* width guards */
+@media (max-width:1330px){
+  .chatgrid{grid-template-columns:216px minmax(0,1fr) 268px}
+  .crew-grid,.crew-hero,.crew-bar{padding-left:34px;padding-right:34px}
+  .msgs,.composer{padding-left:26px;padding-right:26px}
+  .tasks-body{grid-template-columns:minmax(0,1fr) 312px}
+}
+</style>
+</head>
+<body data-screen="crew">
+
+<!-- ===================== APP ===================== -->
+<div class="app">
+
+  <!-- rail -->
+  <nav class="rail" aria-label="Cloud9 sections">
+    <div class="brand" title="Cloud9">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6.5 17.5a4 4 0 0 1-.4-8A5.4 5.4 0 0 1 16.4 8.2a3.6 3.6 0 0 1 1 7.1"/>
+        <circle cx="12" cy="15.6" r="2.6"/>
+      </svg>
+    </div>
+    <button class="rail-btn" data-go="chat"><svg viewBox="0 0 24 24"><path d="M20 14.5a2.5 2.5 0 0 1-2.5 2.5H8l-4 3.5V6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5Z"/><path d="M8.5 9.5h7M8.5 12.5h4"/></svg>Chat</button>
+    <button class="rail-btn" data-go="crew"><svg viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0"/><circle cx="17.5" cy="9.8" r="2.4"/><path d="M15 19.5a5 5 0 0 1 5.5-4.4"/></svg>Crew</button>
+    <button class="rail-btn rail-badge" data-go="tasks"><svg viewBox="0 0 24 24"><rect x="4" y="4.5" width="16" height="15" rx="2.4"/><path d="M8 10l2.2 2.2L15.5 7"/><path d="M8 15.5h8"/></svg>Tasks<b>2</b></button>
+    <button class="rail-btn" data-go="activity"><svg viewBox="0 0 24 24"><path d="M3 12.5h4l2.2-6 3.4 12 2.5-7.5 1.6 3.5H21"/></svg>Log</button>
+    <div class="rail-spacer"></div>
+    <button class="rail-btn" id="railQuick"><svg viewBox="0 0 24 24"><path d="M13.5 3 5 13.5h5.6L9.8 21l8.7-10.6h-5.7Z"/></svg>Ctrl K</button>
+    <button class="rail-btn" data-go="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 3.5v2.2M12 18.3v2.2M20.5 12h-2.2M5.7 12H3.5M17.9 6.1l-1.6 1.6M7.7 16.3l-1.6 1.6M17.9 17.9l-1.6-1.6M7.7 7.7 6.1 6.1"/></svg>Setup</button>
+  </nav>
+
+  <main id="stage" style="min-width:0;overflow:hidden">
+
+  <!-- =========================================================
+       1 · WELCOME
+       ========================================================= -->
+  <section class="screen" id="s-welcome">
+    <div class="welcome">
+      <div class="welcome-left">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="brand" style="width:30px;height:30px;border-radius:9px;margin:0">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 17.5a4 4 0 0 1-.4-8A5.4 5.4 0 0 1 16.4 8.2a3.6 3.6 0 0 1 1 7.1"/><circle cx="12" cy="15.6" r="2.6"/></svg>
+          </div>
+          <span class="wordmark">Cloud9</span>
+          <span class="chip" style="margin-left:6px">First run</span>
+        </div>
+
+        <h1>Hire a crew.<br>Give them a <em>desk</em>.</h1>
+        <p class="lede">Cloud9 turns the AI apps already on this machine into named experts who sit in your channels, take jobs, and ask before they spend a penny.</p>
+
+        <span class="eyebrow" style="display:block;margin-bottom:12px">Step 1 of 2 · Connect the apps they work through</span>
+        <div class="connect-list">
+          <div class="connect" data-state="on">
+            <div class="mark" style="background:var(--marigold-soft);color:var(--marigold)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18 12 5l5 13"/><path d="M9 14h6"/></svg>
+            </div>
+            <div style="min-width:0;flex:1">
+              <div class="name">Claude</div>
+              <div class="meta">vikas@home · Max plan · 4 models</div>
+            </div>
+            <span class="chip is-pine">Signed in</span>
+            <span class="tick"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></svg></span>
+          </div>
+
+          <div class="connect" data-state="on">
+            <div class="mark" style="background:var(--ultra-soft);color:var(--ultra)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m9 9-3.5 3L9 15"/><path d="m15 9 3.5 3L15 15"/></svg>
+            </div>
+            <div style="min-width:0;flex:1">
+              <div class="name">Codex</div>
+              <div class="meta">vikas53953 · Pro · 3 models</div>
+            </div>
+            <span class="chip is-pine">Signed in</span>
+            <span class="tick"><svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></svg></span>
+          </div>
+
+          <div class="connect" data-state="off">
+            <div class="mark" style="background:var(--surface-2);color:var(--ink-3)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2.2"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10"/></svg>
+            </div>
+            <div style="min-width:0;flex:1">
+              <div class="name">Local models</div>
+              <div class="meta">Optional · nothing leaves this machine</div>
+            </div>
+            <button class="btn btn-sm">Connect</button>
+          </div>
+        </div>
+
+        <div class="welcome-foot">
+          <button class="btn btn-primary" data-go="crew">Meet your crew</button>
+          <button class="btn btn-ghost" data-go="settings">Change these later</button>
+          <span class="eyebrow" style="margin-left:auto">Both apps signed in · you're ready</span>
+        </div>
+      </div>
+
+      <div class="welcome-right">
+        <!-- authored illustration: the empty studio, waiting -->
+        <svg class="stage-scene" viewBox="0 0 460 400" role="img" aria-label="An empty studio with a lamp, a stool and three blank plates on the wall">
+          <defs>
+            <radialGradient id="lampGlow" cx="50%" cy="16%" r="52%">
+              <stop offset="0%" stop-color="var(--marigold-hi)" stop-opacity=".38"/>
+              <stop offset="100%" stop-color="var(--marigold-hi)" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <rect x="0" y="0" width="460" height="400" rx="18" fill="var(--surface)" stroke="var(--line)"/>
+          <path d="M0 300h460v82a18 18 0 0 1-18 18H18A18 18 0 0 1 0 382Z" fill="var(--surface-2)"/>
+          <path d="M0 300h460" stroke="var(--line)"/>
+          <circle cx="230" cy="120" r="150" fill="url(#lampGlow)"/>
+          <!-- lamp -->
+          <path d="M230 0v56" stroke="var(--ink-3)" stroke-width="2"/>
+          <path d="M198 92c0-18 14-33 32-33s32 15 32 33Z" fill="var(--ink)" opacity=".9"/>
+          <ellipse cx="230" cy="92" rx="32" ry="6" fill="var(--marigold-hi)"/>
+          <circle cx="230" cy="96" r="4.5" fill="var(--marigold-hi)"/>
+          <!-- three blank cast plates -->
+          <g stroke="var(--line)" fill="var(--surface-2)">
+            <rect x="72" y="150" width="86" height="112" rx="10"/>
+            <rect x="187" y="136" width="86" height="112" rx="10"/>
+            <rect x="302" y="150" width="86" height="112" rx="10"/>
+          </g>
+          <g fill="var(--line)">
+            <circle cx="115" cy="198" r="17"/><rect x="96" y="226" width="38" height="20" rx="10"/>
+            <circle cx="230" cy="184" r="17"/><rect x="211" y="212" width="38" height="20" rx="10"/>
+            <circle cx="345" cy="198" r="17"/><rect x="326" y="226" width="38" height="20" rx="10"/>
+          </g>
+          <!-- stool -->
+          <g stroke="var(--ink-3)" stroke-width="2.4" fill="none" stroke-linecap="round">
+            <ellipse cx="230" cy="316" rx="34" ry="9" fill="var(--pine-soft)"/>
+            <path d="M204 320l-10 44M256 320l10 44M230 322v42M200 348h60"/>
+          </g>
+          <!-- dust motes -->
+          <g fill="var(--marigold-hi)" opacity=".5">
+            <circle cx="140" cy="106" r="2.4"/><circle cx="318" cy="128" r="1.8"/><circle cx="292" cy="74" r="2"/><circle cx="176" cy="60" r="1.6"/>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================================================
+       2 · MAIN CHAT
+       ========================================================= -->
+  <section class="screen" id="s-chat">
+    <div class="chatgrid">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <div style="display:flex;align-items:center;gap:8px">
+            <h2 style="font-size:17px">Studio floor</h2>
+            <span class="chip" style="margin-left:auto">4 online</span>
+          </div>
+        </div>
+        <div class="side-scroll">
+          <div class="side-group">
+            <span class="eyebrow">Channels</span>
+            <button class="side-item" aria-current="true"><span class="hash">#</span><span class="txt">ops-floor</span><span class="cnt hot">3</span></button>
+            <button class="side-item"><span class="hash">#</span><span class="txt">procurement</span><span class="cnt">12</span></button>
+            <button class="side-item"><span class="hash">#</span><span class="txt">weekend-lab</span></button>
+            <button class="side-item"><span class="hash">#</span><span class="txt">incident-log</span><span class="cnt">4</span></button>
+          </div>
+          <div class="side-group">
+            <span class="eyebrow">Direct</span>
+            <button class="side-item" data-go="dm"><span class="avatar" data-portrait="mercer" data-size="22"></span><span class="txt">Mercer</span><span class="cnt hot">1</span></button>
+            <button class="side-item"><span class="avatar" data-portrait="juno" data-size="22"></span><span class="txt">Juno</span></button>
+            <button class="side-item"><span class="avatar" data-portrait="rook" data-size="22"></span><span class="txt">Rook</span></button>
+            <button class="side-item"><span class="avatar" data-portrait="bram" data-size="22"></span><span class="txt">Bram</span></button>
+          </div>
+          <div class="side-group">
+            <span class="eyebrow">People</span>
+            <button class="side-item"><span class="dot live"></span><span class="txt">Priya Nadar</span></button>
+            <button class="side-item"><span class="dot live"></span><span class="txt">Tom Whitaker</span></button>
+            <button class="side-item"><span class="dot off"></span><span class="txt">Deb Osei</span></button>
+          </div>
+        </div>
+      </aside>
+
+      <div class="thread">
+        <header class="topbar">
+          <h2># ops-floor</h2>
+          <span class="sub">3 people · 3 agents</span>
+          <div class="grow"></div>
+          <span class="chip is-gold"><span class="dot wait"></span>1 approval waiting</span>
+          <button class="btn btn-sm">Add agent</button>
+        </header>
+
+        <div class="msgs" id="chatMsgs">
+          <div class="daymark"><span class="eyebrow">Today · Tuesday 29 July</span></div>
+
+          <div class="msg">
+            <span class="avatar"><span class="portrait hair" style="background:var(--ultra-soft);display:grid;place-items:center;font-family:var(--display);color:var(--ultra);font-size:15px">P</span></span>
+            <div class="body">
+              <div class="who"><b>Priya Nadar</b><span class="t">09:12</span></div>
+              <p>The Farnborough branch keeps dropping at about 4pm. Third time this week. Can someone actually pin it down before I have to answer for it again?</p>
+            </div>
+          </div>
+
+          <div class="msg agent">
+            <span class="avatar"><span class="portrait hair" data-portrait="mercer" data-size="34"></span><span class="status st-working"></span></span>
+            <div class="body">
+              <div class="who"><b>Mercer</b><span class="badge-agent">Agent</span><span class="t">09:13</span></div>
+              <p>On it. Pulling the last 14 days of interface counters and the WAN provider's status feed.</p>
+              <div class="answer" style="margin-top:10px">
+                <p>Farnborough's 4pm drop lines up with the backup window, not the provider. Here's the same hour across all four branches:</p>
+                <div class="tbl-wrap">
+                  <table>
+                    <thead><tr><th>Branch</th><th>Link</th><th>Peak 16:00 use</th><th>Drops / 14d</th><th>Verdict</th></tr></thead>
+                    <tbody>
+                      <tr class="pick"><td>Farnborough</td><td>200 Mb FTTP</td><td class="num">198 Mb</td><td class="num">11</td><td>Saturating during backup</td></tr>
+                      <tr><td>Reading</td><td>500 Mb FTTP</td><td class="num">212 Mb</td><td class="num">0</td><td>Healthy</td></tr>
+                      <tr><td>Slough</td><td>200 Mb FTTP</td><td class="num">96 Mb</td><td class="num">1</td><td>Healthy</td></tr>
+                      <tr><td>Woking</td><td>1 Gb FTTP</td><td class="num">240 Mb</td><td class="num">0</td><td>Healthy</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p>Farnborough is the only site running a full nightly image over the same 200&nbsp;Mb link its staff use. Two ways out: shift the backup to 22:00, or shape it to 60&nbsp;Mb during office hours. Shaping keeps the backup window intact — I'd start there.</p>
+                <div class="actions">
+                  <button class="btn btn-sm btn-primary">Ask Mercer to write the change</button>
+                  <button class="btn btn-sm">Show the raw counters</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <span class="avatar"><span class="portrait hair" style="background:var(--pine-soft);display:grid;place-items:center;font-family:var(--display);color:var(--pine);font-size:15px">T</span></span>
+            <div class="body">
+              <div class="who"><b>Tom Whitaker</b><span class="t">09:26</span></div>
+              <p>That matches what the branch manager said — it's always right after everyone gets back from lunch orders. Nice.</p>
+            </div>
+          </div>
+
+          <!-- proactive result -->
+          <div class="msg agent">
+            <span class="avatar"><span class="portrait hair" data-portrait="juno" data-size="34"></span><span class="status st-idle"></span></span>
+            <div class="body">
+              <div class="who"><b>Juno</b><span class="badge-agent">Agent</span><span class="t">10:04</span><span class="chip is-ultra" style="margin-left:2px">Nobody asked — I noticed</span></div>
+              <div class="callout proactive">
+                <div class="hd">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ultra)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v2M5.6 5.6l1.4 1.4M3 12h2M19 12h2M18.4 5.6 17 7"/><path d="M9.5 18h5M10 21h4"/><path d="M12 8a4.5 4.5 0 0 1 2.6 8.2H9.4A4.5 4.5 0 0 1 12 8Z"/></svg>
+                  <h4>Your support contract on the Farnborough switch lapsed 11 days ago</h4>
+                </div>
+                <p style="margin:0 0 8px;color:var(--ink-2);font-size:13.5px">I check renewal dates every Monday. This one slipped past because the reseller sent the notice to the old finance address.</p>
+                <dl class="kv">
+                  <dt>Device</dt><dd>FRN-SW-01 · Catalyst 9300-24T</dd>
+                  <dt>Lapsed</dt><dd>18 July 2026 · 11 days ago</dd>
+                  <dt>Renewal</dt><dd>£1,840 / year via Insight, £2,110 direct</dd>
+                </dl>
+                <div class="actions">
+                  <button class="btn btn-sm btn-primary">Get Bram to quote it</button>
+                  <button class="btn btn-sm">Remind me Friday</button>
+                  <button class="btn btn-sm btn-ghost">Not important</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- pending approval -->
+          <div class="msg agent" id="chatApproval">
+            <span class="avatar"><span class="portrait hair" data-portrait="bram" data-size="34"></span><span class="status st-waiting"></span></span>
+            <div class="body">
+              <div class="who"><b>Bram</b><span class="badge-agent">Agent</span><span class="t">10:31</span><span class="chip is-gold"><span class="dot wait"></span>Waiting on you</span></div>
+              <p>I found the switch cover cheaper than the reseller quote, but it's a card payment — that's your call, not mine.</p>
+              <div class="callout approval">
+                <div class="hd">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--marigold)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2.4"/><path d="M3 10h18M6.5 14.5h3"/></svg>
+                  <h4>Permission to spend</h4>
+                </div>
+                <div class="spend"><span class="amt">£1,612.00</span><span class="per">one year · Smartnet 8×5×NBD</span></div>
+                <dl class="kv">
+                  <dt>Vendor</dt><dd>Softcat, quote SC-448120 (valid 6 days)</dd>
+                  <dt>Card</dt><dd>Business Visa ···· 4417</dd>
+                  <dt>Saves</dt><dd>£228 against the Insight quote</dd>
+                  <dt>Rule hit</dt><dd>Anything over £250 needs Vikas</dd>
+                </dl>
+                <div class="actions">
+                  <button class="btn btn-gold" data-approve="chat">Approve £1,612.00</button>
+                  <button class="btn btn-danger" data-reject="chat">Reject</button>
+                  <button class="btn btn-ghost btn-sm">See the quote</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="msg agent">
+            <span class="avatar"><span class="portrait hair is-thinking" data-portrait="rook" data-size="34"></span><span class="status st-working"></span></span>
+            <div class="body">
+              <div class="who"><b>Rook</b><span class="badge-agent">Agent</span><span class="t">now</span></div>
+              <div class="thinking"><span class="bars"><i></i><i></i><i></i><i></i><i></i></span> Writing the shaping policy for FRN-SW-01 · 40 seconds in</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer">
+          <div class="composer-box">
+            <textarea class="field" rows="1" placeholder="Message #ops-floor — type @ to call an agent in"></textarea>
+            <div class="tools">
+              <button class="mini">@ agent</button>
+              <button class="mini">Attach</button>
+              <button class="mini">Delegate as a job</button>
+              <div class="grow"></div>
+              <span class="eyebrow">Enter to send</span>
+              <button class="btn btn-sm btn-primary">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="aside">
+        <div class="aside-sec">
+          <span class="eyebrow">In this channel</span>
+          <button class="mini-agent" style="width:100%;border:0;background:transparent" data-go="dm">
+            <span class="avatar"><span class="portrait" data-portrait="mercer" data-size="36"></span><span class="status st-working"></span></span>
+            <span style="min-width:0;text-align:left"><span class="nm" style="display:block">Mercer</span><span class="rl" style="display:block">Network analyst · Claude</span></span>
+          </button>
+          <button class="mini-agent" style="width:100%;border:0;background:transparent">
+            <span class="avatar"><span class="portrait" data-portrait="juno" data-size="36"></span><span class="status st-idle"></span></span>
+            <span style="min-width:0;text-align:left"><span class="nm" style="display:block">Juno</span><span class="rl" style="display:block">Research &amp; briefs · Claude</span></span>
+          </button>
+          <button class="mini-agent" style="width:100%;border:0;background:transparent">
+            <span class="avatar"><span class="portrait" data-portrait="rook" data-size="36"></span><span class="status st-working"></span></span>
+            <span style="min-width:0;text-align:left"><span class="nm" style="display:block">Rook</span><span class="rl" style="display:block">Scripts &amp; configs · Codex</span></span>
+          </button>
+        </div>
+        <div class="aside-sec">
+          <span class="eyebrow">Running now</span>
+          <div class="job"><b>Shaping policy · FRN-SW-01</b>Rook · started 10:33<div class="bar"><i style="width:62%"></i></div></div>
+          <div class="job"><b>Weekly renewal sweep</b>Juno · 41 of 60 contracts<div class="bar"><i style="width:68%"></i></div></div>
+        </div>
+        <div class="aside-sec">
+          <span class="eyebrow">Spent this month</span>
+          <div class="spend" style="margin-top:6px"><span class="amt">£1,612</span><span class="per">of £3,000 ceiling</span></div>
+          <div class="bar"><i style="width:54%;background:var(--marigold-hi)"></i></div>
+          <p style="font-size:12.5px;color:var(--ink-3);margin:9px 0 0">One purchase, approved by you. Agents have never spent unapproved.</p>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- =========================================================
+       3 · DIRECT MESSAGE
+       ========================================================= -->
+  <section class="screen" id="s-dm">
+    <div class="chatgrid no-aside">
+      <aside class="sidebar">
+        <div class="sidebar-head"><h2 style="font-size:17px">Studio floor</h2></div>
+        <div class="side-scroll">
+          <div class="side-group">
+            <span class="eyebrow">Channels</span>
+            <button class="side-item" data-go="chat"><span class="hash">#</span><span class="txt">ops-floor</span><span class="cnt hot">3</span></button>
+            <button class="side-item"><span class="hash">#</span><span class="txt">procurement</span><span class="cnt">12</span></button>
+            <button class="side-item"><span class="hash">#</span><span class="txt">weekend-lab</span></button>
+          </div>
+          <div class="side-group">
+            <span class="eyebrow">Direct</span>
+            <button class="side-item" aria-current="true"><span class="avatar" data-portrait="mercer" data-size="22"></span><span class="txt">Mercer</span></button>
+            <button class="side-item"><span class="avatar" data-portrait="juno" data-size="22"></span><span class="txt">Juno</span></button>
+            <button class="side-item"><span class="avatar" data-portrait="rook" data-size="22"></span><span class="txt">Rook</span></button>
+            <button class="side-item"><span class="avatar" data-portrait="pip" data-size="22"></span><span class="txt">Pip</span></button>
+            <button class="side-item"><span class="avatar" data-portrait="calla" data-size="22"></span><span class="txt">Calla</span></button>
+            <button class="side-item"><span class="avatar" data-portrait="bram" data-size="22"></span><span class="txt">Bram</span></button>
+          </div>
+        </div>
+      </aside>
+
+      <div class="thread">
+        <header class="dm-head">
+          <span class="avatar"><span class="portrait" data-portrait="mercer" data-size="48"></span><span class="status st-working"></span></span>
+          <div style="min-width:0">
+            <h2>Mercer</h2>
+            <div class="role">Network analyst · reads your configs, never writes them without asking</div>
+          </div>
+          <div class="grow"></div>
+          <span class="chip is-pine"><span class="dot live"></span>Working</span>
+          <span class="chip">Claude · Opus 4.8</span>
+          <button class="btn btn-sm" data-go="editor">Edit</button>
+        </header>
+
+        <div class="msgs">
+          <div class="daymark"><span class="eyebrow">Just the two of you · nothing here is posted to a channel</span></div>
+
+          <div class="msg" style="grid-template-columns:38px minmax(0,1fr)">
+            <span class="avatar"><span class="portrait hair" style="background:var(--marigold-soft);display:grid;place-items:center;font-family:var(--display);color:var(--marigold);font-size:15px">V</span></span>
+            <div class="body">
+              <div class="who"><b>Vikas</b><span class="t">08:40</span></div>
+              <p>Before I brief the board — is the Farnborough thing our fault or the provider's? Plain answer please.</p>
+            </div>
+          </div>
+
+          <div class="msg agent">
+            <span class="avatar"><span class="portrait hair" data-portrait="mercer" data-size="34"></span><span class="status st-working"></span></span>
+            <div class="body">
+              <div class="who"><b>Mercer</b><span class="badge-agent">Agent</span><span class="t">08:41</span></div>
+              <p>Ours. The line does what it promises; we put a nightly backup on top of a working day. The provider's fault would look like packet loss at all hours — this only ever happens between 15:50 and 16:20.</p>
+              <p>If the board asks how it went unnoticed: nothing was watching link saturation at branch sites. I've started watching it now.</p>
+            </div>
+          </div>
+
+          <div class="msg" style="grid-template-columns:38px minmax(0,1fr)">
+            <span class="avatar"><span class="portrait hair" style="background:var(--marigold-soft);display:grid;place-items:center;font-family:var(--display);color:var(--marigold);font-size:15px">V</span></span>
+            <div class="body">
+              <div class="who"><b>Vikas</b><span class="t">08:43</span></div>
+              <p>Give me three lines I can read out.</p>
+            </div>
+          </div>
+
+          <div class="msg agent">
+            <span class="avatar"><span class="portrait hair" data-portrait="mercer" data-size="34"></span><span class="status st-working"></span></span>
+            <div class="body">
+              <div class="who"><b>Mercer</b><span class="badge-agent">Agent</span><span class="t">08:44</span></div>
+              <div class="answer">
+                <p>1 — Farnborough's afternoon drop-outs were caused by our own backup filling a 200&nbsp;Mb line, not by the internet provider.</p>
+                <p>2 — The fix is a traffic limit on the backup during office hours; it costs nothing and takes ten minutes.</p>
+                <p>3 — We've added link-saturation monitoring at every branch so this shows up on day one, not week three.</p>
+                <div class="actions">
+                  <button class="btn btn-sm">Copy</button>
+                  <button class="btn btn-sm">Shorter</button>
+                  <button class="btn btn-sm">Add the numbers</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="msg agent">
+            <span class="avatar"><span class="portrait hair is-thinking" data-portrait="mercer" data-size="34"></span><span class="status st-working"></span></span>
+            <div class="body">
+              <div class="who"><b>Mercer</b><span class="badge-agent">Agent</span><span class="t">now</span></div>
+              <div class="thinking"><span class="bars"><i></i><i></i><i></i><i></i><i></i></span> Checking whether Reading has the same backup pattern</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer">
+          <div class="composer-box">
+            <textarea class="field" rows="1" placeholder="Message Mercer"></textarea>
+            <div class="tools">
+              <button class="mini">Attach a config</button>
+              <button class="mini">Turn this into a job</button>
+              <div class="grow"></div>
+              <span class="eyebrow">Enter to send</span>
+              <button class="btn btn-sm btn-primary">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================================================
+       4 · CREW  (hero)
+       ========================================================= -->
+  <section class="screen on" id="s-crew">
+    <div class="crew">
+      <header class="crew-hero">
+        <div>
+          <span class="eyebrow">Cloud9 · the crew</span>
+          <h1>Six hires,<br>no <em>payroll</em>.</h1>
+          <p>Everyone here was written by you in plain words. They keep their own skills, run on the app you gave them, and stop at the line you drew.</p>
+        </div>
+        <div class="crew-stats">
+          <div class="stat"><div class="n">2</div><div class="l">Working now</div></div>
+          <div class="stat"><div class="n">1</div><div class="l">Waiting on you</div></div>
+          <div class="stat"><div class="n">148</div><div class="l">Jobs this month</div></div>
+        </div>
+      </header>
+
+      <div class="crew-bar">
+        <div class="seg">
+          <button aria-pressed="true">Everyone</button>
+          <button aria-pressed="false">Working</button>
+          <button aria-pressed="false">Waiting</button>
+          <button aria-pressed="false">Off duty</button>
+        </div>
+        <span class="chip">Claude · 4</span>
+        <span class="chip">Codex · 2</span>
+        <div class="grow"></div>
+        <button class="btn btn-primary" data-go="editor">Hire an agent</button>
+      </div>
+
+      <div class="crew-grid" id="crewGrid"></div>
+    </div>
+  </section>
+
+  <!-- =========================================================
+       5 · EDITOR
+       ========================================================= -->
+  <section class="screen" id="s-editor">
+    <div class="editor">
+      <header class="topbar">
+        <button class="btn btn-sm btn-ghost" data-go="crew">← Crew</button>
+        <h2>Mercer</h2>
+        <span class="sub">Edited 3 days ago · 41 jobs run</span>
+        <div class="grow"></div>
+        <button class="btn btn-sm btn-danger">Retire</button>
+        <button class="btn btn-sm">Discard</button>
+        <button class="btn btn-sm btn-primary">Save Mercer</button>
+      </header>
+
+      <div class="editor-body">
+        <div class="form-col">
+
+          <fieldset>
+            <div class="sec-head"><h3>Who they are</h3><span class="eyebrow">The basics</span></div>
+            <p class="sec-note">Names matter — you'll be typing this one a lot.</p>
+            <div class="two">
+              <div class="field-row">
+                <label for="f-name">Name</label>
+                <input class="input" id="f-name" value="Mercer">
+              </div>
+              <div class="field-row">
+                <label for="f-tag">Job title <span class="hint">shown under the name</span></label>
+                <input class="input" id="f-tag" value="Network analyst">
+              </div>
+            </div>
+            <div class="field-row">
+              <label for="f-does">What they do, in your words</label>
+              <textarea class="textarea" id="f-does">You watch our network the way a good engineer would: interface counters, config drift, provider status. You explain findings in plain English first and the technical detail second. You never change a live device — you write the change and hand it to me. If something looks wrong outside a job, say so.</textarea>
+            </div>
+            <div class="field-row">
+              <label>Portrait <span class="hint">two colours and a face — no photo needed</span></label>
+              <div class="swatches" id="swatches"></div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <div class="sec-head"><h3>Where they run</h3><span class="eyebrow">App and model</span></div>
+            <p class="sec-note">Both apps are signed in. Bigger models cost more per job and think longer.</p>
+            <div class="pick-apps">
+              <button class="app-pick" aria-pressed="true" data-app="claude">
+                <span class="mark" style="color:var(--marigold)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18 12 5l5 13"/><path d="M9 14h6"/></svg></span>
+                <span style="min-width:0"><span class="nm" style="display:block">Claude</span><span class="ms">Signed in · 4 models</span></span>
+              </button>
+              <button class="app-pick" aria-pressed="false" data-app="codex">
+                <span class="mark" style="color:var(--ultra)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 9-3.5 3L9 15"/><path d="m15 9 3.5 3L15 15"/></svg></span>
+                <span style="min-width:0"><span class="nm" style="display:block">Codex</span><span class="ms">Signed in · 3 models</span></span>
+              </button>
+            </div>
+            <div class="two" style="margin-top:14px">
+              <div class="field-row">
+                <label for="f-model">Model</label>
+                <select class="select" id="f-model">
+                  <option selected>Opus 4.8 — best judgement, slowest</option>
+                  <option>Sonnet 5 — quick, good enough for sweeps</option>
+                  <option>Opus 4.1 — older, cheaper</option>
+                </select>
+              </div>
+              <div class="field-row">
+                <label for="f-effort">Thinking effort</label>
+                <select class="select" id="f-effort">
+                  <option>Light — answer fast</option>
+                  <option selected>Normal</option>
+                  <option>Deep — take your time, cost goes up</option>
+                </select>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <div class="sec-head"><h3>What they're allowed to do</h3><span class="eyebrow">Abilities</span></div>
+            <p class="sec-note">Off means the ability doesn't exist for this agent — not even with permission.</p>
+            <div class="panel">
+              <div class="toggle-row"><div class="tx"><b>Read files on this machine</b><span>Limited to the folders you list below</span></div><button class="sw" aria-pressed="true" aria-label="Read files"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Search the web</b><span>Vendor docs, status pages, pricing</span></div><button class="sw" aria-pressed="true" aria-label="Search the web"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Run commands</b><span>Read-only network commands only</span></div><button class="sw" aria-pressed="true" aria-label="Run commands"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Change live devices</b><span>Writes configs to switches and firewalls</span></div><button class="sw" aria-pressed="false" aria-label="Change live devices"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Send email as you</b><span>To vendors and colleagues</span></div><button class="sw" aria-pressed="false" aria-label="Send email"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Spend money</b><span>Uses the card in Settings</span></div><button class="sw" aria-pressed="false" aria-label="Spend money"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Start work on its own</b><span>Can act without being asked first</span></div><button class="sw" aria-pressed="true" aria-label="Start work on its own"></button></div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <div class="sec-head"><h3>When to stop and ask</h3><span class="eyebrow">Approval rules</span></div>
+            <p class="sec-note">Anything matching a rule pauses the job and lands in Tasks with your name on it.</p>
+            <div class="panel">
+              <div class="toggle-row"><div class="tx"><b>Any spend at all</b><span>Even £1</span></div><button class="sw" aria-pressed="true" aria-label="Ask before any spend"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Above a limit</b><span>Ask only over the amount you set</span></div>
+                <input class="input" style="width:110px;flex:none" value="£250" aria-label="Spend limit">
+                <button class="sw" aria-pressed="true" aria-label="Ask above a limit"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Anything that touches a live device</b><span>Config pushes, reboots, firmware</span></div><button class="sw" aria-pressed="true" aria-label="Ask before touching live devices"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Messages that leave the building</b><span>Email or tickets to people outside</span></div><button class="sw" aria-pressed="true" aria-label="Ask before external messages"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Jobs longer than 30 minutes</b><span>Checks in before running on</span></div><button class="sw" aria-pressed="false" aria-label="Ask for long jobs"></button></div>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <div class="sec-head"><h3>Skills</h3><span class="eyebrow">4 taught · 1 uploaded</span></div>
+            <p class="sec-note">A skill is a named routine with your instructions. Mercer picks the right one when a job matches it.</p>
+
+            <div class="skill" data-open="1">
+              <button class="skill-hd"><svg class="car" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg><span class="nm">Branch health sweep</span><span class="sm">Runs every weekday at 08:00</span><span class="chip is-pine">On</span></button>
+              <div class="skill-bd">
+                <div class="field-row">
+                  <label>Instructions</label>
+                  <textarea class="textarea">Pull 14 days of interface counters for every branch router. Flag any link over 85% at any point in the working day, any interface with errors climbing, and any config that differs from the golden template. Write it up as: what changed, what it means for staff, what I'd do. Never more than one page.</textarea>
+                </div>
+                <div class="two">
+                  <div class="field-row"><label>Runs</label><select class="select"><option selected>Every weekday 08:00</option><option>When I ask</option><option>Hourly</option></select></div>
+                  <div class="field-row"><label>Uses</label><input class="input" value="LibreNMS export, golden-configs folder"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="skill">
+              <button class="skill-hd"><svg class="car" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg><span class="nm">Config diff and explain</span><span class="sm">Compares a device against the golden template, in plain words</span><span class="chip is-pine">On</span></button>
+              <div class="skill-bd"><div class="field-row"><label>Instructions</label><textarea class="textarea">Diff the running config against the golden template. For each difference say whether it is deliberate, risky, or unexplained — and who changed it if the log says.</textarea></div></div>
+            </div>
+
+            <div class="skill">
+              <button class="skill-hd"><svg class="car" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg><span class="nm">Incident first pass</span><span class="sm">Triggered when a branch drops twice in an hour</span><span class="chip is-pine">On</span></button>
+              <div class="skill-bd"><div class="field-row"><label>Instructions</label><textarea class="textarea">Establish blast radius, timeline and the three most likely causes before waking anyone up. Post to #incident-log, not to #ops-floor.</textarea></div></div>
+            </div>
+
+            <div class="skill">
+              <button class="skill-hd"><svg class="car" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg><span class="nm">Board-ready summary</span><span class="sm">Uploaded · house-style.skill.md</span><span class="chip">Off</span></button>
+              <div class="skill-bd"><div class="field-row"><label>Instructions</label><textarea class="textarea">Three lines, no jargon, no hedging. Cause, fix, what stops it happening again.</textarea></div></div>
+            </div>
+
+            <button class="dropzone" style="width:100%;margin-top:12px">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3.5A2.5 2.5 0 0 0 6.5 21h11a2.5 2.5 0 0 0 2.5-2.5V15"/></svg>
+              <span><b>Upload a skill file</b></span>
+              <code>.skill.md or .zip · drop it here or browse</code>
+            </button>
+          </fieldset>
+        </div>
+
+        <aside class="preview-col">
+          <div class="preview-sticky">
+            <span class="eyebrow" style="display:block;margin-bottom:12px">How they'll appear</span>
+            <div class="preview-card">
+              <div class="plate" id="previewPlate"></div>
+              <div class="info" style="padding:15px 16px 16px;display:grid;gap:9px">
+                <h3 style="font-family:var(--display);font-size:23px;letter-spacing:-.02em" id="previewName">Mercer</h3>
+                <div style="font-size:13px;color:var(--ink-2);margin-top:-6px" id="previewRole">Network analyst</div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                  <span class="chip is-gold">Claude</span><span class="chip">Opus 4.8</span><span class="chip is-pine"><span class="dot live"></span>Working</span>
+                </div>
+              </div>
+            </div>
+            <p style="font-size:12.5px;color:var(--ink-3);margin-top:14px">Saved to<br><code style="font-family:var(--mono);font-size:11.5px">Documents\Cloud9\agents\mercer.agent.md</code></p>
+            <div class="rule" style="margin:16px 0"></div>
+            <span class="eyebrow" style="display:block;margin-bottom:9px">Recent behaviour</span>
+            <p style="font-size:13px;color:var(--ink-2);margin:0">41 jobs · 0 rule breaches · asked permission 6 times, all granted. Average job 3m&nbsp;12s.</p>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================================================
+       6 · TASKS
+       ========================================================= -->
+  <section class="screen" id="s-tasks">
+    <div class="tasks">
+      <header class="topbar">
+        <h2>Tasks</h2>
+        <span class="sub">Jobs you handed out, and the ones waiting on your word</span>
+        <div class="grow"></div>
+        <div class="seg">
+          <button aria-pressed="true">All</button><button aria-pressed="false">Running</button><button aria-pressed="false">Done</button><button aria-pressed="false">Failed</button>
+        </div>
+        <button class="btn btn-sm btn-primary">Delegate a job</button>
+      </header>
+
+      <div class="tasks-body">
+        <div class="tasks-main">
+          <span class="eyebrow" style="display:block;margin-bottom:12px">Running · 2</span>
+
+          <div class="task">
+            <span class="avatar"><span class="portrait is-thinking" data-portrait="rook" data-size="40"></span><span class="status st-working"></span></span>
+            <div style="min-width:0">
+              <h4>Write a shaping policy for FRN-SW-01</h4>
+              <div class="meta"><span>Rook · Codex · GPT-5.4</span><span>·</span><span>Started 10:33 by Vikas</span><span class="chip is-pine"><span class="dot live"></span>Running</span></div>
+              <div class="out"><b>Where it's up to</b><br>Golden template read. Drafting a policy-map that caps the backup VLAN at 60&nbsp;Mb between 08:00 and 18:30. Will hand you the config to review — it won't push anything.</div>
+              <div class="bar" style="max-width:340px"><i style="width:62%"></i></div>
+            </div>
+            <div class="right"><span class="chip">2m 41s</span><button class="btn btn-sm">Watch</button><button class="btn btn-sm btn-ghost">Stop</button></div>
+          </div>
+
+          <div class="task">
+            <span class="avatar"><span class="portrait is-thinking" data-portrait="juno" data-size="40"></span><span class="status st-working"></span></span>
+            <div style="min-width:0">
+              <h4>Weekly renewal sweep — every contract we hold</h4>
+              <div class="meta"><span>Juno · Claude · Sonnet 5</span><span>·</span><span>Started 09:00 · scheduled</span><span class="chip is-pine"><span class="dot live"></span>Running</span></div>
+              <div class="out"><b>Where it's up to</b><br>41 of 60 contracts checked. One lapsed (Farnborough switch), two lapse within 30 days.</div>
+              <div class="bar" style="max-width:340px"><i style="width:68%"></i></div>
+            </div>
+            <div class="right"><span class="chip">1h 34m</span><button class="btn btn-sm">Watch</button><button class="btn btn-sm btn-ghost">Stop</button></div>
+          </div>
+
+          <span class="eyebrow" style="display:block;margin:26px 0 12px">Finished today · 4</span>
+
+          <div class="task">
+            <span class="avatar"><span class="portrait" data-portrait="mercer" data-size="40"></span><span class="status st-working"></span></span>
+            <div style="min-width:0">
+              <h4>Find out why Farnborough drops at 4pm</h4>
+              <div class="meta"><span>Mercer · Claude · Opus 4.8</span><span>·</span><span>09:13 → 09:24</span><span class="chip is-pine">Done</span></div>
+              <div class="out"><b>Result</b><br>Our nightly backup saturates a 200&nbsp;Mb line during office hours. Not the provider. Recommended shaping to 60&nbsp;Mb, 08:00–18:30.</div>
+            </div>
+            <div class="right"><span class="chip">11m 02s</span><button class="btn btn-sm" data-go="chat">Read it</button></div>
+          </div>
+
+          <div class="task">
+            <span class="avatar"><span class="portrait" data-portrait="pip" data-size="40"></span><span class="status st-idle"></span></span>
+            <div style="min-width:0">
+              <h4>Move Thursday's vendor call and tell everyone</h4>
+              <div class="meta"><span>Pip · Claude · Sonnet 5</span><span>·</span><span>08:02 → 08:04</span><span class="chip is-pine">Done</span></div>
+              <div class="out"><b>Result</b><br>Moved to Friday 11:00. Four people accepted, Deb declined and asked for notes. Draft notes waiting for you.</div>
+            </div>
+            <div class="right"><span class="chip">2m 12s</span><button class="btn btn-sm">Read it</button></div>
+          </div>
+
+          <div class="task">
+            <span class="avatar"><span class="portrait" data-portrait="calla" data-size="40"></span><span class="status st-idle"></span></span>
+            <div style="min-width:0">
+              <h4>Redraw the branch network diagram from the new configs</h4>
+              <div class="meta"><span>Calla · Claude · Opus 4.8</span><span>·</span><span>Yesterday 16:40 → 17:05</span><span class="chip is-pine">Done</span></div>
+              <div class="out"><b>Result</b><br>Four-site diagram with the new Woking uplink. Saved to Documents\Cloud9\out\branch-map-v7.svg</div>
+            </div>
+            <div class="right"><span class="chip">24m 51s</span><button class="btn btn-sm">Open file</button></div>
+          </div>
+
+          <div class="task">
+            <span class="avatar"><span class="portrait" data-portrait="rook" data-size="40"></span><span class="status st-idle"></span></span>
+            <div style="min-width:0">
+              <h4>Back up every switch config to the vault</h4>
+              <div class="meta"><span>Rook · Codex · GPT-5.4-mini</span><span>·</span><span>02:00 → 02:06</span><span class="chip is-madder">Stopped</span></div>
+              <div class="out"><b>What went wrong</b><br>SLO-SW-02 refused the login — the service account password expired on 26 July. The other 11 devices backed up fine. Nothing was lost; it just needs a new password.</div>
+            </div>
+            <div class="right"><span class="chip">6m 08s</span><button class="btn btn-sm">Retry</button><button class="btn btn-sm btn-ghost">Details</button></div>
+          </div>
+        </div>
+
+        <aside class="tasks-side">
+          <div style="display:flex;align-items:center;gap:9px;margin-bottom:14px">
+            <span class="eyebrow">Waiting on you</span>
+            <span class="chip is-gold" id="apprCount">2</span>
+          </div>
+
+          <div id="apprList">
+            <div class="approval" data-appr="1">
+              <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px">
+                <span class="avatar"><span class="portrait" data-portrait="bram" data-size="30"></span></span>
+                <div style="min-width:0"><h4>Buy a year of switch support</h4><div class="meta" style="font-size:12px;color:var(--ink-3)">Bram · 10:31</div></div>
+              </div>
+              <div class="spend" style="margin:6px 0"><span class="amt" style="font-size:25px">£1,612.00</span></div>
+              <p style="font-size:12.5px;color:var(--ink-2);margin:0 0 10px">Softcat quote SC-448120. £228 cheaper than the reseller. Card ···· 4417.</p>
+              <div class="actions"><button class="btn btn-sm btn-gold" data-approve="1">Approve</button><button class="btn btn-sm btn-danger" data-reject="1">Reject</button><button class="btn btn-sm btn-ghost">Quote</button></div>
+            </div>
+
+            <div class="approval" data-appr="2">
+              <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:8px">
+                <span class="avatar"><span class="portrait" data-portrait="rook" data-size="30"></span></span>
+                <div style="min-width:0"><h4>Push the shaping policy to FRN-SW-01</h4><div class="meta" style="font-size:12px;color:var(--ink-3)">Rook · 10:38 · touches a live device</div></div>
+              </div>
+              <p style="font-size:12.5px;color:var(--ink-2);margin:0 0 10px">18 lines of config, no interface goes down. Rook has a rollback ready and will confirm the line is up afterwards.</p>
+              <div class="actions"><button class="btn btn-sm btn-gold" data-approve="2">Approve</button><button class="btn btn-sm btn-danger" data-reject="2">Reject</button><button class="btn btn-sm btn-ghost">See config</button></div>
+            </div>
+          </div>
+
+          <div class="empty" id="apprEmpty" style="display:none">
+            <svg width="164" height="124" viewBox="0 0 164 124" role="img" aria-label="An empty in-tray, everything signed off">
+              <g fill="none" stroke="var(--ink-3)" stroke-width="1.8" stroke-linejoin="round">
+                <path d="M22 66v34a6 6 0 0 0 6 6h108a6 6 0 0 0 6-6V66" fill="var(--surface)"/>
+                <path d="M22 66h30l7 11h46l7-11h30" fill="var(--surface-2)"/>
+                <path d="M40 60V32a7 7 0 0 1 7-7h70a7 7 0 0 1 7 7v28" opacity=".55"/>
+                <path d="M56 52V22a6 6 0 0 1 6-6h40a6 6 0 0 1 6 6v30" opacity=".28"/>
+              </g>
+              <circle cx="82" cy="88" r="11" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="2"/>
+              <path d="m77 88 3.6 3.8L88 84" fill="none" stroke="var(--pine)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+              <g stroke="var(--marigold-hi)" stroke-width="2.2" stroke-linecap="round"><path d="M143 20v7M156 33h-7M153 11l-5 5"/></g>
+            </svg>
+            <h4>Nothing waiting</h4>
+            <p>Every request has an answer. The crew carries on.</p>
+          </div>
+
+          <div class="rule" style="margin:20px 0"></div>
+          <span class="eyebrow" style="display:block;margin-bottom:10px">Scheduled</span>
+          <div class="job"><b>Branch health sweep</b>Mercer · weekdays 08:00</div>
+          <div class="job"><b>Config vault backup</b>Rook · nightly 02:00</div>
+          <div class="job"><b>Renewal sweep</b>Juno · Mondays 09:00</div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================================================
+       7 · ACTIVITY
+       ========================================================= -->
+  <section class="screen" id="s-activity">
+    <div class="activity">
+      <header class="topbar">
+        <h2>Activity</h2>
+        <span class="sub">Everything that happened, and who did it</span>
+        <div class="grow"></div>
+        <div class="filters">
+          <span class="chip is-pine">Agents</span>
+          <span class="chip is-ultra">People</span>
+          <span class="chip is-gold">Money</span>
+          <button class="btn btn-sm">Export</button>
+        </div>
+      </header>
+
+      <div class="act-body">
+        <div class="act-day"><span class="eyebrow">Today · 29 July</span></div>
+        <div class="timeline">
+          <div class="ev by-agent">
+            <span class="avatar"><span class="portrait" data-portrait="rook" data-size="28"></span></span>
+            <div class="tx"><b>Rook started writing a shaping policy</b><p>Job delegated by Vikas from #ops-floor. Read 3 files, no writes.</p></div>
+            <span class="when">10:33</span>
+          </div>
+          <div class="ev by-money">
+            <span class="avatar"><span class="portrait" data-portrait="bram" data-size="28"></span></span>
+            <div class="tx"><b>Bram asked to spend £1,612.00</b><p>Rule hit: anything over £250 needs Vikas. Job paused, nothing charged.</p></div>
+            <span class="when">10:31</span>
+          </div>
+          <div class="ev by-agent">
+            <span class="avatar"><span class="portrait" data-portrait="juno" data-size="28"></span></span>
+            <div class="tx"><b>Juno flagged a lapsed support contract</b><p>Nobody asked. Found during the weekly renewal sweep, posted to #ops-floor.</p></div>
+            <span class="when">10:04</span>
+          </div>
+          <div class="ev by-human">
+            <span class="avatar"><span class="portrait hair" style="background:var(--pine-soft);display:grid;place-items:center;font-family:var(--display);color:var(--pine);font-size:13px;width:28px;height:28px">T</span></span>
+            <div class="tx"><b>Tom Whitaker confirmed the branch report</b><p>Replied in #ops-floor.</p></div>
+            <span class="when">09:26</span>
+          </div>
+          <div class="ev by-agent">
+            <span class="avatar"><span class="portrait" data-portrait="mercer" data-size="28"></span></span>
+            <div class="tx"><b>Mercer finished "Why does Farnborough drop at 4pm"</b><p>11m 02s · read 14 days of counters · concluded it's our backup, not the provider.</p></div>
+            <span class="when">09:24</span>
+          </div>
+          <div class="ev by-human">
+            <span class="avatar"><span class="portrait hair" style="background:var(--ultra-soft);display:grid;place-items:center;font-family:var(--display);color:var(--ultra);font-size:13px;width:28px;height:28px">P</span></span>
+            <div class="tx"><b>Priya Nadar raised the Farnborough drop-outs</b><p>#ops-floor. Mercer picked it up in under a minute.</p></div>
+            <span class="when">09:12</span>
+          </div>
+          <div class="ev by-agent">
+            <span class="avatar"><span class="portrait" data-portrait="pip" data-size="28"></span></span>
+            <div class="tx"><b>Pip moved Thursday's vendor call to Friday 11:00</b><p>Four accepted, one declined. Allowed without asking — calendar changes are on its free list.</p></div>
+            <span class="when">08:04</span>
+          </div>
+          <div class="ev by-human">
+            <span class="avatar"><span class="portrait hair" style="background:var(--marigold-soft);display:grid;place-items:center;font-family:var(--display);color:var(--marigold);font-size:13px;width:28px;height:28px">V</span></span>
+            <div class="tx"><b>Vikas edited Mercer</b><p>Turned off "change live devices". Added the skill "Board-ready summary".</p></div>
+            <span class="when">07:58</span>
+          </div>
+        </div>
+
+        <div class="act-day"><span class="eyebrow">Yesterday · 28 July</span></div>
+        <div class="timeline">
+          <div class="ev by-agent">
+            <span class="avatar"><span class="portrait" data-portrait="rook" data-size="28"></span></span>
+            <div class="tx"><b>Rook's nightly config backup stopped early</b><p>SLO-SW-02 refused the login — expired service account. 11 of 12 devices saved.</p></div>
+            <span class="when">02:06</span>
+          </div>
+          <div class="ev by-agent">
+            <span class="avatar"><span class="portrait" data-portrait="calla" data-size="28"></span></span>
+            <div class="tx"><b>Calla redrew the branch network diagram</b><p>Saved branch-map-v7.svg · 24m 51s.</p></div>
+            <span class="when">17:05</span>
+          </div>
+          <div class="ev by-human">
+            <span class="avatar"><span class="portrait hair" style="background:var(--marigold-soft);display:grid;place-items:center;font-family:var(--display);color:var(--marigold);font-size:13px;width:28px;height:28px">V</span></span>
+            <div class="tx"><b>Vikas hired Calla</b><p>Runs on Claude · Opus 4.8. Three skills taught on day one.</p></div>
+            <span class="when">16:12</span>
+          </div>
+          <div class="ev by-money">
+            <span class="avatar"><span class="portrait" data-portrait="bram" data-size="28"></span></span>
+            <div class="tx"><b>Bram's £89 cable order was rejected</b><p>Vikas rejected it: "we have these in the store cupboard". Bram closed the job.</p></div>
+            <span class="when">14:20</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================================================
+       8 · SETTINGS
+       ========================================================= -->
+  <section class="screen" id="s-settings">
+    <div class="settings">
+      <header class="topbar">
+        <h2>Setup</h2>
+        <span class="sub">How Cloud9 behaves on this machine</span>
+        <div class="grow"></div>
+        <span class="eyebrow">Saved automatically</span>
+      </header>
+      <div class="set-body">
+        <nav class="set-nav" aria-label="Settings sections">
+          <button aria-current="true">Appearance</button>
+          <button>New agents</button>
+          <button>Quiet hours</button>
+          <button>Notifications</button>
+          <button>Agent files</button>
+          <button>Connected apps</button>
+          <button>Spending</button>
+          <button>Danger zone</button>
+        </nav>
+        <div class="set-main">
+
+          <section class="set-sec">
+            <h3>Appearance</h3>
+            <p class="sec-note">Cloud9 follows Windows unless you pick a side.</p>
+            <div class="theme-picks">
+              <button class="theme-pick" data-theme-set="light" aria-pressed="false">
+                <span class="prev" style="background:#F7F8F3"><span style="background:#D8DCD1;border-right:1px solid #C9CFC0"></span><span style="display:grid;gap:4px;padding:8px"><span style="height:7px;width:70%;background:#151F1B;border-radius:3px"></span><span style="height:6px;width:90%;background:#C9CFC0;border-radius:3px"></span><span style="height:6px;width:52%;background:#B77A0C;border-radius:3px"></span></span></span>
+                <span class="nm">Daylight</span>
+              </button>
+              <button class="theme-pick" data-theme-set="dark" aria-pressed="true">
+                <span class="prev" style="background:#171F1B"><span style="background:#0A0F0D;border-right:1px solid #2C3833"></span><span style="display:grid;gap:4px;padding:8px"><span style="height:7px;width:70%;background:#ECEFE5;border-radius:3px"></span><span style="height:6px;width:90%;background:#2C3833;border-radius:3px"></span><span style="height:6px;width:52%;background:#EFB447;border-radius:3px"></span></span></span>
+                <span class="nm">Studio dark</span>
+              </button>
+              <button class="theme-pick" data-theme-set="system" aria-pressed="false">
+                <span class="prev" style="background:linear-gradient(100deg,#F7F8F3 50%,#171F1B 50%)"><span></span><span></span></span>
+                <span class="nm">Follow Windows</span>
+              </button>
+            </div>
+            <div class="panel" style="margin-top:14px">
+              <div class="toggle-row"><div class="tx"><b>Bigger text</b><span>Adds two points everywhere</span></div><button class="sw" aria-pressed="false" aria-label="Bigger text"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Show agent portraits</b><span>Off falls back to initials</span></div><button class="sw" aria-pressed="true" aria-label="Show portraits"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Reduce movement</b><span>Stops the thinking animations</span></div><button class="sw" aria-pressed="false" aria-label="Reduce movement"></button></div>
+            </div>
+          </section>
+
+          <section class="set-sec">
+            <h3>New agents start here</h3>
+            <p class="sec-note">Defaults for anyone you hire from now on. Existing agents keep their own settings.</p>
+            <div class="two">
+              <div class="field-row"><label>App</label><select class="select"><option selected>Claude</option><option>Codex</option><option>Ask me each time</option></select></div>
+              <div class="field-row"><label>Model</label><select class="select"><option selected>Sonnet 5 — quick and cheap</option><option>Opus 4.8 — best judgement</option><option>GPT-5.4</option></select></div>
+            </div>
+            <div class="panel">
+              <div class="toggle-row"><div class="tx"><b>Start new agents with spending off</b><span>Strongly recommended</span></div><button class="sw" aria-pressed="true" aria-label="Spending off by default"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Let new agents act on their own</b><span>They can start work you didn't ask for</span></div><button class="sw" aria-pressed="false" aria-label="Proactive by default"></button></div>
+            </div>
+          </section>
+
+          <section class="set-sec">
+            <h3>Quiet hours</h3>
+            <p class="sec-note">Agents finish what they're doing, then wait. Anything urgent still lands in Tasks for the morning.</p>
+            <div class="two">
+              <div class="field-row"><label>From</label><input class="input" value="19:30"></div>
+              <div class="field-row"><label>Until</label><input class="input" value="07:30"></div>
+            </div>
+            <div class="panel">
+              <div class="toggle-row"><div class="tx"><b>Quiet at weekends too</b><span>Saturday and Sunday, all day</span></div><button class="sw" aria-pressed="true" aria-label="Weekend quiet"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Let scheduled jobs run anyway</b><span>Nightly backups still happen, just silently</span></div><button class="sw" aria-pressed="true" aria-label="Scheduled jobs in quiet hours"></button></div>
+            </div>
+          </section>
+
+          <section class="set-sec">
+            <h3>Notifications</h3>
+            <p class="sec-note">Cloud9 interrupts you as little as it can get away with.</p>
+            <div class="panel">
+              <div class="toggle-row"><div class="tx"><b>An agent needs permission</b><span>Always worth a nudge</span></div><button class="sw" aria-pressed="true" aria-label="Permission notifications"></button></div>
+              <div class="toggle-row"><div class="tx"><b>A job finished</b><span>Desktop toast with the result</span></div><button class="sw" aria-pressed="true" aria-label="Job finished notifications"></button></div>
+              <div class="toggle-row"><div class="tx"><b>A job failed</b><span></span></div><button class="sw" aria-pressed="true" aria-label="Job failed notifications"></button></div>
+              <div class="toggle-row"><div class="tx"><b>An agent noticed something on its own</b><span>The proactive ones can be chatty</span></div><button class="sw" aria-pressed="false" aria-label="Proactive notifications"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Someone mentioned you in a channel</b><span></span></div><button class="sw" aria-pressed="true" aria-label="Mention notifications"></button></div>
+            </div>
+          </section>
+
+          <section class="set-sec">
+            <h3>Where agents live</h3>
+            <p class="sec-note">Every agent is one readable text file. Back this folder up and you've backed up your crew.</p>
+            <div class="path"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.2l2 2.5h7.8A2.5 2.5 0 0 1 21 10v7.5A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5Z"/></svg><span>C:\Users\vikasmit\Documents\Cloud9\agents</span><button class="btn btn-sm" style="margin-left:auto">Change</button><button class="btn btn-sm">Open</button></div>
+            <div class="panel" style="margin-top:12px">
+              <div class="toggle-row"><div class="tx"><b>Keep a version of every edit</b><span>6 agents · 34 versions · 1.2 MB</span></div><button class="sw" aria-pressed="true" aria-label="Version history"></button></div>
+              <div class="toggle-row"><div class="tx"><b>Watch the folder for outside changes</b><span>Edit an agent in Notepad and Cloud9 picks it up</span></div><button class="sw" aria-pressed="true" aria-label="Watch folder"></button></div>
+            </div>
+          </section>
+
+          <section class="set-sec">
+            <h3>Connected apps</h3>
+            <p class="sec-note">Cloud9 uses your own signed-in apps. No keys are stored in Cloud9.</p>
+            <div class="panel">
+              <div class="toggle-row">
+                <span class="mark" style="width:34px;height:34px;border-radius:9px;display:grid;place-items:center;flex:none;background:var(--marigold-soft);color:var(--marigold)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18 12 5l5 13"/><path d="M9 14h6"/></svg></span>
+                <div class="tx"><b>Claude</b><span>vikas@home · Max plan · used by 4 agents</span></div>
+                <span class="chip is-pine">Signed in</span><button class="btn btn-sm">Sign out</button>
+              </div>
+              <div class="toggle-row">
+                <span class="mark" style="width:34px;height:34px;border-radius:9px;display:grid;place-items:center;flex:none;background:var(--ultra-soft);color:var(--ultra)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 9-3.5 3L9 15"/><path d="m15 9 3.5 3L15 15"/></svg></span>
+                <div class="tx"><b>Codex</b><span>vikas53953 · Pro · used by 2 agents</span></div>
+                <span class="chip is-pine">Signed in</span><button class="btn btn-sm">Sign out</button>
+              </div>
+              <div class="toggle-row">
+                <span class="mark" style="width:34px;height:34px;border-radius:9px;display:grid;place-items:center;flex:none;background:var(--surface-2);color:var(--ink-3)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2.2"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10"/></svg></span>
+                <div class="tx"><b>Local models</b><span>Nothing signed in</span></div>
+                <button class="btn btn-sm">Connect</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="set-sec">
+            <h3>Spending</h3>
+            <p class="sec-note">A hard ceiling agents cannot argue their way past.</p>
+            <div class="two">
+              <div class="field-row"><label>Monthly ceiling</label><input class="input" value="£3,000"></div>
+              <div class="field-row"><label>Ask above</label><input class="input" value="£250"></div>
+            </div>
+            <div class="path"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="18" height="12" rx="2.4"/><path d="M3 10h18"/></svg><span>Business Visa ···· 4417 · expires 04/29</span><button class="btn btn-sm" style="margin-left:auto">Replace</button></div>
+          </section>
+
+          <section class="set-sec">
+            <h3>Danger zone</h3>
+            <p class="sec-note">These can't be undone from inside Cloud9.</p>
+            <div class="panel danger">
+              <div class="toggle-row"><div class="tx"><b>Stop every agent right now</b><span>Running jobs are killed mid-step</span></div><button class="btn btn-sm btn-danger">Stop all</button></div>
+              <div class="toggle-row"><div class="tx"><b>Clear all history</b><span>Chats, jobs and the activity log. Agents stay.</span></div><button class="btn btn-sm btn-danger">Clear history</button></div>
+              <div class="toggle-row"><div class="tx"><b>Retire the whole crew</b><span>Deletes all 6 agent files</span></div><button class="btn btn-sm btn-danger">Retire everyone</button></div>
+              <div class="toggle-row"><div class="tx"><b>Reset Cloud9</b><span>Back to first run. Signs both apps out.</span></div><button class="btn btn-sm btn-danger">Reset</button></div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  </main>
+</div>
+
+<!-- =========================================================
+     9 · QUICK CHAT
+     ========================================================= -->
+<div class="qc-veil" id="qcVeil" role="dialog" aria-modal="true" aria-label="Quick chat">
+  <div class="qc">
+    <div class="qc-top">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="var(--marigold)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 3 5 13.5h5.6L9.8 21l8.7-10.6h-5.7Z"/></svg>
+      <input id="qcInput" placeholder="Ask anyone, or start a job…" value="check if reading has the same backup problem">
+      <span class="kbd">Esc</span>
+    </div>
+    <div class="qc-list">
+      <span class="eyebrow" style="display:block;padding:8px 11px 5px">Send to</span>
+      <button class="qc-row" data-sel="1">
+        <span class="avatar"><span class="portrait" data-portrait="mercer" data-size="30"></span><span class="status st-working"></span></span>
+        <span style="min-width:0"><span class="nm" style="display:block">Mercer</span><span class="ds" style="display:block">Network analyst · already looking at this</span></span>
+        <span class="grow"></span><span class="k">Enter</span>
+      </button>
+      <button class="qc-row">
+        <span class="avatar"><span class="portrait" data-portrait="rook" data-size="30"></span><span class="status st-working"></span></span>
+        <span style="min-width:0"><span class="nm" style="display:block">Rook</span><span class="ds" style="display:block">Scripts &amp; configs · busy for ~4 min</span></span>
+      </button>
+      <button class="qc-row">
+        <span class="avatar"><span class="portrait" data-portrait="juno" data-size="30"></span><span class="status st-idle"></span></span>
+        <span style="min-width:0"><span class="nm" style="display:block">Juno</span><span class="ds" style="display:block">Research &amp; briefs · free</span></span>
+      </button>
+      <div class="rule" style="margin:8px 11px"></div>
+      <span class="eyebrow" style="display:block;padding:4px 11px 5px">Or</span>
+      <button class="qc-row">
+        <span style="width:30px;display:grid;place-items:center;color:var(--ink-3)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+        <span style="min-width:0"><span class="nm" style="display:block">Delegate as a background job</span><span class="ds" style="display:block">Pick who later · result lands in Tasks</span></span>
+        <span class="grow"></span><span class="k">Ctrl ↵</span>
+      </button>
+      <button class="qc-row">
+        <span style="width:30px;display:grid;place-items:center;color:var(--ink-3)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A2.5 2.5 0 0 1 17.5 17H8l-4 3.5V6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5Z"/></svg></span>
+        <span style="min-width:0"><span class="nm" style="display:block">Post in #ops-floor</span><span class="ds" style="display:block">Everyone sees it, agents included</span></span>
+      </button>
+    </div>
+    <div class="qc-foot">
+      <span class="eyebrow">Mercer will answer here — nothing is posted to a channel</span>
+      <span class="grow"></span>
+      <span class="kbd">↑↓</span><span class="kbd">↵ send</span>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================
+     PROTOTYPE PICKER
+     ========================================================= -->
+<div class="picker" id="picker">
+  <div class="picker-hd" id="pickerDrag">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ink-3)" stroke-width="2" stroke-linecap="round"><path d="M8 6h.01M8 12h.01M8 18h.01M16 6h.01M16 12h.01M16 18h.01"/></svg>
+    <span class="t">Studio · screens</span>
+    <button class="mini" id="themeBtn" title="Toggle theme">Dark</button>
+    <button class="mini" id="minBtn" title="Collapse">–</button>
+  </div>
+  <div class="picker-list" id="pickerList"></div>
+  <div class="picker-foot">
+    <button class="btn btn-sm" id="prevBtn">← Prev</button>
+    <button class="btn btn-sm" id="nextBtn">Next →</button>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ---------------- agents ---------------- */
+var AGENTS = {
+  mercer:{name:"Mercer",role:"Network analyst",app:"Claude",model:"Opus 4.8",status:"working",
+    now:"Checking whether Reading has the same backup pattern",
+    face:{c1:"#125347",c2:"#D3E4DC",head:"arch",eyes:"visor",crest:"antenna",ground:"#0F3F36"}},
+  juno:{name:"Juno",role:"Research & briefs",app:"Claude",model:"Sonnet 5",status:"working",
+    now:"Weekly renewal sweep · 41 of 60 contracts",
+    face:{c1:"#2B3CA0",c2:"#DCE0F6",head:"orb",eyes:"arcs",crest:"halo",ground:"#1F2C7C"}},
+  rook:{name:"Rook",role:"Scripts & configs",app:"Codex",model:"GPT-5.4",status:"working",
+    now:"Writing the shaping policy for FRN-SW-01",
+    face:{c1:"#3F4A55",c2:"#DFE4E8",head:"block",eyes:"dots",crest:"bars",ground:"#2C343C"}},
+  pip:{name:"Pip",role:"Inbox & diary",app:"Claude",model:"Sonnet 5",status:"idle",
+    now:"Last: moved Thursday's vendor call to Friday 11:00",
+    face:{c1:"#B77A0C",c2:"#F6E6C4",head:"orb",eyes:"dots",crest:"wedge",ground:"#8E5D06"}},
+  calla:{name:"Calla",role:"Diagrams & documents",app:"Claude",model:"Opus 4.8",status:"idle",
+    now:"Last: redrew the branch network diagram · branch-map-v7.svg",
+    face:{c1:"#8A3E7A",c2:"#F0DCEE",head:"lozenge",eyes:"arcs",crest:"braid",ground:"#6C2C5E"}},
+  bram:{name:"Bram",role:"Vendors & buying",app:"Codex",model:"GPT-5.4-mini",status:"waiting",
+    now:"Waiting on you: £1,612.00 for a year of switch support",
+    face:{c1:"#B32A42",c2:"#F6DCE0",head:"block",eyes:"ring",crest:"antenna",ground:"#8C1F33"}}
+};
+var ORDER=["mercer","juno","rook","pip","calla","bram"];
+var STATUS={working:{cls:"is-pine",txt:"Working",dot:"live"},waiting:{cls:"is-gold",txt:"Waiting on you",dot:"wait"},
+  idle:{cls:"",txt:"Free",dot:"off"},asleep:{cls:"",txt:"Off duty",dot:"off"}};
+
+/* ---------------- portrait engine (authored SVG) ---------------- */
+function head(f){
+  if(f.head==="orb")     return '<circle class="p-head" cx="50" cy="54" r="25" fill="'+f.c1+'"/>';
+  if(f.head==="block")   return '<rect class="p-head" x="27" y="30" width="46" height="48" rx="11" fill="'+f.c1+'"/>';
+  if(f.head==="lozenge") return '<ellipse class="p-head" cx="50" cy="54" rx="22" ry="27" fill="'+f.c1+'"/>';
+  return '<path class="p-head" d="M27 78V52a23 23 0 0 1 46 0v26Z" fill="'+f.c1+'"/>'; /* arch */
+}
+function eyes(f){
+  var col=f.c2;
+  if(f.eyes==="visor") return '<g class="p-eyes"><rect x="34" y="48" width="32" height="11" rx="5.5" fill="'+col+'"/>'+
+    '<circle cx="42" cy="53.5" r="2.4" fill="'+f.ground+'"/><circle cx="58" cy="53.5" r="2.4" fill="'+f.ground+'"/></g>';
+  if(f.eyes==="arcs") return '<g class="p-eyes" fill="none" stroke="'+col+'" stroke-width="3.4" stroke-linecap="round">'+
+    '<path d="M38 55a5 5 0 0 1 9 0"/><path d="M53 55a5 5 0 0 1 9 0"/></g>';
+  if(f.eyes==="ring") return '<g class="p-eyes"><circle cx="50" cy="53" r="10" fill="none" stroke="'+col+'" stroke-width="3.4"/>'+
+    '<circle cx="50" cy="53" r="3.4" fill="'+col+'"/></g>';
+  return '<g class="p-eyes"><circle cx="42" cy="53" r="3.6" fill="'+col+'"/><circle cx="58" cy="53" r="3.6" fill="'+col+'"/></g>';
+}
+function crest(f){
+  var s='stroke="'+f.c1+'" stroke-width="3" stroke-linecap="round" fill="none"';
+  if(f.crest==="antenna") return '<g '+s+'><path d="M50 30v-9"/></g><circle cx="50" cy="18" r="4" fill="'+f.c1+'"/>';
+  if(f.crest==="halo")    return '<ellipse cx="50" cy="21" rx="17" ry="5" '+s+'/>';
+  if(f.crest==="bars")    return '<g '+s+'><path d="M40 30v-8M50 30v-12M60 30v-8"/></g>';
+  if(f.crest==="wedge")   return '<path d="M50 19l9.5 10.5h-19Z" fill="'+f.c1+'"/>';
+  return '<path d="M34 26q8-9 16 0t16 0" '+s+'/>'; /* braid */
+}
+function portraitSVG(key,size){
+  var a=AGENTS[key]; if(!a) return "";
+  var f=a.face, id="g"+key+Math.random().toString(36).slice(2,7);
+  return '<svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Portrait of '+a.name+'">'+
+    '<defs><linearGradient id="'+id+'" x1="0" y1="0" x2="0" y2="1">'+
+      '<stop offset="0%" stop-color="'+f.c2+'"/><stop offset="100%" stop-color="'+f.c2+'" stop-opacity=".55"/></linearGradient></defs>'+
+    '<rect width="100" height="100" fill="url(#'+id+')"/>'+
+    '<circle cx="50" cy="44" r="34" fill="#ffffff" opacity=".45"/>'+
+    '<path d="M0 82h100v18H0Z" fill="'+f.ground+'" opacity=".18"/>'+
+    crest(f)+head(f)+eyes(f)+
+    '<path d="M22 100c0-13 12.5-20 28-20s28 7 28 20Z" fill="'+f.ground+'"/>'+
+    '</svg>';
+}
+function paintPortraits(root){
+  (root||document).querySelectorAll("[data-portrait]").forEach(function(el){
+    if(el.dataset.painted) return;
+    el.dataset.painted="1";
+    var s=parseInt(el.dataset.size||"34",10);
+    el.classList.add("portrait");
+    el.style.width=s+"px"; el.style.height=s+"px";
+    el.innerHTML=portraitSVG(el.dataset.portrait,s);
+  });
+}
+
+/* ---------------- crew grid ---------------- */
+function buildCrew(){
+  var g=document.getElementById("crewGrid"); if(!g) return;
+  var html="";
+  ORDER.forEach(function(k,i){
+    var a=AGENTS[k], st=STATUS[a.status];
+    html+='<article class="cast">'+
+      '<div class="plate'+(a.status==="working"?" is-thinking":"")+'">'+portraitSVG(k,320)+
+        '<span class="no">No. '+String(i+1).padStart(2,"0")+'</span>'+
+        '<span class="flag"><span class="chip '+st.cls+'"><span class="dot '+st.dot+'"></span>'+st.txt+'</span></span>'+
+      '</div>'+
+      '<div class="info">'+
+        '<h3>'+a.name+'</h3>'+
+        '<div class="role">'+a.role+'</div>'+
+        '<div class="runs"><span class="chip '+(a.app==="Claude"?"is-gold":"is-ultra")+'">'+a.app+'</span><span class="chip">'+a.model+'</span></div>'+
+        '<div class="now"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex:none;margin-top:2px"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg><span>'+a.now+'</span></div>'+
+      '</div></article>';
+  });
+  html+='<button class="cast cast-new" data-go="editor">'+
+    '<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="3.6"/><path d="M5 20a7 7 0 0 1 10.5-6"/><path d="M18 15.5v6M15 18.5h6"/></svg>'+
+    '<h3>Hire someone new</h3><p style="margin:0;font-size:13px;max-width:26ch">Describe the job in plain words. Cloud9 writes the agent file for you.</p></button>';
+  g.innerHTML=html;
+}
+
+/* ---------------- screens ---------------- */
+var SCREENS=[
+  {id:"welcome",label:"Welcome / connect",full:true},
+  {id:"chat",   label:"Main chat"},
+  {id:"dm",     label:"Direct message"},
+  {id:"crew",   label:"Agents overview"},
+  {id:"editor", label:"Create / edit agent"},
+  {id:"tasks",  label:"Tasks & approvals"},
+  {id:"activity",label:"Activity / history"},
+  {id:"settings",label:"Settings"},
+  {id:"quick",  label:"Quick chat (Ctrl K)"}
+];
+var current="crew";
+
+function show(id){
+  if(id==="quick"){ openQC(); return; }
+  var s=SCREENS.filter(function(x){return x.id===id;})[0];
+  if(!s) return;
+  current=id;
+  document.body.dataset.screen=id;
+  document.body.dataset.fullbleed=s.full?"1":"0";
+  document.querySelectorAll(".screen").forEach(function(el){el.classList.remove("on");});
+  var target=document.getElementById("s-"+id);
+  if(target){ target.classList.add("on"); paintPortraits(target); }
+  document.querySelectorAll(".rail-btn[data-go]").forEach(function(b){
+    var on = b.dataset.go===id || (id==="dm" && b.dataset.go==="chat") || (id==="editor" && b.dataset.go==="crew");
+    b.setAttribute("aria-current", on?"true":"false");
+  });
+  document.querySelectorAll("#pickerList button").forEach(function(b){
+    b.setAttribute("aria-current", b.dataset.go===id?"true":"false");
+  });
+  var m=document.getElementById("chatMsgs"); if(id==="chat"&&m) m.scrollTop=m.scrollHeight;
+}
+
+function buildPicker(){
+  var l=document.getElementById("pickerList"), h="";
+  SCREENS.forEach(function(s,i){
+    h+='<button data-go="'+s.id+'"><span class="n">'+String(i+1)+'</span><span>'+s.label+'</span></button>';
+  });
+  l.innerHTML=h;
+}
+
+/* ---------------- quick chat ---------------- */
+var qc=document.getElementById("qcVeil"), lastFocus=null;
+function openQC(){ lastFocus=document.activeElement; qc.classList.add("on"); paintPortraits(qc);
+  var i=document.getElementById("qcInput"); if(i){i.focus(); i.select();} }
+function closeQC(){ qc.classList.remove("on"); if(lastFocus&&lastFocus.focus) lastFocus.focus(); }
+qc.addEventListener("click",function(e){ if(e.target===qc) closeQC(); });
+
+/* ---------------- theme ---------------- */
+function currentTheme(){
+  var t=document.documentElement.getAttribute("data-theme");
+  if(t) return t;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";
+}
+function setTheme(t){
+  if(t==="system") document.documentElement.removeAttribute("data-theme");
+  else if(t) document.documentElement.setAttribute("data-theme",t);
+  var btn=document.getElementById("themeBtn");
+  if(btn) btn.textContent = currentTheme()==="dark" ? "Light" : "Dark";
+  document.querySelectorAll("[data-theme-set]").forEach(function(b){
+    var v=document.documentElement.getAttribute("data-theme")||"system";
+    b.setAttribute("aria-pressed", b.dataset.themeSet===v ? "true":"false");
+  });
+}
+
+/* ---------------- approvals ---------------- */
+function resolveApproval(node, ok, label){
+  var box=document.createElement("div");
+  box.className="resolved";
+  box.innerHTML = ok
+    ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--pine)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7"/></svg><span><b>Approved by you.</b> '+label+'</span>'
+    : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--madder)" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg><span><b>Rejected.</b> Nothing was spent or changed. The agent has been told why.</span>';
+  node.replaceWith(box);
+  return box;
+}
+function wireApprovals(){
+  document.addEventListener("click",function(e){
+    var yes=e.target.closest("[data-approve]"), no=e.target.closest("[data-reject]");
+    if(!yes && !no) return;
+    var id=(yes||no).dataset.approve || (yes||no).dataset.reject;
+    if(id==="chat"){
+      var c=document.querySelector("#chatApproval .callout.approval");
+      if(c) resolveApproval(c, !!yes, "Bram is placing the order now — receipt will land in Tasks.");
+      return;
+    }
+    var card=document.querySelector('.approval[data-appr="'+id+'"]');
+    if(card){
+      var b=resolveApproval(card, !!yes, "The job has resumed.");
+      b.style.margin="0 0 12px";
+      setTimeout(function(){
+        var left=document.querySelectorAll("#apprList .approval").length;
+        document.getElementById("apprCount").textContent=left;
+        if(left===0){
+          document.getElementById("apprEmpty").style.display="grid";
+          var badge=document.querySelector(".rail-badge b"); if(badge) badge.style.display="none";
+        }
+      },10);
+    }
+  });
+}
+
+/* ---------------- editor bits ---------------- */
+var PALETTES=[
+  {c1:"#125347",c2:"#D3E4DC",ground:"#0F3F36"},
+  {c1:"#2B3CA0",c2:"#DCE0F6",ground:"#1F2C7C"},
+  {c1:"#B77A0C",c2:"#F6E6C4",ground:"#8E5D06"},
+  {c1:"#B32A42",c2:"#F6DCE0",ground:"#8C1F33"},
+  {c1:"#8A3E7A",c2:"#F0DCEE",ground:"#6C2C5E"},
+  {c1:"#3F4A55",c2:"#DFE4E8",ground:"#2C343C"}
+];
+var HEADS=["arch","orb","block","lozenge"], EYES=["visor","dots","arcs","ring"], CRESTS=["antenna","halo","bars","wedge","braid"];
+var draft={c:0,h:0,e:0,cr:0};
+function paintPreview(){
+  var f={c1:PALETTES[draft.c].c1,c2:PALETTES[draft.c].c2,ground:PALETTES[draft.c].ground,
+         head:HEADS[draft.h],eyes:EYES[draft.e],crest:CRESTS[draft.cr]};
+  AGENTS.__draft={name:"draft",face:f};
+  document.getElementById("previewPlate").innerHTML=portraitSVG("__draft",320);
+}
+function buildEditor(){
+  var sw=document.getElementById("swatches"); if(!sw) return;
+  var h="";
+  PALETTES.forEach(function(p,i){
+    h+='<button class="swatch" data-sw="'+i+'" aria-pressed="'+(i===0)+'" aria-label="Colour '+(i+1)+'" style="background:linear-gradient(135deg,'+p.c1+' 50%,'+p.c2+' 50%)"></button>';
+  });
+  h+='<button class="btn btn-sm" id="shuffleFace" style="margin-left:6px">Shuffle the face</button>';
+  sw.innerHTML=h;
+  sw.addEventListener("click",function(e){
+    var b=e.target.closest("[data-sw]");
+    if(b){ draft.c=+b.dataset.sw; sw.querySelectorAll("[data-sw]").forEach(function(x){x.setAttribute("aria-pressed",x===b?"true":"false");}); paintPreview(); return; }
+    if(e.target.closest("#shuffleFace")){
+      draft.h=(draft.h+1)%HEADS.length; draft.e=(draft.e+1)%EYES.length; draft.cr=(draft.cr+2)%CRESTS.length; paintPreview();
+    }
+  });
+  var n=document.getElementById("f-name"), t=document.getElementById("f-tag");
+  n.addEventListener("input",function(){document.getElementById("previewName").textContent=n.value||"Unnamed";});
+  t.addEventListener("input",function(){document.getElementById("previewRole").textContent=t.value||"No job title yet";});
+  paintPreview();
+}
+
+/* ---------------- generic wiring ---------------- */
+document.addEventListener("click",function(e){
+  var go=e.target.closest("[data-go]");
+  if(go){ e.preventDefault(); show(go.dataset.go); return; }
+
+  var sw=e.target.closest(".sw");
+  if(sw){ sw.setAttribute("aria-pressed", sw.getAttribute("aria-pressed")==="true"?"false":"true"); return; }
+
+  var skill=e.target.closest(".skill-hd");
+  if(skill){ var p=skill.parentElement; p.dataset.open = p.dataset.open==="1"?"0":"1"; return; }
+
+  var seg=e.target.closest(".seg button");
+  if(seg){ seg.parentElement.querySelectorAll("button").forEach(function(b){b.setAttribute("aria-pressed",b===seg?"true":"false");}); return; }
+
+  var app=e.target.closest(".app-pick");
+  if(app){
+    app.parentElement.querySelectorAll(".app-pick").forEach(function(b){b.setAttribute("aria-pressed",b===app?"true":"false");});
+    var m=document.getElementById("f-model");
+    m.innerHTML = app.dataset.app==="claude"
+      ? '<option selected>Opus 4.8 — best judgement, slowest</option><option>Sonnet 5 — quick, good enough for sweeps</option><option>Opus 4.1 — older, cheaper</option>'
+      : '<option selected>GPT-5.4 — best judgement</option><option>GPT-5.4-mini — quick and cheap</option><option>o4 — older, cheaper</option>';
+    return;
+  }
+
+  var sn=e.target.closest(".set-nav button");
+  if(sn){ sn.parentElement.querySelectorAll("button").forEach(function(b){b.setAttribute("aria-current",b===sn?"true":"false");});
+    var idx=Array.prototype.indexOf.call(sn.parentElement.children,sn);
+    var sec=document.querySelectorAll(".set-main .set-sec")[idx];
+    if(sec) sec.scrollIntoView({behavior:"smooth",block:"start"});
+    return; }
+
+  var si=e.target.closest(".side-item");
+  if(si && !si.dataset.go){ si.parentElement.querySelectorAll(".side-item").forEach(function(b){b.setAttribute("aria-current",b===si?"true":"false");}); return; }
+
+  var tp=e.target.closest("[data-theme-set]");
+  if(tp){ setTheme(tp.dataset.themeSet); return; }
+
+  var qr=e.target.closest(".qc-row");
+  if(qr){ document.querySelectorAll(".qc-row").forEach(function(b){b.removeAttribute("data-sel");}); qr.dataset.sel="1"; return; }
+});
+
+document.getElementById("railQuick").addEventListener("click",openQC);
+document.getElementById("themeBtn").addEventListener("click",function(){
+  setTheme(currentTheme()==="dark"?"light":"dark");
+});
+document.getElementById("minBtn").addEventListener("click",function(){
+  document.getElementById("picker").classList.toggle("min");
+});
+document.getElementById("prevBtn").addEventListener("click",function(){step(-1);});
+document.getElementById("nextBtn").addEventListener("click",function(){step(1);});
+function step(d){
+  var i=SCREENS.findIndex(function(s){return s.id===current;});
+  var n=(i+d+SCREENS.length)%SCREENS.length;
+  show(SCREENS[n].id);
+}
+
+document.addEventListener("keydown",function(e){
+  if((e.ctrlKey||e.metaKey) && (e.key==="k"||e.key==="K")){ e.preventDefault(); qc.classList.contains("on")?closeQC():openQC(); return; }
+  if(e.key==="Escape" && qc.classList.contains("on")){ closeQC(); return; }
+  var tag=(e.target.tagName||"").toLowerCase();
+  if(tag==="input"||tag==="textarea"||tag==="select") return;
+  if(e.key==="ArrowRight"){ step(1); }
+  if(e.key==="ArrowLeft"){ step(-1); }
+});
+
+/* draggable picker */
+(function(){
+  var p=document.getElementById("picker"), h=document.getElementById("pickerDrag"), dx=0, dy=0, on=false;
+  h.addEventListener("pointerdown",function(e){
+    if(e.target.closest("button")) return;
+    on=true; var r=p.getBoundingClientRect();
+    dx=e.clientX-r.left; dy=e.clientY-r.top;
+    p.style.right="auto"; p.style.bottom="auto"; p.style.left=r.left+"px"; p.style.top=r.top+"px";
+    h.setPointerCapture(e.pointerId);
+  });
+  h.addEventListener("pointermove",function(e){
+    if(!on) return;
+    var x=Math.max(4,Math.min(window.innerWidth-p.offsetWidth-4, e.clientX-dx));
+    var y=Math.max(4,Math.min(window.innerHeight-40, e.clientY-dy));
+    p.style.left=x+"px"; p.style.top=y+"px";
+  });
+  h.addEventListener("pointerup",function(){on=false;});
+})();
+
+/* boot */
+buildCrew();
+buildPicker();
+buildEditor();
+wireApprovals();
+paintPortraits(document);
+setTheme(null);
+show("crew");
+})();
+</script>
+</body>
+</html>

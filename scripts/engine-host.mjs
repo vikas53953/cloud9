@@ -1,9 +1,10 @@
 // Dev/QA engine host: runs the owner's agents against a local relay, and owns
 // harness detection + sign-in for browser-only dev (no Electron).
 //
-// Credentials: CLOUD9_CRED remains the dev escape hatch (harness-signin.md
-// decision 4). A token captured by "Sign in with Claude" is kept in memory for
-// this run only — the dev host has no OS keychain; the Electron shell does.
+// Normally NO credential is needed at all: the Claude and Codex apps installed
+// on this computer are signed in and own their own credentials, and this host
+// simply spawns them (feedback-round-1.md). CLOUD9_CRED remains the dev escape
+// hatch for a machine where those apps are signed out.
 import { startEngineHost } from "@cloud9/engine";
 
 const relayUrl = process.env.CLOUD9_RELAY_URL ?? "ws://127.0.0.1:8787";
@@ -26,11 +27,10 @@ startEngineHost({
     ...(cred ? { claude: { kind, value: cred } } : {}),
     ...(codexKey ? { codex: { kind: "apiKey", value: codexKey } } : {}),
   },
-  onClaudeToken: t => {
-    // never log the value — length only
-    console.log(`[engine-host] captured a Claude sign-in token (length ${t.length}); ` +
-      "it lives in memory for this dev run only — the desktop app stores it encrypted");
-  },
   onReady: () => console.log(
-    `[engine-host] online (${cred ? "live Claude" : demoMode ? "demo mode" : "no Claude credential yet"})`),
+    `[engine-host] online (${cred
+      ? "using a saved Claude key"
+      : demoMode
+        ? "demo mode"
+        : "using the Claude and Codex apps' own sign-ins"})`),
 });

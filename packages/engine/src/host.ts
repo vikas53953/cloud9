@@ -9,6 +9,7 @@
 // accounts on different services; they are stored, injected and cleared
 // separately, and a Codex key must never reach an ANTHROPIC_* variable.
 import { HarnessName, HarnessState } from "@cloud9/shared";
+import { ClaudeCliProvider } from "./claude-cli.js";
 import { CodexProvider } from "./codex.js";
 import { Engine } from "./engine.js";
 import { HarnessManager, HarnessOptions } from "./harness.js";
@@ -26,17 +27,11 @@ export interface EngineHostOptions {
   /** credentials already on this machine (decrypted by the shell just now) */
   credentials?: Partial<Record<HarnessName, StoredCredential>>;
   /**
-   * Persist a token captured by "Sign in with Claude". The Electron shell
-   * encrypts it with safeStorage; the dev host has nowhere safe to put one, so
-   * it keeps it in memory for this run only.
-   */
-  onClaudeToken?: (token: string) => void | Promise<void>;
-  /**
    * Canned replies with no harness at all. Must be asked for explicitly — a
    * signed-out harness must never quietly produce fake answers that look real.
    */
   demoMode?: boolean;
-  harness?: Omit<HarnessOptions, "onChange" | "onClaudeToken">;
+  harness?: Omit<HarnessOptions, "onChange" | "credentialKind">;
   /** called once the relay says hello */
   onReady?: () => void;
   /** false in tests */
@@ -62,31 +57,50 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
   const creds: Partial<Record<HarnessName, StoredCredential>> = { ...opts.credentials };
   let lastState: HarnessState | undefined;
 
-  /** Rebuild both providers from (credentials + detected harness state). */
+  /** The models a harness currently offers — the last gate before a command line. */
+  const modelsFor = (harness: HarnessName): string[] => lastState?.[harness].models ?? [];
+
+  /**
+   * Rebuild both providers from (credentials + detected harness state).
+   *
+   * Order per harness, and it is the same for both (feedback-round-1.md):
+   *  1. a credential WE hold  → today's behaviour (SDK for Claude, key for Codex)
+   *  2. the app's own login   → spawn the CLI with NO credential variables
+   *  3. demo mode, if asked for explicitly
+   *  4. nothing — the agent says "my engine isn't connected"
+   *
+   * A signed-out harness never quietly falls back to canned replies.
+   */
   const applyProviders = (): void => {
-    // --- Claude needs a credential we actually hold: the SDK bills against a
-    // token/key. A signed-in CLI alone is not enough, and a signed-OUT Claude
-    // must not fall back to canned replies that look like real answers.
+    // --- Claude
     const claude = creds.claude?.value ? creds.claude : undefined;
     if (claude) {
       engine.provider = new SdkProvider(
         claude.kind === "apiKey" ? { apiKey: claude.value } : { oauthToken: claude.value },
         engine.agentDataDir,
       );
+    } else if (lastState?.claude.installed && lastState.claude.signedIn) {
+      // the Claude app on this computer is signed in and owns its credential
+      engine.provider = new ClaudeCliProvider({
+        agentDataDir: engine.agentDataDir,
+        command: opts.harness?.claudeCommand,
+        models: () => modelsFor("claude"),
+      });
     } else if (opts.demoMode) {
       engine.provider = new MockProvider();
     } else {
       engine.provider = undefined; // agents will say "my engine isn't connected"
     }
 
-    // --- Codex holds its own login inside the CLI, so a signed-in CLI is
-    // enough. A stored key is the fallback for accounts without a ChatGPT login.
+    // --- Codex
     const codexReady = (lastState?.codex.installed && lastState.codex.signedIn)
       || !!creds.codex?.value;
     if (codexReady) {
       engine.codexProvider = new CodexProvider({
         agentDataDir: engine.agentDataDir,
+        command: opts.harness?.codexCommand,
         apiKey: () => creds.codex?.value || undefined,
+        models: () => modelsFor("codex"),
       });
     } else if (opts.demoMode) {
       engine.codexProvider = new MockProvider();
@@ -111,23 +125,35 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
 
   const harness = new HarnessManager({
     ...opts.harness,
+    // a held credential outranks the CLI's own login when deciding authKind,
+    // because it is what the engine will actually bill against
+    credentialKind: (h: HarnessName) => {
+      const c = creds[h];
+      if (!c?.value) return undefined;
+      return c.kind === "oauthToken" ? "token" : "apiKey";
+    },
     onChange: (state: HarnessState) => {
+      const hadClaude = !!engine.provider;
       const hadCodex = !!engine.codexProvider;
       lastState = state;
       applyProviders();
+      if (!!engine.provider !== hadClaude) {
+        log(engine.provider
+          ? `[engine-host] Claude connected (${state.claude.authKind}) — Claude agents can run`
+          : "[engine-host] Claude disconnected — Claude agents will ask you to sign in");
+      }
       if (!!engine.codexProvider !== hadCodex) {
         log(engine.codexProvider
-          ? "[engine-host] Codex connected — Codex agents can run"
+          ? `[engine-host] Codex connected (${state.codex.authKind}) — Codex agents can run`
           : "[engine-host] Codex disconnected — Codex agents will ask you to sign in");
       }
       engine.reportHarness(state);
     },
-    onClaudeToken: async token => {
-      useCredential("claude", "oauthToken", token);
-      await opts.onClaudeToken?.(token);
-    },
     log: opts.harness?.log ?? ((m: string) => log(m)),
   });
+
+  // the engine's last gate reads the same live list the providers do
+  engine.harnessModels = modelsFor;
 
   engine.onHarnessRequest = (action: "status" | "signIn", which?: HarnessName) => {
     if (action === "status") void harness.refresh();

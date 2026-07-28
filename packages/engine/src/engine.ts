@@ -6,7 +6,7 @@ import path from "node:path";
 import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, Channel, ClientFrame, HarnessName, HarnessState, ID,
-  Message, ServerFrame, Task, WorldState, validateAgentInput,
+  Message, SKILL_FILE_NAME_RE, ServerFrame, Task, WorldState, validateAgentInput,
 } from "@cloud9/shared";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
@@ -55,6 +55,12 @@ export class Engine {
   onReady?: () => void;
   /** the engine host answers these — it owns the local CLIs */
   onHarnessRequest?: (action: "status" | "signIn", harness?: HarnessName) => void;
+  /**
+   * The real model list for a harness, supplied by the host from live detection.
+   * Used at the LAST gate: an agent whose model isn't on its harness's list does
+   * not get a turn, so an unknown id can never reach a command line.
+   */
+  harnessModels?: (harness: HarnessName) => string[];
 
   constructor(opts: EngineOptions) {
     this.opts = opts;
@@ -218,19 +224,50 @@ export class Engine {
     return (agent.provider ?? "claude") === "codex" ? this.codexProvider : this.provider;
   }
 
-  /** Run one turn on the agent's own harness. */
-  private async respondAs(
+  /** Run one turn on the agent's own harness. Public so tests can drive it. */
+  async respondAs(
     agent: AgentDef, input: { context: string; trigger: string; triggerAuthor: string },
   ): Promise<string> {
     const harness = agent.provider ?? "claude";
-    // last-gate validation: this agent definition arrived from a client
-    const problem = validateAgentInput(agent);
+    // last-gate validation: this agent definition arrived from a client, and
+    // its model is checked against the harness's REAL list, not just its shape
+    const problem = validateAgentInput(agent, { models: this.harnessModels?.(harness) });
     if (problem) throw new Error(`refusing to run agent ${agent.id}: ${problem}`);
     const provider = this.providerFor(agent);
     if (!provider) {
       throw new HarnessUnavailableError(harness, `${harness} is not connected on this machine`);
     }
+    this.writeSkillFiles(agent);
     return provider.respond({ agent, ...input });
+  }
+
+  /**
+   * Put a skill's files where the agent can read them: its own folder, one flat
+   * level, nothing else touched. File names are re-checked here against the
+   * same allowlist the relay used — a name that could point outside the folder
+   * is SKIPPED, never rewritten into something safe (run.ts's law).
+   */
+  writeSkillFiles(agent: AgentDef): void {
+    const skills = agent.skills ?? [];
+    if (skills.length === 0) return;
+    const dir = path.join(this.agentDataDir(agent.id), "skills");
+    for (const skill of skills) {
+      for (const file of skill.files ?? []) {
+        if (!SKILL_FILE_NAME_RE.test(file.name) || file.name.includes("..")) {
+          console.error(`[engine] skipped a skill file with an unusable name on agent ${agent.id}`);
+          continue;
+        }
+        const target = path.join(dir, file.name);
+        // belt and braces: the resolved path must still be inside the folder
+        if (path.relative(dir, target).startsWith("..")) continue;
+        try {
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(target, file.text, "utf8");
+        } catch (err) {
+          console.error(`[engine] could not write skill file for agent ${agent.id}:`, err);
+        }
+      }
+    }
   }
 
   /** Run one chat turn for an agent on its own harness. Public so tests can drive it. */

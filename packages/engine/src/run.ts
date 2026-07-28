@@ -135,6 +135,57 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
   });
 }
 
+/**
+ * Start a CLI in a terminal window the user can SEE and type into.
+ *
+ * This exists for one job: `claude setup-token` is interactive-only. Round 1
+ * spawned it with piped stdio and no TTY, so after the browser hand-off it had
+ * no terminal to finish in and the app waited forever (feedback-round-1.md,
+ * root cause). An interactive CLI gets a real console or it doesn't get run.
+ *
+ * We do not wait for it and we never read its output — the token stays in the
+ * user's own terminal. Completion is detected by polling the CLI's own status
+ * command, exactly like the Codex flow.
+ *
+ * Safety: every argument still goes through the same allowlist as run(). The
+ * console-opening wrapper around it is a fixed literal in this file, never
+ * anything a client can influence.
+ */
+export function runVisibleTerminal(cmd: string, args: string[]): Promise<RunResult> {
+  let inner: string;
+  try {
+    inner = [shellQuote(cmd), ...args.map(a => checkArg(a))].join(" ");
+  } catch (err) {
+    return Promise.reject(err);
+  }
+
+  // constant wrapper per platform — no interpolation but `inner`, already checked
+  const line = process.platform === "win32"
+    ? `start "Cloud9 sign-in" cmd /k ${inner}`
+    : process.platform === "darwin"
+      ? `open -a Terminal ${inner}`
+      : `x-terminal-emulator -e ${inner}`;
+
+  return new Promise<RunResult>(resolve => {
+    try {
+      const child = spawn(line, {
+        shell: true,
+        windowsHide: false, // the entire point: the user must see this window
+        detached: true,
+        stdio: "ignore",
+      });
+      child.on("error", () => { /* nothing waits on this; the poller finds out */ });
+      child.unref();
+      resolve({ code: 0, stdout: "", stderr: "", timedOut: false, notFound: false });
+    } catch (err) {
+      resolve({ code: null, stdout: "", stderr: String(err), timedOut: false, notFound: true });
+    }
+  });
+}
+
+/** A `runVisibleTerminal`-shaped function — tests inject a fake one. */
+export type VisibleRunner = typeof runVisibleTerminal;
+
 function checkArg(arg: string): string {
   // an argument that is a path may contain spaces; anything else may not
   return /\s/.test(arg) ? shellQuote(arg) : safeArg(arg);

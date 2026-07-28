@@ -92,18 +92,37 @@ test("run() kills the whole process tree when it times out", async () => {
     `spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore'});` +
     `setTimeout(()=>{},60000);`);
 
+  // The leash must not fire before the grandchild is actually alive, or the
+  // test proves nothing and fails for the wrong reason (node can take over a
+  // second to boot on a loaded machine). So: start the run, WAIT for the
+  // grandchild to announce itself, and only then let the timeout land.
   const started = Date.now();
-  const result = await run(process.execPath, [script], { timeoutMs: 1500 });
-  assert.equal(result.timedOut, true);
-  assert.ok(Date.now() - started < 10_000, "the leash actually fired");
+  const pending = run(process.execPath, [script], { timeoutMs: 8_000 });
 
-  // give the tree-kill a moment, then prove the grandchild stopped writing
-  await new Promise(r => setTimeout(r, 1500));
+  const aliveBy = Date.now() + 30_000;
+  while (!fs.existsSync(beat) && Date.now() < aliveBy) {
+    await new Promise(r => setTimeout(r, 100));
+  }
   assert.ok(fs.existsSync(beat), "the grandchild really did start");
-  const first = fs.readFileSync(beat, "utf8");
-  await new Promise(r => setTimeout(r, 1200));
-  const second = fs.readFileSync(beat, "utf8");
-  assert.equal(second, first, "the grandchild is still alive after the timeout");
+
+  const result = await pending;
+  assert.equal(result.timedOut, true);
+  assert.ok(Date.now() - started < 30_000, "the leash actually fired");
+
+  // The tree-kill is asynchronous and best-effort (`taskkill /T /F` on Windows),
+  // so this WAITS for the beat to stop rather than assuming a fixed delay is
+  // enough — on a loaded machine one more beat can land after the kill is sent.
+  // The assertion is unchanged: within the budget, the grandchild must go quiet
+  // and STAY quiet. Only the impatience is gone.
+  const quietFor = 1200;
+  const budget = Date.now() + 20_000;
+  let wentQuiet = false;
+  while (Date.now() < budget) {
+    const first = fs.readFileSync(beat, "utf8");
+    await new Promise(r => setTimeout(r, quietFor));
+    if (fs.readFileSync(beat, "utf8") === first) { wentQuiet = true; break; }
+  }
+  assert.ok(wentQuiet, "the grandchild is STILL alive well after the timeout — the tree was not killed");
 });
 
 test("output is captured as text and capped", async () => {

@@ -1,0 +1,1820 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud9 — P1 Slack True</title>
+<style>
+/* ============================================================
+   Cloud9 — P1 "Slack True"
+   Palette: deep teal ink chrome, jade brand, amber attention.
+   Signature: the "runline" — machine facts in mono under every
+   agent message (app · model · elapsed · cost). Humans get none.
+   ============================================================ */
+
+:root{
+  --rail:#0B1E25;
+  --side:#11303A;
+  --side-2:#173D49;
+  --side-txt:#B7CBD2;
+  --side-txt-dim:#7E9AA4;
+  --side-txt-hi:#FFFFFF;
+
+  --brand:#0E7C8C;
+  --brand-hi:#0B6473;
+  --brand-soft:#E2F1F3;
+  --amber:#C87F14;
+  --amber-soft:#FDF2DE;
+  --amber-line:#EBC98A;
+  --green:#177E51;
+  --green-soft:#E3F3EA;
+  --red:#B23A31;
+  --red-soft:#FBE9E7;
+  --violet:#6B4FA8;
+  --violet-soft:#EFEAFA;
+
+  --bg:#F4F6F7;
+  --surface:#FFFFFF;
+  --surface-2:#F8FAFA;
+  --hover:#F1F4F5;
+  --line:#DCE3E6;
+  --line-soft:#E8EDEF;
+  --txt:#132126;
+  --txt-2:#4C6068;
+  --txt-3:#75898F;
+  --focus:#0E7C8C;
+  --shadow:0 1px 2px rgba(9,30,37,.06), 0 8px 24px rgba(9,30,37,.08);
+  --shadow-lg:0 24px 64px rgba(9,30,37,.24);
+
+  --sans:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono","Segoe UI Mono",Consolas,"SF Mono",Menlo,monospace;
+
+  --r:6px; --r-lg:10px;
+}
+
+/* dark: media default (unless explicitly forced light) + explicit override */
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0A171B; --surface:#0F2127; --surface-2:#12272E; --hover:#173038;
+    --line:#223D45; --line-soft:#1B333A;
+    --txt:#E6EFF1; --txt-2:#A8BFC6; --txt-3:#7B959D;
+    --brand:#3AA9B8; --brand-hi:#4FC0CF; --brand-soft:#0E3A42;
+    --amber:#E4AC53; --amber-soft:#3A2C11; --amber-line:#6E5320;
+    --green:#4FBE86; --green-soft:#10331F; --red:#E8756A; --red-soft:#3A1B18;
+    --violet:#A98BE8; --violet-soft:#241B3A;
+    --side:#0D262E; --side-2:#13333D; --rail:#071419;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.36);
+    --shadow-lg:0 24px 64px rgba(0,0,0,.6);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0A171B; --surface:#0F2127; --surface-2:#12272E; --hover:#173038;
+  --line:#223D45; --line-soft:#1B333A;
+  --txt:#E6EFF1; --txt-2:#A8BFC6; --txt-3:#7B959D;
+  --brand:#3AA9B8; --brand-hi:#4FC0CF; --brand-soft:#0E3A42;
+  --amber:#E4AC53; --amber-soft:#3A2C11; --amber-line:#6E5320;
+  --green:#4FBE86; --green-soft:#10331F; --red:#E8756A; --red-soft:#3A1B18;
+  --violet:#A98BE8; --violet-soft:#241B3A;
+  --side:#0D262E; --side-2:#13333D; --rail:#071419;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.36);
+  --shadow-lg:0 24px 64px rgba(0,0,0,.6);
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%;overflow:hidden}
+body{
+  background:var(--bg); color:var(--txt);
+  font-family:var(--sans); font-size:14px; line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+button{background:none;border:0;cursor:pointer}
+a{color:var(--brand)}
+:focus-visible{outline:2px solid var(--focus); outline-offset:2px; border-radius:3px}
+.rail :focus-visible,.side :focus-visible{outline-color:#7FD8E4}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;scroll-behavior:auto!important}
+}
+.mono{font-family:var(--mono);font-size:11.5px;letter-spacing:-.1px;font-variant-numeric:tabular-nums}
+.eyebrow{font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--txt-3)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* ---------- prototype switcher strip ---------- */
+.proto{
+  height:42px; display:flex; align-items:center; gap:14px; padding:0 12px;
+  background:var(--rail); color:#C7DBE1; border-bottom:1px solid rgba(255,255,255,.08);
+  position:relative; z-index:60;
+}
+.proto b{color:#fff;font-size:12.5px;letter-spacing:.01em}
+.proto .tag{font-family:var(--mono);font-size:10.5px;color:#6E93A0;border:1px solid rgba(255,255,255,.14);padding:1px 6px;border-radius:99px}
+.proto-tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none;flex:1;min-width:0}
+.proto-tabs::-webkit-scrollbar{display:none}
+.proto-tabs button{
+  padding:4px 10px;border-radius:99px;font-size:12px;color:#9DBAC3;white-space:nowrap;
+  transition:background .12s,color .12s;
+}
+.proto-tabs button:hover{background:rgba(255,255,255,.08);color:#fff}
+.proto-tabs button[aria-current="true"]{background:var(--brand);color:#fff;font-weight:600}
+.proto-right{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+.proto-right button{font-size:11.5px;color:#9DBAC3;padding:4px 9px;border-radius:99px;border:1px solid rgba(255,255,255,.14)}
+.proto-right button:hover{background:rgba(255,255,255,.08);color:#fff}
+
+/* ---------- shell ---------- */
+.stage{height:calc(100vh - 42px);overflow:hidden;position:relative}
+.screen{display:none;height:100%}
+.screen.on{display:block}
+
+.shell{
+  height:100%; display:grid; grid-template-columns:64px 244px minmax(0,1fr);
+  grid-template-rows:minmax(0,1fr);
+  overflow:hidden;
+}
+.shell > *{min-height:0}
+.shell.details{grid-template-columns:64px 244px minmax(0,1fr) 320px}
+.shell:not(.details) .dpane{display:none}
+@media (max-width:1180px){ .shell.details{grid-template-columns:64px 244px minmax(0,1fr)} .shell.details .dpane{display:none} }
+
+/* ---------- workspace rail ---------- */
+.rail{background:var(--rail);display:flex;flex-direction:column;align-items:center;padding:10px 0 8px;gap:8px;min-width:0}
+.ws{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;font-weight:700;font-size:14px;color:#fff;position:relative}
+.ws.on{box-shadow:0 0 0 2px var(--rail),0 0 0 4px #fff}
+.ws-1{background:linear-gradient(150deg,#0E7C8C,#1AA6A0)}
+.ws-2{background:linear-gradient(150deg,#5C4B9B,#8B6FD1)}
+.ws .dot{position:absolute;top:-3px;right:-3px;min-width:16px;height:16px;border-radius:99px;background:#D3452F;color:#fff;font-size:10px;font-weight:700;display:grid;place-items:center;border:2px solid var(--rail);padding:0 3px}
+.ws-add{width:38px;height:38px;border-radius:11px;border:1px dashed rgba(255,255,255,.28);color:#8FB0BA;font-size:17px;display:grid;place-items:center}
+.ws-add:hover{background:rgba(255,255,255,.06);color:#fff}
+.rail hr{width:24px;border:0;border-top:1px solid rgba(255,255,255,.12);margin:2px 0}
+.rail .spacer{flex:1}
+.rail-btn{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;color:#8FB0BA}
+.rail-btn:hover{background:rgba(255,255,255,.08);color:#fff}
+.rail-me{width:32px;height:32px;border-radius:9px;background:#2E5C68;color:#fff;display:grid;place-items:center;font-weight:700;font-size:12px;position:relative}
+.rail-me::after{content:"";position:absolute;right:-2px;bottom:-2px;width:11px;height:11px;border-radius:99px;background:#2FBF71;border:2px solid var(--rail)}
+
+/* ---------- sidebar ---------- */
+.side{background:var(--side);color:var(--side-txt);display:flex;flex-direction:column;min-width:0;border-right:1px solid rgba(0,0,0,.2)}
+.side-head{padding:10px 12px 8px;border-bottom:1px solid rgba(255,255,255,.09)}
+.side-head .row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.side-head h1{margin:0;font-size:15px;color:var(--side-txt-hi);font-weight:700;letter-spacing:-.01em;display:flex;align-items:center;gap:5px}
+.side-head .sub{font-size:11.5px;color:var(--side-txt-dim);margin-top:1px}
+.side-head .icon{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;color:var(--side-txt)}
+.side-head .icon:hover{background:rgba(255,255,255,.1);color:#fff}
+.side-search{margin:8px 10px 6px;display:flex;align-items:center;gap:7px;padding:5px 9px;border-radius:7px;background:rgba(255,255,255,.09);color:var(--side-txt-dim);font-size:12.5px;width:calc(100% - 20px);text-align:left}
+.side-search:hover{background:rgba(255,255,255,.14)}
+.side-search kbd{margin-left:auto;font-family:var(--mono);font-size:10px;border:1px solid rgba(255,255,255,.22);border-radius:4px;padding:0 4px}
+.side-scroll{flex:1;overflow-y:auto;padding:2px 6px 16px;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.2) transparent}
+.side-scroll::-webkit-scrollbar{width:8px}
+.side-scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:9px}
+.grp{margin-top:10px}
+.grp-h{display:flex;align-items:center;gap:5px;width:100%;padding:3px 6px;color:var(--side-txt-dim);font-size:11.5px;font-weight:600;letter-spacing:.02em;border-radius:5px}
+.grp-h:hover{background:rgba(255,255,255,.07);color:#fff}
+.grp-h .caret{transition:transform .14s;display:inline-block;font-size:0;width:9px;height:9px;position:relative;flex:0 0 auto}
+.grp-h .caret::before{content:"";position:absolute;left:1px;top:0;width:5px;height:5px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(45deg)}
+.grp[data-open="false"] .grp-h .caret{transform:rotate(-90deg)}
+.grp[data-open="false"] .grp-items{display:none}
+.grp-h .add{margin-left:auto;opacity:0;font-size:14px;line-height:1}
+.grp-h:hover .add{opacity:.8}
+.it{display:flex;align-items:center;gap:7px;width:100%;padding:4px 8px;border-radius:6px;color:var(--side-txt);font-size:13.5px;text-align:left;line-height:1.35;position:relative}
+.it:hover{background:rgba(255,255,255,.08)}
+.it.on{background:var(--brand);color:#fff;font-weight:600}
+.it.on .hash,.it.on .meta{color:rgba(255,255,255,.85)}
+.it .hash{color:var(--side-txt-dim);width:14px;text-align:center;flex:0 0 auto;font-size:13px}
+.it .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+.it.unread .nm{font-weight:700;color:#fff}
+.it .badge{flex:0 0 auto;background:#D3452F;color:#fff;font-size:10.5px;font-weight:700;border-radius:99px;padding:0 6px;min-width:18px;text-align:center}
+.it .meta{flex:0 0 auto;font-family:var(--mono);font-size:10px;color:var(--side-txt-dim)}
+.pres{width:9px;height:9px;border-radius:99px;flex:0 0 auto;border:1.5px solid transparent}
+.pres.on{background:#2FBF71}
+.pres.off{background:transparent;border-color:var(--side-txt-dim)}
+.pres.busy{background:#E0A33E}
+.ava{width:18px;height:18px;border-radius:4px;display:grid;place-items:center;font-size:11px;flex:0 0 auto;background:rgba(255,255,255,.12)}
+.bot{display:inline-block;font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.04em;background:rgba(255,255,255,.16);color:#DDECEF;border-radius:3px;padding:0 3px;line-height:14px;flex:0 0 auto}
+.it.on .bot{background:rgba(255,255,255,.26);color:#fff}
+.spin{display:inline-block;width:9px;height:9px;border-radius:99px;border:1.5px solid rgba(255,255,255,.35);border-top-color:#7FE0C6;animation:sp .9s linear infinite;flex:0 0 auto}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ---------- main column ---------- */
+.main{display:flex;flex-direction:column;min-width:0;background:var(--surface);overflow:hidden}
+.main > .pane{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;min-width:0;overflow:hidden}
+.main > .pane[hidden]{display:none}
+.topbar{
+  height:49px;flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:0 8px 0 16px;
+  border-bottom:1px solid var(--line);background:var(--surface);
+}
+.topbar h2{margin:0;font-size:15px;font-weight:700;letter-spacing:-.015em;display:flex;align-items:center;gap:5px;white-space:nowrap}
+.topbar .topic{color:var(--txt-3);font-size:12.5px;border-left:1px solid var(--line);padding-left:10px;margin-left:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.topbar .grow{flex:1;min-width:8px}
+.tbtn{display:flex;align-items:center;gap:5px;padding:4px 9px;border-radius:6px;font-size:12.5px;color:var(--txt-2);border:1px solid transparent;white-space:nowrap}
+.tbtn:hover{background:var(--hover);border-color:var(--line)}
+.tbtn.on{background:var(--brand-soft);color:var(--brand);border-color:transparent;font-weight:600}
+.facepile{display:flex;align-items:center;padding:3px 7px 3px 4px;border-radius:6px;border:1px solid var(--line);gap:4px}
+.facepile:hover{background:var(--hover)}
+.facepile .f{width:20px;height:20px;border-radius:4px;display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff;margin-right:-5px;border:1.5px solid var(--surface)}
+.facepile .n{font-size:11.5px;color:var(--txt-2);margin-left:8px;font-family:var(--mono)}
+
+.scroll{flex:1;overflow-y:auto;overflow-x:hidden;min-height:0}
+.scroll::-webkit-scrollbar{width:11px}
+.scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:9px;border:3px solid var(--surface)}
+.pad{padding:16px 20px 8px}
+
+/* ---------- channel intro / dividers ---------- */
+.intro{padding:26px 20px 10px}
+.intro h3{margin:0 0 6px;font-size:24px;letter-spacing:-.03em;font-weight:700}
+.intro p{margin:0 0 10px;color:var(--txt-2);max-width:62ch;font-size:13.5px}
+.div{display:flex;align-items:center;gap:10px;margin:14px 0 8px;padding:0 20px}
+.div::before,.div::after{content:"";height:1px;background:var(--line);flex:1}
+.div span{font-size:11.5px;font-weight:600;color:var(--txt-2);background:var(--surface);padding:0 2px}
+.div.new::before,.div.new::after{background:var(--red)}
+.div.new span{color:var(--red);font-weight:700;font-size:11px;letter-spacing:.05em;text-transform:uppercase}
+
+/* ---------- messages ---------- */
+.msg{display:grid;grid-template-columns:36px minmax(0,1fr);gap:9px;padding:6px 20px 6px 16px;position:relative}
+.msg:hover{background:var(--surface-2)}
+.msg.hl{background:var(--amber-soft)}
+.msg.hl:hover{background:var(--amber-soft)}
+.msg .av{width:36px;height:36px;border-radius:8px;display:grid;place-items:center;font-size:16px;font-weight:700;color:#fff;position:relative;flex:0 0 auto}
+.msg .av .pd{position:absolute;right:-3px;bottom:-3px;width:12px;height:12px;border-radius:99px;border:2px solid var(--surface);background:#2FBF71}
+.msg:hover .av .pd{border-color:var(--surface-2)}
+.msg .av .pd.off{background:var(--txt-3)}
+.msg .av .pd.busy{background:#E0A33E}
+.who{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;margin-bottom:1px}
+.who b{font-size:14px;font-weight:700;letter-spacing:-.01em}
+.who time{font-size:11px;color:var(--txt-3);font-family:var(--mono)}
+.tag-bot{font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.05em;background:var(--violet-soft);color:var(--violet);border-radius:3px;padding:1px 4px;line-height:14px}
+.tag-you{font-family:var(--mono);font-size:9.5px;font-weight:700;background:var(--brand-soft);color:var(--brand);border-radius:3px;padding:1px 4px}
+.body{font-size:14px;color:var(--txt);min-width:0}
+.body p{margin:0 0 6px}
+.body p:last-child{margin-bottom:0}
+.body ul{margin:4px 0 6px;padding-left:19px}
+.body li{margin:1px 0}
+.body code{font-family:var(--mono);font-size:12px;background:var(--hover);border:1px solid var(--line-soft);border-radius:4px;padding:0 4px;color:var(--red)}
+.body strong{font-weight:700}
+.mention{background:var(--brand-soft);color:var(--brand-hi);font-weight:600;border-radius:3px;padding:0 3px}
+.msg.agent .body{border-left:2px solid var(--violet);padding-left:10px;margin-left:-1px}
+
+/* hover action toolbar */
+.acts{position:absolute;top:-12px;right:18px;display:flex;background:var(--surface);border:1px solid var(--line);border-radius:7px;box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .1s;z-index:5}
+.msg:hover .acts,.acts:focus-within{opacity:1;pointer-events:auto}
+.acts button{width:30px;height:28px;display:grid;place-items:center;font-size:13px;color:var(--txt-2);border-radius:6px}
+.acts button:hover{background:var(--hover);color:var(--txt)}
+
+/* reactions + thread line */
+.rx{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
+.rx button{display:flex;align-items:center;gap:4px;border:1px solid var(--line);background:var(--surface-2);border-radius:99px;padding:1px 7px;font-size:11.5px;color:var(--txt-2)}
+.rx button.mine{border-color:var(--brand);background:var(--brand-soft);color:var(--brand-hi);font-weight:600}
+.rx button:hover{border-color:var(--txt-3)}
+.rx .add{color:var(--txt-3)}
+.thread-link{display:flex;align-items:center;gap:7px;margin-top:6px;padding:3px 7px 3px 4px;border-radius:7px;border:1px solid transparent;font-size:12.5px;color:var(--brand);font-weight:600;max-width:max-content}
+.thread-link:hover{border-color:var(--line);background:var(--surface);box-shadow:var(--shadow)}
+.thread-link .fs{display:flex}
+.thread-link .fs i{width:18px;height:18px;border-radius:4px;display:grid;place-items:center;font-size:9px;font-style:normal;color:#fff;margin-right:-4px;border:1.5px solid var(--surface)}
+.thread-link .last{color:var(--txt-3);font-weight:400;font-size:11.5px}
+
+/* ---------- the runline (signature) ---------- */
+.runline{
+  display:flex;align-items:center;gap:0;flex-wrap:wrap;margin-top:7px;
+  font-family:var(--mono);font-size:11px;color:var(--txt-3);
+}
+.runline span{padding-right:9px;margin-right:9px;border-right:1px solid var(--line);white-space:nowrap}
+.runline span:last-child{border-right:0;margin-right:0;padding-right:0}
+.runline .k{color:var(--txt-2);font-weight:600}
+.runline .ok{color:var(--green);font-weight:600}
+.runline .warn{color:var(--amber);font-weight:600}
+
+/* ---------- cards inside messages ---------- */
+.card{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);margin-top:8px;overflow:hidden}
+.card-h{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line-soft);background:var(--surface-2)}
+.card-h b{font-size:13px;letter-spacing:-.01em}
+.card-h .grow{flex:1}
+.card-b{padding:11px 12px}
+table.cmp{width:100%;border-collapse:collapse;font-size:13px}
+table.cmp th,table.cmp td{text-align:left;padding:7px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+table.cmp thead th{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--txt-3);font-weight:700;background:var(--surface-2)}
+table.cmp tbody tr:last-child td{border-bottom:0}
+table.cmp td.num{font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+table.cmp tr.best td{background:var(--green-soft)}
+table.cmp tr.best td:first-child{box-shadow:inset 3px 0 0 var(--green)}
+.pillbest{font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.05em;color:var(--green);border:1px solid var(--green);border-radius:99px;padding:0 5px;margin-left:6px;text-transform:uppercase}
+
+/* approval banner */
+.approval{border:1px solid var(--amber-line);background:var(--amber-soft);border-radius:var(--r-lg);margin-top:8px;overflow:hidden}
+.approval .top{display:flex;gap:10px;padding:11px 13px;align-items:flex-start}
+.approval .ic{width:28px;height:28px;border-radius:8px;background:var(--amber);color:#241703;display:grid;place-items:center;font-size:15px;flex:0 0 auto}
+.approval h4{margin:0 0 2px;font-size:13.5px;letter-spacing:-.01em}
+.approval p{margin:0;font-size:13px;color:var(--txt-2)}
+.approval .lines{margin-top:8px;display:flex;flex-wrap:wrap;gap:8px}
+.approval .lines div{background:rgba(255,255,255,.5);border:1px solid var(--amber-line);border-radius:6px;padding:5px 9px;min-width:118px}
+:root[data-theme="dark"] .approval .lines div{background:rgba(255,255,255,.05)}
+.approval .lines .l{font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--txt-3);font-weight:700}
+.approval .lines .v{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--txt)}
+.approval.neutral{border-color:var(--line);background:var(--surface-2)}
+.approval.neutral .lines div{border-color:var(--line);background:var(--surface)}
+.approval.neutral .bar{border-top-color:var(--line)}
+.approval .bar{display:flex;align-items:center;gap:8px;padding:9px 13px;border-top:1px solid var(--amber-line);flex-wrap:wrap}
+.approval .bar .note{font-size:11.5px;color:var(--txt-2);font-family:var(--mono)}
+.btn{display:inline-flex;align-items:center;gap:6px;border-radius:7px;padding:6px 13px;font-size:13px;font-weight:600;border:1px solid var(--line);background:var(--surface);color:var(--txt)}
+.btn:hover{background:var(--hover)}
+.btn.p{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn.p:hover{background:var(--brand-hi)}
+.btn.g{background:var(--green);border-color:var(--green);color:#fff}
+.btn.g:hover{filter:brightness(.94)}
+.btn.d{color:var(--red);border-color:var(--line)}
+.btn.d:hover{background:var(--red-soft);border-color:var(--red)}
+.btn.sm{padding:3px 9px;font-size:12px}
+.resolved{display:flex;align-items:center;gap:9px;padding:11px 13px;font-size:13px}
+.resolved .ic{width:24px;height:24px;border-radius:99px;display:grid;place-items:center;color:#fff;font-size:13px;flex:0 0 auto}
+
+/* typing */
+.typing{display:flex;align-items:center;gap:8px;padding:4px 20px 8px 61px;font-size:12px;color:var(--txt-3);font-style:italic}
+.typing i{display:flex;gap:3px;font-style:normal}
+.typing i b{width:4px;height:4px;border-radius:99px;background:var(--txt-3);animation:bl 1.1s infinite}
+.typing i b:nth-child(2){animation-delay:.15s}.typing i b:nth-child(3){animation-delay:.3s}
+@keyframes bl{0%,60%,100%{opacity:.3}30%{opacity:1}}
+
+/* ---------- composer ---------- */
+.composer{flex:0 0 auto;padding:0 20px 14px}
+.cbox{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);box-shadow:var(--shadow);overflow:hidden}
+.cbox:focus-within{border-color:var(--brand);box-shadow:0 0 0 1px var(--brand)}
+.fmt{display:flex;align-items:center;gap:1px;padding:4px 6px;border-bottom:1px solid var(--line-soft);background:var(--surface-2);flex-wrap:wrap}
+.fmt button{width:27px;height:26px;border-radius:5px;display:grid;place-items:center;font-size:12.5px;color:var(--txt-2)}
+.fmt button:hover{background:var(--hover);color:var(--txt)}
+.fmt button.on{background:var(--brand-soft);color:var(--brand-hi)}
+.fmt .sep{width:1px;height:16px;background:var(--line);margin:0 5px}
+.cin{padding:9px 12px;min-height:44px;font-size:14px;color:var(--txt)}
+.cin .ph{color:var(--txt-3)}
+.cin .chip{display:inline-flex;align-items:center;gap:4px;background:var(--brand-soft);color:var(--brand-hi);border-radius:5px;padding:0 5px;font-weight:600}
+.caret{display:inline-block;width:1.5px;height:15px;background:var(--brand);vertical-align:-3px;animation:cb 1.05s steps(1) infinite}
+@keyframes cb{50%{opacity:0}}
+.cfoot{display:flex;align-items:center;gap:3px;padding:5px 7px 6px;border-top:1px solid var(--line-soft)}
+.cfoot .b{width:29px;height:28px;border-radius:6px;display:grid;place-items:center;font-size:14px;color:var(--txt-2)}
+.cfoot .b:hover{background:var(--hover);color:var(--txt)}
+.cfoot .grow{flex:1}
+.cfoot .hint{font-family:var(--mono);font-size:10.5px;color:var(--txt-3);margin-right:6px}
+.send{display:flex;align-items:center;gap:6px;background:var(--green);color:#fff;border-radius:7px;padding:5px 12px;font-size:13px;font-weight:600}
+.send:hover{filter:brightness(.94)}
+
+/* ---------- right details pane ---------- */
+.dpane{border-left:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.dhead{height:49px;flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:0 8px 0 14px;border-bottom:1px solid var(--line)}
+.dhead b{font-size:14px;letter-spacing:-.01em}
+.dhead .sub{font-size:11.5px;color:var(--txt-3)}
+.dbody{flex:1;overflow-y:auto;padding:12px 14px 20px}
+.dsec{margin-bottom:16px}
+.dsec h5{margin:0 0 7px;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--txt-3);font-weight:700}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid var(--line-soft);font-size:12.5px}
+.kv:last-child{border-bottom:0}
+.kv .k{color:var(--txt-2)}
+.kv .v{font-family:var(--mono);font-size:11.5px;text-align:right;color:var(--txt)}
+.treply{display:grid;grid-template-columns:28px minmax(0,1fr);gap:8px;padding:8px 0;border-top:1px solid var(--line-soft)}
+.treply .av{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;color:#fff;font-size:13px;font-weight:700}
+.treply .who b{font-size:13px}
+.treply .body{font-size:13px;color:var(--txt-2)}
+
+/* ---------- generic content pages ---------- */
+.page{padding:20px 24px 40px;max-width:1100px}
+.page-h{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+.page-h h3{margin:0 0 3px;font-size:22px;letter-spacing:-.03em;font-weight:700}
+.page-h p{margin:0;color:var(--txt-2);font-size:13.5px;max-width:66ch}
+.page-h .grow{flex:1;min-width:20px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface)}
+.seg button{padding:5px 12px;font-size:12.5px;color:var(--txt-2);border-right:1px solid var(--line)}
+.seg button:last-child{border-right:0}
+.seg button.on{background:var(--brand);color:#fff;font-weight:600}
+.seg button:not(.on):hover{background:var(--hover)}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:18px}
+.stat{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);padding:10px 12px}
+.stat .n{font-family:var(--mono);font-size:23px;font-weight:700;letter-spacing:-.03em;line-height:1.15}
+.stat .l{font-size:11.5px;color:var(--txt-2);margin-top:1px}
+.stat .d{font-family:var(--mono);font-size:10.5px;color:var(--txt-3);margin-top:5px}
+.stat.warn{border-color:var(--amber-line);background:var(--amber-soft)}
+.stat.warn .n{color:var(--amber)}
+
+.gridcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.acard{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);padding:12px 13px;display:flex;flex-direction:column;gap:9px;position:relative;transition:box-shadow .12s,border-color .12s}
+.acard:hover{box-shadow:var(--shadow);border-color:var(--txt-3)}
+.acard .hd{display:flex;gap:10px;align-items:flex-start}
+.acard .emo{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;font-size:19px;flex:0 0 auto;border:1px solid var(--line-soft)}
+.acard h4{margin:0;font-size:14.5px;letter-spacing:-.015em;display:flex;align-items:center;gap:6px}
+.acard .role{font-size:12.5px;color:var(--txt-2)}
+.acard .desc{font-size:12.5px;color:var(--txt-2);border-top:1px solid var(--line-soft);padding-top:8px}
+.acard .foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line-soft);padding-top:8px;margin-top:auto}
+.status{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;border-radius:99px;padding:2px 8px 2px 6px;white-space:nowrap}
+.status i{width:7px;height:7px;border-radius:99px;background:currentColor;flex:0 0 auto}
+.status.work{background:var(--green-soft);color:var(--green)}
+.status.idle{background:var(--hover);color:var(--txt-2)}
+.status.pause{background:var(--hover);color:var(--txt-3)}
+.status.wait{background:var(--amber-soft);color:var(--amber)}
+.runchip{font-family:var(--mono);font-size:10.5px;color:var(--txt-2);border:1px solid var(--line);border-radius:5px;padding:1px 6px;white-space:nowrap}
+.runchip .app{color:var(--violet);font-weight:700}
+
+/* tables (tasks / activity) */
+.tbl{width:100%;border-collapse:collapse;font-size:13px;border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;background:var(--surface)}
+.tbl th{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--txt-3);font-weight:700;text-align:left;padding:8px 12px;background:var(--surface-2);border-bottom:1px solid var(--line)}
+.tbl td{padding:9px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+.tbl tbody tr:last-child td{border-bottom:0}
+.tbl tbody tr:hover{background:var(--surface-2)}
+.tbl .m{font-family:var(--mono);font-size:11.5px;color:var(--txt-2);white-space:nowrap}
+.who-cell{display:flex;align-items:center;gap:7px}
+.who-cell .e{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;font-size:13px;border:1px solid var(--line-soft);flex:0 0 auto}
+.prog{height:5px;border-radius:99px;background:var(--line);overflow:hidden;width:100px;margin-top:5px}
+.prog i{display:block;height:100%;background:var(--brand);border-radius:99px}
+
+/* forms */
+.formgrid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:16px;align-items:start}
+@media (max-width:1080px){.formgrid{grid-template-columns:minmax(0,1fr)}}
+.panel{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);overflow:hidden}
+.panel-h{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line-soft);background:var(--surface-2)}
+.panel-h b{font-size:13px}
+.panel-h .grow{flex:1}
+.panel-b{padding:14px}
+.field{margin-bottom:14px}
+.field:last-child{margin-bottom:0}
+.field label{display:block;font-size:12.5px;font-weight:600;margin-bottom:4px}
+.field .help{font-size:11.5px;color:var(--txt-3);margin-top:4px}
+.inp{width:100%;border:1px solid var(--line);border-radius:7px;padding:7px 10px;font-size:13.5px;background:var(--surface);color:var(--txt)}
+.inp:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+textarea.inp{min-height:70px;resize:vertical;line-height:1.5}
+.row2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
+.emojipick{display:flex;gap:8px;align-items:center}
+.emojipick .cur{width:44px;height:44px;border-radius:11px;border:1px solid var(--line);display:grid;place-items:center;font-size:22px;background:var(--surface-2)}
+.emojipick .opts{display:flex;gap:4px;flex-wrap:wrap}
+.emojipick .opts button{width:30px;height:30px;border-radius:7px;display:grid;place-items:center;font-size:15px;border:1px solid transparent}
+.emojipick .opts button:hover{background:var(--hover);border-color:var(--line)}
+.emojipick .opts button.on{border-color:var(--brand);background:var(--brand-soft)}
+
+.pickrow{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.pick{border:1px solid var(--line);border-radius:9px;padding:9px 11px;text-align:left;display:flex;gap:9px;align-items:flex-start}
+.pick:hover{border-color:var(--txt-3)}
+.pick.on{border-color:var(--brand);background:var(--brand-soft);box-shadow:0 0 0 1px var(--brand)}
+.pick .mark{width:16px;height:16px;border-radius:99px;border:1.5px solid var(--txt-3);flex:0 0 auto;margin-top:2px;display:grid;place-items:center}
+.pick.on .mark{border-color:var(--brand);background:var(--brand)}
+.pick.on .mark::after{content:"";width:6px;height:6px;border-radius:99px;background:#fff}
+.pick b{display:block;font-size:13px}
+.pick span{font-size:11.5px;color:var(--txt-2);font-family:var(--mono)}
+
+.tog{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-soft);width:100%;text-align:left}
+.tog:last-child{border-bottom:0}
+.tog .sw{width:34px;height:20px;border-radius:99px;background:var(--line);position:relative;flex:0 0 auto;transition:background .14s;margin-top:1px}
+.tog .sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:99px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .14s}
+.tog[aria-checked="true"] .sw{background:var(--green)}
+.tog[aria-checked="true"] .sw::after{transform:translateX(14px)}
+.tog .t{min-width:0}
+.tog .t b{display:block;font-size:13px;font-weight:600}
+.tog .t span{font-size:11.5px;color:var(--txt-2)}
+
+/* skills */
+.skill{border:1px solid var(--line);border-radius:9px;margin-bottom:9px;overflow:hidden;background:var(--surface)}
+.skill-h{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface-2);border-bottom:1px solid var(--line-soft)}
+.skill-h b{font-size:13px}
+.skill-h .grow{flex:1}
+.skill-b{padding:9px 11px;font-size:12.5px;color:var(--txt-2);line-height:1.55}
+.skill-b .lbl{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--txt-3);font-weight:700;display:block;margin-bottom:3px}
+.skill-b .instr{font-family:var(--mono);font-size:11.5px;background:var(--surface-2);border:1px solid var(--line-soft);border-radius:6px;padding:7px 9px;color:var(--txt-2);white-space:pre-wrap}
+.drop{border:1.5px dashed var(--line);border-radius:9px;padding:16px;text-align:center;color:var(--txt-2);font-size:12.5px;background:var(--surface-2)}
+.drop:hover{border-color:var(--brand);background:var(--brand-soft)}
+.drop b{display:block;font-size:13px;color:var(--txt);margin-bottom:2px}
+
+/* settings */
+.srow{display:flex;align-items:flex-start;gap:14px;padding:12px 14px;border-bottom:1px solid var(--line-soft)}
+.srow:last-child{border-bottom:0}
+.srow .t{flex:1;min-width:0}
+.srow .t b{display:block;font-size:13.5px}
+.srow .t span{font-size:12px;color:var(--txt-2)}
+.srow .c{flex:0 0 auto;display:flex;align-items:center;gap:8px}
+.danger{border-color:var(--red)!important}
+.danger .panel-h{background:var(--red-soft);border-bottom-color:var(--red)}
+.danger .panel-h b{color:var(--red)}
+.themecard{display:flex;gap:8px}
+.themecard button{border:1px solid var(--line);border-radius:9px;padding:6px;width:88px;text-align:center;font-size:11.5px;color:var(--txt-2)}
+.themecard button.on{border-color:var(--brand);box-shadow:0 0 0 1px var(--brand);color:var(--txt);font-weight:600}
+.themecard .sw{height:38px;border-radius:6px;margin-bottom:5px;border:1px solid var(--line);overflow:hidden;display:flex}
+.themecard .sw i{display:block;height:100%}
+
+/* welcome */
+.welcome{height:100%;overflow-y:auto;background:
+  radial-gradient(1100px 480px at 12% -8%, rgba(14,124,140,.16), transparent 60%),
+  radial-gradient(900px 460px at 92% 0%, rgba(107,79,168,.13), transparent 60%),
+  var(--bg);
+}
+.wwrap{max-width:940px;margin:0 auto;padding:44px 28px 60px}
+.wmark{display:flex;align-items:center;gap:10px;margin-bottom:26px}
+.wmark .logo{width:38px;height:38px;border-radius:11px;background:linear-gradient(150deg,#0E7C8C,#1AA6A0);display:grid;place-items:center;color:#fff;font-weight:800;font-size:17px}
+.wmark b{font-size:17px;letter-spacing:-.02em}
+.wmark span{font-family:var(--mono);font-size:11px;color:var(--txt-3);border:1px solid var(--line);border-radius:99px;padding:1px 7px}
+.wwrap h2{margin:0 0 8px;font-size:38px;line-height:1.08;letter-spacing:-.04em;font-weight:800;max-width:17ch}
+.wwrap h2 em{font-style:normal;color:var(--brand)}
+.wwrap .lede{margin:0 0 26px;font-size:15.5px;color:var(--txt-2);max-width:58ch}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:18px}
+.conn{border:1px solid var(--line);border-radius:14px;background:var(--surface);padding:15px;display:flex;flex-direction:column;gap:11px;box-shadow:var(--shadow)}
+.conn.done{border-color:var(--green)}
+.conn .hd{display:flex;align-items:center;gap:11px}
+.conn .lg{width:42px;height:42px;border-radius:11px;display:grid;place-items:center;font-size:19px;color:#fff;flex:0 0 auto}
+.conn h4{margin:0;font-size:15px;letter-spacing:-.02em}
+.conn .sub{font-size:12px;color:var(--txt-2)}
+.conn .tick{margin-left:auto;width:24px;height:24px;border-radius:99px;background:var(--green);color:#fff;display:grid;place-items:center;font-size:13px;flex:0 0 auto}
+.conn .lines{font-family:var(--mono);font-size:11.5px;color:var(--txt-2);border-top:1px solid var(--line-soft);padding-top:9px;display:grid;gap:3px}
+.conn .lines b{color:var(--txt)}
+.wfoot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:18px;margin-top:22px}
+.wfoot .note{font-size:12px;color:var(--txt-3);max-width:46ch}
+.checklist{display:flex;flex-direction:column;gap:6px;margin:0 0 6px;padding:0;list-style:none}
+.checklist li{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--txt-2)}
+.checklist .b{width:17px;height:17px;border-radius:99px;display:grid;place-items:center;font-size:10px;color:#fff;background:var(--green);flex:0 0 auto}
+.checklist .b.todo{background:var(--line);color:var(--txt-3)}
+
+/* quick chat overlay */
+.qc{position:fixed;inset:0;z-index:80;display:none;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(6,20,25,.5);backdrop-filter:blur(3px)}
+.qc.on{display:flex}
+.qcbox{width:min(660px,92vw);background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow-lg);overflow:hidden}
+.qc-top{display:flex;align-items:center;gap:9px;padding:12px 14px;border-bottom:1px solid var(--line-soft)}
+.qc-top .to{display:inline-flex;align-items:center;gap:6px;background:var(--violet-soft);color:var(--violet);border-radius:7px;padding:3px 8px;font-size:12.5px;font-weight:600;flex:0 0 auto}
+.qc-top .txt{flex:1;font-size:15px;color:var(--txt)}
+.qc-top kbd{font-family:var(--mono);font-size:10px;border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--txt-3)}
+.qc-sec{padding:8px 0}
+.qc-sec .h{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--txt-3);font-weight:700;padding:4px 14px}
+.qc-row{display:flex;align-items:center;gap:10px;width:100%;padding:7px 14px;text-align:left;font-size:13.5px}
+.qc-row:hover,.qc-row.on{background:var(--brand-soft)}
+.qc-row .e{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:14px;border:1px solid var(--line-soft);flex:0 0 auto}
+.qc-row .t{flex:1;min-width:0}
+.qc-row .t b{display:block;font-weight:600}
+.qc-row .t span{font-size:11.5px;color:var(--txt-2)}
+.qc-foot{display:flex;align-items:center;gap:12px;padding:8px 14px;border-top:1px solid var(--line-soft);background:var(--surface-2);font-family:var(--mono);font-size:10.5px;color:var(--txt-3);flex-wrap:wrap}
+
+/* avatar colors */
+.c-vik{background:#2E5C68}.c-pri{background:#7A4A86}.c-tom{background:#8A5A2B}.c-dan{background:#3F6B3A}
+.c-atlas{background:#25566B}.c-ledger{background:#7C5B1F}.c-scout{background:#4A5C86}.c-patch{background:#6B4FA8}.c-sift{background:#2F6B5E}.c-echo{background:#8A3F62}
+</style>
+</head>
+<body>
+
+<!-- ============ prototype switcher ============ -->
+<div class="proto">
+  <b>Cloud9</b><span class="tag">P1 · SLACK TRUE</span>
+  <nav class="proto-tabs" id="tabs" aria-label="Prototype screens">
+    <button data-go="welcome">Welcome</button>
+    <button data-go="chat" aria-current="true">Channel</button>
+    <button data-go="dm">Direct message</button>
+    <button data-go="agents">Agents</button>
+    <button data-go="edit">Create agent</button>
+    <button data-go="tasks">Tasks &amp; approvals</button>
+    <button data-go="activity">Activity</button>
+    <button data-go="settings">Settings</button>
+    <button data-go="__qc">Quick chat ⌃K</button>
+  </nav>
+  <div class="proto-right">
+    <button id="themeBtn" title="Switch light / dark">◐ Light</button>
+  </div>
+</div>
+
+<div class="stage">
+
+<!-- ================= WELCOME ================= -->
+<section class="screen" id="s-welcome" aria-label="Welcome and connect">
+ <div class="welcome">
+  <div class="wwrap">
+    <div class="wmark"><div class="logo">9</div><b>Cloud9</b><span>first run</span></div>
+    <h2>Hire your first <em>coworker</em> in about a minute.</h2>
+    <p class="lede">Cloud9 runs your agents on the AI apps you already pay for. Sign in to each one below — Cloud9 never sees or stores a key, it just talks to the app on your machine.</p>
+
+    <div class="steps">
+      <div class="conn done">
+        <div class="hd">
+          <div class="lg" style="background:linear-gradient(150deg,#6B4FA8,#8B6FD1)">✻</div>
+          <div><h4>Claude app</h4><div class="sub">Signed in as vikas53953@gmail.com</div></div>
+          <div class="tick" aria-hidden="true">✓</div>
+        </div>
+        <div class="lines">
+          <div>plan &nbsp;<b>Max 20×</b></div>
+          <div>models &nbsp;<b>Opus 4.8 · Sonnet 5 · Haiku 4.5</b></div>
+          <div>desktop app &nbsp;<b>v3.14 · running</b></div>
+        </div>
+        <div style="display:flex;gap:8px"><button class="btn sm">Sign out</button><button class="btn sm">Test connection</button></div>
+      </div>
+
+      <div class="conn done">
+        <div class="hd">
+          <div class="lg" style="background:linear-gradient(150deg,#1F5F55,#2E8F73)">⌘</div>
+          <div><h4>Codex app</h4><div class="sub">Signed in as vikas@homelab.dev</div></div>
+          <div class="tick" aria-hidden="true">✓</div>
+        </div>
+        <div class="lines">
+          <div>plan &nbsp;<b>Pro</b></div>
+          <div>models &nbsp;<b>GPT-5.4 · GPT-5.4-codex</b></div>
+          <div>desktop app &nbsp;<b>v2.8 · running</b></div>
+        </div>
+        <div style="display:flex;gap:8px"><button class="btn sm">Sign out</button><button class="btn sm">Test connection</button></div>
+      </div>
+
+      <div class="conn">
+        <div class="hd">
+          <div class="lg" style="background:linear-gradient(150deg,#4A5C86,#6E82B8)">◇</div>
+          <div><h4>Add another app</h4><div class="sub">Gemini, local Ollama, or a custom endpoint</div></div>
+        </div>
+        <div class="lines"><div>status &nbsp;<b>Not connected</b></div><div>optional &nbsp;<b>you can do this later</b></div></div>
+        <div><button class="btn">Connect an app</button></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="eyebrow" style="margin-bottom:7px">What happens next</div>
+      <ul class="checklist">
+        <li><span class="b">✓</span> Both apps connected and answering</li>
+        <li><span class="b">✓</span> Workspace <b style="color:var(--txt)">&nbsp;Vikas HQ&nbsp;</b> created with #general</li>
+        <li><span class="b todo">3</span> Build your first agent — we'll suggest one for network work</li>
+        <li><span class="b todo">4</span> Invite people, or keep it to you and your agents</li>
+      </ul>
+    </div>
+
+    <div class="wfoot">
+      <button class="btn p" data-go="edit">Build my first agent →</button>
+      <button class="btn" data-go="chat">Skip to my workspace</button>
+      <span class="note">Agents can't spend money, send email, or touch files outside your workspace folder until you say yes. You approve each one.</span>
+    </div>
+  </div>
+ </div>
+</section>
+
+<!-- ================= APP SHELL (all other screens) ================= -->
+<section class="screen on" id="s-app" aria-label="Cloud9 workspace">
+ <div class="shell details" id="shell">
+
+  <!-- rail -->
+  <div class="rail">
+    <button class="ws ws-1 on" title="Vikas HQ" aria-current="true">V9<span class="dot">4</span></button>
+    <button class="ws ws-2" title="Home Lab">HL</button>
+    <button class="ws-add" title="Add a workspace">+</button>
+    <hr>
+    <button class="rail-btn" title="Threads">🧵</button>
+    <button class="rail-btn" title="Tasks and approvals" data-go="tasks">✓</button>
+    <button class="rail-btn" title="Activity" data-go="activity">◷</button>
+    <div class="spacer"></div>
+    <button class="rail-btn" title="Settings" data-go="settings">⚙</button>
+    <button class="rail-me" title="Vikas — active">VK</button>
+  </div>
+
+  <!-- sidebar -->
+  <div class="side">
+    <div class="side-head">
+      <div class="row">
+        <div>
+          <h1>Vikas HQ <span style="font-size:10px;opacity:.6">▾</span></h1>
+          <div class="sub">4 people · 6 agents</div>
+        </div>
+        <button class="icon" title="New message">✎</button>
+      </div>
+    </div>
+    <button class="side-search" id="searchBtn">🔍 Search Vikas HQ <kbd>Ctrl K</kbd></button>
+
+    <div class="side-scroll">
+      <div class="grp" data-open="true">
+        <button class="grp-h" data-collapse><span class="caret">▾</span> Workspace</button>
+        <div class="grp-items">
+          <button class="it" data-go="tasks"><span class="hash">✓</span><span class="nm">Tasks &amp; approvals</span><span class="badge">2</span></button>
+          <button class="it" data-go="activity"><span class="hash">◷</span><span class="nm">Activity</span></button>
+          <button class="it" data-go="agents"><span class="hash">◈</span><span class="nm">Agents</span><span class="meta">6</span></button>
+          <button class="it"><span class="hash">🧵</span><span class="nm">Threads</span></button>
+        </div>
+      </div>
+
+      <div class="grp" data-open="true">
+        <button class="grp-h" data-collapse><span class="caret">▾</span> Channels <span class="add">+</span></button>
+        <div class="grp-items">
+          <button class="it" data-go="chat"><span class="hash">#</span><span class="nm">general</span></button>
+          <button class="it on" id="navChat" data-go="chat"><span class="hash">#</span><span class="nm">network-ops</span><span class="badge">3</span></button>
+          <button class="it unread" data-go="chat"><span class="hash">#</span><span class="nm">procurement</span><span class="badge">2</span></button>
+          <button class="it unread" data-go="chat"><span class="hash">#</span><span class="nm">agents-lab</span></button>
+          <button class="it" data-go="chat"><span class="hash">#</span><span class="nm">inbox-triage</span></button>
+          <button class="it" data-go="chat"><span class="hash">🔒</span><span class="nm">site-b-cutover</span></button>
+          <button class="it" data-go="chat"><span class="hash">#</span><span class="nm">random</span></button>
+        </div>
+      </div>
+
+      <div class="grp" data-open="true">
+        <button class="grp-h" data-collapse><span class="caret">▾</span> Agents <span class="add">+</span></button>
+        <div class="grp-items">
+          <button class="it" data-go="dm"><span class="ava">🛰</span><span class="nm">Atlas</span><span class="spin" title="Working"></span></button>
+          <button class="it unread" id="navDm" data-go="dm"><span class="ava">🧾</span><span class="nm">Ledger</span><span class="badge">1</span></button>
+          <button class="it" data-go="dm"><span class="ava">🩹</span><span class="nm">Patch</span><span class="spin" title="Working"></span></button>
+          <button class="it" data-go="dm"><span class="ava">🔎</span><span class="nm">Scout</span></button>
+          <button class="it" data-go="dm"><span class="ava">🗂</span><span class="nm">Sift</span><span class="meta">paused</span></button>
+          <button class="it" data-go="dm"><span class="ava">📣</span><span class="nm">Echo</span></button>
+        </div>
+      </div>
+
+      <div class="grp" data-open="true">
+        <button class="grp-h" data-collapse><span class="caret">▾</span> Direct messages <span class="add">+</span></button>
+        <div class="grp-items">
+          <button class="it"><span class="pres on"></span><span class="nm">Priya Nair</span></button>
+          <button class="it unread"><span class="pres busy"></span><span class="nm">Tom Weller</span><span class="badge">1</span></button>
+          <button class="it"><span class="pres off"></span><span class="nm">Dan Okafor</span></button>
+          <button class="it"><span class="pres on"></span><span class="nm">Vikas <span style="opacity:.6;font-weight:400">(you)</span></span></button>
+        </div>
+      </div>
+
+      <div class="grp" data-open="false">
+        <button class="grp-h" data-collapse><span class="caret">▾</span> Archived</button>
+        <div class="grp-items">
+          <button class="it"><span class="hash">#</span><span class="nm">q1-refresh</span></button>
+          <button class="it"><span class="hash">#</span><span class="nm">isp-migration</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ MAIN: swaps per screen ============ -->
+  <div class="main">
+
+    <!-- ---------- CHANNEL ---------- -->
+    <div class="pane" id="p-chat">
+      <div class="topbar">
+        <h2><span style="color:var(--txt-3);font-weight:400">#</span> network-ops</h2>
+        <span class="topic">Links, gear, outages. Atlas watches the WAN overnight.</span>
+        <div class="grow"></div>
+        <button class="facepile" title="7 members">
+          <i class="f c-vik">VK</i><i class="f c-pri">PN</i><i class="f c-tom">TW</i><i class="f c-atlas">🛰</i>
+          <span class="n">7</span>
+        </button>
+        <button class="tbtn">🔔</button>
+        <button class="tbtn on" id="detailsBtn">☰ Details</button>
+      </div>
+
+      <div class="scroll" id="chatScroll">
+        <div class="intro">
+          <h3># network-ops</h3>
+          <p>Created by <b>Vikas</b> on 3 Feb. Everything about links, gear and outages lives here. <b>Atlas</b> posts the overnight link check at 06:00 and <b>Ledger</b> asks here before spending.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn sm">＋ Add people</button>
+            <button class="btn sm">◈ Add an agent</button>
+            <button class="btn sm">✎ Edit the topic</button>
+          </div>
+        </div>
+
+        <div class="div"><span>Yesterday</span></div>
+
+        <div class="msg">
+          <div class="acts"><button title="React 👍">👍</button><button title="React ✅">✅</button><button title="Reply in thread">🧵</button><button title="Share">↗</button><button title="More">⋯</button></div>
+          <div class="av c-pri">PN<span class="pd"></span></div>
+          <div>
+            <div class="who"><b>Priya Nair</b><time>16:42</time></div>
+            <div class="body"><p>Core-2 in the Leeds rack has been flapping since the power blip. Anyone had eyes on it? I don't want to be the person who finds out at 3am.</p></div>
+            <div class="rx"><button class="mine">👀 <span>2</span></button><button>😬 <span>1</span></button><button class="add" title="Add reaction">＋</button></div>
+          </div>
+        </div>
+
+        <div class="msg agent">
+          <div class="acts"><button title="React 👍">👍</button><button title="React ✅">✅</button><button title="Reply in thread">🧵</button><button title="Re-run this job">↻</button><button title="More">⋯</button></div>
+          <div class="av c-atlas">🛰<span class="pd busy"></span></div>
+          <div>
+            <div class="who"><b>Atlas</b><span class="tag-bot">AGENT</span><time>16:44</time></div>
+            <div class="body">
+              <p><span class="mention">@Priya Nair</span> I've been watching it. <code>core-2.leeds</code> dropped its uplink 14 times since 02:10 — every drop is on <code>Te1/0/47</code>, none on the other members of the bundle. Optic temperature is climbing with each flap.</p>
+              <p>Three ways out of this. I priced all of them against your existing supplier accounts:</p>
+
+              <div class="card">
+                <div class="card-h"><b>Replacing the 10G optic on core-2.leeds Te1/0/47</b><div class="grow"></div><button class="btn sm">Copy</button><button class="btn sm">Open as file</button></div>
+                <table class="cmp">
+                  <thead><tr><th>Option</th><th>Cost</th><th>Here by</th><th>Downtime</th><th>Risk if we wait</th></tr></thead>
+                  <tbody>
+                    <tr class="best">
+                      <td><b>Swap from Slough spares</b><span class="pillbest">Recommended</span></td>
+                      <td class="num">£0</td><td class="num">Tomorrow 09:00</td><td class="num">~4 min</td>
+                      <td>None — 2 identical optics on the shelf</td>
+                    </tr>
+                    <tr>
+                      <td><b>Next-day from Comms Direct</b></td>
+                      <td class="num">£188.00</td><td class="num">Thu 10:30</td><td class="num">~4 min</td>
+                      <td>One more night of flaps</td>
+                    </tr>
+                    <tr>
+                      <td><b>Vendor RMA under warranty</b></td>
+                      <td class="num">£0</td><td class="num">9–12 days</td><td class="num">~4 min</td>
+                      <td>Bundle runs degraded for two weeks</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div class="card-b" style="border-top:1px solid var(--line-soft);color:var(--txt-2);font-size:12.5px">
+                  I'd take the shelf spare and raise the RMA in parallel, so the spare gets replaced for free. I can draft the RMA — say the word.
+                </div>
+              </div>
+
+              <div class="runline">
+                <span class="k">Claude</span><span>Opus 4.8</span><span>ran 47s</span><span>read 3 sources</span><span class="ok">£0.11</span><span>job #A-2291</span>
+              </div>
+            </div>
+            <div class="rx"><button class="mine">🎯 <span>3</span></button><button>🙏 <span>1</span></button><button class="add" title="Add reaction">＋</button></div>
+            <button class="thread-link">
+              <span class="fs"><i class="c-vik">VK</i><i class="c-tom">TW</i><i class="c-pri">PN</i></span>
+              4 replies <span class="last">Last reply 25 minutes ago</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="msg">
+          <div class="acts"><button title="React 👍">👍</button><button title="Reply in thread">🧵</button><button title="More">⋯</button></div>
+          <div class="av c-tom">TW<span class="pd busy"></span></div>
+          <div>
+            <div class="who"><b>Tom Weller</b><time>17:02</time></div>
+            <div class="body"><p>Shelf spare gets my vote. I'm on site tomorrow anyway for the UPS check, I can do it before the shop opens.</p></div>
+          </div>
+        </div>
+
+        <div class="div new"><span>New — 3 messages</span></div>
+
+        <div class="msg agent">
+          <div class="acts"><button title="React 👍">👍</button><button title="Reply in thread">🧵</button><button title="Re-run this job">↻</button><button title="More">⋯</button></div>
+          <div class="av c-atlas">🛰<span class="pd busy"></span></div>
+          <div>
+            <div class="who"><b>Atlas</b><span class="tag-bot">AGENT</span><time>06:00</time><span style="font-size:11px;color:var(--txt-3)">· posted on its own</span></div>
+            <div class="body">
+              <p><b>Overnight link check — 14 sites, 1 needs you.</b></p>
+              <ul>
+                <li><b>core-2.leeds</b> flapped 6 more times between 01:40 and 04:55. Optic now at 71 °C, up 4 °C on last night.</li>
+                <li><b>Site B backup circuit</b> failed over cleanly at 03:12 and came back. Nothing to do — this was the test I scheduled.</li>
+                <li>The other 12 sites were clean. Mean latency 8.4 ms, no packet loss above 0.01%.</li>
+              </ul>
+              <p>I've left the flap counters running and pinned the graph in the details pane.</p>
+              <div class="runline">
+                <span class="k">Claude</span><span>Opus 4.8</span><span>ran 3m 12s</span><span>14 sites polled</span><span class="ok">£0.34</span><span>job #A-2304</span><span>scheduled 06:00 daily</span>
+              </div>
+            </div>
+            <div class="rx"><button>👍 <span>2</span></button><button class="add">＋</button></div>
+          </div>
+        </div>
+
+        <div class="msg agent hl">
+          <div class="acts"><button title="Reply in thread">🧵</button><button title="More">⋯</button></div>
+          <div class="av c-ledger">🧾<span class="pd busy"></span></div>
+          <div>
+            <div class="who"><b>Ledger</b><span class="tag-bot">AGENT</span><time>08:11</time></div>
+            <div class="body">
+              <p><span class="mention">@Vikas</span> The Leeds job needs one thing I can't do on my own. Tom's shelf spare covers the optic, but the RMA needs a support contract that lapsed on 30 June. I've found the renewal and filled the basket — I just need a yes.</p>
+
+              <div class="approval" id="approval">
+                <div id="approvalOpen">
+                  <div class="top">
+                    <div class="ic" aria-hidden="true">£</div>
+                    <div style="min-width:0">
+                      <h4>Ledger wants to spend £412.00</h4>
+                      <p>Renew the Comms Direct hardware support contract for 12 months, so the failed optic can go back under warranty.</p>
+                      <div class="lines">
+                        <div><div class="l">Amount</div><div class="v">£412.00</div></div>
+                        <div><div class="l">Merchant</div><div class="v">Comms Direct</div></div>
+                        <div><div class="l">Card</div><div class="v">Ops •••• 4471</div></div>
+                        <div><div class="l">Budget left</div><div class="v">£1,088 / £1,500</div></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="bar">
+                    <button class="btn g" id="approveBtn">✓ Approve £412.00</button>
+                    <button class="btn d" id="rejectBtn">✕ Reject</button>
+                    <button class="btn">Ask Ledger a question</button>
+                    <span class="note">expires in 6h 12m · nothing is charged until you approve</span>
+                  </div>
+                </div>
+                <div id="approvalDone" style="display:none"></div>
+              </div>
+
+              <div class="runline">
+                <span class="k">Claude</span><span>Sonnet 5</span><span>ran 22s</span><span class="warn">waiting on you</span><span>job #L-0884</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="typing"><span>Patch is writing the config diff</span><i><b></b><b></b><b></b></i></div>
+        <div style="height:6px"></div>
+      </div>
+
+      <div class="composer">
+        <div class="cbox">
+          <div class="fmt">
+            <button class="on" title="Bold"><b>B</b></button>
+            <button title="Italic"><i>I</i></button>
+            <button title="Strikethrough"><s>S</s></button>
+            <button title="Link">🔗</button>
+            <span class="sep"></span>
+            <button title="Bulleted list">•≡</button>
+            <button title="Numbered list">1≡</button>
+            <button title="Quote">❝</button>
+            <span class="sep"></span>
+            <button title="Code"><span class="mono">‹›</span></button>
+            <button title="Code block"><span class="mono">{ }</span></button>
+          </div>
+          <div class="cin" contenteditable="true" role="textbox" aria-label="Message #network-ops" spellcheck="false"><span class="chip">@Atlas</span> draft the RMA for the Leeds optic and pin it here<span class="caret"></span></div>
+          <div class="cfoot">
+            <button class="b" title="Attach a file">＋</button>
+            <button class="b" title="Emoji">😊</button>
+            <button class="b" title="Mention someone">@</button>
+            <button class="b" title="Give this to an agent">◈</button>
+            <button class="b" title="Send later">⏱</button>
+            <button class="b" title="Record audio">🎙</button>
+            <div class="grow"></div>
+            <span class="hint">Enter to send · Shift+Enter for a new line</span>
+            <button class="send">Send ▸</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- DM ---------- -->
+    <div class="pane" id="p-dm" hidden>
+      <div class="topbar">
+        <h2><span style="font-size:16px">🧾</span> Ledger</h2>
+        <span class="topic">Spend &amp; invoices · Claude · Sonnet 5 · waiting on you</span>
+        <div class="grow"></div>
+        <button class="tbtn" data-go="edit">✎ Edit agent</button>
+        <button class="tbtn">⏸ Pause</button>
+        <button class="tbtn on" id="detailsBtn2">☰ Details</button>
+      </div>
+      <div class="scroll">
+        <div class="intro">
+          <h3>🧾 Ledger</h3>
+          <p>This is your one-to-one with Ledger. It watches invoices and renewals, and asks before it spends anything. Nobody else sees this conversation.</p>
+          <div class="runline" style="margin-bottom:4px">
+            <span class="k">Claude</span><span>Sonnet 5</span><span>built 12 Mar</span><span>184 jobs</span><span>£31.20 spent on thinking</span>
+          </div>
+        </div>
+
+        <div class="div"><span>Today</span></div>
+
+        <div class="msg">
+          <div class="acts"><button title="Edit">✎</button><button title="More">⋯</button></div>
+          <div class="av c-vik">VK<span class="pd"></span></div>
+          <div>
+            <div class="who"><b>Vikas</b><span class="tag-you">YOU</span><time>08:26</time></div>
+            <div class="body"><p>Before I approve the £412 — what else is on a renewal clock this quarter? I don't want three of these landing in the same week.</p></div>
+          </div>
+        </div>
+
+        <div class="msg agent">
+          <div class="acts"><button title="React 👍">👍</button><button title="Reply in thread">🧵</button><button title="Re-run">↻</button><button title="More">⋯</button></div>
+          <div class="av c-ledger">🧾<span class="pd busy"></span></div>
+          <div>
+            <div class="who"><b>Ledger</b><span class="tag-bot">AGENT</span><time>08:26</time></div>
+            <div class="body">
+              <p>Four things renew before the end of September. Two of them you can drop.</p>
+              <div class="card">
+                <table class="cmp">
+                  <thead><tr><th>Renews</th><th>What</th><th>Cost</th><th>My read</th></tr></thead>
+                  <tbody>
+                    <tr><td class="num">14 Aug</td><td>Comms Direct hardware support</td><td class="num">£412.00</td><td>Keep — it's the one blocking the RMA</td></tr>
+                    <tr><td class="num">01 Sep</td><td>Cloudflare Zero Trust · 12 seats</td><td class="num">£684.00</td><td>Keep, but you only use 8 seats</td></tr>
+                    <tr><td class="num">09 Sep</td><td>PRTG monitoring · 500 sensors</td><td class="num">£1,240.00</td><td>Atlas covers 90% of this now</td></tr>
+                    <tr><td class="num">28 Sep</td><td>Old Leeds ADSL backup line</td><td class="num">£348.00</td><td>Cancel — replaced by the 5G failover in May</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <p style="margin-top:8px">Dropping the ADSL line and the four unused Cloudflare seats saves <b>£576 a year</b>. Want me to draft both cancellations for you to check?</p>
+              <div class="runline"><span class="k">Claude</span><span>Sonnet 5</span><span>ran 18s</span><span>read 4 invoices</span><span class="ok">£0.05</span><span>job #L-0886</span></div>
+            </div>
+            <div class="rx"><button class="mine">👏 <span>1</span></button><button class="add">＋</button></div>
+          </div>
+        </div>
+
+        <div class="msg">
+          <div class="acts"><button title="Edit">✎</button><button title="More">⋯</button></div>
+          <div class="av c-vik">VK<span class="pd"></span></div>
+          <div>
+            <div class="who"><b>Vikas</b><span class="tag-you">YOU</span><time>08:31</time></div>
+            <div class="body"><p>Draft both. Don't send anything.</p></div>
+          </div>
+        </div>
+
+        <div class="msg agent">
+          <div class="acts"><button title="React 👍">👍</button><button title="More">⋯</button></div>
+          <div class="av c-ledger">🧾<span class="pd busy"></span></div>
+          <div>
+            <div class="who"><b>Ledger</b><span class="tag-bot">AGENT</span><time>08:33</time></div>
+            <div class="body">
+              <p>Both drafted, nothing sent. They're sitting in <code>~/Cloud9/ledger/drafts/</code> and in Tasks.</p>
+              <ul>
+                <li><b>cancel-leeds-adsl.md</b> — 30 days notice, ends 28 Sep, no exit fee</li>
+                <li><b>cloudflare-seat-reduction.md</b> — 12 → 8 seats at next renewal</li>
+              </ul>
+              <div class="runline"><span class="k">Claude</span><span>Sonnet 5</span><span>ran 41s</span><span>wrote 2 files</span><span class="ok">£0.08</span><span>job #L-0887</span></div>
+            </div>
+          </div>
+        </div>
+        <div style="height:8px"></div>
+      </div>
+
+      <div class="composer">
+        <div class="cbox">
+          <div class="fmt">
+            <button title="Bold"><b>B</b></button><button title="Italic"><i>I</i></button><button title="Strikethrough"><s>S</s></button><button title="Link">🔗</button>
+            <span class="sep"></span><button title="Bulleted list">•≡</button><button title="Numbered list">1≡</button><button title="Quote">❝</button>
+            <span class="sep"></span><button title="Code"><span class="mono">‹›</span></button><button title="Code block"><span class="mono">{ }</span></button>
+          </div>
+          <div class="cin" contenteditable="true" role="textbox" aria-label="Message Ledger" spellcheck="false"><span class="ph">Message Ledger</span></div>
+          <div class="cfoot">
+            <button class="b" title="Attach a file">＋</button><button class="b" title="Emoji">😊</button>
+            <button class="b" title="Give this to an agent">◈</button><button class="b" title="Send later">⏱</button>
+            <div class="grow"></div>
+            <span class="hint">Ledger replies here only — it never posts to channels without you</span>
+            <button class="send">Send ▸</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- AGENTS ---------- -->
+    <div class="pane" id="p-agents" hidden>
+      <div class="topbar">
+        <h2>Agents</h2><span class="topic">Six coworkers, two apps, one bill you can read</span>
+        <div class="grow"></div>
+        <button class="tbtn">⇅ Sort: status</button>
+        <button class="tbtn" data-go="edit">＋ Build an agent</button>
+      </div>
+      <div class="scroll"><div class="page">
+        <div class="stats">
+          <div class="stat"><div class="n">2</div><div class="l">Working now</div><div class="d">Atlas · Patch</div></div>
+          <div class="stat warn"><div class="n">1</div><div class="l">Waiting on you</div><div class="d">Ledger · 6h 12m left</div></div>
+          <div class="stat"><div class="n">184</div><div class="l">Jobs this month</div><div class="d">▲ 22% vs June</div></div>
+          <div class="stat"><div class="n">£38.14</div><div class="l">Thinking cost this month</div><div class="d">of £75.00 cap</div></div>
+        </div>
+
+        <div class="gridcards">
+          <div class="acard">
+            <div class="hd">
+              <div class="emo">🛰</div>
+              <div style="flex:1;min-width:0"><h4>Atlas</h4><div class="role">Network watch</div></div>
+              <button class="tbtn" title="More">⋯</button>
+            </div>
+            <div class="desc">Polls every site overnight, tells me what changed, and only wakes me for things that actually matter.</div>
+            <div class="foot">
+              <span class="status work"><i></i> Working</span>
+              <span class="runchip"><span class="app">Claude</span> · Opus 4.8</span>
+            </div>
+            <div class="runline" style="margin-top:0"><span>Last job</span><span>#A-2304 overnight link check</span><span class="ok">done 06:03</span></div>
+            <div style="display:flex;gap:6px"><button class="btn sm" data-go="dm">Message</button><button class="btn sm" data-go="edit">Edit</button><button class="btn sm">Pause</button></div>
+          </div>
+
+          <div class="acard" style="border-color:var(--amber-line)">
+            <div class="hd">
+              <div class="emo">🧾</div>
+              <div style="flex:1;min-width:0"><h4>Ledger</h4><div class="role">Spend &amp; invoices</div></div>
+              <button class="tbtn" title="More">⋯</button>
+            </div>
+            <div class="desc">Reads invoices and renewal notices, flags waste, and never spends a penny without asking first.</div>
+            <div class="foot">
+              <span class="status wait"><i></i> Waiting on you</span>
+              <span class="runchip"><span class="app">Claude</span> · Sonnet 5</span>
+            </div>
+            <div class="runline" style="margin-top:0"><span>Last job</span><span>#L-0884 spend approval</span><span class="warn">£412.00 pending</span></div>
+            <div style="display:flex;gap:6px"><button class="btn sm g" data-go="tasks">Review request</button><button class="btn sm" data-go="dm">Message</button><button class="btn sm" data-go="edit">Edit</button></div>
+          </div>
+
+          <div class="acard">
+            <div class="hd">
+              <div class="emo">🩹</div>
+              <div style="flex:1;min-width:0"><h4>Patch</h4><div class="role">Config &amp; scripts</div></div>
+              <button class="tbtn" title="More">⋯</button>
+            </div>
+            <div class="desc">Writes and reviews device configs. Shows a diff before anything is pushed, always.</div>
+            <div class="foot">
+              <span class="status work"><i></i> Working</span>
+              <span class="runchip"><span class="app">Codex</span> · GPT-5.4-codex</span>
+            </div>
+            <div class="runline" style="margin-top:0"><span>Last job</span><span>#P-1140 Site B VLAN diff</span><span>running 2m 08s</span></div>
+            <div style="display:flex;gap:6px"><button class="btn sm" data-go="dm">Message</button><button class="btn sm" data-go="edit">Edit</button><button class="btn sm">Pause</button></div>
+          </div>
+
+          <div class="acard">
+            <div class="hd">
+              <div class="emo">🔎</div>
+              <div style="flex:1;min-width:0"><h4>Scout</h4><div class="role">Research &amp; suppliers</div></div>
+              <button class="tbtn" title="More">⋯</button>
+            </div>
+            <div class="desc">Digs up kit comparisons, prices and firmware notes, and always shows where it got them.</div>
+            <div class="foot">
+              <span class="status idle"><i></i> Idle</span>
+              <span class="runchip"><span class="app">Codex</span> · GPT-5.4</span>
+            </div>
+            <div class="runline" style="margin-top:0"><span>Last job</span><span>#S-0431 optic price check</span><span class="ok">done yesterday 16:44</span></div>
+            <div style="display:flex;gap:6px"><button class="btn sm" data-go="dm">Message</button><button class="btn sm" data-go="edit">Edit</button><button class="btn sm">Pause</button></div>
+          </div>
+
+          <div class="acard" style="opacity:.72">
+            <div class="hd">
+              <div class="emo">🗂</div>
+              <div style="flex:1;min-width:0"><h4>Sift</h4><div class="role">Inbox triage</div></div>
+              <button class="tbtn" title="More">⋯</button>
+            </div>
+            <div class="desc">Sorts the shared ops inbox into needs-a-human, FYI, and noise. Paused since the mailbox move.</div>
+            <div class="foot">
+              <span class="status pause"><i></i> Paused</span>
+              <span class="runchip"><span class="app">Claude</span> · Haiku 4.5</span>
+            </div>
+            <div class="runline" style="margin-top:0"><span>Last job</span><span>#F-0092 triage</span><span>paused 4 days ago</span></div>
+            <div style="display:flex;gap:6px"><button class="btn sm p">Resume</button><button class="btn sm" data-go="edit">Edit</button></div>
+          </div>
+
+          <div class="acard">
+            <div class="hd">
+              <div class="emo">📣</div>
+              <div style="flex:1;min-width:0"><h4>Echo</h4><div class="role">Standups &amp; notes</div></div>
+              <button class="tbtn" title="More">⋯</button>
+            </div>
+            <div class="desc">Writes the Monday summary of what the team and the agents actually did last week.</div>
+            <div class="foot">
+              <span class="status idle"><i></i> Idle · next run Mon 08:00</span>
+              <span class="runchip"><span class="app">Claude</span> · Sonnet 5</span>
+            </div>
+            <div class="runline" style="margin-top:0"><span>Last job</span><span>#E-0210 weekly summary</span><span class="ok">done Mon 08:02</span></div>
+            <div style="display:flex;gap:6px"><button class="btn sm" data-go="dm">Message</button><button class="btn sm" data-go="edit">Edit</button><button class="btn sm">Pause</button></div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ---------- CREATE / EDIT AGENT ---------- -->
+    <div class="pane" id="p-edit" hidden>
+      <div class="topbar">
+        <h2>Edit agent · Atlas</h2><span class="topic">Changes take effect on the next job</span>
+        <div class="grow"></div>
+        <button class="tbtn">Discard changes</button>
+        <button class="btn p" style="padding:5px 13px">Save agent</button>
+      </div>
+      <div class="scroll"><div class="page">
+        <div class="formgrid">
+
+          <div style="display:grid;gap:12px">
+            <div class="panel">
+              <div class="panel-h"><b>Who it is</b></div>
+              <div class="panel-b">
+                <div class="field">
+                  <label for="agName">Name</label>
+                  <input class="inp" id="agName" value="Atlas">
+                  <div class="help">People will type <b>@Atlas</b> to reach it.</div>
+                </div>
+                <div class="field">
+                  <label>Face</label>
+                  <div class="emojipick">
+                    <div class="cur" id="emoCur">🛰</div>
+                    <div class="opts" id="emoOpts">
+                      <button class="on">🛰</button><button>📡</button><button>🧭</button><button>🦉</button>
+                      <button>🛡</button><button>🧰</button><button>⚡</button><button>🔭</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="agRole">Job title</label>
+                  <input class="inp" id="agRole" value="Network watch">
+                </div>
+                <div class="field">
+                  <label for="agDesc">What it does, in your words</label>
+                  <textarea class="inp" id="agDesc">Watch every site overnight. Poll the links, compare against last night, and tell me what changed. Wake me only for things that will hurt: repeated flaps, optics running hot, a circuit that failed over and did not come back. Write plainly — no jargon, no hedging. If you are not sure, say so and say what would make you sure.</textarea>
+                  <div class="help">This is the agent's standing brief. Plain English works better than instructions written like code.</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-h"><b>Which app runs it</b><div class="grow"></div><span class="mono" style="color:var(--txt-3)">both apps signed in ✓</span></div>
+              <div class="panel-b">
+                <div class="field">
+                  <label>App</label>
+                  <div class="pickrow" id="appPick">
+                    <button class="pick on"><span class="mark"></span><span><b>Claude</b><span>Max 20× · 3 models</span></span></button>
+                    <button class="pick"><span class="mark"></span><span><b>Codex</b><span>Pro · 2 models</span></span></button>
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="agModel">Model</label>
+                  <select class="inp" id="agModel">
+                    <option selected>Opus 4.8 — best thinking, slower, costs more</option>
+                    <option>Sonnet 5 — quick and cheap, good for routine work</option>
+                    <option>Haiku 4.5 — fastest, for sorting and simple checks</option>
+                  </select>
+                  <div class="help">Atlas has to spot patterns across 14 sites, so it earns the expensive model.</div>
+                </div>
+                <div class="row2">
+                  <div class="field"><label for="agCap">Spend cap for thinking</label><input class="inp" id="agCap" value="£25.00 / month"></div>
+                  <div class="field"><label for="agTime">Longest a job may run</label><input class="inp" id="agTime" value="15 minutes"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-h"><b>What it's allowed to do</b></div>
+              <div class="panel-b" style="padding-top:4px;padding-bottom:4px">
+                <button class="tog" role="switch" aria-checked="true"><span class="sw"></span><span class="t"><b>Search the web</b><span>Look things up and quote where it found them</span></span></button>
+                <button class="tog" role="switch" aria-checked="true"><span class="sw"></span><span class="t"><b>Read and write files</b><span>Only inside <span class="mono">~/Cloud9/atlas/</span></span></span></button>
+                <button class="tog" role="switch" aria-checked="true"><span class="sw"></span><span class="t"><b>Run on a schedule</b><span>Every day at 06:00, and every 4 hours during an incident</span></span></button>
+                <button class="tog" role="switch" aria-checked="true"><span class="sw"></span><span class="t"><b>Work in the background</b><span>Keep going when Cloud9 is closed</span></span></button>
+                <button class="tog" role="switch" aria-checked="true"><span class="sw"></span><span class="t"><b>Post in channels on its own</b><span>Currently posts to #network-ops</span></span></button>
+                <button class="tog" role="switch" aria-checked="false"><span class="sw"></span><span class="t"><b>Send email</b><span>Off — Atlas reports here instead</span></span></button>
+                <button class="tog" role="switch" aria-checked="false"><span class="sw"></span><span class="t"><b>Change device configs</b><span>Off — that's Patch's job</span></span></button>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-h"><b>When it must ask you first</b></div>
+              <div class="panel-b" style="padding-top:4px;padding-bottom:4px">
+                <button class="tog" role="switch" aria-checked="true"><span class="sw"></span><span class="t"><b>Spending any money</b><span>Always — no threshold, no exceptions</span></span></button>
+                <button class="tog" role="switch" aria-checked="true"><span class="sw"></span><span class="t"><b>Messaging someone outside the workspace</b><span>Suppliers, vendors, anyone not in Vikas HQ</span></span></button>
+                <button class="tog" role="switch" aria-checked="true"><span class="sw"></span><span class="t"><b>Deleting or overwriting a file</b><span>Shows you the before and after first</span></span></button>
+                <button class="tog" role="switch" aria-checked="false"><span class="sw"></span><span class="t"><b>Every single job</b><span>Off — you'd be approving 40 things a day</span></span></button>
+                <div style="padding:10px 0 4px;border-top:1px solid var(--line-soft);margin-top:4px">
+                  <label style="font-size:12.5px;font-weight:600;display:block;margin-bottom:4px">If you don't answer within</label>
+                  <select class="inp"><option>8 hours — cancel the job and tell me</option><option selected>8 hours — hold it and remind me</option><option>Never expire</option></select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- skills column -->
+          <div style="display:grid;gap:12px">
+            <div class="panel">
+              <div class="panel-h"><b>Skills</b><div class="grow"></div><span class="mono" style="color:var(--txt-3)">4 skills</span><button class="btn sm">＋ New skill</button></div>
+              <div class="panel-b">
+                <p style="margin:0 0 11px;font-size:12.5px;color:var(--txt-2)">A skill is a named routine you can hand the agent. Atlas picks the right one for the job — you don't have to say which.</p>
+
+                <div class="skill">
+                  <div class="skill-h"><span>🌙</span><b>Overnight link check</b><div class="grow"></div><span class="mono" style="color:var(--txt-3)">used 41×</span><button class="tbtn" title="Edit skill">✎</button><button class="tbtn" title="Remove">✕</button></div>
+                  <div class="skill-b">
+                    <span class="lbl">Instructions</span>
+                    <div class="instr">Poll all 14 sites between 01:00 and 05:00.
+Compare flap counts, latency and optic temperature against the last 7 nights.
+Report only what changed by more than 10%.
+Always name the site, the port, and the exact times.
+Never say "everything looks fine" without the numbers behind it.</div>
+                  </div>
+                </div>
+
+                <div class="skill">
+                  <div class="skill-h"><span>🔥</span><b>Incident first look</b><div class="grow"></div><span class="mono" style="color:var(--txt-3)">used 9×</span><button class="tbtn" title="Edit skill">✎</button><button class="tbtn" title="Remove">✕</button></div>
+                  <div class="skill-b">
+                    <span class="lbl">Instructions</span>
+                    <div class="instr">When a site drops, answer four questions before anything else:
+what broke, when, what else it touches, and is it still broken now.
+Post that in under 60 seconds even if it's incomplete — say what you don't know yet.
+Then keep updating the same message rather than posting new ones.</div>
+                  </div>
+                </div>
+
+                <div class="skill">
+                  <div class="skill-h"><span>📋</span><b>Change window prep</b><div class="grow"></div><span class="mono" style="color:var(--txt-3)">used 6×</span><button class="tbtn" title="Edit skill">✎</button><button class="tbtn" title="Remove">✕</button></div>
+                  <div class="skill-b">
+                    <span class="lbl">Instructions</span>
+                    <div class="instr">Before any planned change, capture the current state of every device in scope.
+List what should be true afterwards, and the exact command to check each one.
+Include a back-out that a tired person can follow at 3am.</div>
+                  </div>
+                </div>
+
+                <div class="skill">
+                  <div class="skill-h"><span>🧮</span><b>Capacity read</b><div class="grow"></div><span class="mono" style="color:var(--txt-3)">used 3×</span><button class="tbtn" title="Edit skill">✎</button><button class="tbtn" title="Remove">✕</button></div>
+                  <div class="skill-b">
+                    <span class="lbl">Instructions</span>
+                    <div class="instr">Once a month, work out which links will hit 70% at the current growth rate,
+and when. Show the trend line and the assumption behind it.</div>
+                  </div>
+                </div>
+
+                <button class="drop" style="width:100%;margin-top:4px">
+                  <b>Upload a skill file</b>
+                  Drop a <span class="mono">.md</span> or <span class="mono">.skill</span> file here, or click to pick one
+                </button>
+                <div class="mono" style="color:var(--txt-3);margin-top:7px">Skills live in ~/Cloud9/atlas/skills/ — you can edit them in any text editor.</div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-h"><b>Where it shows up</b></div>
+              <div class="panel-b">
+                <div class="field">
+                  <label>Channels Atlas is in</label>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap">
+                    <span class="runchip"># network-ops ✕</span><span class="runchip"># site-b-cutover ✕</span><span class="runchip"># general ✕</span>
+                    <button class="btn sm">＋ Add a channel</button>
+                  </div>
+                </div>
+                <div class="field" style="margin-bottom:0">
+                  <label>Who can give Atlas work</label>
+                  <select class="inp"><option selected>Anyone in Vikas HQ</option><option>Only me</option><option>Me and Priya</option></select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ---------- TASKS & APPROVALS ---------- -->
+    <div class="pane" id="p-tasks" hidden>
+      <div class="topbar">
+        <h2>Tasks &amp; approvals</h2><span class="topic">Everything you handed over, and everything waiting on you</span>
+        <div class="grow"></div>
+        <div class="seg"><button class="on">Needs you (2)</button><button>Running (2)</button><button>Done</button><button>All</button></div>
+      </div>
+      <div class="scroll"><div class="page">
+
+        <div class="eyebrow" style="margin-bottom:8px">Waiting on you</div>
+
+        <div class="approval" style="margin-bottom:10px">
+          <div class="top">
+            <div class="ic">£</div>
+            <div style="min-width:0">
+              <h4>Ledger wants to spend £412.00 · Comms Direct support renewal</h4>
+              <p>Asked in <b>#network-ops</b> at 08:11 today. Nothing is charged until you approve.</p>
+              <div class="lines">
+                <div><div class="l">Amount</div><div class="v">£412.00</div></div>
+                <div><div class="l">Card</div><div class="v">Ops •••• 4471</div></div>
+                <div><div class="l">Budget left</div><div class="v">£1,088 / £1,500</div></div>
+                <div><div class="l">Expires</div><div class="v">6h 12m</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="bar"><button class="btn g">✓ Approve</button><button class="btn d">✕ Reject</button><button class="btn" data-go="chat">See it in the channel</button></div>
+        </div>
+
+        <div class="approval neutral" style="margin-bottom:20px">
+          <div class="top">
+            <div class="ic" style="background:var(--violet);color:#fff">✎</div>
+            <div style="min-width:0">
+              <h4>Patch wants to push a config change to sw-b3.siteb</h4>
+              <p>Adds VLAN 340 to ports 12–18 for the new cameras. Patch has written the back-out too.</p>
+              <div class="lines">
+                <div><div class="l">Device</div><div class="v">sw-b3.siteb</div></div>
+                <div><div class="l">Lines changed</div><div class="v">+14 / −2</div></div>
+                <div><div class="l">Blast radius</div><div class="v">7 ports</div></div>
+                <div><div class="l">Back-out</div><div class="v">ready ✓</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="bar"><button class="btn p">Review the diff</button><button class="btn">Approve without looking</button><button class="btn d">Reject</button></div>
+        </div>
+
+        <div class="eyebrow" style="margin-bottom:8px">Jobs</div>
+        <table class="tbl">
+          <thead><tr><th>Job</th><th>Agent</th><th>Runs on</th><th>Status</th><th>Started</th><th>Cost</th><th></th></tr></thead>
+          <tbody>
+            <tr>
+              <td><b>Site B VLAN diff for the camera rollout</b><div style="color:var(--txt-2);font-size:12px">Step 3 of 4 — checking the back-out<div class="prog"><i style="width:74%"></i></div></div></td>
+              <td><div class="who-cell"><span class="e">🩹</span> Patch</div></td>
+              <td class="m">Codex · GPT-5.4-codex</td>
+              <td><span class="status work"><i></i> Running</span></td>
+              <td class="m">09:14 · 2m 08s</td><td class="m">£0.19</td>
+              <td><button class="btn sm">Watch</button></td>
+            </tr>
+            <tr>
+              <td><b>Overnight link check — 14 sites</b><div style="color:var(--txt-2);font-size:12px">Found 1 thing that needs you: core-2.leeds optic</div></td>
+              <td><div class="who-cell"><span class="e">🛰</span> Atlas</div></td>
+              <td class="m">Claude · Opus 4.8</td>
+              <td><span class="status work"><i></i> Watching</span></td>
+              <td class="m">06:00 · daily</td><td class="m">£0.34</td>
+              <td><button class="btn sm" data-go="chat">Result</button></td>
+            </tr>
+            <tr>
+              <td><b>Draft two cancellations — ADSL line, Cloudflare seats</b><div style="color:var(--txt-2);font-size:12px">2 files written, nothing sent</div></td>
+              <td><div class="who-cell"><span class="e">🧾</span> Ledger</div></td>
+              <td class="m">Claude · Sonnet 5</td>
+              <td><span class="status idle"><i style="background:var(--green)"></i> Done</span></td>
+              <td class="m">08:33 · 41s</td><td class="m">£0.08</td>
+              <td><button class="btn sm" data-go="dm">Result</button></td>
+            </tr>
+            <tr>
+              <td><b>Price 10G optics across three suppliers</b><div style="color:var(--txt-2);font-size:12px">Shelf spare beats all three — recommended £0</div></td>
+              <td><div class="who-cell"><span class="e">🔎</span> Scout</div></td>
+              <td class="m">Codex · GPT-5.4</td>
+              <td><span class="status idle"><i style="background:var(--green)"></i> Done</span></td>
+              <td class="m">Yesterday 16:41</td><td class="m">£0.22</td>
+              <td><button class="btn sm" data-go="chat">Result</button></td>
+            </tr>
+            <tr>
+              <td><b>Sort the ops inbox</b><div style="color:var(--txt-2);font-size:12px">Stopped — mailbox moved, needs signing in again</div></td>
+              <td><div class="who-cell"><span class="e">🗂</span> Sift</div></td>
+              <td class="m">Claude · Haiku 4.5</td>
+              <td><span class="status pause"><i></i> Paused</span></td>
+              <td class="m">4 days ago</td><td class="m">£0.00</td>
+              <td><button class="btn sm">Fix it</button></td>
+            </tr>
+            <tr>
+              <td><b>Weekly summary for the team</b><div style="color:var(--txt-2);font-size:12px">Next run Monday 08:00</div></td>
+              <td><div class="who-cell"><span class="e">📣</span> Echo</div></td>
+              <td class="m">Claude · Sonnet 5</td>
+              <td><span class="status idle"><i></i> Scheduled</span></td>
+              <td class="m">Mon 08:00</td><td class="m">£0.11 avg</td>
+              <td><button class="btn sm">Run now</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div></div>
+    </div>
+
+    <!-- ---------- ACTIVITY ---------- -->
+    <div class="pane" id="p-activity" hidden>
+      <div class="topbar">
+        <h2>Activity</h2><span class="topic">Every action, and who is answerable for it</span>
+        <div class="grow"></div>
+        <div class="seg"><button class="on">Everyone</button><button>Agents only</button><button>People only</button><button>Money</button></div>
+        <button class="tbtn">⤓ Export</button>
+      </div>
+      <div class="scroll"><div class="page">
+        <div class="stats">
+          <div class="stat"><div class="n">63</div><div class="l">Actions today</div><div class="d">48 by agents · 15 by people</div></div>
+          <div class="stat"><div class="n">7</div><div class="l">Approvals asked</div><div class="d">5 approved · 1 rejected · 1 open</div></div>
+          <div class="stat"><div class="n">£412</div><div class="l">Spend pending</div><div class="d">nothing charged yet</div></div>
+          <div class="stat"><div class="n">0</div><div class="l">Actions taken without asking</div><div class="d">as it should be</div></div>
+        </div>
+
+        <table class="tbl">
+          <thead><tr><th style="width:88px">Time</th><th style="width:170px">Who</th><th>What happened</th><th style="width:150px">Where</th><th style="width:96px">Trace</th></tr></thead>
+          <tbody>
+            <tr><td class="m">09:14</td><td><div class="who-cell"><span class="e">🩹</span> Patch <span class="tag-bot">AGENT</span></div></td><td>Started writing the VLAN 340 diff for <b>sw-b3.siteb</b>. Nothing pushed yet.</td><td class="m">#site-b-cutover</td><td class="m">#P-1140</td></tr>
+            <tr><td class="m">08:33</td><td><div class="who-cell"><span class="e">🧾</span> Ledger <span class="tag-bot">AGENT</span></div></td><td>Wrote 2 draft cancellations to <span class="mono">~/Cloud9/ledger/drafts/</span>. Sent nothing.</td><td class="m">DM with Vikas</td><td class="m">#L-0887</td></tr>
+            <tr><td class="m">08:31</td><td><div class="who-cell"><span class="e c-vik" style="color:#fff;background:#2E5C68;border:0">VK</span> Vikas <span class="tag-you">YOU</span></div></td><td>Told Ledger to draft both cancellations and send nothing.</td><td class="m">DM with Ledger</td><td class="m">—</td></tr>
+            <tr style="background:var(--amber-soft)"><td class="m">08:11</td><td><div class="who-cell"><span class="e">🧾</span> Ledger <span class="tag-bot">AGENT</span></div></td><td><b>Asked to spend £412.00</b> at Comms Direct. Still waiting for your answer.</td><td class="m">#network-ops</td><td class="m">#L-0884</td></tr>
+            <tr><td class="m">07:58</td><td><div class="who-cell"><span class="e c-pri" style="color:#fff;background:#7A4A86;border:0">PN</span> Priya Nair</div></td><td>Approved <b>Scout</b> to read the supplier price list.</td><td class="m">Agents</td><td class="m">#S-0431</td></tr>
+            <tr><td class="m">06:03</td><td><div class="who-cell"><span class="e">🛰</span> Atlas <span class="tag-bot">AGENT</span></div></td><td>Finished the overnight link check across 14 sites and posted the result on its own.</td><td class="m">#network-ops</td><td class="m">#A-2304</td></tr>
+            <tr><td class="m">03:12</td><td><div class="who-cell"><span class="e">🛰</span> Atlas <span class="tag-bot">AGENT</span></div></td><td>Watched the Site B backup circuit fail over and recover. Did not wake you — this was the scheduled test.</td><td class="m">background</td><td class="m">#A-2303</td></tr>
+            <tr><td class="m">Yest 17:02</td><td><div class="who-cell"><span class="e c-tom" style="color:#fff;background:#8A5A2B;border:0">TW</span> Tom Weller</div></td><td>Took the Leeds optic swap and put it on tomorrow's site visit.</td><td class="m">#network-ops</td><td class="m">—</td></tr>
+            <tr><td class="m">Yest 16:44</td><td><div class="who-cell"><span class="e">🛰</span> Atlas <span class="tag-bot">AGENT</span></div></td><td>Posted the three-way comparison for the failing optic.</td><td class="m">#network-ops</td><td class="m">#A-2291</td></tr>
+            <tr><td class="m">Yest 15:20</td><td><div class="who-cell"><span class="e c-vik" style="color:#fff;background:#2E5C68;border:0">VK</span> Vikas <span class="tag-you">YOU</span></div></td><td><b>Rejected</b> Scout's request to buy a £29/month parts-tracking subscription.</td><td class="m">Tasks</td><td class="m">#S-0428</td></tr>
+            <tr><td class="m">Yest 11:04</td><td><div class="who-cell"><span class="e">🗂</span> Sift <span class="tag-bot">AGENT</span></div></td><td>Paused itself after 3 failed sign-ins to the ops mailbox. Did not retry again.</td><td class="m">background</td><td class="m">#F-0092</td></tr>
+          </tbody>
+        </table>
+      </div></div>
+    </div>
+
+    <!-- ---------- SETTINGS ---------- -->
+    <div class="pane" id="p-settings" hidden>
+      <div class="topbar">
+        <h2>Settings</h2><span class="topic">Vikas HQ · this machine</span>
+        <div class="grow"></div>
+        <div class="seg"><button class="on">General</button><button>Agents</button><button>Notifications</button><button>Apps</button><button>Advanced</button></div>
+      </div>
+      <div class="scroll"><div class="page">
+        <div class="formgrid">
+          <div style="display:grid;gap:12px">
+
+            <div class="panel">
+              <div class="panel-h"><b>Appearance</b></div>
+              <div>
+                <div class="srow">
+                  <div class="t"><b>Theme</b><span>Follow Windows, or pick one and stay there.</span></div>
+                  <div class="c">
+                    <div class="themecard" id="themeCards">
+                      <button data-theme-set="light" class="on"><span class="sw"><i style="flex:1;background:#fff"></i><i style="width:12px;background:#11303A"></i></span>Light</button>
+                      <button data-theme-set="dark"><span class="sw"><i style="flex:1;background:#0F2127"></i><i style="width:12px;background:#071419"></i></span>Dark</button>
+                      <button data-theme-set="system"><span class="sw"><i style="flex:1;background:linear-gradient(90deg,#fff 50%,#0F2127 50%)"></i></span>System</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="srow"><div class="t"><b>Density</b><span>How much fits on screen before you scroll.</span></div><div class="c"><div class="seg"><button class="on">Comfortable</button><button>Compact</button></div></div></div>
+                <div class="srow"><div class="t"><b>Show the runline under agent messages</b><span>The mono strip with app, model, time and cost. Turn it off for a cleaner read.</span></div><div class="c"><button class="tog" role="switch" aria-checked="true" style="border:0;padding:0"><span class="sw"></span></button></div></div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-h"><b>New agents start with</b></div>
+              <div>
+                <div class="srow"><div class="t"><b>App</b><span>You can change it per agent afterwards.</span></div><div class="c"><select class="inp" style="width:180px"><option selected>Claude</option><option>Codex</option><option>Ask me each time</option></select></div></div>
+                <div class="srow"><div class="t"><b>Model</b><span>Sonnet 5 is the sensible default — it's quick and cheap.</span></div><div class="c"><select class="inp" style="width:180px"><option>Opus 4.8</option><option selected>Sonnet 5</option><option>Haiku 4.5</option></select></div></div>
+                <div class="srow"><div class="t"><b>Ask before spending</b><span>Strongly recommended. New agents can never spend silently.</span></div><div class="c"><button class="tog" role="switch" aria-checked="true" style="border:0;padding:0"><span class="sw"></span></button></div></div>
+                <div class="srow"><div class="t"><b>Monthly thinking cap per agent</b><span>The agent stops and tells you when it hits this.</span></div><div class="c"><input class="inp" style="width:120px" value="£25.00"></div></div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-h"><b>Quiet hours</b></div>
+              <div>
+                <div class="srow"><div class="t"><b>Don't interrupt me</b><span>Agents keep working — they just hold their messages until morning.</span></div><div class="c"><button class="tog" role="switch" aria-checked="true" style="border:0;padding:0"><span class="sw"></span></button></div></div>
+                <div class="srow"><div class="t"><b>From / to</b><span>Monday to Friday. Weekends are quiet all day.</span></div><div class="c"><input class="inp" style="width:82px" value="21:30"><span style="color:var(--txt-3)">→</span><input class="inp" style="width:82px" value="07:00"></div></div>
+                <div class="srow"><div class="t"><b>Break through for</b><span>The only things worth waking you for.</span></div><div class="c"><div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end"><span class="runchip">a site is down ✕</span><span class="runchip">@mentions from people ✕</span><button class="btn sm">＋</button></div></div></div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-h"><b>Notifications</b></div>
+              <div>
+                <div class="srow"><div class="t"><b>Desktop alerts</b><span>Windows notifications for the things below.</span></div><div class="c"><button class="tog" role="switch" aria-checked="true" style="border:0;padding:0"><span class="sw"></span></button></div></div>
+                <div class="srow"><div class="t"><b>An agent needs approval</b><span>Always on — this is the one that matters.</span></div><div class="c"><span class="status wait"><i></i> Always</span></div></div>
+                <div class="srow"><div class="t"><b>An agent finished a job</b><span>Only for jobs you asked for by name.</span></div><div class="c"><select class="inp" style="width:180px"><option>Every job</option><option selected>Only jobs I asked for</option><option>Never</option></select></div></div>
+                <div class="srow"><div class="t"><b>Sound</b><span>Plays once, quietly.</span></div><div class="c"><select class="inp" style="width:180px"><option selected>Knock</option><option>Ping</option><option>Silent</option></select></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:grid;gap:12px">
+            <div class="panel">
+              <div class="panel-h"><b>Connected apps</b><div class="grow"></div><button class="btn sm">Check all</button></div>
+              <div>
+                <div class="srow">
+                  <div class="t"><b>Claude <span class="status work" style="margin-left:4px"><i></i> Signed in</span></b><span class="mono" style="display:block;margin-top:3px">vikas53953@gmail.com · Max 20× · app v3.14</span></div>
+                  <div class="c"><button class="btn sm">Sign out</button></div>
+                </div>
+                <div class="srow">
+                  <div class="t"><b>Codex <span class="status work" style="margin-left:4px"><i></i> Signed in</span></b><span class="mono" style="display:block;margin-top:3px">vikas@homelab.dev · Pro · app v2.8</span></div>
+                  <div class="c"><button class="btn sm">Sign out</button></div>
+                </div>
+                <div class="srow">
+                  <div class="t"><b>Gemini <span class="status pause" style="margin-left:4px"><i></i> Not connected</span></b><span style="display:block;margin-top:3px">Optional. No agent uses it yet.</span></div>
+                  <div class="c"><button class="btn sm p">Connect</button></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-h"><b>Where agent files live</b></div>
+              <div class="panel-b">
+                <div class="field">
+                  <label>Workspace folder</label>
+                  <div style="display:flex;gap:8px"><input class="inp mono" style="font-size:12px" value="C:\Users\vikasmit\Cloud9\" readonly><button class="btn">Change</button><button class="btn">Open</button></div>
+                  <div class="help">Each agent gets its own folder in here — its skills, its notes, and anything it writes. Plain files you can read and back up yourself.</div>
+                </div>
+                <div class="kv"><span class="k">Atlas</span><span class="v">~/Cloud9/atlas · 4 skills · 18 MB</span></div>
+                <div class="kv"><span class="k">Ledger</span><span class="v">~/Cloud9/ledger · 3 skills · 6 MB</span></div>
+                <div class="kv"><span class="k">Patch</span><span class="v">~/Cloud9/patch · 5 skills · 22 MB</span></div>
+                <div class="kv"><span class="k">Everything else</span><span class="v">3 agents · 11 MB</span></div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-h"><b>Shortcuts</b></div>
+              <div class="panel-b">
+                <div class="kv"><span class="k">Quick chat with any agent</span><span class="v">Ctrl + K</span></div>
+                <div class="kv"><span class="k">Jump to a channel</span><span class="v">Ctrl + T</span></div>
+                <div class="kv"><span class="k">Next unread</span><span class="v">Alt + ↓</span></div>
+                <div class="kv"><span class="k">Approve the top request</span><span class="v">Ctrl + Enter</span></div>
+                <div class="kv"><span class="k">Pause every agent</span><span class="v">Ctrl + Shift + P</span></div>
+              </div>
+            </div>
+
+            <div class="panel danger">
+              <div class="panel-h"><b>Danger zone</b></div>
+              <div>
+                <div class="srow"><div class="t"><b>Pause every agent</b><span>Everything stops mid-job and waits. Nothing is lost.</span></div><div class="c"><button class="btn">Pause all</button></div></div>
+                <div class="srow"><div class="t"><b>Revoke every permission</b><span>Agents keep talking but can't touch files, the web, or money until you say yes again.</span></div><div class="c"><button class="btn d">Revoke all</button></div></div>
+                <div class="srow"><div class="t"><b>Delete this workspace</b><span>Removes 6 agents, 7 channels and 184 job records from this machine. Files in your workspace folder stay.</span></div><div class="c"><button class="btn d">Delete Vikas HQ</button></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+  </div><!-- /main -->
+
+  <!-- details pane (chat + dm only) -->
+  <aside class="dpane" id="dpane">
+    <div class="dhead">
+      <div style="min-width:0"><b>Thread</b><div class="sub">#network-ops · Atlas</div></div>
+      <div style="flex:1"></div>
+      <button class="tbtn" title="Expand">⤢</button>
+      <button class="tbtn" id="closeDetails" title="Close">✕</button>
+    </div>
+    <div class="dbody">
+      <div class="dsec">
+        <h5>Job details</h5>
+        <div class="kv"><span class="k">Job</span><span class="v">#A-2291</span></div>
+        <div class="kv"><span class="k">Agent</span><span class="v">Atlas 🛰</span></div>
+        <div class="kv"><span class="k">Runs on</span><span class="v">Claude · Opus 4.8</span></div>
+        <div class="kv"><span class="k">Skill used</span><span class="v">Incident first look</span></div>
+        <div class="kv"><span class="k">Took</span><span class="v">47s</span></div>
+        <div class="kv"><span class="k">Read</span><span class="v">3 sources</span></div>
+        <div class="kv"><span class="k">Cost</span><span class="v">£0.11</span></div>
+        <div style="display:flex;gap:6px;margin-top:9px"><button class="btn sm">Re-run</button><button class="btn sm">See what it read</button></div>
+      </div>
+
+      <div class="dsec">
+        <h5>Flap count · core-2.leeds Te1/0/47</h5>
+        <div style="border:1px solid var(--line);border-radius:9px;padding:10px;background:var(--surface-2)">
+          <svg viewBox="0 0 260 76" width="100%" height="76" role="img" aria-label="Flaps per night rose from 0 to 14 over seven nights">
+            <line x1="0" y1="70" x2="260" y2="70" stroke="currentColor" opacity=".2"/>
+            <polyline points="6,66 42,64 78,62 114,58 150,44 186,26 222,10 252,6" fill="none" stroke="#C87F14" stroke-width="2.5" stroke-linejoin="round"/>
+            <circle cx="252" cy="6" r="3.5" fill="#C87F14"/>
+          </svg>
+          <div class="mono" style="display:flex;justify-content:space-between;color:var(--txt-3);margin-top:2px"><span>7 nights ago</span><span>last night · 14</span></div>
+        </div>
+      </div>
+
+      <div class="dsec">
+        <h5>4 replies</h5>
+        <div class="treply">
+          <div class="av c-vik">VK</div>
+          <div><div class="who"><b>Vikas</b><time>16:51</time></div><div class="body">Shelf spare it is. Can you raise the RMA at the same time?</div></div>
+        </div>
+        <div class="treply">
+          <div class="av c-atlas">🛰</div>
+          <div><div class="who"><b>Atlas</b><span class="tag-bot">AGENT</span><time>16:52</time></div><div class="body">I can draft it, but the support contract lapsed on 30 June — Ledger is looking at the renewal now.</div></div>
+        </div>
+        <div class="treply">
+          <div class="av c-tom">TW</div>
+          <div><div class="who"><b>Tom Weller</b><time>17:02</time></div><div class="body">I'll do the swap before the shop opens tomorrow.</div></div>
+        </div>
+        <div class="treply">
+          <div class="av c-pri">PN</div>
+          <div><div class="who"><b>Priya Nair</b><time>17:06</time></div><div class="body">Thanks both. Put the old optic in the failed-parts bin, don't bin it.</div></div>
+        </div>
+        <div class="cbox" style="margin-top:10px">
+          <div class="cin" contenteditable="true" role="textbox" aria-label="Reply in thread"><span class="ph">Reply…</span></div>
+          <div class="cfoot"><button class="b" title="Attach">＋</button><button class="b" title="Emoji">😊</button><div class="grow"></div><button class="send">Send ▸</button></div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+ </div>
+</section>
+
+</div><!-- /stage -->
+
+<!-- ================= QUICK CHAT ================= -->
+<div class="qc" id="qc" role="dialog" aria-modal="true" aria-label="Quick chat">
+  <div class="qcbox">
+    <div class="qc-top">
+      <span class="to">🛰 Atlas ▾</span>
+      <span class="txt">is core-1 slough ok right now<span class="caret"></span></span>
+      <kbd>Esc</kbd>
+    </div>
+    <div class="qc-sec">
+      <div class="h">Send to</div>
+      <button class="qc-row on"><span class="e">🛰</span><span class="t"><b>Atlas</b><span>Network watch · Claude · Opus 4.8 · working</span></span><span class="mono" style="color:var(--txt-3)">↵</span></button>
+      <button class="qc-row"><span class="e">🩹</span><span class="t"><b>Patch</b><span>Config &amp; scripts · Codex · GPT-5.4-codex</span></span><span class="mono" style="color:var(--txt-3)">⌥2</span></button>
+      <button class="qc-row"><span class="e">🧾</span><span class="t"><b>Ledger</b><span>Spend &amp; invoices · Claude · Sonnet 5 · waiting on you</span></span><span class="mono" style="color:var(--txt-3)">⌥3</span></button>
+    </div>
+    <div class="qc-sec" style="border-top:1px solid var(--line-soft)">
+      <div class="h">Or do one of these</div>
+      <button class="qc-row"><span class="e">✓</span><span class="t"><b>Approve Ledger's £412.00 request</b><span>Comms Direct support renewal · expires in 6h</span></span></button>
+      <button class="qc-row"><span class="e">⏸</span><span class="t"><b>Pause every agent</b><span>Everything stops and waits</span></span></button>
+      <button class="qc-row"><span class="e">#</span><span class="t"><b>Jump to #network-ops</b><span>3 unread</span></span></button>
+    </div>
+    <div class="qc-foot"><span>↑↓ move</span><span>↵ send</span><span>Tab switch agent</span><span>Esc close</span><span style="margin-left:auto">answers land in your DM with the agent</span></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var PANES = {chat:"p-chat", dm:"p-dm", agents:"p-agents", edit:"p-edit", tasks:"p-tasks", activity:"p-activity", settings:"p-settings"};
+  var tabs = document.getElementById("tabs");
+  var shell = document.getElementById("shell");
+  var qc = document.getElementById("qc");
+  var current = "chat";
+
+  function show(name){
+    if(name === "__qc"){ toggleQC(true); return; }
+    current = name;
+    // top-level screens
+    document.getElementById("s-welcome").classList.toggle("on", name === "welcome");
+    document.getElementById("s-app").classList.toggle("on", name !== "welcome");
+    // panes
+    for(var k in PANES){
+      var el = document.getElementById(PANES[k]);
+      if(el) el.hidden = (k !== name);
+    }
+    // details pane only for conversations
+    shell.classList.toggle("details", name === "chat" || name === "dm");
+    // tab state
+    Array.prototype.forEach.call(tabs.querySelectorAll("button"), function(b){
+      if(b.dataset.go === "__qc") return;
+      b.setAttribute("aria-current", String(b.dataset.go === name));
+    });
+    // sidebar active item
+    Array.prototype.forEach.call(document.querySelectorAll(".side .it"), function(it){
+      it.classList.remove("on");
+    });
+    if(name === "chat"){ document.getElementById("navChat").classList.add("on"); }
+    else if(name === "dm"){ document.getElementById("navDm").classList.add("on"); }
+    else {
+      var first = document.querySelector('.side .it[data-go="'+name+'"]');
+      if(first) first.classList.add("on");
+    }
+    var sc = document.querySelector("#"+ (PANES[name]||"p-chat") + " .scroll");
+    if(sc) sc.scrollTop = 0;
+  }
+
+  // any element with data-go navigates
+  document.addEventListener("click", function(e){
+    var go = e.target.closest("[data-go]");
+    if(go){ show(go.dataset.go); return; }
+
+    var col = e.target.closest("[data-collapse]");
+    if(col){
+      var g = col.closest(".grp");
+      g.dataset.open = g.dataset.open === "true" ? "false" : "true";
+      return;
+    }
+
+    var tog = e.target.closest(".tog");
+    if(tog){
+      tog.setAttribute("aria-checked", tog.getAttribute("aria-checked") === "true" ? "false" : "true");
+      return;
+    }
+
+    var pick = e.target.closest(".pick");
+    if(pick){
+      Array.prototype.forEach.call(pick.parentNode.children, function(p){ p.classList.remove("on"); });
+      pick.classList.add("on");
+      var sel = document.getElementById("agModel");
+      if(sel){
+        var claude = ["Opus 4.8 — best thinking, slower, costs more","Sonnet 5 — quick and cheap, good for routine work","Haiku 4.5 — fastest, for sorting and simple checks"];
+        var codex  = ["GPT-5.4 — general work and research","GPT-5.4-codex — configs, scripts and diffs"];
+        var list = pick.textContent.indexOf("Codex") > -1 ? codex : claude;
+        sel.innerHTML = list.map(function(o){ return "<option>"+o+"</option>"; }).join("");
+      }
+      return;
+    }
+
+    var emo = e.target.closest("#emoOpts button");
+    if(emo){
+      Array.prototype.forEach.call(emo.parentNode.children, function(b){ b.classList.remove("on"); });
+      emo.classList.add("on");
+      document.getElementById("emoCur").textContent = emo.textContent;
+      return;
+    }
+
+    var segBtn = e.target.closest(".seg button");
+    if(segBtn){
+      Array.prototype.forEach.call(segBtn.parentNode.children, function(b){ b.classList.remove("on"); });
+      segBtn.classList.add("on");
+      return;
+    }
+
+    var fmt = e.target.closest(".fmt button");
+    if(fmt){ fmt.classList.toggle("on"); return; }
+
+    var rx = e.target.closest(".rx button");
+    if(rx && !rx.classList.contains("add")){ rx.classList.toggle("mine"); return; }
+
+    if(e.target.closest("#searchBtn")){ toggleQC(true); return; }
+    if(e.target.closest("#detailsBtn") || e.target.closest("#detailsBtn2") || e.target.closest("#closeDetails")){
+      shell.classList.toggle("details");
+      var on = shell.classList.contains("details");
+      var d1 = document.getElementById("detailsBtn"), d2 = document.getElementById("detailsBtn2");
+      if(d1) d1.classList.toggle("on", on);
+      if(d2) d2.classList.toggle("on", on);
+      return;
+    }
+    if(e.target === qc){ toggleQC(false); return; }
+  });
+
+  // approval resolve
+  function resolve(kind){
+    var open = document.getElementById("approvalOpen");
+    var done = document.getElementById("approvalDone");
+    var wrap = document.getElementById("approval");
+    open.style.display = "none";
+    done.style.display = "block";
+    if(kind === "ok"){
+      wrap.style.borderColor = "var(--green)";
+      wrap.style.background = "var(--green-soft)";
+      done.innerHTML = '<div class="resolved"><span class="ic" style="background:var(--green)">✓</span>'+
+        '<div><b>Approved — £412.00 to Comms Direct.</b> Ledger is placing it now and will post the receipt here.</div>'+
+        '<div style="flex:1"></div><button class="btn sm" id="undoBtn">Undo</button></div>';
+    }else{
+      wrap.style.borderColor = "var(--line)";
+      wrap.style.background = "var(--surface-2)";
+      done.innerHTML = '<div class="resolved"><span class="ic" style="background:var(--txt-3)">✕</span>'+
+        '<div><b>Rejected — nothing was charged.</b> Ledger has stopped and will not ask again this month unless you tell it to.</div>'+
+        '<div style="flex:1"></div><button class="btn sm" id="undoBtn">Undo</button></div>';
+    }
+    document.getElementById("undoBtn").addEventListener("click", function(){
+      done.style.display = "none"; open.style.display = "block";
+      wrap.style.borderColor = "var(--amber-line)"; wrap.style.background = "var(--amber-soft)";
+    });
+  }
+  document.getElementById("approveBtn").addEventListener("click", function(){ resolve("ok"); });
+  document.getElementById("rejectBtn").addEventListener("click", function(){ resolve("no"); });
+
+  // theme
+  var themeBtn = document.getElementById("themeBtn");
+  function setTheme(mode){
+    if(mode === "system"){ document.documentElement.removeAttribute("data-theme"); themeBtn.textContent = "◐ System"; }
+    else { document.documentElement.setAttribute("data-theme", mode); themeBtn.textContent = (mode === "dark" ? "◑ Dark" : "◐ Light"); }
+    var cards = document.getElementById("themeCards");
+    if(cards) Array.prototype.forEach.call(cards.children, function(b){ b.classList.toggle("on", b.dataset.themeSet === mode); });
+  }
+  themeBtn.addEventListener("click", function(){
+    var t = document.documentElement.getAttribute("data-theme");
+    setTheme(t === "light" ? "dark" : t === "dark" ? "system" : "light");
+  });
+  document.addEventListener("click", function(e){
+    var c = e.target.closest("[data-theme-set]");
+    if(c) setTheme(c.dataset.themeSet);
+  });
+
+  // quick chat
+  function toggleQC(on){ qc.classList.toggle("on", on); }
+  document.addEventListener("keydown", function(e){
+    if((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")){ e.preventDefault(); toggleQC(!qc.classList.contains("on")); }
+    if(e.key === "Escape"){ toggleQC(false); }
+  });
+
+  // deep link: #chat, #settings … plus ?theme=dark for review
+  var q = new URLSearchParams(location.search);
+  if(q.get("theme")) setTheme(q.get("theme"));
+  var hash = location.hash.replace("#","");
+  show((PANES[hash] || hash === "welcome") ? hash : "chat");
+  if(hash === "qc") { show("chat"); toggleQC(true); }
+  window.addEventListener("hashchange", function(){
+    var h = location.hash.replace("#","");
+    if(h === "qc"){ show("chat"); toggleQC(true); }
+    else if(PANES[h] || h === "welcome"){ toggleQC(false); show(h); }
+  });
+})();
+</script>
+</body>
+</html>

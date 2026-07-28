@@ -1,0 +1,979 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cloud9</title>
+<style>
+/* ── tokens ───────────────────────────────────────────── */
+:root{
+  --bg:#ffffff;
+  --bg-sunk:#f7f8fa;
+  --rail:#f1f2f6;
+  --side:#f7f8fa;
+  --line:#e6e8ee;
+  --line-soft:#eef0f5;
+  --ink:#1b1d24;
+  --ink-2:#5b6070;
+  --ink-3:#878da0;
+  --accent:#4c5fd7;
+  --accent-soft:#eef0fd;
+  --accent-ink:#3a4ac0;
+  --ok:#1f9d63;
+  --ok-soft:#e8f6ef;
+  --warn:#b57314;
+  --warn-soft:#fdf3e3;
+  --hover:rgba(16,20,40,.045);
+  --sel:#e9ebf9;
+  --shadow:0 1px 2px rgba(16,20,40,.05), 0 8px 24px rgba(16,20,40,.07);
+  --shadow-sm:0 1px 2px rgba(16,20,40,.06);
+  --r:8px; --r-lg:12px;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Mono","Segoe UI Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#15171c; --bg-sunk:#1a1d23; --rail:#101216; --side:#181a20;
+    --line:#2a2e37; --line-soft:#23262e;
+    --ink:#e9ebf0; --ink-2:#a2a8b8; --ink-3:#787f90;
+    --accent:#8b9bff; --accent-soft:#22273c; --accent-ink:#a8b4ff;
+    --ok:#4cc38a; --ok-soft:#172a22; --warn:#e3aa5c; --warn-soft:#2b2418;
+    --hover:rgba(255,255,255,.055); --sel:#252a3d;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.45);
+    --shadow-sm:0 1px 2px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#15171c; --bg-sunk:#1a1d23; --rail:#101216; --side:#181a20;
+  --line:#2a2e37; --line-soft:#23262e;
+  --ink:#e9ebf0; --ink-2:#a2a8b8; --ink-3:#787f90;
+  --accent:#8b9bff; --accent-soft:#22273c; --accent-ink:#a8b4ff;
+  --ok:#4cc38a; --ok-soft:#172a22; --warn:#e3aa5c; --warn-soft:#2b2418;
+  --hover:rgba(255,255,255,.055); --sel:#252a3d;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.45);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35);
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--bg);color:var(--ink);
+  font:400 14px/1.55 var(--sans);
+  -webkit-font-smoothing:antialiased;overflow:hidden;
+}
+button,input,textarea,select{font:inherit;color:inherit}
+button{background:none;border:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+::selection{background:var(--sel)}
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-thumb{background:var(--line);border:3px solid transparent;background-clip:content-box;border-radius:9px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ── app frame ────────────────────────────────────────── */
+.app{display:flex;flex-direction:column;height:100vh;min-width:0}
+.titlebar{
+  display:flex;align-items:center;gap:12px;height:44px;flex:0 0 44px;
+  padding:0 12px;background:var(--rail);border-bottom:1px solid var(--line);
+}
+.brand{display:flex;align-items:center;gap:8px;font-weight:650;letter-spacing:-.01em}
+.mark{width:20px;height:20px;border-radius:6px;background:var(--accent);position:relative;flex:0 0 20px}
+.mark::after{content:"";position:absolute;inset:5px 4px auto 4px;height:6px;border-radius:6px;background:#fff;opacity:.9}
+.tsearch{
+  flex:1;max-width:520px;margin:0 auto;height:28px;border-radius:7px;
+  background:var(--bg);border:1px solid var(--line);color:var(--ink-3);
+  display:flex;align-items:center;gap:8px;padding:0 10px;font-size:13px;
+}
+.tsearch:hover{border-color:var(--ink-3)}
+.tsearch kbd{margin-left:auto}
+kbd{font:500 11px/1 var(--mono);color:var(--ink-3);background:var(--bg-sunk);border:1px solid var(--line);border-radius:4px;padding:3px 5px}
+.tright{display:flex;align-items:center;gap:6px;margin-left:auto}
+.iconbtn{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;color:var(--ink-2)}
+.iconbtn:hover{background:var(--hover);color:var(--ink)}
+svg{display:block}
+
+.body{display:flex;flex:1;min-height:0;min-width:0}
+
+/* ── rail ─────────────────────────────────────────────── */
+.rail{
+  width:64px;flex:0 0 64px;background:var(--rail);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 0;
+}
+.rail .spacer{flex:1}
+.rbtn{
+  width:44px;padding:7px 0 5px;border-radius:9px;display:grid;justify-items:center;gap:3px;
+  color:var(--ink-2);font-size:10px;font-weight:500;letter-spacing:.01em;
+}
+.rbtn:hover{background:var(--hover);color:var(--ink)}
+.rbtn[aria-current="true"]{background:var(--sel);color:var(--accent-ink)}
+.rdot{position:relative}
+.rdot::after{content:"";position:absolute;top:-1px;right:-3px;width:7px;height:7px;border-radius:50%;background:var(--accent);border:2px solid var(--rail)}
+
+/* ── sidebar ──────────────────────────────────────────── */
+.side{
+  width:236px;flex:0 0 236px;background:var(--side);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;min-height:0;
+}
+.side-head{display:flex;align-items:center;height:44px;padding:0 8px 0 14px;font-weight:650;font-size:14px;letter-spacing:-.01em}
+.side-head .iconbtn{margin-left:auto}
+.side-scroll{overflow-y:auto;padding:2px 8px 16px;min-height:0}
+.grp{margin-top:14px;padding:0 6px 4px;font-size:11.5px;font-weight:600;color:var(--ink-3);letter-spacing:.02em}
+.item{
+  width:100%;display:flex;align-items:center;gap:8px;height:29px;padding:0 8px;border-radius:7px;
+  color:var(--ink-2);font-size:13.5px;text-align:left;
+}
+.item:hover{background:var(--hover);color:var(--ink)}
+.item[aria-current="true"]{background:var(--sel);color:var(--accent-ink);font-weight:600}
+.item .hash{color:var(--ink-3);width:12px;text-align:center;flex:0 0 12px}
+.item[aria-current="true"] .hash{color:inherit}
+.item .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item .badge{margin-left:auto;background:var(--accent);color:#fff;font-size:10.5px;font-weight:700;border-radius:999px;padding:1px 6px;line-height:1.5}
+.pres{width:8px;height:8px;border-radius:50%;flex:0 0 8px;background:var(--ink-3)}
+.pres.on{background:var(--ok)}
+.av{
+  width:22px;height:22px;border-radius:6px;flex:0 0 22px;display:grid;place-items:center;
+  font-size:12px;background:var(--accent-soft);color:var(--accent-ink);font-weight:650;
+}
+
+/* ── main ─────────────────────────────────────────────── */
+.main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
+.mhead{
+  display:flex;align-items:center;gap:10px;height:52px;flex:0 0 52px;
+  padding:0 16px;border-bottom:1px solid var(--line);
+}
+.mtitle{font-weight:650;font-size:15px;letter-spacing:-.01em;display:flex;align-items:center;gap:7px;min-width:0}
+.mtitle .sub{font-weight:400;font-size:12.5px;color:var(--ink-3)}
+.mhead .tools{margin-left:auto;display:flex;align-items:center;gap:4px}
+.scroll{flex:1;overflow-y:auto;min-height:0}
+.pad{padding:24px 28px 32px;max-width:1080px}
+
+/* ── chat ─────────────────────────────────────────────── */
+.stream{padding:14px 20px 8px;max-width:900px}
+.daydiv{display:flex;align-items:center;gap:12px;margin:12px 0 14px;color:var(--ink-3);font-size:12px}
+.daydiv::before,.daydiv::after{content:"";height:1px;background:var(--line-soft);flex:1}
+.msg{display:grid;grid-template-columns:36px minmax(0,1fr);gap:10px;padding:7px 10px;border-radius:9px;margin:0 -10px;position:relative}
+.msg:hover{background:var(--bg-sunk)}
+.msg .avl{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;font-size:15px;font-weight:650}
+.who{display:flex;align-items:baseline;gap:7px;margin-bottom:1px;min-width:0}
+.who b{font-size:14px;font-weight:650;letter-spacing:-.005em}
+.who time{font-size:11.5px;color:var(--ink-3)}
+.tag{font-size:10.5px;font-weight:650;letter-spacing:.02em;color:var(--accent-ink);background:var(--accent-soft);border-radius:4px;padding:1px 5px}
+.txt{color:var(--ink);max-width:66ch}
+.txt p{margin:0 0 4px}
+.actions{position:absolute;top:-12px;right:8px;display:none;gap:2px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:2px;box-shadow:var(--shadow-sm)}
+.msg:hover .actions,.msg:focus-within .actions{display:flex}
+.actions .iconbtn{width:26px;height:26px}
+.thread{margin-top:5px;font-size:12.5px;color:var(--accent-ink);font-weight:550}
+.thread:hover{text-decoration:underline}
+
+/* inline surfaces */
+.card{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--bg);box-shadow:var(--shadow-sm);overflow:hidden}
+.tbl{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0 2px;max-width:520px}
+.tbl th,.tbl td{text-align:left;padding:7px 12px;border-bottom:1px solid var(--line-soft)}
+.tbl th{font-size:11.5px;font-weight:600;color:var(--ink-3);background:var(--bg-sunk)}
+.tbl tr:last-child td{border-bottom:0}
+.tbl td.num{font-family:var(--mono);font-size:12.5px}
+.tblwrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);max-width:520px}
+.tblwrap .tbl{margin:0;max-width:none}
+
+.result{display:inline-flex;align-items:center;gap:8px;margin-top:6px;padding:6px 11px 6px 9px;border-radius:999px;background:var(--ok-soft);color:var(--ok);font-size:12.5px;font-weight:600}
+.approval{margin-top:8px;max-width:460px;padding:12px 14px}
+.approval .line{display:flex;align-items:center;gap:8px;font-weight:600}
+.approval .cost{margin-left:auto;font-family:var(--mono);font-size:13px}
+.approval .meta{color:var(--ink-3);font-size:12.5px;margin-top:2px}
+.approval .row{display:flex;gap:8px;margin-top:11px}
+.btn{height:30px;padding:0 13px;border-radius:7px;border:1px solid var(--line);background:var(--bg);font-size:13px;font-weight:600;color:var(--ink)}
+.btn:hover{background:var(--hover)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{filter:brightness(1.07)}
+.btn.ghost{border-color:transparent;color:var(--ink-2)}
+.btn.sm{height:26px;padding:0 10px;font-size:12.5px}
+.resolved{margin-top:8px;font-size:13px;color:var(--ok);font-weight:600;display:none;align-items:center;gap:7px}
+
+/* composer */
+.composer{padding:0 20px 18px;max-width:900px}
+.cbox{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--bg);box-shadow:var(--shadow-sm)}
+.cbox:focus-within{border-color:var(--accent)}
+.cbox textarea{width:100%;border:0;background:none;resize:none;padding:11px 13px 4px;font-size:14px;line-height:1.5;outline:none}
+.cbox textarea::placeholder{color:var(--ink-3)}
+.cbar{display:flex;align-items:center;gap:2px;padding:4px 8px 7px}
+.cbar .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.send{width:29px;height:29px;border-radius:7px;background:var(--accent);color:#fff;display:grid;place-items:center}
+.send:hover{filter:brightness(1.07)}
+.hint{font-size:11.5px;color:var(--ink-3);padding:6px 4px 0}
+
+/* ── generic content bits ─────────────────────────────── */
+h1.pg{font-size:20px;font-weight:680;letter-spacing:-.02em;margin:0}
+h2.sec{font-size:12px;font-weight:650;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;margin:0 0 10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:12px}
+.agent{padding:14px;display:grid;gap:9px;cursor:pointer}
+.agent:hover{border-color:var(--ink-3)}
+.agent .top{display:flex;align-items:center;gap:10px}
+.agent .em{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-size:17px;background:var(--bg-sunk)}
+.agent .nm{font-weight:650;letter-spacing:-.01em}
+.agent .role{color:var(--ink-2);font-size:13px}
+.agent .foot{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-3);border-top:1px solid var(--line-soft);padding-top:9px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--bg-sunk);color:var(--ink-2);border:1px solid var(--line)}
+.chip.on{background:var(--ok-soft);color:var(--ok);border-color:transparent}
+.chip.wait{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.chip.mono{font-family:var(--mono);font-weight:500;font-size:11px}
+
+.list{border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;background:var(--bg)}
+.row{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line-soft)}
+.row:last-child{border-bottom:0}
+.row:hover{background:var(--bg-sunk)}
+.row .em{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:15px;background:var(--bg-sunk);flex:0 0 30px}
+.row .grow{min-width:0;flex:1}
+.row .t{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .s{color:var(--ink-3);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .when{color:var(--ink-3);font-size:12px;font-variant-numeric:tabular-nums;flex:0 0 auto}
+
+/* ── forms ────────────────────────────────────────────── */
+.panel{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--bg);padding:18px}
+.panel + .panel{margin-top:14px}
+.field{display:grid;gap:6px;margin-bottom:14px}
+.field:last-child{margin-bottom:0}
+label.lb{font-size:12.5px;font-weight:600;color:var(--ink-2)}
+input.in,select.in,textarea.in{
+  width:100%;height:34px;border:1px solid var(--line);border-radius:var(--r);background:var(--bg);
+  padding:0 10px;outline:none;font-size:13.5px;
+}
+textarea.in{height:auto;padding:9px 10px;resize:vertical;line-height:1.5}
+input.in:focus,select.in:focus,textarea.in:focus{border-color:var(--accent)}
+select.in{appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--ink-3) 50%),linear-gradient(135deg,var(--ink-3) 50%,transparent 50%);background-position:calc(100% - 15px) 15px,calc(100% - 10px) 15px;background-size:5px 5px;background-repeat:no-repeat}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.seg{display:inline-flex;background:var(--bg-sunk);border:1px solid var(--line);border-radius:8px;padding:2px;gap:2px}
+.seg button{padding:5px 13px;border-radius:6px;font-size:13px;font-weight:600;color:var(--ink-2)}
+.seg button[aria-pressed="true"]{background:var(--bg);color:var(--ink);box-shadow:var(--shadow-sm)}
+.tog{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line-soft)}
+.tog:last-child{border-bottom:0}
+.tog .grow{flex:1;min-width:0}
+.tog .t{font-size:13.5px;font-weight:550}
+.tog .s{font-size:12.5px;color:var(--ink-3)}
+.sw{width:36px;height:21px;border-radius:999px;background:var(--line);position:relative;flex:0 0 36px;transition:background .16s}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:var(--shadow-sm);transition:transform .16s}
+.sw[aria-pressed="true"]{background:var(--accent)}
+.sw[aria-pressed="true"]::after{transform:translateX(15px)}
+.skill{display:flex;align-items:flex-start;gap:11px;padding:11px 0;border-bottom:1px solid var(--line-soft)}
+.skill:last-of-type{border-bottom:0}
+.skill .em{width:28px;height:28px;border-radius:8px;background:var(--bg-sunk);display:grid;place-items:center;font-size:14px;flex:0 0 28px}
+.skill .t{font-size:13.5px;font-weight:600}
+.skill .s{font-size:12.5px;color:var(--ink-3);max-width:60ch}
+.drop{margin-top:12px;border:1px dashed var(--line);border-radius:var(--r);padding:14px;text-align:center;color:var(--ink-3);font-size:12.5px}
+.drop:hover{border-color:var(--accent);color:var(--accent-ink)}
+
+/* ── welcome ──────────────────────────────────────────── */
+.welcome{height:100%;display:grid;place-items:center;background:var(--bg-sunk);overflow-y:auto}
+.wcard{width:400px;max-width:calc(100vw - 48px);background:var(--bg);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:28px}
+.wmark{width:40px;height:40px;border-radius:12px;background:var(--accent);position:relative;margin-bottom:16px}
+.wmark::after{content:"";position:absolute;inset:11px 8px auto 8px;height:11px;border-radius:11px;background:#fff;opacity:.92}
+.wcard h1{font-size:22px;font-weight:680;letter-spacing:-.02em;margin:0 0 4px}
+.wcard p.lede{margin:0 0 20px;color:var(--ink-2);font-size:13.5px}
+.conn{display:flex;align-items:center;gap:11px;padding:12px;border:1px solid var(--line);border-radius:10px;margin-bottom:9px}
+.conn .em{width:32px;height:32px;border-radius:9px;background:var(--bg-sunk);display:grid;place-items:center;font-size:15px}
+.conn .t{font-weight:600;font-size:13.5px}
+.conn .s{font-size:12px;color:var(--ink-3)}
+.tick{width:20px;height:20px;border-radius:50%;background:var(--ok);display:grid;place-items:center;color:#fff;flex:0 0 20px}
+
+/* ── quick chat ───────────────────────────────────────── */
+.overlay{position:fixed;inset:0;background:rgba(16,20,40,.34);display:none;justify-content:center;align-items:flex-start;padding-top:14vh;z-index:60;backdrop-filter:blur(2px)}
+.overlay[data-open="true"]{display:flex}
+.qc{width:560px;max-width:calc(100vw - 40px);background:var(--bg);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+.qc .qin{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--line-soft)}
+.qc .qin input{flex:1;border:0;outline:none;background:none;font-size:15px}
+.qc .qlist{max-height:320px;overflow-y:auto;padding:6px}
+.qrow{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;width:100%;text-align:left}
+.qrow[data-sel="true"],.qrow:hover{background:var(--sel)}
+.qrow .em{width:24px;height:24px;border-radius:7px;background:var(--bg-sunk);display:grid;place-items:center;font-size:13px;flex:0 0 24px}
+.qrow .t{font-size:13.5px;font-weight:550}
+.qrow .s{margin-left:auto;font-size:11.5px;color:var(--ink-3)}
+.qfoot{display:flex;gap:14px;padding:8px 14px;border-top:1px solid var(--line-soft);font-size:11.5px;color:var(--ink-3)}
+
+/* ── menu ─────────────────────────────────────────────── */
+.menuwrap{position:relative}
+.menu{
+  position:absolute;top:34px;right:0;width:212px;background:var(--bg);border:1px solid var(--line);
+  border-radius:10px;box-shadow:var(--shadow);padding:5px;z-index:50;display:none;
+}
+.menu[data-open="true"]{display:block}
+.menu button{width:100%;display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:7px;font-size:13px;text-align:left;color:var(--ink-2)}
+.menu button:hover{background:var(--hover);color:var(--ink)}
+.menu button[aria-current="true"]{color:var(--accent-ink);font-weight:600;background:var(--sel)}
+.menu .sep{height:1px;background:var(--line-soft);margin:5px 0}
+.menu .cap{padding:6px 9px 3px;font-size:11px;font-weight:650;color:var(--ink-3);letter-spacing:.04em}
+
+/* ── details pane ─────────────────────────────────────── */
+.pane{width:280px;flex:0 0 280px;border-left:1px solid var(--line);background:var(--bg);display:none;flex-direction:column}
+.pane[data-open="true"]{display:flex}
+@media (max-width:1180px){.pane{display:none!important}}
+.pane-head{display:flex;align-items:center;height:52px;flex:0 0 52px;padding:0 8px 0 16px;border-bottom:1px solid var(--line);font-weight:650;font-size:14px}
+.pane-head .iconbtn{margin-left:auto}
+.pane-body{padding:16px;overflow-y:auto;display:grid;gap:16px}
+.kv{display:grid;gap:3px}
+.kv .k{font-size:11.5px;color:var(--ink-3);font-weight:600}
+.kv .v{font-size:13.5px}
+
+.screen{display:none;flex:1;min-width:0;min-height:0}
+.screen[data-active="true"]{display:flex}
+.mono{font-family:var(--mono);font-size:12.5px}
+.muted{color:var(--ink-3)}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- titlebar -->
+  <div class="titlebar">
+    <div class="brand"><span class="mark"></span>Cloud9</div>
+    <button class="tsearch" id="openQC">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14"/></svg>
+      Search
+      <kbd>Ctrl K</kbd>
+    </button>
+    <div class="tright">
+      <button class="iconbtn" id="themeBtn" title="Theme" aria-label="Switch theme">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 9.4A5.6 5.6 0 0 1 6.6 3a5.6 5.6 0 1 0 6.4 6.4Z"/></svg>
+      </button>
+      <div class="menuwrap">
+        <button class="iconbtn" id="menuBtn" aria-haspopup="true" aria-expanded="false" title="Screens" aria-label="Screens">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg>
+        </button>
+        <div class="menu" id="menu" role="menu">
+          <div class="cap">SCREENS</div>
+          <button data-go="welcome">Welcome</button>
+          <button data-go="chat">Channel</button>
+          <button data-go="dm">Direct message</button>
+          <button data-go="agents">Agents</button>
+          <button data-go="edit">Edit agent</button>
+          <button data-go="tasks">Tasks &amp; approvals</button>
+          <button data-go="activity">Activity</button>
+          <button data-go="settings">Settings</button>
+          <div class="sep"></div>
+          <button id="menuQC">Quick chat <kbd style="margin-left:auto">Ctrl K</kbd></button>
+        </div>
+      </div>
+      <div class="av" style="background:#dfe3ee;color:#3c4256">V</div>
+    </div>
+  </div>
+
+  <div class="body">
+    <!-- rail -->
+    <nav class="rail" id="rail">
+      <button class="rbtn" data-go="chat" aria-current="true">
+        <span class="rdot"><svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 11.5a3 3 0 0 1-3 3H8l-4 3v-3H5a3 3 0 0 1-3-3v-6a3 3 0 0 1 3-3h9a3 3 0 0 1 3 3Z"/></svg></span>
+        Chats
+      </button>
+      <button class="rbtn" data-go="agents">
+        <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3.5" y="6" width="13" height="10" rx="3"/><circle cx="7.6" cy="11" r="1.1" fill="currentColor" stroke="none"/><circle cx="12.4" cy="11" r="1.1" fill="currentColor" stroke="none"/><path d="M10 6V3.2M2 10.5h1.5M16.5 10.5H18"/></svg>
+        Agents
+      </button>
+      <button class="rbtn" data-go="tasks">
+        <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3.5" y="3.5" width="13" height="13" rx="3"/><path d="M7 10.2l2 2 4-4.2"/></svg>
+        Tasks
+      </button>
+      <button class="rbtn" data-go="activity">
+        <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 10.5h3.2l2-5 3.2 9 2.1-4h4.5"/></svg>
+        Activity
+      </button>
+      <div class="spacer"></div>
+      <button class="rbtn" data-go="welcome">
+        <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 2.5 17 6v8l-7 3.5L3 14V6Z"/></svg>
+        Apps
+      </button>
+      <button class="rbtn" data-go="settings">
+        <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.6v2M10 15.4v2M17.4 10h-2M4.6 10h-2M15.2 4.8l-1.4 1.4M6.2 13.8l-1.4 1.4M15.2 15.2l-1.4-1.4M6.2 6.2 4.8 4.8"/></svg>
+        Settings
+      </button>
+    </nav>
+
+    <!-- ══ CHANNEL ══ -->
+    <section class="screen" data-screen="chat" data-active="true">
+      <aside class="side">
+        <div class="side-head">Acme
+          <button class="iconbtn" title="New" aria-label="New message"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg></button>
+        </div>
+        <div class="side-scroll">
+          <div class="grp">Channels</div>
+          <button class="item" aria-current="true"><span class="hash">#</span><span class="nm">product</span></button>
+          <button class="item"><span class="hash">#</span><span class="nm">engineering</span><span class="badge">3</span></button>
+          <button class="item"><span class="hash">#</span><span class="nm">launch-q3</span></button>
+          <button class="item"><span class="hash">#</span><span class="nm">random</span></button>
+          <div class="grp">Agents</div>
+          <button class="item" data-go="dm"><span class="av">🛰</span><span class="nm">Atlas</span></button>
+          <button class="item"><span class="av">🌙</span><span class="nm">Nova</span></button>
+          <button class="item"><span class="av">📊</span><span class="nm">Ledger</span><span class="badge">1</span></button>
+          <div class="grp">People</div>
+          <button class="item"><span class="pres on"></span><span class="nm">Maya Rao</span></button>
+          <button class="item"><span class="pres on"></span><span class="nm">Sam Ochieng</span></button>
+          <button class="item"><span class="pres"></span><span class="nm">Dana Fried</span></button>
+        </div>
+      </aside>
+
+      <div class="main">
+        <div class="mhead">
+          <div class="mtitle"># product <span class="sub">6 members · 3 agents</span></div>
+          <div class="tools">
+            <button class="iconbtn" title="Pinned" aria-label="Pinned"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2h4l-.6 3.4 2.1 2.1H4.5l2.1-2.1Z"/><path d="M8 7.5V14"/></svg></button>
+            <button class="iconbtn" id="paneBtn" title="Details" aria-label="Channel details"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 7.2v4M8 5.1v.1"/></svg></button>
+          </div>
+        </div>
+
+        <div class="scroll">
+          <div class="stream">
+            <div class="daydiv">Today</div>
+
+            <article class="msg">
+              <div class="avl" style="background:#e6dff3;color:#5b4a86">MR</div>
+              <div>
+                <div class="who"><b>Maya Rao</b><time>9:41</time></div>
+                <div class="txt">Which plan should we put on the pricing page as default?</div>
+              </div>
+              <div class="actions"><button class="iconbtn" aria-label="React">☺</button><button class="iconbtn" aria-label="Reply">↩</button><button class="iconbtn" aria-label="More">⋯</button></div>
+            </article>
+
+            <article class="msg">
+              <div class="avl" style="background:var(--accent-soft)">🛰</div>
+              <div>
+                <div class="who"><b>Atlas</b><span class="tag">AGENT</span><time>9:42</time></div>
+                <div class="txt">
+                  <p>Team is the strongest default — best margin per seat.</p>
+                  <div class="tblwrap"><table class="tbl">
+                    <thead><tr><th>Plan</th><th>Price</th><th>Signups</th></tr></thead>
+                    <tbody>
+                      <tr><td>Starter</td><td class="num">$12</td><td class="num">54%</td></tr>
+                      <tr><td>Team</td><td class="num">$29</td><td class="num">38%</td></tr>
+                      <tr><td>Scale</td><td class="num">$79</td><td class="num">8%</td></tr>
+                    </tbody>
+                  </table></div>
+                  <button class="thread">3 replies</button>
+                </div>
+              </div>
+              <div class="actions"><button class="iconbtn" aria-label="React">☺</button><button class="iconbtn" aria-label="Reply">↩</button><button class="iconbtn" aria-label="More">⋯</button></div>
+            </article>
+
+            <article class="msg">
+              <div class="avl" style="background:#dbe9e2;color:#39604f">SO</div>
+              <div>
+                <div class="who"><b>Sam Ochieng</b><time>9:44</time></div>
+                <div class="txt">Works for me. Ship it.</div>
+              </div>
+              <div class="actions"><button class="iconbtn" aria-label="React">☺</button><button class="iconbtn" aria-label="Reply">↩</button><button class="iconbtn" aria-label="More">⋯</button></div>
+            </article>
+
+            <article class="msg">
+              <div class="avl" style="background:var(--accent-soft)">🌙</div>
+              <div>
+                <div class="who"><b>Nova</b><span class="tag">AGENT</span><time>10:02</time></div>
+                <div class="txt">
+                  <p>Nightly checks finished.</p>
+                  <span class="result">
+                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3.5 8.4l3 3 6-6.4"/></svg>
+                    142 tests passed · 0 failed
+                  </span>
+                </div>
+              </div>
+              <div class="actions"><button class="iconbtn" aria-label="React">☺</button><button class="iconbtn" aria-label="Reply">↩</button><button class="iconbtn" aria-label="More">⋯</button></div>
+            </article>
+
+            <article class="msg">
+              <div class="avl" style="background:var(--accent-soft)">📊</div>
+              <div>
+                <div class="who"><b>Ledger</b><span class="tag">AGENT</span><time>10:18</time></div>
+                <div class="txt">
+                  <p>Need your go-ahead before I buy this.</p>
+                  <div class="card approval" id="approvalCard">
+                    <div class="line">3 extra seats · Vercel <span class="cost">$60/mo</span></div>
+                    <div class="meta">Above your $25 limit</div>
+                    <div class="row">
+                      <button class="btn primary" data-approve="ok">Approve</button>
+                      <button class="btn" data-approve="no">Reject</button>
+                      <button class="btn ghost">Details</button>
+                    </div>
+                  </div>
+                  <div class="resolved" id="approvalDone"></div>
+                </div>
+              </div>
+              <div class="actions"><button class="iconbtn" aria-label="React">☺</button><button class="iconbtn" aria-label="Reply">↩</button><button class="iconbtn" aria-label="More">⋯</button></div>
+            </article>
+          </div>
+        </div>
+
+        <div class="composer">
+          <div class="cbox">
+            <textarea rows="2" placeholder="Message #product"></textarea>
+            <div class="cbar">
+              <button class="iconbtn" aria-label="Attach">＋</button>
+              <button class="iconbtn" aria-label="Emoji">☺</button>
+              <button class="iconbtn" aria-label="Mention agent">@</button>
+              <div class="right">
+                <span class="muted" style="font-size:11.5px">Atlas is listening</span>
+                <button class="send" aria-label="Send"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2.5 8h10M8.5 3.8 12.8 8l-4.3 4.2"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="pane" id="pane">
+        <div class="pane-head">Details
+          <button class="iconbtn" id="paneClose" aria-label="Close details">✕</button>
+        </div>
+        <div class="pane-body">
+          <div class="kv"><span class="k">TOPIC</span><span class="v">Pricing and roadmap</span></div>
+          <div class="kv"><span class="k">AGENTS HERE</span>
+            <span class="v">🛰 Atlas · 🌙 Nova · 📊 Ledger</span></div>
+          <div class="kv"><span class="k">SPEND TODAY</span><span class="v mono">$4.20 of $25</span></div>
+          <div class="kv"><span class="k">MEMBERS</span><span class="v">Maya, Sam, Dana, Vikas</span></div>
+        </div>
+      </aside>
+    </section>
+
+    <!-- ══ DM ══ -->
+    <section class="screen" data-screen="dm">
+      <aside class="side">
+        <div class="side-head">Acme</div>
+        <div class="side-scroll">
+          <div class="grp">Channels</div>
+          <button class="item" data-go="chat"><span class="hash">#</span><span class="nm">product</span></button>
+          <button class="item"><span class="hash">#</span><span class="nm">engineering</span></button>
+          <div class="grp">Agents</div>
+          <button class="item" aria-current="true"><span class="av">🛰</span><span class="nm">Atlas</span></button>
+          <button class="item"><span class="av">🌙</span><span class="nm">Nova</span></button>
+          <button class="item"><span class="av">📊</span><span class="nm">Ledger</span></button>
+        </div>
+      </aside>
+      <div class="main">
+        <div class="mhead">
+          <div class="mtitle">🛰 Atlas <span class="sub">Claude · Opus 4.8</span></div>
+          <div class="tools">
+            <span class="chip on">Online</span>
+            <button class="iconbtn" data-go="edit" title="Edit agent" aria-label="Edit agent">⚙</button>
+          </div>
+        </div>
+        <div class="scroll">
+          <div class="stream">
+            <div class="daydiv">Today</div>
+            <article class="msg">
+              <div class="avl" style="background:#dfe3ee;color:#3c4256">V</div>
+              <div><div class="who"><b>You</b><time>11:04</time></div>
+              <div class="txt">Summarise last week's support tickets.</div></div>
+            </article>
+            <article class="msg">
+              <div class="avl" style="background:var(--accent-soft)">🛰</div>
+              <div><div class="who"><b>Atlas</b><span class="tag">AGENT</span><time>11:04</time></div>
+                <div class="txt">
+                  <p>218 tickets. Three themes:</p>
+                  <p>Slow export (61) · Login loop on Safari (44) · Billing confusion (29)</p>
+                  <span class="result"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3.5 8.4l3 3 6-6.4"/></svg>Read 218 tickets in 40s</span>
+                </div>
+              </div>
+            </article>
+            <article class="msg">
+              <div class="avl" style="background:#dfe3ee;color:#3c4256">V</div>
+              <div><div class="who"><b>You</b><time>11:06</time></div>
+              <div class="txt">Open a ticket for the Safari one.</div></div>
+            </article>
+            <article class="msg">
+              <div class="avl" style="background:var(--accent-soft)">🛰</div>
+              <div><div class="who"><b>Atlas</b><span class="tag">AGENT</span><time>11:06</time></div>
+                <div class="txt"><p>Filed <span class="mono">ENG-4412</span> and posted it in #engineering.</p></div>
+              </div>
+            </article>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="cbox">
+            <textarea rows="2" placeholder="Message Atlas"></textarea>
+            <div class="cbar">
+              <button class="iconbtn" aria-label="Attach">＋</button>
+              <button class="iconbtn" aria-label="Skills">✦</button>
+              <div class="right"><button class="send" aria-label="Send"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2.5 8h10M8.5 3.8 12.8 8l-4.3 4.2"/></svg></button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ AGENTS ══ -->
+    <section class="screen" data-screen="agents">
+      <div class="main">
+        <div class="mhead">
+          <div class="mtitle">Agents</div>
+          <div class="tools"><button class="btn primary" data-go="edit">New agent</button></div>
+        </div>
+        <div class="scroll"><div class="pad">
+          <div class="grid">
+            <div class="card agent" data-go="edit">
+              <div class="top"><span class="em">🛰</span><div><div class="nm">Atlas</div><div class="role">Answers product questions</div></div></div>
+              <div class="foot"><span class="chip on">Online</span><span class="chip mono">Claude · Opus 4.8</span></div>
+            </div>
+            <div class="card agent" data-go="edit">
+              <div class="top"><span class="em">🌙</span><div><div class="nm">Nova</div><div class="role">Runs nightly test suites</div></div></div>
+              <div class="foot"><span class="chip on">Online</span><span class="chip mono">Codex · GPT-5.4</span></div>
+            </div>
+            <div class="card agent" data-go="edit">
+              <div class="top"><span class="em">📊</span><div><div class="nm">Ledger</div><div class="role">Tracks spend and invoices</div></div></div>
+              <div class="foot"><span class="chip wait">1 approval</span><span class="chip mono">Claude · Sonnet 5</span></div>
+            </div>
+            <div class="card agent" data-go="edit">
+              <div class="top"><span class="em">📮</span><div><div class="nm">Postie</div><div class="role">Drafts release notes</div></div></div>
+              <div class="foot"><span class="chip">Paused</span><span class="chip mono">Claude · Haiku 4</span></div>
+            </div>
+            <div class="card agent" data-go="edit">
+              <div class="top"><span class="em">🔎</span><div><div class="nm">Scout</div><div class="role">Watches competitor pricing</div></div></div>
+              <div class="foot"><span class="chip on">Online</span><span class="chip mono">Codex · GPT-5.4</span></div>
+            </div>
+          </div>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ══ EDIT AGENT ══ -->
+    <section class="screen" data-screen="edit">
+      <div class="main">
+        <div class="mhead">
+          <button class="iconbtn" data-go="agents" aria-label="Back">←</button>
+          <div class="mtitle">Atlas</div>
+          <div class="tools"><button class="btn" data-go="agents">Cancel</button><button class="btn primary" data-go="agents">Save</button></div>
+        </div>
+        <div class="scroll"><div class="pad" style="max-width:720px">
+          <div class="panel">
+            <div class="two">
+              <div class="field"><label class="lb" for="an">Name</label><input class="in" id="an" value="Atlas"></div>
+              <div class="field"><label class="lb" for="ae">Emoji</label><input class="in" id="ae" value="🛰"></div>
+            </div>
+            <div class="field">
+              <label class="lb" for="ad">What it does</label>
+              <textarea class="in" id="ad" rows="3">Answers product questions in #product. Pulls numbers from the analytics database and always shows its source.</textarea>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2 class="sec">App &amp; model</h2>
+            <div class="field">
+              <div class="seg" id="appSeg">
+                <button aria-pressed="true">Claude</button>
+                <button aria-pressed="false">Codex</button>
+              </div>
+            </div>
+            <div class="two">
+              <div class="field"><label class="lb" for="am">Model</label>
+                <select class="in" id="am"><option>Opus 4.8</option><option>Sonnet 5</option><option>Haiku 4</option></select></div>
+              <div class="field"><label class="lb" for="aw">Answers in</label>
+                <select class="in" id="aw"><option>#product</option><option>All channels</option><option>Direct messages only</option></select></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2 class="sec">Abilities</h2>
+            <div class="tog"><div class="grow"><div class="t">Read channel history</div></div><button class="sw" aria-pressed="true" aria-label="Read channel history"></button></div>
+            <div class="tog"><div class="grow"><div class="t">Search the web</div></div><button class="sw" aria-pressed="true" aria-label="Search the web"></button></div>
+            <div class="tog"><div class="grow"><div class="t">Run code</div></div><button class="sw" aria-pressed="false" aria-label="Run code"></button></div>
+            <div class="tog"><div class="grow"><div class="t">Send email</div></div><button class="sw" aria-pressed="false" aria-label="Send email"></button></div>
+            <div class="tog"><div class="grow"><div class="t">Speak without being asked</div></div><button class="sw" aria-pressed="true" aria-label="Speak without being asked"></button></div>
+          </div>
+
+          <div class="panel">
+            <h2 class="sec">Approval rules</h2>
+            <div class="two">
+              <div class="field"><label class="lb" for="lim">Ask before spending over</label><input class="in" id="lim" value="$25"></div>
+              <div class="field"><label class="lb" for="cap">Monthly cap</label><input class="in" id="cap" value="$400"></div>
+            </div>
+            <div class="tog"><div class="grow"><div class="t">Always ask before buying anything</div></div><button class="sw" aria-pressed="true" aria-label="Always ask before buying"></button></div>
+            <div class="tog"><div class="grow"><div class="t">Always ask before deleting files</div></div><button class="sw" aria-pressed="true" aria-label="Always ask before deleting"></button></div>
+          </div>
+
+          <div class="panel">
+            <h2 class="sec">Skills</h2>
+            <div class="skill">
+              <span class="em">📈</span>
+              <div class="grow"><div class="t">Pricing analysis</div><div class="s">Pull plan revenue from the analytics database, compare last 30 days, show a table.</div></div>
+              <button class="btn sm">Edit</button>
+            </div>
+            <div class="skill">
+              <span class="em">🧾</span>
+              <div class="grow"><div class="t">Invoice reader</div><div class="s">Read PDF invoices from the finance folder and post a monthly total.</div></div>
+              <button class="btn sm">Edit</button>
+            </div>
+            <div class="skill">
+              <span class="em">📝</span>
+              <div class="grow"><div class="t">Release notes</div><div class="s">Turn merged pull requests into plain-words notes for customers.</div></div>
+              <button class="btn sm">Edit</button>
+            </div>
+            <div class="skill">
+              <span class="em">🔔</span>
+              <div class="grow"><div class="t">Standup digest</div><div class="s">Post yesterday's shipped work every weekday at 9am.</div></div>
+              <button class="btn sm">Edit</button>
+            </div>
+            <button class="drop" style="width:100%">Drop a skill file here, or browse</button>
+          </div>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ══ TASKS ══ -->
+    <section class="screen" data-screen="tasks">
+      <div class="main">
+        <div class="mhead">
+          <div class="mtitle">Tasks</div>
+          <div class="tools">
+            <div class="seg" id="taskSeg"><button aria-pressed="true">All</button><button aria-pressed="false">Waiting on you</button></div>
+          </div>
+        </div>
+        <div class="scroll"><div class="pad" style="max-width:860px">
+          <h2 class="sec">Needs approval</h2>
+          <div class="list" style="margin-bottom:24px">
+            <div class="row">
+              <span class="em">📊</span>
+              <div class="grow"><div class="t">Buy 3 more seats · Vercel</div><div class="s">Ledger · $60/mo · over your $25 limit</div></div>
+              <button class="btn sm primary">Approve</button><button class="btn sm">Reject</button>
+            </div>
+            <div class="row">
+              <span class="em">🔎</span>
+              <div class="grow"><div class="t">Upgrade scraping plan</div><div class="s">Scout · $19/mo</div></div>
+              <button class="btn sm primary">Approve</button><button class="btn sm">Reject</button>
+            </div>
+          </div>
+
+          <h2 class="sec">Jobs</h2>
+          <div class="list">
+            <div class="row"><span class="em">🌙</span>
+              <div class="grow"><div class="t">Nightly test run</div><div class="s">142 passed · 0 failed</div></div>
+              <span class="chip on">Done</span><span class="when">10:02</span></div>
+            <div class="row"><span class="em">🛰</span>
+              <div class="grow"><div class="t">Support ticket summary</div><div class="s">218 tickets · 3 themes</div></div>
+              <span class="chip on">Done</span><span class="when">11:04</span></div>
+            <div class="row"><span class="em">🔎</span>
+              <div class="grow"><div class="t">Competitor price check</div><div class="s">Running · 4 of 9 sites</div></div>
+              <span class="chip">Running</span><span class="when">11:31</span></div>
+            <div class="row"><span class="em">📮</span>
+              <div class="grow"><div class="t">Draft release notes v2.4</div><div class="s">Waiting for the release tag</div></div>
+              <span class="chip">Queued</span><span class="when">—</span></div>
+            <div class="row"><span class="em">📊</span>
+              <div class="grow"><div class="t">Monthly invoice total</div><div class="s">$3,180 across 9 vendors</div></div>
+              <span class="chip on">Done</span><span class="when">Yesterday</span></div>
+          </div>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ══ ACTIVITY ══ -->
+    <section class="screen" data-screen="activity">
+      <div class="main">
+        <div class="mhead"><div class="mtitle">Activity</div>
+          <div class="tools"><button class="btn sm">Today</button></div>
+        </div>
+        <div class="scroll"><div class="pad" style="max-width:760px">
+          <div class="list">
+            <div class="row"><span class="em">📊</span><div class="grow"><div class="t">Ledger asked to spend $60</div><div class="s">Waiting on you</div></div><span class="when">10:18</span></div>
+            <div class="row"><span class="em">🌙</span><div class="grow"><div class="t">Nova finished the nightly test run</div><div class="s">142 passed</div></div><span class="when">10:02</span></div>
+            <div class="row"><span class="em">🛰</span><div class="grow"><div class="t">Atlas answered in #product</div><div class="s">Pricing comparison</div></div><span class="when">9:42</span></div>
+            <div class="row"><span class="em">🔎</span><div class="grow"><div class="t">Scout started a price check</div><div class="s">9 sites</div></div><span class="when">9:00</span></div>
+            <div class="row"><span class="em">⚙</span><div class="grow"><div class="t">You changed Atlas's spend limit</div><div class="s">$10 → $25</div></div><span class="when">Yesterday</span></div>
+            <div class="row"><span class="em">📮</span><div class="grow"><div class="t">You paused Postie</div><div class="s"></div></div><span class="when">Yesterday</span></div>
+            <div class="row"><span class="em">🛰</span><div class="grow"><div class="t">Atlas filed ENG-4412</div><div class="s">Safari login loop</div></div><span class="when">Yesterday</span></div>
+          </div>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ══ SETTINGS ══ -->
+    <section class="screen" data-screen="settings">
+      <aside class="side">
+        <div class="side-head">Settings</div>
+        <div class="side-scroll">
+          <button class="item" aria-current="true"><span class="nm">General</span></button>
+          <button class="item"><span class="nm">Connected apps</span></button>
+          <button class="item"><span class="nm">Spending</span></button>
+          <button class="item"><span class="nm">Notifications</span></button>
+          <button class="item"><span class="nm">Shortcuts</span></button>
+        </div>
+      </aside>
+      <div class="main">
+        <div class="mhead"><div class="mtitle">General</div></div>
+        <div class="scroll"><div class="pad" style="max-width:620px">
+          <div class="panel">
+            <h2 class="sec">Appearance</h2>
+            <div class="field"><label class="lb" for="th">Theme</label>
+              <select class="in" id="th"><option>Match system</option><option>Light</option><option>Dark</option></select></div>
+            <div class="tog"><div class="grow"><div class="t">Start Cloud9 when I log in</div></div><button class="sw" aria-pressed="true" aria-label="Start at login"></button></div>
+          </div>
+          <div class="panel">
+            <h2 class="sec">Connected apps</h2>
+            <div class="tog"><span class="em" style="width:26px">✳</span><div class="grow"><div class="t">Claude</div><div class="s">3 agents</div></div><span class="chip on">Signed in</span></div>
+            <div class="tog"><span class="em" style="width:26px">◆</span><div class="grow"><div class="t">Codex</div><div class="s">2 agents</div></div><span class="chip on">Signed in</span></div>
+          </div>
+          <div class="panel">
+            <h2 class="sec">Spending</h2>
+            <div class="two">
+              <div class="field"><label class="lb" for="sd">Daily limit</label><input class="in" id="sd" value="$25"></div>
+              <div class="field"><label class="lb" for="sm">Monthly cap</label><input class="in" id="sm" value="$400"></div>
+            </div>
+            <div class="tog"><div class="grow"><div class="t">Ask me before any purchase</div></div><button class="sw" aria-pressed="true" aria-label="Ask before purchase"></button></div>
+          </div>
+          <div class="panel">
+            <h2 class="sec">Notifications</h2>
+            <div class="tog"><div class="grow"><div class="t">Approvals</div></div><button class="sw" aria-pressed="true" aria-label="Approval notifications"></button></div>
+            <div class="tog"><div class="grow"><div class="t">Job finished</div></div><button class="sw" aria-pressed="true" aria-label="Job notifications"></button></div>
+            <div class="tog"><div class="grow"><div class="t">Mentions only</div></div><button class="sw" aria-pressed="false" aria-label="Mentions only"></button></div>
+          </div>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ══ WELCOME ══ -->
+    <section class="screen" data-screen="welcome">
+      <div class="main">
+        <div class="welcome">
+          <div class="wcard">
+            <div class="wmark"></div>
+            <h1>Welcome to Cloud9</h1>
+            <p class="lede">Connect an app and your agents can start working.</p>
+            <div class="conn">
+              <span class="em">✳</span>
+              <div class="grow" style="flex:1"><div class="t">Claude</div><div class="s">vikas@acme.com</div></div>
+              <span class="tick"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3.5 8.4l3 3 6-6.4"/></svg></span>
+            </div>
+            <div class="conn">
+              <span class="em">◆</span>
+              <div class="grow" style="flex:1"><div class="t">Codex</div><div class="s">vikas@acme.com</div></div>
+              <span class="tick"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3.5 8.4l3 3 6-6.4"/></svg></span>
+            </div>
+            <div class="conn">
+              <span class="em">◇</span>
+              <div class="grow" style="flex:1"><div class="t">Gemini</div><div class="s">Not connected</div></div>
+              <button class="btn sm">Connect</button>
+            </div>
+            <button class="btn primary" data-go="chat" style="width:100%;height:36px;margin-top:16px">Continue</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<!-- quick chat -->
+<div class="overlay" id="overlay">
+  <div class="qc" role="dialog" aria-label="Quick chat">
+    <div class="qin">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="var(--ink-3)" stroke-width="1.6"><circle cx="7" cy="7" r="4.6"/><path d="M10.5 10.5 14 14"/></svg>
+      <input id="qcInput" placeholder="Ask an agent, or jump to…" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="qlist">
+      <button class="qrow" data-sel="true"><span class="em">🛰</span><span class="t">Ask Atlas</span><span class="s">Enter</span></button>
+      <button class="qrow" data-go="dm"><span class="em">🌙</span><span class="t">Ask Nova</span><span class="s">Agent</span></button>
+      <button class="qrow" data-go="chat"><span class="em">#</span><span class="t">product</span><span class="s">Channel</span></button>
+      <button class="qrow" data-go="tasks"><span class="em">✔</span><span class="t">Tasks &amp; approvals</span><span class="s">2 waiting</span></button>
+      <button class="qrow" data-go="edit"><span class="em">＋</span><span class="t">New agent</span><span class="s">Create</span></button>
+    </div>
+    <div class="qfoot"><span>↑↓ move</span><span>⏎ open</span><span>Esc close</span></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var screens = document.querySelectorAll('[data-screen]');
+  var railBtns = document.querySelectorAll('#rail .rbtn');
+  var menu = document.getElementById('menu');
+  var menuBtn = document.getElementById('menuBtn');
+  var overlay = document.getElementById('overlay');
+  var railMap = {chat:'chat', dm:'chat', agents:'agents', edit:'agents', tasks:'tasks', activity:'activity', settings:'settings', welcome:'welcome'};
+
+  function go(name){
+    var found = false;
+    screens.forEach(function(s){
+      var on = s.getAttribute('data-screen') === name;
+      s.setAttribute('data-active', on ? 'true' : 'false');
+      if(on) found = true;
+    });
+    if(!found) return;
+    railBtns.forEach(function(b){
+      b.setAttribute('aria-current', b.getAttribute('data-go') === railMap[name] ? 'true' : 'false');
+    });
+    menu.querySelectorAll('[data-go]').forEach(function(b){
+      b.setAttribute('aria-current', b.getAttribute('data-go') === name ? 'true' : 'false');
+    });
+    closeMenu(); closeQC();
+    var sc = document.querySelector('[data-screen="'+name+'"] .scroll');
+    if(sc) sc.scrollTop = 0;
+  }
+
+  document.addEventListener('click', function(e){
+    var t = e.target.closest('[data-go]');
+    if(t){ e.preventDefault(); go(t.getAttribute('data-go')); return; }
+
+    var sw = e.target.closest('.sw');
+    if(sw){ sw.setAttribute('aria-pressed', sw.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'); return; }
+
+    var seg = e.target.closest('.seg button');
+    if(seg){
+      seg.parentNode.querySelectorAll('button').forEach(function(b){ b.setAttribute('aria-pressed','false'); });
+      seg.setAttribute('aria-pressed','true'); return;
+    }
+
+    var ap = e.target.closest('[data-approve]');
+    if(ap){
+      var card = document.getElementById('approvalCard');
+      var done = document.getElementById('approvalDone');
+      var ok = ap.getAttribute('data-approve') === 'ok';
+      card.style.display = 'none';
+      done.style.display = 'flex';
+      done.style.color = ok ? 'var(--ok)' : 'var(--ink-3)';
+      done.textContent = ok ? '✓ Approved — Ledger is buying the seats.' : '✕ Rejected — Ledger will not buy.';
+      return;
+    }
+
+    if(!e.target.closest('.menuwrap')) closeMenu();
+    if(e.target === overlay) closeQC();
+  });
+
+  function closeMenu(){ menu.setAttribute('data-open','false'); menuBtn.setAttribute('aria-expanded','false'); }
+  menuBtn.addEventListener('click', function(e){
+    e.stopPropagation();
+    var open = menu.getAttribute('data-open') === 'true';
+    menu.setAttribute('data-open', open ? 'false' : 'true');
+    menuBtn.setAttribute('aria-expanded', open ? 'false' : 'true');
+  });
+
+  // details pane
+  var pane = document.getElementById('pane');
+  document.getElementById('paneBtn').addEventListener('click', function(){
+    pane.setAttribute('data-open', pane.getAttribute('data-open') === 'true' ? 'false' : 'true');
+  });
+  document.getElementById('paneClose').addEventListener('click', function(){ pane.setAttribute('data-open','false'); });
+
+  // quick chat
+  function openQC(){ overlay.setAttribute('data-open','true'); document.getElementById('qcInput').focus(); }
+  function closeQC(){ overlay.setAttribute('data-open','false'); }
+  document.getElementById('openQC').addEventListener('click', openQC);
+  document.getElementById('menuQC').addEventListener('click', function(e){ e.stopPropagation(); closeMenu(); openQC(); });
+
+  var rows = overlay.querySelectorAll('.qrow');
+  var idx = 0;
+  document.addEventListener('keydown', function(e){
+    if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k'){ e.preventDefault(); openQC(); return; }
+    if(overlay.getAttribute('data-open') !== 'true') return;
+    if(e.key === 'Escape'){ closeQC(); return; }
+    if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+      e.preventDefault();
+      idx = (idx + (e.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length;
+      rows.forEach(function(r,i){ r.setAttribute('data-sel', i === idx ? 'true' : 'false'); });
+    }
+    if(e.key === 'Enter'){ e.preventDefault(); rows[idx].click(); if(!rows[idx].getAttribute('data-go')) closeQC(); }
+  });
+
+  // theme
+  var root = document.documentElement;
+  root.removeAttribute('data-theme');
+  document.getElementById('themeBtn').addEventListener('click', function(){
+    var cur = root.getAttribute('data-theme');
+    if(!cur){
+      cur = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    root.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  });
+})();
+</script>
+</body>
+</html>

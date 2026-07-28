@@ -127,8 +127,14 @@ export class Relay {
         this.toUser(conn.userId, {
           type: "harness",
           state: {
-            claude: { name: "claude", installed: false, signedIn: false, detail: "your agent engine isn't running" },
-            codex: { name: "codex", installed: false, signedIn: false, detail: "your agent engine isn't running" },
+            claude: {
+              name: "claude", installed: false, signedIn: false, authKind: "none",
+              models: [], detail: "your agent engine isn't running",
+            },
+            codex: {
+              name: "codex", installed: false, signedIn: false, authKind: "none",
+              models: [], detail: "your agent engine isn't running",
+            },
             updatedAt: Date.now(),
           },
         });
@@ -214,10 +220,15 @@ export class Relay {
       }
       case "createChannel": {
         const memberIds = Array.from(new Set([conn.userId, ...frame.memberIds]));
+        const kind = frame.kind ?? (frame.memberIds.length === 1 ? "dm" : "channel");
+        // A direct conversation is FOUND or created, never duplicated (his 15).
+        // Clicking a person twice must land in the same place both times.
+        if (kind === "dm" && memberIds.length === 2) {
+          const existing = this.store.dmBetween(memberIds[0], memberIds[1]);
+          if (existing) { send(conn.ws, { type: "channel", channel: existing }); break; }
+        }
         const channel: Channel = {
-          id: newId("ch"), name: frame.name,
-          kind: frame.kind ?? (frame.memberIds.length === 1 ? "dm" : "channel"),
-          memberIds, createdAt: Date.now(),
+          id: newId("ch"), name: frame.name, kind, memberIds, createdAt: Date.now(),
         };
         this.store.saveChannel(channel);
         this.audit(conn, "channel_created", channel.id, `created ${channel.kind} ${channel.name}`);
@@ -236,7 +247,7 @@ export class Relay {
       case "createAgent": {
         // first gate on untrusted input: some of these fields end up on a
         // command line in the engine host (the engine re-checks too)
-        const bad = validateAgentInput(frame.agent);
+        const bad = validateAgentInput(frame.agent, this.agentRules(conn, frame.agent.provider));
         if (bad) throw new Error(bad);
         const agent: AgentDef = {
           ...frame.agent, id: newId("a"), ownerId: conn.userId, createdAt: Date.now(),
@@ -247,7 +258,7 @@ export class Relay {
         break;
       }
       case "updateAgent": {
-        const bad = validateAgentInput(frame.agent);
+        const bad = validateAgentInput(frame.agent, this.agentRules(conn, frame.agent.provider));
         if (bad) throw new Error(bad);
         const existing = this.store.agents().find(a => a.id === frame.agent.id);
         if (!existing || existing.ownerId !== conn.userId) throw new Error("not your agent");
@@ -268,6 +279,27 @@ export class Relay {
         const code = this.store.createInvite(conn.userId);
         this.audit(conn, "invite_created", code, "created an invite");
         send(conn.ws, { type: "invite", code });
+        break;
+      }
+      case "removeUser": {
+        // removing a person deletes their agents, so this is owner-only and the
+        // owner can't remove themselves out of their own Cloud9
+        if (conn.userId !== this.ownerId) {
+          throw new Error("only the owner of this Cloud9 can remove someone");
+        }
+        if (frame.userId === this.ownerId) throw new Error("you can't remove yourself");
+        const target = this.store.user(frame.userId);
+        if (!target) throw new Error("no such person");
+        const theirAgents = this.store.agents().filter(a => a.ownerId === target.id);
+        this.store.removeUser(target.id);
+        this.audit(conn, "agent_deleted", target.id, `removed ${target.name} from this Cloud9`);
+        for (const a of theirAgents) this.broadcast({ type: "agentDeleted", agentId: a.id });
+        for (const c of this.store.channels()) this.broadcast({ type: "channel", channel: c });
+        this.broadcast({ type: "userRemoved", userId: target.id });
+        // and close whatever they still have open — their tokens are gone
+        for (const c of [...this.conns]) {
+          if (c.userId === target.id) { c.ws.close(); this.conns.delete(c); }
+        }
         break;
       }
       case "createTask": {
@@ -359,6 +391,7 @@ export class Relay {
       // These frames make the engine host start programs on the owner's
       // computer, so they are the most privileged in the protocol: owner only,
       // never on the shipped default token, and rate-limited.
+      case "refreshHarness":
       case "harnessStatus": {
         this.assertHarnessAllowed(conn);
         // answer immediately from cache, and ask this user's engine to re-check
@@ -417,6 +450,21 @@ export class Relay {
       actorName: asAgent ? asAgent.name : user?.name ?? "?",
       kind, refId, detail,
     });
+  }
+
+  /**
+   * The rules an agent from this connection is checked against.
+   *
+   * The model list comes from what this user's OWN engine host last reported,
+   * so an agent can only be pointed at a model that machine can really run
+   * (his 5+6). When no engine has reported yet the list is unknown, and
+   * validateAgentInput falls back to the shape check — that check is the
+   * injection guard and applies either way, so an unknown list can never widen
+   * what is allowed onto a command line.
+   */
+  private agentRules(conn: Conn, provider?: string): { models?: string[] } {
+    const harness = provider === "codex" ? "codex" : "claude";
+    return { models: this.harness[conn.userId]?.[harness].models };
   }
 
   private directory(): { id: ID; name: string }[] {

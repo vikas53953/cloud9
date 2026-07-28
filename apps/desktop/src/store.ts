@@ -19,6 +19,14 @@ export interface World {
   activity: ActivityRecord[];
   /** status of the local Claude/Codex apps — booleans and labels, never secrets */
   harness?: HarnessState;
+  /** the last thing the relay refused, so a failed save is never silent */
+  lastError?: { text: string; ts: number };
+  /**
+   * The last channel the relay handed us. Asking for a direct conversation is
+   * answered with one of these — whether it made a new one or found the old
+   * one — so the UI can open exactly what it was given instead of guessing.
+   */
+  lastChannel?: { id: ID; ts: number };
 }
 
 type Listener = () => void;
@@ -113,17 +121,23 @@ export class RelayClient {
         this.setToken(frame.token);
         break;
       case "message": {
-        (w.messages[frame.message.channelId] ??= []).push(frame.message);
+        // new arrays, not in-place pushes: the UI compares references to decide
+        // what to recompute, so a mutated-in-place list looks like "no change"
+        const cid = frame.message.channelId;
+        w.messages = { ...w.messages, [cid]: [...(w.messages[cid] ?? []), frame.message] };
         break;
       }
       case "channel": {
         const i = w.channels.findIndex(c => c.id === frame.channel.id);
         if (i >= 0) w.channels[i] = frame.channel; else w.channels.push(frame.channel);
+        w.channels = [...w.channels];
+        w.lastChannel = { id: frame.channel.id, ts: Date.now() };
         break;
       }
       case "agent": {
         const i = w.agents.findIndex(a => a.id === frame.agent.id);
         if (i >= 0) w.agents[i] = frame.agent; else w.agents.push(frame.agent);
+        w.agents = [...w.agents];
         break;
       }
       case "agentDeleted":
@@ -156,9 +170,10 @@ export class RelayClient {
       case "history": {
         const existing = w.messages[frame.channelId] ?? [];
         const known = new Set(existing.map(m => m.id));
-        w.messages[frame.channelId] = [
-          ...frame.messages.filter(m => !known.has(m.id)), ...existing,
-        ];
+        w.messages = {
+          ...w.messages,
+          [frame.channelId]: [...frame.messages.filter(m => !known.has(m.id)), ...existing],
+        };
         break;
       }
       case "userJoined":
@@ -166,6 +181,7 @@ export class RelayClient {
         break;
       case "error":
         if (frame.error === "bad token") w.authFailed = true;
+        else w.lastError = { text: frame.error, ts: Date.now() };
         break;
       default:
         break;

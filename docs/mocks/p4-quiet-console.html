@@ -1,0 +1,1220 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud9 — Quiet Console</title>
+<style>
+/* ============================================================
+   CLOUD9 · "QUIET CONSOLE"
+   One thing on screen at a time. Hairlines, not boxes.
+   Colour spent three times a screen, never for decoration.
+   ============================================================ */
+
+/* ---------- tokens: light (default) ---------- */
+:root{
+  --paper:#FCFCFB;
+  --rail:#F4F5F5;
+  --ink:#14181B;
+  --ink-2:#3F484D;
+  --muted:#767E83;
+  --faint:#9AA2A7;
+  --line:#E3E7E9;
+  --line-2:#EDF0F1;
+  --hover:#EEF0F1;
+  --accent:#3A3FD6;      /* one primary action */
+  --accent-ink:#FFFFFF;
+  --live:#17715A;        /* running / connected */
+  --wait:#8A5A06;        /* awaiting you */
+  --danger:#A9412C;
+  --focus:#3A3FD6;
+  --shadow:0 24px 60px -22px rgba(16,22,28,.28), 0 2px 8px -2px rgba(16,22,28,.10);
+  --scrim:rgba(28,32,36,.20);
+  color-scheme:light;
+}
+/* ---------- tokens: dark ---------- */
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0F1114; --rail:#131619; --ink:#E7EAEC; --ink-2:#B9C0C4;
+    --muted:#868E94; --faint:#697177; --line:#242A2E; --line-2:#1C2125;
+    --hover:#1B2024; --accent:#8D91FF; --accent-ink:#0F1114;
+    --live:#54C199; --wait:#DFA855;
+    --danger:#EF8266; --focus:#8D91FF;
+    --shadow:0 28px 70px -24px rgba(0,0,0,.72), 0 2px 10px -2px rgba(0,0,0,.5);
+    --scrim:rgba(6,8,10,.55);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0F1114; --rail:#131619; --ink:#E7EAEC; --ink-2:#B9C0C4;
+  --muted:#868E94; --faint:#697177; --line:#242A2E; --line-2:#1C2125;
+  --hover:#1B2024; --accent:#8D91FF; --accent-ink:#0F1114;
+  --live:#54C199; --wait:#DFA855; --danger:#EF8266; --focus:#8D91FF;
+  --shadow:0 28px 70px -24px rgba(0,0,0,.72), 0 2px 10px -2px rgba(0,0,0,.5);
+  --scrim:rgba(6,8,10,.55);
+  color-scheme:dark;
+}
+
+/* ---------- type roles ---------- */
+:root{
+  --serif: "Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua","Source Serif 4",Georgia,"Times New Roman",serif;
+  --sans: "Segoe UI Variable Text","Segoe UI",-apple-system,BlinkMacSystemFont,"Inter","Helvetica Neue",Arial,sans-serif;
+  --mono: ui-monospace,"Cascadia Mono","SF Mono",Consolas,"Roboto Mono",monospace;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--sans); font-size:15px; line-height:1.62;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  hanging-punctuation:first last;
+  overflow-x:hidden;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus{outline:none}
+:focus-visible{outline:2px solid var(--focus); outline-offset:3px; border-radius:2px}
+
+/* ---------- micro-label: the utility voice ---------- */
+.lab{
+  font-family:var(--mono); font-size:10px; font-weight:500;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--faint);
+  font-variant-numeric:tabular-nums;
+}
+.num{font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1}
+
+/* ============================================================
+   FRAME
+   ============================================================ */
+.app{display:flex; min-height:100vh; width:100%}
+
+/* --- left rail: text only, no icons, no fills --- */
+.rail{
+  width:236px; flex:0 0 236px; background:var(--rail);
+  border-right:1px solid var(--line);
+  padding:26px 0 18px; display:flex; flex-direction:column; gap:26px;
+  position:sticky; top:0; height:100vh; overflow-y:auto;
+}
+.brand{padding:0 26px; display:flex; align-items:baseline; gap:9px}
+.brand b{font-family:var(--serif); font-size:21px; font-weight:600; letter-spacing:-.015em}
+.brand .lab{font-size:9px}
+
+.navgroup{display:flex; flex-direction:column}
+.navgroup > .lab{padding:0 26px 8px}
+.nav{
+  appearance:none; background:none; border:0; text-align:left; cursor:pointer;
+  padding:5px 26px; color:var(--muted); font-size:14px; line-height:1.55;
+  display:flex; align-items:center; gap:8px; position:relative; width:100%;
+}
+.nav:hover{color:var(--ink-2); background:var(--hover)}
+.nav[aria-current="true"]{color:var(--ink); font-weight:600}
+.nav[aria-current="true"]::before{
+  content:""; position:absolute; left:0; top:5px; bottom:5px; width:2px; background:var(--ink);
+}
+.nav .tail{margin-left:auto; font-family:var(--mono); font-size:10px; letter-spacing:.08em; color:var(--faint)}
+.nav .dot{width:5px;height:5px;border-radius:50%;background:var(--live);flex:0 0 5px}
+.nav .dot.wait{background:var(--wait)}
+.rail-foot{margin-top:auto; padding:0 26px; display:flex; flex-direction:column; gap:10px}
+.linkline{
+  appearance:none;background:none;border:0;padding:0;text-align:left;cursor:pointer;
+  color:var(--muted); font-size:13px; display:flex; justify-content:space-between; gap:10px;
+}
+.linkline:hover{color:var(--ink)}
+.linkline kbd{font-family:var(--mono); font-size:10px; letter-spacing:.06em; color:var(--faint); background:none}
+
+/* --- main --- */
+.main{flex:1 1 auto; min-width:0; display:flex; flex-direction:column}
+.sheet{width:100%; max-width:816px; margin:0 auto; padding:0 56px}
+.sheet.wide{max-width:936px}
+
+/* --- screen head: the typographic hierarchy does all the work --- */
+.head{padding:54px 0 0}
+.head .eyebrow{display:flex; align-items:center; gap:10px; margin-bottom:14px}
+h1{
+  font-family:var(--serif); font-weight:600; font-size:38px; line-height:1.14;
+  letter-spacing:-.022em; margin:0;
+}
+.dek{margin:12px 0 0; color:var(--muted); font-size:15.5px; max-width:56ch}
+.rule{height:1px; background:var(--line); border:0; margin:34px 0 0}
+.screen{display:none; animation:rise .28s ease both}
+.screen.on{display:block}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* ============================================================
+   SIGNATURE: the hanging gutter
+   Every line of the app hangs off one spine. Attribution lives
+   in the margin, content lives in the column. No bubbles ever.
+   ============================================================ */
+.stream{padding:8px 0 30px}
+.entry{
+  display:grid; grid-template-columns:126px 1fr; column-gap:30px;
+  padding:17px 0; border-left:0; position:relative;
+}
+.entry + .entry{border-top:1px solid var(--line-2)}
+.entry::after{ /* the spine */
+  content:""; position:absolute; left:126px; top:0; bottom:0; width:1px;
+  background:var(--line-2); transform:translateX(-15px);
+}
+.entry:first-child::after{top:10px}
+.entry:last-child::after{bottom:10px}
+.gut{text-align:right; padding-top:2px; min-width:0}
+.gut .who{
+  display:block; font-size:13.5px; font-weight:600; color:var(--ink);
+  letter-spacing:-.005em; overflow-wrap:break-word;
+}
+.gut .who.bot{font-family:var(--serif); font-weight:600; font-size:15px}
+.gut .sub{display:block; margin-top:3px; letter-spacing:.09em; font-size:9px}
+.gut .stamp{display:block; margin-top:6px}
+.say{min-width:0}
+.say p{margin:0 0 10px}
+.say p:last-child{margin-bottom:0}
+.say .thin{color:var(--muted)}
+.say code{font-family:var(--mono); font-size:12.5px; background:var(--line-2); padding:1px 5px; border-radius:3px}
+
+/* chrome that appears on hover only */
+.entry .acts{
+  position:absolute; right:0; top:11px; display:flex; gap:14px;
+  opacity:0; transition:opacity .16s ease;
+}
+.entry:hover .acts, .entry:focus-within .acts{opacity:1}
+.tinybtn{
+  appearance:none;background:none;border:0;padding:0;cursor:pointer;
+  font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--faint);
+}
+.tinybtn:hover{color:var(--ink)}
+
+/* ---------- data table inside an answer ---------- */
+.tablewrap{overflow-x:auto; margin:14px 0 4px; padding-bottom:2px}
+table{border-collapse:collapse; width:100%; min-width:460px; font-size:13.5px}
+th,td{padding:8px 16px 8px 0; text-align:left; vertical-align:top}
+th{
+  font-family:var(--mono); font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--faint); font-weight:500; border-bottom:1px solid var(--line); padding-bottom:7px;
+}
+td{border-bottom:1px solid var(--line-2); color:var(--ink-2)}
+tbody tr:last-child td{border-bottom:0}
+td:first-child{color:var(--ink); font-weight:500}
+.r{text-align:right; font-variant-numeric:tabular-nums}
+th:last-child,td:last-child{padding-right:0}
+th.r{text-align:right}
+.pick{color:var(--live); font-weight:600}
+
+/* ---------- the interruption: an approval ---------- */
+.ask{margin:16px 0 4px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:20px 0}
+.ask .lab{color:var(--wait)}
+.ask .money{
+  font-family:var(--serif); font-size:34px; line-height:1.1; letter-spacing:-.02em;
+  margin:10px 0 2px; font-variant-numeric:tabular-nums;
+}
+.ask .fine{color:var(--muted); font-size:13.5px; margin:0}
+.ask .row{display:flex; align-items:center; gap:22px; margin-top:18px; flex-wrap:wrap}
+.settled{color:var(--live); font-family:var(--mono); font-size:11px; letter-spacing:.13em; text-transform:uppercase}
+.settled.no{color:var(--muted)}
+
+/* ---------- buttons ---------- */
+.btn{
+  appearance:none; cursor:pointer; border:1px solid transparent; background:var(--accent);
+  color:var(--accent-ink); padding:8px 20px; border-radius:2px; font-size:13.5px; font-weight:600;
+  letter-spacing:.005em; transition:opacity .15s ease;
+}
+.btn:hover{opacity:.86}
+.btn.ghost{background:none; color:var(--ink); border-color:var(--line)}
+.btn.ghost:hover{border-color:var(--muted); opacity:1}
+.btn.bare{background:none;color:var(--muted);border:0;padding:8px 0;font-weight:500}
+.btn.bare:hover{color:var(--ink)}
+.btn.danger{background:none;color:var(--danger);border-color:var(--danger);font-weight:600}
+.btn[disabled]{opacity:.35; cursor:not-allowed}
+
+/* ---------- composer: a line, not a box ---------- */
+.composer{border-top:1px solid var(--line); padding:16px 0 40px; display:flex; align-items:flex-end; gap:16px}
+.composer input{
+  flex:1; min-width:0; border:0; background:none; padding:6px 0; font-size:15px;
+}
+.composer input::placeholder{color:var(--faint)}
+.composer .hint{white-space:nowrap}
+
+/* ---------- lists (agents / tasks / activity) ---------- */
+.list{margin:0; padding:0; list-style:none}
+.row{
+  display:grid; align-items:baseline; column-gap:26px; padding:18px 0;
+  border-bottom:1px solid var(--line-2); position:relative;
+}
+.row:hover{background:linear-gradient(to right,transparent,var(--hover) 4%,var(--hover) 96%,transparent)}
+.r-agent{grid-template-columns:126px 1fr 168px}
+.r-task{grid-template-columns:126px 1fr 132px}
+.r-act{grid-template-columns:126px 1fr}
+.cellL{text-align:right}
+.name{font-family:var(--serif); font-size:19px; font-weight:600; letter-spacing:-.012em; margin:0 0 4px}
+.name .em{font-family:var(--sans); font-size:16px; margin-right:7px}
+.role{color:var(--muted); font-size:14px; margin:0}
+.job{margin:8px 0 0; font-size:13.5px; color:var(--ink-2)}
+.state{display:flex; align-items:center; justify-content:flex-end; gap:7px; white-space:nowrap}
+.state .dot{width:5px;height:5px;border-radius:50%;background:var(--faint)}
+.state.live .dot{background:var(--live)} .state.live{color:var(--live)}
+.state.wait .dot{background:var(--wait)} .state.wait{color:var(--wait)}
+.row .acts{position:absolute; right:0; bottom:14px; opacity:0; transition:opacity .16s}
+.row:hover .acts,.row:focus-within .acts{opacity:1}
+
+/* ---------- section headers inside a screen ---------- */
+.sect{margin:44px 0 0}
+.sect > .lab{display:block; padding-bottom:10px; border-bottom:1px solid var(--line)}
+
+/* ---------- forms: hairline fields, no boxes ---------- */
+.field{display:grid; grid-template-columns:180px 1fr; column-gap:32px; align-items:start; padding:18px 0; border-bottom:1px solid var(--line-2)}
+.field > .lab{padding-top:8px}
+.field .desc{display:block; color:var(--muted); font-size:12.5px; margin:5px 0 0; font-family:var(--sans); letter-spacing:0; text-transform:none; line-height:1.5}
+.ctl{min-width:0}
+.inp{
+  width:100%; border:0; border-bottom:1px solid var(--line); background:none;
+  padding:6px 0; font-size:15px; border-radius:0;
+}
+.inp:focus-visible{outline:none; border-bottom-color:var(--accent); box-shadow:0 1px 0 0 var(--accent)}
+textarea.inp{resize:vertical; min-height:76px; line-height:1.6; font-size:14px}
+select.inp{appearance:none; cursor:pointer; padding-right:20px;
+  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 9px) 14px,calc(100% - 5px) 14px; background-size:4px 4px,4px 4px; background-repeat:no-repeat}
+.seg{display:flex; gap:26px}
+.seg button{
+  appearance:none;background:none;border:0;padding:6px 0;cursor:pointer;color:var(--muted);
+  font-size:15px; border-bottom:1px solid transparent;
+}
+.seg button[aria-pressed="true"]{color:var(--ink); font-weight:600; border-bottom-color:var(--ink)}
+.emojirow{display:flex; gap:8px; flex-wrap:wrap}
+.emojirow button{appearance:none;background:none;border:1px solid transparent;border-radius:3px;font-size:19px;line-height:1;padding:6px;cursor:pointer}
+.emojirow button[aria-pressed="true"]{border-color:var(--ink)}
+.emojirow button:hover{background:var(--hover)}
+
+/* switch: a hairline track */
+.sw{display:flex; align-items:center; justify-content:space-between; gap:20px; padding:10px 0; border-bottom:1px solid var(--line-2)}
+.sw:last-child{border-bottom:0}
+.sw .t{font-size:14.5px}
+.sw .t small{display:block; color:var(--muted); font-size:12.5px; line-height:1.5}
+.toggle{
+  appearance:none; cursor:pointer; flex:0 0 38px; width:38px; height:20px; border-radius:10px;
+  border:1px solid var(--line); background:none; position:relative; transition:background .18s,border-color .18s;
+}
+.toggle::after{content:""; position:absolute; top:3px; left:3px; width:12px; height:12px; border-radius:50%;
+  background:var(--faint); transition:transform .18s ease, background .18s}
+.toggle[aria-checked="true"]{background:var(--ink); border-color:var(--ink)}
+.toggle[aria-checked="true"]::after{transform:translateX(18px); background:var(--paper)}
+
+/* skills */
+.skill{border-bottom:1px solid var(--line-2); padding:18px 0}
+.skill:last-of-type{border-bottom:0}
+.skill h4{margin:0 0 3px; font-family:var(--serif); font-size:17px; font-weight:600; letter-spacing:-.01em}
+.skill p{margin:0; color:var(--muted); font-size:13.5px}
+.skill .head2{display:flex; align-items:baseline; justify-content:space-between; gap:16px}
+.drop{
+  margin-top:20px; border:1px dashed var(--line); border-radius:3px; padding:20px;
+  text-align:center; color:var(--muted); font-size:13.5px;
+}
+.drop b{color:var(--ink); font-weight:600}
+
+/* connect rows (welcome + settings) */
+.conn{display:flex; align-items:center; justify-content:space-between; gap:24px; padding:22px 0; border-bottom:1px solid var(--line-2)}
+.conn h3{margin:0 0 3px; font-family:var(--serif); font-size:20px; font-weight:600; letter-spacing:-.012em}
+.conn p{margin:0; color:var(--muted); font-size:13.5px}
+.tick{display:flex; align-items:center; gap:8px; color:var(--live); font-family:var(--mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; white-space:nowrap}
+.tick svg{width:13px;height:13px;flex:0 0 13px}
+
+/* welcome layout: one thing on screen */
+.welcome{min-height:100vh; display:flex; flex-direction:column; justify-content:center; padding:64px 0}
+.welcome .mark{font-family:var(--serif); font-size:62px; line-height:1; letter-spacing:-.03em; font-weight:600; margin:0}
+.welcome .say1{margin:20px 0 0; font-size:18px; color:var(--muted); max-width:44ch}
+.welcome .steps{margin-top:54px; border-top:1px solid var(--line)}
+.welcome .foot{display:flex; align-items:center; gap:22px; margin-top:34px}
+
+/* quick chat overlay */
+.scrim{
+  position:fixed; inset:0; background:var(--scrim); display:none;
+  align-items:flex-start; justify-content:center; padding:14vh 20px 20px; z-index:60;
+  backdrop-filter:blur(2px);
+}
+.scrim.on{display:flex}
+.pop{
+  width:100%; max-width:640px; background:var(--paper); border:1px solid var(--line);
+  border-radius:4px; box-shadow:var(--shadow); overflow:hidden; animation:pop .18s ease both;
+}
+@keyframes pop{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+.pop .top{display:flex; align-items:center; gap:14px; padding:16px 22px; border-bottom:1px solid var(--line-2)}
+.pop .top input{flex:1; border:0; background:none; font-size:17px; padding:2px 0}
+.pop .top input::placeholder{color:var(--faint)}
+.pop .body{padding:18px 22px 6px}
+.pop .opt{display:flex; align-items:baseline; gap:14px; padding:9px 0; cursor:pointer}
+.pop .opt:hover{background:var(--hover); margin:0 -22px; padding-left:22px; padding-right:22px}
+.pop .opt .n{font-size:14.5px}
+.pop .opt .d{color:var(--muted); font-size:13px; margin-left:auto; text-align:right}
+.pop .foot{display:flex; gap:20px; padding:12px 22px; border-top:1px solid var(--line-2); margin-top:12px}
+
+/* misc */
+.kbd{font-family:var(--mono); font-size:10px; letter-spacing:.08em; color:var(--faint); border:1px solid var(--line); border-radius:3px; padding:1px 5px}
+.spacer{height:70px}
+.note{color:var(--muted); font-size:13.5px; max-width:60ch}
+.inline-list{display:flex; gap:28px; flex-wrap:wrap; margin:0; padding:0; list-style:none}
+.stat b{display:block; font-family:var(--serif); font-size:30px; font-weight:600; letter-spacing:-.02em; font-variant-numeric:tabular-nums; line-height:1.2}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.001ms !important}
+}
+@media (max-width:1080px){
+  .rail{width:200px;flex:0 0 200px}
+  .sheet{padding:0 32px}
+  .entry{grid-template-columns:104px 1fr; column-gap:22px}
+  .entry::after{left:104px}
+  .r-agent,.r-task{grid-template-columns:104px 1fr 140px}
+  .r-act{grid-template-columns:104px 1fr}
+  .field{grid-template-columns:1fr; row-gap:8px}
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ============================ RAIL ============================ -->
+  <nav class="rail" aria-label="Cloud9">
+    <div class="brand"><b>Cloud9</b><span class="lab">Quiet Console</span></div>
+
+    <div class="navgroup">
+      <span class="lab">Channels</span>
+      <button class="nav" data-go="chat" aria-current="true"># core-network <span class="tail num">4</span></button>
+      <button class="nav" data-go="chat"># incidents</button>
+      <button class="nav" data-go="chat"># spend</button>
+    </div>
+
+    <div class="navgroup">
+      <span class="lab">Direct</span>
+      <button class="nav" data-go="dm"><span class="dot"></span>Atlas</button>
+      <button class="nav" data-go="dm"><span class="dot wait"></span>Ledger</button>
+      <button class="nav" data-go="dm">Scribe</button>
+      <button class="nav" data-go="dm">Priya Nair</button>
+    </div>
+
+    <div class="navgroup">
+      <span class="lab">Workspace</span>
+      <button class="nav" data-go="agents">Agents <span class="tail num">6</span></button>
+      <button class="nav" data-go="tasks">Tasks <span class="tail num">2 waiting</span></button>
+      <button class="nav" data-go="activity">Activity</button>
+      <button class="nav" data-go="settings">Settings</button>
+    </div>
+
+    <div class="rail-foot">
+      <span class="lab">Mock screens</span>
+      <button class="linkline" data-go="welcome">First run</button>
+      <button class="linkline" data-go="create">Create agent</button>
+      <button class="linkline" id="openPop">Quick chat <kbd>Ctrl K</kbd></button>
+      <button class="linkline" id="themeBtn">Appearance <kbd id="themeNow">Light</kbd></button>
+    </div>
+  </nav>
+
+  <!-- ============================ MAIN ============================ -->
+  <main class="main">
+
+  <!-- ---------- 1. WELCOME ---------- -->
+  <section class="screen" id="s-welcome" aria-label="Welcome">
+    <div class="sheet welcome">
+      <p class="lab">First run · Step 1 of 1</p>
+      <h2 class="mark">Cloud9</h2>
+      <p class="say1">Your agents sit in the channel with your friends. Connect the apps they think with, and they can start work.</p>
+
+      <div class="steps">
+        <div class="conn">
+          <div>
+            <h3>Claude app</h3>
+            <p>Opus 4.8, Sonnet 5 · found running on this computer</p>
+          </div>
+          <span class="tick"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.6l4 4 8-9"/></svg>Signed in · vikas@nine.dev</span>
+        </div>
+        <div class="conn">
+          <div>
+            <h3>Codex app</h3>
+            <p id="codexSub">GPT-5.4, GPT-5.4 mini · not connected yet</p>
+          </div>
+          <span id="codexSlot"><button class="btn ghost" id="connectCodex">Connect Codex</button></span>
+        </div>
+      </div>
+
+      <div class="foot">
+        <button class="btn" id="enterBtn" disabled>Open my workspace</button>
+        <span class="note" id="enterNote">Connect Codex to continue, or skip and add it later.</span>
+      </div>
+      <p style="margin-top:26px"><button class="btn bare" data-go="chat">Skip for now</button></p>
+    </div>
+  </section>
+
+  <!-- ---------- 2. MAIN CHAT ---------- -->
+  <section class="screen on" id="s-chat" aria-label="Channel">
+    <div class="sheet">
+      <div class="head">
+        <div class="eyebrow"><span class="lab">Channel</span><span class="lab">· 4 people · 3 agents</span></div>
+        <h1># core-network</h1>
+        <p class="dek">Rack moves, link health, and anything that touches the edge routers.</p>
+        <hr class="rule">
+      </div>
+
+      <div class="stream">
+
+        <article class="entry">
+          <div class="gut">
+            <span class="who">Priya Nair</span>
+            <span class="lab sub">Human</span>
+            <span class="lab stamp">09:14</span>
+          </div>
+          <div class="say">
+            <p>Board wants a call on the SD-WAN renewal this week. Can someone lay out the three we shortlisted, with real numbers rather than vendor decks?</p>
+          </div>
+          <div class="acts"><button class="tinybtn">Reply</button><button class="tinybtn">Pin</button></div>
+        </article>
+
+        <article class="entry">
+          <div class="gut">
+            <span class="who bot">🛰 Atlas</span>
+            <span class="lab sub">Claude · Opus 4.8</span>
+            <span class="lab stamp">09:16</span>
+          </div>
+          <div class="say">
+            <p>Pulled the last 90 days from our own telemetry rather than the datasheets. Costs are what we would actually pay at 42 sites.</p>
+            <div class="tablewrap">
+              <table>
+                <caption class="lab" style="text-align:left;padding-bottom:10px">SD-WAN shortlist · 42 sites · measured Apr–Jul</caption>
+                <thead>
+                  <tr><th>Vendor</th><th class="r">Year 1</th><th class="r">Year 3</th><th class="r">p95 failover</th><th>Our gaps</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>Meraki</td><td class="r num">$186,400</td><td class="r num">$612,900</td><td class="r num">1.9 s</td><td>No per-tunnel BGP</td></tr>
+                  <tr><td>Velocloud</td><td class="r num">$154,200</td><td class="r num">$498,300</td><td class="r num">0.8 s</td><td>Weak on-prem reporting</td></tr>
+                  <tr><td class="pick">Fortinet SD-WAN</td><td class="r num">$141,750</td><td class="r num">$451,600</td><td class="r num">1.1 s</td><td class="pick">Fits our existing FortiGates</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="thin">Fortinet is the cheapest over three years and reuses hardware at 31 of the 42 sites. Velocloud fails over faster; that only matters for the two voice sites.</p>
+          </div>
+          <div class="acts"><button class="tinybtn">Ask again</button><button class="tinybtn">Save</button></div>
+        </article>
+
+        <article class="entry">
+          <div class="gut">
+            <span class="who">Tom Okafor</span>
+            <span class="lab sub">Human</span>
+            <span class="lab stamp">09:22</span>
+          </div>
+          <div class="say"><p>That matches what I got by hand last month, within a few thousand. Good enough for the board.</p></div>
+          <div class="acts"><button class="tinybtn">Reply</button></div>
+        </article>
+
+        <article class="entry">
+          <div class="gut">
+            <span class="who bot">📡 Beacon</span>
+            <span class="lab sub">Codex · GPT-5.4</span>
+            <span class="lab stamp">09:31</span>
+          </div>
+          <div class="say">
+            <p><span class="lab" style="color:var(--live)">Nobody asked · brought this in</span></p>
+            <p style="margin-top:8px">The Frankfurt tunnel to <code>edge-fra-02</code> has flapped 14 times since 06:40. Every flap is 40–60 seconds and always starts on the carrier side, so this is not our config.</p>
+            <p class="thin">I opened a ticket with Colt (ref <span class="num">CLT-88214</span>) and attached the timestamps. I have not changed anything on our side.</p>
+          </div>
+          <div class="acts"><button class="tinybtn">Open ticket</button><button class="tinybtn">Mute</button></div>
+        </article>
+
+        <article class="entry">
+          <div class="gut">
+            <span class="who bot">📒 Ledger</span>
+            <span class="lab sub">Claude · Sonnet 5</span>
+            <span class="lab stamp">09:38</span>
+          </div>
+          <div class="say">
+            <p>The Grafana Cloud plan renews on Friday. It is above the limit you set me, so I stopped and am asking.</p>
+            <div class="ask" id="askBlock">
+              <span class="lab">Awaits your ok · spend</span>
+              <p class="money">$228.00</p>
+              <p class="fine">Grafana Cloud Pro · 12 months · card ending 4417 · renews Fri 31 Jul</p>
+              <div class="row" id="askRow">
+                <button class="btn" id="approveBtn">Approve $228.00</button>
+                <button class="btn bare" id="rejectBtn">Reject</button>
+                <span class="note" style="font-size:12.5px">Your rule: ask above $50.</span>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="entry">
+          <div class="gut">
+            <span class="who">Lena Fischer</span>
+            <span class="lab sub">Human</span>
+            <span class="lab stamp">09:44</span>
+          </div>
+          <div class="say"><p>Approve it — we would lose the dashboards the board is about to look at.</p></div>
+          <div class="acts"><button class="tinybtn">Reply</button></div>
+        </article>
+
+      </div>
+
+      <div class="composer">
+        <input type="text" aria-label="Message #core-network" placeholder="Write to the channel, or @Atlas to hand it to an agent…">
+        <span class="lab hint">Enter to send</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- 3. DIRECT MESSAGE ---------- -->
+  <section class="screen" id="s-dm" aria-label="Direct message">
+    <div class="sheet">
+      <div class="head">
+        <div class="eyebrow"><span class="lab">Direct</span><span class="lab">· Claude · Opus 4.8</span><span class="lab" style="color:var(--live)">· working now</span></div>
+        <h1>🛰 Atlas</h1>
+        <p class="dek">Watches the network and answers questions about it. Only you can see this conversation.</p>
+        <hr class="rule">
+      </div>
+
+      <div class="stream">
+        <article class="entry">
+          <div class="gut"><span class="who">Vikas</span><span class="lab sub">You</span><span class="lab stamp">Yesterday 21:06</span></div>
+          <div class="say"><p>Before I sleep — anything on the edge routers I should know about?</p></div>
+        </article>
+
+        <article class="entry">
+          <div class="gut"><span class="who bot">🛰 Atlas</span><span class="lab sub">Claude · Opus 4.8</span><span class="lab stamp">21:06</span></div>
+          <div class="say">
+            <p>Three things, smallest first.</p>
+            <p><code>edge-lon-01</code> is at 71 % memory, climbing about 2 % a week since the June image. Not urgent, but it will matter in a month.</p>
+            <p><code>edge-fra-02</code> lost its BGP session with Colt twice in the evening. Both times it came back on its own inside a minute.</p>
+            <p>Two switches in DC-2 are still on the config from before the March change window. I can write the diff for you to read in the morning.</p>
+          </div>
+        </article>
+
+        <article class="entry">
+          <div class="gut"><span class="who">Vikas</span><span class="lab sub">You</span><span class="lab stamp">21:09</span></div>
+          <div class="say"><p>Write the diff. Don't push anything.</p></div>
+        </article>
+
+        <article class="entry">
+          <div class="gut"><span class="who bot">🛰 Atlas</span><span class="lab sub">Claude · Opus 4.8</span><span class="lab stamp">07:02</span></div>
+          <div class="say">
+            <p>Diff is ready and read-only. <span class="thin">42 lines across two switches — VLAN 310 was never added, and the NTP servers still point at the old pair.</span></p>
+            <p><button class="btn ghost" style="margin-top:6px">Read the diff</button></p>
+          </div>
+        </article>
+
+        <article class="entry">
+          <div class="gut"><span class="who bot">🛰 Atlas</span><span class="lab sub">Claude · Opus 4.8</span><span class="lab stamp">08:20</span></div>
+          <div class="say">
+            <p>Sweeping the other 40 switch configs now so you get the whole picture, not two examples. <span class="thin">About 6 minutes left.</span></p>
+          </div>
+        </article>
+      </div>
+
+      <div class="composer">
+        <input type="text" aria-label="Message Atlas" placeholder="Write to Atlas…">
+        <span class="lab hint">Enter to send</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- 4. AGENTS OVERVIEW ---------- -->
+  <section class="screen" id="s-agents" aria-label="Agents">
+    <div class="sheet wide">
+      <div class="head">
+        <div class="eyebrow"><span class="lab">Workspace</span></div>
+        <h1>Agents</h1>
+        <p class="dek">Six agents. Two are working right now, one is waiting on you.</p>
+        <hr class="rule">
+      </div>
+
+      <ul class="list">
+        <li class="row r-agent">
+          <div class="cellL"><span class="lab">Claude</span><br><span class="lab">Opus 4.8</span></div>
+          <div>
+            <p class="name"><span class="em">🛰</span>Atlas</p>
+            <p class="role">Watches the network and explains what changed</p>
+            <p class="job">Sweeping 42 switch configs for drift · started 08:20</p>
+          </div>
+          <div class="state live"><span class="dot"></span><span class="lab" style="color:inherit">Working</span></div>
+          <div class="acts"><button class="tinybtn" data-go="create">Edit</button></div>
+        </li>
+
+        <li class="row r-agent">
+          <div class="cellL"><span class="lab">Claude</span><br><span class="lab">Sonnet 5</span></div>
+          <div>
+            <p class="name"><span class="em">📒</span>Ledger</p>
+            <p class="role">Watches spending and asks before anything is bought</p>
+            <p class="job">Grafana Cloud renewal · $228.00 · asked you at 09:38</p>
+          </div>
+          <div class="state wait"><span class="dot"></span><span class="lab" style="color:inherit">Waiting on you</span></div>
+          <div class="acts"><button class="tinybtn" data-go="tasks">Review</button></div>
+        </li>
+
+        <li class="row r-agent">
+          <div class="cellL"><span class="lab">Codex</span><br><span class="lab">GPT-5.4</span></div>
+          <div>
+            <p class="name"><span class="em">📡</span>Beacon</p>
+            <p class="role">Probes every public endpoint on a two-minute loop</p>
+            <p class="job">18 endpoints green, 1 flapping · last pass 09:52</p>
+          </div>
+          <div class="state live"><span class="dot"></span><span class="lab" style="color:inherit">Working</span></div>
+          <div class="acts"><button class="tinybtn" data-go="create">Edit</button></div>
+        </li>
+
+        <li class="row r-agent">
+          <div class="cellL"><span class="lab">Codex</span><br><span class="lab">GPT-5.4 mini</span></div>
+          <div>
+            <p class="name"><span class="em">✍️</span>Scribe</p>
+            <p class="role">Turns meetings into notes and follow-ups</p>
+            <p class="job">Last: notes for Tuesday standup · 6 follow-ups · Tue 10:41</p>
+          </div>
+          <div class="state"><span class="dot"></span><span class="lab" style="color:inherit">Idle</span></div>
+          <div class="acts"><button class="tinybtn" data-go="create">Edit</button></div>
+        </li>
+
+        <li class="row r-agent">
+          <div class="cellL"><span class="lab">Claude</span><br><span class="lab">Opus 4.8</span></div>
+          <div>
+            <p class="name"><span class="em">🪶</span>Quill</p>
+            <p class="role">Writes runbooks and draws rack diagrams</p>
+            <p class="job">Last: rack diagram for DC-2 · Mon 16:02</p>
+          </div>
+          <div class="state"><span class="dot"></span><span class="lab" style="color:inherit">Paused by you</span></div>
+          <div class="acts"><button class="tinybtn" data-go="create">Edit</button></div>
+        </li>
+
+        <li class="row r-agent">
+          <div class="cellL"><span class="lab">Claude</span><br><span class="lab">Sonnet 5</span></div>
+          <div>
+            <p class="name"><span class="em">🔍</span>Sift</p>
+            <p class="role">Reads the noisy logs so you don't have to</p>
+            <p class="job">Last: 2,140 syslog lines to 3 things worth reading · 07:15</p>
+          </div>
+          <div class="state"><span class="dot"></span><span class="lab" style="color:inherit">Idle</span></div>
+          <div class="acts"><button class="tinybtn" data-go="create">Edit</button></div>
+        </li>
+      </ul>
+
+      <p style="margin-top:34px"><button class="btn" data-go="create">Create an agent</button></p>
+      <div class="spacer"></div>
+    </div>
+  </section>
+
+  <!-- ---------- 5. CREATE / EDIT AGENT ---------- -->
+  <section class="screen" id="s-create" aria-label="Create agent">
+    <div class="sheet">
+      <div class="head">
+        <div class="eyebrow"><span class="lab">Agent</span><span class="lab">· editing</span></div>
+        <h1>Atlas</h1>
+        <p class="dek">Everything here is written in plain words. Atlas reads it the same way you do.</p>
+        <hr class="rule">
+      </div>
+
+      <div class="sect">
+        <span class="lab">Identity</span>
+        <div class="field">
+          <span class="lab">Name<span class="desc">Shown on every message it sends.</span></span>
+          <div class="ctl"><input class="inp" value="Atlas" aria-label="Agent name"></div>
+        </div>
+        <div class="field">
+          <span class="lab">Face</span>
+          <div class="ctl emojirow" role="group" aria-label="Choose an emoji">
+            <button aria-pressed="true">🛰</button><button aria-pressed="false">📡</button>
+            <button aria-pressed="false">🧭</button><button aria-pressed="false">🔭</button>
+            <button aria-pressed="false">📈</button><button aria-pressed="false">🪧</button>
+            <button aria-pressed="false">🧰</button><button aria-pressed="false">🛠</button>
+          </div>
+        </div>
+        <div class="field">
+          <span class="lab">What it does<span class="desc">Plain words. No code.</span></span>
+          <div class="ctl">
+            <textarea class="inp" aria-label="What it does">Watch every switch, router and tunnel we own. When something changes, say what changed, where, and whether it was us or the carrier. Never touch a device — read only, always.</textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <span class="lab">Thinking</span>
+        <div class="field">
+          <span class="lab">App</span>
+          <div class="ctl seg" role="group" aria-label="Choose app">
+            <button aria-pressed="true">Claude</button><button aria-pressed="false">Codex</button>
+          </div>
+        </div>
+        <div class="field">
+          <span class="lab">Model<span class="desc">Bigger model, slower and dearer.</span></span>
+          <div class="ctl">
+            <select class="inp" aria-label="Model">
+              <option selected>Opus 4.8 — best reasoning</option>
+              <option>Sonnet 5 — fast, good enough for sweeps</option>
+              <option>Haiku 4.5 — cheapest</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <span class="lab">What it may do</span>
+        <div class="field" style="grid-template-columns:1fr;row-gap:0">
+          <div class="ctl">
+            <div class="sw"><span class="t">Read device configs<small>SSH, read-only, using the stored key</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="Read device configs"></button></div>
+            <div class="sw"><span class="t">Change device configs<small>Push to live hardware</small></span><button class="toggle" role="switch" aria-checked="false" aria-label="Change device configs"></button></div>
+            <div class="sw"><span class="t">Search the web<small>Vendor advisories, CVEs, docs</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="Search the web"></button></div>
+            <div class="sw"><span class="t">Open tickets<small>Carrier portals and our own tracker</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="Open tickets"></button></div>
+            <div class="sw"><span class="t">Spend money<small>Anything with a card attached</small></span><button class="toggle" role="switch" aria-checked="false" aria-label="Spend money"></button></div>
+            <div class="sw"><span class="t">Start on its own<small>Act without being asked, on a schedule</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="Start on its own"></button></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <span class="lab">When it must ask you</span>
+        <div class="field">
+          <span class="lab">Money</span>
+          <div class="ctl"><input class="inp num" value="Ask before spending over $50.00" aria-label="Spend rule"></div>
+        </div>
+        <div class="field">
+          <span class="lab">Anything else</span>
+          <div class="ctl">
+            <textarea class="inp" aria-label="Other approval rules">Ask before opening a ticket with a carrier. Ask before messaging anyone outside #core-network. Never touch production between 22:00 and 06:00 without asking twice.</textarea>
+          </div>
+        </div>
+        <div class="field">
+          <span class="lab">If you don't answer</span>
+          <div class="ctl">
+            <select class="inp" aria-label="Timeout behaviour">
+              <option selected>Wait forever — do nothing</option>
+              <option>Give up after 4 hours and tell me</option>
+              <option>Ask Priya instead after 1 hour</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <span class="lab">Skills</span>
+        <p class="note" style="margin:14px 0 4px">Named instructions Atlas follows when the moment fits. Write them once; it uses them forever.</p>
+
+        <div class="skill">
+          <div class="head2"><h4>Config drift sweep</h4><span class="lab">Used 41 times</span></div>
+          <p>Pull the running config from every device, compare it against the version in Git, and report only real differences — ignore timestamps, counters and banners.</p>
+        </div>
+        <div class="skill">
+          <div class="head2"><h4>Carrier escalation</h4><span class="lab">Used 7 times</span></div>
+          <p>When a link fails and the fault is on the carrier side, gather the flap timestamps, our interface counters, and the last clean traceroute, then open a ticket with that evidence attached.</p>
+        </div>
+        <div class="skill">
+          <div class="head2"><h4>Change window brief</h4><span class="lab">Used 12 times</span></div>
+          <p>The night before a change window, write one page: what is changing, which sites are affected, how to roll back, and who to call. No jargon — Priya reads it too.</p>
+        </div>
+        <div class="skill">
+          <div class="head2"><h4>Speak plainly</h4><span class="lab">Always on</span></div>
+          <p>Answer in short sentences. Lead with the thing that matters. Never use a term you haven't explained once.</p>
+        </div>
+
+        <div class="drop">
+          <b>Drop a skill file here</b> — or <button class="btn bare" style="padding:0">choose a file</button><br>
+          <span class="lab">.md or .txt · up to 200 kb</span>
+        </div>
+      </div>
+
+      <div class="sect" style="border-top:1px solid var(--line); padding-top:26px; display:flex; gap:22px; align-items:center; flex-wrap:wrap">
+        <button class="btn" data-go="agents">Save Atlas</button>
+        <button class="btn bare" data-go="agents">Cancel</button>
+        <span class="lab" style="margin-left:auto">Saved as agents/atlas.md</span>
+      </div>
+      <div class="spacer"></div>
+    </div>
+  </section>
+
+  <!-- ---------- 6. TASKS & APPROVALS ---------- -->
+  <section class="screen" id="s-tasks" aria-label="Tasks">
+    <div class="sheet wide">
+      <div class="head">
+        <div class="eyebrow"><span class="lab">Workspace</span></div>
+        <h1>Tasks</h1>
+        <p class="dek">Two of these need a word from you. Everything else is running or finished.</p>
+        <hr class="rule">
+      </div>
+
+      <div class="sect" style="margin-top:34px">
+        <span class="lab" style="color:var(--wait)">Waiting on you · 2</span>
+        <ul class="list">
+          <li class="row r-task">
+            <div class="cellL"><span class="lab">📒 Ledger</span><br><span class="lab">09:38</span></div>
+            <div>
+              <p class="name" style="font-size:17px">Renew Grafana Cloud Pro</p>
+              <p class="role">$228.00 for 12 months, card ending 4417. Renews Friday. Above your $50 limit.</p>
+              <p class="job"><button class="btn" style="padding:6px 16px;font-size:13px">Approve</button> <button class="btn bare" style="margin-left:12px">Reject</button></p>
+            </div>
+            <div class="state wait"><span class="dot"></span><span class="lab" style="color:inherit">Your call</span></div>
+          </li>
+          <li class="row r-task">
+            <div class="cellL"><span class="lab">🛰 Atlas</span><br><span class="lab">08:57</span></div>
+            <div>
+              <p class="name" style="font-size:17px">Open a ticket with Colt about FRA-02</p>
+              <p class="role">14 flaps since 06:40, all carrier-side. Evidence is gathered and attached.</p>
+              <p class="job"><button class="btn" style="padding:6px 16px;font-size:13px">Approve</button> <button class="btn bare" style="margin-left:12px">Reject</button></p>
+            </div>
+            <div class="state wait"><span class="dot"></span><span class="lab" style="color:inherit">Your call</span></div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sect">
+        <span class="lab">Running · 2</span>
+        <ul class="list">
+          <li class="row r-task">
+            <div class="cellL"><span class="lab">🛰 Atlas</span><br><span class="lab">08:20</span></div>
+            <div>
+              <p class="name" style="font-size:17px">Sweep 42 switch configs for drift</p>
+              <p class="role">36 of 42 done · 4 differences found so far · about 6 minutes left</p>
+            </div>
+            <div class="state live"><span class="dot"></span><span class="lab" style="color:inherit">Running</span></div>
+          </li>
+          <li class="row r-task">
+            <div class="cellL"><span class="lab">📡 Beacon</span><br><span class="lab">Always</span></div>
+            <div>
+              <p class="name" style="font-size:17px">Probe 18 public endpoints</p>
+              <p class="role">Two-minute loop since 14 May · 12,904 passes · 3 alerts raised</p>
+            </div>
+            <div class="state live"><span class="dot"></span><span class="lab" style="color:inherit">Running</span></div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sect">
+        <span class="lab">Done today · 4</span>
+        <ul class="list">
+          <li class="row r-task">
+            <div class="cellL"><span class="lab">🔍 Sift</span><br><span class="lab">07:15</span></div>
+            <div>
+              <p class="name" style="font-size:17px">Read overnight syslog</p>
+              <p class="role">2,140 lines down to 3 worth reading: a failed PSU in DC-1, one flapping SFP, and a duplicate IP on VLAN 88.</p>
+              <p class="job"><button class="btn bare" style="padding:0">Read the summary</button></p>
+            </div>
+            <div class="state"><span class="dot" style="background:var(--live)"></span><span class="lab" style="color:inherit">Finished</span></div>
+          </li>
+          <li class="row r-task">
+            <div class="cellL"><span class="lab">🛰 Atlas</span><br><span class="lab">07:02</span></div>
+            <div>
+              <p class="name" style="font-size:17px">Write the DC-2 config diff</p>
+              <p class="role">42 lines across two switches. Read-only, nothing pushed, as you asked.</p>
+              <p class="job"><button class="btn bare" style="padding:0">Read the diff</button></p>
+            </div>
+            <div class="state"><span class="dot" style="background:var(--live)"></span><span class="lab" style="color:inherit">Finished</span></div>
+          </li>
+          <li class="row r-task">
+            <div class="cellL"><span class="lab">✍️ Scribe</span><br><span class="lab">Tue 10:41</span></div>
+            <div>
+              <p class="name" style="font-size:17px">Notes from Tuesday standup</p>
+              <p class="role">6 follow-ups, 2 assigned to you, 1 with no owner.</p>
+            </div>
+            <div class="state"><span class="dot" style="background:var(--live)"></span><span class="lab" style="color:inherit">Finished</span></div>
+          </li>
+          <li class="row r-task">
+            <div class="cellL"><span class="lab">📒 Ledger</span><br><span class="lab">Mon 18:30</span></div>
+            <div>
+              <p class="name" style="font-size:17px">Cancel the unused Datadog seats</p>
+              <p class="role">You approved 4 seats at $69 each. Saved $276 a month.</p>
+            </div>
+            <div class="state"><span class="dot" style="background:var(--live)"></span><span class="lab" style="color:inherit">Finished</span></div>
+          </li>
+        </ul>
+      </div>
+      <div class="spacer"></div>
+    </div>
+  </section>
+
+  <!-- ---------- 7. ACTIVITY ---------- -->
+  <section class="screen" id="s-activity" aria-label="Activity">
+    <div class="sheet wide">
+      <div class="head">
+        <div class="eyebrow"><span class="lab">Workspace</span></div>
+        <h1>Activity</h1>
+        <p class="dek">Everything anyone did — person or agent — in the order it happened.</p>
+        <hr class="rule">
+      </div>
+
+      <ul class="inline-list" style="margin:30px 0 6px; gap:56px">
+        <li class="stat"><b class="num">218</b><span class="lab">Actions this week</span></li>
+        <li class="stat"><b class="num">19</b><span class="lab">Asked first</span></li>
+        <li class="stat"><b class="num">2</b><span class="lab">You refused</span></li>
+        <li class="stat"><b class="num">$276</b><span class="lab">Saved this month</span></li>
+      </ul>
+
+      <div class="sect">
+        <span class="lab">Today · Wednesday 29 July</span>
+        <ul class="list">
+          <li class="row r-act"><div class="cellL"><span class="lab">09:52</span><br><span class="lab">📡 Beacon</span></div>
+            <div><p class="role" style="color:var(--ink)">Finished probe pass 12,904 — 18 endpoints, 1 flapping.</p></div></li>
+          <li class="row r-act"><div class="cellL"><span class="lab">09:44</span><br><span class="lab">Lena Fischer</span></div>
+            <div><p class="role" style="color:var(--ink)">Wrote in #core-network: “Approve it — we would lose the dashboards…”</p></div></li>
+          <li class="row r-act"><div class="cellL"><span class="lab">09:38</span><br><span class="lab">📒 Ledger</span></div>
+            <div><p class="role" style="color:var(--ink)">Stopped and asked before spending <span class="num">$228.00</span> on Grafana Cloud. <span class="lab" style="color:var(--wait)">Still waiting</span></p></div></li>
+          <li class="row r-act"><div class="cellL"><span class="lab">09:31</span><br><span class="lab">📡 Beacon</span></div>
+            <div><p class="role" style="color:var(--ink)">Raised a flapping-tunnel alert for edge-fra-02 without being asked.</p></div></li>
+          <li class="row r-act"><div class="cellL"><span class="lab">09:16</span><br><span class="lab">🛰 Atlas</span></div>
+            <div><p class="role" style="color:var(--ink)">Answered Priya with a three-vendor cost comparison. Read 90 days of telemetry.</p></div></li>
+          <li class="row r-act"><div class="cellL"><span class="lab">08:57</span><br><span class="lab">🛰 Atlas</span></div>
+            <div><p class="role" style="color:var(--ink)">Asked to open a carrier ticket. <span class="lab" style="color:var(--wait)">Still waiting</span></p></div></li>
+          <li class="row r-act"><div class="cellL"><span class="lab">08:20</span><br><span class="lab">🛰 Atlas</span></div>
+            <div><p class="role" style="color:var(--ink)">Started a config drift sweep across 42 switches. Read-only.</p></div></li>
+          <li class="row r-act"><div class="cellL"><span class="lab">07:15</span><br><span class="lab">🔍 Sift</span></div>
+            <div><p class="role" style="color:var(--ink)">Reduced 2,140 syslog lines to 3 findings.</p></div></li>
+          <li class="row r-act"><div class="cellL"><span class="lab">07:02</span><br><span class="lab">🛰 Atlas</span></div>
+            <div><p class="role" style="color:var(--ink)">Wrote the DC-2 config diff. Nothing was pushed.</p></div></li>
+        </ul>
+      </div>
+
+      <div class="sect">
+        <span class="lab">Yesterday · Tuesday 28 July</span>
+        <ul class="list">
+          <li class="row r-act"><div class="cellL"><span class="lab">21:09</span><br><span class="lab">Vikas</span></div>
+            <div><p class="role" style="color:var(--ink)">Told Atlas to write the diff and push nothing.</p></div></li>
+          <li class="row r-act"><div class="cellL"><span class="lab">18:30</span><br><span class="lab">📒 Ledger</span></div>
+            <div><p class="role" style="color:var(--ink)">Cancelled 4 Datadog seats after you approved. <span class="num">$276</span> a month saved.</p></div></li>
+          <li class="row r-act"><div class="cellL"><span class="lab">16:44</span><br><span class="lab">Vikas</span></div>
+            <div><p class="role" style="color:var(--ink)">Refused: Quill wanted to publish the runbook to the public wiki. <span class="lab">Rejected</span></p></div></li>
+          <li class="row r-act"><div class="cellL"><span class="lab">16:02</span><br><span class="lab">🪶 Quill</span></div>
+            <div><p class="role" style="color:var(--ink)">Drew the DC-2 rack diagram from the port map.</p></div></li>
+          <li class="row r-act"><div class="cellL"><span class="lab">10:41</span><br><span class="lab">✍️ Scribe</span></div>
+            <div><p class="role" style="color:var(--ink)">Wrote standup notes and assigned 6 follow-ups.</p></div></li>
+        </ul>
+      </div>
+      <div class="spacer"></div>
+    </div>
+  </section>
+
+  <!-- ---------- 8. SETTINGS ---------- -->
+  <section class="screen" id="s-settings" aria-label="Settings">
+    <div class="sheet">
+      <div class="head">
+        <div class="eyebrow"><span class="lab">Workspace</span></div>
+        <h1>Settings</h1>
+        <p class="dek">Everything here changes how Cloud9 behaves on this machine only.</p>
+        <hr class="rule">
+      </div>
+
+      <div class="sect">
+        <span class="lab">Appearance</span>
+        <div class="field">
+          <span class="lab">Theme</span>
+          <div class="ctl seg" role="group" aria-label="Theme">
+            <button data-theme-set="light" aria-pressed="true">Light</button>
+            <button data-theme-set="dark" aria-pressed="false">Dark</button>
+            <button data-theme-set="system" aria-pressed="false">Match system</button>
+          </div>
+        </div>
+        <div class="field">
+          <span class="lab">Text size</span>
+          <div class="ctl seg" role="group" aria-label="Text size">
+            <button aria-pressed="false">Small</button><button aria-pressed="true">Comfortable</button><button aria-pressed="false">Large</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <span class="lab">New agents start with</span>
+        <div class="field">
+          <span class="lab">App</span>
+          <div class="ctl seg" role="group" aria-label="Default app">
+            <button aria-pressed="true">Claude</button><button aria-pressed="false">Codex</button>
+          </div>
+        </div>
+        <div class="field">
+          <span class="lab">Model</span>
+          <div class="ctl"><select class="inp" aria-label="Default model">
+            <option selected>Sonnet 5 — fast and cheap</option><option>Opus 4.8 — best reasoning</option><option>GPT-5.4</option>
+          </select></div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <span class="lab">Quiet hours</span>
+        <div class="field">
+          <span class="lab">Don't interrupt<span class="desc">Agents keep working, but nothing pings you.</span></span>
+          <div class="ctl" style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+            <input class="inp num" style="width:96px" value="22:00" aria-label="Quiet from">
+            <span class="lab">until</span>
+            <input class="inp num" style="width:96px" value="06:30" aria-label="Quiet until">
+            <span class="lab">Mon–Fri</span>
+          </div>
+        </div>
+        <div class="field" style="grid-template-columns:1fr">
+          <div class="ctl">
+            <div class="sw"><span class="t">Let urgent things through<small>Anything an agent marks as urgent still pings</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="Urgent through quiet hours"></button></div>
+            <div class="sw"><span class="t">Hold approvals until morning<small>Money questions wait, they don't wake you</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="Hold approvals"></button></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <span class="lab">Notifications</span>
+        <div class="field" style="grid-template-columns:1fr">
+          <div class="ctl">
+            <div class="sw"><span class="t">An agent needs your approval<small>Always, unless quiet hours are on</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="Approval notifications"></button></div>
+            <div class="sw"><span class="t">A background job finishes<small>Only the ones you started yourself</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="Job finished"></button></div>
+            <div class="sw"><span class="t">Someone mentions you<small>Human or agent</small></span><button class="toggle" role="switch" aria-checked="true" aria-label="Mentions"></button></div>
+            <div class="sw"><span class="t">Every message in every channel<small>Loud. Most people leave this off.</small></span><button class="toggle" role="switch" aria-checked="false" aria-label="All messages"></button></div>
+            <div class="sw"><span class="t">Play a sound<small></small></span><button class="toggle" role="switch" aria-checked="false" aria-label="Sound"></button></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <span class="lab">Where agents are kept</span>
+        <div class="field">
+          <span class="lab">Folder<span class="desc">One plain text file per agent. Back it up like any other folder.</span></span>
+          <div class="ctl" style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap">
+            <code style="font-family:var(--mono);font-size:12.5px">~/Documents/Cloud9/agents</code>
+            <button class="btn bare" style="padding:0">Change folder</button>
+            <button class="btn bare" style="padding:0">Open in Finder</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <span class="lab">Connected apps</span>
+        <div class="conn">
+          <div><h3>Claude app</h3><p>vikas@nine.dev · Opus 4.8, Sonnet 5, Haiku 4.5 · used by 4 agents</p></div>
+          <span class="tick"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.6l4 4 8-9"/></svg>Signed in</span>
+        </div>
+        <div class="conn">
+          <div><h3>Codex app</h3><p>vikas@nine.dev · GPT-5.4, GPT-5.4 mini · used by 2 agents</p></div>
+          <span class="tick"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.6l4 4 8-9"/></svg>Signed in</span>
+        </div>
+      </div>
+
+      <div class="sect">
+        <span class="lab" style="color:var(--danger)">Danger zone</span>
+        <div class="field">
+          <span class="lab">Stop everything<span class="desc">Every agent pauses mid-job. Nothing is deleted.</span></span>
+          <div class="ctl"><button class="btn ghost">Pause all agents</button></div>
+        </div>
+        <div class="field">
+          <span class="lab">Delete workspace<span class="desc">Agents, channels and history. This cannot be undone.</span></span>
+          <div class="ctl"><button class="btn danger">Delete everything</button></div>
+        </div>
+      </div>
+      <div class="spacer"></div>
+    </div>
+  </section>
+
+  </main>
+</div>
+
+<!-- ---------- 9. QUICK CHAT POPUP ---------- -->
+<div class="scrim" id="scrim" role="dialog" aria-modal="true" aria-label="Quick chat">
+  <div class="pop">
+    <div class="top">
+      <span class="lab">Ask</span>
+      <input type="text" id="popInput" placeholder="Ask anything, or name an agent…" aria-label="Quick chat">
+      <span class="kbd">Esc</span>
+    </div>
+    <div class="body">
+      <p class="lab" style="padding-bottom:6px">Send to</p>
+      <div class="opt" tabindex="0"><span class="n">🛰 Atlas</span><span class="d">Network · working now</span></div>
+      <div class="opt" tabindex="0"><span class="n">📒 Ledger</span><span class="d">Spend · waiting on you</span></div>
+      <div class="opt" tabindex="0"><span class="n">🔍 Sift</span><span class="d">Logs · idle</span></div>
+      <div class="opt" tabindex="0"><span class="n"># core-network</span><span class="d">Channel · 4 people</span></div>
+      <p class="lab" style="padding:14px 0 6px">Recent</p>
+      <div class="opt" tabindex="0"><span class="n">“Is FRA-02 still flapping?”</span><span class="d">Atlas · 09:33</span></div>
+      <div class="opt" tabindex="0"><span class="n">“What did we spend on monitoring this month?”</span><span class="d">Ledger · yesterday</span></div>
+      <div class="foot">
+        <span class="lab">↑↓ Move</span><span class="lab">Enter Send</span><span class="lab">Ctrl K Close</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------- screens ---------- */
+  var screens = ["welcome","chat","dm","agents","create","tasks","activity","settings"];
+  function show(id, src){
+    if(screens.indexOf(id) < 0) return;
+    screens.forEach(function(s){
+      var el = document.getElementById("s-"+s);
+      if(el) el.classList.toggle("on", s === id);
+    });
+    var mark = (src && src.classList.contains("nav")) ? src
+             : document.querySelector('.nav[data-go="' + id + '"]');
+    document.querySelectorAll(".nav").forEach(function(n){
+      n.setAttribute("aria-current", n === mark ? "true" : "false");
+    });
+    window.scrollTo(0,0);
+  }
+  document.addEventListener("click", function(e){
+    var t = e.target.closest("[data-go]");
+    if(t){ e.preventDefault(); show(t.getAttribute("data-go"), t); }
+  });
+
+  /* ---------- theme ---------- */
+  var root = document.documentElement, label = document.getElementById("themeNow");
+  function setTheme(mode){
+    if(mode === "system"){ root.removeAttribute("data-theme"); }
+    else { root.setAttribute("data-theme", mode); }
+    if(label) label.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+    document.querySelectorAll("[data-theme-set]").forEach(function(b){
+      b.setAttribute("aria-pressed", b.getAttribute("data-theme-set") === mode ? "true" : "false");
+    });
+  }
+  document.getElementById("themeBtn").addEventListener("click", function(){
+    var now = root.getAttribute("data-theme");
+    setTheme(now === "dark" ? "light" : now === "light" ? "system" : "dark");
+  });
+  document.querySelectorAll("[data-theme-set]").forEach(function(b){
+    b.addEventListener("click", function(){ setTheme(b.getAttribute("data-theme-set")); });
+  });
+
+  /* ---------- toggles & segmented groups ---------- */
+  document.querySelectorAll(".toggle").forEach(function(t){
+    t.addEventListener("click", function(){
+      t.setAttribute("aria-checked", t.getAttribute("aria-checked") === "true" ? "false" : "true");
+    });
+  });
+  document.querySelectorAll(".seg, .emojirow").forEach(function(g){
+    if(g.querySelector("[data-theme-set]")) return;
+    g.addEventListener("click", function(e){
+      var b = e.target.closest("button");
+      if(!b || !g.contains(b)) return;
+      g.querySelectorAll("button").forEach(function(x){ x.setAttribute("aria-pressed","false"); });
+      b.setAttribute("aria-pressed","true");
+    });
+  });
+
+  /* ---------- welcome: connect Codex ---------- */
+  var cc = document.getElementById("connectCodex");
+  if(cc) cc.addEventListener("click", function(){
+    document.getElementById("codexSlot").innerHTML =
+      '<span class="tick"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.6l4 4 8-9"/></svg>Signed in · vikas@nine.dev</span>';
+    document.getElementById("codexSub").textContent = "GPT-5.4, GPT-5.4 mini · ready";
+    var b = document.getElementById("enterBtn");
+    b.disabled = false;
+    b.setAttribute("data-go","chat");
+    document.getElementById("enterNote").textContent = "Both apps connected. Nothing else to set up.";
+  });
+
+  /* ---------- approval ---------- */
+  function settle(text, refused){
+    var row = document.getElementById("askRow");
+    row.innerHTML = '<span class="settled' + (refused ? " no" : "") + '">' + text + '</span>';
+  }
+  var ap = document.getElementById("approveBtn"), rj = document.getElementById("rejectBtn");
+  if(ap) ap.addEventListener("click", function(){ settle("Approved by Vikas · $228.00 · just now"); });
+  if(rj) rj.addEventListener("click", function(){ settle("Rejected by Vikas · nothing was spent", true); });
+
+  /* ---------- quick chat ---------- */
+  var scrim = document.getElementById("scrim"), popInput = document.getElementById("popInput");
+  function openPop(){ scrim.classList.add("on"); popInput.focus(); }
+  function closePop(){ scrim.classList.remove("on"); }
+  document.getElementById("openPop").addEventListener("click", openPop);
+  scrim.addEventListener("click", function(e){ if(e.target === scrim) closePop(); });
+  document.addEventListener("keydown", function(e){
+    if((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")){
+      e.preventDefault();
+      scrim.classList.contains("on") ? closePop() : openPop();
+    }
+    if(e.key === "Escape" && scrim.classList.contains("on")) closePop();
+  });
+
+  setTheme("light");
+})();
+</script>
+</body>
+</html>

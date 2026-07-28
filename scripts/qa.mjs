@@ -1,11 +1,14 @@
 import { chromium } from "playwright";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const SHOTS = new URL("../docs/qa", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 fs.mkdirSync(SHOTS, { recursive: true });
 const RELAY_PORT = process.env.CLOUD9_RELAY_PORT ?? "8787";
 const UI = `http://127.0.0.1:${process.env.CLOUD9_UI_PORT ?? "4173"}/?relay=ws://127.0.0.1:${RELAY_PORT}`;
 const results = [];
+let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
 
 function ok(name, pass, detail = "") {
@@ -20,6 +23,7 @@ try {
   // ---------- owner context ----------
   const owner = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await owner.newPage();
+  failShot = page;
   page.on("console", m => { if (m.type() === "error") consoleErrors.push("owner: " + m.text()); });
   page.on("pageerror", e => consoleErrors.push("owner pageerror: " + e.message));
 
@@ -35,17 +39,54 @@ try {
   // create agent
   await page.click('button[title="New agent"]');
   await page.fill('.panel input[placeholder="Scout"]', "Scout");
-  await page.fill(".panel textarea", "You research travel, villas, flights and hotels for trips, always with prices");
+  // selector updated (round 2): the create panel now holds more than one textarea
+  // (the skills form), so the personality box is addressed by its own class.
+  await page.fill(".panel textarea.persona-input", "You research travel, villas, flights and hotels for trips, always with prices");
   // provider picker (FR-AG-005): Claude default, Codex offered
   const pickerOptions = await page.$$eval(".panel select.providerpick option", os => os.map(o => o.value));
   const pickerValue = await page.inputValue(".panel select.providerpick");
   ok("agent create offers a provider picker (Claude default)",
     pickerOptions.join(",") === "claude,codex" && pickerValue === "claude",
     `${pickerOptions.join("/")} value=${pickerValue}`);
+
+  // ---- feedback round 1, his 5+6: a model picker in CREATE ----
+  await page.waitForSelector(".panel select.modelpick");
+  const createModels = await page.$$eval(".panel select.modelpick option", os => os.map(o => o.value));
+  const createModel = await page.inputValue(".panel select.modelpick");
+  ok("agent create offers a model picker with a model already chosen",
+    createModels.length > 0 && !!createModel && createModels.includes(createModel),
+    `${createModels.join("/")} value=${createModel}`);
+  const createModelNames = await page.$$eval(".panel select.modelpick option", os => os.map(o => o.textContent.trim()));
+  ok("models are shown by friendly name, not raw ids",
+    createModelNames.every(n => n && !/^claude-/.test(n)), createModelNames.join("/"));
+
+  // ---- his 9: the skills section lives in the create modal too ----
+  ok("agent create has a Skills section with a way to write and to upload one",
+    (await page.locator(".panel .skills .skill-add").count()) === 1 &&
+    (await page.locator(".panel .skills .skill-upload").count()) === 1);
   await page.screenshot({ path: `${SHOTS}/02-create-agent.png` });
   await page.click(".panel .foot >> text=Create agent");
   await page.waitForSelector(".sidebar >> text=Scout");
   ok("agent created and listed", true);
+
+  // the sidebar row must say which app AND which model the agent runs on
+  const scoutSub = (await page.textContent('.sidebar .agentrow[data-agent="Scout"] .agent-sub')).trim();
+  ok("agent row shows the app and the model it runs on",
+    /Claude/.test(scoutSub) && scoutSub.split("·").length >= 2, scoutSub);
+
+  // ---- his 15: clicking an agent opens the direct conversation, never a dead click ----
+  await page.click('.sidebar .agentrow[data-agent="Scout"] .agentmain');
+  await page.waitForSelector('.chathead .ch-title .n:text-is("Scout")', { timeout: 15000 });
+  ok("clicking an agent opens the direct conversation with it", true);
+  // clicking it a second time must land in the SAME conversation, not a new one
+  const scoutRowsBefore = await page.locator('.sidebar .agent-row .agent-name:text-is("Scout")').count();
+  await page.click(".sidebar >> text=# general");
+  await page.click('.sidebar .agentrow[data-agent="Scout"] .agentmain');
+  await page.waitForSelector('.chathead .ch-title .n:text-is("Scout")', { timeout: 15000 });
+  await page.waitForTimeout(400);
+  const scoutRowsAfter = await page.locator('.sidebar .agent-row .agent-name:text-is("Scout")').count();
+  ok("that conversation is found, not created a second time",
+    scoutRowsAfter === scoutRowsBefore, `${scoutRowsBefore} then ${scoutRowsAfter} rows named Scout`);
 
   // create channel with agent
   await page.click('button[title="New channel"]');
@@ -107,11 +148,69 @@ try {
   ok("settings shows live Claude + Codex status", !!claudeState && !!codexState,
     `claude: ${claudeState} | codex: ${codexState}`);
 
-  const buttons = await page.$$eval(".harnesscard .primary, .harnesscard .linkbtn", bs => bs.map(b => b.textContent.trim()));
-  ok("settings offers both sign-in buttons and the API-key fallback",
-    buttons.some(b => /with Claude/.test(b)) && buttons.some(b => /with Codex/.test(b)) &&
-    buttons.filter(b => /API key instead/.test(b)).length === 2,
-    buttons.join(" · "));
+  // ---- his 1 + 11: the sign-in card says what is TRUE for its state ----
+  // Replaces the old "both sign-in buttons are present" check: when a harness is
+  // already signed in the contract forbids a sign-in button at all, so the check
+  // is now per-card and state-aware (stricter, never weaker).
+  for (const [h, title] of [["claude", "Claude"], ["codex", "Codex"]]) {
+    const card = page.locator(`.harnesscard[data-harness="${h}"]`);
+    const text = (await card.innerText()).replace(/\s+/g, " ").trim();
+    const signedIn = (await card.locator(".signedinline").count()) === 1;
+    const waiting = (await card.locator(".waitingline").count()) === 1;
+    const failed = (await card.locator(".problemline").count()) === 1;
+    const signInBtn = await card.locator(`.primary:has-text("Sign in with ${title}")`).count();
+    const states = [signedIn, waiting, failed].filter(Boolean).length;
+
+    if (signedIn) {
+      const tick = await card.locator(".signedinline .tick").count();
+      const switcher = await card.locator(".signedinline .switchacct").count();
+      ok(`${title} card, signed in: green tick, an account line and a quiet Switch account`,
+        tick === 1 && switcher === 1 && signInBtn === 0 && !/again/i.test(text), text.slice(0, 120));
+    } else if (waiting) {
+      const spinner = await card.locator(".waitingline .spinner").count();
+      const cancel = await card.locator('.waitingline button:has-text("Cancel")').count();
+      ok(`${title} card, working: spinner, "Waiting for you in the browser" and a Cancel`,
+        spinner === 1 && cancel === 1 && /waiting for you in the browser/i.test(text), text.slice(0, 120));
+    } else if (failed) {
+      const retry = await card.locator('.problemline button:has-text("Try again")').count();
+      ok(`${title} card, failed: the problem in plain words and a Try again`,
+        retry === 1 && (await card.locator(".problemtext").innerText()).trim().length > 0, text.slice(0, 120));
+    } else {
+      ok(`${title} card, not signed in: one "Sign in with ${title}" button and no "again"`,
+        signInBtn === 1 && !/again/i.test(text), text.slice(0, 120));
+    }
+    ok(`${title} card shows exactly one state`, states <= 1, `signedIn=${signedIn} waiting=${waiting} failed=${failed}`);
+  }
+  const fallbacks = await page.$$eval(".harnesscard .linkbtn", bs => bs.map(b => b.textContent.trim()));
+  ok("settings still offers the API-key fallback on both cards",
+    fallbacks.filter(b => /API key instead/.test(b)).length === 2, fallbacks.join(" · "));
+
+  // ---- his 13: settings has real, changeable things ----
+  const settingsPanel = page.locator(".panel.settingspanel");
+  const themeButtons = await settingsPanel.locator("#set-look .segmented button").count();
+  await settingsPanel.locator('#set-look .segmented button:has-text("Dark")').click();
+  const wentDark = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
+  await settingsPanel.locator('#set-look .segmented button:has-text("Light")').click();
+  const wentLight = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
+  ok("settings can actually change the look (light / dark / match this computer)",
+    themeButtons === 3 && wentDark === "dark" && wentLight === "light", `${wentDark} then ${wentLight}`);
+  await settingsPanel.locator('#set-look .segmented button:has-text("Match this computer")').click();
+
+  const defaultModels = await settingsPanel.locator("#set-agents select.defaultmodelpick option").count();
+  ok("settings sets which app + model new agents start on",
+    (await settingsPanel.locator("#set-agents select.defaultproviderpick").count()) === 1 && defaultModels > 0,
+    `${defaultModels} models`);
+
+  await settingsPanel.locator('#set-notify .switchrow:has-text("Quiet hours") input').check();
+  const quietEnabled = await settingsPanel.locator('#set-notify input[type="time"]').first().isEnabled();
+  ok("settings has notifications on/off and quiet hours that switch on",
+    (await settingsPanel.locator('#set-notify .switchrow:has-text("new messages") input').count()) === 1 && quietEnabled);
+  await settingsPanel.locator('#set-notify .switchrow:has-text("Quiet hours") input').uncheck();
+
+  ok("settings tells you where agent files live and offers a Danger zone",
+    (await settingsPanel.locator("#set-files .pathbox").count()) === 1 &&
+    (await settingsPanel.locator('#set-danger button:has-text("Remove Claude key")').count()) === 1 &&
+    (await settingsPanel.locator("#set-danger select.removepersonpick").count()) === 1);
 
   // the policy disclosure (FR-PC-004) stays visible
   await page.waitForSelector("text=Heads up");
@@ -144,7 +243,69 @@ try {
   await page.waitForSelector(".panel select.providerpick");
   const editPicker = await page.$$eval(".panel select.providerpick option", os => os.map(o => o.value));
   ok("agent edit offers a provider picker", editPicker.join(",") === "claude,codex", editPicker.join("/"));
-  await page.click('.overlay .foot button:has-text("Cancel")');
+
+  // ---- his 5+6: the model picker is in EDIT too, already holding a model ----
+  await page.waitForSelector(".panel select.modelpick");
+  const editModels = await page.$$eval(".panel select.modelpick option", os => os.map(o => o.value));
+  const editModel = await page.inputValue(".panel select.modelpick");
+  ok("agent edit offers a model picker with this agent's model selected",
+    editModels.length > 0 && !!editModel && editModels.includes(editModel),
+    `${editModels.join("/")} value=${editModel}`);
+
+  // ---- his 9: write a skill, edit it, upload one from a file, delete it ----
+  // Names carry a per-run stamp so the check is exact even when the relay's
+  // database still holds agents from an earlier run.
+  const stamp = Date.now().toString(36).slice(-5);
+  const skillA = `Villa shortlist ${stamp}`;
+  const skillB = `Villa shortlist ${stamp} v2`;
+  const skillC = `Flight watch ${stamp}`;
+
+  await page.click(".panel .skills .skill-add");
+  await page.fill(".panel .skill-name-input", skillA);
+  await page.fill(".panel .skill-desc-input", "Picks three villas and says why");
+  await page.fill(".panel .skill-instructions-input", "Read the villa notes, keep the three best under budget, and give a one-line reason for each.");
+  await page.click(".panel .skills .skill-save");
+  await page.waitForSelector(`.panel .skillrow[data-skill="${skillA}"]`);
+  ok("a skill can be written in plain words and saved", true);
+
+  await page.click(`.panel .skillrow[data-skill="${skillA}"] .skill-edit`);
+  await page.fill(".panel .skill-name-input", skillB);
+  await page.click(".panel .skills .skill-save");
+  await page.waitForSelector(`.panel .skillrow[data-skill="${skillB}"]`);
+  ok("a saved skill can be edited",
+    (await page.locator(`.panel .skillrow[data-skill="${skillA}"]`).count()) === 0);
+
+  const skillFile = path.join(os.tmpdir(), `${skillC}.md`);
+  fs.writeFileSync(skillFile, "Check the fare every morning and tell me when it drops below 8k.");
+  await page.setInputFiles(".panel .skills .skill-upload", skillFile);
+  await page.waitForSelector(`.panel .skillrow[data-skill="${skillC}"]`);
+  await page.click(`.panel .skillrow[data-skill="${skillC}"] .skill-edit`);
+  await page.waitForSelector(".panel .skill-instructions-input");
+  const uploadedInstructions = await page.inputValue(".panel .skill-instructions-input");
+  const uploadedName = await page.inputValue(".panel .skill-name-input");
+  ok("a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
+    /fare every morning/.test(uploadedInstructions) && uploadedName === skillC,
+    `${uploadedName} :: ${uploadedInstructions.slice(0, 50)}`);
+  await page.click(".panel .skills .skillformbtns button:has-text('Cancel')");
+
+  await page.click(`.panel .skillrow[data-skill="${skillC}"] .skill-delete`);
+  ok("a skill can be deleted",
+    (await page.locator(`.panel .skillrow[data-skill="${skillC}"]`).count()) === 0 &&
+    (await page.locator(`.panel .skillrow[data-skill="${skillB}"]`).count()) === 1);
+  await page.screenshot({ path: `${SHOTS}/14-agent-edit.png` });
+
+  // the surviving skill must actually reach the agent
+  await page.click('.overlay .foot button:has-text("Save")');
+  await page.waitForTimeout(800);
+  await page.hover(".sidebar .agentrow");
+  await page.click('.sidebar .agentrow button[title="Edit agent"]');
+  await page.waitForSelector(".panel .skills");
+  ok("skills are saved onto the agent and are still there when you reopen it",
+    (await page.locator(`.panel .skillrow[data-skill="${skillB}"]`).count()) === 1);
+  // put the agent back the way it was found
+  await page.click(`.panel .skillrow[data-skill="${skillB}"] .skill-delete`);
+  await page.click('.overlay .foot button:has-text("Save")');
+  await page.waitForTimeout(400);
 
   // invite flow
   await page.click('button[title="Invite a friend"]');
@@ -185,10 +346,95 @@ try {
   await page.waitForTimeout(400);
   ok("empty message is not sent", (await page.locator(".msg").count()) === before);
 
+  // ---- his 15: every person is listed once ----
+  const personNames = await page.$$eval(".sidebar .person-row", rows => rows.map(r => r.dataset.person));
+  const duplicates = personNames.filter((n, i) => personNames.indexOf(n) !== i);
+  ok("the people list shows each person once",
+    duplicates.length === 0 && personNames.filter(n => n === "Priya").length === 1,
+    personNames.join(", "));
+
+  // ---- his 15: clicking a person opens the direct conversation with them ----
+  await page.click('.sidebar .person-row[data-person="Priya"]');
+  await page.waitForSelector('.chathead .ch-title .n:text-is("Priya")', { timeout: 15000 });
+  ok("clicking a person opens the direct conversation with them", true);
+  const dmRows = await page.locator('.sidebar .agent-row .agent-name:text-is("Priya")').count();
+  await page.click('.sidebar .person-row[data-person="Priya"]');
+  await page.waitForSelector('.chathead .ch-title .n:text-is("Priya")', { timeout: 15000 });
+  ok("clicking that person again reuses the same conversation",
+    (await page.locator('.sidebar .agent-row .agent-name:text-is("Priya")').count()) === dmRows,
+    `${dmRows} DM row(s)`);
+  // your own row is not a dead click — it is plainly not a button
+  ok("your own row is marked as you, not offered as a chat",
+    (await page.locator(".sidebar .person-row.is-me .youtag").count()) === 1);
+
+  // ---- his 12+14: the design pass — screenshots and no sideways scroll ----
+  await page.click(".sidebar >> text=# general");
+  for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.waitForTimeout(220);
+      const over = await page.evaluate(() => ({
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        body: document.body.scrollWidth - document.body.clientWidth,
+      }));
+      ok(`no sideways scrolling at ${width} in the ${theme} look`,
+        over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+    }
+  }
+  // the design shots are pinned to the light look so they are comparable run
+  // to run; the dark look gets its own shot below
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: `${SHOTS}/design-main.png`, fullPage: true });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: `${SHOTS}/design-main-dark.png`, fullPage: true });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+  await page.waitForTimeout(250);
+
+  await page.click('.sidebar-foot button:has-text("⚙")');
+  await page.waitForSelector(".panel.settingspanel");
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${SHOTS}/design-settings.png`, fullPage: true });
+  await page.click('.overlay .foot button:has-text("Done")');
+
+  await page.click('button[title="New agent"]');
+  await page.waitForSelector(".panel select.modelpick");
+  await page.click(".panel .skills .skill-add");
+  await page.fill(".panel .skill-name-input", "Weekly report");
+  await page.fill(".panel .skill-desc-input", "Writes the Monday summary of last week");
+  await page.fill(".panel .skill-instructions-input", "Read the last seven days of notes. Write five bullet points: what moved, what stalled, what needs me.");
+  await page.click(".panel .skills .skill-save");
+  await page.waitForSelector('.panel .skillrow[data-skill="Weekly report"]');
+  // frame the shot so the model picker and the skills list are both in view
+  await page.evaluate(() => document.querySelector(".panel .runsonbox")
+    ?.scrollIntoView({ block: "start" }));
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: `${SHOTS}/design-new-agent.png`, fullPage: true });
+  ok("the create screen shows the model picker and the skills editor together",
+    (await page.locator(".panel select.modelpick").count()) === 1 &&
+    (await page.locator('.panel .skillrow[data-skill="Weekly report"]').count()) === 1 &&
+    (await page.locator(".panel .skills .skill-add").count()) === 1);
+  await page.click('.overlay .foot button:has-text("Cancel")');
+
+  await page.keyboard.press("Control+k");
+  await page.waitForSelector(".qc-input");
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: `${SHOTS}/design-quickchat.png`, fullPage: true });
+  await page.keyboard.press("Escape");
+
   await owner.close();
   await friendCtx.close();
 } catch (err) {
   ok("UNCAUGHT", false, String(err));
+  if (failShot) {
+    try {
+      await failShot.screenshot({ path: `${SHOTS}/99-uncaught.png`, fullPage: true });
+      console.log("state when it broke:", (await failShot.textContent(".chathead")) ?? "(no chat header)");
+    } catch { /* the page is already gone */ }
+  }
 } finally {
   await browser.close();
 }

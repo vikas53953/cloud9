@@ -1,6 +1,8 @@
 // Cloud9 desktop shell: hosts the renderer, the global ⌘K quick-chat window,
 // and the agent engine (so agents run while the app is open — Stage-1 decision 5).
-const { app, BrowserWindow, globalShortcut, ipcMain, safeStorage } = require("electron");
+const {
+  app, BrowserWindow, Menu, dialog, globalShortcut, ipcMain, safeStorage, shell,
+} = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 
@@ -143,10 +145,8 @@ async function startEngine() {
       dataDir,
       credentials,
       demoMode: process.env.CLOUD9_DEMO === "1",
-      // "Sign in with Claude" captured a token — encrypt it for next launch
-      onClaudeToken: token => { saveSecret("claude", "oauthToken", token); },
       onReady: () => console.log(
-        `[cloud9] engine online (Claude ${credentials.claude ? "connected" : "not connected"})`),
+        `[cloud9] engine online (Claude ${credentials.claude ? "using your saved key" : "using the Claude app's own sign-in"})`),
     });
   } catch (err) {
     console.error("[cloud9] engine failed to start:", err);
@@ -177,6 +177,24 @@ ipcMain.handle("cloud9:clearCredential", (_ev, harness) => {
   return { ok: true };
 });
 
+/* Where an agent's own files live. The engine puts each agent in
+ * <userData>/engine/agents/<id>, so that is the folder the Settings button
+ * shows. It is created on demand, so "open folder" can never fail on a fresh
+ * install where no agent has written anything yet. */
+function agentFolderPath() {
+  const dir = path.join(app.getPath("userData"), "engine", "agents");
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* shown as-is below */ }
+  return dir;
+}
+
+ipcMain.handle("cloud9:agentFolder", () => agentFolderPath());
+
+ipcMain.handle("cloud9:openAgentFolder", async () => {
+  const dir = agentFolderPath();
+  const problem = await shell.openPath(dir);
+  return problem ? { ok: false, error: problem } : { ok: true };
+});
+
 ipcMain.handle("cloud9:credentialStatus", () => {
   const status = { canEncrypt: safeStorage.isEncryptionAvailable() };
   for (const h of HARNESSES) {
@@ -186,8 +204,102 @@ ipcMain.handle("cloud9:credentialStatus", () => {
   return status;
 });
 
+/* ---------- app menu (feedback round 1, his 14) ----------
+ * A real menu bar, because an app with no menu reads as a mock. Every item
+ * either does its job here in the shell (reload, zoom, quit, open a folder) or
+ * is handed to the app screen as a `menu:<action>` message over the existing
+ * preload bridge. Nothing here is decorative. */
+
+/** Tell the focused app screen that a menu item was chosen. */
+function toRenderer(action) {
+  const win = BrowserWindow.getFocusedWindow() || mainWin;
+  if (win && !win.isDestroyed()) win.webContents.send("cloud9:menu", action);
+}
+
+const menuItem = (label, action, accelerator) => ({
+  label, accelerator, click: () => toRenderer(action),
+});
+
+function buildMenu() {
+  const template = [
+    {
+      label: "File",
+      submenu: [
+        menuItem("New agent…", "new-agent", "CmdOrCtrl+Shift+A"),
+        menuItem("New channel…", "new-channel", "CmdOrCtrl+Shift+N"),
+        menuItem("Invite someone…", "invite", "CmdOrCtrl+Shift+I"),
+        { type: "separator" },
+        menuItem("Settings…", "settings", "CmdOrCtrl+,"),
+        { type: "separator" },
+        {
+          label: "Open my agents' files",
+          click: () => shell.openPath(agentFolderPath()),
+        },
+        { type: "separator" },
+        { role: "quit", label: "Quit Cloud9" },
+      ],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" }, { role: "redo" }, { type: "separator" },
+        { role: "cut" }, { role: "copy" }, { role: "paste" },
+        { role: "selectAll" },
+        { type: "separator" },
+        menuItem("Find in conversation…", "search", "CmdOrCtrl+F"),
+      ],
+    },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload", label: "Reload" },
+        { role: "forceReload" },
+        { type: "separator" },
+        { role: "resetZoom", label: "Actual size" },
+        { role: "zoomIn", label: "Zoom in" },
+        { role: "zoomOut", label: "Zoom out" },
+        { type: "separator" },
+        menuItem("Toggle light / dark", "toggle-theme", "CmdOrCtrl+Shift+L"),
+        menuItem("Activity", "activity"),
+        menuItem("Tasks", "tasks"),
+        { type: "separator" },
+        { role: "togglefullscreen", label: "Full screen" },
+        { role: "toggleDevTools", label: "Developer tools" },
+      ],
+    },
+    {
+      label: "Help",
+      submenu: [
+        menuItem("Quick chat (Ctrl+K)", "quick-chat"),
+        {
+          label: "Open the app's log folder",
+          click: () => shell.openPath(app.getPath("logs")),
+        },
+        { type: "separator" },
+        {
+          label: "About Cloud9",
+          click: () => dialog.showMessageBox({
+            type: "info",
+            title: "About Cloud9",
+            message: `Cloud9 ${app.getVersion()}`,
+            detail:
+              "Chat with your crew of agents and friends.\n\n" +
+              "Your agents run on the Claude and Codex apps already installed on " +
+              "this computer, signed in with your own accounts. Cloud9 starts them " +
+              "for you — it never stores your sign-in.\n\n" +
+              `Electron ${process.versions.electron} · Node ${process.versions.node}`,
+            buttons: ["OK"],
+          }),
+        },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 app.whenReady().then(() => {
   migratePlaintextCredential();
+  buildMenu();
   createMainWindow();
   globalShortcut.register("CommandOrControl+K", toggleQuickWindow);
   startEngine();

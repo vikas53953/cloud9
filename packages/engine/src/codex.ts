@@ -20,8 +20,13 @@ export interface CodexProviderOptions {
    * Fallback Codex API key, read fresh each turn so a settings change takes
    * effect immediately. It is passed to the CLI as CODEX_API_KEY and MUST NOT
    * touch any ANTHROPIC_* variable — these are separate accounts.
+   *
+   * Absent (the normal case) means the CLI-login path: the Codex app is signed
+   * in and owns its own credential, and we pass nothing.
    */
   apiKey?: () => string | undefined;
+  /** the models this harness offers; a turn is refused for anything else */
+  models?: () => string[];
   runner?: Runner;
 }
 
@@ -103,8 +108,8 @@ function str(v: unknown): string | undefined {
  * moment it would become a command line — the relay's check is the first gate,
  * this is the last one, and neither trusts the other.
  */
-export function codexArgs(agent: AgentDef, cwd: string): string[] {
-  const problem = validateAgentInput(agent);
+export function codexArgs(agent: AgentDef, cwd: string, models: string[] = []): string[] {
+  const problem = validateAgentInput(agent, { models });
   if (problem) throw new Error(`refusing to run this agent: ${problem}`);
 
   const args = [
@@ -135,7 +140,7 @@ export class CodexProvider implements ClaudeProvider {
     const cwd = this.opts.agentDataDir(agent.id);
     const prompt = buildAgentPrompt(agent, context);
     const key = this.opts.apiKey?.();
-    const result = await this.runner(this.command, codexArgs(agent, cwd), {
+    const result = await this.runner(this.command, codexArgs(agent, cwd, this.opts.models?.() ?? []), {
       cwd,
       timeoutMs: this.timeoutMs,
       stdin: prompt,

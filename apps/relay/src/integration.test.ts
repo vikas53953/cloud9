@@ -248,8 +248,16 @@ test("harness status is asked for by clients, answered by the engine, broadcast 
   await host.wait(f => f.type === "welcome");
 
   const state = {
-    claude: { name: "claude" as const, installed: true, signedIn: true, account: "vikas@example.com", version: "2.1.220" },
-    codex: { name: "codex" as const, installed: true, signedIn: false, detail: "installed, but not signed in yet" },
+    claude: {
+      name: "claude" as const, installed: true, signedIn: true, authKind: "cli-login" as const,
+      account: "vikas@example.com", version: "2.1.220",
+      models: ["claude-sonnet-5"], defaultModel: "claude-sonnet-5",
+      detail: "Signed in as vikas@example.com",
+    },
+    codex: {
+      name: "codex" as const, installed: true, signedIn: false, authKind: "none" as const,
+      models: [], detail: "installed, but not signed in yet",
+    },
     updatedAt: Date.now(),
   };
 
@@ -359,8 +367,14 @@ test("dev mode allows the default token, and harness status is dropped when the 
   host.send({
     type: "harnessState",
     state: {
-      claude: { name: "claude", installed: true, signedIn: true, account: "vikas@example.com" },
-      codex: { name: "codex", installed: true, signedIn: true },
+      claude: {
+        name: "claude", installed: true, signedIn: true, authKind: "cli-login",
+        account: "vikas@example.com", models: ["claude-sonnet-5"], detail: "Signed in",
+      },
+      codex: {
+        name: "codex", installed: true, signedIn: true, authKind: "cli-login",
+        models: ["gpt-5.6-sol"], detail: "Signed in",
+      },
       updatedAt: Date.now(),
     },
   });
