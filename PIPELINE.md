@@ -53,5 +53,19 @@ Left for Vikas: click both sign-in buttons for real (an agent must not authorise
 in his browser). C5 workspaces still blocked on TBD D6 (PARKING-LOT). GitHub
 push blocked by session security (see A3).
 
+## v2.1 — harness sign-in + Workbench reskin (2026-07-28, Vikas directed)
+Approved order delivered: (1) Sign in with Claude, (2) Sign in with Codex,
+(3) Workbench design round. Spec/plan: docs/plans/harness-signin.md.
+- Sign-in: both harnesses detected live on Vikas's machine; security review
+  found 14 issues (3 P0) — ALL fixed at class level and re-verified.
+  64 tests green (was 43), 19/19 browser QA (was 14). Commit 082767b.
+- Design: Vikas picked WORKBENCH from a 3-direction round
+  (docs/mocks/v2-workbench.html) — now the design law for every screen.
+  Reskin shipped, 64 tests + 19/19 QA still green. Commit 9bf0439.
+- Pending Vikas's own hands (cannot be agent-verified): the live click of both
+  sign-in buttons, and the first real Codex agent answer.
+- Next up per Vikas: "then we will pick up the other things" — remaining
+  spec items (C5 workspaces/roles/governance, D1 outcome wording, mobile).
+
 Open questions: none. Subscription-auth verdict: third-party claude.ai login NOT permitted; shipping API-key + setup-token options (see implementation-notes).
 Deviations: see implementation-notes.md
