@@ -1,9 +1,9 @@
 import { chromium } from "playwright";
 import fs from "node:fs";
 
-const SHOTS = "/home/user/repo/docs/qa";
+const SHOTS = new URL("../docs/qa", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 fs.mkdirSync(SHOTS, { recursive: true });
-const UI = "http://127.0.0.1:4173/?relay=ws://127.0.0.1:8787";
+const UI = `http://127.0.0.1:${process.env.CLOUD9_UI_PORT ?? "4173"}/?relay=ws://127.0.0.1:8787`;
 const results = [];
 const consoleErrors = [];
 
@@ -12,7 +12,9 @@ function ok(name, pass, detail = "") {
   console.log(`${pass ? "PASS" : "FAIL"} - ${name}${detail ? " :: " + detail : ""}`);
 }
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+const browser = await chromium.launch(
+  process.env.CLOUD9_CHROMIUM ? { executablePath: process.env.CLOUD9_CHROMIUM } : {}
+);
 try {
   // ---------- owner context ----------
   const owner = await browser.newContext({ viewport: { width: 1280, height: 800 } });
