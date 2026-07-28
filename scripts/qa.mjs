@@ -2,11 +2,13 @@ import { chromium } from "playwright";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { qaTarget } from "./qa-target.mjs";
 
 const SHOTS = new URL("../docs/qa", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 fs.mkdirSync(SHOTS, { recursive: true });
-const RELAY_PORT = process.env.CLOUD9_RELAY_PORT ?? "8787";
-const UI = `http://127.0.0.1:${process.env.CLOUD9_UI_PORT ?? "4173"}/?relay=ws://127.0.0.1:${RELAY_PORT}`;
+// A QA run points at the throwaway stack by default, never at the real hub
+// (finding #18). `qa-target.mjs` owns that decision for every QA script.
+const { ui: UI } = qaTarget();
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];

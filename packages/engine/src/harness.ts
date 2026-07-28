@@ -168,6 +168,8 @@ export class HarnessManager {
   private visibleRunner: VisibleRunner;
   private commands: Record<HarnessName, string>;
   private inFlight = new Set<HarnessName>();
+  /** sign-ins the user has walked away from — the poll loop stops for these */
+  private cancelled = new Set<HarnessName>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private waiters = new Set<() => void>();
   private stopped = false;
@@ -301,8 +303,24 @@ export class HarnessManager {
       this.log(`${harness}: sign-in failed — ${String(err).slice(0, 160)}`);
     } finally {
       this.inFlight.delete(harness);
+      this.cancelled.delete(harness);
     }
     return this.refresh();
+  }
+
+  /**
+   * The user pressed Cancel. We cannot close the browser window they opened,
+   * but we can stop waiting for it: the poll loop ends on its next tick and the
+   * card goes back to offering a sign-in instead of sitting on a spinner for
+   * five minutes (finding #10).
+   */
+  cancelSignIn(harness: HarnessName): void {
+    if (!this.inFlight.has(harness)) return;
+    this.cancelled.add(harness);
+    this.log(`${harness}: sign-in cancelled`);
+    // wake anything currently sleeping so the loop notices straight away
+    for (const w of [...this.waiters]) w();
+    this.waiters.clear();
   }
 
   /**
@@ -333,9 +351,9 @@ export class HarnessManager {
     const interval = this.opts.pollIntervalMs ?? 5_000;
     const deadline = Date.now() + this.signInCapMs;
     const detectTimeout = this.opts.detectTimeoutMs ?? 20_000;
-    while (!this.stopped && Date.now() < deadline) {
+    while (!this.stopped && !this.cancelled.has(harness) && Date.now() < deadline) {
       await this.wait(Math.min(interval, Math.max(0, deadline - Date.now())));
-      if (this.stopped) break;
+      if (this.stopped || this.cancelled.has(harness)) break;
       const info = harness === "claude"
         ? await detectClaude(this.runner, this.commands.claude, detectTimeout)
         : await detectCodex(this.runner, this.commands.codex, detectTimeout, { models: false });
@@ -344,7 +362,8 @@ export class HarnessManager {
         return;
       }
     }
-    if (this.stopped) return;
+    // a cancelled sign-in is not a failure — it leaves no problem on the card
+    if (this.stopped || this.cancelled.has(harness)) return;
     throw new Error(`${harness} sign-in was not completed in time`);
   }
 

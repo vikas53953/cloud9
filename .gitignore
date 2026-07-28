@@ -3,3 +3,4 @@ dist/
 *.db
 *.db-*
 cloud9-engine-data/
+release/

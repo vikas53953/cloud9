@@ -6,7 +6,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AgentDef, AgentSkill, validateSkills } from "@cloud9/shared";
+import {
+  AgentDef, AgentSkill, MODEL_ID_RE, isSafeSkillFileName, validateAgentInput, validateSkills,
+} from "@cloud9/shared";
 import { Engine } from "./engine.js";
 import { buildAgentPrompt, renderSkills } from "./provider.js";
 
@@ -114,4 +116,53 @@ test("a bad skill file name is rejected at the relay, before it ever reaches dis
     validateSkills([skill({ files: [{ name: "big.md", text: "x".repeat(40_001) }] })]) ?? "",
     /too big/,
   );
+});
+
+// --- security review 2026-07-29, finding #20 ---
+test("a Windows device name is not a file name, whatever extension it wears", () => {
+  const bad = (name: string) => validateSkills([skill({ files: [{ name, text: "x" }] })]);
+  // these are DEVICES on Windows: writing them writes to hardware, not to disk
+  for (const name of ["CON", "con.md", "NUL", "nul.txt", "COM1", "com9.md", "LPT1", "AUX", "PRN"]) {
+    assert.match(bad(name) ?? "", /file name isn't allowed/, `${name} must be refused`);
+    assert.equal(isSafeSkillFileName(name), false, `${name} must be refused`);
+  }
+  // a trailing dot or space is stripped by the OS, so two names become one file
+  for (const name of ["evil.md.", "evil.md ", "notes."]) {
+    assert.match(bad(name) ?? "", /file name isn't allowed/, `${name} must be refused`);
+  }
+  // ordinary names that merely start with those letters are still fine
+  for (const name of ["console.md", "contract.md", "communication.md", "auxiliary.md"]) {
+    assert.equal(bad(name), null, `${name} must still be allowed`);
+  }
+});
+
+test("the engine refuses a device-named skill file at the disk gate too", () => {
+  const dir = tmp();
+  const engine = new Engine({ relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: dir });
+  const realError = console.error;
+  console.error = () => { /* quiet */ };
+  try {
+    engine.writeSkillFiles(agent({
+      skills: [skill({ files: [{ name: "CON.md", text: "nope" }, { name: "fine.md", text: "yes" }] })],
+    }));
+  } finally {
+    console.error = realError;
+  }
+  assert.deepEqual(fs.readdirSync(path.join(dir, "agents", "a1", "skills")), ["fine.md"]);
+  engine.stop();
+});
+
+// --- security review 2026-07-29, finding #21 ---
+test("a model id can never be mistaken for a command-line flag", () => {
+  // `--yolo` passed MODEL_ID_RE before this fix, so a "model" was a flag
+  for (const id of ["--yolo", "-m", "--dangerously-skip-permissions", "-"]) {
+    assert.equal(MODEL_ID_RE.test(id), false, `${id} must not be a valid model id`);
+    assert.match(
+      validateAgentInput({ name: "A", model: id }) ?? "",
+      /valid model id/, `${id} must be refused`);
+  }
+  // the real ids still pass
+  for (const id of ["claude-sonnet-5", "gpt-5.6-sol", "claude-haiku-4-5-20251001"]) {
+    assert.equal(MODEL_ID_RE.test(id), true, `${id} must stay valid`);
+  }
 });

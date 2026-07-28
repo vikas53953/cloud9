@@ -1,16 +1,69 @@
 {
   "name": "@cloud9/desktop",
   "version": "0.1.0",
+  "description": "Cloud9 — chat with your crew of agents and friends.",
+  "author": "Vikas <vikas53953@gmail.com>",
   "type": "module",
   "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.vikas.cloud9",
+    "productName": "Cloud9",
+    "copyright": "Copyright © 2026 Vikas",
+    "directories": {
+      "output": "../../release"
+    },
+    "files": [
+      "electron/**/*",
+      "dist-web/**/*",
+      "public/**/*",
+      "package.json"
+    ],
+    "asar": false,
+    "win": {
+      "icon": "public/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Cloud9",
+      "menuCategory": false,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "public/icon.ico",
+      "uninstallerIcon": "public/icon.ico",
+      "installerHeaderIcon": "public/icon.ico",
+      "artifactName": "Cloud9-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "icon": "public/logo-512.png"
+    },
+    "linux": {
+      "icon": "public/logo-512.png"
+    }
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "logo": "node ../../scripts/build-logo-assets.mjs",
     "electron": "electron .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
   },
   "dependencies": {
     "@cloud9/engine": "*",
+    "@cloud9/relay": "*",
     "@cloud9/shared": "*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
@@ -19,7 +72,8 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
-    "electron": "^31.3.0",
+    "electron": "38.8.6",
+    "electron-builder": "^25.1.8",
     "vite": "^5.4.0"
   }
 }

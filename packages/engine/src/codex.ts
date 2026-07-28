@@ -7,7 +7,8 @@ import { AgentDef, MODEL_ID_RE, validateAgentInput } from "@cloud9/shared";
 import {
   buildAgentPrompt, ClaudeProvider, HarnessUnavailableError, RespondInput,
 } from "./provider.js";
-import { run, Runner, safeArg, shellQuote } from "./run.js";
+import { envWithoutCredentials } from "./env.js";
+import { run, Runner, safeArg } from "./run.js";
 
 export interface CodexProviderOptions {
   /** where the agent's turn runs (its own files folder) */
@@ -107,6 +108,14 @@ function str(v: unknown): string | undefined {
  * The agent definition comes from a client, so it is re-validated HERE, at the
  * moment it would become a command line — the relay's check is the first gate,
  * this is the last one, and neither trusts the other.
+ *
+ * QUOTING HAS EXACTLY ONE OWNER: `run.ts`. This function hands over the plain
+ * path and nothing else. Round 2 quoted it here as well, so `run()` saw an
+ * argument that already had quotes in it, rejected those quotes as unsafe
+ * characters, and every single Codex turn failed for anyone whose Windows user
+ * folder has a space in it (finding #4). Two layers both trying to be careful
+ * produced something neither of them would accept. The cwd is ALSO passed
+ * through `RunOptions.cwd`, exactly as the Claude path does it.
  */
 export function codexArgs(agent: AgentDef, cwd: string, models: string[] = []): string[] {
   const problem = validateAgentInput(agent, { models });
@@ -114,7 +123,7 @@ export function codexArgs(agent: AgentDef, cwd: string, models: string[] = []): 
 
   const args = [
     "exec", "--json", "--color", "never", "--skip-git-repo-check",
-    "-C", shellQuote(cwd),
+    "-C", cwd,
     "-s", agent.abilities.files ? "workspace-write" : "read-only",
   ];
   if (agent.model) {
@@ -144,8 +153,11 @@ export class CodexProvider implements ClaudeProvider {
       cwd,
       timeoutMs: this.timeoutMs,
       stdin: prompt,
-      // Codex's own key only. Never ANTHROPIC_* — that's a different account.
-      env: key ? { ...process.env, CODEX_API_KEY: key } : undefined,
+      // Codex's own key only, and nothing else that looks like a secret. This
+      // used to be `undefined`, which handed the CLI the entire ambient
+      // environment — including any ANTHROPIC_* key lying around, an account
+      // that has nothing to do with Codex (finding #9).
+      env: envWithoutCredentials(process.env, key ? { CODEX_API_KEY: key } : {}),
     });
 
     if (result.notFound) {

@@ -1,8 +1,12 @@
 import { chromium } from "playwright";
-const UI = "http://127.0.0.1:4173/?relay=ws://127.0.0.1:8787";
+import { qaTarget } from "./qa-target.mjs";
+// throwaway QA stack by default, never the real hub (finding #18)
+const { ui: UI } = qaTarget();
 let pass = 0, fail = 0;
 const ok = (n, p) => { console.log(`${p ? "PASS" : "FAIL"} - ${n}`); p ? pass++ : fail++; };
-const b = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+const b = await chromium.launch(
+  process.env.CLOUD9_CHROMIUM ? { executablePath: process.env.CLOUD9_CHROMIUM } : {},
+);
 try {
   const p = await (await b.newContext({ viewport: { width: 1280, height: 800 } })).newPage();
   await p.goto(UI);

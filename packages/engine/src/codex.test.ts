@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { AgentDef } from "@cloud9/shared";
 import { CodexProvider, codexArgs, parseCodexJsonl } from "./codex.js";
 import { HarnessUnavailableError } from "./provider.js";
-import { RunOptions, RunResult } from "./run.js";
+import { RunOptions, RunResult, UnsafeArgumentError, run } from "./run.js";
 
 const agent = (over: Partial<AgentDef> = {}): AgentDef => ({
   id: "a1", ownerId: "u1", name: "Scout", emoji: "🔭", persona: "You research travel",
@@ -87,9 +87,59 @@ test("abilities map to the codex sandbox flag", () => {
   assert.ok(readOnly.join(" ").includes("approval_policy=never"));
 });
 
-test("paths with spaces are quoted for the shell", () => {
+// --- security review 2026-07-29, finding #4 ---
+//
+// The test this replaces asserted that codexArgs QUOTED the path itself. That
+// was the bug written down as a rule: run() then re-checked the argument, saw
+// the quote characters, and refused the whole command — so every Codex turn
+// failed for anyone whose folder has a space in it. Quoting has one owner, and
+// the only honest way to prove it is to push the argv through run() for real.
+test("codexArgs hands over the plain path — it never pre-quotes", () => {
   const args = codexArgs(agent(), "C:/Users/Vik As/data");
-  assert.ok(args.includes('"C:/Users/Vik As/data"'));
+  assert.ok(args.includes("C:/Users/Vik As/data"), "the raw path is passed through");
+  assert.ok(!args.some(a => a.includes('"')), "no argument carries quote characters");
+});
+
+test("a Codex turn survives a user folder with a space in it, end to end through run()", async () => {
+  const spaced = process.platform === "win32"
+    ? "C:/Users/Vik As/cloud9-engine-data/agents/a1"
+    : "/home/vik as/cloud9-engine-data/agents/a1";
+  // the REAL run(), so the real argument checker gets a look at the real argv.
+  // A command that does not exist is fine: we only care that run() agreed to
+  // build the command line at all. Before the fix this rejected with
+  // UnsafeArgumentError and the agent posted that error into the chat forever.
+  const result = await run("cloud9-no-such-command-9x", codexArgs(agent(), spaced), {
+    cwd: process.cwd(), timeoutMs: 15_000,
+  });
+  assert.equal(result.notFound, true, "it tried to run, and only failed on the missing command");
+});
+
+test("a path run() would refuse is still refused — the leash did not loosen", async () => {
+  await assert.rejects(
+    () => run("cloud9-no-such-command-9x", codexArgs(agent(), "C:/data/a1 && calc"), {}),
+    (err: unknown) => err instanceof UnsafeArgumentError,
+  );
+});
+
+test("the codex turn never inherits ambient credentials", async () => {
+  let seenEnv: NodeJS.ProcessEnv = {};
+  const provider = new CodexProvider({
+    agentDataDir: () => "C:/data/a1",
+    apiKey: () => "codex-key-123",
+    runner: fakeRunner({ stdout: TRANSCRIPT }, (_a, o) => { seenEnv = o.env ?? {}; }),
+  });
+  const before = { ...process.env };
+  process.env.ANTHROPIC_API_KEY = "sk-ant-should-not-travel";
+  process.env.GITHUB_TOKEN = "ghp-should-not-travel";
+  try {
+    await provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V" });
+  } finally {
+    process.env = before;
+  }
+  assert.equal(seenEnv.ANTHROPIC_API_KEY, undefined, "another account's key must never pay for a Codex turn");
+  assert.equal(seenEnv.GITHUB_TOKEN, undefined, "no ambient secret reaches the child");
+  assert.equal(seenEnv.CODEX_API_KEY, "codex-key-123", "Codex's own key still gets through");
+  assert.ok(Object.keys(seenEnv).length > 1, "the ordinary environment is still there");
 });
 
 test("provider sends the prompt on stdin and returns the reply", async () => {

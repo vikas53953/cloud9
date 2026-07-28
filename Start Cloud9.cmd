@@ -1,14 +1,22 @@
 @echo off
 rem ============================================================
-rem  Start Cloud9 - double-click this file.
+rem  Start Cloud9 (WORKBENCH MODE) - double-click this file.
 rem  Starts the three parts in order, then opens the app window.
 rem  Close this window to shut everything down.
+rem
+rem  This is the mode for changing Cloud9: the app screen reloads
+rem  as soon as a file is edited. It needs this window left open.
+rem
+rem  For the REAL app - the one with a proper Cloud9 icon that
+rem  lives in your Start menu and needs none of this - double-click
+rem  "Build Cloud9 app.cmd" instead, once. See the README.
 rem ============================================================
 title Cloud9
 cd /d "%~dp0"
 
 echo.
-echo   Cloud9 is starting. Leave this window open while you use the app.
+echo   Cloud9 is starting in workbench mode.
+echo   Leave this window open while you use the app.
 echo.
 
 echo   [1/3] starting the hub...

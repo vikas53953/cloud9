@@ -247,6 +247,10 @@ export type ClientFrame =
   | { type: "refreshHarness" }
   | { type: "harnessStatus" }
   | { type: "harnessSignIn"; harness: HarnessName }
+  // "I'm not finishing that sign-in" — stops the waiting state instead of
+  // leaving the user locked out of trying again (finding #10). Owner only, like
+  // every other harness frame.
+  | { type: "harnessCancel"; harness: HarnessName }
   // engine-host only: report detected harness status (status strings only, never secrets)
   | { type: "harnessState"; state: HarnessState };
 
@@ -283,7 +287,7 @@ export type ServerFrame =
   // harness status broadcast to the owner's clients
   | { type: "harness"; state: HarnessState }
   // relay → engine host: do the harness work (the engine owns the CLIs)
-  | { type: "harnessRequest"; action: "status" | "signIn"; harness?: HarnessName }
+  | { type: "harnessRequest"; action: "status" | "signIn" | "cancel"; harness?: HarnessName }
   | { type: "error"; error: string };
 
 // ---------- untrusted input validation ----------
@@ -293,8 +297,15 @@ export type ServerFrame =
 // store a bad one, and the engine refuses to run one. Same function, so the two
 // checks can never drift apart.
 
-/** Model ids are vendor slugs — letters, digits, dot, dash, underscore. */
-export const MODEL_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
+/**
+ * Model ids are vendor slugs — letters, digits, dot, dash, underscore.
+ *
+ * The FIRST character must be a letter or a digit. Round 2's version allowed a
+ * leading dash, so `--yolo` was a "valid model id" and went straight onto a
+ * command line as a flag (finding #21). An id can never be mistaken for a flag
+ * again: a value that starts with `-` is not an id, it is an option.
+ */
+export const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export const AGENT_LIMITS = { name: 64, emoji: 16, persona: 8000 } as const;
 
@@ -407,6 +418,38 @@ export function validateSkills(skills: unknown): string | null {
  */
 export const SKILL_FILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$/;
 
+/**
+ * Names Windows refuses to treat as ordinary files. `CON`, `NUL`, `COM1` and
+ * friends are DEVICES, whatever extension you bolt on: writing "CON.md" writes
+ * to the console device, not to a file. A trailing dot or space is stripped by
+ * the OS, so "evil.md." and "evil.md " both land on "evil.md" — two different
+ * names that become the same file (finding #20).
+ *
+ * The rule is the same one the whole file follows: REFUSE, never rewrite.
+ */
+const WINDOWS_DEVICE_NAMES = new Set([
+  "CON", "PRN", "AUX", "NUL",
+  "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+  "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+]);
+
+/**
+ * One place that decides whether a skill file name may become a real file.
+ * Both the relay (before storing) and the engine (before writing) call THIS —
+ * so the two checks can never drift apart.
+ */
+export function isSafeSkillFileName(name: unknown): name is string {
+  if (typeof name !== "string") return false;
+  if (!SKILL_FILE_NAME_RE.test(name)) return false;
+  if (name.includes("..")) return false;
+  // the OS strips these, turning two names into one file
+  if (/[. ]$/.test(name)) return false;
+  // device names, with or without an extension: CON, con.md, COM1.txt
+  const stem = name.split(".")[0].trim().toUpperCase();
+  if (WINDOWS_DEVICE_NAMES.has(stem)) return false;
+  return true;
+}
+
 function validateSkillFiles(files: unknown, skillName?: string): string | null {
   if (files === undefined || files === null) return null;
   if (!Array.isArray(files)) return "skill files must be a list";
@@ -416,7 +459,7 @@ function validateSkillFiles(files: unknown, skillName?: string): string | null {
   for (const raw of files) {
     if (!raw || typeof raw !== "object") return "a skill file needs a name and some text";
     const f = raw as Partial<AgentSkillFile>;
-    if (typeof f.name !== "string" || !SKILL_FILE_NAME_RE.test(f.name) || f.name.includes("..")) {
+    if (!isSafeSkillFileName(f.name)) {
       return "that file name isn't allowed — use plain letters, numbers, dots and dashes";
     }
     if (typeof f.text !== "string") return `file "${f.name}" has no text`;
@@ -454,6 +497,16 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * An id for ORDINARY things — messages, channels, agents, activity rows.
+ *
+ * `Math.random()` is not a random-number generator you can bet a lock on: it is
+ * fast and predictable by design. So this function is for names, never for
+ * keys. Anything that GRANTS ACCESS (an invite code, a sign-in token) must come
+ * from `secureId`/`secureToken` in the relay, which uses the OS's cryptographic
+ * randomness. The two are deliberately different functions so the choice is
+ * visible at every call site (finding #2).
+ */
 export function newId(prefix: string): ID {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }

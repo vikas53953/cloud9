@@ -237,6 +237,33 @@ test("stop() releases a sign-in that is sleeping between polls", async () => {
   });
 });
 
+// --- security review 2026-07-29, finding #10: Cancel must really cancel ---
+
+test("cancelSignIn stops the wait, and leaves no failure on the card", async () => {
+  const dir = shimDir();
+  writeClaudeShim(dir, { loggedIn: true });
+  writeCodexShim(dir, path.join(dir, "nope", "state.txt")); // never completes
+  await withPath(dir, async () => {
+    const mgr = new HarnessManager({
+      pollIntervalMs: 60_000, signInTimeoutMs: 300_000, log: () => {},
+    });
+    const started = Date.now();
+    const pending = mgr.signIn("codex");
+    await new Promise(r => setTimeout(r, 200));
+    mgr.cancelSignIn("codex");
+    const after = await pending;
+    assert.ok(Date.now() - started < 15_000, "Cancel left the user waiting anyway");
+    assert.equal(after.codex.signingIn, undefined, "the spinner is gone");
+    assert.equal(after.codex.problem, undefined, "walking away is not an error to report");
+    // and the harness is usable again straight away
+    const again = mgr.signIn("codex");
+    await new Promise(r => setTimeout(r, 100));
+    mgr.cancelSignIn("codex");
+    await again;
+    mgr.stop();
+  });
+});
+
 // --- feedback round 1, his 2/3/4 — the fallback sign-in that used to hang ---
 
 test("the Claude fallback opens a VISIBLE terminal and never reads its output", async () => {

@@ -6,7 +6,7 @@ being built until it leaves the lot.
 ## A. Decisions waiting on Vikas (from the morning review)
 | # | Decision | Options / recommendation |
 |---|---|---|
-| A1 | ~~Design direction pick~~ **RESOLVED 2026-07-28: Vikas picked WORKBENCH** (docs/mocks/v2-workbench.html) from the v2 design round. It is now the design law for every screen. Reskin queued behind the harness sign-in build. | — |
+| A1 | ~~Design direction pick~~ **FINAL 2026-07-29: Vikas approved STUDIO** (docs/mocks/p3-studio.html) — "go with this design all approved". Design law for every screen. (Workbench was picked 07-28 from a single-screen mock, built, then rejected as stale; Quiet Console and Command Deck also rejected. Lesson recorded: he judges only from full multi-screen prototypes he opens himself.) | — |
 | A2 | **Auth stance** | API-key-only (safest) vs also keep the `claude setup-token` option (policy gray zone, disclosed in-app). Rec: keep both, disclosure stays. |
 | A3 | **Push to GitHub** | BLOCKED in-session: this cloud session has no configured source repo, so its GitHub token can't create/reach one. Unblock (2 min): create an empty repo `cloud9` at github.com/new, then either (a) open a new claude.ai/code session on that repo and say "pull in the bundle", or (b) locally: `git clone cloud9.bundle cloud9 && cd cloud9 && git remote add origin <url> && git push -u origin master`. |
 | A4 | **Apple developer account** ($99/yr) | Unlocks TestFlight + real APNs push. Only you can enroll. |

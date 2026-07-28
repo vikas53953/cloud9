@@ -6,7 +6,7 @@ import path from "node:path";
 import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, Channel, ClientFrame, HarnessName, HarnessState, ID,
-  Message, SKILL_FILE_NAME_RE, ServerFrame, Task, WorldState, validateAgentInput,
+  Message, ServerFrame, Task, WorldState, isSafeSkillFileName, validateAgentInput,
 } from "@cloud9/shared";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
@@ -54,7 +54,7 @@ export class Engine {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   onReady?: () => void;
   /** the engine host answers these — it owns the local CLIs */
-  onHarnessRequest?: (action: "status" | "signIn", harness?: HarnessName) => void;
+  onHarnessRequest?: (action: "status" | "signIn" | "cancel", harness?: HarnessName) => void;
   /**
    * The real model list for a harness, supplied by the host from live detection.
    * Used at the LAST gate: an agent whose model isn't on its harness's list does
@@ -253,7 +253,7 @@ export class Engine {
     const dir = path.join(this.agentDataDir(agent.id), "skills");
     for (const skill of skills) {
       for (const file of skill.files ?? []) {
-        if (!SKILL_FILE_NAME_RE.test(file.name) || file.name.includes("..")) {
+        if (!isSafeSkillFileName(file.name)) {
           console.error(`[engine] skipped a skill file with an unusable name on agent ${agent.id}`);
           continue;
         }

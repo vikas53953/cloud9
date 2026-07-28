@@ -15,6 +15,7 @@ import {
   buildAgentPrompt, ClaudeProvider, HarnessUnavailableError, RespondInput,
 } from "./provider.js";
 import { Runner, run, safeArg } from "./run.js";
+import { envWithoutCredentials } from "./env.js";
 
 export interface ClaudeCliProviderOptions {
   /** where the agent's turn runs (its own files folder) */
@@ -28,24 +29,9 @@ export interface ClaudeCliProviderOptions {
   runner?: Runner;
 }
 
-/** Credential variables that must NOT reach a CLI-login turn. */
-export const CREDENTIAL_ENV_VARS = [
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-] as const;
-
-/**
- * A copy of the environment with every credential variable stripped out.
- * Exported so the test can assert on it directly — this is the whole promise of
- * the CLI-login path.
- */
-export function envWithoutCredentials(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...base };
-  for (const key of CREDENTIAL_ENV_VARS) delete env[key];
-  return env;
-}
+// The credential-stripping rule now lives in one place, shared with the Codex
+// provider (finding #9). Re-exported here so existing importers keep working.
+export { CREDENTIAL_ENV_VARS, envWithoutCredentials, isCredentialVar } from "./env.js";
 
 export interface ClaudeCliResult {
   text: string;

@@ -155,9 +155,13 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
   // the engine's last gate reads the same live list the providers do
   engine.harnessModels = modelsFor;
 
-  engine.onHarnessRequest = (action: "status" | "signIn", which?: HarnessName) => {
+  // Every action is named explicitly. The old `else` branch treated ANY action
+  // that carried a harness name as "sign in", so a new action would have
+  // silently started a browser sign-in instead of doing its own job.
+  engine.onHarnessRequest = (action: "status" | "signIn" | "cancel", which?: HarnessName) => {
     if (action === "status") void harness.refresh();
-    else if (which) void harness.signIn(which);
+    else if (action === "signIn" && which) void harness.signIn(which);
+    else if (action === "cancel" && which) harness.cancelSignIn(which);
   };
   engine.onReady = () => {
     opts.onReady?.();

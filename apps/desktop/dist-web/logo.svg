@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Cloud9">
+  <title>Cloud9</title>
+  <defs>
+    <linearGradient id="c9plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#17654F"/>
+      <stop offset="100%" stop-color="#0E4740"/>
+    </linearGradient>
+    <clipPath id="c9clip">
+      <rect x="0" y="0" width="64" height="64" rx="13" ry="13"/>
+    </clipPath>
+  </defs>
+
+  <rect x="0" y="0" width="64" height="64" rx="13" ry="13" fill="url(#c9plate)"/>
+
+  <g clip-path="url(#c9clip)">
+    <!-- the nine, struck into the plate -->
+    <g fill="none" stroke="#E9A227" stroke-width="6.2" stroke-linecap="round" opacity="0.13">
+      <circle cx="39.5" cy="24" r="13"/>
+      <path d="M52.5 24c0 19.5-4 30.5-13.5 37"/>
+    </g>
+
+    <!-- crest: their cloud -->
+    <g fill="#E9A227">
+      <circle cx="24" cy="15" r="5"/>
+      <circle cx="32" cy="13" r="6.5"/>
+      <circle cx="39.5" cy="15.5" r="4.5"/>
+      <rect x="19" y="14.6" width="26" height="4.9" rx="2.2"/>
+    </g>
+
+    <!-- head -->
+    <path d="M20 52V36a12 12 0 0 1 24 0v16Z" fill="#F2F1E4"/>
+
+    <!-- eyes -->
+    <g fill="#0E4740">
+      <circle cx="26.6" cy="37.5" r="3.5"/>
+      <circle cx="37.4" cy="37.5" r="3.5"/>
+    </g>
+
+    <!-- shoulders -->
+    <path d="M12 64c0-11 8.8-16.6 20-16.6S52 53 52 64Z" fill="#06302B"/>
+  </g>
+
+  <rect x="1" y="1" width="62" height="62" rx="12.1" ry="12.1" fill="none" stroke="#E9A227" stroke-opacity="0.26" stroke-width="1.6"/>
+</svg>

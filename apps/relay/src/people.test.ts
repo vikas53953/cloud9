@@ -12,6 +12,19 @@ const BASE_AGENT = {
   abilities: { webSearch: false, files: false, schedules: false, background: false },
 };
 
+/**
+ * REWRITTEN after the 2026-07-29 security review.
+ *
+ * The old version of this test asserted that redeeming a SECOND invite with a
+ * name already in the house handed back that existing person. That was the P0
+ * privilege escalation written down as a requirement: type the owner's name,
+ * get the owner's account. See security.test.ts for the proof-of-concept.
+ *
+ * The duplicate-people problem it was protecting against (his 15) is still
+ * solved, and now by the only sound means: an invite is a single-use ticket,
+ * and coming back is done with the durable token the client kept — never by
+ * re-typing your name.
+ */
 test("re-opening an invite link is a re-login, not a second person", async () => {
   const relay = new Relay({ dbPath: tmp("relay-dupes.db"), ownerToken: "tok-owner", ownerName: "Vikas" });
   const port = await relay.listen(0);
@@ -24,24 +37,23 @@ test("re-opening an invite link is a re-login, not a second person", async () =>
 
   const first = new TestClient(url, `invite:${inv.code}:Neha`);
   const w1 = await first.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
+  const herToken = (first.frames.find(f => f.type === "token") as
+    Extract<ServerFrame, { type: "token" }>).token;
 
-  // the same link opened again — round 1 minted a brand-new Neha right here
-  const again = new TestClient(url, `invite:${inv.code}:Neha`);
+  // coming back with the token her app kept is the SAME person
+  const again = new TestClient(url, herToken);
   const w2 = await again.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
   assert.equal(w2.state.me.id, w1.state.me.id, "same person, not a copy");
 
-  // a SECOND invite redeemed with a name that is already here is also her
-  owner.send({ type: "createInvite" });
-  const inv2 = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(
-    f => f.type === "invite" && f.code !== inv.code);
-  const third = new TestClient(url, `invite:${inv2.code}: neha `);
-  const w3 = await third.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
-  assert.equal(w3.state.me.id, w1.state.me.id, "spaces and capitals are the same person");
+  // re-opening the spent LINK gets her nothing at all — no copy, no new token
+  const stale = new TestClient(url, `invite:${inv.code}:Neha`);
+  await stale.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.ok(!stale.frames.some(f => f.type === "welcome"));
 
   assert.equal(relay.store.users().filter(u => /neha/i.test(u.name)).length, 1,
     "the people list shows Neha exactly once");
 
-  first.close(); again.close(); third.close(); owner.close(); relay.close();
+  first.close(); again.close(); stale.close(); owner.close(); relay.close();
 });
 
 test("a direct conversation is found, never duplicated", async () => {

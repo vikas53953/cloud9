@@ -9,8 +9,14 @@
     "apps/desktop"
   ],
   "scripts": {
-    "build": "npm run build -w @cloud9/shared -w @cloud9/engine -w @cloud9/relay",
+    "typecheck:app": "tsc -p apps/desktop/tsconfig.json --noEmit",
+    "build": "npm run build -w @cloud9/shared -w @cloud9/engine -w @cloud9/relay -w @cloud9/desktop && npm run typecheck:app",
+    "build:app": "npm run build",
+    "prepack:tools": "node scripts/prepare-packaging.mjs",
+    "pack": "npm run build:app && npm run prepack:tools && npm run pack -w @cloud9/desktop",
+    "dist": "npm run build:app && npm run prepack:tools && npm run dist -w @cloud9/desktop",
     "test": "npm test -w @cloud9/engine -w @cloud9/relay",
+    "qa": "node scripts/qa-stack.mjs",
     "dev:relay": "npm run dev -w @cloud9/relay"
   },
   "devDependencies": {

@@ -145,21 +145,35 @@ export class Relay {
   private handleHello(ws: WebSocket, frame: Extract<ClientFrame, { type: "hello" }>): Conn | undefined {
     let user = this.store.userByToken(frame.token);
     // invite redemption: token form "invite:<code>:<display name>"
+    //
+    // The name in this string is a LABEL — what to call this person on screen.
+    // It has never been, and must never become, a claim about who they are:
+    // the account that comes out of this is created fresh, or the redemption
+    // fails. (P0 #1)
     if (!user && frame.token.startsWith("invite:")) {
       const [, code, name] = frame.token.split(":");
       const redeemed = this.store.redeemInvite(code, name || "Friend");
-      if (redeemed) {
-        user = redeemed.user;
-        send(ws, { type: "token", token: redeemed.token });
-        // new users join #general automatically
-        const general = this.store.channels().find(c => c.name === "general");
-        if (general && !general.memberIds.includes(user.id)) {
-          general.memberIds.push(user.id);
-          this.store.saveChannel(general);
-          this.broadcast({ type: "channel", channel: general });
-        }
-        this.broadcast({ type: "userJoined", user });
+      if (!redeemed) {
+        const known = this.store.invite(code);
+        send(ws, {
+          type: "error",
+          error: known
+            ? "that invite has already been used — ask for a new one"
+            : "that invite code isn't valid",
+        });
+        ws.close();
+        return undefined;
       }
+      user = redeemed.user;
+      send(ws, { type: "token", token: redeemed.token });
+      // new users join #general automatically
+      const general = this.store.channels().find(c => c.name === "general");
+      if (general && !general.memberIds.includes(user.id)) {
+        general.memberIds.push(user.id);
+        this.store.saveChannel(general);
+        this.broadcastChannel(general);
+      }
+      this.broadcast({ type: "userJoined", user });
     }
     if (!user) { send(ws, { type: "error", error: "bad token" }); ws.close(); return undefined; }
     const conn: Conn = { ws, userId: user.id, client: frame.client };
@@ -170,12 +184,15 @@ export class Relay {
 
   private worldFor(userId: ID): WorldState {
     const users = this.store.users();
+    const channels = this.visibleChannels(userId);
     return {
       me: users.find(u => u.id === userId)!,
       users,
       agents: this.store.agents(),
-      channels: this.visibleChannels(userId),
-      messages: this.store.recentMessages(),
+      channels,
+      // only the conversations this person is actually in (P1 #7). The opening
+      // frame used to carry the backlog of EVERY channel in the database.
+      messages: this.store.recentMessages(channels),
       agentStatus: this.agentStatus,
       tasks: this.store.tasks(),
       approvals: this.store.approvals(),
@@ -189,10 +206,35 @@ export class Relay {
     );
   }
 
+  /**
+   * The one gate every channel-scoped frame goes through.
+   *
+   * A channel id arrives from a client, so it is a REQUEST, not a permission.
+   * Reading history, posting a message and adding members all ask this same
+   * question — "is this conversation yours?" — so none of them can drift apart
+   * or be forgotten (P1 #7).
+   */
+  private channelFor(userId: ID, channelId: ID): Channel {
+    const channel = this.visibleChannels(userId).find(c => c.id === channelId);
+    if (!channel) throw new Error("no such channel");
+    return channel;
+  }
+
+  /**
+   * The agent this connection is allowed to act on, or an error.
+   * Ownership is read from what is STORED, never from the frame (P1 #6).
+   */
+  private myAgent(userId: ID, agentId: ID): AgentDef {
+    const agent = this.store.agents().find(a => a.id === agentId);
+    if (!agent || agent.ownerId !== userId) throw new Error("not your agent");
+    return agent;
+  }
+
   private handleFrame(conn: Conn, frame: ClientFrame): void {
     switch (frame.type) {
       case "send": {
         const user = this.store.users().find(u => u.id === conn.userId)!;
+        this.channelFor(conn.userId, frame.channelId); // you may only post where you are
         this.postMessage({
           id: newId("m"), channelId: frame.channelId,
           authorId: user.id, authorName: user.name, authorKind: "human",
@@ -202,8 +244,9 @@ export class Relay {
         break;
       }
       case "agentSend": {
-        const agent = this.store.agents().find(a => a.id === frame.agentId);
-        if (!agent || agent.ownerId !== conn.userId) throw new Error("not your agent");
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        // an agent speaks where it (or its owner) belongs, nowhere else
+        this.channelFor(conn.userId, frame.channelId);
         this.postMessage({
           id: newId("m"), channelId: frame.channelId,
           authorId: agent.id, authorName: agent.name, authorKind: "agent",
@@ -214,6 +257,7 @@ export class Relay {
         break;
       }
       case "agentStatus": {
+        this.myAgent(conn.userId, frame.agentId); // nobody sets someone else's lamp
         this.agentStatus[frame.agentId] = frame.status;
         this.broadcast({ type: "agentStatus", agentId: frame.agentId, status: frame.status });
         break;
@@ -232,16 +276,16 @@ export class Relay {
         };
         this.store.saveChannel(channel);
         this.audit(conn, "channel_created", channel.id, `created ${channel.kind} ${channel.name}`);
-        this.broadcast({ type: "channel", channel });
+        this.broadcastChannel(channel);
         break;
       }
       case "addMembers": {
-        const ch = this.store.channel(frame.channelId);
-        if (!ch) throw new Error("no such channel");
+        // you can only add people to a conversation you are in yourself
+        const ch = this.channelFor(conn.userId, frame.channelId);
         ch.memberIds = Array.from(new Set([...ch.memberIds, ...frame.memberIds]));
         this.store.saveChannel(ch);
         this.audit(conn, "member_added", ch.id, `added ${frame.memberIds.length} member(s) to ${ch.name}`);
-        this.broadcast({ type: "channel", channel: ch });
+        this.broadcastChannel(ch);
         break;
       }
       case "createAgent": {
@@ -260,22 +304,26 @@ export class Relay {
       case "updateAgent": {
         const bad = validateAgentInput(frame.agent, this.agentRules(conn, frame.agent.provider));
         if (bad) throw new Error(bad);
-        const existing = this.store.agents().find(a => a.id === frame.agent.id);
-        if (!existing || existing.ownerId !== conn.userId) throw new Error("not your agent");
+        const existing = this.myAgent(conn.userId, frame.agent.id);
         this.store.saveAgent({ ...frame.agent, ownerId: existing.ownerId });
         this.audit(conn, "agent_updated", frame.agent.id, `updated agent ${frame.agent.name}`);
         this.broadcast({ type: "agent", agent: frame.agent });
         break;
       }
       case "deleteAgent": {
-        const existing = this.store.agents().find(a => a.id === frame.agentId);
-        if (!existing || existing.ownerId !== conn.userId) throw new Error("not your agent");
+        const existing = this.myAgent(conn.userId, frame.agentId);
         this.store.deleteAgent(frame.agentId);
         this.audit(conn, "agent_deleted", frame.agentId, `deleted agent ${existing.name}`);
         this.broadcast({ type: "agentDeleted", agentId: frame.agentId });
         break;
       }
       case "createInvite": {
+        // An invite is the front door key of this Cloud9, so only the person
+        // who runs it may cut one (P0 #1). Without this gate a guest could mint
+        // the very code they needed to attack the redemption path.
+        if (conn.userId !== this.ownerId) {
+          throw new Error("only the owner of this Cloud9 can invite someone");
+        }
         const code = this.store.createInvite(conn.userId);
         this.audit(conn, "invite_created", code, "created an invite");
         send(conn.ws, { type: "invite", code });
@@ -294,7 +342,7 @@ export class Relay {
         this.store.removeUser(target.id);
         this.audit(conn, "agent_deleted", target.id, `removed ${target.name} from this Cloud9`);
         for (const a of theirAgents) this.broadcast({ type: "agentDeleted", agentId: a.id });
-        for (const c of this.store.channels()) this.broadcast({ type: "channel", channel: c });
+        for (const c of this.store.channels()) this.broadcastChannel(c);
         this.broadcast({ type: "userRemoved", userId: target.id });
         // and close whatever they still have open — their tokens are gone
         for (const c of [...this.conns]) {
@@ -303,21 +351,33 @@ export class Relay {
         break;
       }
       case "createTask": {
-        const agent = this.store.agents().find(a => a.id === frame.agentId);
-        if (!agent) throw new Error("no such agent");
+        // Two questions, both answered from STORED state, never from the frame
+        // (P1 #6): is this your agent, and is this your conversation? Without
+        // them a guest could run background work on the owner's paid
+        // subscription, in a channel they had never been invited to.
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        this.channelFor(conn.userId, frame.channelId);
         const requester = this.store.users().find(u => u.id === conn.userId)!;
         const now = Date.now();
+        // Whether this needs the owner's blessing is the AGENT's setting. The
+        // client used to be asked, which meant "does this need approval?" was
+        // answered by the thing being approved — sending needsApproval:false
+        // walked straight past the gate.
+        const needsApproval = requiresApproval(agent, frame.title);
         const task: Task = {
           id: newId("t"), title: frame.title,
           requesterId: requester.id, requesterName: requester.name,
           agentId: agent.id, channelId: frame.channelId,
-          status: frame.needsApproval ? "waiting_approval" : "not_started",
+          status: needsApproval ? "waiting_approval" : "not_started",
           createdAt: now, updatedAt: now,
         };
-        if (frame.needsApproval) {
+        if (needsApproval) {
           const approval: Approval = {
             id: newId("ap"), taskId: task.id, agentId: agent.id, ownerId: agent.ownerId,
-            action: frame.action ?? `Run task: ${frame.title}`,
+            // the sentence the owner reads is written HERE, from the stored
+            // task — a client-supplied one could describe the work as
+            // something harmless
+            action: describeApproval(task.title),
             status: "pending", createdAt: now,
           };
           task.approvalId = approval.id;
@@ -349,6 +409,12 @@ export class Relay {
       case "cancelTask": {
         const task = this.store.task(frame.taskId);
         if (!task) throw new Error("no such task");
+        // Stopping someone else's work is an action on their agent, so the same
+        // rule applies (P1 #6): you asked for it, or it runs on your agent.
+        const owner = this.store.agents().find(a => a.id === task.agentId)?.ownerId;
+        if (task.requesterId !== conn.userId && owner !== conn.userId) {
+          throw new Error("that task isn't yours to stop");
+        }
         if (task.status === "completed" || task.status === "failed") break;
         task.status = "cancelled";
         task.updatedAt = Date.now();
@@ -421,6 +487,22 @@ export class Relay {
         });
         break;
       }
+      case "harnessCancel": {
+        // The renderer's Cancel button had nowhere to send this, so pressing it
+        // only hid the spinner locally: the relay kept the "a sign-in is
+        // running" lock for six minutes and every retry was refused
+        // (finding #10). Releasing the lock is the whole job.
+        this.assertHarnessAllowed(conn);
+        if (frame.harness !== "claude" && frame.harness !== "codex") {
+          throw new Error("unknown harness");
+        }
+        delete this.signInFlight[conn.userId];
+        delete this.signInAt[conn.userId];
+        this.toEngines(conn.userId, {
+          type: "harnessRequest", action: "cancel", harness: frame.harness,
+        });
+        break;
+      }
       case "harnessState": {
         if (conn.client !== "engine") throw new Error("only the engine reports harness state");
         this.assertHarnessAllowed(conn);
@@ -433,6 +515,8 @@ export class Relay {
         break;
       }
       case "history": {
+        // scrolling back is reading — same gate as posting (P1 #7)
+        this.channelFor(conn.userId, frame.channelId);
         send(conn.ws, {
           type: "history", channelId: frame.channelId,
           messages: this.store.history(frame.channelId, frame.before ?? Date.now(), frame.limit ?? 50),
@@ -510,6 +594,23 @@ export class Relay {
   }
 
   /**
+   * A conversation is announced only to the people in it (P1 #7). Broadcasting
+   * every channel to everyone told the whole house who was talking to whom —
+   * the member list of a private DM is itself private.
+   */
+  private broadcastChannel(channel: Channel): void {
+    const agents = this.store.agents();
+    const audience = new Set<ID>();
+    for (const m of channel.memberIds) {
+      const agent = agents.find(a => a.id === m);
+      audience.add(agent ? agent.ownerId : m);
+    }
+    for (const conn of this.conns) {
+      if (audience.has(conn.userId)) send(conn.ws, { type: "channel", channel });
+    }
+  }
+
+  /**
    * Harness control is limited to the person who runs this Cloud9, on a relay
    * that isn't using the token every checkout ships with. Invited friends can
    * chat; they cannot start programs on the owner's machine.
@@ -543,6 +644,28 @@ export class Relay {
       if (conn.userId === userId) send(conn.ws, frame);
     }
   }
+}
+
+/**
+ * Does this task need the owner to say yes first?
+ *
+ * Answered from the agent's own stored `approvals` setting, plus what KIND of
+ * task this is (a schedule request names itself in its title). The client's
+ * opinion is not consulted — that was the hole in P1 #6.
+ */
+export function requiresApproval(agent: AgentDef, title: string): boolean {
+  const isSchedule = /^!schedule\b/i.test(title.trim());
+  return isSchedule
+    ? agent.approvals?.schedules === true
+    : agent.approvals?.background === true;
+}
+
+/** The plain sentence the owner is shown, built from the stored task title. */
+export function describeApproval(title: string): string {
+  const t = title.trim();
+  const sched = /^!schedule\s+(.+?):\s*(.+)$/i.exec(t);
+  if (sched) return `Create schedule (${sched[1]}): ${sched[2]}`;
+  return `Run background task: ${t}`;
 }
 
 function send(ws: WebSocket, frame: ServerFrame): void {
