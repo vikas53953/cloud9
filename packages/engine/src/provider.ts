@@ -3,9 +3,8 @@
 //  - SdkProvider: Claude Agent SDK (query()), billing to the user's own
 //    credential (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN).
 import os from "node:os";
-import { AgentDef, DEMO_REPLY_PREFIX } from "@cloud9/shared";
+import { AgentDef, DEMO_REPLY_PREFIX, setMachineNames } from "@cloud9/shared";
 import { claudeToolsFor, NEVER_ALLOWED_TOOLS, renderCapabilities } from "./abilities.js";
-import { isCredentialVar } from "./env.js";
 // type-only: erased at compile time, so runrecord.ts may import this file back
 // without creating a runtime import cycle.
 import type { ProviderTrace } from "./runrecord.js";
@@ -61,96 +60,31 @@ export function sanitizeForChat(err: unknown, where: string): string {
 }
 
 /**
- * The same owner's rule, one level down: given text we DO want to show — a
- * command an agent ran, a file it opened, a failure it hit — return the version
- * that may leave this machine.
+ * The other half of the same law, and it now lives in `@cloud9/shared` — see
+ * the long note there. `sanitizeForChat` above answers "may this raw error text
+ * be shown?" with a flat no; `redactForSharing` answers "which PARTS of this may
+ * be shown?" for text we do want to show. Re-exported here so every existing
+ * caller keeps reaching the SAME function, not a second copy of the rule.
  *
- * `sanitizeForChat` answers "may this error text be shown?" with a flat no,
- * because an error is an unbounded string from someone else's code. A run
- * record is different: showing what the agent did is the entire point, so the
- * question becomes "which PARTS of this may be shown?". Both answers live here,
- * next to each other, so there is one place to look and one place to change.
- *
- * What is removed, in order:
- *  1. anything that looks like a secret's value (KEY=… , sk-… , long blobs);
- *  2. every absolute path, Windows or POSIX or UNC, cut down to its last
- *     segment — "note.txt", never "C:\Users\vikasmit\…\note.txt";
- *  3. this machine's home folder and account name, wherever they appear;
- *  4. environment-variable assignments of any kind.
- * Web addresses are protected and passed through unchanged: a URL is the thing
- * the owner most wants to see, and it says nothing about this computer.
+ * It moved because the relay needs it too: a run record is written by this
+ * process and handed out by another one, and a redaction rule with a copy on
+ * each side is a rule with two versions.
  */
-export function redactForSharing(text: string, max = 300): string {
-  if (!text) return "";
-  const urls: string[] = [];
-  let out = text
-    // protect web addresses before any path rule can chew on them
-    .replace(/https?:\/\/[^\s"'<>|]+/g, m => `\u0000${urls.push(m) - 1}\u0000`);
-
-  // 1. secret VALUES — the name may stay, so the owner can see what was set
-  out = out.replace(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|\S+)/g,
-    (whole, name: string) => (isCredentialVar(name) ? `${name}=***` : whole));
-  out = out.replace(/\b(?:sk|pk|ghp|gho|github_pat)[-_][A-Za-z0-9_-]{6,}/gi, "***");
-  out = out.replace(/\b[A-Za-z0-9+/_-]{40,}={0,2}\b/g, "***");
-
-  // 2. absolute paths → their last segment only.
-  //
-  // ORDER MATTERS, and it cost us a live run to learn it. Codex reports the
-  // command it ran with its backslashes doubled, so "C:\\WINDOWS\\…\\foo.exe"
-  // arrives with real double separators. With the UNC rule first, the "\\WINDOWS"
-  // part was eaten as if it were a network share and the drive letter was left
-  // stranded — "C:powershell.exe". Nothing leaked, but it read like a bug
-  // because it was one. The drive-letter rule now goes first and takes the whole
-  // path, and the UNC rule only fires at the START of a token.
-  out = out.replace(/\b[A-Za-z]:[\\/][^\s"'|;&]*/g, m => lastSegment(m));   // C:\… , C:/…
-  out = out.replace(/(^|[\s"'(=,])\\\\[^\s"'|;&]+/g,                        // \\server\share\…
-    (m, lead: string) => `${lead}${lastSegment(m)}`);
-  out = out.replace(/(^|[\s"'(=,])\/(?:home|Users|root|mnt|opt|srv|var|etc|tmp|private)\/[^\s"'|;&]*/g,
-    (m, lead: string) => `${lead}${lastSegment(m)}`);
-
-  // 3. this machine's own names, wherever they still appear
-  for (const secret of machineNames()) {
-    if (secret.length < 3) continue;
-    out = out.split(secret).join("someone");
-    const lower = secret.toLowerCase();
-    if (lower !== secret) out = out.split(lower).join("someone");
-  }
-
-  // 4. put the web addresses back
-  out = out.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => urls[Number(i)] ?? "");
-
-  out = out.replace(/\s+/g, " ").trim();
-  return out.length > max ? `${out.slice(0, max - 1)}…` : out;
-}
-
-function lastSegment(p: string): string {
-  const parts = p.replace(/[\\/]+$/, "").split(/[\\/]/);
-  return parts[parts.length - 1] || "";
-}
+export { redactForSharing } from "@cloud9/shared";
 
 /**
- * Names that identify this computer or the person on it. Read once, defensively:
- * on a locked-down machine `os.userInfo()` throws, and a redaction helper that
- * throws would take a whole turn down with it.
+ * Tell the shared redactor what this computer is called. Done once, at import,
+ * and defensively: on a locked-down machine `os.userInfo()` throws, and a
+ * redaction helper that throws would take a whole turn down with it.
  */
-let cachedNames: string[] | undefined;
-function machineNames(): string[] {
-  if (cachedNames) return cachedNames;
-  const names = new Set<string>();
-  const add = (v: string | undefined): void => {
-    if (!v) return;
-    for (const part of v.split(/[\\/]/)) if (part.length >= 3) names.add(part);
-  };
-  try { add(os.homedir()); } catch { /* best effort */ }
-  try { add(os.userInfo().username); } catch { /* best effort */ }
-  try { add(os.hostname()); } catch { /* best effort */ }
-  // drive letters and generic folders are not identifying — do not blank them
-  for (const generic of ["Users", "home", "AppData", "Local", "Roaming", "var", "tmp"]) {
-    names.delete(generic);
-  }
-  cachedNames = [...names].sort((a, b) => b.length - a.length);
-  return cachedNames;
+function installMachineNames(): void {
+  const names: (string | undefined)[] = [];
+  try { names.push(os.homedir()); } catch { /* best effort */ }
+  try { names.push(os.userInfo().username); } catch { /* best effort */ }
+  try { names.push(os.hostname()); } catch { /* best effort */ }
+  setMachineNames(names);
 }
+installMachineNames();
 
 /**
  * The agent's skills, rendered for the prompt. A skill is plain words the owner

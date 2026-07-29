@@ -540,6 +540,59 @@ written by an older build cannot become a header or a file on somebody's disk.
 
 ---
 
+### 9.9 Cross-origin reads — ADDED 2026-07-29, and the renderer branch can go
+
+**The app is never on the hub's origin.** It is `http://127.0.0.1:4173` in dev
+and QA, and `file://` (so `Origin: null`) in the packaged app. The attachment
+response carried no `Access-Control-Allow-Origin`, so a browser ran the request,
+let the hub **spend the one-use ticket**, and then hid the answer from the page:
+the worst of both worlds. A Playwright probe from the desktop side caught it as
+a console CORS error.
+
+`GET /attachment/<ticket>` now **reflects the request's `Origin`** and sends
+`Vary: Origin`. Nothing else changed: minted at the click, one use, thirty
+seconds, membership re-checked at redeem through `channelFor`, content type
+still decided by the hub from the validated name.
+
+**Why reflecting is safe HERE and would not be elsewhere.** CORS protects
+endpoints that carry *ambient authority* — a cookie or an HTTP-auth header the
+browser attaches by itself, so that merely being able to make the request is
+enough to act as the signed-in person. This endpoint has none: the only thing
+that authorises it is the ticket in the path. A stranger's page can already make
+this request today; what it cannot do is obtain a ticket, and being allowed to
+read a response it could only have got by holding one hands it nothing new.
+
+`Access-Control-Allow-Credentials` is **deliberately absent, and that is the
+load-bearing half of the decision.** Without it a browser will not attach cookies
+or HTTP auth at all and will refuse to expose the response if any were sent — so
+this can never become the "reflected origin plus credentials" hole, which is a
+real and serious one. The rule is written at the function
+(`attachmentCors` in `apps/relay/src/server.ts`) in capitals: **if anyone ever
+adds cookie or header auth to this route, this must go back to an exact
+allow-list first.**
+
+An exact allow-list was considered and rejected: the packaged app sends the
+literal `null`, which no allow-list can tell apart from any other sandboxed
+page, so listing origins would have bought nothing real while breaking the
+moment a dev port changed.
+
+**One response, one reason.** The header is on the attachment response only —
+including its **404**, because the app re-tickets when a link has expired and can
+only do that if it can see the 404 it got. `/health` and every unknown route
+answer with no such header, and a test pins that. There is no `OPTIONS` route: a
+plain `GET` with no custom request headers is a *simple request* and needs no
+preflight. Adding a custom header to that fetch would need one — don't.
+
+**FOR THE RENDERER: `openFile`'s cross-origin branch can now be deleted.** The
+`fetch` → `blob:` → revoke path with the 404 re-ticket works from every real
+origin, including `file://`. Handing the ticket straight to an `<img>` is no
+longer needed and should go; it was only ever a workaround for this header.
+
+Pinned by two tests in `apps/relay/src/download.test.ts`:
+*"the app can read the bytes from its own origin, and from file:// too"* and
+*"no other route in the hub answers a cross-origin read"*. Both failed before
+the header existed.
+
 ## 10. Channels are real things now — BUILT (schema version 3)
 
 ### 10.1 What changed on `Channel`

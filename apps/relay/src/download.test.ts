@@ -245,3 +245,57 @@ test("one person cannot mint an unbounded pile of tickets", async () => {
   await refuses(owner, { type: "attachmentTicket", attachmentId: file.id }, "too many files");
   owner.close(); relay.close();
 });
+
+// ---------------------------------------------------------------------------
+// The app is never on the hub's origin — and it has to be able to READ the
+// answer, not just cause it. Both of these failed before `attachmentCors`.
+// ---------------------------------------------------------------------------
+
+test("the app can read the bytes from its own origin, and from file:// too", async () => {
+  const { relay, http, owner, general } = await stand("dl-cors.db");
+  const file = await attach(owner, general.id, "notes.txt", "the plan is fine");
+
+  // the dev/QA origin
+  const t1 = await ticketFor(owner, file.id);
+  const web = await fetch(http + t1.url, { headers: { origin: "http://127.0.0.1:4173" } });
+  assert.equal(web.status, 200);
+  assert.equal(web.headers.get("access-control-allow-origin"), "http://127.0.0.1:4173");
+  assert.equal(web.headers.get("vary"), "Origin");
+  // the load-bearing half: no ambient authority may ever ride along
+  assert.equal(web.headers.get("access-control-allow-credentials"), null);
+  assert.equal(await web.text(), "the plan is fine");
+
+  // the packaged app, whose origin is the literal string "null"
+  const t2 = await ticketFor(owner, file.id);
+  const packaged = await fetch(http + t2.url, { headers: { origin: "null" } });
+  assert.equal(packaged.status, 200);
+  assert.equal(packaged.headers.get("access-control-allow-origin"), "null");
+
+  // an expired link must be READABLE as a 404, or the app cannot re-ticket
+  const dead = await fetch(http + t2.url, { headers: { origin: "http://127.0.0.1:4173" } });
+  assert.equal(dead.status, 404);
+  assert.equal(dead.headers.get("access-control-allow-origin"), "http://127.0.0.1:4173");
+
+  // and a request that names no origin gets no header — none is needed
+  const t3 = await ticketFor(owner, file.id);
+  const plain = await fetch(http + t3.url);
+  assert.equal(plain.headers.get("access-control-allow-origin"), null);
+
+  owner.close(); relay.close();
+});
+
+test("no other route in the hub answers a cross-origin read", async () => {
+  const { relay, http, owner } = await stand("dl-cors-only.db");
+  const from = { headers: { origin: "http://127.0.0.1:4173" } };
+
+  const health = await fetch(`${http}/health`, from);
+  assert.equal(health.status, 200);
+  assert.equal(health.headers.get("access-control-allow-origin"), null,
+    "one response, one reason — the header does not spread");
+
+  const nothing = await fetch(`${http}/whatever`, from);
+  assert.equal(nothing.status, 404);
+  assert.equal(nothing.headers.get("access-control-allow-origin"), null);
+
+  owner.close(); relay.close();
+});

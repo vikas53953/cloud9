@@ -144,9 +144,166 @@ export interface Task {
   result?: string;
   error?: string;
   approvalId?: ID;
+  /**
+   * WHAT ACTUALLY HAPPENED when this job ran (FR-TL-003).
+   *
+   * This one field is what turns "the job finished" into "here is what it did":
+   * hand it to `runDetail` and you get the steps, the time and the money behind
+   * the result. Written by the hub from the run record's own `taskId` — never
+   * from anything a client claimed — and absent until a run has been recorded,
+   * which is also the honest answer for every task from before this existed.
+   */
+  runId?: string;
   createdAt: number;
   updatedAt: number;
 }
+
+// ---------- what an agent actually DID: the run record ----------
+//
+// THESE ARE WIRE TYPES AND THEY LIVE HERE. They were written in the engine
+// first (that was the only file its author owned), but the engine writes a run
+// record, the relay stores one, and the screen draws one — three programs, one
+// shape. A second definition anywhere is how the three quietly stop agreeing.
+//
+// THE HONESTY RULE travels with them: nothing here is ever invented, estimated
+// or inferred. If a CLI did not report a duration, a cost or an exit code, the
+// field is ABSENT — never zero, never "about". A row whose value is absent must
+// not be drawn at all.
+
+/**
+ * The kinds of thing an agent does, in words a non-developer reads. Both CLIs
+ * map onto this list; anything we do not recognise becomes "tool" with the
+ * tool's own name as the label, so a new tool shows up as a real step rather
+ * than disappearing.
+ */
+export type RunStepKind =
+  | "command"   // ran something on this computer
+  | "read"      // opened a file
+  | "write"     // wrote or changed a file
+  | "search"    // searched files on this computer
+  | "web"       // searched or fetched something online
+  | "tool"      // used some other tool
+  | "thinking"  // reasoning the CLI reported
+  | "message"   // said something
+  | "note";     // the CLI told us something about itself (incl. a REFUSED tool)
+
+export interface RunStep {
+  /** order within the run, from 1 */
+  seq: number;
+  kind: RunStepKind;
+  /** short human label — "Read note.txt", "Ran a command" */
+  label: string;
+  /** the specific thing acted on. Redacted before it is ever shared. */
+  detail?: string;
+  /** true/false ONLY when the CLI reported an outcome. Absent = it did not. */
+  ok?: boolean;
+}
+
+/** Token and money figures, each present only if the CLI reported it. */
+export interface RunUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  reasoningTokens?: number;
+  /** the CLI's own cost figure. Codex does not report one; Claude does. */
+  costUsd?: number;
+}
+
+export type RunOutcome = "ok" | "failed" | "cancelled";
+export type RunKind = "chat" | "task" | "schedule";
+
+/** One agent turn or one delegated job, start to finish. */
+export interface RunRecord {
+  /** "r-<time>-<noise>" — sorts by time, and is safe as a file name */
+  id: string;
+  /** chat reply, delegated job, or scheduled check-in */
+  kind: RunKind;
+  agentId: ID;
+  agentName: string;
+  /** which app ran it: claude, codex, mock … */
+  provider: string;
+  /** the model we ASKED for */
+  model?: string;
+  /** the model the CLI reported using. Claude only. */
+  actualModel?: string;
+  channelId?: ID;
+  taskId?: ID;
+  /** who asked — the person's name, not an id, so the record reads on its own */
+  requestedBy: string;
+  requestedByKind: "human" | "agent" | "schedule";
+  /** what they asked for, trimmed */
+  ask: string;
+  startedAt: number;
+  finishedAt: number;
+  /** measured by Cloud9 around the call. Always present. */
+  durationMs: number;
+  /** claimed by the CLI. Claude only. */
+  cliDurationMs?: number;
+  outcome: RunOutcome;
+  /** plain-words failure, already redacted. Absent on a clean run. */
+  error?: string;
+  steps: RunStep[];
+  usage?: RunUsage;
+  /** the CLI's own conversation id */
+  sessionId?: string;
+  /** Claude only */
+  numTurns?: number;
+  /** how long the reply was — the reply TEXT is not copied into the record */
+  replyChars: number;
+  /** JSON events we understood in the CLI's stream */
+  events: number;
+  /** steps were dropped to keep this record small */
+  truncated?: boolean;
+}
+
+/** A run as it appears in a list, without loading every step. */
+export interface RunListEntry {
+  id: string;
+  kind: RunKind;
+  outcome: RunOutcome;
+  startedAt: number;
+  durationMs: number;
+  ask: string;
+  /** the plain-words line, rebuilt from the record it came from */
+  summary: string;
+}
+
+// -------------------------------------------------------------------- limits
+//
+// A run record must never be able to grow without bound: a runaway agent that
+// reads ten thousand files would otherwise fill the owner's disk — and then the
+// hub's database — with the proof of it. Caps live here, in one place, and the
+// engine, the relay and the screen all read THESE.
+
+export const RUN_LIMITS = {
+  /** steps kept per run; the rest are counted and dropped */
+  steps: 200,
+  label: 120,
+  detail: 300,
+  ask: 500,
+  error: 300,
+  /** a single stream line longer than this is skipped, not parsed */
+  line: 256 * 1024,
+} as const;
+
+/**
+ * How many runs the hub keeps, and how big one may be once it is stored.
+ *
+ * The engine keeps its own copy on disk under the same rules
+ * (`RUN_STORE_DEFAULTS`); this is the hub's half of the same promise, because a
+ * record that is bounded on the machine that made it and unbounded on the
+ * machine that shares it is not bounded at all.
+ */
+export const RUN_RETENTION = {
+  /** runs kept per agent on the hub; the oldest go first */
+  perAgent: 50,
+  /** biggest single stored record — steps are dropped to fit */
+  bytes: 64 * 1024,
+  /** most rows one `runList` may hand back */
+  listPage: 50,
+  /** the page size used when a client doesn't ask for one */
+  listDefault: 20,
+} as const;
 
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
@@ -170,7 +327,11 @@ export type ActivityKind =
   | "channel_updated" | "channel_archived" | "member_removed" | "member_role_changed"
   // FR-CM-009: changing or withdrawing something already said is an ACTION, and
   // the trail has to keep it — otherwise "delete" quietly means "rewrite history"
-  | "message_edited" | "message_deleted";
+  | "message_edited" | "message_deleted"
+  // FR-TL-003: an agent took a turn and we wrote down what it did. This is the
+  // row the Activity panel was always missing — until now it could say an agent
+  // spoke, but never what the agent DID to be able to say it.
+  | "run_recorded";
 
 /**
  * One line of the trail.
@@ -546,6 +707,24 @@ export type ClientFrame =
   | { type: "cancelTask"; taskId: ID }
   | { type: "decideApproval"; approvalId: ID; decision: "approved" | "rejected" }
   | { type: "activity"; before?: number; limit?: number }
+  // ---- what an agent actually did (FR-TL-003) ----
+  /**
+   * ENGINE-HOST ONLY: one turn finished, here is what it did.
+   *
+   * The engine sends `shareableRun(record)`, never the raw one. The hub then
+   * decides everything that matters about it from STORED state — whose agent
+   * this is, and which conversation it happened in — because a record is a
+   * report, not a permission. It is scrubbed again on the way out.
+   */
+  | { type: "runRecorded"; record: RunRecord }
+  /**
+   * "What has this agent been doing?" (`agentId`, owner only), or "what did
+   * this job actually do?" (`taskId`, anyone who can see the conversation).
+   * Naming neither is an error — a list with no scope is a list of everything.
+   */
+  | { type: "runList"; agentId?: ID; taskId?: ID; limit?: number }
+  /** One run, in full. The id is enough: who may see it is read from the record. */
+  | { type: "runDetail"; runId: string }
   // harness sign-in — asked by any of the owner's clients, answered by the engine host
   //
   // `refreshHarness` is the explicit "go and look again" (it replaced the
@@ -634,6 +813,14 @@ export type ServerFrame =
   | { type: "task"; task: Task }
   | { type: "approval"; approval: Approval }
   | { type: "activity"; records: ActivityRecord[] }
+  /**
+   * One run — pushed the moment it finishes to everyone who can see the
+   * conversation it happened in, and sent back on its own to whoever asked for
+   * it by id. Always the redacted version.
+   */
+  | { type: "run"; record: RunRecord }
+  /** Answers `runList`. Echoes back which question it is answering. */
+  | { type: "runs"; agentId?: ID; taskId?: ID; runs: RunListEntry[] }
   | { type: "push"; message: Message } // relay → mobile: delivered as notification
   // harness status broadcast to the owner's clients
   | { type: "harness"; state: HarnessState }
@@ -1046,6 +1233,351 @@ export function unknownHarness(name: HarnessName): HarnessInfo {
     name, installed: false, signedIn: false, authKind: "none",
     models: [], detail: "checking…",
   };
+}
+
+// ---------- what may leave this machine ----------
+//
+// ONE OWNER FOR THE REDACTION RULE, and it lives here because two different
+// programs now need it: the engine, which writes a run record full of Windows
+// paths and argv, and the relay, which hands that record to somebody else.
+// A copy on each side is a rule with two versions, and the guest gets whichever
+// one was forgotten.
+//
+// `sanitizeForChat` (in the engine) is the other half of the same law: it
+// answers "may this raw error text be shown?" with a flat no, because an error
+// is an unbounded string from someone else's code. This function answers the
+// narrower question — "which PARTS of this may be shown?" — for text we DO want
+// to show. Neither is ever bypassed; where more is needed, it is added here.
+
+/**
+ * Credential variables we know by name and always remove.
+ * Kept explicit as well as pattern-matched: names we have actually seen in the
+ * wild are documented here, and the pattern below catches the rest.
+ */
+export const CREDENTIAL_ENV_VARS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "CODEX_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+] as const;
+
+/**
+ * The shape of a secret's NAME. A deny-list of known variables only ever
+ * protects against the secrets we thought of; this catches the class.
+ */
+const SECRET_NAME_RE = /(API[_-]?KEY|ACCESS[_-]?KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|_TOKEN$|^TOKEN$|AUTH_TOKEN|SESSION_KEY|PRIVATE_KEY)/i;
+
+/** Is this variable name credential-shaped? Exported so tests can pin the rule. */
+export function isCredentialVar(name: string): boolean {
+  if ((CREDENTIAL_ENV_VARS as readonly string[]).includes(name)) return true;
+  return SECRET_NAME_RE.test(name);
+}
+
+/**
+ * The names that identify THIS computer and the person sitting at it.
+ *
+ * This file is imported by a browser bundle as well as by two Node programs, so
+ * it cannot read `os` itself. Instead every Node process that redacts installs
+ * its own machine's names once, at startup — the engine host and the relay both
+ * do. A process that never installs any still gets rules 1, 2 and 4; it simply
+ * has no personal names to blank, which is the honest behaviour rather than a
+ * silent half-redaction.
+ */
+let machineNames: string[] = [];
+
+/**
+ * Tell the redactor what this machine is called. Longest first, so
+ * "vikasmit" is blanked before a shorter fragment of it can be.
+ * Names under three characters are dropped — blanking "am" would shred prose.
+ */
+export function setMachineNames(names: (string | undefined)[]): void {
+  const out = new Set<string>();
+  for (const value of names) {
+    if (!value) continue;
+    for (const part of value.split(/[\\/]/)) if (part.length >= 3) out.add(part);
+  }
+  // drive letters and generic folders are not identifying — do not blank them
+  for (const generic of ["Users", "home", "AppData", "Local", "Roaming", "var", "tmp"]) {
+    out.delete(generic);
+  }
+  machineNames = [...out].sort((a, b) => b.length - a.length);
+}
+
+/** What the redactor is currently blanking. Exported so tests can pin it. */
+export function knownMachineNames(): string[] {
+  return [...machineNames];
+}
+
+/**
+ * Given text we DO want to show — a command an agent ran, a file it opened, a
+ * failure it hit — return the version that may leave this machine.
+ *
+ * What is removed, in order:
+ *  1. anything that looks like a secret's value (KEY=… , sk-… , long blobs);
+ *  2. every absolute path, Windows or POSIX or UNC, cut down to its last
+ *     segment — "note.txt", never "C:\Users\vikasmit\…\note.txt";
+ *  3. this machine's home folder and account name, wherever they appear;
+ *  4. environment-variable assignments of any kind.
+ * Web addresses are protected and passed through unchanged: a URL is the thing
+ * the owner most wants to see, and it says nothing about this computer.
+ */
+export function redactForSharing(text: string, max = 300): string {
+  if (!text) return "";
+  const urls: string[] = [];
+  let out = text
+    // protect web addresses before any path rule can chew on them
+    .replace(/https?:\/\/[^\s"'<>|]+/g, m => `\u0000${urls.push(m) - 1}\u0000`);
+
+  // 1. secret VALUES — the name may stay, so the owner can see what was set
+  out = out.replace(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|\S+)/g,
+    (whole, name: string) => (isCredentialVar(name) ? `${name}=***` : whole));
+  out = out.replace(/\b(?:sk|pk|ghp|gho|github_pat)[-_][A-Za-z0-9_-]{6,}/gi, "***");
+  out = out.replace(/\b[A-Za-z0-9+/_-]{40,}={0,2}\b/g, "***");
+
+  // 2. absolute paths → their last segment only.
+  //
+  // ORDER MATTERS, and it cost us a live run to learn it. Codex reports the
+  // command it ran with its backslashes doubled, so "C:\\WINDOWS\\…\\foo.exe"
+  // arrives with real double separators. With the UNC rule first, the "\\WINDOWS"
+  // part was eaten as if it were a network share and the drive letter was left
+  // stranded — "C:powershell.exe". Nothing leaked, but it read like a bug
+  // because it was one. The drive-letter rule now goes first and takes the whole
+  // path, and the UNC rule only fires at the START of a token.
+  out = out.replace(/\b[A-Za-z]:[\\/][^\s"'|;&]*/g, m => lastSegment(m));   // C:\… , C:/…
+  out = out.replace(/(^|[\s"'(=,])\\\\[^\s"'|;&]+/g,                        // \\server\share\…
+    (m, lead: string) => `${lead}${lastSegment(m)}`);
+  out = out.replace(/(^|[\s"'(=,])\/(?:home|Users|root|mnt|opt|srv|var|etc|tmp|private)\/[^\s"'|;&]*/g,
+    (m, lead: string) => `${lead}${lastSegment(m)}`);
+
+  // 3. this machine's own names, wherever they still appear
+  for (const secret of machineNames) {
+    if (secret.length < 3) continue;
+    out = out.split(secret).join("someone");
+    const lower = secret.toLowerCase();
+    if (lower !== secret) out = out.split(lower).join("someone");
+  }
+
+  // 4. put the web addresses back
+  out = out.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => urls[Number(i)] ?? "");
+
+  out = out.replace(/\s+/g, " ").trim();
+  return out.length > max ? `${out.slice(0, max - 1)}…` : out;
+}
+
+function lastSegment(p: string): string {
+  const parts = p.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || "";
+}
+
+/**
+ * The version of a record that may be shown in chat, sent to a client, or read
+ * by a guest. Every free-text field goes through `redactForSharing`.
+ *
+ * This is deliberately a SEPARATE object rather than a flag on the record: the
+ * raw record on disk keeps the owner's own detail, and the only way to get a
+ * shareable one is to call this. There is no path that shares the raw record by
+ * forgetting to set something — and because it is applied AGAIN on the way out
+ * of the hub, a record put there by an older or broken engine is still scrubbed
+ * before it reaches anybody.
+ */
+export function shareableRun(record: RunRecord): RunRecord {
+  return {
+    ...record,
+    ask: redactForSharing(record.ask, RUN_LIMITS.ask),
+    ...(record.error ? { error: redactForSharing(record.error, RUN_LIMITS.error) } : {}),
+    steps: (record.steps ?? []).map(s => ({
+      ...s,
+      label: redactForSharing(s.label, RUN_LIMITS.label),
+      ...(s.detail ? { detail: redactForSharing(s.detail, RUN_LIMITS.detail) } : {}),
+    })),
+  };
+}
+
+// ---------- reading a run in plain words ----------
+
+export interface RunCounts {
+  command: number; read: number; write: number; search: number;
+  web: number; tool: number; message: number;
+}
+
+/** Count the steps by kind. Nothing is inferred — a kind we did not see is 0. */
+export function countSteps(steps: RunStep[]): RunCounts {
+  const counts: RunCounts = { command: 0, read: 0, write: 0, search: 0, web: 0, tool: 0, message: 0 };
+  for (const s of steps ?? []) {
+    if (s.kind in counts) counts[s.kind as keyof RunCounts]++;
+  }
+  return counts;
+}
+
+/**
+ * One short line a non-developer can read: "checked 4 sites, wrote 1 file, took
+ * 41 seconds". Every clause is derived from a step that was actually recorded —
+ * there is no sentence in here that can appear without evidence behind it.
+ *
+ * It lives in shared because the SCREEN shows it verbatim and the hub puts it
+ * in a list row; both must say the same words about the same run.
+ */
+export function summarizeRun(record: RunRecord): string {
+  const c = countSteps(record.steps);
+  const parts: string[] = [];
+  if (c.web) parts.push(plural(c.web, "checked 1 site", `checked ${c.web} sites`));
+  if (c.search) parts.push(plural(c.search, "ran 1 search", `ran ${c.search} searches`));
+  if (c.read) parts.push(plural(c.read, "read 1 file", `read ${c.read} files`));
+  if (c.write) parts.push(plural(c.write, "wrote 1 file", `wrote ${c.write} files`));
+  if (c.command) parts.push(plural(c.command, "ran 1 command", `ran ${c.command} commands`));
+  if (c.tool) parts.push(plural(c.tool, "used 1 other tool", `used ${c.tool} other tools`));
+
+  const time = `took ${humanDuration(record.durationMs)}`;
+  const money = typeof record.usage?.costUsd === "number"
+    ? `, cost ${humanMoney(record.usage.costUsd)}` : "";
+
+  if (record.outcome === "cancelled") {
+    return parts.length
+      ? `Stopped after ${parts.join(", ")} — ${time}${money}.`
+      : `Stopped before it got started — ${time}.`;
+  }
+  if (record.outcome === "failed") {
+    const why = record.error ? ` — ${record.error}` : "";
+    return parts.length
+      ? `Didn't finish. Got as far as ${parts.join(", ")}, ${time}${money}.${why}`
+      : `Didn't finish, ${time}${money}.${why}`;
+  }
+  if (parts.length === 0) {
+    return `Answered straight from what it knew — no tools used, ${time}${money}.`;
+  }
+  return `${capitalise(parts.join(", "))}, ${time}${money}.`;
+}
+
+/** A list row for one record — the same words the card shows, in one line. */
+export function runListEntry(record: RunRecord): RunListEntry {
+  return {
+    id: record.id,
+    kind: record.kind,
+    outcome: record.outcome,
+    startedAt: record.startedAt,
+    durationMs: record.durationMs,
+    ask: record.ask,
+    summary: summarizeRun(record),
+  };
+}
+
+/** "41 seconds", "2 minutes 5 seconds", "under a second" — no decimals, no jargon. */
+export function humanDuration(ms: number): string {
+  if (ms < 1000) return "under a second";
+  const total = Math.round(ms / 1000);
+  if (total < 60) return `${total} second${total === 1 ? "" : "s"}`;
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  const m = `${mins} minute${mins === 1 ? "" : "s"}`;
+  return secs ? `${m} ${secs} second${secs === 1 ? "" : "s"}` : m;
+}
+
+/** Money as the owner would say it. Under a dollar reads in cents. */
+export function humanMoney(usd: number): string {
+  if (usd < 0.01) return "less than a cent";
+  if (usd < 1) return `${Math.round(usd * 100)} cents`;
+  return `$${usd.toFixed(2)}`;
+}
+
+function plural(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
+}
+
+function capitalise(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// ---------- a run record that arrived from somewhere else ----------
+
+/**
+ * Check a run record before it is stored.
+ *
+ * A record arrives over the wire from the engine host, so it is UNTRUSTED
+ * INPUT exactly like an agent definition is: same law, same shape of answer —
+ * a plain-words problem, or null when it is fine. The relay refuses a bad one
+ * rather than putting it in the database and discovering the problem when a
+ * screen tries to draw it.
+ *
+ * The id is checked with `isSafeSkillFileName` on purpose. A run id becomes a
+ * real file name in the engine's own folder, and asking that question in two
+ * places with two answers is how the two drift.
+ */
+export function validateRunRecord(record: unknown): string | null {
+  if (!record || typeof record !== "object") return "that isn't a run record";
+  const r = record as Partial<RunRecord>;
+  if (!isSafeSkillFileName(typeof r.id === "string" ? `${r.id}.json` : undefined)) {
+    return "that run id isn't usable";
+  }
+  if (r.kind !== "chat" && r.kind !== "task" && r.kind !== "schedule") {
+    return "a run is a chat reply, a job or a scheduled check-in";
+  }
+  if (r.outcome !== "ok" && r.outcome !== "failed" && r.outcome !== "cancelled") {
+    return "a run either worked, failed or was stopped";
+  }
+  if (typeof r.agentId !== "string" || r.agentId.length === 0 || r.agentId.length > 64) {
+    return "a run belongs to an agent";
+  }
+  for (const [what, value, max] of [
+    ["agent name", r.agentName, AGENT_LIMITS.name],
+    ["app name", r.provider, 64],
+    ["ask", r.ask, RUN_LIMITS.ask],
+    ["requester", r.requestedBy, AGENT_LIMITS.name],
+  ] as const) {
+    if (typeof value !== "string") return `a run record needs a ${what}`;
+    if (value.length > max) return `that ${what} is too long`;
+  }
+  for (const [what, value] of [
+    ["start time", r.startedAt], ["finish time", r.finishedAt],
+    ["duration", r.durationMs], ["reply length", r.replyChars], ["event count", r.events],
+  ] as const) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return `that ${what} isn't a number`;
+  }
+  if (!Array.isArray(r.steps)) return "a run record needs a list of steps";
+  if (r.steps.length > RUN_LIMITS.steps) return "that run has too many steps";
+  for (const s of r.steps) {
+    if (!s || typeof s !== "object") return "that isn't a step";
+    if (typeof s.label !== "string" || s.label.length > RUN_LIMITS.label) {
+      return "a step's label is too long";
+    }
+    if (s.detail !== undefined
+      && (typeof s.detail !== "string" || s.detail.length > RUN_LIMITS.detail)) {
+      return "a step's detail is too long";
+    }
+  }
+  return null;
+}
+
+/**
+ * Bring a record under a size cap by dropping steps from the MIDDLE — the first
+ * few steps and the last few are what a person reads. The record then SAYS it
+ * was truncated, so nobody mistakes a trimmed run for a short one.
+ *
+ * One implementation, two callers: the engine measures against the indented
+ * JSON it writes to disk, the relay against the compact JSON it puts in a
+ * database row — so the serializer is handed in rather than assumed. Measuring
+ * one shape and storing another is how a cap quietly stops capping.
+ */
+export function fitRunRecord(
+  record: RunRecord,
+  maxBytes: number,
+  serialize: (r: RunRecord) => string = r => JSON.stringify(r),
+): RunRecord {
+  let out = record;
+  while (serialize(out).length > maxBytes && out.steps.length > 2) {
+    const half = Math.max(1, Math.floor(out.steps.length / 2));
+    out = {
+      ...out,
+      steps: [...out.steps.slice(0, half - 1), ...out.steps.slice(half + 1)],
+      truncated: true,
+    };
+  }
+  if (serialize(out).length > maxBytes) {
+    out = { ...out, steps: [], truncated: true, ask: out.ask.slice(0, RUN_LIMITS.ask) };
+  }
+  return out;
 }
 
 // ---------- helpers ----------

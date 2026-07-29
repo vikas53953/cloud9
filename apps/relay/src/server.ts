@@ -7,13 +7,25 @@ import { WebSocketServer, WebSocket } from "ws";
 import {
   AgentDef, AgentStatus, Approval, Attachment, Channel, ChannelMember, ChannelRole,
   ChannelSummary, ClientFrame, HarnessState, ID, Message,
-  MESSAGE_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, SearchHit, ServerFrame, Task,
-  UnreadEntry, User, WorldState,
-  downloadContentType, isInlineViewable, isSafeSkillFileName, mayAdministerChannel, mayDriveAgent,
+  MESSAGE_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, RunRecord, RUN_RETENTION,
+  SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
+  downloadContentType, fitRunRecord, isInlineViewable, isSafeSkillFileName,
+  mayAdministerChannel, mayDriveAgent, runListEntry, setMachineNames, shareableRun,
   extractMentions, newId, validateAgentInput, validateAttachment, validateChannelText,
-  validateMessageText, validateReactionEmoji,
+  validateMessageText, validateReactionEmoji, validateRunRecord,
 } from "@cloud9/shared";
-import { Store } from "./store.js";
+import os from "node:os";
+import { RunRow, Store } from "./store.js";
+
+/**
+ * The hub runs on somebody's own computer, so its own home folder and account
+ * name are exactly the things a run record must not leak. Installing them here
+ * means the redactor the hub applies on the way out is a REAL one and not a
+ * half-disabled copy — see `redactForSharing` in @cloud9/shared.
+ */
+try {
+  setMachineNames([os.homedir(), os.userInfo().username, os.hostname()]);
+} catch { /* best effort — a locked-down machine still gets the path rules */ }
 import { secureId } from "./secureid.js";
 
 interface Conn {
@@ -128,7 +140,7 @@ export class Relay {
     this.server = http.createServer((req, res) => {
       if (req.url === "/health") { res.writeHead(200); res.end("ok"); return; }
       const at = attachmentTicketFrom(req);
-      if (at !== undefined) { this.serveAttachment(at, res); return; }
+      if (at !== undefined) { this.serveAttachment(at, req, res); return; }
       res.writeHead(404); res.end();
     });
     this.wss = new WebSocketServer({ server: this.server });
@@ -519,9 +531,16 @@ export class Relay {
    * unauthenticated stranger the difference between "no such file" and "a file
    * you may not have", which is itself something they did not know.
    */
-  private serveAttachment(ticket: string, res: http.ServerResponse): void {
+  private serveAttachment(ticket: string, req: http.IncomingMessage, res: http.ServerResponse): void {
+    // The one response in this hub that a browser page on another origin may
+    // read. See `attachmentCors` for why that is safe here and nowhere else.
+    // It goes on the REFUSAL too: the app re-tickets when a link has expired,
+    // and it can only do that if it is allowed to see the 404 it got.
+    const cors = attachmentCors(req);
     const nope = () => {
-      res.writeHead(404, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+      res.writeHead(404, {
+        "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", ...cors,
+      });
       res.end("that link has expired — open the file again");
     };
     // SPENT FIRST, before anything can go wrong and leave it alive. One use is
@@ -567,6 +586,7 @@ export class Relay {
       "x-content-type-options": "nosniff",
       "content-security-policy": "default-src 'none'; sandbox",
       "cache-control": "no-store",
+      ...cors,
     });
     fs.createReadStream(stored).pipe(res);
   }
@@ -1006,6 +1026,51 @@ export class Relay {
         });
         break;
       }
+      // ---- what an agent actually did (FR-TL-003) ----
+      case "runRecorded": {
+        this.recordRun(conn, frame.record);
+        break;
+      }
+      case "runList": {
+        const limit = typeof frame.limit === "number" ? frame.limit : RUN_RETENTION.listDefault;
+        if (frame.taskId) {
+          // A JOB'S runs are readable by whoever can read the conversation the
+          // job was asked for in — the same gate as reading the message that
+          // announced it. `channelFor` is asked first so an invented task id
+          // and a task in somebody else's room fail the same way.
+          const task = this.store.task(frame.taskId);
+          if (!task) throw new Error("no such task");
+          this.channelFor(conn.userId, task.channelId);
+          send(conn.ws, {
+            type: "runs", taskId: frame.taskId,
+            runs: this.store.runsForTask(frame.taskId, limit)
+              // belt and braces: the room gate said yes, each row is asked again
+              .filter(row => this.canSeeRun(conn.userId, row))
+              .map(row => runListEntry(shareableRun(row.record))),
+          });
+          break;
+        }
+        // AN AGENT'S history is its owner's business and nobody else's. Being in
+        // a room with someone's agent shows you the turns it took THERE (ask by
+        // task, or watch them arrive); it is not a licence to read everything
+        // that agent has ever done, in every conversation, for everyone.
+        if (!frame.agentId) throw new Error("say whose work you want to see");
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        send(conn.ws, {
+          type: "runs", agentId: agent.id,
+          runs: this.store.runsForAgent(agent.id, limit)
+            .map(row => runListEntry(shareableRun(row.record))),
+        });
+        break;
+      }
+      case "runDetail": {
+        const row = typeof frame.runId === "string" ? this.store.run(frame.runId) : undefined;
+        // "no such run" for a run you may not see, so an id cannot be probed —
+        // the same sentence an invented id gets, exactly as attachments do.
+        if (!row || !this.canSeeRun(conn.userId, row)) throw new Error("no such run");
+        send(conn.ws, { type: "run", record: shareableRun(row.record) });
+        break;
+      }
       // ---- harness sign-in (docs/plans/harness-signin.md) ----
       // These frames make the engine host start programs on the owner's
       // computer, so they are the most privileged in the protocol: owner only,
@@ -1237,6 +1302,133 @@ export class Relay {
         this.toUser(conn.userId, { type: "read", entry });
         break;
       }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // What an agent actually did (FR-TL-003, FR-AU-003)
+  //
+  // A run record is the most detailed thing this hub has ever been asked to
+  // hand round: it names the files an agent opened, the commands it ran and the
+  // web pages it fetched, on somebody's own computer. So it goes through the
+  // gates that already exist rather than a new set of its own —
+  //
+  //   WHOSE AGENT      `myAgent`, on stored state. An engine may only report
+  //                    runs for agents its own user owns.
+  //   WHICH ROOM       `channelFor`, on stored state. A run is visible to
+  //                    exactly the people who could see the conversation it
+  //                    happened in — plus the agent's owner, always.
+  //   WHAT LEAVES      `shareableRun` (which is `redactForSharing`), applied
+  //                    AGAIN here even though the engine already applied it.
+  //                    The engine is a program on the same machine and this is
+  //                    the last door; a record written by an older or broken
+  //                    engine must not be the way a guest learns the owner's
+  //                    folder layout.
+  //
+  // There is deliberately no second authorisation path. Nothing below reads a
+  // permission out of the record itself.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Store one run the engine has just finished, and tell the room about it.
+   *
+   * Everything the record CLAIMS about where it belongs is verified, and a
+   * claim that does not check out is DROPPED rather than obeyed: an unverifiable
+   * `channelId` leaves the run visible to its owner alone, which is the narrow
+   * answer, and a `taskId` for somebody else's job is simply not recorded. The
+   * turn already happened, so refusing the whole record would lose the evidence
+   * over a field nobody needed.
+   */
+  private recordRun(conn: Conn, record: RunRecord): void {
+    if (conn.client !== "engine") throw new Error("only the engine reports what an agent did");
+    const bad = validateRunRecord(record);
+    if (bad) throw new Error(bad);
+    // WHOSE AGENT — stored state, never the record. This one line is what stops
+    // an engine host reporting runs against another person's agent and, through
+    // that, planting a readable record in a room it was never in.
+    const agent = this.myAgent(conn.userId, record.agentId);
+
+    let channelId: ID | undefined;
+    if (record.channelId) {
+      // the agent's owner can see every room the agent is in, so this is the
+      // right person to ask — and a room neither of them is in fails here
+      try { channelId = this.channelFor(conn.userId, record.channelId).id; }
+      catch { channelId = undefined; }
+    }
+    // a job's run belongs to THAT job, and only if the job is really this
+    // agent's — otherwise `runList` by task would be a way to attach a record
+    // to somebody else's work
+    const task = record.taskId ? this.store.task(record.taskId) : undefined;
+    const taskId = task && task.agentId === agent.id ? task.id : undefined;
+
+    // Redact FIRST, then fit: the cap is measured against the bytes that are
+    // actually stored, and what is stored is the version that may be read.
+    const safe = fitRunRecord(shareableRun(record), RUN_RETENTION.bytes);
+    // The record's OWN `channelId` and `taskId` are overwritten with what was
+    // verified — including with "nothing". Spreading only the values that
+    // checked out would leave the unverified claim sitting inside the record,
+    // where a screen would read it and say the run happened in a room it never
+    // touched. The columns beside it would have been right and the object
+    // itself would have been lying; a test caught exactly that.
+    const cleaned: RunRecord = { ...safe, channelId, taskId };
+    if (!channelId) delete cleaned.channelId;
+    if (!taskId) delete cleaned.taskId;
+    const row: RunRow = {
+      record: cleaned,
+      agentId: agent.id,
+      ownerId: agent.ownerId,
+      ...(channelId ? { channelId } : {}),
+      ...(taskId ? { taskId } : {}),
+    };
+    // saveRun prunes in the same call, so "bounded" isn't something a caller
+    // has to remember
+    this.store.saveRun(row);
+
+    // THE ROW THE ACTIVITY PANEL WAS ALWAYS MISSING. Until now the trail could
+    // say an agent spoke; it could not say what the agent did to be able to.
+    this.store.logActivity({
+      actorKind: "agent", actorId: agent.id, actorName: agent.name,
+      kind: "run_recorded", refId: row.record.id,
+      // the plain-words line, from the record — never a sentence of our own
+      detail: runListEntry(row.record).summary,
+    });
+
+    // "The job finished" becomes "here is what it did".
+    if (task && taskId) {
+      task.runId = row.record.id;
+      task.updatedAt = Date.now();
+      this.store.saveTask(task);
+      this.broadcast({ type: "task", task });
+    }
+
+    this.tellAboutRun(row);
+  }
+
+  /**
+   * May this person read this run?
+   *
+   * Two ways in, and no third: it is your own agent's, or it happened in a
+   * conversation you can see. A run with no room — a scheduled check-in that
+   * posted nowhere — is its owner's alone, which is the narrow answer and
+   * therefore the right default.
+   */
+  private canSeeRun(userId: ID, row: RunRow): boolean {
+    if (row.ownerId === userId) return true;
+    if (!row.channelId) return false;
+    try { this.channelFor(userId, row.channelId); return true; } catch { return false; }
+  }
+
+  /** Push a finished run to everyone who could see the conversation it was in. */
+  private tellAboutRun(row: RunRow): void {
+    const frame: ServerFrame = { type: "run", record: row.record };
+    const channel = row.channelId ? this.store.channel(row.channelId) : undefined;
+    if (!channel) { this.toUser(row.ownerId, frame); return; }
+    const audience = this.audienceFor(channel);
+    // the owner hears about their own agent's work even if they have since
+    // left the room it happened in
+    audience.add(row.ownerId);
+    for (const conn of this.conns) {
+      if (audience.has(conn.userId)) send(conn.ws, frame);
     }
   }
 
@@ -1485,6 +1677,55 @@ export function attachmentTicketFrom(req: http.IncomingMessage): string | undefi
   // string we minted, so anything that isn't one of those characters is not it
   if (!/^[A-Za-z0-9._-]{16,256}$/.test(rest)) return "";
   return rest;
+}
+
+/**
+ * The ONE response in this hub that a page on another origin may read.
+ *
+ * WHY IT IS NEEDED. The app's origin is never the hub's — `127.0.0.1:4173` in
+ * dev and QA, and `file://` (so `Origin: null`) in the packaged app. Without
+ * this header the browser ran the request, let the hub SPEND the one-use
+ * ticket, and then hid the answer from the page: the worst of both worlds. The
+ * renderer had grown a second, worse code path because of it.
+ *
+ * WHY REFLECTING THE ORIGIN IS SAFE HERE. CORS protects endpoints that carry
+ * AMBIENT AUTHORITY — a cookie or an HTTP-auth header the browser attaches by
+ * itself, so that merely being able to make the request is enough to act as the
+ * signed-in person. This endpoint has none. The only thing that authorises it is
+ * the one-use ticket in the path, which is minted on an already-authenticated
+ * socket, checked against membership again at redeem, dies on first use and dies
+ * again after thirty seconds. A stranger's page can already MAKE this request
+ * today; what it cannot do is obtain a ticket. Letting it read a response it
+ * could only have got by holding a ticket hands it nothing it did not have.
+ *
+ * `Access-Control-Allow-Credentials` is deliberately absent, and that is the
+ * load-bearing half of this decision, not an omission. Without it a browser
+ * will not attach cookies or HTTP auth to the request at all, and will refuse
+ * to expose the response if any were sent — so this can never become the
+ * "reflected origin plus credentials" hole, which is a real and serious one.
+ * IF ANYONE EVER ADDS COOKIE OR HEADER AUTH TO THIS ROUTE, THIS FUNCTION MUST
+ * GO BACK TO AN EXACT ALLOW-LIST FIRST.
+ *
+ * An exact list of origins was tried on paper and rejected: the packaged app
+ * sends the literal `null`, which no allow-list can distinguish from any other
+ * sandboxed page, so listing origins would have bought nothing real while
+ * breaking the moment a dev port changed.
+ *
+ * A request with no `Origin` at all — a direct GET, a download manager — gets
+ * no header, because none is needed and a header nobody asked for is noise.
+ * There is no preflight to answer: a plain `GET` with no custom request headers
+ * is a simple request. Adding one to the fetch would need an `OPTIONS` route,
+ * and that would be a second reason on a second response — do not.
+ */
+export function attachmentCors(req: http.IncomingMessage): Record<string, string> {
+  const origin = req.headers.origin;
+  if (typeof origin !== "string" || origin.length === 0 || origin.length > 2048) return {};
+  return {
+    "access-control-allow-origin": origin,
+    // caches must not hand one origin's copy to another. Belt on top of the
+    // braces of `cache-control: no-store`.
+    "vary": "Origin",
+  };
 }
 
 function send(ws: WebSocket, frame: ServerFrame): void {

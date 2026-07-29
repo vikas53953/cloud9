@@ -5,7 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   ActivityRecord, AgentDef, Approval, Attachment, Channel, ChannelMember, ChannelRole, ID, Message,
-  MessageReaction, MESSAGE_LIMITS, Task, User, newId,
+  MessageReaction, MESSAGE_LIMITS, RunRecord, RUN_RETENTION, Task, User, newId,
 } from "@cloud9/shared";
 import { secureId, secureToken } from "./secureid.js";
 
@@ -51,6 +51,45 @@ function toMember(r: RawMember): ChannelMember {
     ...(r.removedAt !== null ? { removedAt: r.removedAt } : {}),
     ...(r.removedBy ? { removedBy: r.removedBy } : {}),
   };
+}
+
+/**
+ * One stored run, plus the four facts the hub decided about it.
+ *
+ * They are stored BESIDE the record rather than trusted from inside it: the
+ * record arrived over the wire, and "who owns this" and "which room was this
+ * in" are the two questions every later authorisation answer is built on.
+ */
+export interface RunRow {
+  record: RunRecord;
+  agentId: ID;
+  /** the human whose agent this is — the person who may always read it */
+  ownerId: ID;
+  /** the conversation it happened in, when it happened in one */
+  channelId?: ID;
+  /** the delegated job it belongs to, when it belongs to one */
+  taskId?: ID;
+}
+
+interface RawRun {
+  id: string; agentId: string; ownerId: string;
+  channelId: string | null; taskId: string | null; startedAt: number; json: string;
+}
+
+function toRun(r: RawRun): RunRow {
+  return {
+    record: JSON.parse(r.json) as RunRecord,
+    agentId: r.agentId,
+    ownerId: r.ownerId,
+    ...(r.channelId ? { channelId: r.channelId } : {}),
+    ...(r.taskId ? { taskId: r.taskId } : {}),
+  };
+}
+
+/** No caller, and no client, may ask for a bigger page than the protocol allows. */
+function cap(limit: number): number {
+  if (!Number.isFinite(limit)) return RUN_RETENTION.listDefault;
+  return Math.max(1, Math.min(Math.floor(limit), RUN_RETENTION.listPage));
 }
 
 function toInvite(r: RawInvite): InviteRow {
@@ -154,6 +193,21 @@ export class Store {
         PRIMARY KEY (channelId, memberId)
       );
       CREATE INDEX IF NOT EXISTS cm_member ON channel_members(memberId);
+
+      -- WHAT AN AGENT ACTUALLY DID, one row per turn (FR-TL-003).
+      --
+      -- The engine's own copy on disk is the local truth; this is the copy
+      -- other people's screens read, and it only ever holds the REDACTED
+      -- version. The columns beside the JSON are the ones authorisation and
+      -- pruning are decided from: ownerId and channelId are written by the hub
+      -- from stored state, never copied out of the record, because a record is
+      -- a report and a report is not a permission.
+      CREATE TABLE IF NOT EXISTS runs(
+        id TEXT PRIMARY KEY, agentId TEXT NOT NULL, ownerId TEXT NOT NULL,
+        channelId TEXT, taskId TEXT, startedAt INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS run_agent ON runs(agentId, startedAt);
+      CREATE INDEX IF NOT EXISTS run_task ON runs(taskId);
 
       -- Read state lives HERE, on the account, so it follows a person between
       -- machines. It used to live in one browser's localStorage.
@@ -277,6 +331,20 @@ export class Store {
       this.backfillChannelMembers();
       from = 3;
       this.setSchemaVersion(3);
+    }
+    if (from < 4) {
+      // v3 → v4: run records.
+      //
+      // NOTHING TO BACKFILL, and that is the honest answer rather than a
+      // missing step: a database written before this round holds no record of
+      // what any agent did, and inventing rows for turns nobody watched is
+      // exactly the lie this feature exists to stop. The table itself is
+      // brand new, so `CREATE TABLE IF NOT EXISTS` above has already made it on
+      // a fresh file and an old one alike — and because no migration step adds
+      // a COLUMN here, its indexes may safely live up there with it (the rule
+      // the activity(seq) bug taught us).
+      from = 4;
+      this.setSchemaVersion(4);
     }
   }
 
@@ -482,6 +550,10 @@ export class Store {
   }
   deleteAgent(id: ID): void {
     this.db.prepare("DELETE FROM agents WHERE id=?").run(id);
+    // An agent's runs go with it. Leaving them behind would be a pile of
+    // records about an agent nobody can see any more, and the `ownerId` on
+    // them would be the only thing still deciding who may read them.
+    this.forgetRuns(id);
   }
   agents(): AgentDef[] {
     return (this.db.prepare("SELECT json FROM agents").all() as { json: string }[])
@@ -1018,6 +1090,74 @@ export class Store {
       .map(r => JSON.parse(r.json) as ActivityRecord).reverse();
   }
 
+  // ---- runs: what an agent actually did ----
+
+  /**
+   * Write one run.
+   *
+   * `ownerId` and `channelId` are handed in by the caller from what it worked
+   * out about the AGENT and the CONVERSATION, not read out of the record — this
+   * function will not go looking, so there is no way for a record to nominate
+   * who may read it.
+   *
+   * Storing is followed immediately by pruning, in the same call, so "bounded"
+   * is a property of the only way to write a run rather than something a caller
+   * has to remember.
+   */
+  saveRun(row: RunRow): void {
+    this.db.prepare(
+      "INSERT OR REPLACE INTO runs(id,agentId,ownerId,channelId,taskId,startedAt,json) VALUES(?,?,?,?,?,?,?)",
+    ).run(
+      row.record.id, row.agentId, row.ownerId,
+      row.channelId ?? null, row.taskId ?? null,
+      row.record.startedAt, JSON.stringify(row.record),
+    );
+    this.pruneRuns(row.agentId);
+  }
+
+  run(id: ID): RunRow | undefined {
+    const raw = this.db.prepare(
+      "SELECT id,agentId,ownerId,channelId,taskId,startedAt,json FROM runs WHERE id=?",
+    ).get(id) as RawRun | undefined;
+    return raw ? toRun(raw) : undefined;
+  }
+
+  /** One agent's runs, newest first. */
+  runsForAgent(agentId: ID, limit: number = RUN_RETENTION.listDefault): RunRow[] {
+    return (this.db.prepare(
+      "SELECT id,agentId,ownerId,channelId,taskId,startedAt,json FROM runs " +
+      "WHERE agentId=? ORDER BY startedAt DESC, id DESC LIMIT ?",
+    ).all(agentId, cap(limit)) as unknown as RawRun[]).map(toRun);
+  }
+
+  /** Every run recorded against one delegated job, newest first. */
+  runsForTask(taskId: ID, limit: number = RUN_RETENTION.listDefault): RunRow[] {
+    return (this.db.prepare(
+      "SELECT id,agentId,ownerId,channelId,taskId,startedAt,json FROM runs " +
+      "WHERE taskId=? ORDER BY startedAt DESC, id DESC LIMIT ?",
+    ).all(taskId, cap(limit)) as unknown as RawRun[]).map(toRun);
+  }
+
+  /**
+   * Keep only the newest `RUN_RETENTION.perAgent` runs for an agent.
+   *
+   * The same promise the engine makes on disk, kept here too: a record that is
+   * bounded on the machine that wrote it and unbounded on the machine that
+   * shares it is not bounded at all. Returns how many were removed.
+   */
+  pruneRuns(agentId: ID, keep: number = RUN_RETENTION.perAgent): number {
+    const doomed = (this.db.prepare(
+      "SELECT id FROM runs WHERE agentId=? ORDER BY startedAt DESC, id DESC LIMIT -1 OFFSET ?",
+    ).all(agentId, Math.max(0, keep)) as { id: string }[]).map(r => r.id);
+    for (const id of doomed) this.db.prepare("DELETE FROM runs WHERE id=?").run(id);
+    return doomed.length;
+  }
+
+  /** Forget everything recorded about one agent — used when the agent is deleted. */
+  forgetRuns(agentId: ID): void {
+    this.db.prepare("DELETE FROM runs WHERE agentId=?").run(agentId);
+  }
+
   /** Every invite ever minted, newest state — for tests and future admin UI. */
   invites(): InviteRow[] {
     return (this.db.prepare("SELECT code,createdBy,usedBy,usedAt,revoked FROM invites")
@@ -1042,8 +1182,9 @@ const AFTER_EVERY_ID = "\uffff";
  * `migrate()` so the next change is a step and not a hand repair.
  * 1 = before the chat basics. 2 = reactions, attachments, read state, ledger.
  * 3 = membership as rows, and rooms that can carry a topic and be archived.
+ * 4 = run records — what an agent actually did, turn by turn.
  */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * The fingerprint of one line of the trail.

@@ -61,6 +61,25 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
     compiles and still crashes at runtime. Always run the thing, not just the
     build.
 
+- **2026-07-29 ~16:45** — commit `87cf070`, verified by running: build clean,
+  **167 engine + 76 relay**, **82/82 + 8/8 + 4/4** browser checks all executed.
+  - On screen: scrollback, search, reactions, edit/delete with tombstones,
+    threads, account-level unread, and the "Who can use this agent?" control.
+  - Underneath: channels are real (topic, description, open/private, archived,
+    membership rows with role/joinedAt/invitedBy), and attachment download via
+    a one-use 30-second ticket, permission checked at mint AND at redeem.
+  - **A pre-existing bug that would have hit Vikas:** an index was created over
+    a column a later migration adds, so the hub could not open its own older
+    database. Found by migrating a COPY of his real db. Now a class rule with a
+    regression test. Note his live db is still at version 0/1 and will step
+    through 2 → 3 the next time the hub opens it — that exact path was proved
+    on the copy, not in place.
+  - An agent declined to widen `visibleChannels()` as the plan suggested,
+    because that one function is what seven authorisation paths are built on.
+    Browsing got a narrower answer instead. Good judgement; keep it.
+  - Run-record card still NOT built — run data does not reach the client.
+    That is the round now in flight.
+
 ## Work in flight when he left
 | Agent | Owns | Doing |
 |---|---|---|

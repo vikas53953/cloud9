@@ -9,39 +9,17 @@
 //
 // Both providers now call the same function, so the two can never drift apart.
 
-/**
- * Credential variables we know by name and always remove.
- * Kept explicit as well as pattern-matched: names we have actually seen in the
- * wild are documented here, and the pattern below catches the rest.
- */
-export const CREDENTIAL_ENV_VARS = [
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-  "CODEX_API_KEY",
-  "OPENAI_API_KEY",
-  "OPENAI_BASE_URL",
-] as const;
-
-/**
- * The shape of a secret's NAME. A deny-list of known variables only ever
- * protects against the secrets we thought of; this catches the class —
- * anything that calls itself a key, token, secret, password or credential
- * (finding #19).
- *
- * A strict allow-list was considered and rejected for now: a CLI needs an
- * unknowable set of ordinary OS variables (PATH, HOME, APPDATA, SystemRoot,
- * TEMP, proxy settings, locale) and guessing that list wrong breaks the app on
- * someone's machine. Naming the dangerous SHAPE is the part that generalises.
- */
-const SECRET_NAME_RE = /(API[_-]?KEY|ACCESS[_-]?KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|_TOKEN$|^TOKEN$|AUTH_TOKEN|SESSION_KEY|PRIVATE_KEY)/i;
-
-/** Is this variable name credential-shaped? Exported so tests can pin the rule. */
-export function isCredentialVar(name: string): boolean {
-  if ((CREDENTIAL_ENV_VARS as readonly string[]).includes(name)) return true;
-  return SECRET_NAME_RE.test(name);
-}
+// WHAT COUNTS AS A SECRET now lives in `@cloud9/shared`, because two programs
+// ask the question: this file, deciding what a spawned CLI may see, and the
+// redactor, deciding what may leave the machine. Re-exported here so every
+// existing caller and test keeps working against one definition.
+//
+// A strict allow-list was considered and rejected for now: a CLI needs an
+// unknowable set of ordinary OS variables (PATH, HOME, APPDATA, SystemRoot,
+// TEMP, proxy settings, locale) and guessing that list wrong breaks the app on
+// someone's machine. Naming the dangerous SHAPE is the part that generalises.
+export { CREDENTIAL_ENV_VARS, isCredentialVar } from "@cloud9/shared";
+import { isCredentialVar } from "@cloud9/shared";
 
 /**
  * A copy of the environment with every credential variable stripped out.

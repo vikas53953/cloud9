@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-29T11:06:37.251Z",
-  "expected": 82,
-  "executed": 82,
+  "ranAt": "2026-07-29T12:10:20.219Z",
+  "expected": 122,
+  "executed": 122,
   "results": [
     {
       "name": "join screen renders",
@@ -161,7 +161,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch zbgbq :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch 1lc9b :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +176,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_ZGkelP7QGeJZtZ4PabPHIw"
+      "detail": "inv_AKf-JKSDWqHs9EgtMT6pFQ"
     },
     {
       "name": "friend joins via invite",
@@ -306,7 +306,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 16:36"
+      "detail": "↳ 1 reply · last at 17:40"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -321,7 +321,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 16:36 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 17:40 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -336,7 +336,7 @@
     {
       "name": "a message you have not seen is counted, and one that asks for you is marked apart",
       "pass": true,
-      "detail": "# general @1 1"
+      "detail": "# general ◆ @1 1"
     },
     {
       "name": "reading the conversation clears the marks",
@@ -367,6 +367,206 @@
       "name": "an agent that will not answer you says so, instead of silently doing nothing",
       "pass": true,
       "detail": "Scout only answers Vikas, so it hasn't been asked."
+    },
+    {
+      "name": "the composer offers a way to attach a file",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a picked file goes up and says it is ready to send",
+      "pass": true,
+      "detail": "362 bytes · ready to send"
+    },
+    {
+      "name": "a file the hub would refuse is refused in the composer, in plain words",
+      "pass": true,
+      "detail": "that file name isn't allowed — use plain letters, numbers, dots and dashes"
+    },
+    {
+      "name": "a file can be taken back off the message before it is sent",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the send button says how many files are going with the message",
+      "pass": true,
+      "detail": "Send with 2 files"
+    },
+    {
+      "name": "a message carries its files, each with its name and its size",
+      "pass": true,
+      "detail": "362 bytes · picture"
+    },
+    {
+      "name": "the tray is empty once the files have gone",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a picture offers to be shown in place and a file offers to be saved",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the file fetched back off the hub is byte-for-byte the file that was sent",
+      "pass": true,
+      "detail": "200 · sent 362 bytes, got 362"
+    },
+    {
+      "name": "the hub decides the type from the name, and tells the browser not to sniff",
+      "pass": true,
+      "detail": "image/png · inline; filename=\"site-plan.png\""
+    },
+    {
+      "name": "a ticket is spent by the first request — a second one is refused",
+      "pass": true,
+      "detail": "status 404"
+    },
+    {
+      "name": "a file the hub will not draw comes back as bytes with a download, unchanged",
+      "pass": true,
+      "detail": "application/octet-stream · attachment; filename=\"ledger.bin\""
+    },
+    {
+      "name": "clicking a picture opens it in place, with the picture really loaded",
+      "pass": true,
+      "detail": "{\"w\":180,\"h\":120,\"src\":\"http:\"}"
+    },
+    {
+      "name": "an opened file is held for this screen, so a second look does not re-ticket",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "opened files are let go when the message leaves the screen",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the room panel lists who is in the room, with their role and when they joined",
+      "pass": true,
+      "detail": "Runs this room · joined 29 Jul"
+    },
+    {
+      "name": "a room's description and one-line topic can be set, and come back from the hub",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the topic is shown beside the room's name, where it is about today",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a room says at a glance that it is private, in the header and in the sidebar",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "with every room shut, browsing says so — and says why, in the hub's own words",
+      "pass": true,
+      "detail": "No open rooms to join. Rooms are private unless someone opens them."
+    },
+    {
+      "name": "opening a room to anyone here is said in the header and on the sidebar row",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "an open room can be found by somebody who is not in it, with what it's for and how many are in it",
+      "pass": true,
+      "detail": "1 person · started 29 Jul"
+    },
+    {
+      "name": "browsing offers no members and no messages — finding a room is not permission to read it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "joining an open room lets you in and hands over what was said in it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "somebody who does not run the room is told so, instead of being offered a dead button",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "letting yourself into an open room is recorded as exactly that — nobody added you",
+      "pass": true,
+      "detail": "Member · joined 29 Jul"
+    },
+    {
+      "name": "leaving a room takes it out of the sidebar, there and then",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "an archived room replaces the composer with the hub's own sentence, word for word",
+      "pass": true,
+      "detail": "that conversation is archived — nothing new can be said in it"
+    },
+    {
+      "name": "an archived room is greyed in the sidebar and marked archived in the header",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "an archived room offers nothing that would put something new in it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "an archived room still reads all the way down — the words and the files stay",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "reopening an archived room gives it back, exactly as it was",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the room-details panel does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the room-details panel does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the room-details panel does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the room-details panel does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "files on a message do not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "files on a message do not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "files on a message do not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "files on a message do not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
     },
     {
       "name": "a thread beside the conversation does not scroll sideways at 1280 in the light look",

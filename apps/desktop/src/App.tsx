@@ -2,9 +2,10 @@ import React, {
   useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore,
 } from "react";
 import {
-  AgentDef, AgentRespondTo, AgentSkill, AgentSkillFile, Approval, Channel, DEMO_MODE_BANNER,
-  HarnessInfo, ID, isSafeSkillFileName, mayDriveAgent, MENU_ACTIONS, MenuAction, Message,
-  SearchHit, SKILL_LIMITS, Task, User,
+  AgentDef, AgentRespondTo, AgentSkill, AgentSkillFile, Approval, Attachment, ATTACHMENT_LIMITS,
+  Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
+  HarnessInfo, ID, isInlineViewable, isSafeSkillFileName, mayAdministerChannel, mayDriveAgent,
+  MENU_ACTIONS, MenuAction, Message, SearchHit, SKILL_LIMITS, Task, User,
 } from "@cloud9/shared";
 import { client } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -108,6 +109,36 @@ const elapsed = (ms: number): string => {
 };
 
 const slug = (s: string): string => s.trim().toLowerCase().replace(/[^\w-]+/g, "-").replace(/^-|-$/g, "") || "chat";
+
+/** A file's size in the words a person uses, not in bytes. */
+const fileSize = (bytes: number): string => {
+  if (bytes < 1000) return `${bytes} bytes`;
+  if (bytes < 1_000_000) return `${Math.round(bytes / 100) / 10} KB`;
+  return `${Math.round(bytes / 100_000) / 10} MB`;
+};
+
+/** The bit after the last dot, upper-cased — what goes on a file's tile. */
+const fileKind = (name: string): string => {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toUpperCase().slice(0, 4) : "FILE";
+};
+
+/** "joined 3 Jun" — the date a membership row carries, said the short way. */
+const dayStamp = (ts: number): string =>
+  new Date(ts).toLocaleDateString([], { day: "numeric", month: "short" });
+
+/**
+ * What a room's visibility means, in one word where space is tight and in a
+ * full sentence where there is room for one. Both are said out of the same
+ * pair, so the chip in the header and the chip in the panel can never drift
+ * into meaning different things.
+ */
+const ROOM_OPEN_WORDS = "Open to anyone here";
+const ROOM_OPEN_SHORT = "Open";
+const ROOM_PRIVATE_WORDS = "Private";
+const ROOM_ARCHIVED_WORDS = "Archived";
+/** The relay's own sentence, said back verbatim wherever writing is refused. */
+const ARCHIVED_SENTENCE = "that conversation is archived — nothing new can be said in it";
 
 const newId = (): string => `sk_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 
@@ -638,7 +669,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 /* ================= the workspace shell ================= */
 
 type ScreenName = "chat" | "crew" | "editor" | "tasks" | "activity" | "settings";
-type ModalName = "invite" | "channel";
+type ModalName = "invite" | "channel" | "browse";
 
 /** Presence line for a rail row — built only from what the app really knows. */
 function agentStatusLine(a: AgentDef, status?: string): { line: string; lamp: string; busy: boolean } {
@@ -782,7 +813,16 @@ function Workspace(): React.JSX.Element {
     // QA hook: the browser suite drives every action on the SHARED list through
     // the same path the Electron menu uses, so a dead item fails a test.
     (window as unknown as { cloud9Menu?: unknown }).cloud9Menu = { actions: MENU_ACTIONS, run };
+    // QA hook, the same shape and for the same reason as the one above: the
+    // suite mints a ticket through the app's OWN path and fetches the file back
+    // over real HTTP, so "the bytes came back unchanged" is something proved
+    // rather than inferred from a link being on screen.
+    (window as unknown as { cloud9Files?: unknown }).cloud9Files = {
+      ticket: (attachmentId: ID) => client.ticketFor(attachmentId),
+      opened: () => client.openFileIds(),
+    };
     return () => {
+      delete (window as unknown as { cloud9Files?: unknown }).cloud9Files;
       delete (window as unknown as { cloud9Menu?: unknown }).cloud9Menu;
       window.removeEventListener("cloud9:menu", onEvent as EventListener);
       if (typeof offMenu === "function") offMenu();
@@ -968,7 +1008,8 @@ function Workspace(): React.JSX.Element {
               active={active} setActiveId={id => setActiveId(id)}
               channels={channels} humanDms={humanDms} agents={agents} people={people}
               unreadFor={unreadFor} peerOf={peerOf} owner={owner}
-              onNewChannel={() => setModal("channel")} onNewAgent={() => openEditor("new")}
+              onNewChannel={() => setModal("channel")} onBrowseRooms={() => setModal("browse")}
+              onNewAgent={() => openEditor("new")}
               onInvite={openInvite} onEditAgent={a => openEditor(a)} onOpenDm={openDm}
               lastRead={active ? world.unread[active.id]?.lastReadTs ?? 0 : 0}
               findOpen={findOpen} onCloseFind={() => setFindOpen(false)}
@@ -1006,6 +1047,10 @@ function Workspace(): React.JSX.Element {
       {quick && <QuickChat onClose={() => setQuick(false)} />}
       {modal === "invite" && <InviteModal onClose={() => setModal(null)} />}
       {modal === "channel" && <ChannelModal onClose={() => setModal(null)} />}
+      {modal === "browse" && (
+        <BrowseRoomsModal onClose={() => setModal(null)}
+          onJoined={id => { setScreen("chat"); setActiveId(id); setModal(null); }} />
+      )}
     </div>
   );
 }
@@ -1061,13 +1106,13 @@ function UnreadMarks({ n }: { n: Unread }): React.JSX.Element | null {
 
 function ChatScreen({
   active, setActiveId, channels, humanDms, agents, people, unreadFor, peerOf, owner,
-  onNewChannel, onNewAgent, onInvite, onEditAgent, onOpenDm, lastRead, findOpen, onCloseFind,
+  onNewChannel, onBrowseRooms, onNewAgent, onInvite, onEditAgent, onOpenDm, lastRead, findOpen, onCloseFind,
   onOpenTasks, jumpTo, onJumped,
 }: {
   active?: Channel; setActiveId: (id: ID) => void;
   channels: Channel[]; humanDms: Channel[]; agents: AgentDefPlus[]; people: User[];
   unreadFor: (c: Channel) => Unread; peerOf: (c: Channel) => Peer; owner: boolean;
-  onNewChannel: () => void; onNewAgent: () => void; onInvite: () => void;
+  onNewChannel: () => void; onBrowseRooms: () => void; onNewAgent: () => void; onInvite: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenDm: (id: ID, name: string) => void;
   lastRead: number; findOpen: boolean; onCloseFind: () => void; onOpenTasks: () => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
@@ -1076,20 +1121,29 @@ function ChatScreen({
   const isDm = active?.kind === "dm";
   /** the message whose thread is open on the right, if any */
   const [threadRoot, setThreadRoot] = useState<ID | null>(null);
+  /** the room-details panel, which shares the right-hand slot with a thread */
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
-  // a thread belongs to the conversation it was opened from
-  useEffect(() => { setThreadRoot(null); }, [active?.id]);
+  // a thread — and a details panel — belong to the conversation they were
+  // opened from, and go when it changes
+  useEffect(() => { setThreadRoot(null); setDetailsOpen(false); }, [active?.id]);
 
   const openThread = useCallback((rootId: ID) => {
     setThreadRoot(rootId);
+    setDetailsOpen(false);
     client.send({ type: "thread", messageId: rootId });
+  }, []);
+
+  const toggleDetails = useCallback(() => {
+    setDetailsOpen(o => !o);
+    setThreadRoot(null);
   }, []);
 
   const agentDmFor = (a: AgentDef) =>
     world.channels.find(c => c.kind === "dm" && c.memberIds.includes(a.id));
 
   return (
-    <div className={`chatgrid${isDm && !threadRoot ? " no-aside" : ""}`}>
+    <div className={`chatgrid${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}`}>
       <aside className="sidebar" aria-label="Studio floor">
         <div className="sidebar-head">
           <h2>Studio floor</h2>
@@ -1105,6 +1159,8 @@ function ChatScreen({
           <div className="side-group">
             <div className="side-head">
               <span className="eyebrow">Channels</span>
+              <button className="browsebtn" title="Browse rooms you could join"
+                aria-label="Browse rooms" onClick={onBrowseRooms}>⌕</button>
               <button title="New channel" aria-label="New channel" onClick={onNewChannel}>＋</button>
             </div>
             {channels.length === 0
@@ -1112,15 +1168,20 @@ function ChatScreen({
               : channels.map(c => {
                 const unread = unreadFor(c);
                 return (
-                  <button key={c.id} className="side-item" data-channel={c.name}
+                  <button key={c.id} className={`side-item${c.archivedAt ? " is-archived" : ""}`}
+                    data-channel={c.name} data-vis={c.archivedAt ? "archived" : c.visibility ?? "private"}
                     aria-current={active?.id === c.id ? "true" : "false"}
                     onClick={() => setActiveId(c.id)}>
                     <span className="hash">#</span>{" "}
                     <span className="txt">{c.name}</span>
+                    {/* Open, shut or retired, on every row — a room anyone can
+                        walk into must not look like one you were put in. */}
+                    <RoomVisibility channel={c} size="mark" />
                     <UnreadMarks n={unread} />
                   </button>
                 );
               })}
+            <button className="browserooms" onClick={onBrowseRooms}>Browse rooms to join</button>
           </div>
 
           <div className="side-group">
@@ -1199,7 +1260,8 @@ function ChatScreen({
       {active ? (
         <ChatView key={active.id} channel={active} lastRead={lastRead} findOpen={findOpen}
           onCloseFind={onCloseFind} onEditAgent={onEditAgent} onOpenTasks={onOpenTasks}
-          jumpTo={jumpTo} onJumped={onJumped} onOpenThread={openThread} threadRoot={threadRoot} />
+          jumpTo={jumpTo} onJumped={onJumped} onOpenThread={openThread} threadRoot={threadRoot}
+          onToggleDetails={toggleDetails} detailsOpen={detailsOpen} />
       ) : (
         <div className="thread">
           <div className="msgs">
@@ -1217,7 +1279,12 @@ function ChatScreen({
         <ThreadPanel key={threadRoot} channel={active} rootId={threadRoot}
           onClose={() => setThreadRoot(null)} />
       )}
-      {active && !isDm && !threadRoot &&
+      {active && !threadRoot && detailsOpen && (
+        <RoomPanel key={`details-${active.id}`} channel={active}
+          onClose={() => setDetailsOpen(false)} onOpenDm={onOpenDm}
+          onLeft={() => setDetailsOpen(false)} />
+      )}
+      {active && !isDm && !threadRoot && !detailsOpen &&
         <ChannelRail channel={active} onEditAgent={onEditAgent} onOpenDm={onOpenDm} />}
     </div>
   );
@@ -1318,12 +1385,13 @@ function AnswerCard({ title, rows, tone, lead, actions }: {
 
 function ChatView({
   channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpenTasks,
-  jumpTo, onJumped, onOpenThread, threadRoot,
+  jumpTo, onJumped, onOpenThread, threadRoot, onToggleDetails, detailsOpen,
 }: {
   channel: Channel; lastRead: number; findOpen: boolean; onCloseFind: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenTasks: () => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
   onOpenThread: (rootId: ID) => void; threadRoot: ID | null;
+  onToggleDetails: () => void; detailsOpen: boolean;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const all = world.messages[channel.id] ?? [];
@@ -1503,6 +1571,13 @@ function ChatView({
             {people.length} {people.length === 1 ? "person" : "people"} ·{" "}
             {agents.length} {agents.length === 1 ? "agent" : "agents"}
           </span>
+          {/* Open or shut, said where the room is named. A room that anyone in
+              this Cloud9 can find and let themselves into is a different thing
+              from one you were put in, and that must never be a guess. */}
+          <RoomVisibility channel={channel} />
+          {channel.topic && (
+            <span className="ch-topic" title={`Topic: ${channel.topic}`}>{channel.topic}</span>
+          )}
           <div className="grow" />
           {myApprovals.length > 0 && (
             <button className="chip is-gold approvalpill" onClick={onOpenTasks}>
@@ -1510,7 +1585,10 @@ function ChatView({
               {myApprovals.length} approval{myApprovals.length === 1 ? "" : "s"} waiting
             </button>
           )}
-          <AddToChannel channel={channel} />
+          {!channel.archivedAt && <AddToChannel channel={channel} />}
+          <button className="btn small roomdetailsbtn" aria-expanded={detailsOpen}
+            title="What this room is for, who is in it, and how it is run"
+            onClick={onToggleDetails}>Room details</button>
         </header>
       )}
 
@@ -1573,7 +1651,10 @@ function ChatView({
             )}
             <MessageRow row={r} agent={world.agents.find(a => a.id === r.m.authorId)}
               working={world.agentStatus[r.m.authorId] === "working"}
+              /* Reading an archived room still works all the way down: the
+                 replies are still there to open, only writing is refused. */
               onOpenThread={onOpenThread}
+              archived={!!channel.archivedAt}
               inOpenThread={threadRoot === r.m.id || threadRoot === r.m.replyTo}
               litUp={litUp === r.m.id} />
           </React.Fragment>
@@ -1664,13 +1745,93 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
 /** The six emoji offered on hover. The full set is still in the composer. */
 const REACT_EMOJI = ["👍", "🎉", "🙏", "👀", "✅", "❤️"];
 
-function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, variant }: {
+/* ---- the files that rode along with a message ----
+ *
+ * A ticket to fetch a file is minted AT THE CLICK and nowhere else: it is good
+ * for thirty seconds and for one request, so one minted when a message scrolled
+ * into view would be dead by the time anybody pressed it — and a screenful of
+ * messages would mint more than the hub will hold. (§9.3.)
+ *
+ * A picture is shown where it sits; anything else is a named file to save.
+ * Which is which is decided by `isInlineViewable` and `downloadContentType`,
+ * the hub's OWN functions, so the app can never offer to draw something the hub
+ * will not serve as a picture.
+ */
+function MessageFiles({ attachments }: { attachments: Attachment[] }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+
+  /* Every blob this message opened is freed when the message goes off screen.
+     Held in a ref so the cleanup frees what was actually opened, not what
+     happened to be in the props on the first render. */
+  const opened = useRef<ID[]>([]);
+  opened.current = attachments.map(a => a.id);
+  useEffect(() => () => {
+    for (const id of opened.current) client.closeFile(id);
+  }, []);
+
+  return (
+    <div className="attachments">
+      {attachments.map(a => {
+        const held = world.files[a.id];
+        const picture = isInlineViewable(a.name) && downloadContentType(a.name).startsWith("image/");
+        const showing = picture && held?.state === "ready" && !!held.url;
+        return (
+          <div className="fileblock" key={a.id} data-file={a.name} data-attachment={a.id}>
+            <div className="filecard">
+              <span className="glyph" aria-hidden="true">{fileKind(a.name)}</span>
+              <span className="filenames">
+                <span className="nm">{a.name}</span>
+                <span className="meta">
+                  {fileSize(a.size)} · {picture ? "picture" : "file"}
+                </span>
+              </span>
+              <span className="act">
+                {held?.state === "opening" ? (
+                  <span className="eyebrow">Opening…</span>
+                ) : showing ? (
+                  <button className="btn small ghost filehide"
+                    onClick={() => client.closeFile(a.id)}>Hide</button>
+                ) : (
+                  <button className="btn small fileopen"
+                    onClick={() => { void (picture ? client.openFile(a) : client.saveFile(a)); }}>
+                    {picture ? "Show" : "Save"}
+                  </button>
+                )}
+              </span>
+            </div>
+            {/* A refusal here is almost always a ticket that was spent or timed
+                out, and the whole recovery is asking for another one — so the
+                person is offered the retry, never just told off. (§9.3.) */}
+            {held?.state === "failed" && (
+              <div className="filefail" role="status">
+                <span>{held.error}</span>
+                <button className="linkish fileretry"
+                  onClick={() => { client.closeFile(a.id); void (picture ? client.openFile(a) : client.saveFile(a)); }}>
+                  Open it again
+                </button>
+              </div>
+            )}
+            {showing && (
+              <div className="fileshot">
+                <img src={held.url} alt={a.name} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, variant, archived }: {
   row: Row; agent?: AgentDef; working?: boolean;
   onOpenThread?: (rootId: ID) => void;
   inOpenThread?: boolean;
   litUp?: boolean;
   /** "thread" drops the affordances that would open a thread inside a thread */
   variant?: "channel" | "thread";
+  /** an archived room is readable and nothing more — no reacting, no editing */
+  archived?: boolean;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const { m, cont, ask } = row;
@@ -1756,8 +1917,10 @@ function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, va
         const isMine = !!world.me && r.userIds.includes(world.me.id);
         return (
           <button key={r.emoji} className={`reactpill${isMine ? " on" : ""}`}
-            data-emoji={r.emoji} aria-pressed={isMine}
-            title={`${r.userIds.map(nameFor).join(", ")} reacted with ${r.emoji}`}
+            data-emoji={r.emoji} aria-pressed={isMine} disabled={archived}
+            title={archived
+              ? ARCHIVED_SENTENCE
+              : `${r.userIds.map(nameFor).join(", ")} reacted with ${r.emoji}`}
             onClick={() => react(r.emoji, !isMine)}>
             <span className="e">{r.emoji}</span><span className="n">{r.userIds.length}</span>
           </button>
@@ -1786,7 +1949,10 @@ function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, va
 
   /* A tombstone has no actions: there is nothing left to react to, copy, edit
      or reply to, and a button that always errors is a dead click. */
-  const actions = deleted ? null : confirmDelete ? (
+  /* Nothing new can be put into an archived room — reacting, editing, deleting
+     and replying all answer the same refusal — so none of those buttons are
+     drawn. The relay is still the gate; this only stops a dead click. */
+  const actions = deleted || archived ? null : confirmDelete ? (
     <div className="msgactions confirming">
       <span className="ma-say">Take this back?</span>
       <button className="ma yes" title="Yes, take it back"
@@ -1861,6 +2027,8 @@ function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, va
         <div className="when-gutter">{clock(m.ts)}</div>
         <div className="body">
           {deleted ? tombstone : editing ? editor : paragraph(m.text)}
+          {!deleted && m.attachments && m.attachments.length > 0 &&
+            <MessageFiles attachments={m.attachments} />}
           {!deleted && m.editedAt && <span className="editedmark">edited</span>}
           {refusedNotes}
           {reactionRow}
@@ -1941,6 +2109,8 @@ function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, va
           </div>
         )}
         {deleted ? tombstone : editing ? editor : body}
+        {!deleted && m.attachments && m.attachments.length > 0 &&
+          <MessageFiles attachments={m.attachments} />}
         {refusedNotes}
         {reactionRow}
         {threadLine}
@@ -1975,7 +2145,7 @@ function ThreadPanel({ channel, rootId, onClose }: {
       <div className="threadbody">
         {!root && <div className="d-empty">Fetching this thread…</div>}
         {root && (
-          <MessageRow row={rowFor(root)} variant="thread"
+          <MessageRow row={rowFor(root)} variant="thread" archived={!!channel.archivedAt}
             agent={world.agents.find(a => a.id === root.authorId)} />
         )}
         {root && (
@@ -1986,7 +2156,7 @@ function ThreadPanel({ channel, rootId, onClose }: {
           </div>
         )}
         {replies.map(m => (
-          <MessageRow key={m.id} row={rowFor(m)} variant="thread"
+          <MessageRow key={m.id} row={rowFor(m)} variant="thread" archived={!!channel.archivedAt}
             agent={world.agents.find(a => a.id === m.authorId)}
             working={world.agentStatus[m.authorId] === "working"} />
         ))}
@@ -2028,6 +2198,10 @@ function Composer({ channel, replyTo }: {
   const [acIndex, setAcIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const uploads = world.uploads[channel.id] ?? [];
+  const ready = uploads.filter(u => u.state === "done").length;
+  const busy = uploads.some(u => u.state === "sending");
 
   const mentionQuery = useMemo(() => {
     const m = /(?:^|\s)@([\w-]*)$/.exec(text);
@@ -2075,12 +2249,19 @@ function Composer({ channel, replyTo }: {
     });
   };
 
+  /* Words are optional when a file is carrying the message — the hub says so
+     too, so the button and the hub agree about what an empty box means. */
   const sendNow = () => {
     const t = text.trim();
-    if (!t) return;
-    client.send({ type: "send", channelId: channel.id, text: t, replyTo });
+    const attachmentIds = client.uploadIds(channel.id);
+    if (!t && attachmentIds.length === 0) return;
+    client.send({
+      type: "send", channelId: channel.id, text: t, replyTo,
+      ...(attachmentIds.length ? { attachmentIds } : {}),
+    });
     setText("");
     setEmojiOpen(false);
+    client.clearUploads(channel.id);
   };
 
   /* A direct conversation is stored under a machine name ("dm-mercer"), so the
@@ -2099,6 +2280,25 @@ function Composer({ channel, replyTo }: {
       ? `Message ${peerName}`
       : `Message #${channel.name} — type @ to call an agent in`;
 
+  /**
+   * An archived room is READ-ONLY, and the box says so in the hub's own words.
+   *
+   * Placed after every hook above, deliberately: a return that jumped the
+   * hooks would change how many React sees between renders. Un-archiving is one
+   * frame and works, so the sentence is a state and not an epitaph — the panel
+   * beside it carries "Reopen".
+   */
+  if (channel.archivedAt) {
+    return (
+      <div className={`composer archivedcomposer${replyTo ? " threadcomposer" : ""}`}>
+        <div className="composer-box readonly" role="status">
+          <span className="ro-mark" aria-hidden="true">⌾</span>
+          <span className="ro-say">{ARCHIVED_SENTENCE}</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`composer${replyTo ? " threadcomposer" : ""}`}>
       <div className="composer-box" title={`Posting as ${world.me?.name ?? "you"}`}>
@@ -2110,6 +2310,30 @@ function Composer({ channel, replyTo }: {
                 onMouseDown={e => { e.preventDefault(); applyMention(s.name); }}>
                 <span className="opt-label">{s.label}</span>
                 <span className="opt-sub">{s.sub}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Picked files wait here, above the words, until the message goes.
+            Each one says what is happening to it — going up, up, or refused in
+            the hub's own sentence — because an upload that fails in silence is
+            a message somebody thinks they sent. */}
+        {uploads.length > 0 && (
+          <div className="uploadtray" aria-label="Files going with this message">
+            {uploads.map(u => (
+              <div className={`uptile ${u.state}`} key={u.localId} data-upload={u.name}>
+                <span className="glyph" aria-hidden="true">{fileKind(u.name)}</span>
+                <span className="filenames">
+                  <span className="nm">{u.name}</span>
+                  <span className="meta">
+                    {u.state === "sending" ? "Going up…"
+                      : u.state === "done" ? `${fileSize(u.size)} · ready to send`
+                        : u.error}
+                  </span>
+                </span>
+                {u.state === "sending" && <span className="upbar" aria-hidden="true"><i /></span>}
+                <button className="upx" aria-label={`Take ${u.name} back off this message`}
+                  title="Take this file off" onClick={() => client.dropUpload(channel.id, u.localId)}>✕</button>
               </div>
             ))}
           </div>
@@ -2130,6 +2354,18 @@ function Composer({ channel, replyTo }: {
           }}
         />
         <div className="tools">
+          {/* The one composer affordance he asked for in round 1 that was never
+              built. The input itself is hidden because a bare file input cannot
+              be made to look like anything; the button in front of it is the
+              real control and carries the label. */}
+          <input ref={fileRef} className="filepick" type="file" multiple
+            aria-label="Choose files to attach"
+            onChange={e => {
+              for (const f of Array.from(e.target.files ?? [])) client.attach(channel.id, f);
+              e.target.value = "";
+            }} />
+          <button className="mini attach" title={`Attach a file (up to ${ATTACHMENT_LIMITS.perMessage}, ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB each)`}
+            onClick={() => fileRef.current?.click()}>📎 Attach</button>
           <button className="mini" title="Call an agent by name" onClick={() => insert("@")}>@ agent</button>
           {/* A thread is a narrow column and a reply is a sentence, so the
               wide affordances stay in the room's own box rather than being
@@ -2144,8 +2380,10 @@ function Composer({ channel, replyTo }: {
           <button className="mini" title="Emoji" aria-expanded={emojiOpen}
             onClick={() => setEmojiOpen(o => !o)}>🙂</button>
           <div className="grow" />
-          {!replyTo && <span className="eyebrow">Enter to send</span>}
-          <button className="primary small" onClick={sendNow} disabled={!text.trim()}>Send</button>
+          {!replyTo && <span className="eyebrow">{busy ? "Sending a file up…" : "Enter to send"}</span>}
+          <button className="primary small" onClick={sendNow} disabled={!text.trim() && ready === 0}>
+            Send{ready > 0 ? ` with ${ready} ${ready === 1 ? "file" : "files"}` : ""}
+          </button>
           {emojiOpen && (
             <div className="emojipop">
               {QUICK_EMOJI.map(e => (
@@ -2158,6 +2396,253 @@ function Composer({ channel, replyTo }: {
     </div>
   );
 }
+
+/* ---- open, shut, or retired — said wherever a room is named ---- */
+
+/**
+ * A room that anyone in this Cloud9 can find and let themselves into is a
+ * different thing from one you were put in. It is drawn everywhere the room is
+ * named, because "who else could be reading this" must never be a guess.
+ *
+ * Absent `visibility` means private: every room that existed before this field
+ * stays shut, and the chip says so rather than saying nothing.
+ */
+function RoomVisibility({ channel, size = "short" }: {
+  channel: Channel;
+  /** "mark" = the glyph alone, for a sidebar row; "long" = the whole sentence */
+  size?: "mark" | "short" | "long";
+}): React.JSX.Element | null {
+  if (channel.kind === "dm") return null;
+  const mark = size === "mark";
+  if (channel.archivedAt) {
+    return (
+      <span className={`roomvis is-archived${mark ? " tiny" : ""}`} data-vis="archived"
+        title="Retired — still readable, nothing new can be said in it">
+        <span className="vm" aria-hidden="true">⌾</span>{mark ? "" : ROOM_ARCHIVED_WORDS}
+      </span>
+    );
+  }
+  const open = channel.visibility === "open";
+  const words = open ? (size === "long" ? ROOM_OPEN_WORDS : ROOM_OPEN_SHORT) : ROOM_PRIVATE_WORDS;
+  return (
+    <span className={`roomvis ${open ? "is-open" : "is-shut"}${mark ? " tiny" : ""}`}
+      data-vis={open ? "open" : "private"}
+      title={open ? ROOM_OPEN_WORDS : "Only the people already in this room can see it"}>
+      <span className="vm" aria-hidden="true">{open ? "◇" : "◆"}</span>
+      {mark ? "" : words}
+    </span>
+  );
+}
+
+/* ---- what this room is, who is in it, and how it is run ---- */
+
+/**
+ * The room-details panel (§10.8).
+ *
+ * The controls are drawn from YOUR OWN membership row's role, and that is the
+ * only thing they decide: whether a button is worth showing. The relay is still
+ * the gate on every one of them (§8), so nothing here can widen what is
+ * allowed — it can only stop a click that would always be refused.
+ */
+function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
+  channel: Channel;
+  onClose: () => void;
+  onOpenDm: (id: ID, name: string) => void;
+  onLeft: () => void;
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [editInfo, setEditInfo] = useState(false);
+  const [topic, setTopic] = useState(channel.topic ?? "");
+  const [description, setDescription] = useState(channel.description ?? "");
+  const [confirmLeave, setConfirmLeave] = useState(false);
+
+  // The panel asks for the membership rows itself. `memberIds` would answer
+  // "who is in here" and nothing else — not the role, not the date, not who
+  // let them in — and those three are what this panel is for.
+  useEffect(() => { client.askMembers(channel.id); }, [channel.id]);
+  useEffect(() => {
+    setTopic(channel.topic ?? "");
+    setDescription(channel.description ?? "");
+    setEditInfo(false);
+    setConfirmLeave(false);
+  }, [channel.id, channel.topic, channel.description]);
+
+  const rows = (world.members[channel.id] ?? []).filter(m => !m.removedAt);
+  const myRole: ChannelRole | undefined =
+    rows.find(m => m.memberId === world.me?.id)?.role;
+  const mayRun = mayAdministerChannel(myRole);
+  const archived = !!channel.archivedAt;
+  const open = channel.visibility === "open";
+
+  const nameOf = (id: ID): { name: string; agent?: AgentDef; user?: User } => {
+    const agent = world.agents.find(a => a.id === id);
+    const user = world.users.find(u => u.id === id);
+    return { name: agent?.name ?? user?.name ?? "Someone who has left", agent, user };
+  };
+
+  /* Absent means "leave alone", "" means "clear it" — the same rule skill files
+     follow. So only the field that actually changed is ever sent. */
+  const saveInfo = () => {
+    const patch: { description?: string; topic?: string } = {};
+    if (description !== (channel.description ?? "")) patch.description = description;
+    if (topic !== (channel.topic ?? "")) patch.topic = topic;
+    setEditInfo(false);
+    if (Object.keys(patch).length === 0) return;
+    client.send({ type: "setChannelInfo", channelId: channel.id, ...patch });
+  };
+
+  return (
+    <aside className="aside roompanel" aria-label="Room details">
+      <div className="threadhead">
+        <span className="eyebrow">Room details</span>
+        <div className="grow" />
+        <button className="iconbtn roomclose" aria-label="Close room details" onClick={onClose}>✕</button>
+      </div>
+
+      <div className="roombody">
+        <div className="aside-sec roomhead">
+          <h3 className="roomname"><span className="h">#</span>{channel.name}</h3>
+          <RoomVisibility channel={channel} size="long" />
+        </div>
+
+        <div className="aside-sec">
+          <span className="eyebrow">What it's for</span>
+          {editInfo ? (
+            <div className="roomedit">
+              <label className="roomfield">
+                <span className="lb">Description</span>
+                <textarea className="roomdesc-input" rows={3} value={description}
+                  maxLength={500} placeholder="What this room is for"
+                  onChange={e => setDescription(e.target.value)} />
+              </label>
+              <label className="roomfield">
+                <span className="lb">Topic — one line</span>
+                <input className="input roomtopic-input" type="text" value={topic}
+                  maxLength={200} placeholder="What it's about today"
+                  onChange={e => setTopic(e.target.value.replace(/[\r\n]/g, " "))} />
+              </label>
+              <div className="roomeditbtns">
+                <button className="primary small roominfo-save" onClick={saveInfo}>Save</button>
+                <button className="btn small ghost" onClick={() => {
+                  setTopic(channel.topic ?? ""); setDescription(channel.description ?? ""); setEditInfo(false);
+                }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <dl className="kv roominfo">
+              <dt>Description</dt>
+              <dd className="roomdesc">{channel.description || "Not written yet"}</dd>
+              <dt>Topic</dt>
+              <dd className="roomtopic">{channel.topic || "Nothing set"}</dd>
+            </dl>
+          )}
+          {mayRun && !archived && !editInfo && (
+            <button className="btn small roominfo-edit" onClick={() => setEditInfo(true)}>
+              Change these
+            </button>
+          )}
+        </div>
+
+        <div className="aside-sec roommembers">
+          <span className="eyebrow">Who's here ({rows.length})</span>
+          {rows.length === 0 && <div className="d-empty">Fetching who is in this room…</div>}
+          {rows.map(m => {
+            const who = nameOf(m.memberId);
+            /* "added by" answers "how did they get here". Said about the
+               person themselves it answers nothing — the room's creator is
+               recorded as their own inviter — so it is left off. */
+            const invitedBy = m.invitedBy && m.invitedBy !== m.memberId
+              ? nameOf(m.invitedBy).name : null;
+            return (
+              <div className="mini-agent memberrow" key={m.memberId} data-member={who.name}>
+                {who.agent
+                  ? <AgentFace name={who.name} size={36} lamp={world.agentStatus[m.memberId] === "working" ? "run" : "live"} />
+                  : <PersonFace name={who.name} size={36} lamp={m.memberId === world.me?.id ? "live" : "idle"} />}
+                <span style={{ minWidth: 0 }}>
+                  <span className="nm">
+                    {who.name}{m.memberId === world.me?.id ? " · you" : ""}
+                    {who.agent ? <span className="badge">Agent</span> : null}
+                  </span>
+                  <span className="rl">
+                    <b className="rolename" data-role={m.role}>{ROLE_WORDS[m.role]}</b>
+                    {" · joined "}{dayStamp(m.joinedAt)}
+                    {invitedBy ? ` · added by ${invitedBy}` : ""}
+                  </span>
+                </span>
+                {who.user && m.memberId !== world.me?.id && (
+                  <span className="tools">
+                    <button className="iconbtn" title={`Open your chat with ${who.name}`}
+                      onClick={() => onOpenDm(m.memberId, who.name)}>✉</button>
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="aside-sec roomcontrols">
+          <span className="eyebrow">How this room is run</span>
+          {mayRun ? (
+            <>
+              <div className="roomctl">
+                <span className="lb">Who can find it</span>
+                <div className="segbtns">
+                  <button className={`segbtn${open ? " on" : ""}`} data-vis="open"
+                    aria-pressed={open} disabled={archived}
+                    title={ROOM_OPEN_WORDS}
+                    onClick={() => client.send({ type: "setChannelVisibility", channelId: channel.id, visibility: "open" })}>
+                    Anyone here
+                  </button>
+                  <button className={`segbtn${open ? "" : " on"}`} data-vis="private"
+                    aria-pressed={!open} disabled={archived}
+                    onClick={() => client.send({ type: "setChannelVisibility", channelId: channel.id, visibility: "private" })}>
+                    {ROOM_PRIVATE_WORDS}
+                  </button>
+                </div>
+              </div>
+              <button className="btn small roomarchive"
+                onClick={() => client.send({ type: "archiveChannel", channelId: channel.id, archived: !archived })}>
+                {archived ? "Reopen this room" : "Archive this room"}
+              </button>
+              <div className="roomhint">
+                {archived
+                  ? "Reopening puts it back the way it was — nothing was deleted."
+                  : "Archiving keeps every word and stops anything new being said."}
+              </div>
+            </>
+          ) : (
+            <div className="d-empty roomnotyours">
+              You can read and talk here. Changing the room — its topic, who can
+              find it, whether it stays open — is for whoever runs it.
+            </div>
+          )}
+
+          {confirmLeave ? (
+            <div className="roomleaveask">
+              <span>Leave #{channel.name}? You'd stop seeing it.</span>
+              <button className="btn small danger roomleave-yes"
+                onClick={() => { client.send({ type: "leaveChannel", channelId: channel.id }); onLeft(); }}>
+                Yes, leave
+              </button>
+              <button className="btn small ghost" onClick={() => setConfirmLeave(false)}>Stay</button>
+            </div>
+          ) : (
+            <button className="btn small roomleave" onClick={() => setConfirmLeave(true)}>
+              Leave this room
+            </button>
+          )}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+/** The three roles, in the words the UI uses for them. */
+const ROLE_WORDS: Record<ChannelRole, string> = {
+  owner: "Runs this room",
+  admin: "Helps run it",
+  member: "Member",
+};
 
 /* ---- the right rail ---- */
 
@@ -3176,6 +3661,79 @@ function InviteModal({ onClose }: { onClose: () => void }): React.JSX.Element {
               {copied ? "Copied ✓" : "Copy the code"}
             </button>
           </div>
+        </div>
+        <div className="foot"><button className="primary" onClick={onClose}>Done</button></div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The open rooms you are not in (§10.5).
+ *
+ * Being able to FIND a room is not permission to read it: this list carries a
+ * name, what the room is for and how many people are in it, and nothing else —
+ * no members, no messages. The hub decides what appears here, and it only ever
+ * lists rooms you could actually join.
+ */
+function BrowseRoomsModal({ onClose, onJoined }: {
+  onClose: () => void;
+  onJoined: (id: ID) => void;
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [joining, setJoining] = useState<ID | null>(null);
+  const dir = world.directory;
+
+  // Asked every time this opens: a list from the last time it was open is not
+  // an answer about now, and rooms are opened and shut while it is closed.
+  useEffect(() => { client.browseChannels(); }, []);
+  // And asked again whenever the answer stops meaning anything — joining a room
+  // takes it out of this list, so the list on screen has become wrong.
+  useEffect(() => { if (!dir.asked) client.browseChannels(); }, [dir.asked]);
+
+  // The hub answers a join with the ordinary `channel` frame. When the room we
+  // asked for turns up in the world, we are in it — open it.
+  useEffect(() => {
+    if (!joining) return;
+    if (world.channels.some(c => c.id === joining)) { onJoined(joining); setJoining(null); }
+  }, [joining, world.channels, onJoined]);
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="panel browsepanel" onClick={e => e.stopPropagation()}>
+        <div className="head">Browse rooms</div>
+        <div className="body">
+          {!dir.asked && <div className="d-empty">Looking for rooms you can join…</div>}
+          {dir.asked && dir.channels.length === 0 && (
+            <div className="notice browseempty">
+              No open rooms to join. Rooms are private unless someone opens them.
+            </div>
+          )}
+          {dir.channels.length > 0 && (
+            <div className="roomcards">
+              {dir.channels.map(c => (
+                <div className="roomcard" key={c.id} data-room={c.name}>
+                  <div className="rc-head">
+                    <h4><span className="h">#</span>{c.name}</h4>
+                    <span className="roomvis is-open" data-vis="open">
+                      <span className="vm" aria-hidden="true">◇</span>{ROOM_OPEN_WORDS}
+                    </span>
+                  </div>
+                  <p className="rc-desc">{c.description || "Nobody has written what this room is for."}</p>
+                  {c.topic && <p className="rc-topic">Topic: {c.topic}</p>}
+                  <div className="rc-foot">
+                    <span className="rc-count">
+                      {c.memberCount} {c.memberCount === 1 ? "person" : "people"} · started {dayStamp(c.createdAt)}
+                    </span>
+                    <button className="primary small roomjoin" disabled={joining === c.id}
+                      onClick={() => { setJoining(c.id); client.send({ type: "joinChannel", channelId: c.id }); }}>
+                      {joining === c.id ? "Joining…" : "Join"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div className="foot"><button className="primary" onClick={onClose}>Done</button></div>
       </div>

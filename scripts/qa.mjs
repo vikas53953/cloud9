@@ -2,6 +2,7 @@ import { chromium } from "playwright";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import {
   assertHarnessIsHonest, qaTarget, reportAndExit, signInAsOwner, waitFor, waitForAgentReply,
 } from "./qa-target.mjs";
@@ -20,7 +21,7 @@ const { ui: UI } = qaTarget();
  * run stops early it now FAILS and says so. Add or remove an `ok(...)` and this
  * number must move with it — a mismatch is the suite telling you it drifted.
  */
-const EXPECTED_CHECKS = 82;
+const EXPECTED_CHECKS = 122;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -28,6 +29,64 @@ const consoleErrors = [];
 function ok(name, pass, detail = "") {
   results.push({ name, pass, detail });
   console.log(`${pass ? "PASS" : "FAIL"} - ${name}${detail ? " :: " + detail : ""}`);
+}
+
+/**
+ * A real PNG of one colour, built here rather than checked into the repo.
+ *
+ * The attachment checks below compare what came back off the hub with what went
+ * up, byte for byte. That comparison is only worth anything against a genuine
+ * file with a genuine header, so this writes one: signature, IHDR, a deflated
+ * IDAT and IEND, with the CRC every chunk is required to carry.
+ */
+const CRC_TABLE = (() => {
+  const table = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c;
+  }
+  return table;
+})();
+
+function crc32(buf) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const typed = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(typed), 0);
+  return Buffer.concat([len, typed, crc]);
+}
+
+function pngOfSolidColour(width, height, [r, g, b]) {
+  const stride = width * 3 + 1;
+  const raw = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++) {
+    const row = y * stride;
+    raw[row] = 0; // no per-row filter
+    for (let x = 0; x < width; x++) {
+      raw[row + 1 + x * 3] = r;
+      raw[row + 2 + x * 3] = g;
+      raw[row + 3 + x * 3] = b;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;  // 8 bits per channel
+  ihdr[9] = 2;  // truecolour
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlib.deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
 }
 
 const browser = await chromium.launch(
@@ -760,6 +819,295 @@ try {
     /only answers/.test(await fpage.locator('.mentionrefused[data-agent="Scout"]').innerText()),
     (await fpage.locator('.mentionrefused[data-agent="Scout"]').innerText()).trim());
   await fpage.screenshot({ path: `${SHOTS}/chat-mention-refused.png` });
+
+  /* ================= FILES ON A MESSAGE (handoff §9) =================
+   * The whole journey, on screen and over the wire: pick a file, watch it go
+   * up, send it, see it on the message, open it, and — the part that is not
+   * inferrable from a link appearing — fetch the bytes back and compare them
+   * to what was sent. */
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click('button[title="New channel"]');
+  await page.fill('.panel input[placeholder="trip-goa"]', "paperwork");
+  await page.click(".panel .foot >> text=Create");
+  await page.waitForSelector(".sidebar >> text=# paperwork");
+  await page.click("text=# paperwork");
+  await page.waitForSelector('.chathead .ch-title .n:text-is("paperwork")', { timeout: 15000 });
+
+  ok("the composer offers a way to attach a file",
+    (await page.locator(".composer .mini.attach").count()) === 1 &&
+    (await page.locator(".composer input.filepick").count()) === 1);
+
+  // a real PNG, not a token one: a file worth a byte-for-byte comparison
+  const PICTURE = pngOfSolidColour(180, 120, [18, 83, 71]);
+  const LEDGER = Buffer.from("row,amount\nvilla,7400\nflights,5200\n", "utf8");
+
+  await page.setInputFiles(".composer input.filepick", {
+    name: "site-plan.png", mimeType: "image/png", buffer: PICTURE,
+  });
+  await page.waitForSelector('.uploadtray .uptile[data-upload="site-plan.png"].done', { timeout: 20000 });
+  ok("a picked file goes up and says it is ready to send",
+    /ready to send/.test(await page.locator('.uptile[data-upload="site-plan.png"] .meta').innerText()),
+    (await page.locator('.uptile[data-upload="site-plan.png"] .meta').innerText()).trim());
+
+  await page.setInputFiles(".composer input.filepick", {
+    name: "ledger.bin", mimeType: "application/octet-stream", buffer: LEDGER,
+  });
+  await page.waitForSelector('.uploadtray .uptile[data-upload="ledger.bin"].done', { timeout: 20000 });
+
+  // a name the hub would refuse is refused HERE, in the hub's own sentence,
+  // before the bytes are ever read — and it is said, never swallowed
+  await page.setInputFiles(".composer input.filepick", {
+    name: "bad name!.png", mimeType: "image/png", buffer: PICTURE,
+  });
+  await page.waitForSelector('.uploadtray .uptile.failed', { timeout: 15000 });
+  const refusedSays = (await page.locator(".uploadtray .uptile.failed .meta").innerText()).trim();
+  ok("a file the hub would refuse is refused in the composer, in plain words",
+    /file name isn't allowed/.test(refusedSays), refusedSays);
+  await page.screenshot({ path: `${SHOTS}/files-composer.png` });
+
+  // a refused file can be taken back off, and the ones that landed stay
+  await page.click('.uploadtray .uptile.failed .upx');
+  await waitFor(page, () => document.querySelectorAll(".uploadtray .uptile.failed").length === 0,
+    undefined, { timeout: 10000, what: "the refused file to be taken off the message" });
+  ok("a file can be taken back off the message before it is sent",
+    (await page.locator(".uploadtray .uptile").count()) === 2);
+
+  const sendSays = (await page.locator(".composer .primary.small").innerText()).trim();
+  ok("the send button says how many files are going with the message",
+    /2 files/.test(sendSays), sendSays);
+
+  await page.fill(".composer textarea", "here is the site plan and the ledger");
+  await page.click(".composer .primary.small");
+  await page.waitForSelector('.msg .fileblock[data-file="site-plan.png"]', { timeout: 20000 });
+  ok("a message carries its files, each with its name and its size",
+    (await page.locator(".msg .fileblock").count()) === 2 &&
+    /KB|bytes/.test(await page.locator('.fileblock[data-file="site-plan.png"] .meta').innerText()),
+    (await page.locator('.fileblock[data-file="site-plan.png"] .meta').innerText()).trim());
+
+  ok("the tray is empty once the files have gone",
+    (await page.locator(".composer .uploadtray").count()) === 0);
+
+  // what may be shown in place and what may only be saved is the HUB's answer,
+  // never the sender's — a picture offers "Show", anything else offers "Save"
+  ok("a picture offers to be shown in place and a file offers to be saved",
+    (await page.locator('.fileblock[data-file="site-plan.png"] .fileopen').innerText()).trim() === "Show" &&
+    (await page.locator('.fileblock[data-file="ledger.bin"] .fileopen').innerText()).trim() === "Save");
+
+  const pictureId = await page.getAttribute('.fileblock[data-file="site-plan.png"]', "data-attachment");
+
+  /* ---- the bytes, fetched back over the real HTTP path ----
+   * The ticket is minted through the app's own path, then redeemed from here.
+   * Two things are proved that a screenshot cannot prove: the file that comes
+   * back IS the file that went up, and the ticket dies on first use. */
+  const ticket = await page.evaluate(id => window.cloud9Files.ticket(id), pictureId);
+  const served = await fetch(ticket.url);
+  const gotBytes = Buffer.from(await served.arrayBuffer());
+  ok("the file fetched back off the hub is byte-for-byte the file that was sent",
+    served.status === 200 && gotBytes.length === PICTURE.length && gotBytes.equals(PICTURE),
+    `${served.status} · sent ${PICTURE.length} bytes, got ${gotBytes.length}`);
+  ok("the hub decides the type from the name, and tells the browser not to sniff",
+    served.headers.get("content-type") === "image/png" &&
+    served.headers.get("x-content-type-options") === "nosniff" &&
+    /inline/.test(served.headers.get("content-disposition") ?? ""),
+    `${served.headers.get("content-type")} · ${served.headers.get("content-disposition")}`);
+  const replayed = await fetch(ticket.url);
+  ok("a ticket is spent by the first request — a second one is refused",
+    replayed.status === 404 &&
+    /that link has expired/.test(await replayed.text()), `status ${replayed.status}`);
+
+  // and a file that is NOT a picture is handed over as bytes with a download
+  const ledgerId = await page.getAttribute('.fileblock[data-file="ledger.bin"]', "data-attachment");
+  const ledgerTicket = await page.evaluate(id => window.cloud9Files.ticket(id), ledgerId);
+  const ledgerServed = await fetch(ledgerTicket.url);
+  const ledgerBytes = Buffer.from(await ledgerServed.arrayBuffer());
+  ok("a file the hub will not draw comes back as bytes with a download, unchanged",
+    ledgerBytes.equals(LEDGER) &&
+    ledgerServed.headers.get("content-type") === "application/octet-stream" &&
+    /attachment/.test(ledgerServed.headers.get("content-disposition") ?? ""),
+    `${ledgerServed.headers.get("content-type")} · ${ledgerServed.headers.get("content-disposition")}`);
+
+  // ---- and the same journey through the buttons a person actually presses ----
+  await page.click('.fileblock[data-file="site-plan.png"] .fileopen');
+  await page.waitForSelector('.fileblock[data-file="site-plan.png"] .fileshot img', { timeout: 20000 });
+  const drawn = await page.evaluate(() => {
+    const img = document.querySelector('.fileblock[data-file="site-plan.png"] .fileshot img');
+    return { w: img.naturalWidth, h: img.naturalHeight, src: img.src.slice(0, 5) };
+  });
+  ok("clicking a picture opens it in place, with the picture really loaded",
+    drawn.w === 180 && drawn.h === 120, JSON.stringify(drawn));
+  await page.screenshot({ path: `${SHOTS}/files-message.png` });
+
+  ok("an opened file is held for this screen, so a second look does not re-ticket",
+    (await page.evaluate(() => window.cloud9Files.opened())).includes(pictureId));
+
+  // leaving the conversation lets every opened file go — a screen that opened a
+  // hundred pictures and never freed them would be holding a hundred pictures
+  await page.click(".sidebar >> text=# general");
+  await page.waitForTimeout(400);
+  ok("opened files are let go when the message leaves the screen",
+    (await page.evaluate(() => window.cloud9Files.opened())).length === 0);
+  await page.click(".sidebar >> text=# paperwork");
+  await page.waitForSelector('.msg .fileblock[data-file="site-plan.png"]', { timeout: 15000 });
+
+  /* ================= ROOMS ARE REAL THINGS (handoff §10) ================= */
+
+  // ---- the details panel: what it's for, who's in it, how it's run ----
+  await page.click(".chathead .roomdetailsbtn");
+  await page.waitForSelector(".roompanel", { timeout: 15000 });
+  await page.waitForSelector(".roommembers .memberrow", { timeout: 15000 });
+  const myRow = page.locator('.roommembers .memberrow[data-member="Vikas"]');
+  ok("the room panel lists who is in the room, with their role and when they joined",
+    (await myRow.count()) === 1 &&
+    (await myRow.locator(".rolename").getAttribute("data-role")) === "owner" &&
+    /joined /.test(await myRow.locator(".rl").innerText()),
+    (await myRow.locator(".rl").innerText()).replace(/\s+/g, " "));
+
+  await page.click(".roominfo-edit");
+  await page.fill(".roomdesc-input", "Everything that has to be filed for the trip");
+  await page.fill(".roomtopic-input", "back on the 14th");
+  await page.click(".roominfo-save");
+  await waitFor(page, () => /back on the 14th/.test(
+    document.querySelector(".roompanel .roomtopic")?.textContent ?? ""),
+  undefined, { timeout: 20000, what: "the room's own words to come back from the hub" });
+  ok("a room's description and one-line topic can be set, and come back from the hub",
+    /has to be filed/.test(await page.locator(".roompanel .roomdesc").innerText()) &&
+    /back on the 14th/.test(await page.locator(".roompanel .roomtopic").innerText()));
+  ok("the topic is shown beside the room's name, where it is about today",
+    /back on the 14th/.test(await page.locator(".chathead .ch-topic").innerText()));
+  await page.screenshot({ path: `${SHOTS}/rooms-details.png` });
+
+  // ---- a room is private until somebody opens it, and it SAYS which ----
+  ok("a room says at a glance that it is private, in the header and in the sidebar",
+    (await page.locator('.chathead .roomvis[data-vis="private"]').count()) === 1 &&
+    (await page.locator('.sidebar .side-item[data-channel="paperwork"][data-vis="private"]').count()) === 1);
+
+  // ---- browse: nothing to join while every room is shut ----
+  await fpage.click(".sidebar .browserooms");
+  await fpage.waitForSelector(".browsepanel", { timeout: 15000 });
+  await fpage.waitForSelector(".browsepanel .browseempty, .browsepanel .roomcard", { timeout: 20000 });
+  const emptySays = (await fpage.locator(".browsepanel .browseempty").innerText()).replace(/\s+/g, " ").trim();
+  ok("with every room shut, browsing says so — and says why, in the hub's own words",
+    emptySays === "No open rooms to join. Rooms are private unless someone opens them.", emptySays);
+  await fpage.screenshot({ path: `${SHOTS}/rooms-browse-empty.png` });
+  await fpage.click('.browsepanel .foot button:has-text("Done")');
+
+  // ---- the owner opens one ----
+  await page.click('.roomcontrols .segbtn[data-vis="open"]');
+  await waitFor(page, () => document.querySelector('.chathead .roomvis[data-vis="open"]') !== null,
+    undefined, { timeout: 20000, what: "the room to come back from the hub as an open one" });
+  ok("opening a room to anyone here is said in the header and on the sidebar row",
+    (await page.locator('.chathead .roomvis[data-vis="open"]').count()) === 1 &&
+    (await page.locator('.sidebar .side-item[data-channel="paperwork"][data-vis="open"]').count()) === 1);
+  await page.screenshot({ path: `${SHOTS}/rooms-open.png` });
+
+  // ---- and now it can be found and joined, with no members and no messages on offer ----
+  await fpage.click(".sidebar .browserooms");
+  await fpage.waitForSelector('.browsepanel .roomcard[data-room="paperwork"]', { timeout: 20000 });
+  const card = fpage.locator('.browsepanel .roomcard[data-room="paperwork"]');
+  ok("an open room can be found by somebody who is not in it, with what it's for and how many are in it",
+    /has to be filed/.test(await card.locator(".rc-desc").innerText()) &&
+    /1 person/.test(await card.locator(".rc-count").innerText()),
+    (await card.locator(".rc-count").innerText()).trim());
+  ok("browsing offers no members and no messages — finding a room is not permission to read it",
+    (await fpage.locator(".browsepanel .msg").count()) === 0 &&
+    (await fpage.locator(".browsepanel .mini-agent").count()) === 0);
+  await fpage.screenshot({ path: `${SHOTS}/rooms-browse.png` });
+
+  await card.locator(".roomjoin").click();
+  await fpage.waitForSelector('.sidebar .side-item[data-channel="paperwork"]', { timeout: 20000 });
+  await fpage.waitForSelector('.msg p:has-text("site plan and the ledger")', { timeout: 20000 });
+  ok("joining an open room lets you in and hands over what was said in it", true);
+  await fpage.screenshot({ path: `${SHOTS}/rooms-joined.png` });
+
+  // a plain member is shown the room, and not the controls they may not use
+  await fpage.click(".chathead .roomdetailsbtn");
+  await fpage.waitForSelector(".roompanel .roomnotyours", { timeout: 20000 });
+  ok("somebody who does not run the room is told so, instead of being offered a dead button",
+    (await fpage.locator(".roompanel .roomarchive").count()) === 0 &&
+    (await fpage.locator(".roompanel .segbtn").count()) === 0 &&
+    (await fpage.locator(".roompanel .roomleave").count()) === 1);
+  const joinedRow = fpage.locator('.roommembers .memberrow[data-member="Priya"]');
+  ok("letting yourself into an open room is recorded as exactly that — nobody added you",
+    (await joinedRow.locator(".rolename").getAttribute("data-role")) === "member" &&
+    !/added by/.test(await joinedRow.locator(".rl").innerText()),
+    (await joinedRow.locator(".rl").innerText()).replace(/\s+/g, " "));
+
+  // ---- leaving takes the room, and everything cached for it, away ----
+  await fpage.click(".roompanel .roomleave");
+  await fpage.click(".roompanel .roomleave-yes");
+  await waitFor(fpage, () =>
+    document.querySelectorAll('.sidebar .side-item[data-channel="paperwork"]').length === 0,
+  undefined, { timeout: 20000, what: "the room to go from the sidebar when you leave it" });
+  ok("leaving a room takes it out of the sidebar, there and then", true);
+
+  // ---- archived: readable, and nothing new ----
+  await page.click(".roomarchive");
+  await waitFor(page, () => document.querySelector(".composer-box.readonly") !== null,
+    undefined, { timeout: 20000, what: "the composer to be replaced once the room is archived" });
+  const archivedSays = (await page.locator(".composer-box.readonly .ro-say").innerText()).trim();
+  ok("an archived room replaces the composer with the hub's own sentence, word for word",
+    archivedSays === "that conversation is archived — nothing new can be said in it", archivedSays);
+  ok("an archived room is greyed in the sidebar and marked archived in the header",
+    (await page.locator('.sidebar .side-item[data-channel="paperwork"].is-archived').count()) === 1 &&
+    (await page.locator('.chathead .roomvis[data-vis="archived"]').count()) === 1);
+  await page.hover(".msgs .msg >> nth=0");
+  await page.waitForTimeout(250);
+  ok("an archived room offers nothing that would put something new in it",
+    (await page.locator(".msgs .msgactions").count()) === 0 &&
+    (await page.locator(".chathead select").count()) === 0);
+  ok("an archived room still reads all the way down — the words and the files stay",
+    (await page.locator('.msg .fileblock[data-file="site-plan.png"]').count()) === 1 &&
+    (await page.locator(".msgs .msg").count()) > 0);
+  await page.screenshot({ path: `${SHOTS}/rooms-archived.png` });
+
+  // ---- and it is a state, not an epitaph ----
+  await page.click(".roomarchive");
+  await waitFor(page, () => document.querySelector(".composer textarea") !== null,
+    undefined, { timeout: 20000, what: "the composer to come back when the room is reopened" });
+  ok("reopening an archived room gives it back, exactly as it was",
+    (await page.locator(".composer-box.readonly").count()) === 0 &&
+    (await page.locator('.sidebar .side-item[data-channel="paperwork"].is-archived').count()) === 0);
+
+  // ---- the details panel must not push the page sideways either ----
+  for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.waitForTimeout(220);
+      const over = await page.evaluate(() => ({
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        body: document.body.scrollWidth - document.body.clientWidth,
+      }));
+      ok(`the room-details panel does not scroll sideways at ${width} in the ${theme} look`,
+        over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+      if (width === 1280) {
+        await page.screenshot({ path: `${SHOTS}/rooms-details-${theme}.png` });
+      }
+    }
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+
+  // the files on a message must not either — a long name is the usual culprit
+  await page.click(".roompanel .roomclose");
+  for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.waitForTimeout(220);
+      const over = await page.evaluate(() => ({
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        body: document.body.scrollWidth - document.body.clientWidth,
+      }));
+      ok(`files on a message do not scroll sideways at ${width} in the ${theme} look`,
+        over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+      if (width === 1280) {
+        await page.screenshot({ path: `${SHOTS}/files-message-${theme}.png` });
+      }
+    }
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
 
   // ---------- nothing new scrolls sideways, in either look ----------
   await page.click('.rail-btn[data-go="chat"]');

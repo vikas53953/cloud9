@@ -99,6 +99,18 @@ interface RunRecord {
 
 ---
 
+> **STATUS 2026-07-29, second pass — §1–3 are DONE and this is now a record of
+> what shipped, not a request.** The types moved, the frames exist, the relay
+> stores and serves them, `Task.runId` is real, and everything is authorised
+> from stored state and redacted on the way out. Section **4.1a** below is the
+> renderer's half: the exact frames a client sends and receives. Nothing in §4
+> has been built — that is still the screen's job.
+>
+> Baselines after the pass: build clean, **174 engine** (was 167), **92 relay**
+> (was 76).
+
+---
+
 ## 3. Protocol additions needed — `packages/shared/src/index.ts`
 
 Move the four types above (`RunStepKind`, `RunStep`, `RunUsage`, `RunRecord`)
@@ -187,6 +199,146 @@ callout:
   no "unknown". Codex reports no cost, so a Codex job simply has no COST row.
   Showing a zero where the CLI said nothing is the exact lie this whole feature
   was built to stop.
+
+### 4.1a The wire, exactly as built — READ THIS FIRST
+
+Everything below is in `packages/shared/src/index.ts` and is what the relay
+really speaks. `apps/desktop/src/store.ts` already has `case "run"` and
+`case "runs"` sitting in its frame switch; filling them in is the whole job.
+
+#### What you import
+
+From `@cloud9/shared` — **not** from `@cloud9/engine`, which is a Node package
+and has no business in a browser bundle:
+
+```ts
+import {
+  RunRecord, RunStep, RunStepKind, RunUsage, RunListEntry,
+  RunKind, RunOutcome, RUN_LIMITS, RUN_RETENTION,
+  summarizeRun, countSteps, humanDuration, humanMoney, runListEntry,
+} from "@cloud9/shared";
+```
+
+`summarizeRun(record)` is the bold line in §4.1, verbatim. `humanDuration` and
+`humanMoney` write the TOOK and COST rows. Do not write your own versions of
+these three — the hub puts the same sentence in its activity trail and in every
+`RunListEntry.summary`, and two spellings of "76 cents" is a bug the owner will
+see before we do.
+
+#### What you send
+
+```ts
+// "what has this agent been doing" — §4.3, the Recent work rail.
+// OWNER ONLY. Asking about someone else's agent errors "not your agent".
+{ type: "runList"; agentId: ID; limit?: number }
+
+// "what did this job actually do" — the Tasks panel and the 📦 Task done card.
+// Anyone who can see the conversation the job was asked for in.
+{ type: "runList"; taskId: ID; limit?: number }
+
+// one run, in full, for the expanded step list (§4.2)
+{ type: "runDetail"; runId: string }
+```
+
+`limit` is clamped to `RUN_RETENTION.listPage` (50); leaving it out gives
+`RUN_RETENTION.listDefault` (20). Naming neither `agentId` nor `taskId` is an
+error, not a list of everything.
+
+There is **no `runRecorded` for you to send.** It is engine-only and the relay
+refuses it from a desktop connection.
+
+#### What you receive
+
+```ts
+// Pushed the moment a turn finishes, unasked, to every client of every person
+// who can see the conversation it happened in — plus the agent's owner always.
+// ALSO the answer to `runDetail`.
+{ type: "run"; record: RunRecord }
+
+// The answer to `runList`. It echoes back which question it is answering, so
+// two lists in flight at once cannot be confused for each other.
+{ type: "runs"; agentId?: ID; taskId?: ID; runs: RunListEntry[] }
+
+// And the field that makes the whole feature findable:
+interface Task { /* … */ runId?: string }
+```
+
+`Task.runId` arrives on an ordinary `{ type: "task"; task: Task }` broadcast, a
+moment after the task goes `completed`. **Absent until a run has been recorded**,
+and absent forever on every task from before this round — so the callout is
+rendered only when `task.runId` is there, never with a placeholder.
+
+#### The four things that will bite you
+
+1. **A `run` frame can arrive for a run you have never heard of**, in a channel
+   you have open or one you do not. Key your cache by `record.id` and index
+   `record.channelId` / `record.taskId` off it; do not assume you asked.
+2. **Absent means absent.** `usage`, `usage.costUsd`, `cliDurationMs`,
+   `actualModel`, `numTurns`, `sessionId`, `step.ok` and `error` are all
+   genuinely optional. §4.1's rule — *a row whose value is absent must not be
+   rendered at all* — is the reason this feature exists. A Codex run has no
+   `usage.costUsd` and never will; see §5.
+3. **The text is already redacted, and it is redacted twice.** The engine
+   applies `shareableRun` before sending and the relay applies it again before
+   handing it out, so paths are already down to `note.txt` and the owner's
+   account name is already gone. Do not "tidy" a label or a detail further —
+   what survived is what the owner is meant to see. Do not try to reconstruct a
+   full path.
+4. **`step.detail` on a `web` step is a real URL and is passed through intact**
+   (URLs are deliberately protected from redaction). It is the one detail that
+   should be a link. Everything else is text — render it as text, through the
+   same `<Markdown>`-free path a file name goes through.
+
+#### A worked example, from a real shape
+
+```ts
+// arrives unasked, ~1 tick after "📦 Task done:" lands in the channel
+{
+  type: "run",
+  record: {
+    id: "r-m2k9x1abc-4f7q",
+    kind: "task",
+    agentId: "a_scout", agentName: "Scout",
+    provider: "claude", model: "claude-sonnet-5", actualModel: "claude-sonnet-5",
+    channelId: "ch_general", taskId: "t_villas",
+    requestedBy: "Vikas", requestedByKind: "human",
+    ask: "find three villas in Goa under 8k",
+    startedAt: 1769..., finishedAt: 1769..., durationMs: 41_000,
+    cliDurationMs: 40_120,
+    outcome: "ok",
+    steps: [
+      { seq: 1, kind: "web",  label: "Read a web page", detail: "https://villas.example/goa", ok: true },
+      { seq: 2, kind: "read", label: "Read notes.md",   detail: "notes.md", ok: true },
+      { seq: 3, kind: "note", label: "Refused to use Bash" },
+    ],
+    usage: { inputTokens: 9_291, outputTokens: 640, cachedInputTokens: 4_100, costUsd: 0.76 },
+    sessionId: "…", numTurns: 3,
+    replyChars: 812, events: 24,
+  },
+}
+```
+
+`summarizeRun` of that is exactly:
+
+> `Checked 1 site, read 1 file, took 41 seconds, cost 76 cents.`
+
+Note step 3: `ok` is **absent**, so it gets no tick and no cross, and it is the
+`note` kind §4.2 says to highlight — the first evidence Cloud9 has ever had that
+a permission boundary held.
+
+#### What the client is NOT allowed to do
+
+- **Do not ask for another person's agent's history.** `runList` by `agentId` is
+  owner-only, by design: sharing a room with someone's agent shows you the turns
+  it takes *there*, and is not a licence to read everything it has ever done.
+  If a details rail is open on somebody else's agent, hide Recent work; do not
+  ask and swallow the error.
+- **`runDetail` on a run you may not see answers `"no such run"` — the same
+  sentence an invented id gets.** That is deliberate so an id cannot be probed.
+  Treat both the same way: the run is not there.
+- **Do not cache a run past `agentDeleted`.** The hub forgets an agent's runs
+  when the agent goes; a client that keeps drawing them is showing something
+  that no longer exists anywhere else.
 
 ### 4.2 The step list (expanded)
 
@@ -362,11 +514,38 @@ nothing. The second half is the more valuable test.
 
 ## 8. Order to do this in
 
-1. Move the five types into `packages/shared` and delete the engine's local
-   copies. *(Small. Unblocks everything else.)*
-2. Add `runRecorded` and wire it to `Engine.onRunRecorded`; relay stores it and
-   logs an activity row. *(Now the data exists on the hub.)*
-3. Add `Task.runId` and show the summary callout under a finished job.
-   *(This is the moment the feature becomes visible — do it before the rest.)*
-4. Add `runList` / `runDetail` and the expanded step list.
-5. Add **Recent work** to the agent rail.
+1. ~~Move the five types into `packages/shared` and delete the engine's local
+   copies.~~ **DONE.** Seven types plus `RUN_LIMITS`, `summarizeRun`,
+   `shareableRun` and `redactForSharing` all moved; the engine re-exports them
+   so `@cloud9/engine` keeps its published surface, but there is exactly one
+   definition of each and a test asserts *identity*, not equality, so a second
+   copy cannot quietly reappear.
+2. ~~Add `runRecorded`; relay stores it and logs an activity row.~~ **DONE.**
+   `Engine.publishRun` sends `shareableRun(record)` on every recorded run
+   (including a cancelled one); the relay stores it in a `runs` table, writes an
+   `activity` row of kind `run_recorded`, and pushes a `run` frame to the room.
+3. ~~Add `Task.runId`.~~ **DONE** — set by the hub from the record's own
+   `taskId`, and only when that task really belongs to that agent.
+   **Showing the summary callout under a finished job is still open** and is
+   the next thing worth doing: it is the moment the feature becomes visible.
+   Everything it needs is in §4.1 and §4.1a.
+4. ~~Add `runList` / `runDetail`.~~ **DONE** on the wire and on the hub. The
+   expanded step list (§4.2) is still open.
+5. Add **Recent work** to the agent rail (§4.3). Still open. Owner-only — see
+   §4.1a's last block.
+
+### 8.1 What is enforced, and where — so the screen does not re-do it
+
+| Question | Answered by | Where |
+|---|---|---|
+| May this connection report a run at all? | `conn.client === "engine"` | `Relay.recordRun` |
+| Whose agent is this? | `myAgent` (stored state) | `Relay.recordRun`, `runList` |
+| Which room was it in? | `channelFor` (stored state) | `Relay.recordRun`, `canSeeRun` |
+| May this person read this run? | `canSeeRun` — owner, or the room | `runDetail`, `runList` |
+| What may leave this machine? | `shareableRun` → `redactForSharing` | engine on send, relay on store AND on serve |
+| Is it bounded? | `validateRunRecord`, `fitRunRecord`, `RUN_RETENTION` | `Relay.recordRun`, `Store.saveRun` |
+
+A claim the record makes that does not check out is **dropped, not obeyed**: an
+unverifiable `channelId` leaves the run visible to its owner alone, and a
+`taskId` naming another agent's job is simply not recorded — and neither
+survives *inside* the record either, so a screen can trust the fields it reads.

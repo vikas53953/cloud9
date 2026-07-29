@@ -1,7 +1,8 @@
 // Renderer-side relay client: one WebSocket, one mutable world, subscribers.
 import {
-  ActivityRecord, AgentDef, AgentStatus, Approval, Channel, ClientFrame,
-  HarnessState, ID, Message, SearchHit, ServerFrame, Task, UnreadEntry, User,
+  ActivityRecord, AgentDef, AgentStatus, Approval, Attachment, ATTACHMENT_LIMITS, Channel,
+  ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
+  SearchHit, ServerFrame, Task, UnreadEntry, User, validateAttachment,
 } from "@cloud9/shared";
 
 /**
@@ -28,6 +29,39 @@ export interface SearchState {
   hasMore: boolean;
   /** the query the results on screen actually belong to */
   answered: string;
+}
+
+/**
+ * One file on its way from this machine to the hub.
+ *
+ * It is held per CONVERSATION, because that is where the person can see it:
+ * a file picked in #trip must not turn up attached to a message in #general
+ * just because the reader changed rooms while it was going up.
+ */
+export interface Upload {
+  /** ours, for the life of this screen — the hub's id only exists once it lands */
+  localId: string;
+  name: string;
+  size: number;
+  state: "sending" | "done" | "failed";
+  /** the hub's own sentence when it refused, never a paraphrase */
+  error?: string;
+  /** what to name in `send` once it is up */
+  attachmentId?: ID;
+}
+
+/**
+ * An attached file this screen has opened.
+ *
+ * `url` is a `blob:` we made and therefore must revoke (see `closeFile`),
+ * unless `direct` is set — then it is a one-use hub URL handed to the browser
+ * to load or download, and there is nothing of ours to free.
+ */
+export interface OpenFile {
+  state: "opening" | "ready" | "failed";
+  url?: string;
+  direct?: boolean;
+  error?: string;
 }
 
 export interface World {
@@ -70,6 +104,20 @@ export interface World {
    * prepending changes `scrollHeight`, and without this the view would jump.
    */
   prepended: number;
+  /** files being sent up from this machine, by conversation */
+  uploads: Record<ID, Upload[]>;
+  /** attached files this screen has opened, by attachment id */
+  files: Record<ID, OpenFile>;
+  /**
+   * The open rooms you are NOT in — the answer to "Browse rooms".
+   *
+   * `asked` is what tells an empty list from an unanswered one: without it the
+   * browser would say "no open rooms" the instant it opened, which is a claim
+   * nobody has checked yet.
+   */
+  directory: { asked: boolean; channels: ChannelSummary[] };
+  /** who is in one room, with roles and dates, by conversation */
+  members: Record<ID, ChannelMember[]>;
 }
 
 type Listener = () => void;
@@ -117,6 +165,7 @@ export class RelayClient {
     connected: false, authFailed: false, users: [], agents: [], channels: [],
     messages: {}, agentStatus: {}, tasks: [], approvals: [], activity: [],
     pages: {}, threads: {}, unread: {}, prepended: 0,
+    uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
   };
   private ws?: WebSocket;
   private listeners = new Set<Listener>();
@@ -307,6 +356,297 @@ export class RelayClient {
     }
   }
 
+  /* ---------------- rooms ---------------- */
+
+  /** Ask for the open rooms this person could join. */
+  browseChannels(): void {
+    this.send({ type: "browseChannels" });
+  }
+
+  /** Ask who is in one room. Answered with roles, join dates and who let them in. */
+  askMembers(channelId: ID): void {
+    this.send({ type: "channelMembers", channelId });
+  }
+
+  /* ---------------- attaching a file ---------------- */
+
+  private uploadQueue: Array<{ channelId: ID; localId: string; frame: ClientFrame }> = [];
+  /** the one upload the hub is working on — see `attach` for why there is only one */
+  private uploading: { channelId: ID; localId: string } | null = null;
+
+  private setUploads(channelId: ID, next: Upload[]): void {
+    this.world.uploads = { ...this.world.uploads, [channelId]: next };
+  }
+
+  private patchUpload(channelId: ID, localId: string, patch: Partial<Upload>): void {
+    const list = this.world.uploads[channelId] ?? [];
+    this.setUploads(channelId, list.map(u => (u.localId === localId ? { ...u, ...patch } : u)));
+  }
+
+  /**
+   * Put one picked file on the hub, ready to be named in a `send`.
+   *
+   * ONE AT A TIME, deliberately. The `attachment` frame that answers an upload
+   * carries no echo of what was asked, and neither does the `error` frame that
+   * refuses one — so two uploads in the air at once could not be told apart,
+   * and a refusal would be pinned on the wrong file. A queue costs a moment on
+   * a second file and buys an answer that is always about the right one.
+   */
+  attach(channelId: ID, file: File): void {
+    const localId = `up_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+    const list = this.world.uploads[channelId] ?? [];
+    // The same ceilings the hub holds, asked here first so a 10 MB file is
+    // refused in the moment it is picked rather than after it has been read,
+    // encoded and sent. `validateAttachment` is the hub's own function — there
+    // is no second copy of the rule in this app.
+    const already = list.filter(u => u.state !== "failed").length;
+    if (already >= ATTACHMENT_LIMITS.perMessage) {
+      this.notify(`that's the most files one message can carry (${ATTACHMENT_LIMITS.perMessage})`);
+      return;
+    }
+    const refusal = validateAttachment(file.name, file.size);
+    if (refusal) {
+      this.setUploads(channelId,
+        [...list, { localId, name: file.name, size: file.size, state: "failed", error: refusal }]);
+      this.emit();
+      return;
+    }
+    this.setUploads(channelId,
+      [...list, { localId, name: file.name, size: file.size, state: "sending" }]);
+    this.emit();
+
+    const reader = new FileReader();
+    reader.onerror = () => {
+      this.patchUpload(channelId, localId, { state: "failed", error: "that file could not be read" });
+      this.emit();
+    };
+    reader.onload = () => {
+      const asUrl = String(reader.result ?? "");
+      const comma = asUrl.indexOf(",");
+      if (comma < 0) {
+        this.patchUpload(channelId, localId, { state: "failed", error: "that file could not be read" });
+        this.emit();
+        return;
+      }
+      this.uploadQueue.push({
+        channelId, localId,
+        frame: {
+          type: "uploadAttachment", channelId, name: file.name,
+          dataBase64: asUrl.slice(comma + 1), mime: file.type || undefined,
+        },
+      });
+      this.pumpUploads();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  private pumpUploads(): void {
+    if (this.uploading) return;
+    const next = this.uploadQueue.shift();
+    if (!next) return;
+    this.uploading = { channelId: next.channelId, localId: next.localId };
+    this.send(next.frame);
+  }
+
+  /** Take one picked file back out before the message is sent. */
+  dropUpload(channelId: ID, localId: string): void {
+    this.uploadQueue = this.uploadQueue.filter(q => q.localId !== localId);
+    this.setUploads(channelId, (this.world.uploads[channelId] ?? []).filter(u => u.localId !== localId));
+    this.emit();
+  }
+
+  /** The ids to name in `send` — only the files that really landed. */
+  uploadIds(channelId: ID): ID[] {
+    return (this.world.uploads[channelId] ?? [])
+      .filter(u => u.state === "done" && u.attachmentId)
+      .map(u => u.attachmentId!);
+  }
+
+  /** The tray is emptied once its files have gone out with a message. */
+  clearUploads(channelId: ID): void {
+    if (!this.world.uploads[channelId]) return;
+    const { [channelId]: gone, ...rest } = this.world.uploads;
+    void gone;
+    this.world.uploads = rest;
+    this.emit();
+  }
+
+  /* ---------------- getting an attached file back ---------------- */
+
+  /** where the hub's own HTTP lives — derived from the socket, never stored twice */
+  private hubHttp(): string {
+    return RELAY_URL.replace(/^ws/, "http");
+  }
+
+  private ticketWaiters: Array<{
+    attachmentId: ID;
+    resolve: (v: { url: string; expiresAt: number }) => void;
+    reject: (e: Error) => void;
+  }> = [];
+
+  /**
+   * Ask for permission to fetch ONE file, ONCE.
+   *
+   * Asked at the moment of the click and never at render: a ticket minted when
+   * a message scrolls into view is dead thirty seconds later, and a screenful
+   * of messages would mint more of them than the hub will hold.
+   */
+  private mintTicket(attachmentId: ID): Promise<{ url: string; expiresAt: number }> {
+    return new Promise((resolve, reject) => {
+      const waiter = { attachmentId, resolve, reject };
+      this.ticketWaiters.push(waiter);
+      this.send({ type: "attachmentTicket", attachmentId });
+      setTimeout(() => {
+        const i = this.ticketWaiters.indexOf(waiter);
+        if (i < 0) return;
+        this.ticketWaiters.splice(i, 1);
+        reject(new Error("the hub didn't answer — try again"));
+      }, 15000);
+    });
+  }
+
+  /**
+   * One ticket to one file, as a whole URL.
+   *
+   * The same mint the buttons use, exposed so the QA suite can fetch a file
+   * back over the real HTTP path and check the bytes against what it sent —
+   * "a link appeared" is not evidence that a file came back.
+   */
+  async ticketFor(attachmentId: ID): Promise<{ url: string; expiresAt: number }> {
+    const t = await this.mintTicket(attachmentId);
+    return { url: this.hubHttp() + t.url, expiresAt: t.expiresAt };
+  }
+
+  /** The attachment ids whose bytes this screen is currently holding. */
+  openFileIds(): ID[] {
+    return Object.keys(this.world.files);
+  }
+
+  private setFile(id: ID, next: OpenFile): void {
+    this.world.files = { ...this.world.files, [id]: next };
+    this.emit();
+  }
+
+  /**
+   * Get one attached file's bytes and keep them for the life of this screen.
+   *
+   * The rules that are not negotiable (§9.3):
+   *  - ONE fetch per ticket. The first request spends it.
+   *  - A `404` is the ONLY failure the hub reports, and it means "spent, expired
+   *    or no longer yours". The recovery is a NEW ticket, not an error message —
+   *    so that is what happens here, once, before anything is said to anyone.
+   *  - Because the hub answers `no-store`, this cache IS the cache. A second
+   *    click on the same file must not re-ticket.
+   */
+  async openFile(a: Attachment): Promise<void> {
+    const held = this.world.files[a.id];
+    if (held && (held.state === "ready" || held.state === "opening")) return;
+    this.setFile(a.id, { state: "opening" });
+
+    const fetchOnce = async (): Promise<Response> => {
+      const t = await this.mintTicket(a.id);
+      return fetch(this.hubHttp() + t.url);
+    };
+
+    try {
+      if (this.hubIsSameOrigin()) {
+        let res = await fetchOnce();
+        // 404 means the ticket was spent or has expired. Ask for another and
+        // try once more — showing a person an error here would be showing them
+        // a problem the app can fix by itself.
+        if (res.status === 404) res = await fetchOnce();
+        if (!res.ok) {
+          this.setFile(a.id, { state: "failed", error: "that link has expired — open the file again" });
+          return;
+        }
+        this.setFile(a.id, { state: "ready", url: URL.createObjectURL(await res.blob()) });
+        return;
+      }
+      /**
+       * The hub is on its own address, so this page may not READ its answer —
+       * a browser refuses to hand a cross-origin response to the script that
+       * asked for it. Loading a PICTURE is not held to that rule, so the ticket
+       * goes to the picture itself instead of through a `fetch`.
+       *
+       * Nothing about the ticket changes: still minted at the click, still good
+       * for one request and thirty seconds, still checked by the hub against
+       * this person's membership at the moment it is redeemed. What is given up
+       * is only the blob copy — which is why `direct` is set, so nothing later
+       * tries to revoke a URL this app did not create.
+       */
+      const t = await this.mintTicket(a.id);
+      this.setFile(a.id, { state: "ready", url: this.hubHttp() + t.url, direct: true });
+    } catch (err) {
+      this.setFile(a.id, {
+        state: "failed",
+        error: (err as Error).message || "that file could not be opened",
+      });
+    }
+  }
+
+  /**
+   * Is the hub answering on this page's own address?
+   *
+   * It is when the app is served by the hub or through something in front of
+   * both; it is not in dev, and not in the packaged app, where the screen is a
+   * local file and the hub is a socket on a port. Asked before a `fetch` rather
+   * than after one fails, because a refused cross-origin request is a red line
+   * in the console every time, and a console full of expected errors is a
+   * console nobody reads.
+   */
+  private hubIsSameOrigin(): boolean {
+    try {
+      return new URL(this.hubHttp()).origin === location.origin;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Save an attached file — the browser's (or Electron's) own download path.
+   *
+   * A download is a navigation, not a read, so it needs no blob and nothing to
+   * free afterwards. The ticket is minted here, at the click.
+   */
+  async saveFile(a: Attachment): Promise<void> {
+    this.setFile(a.id, { state: "opening" });
+    try {
+      const t = await this.mintTicket(a.id);
+      const link = document.createElement("a");
+      link.href = this.hubHttp() + t.url;
+      link.download = a.name;
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      this.setFile(a.id, { state: "ready", url: link.href, direct: true });
+    } catch (err) {
+      this.setFile(a.id, { state: "failed", error: (err as Error).message });
+    }
+  }
+
+  /** May this file be drawn where it sits, or must it be saved first? */
+  canShowInline(a: Attachment): boolean {
+    return isInlineViewable(a.name);
+  }
+
+  /**
+   * Let one opened file go.
+   *
+   * A `blob:` URL is a reference the page holds until it is revoked, so a
+   * screen that opened a hundred pictures and never called this would be
+   * holding a hundred pictures. Called when the message unmounts.
+   */
+  closeFile(id: ID): void {
+    const held = this.world.files[id];
+    if (!held) return;
+    if (held.url && !held.direct) URL.revokeObjectURL(held.url);
+    const { [id]: gone, ...rest } = this.world.files;
+    void gone;
+    this.world.files = rest;
+    this.emit();
+  }
+
   private onFrame(frame: ServerFrame): void {
     const w = this.world;
     switch (frame.type) {
@@ -329,6 +669,16 @@ export class RelayClient {
         w.pages = {};
         w.threads = {};
         w.unread = {};
+        // Everything derived from the last connection goes with it. Blob URLs
+        // are freed rather than dropped, or a reconnect would leak every
+        // picture the last session opened.
+        for (const id of Object.keys(w.files)) {
+          const f = w.files[id];
+          if (f.url && !f.direct) URL.revokeObjectURL(f.url);
+        }
+        w.files = {};
+        w.members = {};
+        w.directory = { asked: false, channels: [] };
         for (const entry of frame.state.unread ?? []) w.unread[entry.channelId] = entry;
         break;
       }
@@ -353,6 +703,10 @@ export class RelayClient {
         const i = w.channels.findIndex(c => c.id === frame.channel.id);
         if (i >= 0) w.channels[i] = frame.channel; else w.channels.push(frame.channel);
         w.channels = [...w.channels];
+        // A room arriving for the FIRST time is a room we just joined, so the
+        // browse list — which only ever shows rooms you are not in — has gone
+        // stale. Only on arrival: a topic change must not reset it.
+        if (i < 0) w.directory = { asked: false, channels: [] };
         w.lastChannel = { id: frame.channel.id, ts: Date.now() };
         break;
       }
@@ -453,6 +807,20 @@ export class RelayClient {
       }
       case "error":
         w.lastError = { text: frame.error, ts: Date.now() };
+        /* A refusal is not correlated to what was asked, so the two things
+           WAITING for an answer have to be told: the one upload in the air and
+           the oldest unanswered ticket. Both are held one-at-a-time for exactly
+           this reason, so neither can be pinned on the wrong file. Nothing else
+           changes — the toast still says the hub's own sentence. */
+        if (this.uploading) {
+          this.patchUpload(this.uploading.channelId, this.uploading.localId,
+            { state: "failed", error: frame.error });
+          this.uploading = null;
+          this.pumpUploads();
+        }
+        if (this.ticketWaiters.length > 0) {
+          this.ticketWaiters.shift()!.reject(new Error(frame.error));
+        }
         // A refusal that arrives before we were ever let in is a FAILED JOIN:
         // send the person back to the welcome screen, where the reason is
         // visible, instead of leaving them staring at an empty workspace.
@@ -462,19 +830,44 @@ export class RelayClient {
       // exhaustiveness check below still holds.
       case "push":        // relay → mobile only
       case "harnessRequest": // relay → engine host only
+      // What an agent actually did on one run, and the list of them. Landing in
+      // the engine half right now; there is no screen for a run's record yet,
+      // and inventing one here would be guessing at somebody else's design.
+      // Named rather than defaulted, so the exhaustiveness check below keeps
+      // its teeth and this cannot ship forgotten.
+      case "run":
+      case "runs":
         break;
-      // The one chat-basics frame with no screen yet. Attachments are held back
-      // deliberately: there is no way to get a file back OFF the hub (see
-      // `docs/plans/chat-basics-handoff.md` §6), so an upload button would park
-      // files nobody could ever open. Named, not defaulted, so the
-      // exhaustiveness check below keeps its teeth.
-      case "attachment":
-      // Landing right now in the relay half, and named here rather than
-      // defaulted so the exhaustiveness check below keeps its teeth. Browsing
-      // rooms you are not in is its own screen and is not this round's.
-      case "attachmentTicket":
+      case "attachment": {
+        // The answer to the ONE upload in the air (see `attach`). It carries no
+        // echo of what was asked, which is exactly why only one is ever asked.
+        const up = this.uploading;
+        if (up) {
+          this.patchUpload(up.channelId, up.localId,
+            { state: "done", attachmentId: frame.attachment.id });
+          this.uploading = null;
+          this.pumpUploads();
+        }
+        break;
+      }
+      case "attachmentTicket": {
+        const i = this.ticketWaiters.findIndex(w => w.attachmentId === frame.attachmentId);
+        if (i >= 0) {
+          const [waiter] = this.ticketWaiters.splice(i, 1);
+          waiter.resolve({ url: frame.url, expiresAt: frame.expiresAt });
+        }
+        break;
+      }
       case "channelDirectory":
+        w.directory = { asked: true, channels: frame.channels };
+        break;
       case "channelMembers":
+        // Only the list of who is in the room NOW is kept here. An `at` list is
+        // an answer to one question about one message, and holding it under the
+        // room's id would quietly overwrite the room's real membership.
+        if (frame.at === undefined) {
+          w.members = { ...w.members, [frame.channelId]: frame.members };
+        }
         break;
       case "channelLeft": {
         // Out of the room means out of it NOW — not after a reload. Everything
@@ -490,6 +883,15 @@ export class RelayClient {
         const { [frame.channelId]: goneUnread, ...restUnread } = w.unread;
         void goneUnread;
         w.unread = restUnread;
+        const { [frame.channelId]: goneMembers, ...restMembers } = w.members;
+        void goneMembers;
+        w.members = restMembers;
+        const { [frame.channelId]: goneUploads, ...restUploads } = w.uploads;
+        void goneUploads;
+        w.uploads = restUploads;
+        // A room you just left may now be one you could join, so the browser's
+        // list is no longer an answer to anything.
+        w.directory = { asked: false, channels: [] };
         break;
       }
       default: {

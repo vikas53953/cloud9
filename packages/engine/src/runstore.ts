@@ -20,8 +20,11 @@
 // reaches the owner and the failure goes to the log.
 import fs from "node:fs";
 import path from "node:path";
-import { isSafeSkillFileName } from "@cloud9/shared";
-import { RunRecord, RUN_LIMITS, summarizeRun } from "./runrecord.js";
+import {
+  RunListEntry, RunRecord, fitRunRecord, isSafeSkillFileName, runListEntry,
+} from "@cloud9/shared";
+
+export type { RunListEntry };
 
 export interface RunStoreOptions {
   /** the agent's own folder — the engine already owns this decision */
@@ -31,18 +34,6 @@ export interface RunStoreOptions {
   /** a single record may not exceed this on disk */
   maxBytes?: number;
   log?: (message: string) => void;
-}
-
-/** A run as it appears in a list, without loading every step. */
-export interface RunListEntry {
-  id: string;
-  kind: RunRecord["kind"];
-  outcome: RunRecord["outcome"];
-  startedAt: number;
-  durationMs: number;
-  ask: string;
-  /** the plain-words line, rebuilt from the record it came from */
-  summary: string;
 }
 
 export const RUN_STORE_DEFAULTS = { keepPerAgent: 50, maxBytes: 64 * 1024 } as const;
@@ -120,21 +111,12 @@ export class RunStore {
    * says it was truncated, so nobody mistakes a trimmed run for a short one.
    */
   fit(record: RunRecord): RunRecord {
-    let out = record;
-    // measured with the SAME serializer that writes the file — measuring one
-    // shape and writing another is how a cap quietly stops capping
-    while (serialize(out).length > this.maxBytes && out.steps.length > 2) {
-      const half = Math.max(1, Math.floor(out.steps.length / 2));
-      out = {
-        ...out,
-        steps: [...out.steps.slice(0, half - 1), ...out.steps.slice(half + 1)],
-        truncated: true,
-      };
-    }
-    if (serialize(out).length > this.maxBytes) {
-      out = { ...out, steps: [], truncated: true, ask: out.ask.slice(0, RUN_LIMITS.ask) };
-    }
-    return out;
+    // ONE implementation of "make it fit", in `@cloud9/shared`, because the
+    // relay has to do the same thing to the same object. What differs is only
+    // HOW it is measured — this store writes indented JSON, the hub writes a
+    // compact database row — so the serializer is handed in. Measuring one
+    // shape and writing another is how a cap quietly stops capping.
+    return fitRunRecord(record, this.maxBytes, serialize);
   }
 
   /** Every stored run for an agent, newest first. Unreadable files are skipped. */
@@ -145,15 +127,9 @@ export class RunStore {
     for (const id of this.idsNewestFirst(dir).slice(0, limit)) {
       const record = this.read(agentId, id);
       if (!record) continue;
-      out.push({
-        id: record.id,
-        kind: record.kind,
-        outcome: record.outcome,
-        startedAt: record.startedAt,
-        durationMs: record.durationMs,
-        ask: record.ask,
-        summary: summarizeRun(record),
-      });
+      // the SAME row-builder the hub uses, so a list drawn from disk and a list
+      // drawn from the hub say the same words about the same run
+      out.push(runListEntry(record));
     }
     return out;
   }

@@ -6,16 +6,14 @@ import path from "node:path";
 import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, Channel, ClientFrame, HarnessName, HarnessState, ID,
-  Message, ServerFrame, Task, WorldState, isSafeSkillFileName, mayDriveAgent,
-  validateAgentInput,
+  Message, RunRecord, ServerFrame, Task, WorldState, isSafeSkillFileName, mayDriveAgent,
+  shareableRun, validateAgentInput,
 } from "@cloud9/shared";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
   ClaudeProvider, HarnessUnavailableError, MockProvider, redactForSharing, sanitizeForChat,
 } from "./provider.js";
-import {
-  buildRunRecord, ProviderTrace, RunFinish, RunKind, RunRecord, RunSeed,
-} from "./runrecord.js";
+import { buildRunRecord, ProviderTrace, RunFinish, RunKind, RunSeed } from "./runrecord.js";
 import { RunStore } from "./runstore.js";
 import { Scheduler } from "./scheduler.js";
 
@@ -332,11 +330,31 @@ export class Engine {
       const record = buildRunRecord(seed, finish);
       this.lastRun = record;
       this.runs.save(record);
+      this.publishRun(record);
       this.onRunRecorded?.(record);
       return record;
     } catch (err) {
       console.error(`[engine] could not record what ${seed.agentName} did:`, err);
       return undefined;
+    }
+  }
+
+  /**
+   * Send one run to the hub, so it can reach the screens.
+   *
+   * THE RAW RECORD NEVER LEAVES THIS PROCESS. What goes on the wire is
+   * `shareableRun(record)` — the version with the Windows paths, the argv, the
+   * account name and anything secret-shaped already taken out. The copy on disk
+   * keeps the owner's own detail; this one is what other people may read.
+   *
+   * Wrapped, like every other piece of run paperwork: a hub that is briefly
+   * disconnected must never be the reason a turn is reported as broken.
+   */
+  private publishRun(record: RunRecord): void {
+    try {
+      this.sendFrame({ type: "runRecorded", record: shareableRun(record) });
+    } catch (err) {
+      console.error("[engine] could not send a run record to the hub:", err);
     }
   }
 
@@ -352,6 +370,7 @@ export class Engine {
       const cancelled: RunRecord = { ...record, outcome: "cancelled" };
       this.lastRun = cancelled;
       this.runs.save(cancelled);
+      this.publishRun(cancelled);
       this.onRunRecorded?.(cancelled);
     } catch (err) {
       console.error("[engine] could not mark a run as cancelled:", err);

@@ -1384,3 +1384,219 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .allowrow input{accent-color:var(--pine);}
 .whocan svg{color:var(--marigold);}
 
+
+/* ============================================================
+   FILES ON A MESSAGE, AND ROOMS AS REAL THINGS
+   Same sheet, same language: a file is a printed docket with a
+   stamped tile; a room's details are a titled card of labelled
+   rows. Every value below is a token — no raw pigment here.
+   ============================================================ */
+
+/* --- a file that rode along with a message --- */
+.attachments{display:flex;flex-direction:column;gap:8px;margin-top:10px;max-width:520px;}
+.fileblock{min-width:0;}
+.filecard{
+  display:flex;align-items:center;gap:11px;min-width:0;
+  border:1px solid var(--line);border-radius:var(--radius-s);
+  background:var(--surface);padding:8px 10px;
+}
+.filecard:hover{border-color:var(--ink-3);}
+/* the stamped tile: the file's kind, set in the data face like a docket number */
+.filecard .glyph,.uptile .glyph{
+  flex:none;width:38px;height:38px;border-radius:var(--radius-xs);display:grid;place-items:center;
+  background:var(--pine-soft);color:var(--pine);
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;font-weight:600;
+  border:1px solid color-mix(in srgb,var(--pine) 25%,transparent);
+}
+.filenames{min-width:0;display:flex;flex-direction:column;gap:1px;}
+.filenames .nm{
+  font-family:var(--display);font-size:14px;line-height:1.2;color:var(--ink);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.filenames .meta{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;color:var(--ink-3);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.filecard .act{margin-left:auto;flex:none;display:flex;align-items:center;gap:7px;}
+.filefail{
+  margin-top:6px;padding:7px 11px;border-radius:var(--radius-s);font-size:12.5px;
+  border:1px solid color-mix(in srgb,var(--marigold) 40%,transparent);
+  background:var(--marigold-soft);color:var(--ink);
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+}
+.linkish{color:var(--pine);font-weight:600;font-size:12.5px;border-bottom:1px solid transparent;padding:0;}
+.linkish:hover{border-bottom-color:var(--pine);}
+.fileshot{
+  display:inline-block;margin-top:8px;border:1px solid var(--line);
+  border-radius:var(--radius-s);background:var(--sunk);overflow:hidden;max-width:100%;
+  line-height:0;
+}
+.fileshot img{display:block;max-width:100%;max-height:340px;object-fit:contain;}
+
+/* --- files waiting in the composer --- */
+.filepick{display:none;}
+.mini.attach{border-color:color-mix(in srgb,var(--pine) 35%,transparent);color:var(--pine);}
+.mini.attach:hover{background:var(--pine-soft);}
+.uploadtray{display:flex;flex-direction:column;gap:6px;margin-bottom:9px;}
+.uptile{
+  display:flex;align-items:center;gap:10px;min-width:0;
+  border:1px solid var(--line-soft);border-radius:var(--radius-s);
+  background:var(--surface-2);padding:6px 8px;
+}
+.uptile.failed{border-color:color-mix(in srgb,var(--madder) 40%,transparent);background:var(--madder-soft);}
+.uptile.failed .glyph{
+  background:var(--madder-soft);color:var(--madder);
+  border-color:color-mix(in srgb,var(--madder) 30%,transparent);
+}
+.uptile.done .glyph{
+  background:var(--marigold-soft);color:var(--marigold);
+  border-color:color-mix(in srgb,var(--marigold) 30%,transparent);
+}
+.uptile .glyph{width:30px;height:30px;font-size:9px;}
+.uptile .upbar{
+  flex:none;width:66px;height:4px;border-radius:99px;background:var(--sunk);
+  overflow:hidden;margin-left:auto;
+}
+.uptile .upbar i{
+  display:block;height:100%;width:40%;border-radius:99px;background:var(--pine);
+  animation:upcrawl 1.15s var(--ease) infinite;
+}
+@keyframes upcrawl{
+  0%{transform:translateX(-100%);}
+  100%{transform:translateX(250%);}
+}
+.uptile .upx{
+  flex:none;margin-left:auto;width:22px;height:22px;border-radius:var(--radius-xs);
+  display:grid;place-items:center;color:var(--ink-3);font-size:11px;
+}
+.uptile .upbar+.upx{margin-left:8px;}
+.uptile .upx:hover{color:var(--madder);background:var(--surface);}
+@media (prefers-reduced-motion:reduce){.uptile .upbar i{animation:none;width:100%;}}
+
+/* The composer's tools may wrap now that a file button shares the row —
+   a row that cannot wrap is a row that eventually scrolls sideways. */
+.composer .tools{flex-wrap:wrap;row-gap:7px;justify-content:flex-end;}
+
+/* --- an archived room's composer: readable, and nothing more --- */
+.composer-box.readonly{
+  display:flex;align-items:center;gap:11px;background:var(--surface-2);box-shadow:none;
+  border-style:dashed;color:var(--ink-2);
+}
+.composer-box.readonly .ro-mark{font-family:var(--mono);color:var(--marigold);font-size:15px;}
+.composer-box.readonly .ro-say{font-size:13.5px;}
+
+/* --- open, shut, retired --- */
+.roomvis{
+  display:inline-flex;align-items:center;gap:5px;flex:none;
+  padding:2px 8px;border-radius:99px;border:1px solid var(--line);
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;
+  background:var(--surface);color:var(--ink-2);white-space:nowrap;
+}
+.roomvis .vm{font-size:9px;line-height:1;}
+.roomvis.is-open{
+  color:var(--pine);background:var(--pine-soft);
+  border-color:color-mix(in srgb,var(--pine) 32%,transparent);
+}
+.roomvis.is-shut{color:var(--ink-3);}
+.roomvis.is-archived{
+  color:var(--marigold);background:var(--marigold-soft);
+  border-color:color-mix(in srgb,var(--marigold) 38%,transparent);
+}
+.roomvis.tiny{padding:2px 5px;gap:0;}
+.roomvis.tiny.is-shut{border-color:transparent;background:transparent;opacity:.7;}
+.side-item.is-archived .txt,.side-item.is-archived .hash{opacity:.55;}
+.side-item.is-archived{font-style:italic;}
+.browserooms{
+  display:block;width:calc(100% - 12px);margin:6px 6px 0;padding:7px 9px;text-align:left;
+  border-radius:9px;font-size:12.5px;color:var(--ink-3);
+  border:1.5px dashed var(--line);background:transparent;
+}
+.browserooms:hover{
+  color:var(--pine);border-color:color-mix(in srgb,var(--pine) 45%,transparent);
+  background:var(--surface-2);
+}
+.chathead .ch-topic{
+  font-size:12.5px;color:var(--ink-3);min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.chathead .roomdetailsbtn{flex:none;}
+
+/* --- the room-details panel --- */
+.roompanel{display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+.roombody{flex:1;min-height:0;overflow-y:auto;}
+.roomhead{display:flex;flex-direction:column;align-items:flex-start;gap:9px;}
+.roomname{
+  font-family:var(--display);font-size:20px;font-weight:600;color:var(--ink);margin:0;
+  min-width:0;max-width:100%;overflow-wrap:anywhere;
+}
+.roomname .h{color:var(--ink-3);font-family:var(--mono);font-size:16px;margin-right:2px;}
+.roominfo{margin:0;}
+.roominfo dd{color:var(--ink);line-height:1.5;}
+.roominfo-edit{margin-top:11px;}
+.roomedit{display:flex;flex-direction:column;gap:11px;}
+.roomfield{display:flex;flex-direction:column;gap:5px;min-width:0;}
+.roomfield .lb{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--ink-3);
+}
+.roomdesc-input{
+  width:100%;border:1px solid var(--line);border-radius:var(--radius-s);background:var(--surface);
+  color:var(--ink);font-family:var(--body);font-size:13.5px;line-height:1.5;padding:8px 10px;
+  resize:vertical;outline:0;
+}
+.roomdesc-input:focus,.roomtopic-input:focus{border-color:var(--pine);}
+.roomeditbtns{display:flex;gap:8px;flex-wrap:wrap;}
+.roommembers .memberrow{padding:7px;}
+.roommembers .memberrow .nm{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+.roommembers .rl{white-space:normal;line-height:1.4;}
+.rolename{color:var(--ink-2);font-weight:600;}
+.rolename[data-role="owner"]{color:var(--pine);}
+.rolename[data-role="admin"]{color:var(--ultra);}
+.roomcontrols{display:flex;flex-direction:column;gap:11px;align-items:flex-start;}
+.roomctl{display:flex;flex-direction:column;gap:6px;width:100%;min-width:0;}
+.roomctl .lb{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--ink-3);
+}
+.segbtns{
+  display:flex;border:1px solid var(--line);border-radius:var(--radius-s);
+  overflow:hidden;background:var(--surface);min-width:0;
+}
+.segbtn{
+  flex:1;min-width:0;padding:7px 9px;font-size:12px;color:var(--ink-2);background:transparent;
+  border-right:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  transition:background .15s var(--ease),color .15s var(--ease);
+}
+.segbtn:last-child{border-right:0;}
+.segbtn:hover:not(:disabled){background:var(--surface-2);color:var(--ink);}
+.segbtn.on{background:var(--pine-soft);color:var(--pine);font-weight:600;}
+.segbtn:disabled{opacity:.45;}
+.roomhint{font-size:12px;color:var(--ink-3);line-height:1.5;}
+.roomleaveask{
+  display:flex;flex-direction:column;align-items:flex-start;gap:8px;width:100%;
+  padding:10px 12px;border-radius:var(--radius-s);
+  border:1px solid color-mix(in srgb,var(--madder) 35%,transparent);background:var(--madder-soft);
+  font-size:12.5px;color:var(--ink);
+}
+.roomleaveask button{align-self:flex-start;}
+.roomnotyours{width:100%;}
+
+/* --- browse rooms --- */
+.browsepanel{max-width:620px;}
+.roomcards{display:flex;flex-direction:column;gap:11px;}
+.roomcard{
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);
+  padding:13px 15px;min-width:0;box-shadow:var(--shadow);
+}
+.roomcard .rc-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.roomcard h4{
+  font-family:var(--display);font-size:16.5px;font-weight:600;color:var(--ink);margin:0;
+  min-width:0;overflow-wrap:anywhere;
+}
+.roomcard h4 .h{color:var(--ink-3);font-family:var(--mono);font-size:14px;margin-right:2px;}
+.rc-desc{margin:7px 0 0;font-size:13px;line-height:1.55;color:var(--ink-2);overflow-wrap:anywhere;}
+.rc-topic{margin:5px 0 0;font-family:var(--mono);font-size:11px;color:var(--ink-3);overflow-wrap:anywhere;}
+.rc-foot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:11px;}
+.rc-count{font-family:var(--mono);font-size:11px;color:var(--ink-3);}
+.rc-foot .roomjoin{margin-left:auto;}
+.browseempty{margin:0;}
