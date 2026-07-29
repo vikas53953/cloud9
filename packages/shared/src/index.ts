@@ -26,6 +26,23 @@ export interface AgentApprovals {
 export type HarnessName = "claude" | "codex";
 
 /**
+ * WHO MAY MAKE THIS AGENT ACT.
+ *
+ * An agent's turns are spent on ITS OWNER'S subscription and run on ITS
+ * OWNER'S computer. So "can you see the channel" was never the right question:
+ * being in a room with someone's agent is not permission to spend their money
+ * or start programs on their machine.
+ *
+ * - `"owner"` — only the person who built it. THE DEFAULT, and the default
+ *   when the field is absent, because an agent from before this rule existed
+ *   must not be more open than one made after it.
+ * - `"allowlist"` — the owner, plus the people named in `respondToAllowlist`.
+ * - `"anyone"` — anyone who can see the conversation. A deliberate, typed-out
+ *   choice; never something that happens by omission.
+ */
+export type AgentRespondTo = "owner" | "allowlist" | "anyone";
+
+/**
  * A skill is a plain-words ability the owner writes for one agent: a name, what
  * it does, and the instructions to follow. Optional files are dropped into the
  * agent's own folder so the agent can read them while it works.
@@ -71,7 +88,32 @@ export interface AgentDef {
   model?: string;
   /** FR (feedback round 1, his 9) — plain-words skills, absent means none */
   skills?: AgentSkill[];
+  /** who may make this agent act — absent means "owner" (the safe default) */
+  respondTo?: AgentRespondTo;
+  /** user ids allowed to drive it, only read when respondTo is "allowlist" */
+  respondToAllowlist?: ID[];
   createdAt: number;
+}
+
+/**
+ * May this person make this agent act?
+ *
+ * ONE OWNER FOR THE RULE. Mentioning an agent, delegating a background job,
+ * asking for a schedule — every path that ends in a turn on the owner's
+ * machine asks THIS function, so a new path cannot quietly arrive without the
+ * check. The relay enforces it; the engine may also ask, and will get the same
+ * answer because it is the same code.
+ *
+ * The answer is computed from what is STORED about the agent, never from what
+ * a client said about itself.
+ */
+export function mayDriveAgent(userId: ID, agent: AgentDef): boolean {
+  if (agent.ownerId === userId) return true;
+  switch (agent.respondTo ?? "owner") {
+    case "anyone": return true;
+    case "allowlist": return (agent.respondToAllowlist ?? []).includes(userId);
+    default: return false;
+  }
 }
 
 export interface AgentSchedule {
@@ -123,8 +165,25 @@ export interface Approval {
 export type ActivityKind =
   | "message" | "task_created" | "task_status" | "approval_requested"
   | "approval_decided" | "agent_created" | "agent_updated" | "agent_deleted"
-  | "channel_created" | "member_added" | "invite_created" | "invite_redeemed";
+  | "channel_created" | "member_added" | "invite_created" | "invite_redeemed"
+  // FR-CM-009: changing or withdrawing something already said is an ACTION, and
+  // the trail has to keep it — otherwise "delete" quietly means "rewrite history"
+  | "message_edited" | "message_deleted";
 
+/**
+ * One line of the trail.
+ *
+ * A LEDGER, NOT A LIST (FR-AU-003). `seq` counts from 1 with no gaps, and
+ * `hash` covers this row's own contents PLUS the previous row's hash — so
+ * quietly editing or removing a line breaks every hash after it, and a missing
+ * line shows up as a hole in the numbering. Both are cheap to add now and
+ * impossible to add honestly later, because a chain can only be built forwards.
+ *
+ * HONEST LIMIT (the same one Buzz states about theirs): this is tamper-EVIDENT,
+ * not tamper-PROOF. Someone who can write to the database file can rebuild the
+ * whole chain. It catches corruption and casual editing, not an attacker with
+ * the file in their hands.
+ */
 export interface ActivityRecord {
   id: ID;
   ts: number;
@@ -134,6 +193,12 @@ export interface ActivityRecord {
   kind: ActivityKind;
   refId?: ID;              // message/task/approval/agent/channel id
   detail: string;          // plain-language summary (FR-AU-003)
+  /** position in the chain, from 1, no gaps (absent on rows written before the ledger) */
+  seq?: number;
+  /** the previous row's hash — "" for the very first row */
+  prevHash?: string;
+  /** hex sha256 over this row's fields and `prevHash` */
+  hash?: string;
 }
 
 // ---------- harness sign-in (docs/plans/harness-signin.md) ----------
@@ -219,6 +284,42 @@ export interface Channel {
 
 export type AuthorKind = "human" | "agent";
 
+/**
+ * One file that rode along with a message.
+ *
+ * The BYTES live on the machine running the hub, never in the database and
+ * never on the wire twice. `storedAs` is written by the relay — a client that
+ * sends one is ignored, because a path chosen by a client is a path that can
+ * point anywhere.
+ */
+export interface Attachment {
+  id: ID;
+  /** the name a person sees — validated by `isSafeSkillFileName` */
+  name: string;
+  /** size of the stored bytes */
+  size: number;
+  /** what the sender said it is. Display only — never used to decide anything. */
+  mime?: string;
+  /** file name inside the hub's attachment folder. RELAY-OWNED. */
+  storedAs: string;
+  uploadedBy: ID;
+  uploadedAt: number;
+}
+
+/**
+ * Everyone who currently has this one emoji on a message.
+ *
+ * Taking a reaction back is a SOFT delete in the database (`removedAt`), not a
+ * row deletion, so "who reacted and then thought better of it" is still a
+ * question the record can answer. What travels on the wire is only the live
+ * list, because that is all a client can draw.
+ */
+export interface MessageReaction {
+  emoji: string;
+  /** user ids, sorted, never duplicated — one person, one emoji, one vote */
+  userIds: ID[];
+}
+
 export interface Message {
   id: ID;
   channelId: ID;
@@ -230,13 +331,59 @@ export interface Message {
   ts: number;
   proactive?: boolean; // schedule/background-task originated → push-worthy
   mentions?: ID[];
+  /**
+   * The message this one answers. Threads are ONE level deep on purpose:
+   * replying to a reply joins the same thread rather than starting a new one,
+   * so a conversation can never become a tree nobody can read.
+   */
+  replyTo?: ID;
+  /** set the first time the author changes the words — the "edited" marker */
+  editedAt?: number;
+  /**
+   * A tombstone, not a hole. The row stays so the conversation still reads in
+   * order and the activity trail is not lying; the words are gone.
+   */
+  deletedAt?: number;
+  attachments?: Attachment[];
+  /**
+   * How many replies hang off this message. STORED on the root and kept up to
+   * date as replies arrive, not counted on the way out — so a channel list can
+   * say "12 replies" without walking the conversation. (Buzz's
+   * `thread_metadata.reply_count`, and it is why theirs is cheap.)
+   */
+  replyCount?: number;
+  /** when the newest reply landed — the other half of "12 replies · 3m ago" */
+  lastReplyAt?: number;
+  // ---- filled in by the relay when it hands a message out, never stored ----
+  /** who reacted with what */
+  reactions?: MessageReaction[];
+}
+
+/** One search result, with enough around it to draw a row without asking again. */
+export interface SearchHit {
+  message: Message;
+  channelName: string;
+  channelKind: ChannelKind;
+  /** the matching words in context, with `«` `»` around each hit */
+  snippet: string;
+}
+
+/** Where one person has read up to in one conversation, and what is left. */
+export interface UnreadEntry {
+  channelId: ID;
+  /** everything at or before this moment has been seen */
+  lastReadTs: number;
+  /** messages after it that this person did not write */
+  unread: number;
+  /** how many of those @mention them (or one of their agents) */
+  mentions: number;
 }
 
 // ---------- WebSocket frames ----------
 
 export type ClientFrame =
   | { type: "hello"; token: string; client: "desktop" | "mobile" | "engine" }
-  | { type: "send"; channelId: ID; text: string; tempId?: string }
+  | { type: "send"; channelId: ID; text: string; tempId?: string; replyTo?: ID; attachmentIds?: ID[] }
   | { type: "createChannel"; name: string; memberIds: ID[]; kind?: ChannelKind }
   | { type: "addMembers"; channelId: ID; memberIds: ID[] }
   | { type: "createAgent"; agent: Omit<AgentDef, "id" | "ownerId" | "createdAt"> }
@@ -245,9 +392,29 @@ export type ClientFrame =
   | { type: "createInvite" }
   // owner only: take a person out of this Cloud9 (their agents go with them)
   | { type: "removeUser"; userId: ID }
-  | { type: "history"; channelId: ID; before?: number; limit?: number }
+  /**
+   * Scroll back. `before`/`beforeId` are the cursor handed back by the last
+   * `history` frame — send them exactly as received and never build your own,
+   * because two messages can share a millisecond and the id is what breaks
+   * the tie.
+   */
+  | { type: "history"; channelId: ID; before?: number; beforeId?: ID; limit?: number }
+  /** Find words across every conversation the asker can see. */
+  | { type: "search"; query: string; channelId?: ID; authorId?: ID; limit?: number }
+  /** Put an emoji on a message, or take yours off. Saying it twice changes nothing. */
+  | { type: "react"; messageId: ID; emoji: string; on?: boolean }
+  /** Change the words of a message you wrote. */
+  | { type: "editMessage"; messageId: ID; text: string }
+  /** Take back a message you wrote — it becomes a tombstone, not a hole. */
+  | { type: "deleteMessage"; messageId: ID }
+  /** The whole of one thread: the message that started it and every reply. */
+  | { type: "thread"; messageId: ID; limit?: number }
+  /** Park a file on the hub. Answered with an `attachment` frame carrying its id. */
+  | { type: "uploadAttachment"; channelId: ID; name: string; dataBase64: string; mime?: string }
+  /** "I have read this conversation up to here" — kept on the account, not the machine. */
+  | { type: "markRead"; channelId: ID; ts?: number }
   // engine-host only: post a message authored by one of the owner's agents
-  | { type: "agentSend"; agentId: ID; channelId: ID; text: string; proactive?: boolean }
+  | { type: "agentSend"; agentId: ID; channelId: ID; text: string; proactive?: boolean; replyTo?: ID }
   | { type: "agentStatus"; agentId: ID; status: AgentStatus }
   // v2 — tasks / approvals / activity
   // `requesterId` says WHO ASKED for this work. The engine host relays a task on
@@ -287,6 +454,11 @@ export interface WorldState {
   agentStatus: Record<ID, AgentStatus>;
   tasks: Task[];
   approvals: Approval[];
+  /**
+   * Where this person has read up to, per conversation — from the RELAY, so it
+   * follows them between machines (absent on a relay older than this round).
+   */
+  unread?: UnreadEntry[];
 }
 
 export type ServerFrame =
@@ -297,7 +469,26 @@ export type ServerFrame =
   | { type: "agentDeleted"; agentId: ID }
   | { type: "agentStatus"; agentId: ID; status: AgentStatus }
   | { type: "invite"; code: string }
-  | { type: "history"; channelId: ID; messages: Message[] }
+  /**
+   * One page of scrollback, oldest first. `hasMore` is the only honest way to
+   * know whether to keep scrolling — an empty page is NOT the signal, because a
+   * page can be short without being the last one.
+   */
+  | {
+      type: "history"; channelId: ID; messages: Message[]; hasMore: boolean;
+      /** feed these straight back as `before`/`beforeId` to get the next page */
+      nextBefore?: number; nextBeforeId?: ID;
+    }
+  | { type: "searchResults"; query: string; results: SearchHit[]; hasMore: boolean }
+  /** The full, current list of who reacted with this emoji. Empty means nobody does. */
+  | { type: "reaction"; channelId: ID; messageId: ID; emoji: string; userIds: ID[] }
+  /** A message changed — edited, deleted, or given its first attachment. */
+  | { type: "messageUpdated"; message: Message }
+  | { type: "thread"; parentId: ID; messages: Message[] }
+  /** A parked file, ready to be named in a `send`. Goes only to the uploader. */
+  | { type: "attachment"; attachment: Attachment }
+  /** Read state for one conversation — sent to EVERY machine this person is on. */
+  | { type: "read"; entry: UnreadEntry }
   | { type: "userJoined"; user: User }
   | { type: "userRemoved"; userId: ID }
   | { type: "token"; token: string } // durable token issued after invite redemption
@@ -356,6 +547,40 @@ export const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export const AGENT_LIMITS = { name: 64, emoji: 16, persona: 8000 } as const;
 
+/**
+ * How big a message, a page of scrollback, and a reaction may be.
+ *
+ * `text` bounds BOTH sending and editing. Before this round `send` had no
+ * bound at all, which meant "edit your message" would have been a way to put
+ * an unbounded blob in the database through a path nobody had ever sized.
+ */
+export const MESSAGE_LIMITS = {
+  text: 40_000,
+  /** biggest page of scrollback the relay will hand back in one frame */
+  page: 200,
+  /** the page size used when a client doesn't ask for one */
+  defaultPage: 50,
+  /** an emoji, not an essay */
+  emoji: 32,
+  /** search needs at least this many characters to be worth running */
+  queryMin: 2,
+  queryMax: 200,
+  /** results per search page */
+  searchPage: 50,
+} as const;
+
+/**
+ * Attachment rules. The name is checked by `isSafeSkillFileName` — the same
+ * one, deliberately: a name that may become a real file in the agents folder
+ * and a name that may become a real file in the attachments folder are the
+ * SAME question, and asking it in two places is how the two answers drift.
+ */
+export const ATTACHMENT_LIMITS = {
+  perMessage: 10,
+  /** biggest single file the hub will accept over the socket */
+  bytes: 10_000_000,
+} as const;
+
 export const SKILL_LIMITS = {
   perAgent: 20, name: 64, description: 200, instructions: 8000,
   files: 10, fileName: 128, fileText: 40_000,
@@ -387,7 +612,12 @@ export interface AgentInput {
   model?: string;
   provider?: string;
   skills?: unknown;
+  respondTo?: unknown;
+  respondToAllowlist?: unknown;
 }
+
+/** How many people one agent may be opened up to. */
+export const RESPOND_TO_LIMITS = { allowlist: 50 } as const;
 
 export interface AgentInputRules {
   /**
@@ -426,7 +656,28 @@ export function validateAgentInput(agent: AgentInput, rules: AgentInputRules = {
       return "that model isn't one this app offers";
     }
   }
+  const openness = validateRespondTo(agent.respondTo, agent.respondToAllowlist);
+  if (openness) return openness;
   return validateSkills(agent.skills);
+}
+
+/** Check the "who may drive me" setting before it is stored. */
+export function validateRespondTo(respondTo: unknown, allowlist: unknown): string | null {
+  if (respondTo !== undefined
+    && respondTo !== "owner" && respondTo !== "allowlist" && respondTo !== "anyone") {
+    return "say who may use this agent: just you, a chosen few, or anyone in the room";
+  }
+  if (allowlist === undefined || allowlist === null) return null;
+  if (!Array.isArray(allowlist)) return "the list of people who may use this agent must be a list";
+  if (allowlist.length > RESPOND_TO_LIMITS.allowlist) {
+    return `that's too many people (max ${RESPOND_TO_LIMITS.allowlist})`;
+  }
+  for (const id of allowlist) {
+    if (typeof id !== "string" || id.length === 0 || id.length > 64) {
+      return "that isn't a person";
+    }
+  }
+  return null;
 }
 
 /** Skills are owner-written text; they are bounded so one agent can't eat the DB. */
@@ -513,6 +764,51 @@ function validateSkillFiles(files: unknown, skillName?: string): string | null {
     if (f.text.length > SKILL_LIMITS.fileText) {
       return `file "${f.name}" is too big (max ${SKILL_LIMITS.fileText} characters)`;
     }
+  }
+  return null;
+}
+
+/**
+ * Check the words of a message (sent or edited).
+ * Returns a plain-words problem, or null when it is fine.
+ */
+export function validateMessageText(text: unknown, allowEmpty = false): string | null {
+  if (typeof text !== "string") return "a message needs some words";
+  if (!allowEmpty && text.trim().length === 0) return "a message needs some words";
+  if (text.length > MESSAGE_LIMITS.text) {
+    return `that message is too long (max ${MESSAGE_LIMITS.text} characters)`;
+  }
+  return null;
+}
+
+/**
+ * Check an emoji before it becomes a reaction.
+ *
+ * A reaction is a short label drawn next to a message, so anything with a line
+ * break or a tab in it is not an emoji — it is someone trying to draw
+ * something else. Refused, never trimmed into shape.
+ */
+export function validateReactionEmoji(emoji: unknown): string | null {
+  if (typeof emoji !== "string" || emoji.length === 0) return "pick an emoji";
+  if (emoji.length > MESSAGE_LIMITS.emoji) return "that's not an emoji";
+  // whitespace and control characters are not emoji — refused, never trimmed into shape
+  if (/[\s\u0000-\u001f\u007f]/.test(emoji)) return "that's not an emoji";
+  return null;
+}
+
+/**
+ * Check an attachment's name and size.
+ *
+ * The name question is delegated to `isSafeSkillFileName` on purpose — see
+ * ATTACHMENT_LIMITS. There is no second copy of that rule anywhere.
+ */
+export function validateAttachment(name: unknown, size: number): string | null {
+  if (!isSafeSkillFileName(name)) {
+    return "that file name isn't allowed — use plain letters, numbers, dots and dashes";
+  }
+  if (!Number.isFinite(size) || size <= 0) return "that file is empty";
+  if (size > ATTACHMENT_LIMITS.bytes) {
+    return `that file is too big (max ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB)`;
   }
   return null;
 }

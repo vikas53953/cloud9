@@ -7,7 +7,7 @@ import {
   ClaudeCliProvider, CREDENTIAL_ENV_VARS, claudeArgs, envWithoutCredentials, parseClaudeJson,
 } from "./claude-cli.js";
 import { HarnessUnavailableError } from "./provider.js";
-import { RunOptions, RunResult, UnsafeArgumentError } from "./run.js";
+import { EMPTY_ARG, RunOptions, RunResult, UnsafeArgumentError } from "./run.js";
 
 const CLAUDE_MODELS = ["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5-20251001"];
 
@@ -74,9 +74,16 @@ test("no credential variable survives into a CLI-login turn", () => {
 
 test("abilities become tools, and Bash is refused for every agent", () => {
   const plain = claudeArgs(agent(), CLAUDE_MODELS);
+  // stream-json, not json: the streamed form is a superset — same final result
+  // envelope, preceded by one line per tool call, which is the run record.
+  // The isolation flags and the declared (here empty) tool set are not optional
+  // extras — see CLAUDE_ISOLATION_FLAGS and isolation.test.ts.
   assert.deepEqual(plain, [
-    "-p", "--output-format", "json", "--permission-mode", "dontAsk",
-    "--model", "claude-sonnet-5", "--disallowed-tools", "Bash",
+    "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
+    "--safe-mode", "--strict-mcp-config", "--disable-slash-commands",
+    "--model", "claude-sonnet-5",
+    "--tools", EMPTY_ARG,
+    "--disallowed-tools", "Bash",
   ]);
 
   const full = claudeArgs(agent({

@@ -57,46 +57,53 @@ try {
 
   // create agent
   await page.click('button[title="New agent"]');
-  await page.fill('.panel input[placeholder="Scout"]', "Scout");
-  // selector updated (round 2): the create panel now holds more than one textarea
+  await page.fill('input[placeholder="Scout"]', "Scout");
+  // selector updated (round 2): the create screen holds more than one textarea
   // (the skills form), so the personality box is addressed by its own class.
-  await page.fill(".panel textarea.persona-input", "You research travel, villas, flights and hotels for trips, always with prices");
-  // provider picker (FR-AG-005): Claude default, Codex offered
-  const pickerOptions = await page.$$eval(".panel select.providerpick option", os => os.map(o => o.value));
-  const pickerValue = await page.inputValue(".panel select.providerpick");
+  await page.fill("textarea.persona-input", "You research travel, villas, flights and hotels for trips, always with prices");
+  // provider picker (FR-AG-005): Claude default, Codex offered.
+  // Selector updated (Studio reskin): the app an agent runs on is picked with
+  // the two cards the approved design uses, not a dropdown. Same assertion —
+  // exactly claude and codex are offered, and Claude is the one already chosen.
+  const pickerOptions = await page.$$eval(".app-pick", bs => bs.map(b => b.dataset.app));
+  const pickerValue = await page.$eval('.app-pick[aria-pressed="true"]', b => b.dataset.app);
   ok("agent create offers a provider picker (Claude default)",
     pickerOptions.join(",") === "claude,codex" && pickerValue === "claude",
     `${pickerOptions.join("/")} value=${pickerValue}`);
 
   // ---- feedback round 1, his 5+6: a model picker in CREATE ----
-  await page.waitForSelector(".panel select.modelpick");
-  const createModels = await page.$$eval(".panel select.modelpick option", os => os.map(o => o.value));
-  const createModel = await page.inputValue(".panel select.modelpick");
+  await page.waitForSelector("select.modelpick");
+  const createModels = await page.$$eval("select.modelpick option", os => os.map(o => o.value));
+  const createModel = await page.inputValue("select.modelpick");
   ok("agent create offers a model picker with a model already chosen",
     createModels.length > 0 && !!createModel && createModels.includes(createModel),
     `${createModels.join("/")} value=${createModel}`);
-  const createModelNames = await page.$$eval(".panel select.modelpick option", os => os.map(o => o.textContent.trim()));
+  const createModelNames = await page.$$eval("select.modelpick option", os => os.map(o => o.textContent.trim()));
   ok("models are shown by friendly name, not raw ids",
     createModelNames.every(n => n && !/^claude-/.test(n)), createModelNames.join("/"));
 
-  // ---- his 9: the skills section lives in the create modal too ----
+  // ---- his 9: the skills section lives on the create screen too ----
   ok("agent create has a Skills section with a way to write and to upload one",
-    (await page.locator(".panel .skills .skill-add").count()) === 1 &&
-    (await page.locator(".panel .skills .skill-upload").count()) === 1);
+    (await page.locator(".skills .skill-add").count()) === 1 &&
+    (await page.locator(".skills .skill-upload").count()) === 1);
   await page.screenshot({ path: `${SHOTS}/02-create-agent.png` });
-  await page.click(".panel .foot >> text=Create agent");
+  await page.click(".editor >> text=Create agent");
+  await page.click('.rail-btn[data-go="chat"]');
   await page.waitForSelector(".sidebar >> text=Scout");
   ok("agent created and listed", true);
-
-  // the sidebar row must say which app AND which model the agent runs on
-  const scoutSub = (await page.textContent('.sidebar .agentrow[data-agent="Scout"] .agent-sub')).trim();
-  ok("agent row shows the app and the model it runs on",
-    /Claude/.test(scoutSub) && scoutSub.split("·").length >= 2, scoutSub);
 
   // ---- his 15: clicking an agent opens the direct conversation, never a dead click ----
   await page.click('.sidebar .agentrow[data-agent="Scout"] .agentmain');
   await page.waitForSelector('.chathead .ch-title .n:text-is("Scout")', { timeout: 15000 });
   ok("clicking an agent opens the direct conversation with it", true);
+
+  // The conversation's own header must say which app AND which model the agent
+  // runs on. (Selector updated in the Studio reskin: the approved design's
+  // sidebar row is a portrait and a name, and the app+model line lives in the
+  // header of the conversation you land in.)
+  const scoutSub = (await page.textContent(".chathead .runchip")).trim();
+  ok("the agent's conversation shows the app and the model it runs on",
+    /Claude/.test(scoutSub) && scoutSub.split("·").length >= 2, scoutSub);
   // clicking it a second time must land in the SAME conversation, not a new one
   const scoutRowsBefore = await page.locator('.sidebar .agent-row .agent-name:text-is("Scout")').count();
   await page.click(".sidebar >> text=# general");
@@ -162,7 +169,7 @@ try {
   // settings: two harness cards with live status from the engine host.
   // No sleep here: Playwright will not click a button something is covering, so
   // the click itself is the wait for the quick panel to get out of the way.
-  await page.click('.sidebar-foot button:has-text("⚙")', { timeout: 20000 });
+  await page.click('.rail-btn[data-go="settings"]', { timeout: 20000 });
   await page.waitForSelector("text=connect your AI apps");
   await page.waitForSelector('.harnesscard[data-harness="claude"]');
   await page.waitForSelector('.harnesscard[data-harness="codex"]');
@@ -213,26 +220,30 @@ try {
     fallbacks.filter(b => /API key instead/.test(b)).length === 2, fallbacks.join(" · "));
 
   // ---- his 13: settings has real, changeable things ----
-  const settingsPanel = page.locator(".panel.settingspanel");
-  const themeButtons = await settingsPanel.locator("#set-look .segmented button").count();
-  await settingsPanel.locator('#set-look .segmented button:has-text("Dark")').click();
+  // selectors updated (Studio reskin): the look is chosen with the approved
+  // design's three painted cards, each addressed by the theme it sets.
+  const settingsPanel = page.locator(".settingspanel");
+  const themeButtons = await settingsPanel.locator("#set-look .theme-pick").count();
+  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="dark"]').click();
   const wentDark = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
-  await settingsPanel.locator('#set-look .segmented button:has-text("Light")').click();
+  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="light"]').click();
   const wentLight = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
   ok("settings can actually change the look (light / dark / match this computer)",
     themeButtons === 3 && wentDark === "dark" && wentLight === "light", `${wentDark} then ${wentLight}`);
-  await settingsPanel.locator('#set-look .segmented button:has-text("Match this computer")').click();
+  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="system"]').click();
 
   const defaultModels = await settingsPanel.locator("#set-agents select.defaultmodelpick option").count();
   ok("settings sets which app + model new agents start on",
     (await settingsPanel.locator("#set-agents select.defaultproviderpick").count()) === 1 && defaultModels > 0,
     `${defaultModels} models`);
 
-  await settingsPanel.locator('#set-notify .switchrow:has-text("Quiet hours") input').check();
-  const quietEnabled = await settingsPanel.locator('#set-notify input[type="time"]').first().isEnabled();
+  // selectors updated (Studio reskin): quiet hours is its own section now, and
+  // a switch row is the approved design's `.toggle-row`.
+  await settingsPanel.locator('#set-quiet .toggle-row:has-text("Quiet hours") input').check();
+  const quietEnabled = await settingsPanel.locator('#set-quiet input[type="time"]').first().isEnabled();
   ok("settings has notifications on/off and quiet hours that switch on",
-    (await settingsPanel.locator('#set-notify .switchrow:has-text("new messages") input').count()) === 1 && quietEnabled);
-  await settingsPanel.locator('#set-notify .switchrow:has-text("Quiet hours") input').uncheck();
+    (await settingsPanel.locator('#set-notify .toggle-row:has-text("new messages") input').count()) === 1 && quietEnabled);
+  await settingsPanel.locator('#set-quiet .toggle-row:has-text("Quiet hours") input').uncheck();
 
   ok("settings tells you where agent files live and offers a Danger zone",
     (await settingsPanel.locator("#set-files .pathbox").count()) === 1 &&
@@ -259,22 +270,22 @@ try {
   ]);
   ok("an old browser-stored credential is wiped on startup",
     purged[0] === null && purged[1] === null, JSON.stringify(purged));
-  await page.click('.sidebar-foot button:has-text("⚙")');
+  await page.click('.rail-btn[data-go="settings"]');
   await page.waitForSelector("text=connect your AI apps");
   await page.screenshot({ path: `${SHOTS}/06-settings.png` });
-  await page.click('.overlay .foot button:has-text("Done")');
+  await page.click('.rail-btn[data-go="chat"]');
 
   // agent edit also lets you change which app an agent runs on
   await page.hover(".sidebar .agentrow");
   await page.click('.sidebar .agentrow button[title="Edit agent"]');
-  await page.waitForSelector(".panel select.providerpick");
-  const editPicker = await page.$$eval(".panel select.providerpick option", os => os.map(o => o.value));
+  await page.waitForSelector(".editor .app-pick");
+  const editPicker = await page.$$eval(".app-pick", bs => bs.map(b => b.dataset.app));
   ok("agent edit offers a provider picker", editPicker.join(",") === "claude,codex", editPicker.join("/"));
 
   // ---- his 5+6: the model picker is in EDIT too, already holding a model ----
-  await page.waitForSelector(".panel select.modelpick");
-  const editModels = await page.$$eval(".panel select.modelpick option", os => os.map(o => o.value));
-  const editModel = await page.inputValue(".panel select.modelpick");
+  await page.waitForSelector("select.modelpick");
+  const editModels = await page.$$eval("select.modelpick option", os => os.map(o => o.value));
+  const editModel = await page.inputValue("select.modelpick");
   ok("agent edit offers a model picker with this agent's model selected",
     editModels.length > 0 && !!editModel && editModels.includes(editModel),
     `${editModels.join("/")} value=${editModel}`);
@@ -287,54 +298,56 @@ try {
   const skillB = `Villa shortlist ${stamp} v2`;
   const skillC = `Flight watch ${stamp}`;
 
-  await page.click(".panel .skills .skill-add");
-  await page.fill(".panel .skill-name-input", skillA);
-  await page.fill(".panel .skill-desc-input", "Picks three villas and says why");
-  await page.fill(".panel .skill-instructions-input", "Read the villa notes, keep the three best under budget, and give a one-line reason for each.");
-  await page.click(".panel .skills .skill-save");
-  await page.waitForSelector(`.panel .skillrow[data-skill="${skillA}"]`);
+  await page.click(".skills .skill-add");
+  await page.fill(".skill-name-input", skillA);
+  await page.fill(".skill-desc-input", "Picks three villas and says why");
+  await page.fill(".skill-instructions-input", "Read the villa notes, keep the three best under budget, and give a one-line reason for each.");
+  await page.click(".skills .skill-save");
+  await page.waitForSelector(`.skillrow[data-skill="${skillA}"]`);
   ok("a skill can be written in plain words and saved", true);
 
-  await page.click(`.panel .skillrow[data-skill="${skillA}"] .skill-edit`);
-  await page.fill(".panel .skill-name-input", skillB);
-  await page.click(".panel .skills .skill-save");
-  await page.waitForSelector(`.panel .skillrow[data-skill="${skillB}"]`);
+  await page.click(`.skillrow[data-skill="${skillA}"] .skill-edit`);
+  await page.fill(".skill-name-input", skillB);
+  await page.click(".skills .skill-save");
+  await page.waitForSelector(`.skillrow[data-skill="${skillB}"]`);
   ok("a saved skill can be edited",
-    (await page.locator(`.panel .skillrow[data-skill="${skillA}"]`).count()) === 0);
+    (await page.locator(`.skillrow[data-skill="${skillA}"]`).count()) === 0);
 
   const skillFile = path.join(os.tmpdir(), `${skillC}.md`);
   fs.writeFileSync(skillFile, "Check the fare every morning and tell me when it drops below 8k.");
-  await page.setInputFiles(".panel .skills .skill-upload", skillFile);
-  await page.waitForSelector(`.panel .skillrow[data-skill="${skillC}"]`);
-  await page.click(`.panel .skillrow[data-skill="${skillC}"] .skill-edit`);
-  await page.waitForSelector(".panel .skill-instructions-input");
-  const uploadedInstructions = await page.inputValue(".panel .skill-instructions-input");
-  const uploadedName = await page.inputValue(".panel .skill-name-input");
+  await page.setInputFiles(".skills .skill-upload", skillFile);
+  await page.waitForSelector(`.skillrow[data-skill="${skillC}"]`);
+  await page.click(`.skillrow[data-skill="${skillC}"] .skill-edit`);
+  await page.waitForSelector(".skill-instructions-input");
+  const uploadedInstructions = await page.inputValue(".skill-instructions-input");
+  const uploadedName = await page.inputValue(".skill-name-input");
   ok("a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
     /fare every morning/.test(uploadedInstructions) && uploadedName === skillC,
     `${uploadedName} :: ${uploadedInstructions.slice(0, 50)}`);
-  await page.click(".panel .skills .skillformbtns button:has-text('Cancel')");
+  await page.click(".skills .skillformbtns button:has-text('Cancel')");
 
-  await page.click(`.panel .skillrow[data-skill="${skillC}"] .skill-delete`);
+  await page.click(`.skillrow[data-skill="${skillC}"] .skill-delete`);
   ok("a skill can be deleted",
-    (await page.locator(`.panel .skillrow[data-skill="${skillC}"]`).count()) === 0 &&
-    (await page.locator(`.panel .skillrow[data-skill="${skillB}"]`).count()) === 1);
+    (await page.locator(`.skillrow[data-skill="${skillC}"]`).count()) === 0 &&
+    (await page.locator(`.skillrow[data-skill="${skillB}"]`).count()) === 1);
   await page.screenshot({ path: `${SHOTS}/14-agent-edit.png` });
 
   // the surviving skill must actually reach the agent
-  await page.click('.overlay .foot button:has-text("Save")');
+  await page.click('.editor .topbar >> text=Save');
   // wait for the editor to actually be gone (the save round-tripped), not 800ms
-  await waitFor(page, () => !document.querySelector(".overlay .panel .skills"),
+  await waitFor(page, () => !document.querySelector(".editor .skills"),
     undefined, { timeout: 20000, what: "the agent editor to close after Save" });
+  await page.click('.rail-btn[data-go="chat"]');
   await page.hover(".sidebar .agentrow");
   await page.click('.sidebar .agentrow button[title="Edit agent"]');
-  await page.waitForSelector(".panel .skills");
+  await page.waitForSelector(".editor .skills");
   ok("skills are saved onto the agent and are still there when you reopen it",
-    (await page.locator(`.panel .skillrow[data-skill="${skillB}"]`).count()) === 1);
+    (await page.locator(`.skillrow[data-skill="${skillB}"]`).count()) === 1);
   // put the agent back the way it was found
-  await page.click(`.panel .skillrow[data-skill="${skillB}"] .skill-delete`);
-  await page.click('.overlay .foot button:has-text("Save")');
+  await page.click(`.skillrow[data-skill="${skillB}"] .skill-delete`);
+  await page.click('.editor .topbar >> text=Save');
   await page.waitForTimeout(400);
+  await page.click('.rail-btn[data-go="chat"]');
 
   // invite flow
   await page.click('button[title="Invite a friend"]');
@@ -423,30 +436,31 @@ try {
   await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
   await page.waitForTimeout(250);
 
-  await page.click('.sidebar-foot button:has-text("⚙")');
-  await page.waitForSelector(".panel.settingspanel");
+  await page.click('.rail-btn[data-go="settings"]');
+  await page.waitForSelector(".settingspanel");
   await page.waitForTimeout(300);
   await page.screenshot({ path: `${SHOTS}/design-settings.png`, fullPage: true });
-  await page.click('.overlay .foot button:has-text("Done")');
+  await page.click('.rail-btn[data-go="chat"]');
 
   await page.click('button[title="New agent"]');
-  await page.waitForSelector(".panel select.modelpick");
-  await page.click(".panel .skills .skill-add");
-  await page.fill(".panel .skill-name-input", "Weekly report");
-  await page.fill(".panel .skill-desc-input", "Writes the Monday summary of last week");
-  await page.fill(".panel .skill-instructions-input", "Read the last seven days of notes. Write five bullet points: what moved, what stalled, what needs me.");
-  await page.click(".panel .skills .skill-save");
-  await page.waitForSelector('.panel .skillrow[data-skill="Weekly report"]');
-  // frame the shot so the model picker and the skills list are both in view
-  await page.evaluate(() => document.querySelector(".panel .runsonbox")
+  await page.waitForSelector("select.modelpick");
+  await page.click(".skills .skill-add");
+  await page.fill(".skill-name-input", "Weekly report");
+  await page.fill(".skill-desc-input", "Writes the Monday summary of last week");
+  await page.fill(".skill-instructions-input", "Read the last seven days of notes. Write five bullet points: what moved, what stalled, what needs me.");
+  await page.click(".skills .skill-save");
+  await page.waitForSelector('.skillrow[data-skill="Weekly report"]');
+  // frame the shot so the app picker and the skills list are both in view
+  await page.evaluate(() => document.querySelector(".editor .pick-apps")
     ?.scrollIntoView({ block: "start" }));
   await page.waitForTimeout(250);
   await page.screenshot({ path: `${SHOTS}/design-new-agent.png`, fullPage: true });
   ok("the create screen shows the model picker and the skills editor together",
-    (await page.locator(".panel select.modelpick").count()) === 1 &&
-    (await page.locator('.panel .skillrow[data-skill="Weekly report"]').count()) === 1 &&
-    (await page.locator(".panel .skills .skill-add").count()) === 1);
-  await page.click('.overlay .foot button:has-text("Cancel")');
+    (await page.locator("select.modelpick").count()) === 1 &&
+    (await page.locator('.skillrow[data-skill="Weekly report"]').count()) === 1 &&
+    (await page.locator(".skills .skill-add").count()) === 1);
+  await page.click('.editor .topbar >> text=Cancel');
+  await page.click('.rail-btn[data-go="chat"]');
 
   await page.keyboard.press("Control+k");
   await page.waitForSelector(".qc-input");

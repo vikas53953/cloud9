@@ -33,11 +33,14 @@ try {
 
   // agent that requires approval for background work
   await page.click('button[title="New agent"]');
-  await page.fill('.panel input[placeholder="Scout"]', "Guard");
-  await page.fill(".panel textarea.persona-input", "You handle sensitive research and background jobs carefully");
-  await page.click('.panel label:has-text("🔒 Background work") input');
+  await page.fill('input[placeholder="Scout"]', "Guard");
+  await page.fill("textarea.persona-input", "You handle sensitive research and background jobs carefully");
+  // selector updated (Studio reskin): an approval rule is a switch row in the
+  // approved design, and the rows lost their padlock emoji.
+  await page.click('.toggle-row:has-text("Background work") input');
   await page.screenshot({ path: `${SHOTS}/10-agent-approvals.png` });
-  await page.click('.panel .foot >> text=Create agent');
+  await page.click('.editor >> text=Create agent');
+  await page.click('.rail-btn[data-go="chat"]');
   await page.waitForSelector(".sidebar >> text=Guard");
   ok("agent created with approval requirement", true);
 
@@ -54,10 +57,12 @@ try {
   await page.waitForSelector(".msg p:has-text('approval')", { timeout: 90000 });
   ok("agent announces it is waiting for approval", true);
 
-  // tasks panel shows badge + pending approval
-  await page.waitForSelector('.sidebar-foot button:has-text("Tasks (1)")', { timeout: 30000 });
+  // tasks rail button shows the badge + pending approval
+  // (selector updated in the Studio reskin: Tasks is a rail button with a count
+  // badge, exactly as the approved design draws it)
+  await page.waitForSelector('.rail-btn[data-go="tasks"] .rail-count:text-is("1")', { timeout: 30000 });
   ok("tasks button shows pending-approval badge", true);
-  await page.click('.sidebar-foot button:has-text("Tasks")');
+  await page.click('.rail-btn[data-go="tasks"]');
   await page.waitForSelector(".taskrow");
   await page.waitForSelector(".tstatus.waiting_approval");
   await page.screenshot({ path: `${SHOTS}/11-task-approval.png` });
@@ -66,25 +71,25 @@ try {
   await page.click('.taskrow button:has-text("Reject")');
   await page.waitForSelector(".tstatus.cancelled", { timeout: 30000 });
   ok("rejected task becomes cancelled and never runs", true);
-  await page.click('.panel .foot >> text=Close');
+  await page.click('.rail-btn[data-go="chat"]');
 
   // second request → approve → completes with proactive result
   await box.fill("@Guard !bg summarise the safe topic");
   await box.press("Enter");
-  await page.waitForSelector('.sidebar-foot button:has-text("Tasks (1)")', { timeout: 30000 });
-  await page.click('.sidebar-foot button:has-text("Tasks")');
+  await page.waitForSelector('.rail-btn[data-go="tasks"] .rail-count:text-is("1")', { timeout: 30000 });
+  await page.click('.rail-btn[data-go="tasks"]');
   await page.click('.taskrow button:has-text("Approve")');
   await page.waitForSelector(".tstatus.completed", { timeout: 90000 });
   await page.screenshot({ path: `${SHOTS}/12-task-completed.png` });
   ok("approved task runs to completed with result", true);
-  await page.click('.panel .foot >> text=Close');
+  await page.click('.rail-btn[data-go="chat"]');
   await page.waitForSelector(".msg.proactive .selfstart", { timeout: 30000 });
   ok("completion posts a proactive message in the channel", true);
 
   // activity trail
-  await page.click('.sidebar-foot button:has-text("🕘")');
+  await page.click('.rail-btn[data-go="activity"]');
   await page.waitForSelector(".actrow", { timeout: 30000 });
-  const activityText = await page.locator(".panel .body").innerText();
+  const activityText = await page.locator(".act-body").innerText();
   ok("activity shows approval decisions attributed to Vikas",
     /approved|rejected/.test(activityText) && /Vikas/.test(activityText));
   await page.screenshot({ path: `${SHOTS}/13-activity.png` });

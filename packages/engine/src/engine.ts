@@ -6,12 +6,17 @@ import path from "node:path";
 import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, Channel, ClientFrame, HarnessName, HarnessState, ID,
-  Message, ServerFrame, Task, WorldState, isSafeSkillFileName, validateAgentInput,
+  Message, ServerFrame, Task, WorldState, isSafeSkillFileName, mayDriveAgent,
+  validateAgentInput,
 } from "@cloud9/shared";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
-  ClaudeProvider, HarnessUnavailableError, MockProvider, sanitizeForChat,
+  ClaudeProvider, HarnessUnavailableError, MockProvider, redactForSharing, sanitizeForChat,
 } from "./provider.js";
+import {
+  buildRunRecord, ProviderTrace, RunFinish, RunKind, RunRecord, RunSeed,
+} from "./runrecord.js";
+import { RunStore } from "./runstore.js";
 import { Scheduler } from "./scheduler.js";
 
 export interface EngineOptions {
@@ -31,6 +36,20 @@ export interface EngineOptions {
   brake?: BrakeConfig;
   contextMessages?: number;
   maxConcurrentTurns?: number;
+  /** how many run records to keep per agent before the oldest are deleted */
+  keepRunsPerAgent?: number;
+}
+
+/** Everything a turn needs, plus who is asking and on whose behalf. */
+export interface TurnInput {
+  context: string;
+  trigger: string;
+  triggerAuthor: string;
+  /** chat reply, delegated job, or scheduled check-in — recorded on the run */
+  kind?: RunKind;
+  channelId?: ID;
+  taskId?: ID;
+  requesterKind?: "human" | "agent" | "schedule";
 }
 
 export class Engine {
@@ -50,6 +69,15 @@ export class Engine {
   brake: BrakeConfig;
   schedules: AgentSchedule[] = [];
   scheduler: Scheduler;
+  /**
+   * What each agent actually did, turn by turn. Kept in the agent's own folder
+   * so it survives the app closing (FR-AU-003, FR-TL-003).
+   */
+  runs: RunStore;
+  /** the record this engine wrote most recently — the newest run, in memory */
+  lastRun?: RunRecord;
+  /** told about every run as it finishes, so a host can forward it to clients */
+  onRunRecorded?: (record: RunRecord) => void;
   private history = new Map<ID, Message[]>();
   tasks = new Map<ID, Task>();
   private claimed = new Set<ID>();
@@ -76,6 +104,10 @@ export class Engine {
     this.dataDir = opts.dataDir ?? path.join(process.cwd(), "cloud9-engine-data");
     this.brake = opts.brake ?? DEFAULT_BRAKE;
     fs.mkdirSync(this.dataDir, { recursive: true });
+    this.runs = new RunStore({
+      agentDataDir: this.agentDataDir,
+      ...(opts.keepRunsPerAgent ? { keepPerAgent: opts.keepRunsPerAgent } : {}),
+    });
     this.schedules = this.loadSchedules();
     this.scheduler = new Scheduler(
       () => this.schedules,
@@ -235,21 +267,95 @@ export class Engine {
     return (agent.provider ?? "claude") === "codex" ? this.codexProvider : this.provider;
   }
 
-  /** Run one turn on the agent's own harness. Public so tests can drive it. */
-  async respondAs(
-    agent: AgentDef, input: { context: string; trigger: string; triggerAuthor: string },
-  ): Promise<string> {
+  /**
+   * Run one turn on the agent's own harness, and write down what it did.
+   * Public so tests can drive it.
+   *
+   * Every path out of this function — a clean answer, a refused agent, a
+   * missing harness, a CLI that fell over — leaves a run record behind, because
+   * "it did nothing and here is why" is exactly the case the owner most needs
+   * to be able to read. Recording is wrapped so it can never be the reason a
+   * turn fails.
+   */
+  async respondAs(agent: AgentDef, input: TurnInput): Promise<string> {
     const harness = agent.provider ?? "claude";
-    // last-gate validation: this agent definition arrived from a client, and
-    // its model is checked against the harness's REAL list, not just its shape
-    const problem = validateAgentInput(agent, { models: this.harnessModels?.(harness) });
-    if (problem) throw new Error(`refusing to run agent ${agent.id}: ${problem}`);
-    const provider = this.providerFor(agent);
-    if (!provider) {
-      throw new HarnessUnavailableError(harness, `${harness} is not connected on this machine`);
+    const seed: RunSeed = {
+      kind: input.kind ?? "chat",
+      agentId: agent.id,
+      agentName: agent.name,
+      provider: harness,
+      ...(agent.model ? { model: agent.model } : {}),
+      ...(input.channelId ? { channelId: input.channelId } : {}),
+      ...(input.taskId ? { taskId: input.taskId } : {}),
+      requestedBy: input.triggerAuthor,
+      requestedByKind: input.requesterKind ?? "human",
+      ask: input.trigger,
+      startedAt: Date.now(),
+    };
+    let trace: ProviderTrace | undefined;
+    try {
+      // last-gate validation: this agent definition arrived from a client, and
+      // its model is checked against the harness's REAL list, not just its shape
+      const problem = validateAgentInput(agent, { models: this.harnessModels?.(harness) });
+      if (problem) throw new Error(`refusing to run agent ${agent.id}: ${problem}`);
+      const provider = this.providerFor(agent);
+      if (!provider) {
+        throw new HarnessUnavailableError(harness, `${harness} is not connected on this machine`);
+      }
+      this.writeSkillFiles(agent);
+      const text = await provider.respond({
+        agent,
+        context: input.context,
+        trigger: input.trigger,
+        triggerAuthor: input.triggerAuthor,
+        onTrace: t => { trace = t; },
+      });
+      this.recordRun(seed, { finishedAt: Date.now(), outcome: "ok", trace, reply: text });
+      return text;
+    } catch (err) {
+      this.recordRun(seed, {
+        finishedAt: Date.now(), outcome: "failed", trace,
+        // the record keeps WHY, in words that carry no path, no argv and no
+        // environment — the same rule sanitizeForChat enforces for chat
+        error: redactForSharing(err instanceof Error ? err.message : String(err)),
+      });
+      throw err;
     }
-    this.writeSkillFiles(agent);
-    return provider.respond({ agent, ...input });
+  }
+
+  /**
+   * Build and store one run record. Never throws: a turn that worked must not
+   * be reported as broken because its paperwork failed.
+   */
+  private recordRun(seed: RunSeed, finish: RunFinish): RunRecord | undefined {
+    try {
+      const record = buildRunRecord(seed, finish);
+      this.lastRun = record;
+      this.runs.save(record);
+      this.onRunRecorded?.(record);
+      return record;
+    } catch (err) {
+      console.error(`[engine] could not record what ${seed.agentName} did:`, err);
+      return undefined;
+    }
+  }
+
+  /**
+   * The owner pulled the plug while the agent was still working. The run really
+   * happened, so the record stays — it is re-saved as cancelled rather than
+   * deleted, and the result is still discarded by the caller.
+   */
+  private markRunCancelled(taskId: ID): void {
+    try {
+      const record = this.lastRun;
+      if (!record || record.taskId !== taskId || record.outcome !== "ok") return;
+      const cancelled: RunRecord = { ...record, outcome: "cancelled" };
+      this.lastRun = cancelled;
+      this.runs.save(cancelled);
+      this.onRunRecorded?.(cancelled);
+    } catch (err) {
+      console.error("[engine] could not mark a run as cancelled:", err);
+    }
   }
 
   /**
@@ -289,6 +395,9 @@ export class Engine {
         context: this.renderContext(channelId),
         trigger: trigger.text,
         triggerAuthor: trigger.authorName,
+        kind: "chat",
+        channelId,
+        requesterKind: trigger.authorKind === "agent" ? "agent" : "human",
       });
       this.agentSend(agent.id, channelId, text);
     } catch (err) {
@@ -305,6 +414,15 @@ export class Engine {
     const agent = this.myAgents.find(a => a.id === task.agentId);
     if (!agent) return;
     if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") return; // FR-AG-007
+    // Last gate on "who may make this agent act". The relay checks the same
+    // rule when the task is created; this is the check that runs on the machine
+    // that would actually spend the money and start the program, and the two
+    // deliberately do not trust each other. Same function, no second copy.
+    if (!mayDriveAgent(task.requesterId, agent)) {
+      console.error(
+        `[engine] refused a job for ${agent.name}: ${task.requesterId} may not drive this agent`);
+      return;
+    }
     this.claimed.add(task.id);
     this.enqueue(() => this.runTask(agent, task));
   }
@@ -329,9 +447,15 @@ export class Engine {
         context: this.renderContext(task.channelId),
         trigger: `Background task: ${task.title}. Do the work and report the outcome.`,
         triggerAuthor: task.requesterName,
+        kind: "task",
+        channelId: task.channelId,
+        taskId: task.id,
       });
       // FR-TS-005: if cancelled while we worked, discard the result
-      if (this.tasks.get(task.id)?.status === "cancelled") return;
+      if (this.tasks.get(task.id)?.status === "cancelled") {
+        this.markRunCancelled(task.id);
+        return;
+      }
       this.sendFrame({ type: "updateTask", taskId: task.id, status: "completed", result: text.slice(0, 2000) });
       this.agentSend(agent.id, task.channelId, `📦 Task done:\n${text}`, true);
     } catch (err) {
@@ -350,6 +474,8 @@ export class Engine {
         context: this.renderContext(channelId),
         trigger: `Background task: ${trigger.text.replace(/^!bg\s+/i, "")}. Do the work and report the outcome.`,
         triggerAuthor: trigger.authorName,
+        kind: "task",
+        channelId,
       });
       this.agentSend(agent.id, channelId, `📦 Background task done:\n${text}`, true);
     } finally {
@@ -367,6 +493,9 @@ export class Engine {
         context: this.renderContext(s.channelId),
         trigger: `Scheduled task fired: ${s.prompt}`,
         triggerAuthor: "schedule",
+        kind: "schedule",
+        channelId: s.channelId,
+        requesterKind: "schedule",
       });
       this.agentSend(agent.id, s.channelId, `⏰ ${text}`, true);
     } catch (err) {

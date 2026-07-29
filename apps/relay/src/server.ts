@@ -3,8 +3,11 @@
 import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import {
-  AgentDef, AgentStatus, Approval, Channel, ClientFrame, HarnessState, ID, Message,
-  ServerFrame, Task, User, WorldState, extractMentions, newId, validateAgentInput,
+  AgentDef, AgentStatus, Approval, Attachment, Channel, ClientFrame, HarnessState, ID, Message,
+  MESSAGE_LIMITS, ATTACHMENT_LIMITS, SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
+  mayDriveAgent,
+  extractMentions, newId, validateAgentInput, validateAttachment, validateMessageText,
+  validateReactionEmoji,
 } from "@cloud9/shared";
 import { Store } from "./store.js";
 
@@ -225,10 +228,13 @@ export class Relay {
       channels,
       // only the conversations this person is actually in (P1 #7). The opening
       // frame used to carry the backlog of EVERY channel in the database.
-      messages: this.store.recentMessages(channels),
+      messages: this.hydrate(this.store.recentMessages(channels)),
       agentStatus: this.agentStatus,
       tasks: this.store.tasks(),
       approvals: this.store.approvals(),
+      // read state comes from the RELAY now, not from one browser's storage, so
+      // reading on the laptop is read on the phone too
+      unread: this.unreadFor(userId, channels),
     };
   }
 
@@ -263,29 +269,193 @@ export class Relay {
     return agent;
   }
 
+  /**
+   * The one gate every MESSAGE-scoped frame goes through.
+   *
+   * A message id arrives from a client, so — exactly like a channel id — it is
+   * a request, not a permission. Reacting, editing, deleting, replying and
+   * opening a thread all ask the same question first: does this message live in
+   * a conversation that is yours? Asking it here means none of them can drift
+   * apart or be forgotten. Same law as `channelFor` (P1 #7).
+   */
+  private messageFor(userId: ID, messageId: ID): Message {
+    const message = this.store.message(messageId);
+    if (!message) throw new Error("no such message");
+    this.channelFor(userId, message.channelId);
+    return message;
+  }
+
+  /**
+   * May this person change this message?
+   *
+   * Only the author. An agent's messages belong to THE AGENT'S OWNER, and that
+   * is decided by `myAgent` — the same function that decides every other
+   * question about an agent — so ownership is read from stored state and never
+   * from what arrived on the wire.
+   */
+  private assertAuthor(userId: ID, message: Message): void {
+    if (message.authorKind === "agent") {
+      this.myAgent(userId, message.authorId); // throws "not your agent"
+      return;
+    }
+    if (message.authorId !== userId) throw new Error("you can only change your own messages");
+  }
+
+  /** This person plus every agent they own — the ids that count as "me". */
+  private myIds(userId: ID): Set<ID> {
+    const ids = new Set<ID>([userId]);
+    for (const a of this.store.agents()) if (a.ownerId === userId) ids.add(a.id);
+    return ids;
+  }
+
+  /**
+   * Fill in the parts of a message that are computed, not stored: who reacted,
+   * and how many replies hang off it. One place, so history, search, threads
+   * and the opening frame can never disagree about what a message looks like.
+   */
+  private hydrate(messages: Message[]): Message[] {
+    if (messages.length === 0) return messages;
+    const reactions = this.store.reactionsFor(messages.map(m => m.id));
+    return messages.map(m => {
+      const r = reactions.get(m.id);
+      return r ? { ...m, reactions: r } : m;
+    });
+  }
+
+  /**
+   * WHO MAY MAKE AN AGENT ACT — asked here, on the way in, for every path.
+   *
+   * An agent's turns run on its owner's computer and are paid for by its
+   * owner's subscription, so sharing a room with someone's agent has never been
+   * permission to drive it. Three things can start a turn: an @mention, a
+   * delegated job (`createTask`), and a schedule (a kind of task). All three ask
+   * `mayDriveAgent`, which reads the agent's own stored setting.
+   *
+   * A MENTION IS FILTERED, NOT REFUSED. The message still goes through with the
+   * words the person typed — it is their message — but the id of an agent they
+   * may not drive never reaches the published `mentions` list, which is what the
+   * engine acts on. Refusing the whole message would mean one badly-aimed
+   * @ silences a conversation.
+   */
+  private mentionsFor(userId: ID, text: string): ID[] {
+    const agents = new Map(this.store.agents().map(a => [a.id, a]));
+    return extractMentions(text, this.directory()).filter(id => {
+      const agent = agents.get(id);
+      return !agent || mayDriveAgent(userId, agent);
+    });
+  }
+
+  /**
+   * Where a reply belongs.
+   *
+   * Threads are ONE level deep on purpose. Replying to a reply joins the same
+   * thread rather than starting a nested one, so a busy channel can never grow
+   * a tree nobody can follow — and the parent must be in the same conversation,
+   * or "reply" would be a way to hang your words off a message somewhere else.
+   */
+  private resolveReplyTo(channel: Channel, replyTo: ID | undefined): ID | undefined {
+    if (!replyTo) return undefined;
+    const parent = this.store.message(replyTo);
+    if (!parent || parent.channelId !== channel.id) {
+      throw new Error("that message isn't in this conversation");
+    }
+    return parent.replyTo ?? parent.id;
+  }
+
+  /** Where this person has read up to, in every conversation they can see. */
+  private unreadFor(userId: ID, channels: Channel[]): UnreadEntry[] {
+    const mine = this.myIds(userId);
+    return channels.map(c => ({
+      channelId: c.id,
+      lastReadTs: this.store.lastRead(userId, c.id),
+      ...this.store.unreadFor(userId, c.id, mine),
+    }));
+  }
+
+  /**
+   * Hand the files a `send` named to the message that is carrying them.
+   *
+   * Each one has to be YOURS, parked in THIS conversation, and not already on
+   * another message — a parked file id is a claim, so all three are checked
+   * against what is stored rather than trusted.
+   */
+  private claimAttachments(userId: ID, channel: Channel, ids: ID[] | undefined, messageId: ID): Attachment[] {
+    if (!ids || ids.length === 0) return [];
+    if (ids.length > ATTACHMENT_LIMITS.perMessage) {
+      throw new Error(`that's too many files (max ${ATTACHMENT_LIMITS.perMessage})`);
+    }
+    const out: Attachment[] = [];
+    for (const id of new Set(ids)) {
+      const row = this.store.attachment(id);
+      if (!row) throw new Error("that file isn't ready to send");
+      if (row.attachment.uploadedBy !== userId) throw new Error("that file isn't yours to send");
+      if (row.channelId !== channel.id) throw new Error("that file was uploaded to another conversation");
+      if (row.messageId) throw new Error("that file has already been sent");
+      this.store.claimAttachment(id, messageId);
+      out.push(row.attachment);
+    }
+    return out;
+  }
+
+  /** Tell every client of every member that a stored message changed. */
+  private broadcastMessageUpdate(message: Message): void {
+    const ch = this.store.channel(message.channelId);
+    if (!ch) return;
+    const [hydrated] = this.hydrate([message]);
+    for (const conn of this.conns) {
+      if (this.audienceFor(ch).has(conn.userId)) {
+        send(conn.ws, { type: "messageUpdated", message: hydrated });
+      }
+    }
+  }
+
+  /** The human accounts that can see this conversation (an agent counts as its owner). */
+  private audienceFor(channel: Channel): Set<ID> {
+    const agents = this.store.agents();
+    const out = new Set<ID>();
+    for (const m of channel.memberIds) {
+      const agent = agents.find(a => a.id === m);
+      out.add(agent ? agent.ownerId : m);
+    }
+    return out;
+  }
+
   private handleFrame(conn: Conn, frame: ClientFrame): void {
     switch (frame.type) {
       case "send": {
         const user = this.store.users().find(u => u.id === conn.userId)!;
-        this.channelFor(conn.userId, frame.channelId); // you may only post where you are
+        const channel = this.channelFor(conn.userId, frame.channelId); // you may only post where you are
+        const hasFiles = (frame.attachmentIds?.length ?? 0) > 0;
+        // words are optional only when a file is carrying the message
+        const bad = validateMessageText(frame.text, hasFiles);
+        if (bad) throw new Error(bad);
+        const replyTo = this.resolveReplyTo(channel, frame.replyTo);
+        const id = newId("m");
+        const attachments = this.claimAttachments(conn.userId, channel, frame.attachmentIds, id);
         this.postMessage({
-          id: newId("m"), channelId: frame.channelId,
+          id, channelId: frame.channelId,
           authorId: user.id, authorName: user.name, authorKind: "human",
           text: frame.text, ts: Date.now(),
-          mentions: extractMentions(frame.text, this.directory()),
+          mentions: this.mentionsFor(conn.userId, frame.text),
+          ...(replyTo ? { replyTo } : {}),
+          ...(attachments.length ? { attachments } : {}),
         }, frame.tempId);
         break;
       }
       case "agentSend": {
         const agent = this.myAgent(conn.userId, frame.agentId);
         // an agent speaks where it (or its owner) belongs, nowhere else
-        this.channelFor(conn.userId, frame.channelId);
+        const channel = this.channelFor(conn.userId, frame.channelId);
+        const bad = validateMessageText(frame.text);
+        if (bad) throw new Error(bad);
+        const replyTo = this.resolveReplyTo(channel, frame.replyTo);
         this.postMessage({
           id: newId("m"), channelId: frame.channelId,
           authorId: agent.id, authorName: agent.name, authorKind: "agent",
           authorEmoji: agent.emoji, text: frame.text, ts: Date.now(),
           proactive: frame.proactive,
-          mentions: extractMentions(frame.text, this.directory()),
+          mentions: this.mentionsFor(conn.userId, frame.text),
+          ...(replyTo ? { replyTo } : {}),
         });
         break;
       }
@@ -404,6 +574,14 @@ export class Relay {
         // person off the connection credited every delegated job to the owner
         // (M4). `requesterFor` is the one place that answers this question.
         const requester = this.requesterFor(conn, frame.requesterId, channel);
+        // AND THE THIRD QUESTION: may THEY drive this agent? `myAgent` above
+        // only proves the agent belongs to whoever owns this socket — and the
+        // engine host's socket belongs to the owner while it relays everybody
+        // else's "!bg …". Without this line, any friend in the room could spend
+        // the owner's subscription and start work on the owner's computer.
+        if (!mayDriveAgent(requester.id, agent)) {
+          throw new Error(`${agent.name} isn't set up to take work from ${requester.name}`);
+        }
         const now = Date.now();
         // Whether this needs the owner's blessing is the AGENT's setting. The
         // client used to be asked, which meant "does this need approval?" was
@@ -565,13 +743,171 @@ export class Relay {
       case "history": {
         // scrolling back is reading — same gate as posting (P1 #7)
         this.channelFor(conn.userId, frame.channelId);
+        const page = this.store.history(
+          frame.channelId,
+          { before: frame.before, beforeId: frame.beforeId },
+          frame.limit ?? MESSAGE_LIMITS.defaultPage,
+        );
         send(conn.ws, {
           type: "history", channelId: frame.channelId,
-          messages: this.store.history(frame.channelId, frame.before ?? Date.now(), frame.limit ?? 50),
+          messages: this.hydrate(page.items),
+          hasMore: page.hasMore,
+          nextBefore: page.nextBefore, nextBeforeId: page.nextBeforeId,
         });
         break;
       }
+      case "search": {
+        // The scope is computed from STORED membership, exactly as `welcome` is
+        // — a search can never reach a conversation the asker isn't in, and a
+        // `channelId` in the frame can only NARROW that list, never widen it.
+        const mine = this.visibleChannels(conn.userId);
+        const scope = frame.channelId
+          ? [this.channelFor(conn.userId, frame.channelId)]
+          : mine;
+        const page = this.store.search(scope, frame.query ?? "", {
+          authorId: frame.authorId, limit: frame.limit,
+        });
+        const byId = new Map(scope.map(c => [c.id, c]));
+        const results: SearchHit[] = this.hydrate(page.items.map(x => x.message))
+          .map((message, i) => {
+            const ch = byId.get(message.channelId)!;
+            return {
+              message, channelName: ch.name, channelKind: ch.kind,
+              snippet: page.items[i].snippet,
+            };
+          });
+        send(conn.ws, {
+          type: "searchResults", query: frame.query ?? "", results, hasMore: page.hasMore,
+        });
+        break;
+      }
+      case "react": {
+        const message = this.messageFor(conn.userId, frame.messageId);
+        // a tombstone has nothing left to react to
+        if (message.deletedAt) throw new Error("that message was deleted");
+        const bad = validateReactionEmoji(frame.emoji);
+        if (bad) throw new Error(bad);
+        const on = frame.on !== false;
+        // idempotent by the reactions table's primary key, not by hoping the
+        // client only pressed once
+        const userIds = this.store.setReaction(message.id, conn.userId, frame.emoji, on);
+        const ch = this.store.channel(message.channelId)!;
+        const audience = this.audienceFor(ch);
+        for (const c of this.conns) {
+          if (audience.has(c.userId)) {
+            send(c.ws, {
+              type: "reaction", channelId: ch.id, messageId: message.id,
+              emoji: frame.emoji, userIds,
+            });
+          }
+        }
+        break;
+      }
+      case "editMessage": {
+        const message = this.messageFor(conn.userId, frame.messageId);
+        this.assertAuthor(conn.userId, message);
+        if (message.deletedAt) throw new Error("that message was deleted");
+        const bad = validateMessageText(frame.text, (message.attachments?.length ?? 0) > 0);
+        if (bad) throw new Error(bad);
+        message.text = frame.text;
+        message.editedAt = Date.now();
+        // an edit re-decides who was named, so an @mention can be added or taken
+        // back — otherwise editing would leave the old names notifying forever
+        message.mentions = this.mentionsFor(conn.userId, frame.text);
+        this.store.saveMessage(message);
+        this.auditMessage(conn, message, "message_edited", "edited a message");
+        this.broadcastMessageUpdate(message);
+        break;
+      }
+      case "deleteMessage": {
+        const message = this.messageFor(conn.userId, frame.messageId);
+        this.assertAuthor(conn.userId, message);
+        if (message.deletedAt) break; // already gone; saying it twice changes nothing
+        // A TOMBSTONE, NOT A HOLE. The row stays where it was, so replies still
+        // hang off something, scrollback still counts, and the activity trail is
+        // not made to lie about a conversation that really happened. What goes
+        // is the content: the words, the files, the @mentions and the reactions.
+        for (const a of this.store.releaseAttachments(message.id)) {
+          this.store.removeAttachmentBytes(a.storedAs);
+        }
+        this.store.clearReactions(message.id);
+        message.text = "";
+        message.mentions = [];
+        message.attachments = undefined;
+        message.deletedAt = Date.now();
+        this.store.saveMessage(message);
+        this.auditMessage(conn, message, "message_deleted", "deleted a message");
+        this.broadcastMessageUpdate(message);
+        break;
+      }
+      case "thread": {
+        const parent = this.messageFor(conn.userId, frame.messageId);
+        // asking about a reply gives you the thread it belongs to
+        const rootId = parent.replyTo ?? parent.id;
+        const root = this.store.message(rootId)!;
+        send(conn.ws, {
+          type: "thread", parentId: rootId,
+          messages: this.hydrate([root, ...this.store.thread(rootId, frame.limit)]),
+        });
+        break;
+      }
+      case "uploadAttachment": {
+        const channel = this.channelFor(conn.userId, frame.channelId);
+        let bytes: Buffer;
+        try { bytes = Buffer.from(String(frame.dataBase64 ?? ""), "base64"); }
+        catch { throw new Error("that file didn't arrive properly"); }
+        // The name rule is `isSafeSkillFileName`, reached through
+        // `validateAttachment` — the SAME rule that guards skill files, on
+        // purpose. There is no second copy of it to drift.
+        const bad = validateAttachment(frame.name, bytes.length);
+        if (bad) throw new Error(bad);
+        const id = newId("at");
+        const storedAs = this.store.writeAttachmentBytes(id, frame.name, bytes);
+        const attachment: Attachment = {
+          id, name: frame.name, size: bytes.length,
+          ...(typeof frame.mime === "string" ? { mime: frame.mime.slice(0, 128) } : {}),
+          storedAs, uploadedBy: conn.userId, uploadedAt: Date.now(),
+        };
+        this.store.saveAttachment(attachment, channel.id);
+        // only the uploader is told — nobody else can name this id anyway
+        send(conn.ws, { type: "attachment", attachment });
+        break;
+      }
+      case "markRead": {
+        const channel = this.channelFor(conn.userId, frame.channelId);
+        const ts = typeof frame.ts === "number" ? frame.ts : Date.now();
+        const lastReadTs = this.store.markRead(conn.userId, channel.id, ts);
+        const entry: UnreadEntry = {
+          channelId: channel.id, lastReadTs,
+          ...this.store.unreadFor(conn.userId, channel.id, this.myIds(conn.userId)),
+        };
+        // EVERY machine this person is signed in on, which is the whole point
+        this.toUser(conn.userId, { type: "read", entry });
+        break;
+      }
     }
+  }
+
+  /**
+   * Audit a change to something already said.
+   *
+   * Editing and deleting are actions on the record, so they go in the trail
+   * (FR-AU-003). An agent's message is credited to the agent, with the person
+   * who pressed the button named in the sentence — "the owner deleted it"
+   * and "the agent said it" are two different facts and both are kept.
+   */
+  private auditMessage(
+    conn: Conn, message: Message,
+    kind: "message_edited" | "message_deleted", what: string,
+  ): void {
+    const who = this.store.users().find(u => u.id === conn.userId);
+    const detail = message.authorKind === "agent"
+      ? `${who?.name ?? "someone"} ${what} from ${message.authorName} in channel ${message.channelId}`
+      : `${what} in channel ${message.channelId}`;
+    this.store.logActivity({
+      actorKind: "human", actorId: conn.userId, actorName: who?.name ?? "?",
+      kind, refId: message.id, detail,
+    });
   }
 
   /**
@@ -644,6 +980,13 @@ export class Relay {
     const ch = this.store.channel(message.channelId);
     if (!ch) throw new Error("no such channel");
     this.store.saveMessage(message);
+    // A reply bumps the CACHED count on the message that started the thread, and
+    // everyone watching is told the root changed — otherwise "12 replies" would
+    // only appear after a reload.
+    if (message.replyTo) {
+      const root = this.store.bumpReplyCount(message.replyTo, message.ts);
+      if (root) this.broadcastMessageUpdate(root);
+    }
     if (message.authorKind === "agent") {
       this.store.logActivity({
         actorKind: "agent", actorId: message.authorId, actorName: message.authorName,
@@ -651,12 +994,7 @@ export class Relay {
         detail: `posted in channel ${message.channelId}${message.proactive ? " (proactive)" : ""}`,
       });
     }
-    const agents = this.store.agents();
-    const memberUserIds = new Set<ID>();
-    for (const m of ch.memberIds) {
-      const agent = agents.find(a => a.id === m);
-      memberUserIds.add(agent ? agent.ownerId : m);
-    }
+    const memberUserIds = this.audienceFor(ch);
     for (const conn of this.conns) {
       if (!memberUserIds.has(conn.userId)) continue;
       send(conn.ws, { type: "message", message, tempId });

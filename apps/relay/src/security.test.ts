@@ -256,7 +256,7 @@ test("a guest is never handed another channel's messages", async () => {
   await raj.wait<Extract<ServerFrame, { type: "error" }>>(
     f => f.type === "error" && /no such channel/.test(f.error));
   assert.equal(
-    relay.store.history(room.id, Date.now() + 1, 50).some(m => /from outside/.test(m.text)),
+    relay.store.history(room.id, {}, 50).items.some(m => /from outside/.test(m.text)),
     false, "an outsider's message reached a private room");
 
   // 4. and the people who ARE in it still work normally
@@ -346,8 +346,19 @@ test("a delegated job is credited to the person who asked, not to the engine's o
   const hello = await friend.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
   const friendId = hello.state.me.id;
 
-  // the owner's agent, in a channel the friend is in
-  owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
+  // The owner's agent, in a channel the friend is in — and DELIBERATELY opened
+  // up to her by name. Since the respond-to rule landed, being in a room with
+  // someone's agent is no longer permission to set it working (the refusal is
+  // proved in chat.test.ts, "a friend in the room cannot spend the owner's
+  // subscription"). This test is about ATTRIBUTION once the work is allowed:
+  // the job must be credited to the person who asked, not to the engine's owner.
+  owner.send({
+    type: "createAgent",
+    agent: {
+      ...BASE_AGENT, name: "Scout",
+      respondTo: "allowlist", respondToAllowlist: [friendId],
+    } as never,
+  });
   const made = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent");
   const general = hello.state.channels.find(c => c.name === "general")!;
   owner.send({ type: "addMembers", channelId: general.id, memberIds: [made.agent.id] });

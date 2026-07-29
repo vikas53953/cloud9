@@ -186,7 +186,24 @@ export function runVisibleTerminal(cmd: string, args: string[]): Promise<RunResu
 /** A `runVisibleTerminal`-shaped function — tests inject a fake one. */
 export type VisibleRunner = typeof runVisibleTerminal;
 
+/**
+ * The ONE way to put a deliberately EMPTY argument on a command line.
+ *
+ * `claude --tools ""` means "no built-in tools at all", which is exactly what a
+ * Cloud9 agent with no abilities switched on should get. There is no way to
+ * write that with the allowlist above — a quote character is refused, and a
+ * genuinely empty string would vanish in the shell and let `--tools` swallow
+ * the next flag instead. So the intent is named here, at the quoting owner,
+ * rather than each caller inventing its own escape.
+ *
+ * It is a sentinel a client could never send: the allowlist rejects the NUL
+ * characters in it, so the only way this value reaches argv is a Cloud9 module
+ * importing the constant on purpose.
+ */
+export const EMPTY_ARG = "\u0000cloud9-empty\u0000";
+
 function checkArg(arg: string): string {
+  if (arg === EMPTY_ARG) return '""';
   // an argument that is a path may contain spaces; anything else may not
   return /\s/.test(arg) ? shellQuote(arg) : safeArg(arg);
 }

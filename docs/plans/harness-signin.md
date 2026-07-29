@@ -1,4 +1,16 @@
 # Harness sign-in — architecture note            2026-07-28
+> **SUPERSEDED IN PART, 2026-07-29.** The `setup-token` capture described below
+> was built, proved to hang (it is interactive-only and was spawned without a
+> terminal), and REPLACED. The shipped design is CLI-login-first: Cloud9 spawns
+> the local Claude Code / Codex CLIs with every credential environment variable
+> stripped, and never captures or stores a token. A teardown of Buzz's source
+> (`docs/plans/buzz-teardown.md`) confirms Buzz does exactly the same — its
+> "sign in with Claude" runs `claude auth login` and keeps the credential inside
+> Claude Code. **We already match the behaviour Vikas asked us to copy.**
+> `setup-token` survives only as an explicit advanced fallback, and only in a
+> visible terminal. Read this file for the verified CLI facts; read
+> `docs/plans/feedback-round-1.md` and `docs/plans/backend-decision.md` for the
+> design that actually shipped.
 
 Vikas's directive (resolves PARKING-LOT D2 + A2): connect Claude and Codex the
 way Buzz does — a "Sign in with …" button that hands off to each provider's own

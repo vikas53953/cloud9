@@ -27,11 +27,13 @@ try {
   // header, so with no conversation open there is nothing to pick from
   await p.click(".sidebar >> text=# general");
   await p.click('button[title="New agent"]');
-  await p.fill('.panel input[placeholder="Scout"]', "Echo");
-  // the create panel holds more than one textarea now (the skills form), so the
+  await p.fill('input[placeholder="Scout"]', "Echo");
+  // the create screen holds more than one textarea (the skills form), so the
   // personality box is addressed by its own class
-  await p.fill(".panel textarea.persona-input", "You echo travel research requests helpfully");
-  await p.click('.panel .foot >> text=Create agent');
+  await p.fill("textarea.persona-input", "You echo travel research requests helpfully");
+  await p.click('.editor >> text=Create agent');
+  await p.click('.rail-btn[data-go="chat"]');
+  await p.click(".sidebar >> text=# general");
   await p.waitForSelector(".sidebar >> text=Echo");
   const chanSel = await p.$$eval(".chathead select option", os => os.find(o => o.textContent.includes("Echo"))?.value);
   await p.selectOption(".chathead select", chanSel);
@@ -64,10 +66,10 @@ try {
   // pause via edit modal
   await echoRow.hover();
   await echoRow.locator(".editbtn").click();
-  await p.waitForSelector("text=Edit");
-  await p.selectOption(".panel select", "paused");
+  await p.waitForSelector(".editor .lifecyclepick");
+  await p.selectOption(".editor select.lifecyclepick", "paused");
   await p.screenshot({ path: "docs/qa/14-agent-edit.png" });
-  await p.click('.panel .foot >> text=Save');
+  await p.click('.editor .topbar >> text=Save');
   /* What "it says it is paused" looks like on screen TODAY.
    *
    * This check has now been wrong twice for the same reason: it named a
@@ -76,8 +78,13 @@ try {
    * answer. Both of those elements were removed in the reskin, so the suite was
    * failing a feature that works. The rail's own status line is what a person
    * reads, so that is what is asserted. */
-  await echoRow.locator(".agent-sub:has-text('paused')").waitFor({ timeout: 30000 });
-  ok("the rail says the agent is paused after the edit", true);
+  /* Selector updated in the Studio reskin, and made STRICTER rather than
+   * weaker: saving lands you on the crew screen, whose card must say the agent
+   * is paused in plain words, AND the rail's own portrait lamp must go dark. */
+  await p.locator('.cast[data-crew="Echo"] .now:has-text("Paused")').waitFor({ timeout: 30000 });
+  await p.click('.rail-btn[data-go="chat"]');
+  await echoRow.locator(".avatar .status.st-asleep").waitFor({ timeout: 30000 });
+  ok("the app says the agent is paused after the edit", true);
 
   /* An absence cannot be waited for, only given time to appear. That window is
    * meaningful now only because the reply above proved the engine is warm and
@@ -98,8 +105,10 @@ try {
   // unpause → replies again
   await echoRow.hover();
   await echoRow.locator(".editbtn").click();
-  await p.selectOption(".panel select", "enabled");
-  await p.click('.panel .foot >> text=Save');
+  await p.waitForSelector(".editor .lifecyclepick");
+  await p.selectOption(".editor select.lifecyclepick", "enabled");
+  await p.click('.editor .topbar >> text=Save');
+  await p.click('.rail-btn[data-go="chat"]');
   await box.fill("@Echo are you there now?");
   await box.press("Enter");
   await p.waitForFunction(

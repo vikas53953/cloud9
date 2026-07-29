@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-07-29T05:14:11.491Z",
+  "ranAt": "2026-07-29T07:09:27.066Z",
   "expected": 48,
   "executed": 48,
   "results": [
@@ -39,19 +39,19 @@
       "detail": ""
     },
     {
-      "name": "agent row shows the app and the model it runs on",
-      "pass": true,
-      "detail": "Claude · Sonnet 5"
-    },
-    {
       "name": "clicking an agent opens the direct conversation with it",
       "pass": true,
       "detail": ""
     },
     {
+      "name": "the agent's conversation shows the app and the model it runs on",
+      "pass": true,
+      "detail": "Claude · Sonnet 5"
+    },
+    {
       "name": "that conversation is found, not created a second time",
       "pass": true,
-      "detail": "2 then 2 rows named Scout"
+      "detail": "1 then 1 rows named Scout"
     },
     {
       "name": "channel created with agent member",
@@ -81,32 +81,32 @@
     {
       "name": "settings shows live Claude + Codex status",
       "pass": true,
-      "detail": "claude: not installed on this computer | codex: not installed on this computer"
+      "detail": "claude: signed in as vikas53953@gmail.com | codex: signed in as ChatGPT account"
     },
     {
-      "name": "Claude card, not signed in: one \"Sign in with Claude\" button and no \"again\"",
+      "name": "Claude card, signed in: green tick, an account line and a quiet Switch account",
       "pass": true,
-      "detail": "🟣 Claude not installed on this computer ✗ app not found ✗ not signed in Sign in with Claude Checking… Install the Claud"
+      "detail": "Claude signed in as vikas53953@gmail.com ✓ app found (2.1.220 (Claude Code)) ✓ signed in using the Claude app's own logi"
     },
     {
       "name": "Claude card shows exactly one state",
       "pass": true,
-      "detail": "signedIn=false waiting=false failed=false"
+      "detail": "signedIn=true waiting=false failed=false"
     },
     {
-      "name": "Codex card, not signed in: one \"Sign in with Codex\" button and no \"again\"",
+      "name": "Codex card, signed in: green tick, an account line and a quiet Switch account",
       "pass": true,
-      "detail": "🟢 Codex not installed on this computer ✗ app not found ✗ not signed in Sign in with Codex Checking… Install the Codex a"
+      "detail": "Codex signed in as ChatGPT account ✓ app found (codex-cli 0.144.4) ✓ signed in using the Codex app's own login 7 models "
     },
     {
       "name": "Codex card shows exactly one state",
       "pass": true,
-      "detail": "signedIn=false waiting=false failed=false"
+      "detail": "signedIn=true waiting=false failed=false"
     },
     {
       "name": "settings still offers the API-key fallback on both cards",
       "pass": true,
-      "detail": "▸ Use an API key instead · ▸ Use an API key instead"
+      "detail": "Switch account · ▸ Use an API key instead · Switch account · ▸ Use an API key instead"
     },
     {
       "name": "settings can actually change the look (light / dark / match this computer)",
@@ -161,7 +161,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch mqg77 :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch qumjk :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +176,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_mE4L6zVg_6UVReKpu5hMvQ"
+      "detail": "inv_HTZJwQ6LKybdaHQon2KZag"
     },
     {
       "name": "friend joins via invite",

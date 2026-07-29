@@ -407,7 +407,7 @@ Authentication method is `TBD`.
 | FR-CM-006 | P0 | Conversation history must remain available according to the product's retention policy. |
 | FR-CM-007 | P1 | Agents should be able to communicate or hand work to other agents when permitted. |
 | FR-CM-008 | P1 | The user should be able to see when an agent is working, waiting, blocked, or completed. |
-| FR-CM-009 | TBD | Threads, reactions, attachments, editing, deletion, and mentions. |
+| FR-CM-009 | **P1** | Threads, reactions, attachments, editing, deletion, and mentions. **TBD resolved by Vikas 2026-07-29** (spec rule 15): *"also do add the feature of slack and buzz, whatever features we have"*, and earlier *"all of the features which we have in buzz, i really want those features"*. Build order recorded in `docs/plans/feature-gap.md`. |
 | FR-CM-010 | TBD | Voice or video communication. |
 
 ### 10.5 Task Delegation and Execution

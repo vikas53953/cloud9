@@ -67,6 +67,10 @@ test("cloud9 end-to-end: agents chat with humans across the relay", async () => 
       name: "Scout", emoji: "🔭",
       persona: "You research travel, villas, flights and hotels",
       abilities: { webSearch: true, files: false, schedules: true, background: true },
+      // This test is about a FRIEND driving the agent, which is only allowed
+      // when the owner has opened it up. The default is owner-only — proved
+      // separately by "an agent left at the default ignores a friend" below.
+      respondTo: "anyone",
     },
   });
   const agentFrame = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent");
@@ -110,6 +114,36 @@ test("cloud9 end-to-end: agents chat with humans across the relay", async () => 
     f => f.type === "message" && !!f.message.proactive,
   );
   assert.match(done.message.text, /Task done/);
+
+  // …and the half that actually protects the owner's subscription: a SECOND
+  // agent, left at the default, must ignore the same friend entirely. Scout
+  // above only answers her because the owner opened it up.
+  owner.send({
+    type: "createAgent",
+    agent: {
+      name: "Ledger", emoji: "📊",
+      persona: "You research travel, villas, flights and hotels",
+      abilities: { webSearch: true, files: false, schedules: true, background: true },
+      // no respondTo — the default is owner-only
+    },
+  });
+  const ledgerFrame = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(
+    f => f.type === "agent" && f.agent.name === "Ledger",
+  );
+  owner.send({ type: "addMembers", channelId: general.id, memberIds: [ledgerFrame.agent.id] });
+  await owner.wait(f => f.type === "channel" && f.channel.memberIds.includes(ledgerFrame.agent.id));
+
+  friend.send({ type: "send", channelId: general.id, text: "@Ledger find beach villas in Goa" });
+  // The refusal is deliberately SILENT, so the proof is an absence: give the
+  // engine the same room it needed to answer Scout, then assert Ledger never
+  // spoke.
+  const spoke = await Promise.race([
+    friend.wait<Extract<ServerFrame, { type: "message" }>>(
+      f => f.type === "message" && f.message.authorName === "Ledger",
+    ).then(() => true),
+    new Promise<false>(r => setTimeout(() => r(false), 2500)),
+  ]);
+  assert.equal(spoke, false, "an agent left at the default answered a friend — it must not");
 
   engine.stop();
   owner.close();

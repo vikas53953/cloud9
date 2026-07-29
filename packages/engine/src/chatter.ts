@@ -3,7 +3,7 @@
 // silently draining a subscription: >=25 consecutive agent messages with no
 // human, or >=60 agent messages in an hour per channel, pauses agents there
 // until a human speaks.
-import { AgentDef, Channel, Message } from "@cloud9/shared";
+import { AgentDef, Channel, mayDriveAgent, Message } from "@cloud9/shared";
 
 export interface BrakeConfig {
   maxConsecutiveAgent: number; // default 25
@@ -28,12 +28,28 @@ export function isBraked(history: Message[], cfg: BrakeConfig = DEFAULT_BRAKE): 
 /**
  * Decide whether `agent` should reply to `message`.
  *  - never to itself
- *  - always in a DM it belongs to (when someone else spoke)
+ *  - never for someone who is not allowed to drive this agent
+ *  - always in a DM it belongs to (when someone allowed spoke)
  *  - always when @mentioned
  *  - free chatter: for un-mentioned human messages, the single most relevant
  *    agent in the channel chimes in (keyword overlap with persona); agent
  *    messages only draw replies via mention — that plus the brake keeps
  *    "free conversation" from becoming an infinite loop.
+ *
+ * WHO MAY MAKE THIS AGENT ACT HAS ONE OWNER: `mayDriveAgent` in
+ * `@cloud9/shared`, the same function the relay calls on mentions and on
+ * `createTask`. It is imported, never re-implemented and never re-derived — a
+ * second copy of a permission rule is a rule that goes stale, and this one
+ * decides whose subscription gets spent and whose machine starts a program.
+ *
+ * The hole this closes: a friend invited into Cloud9 could open a DM with the
+ * owner's agent — or simply say something on-topic in a shared channel — and
+ * get a turn out of it, because neither the DM branch nor the free-chatter
+ * branch ever asked who was speaking.
+ *
+ * A refusal is SILENT. The agent says nothing at all, so a guest cannot use a
+ * polite "sorry, you're not allowed" to discover which agents exist, who owns
+ * them, or how they are configured. The engine logs it for the owner instead.
  */
 export function shouldReply(
   agent: AgentDef,
@@ -44,6 +60,12 @@ export function shouldReply(
   if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") return false;
   if (message.authorId === agent.id) return false;
   if (!channel.memberIds.includes(agent.id)) return false;
+  // A person may only make an agent act if the agent's owner said they may.
+  // Agent-authored messages are left to the agent→agent rules below: an agent
+  // needs a mention, and the relay has already filtered that mention against
+  // ITS OWNER's permissions — which is what stops an agent laundering a
+  // permission its owner does not have (FR-AA-003).
+  if (message.authorKind === "human" && !mayDriveAgent(message.authorId, agent)) return false;
   if (channel.kind === "dm") return true;
   if (message.mentions?.includes(agent.id)) return true;
   if (message.authorKind === "agent") return false; // agent→agent needs a mention
