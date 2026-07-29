@@ -6,6 +6,7 @@ import {
   isSafeSkillFileName, MENU_ACTIONS, MenuAction, Message, SKILL_LIMITS, Task, User,
 } from "@cloud9/shared";
 import { client } from "./store.js";
+import { Markdown } from "./markdown.js";
 
 const isQuickWindow = location.hash === "#quick";
 
@@ -1436,10 +1437,12 @@ function MessageRow({ row, agent, working }: { row: Row; agent?: AgentDef; worki
     }).catch(() => setCopied(false));
   };
 
+  // Every message body goes through here, so formatting is a property of "a
+  // message" rather than something each call site remembers. Markdown renders
+  // to React elements only — never to HTML — so a `<script>` in a message is
+  // the word "<script>". @mentions are still highlighted, inside the markdown.
   const paragraph = (text: string, key?: React.Key) => (
-    <p key={key}>{text.split(/(@[\w-]+)/g).map((part, i) => part.startsWith("@")
-      ? <span key={i} className="mention">{part}</span>
-      : part)}</p>
+    <Markdown key={key} text={text} />
   );
 
   const actions = (

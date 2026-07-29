@@ -20,7 +20,7 @@ const { ui: UI } = qaTarget();
  * run stops early it now FAILS and says so. Add or remove an `ok(...)` and this
  * number must move with it — a mismatch is the suite telling you it drifted.
  */
-const EXPECTED_CHECKS = 48;
+const EXPECTED_CHECKS = 52;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -467,6 +467,45 @@ try {
   await page.waitForTimeout(200);
   await page.screenshot({ path: `${SHOTS}/design-quickchat.png`, fullPage: true });
   await page.keyboard.press("Escape");
+
+  // ---------- a message is set the way it was written ----------
+  // The formatting buttons used to make a message look WORSE: they inserted
+  // **stars** and the list printed them raw. These checks assert the shapes,
+  // and — the one that matters — that a message can never become markup.
+  const md = [
+    "**bold words** and *italic* and `inline code`",
+    "- first thing",
+    "- second thing",
+    "```js",
+    "const x = 1;",
+    "```",
+    "> a quoted line",
+    "<script>alert('xss')</script>",
+    "https://example.com/page",
+  ].join("\n");
+  await box.fill(md);
+  await box.press("Enter");
+  const last = page.locator(".msg").last();
+  await last.locator(".md strong").first().waitFor({ timeout: 8000 });
+
+  ok("a message renders bold, italic and inline code",
+    (await last.locator(".md strong").count()) > 0 &&
+    (await last.locator(".md em").count()) > 0 &&
+    (await last.locator("code.mdcode").count()) > 0);
+  ok("a message renders lists, code blocks and quotes",
+    (await last.locator("ul.mdlist li").count()) >= 2 &&
+    (await last.locator("pre.mdpre code").count()) > 0 &&
+    (await last.locator("blockquote.mdquote").count()) > 0);
+  ok("a bare link becomes a safe link",
+    (await last.locator('a.mdlink[href="https://example.com/page"]').count()) === 1 &&
+    (await last.locator("a.mdlink").first().getAttribute("rel")).includes("noopener"));
+  // The whole safety argument in one assertion: markdown renders to React
+  // elements, never to HTML, so a script tag is the WORDS "<script>".
+  const scriptTags = await page.locator(".msg script").count();
+  const scriptShownAsText = (await last.textContent()).includes("<script>");
+  ok("a script tag in a message stays text, and never becomes markup",
+    scriptTags === 0 && scriptShownAsText, `script els=${scriptTags}`);
+  await page.screenshot({ path: `${SHOTS}/chat-markdown.png`, fullPage: true });
 
   await owner.close();
   await friendCtx.close();

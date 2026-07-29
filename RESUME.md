@@ -27,6 +27,22 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
 - FR-CM-009 (threads/reactions/attachments/edit/delete/mentions) approved by
   him on 2026-07-29 and recorded in the spec.
 
+## Progress log (append, newest last — never delete)
+- **2026-07-29 ~13:00** — all four agents from the first wave landed and are
+  COMMITTED and PUSHED. Verified by running, not claimed: build clean,
+  **167 engine + 52 relay** tests, **48/48 + 8/8 + 4/4** browser checks all
+  executed on a cold database. Commits `c74c959`, `433ce74`, `b69ca28`.
+  - Studio match rebuilt: 8 of 9 screens match the prototype structurally
+    (icon rail, Studio-floor sidebar, portraits, permission card with labelled
+    rows, right rail, composer affordances). Welcome deliberately differs —
+    a real first run must establish identity before it can know about AI apps.
+  - 11 prototype elements had no real data (spend ceiling, progress %,
+    scheduled list, export, "N online") — all HIDDEN, never faked.
+  - Run records, agent capability prompt, config isolation, `mayDriveAgent`
+    on every turn path all landed.
+  - Chat basics server half landed (scrollback, FTS5 search, reactions,
+    edit/delete, threads, attachments, account unread, audit ledger).
+
 ## Work in flight when he left
 | Agent | Owns | Doing |
 |---|---|---|

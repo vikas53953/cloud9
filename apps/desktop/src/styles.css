@@ -469,6 +469,44 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 }
 .msg.cont:hover .when-gutter{opacity:1;}
 .mention{color:var(--pine);background:var(--pine-soft);border-radius:var(--radius-xs);padding:0 4px;font-weight:600;}
+/* --- a message, set the way it was written ---
+   Deliberately quiet: a chat message that shouts in headings would fight the
+   conversation around it. Headings step DOWN to near body size and earn their
+   weight from the display face instead. Code is the one place the mono voice
+   appears in a message body, matching the run strips. */
+.md{display:flex;flex-direction:column;gap:var(--s2);min-width:0;}
+.md > :first-child{margin-top:0;}
+.md > :last-child{margin-bottom:0;}
+.md p{margin:0;}
+.mdh{font-family:var(--display);margin:0;line-height:1.25;color:var(--ink);}
+.mdh-1,.mdh-2{font-size:1.05em;font-weight:600;}
+.mdh-3,.mdh-4,.mdh-5,.mdh-6{font-size:1em;font-weight:600;}
+.mdcode{
+  font-family:var(--mono);font-size:.92em;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:var(--radius-xs);padding:0 4px;
+}
+.mdpre{
+  position:relative;margin:0;overflow-x:auto;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:var(--radius-sm,8px);
+  padding:var(--s3) var(--s4);
+}
+.mdpre code{font-family:var(--mono);font-size:.9em;color:var(--ink);white-space:pre;}
+.mdlang{
+  position:absolute;top:4px;right:8px;font-family:var(--mono);font-size:10px;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);
+}
+.mdquote{
+  margin:0;padding-left:var(--s4);border-left:2px solid var(--line);color:var(--ink-2);
+  display:flex;flex-direction:column;gap:var(--s2);
+}
+.mdlist{margin:0;padding-left:1.25em;display:flex;flex-direction:column;gap:2px;}
+.mdlist li{margin:0;}
+.mdlist li::marker{color:var(--ink-3);}
+.mdnum li::marker{font-family:var(--mono);font-size:.9em;}
+.mdrule{border:none;border-top:1px solid var(--line);margin:var(--s2) 0;width:100%;}
+.mdlink{color:var(--pine);text-decoration:underline;text-underline-offset:2px;}
+.mdlink:hover{color:var(--marigold);}
+
 .selfstart{flex:none;}
 .runstrip{
   display:flex;align-items:center;gap:9px;flex-wrap:wrap;

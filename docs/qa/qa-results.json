@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-29T07:45:12.221Z",
-  "expected": 48,
-  "executed": 48,
+  "ranAt": "2026-07-29T09:31:43.073Z",
+  "expected": 52,
+  "executed": 52,
   "results": [
     {
       "name": "join screen renders",
@@ -161,7 +161,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch s4v8j :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch vxt8k :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +176,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv__mnGH3eFTQteff7vhQ7TtQ"
+      "detail": "inv_WJa_cuEXvTjVdQbtXIetMA"
     },
     {
       "name": "friend joins via invite",
@@ -237,6 +237,26 @@
       "name": "the create screen shows the model picker and the skills editor together",
       "pass": true,
       "detail": ""
+    },
+    {
+      "name": "a message renders bold, italic and inline code",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a message renders lists, code blocks and quotes",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a bare link becomes a safe link",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a script tag in a message stays text, and never becomes markup",
+      "pass": true,
+      "detail": "script els=0"
     },
     {
       "name": "no console errors",
