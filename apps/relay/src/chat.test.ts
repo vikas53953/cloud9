@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AgentDef, Message, ServerFrame } from "@cloud9/shared";
 import { Relay } from "./server.js";
+import { SCHEMA_VERSION } from "./store.js";
 import { TestClient, tmp } from "./testclient.js";
 
 const BASE_AGENT = {
@@ -647,7 +648,9 @@ test("a database written before the ledger is chained on the way in", async () =
 
   const second = new Relay({ dbPath, ownerToken: "tok-owner", ownerName: "Vikas" });
   await second.listen(0);
-  assert.equal(second.store.schemaVersion(), 2);
+  // brought all the way up to date, whatever "up to date" is today — pinned to
+  // the constant so this line cannot go stale on the next migration step
+  assert.equal(second.store.schemaVersion(), SCHEMA_VERSION);
   assert.equal(second.store.verifyActivity(), null, "the old rows were not chained");
   const old = second.store.activity(Date.now() + 1, 100).find(r => r.id === "act_old")!;
   assert.equal(old.seq, 1);

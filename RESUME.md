@@ -43,6 +43,24 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
   - Chat basics server half landed (scrollback, FTS5 search, reactions,
     edit/delete, threads, attachments, account unread, audit ledger).
 
+- **2026-07-29 ~15:00** — a usage limit killed both follow-up agents seconds
+  after they started. One had written `apps/desktop/src/markdown.tsx` and
+  nothing else. I finished that item myself rather than lose it:
+  - **Markdown rendering is DONE and pushed** (`da8f426`). Every message body
+    goes through one `<Markdown>` component; it emits React elements and never
+    HTML, so a `<script>` in a message is the word "<script>". Only http/https/
+    mailto links are allowed.
+  - Two real bugs found by testing, both fixed: a React hook called
+    conditionally, and — the serious one — the inline regex was module-level
+    with `/g`, so the recursive bold-inside-italic call rewound the outer loop
+    and it looped until Node ran out of memory. A single line of
+    "**a** *b* `c`" killed it. Fixed by removing the shared state entirely.
+  - QA raised to **52/52 + 8/8 + 4/4, all executed**, including a check that a
+    script tag stays text.
+  - **Lesson for future rounds:** an agent killed mid-task can leave code that
+    compiles and still crashes at runtime. Always run the thing, not just the
+    build.
+
 ## Work in flight when he left
 | Agent | Owns | Doing |
 |---|---|---|

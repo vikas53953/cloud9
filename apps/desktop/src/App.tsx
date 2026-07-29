@@ -2,8 +2,9 @@ import React, {
   useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore,
 } from "react";
 import {
-  AgentDef, AgentSkill, AgentSkillFile, Approval, Channel, DEMO_MODE_BANNER, HarnessInfo, ID,
-  isSafeSkillFileName, MENU_ACTIONS, MenuAction, Message, SKILL_LIMITS, Task, User,
+  AgentDef, AgentRespondTo, AgentSkill, AgentSkillFile, Approval, Channel, DEMO_MODE_BANNER,
+  HarnessInfo, ID, isSafeSkillFileName, mayDriveAgent, MENU_ACTIONS, MenuAction, Message,
+  SearchHit, SKILL_LIMITS, Task, User,
 } from "@cloud9/shared";
 import { client } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -450,9 +451,9 @@ const prefs = makeStore<Prefs>("cloud9.prefs", {
 
 const usePrefs = (): Prefs => useSyncExternalStore(prefs.subscribe, prefs.get);
 
-/** last time you looked at each conversation — drives the unread marks */
-const reads = makeStore<Record<string, number>>("cloud9.lastRead", {});
-const useReads = (): Record<string, number> => useSyncExternalStore(reads.subscribe, reads.get);
+/* Read state used to live in `localStorage` here. It does not any more: the
+   relay keeps it on the ACCOUNT, so reading a room on this computer marks it
+   read on every other one too. `purgeLegacySecrets` deletes the old key. */
 
 function applyTheme(theme: Prefs["theme"]): void {
   const root = document.documentElement;
@@ -657,6 +658,23 @@ const roleOf = (persona: string): string => {
   return first.length > 90 ? `${first.slice(0, 88).trim()}…` : first || "No job written yet";
 };
 
+/**
+ * Who may set this agent working, in plain words. Read off the agent, and an
+ * agent that says nothing is owner-only — the same default the relay enforces.
+ */
+function respondWords(a: AgentDef, ownerName: string): string {
+  switch (a.respondTo ?? "owner") {
+    case "anyone": return "Anyone in the room can use it";
+    case "allowlist": {
+      const n = (a.respondToAllowlist ?? []).length;
+      return n === 0
+        ? `Only ${ownerName} — nobody has been named yet`
+        : `${ownerName} and ${n} ${n === 1 ? "other person" : "others"} can use it`;
+    }
+    default: return `Only ${ownerName} can use it`;
+  }
+}
+
 /** Which rule made this agent stop and ask. Read off the agent, never guessed. */
 function ruleWords(agent?: AgentDef): string | null {
   if (!agent?.approvals) return null;
@@ -670,7 +688,6 @@ function ruleWords(agent?: AgentDef): string | null {
 function Workspace(): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const p = usePrefs();
-  const lastRead = useReads();
   const [screen, setScreen] = useState<ScreenName>("chat");
   const [activeId, setActiveId] = useState<ID | null>(null);
   const [modal, setModal] = useState<null | ModalName>(null);
@@ -679,6 +696,9 @@ function Workspace(): React.JSX.Element {
   const [quick, setQuick] = useState(false);
   const [pendingPeer, setPendingPeer] = useState<{ id: ID; since: number } | null>(null);
   const [findOpen, setFindOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  /** a message the app is on its way to, from a search result */
+  const [jumpTo, setJumpTo] = useState<{ id: ID; at: number } | null>(null);
 
   const active = world.channels.find(c => c.id === activeId) ?? world.channels[0];
   const owner = isOwner(world.me);
@@ -706,6 +726,11 @@ function Workspace(): React.JSX.Element {
         e.preventDefault();
         setQuick(q => !q);
       }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setScreen("chat");
+        setFindOpen(true);
+      }
       if (e.key === "Escape") setQuick(false);
     };
     window.addEventListener("keydown", onKey);
@@ -726,7 +751,9 @@ function Workspace(): React.JSX.Element {
       ? openInvite()
       : client.notify("only the owner of this Cloud9 can invite someone"),
     "settings": () => setScreen("settings"),
-    "search": () => { setScreen("chat"); setFindOpen(true); },
+    // Search looks EVERYWHERE you are allowed to see. Finding words in the one
+    // conversation on screen is a different job and keeps its own bar (Ctrl+F).
+    "search": () => { setScreen("chat"); setSearchOpen(true); },
     "toggle-theme": () => {
       const now = document.documentElement.getAttribute("data-theme");
       prefs.set({ theme: now === "dark" ? "light" : "dark" });
@@ -805,20 +832,59 @@ function Workspace(): React.JSX.Element {
     return () => clearTimeout(giveUp);
   }, [pendingPeer, findDm, world.lastChannel, world.channels]);
 
-  /* ---- unread ---- */
-  const unreadFor = useCallback((c: Channel): number => {
-    const seen = lastRead[c.id] ?? 0;
+  /* ---- unread, from the account ----
+   *
+   * The relay owns "up to when has this person read" (`lastReadTs`) and counts
+   * what is after it. This computes the same count from the messages on hand,
+   * and takes whichever is BIGGER: the relay's number covers messages this
+   * client never loaded, and the local one covers messages that arrived since
+   * the relay last counted. Neither alone is right on its own. */
+  const unreadFor = useCallback((c: Channel): { unread: number; mentions: number } => {
+    const entry = world.unread[c.id];
+    const seen = entry?.lastReadTs ?? 0;
     const msgs = world.messages[c.id] ?? [];
-    return msgs.filter(m => m.ts > seen && m.authorId !== world.me?.id).length;
-  }, [lastRead, world.messages, world.me]);
+    const mine = world.me?.id;
+    const myAgentIds = world.agents.filter(a => a.ownerId === mine).map(a => a.id);
+    const fresh = msgs.filter(m => m.ts > seen && m.authorId !== mine);
+    const mentionsMe = (m: Message) =>
+      (m.mentions ?? []).some(id => id === mine || myAgentIds.includes(id));
+    return {
+      unread: Math.max(fresh.length, entry?.unread ?? 0),
+      mentions: Math.max(fresh.filter(mentionsMe).length, entry?.mentions ?? 0),
+    };
+  }, [world.unread, world.messages, world.me, world.agents]);
 
-  // reading a channel marks it read
+  /* Reading a conversation marks it read — on the account, so the phone finds
+     out too. Debounced, because a burst of arriving messages is one read. */
+  const newestTs = active
+    ? (world.messages[active.id] ?? []).reduce((n, m) => Math.max(n, m.ts), 0)
+    : 0;
   useEffect(() => {
-    if (!active || screen !== "chat") return;
-    const msgs = world.messages[active.id] ?? [];
-    const newest = msgs.length ? msgs[msgs.length - 1].ts : Date.now();
-    if ((reads.get()[active.id] ?? 0) < newest) reads.set({ [active.id]: newest });
-  }, [active, world.messages, screen]);
+    if (!active || screen !== "chat" || !world.connected) return;
+    const seen = world.unread[active.id]?.lastReadTs ?? 0;
+    const upTo = newestTs || Date.now();
+    if (seen >= upTo) return;
+    const t = setTimeout(() => client.markRead(active.id, upTo), 350);
+    return () => clearTimeout(t);
+  }, [active?.id, newestTs, screen, world.connected, world.unread]);
+
+  /* Coming back to the window is also "I have read this". */
+  useEffect(() => {
+    const onFocus = () => {
+      if (!active || screen !== "chat") return;
+      client.markRead(active.id);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [active?.id, screen]);
+
+  /* Opening a conversation asks the relay for its newest page, which is the
+     only way to learn whether there is anything OLDER — `welcome` hands over
+     recent messages without ever saying. */
+  useEffect(() => {
+    if (!active || !world.connected) return;
+    if (!client.page(active.id).asked) client.loadOlder(active.id);
+  }, [active?.id, world.connected]);
 
   /* ---- notifications you asked for, silent in quiet hours ---- */
   const knownCount = useRef<number>(-1);
@@ -904,9 +970,10 @@ function Workspace(): React.JSX.Element {
               unreadFor={unreadFor} peerOf={peerOf} owner={owner}
               onNewChannel={() => setModal("channel")} onNewAgent={() => openEditor("new")}
               onInvite={openInvite} onEditAgent={a => openEditor(a)} onOpenDm={openDm}
-              lastRead={active ? lastRead[active.id] ?? 0 : 0}
+              lastRead={active ? world.unread[active.id]?.lastReadTs ?? 0 : 0}
               findOpen={findOpen} onCloseFind={() => setFindOpen(false)}
               onOpenTasks={() => setScreen("tasks")}
+              jumpTo={jumpTo} onJumped={() => setJumpTo(null)}
             />
           )}
           {screen === "crew" && (
@@ -924,6 +991,18 @@ function Workspace(): React.JSX.Element {
         </main>
       </div>
 
+      {searchOpen && (
+        <SearchOverlay
+          onClose={() => { setSearchOpen(false); client.clearSearch(); }}
+          onGo={(channelId, messageId) => {
+            setScreen("chat");
+            setActiveId(channelId);
+            setJumpTo({ id: messageId, at: Date.now() });
+            setSearchOpen(false);
+            client.clearSearch();
+          }}
+        />
+      )}
       {quick && <QuickChat onClose={() => setQuick(false)} />}
       {modal === "invite" && <InviteModal onClose={() => setModal(null)} />}
       {modal === "channel" && <ChannelModal onClose={() => setModal(null)} />}
@@ -957,26 +1036,60 @@ interface Peer {
   name: string; agent?: AgentDef; isAgent: boolean; sub: string; lamp: string; busy: boolean;
 }
 
+/**
+ * What is waiting in one conversation. `mentions` is its OWN count, not a
+ * subset drawn the same way: "someone said something" and "someone asked me
+ * something" are different news and are shown differently.
+ */
+interface Unread { unread: number; mentions: number }
+
+/** The unread marks on a rail row — nothing at all when there is nothing new. */
+function UnreadMarks({ n }: { n: Unread }): React.JSX.Element | null {
+  if (n.unread <= 0 && n.mentions <= 0) return null;
+  return (
+    <>
+      {n.mentions > 0 && (
+        <span className="cnt at" title={`${n.mentions} that ask for you`}
+          aria-label={`${n.mentions} mentioning you`}>@{n.mentions}</span>
+      )}
+      {n.unread > 0 && (
+        <span className="cnt hot" aria-label={`${n.unread} new`}>{n.unread}</span>
+      )}
+    </>
+  );
+}
+
 function ChatScreen({
   active, setActiveId, channels, humanDms, agents, people, unreadFor, peerOf, owner,
   onNewChannel, onNewAgent, onInvite, onEditAgent, onOpenDm, lastRead, findOpen, onCloseFind,
-  onOpenTasks,
+  onOpenTasks, jumpTo, onJumped,
 }: {
   active?: Channel; setActiveId: (id: ID) => void;
   channels: Channel[]; humanDms: Channel[]; agents: AgentDefPlus[]; people: User[];
-  unreadFor: (c: Channel) => number; peerOf: (c: Channel) => Peer; owner: boolean;
+  unreadFor: (c: Channel) => Unread; peerOf: (c: Channel) => Peer; owner: boolean;
   onNewChannel: () => void; onNewAgent: () => void; onInvite: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenDm: (id: ID, name: string) => void;
   lastRead: number; findOpen: boolean; onCloseFind: () => void; onOpenTasks: () => void;
+  jumpTo: { id: ID; at: number } | null; onJumped: () => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const isDm = active?.kind === "dm";
+  /** the message whose thread is open on the right, if any */
+  const [threadRoot, setThreadRoot] = useState<ID | null>(null);
+
+  // a thread belongs to the conversation it was opened from
+  useEffect(() => { setThreadRoot(null); }, [active?.id]);
+
+  const openThread = useCallback((rootId: ID) => {
+    setThreadRoot(rootId);
+    client.send({ type: "thread", messageId: rootId });
+  }, []);
 
   const agentDmFor = (a: AgentDef) =>
     world.channels.find(c => c.kind === "dm" && c.memberIds.includes(a.id));
 
   return (
-    <div className={`chatgrid${isDm ? " no-aside" : ""}`}>
+    <div className={`chatgrid${isDm && !threadRoot ? " no-aside" : ""}`}>
       <aside className="sidebar" aria-label="Studio floor">
         <div className="sidebar-head">
           <h2>Studio floor</h2>
@@ -1004,7 +1117,7 @@ function ChatScreen({
                     onClick={() => setActiveId(c.id)}>
                     <span className="hash">#</span>{" "}
                     <span className="txt">{c.name}</span>
-                    {unread > 0 && <span className="cnt hot" aria-label={`${unread} new`}>{unread}</span>}
+                    <UnreadMarks n={unread} />
                   </button>
                 );
               })}
@@ -1020,7 +1133,7 @@ function ChatScreen({
             {agents.map(a => {
               const s = agentStatusLine(a, world.agentStatus[a.id]);
               const dm = agentDmFor(a);
-              const unread = dm ? unreadFor(dm) : 0;
+              const unread = dm ? unreadFor(dm) : { unread: 0, mentions: 0 };
               return (
                 <div key={a.id} className="side-item agentrow agent-row" data-agent={a.name}
                   aria-current={dm && active?.id === dm.id ? "true" : "false"} title={a.persona}>
@@ -1028,7 +1141,7 @@ function ChatScreen({
                     title={`Open your chat with ${a.name}`}>
                     <AgentFace name={a.name} size={22} lamp={s.lamp} />
                     <span className="txt agent-name">{a.name}</span>
-                    {unread > 0 && <span className="cnt hot">{unread}</span>}
+                    <UnreadMarks n={unread} />
                   </button>
                   {a.ownerId === world.me?.id &&
                     <button className="editbtn" title="Edit agent" aria-label={`Edit ${a.name}`}
@@ -1045,7 +1158,7 @@ function ChatScreen({
                   onClick={() => setActiveId(c.id)}>
                   <PersonFace name={pr.name} size={22} />
                   <span className="txt agent-name">{pr.name}</span>
-                  {unread > 0 && <span className="cnt hot">{unread}</span>}
+                  <UnreadMarks n={unread} />
                 </button>
               );
             })}
@@ -1084,8 +1197,9 @@ function ChatScreen({
       </aside>
 
       {active ? (
-        <ChatView channel={active} lastRead={lastRead} findOpen={findOpen} onCloseFind={onCloseFind}
-          onEditAgent={onEditAgent} onOpenTasks={onOpenTasks} />
+        <ChatView key={active.id} channel={active} lastRead={lastRead} findOpen={findOpen}
+          onCloseFind={onCloseFind} onEditAgent={onEditAgent} onOpenTasks={onOpenTasks}
+          jumpTo={jumpTo} onJumped={onJumped} onOpenThread={openThread} threadRoot={threadRoot} />
       ) : (
         <div className="thread">
           <div className="msgs">
@@ -1099,7 +1213,12 @@ function ChatScreen({
         </div>
       )}
 
-      {active && !isDm && <ChannelRail channel={active} onEditAgent={onEditAgent} onOpenDm={onOpenDm} />}
+      {active && threadRoot && (
+        <ThreadPanel key={threadRoot} channel={active} rootId={threadRoot}
+          onClose={() => setThreadRoot(null)} />
+      )}
+      {active && !isDm && !threadRoot &&
+        <ChannelRail channel={active} onEditAgent={onEditAgent} onOpenDm={onOpenDm} />}
     </div>
   );
 }
@@ -1197,15 +1316,23 @@ function AnswerCard({ title, rows, tone, lead, actions }: {
   );
 }
 
-function ChatView({ channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpenTasks }: {
+function ChatView({
+  channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpenTasks,
+  jumpTo, onJumped, onOpenThread, threadRoot,
+}: {
   channel: Channel; lastRead: number; findOpen: boolean; onCloseFind: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenTasks: () => void;
+  jumpTo: { id: ID; at: number } | null; onJumped: () => void;
+  onOpenThread: (rootId: ID) => void; threadRoot: ID | null;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const all = world.messages[channel.id] ?? [];
   const streamRef = useRef<HTMLDivElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
   const [openedAt] = useState(lastRead);
+  const page = world.pages[channel.id] ?? { hasMore: true, loading: false, asked: false };
+  /** the message a search result sent us to, lit up for a moment */
+  const [litUp, setLitUp] = useState<ID | null>(null);
 
   /* ---- Find in conversation (Ctrl+F / Edit menu) ---- */
   const [find, setFind] = useState("");
@@ -1216,9 +1343,95 @@ function ChatView({ channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpe
     ? all.filter(m => m.text.toLowerCase().includes(needle) || m.authorName.toLowerCase().includes(needle))
     : all;
 
+  /* ---- scrollback ----
+   *
+   * Three rules, and they must not fight each other:
+   *  1. a NEW message at the bottom follows the reader down, but only if the
+   *     reader was already down there;
+   *  2. an OLDER page put on the front must not move the words under the
+   *     reader's eyes — the view is nailed to what it was looking at;
+   *  3. reaching the top asks for the page before, and stops when the relay
+   *     says there is nothing older. */
+  const atBottom = useRef(true);
+  /**
+   * The message the reader is looking at, and where it sat on screen.
+   *
+   * Anchored to a ROW, not to `scrollHeight`: the height of the list changes
+   * for reasons other than the new page — the "fetching…" line appears and is
+   * then replaced by "that's the beginning" — and a restore computed from the
+   * total height carries every one of those differences into the reader's eye.
+   * A row cannot lie about where it is.
+   */
+  const anchor = useRef<{ id: ID; top: number } | null>(null);
+
+  const askForOlder = useCallback(() => {
+    const el = streamRef.current;
+    if (!el) return;
+    const p = client.page(channel.id);
+    if (p.loading || (p.asked && !p.hasMore)) return;
+    const first = el.querySelector<HTMLElement>(".msg[data-msg]");
+    anchor.current = first?.dataset.msg
+      ? { id: first.dataset.msg, top: first.getBoundingClientRect().top }
+      : null;
+    client.loadOlder(channel.id);
+  }, [channel.id]);
+
+  // rule 2 — put the reader back where they were, before the browser paints
+  React.useLayoutEffect(() => {
+    const el = streamRef.current;
+    const held = anchor.current;
+    if (!el || !held) return;
+    const still = el.querySelector<HTMLElement>(`.msg[data-msg="${CSS.escape(held.id)}"]`);
+    if (still) el.scrollTop += still.getBoundingClientRect().top - held.top;
+    anchor.current = null;
+  }, [world.prepended]);
+
+  // rule 1 — a new arrival only follows a reader who is already at the bottom
+  const newest = messages.length ? messages[messages.length - 1].id : "";
   useEffect(() => {
-    streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight });
-  }, [messages.length, channel.id]);
+    const el = streamRef.current;
+    if (!el || anchor.current) return;
+    if (atBottom.current) el.scrollTo({ top: el.scrollHeight });
+  }, [newest, messages.length]);
+
+  const onStreamScroll = useCallback(() => {
+    const el = streamRef.current;
+    if (!el) return;
+    atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (el.scrollTop < 160) askForOlder();
+  }, [askForOlder]);
+
+  /* ---- a search result asked for one particular message ----
+   * If it is already loaded, go to it. If it is further back than we have
+   * read, keep asking for older pages until it turns up or the relay says
+   * there is nothing older. Bounded, so a message that cannot be found (it was
+   * deleted between the search and the click) ends the walk instead of
+   * spinning. */
+  const walked = useRef(0);
+  useEffect(() => {
+    if (!jumpTo) { walked.current = 0; return; }
+    const el = streamRef.current;
+    if (!el) return;
+    const target = el.querySelector(`[data-msg="${CSS.escape(jumpTo.id)}"]`);
+    if (target) {
+      anchor.current = null;
+      atBottom.current = false;
+      target.scrollIntoView({ block: "center" });
+      setLitUp(jumpTo.id);
+      walked.current = 0;
+      onJumped();
+      const t = setTimeout(() => setLitUp(null), 2600);
+      return () => clearTimeout(t);
+    }
+    const p = client.page(channel.id);
+    if (walked.current >= 12 || (p.asked && !p.hasMore)) {
+      client.notify("that message is further back than this conversation goes");
+      walked.current = 0;
+      onJumped();
+      return;
+    }
+    if (!p.loading) { walked.current += 1; askForOlder(); }
+  }, [jumpTo, messages.length, page.loading, page.hasMore, channel.id, askForOlder, onJumped]);
 
   const people = onePerPerson(
     channel.memberIds.map(id => world.users.find(u => u.id === id)).filter(Boolean) as User[]);
@@ -1233,8 +1446,12 @@ function ChatView({ channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpe
   const rows: Row[] = messages.map((m, i) => {
     const prev = messages[i - 1];
     const dayStart = i === 0 || !sameDay(prev.ts, m.ts);
+    /* A continuation row means "the same person, still talking". A reply that
+       belongs to a thread is not that — it is an answer to something further
+       up — so it always keeps its own head and its "said in a thread" line. */
     const cont = !dayStart && !!prev && prev.authorKind === "human" && m.authorKind === "human"
-      && prev.authorId === m.authorId && m.ts - prev.ts < 5 * 60 * 1000;
+      && prev.authorId === m.authorId && m.ts - prev.ts < 5 * 60 * 1000
+      && !m.replyTo && !prev.replyTo;
     const ask = m.authorKind === "agent" && !m.proactive ? findAsk(messages, i, m) : undefined;
     const firstUnread = !markedUnread && openedAt > 0 && m.ts > openedAt && m.authorId !== world.me?.id;
     if (firstUnread) markedUnread = true;
@@ -1314,7 +1531,23 @@ function ChatView({ channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpe
         </div>
       )}
 
-      <div className="msgs" ref={streamRef}>
+      <div className="msgs" ref={streamRef} onScroll={onStreamScroll}>
+        {/* The top of the scrollback. `hasMore` is the ONLY honest end signal —
+            a short page is not the end — so nothing here is said until the
+            relay has answered at least once. */}
+        {!needle && page.loading && (
+          <div className="backtop" role="status">
+            <span className="bars" aria-hidden="true"><i /><i /><i /><i /><i /></span>
+            Fetching what was said before…
+          </div>
+        )}
+        {!needle && page.asked && !page.hasMore && !page.loading && all.length > 0 && (
+          <div className="backtop startofhistory">
+            <span className="rule" aria-hidden="true" />
+            That's the beginning of this conversation
+            <span className="rule" aria-hidden="true" />
+          </div>
+        )}
         {needle && messages.length === 0 && (
           <div className="empty">
             <div className="empty-mark" aria-hidden="true">⌕</div>
@@ -1339,7 +1572,10 @@ function ChatView({ channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpe
               <div className="newline" role="separator"><span className="rule" /><span className="tag">New</span></div>
             )}
             <MessageRow row={r} agent={world.agents.find(a => a.id === r.m.authorId)}
-              working={world.agentStatus[r.m.authorId] === "working"} />
+              working={world.agentStatus[r.m.authorId] === "working"}
+              onOpenThread={onOpenThread}
+              inOpenThread={threadRoot === r.m.id || threadRoot === r.m.replyTo}
+              litUp={litUp === r.m.id} />
           </React.Fragment>
         ))}
 
@@ -1425,10 +1661,27 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
   );
 }
 
-function MessageRow({ row, agent, working }: { row: Row; agent?: AgentDef; working?: boolean }): React.JSX.Element {
+/** The six emoji offered on hover. The full set is still in the composer. */
+const REACT_EMOJI = ["👍", "🎉", "🙏", "👀", "✅", "❤️"];
+
+function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, variant }: {
+  row: Row; agent?: AgentDef; working?: boolean;
+  onOpenThread?: (rootId: ID) => void;
+  inOpenThread?: boolean;
+  litUp?: boolean;
+  /** "thread" drops the affordances that would open a thread inside a thread */
+  variant?: "channel" | "thread";
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const { m, cont, ask } = row;
   const isAgent = m.authorKind === "agent";
   const [copied, setCopied] = useState(false);
+  const [pickEmoji, setPickEmoji] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(m.text);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const deleted = !!m.deletedAt;
+  const inThread = variant === "thread";
 
   const copy = () => {
     void navigator.clipboard?.writeText(m.text).then(() => {
@@ -1436,6 +1689,92 @@ function MessageRow({ row, agent, working }: { row: Row; agent?: AgentDef; worki
       setTimeout(() => setCopied(false), 1200);
     }).catch(() => setCopied(false));
   };
+
+  /**
+   * May I change these words?
+   *
+   * My own message, or one written by an agent I own — an agent's words are
+   * its owner's words, spent on the owner's account. The relay refuses either
+   * way; this only decides whether to draw a button, never what is allowed.
+   */
+  const mine = !!world.me && (isAgent
+    ? world.agents.find(a => a.id === m.authorId)?.ownerId === world.me.id
+    : m.authorId === world.me.id);
+
+  const nameFor = (id: ID): string =>
+    id === world.me?.id ? "You"
+      : world.users.find(u => u.id === id)?.name
+      ?? world.agents.find(a => a.id === id)?.name
+      ?? "Someone";
+
+  const react = (emoji: string, on: boolean) => {
+    client.send({ type: "react", messageId: m.id, emoji, on });
+    setPickEmoji(false);
+  };
+
+  const saveEdit = () => {
+    const next = draft.trim();
+    setEditing(false);
+    if (!next || next === m.text) return;
+    client.send({ type: "editMessage", messageId: m.id, text: next });
+  };
+
+  /**
+   * Someone @-named an agent that will not answer them.
+   *
+   * The relay filters that agent's id out of `mentions` and stays silent, which
+   * from the outside looks exactly like a broken app. So: if the words hold an
+   * @name, the agent exists, and its id is NOT in the published mentions, say
+   * plainly why nothing happened.
+   */
+  const refusedMentions = useMemo(() => {
+    if (isAgent || deleted || !world.me) return [];
+    const named = world.agents.filter(a =>
+      new RegExp(`@${a.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i").test(m.text));
+    return named
+      .filter(a => !(m.mentions ?? []).includes(a.id) && !mayDriveAgent(m.authorId, a))
+      .map(a => ({
+        agent: a,
+        owner: world.users.find(u => u.id === a.ownerId)?.name ?? "its owner",
+      }));
+  }, [m.text, m.mentions, m.authorId, world.agents, world.users, isAgent, deleted, world.me]);
+
+  /* Rendered under EVERY shape of a message. A second message from the same
+     person a minute later is drawn as a continuation row, and a hint that
+     disappeared because you happened to speak twice in a row would be worse
+     than no hint at all. */
+  const refusedNotes = refusedMentions.map(({ agent: a, owner }) => (
+    <div className="mentionrefused" key={a.id} data-agent={a.name}>
+      {a.name} only answers {owner}, so it hasn't been asked.
+    </div>
+  ));
+
+  const reactions = (m.reactions ?? []).filter(r => r.userIds.length > 0);
+  const reactionRow = (!deleted && reactions.length > 0) && (
+    <div className="reactions">
+      {reactions.map(r => {
+        const isMine = !!world.me && r.userIds.includes(world.me.id);
+        return (
+          <button key={r.emoji} className={`reactpill${isMine ? " on" : ""}`}
+            data-emoji={r.emoji} aria-pressed={isMine}
+            title={`${r.userIds.map(nameFor).join(", ")} reacted with ${r.emoji}`}
+            onClick={() => react(r.emoji, !isMine)}>
+            <span className="e">{r.emoji}</span><span className="n">{r.userIds.length}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const replyCount = m.replyCount ?? 0;
+  const threadLine = (!inThread && !deleted && replyCount > 0 && onOpenThread) && (
+    <button className="threadline" data-replies={replyCount}
+      onClick={() => onOpenThread(m.id)}>
+      <span className="arrow" aria-hidden="true">↳</span>
+      {replyCount} {replyCount === 1 ? "reply" : "replies"}
+      {m.lastReplyAt ? <span className="ago">· last at {clock(m.lastReplyAt)}</span> : null}
+    </button>
+  );
 
   // Every message body goes through here, so formatting is a property of "a
   // message" rather than something each call site remembers. Markdown renders
@@ -1445,19 +1784,88 @@ function MessageRow({ row, agent, working }: { row: Row; agent?: AgentDef; worki
     <Markdown key={key} text={text} />
   );
 
-  const actions = (
+  /* A tombstone has no actions: there is nothing left to react to, copy, edit
+     or reply to, and a button that always errors is a dead click. */
+  const actions = deleted ? null : confirmDelete ? (
+    <div className="msgactions confirming">
+      <span className="ma-say">Take this back?</span>
+      <button className="ma yes" title="Yes, take it back"
+        onClick={() => { setConfirmDelete(false); client.send({ type: "deleteMessage", messageId: m.id }); }}>
+        Yes
+      </button>
+      <button className="ma" title="Keep it" onClick={() => setConfirmDelete(false)}>Keep</button>
+    </div>
+  ) : (
     <div className="msgactions">
+      <button className="ma react" title="React to this" aria-expanded={pickEmoji}
+        onClick={() => setPickEmoji(o => !o)}>☺</button>
+      {!inThread && onOpenThread && (
+        <button className="ma reply" title="Reply in a thread"
+          onClick={() => onOpenThread(m.replyTo ?? m.id)}>↳</button>
+      )}
       <button className="ma" title={`Write back to ${m.authorName}`}
         onClick={() => composerInsert?.(`@${m.authorName} `)}>↩</button>
       <button className="ma" title="Copy this message" onClick={copy}>{copied ? "✓" : "⧉"}</button>
+      {mine && (
+        <button className="ma edit" title="Change what this says"
+          onClick={() => { setDraft(m.text); setEditing(true); }}>✎</button>
+      )}
+      {mine && (
+        <button className="ma del" title="Take this message back"
+          onClick={() => setConfirmDelete(true)}>🗑</button>
+      )}
+      {pickEmoji && (
+        <div className="reactpop" role="menu">
+          {REACT_EMOJI.map(e => {
+            const isMine = !!world.me
+              && (m.reactions ?? []).some(r => r.emoji === e && r.userIds.includes(world.me!.id));
+            return (
+              <button key={e} aria-pressed={isMine} onClick={() => react(e, !isMine)}>{e}</button>
+            );
+          })}
+        </div>
+      )}
     </div>
+  );
+
+  const editor = (
+    <div className="editmsg">
+      <textarea className="editmsg-input" value={draft} autoFocus rows={2}
+        onChange={e => setDraft(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === "Escape") { setEditing(false); setDraft(m.text); }
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveEdit(); }
+        }} />
+      <div className="editmsg-btns">
+        <button className="primary small editmsg-save" onClick={saveEdit}>Save the change</button>
+        <button className="btn small ghost" onClick={() => { setEditing(false); setDraft(m.text); }}>
+          Cancel
+        </button>
+        <span className="eyebrow">Everyone sees it was changed</span>
+      </div>
+    </div>
+  );
+
+  /** What is left of a message that was taken back. A row, never a hole. */
+  const tombstone = (
+    <p className="tombstone">
+      <span className="mark" aria-hidden="true">⌀</span>
+      {m.authorName} took this message back
+    </p>
   );
 
   if (cont) {
     return (
-      <article className="msg cont">
+      <article className={`msg cont${deleted ? " deleted" : ""}${litUp ? " litup" : ""}`}
+        data-msg={m.id}>
         <div className="when-gutter">{clock(m.ts)}</div>
-        <div className="body">{paragraph(m.text)}</div>
+        <div className="body">
+          {deleted ? tombstone : editing ? editor : paragraph(m.text)}
+          {!deleted && m.editedAt && <span className="editedmark">edited</span>}
+          {refusedNotes}
+          {reactionRow}
+          {threadLine}
+        </div>
         {actions}
       </article>
     );
@@ -1503,7 +1911,9 @@ function MessageRow({ row, agent, working }: { row: Row; agent?: AgentDef; worki
       : paragraph(m.text);
 
   return (
-    <article className={`msg ${isAgent ? "from-agent" : ""} ${m.proactive ? "proactive" : ""}`}>
+    <article data-msg={m.id}
+      className={`msg ${isAgent ? "from-agent" : ""} ${m.proactive ? "proactive" : ""}`
+        + `${deleted ? " deleted" : ""}${litUp ? " litup" : ""}${inOpenThread ? " inthread" : ""}`}>
       {isAgent
         ? <AgentFace name={m.authorName} size={34} lamp={working ? "run" : "live"} />
         : <PersonFace name={m.authorName} size={34} />}
@@ -1512,9 +1922,15 @@ function MessageRow({ row, agent, working }: { row: Row; agent?: AgentDef; worki
           <b>{m.authorName}</b>
           {isAgent && <span className="badge">Agent</span>}
           <span className="t">{clock(m.ts)}</span>
+          {!deleted && m.editedAt && <span className="editedmark">edited</span>}
           {m.proactive && <span className="chip is-ultra selfstart">Nobody asked — I noticed</span>}
         </div>
-        {strip.length > 0 && (
+        {!inThread && m.replyTo && onOpenThread && !deleted && (
+          <button className="inthreadmark" onClick={() => onOpenThread(m.replyTo!)}>
+            ↳ said in a thread — open it
+          </button>
+        )}
+        {strip.length > 0 && !deleted && (
           <div className="runstrip">
             {strip.map((node, i) => (
               <React.Fragment key={i}>
@@ -1524,10 +1940,59 @@ function MessageRow({ row, agent, working }: { row: Row; agent?: AgentDef; worki
             ))}
           </div>
         )}
-        {body}
+        {deleted ? tombstone : editing ? editor : body}
+        {refusedNotes}
+        {reactionRow}
+        {threadLine}
       </div>
       {actions}
     </article>
+  );
+}
+
+/* ---- one thread, in the right-hand rail ---- */
+
+function ThreadPanel({ channel, rootId, onClose }: {
+  channel: Channel; rootId: ID; onClose: () => void;
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const held = world.threads[rootId];
+  // the root may also be on screen in the conversation behind this panel
+  const fromChannel = (world.messages[channel.id] ?? []).find(m => m.id === rootId);
+  const messages = held ?? (fromChannel ? [fromChannel] : []);
+  const root = messages[0];
+  const replies = messages.slice(1);
+
+  const rowFor = (m: Message): Row => ({ m, cont: false, dayStart: false, firstUnread: false });
+
+  return (
+    <aside className="aside threadpanel" aria-label="Thread">
+      <div className="threadhead">
+        <span className="eyebrow">Thread</span>
+        <div className="grow" />
+        <button className="iconbtn threadclose" aria-label="Close the thread" onClick={onClose}>✕</button>
+      </div>
+      <div className="threadbody">
+        {!root && <div className="d-empty">Fetching this thread…</div>}
+        {root && (
+          <MessageRow row={rowFor(root)} variant="thread"
+            agent={world.agents.find(a => a.id === root.authorId)} />
+        )}
+        {root && (
+          <div className="threadcount">
+            {replies.length === 0
+              ? "No replies yet — yours would be the first."
+              : `${replies.length} ${replies.length === 1 ? "reply" : "replies"}`}
+          </div>
+        )}
+        {replies.map(m => (
+          <MessageRow key={m.id} row={rowFor(m)} variant="thread"
+            agent={world.agents.find(a => a.id === m.authorId)}
+            working={world.agentStatus[m.authorId] === "working"} />
+        ))}
+      </div>
+      <Composer channel={channel} replyTo={rootId} />
+    </aside>
   );
 }
 
@@ -1553,7 +2018,11 @@ function AddToChannel({ channel }: { channel: Channel }): React.JSX.Element | nu
 
 const QUICK_EMOJI = ["👍", "🙏", "🎉", "🔥", "✅", "❌", "😀", "😅", "🤔", "👀", "🚀", "☁️", "📌", "⏰", "💡", "❤️"];
 
-function Composer({ channel }: { channel: Channel }): React.JSX.Element {
+function Composer({ channel, replyTo }: {
+  channel: Channel;
+  /** set in a thread panel: everything typed here joins that thread */
+  replyTo?: ID;
+}): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [text, setText] = useState("");
   const [acIndex, setAcIndex] = useState(0);
@@ -1583,10 +2052,14 @@ function Composer({ channel }: { channel: Channel }): React.JSX.Element {
     taRef.current?.focus();
   }, []);
 
+  /* The "write back to…" buttons drop text into the CONVERSATION's box, never
+     into a thread's — a thread panel opens and closes under the reader, and
+     text that landed in a box that then vanished is text they lost. */
   useEffect(() => {
+    if (replyTo) return;
     composerInsert = insert;
     return () => { composerInsert = null; };
-  }, [insert]);
+  }, [insert, replyTo]);
 
   /** wrap whatever is selected, the way a formatting button should */
   const wrap = (left: string, right = left) => {
@@ -1605,7 +2078,7 @@ function Composer({ channel }: { channel: Channel }): React.JSX.Element {
   const sendNow = () => {
     const t = text.trim();
     if (!t) return;
-    client.send({ type: "send", channelId: channel.id, text: t });
+    client.send({ type: "send", channelId: channel.id, text: t, replyTo });
     setText("");
     setEmojiOpen(false);
   };
@@ -1620,12 +2093,14 @@ function Composer({ channel }: { channel: Channel }): React.JSX.Element {
         ?? channel.name;
     })()
     : null;
-  const placeholder = peerName
-    ? `Message ${peerName}`
-    : `Message #${channel.name} — type @ to call an agent in`;
+  const placeholder = replyTo
+    ? "Reply in this thread"
+    : peerName
+      ? `Message ${peerName}`
+      : `Message #${channel.name} — type @ to call an agent in`;
 
   return (
-    <div className="composer">
+    <div className={`composer${replyTo ? " threadcomposer" : ""}`}>
       <div className="composer-box" title={`Posting as ${world.me?.name ?? "you"}`}>
         {suggestions.length > 0 && (
           <div className="autocomplete">
@@ -1656,15 +2131,20 @@ function Composer({ channel }: { channel: Channel }): React.JSX.Element {
         />
         <div className="tools">
           <button className="mini" title="Call an agent by name" onClick={() => insert("@")}>@ agent</button>
-          <button className="mini" title="Hand this over as background work"
-            onClick={() => insert("!bg ")}>Delegate as a job</button>
-          <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
-          <button className="mini ital" title="Italic" onClick={() => wrap("_")}>I</button>
-          <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
+          {/* A thread is a narrow column and a reply is a sentence, so the
+              wide affordances stay in the room's own box rather than being
+              squeezed into a rail they do not fit. */}
+          {!replyTo && <>
+            <button className="mini" title="Hand this over as background work"
+              onClick={() => insert("!bg ")}>Delegate as a job</button>
+            <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
+            <button className="mini ital" title="Italic" onClick={() => wrap("_")}>I</button>
+            <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
+          </>}
           <button className="mini" title="Emoji" aria-expanded={emojiOpen}
             onClick={() => setEmojiOpen(o => !o)}>🙂</button>
           <div className="grow" />
-          <span className="eyebrow">Enter to send</span>
+          {!replyTo && <span className="eyebrow">Enter to send</span>}
           <button className="primary small" onClick={sendNow} disabled={!text.trim()}>Send</button>
           {emojiOpen && (
             <div className="emojipop">
@@ -1860,6 +2340,14 @@ function CrewScreen({ onHire, onEdit, onOpen }: {
                     <span className="chip" title={a.model ? undefined : MODEL_UNSET_HINT}>{modelWords(a.model)}</span>
                     {(a.skills?.length ?? 0) > 0 &&
                       <span className="chip">{a.skills!.length} {a.skills!.length === 1 ? "skill" : "skills"}</span>}
+                  </div>
+                  <div className="now whocan" data-respond={a.respondTo ?? "owner"}>
+                    <MarkGate />
+                    <span>
+                      {respondWords(a, a.ownerId === world.me?.id
+                        ? "you"
+                        : world.users.find(u => u.id === a.ownerId)?.name ?? "its owner")}
+                    </span>
                   </div>
                   <div className="now">
                     <MarkClock />
@@ -2252,6 +2740,10 @@ function AgentEditor({ agent, onDone }: { agent: AgentDef | null; onDone: () => 
     agent?.model ?? p.defaultModel?.[(agent?.provider ?? p.defaultProvider ?? "claude") as Provider] ?? MODEL_DEFAULT.claude);
   const [skills, setSkills] = useState<AgentSkill[]>(Array.isArray(agent?.skills) ? agent!.skills! : []);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /* WHO MAY SET THIS AGENT WORKING. Absent means "owner" — an agent made
+     before this setting existed must never be more open than one made after. */
+  const [respondTo, setRespondTo] = useState<AgentRespondTo>(agent?.respondTo ?? "owner");
+  const [allowlist, setAllowlist] = useState<ID[]>(agent?.respondToAllowlist ?? []);
 
   const { ids, fallback, preferred } = useModels(provider);
   // an agent must never end up without a model
@@ -2270,7 +2762,7 @@ function AgentEditor({ agent, onDone }: { agent: AgentDef | null; onDone: () => 
           name: name.trim().replace(/\s+/g, "-"), emoji, persona: persona.trim(),
           abilities: ab, approvals: ap, provider,
           model: model || MODEL_DEFAULT[provider],
-          skills,
+          skills, respondTo, respondToAllowlist: respondTo === "allowlist" ? allowlist : [],
         },
       });
     } else {
@@ -2280,7 +2772,7 @@ function AgentEditor({ agent, onDone }: { agent: AgentDef | null; onDone: () => 
           ...agent!, emoji, persona: persona.trim() || agent!.persona, abilities: ab,
           approvals: ap, provider, lifecycle: life,
           model: model || MODEL_DEFAULT[provider],
-          skills,
+          skills, respondTo, respondToAllowlist: respondTo === "allowlist" ? allowlist : [],
         },
       });
     }
@@ -2426,6 +2918,48 @@ function AgentEditor({ agent, onDone }: { agent: AgentDef | null; onDone: () => 
             </div>
           </section>
 
+          <section className="fieldset whocanuse">
+            <div className="sec-head"><h3>Who can use this agent?</h3><span className="eyebrow">Permission</span></div>
+            <p className="sec-note">
+              This agent runs on your computer and its answers are paid for by your account,
+              so nobody else can set it working unless you say so.
+            </p>
+            <div className="panelbox">
+              {([
+                ["owner", "Just me", "Nobody else can @mention it or hand it a job.", true],
+                ["allowlist", "Me and these people", "Choose exactly who below.", false],
+                ["anyone", "Anyone in the room", "Everyone who can see the conversation can set it working.", false],
+              ] as const).map(([value, title, why, recommended]) => (
+                <button key={value} className="choice-row respondpick" data-respond={value}
+                  aria-pressed={respondTo === value} onClick={() => setRespondTo(value)}>
+                  <span className="tick" aria-hidden="true">{respondTo === value ? "●" : "○"}</span>
+                  <span className="tx">
+                    <b>{title}{recommended && <span className="chip">Recommended</span>}</b>
+                    <span>{why}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+            {respondTo === "allowlist" && (
+              <div className="allowpick">
+                {world.users.filter(u => u.id !== world.me?.id).length === 0
+                  ? <div className="d-empty">Nobody else is in this Cloud9 yet — invite someone first.</div>
+                  : onePerPerson(world.users).filter(u => u.id !== world.me?.id).map(u => {
+                    const on = allowlist.includes(u.id);
+                    return (
+                      <label className="allowrow" key={u.id} data-person={u.name}>
+                        <input type="checkbox" checked={on} aria-label={u.name}
+                          onChange={e => setAllowlist(list =>
+                            e.target.checked ? [...list, u.id] : list.filter(id => id !== u.id))} />
+                        <PersonFace name={u.name} size={24} />
+                        <span className="nm">{u.name}</span>
+                      </label>
+                    );
+                  })}
+              </div>
+            )}
+          </section>
+
           <section className="fieldset">
             <div className="sec-head"><h3>When to stop and ask</h3><span className="eyebrow">Approval rules</span></div>
             <p className="sec-note">Anything matching a rule pauses the job and lands in Tasks with your name on it.</p>
@@ -2465,6 +2999,159 @@ function AgentEditor({ agent, onDone }: { agent: AgentDef | null; onDone: () => 
             </p>
           </div>
         </aside>
+      </div>
+    </div>
+  );
+}
+
+/* ================= search across everything you can see ================= */
+
+/**
+ * The relay marks what it matched with « », because a snippet is text and
+ * markup in it would be a way to draw anything. This turns those marks into
+ * highlights — and NOTHING else in the snippet is ever treated as markup.
+ */
+function Snippet({ text }: { text: string }): React.JSX.Element {
+  const parts = text.split(/«([^»]*)»/g);
+  return (
+    <span className="snippet">
+      {parts.map((part, i) => (
+        i % 2 === 1 ? <mark key={i}>{part}</mark> : <React.Fragment key={i}>{part}</React.Fragment>
+      ))}
+    </span>
+  );
+}
+
+function SearchOverlay({ onClose, onGo }: {
+  onClose: () => void;
+  onGo: (channelId: ID, messageId: ID) => void;
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [q, setQ] = useState("");
+  const boxRef = useRef<HTMLInputElement>(null);
+  const state = world.search;
+
+  useEffect(() => { boxRef.current?.focus(); }, []);
+
+  /**
+   * `in:` and `from:` are resolved to ids HERE, because the relay does not take
+   * names — a display name is not an identity, and two people may share one.
+   * An unknown name is left in the words rather than silently dropped.
+   */
+  const parsed = useMemo(() => {
+    let words = q;
+    let channelId: ID | undefined;
+    let authorId: ID | undefined;
+    const takeChannel = /(?:^|\s)in:([\w-]+)/i.exec(words);
+    if (takeChannel) {
+      const found = world.channels.find(c =>
+        c.kind === "channel" && c.name.toLowerCase() === takeChannel[1].toLowerCase());
+      if (found) { channelId = found.id; words = words.replace(takeChannel[0], " "); }
+    }
+    const takeAuthor = /(?:^|\s)from:([\w-]+)/i.exec(words);
+    if (takeAuthor) {
+      const person = world.users.find(u => u.name.toLowerCase() === takeAuthor[1].toLowerCase());
+      const bot = world.agents.find(a => a.name.toLowerCase() === takeAuthor[1].toLowerCase());
+      const who = person ?? bot;
+      if (who) { authorId = who.id; words = words.replace(takeAuthor[0], " "); }
+    }
+    return { words: words.trim(), channelId, authorId };
+  }, [q, world.channels, world.users, world.agents]);
+
+  // debounced, so typing a word is one search and not six
+  useEffect(() => {
+    if (parsed.words.length < 2) { client.clearSearch(); return; }
+    const t = setTimeout(() => {
+      client.search(parsed.words, { channelId: parsed.channelId, authorId: parsed.authorId });
+    }, 200);
+    return () => clearTimeout(t);
+  }, [parsed.words, parsed.channelId, parsed.authorId]);
+
+  /** Results grouped by the conversation they were said in, newest group first. */
+  const groups = useMemo(() => {
+    const out = new Map<ID, { name: string; kind: string; hits: SearchHit[] }>();
+    for (const hit of state?.results ?? []) {
+      const cid = hit.message.channelId;
+      const existing = out.get(cid);
+      if (existing) existing.hits.push(hit);
+      else out.set(cid, { name: hit.channelName, kind: hit.channelKind, hits: [hit] });
+    }
+    return [...out.entries()];
+  }, [state?.results]);
+
+  const total = state?.results.length ?? 0;
+
+  return (
+    <div className="overlay searchveil" onClick={onClose}>
+      <div className="panel searchpanel" onClick={e => e.stopPropagation()}
+        onKeyDown={e => { if (e.key === "Escape") onClose(); }}>
+        <div className="head">
+          Search everything you can see
+          <span className="eyebrow">Esc to close</span>
+        </div>
+        <div className="searchbar">
+          <span className="find-mark" aria-hidden="true">⌕</span>
+          <input ref={boxRef} className="search-input" type="text" value={q}
+            aria-label="Search every conversation"
+            placeholder="villas in Goa · in:general · from:Priya"
+            onChange={e => setQ(e.target.value)} />
+          {state?.running && <span className="eyebrow">Looking…</span>}
+        </div>
+
+        <div className="searchbody">
+          {parsed.words.length < 2 && (
+            <div className="searchhint">
+              <p>
+                Type at least two letters. <code>in:general</code> looks in one channel and{" "}
+                <code>from:Priya</code> looks for one person.
+              </p>
+              {/* The honest limits, in the UI rather than in a document nobody reads */}
+              <p className="sec-note">
+                It matches whole words in any order, and completes the last word as you type.
+                It will not find a word inside another word — “port” does not find “airport” —
+                and it does not know that “running” and “run” are the same word.
+                Messages that were taken back are never found.
+              </p>
+            </div>
+          )}
+          {parsed.words.length >= 2 && !state?.running && state?.answered && total === 0 && (
+            <div className="searchhint">
+              <p>Nothing you can see says “{state.answered}”.</p>
+              <p className="sec-note">Try one word on its own, or drop the <code>in:</code> filter.</p>
+            </div>
+          )}
+          {groups.map(([cid, group]) => (
+            <section className="searchgroup" key={cid} data-channel={group.name}>
+              <div className="searchgrouphead">
+                <span className="eyebrow">
+                  {group.kind === "dm" ? "Direct" : "#"}{group.kind === "dm" ? "" : group.name}
+                </span>
+                <span className="chip">{group.hits.length}</span>
+              </div>
+              {group.hits.map(hit => (
+                <button className="searchhit" key={hit.message.id}
+                  data-hit={hit.message.id}
+                  onClick={() => onGo(hit.message.channelId, hit.message.id)}>
+                  {hit.message.authorKind === "agent"
+                    ? <AgentFace name={hit.message.authorName} size={26} />
+                    : <PersonFace name={hit.message.authorName} size={26} />}
+                  <span className="hitbody">
+                    <span className="hitwho">
+                      <b>{hit.message.authorName}</b>
+                      <span className="t">{dayLabel(hit.message.ts)} · {clock(hit.message.ts)}</span>
+                    </span>
+                    <Snippet text={hit.snippet} />
+                  </span>
+                </button>
+              ))}
+            </section>
+          ))}
+          {state?.hasMore && total > 0 && (
+            <p className="sec-note searchmore">
+              Showing the first {total}. Add a word to narrow it down.
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );

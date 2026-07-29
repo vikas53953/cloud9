@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-29T09:31:43.073Z",
-  "expected": 52,
-  "executed": 52,
+  "ranAt": "2026-07-29T11:06:37.251Z",
+  "expected": 82,
+  "executed": 82,
   "results": [
     {
       "name": "join screen renders",
@@ -161,7 +161,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch vxt8k :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch zbgbq :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +176,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_WJa_cuEXvTjVdQbtXIetMA"
+      "detail": "inv_ZGkelP7QGeJZtZ4PabPHIw"
     },
     {
       "name": "friend joins via invite",
@@ -257,6 +257,156 @@
       "name": "a script tag in a message stays text, and never becomes markup",
       "pass": true,
       "detail": "script els=0"
+    },
+    {
+      "name": "a long conversation opens on its newest page, not the whole thing",
+      "pass": true,
+      "detail": "50 messages on screen"
+    },
+    {
+      "name": "older messages load on scroll-up and the reader keeps their place",
+      "pass": true,
+      "detail": "the message the reader was on moved 0px"
+    },
+    {
+      "name": "the beginning of a conversation is said, once, and only when the hub says so",
+      "pass": true,
+      "detail": "55 of 55 messages loaded"
+    },
+    {
+      "name": "a reaction can be added on hover, and says who reacted",
+      "pass": true,
+      "detail": "You reacted with 👍"
+    },
+    {
+      "name": "clicking your own reaction takes it back and the pill goes",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "your own message can be changed, and says it was changed",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a deleted message becomes a tombstone in place, never a hole",
+      "pass": true,
+      "detail": "56 rows before, 56 after"
+    },
+    {
+      "name": "there is no edit or delete on a message you did not write",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a message can be replied to in a thread, and the thread opens beside it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a reply lands in the thread and the message it answers says how many replies it has",
+      "pass": true,
+      "detail": "↳ 1 reply · last at 16:36"
+    },
+    {
+      "name": "the reply count opens the thread, with the message it started and every reply",
+      "pass": true,
+      "detail": "2 messages in the panel"
+    },
+    {
+      "name": "search opens from the menu and looks across everything, not one room",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "results are grouped by conversation, with who said it, when, and the words around it",
+      "pass": true,
+      "detail": "1 group(s) :: V Vikas Today · 16:36 what should we do about the backlog?"
+    },
+    {
+      "name": "clicking a result goes to that message, in the conversation it was said in",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the old per-machine read state is deleted on start — the hub owns it now",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a message you have not seen is counted, and one that asks for you is marked apart",
+      "pass": true,
+      "detail": "# general @1 1"
+    },
+    {
+      "name": "reading the conversation clears the marks",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the agent editor asks who may use this agent, and starts closed",
+      "pass": true,
+      "detail": "owner/allowlist/anyone chosen=owner"
+    },
+    {
+      "name": "choosing “me and these people” offers the people to choose",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the crew card says, in plain words, who may set this agent working",
+      "pass": true,
+      "detail": "you and 1 other person can use it"
+    },
+    {
+      "name": "the choice is saved on the agent and is there when you open it again",
+      "pass": true,
+      "detail": "Only you can use it"
+    },
+    {
+      "name": "an agent that will not answer you says so, instead of silently doing nothing",
+      "pass": true,
+      "detail": "Scout only answers Vikas, so it hasn't been asked."
+    },
+    {
+      "name": "a thread beside the conversation does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a thread beside the conversation does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a thread beside the conversation does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a thread beside the conversation does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "search results do not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "search results do not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "search results do not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "search results do not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
     },
     {
       "name": "no console errors",

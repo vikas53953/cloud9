@@ -1,15 +1,20 @@
 // Cloud9 relay — the small always-on hub. All clients (desktop renderer,
 // engine host, iPhone app) speak the same WS protocol defined in @cloud9/shared.
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import {
-  AgentDef, AgentStatus, Approval, Attachment, Channel, ClientFrame, HarnessState, ID, Message,
-  MESSAGE_LIMITS, ATTACHMENT_LIMITS, SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
-  mayDriveAgent,
-  extractMentions, newId, validateAgentInput, validateAttachment, validateMessageText,
-  validateReactionEmoji,
+  AgentDef, AgentStatus, Approval, Attachment, Channel, ChannelMember, ChannelRole,
+  ChannelSummary, ClientFrame, HarnessState, ID, Message,
+  MESSAGE_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, SearchHit, ServerFrame, Task,
+  UnreadEntry, User, WorldState,
+  downloadContentType, isInlineViewable, isSafeSkillFileName, mayAdministerChannel, mayDriveAgent,
+  extractMentions, newId, validateAgentInput, validateAttachment, validateChannelText,
+  validateMessageText, validateReactionEmoji,
 } from "@cloud9/shared";
 import { Store } from "./store.js";
+import { secureId } from "./secureid.js";
 
 interface Conn {
   ws: WebSocket;
@@ -94,6 +99,14 @@ export class Relay {
   private signInAt: Record<ID, number> = {};
   private signInFlight: Record<ID, number> = {};
 
+  /**
+   * Unspent tickets to fetch one file. IN MEMORY ON PURPOSE, never in the
+   * database: this is a credential, and a credential that survives a restart is
+   * a credential somebody has to remember to expire. These die with the process,
+   * with the clock, and with their first use — whichever comes first.
+   */
+  private tickets = new Map<string, { attachmentId: ID; userId: ID; expiresAt: number }>();
+
   constructor(opts: RelayOptions = {}) {
     this.store = new Store(opts.dbPath ?? "cloud9-relay.db");
     this.ownerToken = opts.ownerToken ?? process.env.CLOUD9_OWNER_TOKEN ?? "dev-owner-token";
@@ -104,13 +117,18 @@ export class Relay {
     const owner = this.store.ensureOwner(this.ownerName, this.ownerToken);
     this.ownerId = owner.id;
     if (this.store.channels().length === 0) {
-      this.store.saveChannel({
+      const general: Channel = {
         id: newId("ch"), name: "general", kind: "channel",
         memberIds: [owner.id], createdAt: Date.now(),
-      });
+      };
+      this.store.saveChannel(general);
+      // whoever runs this Cloud9 runs its first room
+      this.store.setMemberRole(general.id, owner.id, "owner");
     }
     this.server = http.createServer((req, res) => {
       if (req.url === "/health") { res.writeHead(200); res.end("ok"); return; }
+      const at = attachmentTicketFrom(req);
+      if (at !== undefined) { this.serveAttachment(at, res); return; }
       res.writeHead(404); res.end();
     });
     this.wss = new WebSocketServer({ server: this.server });
@@ -243,6 +261,30 @@ export class Relay {
     return this.store.channels().filter(
       c => c.memberIds.includes(userId) || c.memberIds.some(m => myAgentIds.has(m)),
     );
+  }
+
+  /**
+   * The rooms you could join — open, not archived, and not already yours.
+   *
+   * DELIBERATELY NOT PART OF `visibleChannels` (§7 suggested folding it in
+   * there; this does not). `visibleChannels` is what `channelFor` is built on,
+   * so widening it would have quietly made every open room readable and
+   * postable by everyone in this Cloud9 without anybody joining anything — one
+   * edit, seven authorisation paths changed. Browsing is a different question
+   * from membership and gets its own, smaller answer: a name, a description,
+   * and a count. Never a member list, never a message. Joining is what turns a
+   * listing into membership, and from then on the ordinary gate applies.
+   */
+  private browsableChannels(userId: ID): ChannelSummary[] {
+    const mine = new Set(this.visibleChannels(userId).map(c => c.id));
+    return this.store.channels()
+      .filter(c => c.kind === "channel" && c.visibility === "open" && !c.archivedAt && !mine.has(c.id))
+      .map(c => ({
+        id: c.id, name: c.name,
+        ...(c.description ? { description: c.description } : {}),
+        ...(c.topic ? { topic: c.topic } : {}),
+        memberCount: c.memberIds.length, createdAt: c.createdAt,
+      }));
   }
 
   /**
@@ -420,11 +462,164 @@ export class Relay {
     return out;
   }
 
+  // -------------------------------------------------------------------------
+  // Handing a file's bytes back — the one thing this relay does over plain
+  // HTTP rather than over the socket.
+  //
+  // THE DECISION, WRITTEN DOWN (docs/plans/chat-basics-handoff.md §6 left this
+  // open, and it was right to: "a token in a URL is a credential in a log
+  // line"). The rule we are keeping is that a connection is authorised ONCE,
+  // as a person, and everything else is decided from what is stored about that
+  // person. So:
+  //
+  //   1. There is NO second way to sign in. The `attachmentTicket` frame is
+  //      asked for on the socket that already said `hello`, and the answer is
+  //      authorised by `channelFor` — the same gate that decides whether you
+  //      may read the conversation the file was posted in. No header, no query
+  //      parameter and no cookie carries a durable token, ever.
+  //   2. What travels in the URL is not a credential to this Cloud9. It is a
+  //      ticket to ONE file, good for thirty seconds, and it is spent by the
+  //      first request that presents it. Copied out of a log line, a proxy
+  //      trace or a screen recording it is already worthless — that is what
+  //      "safe by construction" means here, rather than "we promise not to log
+  //      it", which is a promise about somebody else's software.
+  //   3. Permission is checked TWICE, and the second time is the one that
+  //      counts: at mint AND at redeem, both times through `channelFor` on
+  //      stored state. Being thrown out of a room in those thirty seconds
+  //      stops the download.
+  //
+  // This is also why it does not become a hole the moment the hub binds a
+  // private-network address (backend-decision.md #2): reaching the port still
+  // buys nothing without a ticket, and a ticket cannot be obtained without an
+  // authenticated socket that is already a member.
+  // -------------------------------------------------------------------------
+
+  /** Mint the one-use ticket. Only ever called after `channelFor` has passed. */
+  private mintTicket(userId: ID, attachmentId: ID): { ticket: string; expiresAt: number } {
+    const now = Date.now();
+    for (const [key, t] of this.tickets) if (t.expiresAt <= now) this.tickets.delete(key);
+    let mine = 0;
+    for (const t of this.tickets.values()) if (t.userId === userId) mine++;
+    if (mine >= ATTACHMENT_TICKET.perUser) {
+      throw new Error("too many files being opened at once — try again in a moment");
+    }
+    // Secret-grade randomness: this string is the only thing between a request
+    // and somebody's file, so it comes from the same place invite codes do —
+    // `secureId`, never `newId`, which is `Math.random()` and a clock.
+    const ticket = secureId("tk");
+    const expiresAt = now + ATTACHMENT_TICKET.ttlMs;
+    this.tickets.set(ticket, { attachmentId, userId, expiresAt });
+    return { ticket, expiresAt };
+  }
+
+  /**
+   * Redeem a ticket and hand over the bytes.
+   *
+   * Every refusal answers 404 with the same sentence. A 403 here would tell an
+   * unauthenticated stranger the difference between "no such file" and "a file
+   * you may not have", which is itself something they did not know.
+   */
+  private serveAttachment(ticket: string, res: http.ServerResponse): void {
+    const nope = () => {
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+      res.end("that link has expired — open the file again");
+    };
+    // SPENT FIRST, before anything can go wrong and leave it alive. One use is
+    // a property of this line, not of the checks below it.
+    const held = this.tickets.get(ticket);
+    this.tickets.delete(ticket);
+    if (!held || held.expiresAt <= Date.now()) { nope(); return; }
+
+    const row = this.store.attachment(held.attachmentId);
+    if (!row) { nope(); return; }
+    // THE SAME GATE, ASKED AGAIN, NOW. Not a copy of it — the function itself.
+    try { this.channelFor(held.userId, row.channelId); } catch { nope(); return; }
+
+    const file = row.attachment;
+    // The name was checked by `isSafeSkillFileName` before it was stored. It is
+    // checked again on the way out, because a row could have been written by an
+    // older build, and because it is about to become a header and a file name on
+    // somebody's disk. Same rule, one owner, no second copy of it anywhere.
+    if (!isSafeSkillFileName(file.name)) { nope(); return; }
+    const stored = path.join(this.store.attachmentsDir, path.basename(file.storedAs));
+    const root = path.resolve(this.store.attachmentsDir);
+    if (path.resolve(stored) !== path.join(root, path.basename(file.storedAs))) { nope(); return; }
+
+    let size: number;
+    try {
+      const stat = fs.statSync(stored);
+      if (!stat.isFile()) { nope(); return; }
+      size = stat.size;
+    } catch { nope(); return; }
+    // the same ceiling the upload was held to — a file that grew on disk since
+    // is not a file this hub agreed to serve
+    if (size > ATTACHMENT_LIMITS.bytes) { nope(); return; }
+
+    // The type is computed from the NAME, never from the `mime` the sender
+    // claimed (see `downloadContentType`). `nosniff` stops a browser deciding
+    // it knows better, and the sandbox/CSP pair means that even the types we do
+    // serve inline cannot become a running page inside the app.
+    res.writeHead(200, {
+      "content-type": downloadContentType(file.name),
+      "content-length": String(size),
+      "content-disposition":
+        `${isInlineViewable(file.name) ? "inline" : "attachment"}; filename="${file.name}"`,
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'none'; sandbox",
+      "cache-control": "no-store",
+    });
+    fs.createReadStream(stored).pipe(res);
+  }
+
+  // -------------------------------------------------------------------------
+  // Channels as real things (§7)
+  // -------------------------------------------------------------------------
+
+  /**
+   * A conversation you may WRITE in.
+   *
+   * `channelFor` answers "is this yours to read". Archiving adds a second
+   * question — "is it still open for business" — and it is asked HERE, once,
+   * so every path that puts something new into a room asks it and no future
+   * one can forget to. Reading an archived room is still allowed; that is the
+   * whole point of archiving rather than deleting.
+   */
+  private writableChannel(userId: ID, channelId: ID): Channel {
+    const channel = this.channelFor(userId, channelId);
+    if (channel.archivedAt) throw new Error("that conversation is archived — nothing new can be said in it");
+    return channel;
+  }
+
+  /**
+   * A conversation you may ADMINISTER — set the topic, invite, remove, archive.
+   *
+   * Read from the stored membership row's role, never from anything a client
+   * said about itself. A direct conversation has nothing to administer, so it
+   * refuses outright rather than inventing a role for it.
+   */
+  private adminChannel(userId: ID, channelId: ID, need: "admin" | "owner" = "admin"): Channel {
+    const channel = this.channelFor(userId, channelId);
+    if (channel.kind === "dm") throw new Error("a direct conversation has no settings to change");
+    const role = this.store.memberRole(channel.id, userId);
+    const ok = need === "owner" ? role === "owner" : mayAdministerChannel(role);
+    if (!ok) {
+      throw new Error(need === "owner"
+        ? "only the person who runs this conversation can do that"
+        : "you don't run this conversation");
+    }
+    return channel;
+  }
+
+  /** Tell one person's machines they are out of a room, so they stop drawing it. */
+  private tellLeft(userId: ID, channelId: ID): void {
+    this.toUser(userId, { type: "channelLeft", channelId });
+  }
+
   private handleFrame(conn: Conn, frame: ClientFrame): void {
     switch (frame.type) {
       case "send": {
         const user = this.store.users().find(u => u.id === conn.userId)!;
-        const channel = this.channelFor(conn.userId, frame.channelId); // you may only post where you are
+        const channel = this.writableChannel(conn.userId, frame.channelId); // you may only post where you are
         const hasFiles = (frame.attachmentIds?.length ?? 0) > 0;
         // words are optional only when a file is carrying the message
         const bad = validateMessageText(frame.text, hasFiles);
@@ -445,7 +640,7 @@ export class Relay {
       case "agentSend": {
         const agent = this.myAgent(conn.userId, frame.agentId);
         // an agent speaks where it (or its owner) belongs, nowhere else
-        const channel = this.channelFor(conn.userId, frame.channelId);
+        const channel = this.writableChannel(conn.userId, frame.channelId);
         const bad = validateMessageText(frame.text);
         if (bad) throw new Error(bad);
         const replyTo = this.resolveReplyTo(channel, frame.replyTo);
@@ -477,18 +672,150 @@ export class Relay {
         const channel: Channel = {
           id: newId("ch"), name: frame.name, kind, memberIds, createdAt: Date.now(),
         };
-        this.store.saveChannel(channel);
+        // `by` records who let each of these people in — the `invitedBy` an id
+        // array could never hold. Everyone else is a plain member.
+        this.store.saveChannel(channel, conn.userId);
+        // whoever made a room runs it; a direct conversation has no owner
+        if (kind !== "dm") this.store.setMemberRole(channel.id, conn.userId, "owner");
         this.audit(conn, "channel_created", channel.id, `created ${channel.kind} ${channel.name}`);
-        this.broadcastChannel(channel);
+        this.broadcastChannel(this.store.channel(channel.id)!);
         break;
       }
       case "addMembers": {
         // you can only add people to a conversation you are in yourself
-        const ch = this.channelFor(conn.userId, frame.channelId);
+        const ch = this.writableChannel(conn.userId, frame.channelId);
         ch.memberIds = Array.from(new Set([...ch.memberIds, ...frame.memberIds]));
-        this.store.saveChannel(ch);
+        this.store.saveChannel(ch, conn.userId);
         this.audit(conn, "member_added", ch.id, `added ${frame.memberIds.length} member(s) to ${ch.name}`);
-        this.broadcastChannel(ch);
+        this.broadcastChannel(this.store.channel(ch.id)!);
+        break;
+      }
+      // ---- §7: a room is a thing that can be described, opened and retired ----
+      case "setChannelInfo": {
+        const ch = this.adminChannel(conn.userId, frame.channelId);
+        for (const [what, value] of [["description", frame.description], ["topic", frame.topic]] as const) {
+          const bad = validateChannelText(value, what);
+          if (bad) throw new Error(bad);
+        }
+        // ABSENT means "I am not talking about this field", empty string means
+        // "clear it" — the same sentence-vs-silence rule as `keepSkillFiles`.
+        if (frame.description !== undefined) {
+          ch.description = frame.description === "" ? undefined : frame.description;
+        }
+        if (frame.topic !== undefined) {
+          ch.topic = frame.topic === "" ? undefined : frame.topic;
+          ch.topicSetBy = conn.userId;
+          ch.topicSetAt = Date.now();
+        }
+        this.store.saveChannel(ch);
+        this.audit(conn, "channel_updated", ch.id,
+          frame.topic !== undefined ? `set the topic of ${ch.name}` : `described ${ch.name}`);
+        this.broadcastChannel(this.store.channel(ch.id)!);
+        break;
+      }
+      case "setChannelVisibility": {
+        if (frame.visibility !== "open" && frame.visibility !== "private") {
+          throw new Error("a conversation is either open or private");
+        }
+        const ch = this.adminChannel(conn.userId, frame.channelId);
+        ch.visibility = frame.visibility;
+        this.store.saveChannel(ch);
+        this.audit(conn, "channel_updated", ch.id,
+          `made ${ch.name} ${frame.visibility === "open" ? "open to anyone here" : "private"}`);
+        this.broadcastChannel(this.store.channel(ch.id)!);
+        break;
+      }
+      case "archiveChannel": {
+        const ch = this.adminChannel(conn.userId, frame.channelId);
+        if (frame.archived) {
+          ch.archivedAt = Date.now();
+          ch.archivedBy = conn.userId;
+        } else {
+          ch.archivedAt = undefined;
+          ch.archivedBy = undefined;
+        }
+        this.store.saveChannel(ch);
+        this.audit(conn, "channel_archived", ch.id,
+          `${frame.archived ? "archived" : "reopened"} ${ch.name}`);
+        this.broadcastChannel(this.store.channel(ch.id)!);
+        break;
+      }
+      case "browseChannels": {
+        send(conn.ws, { type: "channelDirectory", channels: this.browsableChannels(conn.userId) });
+        break;
+      }
+      case "joinChannel": {
+        // NOT `channelFor` — the whole point is that you are not in it yet. So
+        // the question this asks is the narrow one: is this room one of the
+        // ones you were allowed to FIND? Anything else is refused with the same
+        // sentence a made-up id gets, so browsing cannot become a way to learn
+        // which private rooms exist.
+        const listed = this.browsableChannels(conn.userId).some(c => c.id === frame.channelId);
+        if (!listed) throw new Error("no such channel");
+        const ch = this.store.channel(frame.channelId)!;
+        this.store.addChannelMember(ch.id, conn.userId, { role: "member" });
+        this.audit(conn, "member_added", ch.id, `joined ${ch.name}`);
+        // everyone in the room, including the new arrival, learns the new
+        // member list; the newcomer then asks for scrollback the ordinary way
+        this.broadcastChannel(this.store.channel(ch.id)!);
+        break;
+      }
+      case "leaveChannel": {
+        const ch = this.channelFor(conn.userId, frame.channelId);
+        if (ch.kind === "dm") throw new Error("you can't leave a direct conversation");
+        if (!this.store.memberRole(ch.id, conn.userId)) throw new Error("you're not in that conversation");
+        this.store.removeChannelMember(ch.id, conn.userId, conn.userId);
+        this.audit(conn, "member_removed", ch.id, `left ${ch.name}`);
+        this.tellLeft(conn.userId, ch.id);
+        this.broadcastChannel(this.store.channel(ch.id)!);
+        break;
+      }
+      case "removeMember": {
+        const ch = this.adminChannel(conn.userId, frame.channelId);
+        const role = this.store.memberRole(ch.id, frame.memberId);
+        if (!role) throw new Error("they're not in that conversation");
+        // an admin cannot throw out the person who runs the room
+        if (role === "owner" && this.store.memberRole(ch.id, conn.userId) !== "owner") {
+          throw new Error("only the person who runs this conversation can do that");
+        }
+        this.store.removeChannelMember(ch.id, frame.memberId, conn.userId);
+        this.audit(conn, "member_removed", ch.id, `removed someone from ${ch.name}`);
+        // an agent's place in a room belongs to its owner's screen
+        const agent = this.store.agents().find(a => a.id === frame.memberId);
+        this.tellLeft(agent ? agent.ownerId : frame.memberId, ch.id);
+        this.broadcastChannel(this.store.channel(ch.id)!);
+        break;
+      }
+      case "setMemberRole": {
+        if (frame.role !== "owner" && frame.role !== "admin" && frame.role !== "member") {
+          throw new Error("that isn't a role");
+        }
+        const ch = this.adminChannel(conn.userId, frame.channelId, "owner");
+        if (!this.store.memberRole(ch.id, frame.memberId)) {
+          throw new Error("they're not in that conversation");
+        }
+        // A room always has someone who runs it. Standing down is done by
+        // handing the room to somebody else, never by leaving it ownerless.
+        if (frame.memberId === conn.userId && frame.role !== "owner") {
+          throw new Error("give this conversation to someone else before standing down");
+        }
+        this.store.setMemberRole(ch.id, frame.memberId, frame.role as ChannelRole);
+        this.audit(conn, "member_role_changed", ch.id, `changed a role in ${ch.name}`);
+        this.broadcastChannel(this.store.channel(ch.id)!);
+        break;
+      }
+      case "channelMembers": {
+        // same gate as reading the conversation: knowing who is in a room is
+        // knowing something about the room
+        const ch = this.channelFor(conn.userId, frame.channelId);
+        const members: ChannelMember[] = frame.at !== undefined
+          ? this.store.channelMembers(ch.id, { at: frame.at })
+          : this.store.channelMembers(ch.id);
+        send(conn.ws, {
+          type: "channelMembers", channelId: ch.id,
+          ...(frame.at !== undefined ? { at: frame.at } : {}),
+          members,
+        });
         break;
       }
       case "createAgent": {
@@ -783,6 +1110,7 @@ export class Relay {
       }
       case "react": {
         const message = this.messageFor(conn.userId, frame.messageId);
+        this.writableChannel(conn.userId, message.channelId); // an archived room is read-only
         // a tombstone has nothing left to react to
         if (message.deletedAt) throw new Error("that message was deleted");
         const bad = validateReactionEmoji(frame.emoji);
@@ -805,6 +1133,7 @@ export class Relay {
       }
       case "editMessage": {
         const message = this.messageFor(conn.userId, frame.messageId);
+        this.writableChannel(conn.userId, message.channelId);
         this.assertAuthor(conn.userId, message);
         if (message.deletedAt) throw new Error("that message was deleted");
         const bad = validateMessageText(frame.text, (message.attachments?.length ?? 0) > 0);
@@ -821,6 +1150,7 @@ export class Relay {
       }
       case "deleteMessage": {
         const message = this.messageFor(conn.userId, frame.messageId);
+        this.writableChannel(conn.userId, message.channelId);
         this.assertAuthor(conn.userId, message);
         if (message.deletedAt) break; // already gone; saying it twice changes nothing
         // A TOMBSTONE, NOT A HOLE. The row stays where it was, so replies still
@@ -852,7 +1182,7 @@ export class Relay {
         break;
       }
       case "uploadAttachment": {
-        const channel = this.channelFor(conn.userId, frame.channelId);
+        const channel = this.writableChannel(conn.userId, frame.channelId);
         let bytes: Buffer;
         try { bytes = Buffer.from(String(frame.dataBase64 ?? ""), "base64"); }
         catch { throw new Error("that file didn't arrive properly"); }
@@ -871,6 +1201,28 @@ export class Relay {
         this.store.saveAttachment(attachment, channel.id);
         // only the uploader is told — nobody else can name this id anyway
         send(conn.ws, { type: "attachment", attachment });
+        break;
+      }
+      case "attachmentTicket": {
+        const row = this.store.attachment(frame.attachmentId);
+        // "no such file" for a file you may not see, so an id cannot be probed
+        if (!row) throw new Error("no such file");
+        // THE GATE, not a copy of it. Reading an attached file is reading the
+        // conversation it was posted in, so it asks exactly that question — and
+        // an archived room is still readable, which is why this is
+        // `channelFor` and not `writableChannel`.
+        try { this.channelFor(conn.userId, row.channelId); }
+        catch { throw new Error("no such file"); }
+        // A file nobody has sent yet is still only its uploader's business.
+        if (!row.messageId && row.attachment.uploadedBy !== conn.userId) {
+          throw new Error("no such file");
+        }
+        const { ticket, expiresAt } = this.mintTicket(conn.userId, row.attachment.id);
+        send(conn.ws, {
+          type: "attachmentTicket", attachmentId: row.attachment.id,
+          ticket, url: ATTACHMENT_TICKET.path + ticket, expiresAt,
+          attachment: row.attachment,
+        });
         break;
       }
       case "markRead": {
@@ -1113,6 +1465,26 @@ export function describeApproval(title: string): string {
   const sched = /^!schedule\s+(.+?):\s*(.+)$/i.exec(t);
   if (sched) return `Create schedule (${sched[1]}): ${sched[2]}`;
   return `Run background task: ${t}`;
+}
+
+/**
+ * Pull the ticket out of a request, or undefined when this isn't one.
+ *
+ * GET only, exact path shape only, and the ticket is read from the PATH — not
+ * from a query string, a header or a cookie, because there being exactly one
+ * place it can be is what stops a second, sloppier way of asking growing next
+ * to this one. A query string is refused rather than ignored: a request that
+ * carries something we do not understand is not a request we should answer.
+ */
+export function attachmentTicketFrom(req: http.IncomingMessage): string | undefined {
+  if (req.method !== "GET") return undefined;
+  const url = req.url ?? "";
+  if (!url.startsWith(ATTACHMENT_TICKET.path)) return undefined;
+  const rest = url.slice(ATTACHMENT_TICKET.path.length);
+  // one segment, no query, no fragment, no traversal — the ticket is an opaque
+  // string we minted, so anything that isn't one of those characters is not it
+  if (!/^[A-Za-z0-9._-]{16,256}$/.test(rest)) return "";
+  return rest;
 }
 
 function send(ws: WebSocket, frame: ServerFrame): void {

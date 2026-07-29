@@ -20,7 +20,7 @@ const { ui: UI } = qaTarget();
  * run stops early it now FAILS and says so. Add or remove an `ok(...)` and this
  * number must move with it — a mismatch is the suite telling you it drifted.
  */
-const EXPECTED_CHECKS = 52;
+const EXPECTED_CHECKS = 82;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -506,6 +506,303 @@ try {
   ok("a script tag in a message stays text, and never becomes markup",
     scriptTags === 0 && scriptShownAsText, `script els=${scriptTags}`);
   await page.screenshot({ path: `${SHOTS}/chat-markdown.png`, fullPage: true });
+
+  /* ================= CHAT BASICS — the renderer half =================
+   * docs/plans/chat-basics-handoff.md. Every check below drives the real UI
+   * against the real relay: scrollback, search, reactions, edit and delete,
+   * threads, account-level unread, and who may set an agent working. */
+
+  // ---------- a conversation longer than one page ----------
+  await page.click('button[title="New channel"]');
+  await page.fill('.panel input[placeholder="trip-goa"]', "backlog");
+  await page.click(".panel .foot >> text=Create");
+  await page.waitForSelector(".sidebar >> text=# backlog");
+  await page.click("text=# backlog");
+  const backlogBox = page.locator(".composer textarea");
+  const LINES = 55; // more than one 50-message page, so paging is real
+  for (let i = 1; i <= LINES; i++) {
+    await backlogBox.fill(`backlog line ${i}`);
+    await backlogBox.press("Enter");
+  }
+  await page.waitForSelector(`.msg:has-text("backlog line ${LINES}")`, { timeout: 30000 });
+
+  // a reload is the honest starting point: the app knows only what the hub says
+  await page.reload();
+  await page.waitForSelector(".sidebar >> text=# backlog", { timeout: 20000 });
+  await page.click("text=# backlog");
+  await page.waitForSelector('.msg:has-text("backlog line 55")', { timeout: 20000 });
+  await page.waitForTimeout(600);
+  const firstPage = await page.locator(".msgs .msg").count();
+  ok("a long conversation opens on its newest page, not the whole thing",
+    firstPage <= 50 && firstPage >= 20 &&
+    (await page.locator(".startofhistory").count()) === 0,
+    `${firstPage} messages on screen`);
+
+  // scrolling to the top asks for the page before — and must not move the
+  // words under the reader's eyes
+  const anchorBefore = await page.evaluate(() => {
+    const el = document.querySelector(".msgs");
+    const first = el.querySelector(".msg");
+    el.scrollTop = 0;
+    return { id: first?.dataset.msg, top: first?.getBoundingClientRect().top ?? 0 };
+  });
+  await waitFor(page, n => document.querySelectorAll(".msgs .msg").length > n, firstPage,
+    { timeout: 20000, what: "older messages to be loaded when the top is reached" });
+  await page.waitForTimeout(350);
+  const anchorAfter = await page.evaluate(id => {
+    const el = document.querySelector(`.msgs .msg[data-msg="${id}"]`);
+    return el ? el.getBoundingClientRect().top : null;
+  }, anchorBefore.id);
+  ok("older messages load on scroll-up and the reader keeps their place",
+    anchorAfter !== null && Math.abs(anchorAfter - anchorBefore.top) <= 2,
+    `the message the reader was on moved ${anchorAfter === null ? "off screen" : Math.round(anchorAfter - anchorBefore.top)}px`);
+
+  // keep going until the relay says there is nothing older — `hasMore`, never
+  // "the page was short"
+  for (let i = 0; i < 6 && (await page.locator(".startofhistory").count()) === 0; i++) {
+    await page.evaluate(() => { document.querySelector(".msgs").scrollTop = 0; });
+    await page.waitForTimeout(700);
+  }
+  const allLoaded = await page.locator(".msgs .msg").count();
+  ok("the beginning of a conversation is said, once, and only when the hub says so",
+    (await page.locator(".startofhistory").count()) === 1 && allLoaded >= LINES,
+    `${allLoaded} of ${LINES} messages loaded`);
+  await page.evaluate(() => { document.querySelector(".msgs").scrollTop = 0; });
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: `${SHOTS}/chat-scrollback.png` });
+  await page.evaluate(() => {
+    const el = document.querySelector(".msgs");
+    el.scrollTop = el.scrollHeight;
+  });
+
+  // ---------- reactions ----------
+  const lastBacklog = page.locator(".msgs .msg").last();
+  await lastBacklog.hover();
+  await lastBacklog.locator(".ma.react").click();
+  await page.click('.reactpop button:has-text("👍")');
+  await page.waitForSelector('.reactpill[data-emoji="👍"]', { timeout: 15000 });
+  const pill = page.locator('.reactpill[data-emoji="👍"]').last();
+  ok("a reaction can be added on hover, and says who reacted",
+    (await pill.locator(".n").innerText()).trim() === "1" &&
+    /You/.test(await pill.getAttribute("title")),
+    (await pill.getAttribute("title")) ?? "");
+  await page.screenshot({ path: `${SHOTS}/chat-reactions.png` });
+  await pill.click();
+  await waitFor(page, () => document.querySelectorAll('.reactpill[data-emoji="👍"]').length === 0,
+    undefined, { timeout: 15000, what: "the reaction pill to go when the last person takes it back" });
+  ok("clicking your own reaction takes it back and the pill goes", true);
+
+  // ---------- edit and delete your own message ----------
+  await backlogBox.fill("this line will be corrected");
+  await backlogBox.press("Enter");
+  const toEdit = page.locator('.msg:has-text("this line will be corrected")').last();
+  await toEdit.waitFor({ timeout: 15000 });
+  await toEdit.hover();
+  await toEdit.locator(".ma.edit").click();
+  await page.fill(".editmsg-input", "this line was corrected");
+  await page.click(".editmsg-save");
+  await page.waitForSelector('.msg:has-text("this line was corrected")', { timeout: 15000 });
+  const edited = page.locator('.msg:has-text("this line was corrected")').last();
+  ok("your own message can be changed, and says it was changed",
+    (await edited.locator(".editedmark").count()) === 1 &&
+    (await page.locator('.msg:has-text("this line will be corrected")').count()) === 0);
+  await page.screenshot({ path: `${SHOTS}/chat-edited.png` });
+
+  const beforeDelete = await page.locator(".msgs .msg").count();
+  await edited.hover();
+  await edited.locator(".ma.del").click();
+  await edited.locator(".ma.yes").click();
+  await page.waitForSelector(".msgs .msg.deleted .tombstone", { timeout: 15000 });
+  const afterDelete = await page.locator(".msgs .msg").count();
+  ok("a deleted message becomes a tombstone in place, never a hole",
+    afterDelete === beforeDelete &&
+    (await page.locator(".msgs .msg.deleted .msgactions").count()) === 0,
+    `${beforeDelete} rows before, ${afterDelete} after`);
+  await page.screenshot({ path: `${SHOTS}/chat-edit-delete.png` });
+
+  // someone else's words are not yours to change
+  await page.click(".sidebar >> text=# general");
+  await page.waitForSelector(".msg p:has-text('Priya here')");
+  const theirs = page.locator(".msg:has-text('Priya here')").last();
+  await theirs.hover();
+  ok("there is no edit or delete on a message you did not write",
+    (await theirs.locator(".ma.edit").count()) === 0 &&
+    (await theirs.locator(".ma.del").count()) === 0);
+
+  // ---------- threads ----------
+  await page.click(".sidebar >> text=# backlog");
+  await backlogBox.fill("what should we do about the backlog?");
+  await backlogBox.press("Enter");
+  const root = page.locator('.msg:has-text("what should we do about the backlog?")').last();
+  await root.waitFor({ timeout: 15000 });
+  await root.hover();
+  await root.locator(".ma.reply").click();
+  await page.waitForSelector(".threadpanel", { timeout: 15000 });
+  ok("a message can be replied to in a thread, and the thread opens beside it",
+    (await page.locator(".threadpanel .msg").count()) >= 1);
+
+  await page.fill(".threadcomposer textarea", "cut it in half");
+  await page.press(".threadcomposer textarea", "Enter");
+  await page.waitForSelector('.threadpanel .msg:has-text("cut it in half")', { timeout: 20000 });
+  await page.waitForSelector(".threadline", { timeout: 20000 });
+  const replyLine = (await page.locator(".threadline").last().innerText()).replace(/\s+/g, " ");
+  ok("a reply lands in the thread and the message it answers says how many replies it has",
+    /1 reply/.test(replyLine), replyLine);
+  await page.screenshot({ path: `${SHOTS}/chat-thread.png` });
+
+  await page.click(".threadpanel .threadclose");
+  await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
+  await page.locator(".threadline").last().click();
+  await page.waitForSelector(".threadpanel", { timeout: 15000 });
+  ok("the reply count opens the thread, with the message it started and every reply",
+    (await page.locator(".threadpanel .msg").count()) === 2,
+    `${await page.locator(".threadpanel .msg").count()} messages in the panel`);
+  await page.click(".threadpanel .threadclose");
+
+  // ---------- search across everything ----------
+  await page.evaluate(() => window.cloud9Menu.run("search"));
+  await page.waitForSelector(".searchpanel", { timeout: 10000 });
+  ok("search opens from the menu and looks across everything, not one room", true);
+  await page.fill(".search-input", "backlog");
+  await page.waitForSelector(".searchhit", { timeout: 20000 });
+  await page.waitForTimeout(400);
+  const groups = await page.locator(".searchgroup").count();
+  const firstHit = page.locator(".searchhit").first();
+  const hitText = (await firstHit.innerText()).replace(/\s+/g, " ");
+  ok("results are grouped by conversation, with who said it, when, and the words around it",
+    groups >= 1 &&
+    (await firstHit.locator(".hitwho b").count()) === 1 &&
+    (await firstHit.locator(".hitwho .t").count()) === 1 &&
+    (await page.locator(".searchhit .snippet mark").count()) >= 1,
+    `${groups} group(s) :: ${hitText.slice(0, 80)}`);
+  await page.screenshot({ path: `${SHOTS}/chat-search.png` });
+
+  // a result is a way BACK to the message, in its own conversation
+  const wantedId = await page.locator(".searchhit").first().getAttribute("data-hit");
+  await page.locator(".searchhit").first().click();
+  await page.waitForSelector(`.msgs .msg[data-msg="${wantedId}"].litup`, { timeout: 25000 });
+  ok("clicking a result goes to that message, in the conversation it was said in", true);
+  await page.screenshot({ path: `${SHOTS}/chat-search-jump.png` });
+
+  // ---------- unread, from the account and not from this browser ----------
+  await page.evaluate(() => localStorage.setItem("cloud9.lastRead", '{"c":1}'));
+  await page.reload();
+  await page.waitForSelector(".sidebar >> text=# general", { timeout: 20000 });
+  ok("the old per-machine read state is deleted on start — the hub owns it now",
+    (await page.evaluate(() => localStorage.getItem("cloud9.lastRead"))) === null);
+
+  await page.click(".sidebar >> text=# backlog");
+  await page.waitForTimeout(500);
+  await fpage.click("text=# general");
+  await fpage.fill(".composer textarea", "@Vikas can you look at this when you get a moment?");
+  await fpage.press(".composer textarea", "Enter");
+  await page.waitForSelector('.side-item[data-channel="general"] .cnt.hot', { timeout: 25000 });
+  ok("a message you have not seen is counted, and one that asks for you is marked apart",
+    (await page.locator('.side-item[data-channel="general"] .cnt.at').count()) === 1,
+    (await page.locator('.side-item[data-channel="general"]').innerText()).replace(/\s+/g, " "));
+  await page.screenshot({ path: `${SHOTS}/chat-unread.png` });
+
+  await page.click(".sidebar >> text=# general");
+  await waitFor(page, () =>
+    document.querySelectorAll('.side-item[data-channel="general"] .cnt').length === 0,
+  undefined, { timeout: 20000, what: "the unread marks to clear once the room is read" });
+  ok("reading the conversation clears the marks", true);
+
+  // ---------- who may set an agent working ----------
+  await page.hover(".sidebar .agentrow");
+  await page.click('.sidebar .agentrow button[title="Edit agent"]');
+  await page.waitForSelector(".whocanuse", { timeout: 15000 });
+  const respondOptions = await page.$$eval(".respondpick", bs => bs.map(b => b.dataset.respond));
+  const respondChosen = await page.$eval('.respondpick[aria-pressed="true"]', b => b.dataset.respond);
+  ok("the agent editor asks who may use this agent, and starts closed",
+    respondOptions.join(",") === "owner,allowlist,anyone" && respondChosen === "owner",
+    `${respondOptions.join("/")} chosen=${respondChosen}`);
+
+  await page.click('.respondpick[data-respond="allowlist"]');
+  await page.waitForSelector(".allowpick .allowrow", { timeout: 10000 });
+  ok("choosing “me and these people” offers the people to choose",
+    (await page.locator('.allowpick .allowrow[data-person="Priya"]').count()) === 1);
+  await page.evaluate(() => document.querySelector(".whocanuse")?.scrollIntoView({ block: "center" }));
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: `${SHOTS}/chat-agent-permission.png` });
+  await page.click('.allowpick .allowrow[data-person="Priya"] input');
+  await page.click('.editor .topbar >> text=Save');
+  await page.waitForSelector(".crew-grid", { timeout: 20000 });
+  await page.locator('.cast[data-crew="Scout"] .whocan').filter({ hasText: "other person" })
+    .waitFor({ timeout: 20000 });
+  const crewSays = (await page.locator('.cast[data-crew="Scout"] .whocan').innerText()).replace(/\s+/g, " ");
+  ok("the crew card says, in plain words, who may set this agent working",
+    /1 other person/.test(crewSays), crewSays);
+  await page.evaluate(() =>
+    document.querySelector('.cast[data-crew="Scout"] .whocan')?.scrollIntoView({ block: "center" }));
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: `${SHOTS}/chat-crew-permission.png` });
+
+  // put it back to owner-only, and prove the closed default is visible to the
+  // person it shuts out
+  await page.click('.cast[data-crew="Scout"] button:has-text("Edit")');
+  await page.waitForSelector(".whocanuse", { timeout: 15000 });
+  await page.click('.respondpick[data-respond="owner"]');
+  await page.click('.editor .topbar >> text=Save');
+  await page.waitForSelector(".crew-grid", { timeout: 20000 });
+  // the save has to ROUND-TRIP through the hub before the card can be believed —
+  // reading the card the instant the screen appears reads the old answer
+  await page.locator('.cast[data-crew="Scout"] .whocan').filter({ hasText: "Only you" })
+    .waitFor({ timeout: 20000 });
+  ok("the choice is saved on the agent and is there when you open it again",
+    /Only you/.test((await page.locator('.cast[data-crew="Scout"] .whocan').innerText())),
+    (await page.locator('.cast[data-crew="Scout"] .whocan').innerText()).replace(/\s+/g, " "));
+
+  await fpage.fill(".composer textarea", "@Scout could you find me a villa too?");
+  await fpage.press(".composer textarea", "Enter");
+  await fpage.waitForSelector('.mentionrefused[data-agent="Scout"]', { timeout: 25000 });
+  ok("an agent that will not answer you says so, instead of silently doing nothing",
+    /only answers/.test(await fpage.locator('.mentionrefused[data-agent="Scout"]').innerText()),
+    (await fpage.locator('.mentionrefused[data-agent="Scout"]').innerText()).trim());
+  await fpage.screenshot({ path: `${SHOTS}/chat-mention-refused.png` });
+
+  // ---------- nothing new scrolls sideways, in either look ----------
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# backlog");
+  await page.locator(".threadline").last().click();
+  await page.waitForSelector(".threadpanel", { timeout: 15000 });
+  const overflow = async () => page.evaluate(() => ({
+    doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    body: document.body.scrollWidth - document.body.clientWidth,
+  }));
+  for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.waitForTimeout(200);
+      const over = await overflow();
+      ok(`a thread beside the conversation does not scroll sideways at ${width} in the ${theme} look`,
+        over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+      if (width === 1280) {
+        await page.screenshot({ path: `${SHOTS}/chat-thread-${theme}.png` });
+      }
+    }
+  }
+  await page.evaluate(() => window.cloud9Menu.run("search"));
+  await page.waitForSelector(".searchpanel", { timeout: 10000 });
+  await page.fill(".search-input", "backlog");
+  await page.waitForSelector(".searchhit", { timeout: 20000 });
+  for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.waitForTimeout(200);
+      const over = await overflow();
+      ok(`search results do not scroll sideways at ${width} in the ${theme} look`,
+        over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+      if (width === 1280) {
+        await page.screenshot({ path: `${SHOTS}/chat-search-${theme}.png` });
+      }
+    }
+  }
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
 
   await owner.close();
   await friendCtx.close();

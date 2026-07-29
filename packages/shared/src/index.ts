@@ -166,6 +166,8 @@ export type ActivityKind =
   | "message" | "task_created" | "task_status" | "approval_requested"
   | "approval_decided" | "agent_created" | "agent_updated" | "agent_deleted"
   | "channel_created" | "member_added" | "invite_created" | "invite_redeemed"
+  // §7: a room is a thing that can change, so every change to it is an action
+  | "channel_updated" | "channel_archived" | "member_removed" | "member_role_changed"
   // FR-CM-009: changing or withdrawing something already said is an ACTION, and
   // the trail has to keep it — otherwise "delete" quietly means "rewrite history"
   | "message_edited" | "message_deleted";
@@ -274,11 +276,96 @@ export const DEMO_REPLY_PREFIX = "[demo — not a real answer] ";
 
 export type ChannelKind = "channel" | "dm";
 
+/**
+ * Who may CHANGE a conversation, as opposed to who may talk in it.
+ *
+ * - `owner` — made it (or was handed it). May do everything, including hand
+ *   out roles.
+ * - `admin` — may set the topic and description, invite and remove people,
+ *   change visibility and archive. May not change roles.
+ * - `member` — may read and talk. THE DEFAULT, and the default when a row
+ *   predates roles, because a membership from before this rule existed must
+ *   not be more powerful than one made after it.
+ */
+export type ChannelRole = "owner" | "admin" | "member";
+
+/**
+ * Can this conversation be found and joined by someone who isn't in it?
+ *
+ * ABSENT MEANS `private`, which is exactly today's behaviour — every room that
+ * existed before this field stays shut. Opening a room is a typed-out choice,
+ * never something that happens by omission.
+ */
+export type ChannelVisibility = "open" | "private";
+
+/**
+ * One person's (or one agent's) place in one conversation — A ROW, NOT AN ID
+ * IN A LIST.
+ *
+ * An array of ids can only answer "who is in here right now". It cannot say
+ * when someone joined, who let them in, what they may change, or that they
+ * left — so "who was in the room when this was said" was an unanswerable
+ * question. This row answers all four.
+ *
+ * `removedAt` is a SOFT delete, like a reaction: the row stays so the record
+ * still knows the person was once here. Only rows with no `removedAt` are
+ * "in the room".
+ */
+export interface ChannelMember {
+  channelId: ID;
+  /** a user id or an agent id — the same union `memberIds` always carried */
+  memberId: ID;
+  role: ChannelRole;
+  joinedAt: number;
+  /** who added them; absent when they joined an open room themselves */
+  invitedBy?: ID;
+  /** when they left or were taken out; absent means they are still in */
+  removedAt?: number;
+  removedBy?: ID;
+}
+
+/** May this role change the conversation itself (topic, people, archive)? */
+export function mayAdministerChannel(role: ChannelRole | undefined): boolean {
+  return role === "owner" || role === "admin";
+}
+
 export interface Channel {
   id: ID;
   name: string; // for dm: derived, e.g. "dm:<a>:<b>" — clients render the peer name
   kind: ChannelKind;
+  /**
+   * Who is in this conversation right now.
+   *
+   * DERIVED, not stored: the relay builds it from the membership rows on the
+   * way out. It stays on the wire so no existing client breaks, and it is the
+   * field to retire once every screen reads `channelMembers` instead.
+   */
   memberIds: ID[]; // user ids and agent ids
+  createdAt: number;
+  /** what this room is for — set once and left alone */
+  description?: string;
+  /** what it is about TODAY — the line that changes */
+  topic?: string;
+  topicSetBy?: ID;
+  topicSetAt?: number;
+  /** absent means "private", i.e. exactly how every room behaved before this */
+  visibility?: ChannelVisibility;
+  /** retired, not deleted: still readable, nothing new can be said in it */
+  archivedAt?: number;
+  archivedBy?: ID;
+}
+
+/**
+ * A room you are NOT in, as seen from outside: enough to decide whether to
+ * join, and nothing more. Never carries members or messages — being able to
+ * FIND a room is not permission to read it.
+ */
+export interface ChannelSummary {
+  id: ID;
+  name: string;
+  description?: string;
+  topic?: string;
+  memberCount: number;
   createdAt: number;
 }
 
@@ -386,6 +473,29 @@ export type ClientFrame =
   | { type: "send"; channelId: ID; text: string; tempId?: string; replyTo?: ID; attachmentIds?: ID[] }
   | { type: "createChannel"; name: string; memberIds: ID[]; kind?: ChannelKind }
   | { type: "addMembers"; channelId: ID; memberIds: ID[] }
+  // ---- channels as real things (docs/plans/chat-basics-handoff.md §7) ----
+  /** Set what a room is for and what it is about. Absent field = leave alone. */
+  | { type: "setChannelInfo"; channelId: ID; description?: string; topic?: string }
+  /** Open a room to browse-and-join, or shut it again. */
+  | { type: "setChannelVisibility"; channelId: ID; visibility: ChannelVisibility }
+  /** Retire a room (or bring it back). Archived is READ-ONLY, never deleted. */
+  | { type: "archiveChannel"; channelId: ID; archived: boolean }
+  /** The open rooms you are not in — name and description only, never contents. */
+  | { type: "browseChannels" }
+  /** Let yourself into an open room. */
+  | { type: "joinChannel"; channelId: ID }
+  /** Take yourself out of a room. */
+  | { type: "leaveChannel"; channelId: ID }
+  /** Take someone else out of a room. Needs `owner` or `admin`. */
+  | { type: "removeMember"; channelId: ID; memberId: ID }
+  /** Hand out (or take back) the power to change a room. Needs `owner`. */
+  | { type: "setMemberRole"; channelId: ID; memberId: ID; role: ChannelRole }
+  /**
+   * Who is in this room, with roles and dates — and, with `at`, who was in it
+   * at that moment. That last one is the honest answer to "who could see this
+   * message when it was said".
+   */
+  | { type: "channelMembers"; channelId: ID; at?: number }
   | { type: "createAgent"; agent: Omit<AgentDef, "id" | "ownerId" | "createdAt"> }
   | { type: "updateAgent"; agent: AgentDef }
   | { type: "deleteAgent"; agentId: ID }
@@ -411,6 +521,15 @@ export type ClientFrame =
   | { type: "thread"; messageId: ID; limit?: number }
   /** Park a file on the hub. Answered with an `attachment` frame carrying its id. */
   | { type: "uploadAttachment"; channelId: ID; name: string; dataBase64: string; mime?: string }
+  /**
+   * Ask for permission to fetch one attached file's bytes.
+   *
+   * The answer is a ONE-USE, SHORT-LIVED ticket for that one file. It is asked
+   * for over this already-authenticated socket, so there is no second way to
+   * sign in and no durable secret ever goes near a URL. See
+   * `ATTACHMENT_TICKET` and the `attachmentTicket` server frame.
+   */
+  | { type: "attachmentTicket"; attachmentId: ID }
   /** "I have read this conversation up to here" — kept on the account, not the machine. */
   | { type: "markRead"; channelId: ID; ts?: number }
   // engine-host only: post a message authored by one of the owner's agents
@@ -487,6 +606,26 @@ export type ServerFrame =
   | { type: "thread"; parentId: ID; messages: Message[] }
   /** A parked file, ready to be named in a `send`. Goes only to the uploader. */
   | { type: "attachment"; attachment: Attachment }
+  /**
+   * Permission to fetch ONE file, ONCE, for a few seconds. Goes only to the
+   * socket that asked. `url` is relative to the hub's own address — join it to
+   * the same origin the WebSocket is on and `GET` it; the ticket dies the
+   * moment the first byte is served, and again when `expiresAt` passes.
+   */
+  | {
+      type: "attachmentTicket"; attachmentId: ID; ticket: string;
+      /** e.g. "/attachment/<ticket>" */
+      url: string;
+      expiresAt: number;
+      /** the file this ticket is for, so a client can draw it without asking again */
+      attachment: Attachment;
+    }
+  /** A room you are not in, as seen from outside. Answers `browseChannels`. */
+  | { type: "channelDirectory"; channels: ChannelSummary[] }
+  /** Who is (or was) in one room. Answers `channelMembers`. */
+  | { type: "channelMembers"; channelId: ID; at?: number; members: ChannelMember[] }
+  /** You are no longer in this room — drop it, and everything you cached for it. */
+  | { type: "channelLeft"; channelId: ID }
   /** Read state for one conversation — sent to EVERY machine this person is on. */
   | { type: "read"; entry: UnreadEntry }
   | { type: "userJoined"; user: User }
@@ -580,6 +719,44 @@ export const ATTACHMENT_LIMITS = {
   /** biggest single file the hub will accept over the socket */
   bytes: 10_000_000,
 } as const;
+
+/**
+ * How long a ticket to fetch one file is good for, and how many a person may
+ * be holding at once.
+ *
+ * THE WHOLE POINT IS THAT A LEAKED ONE IS WORTHLESS. Thirty seconds is long
+ * enough to click a link and short enough that a ticket copied out of a log
+ * line, a proxy trace or a screen recording has already expired — and it can
+ * only ever have been worth ONE file anyway, because the ticket is consumed by
+ * the first byte served.
+ */
+export const ATTACHMENT_TICKET = {
+  /** milliseconds a ticket stays good for */
+  ttlMs: 30_000,
+  /** most unspent tickets one person may hold — stops a bulk mint */
+  perUser: 32,
+  /** the path a ticket is redeemed at, relative to the hub's own address */
+  path: "/attachment/",
+} as const;
+
+/**
+ * How long a room's own words may be.
+ * Bounded for the same reason a message is: an unbounded field is a way to put
+ * a blob in the database through a path nobody sized.
+ */
+export const CHANNEL_LIMITS = { description: 500, topic: 200 } as const;
+
+/** Check a room's description or topic before it is stored. */
+export function validateChannelText(value: unknown, what: "description" | "topic"): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") return `that ${what} isn't text`;
+  const max = what === "topic" ? CHANNEL_LIMITS.topic : CHANNEL_LIMITS.description;
+  if (value.length > max) return `that ${what} is too long (max ${max} characters)`;
+  // a topic is one line drawn in a header; a newline in it is someone drawing
+  // something else. Refused, never trimmed into shape (same law as an emoji).
+  if (what === "topic" && /[\r\n]/.test(value)) return "a topic is one line";
+  return null;
+}
 
 export const SKILL_LIMITS = {
   perAgent: 20, name: 64, description: 200, instructions: 8000,
@@ -811,6 +988,56 @@ export function validateAttachment(name: unknown, size: number): string | null {
     return `that file is too big (max ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB)`;
   }
   return null;
+}
+
+/**
+ * The only kinds of file the hub will ever hand back with a type a browser
+ * will RENDER. Everything else is served as a download and nothing more.
+ *
+ * WHY AN ALLOWLIST AND NOT THE UPLOADER'S `mime`: the `mime` on an attachment
+ * is what the sender SAID it was — it is display text, and the type comment on
+ * `Attachment` already says it is never used to decide anything. If the hub
+ * echoed it back as `Content-Type`, anyone who could attach a file could
+ * choose how the app treats it, and "here is a picture" would be a way to run
+ * a page inside the app. So the type is decided HERE, from the extension of
+ * the already-validated name, and anything not on this list is handed over as
+ * bytes with a download prompt.
+ *
+ * There is deliberately no `image/svg+xml`: an SVG is a document that can
+ * carry script, not a picture.
+ */
+const INLINE_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+  txt: "text/plain; charset=utf-8",
+  md: "text/plain; charset=utf-8",
+  log: "text/plain; charset=utf-8",
+  csv: "text/plain; charset=utf-8",
+  json: "text/plain; charset=utf-8",
+  pdf: "application/pdf",
+};
+
+/** The bytes-only type: "I am not telling you this is safe to render." */
+export const DOWNLOAD_FALLBACK_TYPE = "application/octet-stream";
+
+/**
+ * What `Content-Type` the hub serves this file as — computed from the name it
+ * validated, never from anything the sender claimed.
+ */
+export function downloadContentType(name: string): string {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return DOWNLOAD_FALLBACK_TYPE;
+  return INLINE_TYPES[name.slice(dot + 1).toLowerCase()] ?? DOWNLOAD_FALLBACK_TYPE;
+}
+
+/** May a client show this file in place, or must it be saved first? */
+export function isInlineViewable(name: string): boolean {
+  return downloadContentType(name) !== DOWNLOAD_FALLBACK_TYPE;
 }
 
 /** A harness we know nothing about yet — used before the first detection run. */

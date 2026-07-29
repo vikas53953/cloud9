@@ -1207,3 +1207,180 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   .editor-body{grid-template-columns:minmax(0,1fr);}
   .preview-col{border-left:0;border-top:1px solid var(--line);}
 }
+
+/* ============================================================
+   CHAT BASICS â€” scrollback, search, reactions, edits, threads,
+   unread, and the "who may use this agent" control.
+   Same paper, same pigments: every value below is a token.
+   ============================================================ */
+
+/* --- the top of the scrollback ---
+   `overflow-anchor:none` because the browser's own scroll anchoring and the
+   app's both try to hold the reader's place when older messages are put on the
+   front, and two hands on the same wheel is how the view jumps. The app's is
+   the one that knows a page was prepended. */
+.msgs{overflow-anchor:none;}
+.backtop{
+  display:flex;align-items:center;justify-content:center;gap:12px;flex:none;
+  padding:10px 0 18px;color:var(--ink-3);
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+}
+.backtop .rule{height:1px;flex:1;background:var(--line);}
+
+/* --- a message a search result sent us to --- */
+.msg.litup{
+  background:var(--marigold-soft);border-radius:var(--radius);
+  box-shadow:0 0 0 6px var(--marigold-soft);
+}
+@media (prefers-reduced-motion:no-preference){
+  .msg.litup{transition:background .5s var(--ease),box-shadow .5s var(--ease);}
+}
+.msg.inthread{box-shadow:-11px 0 0 -9px var(--ultra);}
+
+/* --- a message that was taken back --- */
+.tombstone{
+  display:flex;align-items:center;gap:8px;margin:0;color:var(--ink-3);
+  font-style:italic;font-size:13.5px;
+}
+.tombstone .mark{
+  font-family:var(--mono);font-style:normal;color:var(--ink-3);
+  border:1px dashed var(--line);border-radius:var(--radius-xs);padding:0 5px;
+}
+.msg.deleted .who b{color:var(--ink-3);}
+
+.editedmark{
+  font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-3);
+}
+
+/* --- changing what a message says --- */
+.editmsg{display:flex;flex-direction:column;gap:9px;margin:2px 0 4px;}
+.editmsg-input{
+  width:100%;background:var(--surface);border:1px solid var(--pine);border-radius:var(--radius-s);
+  padding:9px 11px;color:var(--ink);font-family:var(--body);font-size:14px;outline:0;resize:vertical;
+}
+.editmsg-btns{display:flex;align-items:center;gap:9px;flex-wrap:wrap;}
+
+/* --- reactions --- */
+.reactions{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;}
+.reactpill{
+  display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:99px;
+  border:1px solid var(--line);background:var(--surface);font-size:12.5px;line-height:1.6;
+  color:var(--ink-2);
+}
+.reactpill:hover{border-color:var(--ink-3);}
+.reactpill.on{border-color:var(--pine);background:var(--pine-soft);color:var(--ink);}
+.reactpill .n{font-family:var(--mono);font-size:10.5px;}
+.reactpop{
+  position:absolute;top:calc(100% + 5px);right:0;display:flex;gap:2px;padding:3px;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-s);
+  box-shadow:var(--shadow);z-index:20;
+}
+.reactpop button{
+  width:28px;height:26px;border-radius:var(--radius-xs);display:grid;place-items:center;font-size:15px;
+}
+.reactpop button:hover{background:var(--surface-2);}
+.reactpop button[aria-pressed="true"]{background:var(--pine-soft);}
+.msgactions.confirming{opacity:1;pointer-events:auto;padding:2px 6px;gap:6px;align-items:center;}
+.ma-say{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);white-space:nowrap;}
+.ma.yes{color:var(--madder);font-size:11px;width:auto;padding:0 7px;font-weight:600;}
+.ma.del:hover{color:var(--madder);}
+
+/* --- threads --- */
+.threadline{
+  display:inline-flex;align-items:center;gap:7px;margin-top:8px;padding:3px 10px;
+  border:1px solid var(--line);border-radius:99px;background:var(--surface);
+  font-size:12.5px;color:var(--ultra);
+}
+.threadline:hover{border-color:var(--ultra);background:var(--ultra-soft);}
+.threadline .arrow{font-family:var(--mono);}
+.threadline .ago{color:var(--ink-3);font-family:var(--mono);font-size:10.5px;}
+.inthreadmark{
+  display:inline-block;margin-bottom:5px;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.05em;color:var(--ultra);
+}
+.inthreadmark:hover{text-decoration:underline;}
+.threadpanel{display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+.threadhead{
+  display:flex;align-items:center;gap:9px;flex:none;padding:13px 16px;
+  border-bottom:1px solid var(--line);background:var(--surface-2);
+}
+.threadbody{flex:1;min-height:0;overflow-y:auto;padding:16px;}
+.threadbody .msg{margin-bottom:16px;}
+.threadbody .msgactions{top:-10px;}
+.threadcount{
+  display:flex;align-items:center;gap:10px;margin:2px 0 14px;color:var(--ink-3);
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+}
+.threadcount::after{content:"";height:1px;flex:1;background:var(--line);}
+.composer.threadcomposer{padding:12px 16px;border-top:1px solid var(--line);}
+.composer.threadcomposer .tools{flex-wrap:wrap;gap:6px;}
+.composer.threadcomposer .autocomplete{min-width:0;width:100%;}
+
+/* --- an agent that will not answer the person who called it --- */
+.mentionrefused{
+  margin-top:7px;padding:6px 11px;border-radius:var(--radius-s);
+  border:1px solid color-mix(in srgb,var(--marigold) 40%,transparent);
+  background:var(--marigold-soft);color:var(--ink);font-size:12.5px;
+}
+
+/* --- unread that asks for you is its own mark --- */
+.side-item .cnt.at{
+  background:var(--ultra);color:var(--on-pine);border-radius:99px;padding:1px 6px;font-weight:600;
+}
+
+/* --- search across everything you can see --- */
+.searchpanel{width:min(760px,94vw);max-height:78vh;display:flex;flex-direction:column;}
+.searchbar{
+  display:flex;align-items:center;gap:10px;flex:none;padding:14px 22px;
+  border-bottom:1px solid var(--line-soft);background:var(--surface-2);
+}
+.search-input{
+  flex:1;min-width:0;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--radius-s);padding:9px 12px;color:var(--ink);
+  font-family:var(--body);font-size:15px;outline:0;
+}
+.search-input:focus{border-color:var(--pine);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--pine) 16%,transparent);}
+.searchbody{flex:1;min-height:0;overflow-y:auto;padding:16px 22px 22px;}
+.searchhint{color:var(--ink-2);font-size:13.5px;}
+.searchhint code{font-family:var(--mono);font-size:11.5px;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:var(--radius-xs);padding:0 4px;}
+.searchgroup{margin-bottom:20px;}
+.searchgrouphead{display:flex;align-items:center;gap:9px;margin-bottom:8px;}
+.searchgrouphead .chip{flex:none;}
+.searchhit{
+  display:grid;grid-template-columns:26px minmax(0,1fr);gap:11px;width:100%;text-align:left;
+  padding:10px 12px;border-radius:var(--radius-s);border:1px solid transparent;
+}
+.searchhit:hover{background:var(--surface-2);border-color:var(--line);}
+.hitbody{min-width:0;}
+.hitwho{display:flex;align-items:baseline;gap:9px;margin-bottom:2px;}
+.hitwho b{font-family:var(--display);font-size:14px;}
+.hitwho .t{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);}
+.snippet{display:block;color:var(--ink-2);font-size:13.5px;line-height:1.55;
+  overflow-wrap:anywhere;}
+.snippet mark{background:var(--marigold-soft);color:var(--ink);
+  border-radius:var(--radius-xs);padding:0 2px;}
+.searchmore{margin-top:4px;}
+
+/* --- who may use this agent --- */
+.choice-row{
+  display:flex;align-items:flex-start;gap:13px;width:100%;text-align:left;padding:12px 0;
+  border-bottom:1px solid var(--line-soft);
+}
+.panelbox .choice-row:last-child{border-bottom:0;}
+.choice-row .tick{font-size:13px;color:var(--ink-3);line-height:1.5;flex:none;}
+.choice-row[aria-pressed="true"] .tick{color:var(--pine);}
+.choice-row .tx{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.choice-row .tx b{font-size:13.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.choice-row .tx span{font-size:12.5px;color:var(--ink-3);}
+.allowpick{margin-top:12px;display:flex;flex-wrap:wrap;gap:9px;}
+.allowrow{
+  display:flex;align-items:center;gap:9px;padding:7px 12px 7px 9px;border-radius:99px;
+  border:1px solid var(--line);background:var(--surface);font-size:13px;cursor:pointer;
+}
+.allowrow:has(input:checked){border-color:var(--pine);background:var(--pine-soft);}
+.allowrow input{accent-color:var(--pine);}
+.whocan svg{color:var(--marigold);}
+

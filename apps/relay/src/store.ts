@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
-  ActivityRecord, AgentDef, Approval, Attachment, Channel, ID, Message,
+  ActivityRecord, AgentDef, Approval, Attachment, Channel, ChannelMember, ChannelRole, ID, Message,
   MessageReaction, MESSAGE_LIMITS, Task, User, newId,
 } from "@cloud9/shared";
 import { secureId, secureToken } from "./secureid.js";
@@ -36,6 +36,21 @@ export interface InviteRow {
 interface RawInvite {
   code: string; createdBy: string; usedBy: string | null;
   usedAt: number | null; revoked: number;
+}
+
+interface RawMember {
+  channelId: string; memberId: string; role: string; joinedAt: number;
+  invitedBy: string | null; removedAt: number | null; removedBy: string | null;
+}
+
+function toMember(r: RawMember): ChannelMember {
+  return {
+    channelId: r.channelId, memberId: r.memberId, role: r.role as ChannelRole,
+    joinedAt: r.joinedAt,
+    ...(r.invitedBy ? { invitedBy: r.invitedBy } : {}),
+    ...(r.removedAt !== null ? { removedAt: r.removedAt } : {}),
+    ...(r.removedBy ? { removedBy: r.removedBy } : {}),
+  };
 }
 
 function toInvite(r: RawInvite): InviteRow {
@@ -92,7 +107,7 @@ export class Store {
         seq INTEGER, hash TEXT, prevHash TEXT
       );
       CREATE INDEX IF NOT EXISTS act_ts ON activity(ts);
-      CREATE UNIQUE INDEX IF NOT EXISTS act_seq ON activity(seq);
+      -- NOTE: the index over activity(seq) is NOT created here. See migrate().
       CREATE TABLE IF NOT EXISTS pushlog(
         id TEXT PRIMARY KEY, userId TEXT NOT NULL, messageId TEXT NOT NULL,
         ts INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT 0
@@ -122,6 +137,23 @@ export class Store {
         messageId TEXT, uploadedAt INTEGER NOT NULL, json TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS att_msg ON attachments(messageId);
+
+      -- WHO IS IN A ROOM — a row each, not an array of ids inside the channel.
+      --
+      -- An array could only ever say "these people are in here now". It could
+      -- not say when someone joined, who let them in, what they may change, or
+      -- that they left — so "who was in the room when this was said" had no
+      -- answer at all. removedAt is a SOFT delete, like a reaction: the row
+      -- stays, so the record still knows the person was once here. Every read
+      -- of "who is in here" filters on removedAt IS NULL.
+      CREATE TABLE IF NOT EXISTS channel_members(
+        channelId TEXT NOT NULL, memberId TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'member',
+        joinedAt INTEGER NOT NULL, invitedBy TEXT,
+        removedAt INTEGER, removedBy TEXT,
+        PRIMARY KEY (channelId, memberId)
+      );
+      CREATE INDEX IF NOT EXISTS cm_member ON channel_members(memberId);
 
       -- Read state lives HERE, on the account, so it follows a person between
       -- machines. It used to live in one browser's localStorage.
@@ -210,15 +242,84 @@ export class Store {
     this.addColumn("activity", "seq", "INTEGER");
     this.addColumn("activity", "hash", "TEXT");
     this.addColumn("activity", "prevHash", "TEXT");
+    // AN INDEX CAN ONLY BE BUILT OVER A COLUMN THAT EXISTS, so it is built
+    // here, after the ALTERs, and not up in the CREATE block with the others.
+    //
+    // This is a real bug that a real file found: `CREATE TABLE IF NOT EXISTS`
+    // does nothing to a table that is already there, so on a database written
+    // before the ledger the `activity` table had no `seq` column — and
+    // `CREATE UNIQUE INDEX ... ON activity(seq)`, sitting above the migration,
+    // threw "no such column: seq" before the migration could add it. The hub
+    // could not open its own older file at all.
+    //
+    // THE CLASS, NOT THE CASE: every index over a column that a migration adds
+    // belongs here, below the ALTERs. Nothing in the CREATE block may name a
+    // column that any migration step is responsible for.
+    this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS act_seq ON activity(seq)");
 
-    const from = this.schemaVersion();
-    if (from < SCHEMA_VERSION) {
+    // THE STEPPER. Each step is a function of the version it starts from, runs
+    // once, and is written so that running it AGAIN on an already-migrated
+    // database changes nothing — because the one thing worse than an
+    // un-migrated database is a half-migrated one, and the only way to be able
+    // to say "just run it again" is to make that true.
+    let from = this.schemaVersion();
+    if (from < 2) {
       // v1 → v2: the trail becomes a ledger. Rows written before the chain
       // existed are numbered and hashed in time order, ONCE. This does not make
       // them trustworthy — nothing can, after the fact — it makes everything
       // written from here on detectable if it is altered.
       this.chainExistingActivity();
-      this.setSchemaVersion(SCHEMA_VERSION);
+      from = 2;
+      this.setSchemaVersion(2);
+    }
+    if (from < 3) {
+      // v2 → v3: membership becomes rows.
+      this.backfillChannelMembers();
+      from = 3;
+      this.setSchemaVersion(3);
+    }
+  }
+
+  /**
+   * v2 → v3. Give every id in every channel's stored `memberIds` a real
+   * membership row.
+   *
+   * LOSSLESS BY CONSTRUCTION, in three ways:
+   * - it only ever INSERTs, and only `OR IGNORE`, so a row that already exists
+   *   is left exactly as it is — running it twice cannot change a `joinedAt`,
+   *   a role, or an `invitedBy`;
+   * - it never writes to the `channels` table, so the old `memberIds` list is
+   *   still there afterwards to check the new rows against (and still readable
+   *   by the previous build, which is why it is not deleted this release);
+   * - `joinedAt` is the channel's own `createdAt`, the only honest answer
+   *   available — nobody recorded when these people arrived, and stamping
+   *   "now" would be inventing a fact.
+   *
+   * ROLES. Nothing in a v2 database records who made a room. Guessing wrongly
+   * in the generous direction would hand out powers nobody was given, so the
+   * rule is deliberately narrow and stated out loud: the person who runs this
+   * Cloud9 becomes `owner` of a room if they are in it; everyone else — and
+   * every member of a room he is not in — is a plain `member`, and the owner
+   * can hand roles out afterwards. A direct conversation has no owner at all:
+   * there is nothing to administer.
+   */
+  private backfillChannelMembers(): void {
+    const ownerId = (this.db.prepare(
+      "SELECT userId FROM tokens ORDER BY rowid ASC LIMIT 1",
+    ).get() as { userId: string } | undefined)?.userId;
+    const rows = this.db.prepare("SELECT id,json FROM channels").all() as
+      { id: string; json: string }[];
+    const insert = this.db.prepare(
+      "INSERT OR IGNORE INTO channel_members(channelId,memberId,role,joinedAt,invitedBy) VALUES(?,?,?,?,NULL)",
+    );
+    for (const r of rows) {
+      const ch = JSON.parse(r.json) as Channel;
+      const joinedAt = ch.createdAt ?? Date.now();
+      for (const memberId of ch.memberIds ?? []) {
+        const role: ChannelRole =
+          ch.kind !== "dm" && ownerId !== undefined && memberId === ownerId ? "owner" : "member";
+        insert.run(r.id, memberId, role, joinedAt);
+      }
     }
   }
 
@@ -388,12 +489,128 @@ export class Store {
   }
 
   // ---- channels ----
-  saveChannel(channel: Channel): void {
-    this.db.prepare("INSERT OR REPLACE INTO channels(id,json) VALUES(?,?)").run(channel.id, JSON.stringify(channel));
+  /**
+   * Write a channel — and keep the membership rows in step with it.
+   *
+   * `memberIds` is still the shape every existing caller holds, so this is the
+   * ONE place that turns it into rows: ids that are new get a row, ids that
+   * have gone get a `removedAt`. Nothing else in the codebase had to change,
+   * and no caller can add a member without a row appearing, because there is
+   * no other way to save a channel.
+   *
+   * The list is still written into the JSON as well. That is deliberate for
+   * one release: an older build reading this file still finds the members
+   * where it expects them (and it is what the migration checks itself against).
+   */
+  saveChannel(channel: Channel, by?: ID): void {
+    this.db.prepare("INSERT OR REPLACE INTO channels(id,json) VALUES(?,?)")
+      .run(channel.id, JSON.stringify(channel));
+    this.syncMembers(channel, by);
   }
+
+  private syncMembers(channel: Channel, by?: ID): void {
+    const wanted = new Set(channel.memberIds ?? []);
+    const now = Date.now();
+    for (const id of wanted) {
+      this.addChannelMember(channel.id, id, { invitedBy: by, at: now });
+    }
+    for (const live of this.liveMemberIds(channel.id)) {
+      if (!wanted.has(live)) this.removeChannelMember(channel.id, live, by);
+    }
+  }
+
+  /** Everyone in this room right now — the derived `memberIds`. */
+  liveMemberIds(channelId: ID): ID[] {
+    return (this.db.prepare(
+      "SELECT memberId FROM channel_members WHERE channelId=? AND removedAt IS NULL ORDER BY joinedAt ASC, memberId ASC",
+    ).all(channelId) as { memberId: string }[]).map(r => r.memberId);
+  }
+
+  /**
+   * Every membership row for one room, including people who have left.
+   * With `at`, it answers the question an id array never could: who was in
+   * this room at that moment.
+   */
+  channelMembers(channelId: ID, opts: { at?: number; includeRemoved?: boolean } = {}): ChannelMember[] {
+    const rows = this.db.prepare(
+      "SELECT channelId,memberId,role,joinedAt,invitedBy,removedAt,removedBy FROM channel_members " +
+      "WHERE channelId=? ORDER BY joinedAt ASC, memberId ASC",
+    ).all(channelId) as unknown as RawMember[];
+    let members = rows.map(toMember);
+    if (opts.at !== undefined) {
+      const at = opts.at;
+      return members.filter(m => m.joinedAt <= at && (m.removedAt === undefined || m.removedAt > at));
+    }
+    if (!opts.includeRemoved) members = members.filter(m => m.removedAt === undefined);
+    return members;
+  }
+
+  /** What this person may change in this room — undefined when they aren't in it. */
+  memberRole(channelId: ID, memberId: ID): ChannelRole | undefined {
+    const row = this.db.prepare(
+      "SELECT role FROM channel_members WHERE channelId=? AND memberId=? AND removedAt IS NULL",
+    ).get(channelId, memberId) as { role: string } | undefined;
+    return row ? (row.role as ChannelRole) : undefined;
+  }
+
+  /**
+   * Put someone in a room.
+   *
+   * Re-joining REVIVES the existing row rather than making a second one (the
+   * primary key would not allow a second anyway), and it keeps whatever role
+   * they had. Only one spell in a room is kept — the current one — which is
+   * the honest limit of a single row per pair, and it is written down here
+   * rather than discovered later.
+   */
+  addChannelMember(
+    channelId: ID, memberId: ID,
+    opts: { role?: ChannelRole; invitedBy?: ID; at?: number } = {},
+  ): void {
+    const at = opts.at ?? Date.now();
+    const existing = this.db.prepare(
+      "SELECT role, removedAt FROM channel_members WHERE channelId=? AND memberId=?",
+    ).get(channelId, memberId) as { role: string; removedAt: number | null } | undefined;
+    if (!existing) {
+      this.db.prepare(
+        "INSERT INTO channel_members(channelId,memberId,role,joinedAt,invitedBy) VALUES(?,?,?,?,?)",
+      ).run(channelId, memberId, opts.role ?? "member", at, opts.invitedBy ?? null);
+      return;
+    }
+    if (existing.removedAt !== null) {
+      this.db.prepare(
+        "UPDATE channel_members SET removedAt=NULL, removedBy=NULL, joinedAt=?, invitedBy=? WHERE channelId=? AND memberId=?",
+      ).run(at, opts.invitedBy ?? null, channelId, memberId);
+    }
+    if (opts.role && opts.role !== existing.role) this.setMemberRole(channelId, memberId, opts.role);
+  }
+
+  /** Take someone out — softly, so the record still knows they were here. */
+  removeChannelMember(channelId: ID, memberId: ID, by?: ID): void {
+    this.db.prepare(
+      "UPDATE channel_members SET removedAt=?, removedBy=? WHERE channelId=? AND memberId=? AND removedAt IS NULL",
+    ).run(Date.now(), by ?? null, channelId, memberId);
+  }
+
+  setMemberRole(channelId: ID, memberId: ID, role: ChannelRole): void {
+    this.db.prepare(
+      "UPDATE channel_members SET role=? WHERE channelId=? AND memberId=? AND removedAt IS NULL",
+    ).run(role, channelId, memberId);
+  }
+
+  /**
+   * A channel as everyone else sees it: whatever was stored, with `memberIds`
+   * REPLACED by the live membership rows. One place, so the rows and the wire
+   * can never disagree about who is in a room.
+   */
+  private hydrateChannel(json: string): Channel {
+    const ch = JSON.parse(json) as Channel;
+    ch.memberIds = this.liveMemberIds(ch.id);
+    return ch;
+  }
+
   channels(): Channel[] {
     return (this.db.prepare("SELECT json FROM channels").all() as { json: string }[])
-      .map(r => JSON.parse(r.json) as Channel);
+      .map(r => this.hydrateChannel(r.json));
   }
   /**
    * The one-to-one conversation between exactly these two ids, if there is one
@@ -410,7 +627,7 @@ export class Store {
 
   channel(id: ID): Channel | undefined {
     const row = this.db.prepare("SELECT json FROM channels WHERE id=?").get(id) as { json: string } | undefined;
-    return row ? (JSON.parse(row.json) as Channel) : undefined;
+    return row ? this.hydrateChannel(row.json) : undefined;
   }
 
   // ---- messages ----
@@ -824,8 +1041,9 @@ const AFTER_EVERY_ID = "\uffff";
  * The shape this build expects. Bumped whenever the tables change, and read by
  * `migrate()` so the next change is a step and not a hand repair.
  * 1 = before the chat basics. 2 = reactions, attachments, read state, ledger.
+ * 3 = membership as rows, and rooms that can carry a topic and be archived.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * The fingerprint of one line of the trail.
