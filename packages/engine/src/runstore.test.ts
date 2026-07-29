@@ -267,3 +267,114 @@ test("a scheduled check-in and a delegated job are recorded as what they are", a
   assert.equal(engine.lastRun?.kind, "task");
   assert.equal(engine.lastRun?.taskId, "t7");
 });
+
+// ------------------------------------------------ torn writes and retention
+//
+// Findings from the 2026-07-29 review, fixed as a CLASS:
+//  - a record was written with a plain `writeFileSync`, so a turn interrupted
+//    mid-write left half a file that still occupied a retention slot for ever;
+//  - `RUN_STORE_DEFAULTS.keepPerAgent` and `RUN_RETENTION.perAgent` were two
+//    unlinked 50s in two packages;
+//  - a negative keep made `prune` delete everything.
+
+test("a record becomes visible only whole: the write lands under a temporary name first", () => {
+  const dir = tmp();
+  const seen: string[] = [];
+  const store = storeIn(dir);
+  const saved = record();
+
+  // watch the folder through the write by hooking the module's own fs use:
+  // whatever name the bytes are first written under, it must NOT be the name
+  // `list` and `read` look at.
+  const realWrite = fs.writeFileSync;
+  (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync =
+    ((p: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, o?: unknown) => {
+      if (typeof p === "string") seen.push(path.basename(p));
+      return realWrite(p as string, data as string, o as never);
+    }) as typeof fs.writeFileSync;
+  try {
+    store.save(saved);
+  } finally {
+    (fs as unknown as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = realWrite;
+  }
+
+  assert.equal(seen.length, 1, "the record was written exactly once");
+  assert.notEqual(seen[0], `${saved.id}.json`,
+    "bytes went straight to the final name — an interrupted write would be a torn record");
+  assert.ok(seen[0].startsWith(`${saved.id}.json.`), "and the temporary name is derived from it");
+  // and after the call the final name is there, whole
+  assert.deepEqual(store.read("a1", saved.id)?.id, saved.id);
+});
+
+test("a torn file left by an older version is recovered, not kept for ever", () => {
+  const dir = tmp();
+  const store = storeIn(dir);
+  const good = record();
+  store.save(good);
+
+  // exactly what an interrupted writeFileSync used to leave behind
+  const runs = path.join(dir, "agents", "a1", "runs");
+  const tornId = "r-000000000000-torn";
+  fs.writeFileSync(path.join(runs, `${tornId}.json`), '{"id":"r-000000000000-torn","step', "utf8");
+  assert.equal(fs.readdirSync(runs).length, 2);
+
+  const rows = store.list("a1");
+  assert.deepEqual(rows.map(r => r.id), [good.id], "the torn file is not offered as a run");
+  assert.equal(fs.readdirSync(runs).length, 1,
+    "and it no longer occupies a retention slot — it carried nothing to keep");
+});
+
+test("a leftover temporary file is swept and never counted as a run", () => {
+  const dir = tmp();
+  const store = storeIn(dir);
+  const good = record();
+  store.save(good);
+  const runs = path.join(dir, "agents", "a1", "runs");
+  fs.writeFileSync(path.join(runs, `r-000000000000-half.json.tmp-1-2`), "{", "utf8");
+
+  assert.deepEqual(store.list("a1").map(r => r.id), [good.id]);
+  store.prune("a1");
+  assert.deepEqual(fs.readdirSync(runs), [`${good.id}.json`], "the half-written file is gone");
+});
+
+test("how many runs are kept is ONE number, shared with the hub", async () => {
+  const { RUN_RETENTION } = await import("@cloud9/shared");
+  const { RUN_STORE_DEFAULTS } = await import("./runstore.js");
+  assert.equal(RUN_STORE_DEFAULTS.keepPerAgent, RUN_RETENTION.perAgent,
+    "the engine's keep and the hub's keep must be the same fact, not two copies of 50");
+
+  // Equal today is not enough — two 50s in two packages ARE equal today, and
+  // that is exactly how they drift apart tomorrow. The number must be DERIVED,
+  // so this asserts the source says so rather than that the values happen to
+  // match.
+  //
+  // The path is resolved from THIS FILE, never from the working directory: the
+  // compiled test lives in dist/ and can be run from the package root (npm
+  // test) or from the repo root (node --test packages/engine/dist/*.test.js).
+  // Resolving against cwd passed one way and failed the other, which is a test
+  // that reports on where you stood rather than on the code.
+  const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+  const source = fs.readFileSync(path.resolve(here, "..", "src", "runstore.ts"), "utf8");
+  const line = source.split(String.fromCharCode(10)).find(l => l.includes("keepPerAgent:")) ?? "";
+  assert.ok(line.includes("RUN_RETENTION.perAgent"),
+    `keepPerAgent must be derived from RUN_RETENTION.perAgent, not written out again: ${line.trim()}`);
+});
+
+test("an absurd keep can never empty an agent's history", () => {
+  for (const keep of [-5, 0, Number.NaN, -0.5]) {
+    const dir = tmp();
+    const store = storeIn(dir, { keepPerAgent: keep as number });
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const r = { ...record(), id: newRunId(1_000_000 + i * 1000) };
+      ids.push(r.id);
+      store.save(r);
+    }
+    const runs = path.join(dir, "agents", "a1", "runs");
+    assert.ok(fs.readdirSync(runs).length >= 1,
+      `keep=${String(keep)} deleted every run an agent had`);
+    assert.ok(store.list("a1").length >= 1, `keep=${String(keep)} left nothing to list`);
+    assert.ok(store.list("a1", keep as number).length >= 1, `list(keep=${String(keep)}) returned nothing`);
+    assert.ok(ids.length === 4);
+  }
+});

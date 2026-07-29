@@ -105,6 +105,38 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
     attempts refused), FTS5 injection, the one-use ticket race, `runDetail`
     being unprobeable, and the migration happy path being lossless.
 
+- **2026-07-29 ~21:00 — the plan's open list is DONE and pushed** (`58e92c3`).
+  Verified by running: build clean, **174 engine + 113 relay**,
+  **191 browser checks** (179 + 8 + 4), all executed. The installed app was
+  rebuilt (the copy on the machine was from the morning, before everything),
+  reinstalled, given a clean start, and its window captured as proof.
+  Review page: https://claude.ai/code/artifact/967029d8-409d-468e-b3ed-8b9dc9126356
+  - Closed: the room breach (both halves), redaction of secrets inside URLs,
+    unsafe migrations, `from:` search, role restoration on rejoin, the literal
+    NUL in the link guard, and the hub's own error sentence reaching the screen.
+  - Shipped: run records on screen, files, rooms, scrollback, search,
+    reactions, edit/delete, threads, account-level unread, markdown.
+
+## Still open, in priority order (nothing here needs Vikas)
+1. **Remaining review findings**, none yet fixed: an unrelated refusal kills an
+   in-flight upload (#9); a blob URL revoked while the picture is still on
+   screen (#16); Enter drops a file still uploading (#17); a late search result
+   resurrects a cleared search (#18); the scroll anchor is undone by the
+   follow-to-bottom effect (#19); roles are shown but cannot be changed (#21);
+   plus the P3 list (unread capped at 1000 reporting "999", the no-FTS5
+   fallback searching raw JSON, `runstore` non-atomic writes, two unlinked
+   retention constants).
+2. **Codex cannot be isolated** as tightly as Claude — four of its own tools and
+   the owner's Codex skills still load. Written down, not fixed.
+3. **vibe-qa phases 5 and 6 have never been run** — negative/edge testing and
+   the UI/UX pass. The suite proves features work; nobody has tried to break
+   them with bad input.
+
+## NEEDS VIKAS (do not guess)
+- **Which real system should an agent touch first** — calendar, email, files?
+  Everything else is in place; this is the one that makes the product real.
+- Whether to set up the private network so friends can connect.
+
 ## Work in flight when he left
 | Agent | Owns | Doing |
 |---|---|---|

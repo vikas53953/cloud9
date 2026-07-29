@@ -11,7 +11,8 @@ import assert from "node:assert/strict";
 import { AgentAbilities, AgentDef } from "@cloud9/shared";
 import { claudeToolsFor } from "./abilities.js";
 import { claudeArgs, CLAUDE_ISOLATION_FLAGS } from "./claude-cli.js";
-import { codexArgs, CODEX_ISOLATION_FLAGS } from "./codex.js";
+import { codexArgs, CODEX_DISABLED_FEATURES, CODEX_ISOLATION_FLAGS } from "./codex.js";
+import { HARNESS_ISOLATION, isolationFor } from "./isolation.js";
 import { EMPTY_ARG, run, UnsafeArgumentError } from "./run.js";
 
 const ALL_OFF: AgentAbilities = {
@@ -114,4 +115,78 @@ test("Codex cannot declare its built-in tool set — this is recorded, not fixed
   // Measured 2026-07-29 with both isolation flags on: the model still reported
   // collaboration.spawn_agent, list_mcp_resources, web.run and image_gen.
   // A Codex agent's toggles govern its SANDBOX, not its whole tool surface.
+});
+
+// ---------------------------------------------------------------------------
+// What Codex CAN be told to drop. Measured on codex-cli 0.146.0, 2026-07-29,
+// by two real `codex exec` turns that differ only in these flags:
+//
+//   with --ignore-user-config --ignore-rules ONLY, the model reported holding
+//     tool_search_tool, functions.list_mcp_resources,
+//     functions.list_mcp_resource_templates, functions.read_mcp_resource,
+//     functions.request_plugin_install, image_gen.imagegen, web.run,
+//     collaboration.* (7), functions.{wait,shell_command,update_plan,
+//     request_user_input,view_image,exec,apply_patch}
+//   — and the CLI's own "Skill descriptions were shortened" note.
+//
+//   with the feature switches below added, the SAME prompt reported
+//     functions.{wait,shell_command,update_plan,request_user_input,view_image,
+//     exec,apply_patch}, collaboration.* (7), web.run
+//   — six tools gone, and no skills note.
+
+test("a Codex agent is told to drop the owner's plugins, apps, MCP resources and image tool", () => {
+  const args = codexArgs(agent({ files: true }), "C:/data/a1");
+  for (const feature of CODEX_DISABLED_FEATURES) {
+    const at = args.indexOf(feature);
+    assert.ok(at > 0, `feature ${feature} is never switched off`);
+    assert.equal(args[at - 1], "--disable", `${feature} is not attached to a --disable`);
+  }
+  // named individually so dropping one fails here, loudly, with the tool it costs
+  assert.ok(CODEX_DISABLED_FEATURES.includes("plugins"), "functions.request_plugin_install");
+  assert.ok(CODEX_DISABLED_FEATURES.includes("apps"), "the owner's connected apps");
+  assert.ok(CODEX_DISABLED_FEATURES.includes("image_generation"), "image_gen.imagegen");
+});
+
+test("Codex's own web-search switch follows the ability, both ways", () => {
+  const on = codexArgs(agent({ webSearch: true }), "C:/data/a1");
+  const off = codexArgs(agent(), "C:/data/a1");
+  assert.ok(on.includes("tools.web_search=true"), "an agent allowed the web gets the CLI switch on");
+  assert.ok(off.includes("tools.web_search=false"), "and one that is not gets it off");
+});
+
+// --------------------------------------------------------------------------
+// The app must be able to TELL THE TRUTH about which harness's toggles are a
+// real boundary. A screen that shows the same sentence for both is the bug.
+
+test("the engine can say, per harness, whether the toggles are the boundary", () => {
+  assert.equal(HARNESS_ISOLATION.claude.togglesAreTheBoundary, true,
+    "Claude declares its exact tool set with --tools");
+  assert.equal(HARNESS_ISOLATION.codex.togglesAreTheBoundary, false,
+    "codex-cli 0.146.0 has no --tools; collaboration.* and web.run survive every switch");
+  assert.equal(HARNESS_ISOLATION.claude.stillLoaded.length, 0);
+  assert.ok(HARNESS_ISOLATION.codex.stillLoaded.length > 0,
+    "what still leaks is named, tool by tool, not summarised away");
+  for (const leak of HARNESS_ISOLATION.codex.stillLoaded) {
+    assert.ok(leak.name && leak.plainWords && leak.why, "every leak says what it is and why it is still there");
+  }
+  // the two headlines must not be the same words — that is the whole point
+  assert.notEqual(HARNESS_ISOLATION.claude.headline, HARNESS_ISOLATION.codex.headline);
+  assert.equal(isolationFor("codex"), HARNESS_ISOLATION.codex);
+  assert.equal(isolationFor("mock")?.togglesAreTheBoundary, true, "a mock agent runs no tools at all");
+});
+
+test("a harness may not claim the toggles are the boundary while leaking tools", () => {
+  // the class rule: the two fields cannot disagree, whoever edits the table next
+  for (const report of Object.values(HARNESS_ISOLATION)) {
+    assert.equal(report.togglesAreTheBoundary, report.stillLoaded.length === 0,
+      `${report.harness} says its toggles are the boundary and still lists leaks`);
+    assert.ok(report.measuredOn, `${report.harness} has no evidence date`);
+  }
+});
+
+test("generalising to Codex never loosened Claude's own isolation", () => {
+  const args = claudeArgs(agent({ webSearch: true }));
+  assert.ok(args.includes("--tools"), "the declared tool set is still declared");
+  for (const flag of CLAUDE_ISOLATION_FLAGS) assert.ok(args.includes(flag));
+  assert.ok(!args.some(a => a.startsWith("--disable ")), "and no Codex-shaped flag leaked in");
 });

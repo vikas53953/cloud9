@@ -7,7 +7,7 @@ import { AgentDef, MODEL_ID_RE, validateAgentInput } from "@cloud9/shared";
 import {
   buildAgentPrompt, ClaudeProvider, HarnessUnavailableError, RespondInput,
 } from "./provider.js";
-import { codexSandboxFor } from "./abilities.js";
+import { codexSandboxFor, codexWebSearchFor } from "./abilities.js";
 import { envWithoutCredentials } from "./env.js";
 import { run, Runner, safeArg } from "./run.js";
 import {
@@ -247,26 +247,75 @@ function str(v: unknown): string | undefined {
  *  - `--ignore-rules` does not load the owner's or the project's execpolicy
  *    `.rules` files.
  *
- * WHAT STILL LEAKS, and this one is worse than Claude's. Probed live on
- * codex-cli 0.146.0, 2026-07-29, with both flags set:
- *  - the model still reported holding `collaboration.spawn_agent`,
- *    `collaboration.send_message`, `list_mcp_resources`, `read_mcp_resource`,
- *    `web.run` and `image_gen.imagegen`. **Codex has no equivalent of Claude's
- *    `--tools`**, so Cloud9 cannot declare the exact built-in set for a Codex
- *    agent the way it can for a Claude one.
- *  - a full Cloud9 turn still produced the CLI's own note "Skill descriptions
- *    were shortened to fit the 2% skills context budget", which means the
- *    owner's `$CODEX_HOME/skills` are STILL being loaded. `--ignore-user-config`
- *    covers config.toml and nothing else. That note now lands in the run record
- *    as a visible step rather than disappearing, which is the only good part.
+ * These two are NOT enough on their own; see CODEX_DISABLED_FEATURES below for
+ * the six tools a second pass closed, and `isolation.ts` for what survived
+ * everything and therefore has to be said out loud on the screen.
+ *
+ * WHAT CANNOT BE CLOSED, re-measured 2026-07-29 on codex-cli 0.146.0 with every
+ * switch this file sets:
+ *  - **Codex has no equivalent of Claude's `--tools`.** `codex --help` and
+ *    `codex exec --help` were both read at 0.146.0; there is no such flag. The
+ *    built-in set cannot be DECLARED, only whittled at.
+ *  - `collaboration.*` (6 tools, including `spawn_agent`) survived
+ *    `--disable multi_agent` AND `-c agents.max_depth=0` on a live turn.
+ *  - `web.run` survived `-c tools.web_search=false` on a live turn.
+ *  - `functions.exec` / `shell_command` / `apply_patch` cannot be removed at
+ *    all; what holds them back is the sandbox, which is a fence, not an absence.
+ *  - the owner's skills still load. `skills.enabled=false`,
+ *    `include_skills_usage_instructions=false` and `skills.disabled_skill_names`
+ *    were each rendered through `codex debug prompt-input` and each changed
+ *    nothing (49 skills before, 49 after). Worse, they come from TWO roots:
+ *    `$CODEX_HOME/skills` and `~/.agents/skills`. Pointing CODEX_HOME at a
+ *    Cloud9-owned folder drops the first — and signs the agent out: with a
+ *    fresh CODEX_HOME, `codex login status` printed "Not logged in" where the
+ *    real one printed "Logged in using ChatGPT". Exactly the trap
+ *    CLAUDE_CONFIG_DIR set for the Claude path. `~/.agents/skills` is not under
+ *    CODEX_HOME at all and stayed loaded even then.
  *
  * The honest consequence, which belongs in front of the owner rather than
  * buried here: a Codex agent's ability toggles control its SANDBOX (what it may
  * write) but not its full tool surface. A Claude agent's toggles now control
- * both. Until Codex grows a `--tools`, "the agent used only what it was allowed
- * to" is evidenced for Claude and only requested for Codex.
+ * both. That difference is exported as data — see `HARNESS_ISOLATION` — so the
+ * screen can stop showing one sentence for two different truths.
  */
 export const CODEX_ISOLATION_FLAGS = ["--ignore-user-config", "--ignore-rules"] as const;
+
+/**
+ * Codex feature switches turned OFF for every agent, whatever its abilities say.
+ *
+ * `--disable <name>` is the CLI's documented shorthand for `-c
+ * features.<name>=false`, and every name here came from `codex features list` on
+ * this machine, so none of them can be a typo the CLI silently ignores.
+ *
+ * MEASURED, not hoped for. Two real `codex exec` turns on codex-cli 0.146.0,
+ * 2026-07-29, differing only in these switches, asked the model to name its own
+ * tools. Six tools stopped arriving:
+ *
+ *   tool_search_tool, functions.list_mcp_resources,
+ *   functions.list_mcp_resource_templates, functions.read_mcp_resource,
+ *   functions.request_plugin_install, image_gen.imagegen
+ *
+ * and the CLI's own "Skill descriptions were shortened" note stopped appearing.
+ * `codex debug prompt-input` (which renders exactly what reaches the model,
+ * offline and for free) confirms the matching text goes too: the owner's
+ * `<plugins_instructions>`, `<apps_instructions>` and `<recommended_plugins>`
+ * blocks — 4,641 characters of his setup that every turn used to pay for.
+ *
+ * `multi_agent` is in the list even though it did NOT remove `collaboration.*`
+ * on the probe. It costs nothing, it is the switch the CLI offers, and if a
+ * later version honours it we get the fix for free. What it does NOT do is
+ * recorded honestly in `isolation.ts` rather than assumed here.
+ */
+export const CODEX_DISABLED_FEATURES = [
+  "plugins",          // functions.request_plugin_install + the owner's installed plugins
+  "apps",             // the owner's connected apps and their MCP tools
+  "multi_agent",      // collaboration.* — requested; NOT granted on 0.146.0
+  "image_generation", // image_gen.imagegen — confirmed gone
+  "computer_use",     // driving the owner's actual desktop
+  "browser_use",      // driving the owner's actual browser
+  "memories",         // the owner's own memories, written by his own sessions
+  "hooks",            // the owner's hook scripts
+] as const;
 
 /**
  * Build the `codex exec` argument list for an agent.
@@ -301,6 +350,23 @@ export function codexArgs(agent: AgentDef, cwd: string, models: string[] = []): 
     args.push("-m", safeArg(agent.model));
   }
   args.push("-c", "approval_policy=never", "--ephemeral", ...CODEX_ISOLATION_FLAGS);
+  // Every feature switch the CLI offers that takes a tool away. See the list.
+  for (const feature of CODEX_DISABLED_FEATURES) args.push("--disable", feature);
+  // The only per-tool switch Codex has (`[tools] web_search`), driven by the
+  // same table that writes the sentence the agent reads about itself. It did
+  // NOT remove `web.run` when measured — that is recorded in isolation.ts, not
+  // papered over — but it is the switch the CLI offers and it follows the toggle
+  // in BOTH directions, so an agent that was never allowed the web is at least
+  // never handed it on purpose.
+  args.push("-c", `tools.web_search=${codexWebSearchFor(agent)}`);
+  // NOT SET, and the reason is worth keeping. `-c agents.max_depth=0` looked
+  // like the way to stop an agent spawning further agents. Running it proved
+  // two things: it does not remove `collaboration.spawn_agent` (it was still in
+  // the tool list on a live probe turn), and the CLI REFUSES the value outright
+  // — "Error: agents.max_depth must be at least 1", exit 1, before the model is
+  // even reached. Shipping it would have broken every Codex turn on the machine,
+  // which is exactly what happened once before with the quoting fix. A flag that
+  // does not close the hole is not worth a command line that does not run.
   return args;
 }
 

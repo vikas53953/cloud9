@@ -11,8 +11,15 @@ export {
 } from "./claude-cli.js";
 export {
   CodexProvider, parseCodexJsonl, traceCodex, codexMapper, codexArgs,
-  CODEX_ISOLATION_FLAGS, type CodexProviderOptions, type CodexTranscript,
+  CODEX_ISOLATION_FLAGS, CODEX_DISABLED_FEATURES,
+  type CodexProviderOptions, type CodexTranscript,
 } from "./codex.js";
+// The honest per-harness answer to "are these toggles the permission boundary?"
+// A screen that shows one sentence for both harnesses is telling a lie about one.
+export {
+  HARNESS_ISOLATION, isolationFor,
+  type HarnessName, type HarnessIsolation, type LeakedSurface,
+} from "./isolation.js";
 // What an agent actually did — the run record (FR-TL-003, FR-AU-003).
 // The SHAPES themselves live in `@cloud9/shared` — see runrecord.ts. They are
 // re-exported here so `@cloud9/engine` keeps its published surface, but there is
@@ -31,7 +38,7 @@ export {
 // The ONE owner of "what this agent can do" — read by the command line, the
 // sandbox and the prompt alike, so they cannot disagree.
 export {
-  CAPABILITIES, NEVER_ALLOWED_TOOLS, claudeToolsFor, codexSandboxFor,
+  CAPABILITIES, NEVER_ALLOWED_TOOLS, claudeToolsFor, codexSandboxFor, codexWebSearchFor,
   renderCapabilities, type Capability,
 } from "./abilities.js";
 export {

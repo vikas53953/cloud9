@@ -32,6 +32,13 @@ export interface Capability {
   claudeTools: string[];
   /** true if this switch is what opens Codex's sandbox for writing */
   opensCodexWorkspace?: boolean;
+  /**
+   * true if this switch is what turns on Codex's own `[tools] web_search`.
+   * It is the ONLY per-tool switch codex-cli 0.146.0 has, and it is not a
+   * boundary — `web.run` was still present on a live turn with it false. See
+   * `isolation.ts`. It lives here so the switch and the sentence stay one row.
+   */
+  opensCodexWebSearch?: boolean;
   /** what the agent is told when the switch is ON */
   can: string;
   /** what the agent is told when the switch is OFF — never left to guess */
@@ -46,6 +53,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     ability: "webSearch",
     claudeTools: ["WebSearch", "WebFetch"],
+    opensCodexWebSearch: true,
     can: "You CAN search the web and open web pages, so you can check things that are " +
       "live right now — prices, availability, news — rather than guessing from memory.",
     cannot: "You CANNOT search the web or open web pages. Say so plainly if you are asked " +
@@ -94,6 +102,11 @@ export function claudeToolsFor(agent: AgentDef): string[] {
 export function codexSandboxFor(agent: AgentDef): "workspace-write" | "read-only" {
   const opens = CAPABILITIES.some(c => c.opensCodexWorkspace && isOn(agent, c.ability));
   return opens ? "workspace-write" : "read-only";
+}
+
+/** Codex's own web-search switch, from the same table. */
+export function codexWebSearchFor(agent: AgentDef): boolean {
+  return CAPABILITIES.some(c => c.opensCodexWebSearch && isOn(agent, c.ability));
 }
 
 /**
