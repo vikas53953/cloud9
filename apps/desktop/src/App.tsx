@@ -8,7 +8,7 @@ import {
   MENU_ACTIONS, MenuAction, Message, RunListEntry, RunRecord, RunStep, RunStepKind,
   SearchHit, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
 } from "@cloud9/shared";
-import { client } from "./store.js";
+import { client, World } from "./store.js";
 import { Markdown } from "./markdown.js";
 
 const isQuickWindow = location.hash === "#quick";
@@ -530,9 +530,126 @@ function onePerPerson(users: User[]): User[] {
   return out;
 }
 
+/* ---- an agent in a room is a PERSON in the room ---- */
+
+/**
+ * WHOSE AGENT THIS IS, AND THEREFORE WHO CAN READ THIS ROOM.
+ *
+ * An agent counts as its owner for visibility: the hub calls a room yours when
+ * an agent of yours is in it. So admitting somebody's agent admits that person
+ * to every word said here, including everything said before they arrived — and
+ * a row that said only "🔭 Scout" hid that person completely. That is exactly
+ * how a private room was widened with nothing on screen to show for it.
+ *
+ * One owner for these words, so the member list, the right rail, the add
+ * picker and a direct conversation can never drift into saying different
+ * things about the same relationship.
+ */
+interface AgentOwnership {
+  /** the owner's name, or "You" when it is this person's own agent */
+  name: string;
+  mine: boolean;
+  /** "Priya's agent" / "Your agent" */
+  whose: string;
+  /** the sentence that must never be missing: who gains sight of this place */
+  reads: string;
+}
+
+function ownershipOf(
+  agent: AgentDef, world: World, place: "room" | "conversation" = "room",
+): AgentOwnership {
+  const mine = !!world.me && agent.ownerId === world.me.id;
+  /* An owner who is no longer in this Cloud9 is still named as a stranger
+     rather than quietly left blank — "somebody" is a worse answer than a
+     missing name, but a blank line is the worst of the three. */
+  const name = mine
+    ? "You"
+    : world.users.find(u => u.id === agent.ownerId)?.name ?? "Someone who has left";
+  return {
+    name, mine,
+    whose: mine ? "Your agent" : `${name}'s agent`,
+    reads: `${name} can read this ${place}`,
+  };
+}
+
+/**
+ * The two lines every agent carries wherever it sits in a room: whose it is,
+ * and what that means for who can read the place.
+ */
+function AgentOwnerTag({ agent, place = "room" }: {
+  agent: AgentDef;
+  place?: "room" | "conversation";
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const own = ownershipOf(agent, world, place);
+  return (
+    <span className="agentowner" data-owner={own.name} data-mine={own.mine ? "yes" : "no"}>
+      <span className="whose">{own.whose}</span>
+      {/* The readership line is for the answer the reader does NOT already
+          have. "You can read this room" told somebody standing in the room
+          nothing, and a line that says nothing beside a line that matters
+          teaches people to skip both. */}
+      {own.mine ? null : (
+        <span className="readsroom"><span className="rm" aria-hidden="true">◉</span>{own.reads}</span>
+      )}
+    </span>
+  );
+}
+
 /* a one-line bus so a message row can drop text into the composer */
 type Inserter = (text: string) => void;
 let composerInsert: Inserter | null = null;
+
+/* ---- the hub could not open its messages ---- */
+
+/**
+ * The hub's own sentence when it cannot open the database, or nothing.
+ *
+ * `StoreOpenError` already writes the sentence for a person rather than for a
+ * developer: it names the file, says what was wrong with it, and says that
+ * nothing was changed. It is shown WORD FOR WORD. Rewording it here would be a
+ * second, quieter answer to "what happened to my messages", and the two would
+ * drift the first time either was edited.
+ *
+ * Read from wherever the shell can put it — the desktop bridge, or the address
+ * the window was opened with — because the hub that failed is a different
+ * process from this screen and has no socket left to say it on.
+ */
+function hubCannotOpen(): string | null {
+  const bridged = (window as unknown as { cloud9?: { hubError?: unknown } }).cloud9?.hubError;
+  const fromShell = typeof bridged === "string" ? bridged : "";
+  const fromUrl = new URLSearchParams(location.search).get("hubError") ?? "";
+  const said = (fromShell || fromUrl).trim();
+  return said ? said : null;
+}
+
+const HUB_PROBLEM = hubCannotOpen();
+
+/**
+ * A plain screen, never a stack trace.
+ *
+ * There is nothing to sign into and nothing to retry from here: the file is
+ * where it was and the reason is in the sentence. So this offers no button
+ * that would pretend otherwise.
+ */
+function HubUnreadable({ text }: { text: string }): React.JSX.Element {
+  return (
+    <div className="welcome hubdown">
+      <div className="welcome-left">
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div className="brand" aria-hidden="true"><CloudMark /></div>
+          <span className="wordmark">Cloud9</span>
+        </div>
+        <h1>Cloud9 could not open your <em>messages</em>.</h1>
+        <div className="notice refused hubsay" role="alert">{text}</div>
+        <p className="sec-note">
+          Nothing on this screen can change that file. Close Cloud9, put the file back
+          where it was, or hand this sentence to whoever looks after this machine.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 /* ================= app ================= */
 
@@ -561,6 +678,11 @@ export function App(): React.JSX.Element {
     client.send({ type: "refreshHarness" });
     client.send({ type: "harnessStatus" });
   }, [canAskHarness, meId]);
+
+  /* Before anything else: if the hub could not read the database there is no
+     world to draw, and a sign-in box would be an invitation to a door that
+     cannot open. */
+  if (HUB_PROBLEM) return <HubUnreadable text={HUB_PROBLEM} />;
 
   const onJoinScreen = !joined || world.authFailed;
   const screen = onJoinScreen
@@ -1794,6 +1916,9 @@ function ChatView({
             <div className="role">
               {peerAgent ? roleOf(peerAgent.persona) : "Just the two of you — nothing here is posted to a channel"}
             </div>
+            {/* A direct conversation with somebody else's agent is a direct
+                conversation with that somebody: they can read it. */}
+            {peerAgent && <AgentOwnerTag agent={peerAgent} place="conversation" />}
           </div>
           <div className="grow" />
           {peerAgent && dmAgentStatus && (
@@ -2437,22 +2562,80 @@ function ThreadPanel({ channel, rootId, onClose }: {
   );
 }
 
+/**
+ * LETTING SOMEBODY IN — offered only to the people who can actually do it.
+ *
+ * `addMembers` used to be on the any-member gate, and a plain member could hand
+ * a private room's whole scrollback to anybody. It is admin-or-owner now, so
+ * the control follows the same rule: a button whose only possible outcome is a
+ * refusal is worse than no button at all. The relay is still the gate (§8) —
+ * nothing here widens anything, it only stops a click that would be refused.
+ *
+ * A DIRECT CONVERSATION HAS NO CONTROL AT ALL, for anybody, including the
+ * owner. Two people is what a direct conversation IS; the way to include a
+ * third is to start a room.
+ */
 function AddToChannel({ channel }: { channel: Channel }): React.JSX.Element | null {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  if (channel.kind === "dm") return null;
-  const candidates = [
-    ...world.agents.filter(a => !channel.memberIds.includes(a.id)).map(a => ({ id: a.id, label: `${a.emoji} ${a.name}` })),
-    ...onePerPerson(world.users).filter(u => !channel.memberIds.includes(u.id)).map(u => ({ id: u.id, label: u.name })),
-  ];
-  if (candidates.length === 0) return null;
+  const isRoom = channel.kind !== "dm";
+  /* The rows are what carry the role — `memberIds` answers "who is in here"
+     and nothing else. Asked here as well as in the panel, because the header
+     is drawn whether or not the panel is open. */
+  /* Re-asked whenever the room's membership changes, not only when it opens:
+     the rows are what decide whether this control is drawn at all, and a stale
+     copy would offer — or withhold — the control on last week's answer. */
+  const roster = channel.memberIds.join(",");
+  useEffect(() => { if (isRoom) client.askMembers(channel.id); }, [channel.id, isRoom, roster]);
+
+  if (!isRoom || channel.archivedAt) return null;
+  const rows = (world.members[channel.id] ?? []).filter(m => !m.removedAt);
+  const myRole = rows.find(m => m.memberId === world.me?.id)?.role;
+  /* Until the rows have arrived the answer is "we don't know yet", and an
+     unknown must not be drawn as a yes. */
+  if (!mayAdministerChannel(myRole)) return null;
+
+  const inRoom = (id: ID): boolean => rows.some(m => m.memberId === id);
+  /* An agent whose owner is not in the room WILL be refused by the hub, and
+     being refused after clicking is a worse way to learn it. It is still shown,
+     greyed and with the reason, because hiding it invites the same click again
+     tomorrow. */
+  const agents = world.agents
+    .filter(a => !inRoom(a.id))
+    .map(a => {
+      const own = ownershipOf(a, world);
+      const ownerHere = a.ownerId === world.me?.id || inRoom(a.ownerId);
+      return {
+        id: a.id,
+        label: ownerHere
+          ? `${a.emoji} ${a.name} — ${own.whose}, so ${own.mine ? "you" : own.name} can read it`
+          : `${a.emoji} ${a.name} — ${own.name} isn't in this room`,
+        why: ownerHere ? "" : `${own.name} isn't in this room`,
+        blocked: !ownerHere,
+      };
+    });
+  const people = onePerPerson(world.users)
+    .filter(u => !inRoom(u.id))
+    .map(u => ({ id: u.id, label: u.name, why: "", blocked: false }));
+  if (agents.length === 0 && people.length === 0) return null;
+
+  const option = (c: { id: ID; label: string; why: string; blocked: boolean }) => (
+    <option key={c.id} value={c.id} disabled={c.blocked}
+      data-add={c.id} data-blocked={c.blocked ? "yes" : "no"} data-why={c.why || undefined}>
+      {c.label}
+    </option>
+  );
+
   return (
-    <select
-      aria-label="Add someone to this channel"
+    <select className="addmember"
+      aria-label="Add someone to this room"
       value=""
       onChange={e => { if (e.target.value) client.send({ type: "addMembers", channelId: channel.id, memberIds: [e.target.value] }); }}
     >
-      <option value="">Add agent…</option>
-      {candidates.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+      <option value="">Add someone…</option>
+      {people.length > 0 && <optgroup label="People">{people.map(option)}</optgroup>}
+      {agents.length > 0 && (
+        <optgroup label="Agents — their owner reads this room">{agents.map(option)}</optgroup>
+      )}
     </select>
   );
 }
@@ -2473,6 +2656,22 @@ function Composer({ channel, replyTo }: {
   const uploads = world.uploads[channel.id] ?? [];
   const ready = uploads.filter(u => u.state === "done").length;
   const busy = uploads.some(u => u.state === "sending");
+
+  /**
+   * HOW MUCH IS SITTING UNSENT, against the ceiling the hub actually enforces.
+   *
+   * Counted across every conversation, because the ceiling is per PERSON: files
+   * picked in one room and never sent are what fills it, and a tray that only
+   * counted this room would explain nothing when the refusal arrived. Both
+   * numbers come from `@cloud9/shared` — the hub's own constants — so the
+   * screen cannot say a limit the hub does not hold.
+   */
+  const parked = useMemo(
+    () => Object.values(world.uploads).flat()
+      .filter(u => u.state !== "failed")
+      .reduce((n, u) => n + u.size, 0),
+    [world.uploads]);
+  const parkedHours = Math.round(ATTACHMENT_LIMITS.parkedTtlMs / 3_600_000);
 
   const mentionQuery = useMemo(() => {
     const m = /(?:^|\s)@([\w-]*)$/.exec(text);
@@ -2589,6 +2788,18 @@ function Composer({ channel, replyTo }: {
             Each one says what is happening to it — going up, up, or refused in
             the hub's own sentence — because an upload that fails in silence is
             a message somebody thinks they sent. */}
+        {parked > 0 && (
+          <div className="parked" role="status"
+            data-parked={parked} data-parked-max={ATTACHMENT_LIMITS.parkedBytesPerUser}>
+            <span className="pk">Files waiting to be sent</span>
+            <span className="pv">
+              {fileSize(parked)} of {fileSize(ATTACHMENT_LIMITS.parkedBytesPerUser)}
+            </span>
+            <span className="pw">
+              Kept for {parkedHours} hours — send them or take them off before then.
+            </span>
+          </div>
+        )}
         {uploads.length > 0 && (
           <div className="uploadtray" aria-label="Files going with this message">
             {uploads.map(u => (
@@ -2730,7 +2941,11 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
   // The panel asks for the membership rows itself. `memberIds` would answer
   // "who is in here" and nothing else — not the role, not the date, not who
   // let them in — and those three are what this panel is for.
-  useEffect(() => { client.askMembers(channel.id); }, [channel.id]);
+  /* Asked again whenever the room's membership changes — somebody joining an
+     open room, or an agent being let in, must appear in this list without the
+     panel having to be closed and opened again. */
+  const roster = channel.memberIds.join(",");
+  useEffect(() => { client.askMembers(channel.id); }, [channel.id, roster]);
   useEffect(() => {
     setTopic(channel.topic ?? "");
     setDescription(channel.description ?? "");
@@ -2825,7 +3040,14 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
             const invitedBy = m.invitedBy && m.invitedBy !== m.memberId
               ? nameOf(m.invitedBy).name : null;
             return (
-              <div className="mini-agent memberrow" key={m.memberId} data-member={who.name}>
+              /* KEYED BY THE ROW, NOT BY THE PERSON. Leaving a room and being
+                 let back in writes a SECOND membership row and leaves the first
+                 exactly as it was, so `memberId` alone is no longer unique —
+                 React would fold a real history into one row and go on drawing
+                 the membership that ended. */
+              <div className="mini-agent memberrow" key={`${m.memberId}:${m.joinedAt}`}
+                data-member={who.name} data-memberkey={`${m.memberId}:${m.joinedAt}`}
+                data-joined={m.joinedAt}>
                 {who.agent
                   ? <AgentFace name={who.name} size={36} lamp={world.agentStatus[m.memberId] === "working" ? "run" : "live"} />
                   : <PersonFace name={who.name} size={36} lamp={m.memberId === world.me?.id ? "live" : "idle"} />}
@@ -2839,6 +3061,10 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
                     {" · joined "}{dayStamp(m.joinedAt)}
                     {invitedBy ? ` · added by ${invitedBy}` : ""}
                   </span>
+                  {/* An agent's owner reads everything said here. Said on the
+                      row itself, because this list is where a person decides
+                      whether the room is still private. */}
+                  {who.agent ? <AgentOwnerTag agent={who.agent} /> : null}
                 </span>
                 {who.user && m.memberId !== world.me?.id && (
                   <span className="tools">
@@ -2940,13 +3166,15 @@ function ChannelRail({ channel, onEditAgent, onOpenDm }: {
           const s = agentStatusLine(a, world.agentStatus[a.id]);
           const provider = (a.provider ?? "claude") as Provider;
           return (
-            <div className="mini-agent" key={a.id}>
+            <div className="mini-agent" key={a.id} data-agent={a.name}>
               <AgentFace name={a.name} size={36} lamp={s.lamp} />
               <span style={{ minWidth: 0 }}>
                 <span className="nm">{a.name}</span>
                 <span className="rl two-lines" title={a.persona}>
                   {PROVIDER_LABEL[provider]} · {s.busy ? "Working now" : roleOf(a.persona)}
                 </span>
+                {/* who is in this room BECAUSE this agent is */}
+                <AgentOwnerTag agent={a} />
               </span>
               <span className="tools">
                 <button className="iconbtn" title={`Open your chat with ${a.name}`}

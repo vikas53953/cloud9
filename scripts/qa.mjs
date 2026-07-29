@@ -10,7 +10,10 @@ import {
 // The screen shows `summarizeRun`'s sentence VERBATIM, so the check that it did
 // has to be able to say the sentence itself. Imported from the same package the
 // app imports, never re-spelled here.
-import { humanMoney, summarizeRun } from "@cloud9/shared";
+// The size ceilings are the HUB's numbers. The screen reads them from this
+// package and so does this suite, so a check can never agree with a number the
+// renderer made up on its own.
+import { ATTACHMENT_LIMITS, humanMoney, summarizeRun } from "@cloud9/shared";
 
 const SHOTS = new URL("../docs/qa", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 fs.mkdirSync(SHOTS, { recursive: true });
@@ -26,7 +29,7 @@ const { ui: UI } = qaTarget();
  * run stops early it now FAILS and says so. Add or remove an `ok(...)` and this
  * number must move with it — a mismatch is the suite telling you it drifted.
  */
-const EXPECTED_CHECKS = 156;
+const EXPECTED_CHECKS = 179;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -877,6 +880,28 @@ try {
   ok("a file can be taken back off the message before it is sent",
     (await page.locator(".uploadtray .uptile").count()) === 2);
 
+  /* ---- what is sitting unsent, in the hub's own numbers (handoff §11.5) ----
+     The ceiling on parked files is per PERSON and is enforced by the hub. The
+     screen must be able to say it BEFORE somebody hits it, and must say the
+     same number the hub holds — so this check compares what is on screen with
+     the constant imported from `@cloud9/shared`, never with a number typed
+     here. A renderer that restated "50 MB" by hand would fail the day the hub
+     moved it. */
+  const parkedSaid = await page.$eval(".composer .parked", el => ({
+    held: Number(el.dataset.parked),
+    max: Number(el.dataset.parkedMax),
+    text: el.innerText.replace(/\s+/g, " ").trim(),
+  }));
+  const parkedMB = `${Math.round(ATTACHMENT_LIMITS.parkedBytesPerUser / 100_000) / 10} MB`;
+  const parkedHours = `${Math.round(ATTACHMENT_LIMITS.parkedTtlMs / 3_600_000)} hours`;
+  ok("the composer says how much is waiting to be sent, against the ceiling the hub itself holds",
+    parkedSaid.max === ATTACHMENT_LIMITS.parkedBytesPerUser &&
+    parkedSaid.held === PICTURE.length + LEDGER.length &&
+    parkedSaid.text.includes(`of ${parkedMB}`) &&
+    parkedSaid.text.includes(parkedHours),
+    `${parkedSaid.text} :: held=${parkedSaid.held} max=${parkedSaid.max}`);
+  await page.screenshot({ path: `${SHOTS}/room-files-waiting.png` });
+
   const sendSays = (await page.locator(".composer .primary.small").innerText()).trim();
   ok("the send button says how many files are going with the message",
     /2 files/.test(sendSays), sendSays);
@@ -1056,6 +1081,10 @@ try {
     (await fpage.locator(".roompanel .segbtn").count()) === 0 &&
     (await fpage.locator(".roompanel .roomleave").count()) === 1);
   const joinedRow = fpage.locator('.roommembers .memberrow[data-member="Priya"]');
+  /* Kept for the membership-history check further down: leaving and coming back
+     writes a SECOND row, and the only way to prove the screen did not fold the
+     two into one is to know what the first one said. */
+  const priyaFirstJoin = Number(await joinedRow.getAttribute("data-joined"));
   ok("letting yourself into an open room is recorded as exactly that — nobody added you",
     (await joinedRow.locator(".rolename").getAttribute("data-role")) === "member" &&
     !/added by/.test(await joinedRow.locator(".rl").innerText()),
@@ -1096,6 +1125,231 @@ try {
   ok("reopening an archived room gives it back, exactly as it was",
     (await page.locator(".composer-box.readonly").count()) === 0 &&
     (await page.locator('.sidebar .side-item[data-channel="paperwork"].is-archived').count()) === 0);
+
+  /* ============ WHO CAN READ THIS ROOM (handoff §11.2, §11.3, §11.6) ============
+
+     The review reproduced this end to end: an ordinary member added SOMEBODY
+     ELSE'S AGENT to a private room, and because an agent counts as its owner
+     for visibility, that owner silently gained the room's entire history — with
+     NOTHING ON SCREEN to say a person had been let in. The hub refuses that
+     now. These checks are the other half of the fix: that the screen says who
+     can read the room, and that the control which lets somebody in is offered
+     by ROLE and not to whoever happens to be looking. */
+
+  // Priya hires an agent of her own, so the room can be asked the exact
+  // question the review asked.
+  await fpage.click('button[title="New agent"]');
+  await fpage.fill('input[placeholder="Scout"]', "Bramble");
+  await fpage.fill("textarea.persona-input",
+    "You keep the trip paperwork tidy and say what is still to file");
+  await fpage.click(".editor >> text=Create agent");
+  await fpage.click('.rail-btn[data-go="chat"]');
+  await fpage.waitForSelector('.sidebar .agentrow[data-agent="Bramble"]', { timeout: 20000 });
+  ok("a friend can hire an agent of their own", true);
+
+  // ---- the control that lets somebody in is offered BY ROLE ----
+  const addOptions = () => page.$$eval(".chathead .addmember option", os => os.map(o => ({
+    id: o.value,
+    text: (o.textContent ?? "").replace(/\s+/g, " ").trim(),
+    disabled: o.disabled,
+    why: o.dataset.why ?? "",
+  })));
+  await page.waitForSelector(".chathead .addmember", { timeout: 20000 });
+  ok("the person who runs the room is offered the way to let somebody in",
+    (await page.locator(".chathead .addmember").count()) === 1);
+
+  const shutOut = await addOptions();
+  const brambleShut = shutOut.find(o => /Bramble/.test(o.text));
+  ok("an agent whose owner is not in this room is offered greyed, with the reason, before the click",
+    !!brambleShut && brambleShut.disabled && /Priya isn't in this room/.test(brambleShut.why),
+    JSON.stringify(brambleShut ?? null));
+  const scoutOption = shutOut.find(o => /Scout/.test(o.text));
+  ok("the picker says whose each agent is, and who admitting it would let in",
+    !!scoutOption && !scoutOption.disabled && /Your agent/.test(scoutOption.text),
+    scoutOption?.text ?? "(no Scout option)");
+
+  /* The owner's own agent goes in first, so the list below holds one of each:
+     an agent that tells the reader nothing new, and an agent that tells them
+     somebody else is now reading the room. */
+  await page.selectOption(".chathead .addmember", scoutOption.id);
+  await page.waitForSelector('.roommembers .memberrow[data-member="Scout"]', { timeout: 25000 });
+
+  // ---- Priya comes back into the room, so her agent may be admitted ----
+  await fpage.click(".sidebar .browserooms");
+  await fpage.waitForSelector('.browsepanel .roomcard[data-room="paperwork"]', { timeout: 20000 });
+  await fpage.locator('.browsepanel .roomcard[data-room="paperwork"] .roomjoin').click();
+  await fpage.waitForSelector('.sidebar .side-item[data-channel="paperwork"]', { timeout: 20000 });
+
+  await waitFor(page, () => {
+    const sel = document.querySelector(".chathead .addmember");
+    return !!sel && [...sel.options].some(o => /Bramble/.test(o.textContent ?? "") && !o.disabled);
+  }, undefined, { timeout: 25000, what: "the picker to notice Priya is back in the room" });
+  const nowOffered = (await addOptions()).find(o => /Bramble/.test(o.text));
+  ok("once its owner is in the room the agent can be added — and the picker names the person it lets in",
+    !!nowOffered && !nowOffered.disabled && /Priya's agent/.test(nowOffered.text) &&
+    /Priya can read it/.test(nowOffered.text),
+    nowOffered?.text ?? "(no Bramble option)");
+
+  // ---- and now the thing whose ABSENCE made the breach invisible ----
+  await page.selectOption(".chathead .addmember", nowOffered.id);
+  await page.waitForSelector('.roommembers .memberrow[data-member="Bramble"]', { timeout: 25000 });
+  const ownerSeesBramble = page.locator('.roommembers .memberrow[data-member="Bramble"]');
+  ok("an agent in a member list names its OWNER, so reading the list tells you who can see the room",
+    (await ownerSeesBramble.locator(".agentowner").getAttribute("data-owner")) === "Priya" &&
+    /Priya's agent/.test(await ownerSeesBramble.locator(".agentowner .whose").innerText()) &&
+    /Priya can read this room/i.test(await ownerSeesBramble.locator(".agentowner .readsroom").innerText()),
+    (await ownerSeesBramble.locator(".agentowner").innerText()).replace(/\s+/g, " ").trim());
+  const ownScout = page.locator('.roommembers .memberrow[data-member="Scout"] .agentowner');
+  ok("your own agent is named as yours in the same place, so the two are told apart at a glance",
+    (await ownScout.getAttribute("data-mine")) === "yes" &&
+    /Your agent/.test(await ownScout.locator(".whose").innerText()),
+    (await ownScout.innerText()).replace(/\s+/g, " ").trim());
+  await page.screenshot({ path: `${SHOTS}/room-members-owner.png` });
+
+  // the right rail says it too — an agent is a room participant wherever it is drawn
+  await page.click(".roompanel .roomclose");
+  await page.waitForSelector('.aside .mini-agent[data-agent="Bramble"]', { timeout: 20000 });
+  const railBramble = page.locator('.aside .mini-agent[data-agent="Bramble"] .agentowner');
+  ok("the same is said in the rail beside the conversation, not only in the details panel",
+    (await railBramble.getAttribute("data-owner")) === "Priya" &&
+    /Priya can read this room/i.test(await railBramble.locator(".readsroom").innerText()),
+    (await railBramble.innerText()).replace(/\s+/g, " ").trim());
+  await page.screenshot({ path: `${SHOTS}/room-rail-owner.png` });
+  await page.click(".chathead .roomdetailsbtn");
+  await page.waitForSelector(".roompanel .memberrow", { timeout: 20000 });
+
+  // ---- the same room, read by a plain member ----
+  await fpage.click(".sidebar >> text=# paperwork");
+  await fpage.click(".chathead .roomdetailsbtn");
+  await fpage.waitForSelector('.roommembers .memberrow[data-member="Bramble"]', { timeout: 25000 });
+  const memberSeesBramble = fpage.locator('.roommembers .memberrow[data-member="Bramble"]');
+  const memberSeesScout = fpage.locator('.roommembers .memberrow[data-member="Scout"] .agentowner');
+  ok("everybody in the room is told who an agent belongs to, not only the person who runs it",
+    /Your agent/.test(await memberSeesBramble.locator(".agentowner .whose").innerText()) &&
+    (await memberSeesBramble.locator(".agentowner").getAttribute("data-mine")) === "yes" &&
+    (await memberSeesScout.getAttribute("data-owner")) === "Vikas" &&
+    /Vikas can read this room/i.test(await memberSeesScout.locator(".readsroom").innerText()),
+    (await memberSeesScout.innerText()).replace(/\s+/g, " ").trim());
+  ok("a plain member is not offered the control that lets somebody in — it is not there to click",
+    (await fpage.locator(".chathead .addmember").count()) === 0 &&
+    (await fpage.locator(".chathead select").count()) === 0);
+  await fpage.screenshot({ path: `${SHOTS}/room-members-member.png` });
+
+  // ---- membership is a HISTORY now: two rows, not one (§11.6) ----
+  const memberKeys = await fpage.$$eval(".roommembers .memberrow",
+    rs => rs.map(r => r.dataset.memberkey ?? ""));
+  ok("every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
+    memberKeys.length >= 2 && memberKeys.every(k => /^[^:]+:\d+$/.test(k)) &&
+    new Set(memberKeys).size === memberKeys.length,
+    memberKeys.join(" "));
+  const priyaBack = fpage.locator('.roommembers .memberrow[data-member="Priya"]');
+  const priyaSecondJoin = Number(await priyaBack.getAttribute("data-joined"));
+  ok("coming back into a room is a NEW membership, and the list shows the one she has now",
+    (await priyaBack.count()) === 1 && priyaSecondJoin > priyaFirstJoin,
+    `first ${priyaFirstJoin} · now ${priyaSecondJoin}`);
+  ok("somebody let back in comes back as a plain member — power is not restored by the door",
+    (await priyaBack.locator(".rolename").getAttribute("data-role")) === "member",
+    (await priyaBack.locator(".rl").innerText()).replace(/\s+/g, " ").trim());
+
+  // ---- nothing new pushes the page sideways, in either look ----
+  for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const theme of ["light", "dark"]) {
+      await fpage.setViewportSize({ width, height });
+      await fpage.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+      await fpage.waitForTimeout(220);
+      const over = await fpage.evaluate(() => ({
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        body: document.body.scrollWidth - document.body.clientWidth,
+      }));
+      ok(`a member list naming an agent's owner does not scroll sideways at ${width} in the ${theme} look`,
+        over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+      if (width === 1280) {
+        await fpage.screenshot({ path: `${SHOTS}/room-owner-named-${theme}.png` });
+      }
+    }
+  }
+  await fpage.setViewportSize({ width: 1280, height: 800 });
+  await fpage.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+  await fpage.click(".roompanel .roomclose");
+
+  /* ---- `from:` really filters now, so the placeholder is not a promise the
+     hub breaks (§11.4). The author filter used to be applied in JavaScript
+     AFTER SQL's limit, so on a busy room it returned nothing at all. Two people
+     say the same word here, deliberately: a filter that returned one hit
+     because only one hit existed would prove nothing. */
+  await fpage.click(".sidebar >> text=# general");
+  await fpage.fill(".composer textarea", "kayak hire is sorted for Saturday");
+  await fpage.press(".composer textarea", "Enter");
+  await page.click(".sidebar >> text=# general");
+  await page.waitForSelector('.msg p:has-text("kayak hire is sorted")', { timeout: 25000 });
+  await page.fill(".composer textarea", "kayak deposit is still to pay");
+  await page.press(".composer textarea", "Enter");
+  await page.waitForSelector('.msg p:has-text("kayak deposit is still")', { timeout: 25000 });
+
+  await page.evaluate(() => window.cloud9Menu.run("search"));
+  await page.waitForSelector(".searchpanel", { timeout: 10000 });
+  const searchPlaceholder = await page.getAttribute(".search-input", "placeholder");
+  ok("the search box still offers from:, and the offer is true now",
+    /from:Priya/.test(searchPlaceholder ?? ""), searchPlaceholder ?? "");
+  await page.fill(".search-input", "kayak");
+  await waitFor(page, () => document.querySelectorAll(".searchhit").length === 2,
+    undefined, { timeout: 25000, what: "both people's kayak messages to be found" });
+  const bothSaid = await page.$$eval(".searchhit .hitwho b", bs => bs.map(b => b.textContent.trim()));
+  ok("two different people said the same word, so narrowing by author has something to do",
+    bothSaid.length === 2 && new Set(bothSaid).size === 2, bothSaid.join(" / "));
+  await page.fill(".search-input", "from:Priya kayak");
+  await waitFor(page, () => document.querySelectorAll(".searchhit").length === 1,
+    undefined, { timeout: 25000, what: "the author filter to narrow the results" });
+  const narrowed = await page.$$eval(".searchhit .hitwho b", bs => bs.map(b => b.textContent.trim()));
+  ok("from: narrows to that one person's messages, from the screen",
+    narrowed.length === 1 && narrowed[0] === "Priya", narrowed.join(" / "));
+  await page.screenshot({ path: `${SHOTS}/room-search-from.png` });
+  await page.keyboard.press("Escape");
+
+  /* ---- the hub could not open its messages (§11.7) ----
+     The sentence is written by `StoreOpenError` for a person to read, and the
+     screen shows it WORD FOR WORD. So this check does not type the sentence: it
+     makes a database the hub genuinely cannot read, catches the error the hub
+     itself would throw, and compares that string with what the screen drew. */
+  const { Store } = await import("../apps/relay/dist/store.js");
+  const brokenDbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-qa-broken-")), "not-a.db");
+  fs.writeFileSync(brokenDbPath, "this file is not a database at all\n");
+  let hubSentence = "";
+  try {
+    new Store(brokenDbPath);
+  } catch (err) {
+    hubSentence = err.name === "StoreOpenError" ? err.message : "";
+  }
+  ok("the hub really does refuse an unreadable database with a sentence written for a person",
+    hubSentence.startsWith("Cloud9 could not open its message database at") &&
+    /Nothing has been changed/.test(hubSentence), hubSentence.slice(0, 90));
+
+  const downPage = await owner.newPage();
+  downPage.on("console", m => { if (m.type() === "error") consoleErrors.push("hubdown: " + m.text()); });
+  await downPage.goto(`${UI}&hubError=${encodeURIComponent(hubSentence)}`);
+  await downPage.waitForSelector(".hubdown .hubsay", { timeout: 20000 });
+  const shownSentence = (await downPage.locator(".hubdown .hubsay").innerText()).replace(/\s+/g, " ").trim();
+  ok("when the hub cannot open its database the screen says its sentence as-is, never a stack trace",
+    shownSentence === hubSentence.replace(/\s+/g, " ").trim() &&
+    (await downPage.locator(".join").count()) === 0 &&
+    !/at Object|at new Store|\.js:\d+/.test(shownSentence),
+    shownSentence.slice(0, 90));
+  await downPage.screenshot({ path: `${SHOTS}/room-hub-unreadable.png` });
+  await downPage.close();
+  /* Best effort: SQLite opened the file before it discovered it was not a
+     database, and on Windows that handle outlives the failed open for a moment.
+     A locked scratch file in the OS temp folder must never be the reason a QA
+     run reports a failure it did not find. */
+  try { fs.rmSync(path.dirname(brokenDbPath), { recursive: true, force: true }); }
+  catch { /* the OS will sweep it — it holds nothing but a line of text */ }
+
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# paperwork");
+  await page.waitForSelector(".chathead .roomdetailsbtn", { timeout: 20000 });
+  // the panel is closed by the trip out to another screen; the checks below are
+  // about the panel, so it is opened again rather than assumed
+  if ((await page.locator(".roompanel").count()) === 0) await page.click(".chathead .roomdetailsbtn");
+  await page.waitForSelector(".roompanel .memberrow", { timeout: 20000 });
 
   // ---- the details panel must not push the page sideways either ----
   for (const [width, height] of [[1280, 800], [1440, 900]]) {

@@ -32,6 +32,8 @@ const DEV_URL = process.env.CLOUD9_DEV_URL; // e.g. http://localhost:5173
  * port it actually got.
  */
 let relayUrl = process.env.CLOUD9_RELAY_URL || "ws://127.0.0.1:8787";
+/** The hub's own sentence when it could not open its database — shown on screen. */
+let hubError = "";
 /** The key that proves "I am the owner of this Cloud9". Filled in on startup. */
 let ownerToken = "dev-owner-token";
 
@@ -224,11 +226,16 @@ function appIconPath() {
  */
 function loadRenderer(win, hash) {
   const suffix = hash ? `#${hash}` : "";
-  if (DEV_URL) win.loadURL(`${DEV_URL}/${suffix}`);
+  // If the hub could not open its database, the screen shows that sentence
+  // instead of a sign-in box it can never satisfy. The words come from the hub
+  // itself (StoreOpenError) and are written for a person, so they are passed
+  // through untouched rather than re-worded here.
+  const q = new URLSearchParams({ relay: relayUrl ?? "", ...(hubError ? { hubError } : {}) });
+  if (DEV_URL) win.loadURL(`${DEV_URL}/${suffix}${hubError ? `?${q}` : ""}`);
   else {
     win.loadFile(path.join(__dirname, "..", "dist-web", "index.html"), {
       hash,
-      query: { relay: relayUrl },
+      query: { relay: relayUrl, ...(hubError ? { hubError } : {}) },
     });
   }
 }
@@ -695,10 +702,10 @@ if (PACKAGED && !app.requestSingleInstanceLock()) {
         await startRelay();
       } catch (err) {
         console.error("[cloud9] the hub could not start:", err);
-        dialog.showErrorBox(
-          "Cloud9 could not start",
-          "Cloud9's hub did not start, so the app has nothing to talk to.\n\n" +
-          `Details: ${String(err)}`);
+        // Keep the hub's own sentence — StoreOpenError is already written in
+        // plain words and names the file. The screen shows it; a native error
+        // box on top of it would say the same thing twice.
+        hubError = err?.message ? String(err.message) : String(err);
       }
     }
     // the menu is built from the shared action list, and refuses to build if the
