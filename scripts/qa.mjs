@@ -2,13 +2,25 @@ import { chromium } from "playwright";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { qaTarget } from "./qa-target.mjs";
+import {
+  assertHarnessIsHonest, qaTarget, reportAndExit, signInAsOwner, waitFor, waitForAgentReply,
+} from "./qa-target.mjs";
 
 const SHOTS = new URL("../docs/qa", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 fs.mkdirSync(SHOTS, { recursive: true });
 // A QA run points at the throwaway stack by default, never at the real hub
 // (finding #18). `qa-target.mjs` owns that decision for every QA script.
 const { ui: UI } = qaTarget();
+
+/**
+ * How many checks a complete run of this file performs.
+ *
+ * This number is the difference between "12 of 13 passed" (which reads like a
+ * near-miss) and the truth, which was that 36 checks never ran at all. If the
+ * run stops early it now FAILS and says so. Add or remove an `ok(...)` and this
+ * number must move with it — a mismatch is the suite telling you it drifted.
+ */
+const EXPECTED_CHECKS = 48;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -34,9 +46,14 @@ try {
   await page.screenshot({ path: `${SHOTS}/01-join.png` });
   ok("join screen renders", true);
 
-  await page.click("text=Enter Cloud9");
-  await page.waitForSelector("text=# general");
+  // one owner for how a QA run signs in — it types THIS stack's key, not the
+  // shipped default the join screen pre-fills
+  await signInAsOwner(page);
   ok("owner connects, #general visible", true);
+
+  // §4.0 harness pre-flight: prove this suite can still tell true from false
+  // before a single result from it is believed.
+  await assertHarnessIsHonest(page);
 
   // create agent
   await page.click('button[title="New agent"]');
@@ -103,26 +120,33 @@ try {
   const box = page.locator(".composer textarea");
   await box.fill("@Scout find beach villas in Goa under 8k");
   await box.press("Enter");
-  // the AGENT tag on an agent message (Workbench reskin renamed .chip -> .badge)
-  await page.waitForSelector(".msg:has-text('Scout') .badge", { timeout: 8000 });
-  await page.waitForSelector(".msg p:has-text('villas')", { timeout: 8000 });
+  // This is the FIRST time the engine is asked to speak, so it pays the whole
+  // cold-start cost: connect, detect both harnesses, start a CLI. That is
+  // 15-25s on this machine and the old 8s wait simply could not survive it —
+  // the suite died here and blamed the feature. The wait is now on the thing we
+  // actually need (an agent message carrying the answer), with a bound that
+  // fits a cold engine. Later replies are fast because this one warmed it up.
+  await waitForAgentReply(page, "villas");
   ok("@mention draws agent reply", true);
   await page.screenshot({ path: `${SHOTS}/03-chat-reply.png` });
 
   // free chatter (no mention, relevant)
   await box.fill("should we also look at flights and hotels?");
   await box.press("Enter");
-  await page.waitForFunction(() =>
+  await waitFor(page, () =>
     [...document.querySelectorAll(".msg p")].filter(p => p.textContent.includes("flights")).length >= 2,
-  { timeout: 8000 });
+  undefined, { what: "an unmentioned agent to chime in about flights" });
   ok("free chatter: relevant agent chimes in unmentioned", true);
 
   // background task
   await box.fill("@Scout !bg compare 14 villas and shortlist 3");
   await box.press("Enter");
-  await page.waitForSelector(".msg p:has-text('background')", { timeout: 8000 });
+  await waitFor(page, () => [...document.querySelectorAll(".msg p")]
+    .some(p => p.textContent.includes("background")),
+  undefined, { what: "the agent's acknowledgement of the background job" });
   // the "started on its own" marker in the run strip (was .proactive-tag)
-  await page.waitForSelector(".msg.proactive .selfstart", { timeout: 10000 });
+  await waitFor(page, () => !!document.querySelector(".msg.proactive .selfstart"),
+    undefined, { what: "the finished background job to post itself back" });
   ok("background task acks then posts proactive result", true);
   await page.screenshot({ path: `${SHOTS}/04-background-task.png` });
 
@@ -132,12 +156,13 @@ try {
   await page.screenshot({ path: `${SHOTS}/05-quick-chat.png` });
   await page.fill(".qc-input", "quick ping from the hotkey popup");
   await page.press(".qc-input", "Enter");
-  await page.waitForSelector("text=Sent to", { timeout: 5000 });
+  await page.waitForSelector("text=Sent to", { timeout: 15000 });
   ok("quick chat (Ctrl/Cmd+K) sends", true);
-  await page.waitForTimeout(1100);
 
-  // settings: two harness cards with live status from the engine host
-  await page.click('.sidebar-foot button:has-text("⚙")');
+  // settings: two harness cards with live status from the engine host.
+  // No sleep here: Playwright will not click a button something is covering, so
+  // the click itself is the wait for the quick panel to get out of the way.
+  await page.click('.sidebar-foot button:has-text("⚙")', { timeout: 20000 });
   await page.waitForSelector("text=connect your AI apps");
   await page.waitForSelector('.harnesscard[data-harness="claude"]');
   await page.waitForSelector('.harnesscard[data-harness="codex"]');
@@ -298,7 +323,9 @@ try {
 
   // the surviving skill must actually reach the agent
   await page.click('.overlay .foot button:has-text("Save")');
-  await page.waitForTimeout(800);
+  // wait for the editor to actually be gone (the save round-tripped), not 800ms
+  await waitFor(page, () => !document.querySelector(".overlay .panel .skills"),
+    undefined, { timeout: 20000, what: "the agent editor to close after Save" });
   await page.hover(".sidebar .agentrow");
   await page.click('.sidebar .agentrow button[title="Edit agent"]');
   await page.waitForSelector(".panel .skills");
@@ -327,7 +354,7 @@ try {
   await fpage.fill('.panel input[placeholder="inv_…"]', code);
   await fpage.fill('.panel input[placeholder="Priya"]', "Priya");
   await fpage.click("text=Enter Cloud9");
-  await fpage.waitForSelector("text=# general", { timeout: 8000 });
+  await fpage.waitForSelector("text=# general", { timeout: 30000 });
   ok("friend joins via invite", true);
 
   await fpage.click("text=# general");
@@ -338,7 +365,7 @@ try {
 
   // owner sees the friend's message
   await page.click("text=# general");
-  await page.waitForSelector(".msg p:has-text('Priya here')", { timeout: 8000 });
+  await page.waitForSelector(".msg p:has-text('Priya here')", { timeout: 30000 });
   ok("human-to-human message syncs across clients", true);
   await page.screenshot({ path: `${SHOTS}/09-owner-sees-friend.png` });
 
@@ -442,7 +469,8 @@ try {
 }
 
 ok("no console errors", consoleErrors.length === 0, consoleErrors.slice(0, 5).join(" | "));
-fs.writeFileSync(`${SHOTS}/qa-results.json`, JSON.stringify({ ranAt: new Date().toISOString(), results }, null, 2));
-const fails = results.filter(r => !r.pass).length;
-console.log(`\n${results.length - fails}/${results.length} passed`);
-process.exit(fails ? 1 : 0);
+fs.writeFileSync(`${SHOTS}/qa-results.json`, JSON.stringify({
+  ranAt: new Date().toISOString(), expected: EXPECTED_CHECKS, executed: results.length, results,
+}, null, 2));
+// a run that stopped early is a FAILURE, not a good score out of a small number
+reportAndExit("qa.mjs", results, EXPECTED_CHECKS);

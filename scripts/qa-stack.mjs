@@ -16,6 +16,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { newQaOwnerToken } from "./qa-target.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -24,8 +25,14 @@ const noUi = args.includes("--no-ui") || stackOnly;
 
 const RELAY_PORT = Number(process.env.CLOUD9_RELAY_PORT ?? 8799);
 const UI_PORT = Number(process.env.CLOUD9_UI_PORT ?? 4173);
-/** A QA run gets its own owner token, so it is never the shipped default. */
-const OWNER_TOKEN = process.env.CLOUD9_OWNER_TOKEN ?? `qa-owner-${Date.now().toString(36)}`;
+/**
+ * A QA run gets its own owner key, so it is never the shipped default — and the
+ * SAME key is handed down to every QA script below (`CLOUD9_OWNER_TOKEN`), so
+ * the hub and the suite can never disagree about what it is. They used to: the
+ * stack minted one here and the scripts typed "dev-owner-token" into the join
+ * screen, which meant the owner simply could not sign in.
+ */
+const OWNER_TOKEN = process.env.CLOUD9_OWNER_TOKEN ?? newQaOwnerToken();
 
 // ---- sweep anything an earlier run left behind ----
 // A run that was killed outright (task manager, a closed terminal) can't run
@@ -88,6 +95,22 @@ async function waitForPort(port, seconds) {
   return false;
 }
 
+/**
+ * Give up, tidy up, and — crucially — STOP.
+ *
+ * `cleanup` schedules the workspace delete on a timer, so calling it does not
+ * end this script: every `cleanup(1)` used to fall straight through into the
+ * next line. The port-clash guard below announced "something is already using
+ * this port, try again" and then cheerfully started a hub anyway. A harness
+ * that carries on after saying it stopped cannot be trusted about anything, so
+ * an abort now really is an abort.
+ */
+function abort(code, message) {
+  console.error(message);
+  cleanup(code);
+  return new Promise(() => { /* nothing after an abort ever runs */ });
+}
+
 let cleaned = false;
 function cleanup(code = 0) {
   if (cleaned) return;
@@ -129,10 +152,9 @@ process.on("SIGTERM", () => cleanup(0));
 // A previous run that was killed outright can leave its relay holding the port.
 // Say so plainly instead of letting the hub crash with a stack trace.
 if (await waitForPort(RELAY_PORT, 0.5)) {
-  console.error(
+  await abort(1,
     `[qa-stack] something is already using port ${RELAY_PORT} — probably a QA stack ` +
     "from an earlier run. Close it (or set CLOUD9_RELAY_PORT to a free port) and try again.");
-  cleanup(1);
 }
 
 start("relay", "node", ["apps/relay/dist/server.js"], {
@@ -142,8 +164,7 @@ start("relay", "node", ["apps/relay/dist/server.js"], {
   PORT: String(RELAY_PORT),
 });
 if (!(await waitForPort(RELAY_PORT, 40))) {
-  console.error("[qa-stack] the hub did not start — run `npm run build` first");
-  cleanup(1);
+  await abort(1, "[qa-stack] the hub did not start — run `npm run build` first");
 }
 console.log(`[qa-stack] hub ready on :${RELAY_PORT}`);
 
@@ -151,7 +172,12 @@ start("engine", "node", ["scripts/engine-host.mjs"], {
   CLOUD9_RELAY_URL: `ws://127.0.0.1:${RELAY_PORT}`,
   CLOUD9_OWNER_TOKEN: OWNER_TOKEN,
   CLOUD9_ENGINE_DATA: engineData,
-  // QA drives the UI, not real models: canned replies keep runs free and fast
+  // QA drives the UI, not real models: canned replies keep runs free and fast.
+  // This is the ONE place demo mode is switched on by default, and it is a
+  // deliberate, named choice by the person running QA — never a launcher
+  // quietly deciding it for Vikas (B2). Every canned reply is labelled
+  // "[demo — not a real answer]" at the source, so even here nothing can pass
+  // itself off as a real answer.
   CLOUD9_DEMO: process.env.CLOUD9_DEMO ?? "1",
 });
 
@@ -159,8 +185,7 @@ if (!noUi) {
   start("ui", "npx", ["vite", "preview", "--host", "127.0.0.1", "--port", String(UI_PORT)],
     {}, path.join(repo, "apps", "desktop"));
   if (!(await waitForPort(UI_PORT, 90))) {
-    console.error("[qa-stack] the app screen did not start — run `npm run build -w @cloud9/desktop`");
-    cleanup(1);
+    await abort(1, "[qa-stack] the app screen did not start — run `npm run build -w @cloud9/desktop`");
   }
   console.log(`[qa-stack] screen ready on :${UI_PORT}`);
 }
@@ -179,6 +204,8 @@ if (stackOnly || noUi) {
           ...process.env,
           CLOUD9_RELAY_PORT: String(RELAY_PORT),
           CLOUD9_UI_PORT: String(UI_PORT),
+          // the one key this stack is actually using — the suite types THIS
+          CLOUD9_OWNER_TOKEN: OWNER_TOKEN,
         },
       });
       child.on("close", resolve);

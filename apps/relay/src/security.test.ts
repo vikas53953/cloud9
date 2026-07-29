@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ServerFrame } from "@cloud9/shared";
-import { Relay } from "./server.js";
+import { LOOPBACK, Relay, resolveBind } from "./server.js";
 import { TestClient, tmp } from "./testclient.js";
 
 const BASE_AGENT = {
@@ -330,3 +330,216 @@ function tokenOf(client: TestClient): string {
   assert.ok(frame, "expected a durable token");
   return frame.token;
 }
+
+// ---------------------------------------------------------------------------
+// M4 — a connection is a pipe, not a person.
+//
+// The engine host holds ONE socket and carries everybody's requests down it, so
+// "whoever owns this socket" is the wrong answer for anything it relays. A
+// friend's delegated job used to come out reading "asked by Vikas".
+// ---------------------------------------------------------------------------
+
+test("a delegated job is credited to the person who asked, not to the engine's owner", async () => {
+  const { relay, url, owner } = await stand("attr-task.db");
+  const code = await invite(owner);
+  const friend = new TestClient(url, `invite:${code}:Priya`, "desktop");
+  const hello = await friend.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
+  const friendId = hello.state.me.id;
+
+  // the owner's agent, in a channel the friend is in
+  owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
+  const made = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent");
+  const general = hello.state.channels.find(c => c.name === "general")!;
+  owner.send({ type: "addMembers", channelId: general.id, memberIds: [made.agent.id] });
+  await owner.wait(f => f.type === "channel");
+
+  // the engine relays the friend's "!bg …" on its own socket, naming the friend
+  const engine = new TestClient(url, "tok-owner", "engine");
+  await engine.wait(f => f.type === "welcome");
+  engine.send({
+    type: "createTask", agentId: made.agent.id, channelId: general.id,
+    title: "book the villa", requesterId: friendId,
+  });
+
+  const task = await owner.wait<Extract<ServerFrame, { type: "task" }>>(f => f.type === "task");
+  assert.equal(task.task.requesterId, friendId, "the task belongs to the friend who asked");
+  assert.equal(task.task.requesterName, "Priya");
+
+  // and the activity trail says the same thing
+  owner.send({ type: "activity" });
+  const act = await owner.wait<Extract<ServerFrame, { type: "activity" }>>(f => f.type === "activity");
+  const row = act.records.find(r => r.kind === "task_created")!;
+  assert.equal(row.actorName, "Priya", "the activity row names the person, not the engine's owner");
+
+  owner.close(); friend.close(); engine.close(); relay.close();
+});
+
+test("an ordinary client cannot claim a job was asked for by somebody else", async () => {
+  const { relay, url, owner } = await stand("attr-spoof.db");
+  const code = await invite(owner);
+  const friend = new TestClient(url, `invite:${code}:Priya`, "desktop");
+  const hello = await friend.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
+
+  owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
+  const made = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent");
+  const general = hello.state.channels.find(c => c.name === "general")!;
+
+  // the owner's own desktop tries to file a job "asked by Priya"
+  owner.send({
+    type: "createTask", agentId: made.agent.id, channelId: general.id,
+    title: "blame the friend", requesterId: hello.state.me.id,
+  });
+  const err = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(err.error, /only your own agent engine/);
+
+  owner.close(); friend.close(); relay.close();
+});
+
+test("the engine cannot credit a job to somebody who isn't even in the conversation", async () => {
+  const { relay, url, owner } = await stand("attr-outsider.db");
+  const code = await invite(owner);
+  const friend = new TestClient(url, `invite:${code}:Priya`, "desktop");
+  const hello = await friend.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
+  const friendId = hello.state.me.id;
+
+  owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
+  const made = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent");
+  // a private channel the friend was never added to
+  owner.send({ type: "createChannel", name: "private", memberIds: [made.agent.id], kind: "channel" });
+  const priv = await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.name === "private");
+
+  const engine = new TestClient(url, "tok-owner", "engine");
+  await engine.wait(f => f.type === "welcome");
+  engine.send({
+    type: "createTask", agentId: made.agent.id, channelId: priv.channel.id,
+    title: "read the private room", requesterId: friendId,
+  });
+  const err = await engine.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(err.error, /isn't in this conversation/);
+
+  owner.close(); friend.close(); engine.close(); relay.close();
+});
+
+// ---------------------------------------------------------------------------
+// M3 — editing a skill must not silently delete its files.
+// ---------------------------------------------------------------------------
+
+test("editing a skill's wording keeps the files that skill already had", async () => {
+  const { relay, owner } = await stand("skill-files.db");
+  owner.send({
+    type: "createAgent",
+    agent: {
+      ...BASE_AGENT, name: "Scout",
+      skills: [{
+        id: "sk1", name: "Villa shortlist", description: "picks villas",
+        instructions: "three options with prices",
+        files: [{ name: "checklist.md", text: "1. check the price" }],
+      }],
+    } as never,
+  });
+  const made = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent");
+
+  // the screen sends the skill back without mentioning files at all
+  owner.send({
+    type: "updateAgent",
+    agent: {
+      ...made.agent,
+      skills: [{
+        id: "sk1", name: "Villa shortlist v2", description: "picks villas",
+        instructions: "three options with prices",
+      }],
+    } as never,
+  });
+  const after = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(
+    f => f.type === "agent" && f.agent.skills?.[0].name === "Villa shortlist v2");
+  // the broadcast echoes the client, but what is STORED must still hold the file
+  const stored = relay.store.agents().find(a => a.id === after.agent.id)!;
+  assert.equal(stored.skills?.[0].files?.[0].name, "checklist.md",
+    "an edit that never mentioned files must not delete them");
+
+  owner.close(); relay.close();
+});
+
+test("a skill sent with an empty file list really does clear its files", async () => {
+  const { relay, owner } = await stand("skill-files-clear.db");
+  owner.send({
+    type: "createAgent",
+    agent: {
+      ...BASE_AGENT, name: "Scout",
+      skills: [{
+        id: "sk1", name: "Villa shortlist", description: "picks villas",
+        instructions: "three options", files: [{ name: "checklist.md", text: "x" }],
+      }],
+    } as never,
+  });
+  const made = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent");
+  owner.send({
+    type: "updateAgent",
+    agent: {
+      ...made.agent,
+      skills: [{ id: "sk1", name: "Villa shortlist", description: "picks villas",
+        instructions: "three options", files: [] }],
+    } as never,
+  });
+  await owner.wait(f => f.type === "agent" && f.agent.id === made.agent.id
+    && (f.agent.skills?.[0].files?.length ?? -1) === 0);
+  const stored = relay.store.agents().find(a => a.id === made.agent.id)!;
+  assert.deepEqual(stored.skills?.[0].files, [],
+    "\"no files\" and \"I didn't mention files\" are different sentences");
+
+  owner.close(); relay.close();
+});
+
+// ---------------------------------------------------------------------------
+// M7 — an invited friend on another computer must be able to reach the hub,
+// without the hub ever answering the whole internet.
+// ---------------------------------------------------------------------------
+
+test("the hub answers this computer only unless it is told an address", () => {
+  assert.equal(resolveBind(undefined), LOOPBACK);
+  assert.equal(resolveBind(""), LOOPBACK);
+  assert.equal(resolveBind("   "), LOOPBACK);
+  assert.equal(new Relay({ dbPath: tmp("bind-default.db") }).bind, LOOPBACK);
+});
+
+test("a private-network address is accepted, so a friend can reach it", () => {
+  assert.equal(resolveBind("100.101.102.103"), "100.101.102.103");
+  const relay = new Relay({ dbPath: tmp("bind-tailscale.db"), bind: "100.101.102.103" });
+  assert.equal(relay.bind, "100.101.102.103");
+});
+
+test("\"every network\" is REFUSED, never quietly narrowed", () => {
+  // The hub can start programs on the owner's computer. A wildcard bind puts
+  // that on every network the machine is on — so this fails loudly rather than
+  // silently doing something safer than what was asked for.
+  for (const wildcard of ["0.0.0.0", "::", "[::]", "*", "0", "0.0.0.0 "]) {
+    assert.throws(() => resolveBind(wildcard), /will not listen on every network/,
+      `${wildcard} must be refused`);
+  }
+  assert.throws(() => new Relay({ dbPath: tmp("bind-wild.db"), bind: "0.0.0.0" }),
+    /will not listen on every network/);
+});
+
+test("opening the hub to a private network does not open the harness gate", async () => {
+  // The safety rule and the reachability rule are independent: being reachable
+  // from a friend's laptop must not make that friend able to start programs on
+  // Vikas's machine.
+  const relay = new Relay({
+    dbPath: tmp("bind-guard.db"), ownerToken: "tok-owner", ownerName: "Vikas",
+    bind: LOOPBACK, // bound anywhere, the gate below is the same
+  });
+  const port = await relay.listen(0);
+  const url = `ws://127.0.0.1:${port}`;
+  const owner = new TestClient(url, "tok-owner");
+  await owner.wait(f => f.type === "welcome");
+  const code = await invite(owner);
+  const friend = new TestClient(url, `invite:${code}:Priya`);
+  await friend.wait(f => f.type === "welcome");
+
+  friend.send({ type: "harnessSignIn", harness: "claude" });
+  const err = await friend.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(err.error, /only the owner/);
+
+  owner.close(); friend.close(); relay.close();
+});

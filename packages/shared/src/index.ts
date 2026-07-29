@@ -188,8 +188,24 @@ export interface HarnessState {
   codex: HarnessInfo;
   /** a detection round is running right now — the UI disables "Re-check" */
   checking?: boolean;
+  /**
+   * This engine is answering with CANNED replies, not a real AI (demo mode).
+   *
+   * Demo mode can only be switched on by a human who asks for it, and when it is
+   * on the app must SAY SO on screen — a fake answer that looks real is worse
+   * than no answer at all. The flag rides on the harness state because that is
+   * the one thing every client already listens to.
+   */
+  demo?: boolean;
   updatedAt: number;
 }
+
+/** The plain sentence every client shows while demo mode is on. */
+export const DEMO_MODE_BANNER =
+  "Demo mode: these answers are made up examples, not real answers from Claude or Codex.";
+
+/** Prefixed to every canned reply so a demo answer can never be mistaken for a real one. */
+export const DEMO_REPLY_PREFIX = "[demo — not a real answer] ";
 
 export type ChannelKind = "channel" | "dm";
 
@@ -234,7 +250,12 @@ export type ClientFrame =
   | { type: "agentSend"; agentId: ID; channelId: ID; text: string; proactive?: boolean }
   | { type: "agentStatus"; agentId: ID; status: AgentStatus }
   // v2 — tasks / approvals / activity
-  | { type: "createTask"; agentId: ID; channelId: ID; title: string; needsApproval?: boolean; action?: string }
+  // `requesterId` says WHO ASKED for this work. The engine host relays a task on
+  // behalf of whoever typed "!bg …", so without it the relay would credit the
+  // engine's own account (the owner) for a friend's request. Only an engine
+  // connection may set it, and the relay still checks that person is real and
+  // can see the channel — it is a claim, not a permission.
+  | { type: "createTask"; agentId: ID; channelId: ID; title: string; requesterId?: ID; needsApproval?: boolean; action?: string }
   | { type: "updateTask"; taskId: ID; status: TaskStatus; result?: string; error?: string } // engine (agent owner) only
   | { type: "cancelTask"; taskId: ID }
   | { type: "decideApproval"; approvalId: ID; decision: "approved" | "rejected" }
@@ -289,6 +310,32 @@ export type ServerFrame =
   // relay → engine host: do the harness work (the engine owns the CLIs)
   | { type: "harnessRequest"; action: "status" | "signIn" | "cancel"; harness?: HarnessName }
   | { type: "error"; error: string };
+
+// ---------- desktop menu actions ----------
+//
+// ONE list, owned here, read by both halves: the Electron shell builds its menu
+// from it (and refuses to start if it names anything not on this list), and the
+// app screen's handler map is typed `Record<MenuAction, () => void>` so a
+// missing handler is a BUILD failure, not a dead click a user finds later.
+// Adding a menu item and forgetting to handle it is no longer possible.
+
+export const MENU_ACTIONS = [
+  "new-agent",
+  "new-channel",
+  "invite",
+  "settings",
+  "search",
+  "toggle-theme",
+  "activity",
+  "tasks",
+  "quick-chat",
+] as const;
+
+export type MenuAction = (typeof MENU_ACTIONS)[number];
+
+export function isMenuAction(value: unknown): value is MenuAction {
+  return typeof value === "string" && (MENU_ACTIONS as readonly string[]).includes(value);
+}
 
 // ---------- untrusted input validation ----------
 //

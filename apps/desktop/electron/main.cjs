@@ -283,12 +283,33 @@ function listenOnce(r, port) {
   });
 }
 
+/**
+ * Which address the hub answers on (docs/plans/backend-decision.md #2).
+ *
+ * Loopback — this computer only — unless Vikas has deliberately put his
+ * private-network address in settings.json. That is the ONE supported way a
+ * friend on another computer can reach his Cloud9: both machines join the same
+ * Tailscale network, and the hub answers on his 100.x.y.z address, which no
+ * device outside that network can even see. A wildcard like 0.0.0.0 is refused
+ * outright by the relay — the hub can start programs on this machine, so it is
+ * never allowed to answer the café wifi.
+ *
+ * Settings key:  "networkBind": "100.x.y.z"   (in Cloud9's settings.json)
+ * Or, for one run:  set CLOUD9_BIND=100.x.y.z
+ */
+function hubBindAddress() {
+  const fromSettings = readSettings().networkBind;
+  return (process.env.CLOUD9_BIND || fromSettings || "").trim() || "127.0.0.1";
+}
+
 async function startRelay() {
   const { Relay } = await import("@cloud9/relay");
+  const bind = hubBindAddress();
   relay = new Relay({
     dbPath: path.join(app.getPath("userData"), "cloud9-relay.db"),
     ownerToken,
-    bind: "127.0.0.1",
+    // never a wildcard: Relay's resolveBind refuses one rather than narrowing it
+    bind,
     // An installed app must never accept the token every checkout ships with,
     // whatever CLOUD9_DEV happens to say in the environment it was launched from.
     devMode: false,
@@ -301,8 +322,16 @@ async function startRelay() {
     // something else is on 8787 (a dev hub, most likely) — take any free port
     port = await listenOnce(relay, 0);
   }
+  // This app's own screen always talks to itself over loopback, whatever the hub
+  // is also listening on — a friend uses the address below, we do not need it.
   relayUrl = `ws://127.0.0.1:${port}`;
-  console.log(`[cloud9] hub running on ${relayUrl}`);
+  if (bind === "127.0.0.1") {
+    console.log(`[cloud9] hub running on ${relayUrl} (this computer only)`);
+  } else {
+    console.log(
+      `[cloud9] hub running on ${relayUrl}, and reachable on your private network ` +
+      `at ws://${bind}:${port} — that is the address to give a friend`);
+  }
 }
 
 function stopRelay() {
@@ -316,12 +345,22 @@ async function startEngine() {
     const { startEngineHost } = await import("@cloud9/engine");
     const dataDir = path.join(app.getPath("userData"), "engine");
     const credentials = loadAllSecrets();
+    /* Demo mode = made-up answers instead of real ones. It is opt-in and it is
+     * never quiet: the engine reports it to every screen (which shows a banner)
+     * and every canned reply is stamped at the source. Nothing about how the app
+     * was launched can turn it on by accident — only this variable, typed by a
+     * person, and the log line below says so out loud. */
+    const demoMode = process.env.CLOUD9_DEMO === "1";
+    if (demoMode) {
+      console.log("[cloud9] DEMO MODE — agents will answer with made-up examples, " +
+        "not real answers from Claude or Codex.");
+    }
     host = startEngineHost({
       relayUrl,
       token: ownerToken,
       dataDir,
       credentials,
-      demoMode: process.env.CLOUD9_DEMO === "1",
+      demoMode,
       onReady: () => console.log(
         `[cloud9] engine online (Claude ${credentials.claude ? "using your saved key" : "using the Claude app's own sign-in"})`),
     });
@@ -372,6 +411,71 @@ ipcMain.handle("cloud9:openAgentFolder", async () => {
   return problem ? { ok: false, error: problem } : { ok: true };
 });
 
+/* ---------- the computer-wide hotkey, as a setting ---------- */
+
+function quickChatHotkeyStatus(applied) {
+  const s = readSettings();
+  return {
+    enabled: s.globalQuickChat === true,
+    key: String(s.globalQuickChatKey || DEFAULT_GLOBAL_QUICK_CHAT_KEY),
+    defaultKey: DEFAULT_GLOBAL_QUICK_CHAT_KEY,
+    // did it really take the key, or is another program holding it?
+    active: applied ? applied.ok && !!applied.key : !!globalQuickChatKey(),
+    error: applied && applied.error ? applied.error : null,
+  };
+}
+
+ipcMain.handle("cloud9:quickChatHotkey", () => quickChatHotkeyStatus(null));
+
+ipcMain.handle("cloud9:setQuickChatHotkey", (_ev, enabled, key) => {
+  const s = readSettings();
+  s.globalQuickChat = enabled === true;
+  if (typeof key === "string" && key.trim()) s.globalQuickChatKey = key.trim();
+  writeSettings(s);
+  // apply it now and report honestly whether the key could actually be claimed
+  return quickChatHotkeyStatus(applyGlobalQuickChatShortcut());
+});
+
+/* ---------- letting a friend on another computer reach this hub ---------- */
+
+ipcMain.handle("cloud9:hubNetwork", () => ({
+  address: hubBindAddress(),
+  loopbackOnly: hubBindAddress() === "127.0.0.1",
+  // the addresses this computer could offer — a Tailscale one starts 100.
+  candidates: privateNetworkAddresses(),
+}));
+
+ipcMain.handle("cloud9:setHubNetwork", (_ev, address) => {
+  const want = String(address ?? "").trim();
+  // the relay is the one owner of this rule; ask it rather than re-deciding here
+  if (/^(0\.0\.0\.0|::|\*|0)$/.test(want)) {
+    return {
+      ok: false,
+      error: "that address means every network this computer is on, including " +
+        "public wifi. Use your private-network address instead (it starts with 100.).",
+    };
+  }
+  const s = readSettings();
+  if (want) s.networkBind = want; else delete s.networkBind;
+  writeSettings(s);
+  return { ok: true, address: want || "127.0.0.1", restartNeeded: true };
+});
+
+/** Addresses on this computer that a private network (Tailscale) would have given it. */
+function privateNetworkAddresses() {
+  const out = [];
+  try {
+    const os = require("node:os");
+    for (const [name, list] of Object.entries(os.networkInterfaces())) {
+      for (const iface of list || []) {
+        if (iface.family !== "IPv4" || iface.internal) continue;
+        out.push({ name, address: iface.address, likelyTailscale: iface.address.startsWith("100.") });
+      }
+    }
+  } catch { /* nothing to offer — the box below just stays empty */ }
+  return out;
+}
+
 ipcMain.handle("cloud9:credentialStatus", () => {
   const status = { canEncrypt: safeStorage.isEncryptionAvailable() };
   for (const h of HARNESSES) {
@@ -404,9 +508,31 @@ function toRenderer(action) {
   if (win && !win.isDestroyed()) win.webContents.send("cloud9:menu", action);
 }
 
-const menuItem = (label, action, accelerator) => ({
-  label, accelerator, click: () => toRenderer(action),
-});
+/* The canonical list of menu actions, loaded from @cloud9/shared at startup.
+ * ONE list, two halves: this file builds the menu from it, and the app screen
+ * types its handler map as Record<MenuAction, …> so a handler it forgets is a
+ * build error rather than a menu item that silently does nothing. Four items
+ * used to be exactly that (M5). */
+let MENU_ACTIONS = null;
+/** Every action this menu actually sends — filled in as the menu is built. */
+const sentActions = new Set();
+
+/**
+ * A menu item that hands its action to the app screen.
+ *
+ * The action is checked against the shared list the moment the menu is built,
+ * so a typo or an invented action stops the app at startup with a plain
+ * sentence — instead of shipping a menu item that looks alive and is not.
+ */
+const menuItem = (label, action, accelerator) => {
+  if (MENU_ACTIONS && !MENU_ACTIONS.includes(action)) {
+    throw new Error(
+      `menu item "${label}" sends "${action}", which is not in the shared MENU_ACTIONS ` +
+      "list in @cloud9/shared. Add it there (and to the app screen's handler map) first.");
+  }
+  sentActions.add(action);
+  return { label, accelerator, click: () => toRenderer(action) };
+};
 
 function buildMenu() {
   const template = [
@@ -483,6 +609,66 @@ function buildMenu() {
     },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+
+  // The other direction: every action on the shared list must actually be sent
+  // by some menu item. Without this the list could grow an action nothing
+  // reaches, and the app screen would carry a handler for a dead route.
+  if (MENU_ACTIONS) {
+    const missing = MENU_ACTIONS.filter(a => !sentActions.has(a));
+    if (missing.length) {
+      throw new Error(
+        `these menu actions are on the shared list but no menu item sends them: ` +
+        `${missing.join(", ")}. Either add the menu items or take them off the list.`);
+    }
+    console.log(`[cloud9] menu wired: ${MENU_ACTIONS.length} actions, all reachable`);
+  }
+}
+
+/* ---------- the quick-chat hotkey ----------
+ * Ctrl+K inside Cloud9's own window is handled by the app screen, costs nobody
+ * anything, and is always on.
+ *
+ * A GLOBAL hotkey is a different animal: Electron takes that key away from
+ * EVERY program on the computer for as long as Cloud9 is running. Registering
+ * CommandOrControl+K globally meant VS Code lost its chord prefix, Slack lost
+ * its link dialog and every browser lost its search bar (M8). So the global
+ * hotkey is now OFF unless asked for, and when asked for it defaults to
+ * Ctrl+Alt+K — a combination essentially nothing else claims.
+ *
+ * Settings keys (Cloud9's settings.json):
+ *   "globalQuickChat": true                  turn it on   (default: false)
+ *   "globalQuickChatKey": "Control+Alt+K"    change it     (default as shown)
+ */
+const DEFAULT_GLOBAL_QUICK_CHAT_KEY = "CommandOrControl+Alt+K";
+
+function globalQuickChatKey() {
+  const s = readSettings();
+  if (s.globalQuickChat !== true) return null;
+  const key = String(s.globalQuickChatKey || DEFAULT_GLOBAL_QUICK_CHAT_KEY).trim();
+  return key || DEFAULT_GLOBAL_QUICK_CHAT_KEY;
+}
+
+/** Put the current setting into effect. Safe to call again at any time. */
+function applyGlobalQuickChatShortcut() {
+  globalShortcut.unregisterAll();
+  const key = globalQuickChatKey();
+  if (!key) {
+    console.log("[cloud9] no computer-wide hotkey registered — Ctrl+K works inside Cloud9 only");
+    return { ok: true, key: null };
+  }
+  let registered = false;
+  try {
+    registered = globalShortcut.register(key, toggleQuickWindow);
+  } catch (err) {
+    console.error(`[cloud9] "${key}" is not a shortcut Windows understands:`, err.message);
+  }
+  if (!registered) {
+    console.error(`[cloud9] could not take "${key}" — another program already has it. ` +
+      "Ctrl+K still works inside Cloud9.");
+    return { ok: false, key, error: "another program already uses that shortcut" };
+  }
+  console.log(`[cloud9] computer-wide quick-chat hotkey: ${key}`);
+  return { ok: true, key };
 }
 
 // (the App User Model ID is set at the top of this file, before anything else)
@@ -515,9 +701,18 @@ if (PACKAGED && !app.requestSingleInstanceLock()) {
           `Details: ${String(err)}`);
       }
     }
+    // the menu is built from the shared action list, and refuses to build if the
+    // two halves have drifted apart (M5)
+    try {
+      ({ MENU_ACTIONS } = await import("@cloud9/shared"));
+    } catch (err) {
+      console.error("[cloud9] could not load the shared menu action list:", err);
+    }
     buildMenu();
     createMainWindow();
-    globalShortcut.register("CommandOrControl+K", toggleQuickWindow);
+    // Ctrl+K inside the app is the app screen's job and always works. A
+    // computer-wide hotkey is off unless asked for (M8).
+    applyGlobalQuickChatShortcut();
     startEngine();
     app.on("activate", () => { if (!mainWin) createMainWindow(); });
   });

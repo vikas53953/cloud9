@@ -40,6 +40,12 @@ export class Engine {
   provider?: ClaudeProvider;
   /** the Codex-side provider — undefined until Codex is signed in */
   codexProvider?: ClaudeProvider;
+  /**
+   * True when this engine may answer with canned replies. It is reported to
+   * every client on the harness state, so demo mode is always VISIBLE — it can
+   * never be a silent property of how the app happened to be launched.
+   */
+  demoMode: boolean;
   dataDir: string;
   brake: BrakeConfig;
   schedules: AgentSchedule[] = [];
@@ -64,6 +70,7 @@ export class Engine {
 
   constructor(opts: EngineOptions) {
     this.opts = opts;
+    this.demoMode = opts.demoMode === true;
     this.provider = opts.provider ?? (opts.demoMode ? new MockProvider() : undefined);
     this.codexProvider = opts.codexProvider ?? (opts.demoMode ? new MockProvider() : undefined);
     this.dataDir = opts.dataDir ?? path.join(process.cwd(), "cloud9-engine-data");
@@ -182,7 +189,8 @@ export class Engine {
       const bare = message.text.replace(/@[\w-]+\s*/g, "");
       // schedule commands: "@Agent !schedule daily 06:30 do X" / "every 15m do X",
       // "@Agent !schedules", "@Agent !unschedule <id>"
-      if (message.authorKind === "human" && this.handleScheduleCommand(agent, channel.id, bare)) continue;
+      if (message.authorKind === "human"
+        && this.handleScheduleCommand(agent, channel.id, bare, message.authorId)) continue;
       // delegated work: "!bg <task>" or "!task <task>" → tracked Task (spec FR-TS-002)
       const bg = message.authorKind === "human" && /^!(bg|task)\s+/i.test(bare);
       if (bg) {
@@ -190,6 +198,9 @@ export class Engine {
         const needsApproval = agent.approvals?.background === true;
         this.sendFrame({
           type: "createTask", agentId: agent.id, channelId: channel.id, title,
+          // the person who TYPED it, not the account this engine runs as — a
+          // friend's job must stay their job in Tasks and in the activity log
+          requesterId: message.authorId,
           needsApproval, action: needsApproval ? `Run background task: ${title}` : undefined,
         });
         this.agentSend(agent.id, channel.id, needsApproval
@@ -375,7 +386,10 @@ export class Engine {
    * harnesses look like. Status only — no credential material (decision 5/6).
    */
   reportHarness(state: HarnessState): void {
-    this.sendFrame({ type: "harnessState", state });
+    // demo mode travels WITH the status every client already listens to, so the
+    // screen can say "these answers are made up" without anyone having to
+    // remember to ask a second question
+    this.sendFrame({ type: "harnessState", state: { ...state, demo: this.demoMode } });
   }
 
   agentSend(agentId: ID, channelId: ID, text: string, proactive = false): void {
@@ -393,13 +407,14 @@ export class Engine {
   }
 
   /** returns true when the message was a schedule command (handled, no LLM turn) */
-  handleScheduleCommand(agent: AgentDef, channelId: ID, text: string): boolean {
+  handleScheduleCommand(agent: AgentDef, channelId: ID, text: string, requesterId?: ID): boolean {
     const t = text.trim();
     const create = /^!schedule\s+(daily \d{1,2}:\d{2}|every \d+m)\s*:?\s+(.+)$/i.exec(t);
     if (create && agent.approvals?.schedules === true) {
       this.sendFrame({
         type: "createTask", agentId: agent.id, channelId,
         title: `!schedule ${create[1].toLowerCase()}: ${create[2]}`,
+        requesterId,
         needsApproval: true, action: `Create schedule (${create[1]}): ${create[2]}`,
       });
       this.agentSend(agent.id, channelId, `Schedule request sent for approval. 🔒`);

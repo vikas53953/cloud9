@@ -2,7 +2,7 @@
 //  - MockProvider: deterministic, credential-free — used for tests/QA and demo mode.
 //  - SdkProvider: Claude Agent SDK (query()), billing to the user's own
 //    credential (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN).
-import { AgentDef } from "@cloud9/shared";
+import { AgentDef, DEMO_REPLY_PREFIX } from "@cloud9/shared";
 
 export interface RespondInput {
   agent: AgentDef;
@@ -84,8 +84,20 @@ export function buildAgentPrompt(agent: AgentDef, context: string): string {
   );
 }
 
+/**
+ * Canned answers, for tests, QA and demo mode.
+ *
+ * Every reply it produces is LABELLED. A demo answer that reads like a real one
+ * is the worst failure this app can have — the owner would believe it. The
+ * label is written here, at the only place canned text is made, so no launcher,
+ * flag or future caller can produce an unlabelled fake.
+ */
 export class MockProvider implements ClaudeProvider {
   async respond({ agent, trigger, triggerAuthor }: RespondInput): Promise<string> {
+    return DEMO_REPLY_PREFIX + this.cannedBody({ agent, trigger, triggerAuthor });
+  }
+
+  private cannedBody({ agent, trigger, triggerAuthor }: Omit<RespondInput, "context">): string {
     const gist = trigger.replace(/@[\w-]+/g, "").trim().slice(0, 80) || "that";
     const flavor: Record<string, string> = {
       webSearch: "I'd search the web for this",

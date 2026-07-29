@@ -51,7 +51,14 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
   const log = opts.log ?? ((m: string) => console.log(m));
   const engine = new Engine({
     relayUrl: opts.relayUrl, token: opts.token, dataDir: opts.dataDir,
+    // the flag is passed through so the engine can TELL every client it is in
+    // demo mode; the providers themselves are decided by applyProviders below
+    demoMode: opts.demoMode,
   });
+  if (opts.demoMode) {
+    log("[engine-host] DEMO MODE IS ON — agents will answer with made-up examples, " +
+      "not real answers. Nothing here came from Claude or Codex.");
+  }
 
   // one slot per harness; a missing slot means "no credential"
   const creds: Partial<Record<HarnessName, StoredCredential>> = { ...opts.credentials };
@@ -64,14 +71,30 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
    * Rebuild both providers from (credentials + detected harness state).
    *
    * Order per harness, and it is the same for both (feedback-round-1.md):
-   *  1. a credential WE hold  → today's behaviour (SDK for Claude, key for Codex)
-   *  2. the app's own login   → spawn the CLI with NO credential variables
-   *  3. demo mode, if asked for explicitly
+   *  1. demo mode, when a person explicitly asked for it
+   *  2. a credential WE hold  → today's behaviour (SDK for Claude, key for Codex)
+   *  3. the app's own login   → spawn the CLI with NO credential variables
    *  4. nothing — the agent says "my engine isn't connected"
    *
-   * A signed-out harness never quietly falls back to canned replies.
+   * Demo mode used to sit at position 3, as a FALLBACK: it fired only when
+   * everything else was missing. That is the worst possible place for it. It
+   * meant the one moment canned answers appeared was the moment the owner was
+   * signed out and least able to tell — and, in the other direction, that asking
+   * for demo mode on a signed-in machine did nothing at all, so QA runs quietly
+   * spent real money on real models and got a different answer every time.
+   *
+   * So it is not a fallback any more, it is an OVERRIDE: it happens only because
+   * somebody asked, and when they ask it is what they get. Nothing broken can
+   * cause it. And it is never invisible — the engine reports it to every screen
+   * and every canned line is stamped "[demo — not a real answer]" at the source.
    */
   const applyProviders = (): void => {
+    if (opts.demoMode) {
+      engine.provider = new MockProvider();
+      engine.codexProvider = new MockProvider();
+      return;
+    }
+
     // --- Claude
     const claude = creds.claude?.value ? creds.claude : undefined;
     if (claude) {
@@ -86,8 +109,6 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
         command: opts.harness?.claudeCommand,
         models: () => modelsFor("claude"),
       });
-    } else if (opts.demoMode) {
-      engine.provider = new MockProvider();
     } else {
       engine.provider = undefined; // agents will say "my engine isn't connected"
     }
@@ -102,8 +123,6 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
         apiKey: () => creds.codex?.value || undefined,
         models: () => modelsFor("codex"),
       });
-    } else if (opts.demoMode) {
-      engine.codexProvider = new MockProvider();
     } else {
       engine.codexProvider = undefined;
     }

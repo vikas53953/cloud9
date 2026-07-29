@@ -166,3 +166,42 @@ test("a model id can never be mistaken for a command-line flag", () => {
     assert.equal(MODEL_ID_RE.test(id), true, `${id} must stay valid`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// M3 — a skill's files must really become files, and never be lost on an edit.
+// ---------------------------------------------------------------------------
+
+test("a skill's files are written into the agent's own folder", () => {
+  const dir = tmp();
+  const engine = new Engine({ relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: dir });
+  const a = agent({
+    skills: [skill({ files: [{ name: "checklist.md", text: "1. check the price" }] })],
+  });
+  engine.writeSkillFiles(a);
+  const written = path.join(dir, "agents", a.id, "skills", "checklist.md");
+  assert.equal(fs.readFileSync(written, "utf8"), "1. check the price");
+});
+
+test("a file name that could point outside the folder is refused, never rewritten", () => {
+  const dir = tmp();
+  const engine = new Engine({ relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: dir });
+  const a = agent({
+    skills: [skill({
+      files: [
+        { name: "../escape.md", text: "no" },
+        { name: "CON.md", text: "no" },
+        { name: "fine.md", text: "yes" },
+      ],
+    })],
+  });
+  engine.writeSkillFiles(a);
+  const skillsDir = path.join(dir, "agents", a.id, "skills");
+  assert.deepEqual(fs.readdirSync(skillsDir), ["fine.md"]);
+  assert.ok(!fs.existsSync(path.join(dir, "agents", a.id, "escape.md")));
+});
+
+test("the file names an agent has are named in its prompt, so it knows to read them", () => {
+  const prompt = buildAgentPrompt(
+    agent({ skills: [skill({ files: [{ name: "checklist.md", text: "x" }] })] }), "V: hi");
+  assert.match(prompt, /Files in your folder: checklist\.md/);
+});

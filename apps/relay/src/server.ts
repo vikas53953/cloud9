@@ -4,7 +4,7 @@ import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   AgentDef, AgentStatus, Approval, Channel, ClientFrame, HarnessState, ID, Message,
-  ServerFrame, Task, WorldState, extractMentions, newId, validateAgentInput,
+  ServerFrame, Task, User, WorldState, extractMentions, newId, validateAgentInput,
 } from "@cloud9/shared";
 import { Store } from "./store.js";
 
@@ -31,6 +31,39 @@ export interface RelayOptions {
  * to trigger them outside dev mode.
  */
 export const DEFAULT_OWNER_TOKEN = "dev-owner-token";
+
+/** This computer only — the address the hub uses unless it is told otherwise. */
+export const LOOPBACK = "127.0.0.1";
+
+/**
+ * Addresses that mean "answer on EVERY network this computer is on", including
+ * the café wifi and, behind a careless router, the open internet. The hub can
+ * start programs on the owner's machine, so it must never be reachable that
+ * widely — not by a typo, not by an environment variable, not by a settings
+ * file someone copied off a forum. (docs/plans/backend-decision.md #2:
+ * "bind the private-network interface instead, never 0.0.0.0".)
+ */
+const EVERY_INTERFACE = new Set(["0.0.0.0", "::", "[::]", "*", "0", "::0", "0.0.0.0.0"]);
+
+/**
+ * Which address the hub answers on. Loopback unless a real, specific address is
+ * named — and a wildcard is REFUSED, never quietly narrowed, so a
+ * misconfiguration is loud instead of a silent hole.
+ *
+ * The intended use is a Tailscale address (100.x.y.z): friends' enrolled
+ * devices can reach it and nothing else on any network can.
+ */
+export function resolveBind(requested?: string): string {
+  const want = (requested ?? "").trim();
+  if (!want) return LOOPBACK;
+  if (EVERY_INTERFACE.has(want.toLowerCase())) {
+    throw new Error(
+      "Cloud9's hub will not listen on every network (" + want + "). " +
+      "Give it one address — your private-network (Tailscale) address, e.g. 100.x.y.z — " +
+      "or leave it unset to stay on this computer only.");
+  }
+  return want;
+}
 
 /** A sign-in may be asked for once every 30s per user, one at a time. */
 const SIGNIN_COOLDOWN_MS = 30_000;
@@ -62,7 +95,7 @@ export class Relay {
     this.store = new Store(opts.dbPath ?? "cloud9-relay.db");
     this.ownerToken = opts.ownerToken ?? process.env.CLOUD9_OWNER_TOKEN ?? "dev-owner-token";
     this.ownerName = opts.ownerName ?? process.env.CLOUD9_OWNER_NAME ?? "Vikas";
-    this.bind = opts.bind ?? process.env.CLOUD9_BIND ?? "127.0.0.1";
+    this.bind = resolveBind(opts.bind ?? process.env.CLOUD9_BIND);
     this.devMode = opts.devMode ?? process.env.CLOUD9_DEV === "1";
     // Owner exists from first boot; a default #general channel too.
     const owner = this.store.ensureOwner(this.ownerName, this.ownerToken);
@@ -305,9 +338,18 @@ export class Relay {
         const bad = validateAgentInput(frame.agent, this.agentRules(conn, frame.agent.provider));
         if (bad) throw new Error(bad);
         const existing = this.myAgent(conn.userId, frame.agent.id);
-        this.store.saveAgent({ ...frame.agent, ownerId: existing.ownerId });
+        // An edit that never mentions a skill's files must not delete them
+        // (M3). One rule, here, for every client — see `keepSkillFiles`.
+        const saved: AgentDef = {
+          ...frame.agent,
+          ownerId: existing.ownerId,
+          skills: keepSkillFiles(existing.skills, frame.agent.skills),
+        };
+        this.store.saveAgent(saved);
         this.audit(conn, "agent_updated", frame.agent.id, `updated agent ${frame.agent.name}`);
-        this.broadcast({ type: "agent", agent: frame.agent });
+        // broadcast what was STORED, not what was sent — otherwise every other
+        // client would be told the files are gone even though they are not
+        this.broadcast({ type: "agent", agent: saved });
         break;
       }
       case "deleteAgent": {
@@ -356,8 +398,12 @@ export class Relay {
         // them a guest could run background work on the owner's paid
         // subscription, in a channel they had never been invited to.
         const agent = this.myAgent(conn.userId, frame.agentId);
-        this.channelFor(conn.userId, frame.channelId);
-        const requester = this.store.users().find(u => u.id === conn.userId)!;
+        const channel = this.channelFor(conn.userId, frame.channelId);
+        // WHO ASKED — not whichever socket carried the request. The engine host
+        // relays everybody's "!bg …" down its own connection, so reading the
+        // person off the connection credited every delegated job to the owner
+        // (M4). `requesterFor` is the one place that answers this question.
+        const requester = this.requesterFor(conn, frame.requesterId, channel);
         const now = Date.now();
         // Whether this needs the owner's blessing is the AGENT's setting. The
         // client used to be asked, which meant "does this need approval?" was
@@ -383,11 +429,13 @@ export class Relay {
           task.approvalId = approval.id;
           this.store.saveApproval(approval);
           this.audit(conn, "approval_requested", approval.id,
-            `${agent.name} requests approval: ${approval.action}`);
+            `${agent.name} requests approval: ${approval.action}`, { asUser: requester });
           this.broadcast({ type: "approval", approval });
         }
         this.store.saveTask(task);
-        this.audit(conn, "task_created", task.id, `task for ${agent.name}: ${task.title}`);
+        // credited to WHO ASKED, not to whichever socket carried the request
+        this.audit(conn, "task_created", task.id, `task for ${agent.name}: ${task.title}`,
+          { asUser: requester });
         this.broadcast({ type: "task", task });
         break;
       }
@@ -402,7 +450,7 @@ export class Relay {
         if (frame.error !== undefined) task.error = frame.error;
         task.updatedAt = Date.now();
         this.store.saveTask(task);
-        this.audit(conn, "task_status", task.id, `task "${task.title}" → ${task.status}`, agent);
+        this.audit(conn, "task_status", task.id, `task "${task.title}" → ${task.status}`, { asAgent: agent });
         this.broadcast({ type: "task", task });
         break;
       }
@@ -526,11 +574,48 @@ export class Relay {
     }
   }
 
-  private audit(conn: Conn, kind: Parameters<Store["logActivity"]>[0]["kind"], refId: string, detail: string, asAgent?: AgentDef): void {
-    const user = this.store.users().find(u => u.id === conn.userId);
+  /**
+   * Who asked for this work.
+   *
+   * A connection is a PIPE, not a person. The engine host holds one socket and
+   * carries the requests of everybody in the house, so "whoever owns this
+   * socket" is the wrong answer for anything it relays — that is how a friend's
+   * job came out reading "asked by Vikas" (M4).
+   *
+   * So: only an engine connection may name someone else, the named person must
+   * really exist, and they must be able to see the conversation the work happens
+   * in. Every other client speaks for itself and cannot name anyone at all.
+   */
+  private requesterFor(conn: Conn, claimedId: ID | undefined, channel: Channel): User {
+    const self = this.store.users().find(u => u.id === conn.userId)!;
+    if (!claimedId || claimedId === conn.userId) return self;
+    if (conn.client !== "engine") {
+      throw new Error("only your own agent engine can ask for work on someone else's behalf");
+    }
+    const claimed = this.store.user(claimedId);
+    if (!claimed) throw new Error("no such person");
+    // the same question channelFor asks, asked about THEM: is this their conversation?
+    const theirAgents = new Set(
+      this.store.agents().filter(a => a.ownerId === claimed.id).map(a => a.id),
+    );
+    const inChannel = channel.memberIds.includes(claimed.id)
+      || channel.memberIds.some(m => theirAgents.has(m));
+    if (!inChannel) throw new Error("that person isn't in this conversation");
+    return claimed;
+  }
+
+  private audit(
+    conn: Conn,
+    kind: Parameters<Store["logActivity"]>[0]["kind"],
+    refId: string,
+    detail: string,
+    as: { asAgent?: AgentDef; asUser?: User } = {},
+  ): void {
+    const { asAgent, asUser } = as;
+    const user = asUser ?? this.store.users().find(u => u.id === conn.userId);
     this.store.logActivity({
       actorKind: asAgent ? "agent" : "human",
-      actorId: asAgent ? asAgent.id : conn.userId,
+      actorId: asAgent ? asAgent.id : user?.id ?? conn.userId,
       actorName: asAgent ? asAgent.name : user?.name ?? "?",
       kind, refId, detail,
     });
@@ -658,6 +743,30 @@ export function requiresApproval(agent: AgentDef, title: string): boolean {
   return isSchedule
     ? agent.approvals?.schedules === true
     : agent.approvals?.background === true;
+}
+
+/**
+ * Keep a skill's files when an edit doesn't mention them.
+ *
+ * A client that edits a skill's wording sends back name/description/
+ * instructions and says nothing about `files` — so a plain overwrite would
+ * DELETE the agent's files on every rename. That is silent data loss, and it
+ * would be the renderer's bug to make in four places.
+ *
+ * So the rule lives here instead, once, for every client: `files` absent means
+ * "I am not talking about files, leave them alone"; `files: []` means "remove
+ * them". Absent and empty are different sentences and are treated differently.
+ */
+export function keepSkillFiles(
+  before: AgentDef["skills"], after: AgentDef["skills"],
+): AgentDef["skills"] {
+  if (!after) return after;
+  const old = new Map((before ?? []).map(s => [s.id, s]));
+  return after.map(skill => {
+    if (skill.files !== undefined) return skill;
+    const previous = old.get(skill.id);
+    return previous?.files ? { ...skill, files: previous.files } : skill;
+  });
 }
 
 /** The plain sentence the owner is shown, built from the stored task title. */

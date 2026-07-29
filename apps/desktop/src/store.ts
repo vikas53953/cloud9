@@ -76,13 +76,25 @@ export class RelayClient {
 
   connect(token: string): void {
     this.ws?.close();
+    // a fresh attempt starts with a clean slate: the last refusal belonged to the
+    // last attempt, and leaving it up would explain the wrong thing
+    this.world.authFailed = false;
+    this.world.lastError = undefined;
+    this.emit();
     const ws = new WebSocket(RELAY_URL);
     this.ws = ws;
     ws.onopen = () => this.send({ type: "hello", token, client: "desktop" });
     ws.onclose = () => {
       this.world.connected = false;
+      // Retrying on an EMPTY token is not a retry — it is a guaranteed "bad
+      // token", and that second refusal used to overwrite the real reason the
+      // first one gave (a spent invite). No token, no reconnect.
+      if (!this.world.authFailed && this.token()) {
+        setTimeout(() => this.connect(this.token()), 2500);
+      } else if (!this.token()) {
+        this.world.authFailed = true;
+      }
       this.emit();
-      if (!this.world.authFailed) setTimeout(() => this.connect(this.token()), 2500);
     };
     ws.onmessage = ev => this.onFrame(JSON.parse(ev.data) as ServerFrame);
   }
@@ -96,6 +108,21 @@ export class RelayClient {
 
   send(frame: ClientFrame): void {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(frame));
+  }
+
+  /**
+   * Say something the app itself decided, in the one place refusals are said.
+   *
+   * When the app declines to do something (a guest asking for an invite the
+   * relay would refuse anyway), it must not just do nothing — silence is the
+   * dead click this round exists to kill. It goes through `lastError` so there
+   * is still exactly ONE owner of "here is why that didn't happen": the toast
+   * on every workspace screen, the notice on the join screen. Pass the relay's
+   * own wording where one exists, so both routes print the same sentence.
+   */
+  notify(text: string): void {
+    this.world.lastError = { text, ts: Date.now() };
+    this.emit();
   }
 
   private onFrame(frame: ServerFrame): void {
@@ -179,12 +206,44 @@ export class RelayClient {
       case "userJoined":
         w.users = [...w.users, frame.user];
         break;
+      case "userRemoved": {
+        // Removed means removed EVERYWHERE, now — not after a reload. The
+        // sidebar, the @-mention list and the "Remove a person" dropdown all
+        // read these two arrays, so dropping them here fixes every list at once.
+        if (w.me && frame.userId === w.me.id) {
+          // it was us: the relay has already closed the socket, so show the
+          // welcome screen with a reason rather than an empty app
+          w.authFailed = true;
+          w.lastError = { text: "you were removed from this Cloud9", ts: Date.now() };
+          break;
+        }
+        w.users = w.users.filter(u => u.id !== frame.userId);
+        w.channels = w.channels.filter(
+          c => !(c.kind === "dm" && c.memberIds.includes(frame.userId)));
+        break;
+      }
       case "error":
-        if (frame.error === "bad token") w.authFailed = true;
-        else w.lastError = { text: frame.error, ts: Date.now() };
+        w.lastError = { text: frame.error, ts: Date.now() };
+        // A refusal that arrives before we were ever let in is a FAILED JOIN:
+        // send the person back to the welcome screen, where the reason is
+        // visible, instead of leaving them staring at an empty workspace.
+        if (frame.error === "bad token" || !w.me) w.authFailed = true;
         break;
-      default:
+      // Frames that are not ours to act on. Named, not defaulted, so the
+      // exhaustiveness check below still holds.
+      case "push":        // relay → mobile only
+      case "harnessRequest": // relay → engine host only
         break;
+      default: {
+        /**
+         * If a new frame is added to `ServerFrame` and not handled above, this
+         * line stops being assignable and `tsc` fails the build. An unhandled
+         * frame can no longer ship silently the way `userRemoved` did.
+         */
+        const unhandled: never = frame;
+        void unhandled;
+        break;
+      }
     }
     this.emit();
   }

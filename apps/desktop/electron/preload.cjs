@@ -30,6 +30,26 @@ contextBridge.exposeInMainWorld("cloud9", {
   openAgentFolder: () => ipcRenderer.invoke("cloud9:openAgentFolder"),
 
   /**
+   * The computer-wide quick-chat hotkey. OFF by default, because a global
+   * shortcut takes that key away from every other program on the machine.
+   * `get` → { enabled, key, defaultKey, active }, `set(enabled, key)` → same,
+   * having actually tried to claim it (so the screen can say "another program
+   * already uses that one").
+   */
+  quickChatHotkey: () => ipcRenderer.invoke("cloud9:quickChatHotkey"),
+  setQuickChatHotkey: (enabled, key) =>
+    ipcRenderer.invoke("cloud9:setQuickChatHotkey", enabled, key),
+
+  /**
+   * Which address this computer's hub answers on, so a friend on another
+   * computer can reach it over a private (Tailscale) network. Loopback — this
+   * computer only — unless changed. `set` takes effect the next time Cloud9
+   * starts; a wildcard address is refused, never quietly narrowed.
+   */
+  hubNetwork: () => ipcRenderer.invoke("cloud9:hubNetwork"),
+  setHubNetwork: address => ipcRenderer.invoke("cloud9:setHubNetwork", address),
+
+  /**
    * Menu bar → app screen. The callback is handed the action name only
    * ("new-agent", "settings", "toggle-theme", …) — never the raw IPC event, so
    * the renderer can't reach back through it. Returns an unsubscribe function.

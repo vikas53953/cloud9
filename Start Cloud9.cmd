@@ -14,6 +14,15 @@ rem ============================================================
 title Cloud9
 cd /d "%~dp0"
 
+rem  Real answers, always. Demo mode invents answers that LOOK real, so it must
+rem  only ever happen because a person asked for it - and this launcher is not
+rem  a person asking. Cleared once, here, so nothing started below can inherit
+rem  it from whatever window this was opened from: the hub, the agents, the app
+rem  screen and the Cloud9 window all get a session with demo mode switched off.
+rem  If you DO want made-up answers (a demo with no internet, say), run
+rem  "Start Cloud9 (demo).cmd" - it says so on screen the whole time.
+set "CLOUD9_DEMO="
+
 echo.
 echo   Cloud9 is starting in workbench mode.
 echo   Leave this window open while you use the app.
@@ -32,8 +41,10 @@ if errorlevel 1 (
 )
 echo         hub ready
 
+rem  Your agents run on YOUR Claude and Codex, signed in on this computer.
+rem  Demo mode was cleared for this whole session at the top of this file.
 echo   [2/3] starting your agents...
-start "Cloud9 agents" /min cmd /c "set CLOUD9_DEMO=1&& node scripts\engine-host.mjs"
+start "Cloud9 agents" /min cmd /c "node scripts\engine-host.mjs"
 
 echo   [3/3] starting the app screen...
 start "Cloud9 screen" /min cmd /c "cd apps\desktop&& npx vite dev --host 127.0.0.1 --port 5173"

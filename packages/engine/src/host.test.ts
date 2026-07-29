@@ -176,3 +176,47 @@ test("a Codex key is passed as CODEX_API_KEY and never as an ANTHROPIC variable"
   assert.notEqual(seenEnv?.CLAUDE_CODE_OAUTH_TOKEN, "sk-codex-secret-value");
   h.stop();
 });
+
+// ---------------------------------------------------------------------------
+// B2 — demo answers must never happen unless a person asked for them, and when
+// they do happen they must be impossible to mistake for real ones.
+// ---------------------------------------------------------------------------
+
+test("demo mode is an OVERRIDE, not a fallback: asking for it wins even on a signed-in machine", () => {
+  // Before this fix demo mode sat below the CLI login, so CLOUD9_DEMO=1 on a
+  // signed-in machine did nothing — and, far worse, canned answers appeared
+  // exactly when the owner was signed OUT and least able to tell.
+  const h = host({ demoMode: true });
+  h.harness.setState(state({ claudeIn: true, codexIn: true }));
+  assert.ok(h.engine.provider instanceof MockProvider,
+    "an explicit demo request is honoured even though the Claude CLI is signed in");
+  assert.ok(h.engine.codexProvider instanceof MockProvider);
+  h.stop();
+});
+
+test("a signed-out machine with no demo request gets NO provider, never a canned one", () => {
+  const h = host();
+  h.harness.setState(state({ claudeIn: false, codexIn: false }));
+  assert.equal(h.engine.provider, undefined, "nothing broken may produce a fake answer");
+  assert.equal(h.engine.codexProvider, undefined);
+  h.stop();
+});
+
+test("demo mode is reported to every client, so the screen can say so", () => {
+  const h = host({ demoMode: true });
+  const sent: unknown[] = [];
+  (h.engine as unknown as { sendFrame: (f: unknown) => void }).sendFrame = f => { sent.push(f); };
+  h.engine.reportHarness(state({ claudeIn: false }));
+  assert.equal((sent[0] as { state: HarnessState }).state.demo, true,
+    "the harness state carries the demo flag so no screen has to guess");
+  h.stop();
+});
+
+test("a machine NOT in demo mode says so too, rather than saying nothing", () => {
+  const h = host();
+  const sent: unknown[] = [];
+  (h.engine as unknown as { sendFrame: (f: unknown) => void }).sendFrame = f => { sent.push(f); };
+  h.engine.reportHarness(state({ claudeIn: true }));
+  assert.equal((sent[0] as { state: HarnessState }).state.demo, false);
+  h.stop();
+});
