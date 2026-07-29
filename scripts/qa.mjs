@@ -1,4 +1,5 @@
 import { chromium } from "playwright";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -29,7 +30,7 @@ const { ui: UI } = qaTarget();
  * run stops early it now FAILS and says so. Add or remove an `ok(...)` and this
  * number must move with it — a mismatch is the suite telling you it drifted.
  */
-const EXPECTED_CHECKS = 179;
+const EXPECTED_CHECKS = 247;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -103,6 +104,65 @@ const browser = await chromium.launch(
 try {
   // ---------- owner context ----------
   const owner = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+
+  /* ---- A HOLD ON ONE KIND OF ANSWER FROM THE HUB ----------------------------
+   *
+   * Two of the findings below can only be PROVED by catching the app in a state
+   * that lasts a fraction of a second: one file on the wire and unanswered, with
+   * a second already read and queued behind it. The suite used to try to catch
+   * it by racing — pick a big file, then spin waiting for the moment to come
+   * round. On a hub that answered quickly the moment had already gone, and the
+   * check failed on a run where nothing whatsoever was wrong. Worse, the failure
+   * cascaded: with no refusal ever provoked there was no toast to read, and the
+   * whole run died on a 30-second timeout with 70 checks never executed.
+   *
+   * So the moment is HELD OPEN instead of chased. `__c9hold.hold(["attachment"])`
+   * makes the browser keep the hub's answers to uploads in a queue until
+   * `release()` hands them over, in the order they arrived. Nothing in the app is
+   * stubbed or stood in for: every frame the hub sends is still delivered, to the
+   * app's own handler, unchanged and in order — the only thing this decides is
+   * WHEN. That turns "if the hub happens to be slow" into a state the app is
+   * simply in, which is what the checks then wait on.
+   *
+   * It also matches the real ordering the bug needs: a refusal about something
+   * else is a small, fast answer, so on a busy hub it genuinely does arrive
+   * before the upload it got mistakenly pinned on. */
+  await owner.addInitScript(() => {
+    const Real = window.WebSocket;
+    const gate = { types: [], held: [] };
+    window.__c9hold = {
+      hold: types => { gate.types = types; gate.held = []; },
+      holding: () => gate.held.length,
+      release: () => {
+        gate.types = [];
+        const queued = gate.held.splice(0);
+        for (const deliver of queued) deliver();
+        return queued.length;
+      },
+    };
+    class Gated extends Real {
+      constructor(...args) {
+        super(...args);
+        let mine = null;
+        // the app assigns `ws.onmessage`; this instance property shadows the
+        // native one, so every frame comes through here first
+        Object.defineProperty(this, "onmessage", {
+          configurable: true,
+          get: () => mine,
+          set: fn => { mine = fn; },
+        });
+        Real.prototype.addEventListener.call(this, "message", ev => {
+          const deliver = () => { if (mine) mine.call(this, ev); };
+          let type = "";
+          try { type = JSON.parse(ev.data).type; } catch { /* not a frame we know */ }
+          if (gate.types.includes(type)) gate.held.push(deliver);
+          else deliver();
+        });
+      }
+    }
+    window.WebSocket = Gated;
+  });
+
   const page = await owner.newPage();
   failShot = page;
   page.on("console", m => { if (m.type() === "error") consoleErrors.push("owner: " + m.text()); });
@@ -725,6 +785,104 @@ try {
     (await page.locator(".threadpanel .msg").count()) === 2,
     `${await page.locator(".threadpanel .msg").count()} messages in the panel`);
   await page.click(".threadpanel .threadclose");
+  await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
+
+  /* ================= WHAT HE COULD NOT FIND ================================
+   *
+   * Threads were all there — a panel, reply counts, a `replyTo` on the wire —
+   * and he still said they were missing, because every reply was ALSO posted
+   * into the room. A thread that changes nothing about the room is a thread
+   * nobody can see. So: with threads on, a reply is NOT a row in the
+   * conversation. That is the check.
+   */
+  const rowsInRoom = async () => page.evaluate(() => [...document.querySelectorAll(".msgs .msg")]
+    .map(m => (m.querySelector(".body")?.innerText ?? "").replace(/\s+/g, " ")));
+  const roomRows = await rowsInRoom();
+  ok("with threads on, a reply is kept in its thread and is NOT a row in the conversation",
+    roomRows.some(t => /what should we do about the backlog/.test(t)) &&
+    !roomRows.some(t => /cut it in half/.test(t)),
+    `${roomRows.length} row(s) in the room`);
+
+  /* The door to a thread used to be an unlabelled ↳ among five other glyphs,
+     revealed only on hover. It carries the word now. */
+  await root.hover();
+  ok("the way into a thread is a control that says Reply, not a bare glyph",
+    /reply/i.test((await root.locator(".ma.reply").innerText()).trim()),
+    (await root.locator(".ma.reply").innerText()).replace(/\s+/g, " "));
+  await page.screenshot({ path: `${SHOTS}/thread-channel.png` });
+
+  /* ---- and the setting he asked for, which must CHANGE the behaviour ---- */
+  await page.evaluate(() => window.cloud9Menu.run("settings"));
+  await page.waitForSelector("#set-replies", { timeout: 15000 });
+  const replyChoices = await page.$$eval(".repliespick", bs => bs.map(b => ({
+    value: b.dataset.replies,
+    words: b.innerText.replace(/\s+/g, " ").trim(),
+  })));
+  ok("Settings offers the two ways a reply can behave, and says plainly what each one does",
+    replyChoices.length === 2 &&
+    replyChoices[0].value === "thread" && replyChoices[1].value === "inline" &&
+    /reply count/i.test(replyChoices[0].words) &&
+    /does not appear in the conversation/i.test(replyChoices[0].words) &&
+    /straight into the conversation/i.test(replyChoices[1].words) &&
+    /no thread opens/i.test(replyChoices[1].words),
+    replyChoices.map(c => `${c.value}: ${c.words.slice(0, 60)}`).join(" | "));
+  ok("threads is what it starts on — the behaviour he is comparing it against",
+    (await page.$eval('.repliespick[aria-pressed="true"]', b => b.dataset.replies)) === "thread");
+  await page.screenshot({ path: `${SHOTS}/thread-setting.png` });
+
+  // KEEP IT IN THE CONVERSATION — the reply comes back into the room…
+  await page.click('.repliespick[data-replies="inline"]');
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# backlog");
+  await page.waitForSelector('.msgs .msg:has-text("cut it in half")', { timeout: 15000 });
+  const inlineRows = await rowsInRoom();
+  ok("choosing “keep it in the conversation” really does put the reply back in the room",
+    inlineRows.some(t => /cut it in half/.test(t)), `${inlineRows.length} row(s) in the room`);
+  ok("and it says which message it is answering, instead of just appearing",
+    (await page.locator('.msg:has-text("cut it in half") .answeringmark').count()) === 1,
+    (await page.locator('.msg:has-text("cut it in half") .answeringmark').innerText()).replace(/\s+/g, " "));
+  ok("no thread pill is offered when threads are off — there is nothing to open",
+    (await page.locator(".threadline").count()) === 0);
+
+  // …and Reply now aims the room's own box instead of opening a panel
+  const inlineRoot = page.locator('.msgs .msg:has-text("what should we do about the backlog?")').last();
+  await inlineRoot.hover();
+  await inlineRoot.locator(".ma.reply").click();
+  await page.waitForSelector(".answeringbar", { timeout: 10000 });
+  ok("with threads off, Reply aims the conversation's own box and opens no thread at all",
+    (await page.locator(".threadpanel").count()) === 0 &&
+    (await page.locator(".answeringbar").count()) === 1,
+    (await page.locator(".answeringbar").innerText()).replace(/\s+/g, " "));
+  await page.fill(".thread .composer textarea", "and ship the rest next week");
+  await page.press(".thread .composer textarea", "Enter");
+  await page.waitForSelector('.msgs .msg:has-text("ship the rest next week")', { timeout: 20000 });
+  ok("a reply written that way lands in the conversation, under the message it answers",
+    (await page.locator('.msgs .msg:has-text("ship the rest next week") .answeringmark').count()) === 1 &&
+    (await page.locator(".answeringbar").count()) === 0);
+  await page.screenshot({ path: `${SHOTS}/thread-inline.png` });
+
+  // put it back, and prove the room goes quiet again
+  await page.evaluate(() => window.cloud9Menu.run("settings"));
+  await page.waitForSelector("#set-replies", { timeout: 15000 });
+  await page.click('.repliespick[data-replies="thread"]');
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# backlog");
+  await waitFor(page, () => ![...document.querySelectorAll(".msgs .msg")]
+    .some(m => /cut it in half/.test(m.textContent ?? "")),
+  undefined, { timeout: 20000, what: "the replies to leave the conversation again" });
+  const backRows = await rowsInRoom();
+  ok("switching back to threads takes the replies out of the conversation again",
+    !backRows.some(t => /cut it in half/.test(t)) &&
+    !backRows.some(t => /ship the rest next week/.test(t)) &&
+    (await page.locator(".threadline").count()) >= 1,
+    `${backRows.length} row(s), ${await page.locator(".threadline").count()} reply pill(s)`);
+  await page.locator(".threadline").last().click();
+  await page.waitForSelector(".threadpanel", { timeout: 15000 });
+  ok("and every reply written either way is in the thread, none of them lost",
+    (await page.locator(".threadpanel .msg").count()) === 3,
+    `${await page.locator(".threadpanel .msg").count()} messages in the panel`);
+  await page.screenshot({ path: `${SHOTS}/thread-panel.png` });
+  await page.click(".threadpanel .threadclose");
 
   // ---------- search across everything ----------
   await page.evaluate(() => window.cloud9Menu.run("search"));
@@ -819,6 +977,104 @@ try {
   ok("the choice is saved on the agent and is there when you open it again",
     /Only you/.test((await page.locator('.cast[data-crew="Scout"] .whocan').innerText())),
     (await page.locator('.cast[data-crew="Scout"] .whocan').innerText()).replace(/\s+/g, " "));
+
+  /* ================= THE HIRING HALL (the marketplace) =====================
+   *
+   * A catalogue that ships INSIDE the app: no server, no download. The three
+   * things that make it a product rather than a list — you can get to it from
+   * where you already go to add an agent, the brief is real, and what you hire
+   * is an ordinary agent you can edit — are each checked, and hiring is done
+   * for real, against the hub.
+   */
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.waitForSelector(".sidebar", { timeout: 15000 });
+  ok("the hiring hall is reachable from where he already goes to add an agent",
+    (await page.locator(".sidebar .side-head .browsebtn.tomarket").count()) === 1,
+    (await page.getAttribute(".sidebar .side-head .browsebtn.tomarket", "aria-label")) ?? "");
+  await page.click('.rail-btn[data-go="crew"]');
+  await page.waitForSelector(".crew-bar", { timeout: 15000 });
+  ok("and from the crew screen",
+    (await page.locator(".crew-bar .tomarket").count()) === 1);
+  await page.click(".crew-bar .tomarket");
+  await page.waitForSelector(".market .cast.role", { timeout: 15000 });
+
+  const roles = await page.$$eval(".market .cast.role", cards => cards.map(c => ({
+    id: c.dataset.role,
+    title: c.querySelector("h3")?.innerText.trim() ?? "",
+    tagline: c.querySelector(".role")?.innerText.trim() ?? "",
+    asks: c.querySelectorAll(".roleasks li").length,
+    app: c.querySelector(".runs .chip")?.innerText.trim() ?? "",
+  })));
+  const wantedRoles = ["architect", "backend", "frontend", "qa", "security", "devops", "reviewer", "writer"];
+  ok("the software roles he asked for are all in the catalogue",
+    wantedRoles.every(r => roles.some(c => c.id === `sw-${r}`)),
+    roles.map(r => r.id).join(", "));
+  ok("every role says what it is for, what to ask it, and which app suits it",
+    roles.length >= 8 && roles.every(r => r.title && r.tagline.length > 20 && r.asks >= 3
+      && /^Suggested: (Claude|Codex)$/.test(r.app)),
+    JSON.stringify(roles.find(r => !r.title || r.tagline.length <= 20 || r.asks < 3) ?? "all complete"));
+  ok("the catalogue is grouped by category, so a second category is data and not a redesign",
+    (await page.locator('.market .marketgroup[data-group="software"]').count()) === 1 &&
+    (await page.locator('.market .seg button[data-cat]').count()) >= 1);
+  await page.screenshot({ path: `${SHOTS}/market-hall.png` });
+
+  // the brief itself — the product, not filler
+  await page.click('.market .cast.role[data-role="sw-architect"] .rolesee');
+  await page.waitForSelector(".hirepanel", { timeout: 15000 });
+  const brief = (await page.locator(".hirepanel .briefbox").innerText()).trim();
+  ok("the brief he is hiring is shown in full, in the agent's own words",
+    brief.length > 400 && /^You are my software architect/.test(brief),
+    `${brief.length} characters`);
+  ok("the panel says what the hire may touch, and that it stops and asks first",
+    (await page.locator(".hirepanel .abilitywords .chip").count()) >= 1 &&
+    /asks you first/i.test(await page.locator(".hirepanel .abilitywords .ab-note").first().innerText()));
+  ok("a hire answers only its owner, the same default a hand-written agent gets",
+    /Just you/.test(await page.locator(".hirepanel .field-row:has-text('Who can set them working')").innerText()));
+  ok("he picks which app runs it, and from his app's real model list",
+    (await page.locator(".hirepanel .hireapp").count()) === 1 &&
+    (await page.locator(".hirepanel .hiremodel option").count()) >= 1,
+    `${await page.locator(".hirepanel .hiremodel option").count()} models offered`);
+  await page.screenshot({ path: `${SHOTS}/market-brief.png` });
+
+  // hire it, for real, on Codex — and prove what landed
+  await page.selectOption(".hirepanel .hireapp", "codex");
+  const hireModel = await page.locator(".hirepanel .hiremodel").inputValue();
+  await page.click(".hirepanel .hirebtn");
+  await page.waitForSelector('.crew-grid .cast[data-crew="Architect"]', { timeout: 25000 });
+  ok("hiring copies the role onto his floor as one of his own agents",
+    (await page.locator('.cast[data-crew="Architect"]').count()) === 1);
+  ok("and it runs on the app he chose, not the one the catalogue suggested",
+    /Codex/.test(await page.locator('.cast[data-crew="Architect"] .runs').innerText()),
+    (await page.locator('.cast[data-crew="Architect"] .runs').innerText()).replace(/\s+/g, " "));
+  ok("the crew screen says the hire is his to change",
+    (await page.locator('.hirednote[data-hired="Architect"]').count()) === 1,
+    (await page.locator(".hirednote").innerText()).replace(/\s+/g, " ").slice(0, 90));
+  ok("a hire is owner-only, exactly like an agent he wrote himself",
+    /Only you/.test(await page.locator('.cast[data-crew="Architect"] .whocan').innerText()),
+    (await page.locator('.cast[data-crew="Architect"] .whocan').innerText()).replace(/\s+/g, " "));
+  await page.screenshot({ path: `${SHOTS}/market-hired.png` });
+
+  // …and it is genuinely editable afterwards, not a locked template
+  await page.click('.cast[data-crew="Architect"] button:has-text("Edit")');
+  await page.waitForSelector(".editor .persona-input", { timeout: 15000 });
+  const hiredPersona = await page.locator(".editor .persona-input").inputValue();
+  ok("the brief really was copied onto the agent, word for word",
+    hiredPersona.trim() === brief, `${hiredPersona.length} characters on the agent`);
+  ok("the model he picked was saved on the agent too",
+    (await page.locator(".editor .modelpick").inputValue()) === hireModel,
+    `${await page.locator(".editor .modelpick").inputValue()} (picked ${hireModel})`);
+  await page.fill(".editor .persona-input", `${hiredPersona}\n\nAlways answer in British English.`);
+  await page.click('.editor .topbar >> text=Save');
+  await page.waitForSelector(".crew-grid", { timeout: 20000 });
+  await page.click('.cast[data-crew="Architect"] button:has-text("Edit")');
+  await page.waitForSelector(".editor .persona-input", { timeout: 15000 });
+  ok("and every word of it can be changed afterwards — the change survives the hub",
+    /Always answer in British English\.$/.test(
+      (await page.locator(".editor .persona-input").inputValue()).trim()),
+    (await page.locator(".editor .persona-input").inputValue()).trim().slice(-40));
+  await page.screenshot({ path: `${SHOTS}/market-editable.png` });
+  await page.click(".editor >> text=← Crew");
+  await page.waitForSelector(".crew-grid", { timeout: 20000 });
 
   await fpage.fill(".composer textarea", "@Scout could you find me a villa too?");
   await fpage.press(".composer textarea", "Enter");
@@ -1270,7 +1526,572 @@ try {
   }
   await fpage.setViewportSize({ width: 1280, height: 800 });
   await fpage.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+
+  /* ================= ROLES CAN BE CHANGED, NOT ONLY READ (finding #21) =======
+
+     `removeMember` and `setMemberRole` existed on the hub with nothing on
+     screen to reach them. The rule these checks hold to is the same one the
+     rest of the panel follows: a control is offered only where the hub would
+     say yes, and it says what the change MEANS before it is made. */
+
+  // ---- a plain member is offered neither, because neither would be allowed ----
+  ok("somebody who does not run the room is offered no way to change roles or take people out",
+    (await fpage.locator(".roompanel .memberopen").count()) === 0 &&
+    (await fpage.locator(".roompanel .memberout").count()) === 0 &&
+    (await fpage.locator(".roompanel .roleopt").count()) === 0);
   await fpage.click(".roompanel .roomclose");
+
+  // ---- the person who runs it is ----
+  const priyaRow = page.locator('.roommembers .memberrow[data-member="Priya"]');
+  await page.waitForSelector('.roommembers .memberrow[data-member="Priya"]', { timeout: 20000 });
+  ok("the person who runs the room is offered a way to change what somebody can do here",
+    (await priyaRow.locator(".memberopen").count()) === 1);
+  /* Never a button whose one outcome is a refusal: the hub refuses to let the
+     owner stand themselves down, and an agent has no screen to run a room from,
+     so neither is offered a role at all. */
+  ok("the owner is not offered a way to demote themselves — the hub would refuse it, so it is not there",
+    (await page.locator('.memberrow[data-member="Vikas"] .memberopen').count()) === 0);
+  await page.locator('.roommembers .memberrow[data-member="Bramble"] .memberopen').click();
+  await page.waitForSelector('.memberask[data-manage="Bramble"]', { timeout: 15000 });
+  ok("an agent can be taken out of a room but is never offered a role — a role is a job on a screen",
+    (await page.locator('.memberask[data-manage="Bramble"] .roleopt').count()) === 0 &&
+    (await page.locator('.memberask[data-manage="Bramble"] .memberout').count()) === 1);
+  await page.locator('.roommembers .memberrow[data-member="Bramble"] .memberopen').click();
+
+  await priyaRow.locator(".memberopen").click();
+  await page.waitForSelector('.memberask[data-manage="Priya"]', { timeout: 15000 });
+  const roleOpts = await page.$$eval('.memberask[data-manage="Priya"] .roleopt', bs => bs.map(b => ({
+    role: b.dataset.setrole,
+    name: b.querySelector("b")?.textContent?.trim() ?? "",
+    means: b.querySelector("span")?.textContent?.replace(/\s+/g, " ").trim() ?? "",
+    on: b.getAttribute("aria-pressed") === "true",
+  })));
+  ok("every role on offer says what picking it would actually do",
+    roleOpts.length === 3 &&
+    roleOpts.map(o => o.role).join(",") === "owner,admin,member" &&
+    roleOpts.every(o => o.means.length > 30) &&
+    /Hands this room over/.test(roleOpts.find(o => o.role === "owner").means) &&
+    roleOpts.find(o => o.role === "member").on === true,
+    roleOpts.map(o => `${o.role}:${o.means.slice(0, 34)}`).join(" | "));
+  await page.screenshot({ path: `${SHOTS}/fix2-roles-offered.png` });
+
+  // ---- and changing one really reaches the hub and comes back ----
+  await page.click('.memberask[data-manage="Priya"] .roleopt[data-setrole="admin"]');
+  await waitFor(page, () => document.querySelector(
+    '.roommembers .memberrow[data-member="Priya"] .rolename')?.dataset.role === "admin",
+  undefined, { timeout: 20000, what: "the new role to come back from the hub" });
+  ok("a role changed on screen is changed at the hub, and the room says so",
+    (await priyaRow.locator(".rolename").getAttribute("data-role")) === "admin" &&
+    /Helps run it/.test(await priyaRow.locator(".rolename").innerText()));
+  // and the person it was done to is told, on their own screen
+  await waitFor(fpage, () => document.querySelectorAll(
+    ".roompanel .memberopen").length > 0 || true, undefined, { timeout: 5000, what: "a moment" });
+  await fpage.click(".chathead .roomdetailsbtn");
+  await fpage.waitForSelector(".roompanel .memberrow", { timeout: 20000 });
+  await waitFor(fpage, () => document.querySelector(
+    '.roommembers .memberrow[data-member="Priya"] .rolename')?.dataset.role === "admin",
+  undefined, { timeout: 20000, what: "the new role to reach the person it was given to" });
+  ok("being given a job in a room reaches that person's own screen, and brings the controls with it",
+    (await fpage.locator(".roompanel .memberopen").count()) >= 1 &&
+    (await fpage.locator(".roompanel .roomarchive").count()) === 1);
+  await fpage.screenshot({ path: `${SHOTS}/fix2-role-arrived.png` });
+  /* An admin may take people out but may NOT hand out roles — that is the
+     owner's alone at the hub — and may not throw out the person who runs the
+     room. Neither is offered, so on the owner's row there is nothing to press
+     at all. */
+  ok("somebody helping run a room is offered nothing at all on the row of the person who runs it",
+    (await fpage.locator('.roommembers .memberrow[data-member="Vikas"] .memberopen').count()) === 0 &&
+    (await fpage.locator('.roommembers .memberrow[data-member="Vikas"] .memberout').count()) === 0);
+  /* …but may take out an ordinary member, which is exactly what an admin is
+     for — so the control IS there where the hub would allow it. */
+  await fpage.locator('.roommembers .memberrow[data-member="Bramble"] .memberopen').click();
+  await fpage.waitForSelector('.memberask[data-manage="Bramble"]', { timeout: 15000 });
+  ok("and IS offered the one thing an admin may do — taking an ordinary member out — with no role picker",
+    (await fpage.locator('.memberask[data-manage="Bramble"] .memberout').count()) === 1 &&
+    (await fpage.locator('.memberask[data-manage="Bramble"] .roleopt').count()) === 0);
+  await fpage.locator('.roommembers .memberrow[data-member="Bramble"] .memberopen').click();
+  await fpage.click(".roompanel .roomclose");
+
+  // ---- taking somebody out says what it means before it happens ----
+  await page.locator('.roommembers .memberrow[data-member="Bramble"] .memberopen').click();
+  await page.click('.memberask[data-manage="Bramble"] .memberout');
+  await page.waitForSelector(".memberoutask", { timeout: 15000 });
+  const outSays = (await page.locator(".memberoutask span").innerText()).replace(/\s+/g, " ").trim();
+  ok("taking somebody out says what it costs them before it is done, and that nothing is deleted",
+    /stops answering here/.test(outSays) &&
+    /Priya stops seeing this room|whoever owns it stops seeing/.test(outSays) &&
+    /Everything already said stays/.test(outSays), outSays);
+  await page.screenshot({ path: `${SHOTS}/fix2-remove-asks.png` });
+  await page.click(".memberoutask .memberout-yes");
+  await waitFor(page, () => document.querySelectorAll(
+    '.roommembers .memberrow[data-member="Bramble"]').length === 0,
+  undefined, { timeout: 20000, what: "the agent to be taken out of the room" });
+  ok("taking somebody out reaches the hub and the room list stops showing them",
+    (await page.locator('.roommembers .memberrow[data-member="Bramble"]').count()) === 0);
+  await page.screenshot({ path: `${SHOTS}/fix2-removed.png` });
+
+  /* ---- nothing new pushes the panel sideways ---- */
+  await page.locator('.roommembers .memberrow[data-member="Priya"] .memberopen').click();
+  await page.waitForSelector('.memberask[data-manage="Priya"]', { timeout: 15000 });
+  for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.waitForTimeout(220);
+      const over = await page.evaluate(() => ({
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        body: document.body.scrollWidth - document.body.clientWidth,
+      }));
+      ok(`the role controls do not scroll sideways at ${width} in the ${theme} look`,
+        over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+      if (width === 1280) await page.screenshot({ path: `${SHOTS}/fix2-roles-${theme}.png` });
+    }
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+  await page.locator('.roommembers .memberrow[data-member="Priya"] .memberopen').click();
+  await page.click(".roompanel .roomclose");
+
+  /* ================= A REPLY MUST BE MATCHABLE TO ITS REQUEST ===============
+
+     Findings #9 and #18, and they are ONE finding: an answer from the hub that
+     is applied to the wrong question. An `error` frame carries no echo of what
+     it refuses, so an unrelated refusal was pinned on whatever happened to be
+     waiting — a file that had reached the hub perfectly well could never be
+     attached to anything afterwards. The same shape, the other way round: a
+     `searchResults` frame was applied whether or not anybody was still asking.
+
+     BOTH ARE REPRODUCED FIRST. Each check below proves the two things really
+     overlapped before it claims the fix held; a run in which they never
+     overlapped fails rather than passing on a technicality. */
+
+  // ---- a message this person did NOT write, so a refusal can be provoked ----
+  await fpage.click(".sidebar >> text=# paperwork");
+  await fpage.fill(".composer textarea", "the villa deposit receipt is filed");
+  await fpage.press(".composer textarea", "Enter");
+  await page.waitForSelector('.msg p:has-text("villa deposit receipt")', { timeout: 25000 });
+  const notMine = await page.getAttribute('.msg:has-text("villa deposit receipt")', "data-msg");
+
+  /* TWO files, because that is what the bug needs and it is what people do.
+     Uploads go up ONE AT A TIME, so the second waits its turn — and the moment
+     the first is answered the second is put on the wire inside that very
+     handler. A refusal that was already queued behind the first then landed on
+     the second, which had done nothing wrong: it flipped to failed carrying a
+     sentence about somebody else's message, and its real answer arrived to find
+     nobody waiting, so the file could never be attached to anything.
+
+     The first file is deliberately large and RANDOM — a solid-colour PNG
+     deflates to almost nothing, and a hub that answers instantly cannot be
+     caught in the middle of anything. */
+  const HEAVY = crypto.randomBytes(ATTACHMENT_LIMITS.bytes - 200_000);
+  const LIGHT = Buffer.from("deposit,7400\nbalance,2600\n", "utf8");
+  /* The hub's answers to uploads are held from here until the refusal has
+     landed, so the overlap the bug needs is a state the app is HELD in rather
+     than a moment this script has to be lucky enough to catch. See the note on
+     `__c9hold` where the browser context is made. */
+  await page.evaluate(() => window.__c9hold.hold(["attachment"]));
+  /* The heavy one goes first and on its own, so it is the one the hub is busy
+     with. The light one is picked only once the heavy one is on the wire — it
+     is read in a moment and then QUEUED, waiting for the wire rather than on
+     it. */
+  await page.setInputFiles(".composer input.filepick", {
+    name: "survey-scan.bin", mimeType: "application/octet-stream", buffer: HEAVY,
+  });
+  await page.waitForFunction(
+    () => window.cloud9Wire.outstanding().filter(k => k === "uploadAttachment").length === 1,
+    null, { timeout: 40000 });
+  await page.setInputFiles(".composer input.filepick", {
+    name: "deposit-note.bin", mimeType: "application/octet-stream", buffer: LIGHT,
+  });
+  /* THE EXACT STATE THE BUG NEEDS: one file on the wire and unanswered, and a
+     second already READ and queued behind it. A queued file is put on the wire
+     from inside the handler that answers the one ahead of it — so a refusal
+     that was queued behind the first arrives to find the second waiting, and
+     that is the one that used to be blamed for it.
+
+     Waiting for a second TILE is not enough, and that hole made this check pass
+     against the very bug it exists to catch: a tile appears the moment a file is
+     PICKED, and a file that has not finished being read cannot be pumped and so
+     cannot be blamed. Both halves are the app's own state, waited for. */
+  await page.waitForFunction(
+    () => window.cloud9Files.queued() === 1 &&
+      window.cloud9Wire.outstanding().filter(k => k === "uploadAttachment").length === 1,
+    null, { timeout: 40000 });
+  const overlapped = await page.evaluate(messageId => {
+    const wire = window.cloud9Wire;
+    // provoke a refusal that has nothing to do with either file
+    wire.ask({ type: "editMessage", messageId, text: "changing words that are not mine" });
+    return {
+      onTheWire: wire.outstanding().filter(k => k === "uploadAttachment").length,
+      queuedBehind: window.cloud9Files.queued(),
+      asked: wire.outstanding(),
+    };
+  }, notMine);
+  ok("REPRODUCED: a refusal was provoked with one file on the wire and a second read and queued behind it",
+    overlapped.onTheWire === 1 && overlapped.queuedBehind === 1 &&
+    overlapped.asked.includes("uploadAttachment") && overlapped.asked.includes("editMessage"),
+    JSON.stringify(overlapped));
+
+  /* The refusal must ARRIVE while the two are still overlapped — that is the
+     whole point — so it is read here, before the hub's held answers are let
+     through, rather than hoped to still be on screen several checks later. */
+  const refusal = (await page.locator(".toast .toast-text").innerText({ timeout: 30000 })).trim();
+  const letThrough = await page.evaluate(() => window.__c9hold.release());
+  ok("REPRODUCED: the refusal really did land while the upload was still unanswered",
+    letThrough >= 1, `${letThrough} held answer(s) released afterwards`);
+
+  /* Waited on both files STOPPING — landed or refused — rather than on both
+     landing, so a file the refusal wrongly killed is reported by the check
+     below instead of being lost in a timeout. */
+  await page.waitForFunction(() => document.querySelectorAll(
+    ".uploadtray .uptile.done, .uploadtray .uptile.failed").length === 2,
+  null, { timeout: 60000 });
+  ok("the unrelated refusal touches NEITHER file — both land and both are ready to send",
+    (await page.locator(".uploadtray .uptile.failed").count()) === 0 &&
+    (await page.locator(".uploadtray .uptile.done").count()) === 2,
+    (await page.locator(".uploadtray").innerText()).replace(/\s+/g, " ").trim().slice(0, 120));
+  ok("and the refusal is still said on screen, in the hub's own words",
+    /can only change your own messages/.test(refusal), refusal);
+  await page.screenshot({ path: `${SHOTS}/fix2-upload-survives.png` });
+
+  /* ---- ENTER MUST NEVER THROW AWAY A FILE THAT IS STILL GOING UP (#17) ----
+     The tray is emptied when a message goes, and it used to take whatever had
+     not landed yet with it: the upload finished into nothing and nobody was
+     told. Pressing Enter mid-upload now refuses in a sentence and leaves the
+     file exactly where it is. */
+  await page.fill(".composer textarea", "the survey and the note");
+  await page.click(".composer .primary.small");
+  await page.waitForSelector('.msg .fileblock[data-file="survey-scan.bin"]', { timeout: 30000 });
+  ok("the files that survived an unrelated refusal really go out with the message",
+    (await page.locator('.msg .fileblock[data-file="survey-scan.bin"]').count()) === 1 &&
+    (await page.locator('.msg .fileblock[data-file="deposit-note.bin"]').count()) === 1);
+
+  // as big as the hub will take, so the window the press must fall inside is
+  // as wide as it can honestly be made
+  const SECOND = crypto.randomBytes(ATTACHMENT_LIMITS.bytes - 300_000);
+  await page.setInputFiles(".composer input.filepick", {
+    name: "roof-survey.bin", mimeType: "application/octet-stream", buffer: SECOND,
+  });
+  /* The press happens IN THE PAGE, because the window it has to fall inside is
+     shorter than a round trip out to this script and back. It is dispatched at
+     the composer's own textarea and goes through the app's real `onKeyDown` —
+     the same handler a finger reaches; only the browser's key delivery is
+     stood in for. */
+  const pressedEarly = await page.evaluate(async () => {
+    const tile = () => document.querySelector('.uploadtray .uptile[data-upload="roof-survey.bin"]');
+    const stillGoing = () => {
+      const t = tile();
+      return !!t && !t.classList.contains("done") && !t.classList.contains("failed");
+    };
+    if (!stillGoing()) return { reproduced: false, why: "the file had already landed" };
+    const box = document.querySelector(".composer textarea");
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype, "value").set;
+    setter.call(box, "sending this before the file is up");
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    const waitingWhenPressed = stillGoing();
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    // give whatever the press caused a chance to be drawn
+    const until = Date.now() + 6000;
+    let said = "";
+    while (Date.now() < until) {
+      said = document.querySelector(".toast .toast-text")?.textContent?.trim() ?? "";
+      if (/still going up/.test(said)) break;
+      await new Promise(r => setTimeout(r, 20));
+    }
+    return {
+      reproduced: true, waitingWhenPressed, said,
+      stillThere: !!tile(),
+      wordsKept: box.value,
+      wentAnyway: [...document.querySelectorAll(".msg p")]
+        .filter(p => p.textContent.includes("sending this before the file is up")).length,
+    };
+  });
+  ok("REPRODUCED: the Enter key was pressed while a file was genuinely still on its way up",
+    pressedEarly.reproduced === true && pressedEarly.waitingWhenPressed === true,
+    JSON.stringify(pressedEarly));
+  ok("Enter mid-upload refuses in a sentence instead of throwing the file away in silence",
+    /still going up/.test(pressedEarly.said) && pressedEarly.stillThere === true &&
+    pressedEarly.wentAnyway === 0 &&
+    pressedEarly.wordsKept === "sending this before the file is up",
+    JSON.stringify(pressedEarly));
+  ok("and the send button says it is waiting for the file rather than offering to send without it",
+    (await page.getAttribute(".composer .sendbtn", "data-waiting")) === "file" &&
+    /Waiting for a file/.test(await page.locator(".composer .sendbtn").innerText()),
+    (await page.locator(".composer .sendbtn").innerText()).trim());
+  await page.screenshot({ path: `${SHOTS}/fix2-enter-waits.png` });
+
+  // and once it lands, the very same message goes with the file it was holding
+  await page.waitForSelector('.uploadtray .uptile[data-upload="roof-survey.bin"].done',
+    { timeout: 40000 });
+  await page.click(".composer .primary.small");
+  await page.waitForSelector('.msg .fileblock[data-file="roof-survey.bin"]', { timeout: 30000 });
+  ok("nothing was lost by waiting — the file goes out with the words that were typed",
+    (await page.locator('.msg .fileblock[data-file="roof-survey.bin"]').count()) === 1 &&
+    (await page.locator('.msg p:has-text("sending this before the file is up")').count()) === 1);
+
+  /* ---- a search cleared before its answer arrives (#18) ---- */
+  const searchRace = await page.evaluate(async () => {
+    const wire = window.cloud9Wire;
+    const before = wire.seen().searchResults ?? 0;
+    wire.search("villa");        // ask
+    wire.clearSearch();          // and call it off, in the same tick
+    const deadline = Date.now() + 20000;
+    while ((wire.seen().searchResults ?? 0) <= before && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+    await new Promise(r => setTimeout(r, 400)); // let anything wrong settle in
+    return {
+      answersArrived: (wire.seen().searchResults ?? 0) - before,
+      searchOnScreen: wire.searching(),
+      hitsOnScreen: document.querySelectorAll(".searchhit").length,
+    };
+  });
+  ok("REPRODUCED: the answer to the cleared search really did come back from the hub",
+    searchRace.answersArrived >= 1, `${searchRace.answersArrived} searchResults frame(s)`);
+  ok("a search called off before its answer arrives stays gone — nothing is brought back to life",
+    searchRace.searchOnScreen === null && searchRace.hitsOnScreen === 0,
+    JSON.stringify(searchRace));
+
+  /* ================= ONE HELD FILE, SHOWN IN TWO PLACES (#16) ===============
+
+     A `blob:` URL lives until it is revoked, and the same message is drawn in
+     two places at once — in the room and again in an open thread. Whichever
+     copy went away first used to revoke it, so closing a thread panel wiped the
+     picture out of the room behind it. Ownership of a held thing cannot be
+     "whoever let go of it first": every copy takes a hold and the LAST one to
+     let go frees the bytes. */
+  const planMsg = page.locator('.msg:has-text("here is the site plan and the ledger")').last();
+  await planMsg.waitFor({ timeout: 20000 });
+  await planMsg.hover();
+  await planMsg.locator(".ma.reply").click();
+  await page.waitForSelector(".threadpanel", { timeout: 20000 });
+  await page.waitForSelector('.threadpanel .fileblock[data-file="site-plan.png"]',
+    { timeout: 20000 });
+  const planId = await page.getAttribute(
+    '.msgs .fileblock[data-file="site-plan.png"]', "data-attachment");
+  const holders = () => page.evaluate(id => window.cloud9Files.holders(id), planId);
+  ok("REPRODUCED: the same picture really is drawn in two places at once, and held by both",
+    (await page.locator('.fileblock[data-file="site-plan.png"]').count()) === 2 &&
+    (await holders()) === 2, `${await holders()} places holding it`);
+
+  await page.click('.msgs .fileblock[data-file="site-plan.png"] .fileopen');
+  await page.waitForSelector('.msgs .fileblock[data-file="site-plan.png"] .fileshot img',
+    { timeout: 20000 });
+  await page.click(".threadpanel .threadclose");
+  await page.waitForSelector(".threadpanel", { state: "detached", timeout: 15000 });
+  await page.waitForTimeout(500);
+  const stillDrawn = await page.evaluate(() => {
+    const img = document.querySelector('.msgs .fileblock[data-file="site-plan.png"] .fileshot img');
+    if (!img) return null;
+    return { w: img.naturalWidth, h: img.naturalHeight, blob: img.src.startsWith("blob:"), done: img.complete };
+  });
+  ok("closing the thread does NOT take the picture out of the room behind it",
+    !!stillDrawn && stillDrawn.blob && stillDrawn.done && stillDrawn.w === 180 && stillDrawn.h === 120,
+    JSON.stringify(stillDrawn));
+  ok("and the file is held once now, by the one place still showing it",
+    (await holders()) === 1, `${await holders()} holder(s)`);
+  await page.screenshot({ path: `${SHOTS}/fix2-picture-survives-thread.png` });
+
+  /* ---- and the LAST place letting go really does free it ---- */
+  await page.click(".sidebar >> text=# general");
+  await page.waitForTimeout(600);
+  ok("when the last place showing a file goes, the bytes are let go",
+    (await holders()) === 0 &&
+    !(await page.evaluate(() => window.cloud9Files.opened())).includes(planId),
+    `${await holders()} holder(s) left`);
+  await page.click(".sidebar >> text=# paperwork");
+  await page.waitForSelector('.msg .fileblock[data-file="site-plan.png"]', { timeout: 20000 });
+
+  /* ================= A NUMBER WITH A CEILING (#P3) ========================= */
+  const capSays = await page.evaluate(() => {
+    const w = window.cloud9Wire;
+    const cap = w.unreadCeiling();
+    return { cap, at: w.unreadSays(cap), over: w.unreadSays(cap + 40), under: w.unreadSays(12) };
+  });
+  ok("a count that has hit the ceiling is never printed as though it were exact",
+    capSays.at === `${capSays.cap - 1}+` && capSays.over === `${capSays.cap - 1}+` &&
+    capSays.under === "12", JSON.stringify(capSays));
+
+  /* ---- and a real, uncapped count on the rail is still the plain truth ---- */
+  await fpage.click(".sidebar >> text=# paperwork");
+  await fpage.fill(".composer textarea", "one more for the pile");
+  await fpage.press(".composer textarea", "Enter");
+  await waitFor(page, () => (document.querySelector(
+    '.sidebar .side-item[data-channel="paperwork"] .cnt.hot')?.textContent ?? "") !== "",
+  undefined, { timeout: 25000, what: "an unread mark to appear on the rail" });
+  const badge = await page.$eval('.sidebar .side-item[data-channel="paperwork"] .cnt.hot', el => ({
+    says: el.textContent.trim(), capped: el.dataset.capped ?? "", label: el.getAttribute("aria-label"),
+  }));
+  ok("an unread count below the ceiling is said exactly, with no plus and no hedging",
+    /^\d+$/.test(badge.says) && badge.capped === "" && /^\d+ new$/.test(badge.label),
+    JSON.stringify(badge));
+
+  /* ================= A HIGHLIGHT MUST BE ONE THE HUB REALLY FOUND ========== */
+  await page.click(".sidebar >> text=# paperwork");
+  await page.fill(".composer textarea", "the «gazebo» quote came in under budget");
+  await page.press(".composer textarea", "Enter");
+  await page.waitForSelector('.msg p:has-text("quote came in under budget")', { timeout: 25000 });
+  await page.evaluate(() => window.cloud9Menu.run("search"));
+  await page.waitForSelector(".searchpanel", { timeout: 10000 });
+  await page.fill(".search-input", "gazebo");
+  await page.waitForSelector(".searchhit", { timeout: 25000 });
+  await page.waitForTimeout(400);
+  const marked = await page.$eval(".searchhit .snippet", el => ({
+    mode: el.dataset.marked,
+    marks: el.querySelectorAll("mark").length,
+    text: el.textContent,
+  }));
+  ok("a message that contains « » is not given a highlight it never earned, and no stray bracket is drawn",
+    marked.mode === "plain" && marked.marks === 0 &&
+    marked.text.includes("gazebo") && !/«»|»«/.test(marked.text),
+    JSON.stringify(marked));
+  await page.screenshot({ path: `${SHOTS}/fix2-snippet-honest.png` });
+
+  // and an ordinary message is still highlighted, so the fix did not just
+  // switch highlighting off
+  await page.fill(".search-input", "ledger");
+  await waitFor(page, () => [...document.querySelectorAll(".searchhit .snippet")]
+    .some(s => s.dataset.marked === "marks"), undefined,
+  { timeout: 25000, what: "a result whose marks can be trusted" });
+  ok("an ordinary result is still highlighted where the hub really found the word",
+    (await page.locator('.searchhit .snippet[data-marked="marks"] mark').count()) >= 1);
+  await page.keyboard.press("Escape");
+
+  /* ================= THE VIEW HAS ONE OWNER (#19) ==========================
+
+     Rule 2 (an older page must not move the words under the reader) used to be
+     undone by rule 1 (a new message follows a reader who is at the bottom):
+     layout effects run first, so rule 1's guard never saw rule 2's anchor and
+     followed anyway. Walking back to a search result therefore snapped to the
+     newest message on every page it loaded. The reader is put a little way off
+     the bottom — near enough that rule 1 still considers them "at the bottom",
+     far enough that rule 1 firing would be unmistakable. */
+  /* A conversation LONG ENOUGH that walking back to the target takes several
+     pages. One page back is not a test of this at all: the snap and the jump
+     would land in the same commit, before the browser paints, and the bug would
+     be invisible to anything watching the screen. The messages are sent through
+     the app's own `send`, because typing a hundred and sixty of them one key at
+     a time would take longer than the rest of this suite. */
+  await page.click('button[title="New channel"]');
+  await page.fill('.panel input[placeholder="trip-goa"]', "longhaul");
+  await page.click(".panel .foot >> text=Create");
+  await page.waitForSelector(".sidebar >> text=# longhaul", { timeout: 20000 });
+  await page.click("text=# longhaul");
+  const seeded = await page.evaluate(async () => {
+    const wire = window.cloud9Wire;
+    const id = wire.channels().find(c => c.name === "longhaul").id;
+    // the one message with this word in it, said first and never repeated
+    wire.ask({ type: "send", channelId: id, text: "the marker message nobody repeats" });
+    for (let i = 1; i <= 160; i++) {
+      wire.ask({ type: "send", channelId: id, text: `longhaul line ${i}` });
+      if (i % 20 === 0) await new Promise(r => setTimeout(r, 60));
+    }
+    return id;
+  });
+  await page.waitForSelector('.msg:has-text("longhaul line 160")', { timeout: 60000 });
+  void seeded;
+
+  // a reload is the honest starting point: only the newest page is on screen
+  await page.reload();
+  await page.waitForSelector(".sidebar >> text=# longhaul", { timeout: 25000 });
+  await page.click("text=# longhaul");
+  await page.waitForSelector('.msg:has-text("longhaul line 160")', { timeout: 25000 });
+  await page.waitForTimeout(900);
+  const startedWith = await page.evaluate(async () => {
+    const el = document.querySelector(".msgs");
+    el.scrollTop = el.scrollHeight;                        // at the bottom first
+    await new Promise(r => setTimeout(r, 120));            // let the app see it
+    el.scrollTop = el.scrollHeight - el.clientHeight - 40; // 40px up: still "at the bottom"
+    await new Promise(r => setTimeout(r, 120));
+    /* Sampled every frame for as long as the walk could possibly take. The
+       search overlay takes the message list off screen for a moment, so a
+       sampler that stopped the first time it could not find one would only ever
+       have watched the part before the click — which is the part that proves
+       nothing. It keeps its own frame budget instead. */
+    /* WATCH THE RULE ITSELF, not the paint it leaves behind.
+       The follow-to-bottom rule is the only thing that calls `scrollTo` on the
+       message list — keeping the reader's place sets `scrollTop` directly, and
+       going to a particular message uses `scrollIntoView`. So a call here IS
+       the rule firing, whether or not the browser ever painted the result. */
+    window.__followed = [];
+    const realScrollTo = Element.prototype.scrollTo;
+    Element.prototype.scrollTo = function (...args) {
+      if (this.classList && this.classList.contains("msgs")) {
+        window.__followed.push(Math.round((args[0] && args[0].top) ?? args[1] ?? -1));
+      }
+      return realScrollTo.apply(this, args);
+    };
+    window.__fromBottom = [];
+    const note = () => {
+      const m = document.querySelector(".msgs");
+      if (m) window.__fromBottom.push(Math.round(m.scrollHeight - m.scrollTop - m.clientHeight));
+    };
+    /* Sampled on the list's OWN scroll events as well as once a frame.
+       Frames are a clock, and the clock made this check lie: on a run where the
+       walk finished inside sixteen frames every sample taken was perfect and the
+       check failed anyway, on "not enough samples". A scroll event is the app
+       moving the view — the thing actually being watched — so no movement can
+       now happen without being sampled, however fast the walk is. Listened for
+       in the capture phase at the document, because scroll events do not bubble
+       and React may hand this list a different element than the one on screen
+       now. */
+    document.addEventListener("scroll", note, true);
+    let frames = 0;
+    const tick = () => { note(); if (++frames < 4000) requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+    return { onScreen: document.querySelectorAll(".msgs .msg").length };
+  });
+  await page.evaluate(() => window.cloud9Menu.run("search"));
+  await page.waitForSelector(".searchpanel", { timeout: 10000 });
+  await page.fill(".search-input", "marker");
+  await waitFor(page, () => document.querySelectorAll(".searchhit").length >= 1,
+    undefined, { timeout: 25000, what: "the one marker message to be found" });
+  const oldestHit = await page.locator(".searchhit").last().getAttribute("data-hit");
+  const mustWalk = await page.evaluate(id =>
+    document.querySelectorAll(`.msgs .msg[data-msg="${id}"]`).length === 0, oldestHit);
+  ok("REPRODUCED: the message asked for is several pages further back than what is on screen, so pages must really be walked",
+    mustWalk && startedWith.onScreen <= 50,
+    `${startedWith.onScreen} of 161 messages on screen, target already loaded: ${!mustWalk}`);
+  await page.locator(".searchhit").last().click();
+  await page.waitForSelector(`.msgs .msg[data-msg="${oldestHit}"].litup`, { timeout: 30000 });
+  const walk = await page.evaluate(() => {
+    const m = document.querySelector(".msgs");
+    const endedAt = m ? Math.round(m.scrollHeight - m.scrollTop - m.clientHeight) : -1;
+    // one last reading, taken directly, so this can never depend on a sampler
+    // having been given a slice of the machine at the right instant
+    if (m) (window.__fromBottom ?? []).push(endedAt);
+    const seen = window.__fromBottom ?? [];
+    /* The reader was put 40px off the bottom — near enough that the
+       follow-to-bottom rule still counts them as "at the bottom", so if it ever
+       fired the view would be pinned to 0. */
+    return {
+      followedToBottom: (window.__followed ?? []).length,
+      samples: seen.length,
+      pinned: seen.filter(d => d <= 2).length,
+      min: seen.length ? Math.min(...seen) : -1,
+      max: seen.length ? Math.max(...seen) : -1,
+      endedAt,
+    };
+  });
+  /* What this check is really made of, and none of it is a clock:
+     - `followedToBottom` counts CALLS to the follow-to-bottom rule, caught at
+       the one function it uses. It cannot be missed however fast the walk was.
+     - `pinned`/`min` say the view was never at the newest message at any moment
+       anybody sampled.
+     - `endedAt` says the reader finished a long way from the bottom, which is
+       what proves pages were really walked back rather than nudged.
+     It used to also demand more than twenty samples, which was nothing but a
+     guess that the walk would be slow. It was not, on a machine with a spare
+     moment, and the check failed a working app for it. */
+  ok("walking back to a result never snaps the view to the newest message",
+    walk.followedToBottom === 0 && walk.samples >= 1 && walk.pinned === 0
+      && walk.min >= 30 && walk.endedAt >= 200,
+    JSON.stringify(walk));
+  ok("and the reader ends up on the message they asked for",
+    (await page.locator(`.msgs .msg[data-msg="${oldestHit}"].litup`).count()) === 1);
+  await page.screenshot({ path: `${SHOTS}/fix2-jump-holds.png` });
+  await page.keyboard.press("Escape");
 
   /* ---- `from:` really filters now, so the placeholder is not a promise the
      hub breaks (§11.4). The author filter used to be applied in JavaScript
@@ -1689,6 +2510,29 @@ try {
     }
   }
   await page.keyboard.press("Escape");
+
+  /* ---- and the hiring hall, with a brief open over it ---- */
+  await page.click('.rail-btn[data-go="crew"]');
+  await page.waitForSelector(".crew-bar .tomarket", { timeout: 20000 });
+  await page.click(".crew-bar .tomarket");
+  await page.waitForSelector(".market .cast.role", { timeout: 20000 });
+  await page.click('.market .cast.role[data-role="sw-devops"] .rolesee');
+  await page.waitForSelector(".hirepanel", { timeout: 15000 });
+  for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.waitForTimeout(200);
+      const over = await overflow();
+      ok(`the hiring hall and an open brief do not scroll sideways at ${width} in the ${theme} look`,
+        over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+      if (width === 1280) {
+        await page.screenshot({ path: `${SHOTS}/market-brief-${theme}.png` });
+      }
+    }
+  }
+  await page.click('.hirepanel .foot >> text=Not now');
+
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
 

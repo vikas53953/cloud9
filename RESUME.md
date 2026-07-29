@@ -132,10 +132,85 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
    the UI/UX pass. The suite proves features work; nobody has tried to break
    them with bad input.
 
-## NEEDS VIKAS (do not guess)
-- **Which real system should an agent touch first** — calendar, email, files?
-  Everything else is in place; this is the one that makes the product real.
-- Whether to set up the private network so friends can connect.
+## DECIDED BY VIKAS 2026-07-30 (do not re-ask — spec rule 15)
+
+**1. Capability parity is the goal, not a curated tool list.** His words:
+*"these agents are fully agentic and using the harness from claude and codex,
+they already have access to everything… whatever functions we have as codex and
+claude code on my system, every functionality should be replicated."*
+
+This is close to the OPPOSITE of the isolation work of 2026-07-29, and both are
+right — reconcile them, do not undo either:
+- KEEP the mechanism (the toggles are a real boundary; `HARNESS_ISOLATION`
+  reports honestly where they are not).
+- KEEP the isolation from HIS OWN dev setup — an agent must not silently inherit
+  his personal MCP servers, global CLAUDE.md and slash commands. That was never
+  what he asked for.
+- RAISE the ceiling: the toggles must be able to grant the CLI's FULL surface —
+  shell, file editing, the CLI's own skills, MCP servers, subagents, web — per
+  agent, chosen by him.
+- Approvals stay in front of anything that changes the machine or spends money.
+  He owns the PC and made this call; the honest guard is "ask first", not
+  "cannot".
+
+**2. Private network: YES.** Tailscale, so his phone and invited friends can
+reach the hub while the public internet cannot see it. Free plan caps at 6
+people. He must do the browser sign-in himself; everything else is ours.
+
+## FROM VIKAS USING IT, 2026-07-30 night (he is asleep — build these)
+He has the rebuilt app, added several agents, and it works. Five things:
+
+1. **Threads are missing.** Slack opens a thread inside a channel; ours does not
+   surface it. **And a setting**: let him choose whether a reply stays inline in
+   the channel or opens a thread. His choice, per his words "totally dependent
+   on that as an option to choose".
+2. **Presence is wrong — every agent shows offline.** It must reflect real
+   status: available when the agent can actually run, offline when it cannot,
+   the way Slack and Buzz show it, in the sidebar AND in the conversation.
+   Treat as a BUG, not a feature. Verify what the app really knows before
+   changing anything — do not invent a status we cannot support.
+3. **When a job finishes, say so and summarise it.** As in the approved
+   prototype: the task completes, it is highlighted, and a short TLDR appears.
+   He is happy for the AGENT to write that summary itself.
+4. **A marketplace inside the app.** DECIDED: a curated catalogue that ships
+   BUILT IN (his pick), software roles first — architect, backend, frontend, QA,
+   security review, DevOps/SRE, code reviewer, tech writer — with categories
+   able to grow later. Hiring copies the template into his crew, fully editable,
+   and he picks which app (Claude/Codex) it runs on.
+5. **Agents should react with emoji as work happens** — an emoji on the message
+   when a job is picked up, in progress, done — so he can see what is happening
+   at a glance, the way Buzz does.
+
+6. **GitHub integration — "full dev style", his words, and he called it worth
+   building.** Agents should work like real developers: open a repo, create a
+   repo, push code, and manage the work on GitHub. Build the whole surface, not
+   a token gesture — branches, commits, pull requests, issues, reviews.
+   **DECIDED by him: branch + pull request, ALWAYS.** An agent works on its own
+   branch and opens a PR; nothing ever lands on the default branch without him.
+   A bad run costs a click to close, and several agents can work at once without
+   colliding.
+   Facts already established on this machine, do not re-derive: `gh` is
+   installed and authenticated as `vikas53953` over HTTPS via the keyring
+   (verified — it is how every commit today was pushed); there is NO SSH key, so
+   HTTPS is the only route; the project's own repo is `vikas53953/cloud9`.
+   Agents are about to have real shell and file access, so most of this is
+   wiring `git` + `gh` into an agent's own workspace safely — not writing a
+   GitHub client. Approvals must sit in front of anything that leaves the
+   machine or changes a remote.
+
+7. **Projects, and agents in parallel worktrees.** He saw Buzz's shape —
+   Inbox / Agents / Workflows / Projects, with a project holding its repository,
+   pull requests and issues — and wants the same idea, taking inspiration from
+   Codex and Claude Code. **DECIDED: PROJECTS is added to the existing icon
+   rail** (Chat / Crew / Tasks / Projects / Log). The Studio navigation he
+   approved does NOT change; Inbox and Workflows are deliberately left open
+   until he has used Projects.
+   Inside a project: the repository, pull requests, issues.
+   **Agents must work in PARALLEL GIT WORKTREES** — one per agent or task — so
+   several can work one repo at once without colliding. This is the mechanism
+   that makes his "branch + pull request, always" decision safe in parallel.
+
+## NEEDS VIKAS (nothing right now)
 
 ## Work in flight when he left
 | Agent | Owns | Doing |

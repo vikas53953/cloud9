@@ -2,14 +2,18 @@ import React, {
   useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore,
 } from "react";
 import {
-  AgentDef, AgentRespondTo, AgentSkill, AgentSkillFile, Approval, Attachment, ATTACHMENT_LIMITS,
+  AgentAbilities, AgentApprovals, AgentDef, AgentRespondTo, AgentSkill, AgentSkillFile,
+  Approval, Attachment, ATTACHMENT_LIMITS,
   Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
   HarnessInfo, ID, isInlineViewable, isSafeSkillFileName, mayAdministerChannel, mayDriveAgent,
   MENU_ACTIONS, MenuAction, Message, RunListEntry, RunRecord, RunStep, RunStepKind,
   SearchHit, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
 } from "@cloud9/shared";
-import { client, World } from "./store.js";
+import { client, UNREAD_CEILING, unreadLabel, World } from "./store.js";
 import { Markdown } from "./markdown.js";
+import {
+  abilitiesOn, abilityWords, MARKET_CATEGORIES, MARKET_TEMPLATES, MarketTemplate,
+} from "./market.js";
 
 const isQuickWindow = location.hash === "#quick";
 
@@ -85,6 +89,19 @@ const initials = (name: string): string =>
 
 const clock = (ts: number): string =>
   new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+/**
+ * A message shrunk to one line, for the "answering…" line above a reply.
+ *
+ * Plain text only: this is a quotation of somebody's words in a place too
+ * small for their formatting, and a half-rendered heading or a broken link
+ * would be worse than the sentence itself. Line breaks become spaces so a
+ * quotation can never push the row it sits in taller.
+ */
+const quoteOf = (text: string, max = 90): string => {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+};
 
 const sameDay = (a: number, b: number): boolean => {
   const x = new Date(a), y = new Date(b);
@@ -467,6 +484,18 @@ export interface Prefs {
   quietTo: string;
   compact: boolean;
   collapsed: Record<string, boolean>;
+  /**
+   * WHAT A REPLY DOES. His choice, and it changes the behaviour, not the words.
+   *
+   * "thread"  — a reply is kept on the message it answers. The conversation
+   *             shows that message with a reply count and NOTHING else moves.
+   * "inline"  — a reply is posted straight into the conversation, under a line
+   *             saying which message it answers. No thread panel ever opens.
+   *
+   * Default "thread", because that is the Slack behaviour he is comparing this
+   * against. Absent (an install from before this setting) also means "thread".
+   */
+  replies: "thread" | "inline";
 }
 
 const prefs = makeStore<Prefs>("cloud9.prefs", {
@@ -479,6 +508,7 @@ const prefs = makeStore<Prefs>("cloud9.prefs", {
   quietTo: "08:00",
   compact: false,
   collapsed: {},
+  replies: "thread",
 });
 
 const usePrefs = (): Prefs => useSyncExternalStore(prefs.subscribe, prefs.get);
@@ -791,7 +821,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "editor" | "tasks" | "activity" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "activity" | "settings";
 type ModalName = "invite" | "channel" | "browse";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -847,6 +877,8 @@ function Workspace(): React.JSX.Element {
   const [modal, setModal] = useState<null | ModalName>(null);
   /** null = not editing. "new" = hiring. An agent = editing that one. */
   const [editorFor, setEditorFor] = useState<AgentDef | "new" | null>(null);
+  /** the @name of the role just hired from the hiring hall, so the crew says so */
+  const [justHired, setJustHired] = useState<string | null>(null);
   const [quick, setQuick] = useState(false);
   const [pendingPeer, setPendingPeer] = useState<{ id: ID; since: number } | null>(null);
   const [findOpen, setFindOpen] = useState(false);
@@ -943,6 +975,41 @@ function Workspace(): React.JSX.Element {
     (window as unknown as { cloud9Files?: unknown }).cloud9Files = {
       ticket: (attachmentId: ID) => client.ticketFor(attachmentId),
       opened: () => client.openFileIds(),
+      /* How many places on screen are showing one file. The whole point of
+         counting holders is that the LAST one frees the bytes, and a count is
+         the only way a test can prove that rather than infer it. */
+      holders: (attachmentId: ID) => client.holdersOf(attachmentId),
+      /* What is still on its way up in one conversation, and what the app would
+         do if Enter were pressed right now — so "a file is never dropped in
+         silence" is checked at the decision, not guessed at from the screen. */
+      inFlight: (channelId: ID) => client.uploadsInFlight(channelId),
+      queued: () => client.queuedUploads(),
+      wouldSend: (channelId: ID, hasWords: boolean) => client.readyToSend(channelId, hasWords),
+    };
+    /* QA hook: the wire itself. Two findings can only be PROVED by reproducing
+       them — a refusal that belonged to something else reaching an upload, and
+       an answer to a search that was already called off. Neither is visible on
+       screen at the moment it matters, so the suite needs to see what is
+       outstanding and what has come back. `ask`, `search` and `clearSearch` are
+       the app's own methods, unwrapped: the composer, the room panel and the
+       search overlay call exactly these. Nothing here is a stand-in. */
+    (window as unknown as { cloud9Wire?: unknown }).cloud9Wire = {
+      outstanding: () => client.outstanding(),
+      seen: () => client.framesSeen(),
+      ask: (frame: Parameters<typeof client.send>[0]) => client.send(frame),
+      search: (q: string) => client.search(q),
+      clearSearch: () => client.clearSearch(),
+      searching: () => client.world.search ?? null,
+      /* The conversations this screen knows, by name. The suite needs an id to
+         seed a conversation long enough to prove the scroll rules against; the
+         alternative was typing a hundred and sixty messages one key at a time. */
+      channels: () => client.world.channels.map(c => ({ id: c.id, name: c.name })),
+      /* The very function the unread badge calls. A conversation with more
+         than a thousand unread messages cannot be built in a QA run, so the
+         RULE is checked here and the badge is checked on screen; between them
+         nothing prints a capped number as though it were exact. */
+      unreadSays: (n: number) => unreadLabel(n),
+      unreadCeiling: () => UNREAD_CEILING,
     };
     // QA hook, same shape again: what the screen is HOLDING about runs, so a
     // missing card can be told apart from a record that never arrived. It
@@ -954,6 +1021,7 @@ function Workspace(): React.JSX.Element {
         .map(t => ({ id: t.id, status: t.status, runId: t.runId ?? null })),
     };
     return () => {
+      delete (window as unknown as { cloud9Wire?: unknown }).cloud9Wire;
       delete (window as unknown as { cloud9Runs?: unknown }).cloud9Runs;
       delete (window as unknown as { cloud9Files?: unknown }).cloud9Files;
       delete (window as unknown as { cloud9Menu?: unknown }).cloud9Menu;
@@ -1142,7 +1210,7 @@ function Workspace(): React.JSX.Element {
               channels={channels} humanDms={humanDms} agents={agents} people={people}
               unreadFor={unreadFor} peerOf={peerOf} owner={owner}
               onNewChannel={() => setModal("channel")} onBrowseRooms={() => setModal("browse")}
-              onNewAgent={() => openEditor("new")}
+              onNewAgent={() => openEditor("new")} onBrowseMarket={() => setScreen("market")}
               onInvite={openInvite} onEditAgent={a => openEditor(a)} onOpenDm={openDm}
               lastRead={active ? world.unread[active.id]?.lastReadTs ?? 0 : 0}
               findOpen={findOpen} onCloseFind={() => setFindOpen(false)}
@@ -1151,12 +1219,23 @@ function Workspace(): React.JSX.Element {
             />
           )}
           {screen === "crew" && (
-            <CrewScreen onHire={() => openEditor("new")} onEdit={a => openEditor(a)} onOpen={openDm} />
+            <CrewScreen onHire={() => openEditor("new")} onEdit={a => openEditor(a)} onOpen={openDm}
+              onMarket={() => setScreen("market")} justHired={justHired} />
+          )}
+          {screen === "market" && (
+            <MarketScreen
+              onBack={() => setScreen("crew")}
+              onWriteMyOwn={() => openEditor("new")}
+              /* Hiring lands him where the new agent is: on the floor, with an
+                 Edit button on it. Nothing about it is locked. */
+              onHired={name => { setJustHired(name); setScreen("crew"); }}
+            />
           )}
           {screen === "editor" && (
             <AgentEditor
               agent={editorFor === "new" || editorFor === null ? null : editorFor}
               onDone={() => { setEditorFor(null); setScreen("crew"); }}
+              onMarket={() => { setEditorFor(null); setScreen("market"); }}
             />
           )}
           {screen === "tasks" && <TasksScreen onOpenChannel={id => { setActiveId(id); setScreen("chat"); }} />}
@@ -1221,17 +1300,31 @@ interface Peer {
  */
 interface Unread { unread: number; mentions: number }
 
-/** The unread marks on a rail row — nothing at all when there is nothing new. */
+/**
+ * The unread marks on a rail row — nothing at all when there is nothing new.
+ *
+ * The hub counts at most `UNREAD_CEILING` messages in one conversation, so a
+ * count that reaches it is "this many or more" and not an exact tally. It used
+ * to be printed as though it were exact, which is a number nobody had counted.
+ * `unreadLabel` is the one place that decides how a capped number is said, and
+ * the title says the same thing in words.
+ */
 function UnreadMarks({ n }: { n: Unread }): React.JSX.Element | null {
   if (n.unread <= 0 && n.mentions <= 0) return null;
+  const capped = (v: number): boolean => v >= UNREAD_CEILING;
+  const say = (v: number, what: string): string =>
+    capped(v) ? `more than ${UNREAD_CEILING - 1} ${what}` : `${v} ${what}`;
   return (
     <>
       {n.mentions > 0 && (
-        <span className="cnt at" title={`${n.mentions} that ask for you`}
-          aria-label={`${n.mentions} mentioning you`}>@{n.mentions}</span>
+        <span className="cnt at" data-capped={capped(n.mentions) || undefined}
+          title={say(n.mentions, "that ask for you")}
+          aria-label={say(n.mentions, "mentioning you")}>@{unreadLabel(n.mentions)}</span>
       )}
       {n.unread > 0 && (
-        <span className="cnt hot" aria-label={`${n.unread} new`}>{n.unread}</span>
+        <span className="cnt hot" data-capped={capped(n.unread) || undefined}
+          title={say(n.unread, "new")}
+          aria-label={say(n.unread, "new")}>{unreadLabel(n.unread)}</span>
       )}
     </>
   );
@@ -1239,13 +1332,15 @@ function UnreadMarks({ n }: { n: Unread }): React.JSX.Element | null {
 
 function ChatScreen({
   active, setActiveId, channels, humanDms, agents, people, unreadFor, peerOf, owner,
-  onNewChannel, onBrowseRooms, onNewAgent, onInvite, onEditAgent, onOpenDm, lastRead, findOpen, onCloseFind,
+  onNewChannel, onBrowseRooms, onNewAgent, onBrowseMarket, onInvite, onEditAgent, onOpenDm,
+  lastRead, findOpen, onCloseFind,
   onOpenTasks, jumpTo, onJumped,
 }: {
   active?: Channel; setActiveId: (id: ID) => void;
   channels: Channel[]; humanDms: Channel[]; agents: AgentDefPlus[]; people: User[];
   unreadFor: (c: Channel) => Unread; peerOf: (c: Channel) => Peer; owner: boolean;
-  onNewChannel: () => void; onBrowseRooms: () => void; onNewAgent: () => void; onInvite: () => void;
+  onNewChannel: () => void; onBrowseRooms: () => void; onNewAgent: () => void;
+  onBrowseMarket: () => void; onInvite: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenDm: (id: ID, name: string) => void;
   lastRead: number; findOpen: boolean; onCloseFind: () => void; onOpenTasks: () => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
@@ -1256,10 +1351,17 @@ function ChatScreen({
   const [threadRoot, setThreadRoot] = useState<ID | null>(null);
   /** the room-details panel, which shares the right-hand slot with a thread */
   const [detailsOpen, setDetailsOpen] = useState(false);
+  /* THREADS OR NOT — his setting, read in the one place that opens them. */
+  const threading = usePrefs().replies !== "inline";
 
   // a thread — and a details panel — belong to the conversation they were
   // opened from, and go when it changes
   useEffect(() => { setThreadRoot(null); setDetailsOpen(false); }, [active?.id]);
+
+  /* Switching to "keep it in the conversation" closes whatever thread was
+     open. Leaving a panel behind that the setting says cannot exist is how a
+     setting ends up being only a change of wording. */
+  useEffect(() => { if (!threading) setThreadRoot(null); }, [threading]);
 
   const openThread = useCallback((rootId: ID) => {
     setThreadRoot(rootId);
@@ -1320,10 +1422,15 @@ function ChatScreen({
           <div className="side-group">
             <div className="side-head">
               <span className="eyebrow">Direct</span>
+              {/* The same pair as Channels above: browse what exists, or make
+                  one. This is where he already comes to add an agent, so this
+                  is where the hiring hall has to be. */}
+              <button className="browsebtn tomarket" title="Browse the hiring hall"
+                aria-label="Browse the hiring hall" onClick={onBrowseMarket}>⌕</button>
               <button title="New agent" aria-label="New agent" onClick={onNewAgent}>＋</button>
             </div>
             {agents.length === 0 && humanDms.length === 0 &&
-              <RailEmpty text="Nobody hired yet." action="Write your first agent" onAction={onNewAgent} />}
+              <RailEmpty text="Nobody hired yet." action="Browse the hiring hall" onAction={onBrowseMarket} />}
             {agents.map(a => {
               const s = agentStatusLine(a, world.agentStatus[a.id]);
               const dm = agentDmFor(a);
@@ -1393,7 +1500,8 @@ function ChatScreen({
       {active ? (
         <ChatView key={active.id} channel={active} lastRead={lastRead} findOpen={findOpen}
           onCloseFind={onCloseFind} onEditAgent={onEditAgent} onOpenTasks={onOpenTasks}
-          jumpTo={jumpTo} onJumped={onJumped} onOpenThread={openThread} threadRoot={threadRoot}
+          jumpTo={jumpTo} onJumped={onJumped}
+          onOpenThread={threading ? openThread : undefined} threadRoot={threadRoot}
           onToggleDetails={toggleDetails} detailsOpen={detailsOpen} />
       ) : (
         <div className="thread">
@@ -1408,7 +1516,7 @@ function ChatScreen({
         </div>
       )}
 
-      {active && threadRoot && (
+      {active && threading && threadRoot && (
         <ThreadPanel key={threadRoot} channel={active} rootId={threadRoot}
           onClose={() => setThreadRoot(null)} />
       )}
@@ -1758,11 +1866,17 @@ function ChatView({
   channel: Channel; lastRead: number; findOpen: boolean; onCloseFind: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenTasks: () => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
-  onOpenThread: (rootId: ID) => void; threadRoot: ID | null;
+  /** absent when his setting says replies stay in the conversation */
+  onOpenThread?: (rootId: ID) => void; threadRoot: ID | null;
   onToggleDetails: () => void; detailsOpen: boolean;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const all = world.messages[channel.id] ?? [];
+  const threading = !!onOpenThread;
+  /** the message this conversation's own box is answering, in inline mode */
+  const [replyingTo, setReplyingTo] = useState<ID | null>(null);
+  useEffect(() => { setReplyingTo(null); }, [channel.id]);
+  useEffect(() => { if (threading) setReplyingTo(null); }, [threading]);
   const streamRef = useRef<HTMLDivElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
   const [openedAt] = useState(lastRead);
@@ -1775,9 +1889,32 @@ function ChatView({
   useEffect(() => { if (findOpen) findRef.current?.focus(); }, [findOpen]);
   useEffect(() => { if (!findOpen) setFind(""); }, [findOpen]);
   const needle = findOpen ? find.trim().toLowerCase() : "";
+
+  /**
+   * WHAT THE CONVERSATION ITSELF SHOWS — and this is the whole of "threads".
+   *
+   * With threads on, a reply lives on the message it answers and is NOT a row
+   * in the conversation. That one rule is what he could not find: every reply
+   * used to be posted into the room as well, so a thread never visually
+   * existed — the room simply got longer and carried a small "said in a
+   * thread" label. The message it answers still shows its reply count, and
+   * that is how you get to it.
+   *
+   * Two deliberate exceptions, both so nothing becomes unreachable:
+   *  - Find in conversation searches everything, replies included. A reply you
+   *    cannot find is a reply that is lost.
+   *  - A message the app is being sent to (a search result) is shown wherever
+   *    it is, so the jump lands rather than walking off the end of the room.
+   *
+   * With his setting on "keep it in the conversation" nothing is hidden at
+   * all, and no thread is ever opened.
+   */
+  const shown = (threading && !needle)
+    ? all.filter(m => !m.replyTo || m.id === jumpTo?.id || m.id === litUp)
+    : all;
   const messages = needle
     ? all.filter(m => m.text.toLowerCase().includes(needle) || m.authorName.toLowerCase().includes(needle))
-    : all;
+    : shown;
 
   /* ---- scrollback ----
    *
@@ -1812,23 +1949,58 @@ function ChatView({
     client.loadOlder(channel.id);
   }, [channel.id]);
 
-  // rule 2 — put the reader back where they were, before the browser paints
+  /**
+   * ONE OWNER OF WHERE THIS LIST IS SCROLLED TO.
+   *
+   * The three rules above used to live in two effects, and the split WAS the
+   * bug. A layout effect runs before a plain one, so the anchor restore had
+   * already cleared `anchor.current` by the time the follow-to-bottom effect
+   * read it — its guard could never see an anchor, and it followed anyway. A
+   * search jump that had to walk back through pages flashed to the newest
+   * message on every single page it loaded.
+   *
+   * Two effects cannot guard against each other; whichever runs first wins by
+   * accident. So there is one, it is a layout effect (the reader must never see
+   * the intermediate position), and the priority is stated once, here.
+   */
+  const newest = messages.length ? messages[messages.length - 1].id : "";
   React.useLayoutEffect(() => {
     const el = streamRef.current;
+    if (!el) return;
+    // 1. an older page went on the front: nail the view to the row the reader
+    //    was actually looking at, whatever else is going on.
     const held = anchor.current;
-    if (!el || !held) return;
-    const still = el.querySelector<HTMLElement>(`.msg[data-msg="${CSS.escape(held.id)}"]`);
-    if (still) el.scrollTop += still.getBoundingClientRect().top - held.top;
-    anchor.current = null;
-  }, [world.prepended]);
-
-  // rule 1 — a new arrival only follows a reader who is already at the bottom
-  const newest = messages.length ? messages[messages.length - 1].id : "";
-  useEffect(() => {
-    const el = streamRef.current;
-    if (!el || anchor.current) return;
+    if (held) {
+      const still = el.querySelector<HTMLElement>(`.msg[data-msg="${CSS.escape(held.id)}"]`);
+      if (still) el.scrollTop += still.getBoundingClientRect().top - held.top;
+      anchor.current = null;
+      return;
+    }
+    // 2. somebody asked to be taken to one particular message. That walk owns
+    //    the view until it lands — following the newest message would be
+    //    yanking the reader away from the thing they asked for.
+    if (jumpTo) return;
+    // 3. otherwise a new arrival follows a reader who is already at the bottom.
     if (atBottom.current) el.scrollTo({ top: el.scrollHeight });
-  }, [newest, messages.length]);
+  }, [world.prepended, newest, messages.length, jumpTo]);
+
+  /**
+   * Take the reader to one message already on screen, and mark it.
+   *
+   * Used by the "answering…" line above an inline reply: the message it
+   * answers is a few rows up in the same conversation, so this walks there
+   * rather than opening anything. If it is further back than the loaded page,
+   * nothing is claimed — a line that says it took you somewhere and did not
+   * is worse than a line that does nothing.
+   */
+  const goToMessage = useCallback((id: ID) => {
+    const el = streamRef.current?.querySelector(`[data-msg="${CSS.escape(id)}"]`);
+    if (!el) { client.notify("that message is further back than this conversation goes"); return; }
+    atBottom.current = false;
+    el.scrollIntoView({ block: "center" });
+    setLitUp(id);
+    setTimeout(() => setLitUp(now => (now === id ? null : now)), 2600);
+  }, []);
 
   const onStreamScroll = useCallback(() => {
     const el = streamRef.current;
@@ -2025,6 +2197,10 @@ function ChatView({
               /* Reading an archived room still works all the way down: the
                  replies are still there to open, only writing is refused. */
               onOpenThread={onOpenThread}
+              /* Inline mode: the reply button arms THIS conversation's box
+                 instead of opening a panel that the setting says cannot exist. */
+              onInlineReply={threading ? undefined : (id: ID) => setReplyingTo(id)}
+              onGoToMessage={goToMessage}
               archived={!!channel.archivedAt}
               inOpenThread={threadRoot === r.m.id || threadRoot === r.m.replyTo}
               litUp={litUp === r.m.id} />
@@ -2052,7 +2228,14 @@ function ChatView({
         ))}
       </div>
 
-      <Composer channel={channel} />
+      {/* In inline mode the conversation's own box is what carries a reply, so
+          it says which message it is answering and offers a way out of it. */}
+      <Composer channel={channel}
+        replyTo={!threading && replyingTo ? replyingTo : undefined}
+        answering={!threading && replyingTo
+          ? all.find(m => m.id === replyingTo)
+          : undefined}
+        onStopAnswering={() => setReplyingTo(null)} />
     </div>
   );
 }
@@ -2131,13 +2314,18 @@ const REACT_EMOJI = ["👍", "🎉", "🙏", "👀", "✅", "❤️"];
 function MessageFiles({ attachments }: { attachments: Attachment[] }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
 
-  /* Every blob this message opened is freed when the message goes off screen.
-     Held in a ref so the cleanup frees what was actually opened, not what
-     happened to be in the props on the first render. */
-  const opened = useRef<ID[]>([]);
-  opened.current = attachments.map(a => a.id);
-  useEffect(() => () => {
-    for (const id of opened.current) client.closeFile(id);
+  /* THIS COPY IS SHOWING THESE FILES — one hold each, given back when it goes.
+     The same message is drawn in more than one place at once (the conversation
+     and an open thread), and this used to free the bytes on unmount: closing
+     the thread panel revoked the `blob:` the room behind it was still drawing,
+     and the picture broke. The store counts holders and frees only when the
+     last copy lets go, so "who owns it" is no longer "who unmounted first". */
+  const shownHere = useRef<ID[]>([]);
+  shownHere.current = attachments.map(a => a.id);
+  useEffect(() => {
+    const mine = shownHere.current;
+    for (const id of mine) client.holdFile(id);
+    return () => { for (const id of mine) client.releaseFile(id); };
   }, []);
 
   return (
@@ -2194,9 +2382,17 @@ function MessageFiles({ attachments }: { attachments: Attachment[] }): React.JSX
   );
 }
 
-function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, variant, archived }: {
+function MessageRow({
+  row, agent, working, onOpenThread, onInlineReply, onGoToMessage,
+  inOpenThread, litUp, variant, archived,
+}: {
   row: Row; agent?: AgentDef; working?: boolean;
+  /** threads are on: replying opens one, and the reply count opens it again */
   onOpenThread?: (rootId: ID) => void;
+  /** threads are off: replying arms the conversation's own box instead */
+  onInlineReply?: (messageId: ID) => void;
+  /** walk to another message in this same conversation */
+  onGoToMessage?: (messageId: ID) => void;
   inOpenThread?: boolean;
   litUp?: boolean;
   /** "thread" drops the affordances that would open a thread inside a thread */
@@ -2323,6 +2519,45 @@ function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, va
     </div>
   );
 
+  /**
+   * WHAT THIS MESSAGE IS ANSWERING — drawn above it, both ways round.
+   *
+   * With threads on, a reply is normally not in the conversation at all; the
+   * only ones that are, are the one a search jumped to, and this line takes
+   * the reader to the thread it belongs to.
+   *
+   * With threads off, every reply is in the conversation and needs to say what
+   * it is answering, or "keep it in the conversation" is just an unreadable
+   * pile. So it quotes the message above it and walks there when clicked.
+   */
+  const answered = useMemo(() => {
+    if (inThread || deleted || !m.replyTo) return undefined;
+    return (world.messages[m.channelId] ?? []).find(x => x.id === m.replyTo);
+  }, [m.replyTo, m.channelId, world.messages, inThread, deleted]);
+
+  const answeringLine = (!inThread && m.replyTo && !deleted) && (
+    onOpenThread
+      ? (
+        <button className="inthreadmark" onClick={() => onOpenThread(m.replyTo!)}>
+          ↳ said in a thread — open it
+        </button>
+      )
+      : onGoToMessage
+        ? (
+          <button className="answeringmark" onClick={() => onGoToMessage(m.replyTo!)}
+            title="Go to the message this answers">
+            <span className="arrow" aria-hidden="true">↳</span>
+            <span className="who2">
+              {answered ? `Answering ${answered.authorName}` : "Answering a message above"}
+            </span>
+            {answered && !answered.deletedAt && (
+              <span className="quoted">{quoteOf(answered.text)}</span>
+            )}
+          </button>
+        )
+        : null
+  );
+
   const replyCount = m.replyCount ?? 0;
   const threadLine = (!inThread && !deleted && replyCount > 0 && onOpenThread) && (
     <button className="threadline" data-replies={replyCount}
@@ -2359,9 +2594,18 @@ function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, va
     <div className="msgactions">
       <button className="ma react" title="React to this" aria-expanded={pickEmoji}
         onClick={() => setPickEmoji(o => !o)}>☺</button>
-      {!inThread && onOpenThread && (
-        <button className="ma reply" title="Reply in a thread"
-          onClick={() => onOpenThread(m.replyTo ?? m.id)}>↳</button>
+      {/* THE WAY IN. It used to be a bare ↳ among five other glyphs, so the
+          only door to a thread was an unlabelled icon that appears on hover —
+          which is a fair description of a feature nobody can find. It carries
+          the word now, and it says which of the two things it will do. */}
+      {!inThread && (onOpenThread || onInlineReply) && (
+        <button className="ma reply"
+          title={onOpenThread ? "Reply in a thread on this message" : "Reply to this, here in the conversation"}
+          onClick={() => onOpenThread
+            ? onOpenThread(m.replyTo ?? m.id)
+            : onInlineReply!(m.id)}>
+          <span className="arrow" aria-hidden="true">↳</span>Reply
+        </button>
       )}
       <button className="ma" title={`Write back to ${m.authorName}`}
         onClick={() => composerInsert?.(`@${m.authorName} `)}>↩</button>
@@ -2488,11 +2732,7 @@ function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, va
           {!deleted && m.editedAt && <span className="editedmark">edited</span>}
           {m.proactive && <span className="chip is-ultra selfstart">Nobody asked — I noticed</span>}
         </div>
-        {!inThread && m.replyTo && onOpenThread && !deleted && (
-          <button className="inthreadmark" onClick={() => onOpenThread(m.replyTo!)}>
-            ↳ said in a thread — open it
-          </button>
-        )}
+        {answeringLine}
         {strip.length > 0 && !deleted && (
           <div className="runstrip">
             {strip.map((node, i) => (
@@ -2642,15 +2882,23 @@ function AddToChannel({ channel }: { channel: Channel }): React.JSX.Element | nu
 
 const QUICK_EMOJI = ["👍", "🙏", "🎉", "🔥", "✅", "❌", "😀", "😅", "🤔", "👀", "🚀", "☁️", "📌", "⏰", "💡", "❤️"];
 
-function Composer({ channel, replyTo }: {
+function Composer({ channel, replyTo, answering, onStopAnswering }: {
   channel: Channel;
-  /** set in a thread panel: everything typed here joins that thread */
+  /** set in a thread panel, and in the conversation's own box when threads are
+      off and he has pressed Reply: everything typed here answers that message */
   replyTo?: ID;
+  /** inline mode only — the message being answered, so the box can say so */
+  answering?: Message;
+  onStopAnswering?: () => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [text, setText] = useState("");
   const [acIndex, setAcIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  /* A thread's box is a narrow rail and drops the wide affordances. The
+     conversation's own box keeps every one of them even while it is answering
+     something — it is the same box it always was, only aimed. */
+  const inThreadPanel = !!replyTo && !onStopAnswering;
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const uploads = world.uploads[channel.id] ?? [];
@@ -2700,10 +2948,10 @@ function Composer({ channel, replyTo }: {
      into a thread's — a thread panel opens and closes under the reader, and
      text that landed in a box that then vanished is text they lost. */
   useEffect(() => {
-    if (replyTo) return;
+    if (inThreadPanel) return;
     composerInsert = insert;
     return () => { composerInsert = null; };
-  }, [insert, replyTo]);
+  }, [insert, inThreadPanel]);
 
   /** wrap whatever is selected, the way a formatting button should */
   const wrap = (left: string, right = left) => {
@@ -2723,15 +2971,26 @@ function Composer({ channel, replyTo }: {
      too, so the button and the hub agree about what an empty box means. */
   const sendNow = () => {
     const t = text.trim();
-    const attachmentIds = client.uploadIds(channel.id);
-    if (!t && attachmentIds.length === 0) return;
+    /* A FILE STILL GOING UP IS NEVER THROWN AWAY IN SILENCE. Pressing Enter
+       used to take whichever files had landed, empty the tray and send — so a
+       file still on its way was dropped without a word and finished uploading
+       into nothing. The store owns that judgement, so the button, the Enter key
+       and a thread's own box all give the same answer. */
+    const ready = client.readyToSend(channel.id, t.length > 0);
+    if (!ready.ok) {
+      if (ready.why) client.notify(ready.why);
+      return;
+    }
     client.send({
       type: "send", channelId: channel.id, text: t, replyTo,
-      ...(attachmentIds.length ? { attachmentIds } : {}),
+      ...(ready.ids.length ? { attachmentIds: ready.ids } : {}),
     });
     setText("");
     setEmojiOpen(false);
     client.clearUploads(channel.id);
+    /* The box stops being aimed the moment the reply is away, so the next
+       thing typed goes to the conversation unless he aims it again. */
+    onStopAnswering?.();
   };
 
   /* A direct conversation is stored under a machine name ("dm-mercer"), so the
@@ -2744,9 +3003,11 @@ function Composer({ channel, replyTo }: {
         ?? channel.name;
     })()
     : null;
-  const placeholder = replyTo
+  const placeholder = inThreadPanel
     ? "Reply in this thread"
-    : peerName
+    : answering
+      ? `Answering ${answering.authorName}`
+      : peerName
       ? `Message ${peerName}`
       : `Message #${channel.name} — type @ to call an agent in`;
 
@@ -2760,7 +3021,7 @@ function Composer({ channel, replyTo }: {
    */
   if (channel.archivedAt) {
     return (
-      <div className={`composer archivedcomposer${replyTo ? " threadcomposer" : ""}`}>
+      <div className={`composer archivedcomposer${inThreadPanel ? " threadcomposer" : ""}`}>
         <div className="composer-box readonly" role="status">
           <span className="ro-mark" aria-hidden="true">⌾</span>
           <span className="ro-say">{ARCHIVED_SENTENCE}</span>
@@ -2770,7 +3031,21 @@ function Composer({ channel, replyTo }: {
   }
 
   return (
-    <div className={`composer${replyTo ? " threadcomposer" : ""}`}>
+    <div className={`composer${inThreadPanel ? " threadcomposer" : ""}`}>
+      {/* AIMED AT ONE MESSAGE. Only in the conversation's own box, only when
+          his setting keeps replies in the conversation — the way out is right
+          here, because a box that is quietly still answering something from
+          five minutes ago sends the next message to the wrong place. */}
+      {answering && (
+        <div className="answeringbar" data-answering={answering.id}>
+          <span className="arrow" aria-hidden="true">↳</span>
+          <span className="ab-who">Answering {answering.authorName}</span>
+          <span className="ab-quote">{quoteOf(answering.text, 70)}</span>
+          <button className="ab-x" aria-label="Stop answering this message"
+            title="Send to the conversation instead"
+            onClick={() => onStopAnswering?.()}>✕</button>
+        </div>
+      )}
       <div className="composer-box" title={`Posting as ${world.me?.name ?? "you"}`}>
         {suggestions.length > 0 && (
           <div className="autocomplete">
@@ -2852,7 +3127,7 @@ function Composer({ channel, replyTo }: {
           {/* A thread is a narrow column and a reply is a sentence, so the
               wide affordances stay in the room's own box rather than being
               squeezed into a rail they do not fit. */}
-          {!replyTo && <>
+          {!inThreadPanel && <>
             <button className="mini" title="Hand this over as background work"
               onClick={() => insert("!bg ")}>Delegate as a job</button>
             <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
@@ -2862,9 +3137,17 @@ function Composer({ channel, replyTo }: {
           <button className="mini" title="Emoji" aria-expanded={emojiOpen}
             onClick={() => setEmojiOpen(o => !o)}>🙂</button>
           <div className="grow" />
-          {!replyTo && <span className="eyebrow">{busy ? "Sending a file up…" : "Enter to send"}</span>}
-          <button className="primary small" onClick={sendNow} disabled={!text.trim() && ready === 0}>
-            Send{ready > 0 ? ` with ${ready} ${ready === 1 ? "file" : "files"}` : ""}
+          {!inThreadPanel && <span className="eyebrow">{busy ? "Sending a file up…" : "Enter to send"}</span>}
+          {/* While a file is on its way the button SAYS so rather than sending
+              without it. Enter says the same thing out loud (see `sendNow`), so
+              neither route can quietly leave a file behind. */}
+          <button className="primary small sendbtn" onClick={sendNow}
+            data-waiting={busy ? "file" : undefined}
+            title={busy ? "A file is still going up. It goes with this message once it lands." : undefined}
+            disabled={busy || (!text.trim() && ready === 0)}>
+            {busy
+              ? "Waiting for a file…"
+              : `Send${ready > 0 ? ` with ${ready} ${ready === 1 ? "file" : "files"}` : ""}`}
           </button>
           {emojiOpen && (
             <div className="emojipop">
@@ -2959,6 +3242,48 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
   const mayRun = mayAdministerChannel(myRole);
   const archived = !!channel.archivedAt;
   const open = channel.visibility === "open";
+  /* Who is being taken out, or given a different job. Held by row key, so the
+     question is always about the membership on screen. */
+  const [managing, setManaging] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  useEffect(() => { setManaging(null); setConfirmRemove(null); }, [channel.id]);
+
+  /**
+   * MAY I TAKE THIS PERSON OUT, AND MAY I CHANGE WHAT THEY DO HERE?
+   *
+   * The hub's rules, read here so a button whose only possible outcome is a
+   * refusal is never drawn at all (§8 — the hub is still the gate; this can
+   * only ever offer LESS than the hub allows, never more):
+   *  - taking someone out needs owner or admin, and only the owner may take out
+   *    the person who runs the room;
+   *  - changing a role is the owner's alone, and the owner cannot stand
+   *    themselves down — a room always has somebody running it, so that is done
+   *    by handing it to someone else;
+   *  - a role is a job on a screen, and an agent has no screen. Agents can be
+   *    taken out of a room; they are never offered one.
+   */
+  /**
+   * CHANGE THE ROOM'S MEMBERSHIP, AND ASK WHAT IT IS NOW.
+   *
+   * The room's own `channel` frame carries `memberIds`, so taking somebody out
+   * refreshes this list by itself — but giving somebody a different job changes
+   * NOTHING in that list, and the panel sat there showing the role it had
+   * before. Rather than wait for a broadcast that says nothing about roles, the
+   * question is asked again straight away: the hub reads one frame at a time
+   * and answers it before it reads the next, so the answer to this one is bound
+   * to have the change in it.
+   */
+  const changeMembership = (frame: Parameters<typeof client.send>[0]): void => {
+    client.send(frame);
+    client.askMembers(channel.id);
+  };
+
+  const isRoom = channel.kind !== "dm";
+  const mayRemove = (m: ChannelMember): boolean =>
+    isRoom && mayRun && m.memberId !== world.me?.id
+    && (m.role !== "owner" || myRole === "owner");
+  const mayRerole = (m: ChannelMember, isAgent: boolean): boolean =>
+    isRoom && myRole === "owner" && !isAgent && m.memberId !== world.me?.id;
 
   const nameOf = (id: ID): { name: string; agent?: AgentDef; user?: User } => {
     const agent = world.agents.find(a => a.id === id);
@@ -3034,6 +3359,9 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
           {rows.length === 0 && <div className="d-empty">Fetching who is in this room…</div>}
           {rows.map(m => {
             const who = nameOf(m.memberId);
+            const key = `${m.memberId}:${m.joinedAt}`;
+            const canRemove = mayRemove(m);
+            const canRerole = mayRerole(m, !!who.agent);
             /* "added by" answers "how did they get here". Said about the
                person themselves it answers nothing — the room's creator is
                recorded as their own inviter — so it is left off. */
@@ -3045,8 +3373,9 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
                  exactly as it was, so `memberId` alone is no longer unique —
                  React would fold a real history into one row and go on drawing
                  the membership that ended. */
-              <div className="mini-agent memberrow" key={`${m.memberId}:${m.joinedAt}`}
-                data-member={who.name} data-memberkey={`${m.memberId}:${m.joinedAt}`}
+              <React.Fragment key={key}>
+              <div className="mini-agent memberrow"
+                data-member={who.name} data-memberkey={key}
                 data-joined={m.joinedAt}>
                 {who.agent
                   ? <AgentFace name={who.name} size={36} lamp={world.agentStatus[m.memberId] === "working" ? "run" : "live"} />
@@ -3066,13 +3395,79 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
                       whether the room is still private. */}
                   {who.agent ? <AgentOwnerTag agent={who.agent} /> : null}
                 </span>
-                {who.user && m.memberId !== world.me?.id && (
+                {(canRemove || canRerole || (who.user && m.memberId !== world.me?.id)) && (
                   <span className="tools">
-                    <button className="iconbtn" title={`Open your chat with ${who.name}`}
-                      onClick={() => onOpenDm(m.memberId, who.name)}>✉</button>
+                    {who.user && m.memberId !== world.me?.id && (
+                      <button className="iconbtn" title={`Open your chat with ${who.name}`}
+                        onClick={() => onOpenDm(m.memberId, who.name)}>✉</button>
+                    )}
+                    {/* Offered only where the hub would say yes, so this is
+                        never a button whose one outcome is a refusal. */}
+                    {(canRemove || canRerole) && (
+                      <button className="iconbtn memberopen" aria-expanded={managing === key}
+                        aria-label={`Change what ${who.name} can do here`}
+                        title={`Change what ${who.name} can do here`}
+                        onClick={() => {
+                          setManaging(k => (k === key ? null : key));
+                          setConfirmRemove(null);
+                        }}>⋯</button>
+                    )}
                   </span>
                 )}
               </div>
+              {managing === key && (
+                <div className="memberask" data-manage={who.name}>
+                  {canRerole && (
+                    <div className="rolepick">
+                      <span className="lb">What {who.name} can do here</span>
+                      {ROLE_ORDER.map(r => (
+                        <button key={r} className={`roleopt${m.role === r ? " on" : ""}`}
+                          data-role={r} data-setrole={r} aria-pressed={m.role === r}
+                          disabled={m.role === r}
+                          onClick={() => {
+                            changeMembership({
+                              type: "setMemberRole", channelId: channel.id,
+                              memberId: m.memberId, role: r,
+                            });
+                            setManaging(null);
+                          }}>
+                          <b>{ROLE_WORDS[r]}</b>
+                          <span>{ROLE_MEANS[r]}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {canRemove && (confirmRemove === key ? (
+                    <div className="roomleaveask memberoutask">
+                      <span>
+                        Take {who.name} out of #{channel.name}?
+                        {who.agent
+                          ? " It stops answering here, and whoever owns it stops seeing this room."
+                          : " They stop seeing it."}
+                        {" Everything already said stays exactly where it is."}
+                      </span>
+                      <button className="btn small danger memberout-yes"
+                        onClick={() => {
+                          changeMembership({
+                            type: "removeMember", channelId: channel.id, memberId: m.memberId,
+                          });
+                          setConfirmRemove(null);
+                          setManaging(null);
+                        }}>
+                        Yes, take {who.name} out
+                      </button>
+                      <button className="btn small ghost"
+                        onClick={() => setConfirmRemove(null)}>Keep them here</button>
+                    </div>
+                  ) : (
+                    <button className="btn small memberout"
+                      onClick={() => setConfirmRemove(key)}>
+                      Take {who.name} out of this room
+                    </button>
+                  ))}
+                </div>
+              )}
+              </React.Fragment>
             );
           })}
         </div>
@@ -3139,6 +3534,22 @@ const ROLE_WORDS: Record<ChannelRole, string> = {
   owner: "Runs this room",
   admin: "Helps run it",
   member: "Member",
+};
+
+/** Most power first, so the list reads as a ladder rather than an arbitrary set. */
+const ROLE_ORDER: ChannelRole[] = ["owner", "admin", "member"];
+
+/**
+ * WHAT PICKING EACH ONE ACTUALLY DOES.
+ *
+ * Said on the control itself, because a role is only a word until somebody
+ * knows what it costs them — and handing a room over is not undoable by the
+ * person doing it.
+ */
+const ROLE_MEANS: Record<ChannelRole, string> = {
+  owner: "Hands this room over. They run it and you drop to helping run it — only they can hand it back.",
+  admin: "Can change the description and topic, open or close the room, and take people out.",
+  member: "Can read and talk here, and nothing about the room itself.",
 };
 
 /* ---- the right rail ---- */
@@ -3223,10 +3634,13 @@ function ChannelRail({ channel, onEditAgent, onOpenDm }: {
 
 /* ================= 4 · THE CREW (call sheet) ================= */
 
-function CrewScreen({ onHire, onEdit, onOpen }: {
+function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
   onHire: () => void;
   onEdit: (a: AgentDef) => void;
   onOpen: (id: ID, name: string) => void;
+  onMarket: () => void;
+  /** just hired from the hiring hall — say so, and say it is editable */
+  justHired?: string | null;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [filter, setFilter] = useState<"all" | "working" | "waiting" | "off">("all");
@@ -3281,8 +3695,20 @@ function CrewScreen({ onHire, onEdit, onOpen }: {
         {byProvider("claude") > 0 && <span className="chip is-gold">Claude · {byProvider("claude")}</span>}
         {byProvider("codex") > 0 && <span className="chip is-ultra">Codex · {byProvider("codex")}</span>}
         <div className="grow" />
-        <button className="primary" onClick={onHire}>Hire an agent</button>
+        <button className="btn tomarket" onClick={onMarket}>Browse the hiring hall</button>
+        <button className="primary" onClick={onHire}>Write an agent</button>
       </div>
+
+      {/* The one thing he has to know after hiring: it is his now. */}
+      {justHired && (
+        <div className="hirednote" data-hired={justHired}>
+          <span className="hn-mark" aria-hidden="true">✓</span>
+          <span>
+            <b>@{justHired}</b> is on the floor. Everything about them — the brief, the app,
+            what they can touch — is yours to change. Press <b>Edit</b> on their card.
+          </span>
+        </div>
+      )}
 
       {agents.length === 0 ? (
         <div className="crew-empty">
@@ -3290,9 +3716,12 @@ function CrewScreen({ onHire, onEdit, onOpen }: {
           <h2>The plates are still blank</h2>
           <p>
             Write one agent in plain words — what it does, what it may touch, when it must stop and ask.
-            Cloud9 gives it a face and a desk.
+            Or hire one that is already written and change it afterwards.
           </p>
-          <button className="primary" onClick={onHire}>Write your first agent</button>
+          <div className="crew-emptybtns">
+            <button className="primary" onClick={onMarket}>Browse the hiring hall</button>
+            <button className="btn" onClick={onHire}>Write your first agent</button>
+          </div>
         </div>
       ) : (
         <div className="crew-grid">
@@ -3352,17 +3781,254 @@ function CrewScreen({ onHire, onEdit, onOpen }: {
               </article>
             );
           })}
+          <button className="cast cast-new castmarket" onClick={onMarket}>
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 8h16l-1 11.5a1.5 1.5 0 0 1-1.5 1.4h-11A1.5 1.5 0 0 1 5 19.5Z" />
+              <path d="M8.5 8V6a3.5 3.5 0 0 1 7 0v2" />
+            </svg>
+            <h3>The hiring hall</h3>
+            <p>{MARKET_TEMPLATES.length} roles already written. Read the brief, pick the app, hire.</p>
+          </button>
           <button className="cast cast-new" onClick={onHire}>
             <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="9" r="3.6" /><path d="M5 20a7 7 0 0 1 10.5-6" />
               <path d="M18 15.5v6M15 18.5h6" />
             </svg>
-            <h3>Hire someone new</h3>
+            <h3>Write your own</h3>
             <p>Describe the job in plain words. Cloud9 writes the agent for you.</p>
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ================= 5b · THE HIRING HALL (the marketplace) ================= */
+
+/**
+ * READY-WRITTEN AGENTS, SHIPPED INSIDE THE APP.
+ *
+ * No server, no download, no account: the catalogue is `market.ts`, compiled
+ * into the app, so this screen works with the network unplugged. Hiring COPIES
+ * a role into his crew as an ordinary agent — from that second it is his, and
+ * every word of it is editable in the same editor as anything he wrote himself.
+ *
+ * Growing it takes no change here. The filter bar is built from
+ * `MARKET_CATEGORIES` and the grid from `MARKET_TEMPLATES`, so a second
+ * category is two pieces of data, not a redesign.
+ */
+function MarketScreen({ onHired, onBack, onWriteMyOwn }: {
+  /** hand back the name we hired under, so the crew can point at it */
+  onHired: (name: string) => void;
+  onBack: () => void;
+  onWriteMyOwn: () => void;
+}): React.JSX.Element {
+  const [category, setCategory] = useState<string>("all");
+  const [open, setOpen] = useState<MarketTemplate | null>(null);
+
+  const shown = MARKET_TEMPLATES.filter(t => category === "all" || t.category === category);
+  const groups = MARKET_CATEGORIES.filter(c => shown.some(t => t.category === c.id));
+
+  return (
+    <div className="crew market">
+      <header className="crew-hero">
+        <div>
+          <span className="eyebrow">Cloud9 · the marketplace</span>
+          <h1>Hire someone<br />already <em>written</em>.</h1>
+          <p>
+            {MARKET_TEMPLATES.length} roles that ship inside Cloud9 — no download, no account,
+            and they work with the internet off. Hiring one copies it onto your floor,
+            where you can change every word of it.
+          </p>
+        </div>
+        <div className="crew-stats">
+          <div className="stat"><div className="n">{MARKET_TEMPLATES.length}</div><div className="l">Roles ready</div></div>
+          <div className="stat"><div className="n">{MARKET_CATEGORIES.length}</div><div className="l">Categories</div></div>
+        </div>
+      </header>
+
+      <div className="crew-bar">
+        <div className="seg" role="group" aria-label="Which roles to show">
+          <button aria-pressed={category === "all"} onClick={() => setCategory("all")}>All roles</button>
+          {MARKET_CATEGORIES.map(c => (
+            <button key={c.id} data-cat={c.id} aria-pressed={category === c.id}
+              onClick={() => setCategory(c.id)}>{c.label}</button>
+          ))}
+        </div>
+        <div className="grow" />
+        <button className="btn small ghost marketback" onClick={onBack}>← Crew</button>
+        <button className="btn small" onClick={onWriteMyOwn}>Write my own instead</button>
+      </div>
+
+      {groups.map(group => (
+        <section className="marketgroup" key={group.id} data-group={group.id}>
+          <div className="mg-head">
+            <h2>{group.label}</h2>
+            <p>{group.blurb}</p>
+          </div>
+          <div className="crew-grid">
+            {shown.filter(t => t.category === group.id).map(t => (
+              <article className="cast role" key={t.id} data-role={t.id}>
+                <div className="roleface" aria-hidden="true"><span>{t.emoji}</span></div>
+                <div className="info">
+                  <h3>{t.title}</h3>
+                  <div className="role">{t.tagline}</div>
+                  <div className="runs">
+                    <span className={`chip ${t.suggestedApp === "claude" ? "is-gold" : "is-ultra"}`}>
+                      Suggested: {PROVIDER_LABEL[t.suggestedApp]}
+                    </span>
+                    <span className="chip">@{t.name}</span>
+                  </div>
+                  <ul className="roleasks">
+                    {t.askItFor.map(a => <li key={a}>{a}</li>)}
+                  </ul>
+                </div>
+                <div className="castbtns">
+                  <button className="primary small rolesee" onClick={() => setOpen(t)}>
+                    Read the brief
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ))}
+
+      {open && (
+        <HireModal template={open} onClose={() => setOpen(null)}
+          onHired={name => { setOpen(null); onHired(name); }} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * THE BRIEF, IN FULL, AND THE ONE DECISION HE MAKES BEFORE HIRING.
+ *
+ * He reads the words the agent will actually be given — no summary stands in
+ * for them — and picks which app runs it. The model list is the REAL one from
+ * his signed-in app (the same hook the editor uses), so this screen can never
+ * offer a model that does not exist.
+ *
+ * `respondTo` is fixed at "owner", the same default a hand-written agent gets.
+ * An agent hired in two clicks must not be more open than one typed out.
+ */
+function HireModal({ template, onClose, onHired }: {
+  template: MarketTemplate;
+  onClose: () => void;
+  onHired: (name: string) => void;
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [provider, setProvider] = useState<Provider>(template.suggestedApp as Provider);
+  const { ids, fallback, preferred } = useModels(provider);
+  const [model, setModel] = useState<string>(preferred);
+  useEffect(() => { if (!ids.includes(model)) setModel(preferred); }, [provider, ids.join(","), model]);
+
+  /* Two hires of the same role are two agents, and an @name is how everyone
+     points at one — so the second gets its own. The relay is still the judge
+     of a name it will accept; this only stops the obvious collision. */
+  const takenNames = world.agents.map(a => a.name.toLowerCase());
+  const hireName = (() => {
+    if (!takenNames.includes(template.name.toLowerCase())) return template.name;
+    for (let n = 2; n < 50; n++) {
+      if (!takenNames.includes(`${template.name}-${n}`.toLowerCase())) return `${template.name}-${n}`;
+    }
+    return `${template.name}-${Date.now().toString().slice(-4)}`;
+  })();
+
+  const on = abilitiesOn(template);
+
+  const hire = () => {
+    client.send({
+      type: "createAgent",
+      agent: {
+        name: hireName,
+        emoji: template.emoji,
+        persona: template.persona,
+        // start from what any new agent starts with, then only what this role asks for
+        abilities: { ...NEW_AGENT_ABILITIES, ...template.abilities },
+        approvals: NEW_AGENT_APPROVALS,
+        provider,
+        model,
+        skills: [],
+        // the same default a hand-written agent gets: nobody but him can set it working
+        respondTo: "owner",
+        respondToAllowlist: [],
+      },
+    });
+    onHired(hireName);
+  };
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="panel hirepanel" onClick={e => e.stopPropagation()}>
+        <div className="head">
+          <span className="hireface" aria-hidden="true">{template.emoji}</span>
+          <span className="hiretitle">{template.title}</span>
+          <span className="eyebrow">hired as @{hireName}</span>
+        </div>
+        <div className="body">
+          <p className="hiretag">{template.tagline}</p>
+
+          <div className="field-row">
+            <label>What they are told to do</label>
+            <div className="briefbox" data-brief={template.id}>{template.persona}</div>
+          </div>
+
+          <div className="field-row">
+            <label>What they can touch</label>
+            <div className="abilitywords">
+              {on.length === 0
+                ? <span className="ab-none">Nothing beyond talking to you.</span>
+                : on.map(key => <span className="chip" key={key} data-ability={key}>{abilityWords(key)}</span>)}
+              <span className="ab-note">
+                Anything that changes this computer or spends money stops and asks you first.
+                You can change every switch afterwards.
+              </span>
+            </div>
+          </div>
+
+          <div className="field-row">
+            <label>Who can set them working</label>
+            <div className="abilitywords">
+              <span className="chip">Just you</span>
+              <span className="ab-note">
+                They run on your computer and your account pays, so nobody else can start them
+                until you say so.
+              </span>
+            </div>
+          </div>
+
+          <div className="two">
+            <div className="field-row">
+              <label>App</label>
+              <select className="select hireapp" value={provider}
+                onChange={e => setProvider(e.target.value as Provider)}>
+                <option value="claude">Claude</option>
+                <option value="codex">Codex</option>
+              </select>
+            </div>
+            <div className="field-row">
+              <label>Model</label>
+              <select className="select hiremodel" value={ids.includes(model) ? model : preferred}
+                onChange={e => setModel(e.target.value)}>
+                {ids.map(id => <option key={id} value={id}>{modelLabel(id)}</option>)}
+              </select>
+            </div>
+          </div>
+          <p className="sec-note">
+            {template.whyThatApp} {fallback
+              ? "This is the list Cloud9 ships with — sign the app in under Setup for its own."
+              : ""}
+          </p>
+        </div>
+        <div className="foot">
+          <button className="subtle" onClick={onClose}>Not now</button>
+          <button className="primary hirebtn" onClick={hire}>Hire {hireName}</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -3464,6 +4130,23 @@ function QuickChat({ onClose, standalone }: { onClose?: () => void; standalone?:
 /* ================= model picker (his 5, 6) ================= */
 
 /** The models this harness really offers, or the documented set until it says. */
+/**
+ * WHAT A BRAND NEW AGENT STARTS WITH — one owner for the answer.
+ *
+ * The editor starts here and so does a hire from the hiring hall, which is why
+ * it is a constant rather than a literal typed into two places. A hired role
+ * only ever says which switches it wants ON; everything it does not name keeps
+ * whatever this says, and any switch added to the abilities model later is
+ * absent here too — absent means off (`@cloud9/shared`), so nothing can be
+ * granted to a hire by an ability arriving rather than by someone choosing it.
+ */
+const NEW_AGENT_ABILITIES: AgentAbilities = {
+  webSearch: true, files: false, schedules: false, background: true,
+};
+
+/** The same answer, for approvals. A hire is no more permissive than a hand-written agent. */
+const NEW_AGENT_APPROVALS: AgentApprovals = { background: false, schedules: false };
+
 function useModels(provider: Provider): { ids: string[]; fallback: boolean; preferred: string } {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const info = world.harness?.[provider];
@@ -3707,7 +4390,9 @@ function SkillsEditor({ skills, onChange }: {
 
 /* ================= 5 · CREATE / EDIT AN AGENT ================= */
 
-function AgentEditor({ agent, onDone }: { agent: AgentDef | null; onDone: () => void }): React.JSX.Element {
+function AgentEditor({ agent, onDone, onMarket }: {
+  agent: AgentDef | null; onDone: () => void; onMarket: () => void;
+}): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const p = usePrefs();
   const creating = agent === null;
@@ -3715,8 +4400,8 @@ function AgentEditor({ agent, onDone }: { agent: AgentDef | null; onDone: () => 
   const [name, setName] = useState(agent?.name ?? "");
   const [emoji, setEmoji] = useState(agent?.emoji ?? "✨");
   const [persona, setPersona] = useState(agent?.persona ?? "");
-  const [ab, setAb] = useState(agent?.abilities ?? { webSearch: true, files: false, schedules: false, background: true });
-  const [ap, setAp] = useState(agent?.approvals ?? { background: false, schedules: false });
+  const [ab, setAb] = useState(agent?.abilities ?? NEW_AGENT_ABILITIES);
+  const [ap, setAp] = useState(agent?.approvals ?? NEW_AGENT_APPROVALS);
   const [life, setLife] = useState(agent?.lifecycle ?? "enabled");
   const [provider, setProvider] = useState<Provider>(
     (agent?.provider ?? p.defaultProvider ?? "claude") as Provider);
@@ -3806,6 +4491,21 @@ function AgentEditor({ agent, onDone }: { agent: AgentDef | null; onDone: () => 
 
       <div className="editor-body">
         <div className="form-col">
+          {/* The blank page is the hardest part of writing an agent, so the
+              way out of it is offered on the blank page itself. */}
+          {creating && (
+            <div className="fromhall">
+              <span className="fh-mark" aria-hidden="true">⌕</span>
+              <span className="fh-tx">
+                <b>Not sure what to write?</b>
+                <span>
+                  {MARKET_TEMPLATES.length} roles are already written — architect, backend,
+                  QA and more. Hire one and change it here afterwards.
+                </span>
+              </span>
+              <button className="btn small tomarket" onClick={onMarket}>Browse the hiring hall</button>
+            </div>
+          )}
           <section className="fieldset">
             <div className="sec-head"><h3>Who they are</h3><span className="eyebrow">The basics</span></div>
             <p className="sec-note">Names matter — you'll be typing this one a lot, after an @.</p>
@@ -4009,16 +4709,75 @@ function AgentEditor({ agent, onDone }: { agent: AgentDef | null; onDone: () => 
  * The relay marks what it matched with « », because a snippet is text and
  * markup in it would be a way to draw anything. This turns those marks into
  * highlights — and NOTHING else in the snippet is ever treated as markup.
+ *
+ * Two ways a plain split got that wrong, and both showed on screen:
+ *
+ *  - THE MARKS ARE NOT ESCAPED. A message that itself contains « or » was cut
+ *    up by its own words and given a highlight it never earned — the app
+ *    claiming a match the hub never found. Nothing in the snippet distinguishes
+ *    the hub's marks from the writer's, so when the message body carries either
+ *    character this draws the snippet plainly. No highlight is honest; an
+ *    invented one is not.
+ *  - A SNIPPET IS CUT SHORT, and the cut can fall between « and ». A « with no
+ *    » after it is a highlight that runs to the end of what we were given, and
+ *    a » with no « before it started before the piece we were given. Either
+ *    way what it is NOT is a stray bracket printed at the reader.
  */
-function Snippet({ text }: { text: string }): React.JSX.Element {
-  const parts = text.split(/«([^»]*)»/g);
+function Snippet({ text, body }: { text: string; body?: string }): React.JSX.Element {
+  const ambiguous = body !== undefined && (body.includes("«") || body.includes("»"));
+  // When the marks cannot be trusted, show what the person actually WROTE,
+  // unmarked. Passing the marked-up snippet through instead would print the
+  // hub's brackets at the reader on top of their own.
+  const parts = ambiguous ? [clip(body ?? text, 180)] : splitOnMarks(text);
   return (
-    <span className="snippet">
+    <span className="snippet" data-marked={ambiguous ? "plain" : "marks"}>
       {parts.map((part, i) => (
         i % 2 === 1 ? <mark key={i}>{part}</mark> : <React.Fragment key={i}>{part}</React.Fragment>
       ))}
     </span>
   );
+}
+
+/** As much of a message as a result line has room for, cut on a word. */
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const space = cut.lastIndexOf(" ");
+  return `${space > max / 2 ? cut.slice(0, space) : cut}…`;
+}
+
+/**
+ * A snippet split into plain/highlighted/plain/highlighted… pieces.
+ *
+ * Walked rather than split by regex, so a mark left open by the cut is closed
+ * at the end of the text instead of being left on screen as a `«`.
+ */
+function splitOnMarks(text: string): string[] {
+  // pieces alternate plain, highlighted, plain, highlighted… so it starts plain
+  const parts: string[] = [];
+  let plain = "";
+  let i = 0;
+  // a closing mark before any opening one closes a highlight that began BEFORE
+  // the piece we were handed: everything up to it is part of that match
+  const firstOpen = text.indexOf("«");
+  const firstClose = text.indexOf("»");
+  if (firstClose >= 0 && (firstOpen < 0 || firstClose < firstOpen)) {
+    parts.push("", text.slice(0, firstClose));
+    i = firstClose + 1;
+  }
+  while (i < text.length) {
+    const open = text.indexOf("«", i);
+    if (open < 0) break;
+    plain += text.slice(i, open);
+    const close = text.indexOf("»", open + 1);
+    // no closing mark: the cut fell inside a highlight, so it runs to the end
+    const end = close < 0 ? text.length : close;
+    parts.push(plain, text.slice(open + 1, end));
+    plain = "";
+    i = close < 0 ? text.length : close + 1;
+  }
+  parts.push(plain + text.slice(i));
+  return parts;
 }
 
 function SearchOverlay({ onClose, onGo }: {
@@ -4139,7 +4898,9 @@ function SearchOverlay({ onClose, onGo }: {
                       <b>{hit.message.authorName}</b>
                       <span className="t">{dayLabel(hit.message.ts)} · {clock(hit.message.ts)}</span>
                     </span>
-                    <Snippet text={hit.snippet} />
+                    {/* the real words are handed over too, so the marks can be
+                        disbelieved when the message itself contains one */}
+                    <Snippet text={hit.snippet} body={hit.message.text} />
                   </span>
                 </button>
               ))}
@@ -4321,6 +5082,7 @@ const desktop = (): DesktopBridge | undefined =>
 
 const SET_SECTIONS = [
   ["set-look", "Appearance"],
+  ["set-replies", "Replies"],
   ["set-agents", "New agents"],
   ["set-notify", "Notifications"],
   ["set-quiet", "Quiet hours"],
@@ -4409,6 +5171,37 @@ function SettingsScreen(): React.JSX.Element {
                 <input className="sw" type="checkbox" checked={p.compact} aria-label="Tighter message spacing"
                   onChange={e => prefs.set({ compact: e.target.checked })} />
               </label>
+            </div>
+          </section>
+
+          {/* HIS CHOICE, AND IT CHANGES THE BEHAVIOUR. Each line says what
+              actually happens on screen, not which one sounds tidier. */}
+          <section id="set-replies" className="setsect">
+            <h3>Replies</h3>
+            <p className="sec-note">
+              What happens when you press <b>Reply</b> on a message. Either way the reply is
+              still linked to the message it answers — this is about where you read it.
+            </p>
+            <div className="panelbox">
+              {([
+                ["thread", "Open a thread",
+                  "The reply is kept on the message it answers. The conversation shows that message with " +
+                  "a reply count you can open, and the reply itself does not appear in the conversation.",
+                  true],
+                ["inline", "Keep it in the conversation",
+                  "The reply is posted straight into the conversation, under a line saying which message " +
+                  "it answers. No thread opens, ever.",
+                  false],
+              ] as const).map(([value, title, why, recommended]) => (
+                <button key={value} className="choice-row repliespick" data-replies={value}
+                  aria-pressed={p.replies === value} onClick={() => prefs.set({ replies: value })}>
+                  <span className="tick" aria-hidden="true">{p.replies === value ? "●" : "○"}</span>
+                  <span className="tx">
+                    <b>{title}{recommended && <span className="chip">Like Slack</span>}</b>
+                    <span>{why}</span>
+                  </span>
+                </button>
+              ))}
             </div>
           </section>
 

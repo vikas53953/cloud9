@@ -1671,6 +1671,37 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .rolename{color:var(--ink-2);font-weight:600;}
 .rolename[data-role="owner"]{color:var(--pine);}
 .rolename[data-role="admin"]{color:var(--ultra);}
+/* --- changing what somebody can do in a room ---
+   Opened from one row, so it sits under that row and is plainly about it. Every
+   colour is a token; the block borrows the room panel's own vocabulary rather
+   than inventing a second look for the same panel. */
+.memberask{
+  display:flex;flex-direction:column;gap:10px;min-width:0;
+  margin:2px 0 10px;padding:11px 12px;
+  border:1px solid var(--line);border-left:2px solid var(--pine);
+  border-radius:var(--radius-s);background:var(--surface-2);
+}
+.rolepick{display:flex;flex-direction:column;gap:7px;min-width:0;}
+.rolepick .lb{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--ink-3);
+}
+.roleopt{
+  display:flex;flex-direction:column;gap:3px;align-items:flex-start;text-align:left;
+  padding:8px 10px;min-width:0;width:100%;
+  border:1px solid var(--line);border-radius:var(--radius-s);background:var(--surface);
+  transition:background .15s var(--ease),border-color .15s var(--ease);
+}
+.roleopt b{font-family:var(--display);font-size:13px;font-weight:600;color:var(--ink);}
+.roleopt span{font-size:11.5px;line-height:1.45;color:var(--ink-3);white-space:normal;}
+.roleopt:hover:not(:disabled){background:var(--surface-2);border-color:var(--ink-3);}
+.roleopt.on{background:var(--pine-soft);border-color:var(--pine);}
+.roleopt.on b{color:var(--pine);}
+.roleopt:disabled{cursor:default;}
+.memberask .memberout{align-self:flex-start;}
+.memberask .memberoutask{width:100%;}
+.mini-agent .tools .memberopen{font-size:15px;line-height:1;}
+
 .roomcontrols{display:flex;flex-direction:column;gap:11px;align-items:flex-start;}
 .roomctl{display:flex;flex-direction:column;gap:6px;width:100%;min-width:0;}
 .roomctl .lb{
@@ -1719,3 +1750,111 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .rc-count{font-family:var(--mono);font-size:11px;color:var(--ink-3);}
 .rc-foot .roomjoin{margin-left:auto;}
 .browseempty{margin:0;}
+
+/* ============================================================
+   REPLIES — the "Reply" button, an inline reply, and the box
+   that says which message it is aimed at.
+   ============================================================ */
+
+/* The way into a thread used to be a bare ↳ among five other glyphs. It
+   carries the word now, so a hover reveals a control that reads as one. */
+.ma.reply{width:auto;padding:0 8px;gap:5px;display:inline-flex;align-items:center;
+  font-size:11.5px;font-weight:600;letter-spacing:.01em;}
+.ma.reply .arrow{font-family:var(--mono);font-size:11px;}
+.ma.reply:hover{background:var(--ultra-soft);color:var(--ultra);}
+
+/* the line above a reply that is sitting in the conversation itself */
+.answeringmark{
+  display:flex;align-items:baseline;gap:7px;max-width:100%;margin-bottom:6px;
+  padding:3px 10px 3px 8px;border-left:2px solid var(--ultra);
+  border-radius:0 var(--radius-xs) var(--radius-xs) 0;background:var(--surface-2);
+  font-size:12px;color:var(--ink-3);text-align:left;min-width:0;
+}
+.answeringmark:hover{background:var(--ultra-soft);}
+.answeringmark .arrow{font-family:var(--mono);color:var(--ultra);flex:none;}
+.answeringmark .who2{color:var(--ultra);font-weight:600;flex:none;}
+.answeringmark .quoted{
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+
+/* the conversation's own box, aimed at one message */
+.answeringbar{
+  display:flex;align-items:center;gap:9px;min-width:0;
+  margin:0 0 -1px;padding:7px 13px;
+  border:1px solid var(--line);border-bottom:0;
+  border-radius:var(--radius) var(--radius) 0 0;
+  background:var(--surface-2);font-size:12.5px;
+}
+.answeringbar .arrow{font-family:var(--mono);color:var(--ultra);flex:none;}
+.answeringbar .ab-who{color:var(--ultra);font-weight:600;flex:none;}
+.answeringbar .ab-quote{
+  color:var(--ink-3);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.answeringbar .ab-x{margin-left:auto;flex:none;color:var(--ink-3);font-size:12px;
+  width:22px;height:22px;border-radius:var(--radius-xs);display:grid;place-items:center;}
+.answeringbar .ab-x:hover{background:var(--surface);color:var(--ink);}
+
+/* ============================================================
+   THE HIRING HALL — ready-written roles that ship in the app
+   ============================================================ */
+
+.marketgroup{padding:0 0 8px;}
+.mg-head{padding:0 46px 14px;}
+.mg-head h2{font-family:var(--display);font-size:22px;letter-spacing:-.02em;margin:0;}
+.mg-head p{margin:4px 0 0;color:var(--ink-2);font-size:13.5px;}
+
+.cast.role{cursor:default;}
+.cast.role:hover{transform:none;box-shadow:var(--shadow);border-color:var(--line);}
+.roleface{
+  height:96px;display:grid;place-items:center;border-bottom:1px solid var(--line);
+  background:var(--surface-2);font-size:34px;line-height:1;
+}
+.roleasks{margin:2px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:5px;}
+.roleasks li{
+  position:relative;padding-left:15px;font-size:12.5px;color:var(--ink-2);line-height:1.45;
+  overflow-wrap:anywhere;
+}
+.roleasks li::before{
+  content:"›";position:absolute;left:2px;top:0;color:var(--ultra);font-family:var(--mono);
+}
+.cast.role .castbtns .primary{flex:1;}
+
+.crew-emptybtns{display:flex;gap:9px;flex-wrap:wrap;justify-content:center;margin-top:6px;}
+.castmarket:hover{border-color:var(--marigold);color:var(--marigold);}
+
+.hirednote{
+  display:flex;align-items:flex-start;gap:11px;margin:0 46px 20px;padding:12px 15px;
+  border:1px solid color-mix(in srgb,var(--pine) 40%,transparent);
+  border-radius:var(--radius);background:var(--pine-soft);color:var(--ink);
+  font-size:13.5px;line-height:1.5;
+}
+.hirednote .hn-mark{color:var(--pine);font-weight:700;flex:none;}
+
+/* the nudge on a blank agent form */
+.fromhall{
+  display:flex;align-items:center;gap:13px;margin-bottom:18px;padding:13px 16px;
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--surface-2);
+}
+.fromhall .fh-mark{
+  font-family:var(--mono);font-size:17px;color:var(--marigold);flex:none;
+}
+.fromhall .fh-tx{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.fromhall .fh-tx b{font-size:13.5px;}
+.fromhall .fh-tx span{font-size:12.5px;color:var(--ink-2);}
+.fromhall .btn{margin-left:auto;flex:none;white-space:nowrap;}
+
+/* the brief, and the one decision before hiring */
+.hirepanel{width:min(680px,94vw);}
+.hirepanel>.head .hireface{font-size:22px;line-height:1;}
+.hirepanel>.head .hiretitle{min-width:0;overflow:hidden;text-overflow:ellipsis;}
+.hiretag{margin:0;color:var(--ink-2);font-size:14px;line-height:1.5;}
+.briefbox{
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--surface-2);
+  padding:14px 16px;font-size:13px;line-height:1.62;color:var(--ink);
+  white-space:pre-wrap;overflow-wrap:anywhere;max-height:230px;overflow-y:auto;
+}
+.abilitywords{display:flex;flex-wrap:wrap;gap:7px;align-items:center;}
+.abilitywords .ab-note{
+  flex-basis:100%;font-size:12px;color:var(--ink-3);line-height:1.5;margin-top:2px;
+}
+.abilitywords .ab-none{font-size:13px;color:var(--ink-3);}

@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-29T14:53:17.606Z",
-  "expected": 179,
-  "executed": 179,
+  "ranAt": "2026-07-29T19:42:28.530Z",
+  "expected": 247,
+  "executed": 247,
   "results": [
     {
       "name": "join screen renders",
@@ -161,7 +161,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch 7du4s :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch hnnjl :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +176,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_8N-Hl51Fywvhejic6szcQQ"
+      "detail": "inv_7H-IKFfcHYQxDoJVI147UA"
     },
     {
       "name": "friend joins via invite",
@@ -306,12 +306,67 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 20:22"
+      "detail": "↳ 1 reply · last at 01:10"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
       "pass": true,
       "detail": "2 messages in the panel"
+    },
+    {
+      "name": "with threads on, a reply is kept in its thread and is NOT a row in the conversation",
+      "pass": true,
+      "detail": "57 row(s) in the room"
+    },
+    {
+      "name": "the way into a thread is a control that says Reply, not a bare glyph",
+      "pass": true,
+      "detail": "↳ Reply"
+    },
+    {
+      "name": "Settings offers the two ways a reply can behave, and says plainly what each one does",
+      "pass": true,
+      "detail": "thread: ● Open a thread Like Slack The reply is kept on the message  | inline: ○ Keep it in the conversation The reply is posted straight i"
+    },
+    {
+      "name": "threads is what it starts on — the behaviour he is comparing it against",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "choosing “keep it in the conversation” really does put the reply back in the room",
+      "pass": true,
+      "detail": "58 row(s) in the room"
+    },
+    {
+      "name": "and it says which message it is answering, instead of just appearing",
+      "pass": true,
+      "detail": "↳ Answering Vikas what should we do about the backlog?"
+    },
+    {
+      "name": "no thread pill is offered when threads are off — there is nothing to open",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "with threads off, Reply aims the conversation's own box and opens no thread at all",
+      "pass": true,
+      "detail": "↳ Answering Vikas cut it in half ✕"
+    },
+    {
+      "name": "a reply written that way lands in the conversation, under the message it answers",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "switching back to threads takes the replies out of the conversation again",
+      "pass": true,
+      "detail": "57 row(s), 1 reply pill(s)"
+    },
+    {
+      "name": "and every reply written either way is in the thread, none of them lost",
+      "pass": true,
+      "detail": "3 messages in the panel"
     },
     {
       "name": "search opens from the menu and looks across everything, not one room",
@@ -321,7 +376,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 20:22 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 01:10 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -362,6 +417,86 @@
       "name": "the choice is saved on the agent and is there when you open it again",
       "pass": true,
       "detail": "Only you can use it"
+    },
+    {
+      "name": "the hiring hall is reachable from where he already goes to add an agent",
+      "pass": true,
+      "detail": "Browse the hiring hall"
+    },
+    {
+      "name": "and from the crew screen",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the software roles he asked for are all in the catalogue",
+      "pass": true,
+      "detail": "sw-architect, sw-backend, sw-frontend, sw-qa, sw-security, sw-devops, sw-reviewer, sw-writer"
+    },
+    {
+      "name": "every role says what it is for, what to ask it, and which app suits it",
+      "pass": true,
+      "detail": "\"all complete\""
+    },
+    {
+      "name": "the catalogue is grouped by category, so a second category is data and not a redesign",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the brief he is hiring is shown in full, in the agent's own words",
+      "pass": true,
+      "detail": "1034 characters"
+    },
+    {
+      "name": "the panel says what the hire may touch, and that it stops and asks first",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a hire answers only its owner, the same default a hand-written agent gets",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "he picks which app runs it, and from his app's real model list",
+      "pass": true,
+      "detail": "4 models offered"
+    },
+    {
+      "name": "hiring copies the role onto his floor as one of his own agents",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and it runs on the app he chose, not the one the catalogue suggested",
+      "pass": true,
+      "detail": "Codex gpt-5.6-sol"
+    },
+    {
+      "name": "the crew screen says the hire is his to change",
+      "pass": true,
+      "detail": "✓ @Architect is on the floor. Everything about them — the brief, the app, what they can to"
+    },
+    {
+      "name": "a hire is owner-only, exactly like an agent he wrote himself",
+      "pass": true,
+      "detail": "Only you can use it"
+    },
+    {
+      "name": "the brief really was copied onto the agent, word for word",
+      "pass": true,
+      "detail": "1034 characters on the agent"
+    },
+    {
+      "name": "the model he picked was saved on the agent too",
+      "pass": true,
+      "detail": "gpt-5.6-sol (picked gpt-5.6-sol)"
+    },
+    {
+      "name": "and every word of it can be changed afterwards — the change survives the hub",
+      "pass": true,
+      "detail": "wait.\n\nAlways answer in British English."
     },
     {
       "name": "an agent that will not answer you says so, instead of silently doing nothing",
@@ -466,7 +601,7 @@
     {
       "name": "the room panel lists who is in the room, with their role and when they joined",
       "pass": true,
-      "detail": "Runs this room · joined 29 Jul"
+      "detail": "Runs this room · joined 30 Jul"
     },
     {
       "name": "a room's description and one-line topic can be set, and come back from the hub",
@@ -496,7 +631,7 @@
     {
       "name": "an open room can be found by somebody who is not in it, with what it's for and how many are in it",
       "pass": true,
-      "detail": "1 person · started 29 Jul"
+      "detail": "1 person · started 30 Jul"
     },
     {
       "name": "browsing offers no members and no messages — finding a room is not permission to read it",
@@ -516,7 +651,7 @@
     {
       "name": "letting yourself into an open room is recorded as exactly that — nobody added you",
       "pass": true,
-      "detail": "Member · joined 29 Jul"
+      "detail": "Member · joined 30 Jul"
     },
     {
       "name": "leaving a room takes it out of the sidebar, there and then",
@@ -561,7 +696,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms67f4eksp04tg\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms6hpbc42xy73d\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -601,17 +736,17 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms67df8wfhz80c:1785336762520 a_ms67dmdnpwuqx4:1785336776300 u_ms67dzd74mw7jh:1785336776850 a_ms67f4eksp04tg:1785336777118"
+      "detail": "u_ms6hnd7hjnoi3j:1785354033025 a_ms6hnfhl6fpi86:1785354047820 u_ms6hnt29r5a2yu:1785354048633 a_ms6hpbc42xy73d:1785354049011"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785336771905 · now 1785336776850"
+      "detail": "first 1785354043676 · now 1785354048633"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
       "pass": true,
-      "detail": "Member · joined 29 Jul"
+      "detail": "Member · joined 30 Jul"
     },
     {
       "name": "a member list naming an agent's owner does not scroll sideways at 1280 in the light look",
@@ -632,6 +767,191 @@
       "name": "a member list naming an agent's owner does not scroll sideways at 1440 in the dark look",
       "pass": true,
       "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "somebody who does not run the room is offered no way to change roles or take people out",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the person who runs the room is offered a way to change what somebody can do here",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the owner is not offered a way to demote themselves — the hub would refuse it, so it is not there",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "an agent can be taken out of a room but is never offered a role — a role is a job on a screen",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "every role on offer says what picking it would actually do",
+      "pass": true,
+      "detail": "owner:Hands this room over. They run it  | admin:Can change the description and top | member:Can read and talk here, and nothin"
+    },
+    {
+      "name": "a role changed on screen is changed at the hub, and the room says so",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "being given a job in a room reaches that person's own screen, and brings the controls with it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "somebody helping run a room is offered nothing at all on the row of the person who runs it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and IS offered the one thing an admin may do — taking an ordinary member out — with no role picker",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "taking somebody out says what it costs them before it is done, and that nothing is deleted",
+      "pass": true,
+      "detail": "Take Bramble out of #paperwork? It stops answering here, and whoever owns it stops seeing this room. Everything already said stays exactly where it is."
+    },
+    {
+      "name": "taking somebody out reaches the hub and the room list stops showing them",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the role controls do not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the role controls do not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the role controls do not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the role controls do not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "REPRODUCED: a refusal was provoked with one file on the wire and a second read and queued behind it",
+      "pass": true,
+      "detail": "{\"onTheWire\":1,\"queuedBehind\":1,\"asked\":[\"archiveChannel\",\"archiveChannel\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setMemberRole\",\"channelMembers\",\"removeMember\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"markRead\",\"uploadAttachment\",\"editMessage\"]}"
+    },
+    {
+      "name": "REPRODUCED: the refusal really did land while the upload was still unanswered",
+      "pass": true,
+      "detail": "1 held answer(s) released afterwards"
+    },
+    {
+      "name": "the unrelated refusal touches NEITHER file — both land and both are ready to send",
+      "pass": true,
+      "detail": "BIN survey-scan.bin 9.8 MB · ready to send ✕ BIN deposit-note.bin 26 bytes · ready to send ✕"
+    },
+    {
+      "name": "and the refusal is still said on screen, in the hub's own words",
+      "pass": true,
+      "detail": "you can only change your own messages"
+    },
+    {
+      "name": "the files that survived an unrelated refusal really go out with the message",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "REPRODUCED: the Enter key was pressed while a file was genuinely still on its way up",
+      "pass": true,
+      "detail": "{\"reproduced\":true,\"waitingWhenPressed\":true,\"said\":\"that file is still going up — give it a moment, or take it off\",\"stillThere\":true,\"wordsKept\":\"sending this before the file is up\",\"wentAnyway\":0}"
+    },
+    {
+      "name": "Enter mid-upload refuses in a sentence instead of throwing the file away in silence",
+      "pass": true,
+      "detail": "{\"reproduced\":true,\"waitingWhenPressed\":true,\"said\":\"that file is still going up — give it a moment, or take it off\",\"stillThere\":true,\"wordsKept\":\"sending this before the file is up\",\"wentAnyway\":0}"
+    },
+    {
+      "name": "and the send button says it is waiting for the file rather than offering to send without it",
+      "pass": true,
+      "detail": "Waiting for a file…"
+    },
+    {
+      "name": "nothing was lost by waiting — the file goes out with the words that were typed",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "REPRODUCED: the answer to the cleared search really did come back from the hub",
+      "pass": true,
+      "detail": "1 searchResults frame(s)"
+    },
+    {
+      "name": "a search called off before its answer arrives stays gone — nothing is brought back to life",
+      "pass": true,
+      "detail": "{\"answersArrived\":1,\"searchOnScreen\":null,\"hitsOnScreen\":0}"
+    },
+    {
+      "name": "REPRODUCED: the same picture really is drawn in two places at once, and held by both",
+      "pass": true,
+      "detail": "2 places holding it"
+    },
+    {
+      "name": "closing the thread does NOT take the picture out of the room behind it",
+      "pass": true,
+      "detail": "{\"w\":180,\"h\":120,\"blob\":true,\"done\":true}"
+    },
+    {
+      "name": "and the file is held once now, by the one place still showing it",
+      "pass": true,
+      "detail": "1 holder(s)"
+    },
+    {
+      "name": "when the last place showing a file goes, the bytes are let go",
+      "pass": true,
+      "detail": "0 holder(s) left"
+    },
+    {
+      "name": "a count that has hit the ceiling is never printed as though it were exact",
+      "pass": true,
+      "detail": "{\"cap\":1000,\"at\":\"999+\",\"over\":\"999+\",\"under\":\"12\"}"
+    },
+    {
+      "name": "an unread count below the ceiling is said exactly, with no plus and no hedging",
+      "pass": true,
+      "detail": "{\"says\":\"1\",\"capped\":\"\",\"label\":\"1 new\"}"
+    },
+    {
+      "name": "a message that contains « » is not given a highlight it never earned, and no stray bracket is drawn",
+      "pass": true,
+      "detail": "{\"mode\":\"plain\",\"marks\":0,\"text\":\"the «gazebo» quote came in under budget\"}"
+    },
+    {
+      "name": "an ordinary result is still highlighted where the hub really found the word",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "REPRODUCED: the message asked for is several pages further back than what is on screen, so pages must really be walked",
+      "pass": true,
+      "detail": "50 of 161 messages on screen, target already loaded: false"
+    },
+    {
+      "name": "walking back to a result never snaps the view to the newest message",
+      "pass": true,
+      "detail": "{\"followedToBottom\":0,\"samples\":49,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
+    },
+    {
+      "name": "and the reader ends up on the message they asked for",
+      "pass": true,
+      "detail": ""
     },
     {
       "name": "the search box still offers from:, and the offer is true now",
@@ -701,7 +1021,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms67dpgkw40j08\",\"status\":\"completed\",\"runId\":\"r-0ms67dpgy-sy6a\"}"
+      "detail": "{\"id\":\"t_ms6hnipd7xnx99\",\"status\":\"completed\",\"runId\":\"r-0ms6hniqc-16z4\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -890,6 +1210,26 @@
     },
     {
       "name": "search results do not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the hiring hall and an open brief do not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the hiring hall and an open brief do not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the hiring hall and an open brief do not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the hiring hall and an open brief do not scroll sideways at 1440 in the dark look",
       "pass": true,
       "detail": "{\"doc\":0,\"body\":0}"
     },

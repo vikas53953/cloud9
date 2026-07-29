@@ -195,8 +195,19 @@ if (stackOnly || noUi) {
 } else {
   const scripts = ["scripts/qa.mjs", "scripts/qa-v2.mjs", "scripts/qa-lifecycle.mjs"];
   let failed = 0;
+  /* One line per script at the very end.
+   *
+   * A full run prints thousands of lines, and a single failure two thirds of the
+   * way up is invisible by the time it finishes — the last thing on screen was
+   * whichever script happened to run last, which said nothing about the one that
+   * broke. Every script is run whatever the one before it did, and this says
+   * plainly which of them came back clean. It does not soften anything: a script
+   * that stopped early already fails inside `reportAndExit`, and that verdict is
+   * simply carried here. */
+  const verdicts = [];
   for (const script of scripts) {
     console.log(`\n[qa-stack] === ${script} ===`);
+    const started = Date.now();
     const code = await new Promise(resolve => {
       const child = spawn("node", [script], {
         cwd: repo, stdio: "inherit", shell: process.platform === "win32",
@@ -211,7 +222,12 @@ if (stackOnly || noUi) {
       child.on("close", resolve);
       child.on("error", () => resolve(1));
     });
+    verdicts.push({ script, code, seconds: Math.round((Date.now() - started) / 1000) });
     if (code !== 0) failed++;
+  }
+  console.log("\n[qa-stack] ---- how each script finished ----");
+  for (const v of verdicts) {
+    console.log(`[qa-stack] ${v.code === 0 ? "PASS" : "FAIL"}  ${v.script}  (${v.seconds}s)`);
   }
   console.log(`\n[qa-stack] ${failed === 0 ? "all QA scripts passed" : `${failed} QA script(s) failed`}`);
   cleanup(failed === 0 ? 0 : 1);

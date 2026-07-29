@@ -157,6 +157,56 @@ export interface World {
 
 type Listener = () => void;
 
+/**
+ * ONE QUESTION THIS APP ASKED THE HUB, AND WHAT BECOMES OF THE ANSWER.
+ *
+ * `answers` recognises the reply. `answered` is what to do with it — a reply is
+ * applied BY THE REQUEST THAT ASKED FOR IT, never by a handler that assumes
+ * somebody must still want it. `refused` is what to do with the hub's "no".
+ * `lost` is the same question with no answer at all.
+ */
+interface Asked {
+  /** what was asked — for reading a queue in a debugger, and for the tests */
+  kind: ClientFrame["type"];
+  /** does this frame from the hub answer THIS question? */
+  answers?: (frame: ServerFrame) => boolean;
+  answered?: (frame: ServerFrame) => void;
+  /** the hub said no, in the hub's own words */
+  refused?: (why: string) => void;
+  /** nothing came back — the net under the whole thing, so a queue cannot jam */
+  lost?: () => void;
+}
+
+/**
+ * How long the hub gets before a question stops waiting for it.
+ *
+ * The hub is on this machine, over loopback, and answers a frame the moment it
+ * reads it. Twenty seconds is not a guess at how long an answer takes — it is
+ * long enough that anything arriving after it is certainly about something
+ * else. A question that times out is TOLD (`lost`), never quietly dropped.
+ */
+const ANSWER_WINDOW_MS = 20_000;
+
+/**
+ * The most unread messages the hub will ever count in one conversation.
+ *
+ * `apps/relay/src/store.ts` — `unreadFor` reads at most this many rows, so a
+ * count that reaches it means "this many or more" and NOT "exactly this many".
+ * Printed as an exact number it was a claim nobody had checked; `unreadLabel`
+ * below is the one place that decides how such a number is said.
+ */
+export const UNREAD_CEILING = 1000;
+
+/**
+ * Say a count that has a ceiling, honestly.
+ *
+ * Below the ceiling the number is the truth. At it, the only true thing that
+ * can be said is "more than the ones we could count".
+ */
+export function unreadLabel(n: number): string {
+  return n >= UNREAD_CEILING ? `${UNREAD_CEILING - 1}+` : String(n);
+}
+
 const params = new URLSearchParams(location.search);
 export const RELAY_URL =
   params.get("relay") ?? localStorage.getItem("cloud9.relay") ?? "ws://127.0.0.1:8787";
@@ -224,6 +274,12 @@ export class RelayClient {
     // last attempt, and leaving it up would explain the wrong thing
     this.world.authFailed = false;
     this.world.lastError = undefined;
+    // Questions asked of the LAST connection will never be answered by this
+    // one. They are told so, rather than left on a list where a refusal
+    // belonging to this connection could be handed to one of them.
+    const orphaned = this.asked;
+    this.asked = [];
+    for (const a of orphaned) a.lost?.();
     this.emit();
     const ws = new WebSocket(RELAY_URL);
     this.ws = ws;
@@ -250,8 +306,94 @@ export class RelayClient {
     localStorage.setItem("cloud9.token", token);
   }
 
+  /**
+   * WHAT WE ASKED, IN THE ORDER WE ASKED IT.
+   *
+   * An `error` frame carries no echo of the question it refuses, so the only
+   * way to know whose refusal it is, is to know what is still outstanding. The
+   * hub makes that knowable: it reads one frame at a time and finishes
+   * answering it before it reads the next (`apps/relay/src/server.ts` —
+   * `handleFrame` is synchronous from top to bottom, and an `error` is only
+   * ever sent back down the connection whose own frame caused it). So answers
+   * come back in the order the questions went out, and a refusal belongs to the
+   * OLDEST question still waiting.
+   *
+   * THAT IS ONLY TRUE IF EVERY REFUSABLE QUESTION IS IN HERE. It used to be
+   * uploads and tickets and nothing else, so a refusal that belonged to
+   * something else in the app — editing a message you did not write — was
+   * pinned on the one upload in the air: the upload flipped to failed with a
+   * sentence about someone else's message, and a file that had reached the hub
+   * perfectly well could never be attached to anything. The list is complete
+   * now, and stays complete, because `send` is the only door out of this app
+   * and `send` is this.
+   *
+   * The same list is what stops a LATE answer being applied to a question
+   * nobody is asking any more: an answer is handed to the request that asked
+   * for it, and if that request has been called off the answer goes nowhere.
+   */
+  private asked: Asked[] = [];
+
+  /**
+   * Ask the hub something and remember that we asked.
+   *
+   * Returns whether it actually went. A frame written to a socket that is not
+   * open was never asked, so it must never be waited on.
+   */
+  private ask(frame: ClientFrame, waiting: Omit<Asked, "kind"> = {}): boolean {
+    const ws = this.ws;
+    if (ws?.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(frame));
+    // `hello` is the one frame asked before there is a conversation to have.
+    // Its refusals are about the connection itself and are handled as such.
+    if (frame.type === "hello") return true;
+    const entry: Asked = { kind: frame.type, ...waiting };
+    this.asked.push(entry);
+    setTimeout(() => {
+      const i = this.asked.indexOf(entry);
+      if (i < 0) return;
+      this.asked.splice(i, 1);
+      entry.lost?.();
+    }, ANSWER_WINDOW_MS);
+    return true;
+  }
+
+  /**
+   * Hand one answer to the question that asked for it.
+   *
+   * Everything asked BEFORE the question this answers has been answered too —
+   * the hub cannot answer a later question first — so those stop waiting here,
+   * without refusal and without complaint. A frame that answers nothing on the
+   * list is unasked news (a message, a reaction, somebody joining) and settles
+   * nothing.
+   */
+  private settle(frame: ServerFrame): void {
+    const i = this.asked.findIndex(a => a.answers !== undefined && a.answers(frame));
+    if (i < 0) return;
+    const settled = this.asked.splice(0, i + 1);
+    settled[settled.length - 1].answered?.(frame);
+  }
+
   send(frame: ClientFrame): void {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(frame));
+    this.ask(frame);
+  }
+
+  /**
+   * What has been asked and not yet answered, oldest first.
+   *
+   * Exposed because the one thing that matters about the ledger cannot be seen
+   * on screen: that a refusal arrived WHILE something else was still waiting.
+   * A test that only checked the outcome would pass just as happily when the
+   * two never overlapped at all.
+   */
+  outstanding(): string[] {
+    return this.asked.map(a => a.kind);
+  }
+
+  /** how many frames of each kind the hub has sent — evidence that an answer really arrived */
+  private seen: Record<string, number> = {};
+
+  framesSeen(): Record<string, number> {
+    return { ...this.seen };
   }
 
   /**
@@ -313,7 +455,19 @@ export class RelayClient {
 
   /* ---------------- search ---------------- */
 
+  /**
+   * WHICH SEARCH THIS SCREEN IS WAITING FOR.
+   *
+   * Bumped when a new one is asked and again when one is called off, so an
+   * answer can tell whether the question that produced it is still being asked.
+   * A search cleared while its results were still coming back used to be
+   * brought back to life by them, hits and all, and the ghost hits were
+   * clickable. An answer to a question nobody is asking any more goes nowhere.
+   */
+  private searchEpoch = 0;
+
   search(query: string, filters: { channelId?: ID; authorId?: ID } = {}): void {
+    const epoch = ++this.searchEpoch;
     this.world.search = {
       query, running: true,
       results: this.world.search?.results ?? [],
@@ -321,10 +475,31 @@ export class RelayClient {
       answered: this.world.search?.answered ?? "",
     };
     this.emit();
-    this.send({ type: "search", query, ...filters, limit: 50 });
+    /** the answer only lands if this is still the search on screen */
+    const stale = (): boolean => this.searchEpoch !== epoch;
+    const stopRunning = (): void => {
+      if (stale() || !this.world.search) return;
+      this.world.search = { ...this.world.search, running: false };
+      this.emit();
+    };
+    this.ask({ type: "search", query, ...filters, limit: 50 }, {
+      answers: f => f.type === "searchResults",
+      answered: f => {
+        if (stale() || f.type !== "searchResults") return;
+        this.world.search = {
+          query, answered: f.query, running: false,
+          results: f.results, hasMore: f.hasMore,
+        };
+      },
+      // A refused search stops spinning. The hub's own sentence is already on
+      // screen through `lastError` — saying it twice would not make it truer.
+      refused: stopRunning,
+      lost: stopRunning,
+    });
   }
 
   clearSearch(): void {
+    this.searchEpoch++;
     this.world.search = undefined;
     this.emit();
   }
@@ -427,12 +602,21 @@ export class RelayClient {
   askRun(runId: string): void {
     if (this.world.runs[runId] || this.runAsked.has(runId)) return;
     this.runAsked.add(runId);
-    this.pendingRunDetail.push(runId);
-    this.send({ type: "runDetail", runId });
+    /* "It isn't there" used to be recognised by reading the hub's sentence and
+       matching the words "no such run". That was a patch: it worked only while
+       the hub kept spelling it that way, and only for refusals it had been
+       taught. A refusal is now recognised by WHOSE it is (see `asked`), so any
+       reason this run cannot be shown ends the disclosure's wait. */
+    const gone = (): void => {
+      this.world.runsGone = { ...this.world.runsGone, [runId]: true };
+      this.emit();
+    };
+    this.ask({ type: "runDetail", runId }, {
+      answers: f => f.type === "run" && f.record.id === runId,
+      refused: gone,
+      lost: gone,
+    });
   }
-
-  /** runs asked for and not yet answered, oldest first — see the `error` frame */
-  private pendingRunDetail: string[] = [];
 
   /**
    * Ask what an agent, or one job, has been doing.
@@ -566,8 +750,31 @@ export class RelayClient {
     if (this.uploading) return;
     const next = this.uploadQueue.shift();
     if (!next) return;
-    this.uploading = { channelId: next.channelId, localId: next.localId };
-    this.send(next.frame);
+    const up = { channelId: next.channelId, localId: next.localId };
+    this.uploading = up;
+    /* Only ever about THIS file. Both of these are reached from the request
+       ledger, so they are called for this upload's own answer and for nothing
+       else — an unrelated refusal cannot get in here at all. */
+    const failed = (why: string): void => {
+      if (this.uploading !== up) return;
+      this.uploading = null;
+      this.patchUpload(up.channelId, up.localId, { state: "failed", error: why });
+      this.emit();
+      this.pumpUploads();
+    };
+    const sent = this.ask(next.frame, {
+      answers: f => f.type === "attachment",
+      answered: f => {
+        if (this.uploading !== up || f.type !== "attachment") return;
+        this.uploading = null;
+        this.patchUpload(up.channelId, up.localId,
+          { state: "done", attachmentId: f.attachment.id });
+        this.pumpUploads();
+      },
+      refused: failed,
+      lost: () => failed("the hub never answered about this file — take it off and try again"),
+    });
+    if (!sent) failed("there's no connection to the hub — take the file off and try again");
   }
 
   /** Take one picked file back out before the message is sent. */
@@ -582,6 +789,49 @@ export class RelayClient {
     return (this.world.uploads[channelId] ?? [])
       .filter(u => u.state === "done" && u.attachmentId)
       .map(u => u.attachmentId!);
+  }
+
+  /**
+   * How many files have been READ and are waiting their turn on the wire.
+   *
+   * Not the same as "a file is in the tray": a tray tile appears the moment a
+   * file is picked, long before it has been read. Only a file that is already
+   * queued will be put on the wire the instant the one ahead of it is answered
+   * — which is the exact moment a refusal meant for something else used to land
+   * on it — so this is what a test of that has to wait for.
+   */
+  queuedUploads(): number {
+    return this.uploadQueue.length;
+  }
+
+  /** How many files in this conversation's tray are still on their way up. */
+  uploadsInFlight(channelId: ID): number {
+    return (this.world.uploads[channelId] ?? []).filter(u => u.state === "sending").length;
+  }
+
+  /**
+   * MAY THIS MESSAGE GO YET, AND WITH WHICH FILES?
+   *
+   * The one owner of that question, so every way of sending — the button, the
+   * Enter key, a thread's own box — gets the same answer. Pressing Enter used
+   * to take the files that had landed, empty the tray, and send: a file still
+   * going up was thrown away without a word, and it finished uploading into
+   * nothing. Nothing is ever discarded in silence; a message that cannot go yet
+   * is refused in a sentence, and the file stays exactly where it is.
+   */
+  readyToSend(channelId: ID, hasWords: boolean): { ok: boolean; ids: ID[]; why?: string } {
+    const waiting = this.uploadsInFlight(channelId);
+    if (waiting > 0) {
+      return {
+        ok: false, ids: [],
+        why: waiting === 1
+          ? "that file is still going up — give it a moment, or take it off"
+          : `those ${waiting} files are still going up — give them a moment, or take them off`,
+      };
+    }
+    const ids = this.uploadIds(channelId);
+    if (!hasWords && ids.length === 0) return { ok: false, ids: [] };
+    return { ok: true, ids };
   }
 
   /** The tray is emptied once its files have gone out with a message. */
@@ -600,30 +850,31 @@ export class RelayClient {
     return RELAY_URL.replace(/^ws/, "http");
   }
 
-  private ticketWaiters: Array<{
-    attachmentId: ID;
-    resolve: (v: { url: string; expiresAt: number }) => void;
-    reject: (e: Error) => void;
-  }> = [];
-
   /**
    * Ask for permission to fetch ONE file, ONCE.
    *
    * Asked at the moment of the click and never at render: a ticket minted when
    * a message scrolls into view is dead thirty seconds later, and a screenful
    * of messages would mint more of them than the hub will hold.
+   *
+   * There used to be a separate queue of waiters here, and an `error` frame
+   * rejected the OLDEST of them whatever the error was actually about. It goes
+   * through the one request ledger now (see `asked`), which knows whose refusal
+   * a refusal is — and matches the ticket that comes back to the file it is for.
    */
   private mintTicket(attachmentId: ID): Promise<{ url: string; expiresAt: number }> {
     return new Promise((resolve, reject) => {
-      const waiter = { attachmentId, resolve, reject };
-      this.ticketWaiters.push(waiter);
-      this.send({ type: "attachmentTicket", attachmentId });
-      setTimeout(() => {
-        const i = this.ticketWaiters.indexOf(waiter);
-        if (i < 0) return;
-        this.ticketWaiters.splice(i, 1);
-        reject(new Error("the hub didn't answer — try again"));
-      }, 15000);
+      let done = false;
+      const once = (fn: () => void): void => { if (!done) { done = true; fn(); } };
+      const sent = this.ask({ type: "attachmentTicket", attachmentId }, {
+        answers: f => f.type === "attachmentTicket" && f.attachmentId === attachmentId,
+        answered: f => once(() => {
+          if (f.type === "attachmentTicket") resolve({ url: f.url, expiresAt: f.expiresAt });
+        }),
+        refused: why => once(() => reject(new Error(why))),
+        lost: () => once(() => reject(new Error("the hub didn't answer — try again"))),
+      });
+      if (!sent) once(() => reject(new Error("there's no connection to the hub — try again in a moment")));
     });
   }
 
@@ -729,11 +980,46 @@ export class RelayClient {
   }
 
   /**
-   * Let one opened file go.
+   * HOW MANY PLACES ON SCREEN ARE SHOWING EACH OPENED FILE.
    *
-   * A `blob:` URL is a reference the page holds until it is revoked, so a
-   * screen that opened a hundred pictures and never called this would be
-   * holding a hundred pictures. Called when the message unmounts.
+   * The same message is drawn in more than one place at once — in the
+   * conversation and again in an open thread — and each copy showed the same
+   * picture from the same `blob:` URL. Whichever copy went away first used to
+   * revoke it, and the picture still on screen in the other one turned into a
+   * broken image: closing a thread panel wiped a picture out of the room
+   * behind it.
+   *
+   * Ownership of a held thing cannot be "whoever let go of it first". Every
+   * copy that shows a file takes a hold; the bytes are freed when the LAST one
+   * lets go, and not before.
+   */
+  private fileHolders = new Map<ID, number>();
+
+  /** "I am showing this file, so keep its bytes alive." Paired with `releaseFile`. */
+  holdFile(id: ID): void {
+    this.fileHolders.set(id, (this.fileHolders.get(id) ?? 0) + 1);
+  }
+
+  /** "I have stopped showing it." The bytes go only when nobody is left holding them. */
+  releaseFile(id: ID): void {
+    const left = (this.fileHolders.get(id) ?? 0) - 1;
+    if (left > 0) { this.fileHolders.set(id, left); return; }
+    this.fileHolders.delete(id);
+    this.closeFile(id);
+  }
+
+  /** how many places are showing one file — the QA suite asks, so the count is provable */
+  holdersOf(id: ID): number {
+    return this.fileHolders.get(id) ?? 0;
+  }
+
+  /**
+   * Let one opened file go, everywhere, now.
+   *
+   * This is what "Hide" means, and it is a DELIBERATE act: the picture goes
+   * from every place it was showing, because the file itself is dropped from
+   * the world and no copy has anything left to draw. A copy merely going off
+   * screen is not this — that is `releaseFile`, which waits for the last one.
    */
   closeFile(id: ID): void {
     const held = this.world.files[id];
@@ -747,6 +1033,12 @@ export class RelayClient {
 
   private onFrame(frame: ServerFrame): void {
     const w = this.world;
+    this.seen[frame.type] = (this.seen[frame.type] ?? 0) + 1;
+    /* Hand this to whatever asked for it, FIRST — a reply is applied by the
+       request that wanted it, and one nobody is waiting for any more is not
+       applied at all. Refusals are the exception and are matched below, where
+       the sentence they carry can also be put on screen. */
+    if (frame.type !== "error") this.settle(frame);
     switch (frame.type) {
       case "welcome": {
         w.connected = true;
@@ -783,7 +1075,6 @@ export class RelayClient {
         w.runLists = {};
         w.runsGone = {};
         this.runAsked.clear();
-        this.pendingRunDetail = [];
         for (const entry of frame.state.unread ?? []) w.unread[entry.channelId] = entry;
         break;
       }
@@ -870,13 +1161,11 @@ export class RelayClient {
         break;
       }
       case "searchResults":
-        w.search = {
-          query: w.search?.query ?? frame.query,
-          answered: frame.query,
-          running: false,
-          results: frame.results,
-          hasMore: frame.hasMore,
-        };
+        /* Applied by the search that asked for it (see `search`), and by
+           nothing else. A results frame for a search that has been cleared has
+           nobody to give it to, so it is dropped here — which is the whole
+           point: it used to land unconditionally and bring a search the reader
+           had already closed back onto the screen, hits and all. */
         break;
       case "reaction":
         // A reaction frame is a FACT, not a delta: replace the list, never add
@@ -911,33 +1200,21 @@ export class RelayClient {
           c => !(c.kind === "dm" && c.memberIds.includes(frame.userId)));
         break;
       }
-      case "error":
+      case "error": {
         w.lastError = { text: frame.error, ts: Date.now() };
-        /* A refusal is not correlated to what was asked, so the two things
-           WAITING for an answer have to be told: the one upload in the air and
-           the oldest unanswered ticket. Both are held one-at-a-time for exactly
-           this reason, so neither can be pinned on the wrong file. Nothing else
-           changes — the toast still says the hub's own sentence. */
-        if (this.uploading) {
-          this.patchUpload(this.uploading.channelId, this.uploading.localId,
-            { state: "failed", error: frame.error });
-          this.uploading = null;
-          this.pumpUploads();
-        }
-        if (this.ticketWaiters.length > 0) {
-          this.ticketWaiters.shift()!.reject(new Error(frame.error));
-        }
-        // Same discipline for a run that was asked for and refused: the oldest
-        // unanswered one is told, so a disclosure says "it isn't there" instead
-        // of waiting for ever on an answer that has already been given.
-        if (frame.error === "no such run" && this.pendingRunDetail.length > 0) {
-          w.runsGone = { ...w.runsGone, [this.pendingRunDetail.shift()!]: true };
-        }
+        /* WHOSE REFUSAL IS THIS? The oldest question still waiting, and only
+           that one — see `asked`. Everything asked before it has already been
+           answered, and everything asked after it has not been read yet. An
+           unrelated refusal therefore cannot reach an upload, a ticket or a
+           disclosure that had nothing to do with it. The toast above still says
+           the hub's own sentence, whoever the refusal turns out to belong to. */
+        this.asked.shift()?.refused?.(frame.error);
         // A refusal that arrives before we were ever let in is a FAILED JOIN:
         // send the person back to the welcome screen, where the reason is
         // visible, instead of leaving them staring at an empty workspace.
         if (frame.error === "bad token" || !w.me) w.authFailed = true;
         break;
+      }
       // Frames that are not ours to act on. Named, not defaulted, so the
       // exhaustiveness check below still holds.
       case "push":        // relay → mobile only
@@ -948,7 +1225,6 @@ export class RelayClient {
         // so a run from a conversation this screen never opened still lands
         // somewhere findable rather than being dropped for not being expected.
         w.runs = { ...w.runs, [frame.record.id]: frame.record };
-        this.pendingRunDetail = this.pendingRunDetail.filter(id => id !== frame.record.id);
         break;
       case "runs": {
         // The frame echoes back WHICH question it answers, so two lists in
@@ -961,26 +1237,12 @@ export class RelayClient {
         }
         break;
       }
-      case "attachment": {
-        // The answer to the ONE upload in the air (see `attach`). It carries no
-        // echo of what was asked, which is exactly why only one is ever asked.
-        const up = this.uploading;
-        if (up) {
-          this.patchUpload(up.channelId, up.localId,
-            { state: "done", attachmentId: frame.attachment.id });
-          this.uploading = null;
-          this.pumpUploads();
-        }
+      // Both of these are the answer to one particular question and are applied
+      // by the question that asked (see `pumpUploads` and `mintTicket`). One
+      // that answers nothing outstanding is not ours to act on.
+      case "attachment":
+      case "attachmentTicket":
         break;
-      }
-      case "attachmentTicket": {
-        const i = this.ticketWaiters.findIndex(w => w.attachmentId === frame.attachmentId);
-        if (i >= 0) {
-          const [waiter] = this.ticketWaiters.splice(i, 1);
-          waiter.resolve({ url: frame.url, expiresAt: frame.expiresAt });
-        }
-        break;
-      }
       case "channelDirectory":
         w.directory = { asked: true, channels: frame.channels };
         break;
