@@ -297,6 +297,16 @@ export const RUN_LIMITS = {
 export const RUN_RETENTION = {
   /** runs kept per agent on the hub; the oldest go first */
   perAgent: 50,
+  /**
+   * Runs kept for a DELEGATED JOB, whatever its agent has done since.
+   *
+   * A job's record is the answer to "what did this actually do", and pruning it
+   * on the agent's budget deleted exactly that: one busy agent pushed last
+   * week's job history out and opening the job showed nothing at all. So a run
+   * attached to a task survives the agent's cut while it is among that task's
+   * newest.
+   */
+  perTask: 20,
   /** biggest single stored record — steps are dropped to fit */
   bytes: 64 * 1024,
   /** most rows one `runList` may hand back */
@@ -905,6 +915,37 @@ export const ATTACHMENT_LIMITS = {
   perMessage: 10,
   /** biggest single file the hub will accept over the socket */
   bytes: 10_000_000,
+  /**
+   * WHAT STOPS A GUEST FILLING THE OWNER'S DISK.
+   *
+   * A per-file cap alone bounds nothing: it bounds one file, and nothing bounded
+   * how many. These three do — how much may sit unsent at once, how long an
+   * unsent file lives before it is swept, and how fast files may arrive.
+   * They are here rather than in the hub because the SCREEN has to be able to
+   * say the same numbers back to the person who hit them.
+   */
+  /** total bytes one person may have parked (uploaded, not yet sent) */
+  parkedBytesPerUser: 50_000_000,
+  /** how long a parked file lives before it is thrown away — one day */
+  parkedTtlMs: 24 * 60 * 60 * 1000,
+  /** most uploads one person may start in a minute */
+  uploadsPerMinute: 30,
+} as const;
+
+/**
+ * The biggest thing the hub will read off the socket AT ALL.
+ *
+ * Every other size rule in this file is checked AFTER a frame has been received
+ * and parsed — which is too late to stop somebody sending a gigabyte, because
+ * the hub has already held it in memory to find out how big it was. `ws` can
+ * refuse an oversized frame before that, and this is the number it uses.
+ *
+ * It is the attachment cap with room for base64's third-over plus the JSON
+ * around it — deliberately derived from `ATTACHMENT_LIMITS.bytes` so the two
+ * can never drift into a state where a legal upload is dropped by the socket.
+ */
+export const WS_LIMITS = {
+  maxPayloadBytes: Math.ceil(ATTACHMENT_LIMITS.bytes * 4 / 3) + 64 * 1024,
 } as const;
 
 /**
@@ -1321,20 +1362,30 @@ export function knownMachineNames(): string[] {
  *     segment — "note.txt", never "C:\Users\vikasmit\…\note.txt";
  *  3. this machine's home folder and account name, wherever they appear;
  *  4. environment-variable assignments of any kind.
- * Web addresses are protected and passed through unchanged: a URL is the thing
- * the owner most wants to see, and it says nothing about this computer.
+ *
+ * WEB ADDRESSES ARE KEPT WHOLE — AND STILL SCRUBBED. A URL is the thing the
+ * owner most wants to see, so it is set aside before the path rules can chew a
+ * legitimate `/Users/` or `/var/` segment out of somebody's website. It used to
+ * be set aside UNTOUCHED, and that quietly turned the protection into a hole:
+ * a Slack webhook carrying an `xoxb-…` token, an `sk-ant-api03-…` in a query
+ * string, and a Windows path sitting in a query parameter all sailed straight
+ * through into run records that every member of a room can read. A URL says
+ * plenty about this computer. So `redactUrl` runs the same rules over the
+ * address itself BEFORE it is set aside, and the shield can no longer cancel
+ * anything.
  */
 export function redactForSharing(text: string, max = 300): string {
   if (!text) return "";
   const urls: string[] = [];
   let out = text
-    // protect web addresses before any path rule can chew on them
-    .replace(/https?:\/\/[^\s"'<>|]+/g, m => `\u0000${urls.push(m) - 1}\u0000`);
+    // set web addresses aside — SCRUBBED FIRST, see `redactUrl` — so the path
+    // rules below cannot chew a real website apart
+    .replace(/https?:\/\/[^\s"'<>|]+/g, m => `\u0000${urls.push(redactUrl(m)) - 1}\u0000`);
 
   // 1. secret VALUES — the name may stay, so the owner can see what was set
   out = out.replace(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|\S+)/g,
     (whole, name: string) => (isCredentialVar(name) ? `${name}=***` : whole));
-  out = out.replace(/\b(?:sk|pk|ghp|gho|github_pat)[-_][A-Za-z0-9_-]{6,}/gi, "***");
+  out = out.replace(SECRET_VALUE_RE, "***");
   out = out.replace(/\b[A-Za-z0-9+/_-]{40,}={0,2}\b/g, "***");
 
   // 2. absolute paths → their last segment only.
@@ -1365,6 +1416,58 @@ export function redactForSharing(text: string, max = 300): string {
 
   out = out.replace(/\s+/g, " ").trim();
   return out.length > max ? `${out.slice(0, max - 1)}…` : out;
+}
+
+/**
+ * The SHAPE of a secret's value, wherever it turns up — in a command line, in a
+ * URL path, in a query string.
+ *
+ * One pattern, used by both the plain-text pass and the URL pass, so a token
+ * that is caught in a command cannot be missed in a link. `xox…` is here
+ * because the leak that was reproduced was a Slack webhook: their tokens live
+ * in the PATH of a URL, which is precisely where nothing was looking.
+ */
+const SECRET_VALUE_RE = /\b(?:sk|pk|ghp|gho|ghu|ghs|github_pat|xox[abprs]|glpat|AIza|hooks)[-_][A-Za-z0-9_-]{6,}/gi;
+
+/**
+ * A web address, with everything that should never leave this machine taken out
+ * of it — and everything that makes it a useful link left in.
+ *
+ * This exists because the old code did the opposite: it took URLs out of harm's
+ * way and put them back untouched, which made "it's a URL" a way to smuggle a
+ * token or a file path past every rule in `redactForSharing`. Each rule below
+ * is the URL-shaped version of a rule up there; none of them can chew an
+ * ordinary link apart, because each is anchored to where a secret actually
+ * lives in an address.
+ */
+function redactUrl(u: string): string {
+  let out = u;
+  // 1. a Windows path sitting inside the address — the taxes.xlsx case
+  out = out.replace(/\b[A-Za-z]:[\\/][^\s"'|;&?#]*/g, m => lastSegment(m));
+  // 2. a POSIX home path in a PARAMETER VALUE. Anchored to `=` on purpose: a
+  //    bare `/home/` segment in a website's own path is somebody's blog, not
+  //    this computer, and cutting it would mangle a link for nothing.
+  out = out.replace(/([?&#][A-Za-z0-9_.\-[\]]*=)(\/(?:home|Users|root|private)\/[^&#\s]*)/g,
+    (_m, lead: string, p: string) => `${lead}${lastSegment(p)}`);
+  // 3. a token anywhere in it — path segment or query value alike
+  out = out.replace(SECRET_VALUE_RE, "***");
+  // 4. a credential-shaped PARAMETER, value only, so `?api_key=…&page=2` keeps
+  //    its page number. The value stops at `&` or `#`, unlike the plain-text
+  //    rule's `\S+`, which would have swallowed the rest of the query.
+  out = out.replace(/([?&#])([A-Za-z_][A-Za-z0-9_.-]*)=([^&#\s]*)/g,
+    (whole, sep: string, name: string) => (isCredentialVar(name) ? `${sep}${name}=***` : whole));
+  // 5. one long opaque blob, per segment. Per SEGMENT and not across the whole
+  //    address, because the greedy version ate `example.com/a/b/c…` whole and
+  //    left the owner a link he could not read or click.
+  out = out.replace(/([/=?&#])([A-Za-z0-9+_-]{40,}={0,2})(?=[/?&#]|$)/g, "$1***");
+  // 6. this machine's own names — they are as identifying in a link as anywhere
+  for (const secret of machineNames) {
+    if (secret.length < 3) continue;
+    out = out.split(secret).join("someone");
+    const lower = secret.toLowerCase();
+    if (lower !== secret) out = out.split(lower).join("someone");
+  }
+  return out;
 }
 
 function lastSegment(p: string): string {

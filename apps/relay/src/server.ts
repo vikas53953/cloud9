@@ -12,7 +12,7 @@ import {
   downloadContentType, fitRunRecord, isInlineViewable, isSafeSkillFileName,
   mayAdministerChannel, mayDriveAgent, runListEntry, setMachineNames, shareableRun,
   extractMentions, newId, validateAgentInput, validateAttachment, validateChannelText,
-  validateMessageText, validateReactionEmoji, validateRunRecord,
+  validateMessageText, validateReactionEmoji, validateRunRecord, WS_LIMITS,
 } from "@cloud9/shared";
 import os from "node:os";
 import { RunRow, Store } from "./store.js";
@@ -120,8 +120,17 @@ export class Relay {
   private tickets = new Map<string, { attachmentId: ID; userId: ID; expiresAt: number }>();
 
   constructor(opts: RelayOptions = {}) {
-    this.store = new Store(opts.dbPath ?? "cloud9-relay.db");
     this.ownerToken = opts.ownerToken ?? process.env.CLOUD9_OWNER_TOKEN ?? "dev-owner-token";
+    // The store is opened with the owner's token IN HAND. The membership
+    // backfill has to decide who runs each existing room, and it used to guess
+    // from the first row of `tokens` — which on a differently-ordered file made
+    // a guest the owner of every room and demoted Vikas in his own Cloud9.
+    // Opening comes first now, and if the file cannot be read the error says
+    // which file and why rather than a bare SQLite message.
+    this.store = new Store(opts.dbPath ?? "cloud9-relay.db", { ownerToken: this.ownerToken });
+    for (const problem of this.store.problems) {
+      console.warn(`[cloud9] ${problem}`);
+    }
     this.ownerName = opts.ownerName ?? process.env.CLOUD9_OWNER_NAME ?? "Vikas";
     this.bind = resolveBind(opts.bind ?? process.env.CLOUD9_BIND);
     this.devMode = opts.devMode ?? process.env.CLOUD9_DEV === "1";
@@ -133,7 +142,7 @@ export class Relay {
         id: newId("ch"), name: "general", kind: "channel",
         memberIds: [owner.id], createdAt: Date.now(),
       };
-      this.store.saveChannel(general);
+      this.store.createChannel(general);
       // whoever runs this Cloud9 runs its first room
       this.store.setMemberRole(general.id, owner.id, "owner");
     }
@@ -143,8 +152,17 @@ export class Relay {
       if (at !== undefined) { this.serveAttachment(at, req, res); return; }
       res.writeHead(404); res.end();
     });
-    this.wss = new WebSocketServer({ server: this.server });
+    // A SIZE LIMIT THE SOCKET ITSELF ENFORCES. Every other rule in this app
+    // checks a size AFTER the frame has been received and parsed, which is too
+    // late — by then the hub has already held whatever was sent in memory to
+    // find out how big it was. `maxPayload` refuses an oversized frame before
+    // that, so a guest cannot make the hub read a gigabyte to be told no.
+    this.wss = new WebSocketServer({ server: this.server, maxPayload: WS_LIMITS.maxPayloadBytes });
     this.wss.on("connection", ws => this.onConnection(ws));
+    // Files that were uploaded and never sent are nobody's but their
+    // uploader's, so nothing was ever going to reclaim them. Swept at every
+    // start, and again on each upload, so the disk cannot fill with drafts.
+    this.store.sweepParkedAttachments(Date.now() - ATTACHMENT_LIMITS.parkedTtlMs);
   }
 
   /**
@@ -235,9 +253,11 @@ export class Relay {
       // new users join #general automatically
       const general = this.store.channels().find(c => c.name === "general");
       if (general && !general.memberIds.includes(user.id)) {
-        general.memberIds.push(user.id);
-        this.store.saveChannel(general);
-        this.broadcastChannel(general);
+        // one person added, by name. Handing a lengthened member list to
+        // `saveChannel` used to do this, and it reconciled the WHOLE room
+        // against that snapshot on the way through.
+        this.store.addChannelMember(general.id, user.id, { role: "member" });
+        this.broadcastChannel(this.store.channel(general.id)!);
       }
       this.broadcast({ type: "userJoined", user });
     }
@@ -630,6 +650,27 @@ export class Relay {
     return channel;
   }
 
+  /**
+   * May these ids be put in a room whose people are `present`?
+   *
+   * THE ONE PLACE THAT ASKS IT, for creating a room and for adding to one
+   * alike. An agent carries its owner's SIGHT of the room in with it —
+   * `visibleChannels` counts a room as yours when an agent of yours is in it —
+   * so putting a stranger's agent somewhere quietly puts the stranger there,
+   * with nothing on screen saying a person arrived. Two copies of this rule
+   * would be one copy away from drifting, so there is one.
+   */
+  private assertMayAdd(byUserId: ID, memberIds: ID[], present: Set<ID>): void {
+    const agents = this.store.agents();
+    for (const memberId of memberIds) {
+      const agent = agents.find(a => a.id === memberId);
+      if (!agent) continue; // a person is a person; that is the ordinary case
+      if (agent.ownerId === byUserId) continue;
+      if (present.has(agent.ownerId)) continue;
+      throw new Error("that agent's owner isn't in this conversation — invite them first");
+    }
+  }
+
   /** Tell one person's machines they are out of a room, so they stop drawing it. */
   private tellLeft(userId: ID, channelId: ID): void {
     this.toUser(userId, { type: "channelLeft", channelId });
@@ -683,6 +724,16 @@ export class Relay {
       case "createChannel": {
         const memberIds = Array.from(new Set([conn.userId, ...frame.memberIds]));
         const kind = frame.kind ?? (frame.memberIds.length === 1 ? "dm" : "channel");
+        // A DIRECT CONVERSATION IS BETWEEN TWO PEOPLE, at the moment it is made
+        // as much as ever after. `addMembers` refuses to make a third; a room
+        // that was BORN with three and calls itself a DM would be a room with
+        // no settings, no owner and nobody able to change any of it.
+        if (kind === "dm" && memberIds.length !== 2) {
+          throw new Error("a direct conversation is between two people — make a room instead");
+        }
+        // the same rule adding uses: an agent may not drag its owner in behind it
+        this.assertMayAdd(conn.userId, memberIds, new Set(memberIds.filter(id =>
+          this.store.users().some(u => u.id === id))));
         // A direct conversation is FOUND or created, never duplicated (his 15).
         // Clicking a person twice must land in the same place both times.
         if (kind === "dm" && memberIds.length === 2) {
@@ -693,8 +744,10 @@ export class Relay {
           id: newId("ch"), name: frame.name, kind, memberIds, createdAt: Date.now(),
         };
         // `by` records who let each of these people in — the `invitedBy` an id
-        // array could never hold. Everyone else is a plain member.
-        this.store.saveChannel(channel, conn.userId);
+        // array could never hold. Everyone else is a plain member. This is the
+        // ONE call that turns a member list into rows, and it only applies to a
+        // room that did not exist a moment ago.
+        this.store.createChannel(channel, conn.userId);
         // whoever made a room runs it; a direct conversation has no owner
         if (kind !== "dm") this.store.setMemberRole(channel.id, conn.userId, "owner");
         this.audit(conn, "channel_created", channel.id, `created ${channel.kind} ${channel.name}`);
@@ -702,10 +755,31 @@ export class Relay {
         break;
       }
       case "addMembers": {
-        // you can only add people to a conversation you are in yourself
-        const ch = this.writableChannel(conn.userId, frame.channelId);
-        ch.memberIds = Array.from(new Set([...ch.memberIds, ...frame.memberIds]));
-        this.store.saveChannel(ch, conn.userId);
+        // LETTING SOMEBODY INTO A ROOM IS ADMINISTERING IT. This was the one
+        // channel-administration frame still on `writableChannel` — the gate
+        // that only asks "are you in here" — while setting a topic, changing
+        // who may find the room, archiving it and removing people had all moved
+        // to `adminChannel`. So any member could hand a private room's entire
+        // scrollback to anyone: a guest in a direct conversation added a third
+        // person and they read it, and a plain member added somebody else's
+        // agent to a private board, which let that agent's OWNER read the room
+        // too, with nothing on screen saying a person had been let in.
+        //
+        // `adminChannel` also refuses a direct conversation outright, which is
+        // the right answer and not a special case: a DM is between two people
+        // by definition. There is no second gate here — it is the same one
+        // every other administration frame goes through.
+        const ch = this.adminChannel(conn.userId, frame.channelId);
+        if (ch.archivedAt) throw new Error("that conversation is archived — nobody new can be added to it");
+
+        const live = new Set(this.store.channel(ch.id)!.memberIds);
+        for (const memberId of new Set(frame.memberIds)) {
+          // AN AGENT CARRIES ITS OWNER IN WITH IT — the same rule creating a
+          // room asks, asked here by the same function.
+          this.assertMayAdd(conn.userId, [memberId], live);
+          this.store.addChannelMember(ch.id, memberId, { role: "member", invitedBy: conn.userId });
+          live.add(memberId);
+        }
         this.audit(conn, "member_added", ch.id, `added ${frame.memberIds.length} member(s) to ${ch.name}`);
         this.broadcastChannel(this.store.channel(ch.id)!);
         break;
@@ -1256,6 +1330,23 @@ export class Relay {
         // purpose. There is no second copy of it to drift.
         const bad = validateAttachment(frame.name, bytes.length);
         if (bad) throw new Error(bad);
+        // A CAP ON ONE FILE BOUNDS ONE FILE, AND NOTHING ELSE. Nothing limited
+        // how many, how fast, or how long they stayed, so anybody who could
+        // sign in could fill the owner's hard disk ten megabytes at a time.
+        // Three bounds, checked here because this is the only way in:
+        // stale drafts go first, then how fast, then how much is sitting unsent.
+        this.store.sweepParkedAttachments(Date.now() - ATTACHMENT_LIMITS.parkedTtlMs);
+        const recent = this.store.uploadsSince(conn.userId, Date.now() - 60_000);
+        if (recent >= ATTACHMENT_LIMITS.uploadsPerMinute) {
+          throw new Error("that's a lot of files at once — wait a minute and try again");
+        }
+        const parked = this.store.parkedBytes(conn.userId);
+        if (parked + bytes.length > ATTACHMENT_LIMITS.parkedBytesPerUser) {
+          throw new Error(
+            `you have too many files waiting to be sent (max ` +
+            `${Math.floor(ATTACHMENT_LIMITS.parkedBytesPerUser / 1_000_000)} MB) — send or discard some first`,
+          );
+        }
         const id = newId("at");
         const storedAs = this.store.writeAttachmentBytes(id, frame.name, bytes);
         const attachment: Attachment = {

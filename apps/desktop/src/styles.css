@@ -559,6 +559,84 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
   padding:9px 12px;border-radius:var(--radius-s);background:var(--surface-2);margin-top:10px;
 }
 
+/* ---- what an agent actually did: the run record (FR-TL-003) ----
+   The same callout the prototype uses for an answer, with one addition that is
+   specific to this card: the step list is a DOCKET. A run really is a numbered
+   sequence — `seq` carries information a reader needs — so the numbers are down
+   the left in the data face, the way a job sheet is printed. Nothing else here
+   is new; the head, the labelled rows and the disclosure are the mock's own. */
+.callout.run{border-color:color-mix(in srgb,var(--pine) 26%,var(--line));}
+.callout.run.out-failed{border-color:color-mix(in srgb,var(--madder) 45%,transparent);}
+.callout.run.out-failed .hd h4{color:var(--madder);}
+.callout.run.out-cancelled{border-color:color-mix(in srgb,var(--ink-3) 45%,transparent);}
+.callout.run .runsum{
+  margin:0;color:var(--ink);font-size:13.5px;font-weight:600;overflow-wrap:anywhere;
+}
+.runmore{
+  display:inline-flex;align-items:center;gap:8px;margin-top:2px;padding:5px 0;
+  background:none;border:0;cursor:pointer;color:var(--pine);
+  font-family:var(--body);font-size:12.5px;font-weight:600;
+}
+.runmore .tri{font-size:10px;color:var(--ink-3);}
+.runmore .n{
+  font-family:var(--mono);font-size:11px;color:var(--ink-3);font-weight:400;
+  letter-spacing:.04em;
+}
+.runmore:hover{text-decoration:underline;}
+.runsteps{margin-top:8px;border-top:1px solid var(--line-soft);padding-top:10px;}
+.runsteps ol{list-style:none;margin:0;padding:0;display:grid;gap:2px;}
+.runstep{
+  display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;align-items:baseline;
+  gap:10px;padding:5px 8px;border-radius:var(--radius-xs);font-size:12.5px;min-width:0;
+}
+.runstep:nth-child(odd){background:var(--surface-2);}
+.runstep .sq{
+  font-family:var(--mono);font-size:10.5px;color:var(--ink-3);
+  min-width:1.4em;text-align:right;
+}
+.runstep .ic{color:var(--ink-3);align-self:center;display:flex;}
+.runstep .tx{min-width:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 9px;}
+.runstep .lb{color:var(--ink);overflow-wrap:anywhere;}
+.runstep .dt{
+  font-family:var(--mono);font-size:11px;color:var(--ink-3);
+  overflow-wrap:anywhere;min-width:0;
+}
+.runstep a.dt.lnk{color:var(--ultra);text-decoration:underline;}
+.runstep .mk{font-size:11px;align-self:center;}
+.runstep .mk.yes{color:var(--pine);}
+.runstep .mk.no{color:var(--madder);}
+.runstep.bad{background:color-mix(in srgb,var(--madder-soft) 60%,transparent);}
+.runstep.bad .lb{color:var(--madder);}
+/* a refusal is EVIDENCE A BOUNDARY HELD — it reads as a good thing, not a fault */
+.runstep.held{background:var(--pine-soft);}
+.runstep.held .ic,.runstep.held .lb{color:var(--pine);}
+.runquiet{
+  margin-top:8px;background:none;border:0;padding:0;cursor:pointer;
+  font-family:var(--body);font-size:11.5px;color:var(--ink-3);text-decoration:underline;
+}
+.runtrunc{margin:9px 0 0;font-size:11.5px;color:var(--ink-3);}
+.runwait,.runmissing{
+  margin-top:10px;font-size:12.5px;color:var(--ink-3);
+  padding:8px 11px;border-radius:var(--radius-s);background:var(--surface-2);
+}
+.runopen{margin-top:10px;}
+
+/* ---- an agent's recent work, in its editor ---- */
+.recentwork{display:grid;gap:7px;}
+.workrow{border:1px solid var(--line-soft);border-radius:var(--radius-s);background:var(--surface);}
+.workrow .wr-head{
+  display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;
+  width:100%;padding:10px 13px;background:none;border:0;cursor:pointer;text-align:left;
+  font-family:var(--body);
+}
+.workrow .wr-when{font-family:var(--mono);font-size:11px;color:var(--ink-3);}
+.workrow .wr-tx{min-width:0;display:grid;gap:2px;}
+.workrow .wr-tx b{font-size:13px;color:var(--ink);overflow-wrap:anywhere;}
+.workrow .wr-sum{font-size:12px;color:var(--ink-2);overflow-wrap:anywhere;}
+.workrow .chip{flex:none;}
+.workrow .callout.run{margin:0 13px 13px;}
+.workrow .runwait,.workrow .runmissing,.workrow .runopen{margin:0 13px 13px;}
+
 /* --- working indicator --- */
 .thinking{display:flex;align-items:center;gap:10px;color:var(--ink-2);font-size:13px;margin-bottom:22px;}
 .bars{display:flex;gap:3px;align-items:flex-end;height:14px;}

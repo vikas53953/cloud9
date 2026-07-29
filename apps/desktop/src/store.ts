@@ -2,7 +2,7 @@
 import {
   ActivityRecord, AgentDef, AgentStatus, Approval, Attachment, ATTACHMENT_LIMITS, Channel,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
-  SearchHit, ServerFrame, Task, UnreadEntry, User, validateAttachment,
+  RunListEntry, RunRecord, SearchHit, ServerFrame, Task, UnreadEntry, User, validateAttachment,
 } from "@cloud9/shared";
 
 /**
@@ -54,14 +54,28 @@ export interface Upload {
  * An attached file this screen has opened.
  *
  * `url` is a `blob:` we made and therefore must revoke (see `closeFile`),
- * unless `direct` is set — then it is a one-use hub URL handed to the browser
- * to load or download, and there is nothing of ours to free.
+ * unless `direct` is set — which only SAVING does, because a download is a
+ * navigation to a one-use hub URL rather than a copy this app is holding, and
+ * there is nothing of ours to free.
  */
 export interface OpenFile {
   state: "opening" | "ready" | "failed";
   url?: string;
   direct?: boolean;
   error?: string;
+}
+
+/**
+ * One answer to "what has this agent — or this job — been doing".
+ *
+ * `asked` is what tells an empty history from an unanswered one. Without it a
+ * rail would say "nothing yet" the instant it opened, which is a claim nobody
+ * has checked. Same law as the room directory above.
+ */
+export interface RunList {
+  asked: boolean;
+  loading: boolean;
+  entries: RunListEntry[];
 }
 
 export interface World {
@@ -118,6 +132,27 @@ export interface World {
   directory: { asked: boolean; channels: ChannelSummary[] };
   /** who is in one room, with roles and dates, by conversation */
   members: Record<ID, ChannelMember[]>;
+  /**
+   * WHAT AN AGENT ACTUALLY DID, by run id.
+   *
+   * Keyed by the record's own id and nothing else, because a `run` frame
+   * arrives UNASKED the moment any turn finishes — in a conversation this
+   * screen has open, or one it does not. Anything that wants to find a run by
+   * job or by agent looks it up through the indexes below, which are built off
+   * what arrived rather than off what we happened to request.
+   */
+  runs: Record<string, RunRecord>;
+  /** histories, keyed by `runKey` — "agent:<id>" or "task:<id>" */
+  runLists: Record<string, RunList>;
+  /**
+   * Runs the hub has said are not there.
+   *
+   * A run you may not read and a run that never existed get the SAME sentence,
+   * deliberately, so an id cannot be probed. Both mean one thing to a screen —
+   * it is not there — and saying so is better than a disclosure that spins for
+   * ever waiting for an answer that already came.
+   */
+  runsGone: Record<string, true>;
 }
 
 type Listener = () => void;
@@ -166,6 +201,7 @@ export class RelayClient {
     messages: {}, agentStatus: {}, tasks: [], approvals: [], activity: [],
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
+    runs: {}, runLists: {}, runsGone: {},
   };
   private ws?: WebSocket;
   private listeners = new Set<Listener>();
@@ -354,6 +390,92 @@ export class RelayClient {
       copy[i] = rewrite(copy[i]);
       w.threads = { ...w.threads, [root]: copy };
     }
+  }
+
+  /* ---------------- what an agent actually did ---------------- */
+
+  /** The one spelling of a history's key. Two spellings is two caches. */
+  private runKey(scope: "agent" | "task", id: ID): string {
+    return `${scope}:${id}`;
+  }
+
+  /** run ids already asked for, so a render cannot ask for the same one twice */
+  private runAsked = new Set<string>();
+
+  /** One run in full, if this screen is holding it. */
+  run(runId: string): RunRecord | undefined {
+    return this.world.runs[runId];
+  }
+
+  /** One history, answered or not. Never undefined — an unasked list says so. */
+  runsFor(scope: "agent" | "task", id: ID): RunList {
+    return this.world.runLists[this.runKey(scope, id)] ?? { asked: false, loading: false, entries: [] };
+  }
+
+  /**
+   * Ask for one run in full — the steps, the time, the money.
+   *
+   * Asked ONCE per run for the life of this screen: a record does not change
+   * after it is written, and a disclosure that re-asked on every open would put
+   * a frame on the wire for every click. A run already pushed here unasked is
+   * never asked for at all.
+   *
+   * A run this person may not read is answered "no such run" — the same
+   * sentence an invented id gets, deliberately, so an id cannot be probed. Both
+   * mean the same thing to this screen: it is not there.
+   */
+  askRun(runId: string): void {
+    if (this.world.runs[runId] || this.runAsked.has(runId)) return;
+    this.runAsked.add(runId);
+    this.pendingRunDetail.push(runId);
+    this.send({ type: "runDetail", runId });
+  }
+
+  /** runs asked for and not yet answered, oldest first — see the `error` frame */
+  private pendingRunDetail: string[] = [];
+
+  /**
+   * Ask what an agent, or one job, has been doing.
+   *
+   * By AGENT this is owner-only at the hub, by design — sharing a room with
+   * someone's agent shows you the turns it takes there, and is not a licence to
+   * read everything it has ever done. Callers must not ask about an agent that
+   * is not this person's; the rail simply does not offer it.
+   */
+  askRuns(scope: "agent" | "task", id: ID, limit?: number): void {
+    const key = this.runKey(scope, id);
+    const held = this.runsFor(scope, id);
+    /* ASKED EVERY TIME THE RAIL OPENS, and only the one already in flight is
+       skipped. A history is not a record: it grows with every turn the agent
+       takes, so an answer from the last time this screen was opened is out of
+       date the moment anything happens. Caching it the way a single record is
+       cached showed the owner an agent's work as it stood an hour ago, with the
+       job they just watched finish missing from it. */
+    if (held.loading) return;
+    this.world.runLists = { ...this.world.runLists, [key]: { ...held, loading: true } };
+    this.emit();
+    this.send(scope === "agent"
+      ? { type: "runList", agentId: id, ...(limit ? { limit } : {}) }
+      : { type: "runList", taskId: id, ...(limit ? { limit } : {}) });
+  }
+
+  /**
+   * An agent is gone, so what it did goes with it.
+   *
+   * The hub forgets an agent's runs when the agent goes. A screen that carried
+   * on drawing them would be showing something that no longer exists anywhere
+   * else — which is the same class of lie as showing a cost nobody reported.
+   */
+  private forgetRunsOf(agentId: ID): void {
+    const w = this.world;
+    const kept: Record<string, RunRecord> = {};
+    for (const [id, record] of Object.entries(w.runs)) {
+      if (record.agentId !== agentId) kept[id] = record;
+    }
+    w.runs = kept;
+    const { [this.runKey("agent", agentId)]: gone, ...rest } = w.runLists;
+    void gone;
+    w.runLists = rest;
   }
 
   /* ---------------- rooms ---------------- */
@@ -549,56 +671,32 @@ export class RelayClient {
     };
 
     try {
-      if (this.hubIsSameOrigin()) {
-        let res = await fetchOnce();
-        // 404 means the ticket was spent or has expired. Ask for another and
-        // try once more — showing a person an error here would be showing them
-        // a problem the app can fix by itself.
-        if (res.status === 404) res = await fetchOnce();
-        if (!res.ok) {
-          this.setFile(a.id, { state: "failed", error: "that link has expired — open the file again" });
-          return;
-        }
-        this.setFile(a.id, { state: "ready", url: URL.createObjectURL(await res.blob()) });
+      /**
+       * ONE ROUTE, whatever address the hub is on.
+       *
+       * There used to be a second one here: when the hub answered from its own
+       * origin, the page could not READ a cross-origin response, so the ticket
+       * was handed to an `<img>` instead of fetched. The hub now sends the
+       * cross-origin headers on the download (`chat-basics-handoff.md` §9.9),
+       * so that branch was a workaround for a problem that no longer exists —
+       * and a second route is a second set of behaviour to get right. Every
+       * file now takes the intended path: fetch, blob, revoke on close.
+       */
+      let res = await fetchOnce();
+      // 404 means the ticket was spent or has expired. Ask for another and
+      // try once more — showing a person an error here would be showing them
+      // a problem the app can fix by itself.
+      if (res.status === 404) res = await fetchOnce();
+      if (!res.ok) {
+        this.setFile(a.id, { state: "failed", error: "that link has expired — open the file again" });
         return;
       }
-      /**
-       * The hub is on its own address, so this page may not READ its answer —
-       * a browser refuses to hand a cross-origin response to the script that
-       * asked for it. Loading a PICTURE is not held to that rule, so the ticket
-       * goes to the picture itself instead of through a `fetch`.
-       *
-       * Nothing about the ticket changes: still minted at the click, still good
-       * for one request and thirty seconds, still checked by the hub against
-       * this person's membership at the moment it is redeemed. What is given up
-       * is only the blob copy — which is why `direct` is set, so nothing later
-       * tries to revoke a URL this app did not create.
-       */
-      const t = await this.mintTicket(a.id);
-      this.setFile(a.id, { state: "ready", url: this.hubHttp() + t.url, direct: true });
+      this.setFile(a.id, { state: "ready", url: URL.createObjectURL(await res.blob()) });
     } catch (err) {
       this.setFile(a.id, {
         state: "failed",
         error: (err as Error).message || "that file could not be opened",
       });
-    }
-  }
-
-  /**
-   * Is the hub answering on this page's own address?
-   *
-   * It is when the app is served by the hub or through something in front of
-   * both; it is not in dev, and not in the packaged app, where the screen is a
-   * local file and the hub is a socket on a port. Asked before a `fetch` rather
-   * than after one fails, because a refused cross-origin request is a red line
-   * in the console every time, and a console full of expected errors is a
-   * console nobody reads.
-   */
-  private hubIsSameOrigin(): boolean {
-    try {
-      return new URL(this.hubHttp()).origin === location.origin;
-    } catch {
-      return false;
     }
   }
 
@@ -679,6 +777,13 @@ export class RelayClient {
         w.files = {};
         w.members = {};
         w.directory = { asked: false, channels: [] };
+        // Records belonged to the last connection too. Keeping them would mean
+        // drawing an agent's work from a world this screen is no longer in.
+        w.runs = {};
+        w.runLists = {};
+        w.runsGone = {};
+        this.runAsked.clear();
+        this.pendingRunDetail = [];
         for (const entry of frame.state.unread ?? []) w.unread[entry.channelId] = entry;
         break;
       }
@@ -718,6 +823,7 @@ export class RelayClient {
       }
       case "agentDeleted":
         w.agents = w.agents.filter(a => a.id !== frame.agentId);
+        this.forgetRunsOf(frame.agentId);
         break;
       case "agentStatus":
         w.agentStatus = { ...w.agentStatus, [frame.agentId]: frame.status };
@@ -821,6 +927,12 @@ export class RelayClient {
         if (this.ticketWaiters.length > 0) {
           this.ticketWaiters.shift()!.reject(new Error(frame.error));
         }
+        // Same discipline for a run that was asked for and refused: the oldest
+        // unanswered one is told, so a disclosure says "it isn't there" instead
+        // of waiting for ever on an answer that has already been given.
+        if (frame.error === "no such run" && this.pendingRunDetail.length > 0) {
+          w.runsGone = { ...w.runsGone, [this.pendingRunDetail.shift()!]: true };
+        }
         // A refusal that arrives before we were ever let in is a FAILED JOIN:
         // send the person back to the welcome screen, where the reason is
         // visible, instead of leaving them staring at an empty workspace.
@@ -830,14 +942,25 @@ export class RelayClient {
       // exhaustiveness check below still holds.
       case "push":        // relay → mobile only
       case "harnessRequest": // relay → engine host only
-      // What an agent actually did on one run, and the list of them. Landing in
-      // the engine half right now; there is no screen for a run's record yet,
-      // and inventing one here would be guessing at somebody else's design.
-      // Named rather than defaulted, so the exhaustiveness check below keeps
-      // its teeth and this cannot ship forgotten.
-      case "run":
-      case "runs":
         break;
+      case "run":
+        // Unasked or asked, new or already held — keyed by the record's OWN id,
+        // so a run from a conversation this screen never opened still lands
+        // somewhere findable rather than being dropped for not being expected.
+        w.runs = { ...w.runs, [frame.record.id]: frame.record };
+        this.pendingRunDetail = this.pendingRunDetail.filter(id => id !== frame.record.id);
+        break;
+      case "runs": {
+        // The frame echoes back WHICH question it answers, so two lists in
+        // flight cannot be mistaken for each other. One with neither is an
+        // answer to nothing and is left alone.
+        const key = frame.agentId ? `agent:${frame.agentId}`
+          : frame.taskId ? `task:${frame.taskId}` : undefined;
+        if (key) {
+          w.runLists = { ...w.runLists, [key]: { asked: true, loading: false, entries: frame.runs } };
+        }
+        break;
+      }
       case "attachment": {
         // The answer to the ONE upload in the air (see `attach`). It carries no
         // echo of what was asked, which is exactly why only one is ever asked.

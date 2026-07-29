@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-29T12:10:20.219Z",
-  "expected": 122,
-  "executed": 122,
+  "ranAt": "2026-07-29T13:41:35.793Z",
+  "expected": 156,
+  "executed": 156,
   "results": [
     {
       "name": "join screen renders",
@@ -161,7 +161,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch 1lc9b :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch 4twz9 :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +176,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_AKf-JKSDWqHs9EgtMT6pFQ"
+      "detail": "inv_Z4csh82dKyiZLvPktSHOrQ"
     },
     {
       "name": "friend joins via invite",
@@ -306,7 +306,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 17:40"
+      "detail": "↳ 1 reply · last at 19:10"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -321,7 +321,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 17:40 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 19:10 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -431,7 +431,22 @@
     {
       "name": "clicking a picture opens it in place, with the picture really loaded",
       "pass": true,
-      "detail": "{\"w\":180,\"h\":120,\"src\":\"http:\"}"
+      "detail": "{\"w\":180,\"h\":120,\"src\":\"blob:\"}"
+    },
+    {
+      "name": "the screen and the hub really are on different addresses, so the next check means something",
+      "pass": true,
+      "detail": "http://127.0.0.1:4173 vs http://127.0.0.1:8799"
+    },
+    {
+      "name": "a picture takes the one intended route — fetched, held as a blob, freed on close",
+      "pass": true,
+      "detail": "img src begins \"blob:\""
+    },
+    {
+      "name": "saving a file still hands it to the browser, under its own name",
+      "pass": true,
+      "detail": "ledger.bin"
     },
     {
       "name": "an opened file is held for this screen, so a second look does not re-ticket",
@@ -565,6 +580,161 @@
     },
     {
       "name": "files on a message do not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a finished job carries the record of what its agent actually did",
+      "pass": true,
+      "detail": "{\"id\":\"t_ms64trcm4mjfok\",\"status\":\"completed\",\"runId\":\"r-0ms64trd0-k0ok\"}"
+    },
+    {
+      "name": "opening it fetches the real record from the hub and draws it as a finished run",
+      "pass": true,
+      "detail": "ok"
+    },
+    {
+      "name": "the plain-words line is the hub's own sentence, built from the same numbers as the rows",
+      "pass": true,
+      "detail": "Answered straight from what it knew — no tools used, took under a second. :: took=under a second"
+    },
+    {
+      "name": "a run the app reported no money for renders NO COST ROW AT ALL — not a zero, not an estimate",
+      "pass": true,
+      "detail": "asked-by/ran-on/took"
+    },
+    {
+      "name": "and the rows it does carry are the ones the record really holds",
+      "pass": true,
+      "detail": "asked-by/ran-on/took"
+    },
+    {
+      "name": "the 📦 job result in the conversation carries that job's own record, not a lookalike",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a run card under a job result in the conversation does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card under a job result in the conversation does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card under a job result in the conversation does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card under a job result in the conversation does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card in the Tasks in-tray does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card in the Tasks in-tray does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card in the Tasks in-tray does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card in the Tasks in-tray does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run that finishes anywhere this person can see arrives unasked, and is kept by its own id",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "an agent's recent work lists what it did, with the ask and the same plain-words line",
+      "pass": true,
+      "detail": "Checked 1 site, read 1 file, ran 1 command, took 41 seconds, cost 76 cents."
+    },
+    {
+      "name": "a run the app DID report money for shows the cost, in the hub's own words",
+      "pass": true,
+      "detail": "76 cents"
+    },
+    {
+      "name": "every step is listed in the order it happened, each as its own kind of thing",
+      "pass": true,
+      "detail": "1:web 2:read 3:note 4:command"
+    },
+    {
+      "name": "a web step's detail is a real link to the page it read",
+      "pass": true,
+      "detail": "https://villas.example/goa"
+    },
+    {
+      "name": "a step the app said nothing about gets NO tick and NO cross",
+      "pass": true,
+      "detail": "1 unsaid, 3 marks in all"
+    },
+    {
+      "name": "a step the app said failed is marked failed, and only that one",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a refused tool reads as a boundary that held, not as an error",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "what it thought and what it said are folded away until they are asked for",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a Codex run shows NO cost row at all — the app reports no money and none is invented",
+      "pass": true,
+      "detail": "asked-by/ran-on/took"
+    },
+    {
+      "name": "a run that failed says what went wrong, word for word from the record",
+      "pass": true,
+      "detail": "the booking site refused the card"
+    },
+    {
+      "name": "a record that had steps dropped to keep it small says so",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a friend is never shown — and never asks for — the history of an agent that isn't theirs",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a run card with every step showing, in an agent's history does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card with every step showing, in an agent's history does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card with every step showing, in an agent's history does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card with every step showing, in an agent's history does not scroll sideways at 1440 in the dark look",
       "pass": true,
       "detail": "{\"doc\":0,\"body\":0}"
     },

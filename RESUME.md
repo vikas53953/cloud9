@@ -80,6 +80,31 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
   - Run-record card still NOT built — run data does not reach the client.
     That is the round now in flight.
 
+- **2026-07-29 ~18:00 — a review of b69ca28..505c2f9 returned NOT READY.**
+  Read `docs/plans/` and the review findings before trusting anything from
+  today. Headlines:
+  - **P0, reproduced end to end: a private room is not private.**
+    `addMembers` was left on the any-member gate while every other channel
+    admin frame moved to `adminChannel`. A guest widened a DM; a plain member
+    admitted SOMEONE ELSE'S AGENT to a private room and its owner silently
+    gained the whole scrollback. The 92 relay tests missed it because every
+    `addMembers` in the suite is sent by the owner — **test what an insider
+    can do, not only an outsider.**
+  - Redaction was defeated by its own URL shield: tokens and file paths inside
+    a URL passed through into run records.
+  - Migrations are not transactional and one unparseable row can brick the
+    database permanently. **Vikas's live db is still at 0/1 and steps 2→3→4 the
+    next time the hub opens.** Fix before he opens it.
+  - **I made a false claim in commit 505c2f9**: "removes a workaround branch in
+    the app". The branch was ADDED in that same commit and is still there.
+    Correct it in the next commit message rather than quietly fixing it.
+  - "Anyone in the room" is a promise the permission function cannot keep —
+    `mayDriveAgent` takes no channel argument. Either scope it or change the
+    words on screen.
+  - Genuinely clean and re-proved by the reviewer: markdown/XSS (25 bypass
+    attempts refused), FTS5 injection, the one-use ticket race, `runDetail`
+    being unprobeable, and the migration happy path being lossless.
+
 ## Work in flight when he left
 | Agent | Owns | Doing |
 |---|---|---|

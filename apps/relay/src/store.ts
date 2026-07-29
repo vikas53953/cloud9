@@ -100,6 +100,38 @@ function toInvite(r: RawInvite): InviteRow {
   };
 }
 
+/** How a store was asked to open itself. */
+export interface StoreOptions {
+  /**
+   * The sign-in token of the person who RUNS this Cloud9.
+   *
+   * Handed in rather than guessed. The v2 → v3 membership backfill has to
+   * decide who owns each existing room, and it used to take the first row of
+   * `tokens` by rowid — which is only the owner by accident of insertion order.
+   * On a differently-ordered file that made a guest the owner of every room and
+   * demoted the real owner. The caller already knows the answer, so it says it.
+   */
+  ownerToken?: string;
+}
+
+/**
+ * A database this build could not open or read.
+ *
+ * Carried as its own error type so the caller can say WHICH file and WHAT was
+ * wrong with it in plain words, instead of a bare SQLite or JSON message that
+ * tells the owner nothing about his own data.
+ */
+export class StoreOpenError extends Error {
+  constructor(readonly dbPath: string, readonly cause: unknown) {
+    super(
+      `Cloud9 could not open its message database at ${dbPath}. ` +
+      `The file is there but this build could not read it: ${(cause as Error)?.message ?? String(cause)}. ` +
+      `Nothing has been changed — the file is exactly as it was.`,
+    );
+    this.name = "StoreOpenError";
+  }
+}
+
 export class Store {
   db: DatabaseSync;
   /**
@@ -109,10 +141,32 @@ export class Store {
    */
   attachmentsDir: string;
 
-  constructor(dbPath: string) {
-    this.db = new DatabaseSync(dbPath);
+  /**
+   * Rows this build could not make sense of, in plain words.
+   *
+   * A single unreadable row must never be the reason the owner cannot open his
+   * own messages ever again. So a row that will not parse is SKIPPED, described
+   * here, and the rest of the database opens — a fault you can read and repair
+   * rather than a door that is shut forever.
+   */
+  readonly problems: string[] = [];
+
+  private readonly ownerToken?: string;
+
+  constructor(dbPath: string, opts: StoreOptions = {}) {
+    this.ownerToken = opts.ownerToken;
+    try {
+      this.db = new DatabaseSync(dbPath);
+    } catch (e) {
+      throw new StoreOpenError(dbPath, e);
+    }
     this.attachmentsDir = path.join(path.dirname(path.resolve(dbPath)), "cloud9-attachments");
-    this.db.exec(`
+    // EVERYTHING FROM HERE TO THE END OF THE MIGRATION IS ONE GUARDED OPEN.
+    // `new DatabaseSync` succeeds on a file that is not a database at all —
+    // SQLite does not look inside until the first statement — so guarding only
+    // the constructor guarded nothing. The first statement is below.
+    try {
+      this.db.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS users(
         id TEXT PRIMARY KEY, name TEXT NOT NULL, invitedBy TEXT
@@ -185,12 +239,21 @@ export class Store {
       -- answer at all. removedAt is a SOFT delete, like a reaction: the row
       -- stays, so the record still knows the person was once here. Every read
       -- of "who is in here" filters on removedAt IS NULL.
+      --
+      -- ONE ROW PER SPELL IN THE ROOM, not one row per person. The key carries
+      -- joinedAt, so someone who was removed and later let back in gets a
+      -- SECOND row. The old single-row key forced a rejoin to overwrite the
+      -- first visit, which destroyed the two facts this table exists to hold —
+      -- when they first arrived and who let them in — and made "who was in this
+      -- room at that moment" answer yes for a moment they were out of it.
+      -- The partial unique index below is what still guarantees a person can
+      -- only be in a room once at a time.
       CREATE TABLE IF NOT EXISTS channel_members(
         channelId TEXT NOT NULL, memberId TEXT NOT NULL,
         role TEXT NOT NULL DEFAULT 'member',
         joinedAt INTEGER NOT NULL, invitedBy TEXT,
         removedAt INTEGER, removedBy TEXT,
-        PRIMARY KEY (channelId, memberId)
+        PRIMARY KEY (channelId, memberId, joinedAt)
       );
       CREATE INDEX IF NOT EXISTS cm_member ON channel_members(memberId);
 
@@ -217,8 +280,62 @@ export class Store {
         PRIMARY KEY (userId, channelId)
       );
     `);
-    this.migrate();
-    this.initSearch();
+      this.migrate();
+      this.initSearch();
+    } catch (e) {
+      // A migration that threw has already been rolled back by `step()`, so the
+      // file is still the shape it was. Say which file and why, once, in words
+      // the owner can act on.
+      throw new StoreOpenError(dbPath, e);
+    }
+  }
+
+  /**
+   * Run one piece of work as ALL OF IT OR NONE OF IT.
+   *
+   * Every migration step goes through here, together with the version bump that
+   * records it. Without this a step that was interrupted half way — a laptop
+   * lid, a crash, a kill — left the database in a shape no version number
+   * described, and the next start either skipped the rest of the step forever
+   * or re-ran it on top of itself. With it there are only two states: the step
+   * ran and the version moved, or neither happened.
+   *
+   * IMMEDIATE, not DEFERRED: the write lock is taken up front, so two hubs
+   * opening the same file cannot both decide they are the one doing the
+   * migration.
+   */
+  private tx<T>(work: () => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const out = work();
+      this.db.exec("COMMIT");
+      return out;
+    } catch (e) {
+      try { this.db.exec("ROLLBACK"); } catch { /* the transaction is already gone */ }
+      throw e;
+    }
+  }
+
+  /**
+   * Read one stored JSON row, or record why it could not be read and give back
+   * nothing.
+   *
+   * A row written by a newer build, truncated by a full disk, or corrupted on
+   * the way to the platter must not be able to stop the hub from ever opening
+   * again. The caller decides what to do without the row; the reason is kept in
+   * `problems` so it can be shown rather than guessed at.
+   */
+  private safeParse<T>(json: string, what: string, id: string): T | undefined {
+    try {
+      return JSON.parse(json) as T;
+    } catch (e) {
+      this.note(`${what} ${id} could not be read (${(e as Error).message}) — it was skipped`);
+      return undefined;
+    }
+  }
+
+  private note(problem: string): void {
+    if (!this.problems.includes(problem)) this.problems.push(problem);
   }
 
   // ---- search index ----
@@ -251,16 +368,51 @@ export class Store {
       this.searchIndexed = false;
       return;
     }
-    // Backfill a database written before this round, once.
-    const indexed = (this.db.prepare("SELECT COUNT(*) n FROM messages_fts").get() as { n: number }).n;
-    if (indexed > 0) return;
-    const rows = this.db.prepare("SELECT id,channelId,json FROM messages").all() as
-      { id: string; channelId: string; json: string }[];
-    for (const r of rows) {
-      const m = JSON.parse(r.json) as Message;
-      if (m.deletedAt) continue;
-      this.indexMessage(m);
-    }
+    this.backfillSearch();
+  }
+
+  /**
+   * Make the index hold EVERY message that should be findable — or do nothing.
+   *
+   * THE GUARD IS COMPLETENESS, NOT EMPTINESS. It used to be "the index has at
+   * least one row in it", and that is the wrong question: a backfill that was
+   * interrupted after eight messages of thirty left an index that was non-empty
+   * and permanently, silently wrong — search simply never found the other
+   * twenty-two, with no error anywhere. Counting what SHOULD be in there
+   * against what IS means an interrupted run is detected on the next start and
+   * finished, and a complete one costs two counts.
+   *
+   * The rebuild is one transaction, so it is all of it or none of it. An
+   * interruption rolls back to the previous index and the next start tries
+   * again — never a half-filled one that looks finished.
+   */
+  private backfillSearch(): void {
+    if (!this.searchIndexed) return;
+    const want = (this.db.prepare(
+      "SELECT COUNT(*) n FROM messages WHERE json_extract(json,'$.deletedAt') IS NULL",
+    ).get() as { n: number }).n;
+    const have = (this.db.prepare("SELECT COUNT(*) n FROM messages_fts").get() as { n: number }).n;
+    if (have === want) return;
+    this.tx(() => {
+      this.db.exec("DELETE FROM messages_fts");
+      const rows = this.db.prepare("SELECT id,channelId,json FROM messages").all() as
+        { id: string; channelId: string; json: string }[];
+      for (const r of rows) {
+        const m = this.safeParse<Message>(r.json, "a message", r.id);
+        if (!m || m.deletedAt) continue;
+        this.indexMessage(m);
+      }
+    });
+  }
+
+  /** True when every message that should be findable is in the index. */
+  searchIndexComplete(): boolean {
+    if (!this.searchIndexed) return false;
+    const want = (this.db.prepare(
+      "SELECT COUNT(*) n FROM messages WHERE json_extract(json,'$.deletedAt') IS NULL",
+    ).get() as { n: number }).n;
+    const have = (this.db.prepare("SELECT COUNT(*) n FROM messages_fts").get() as { n: number }).n;
+    return have === want;
   }
 
   private indexMessage(m: Message): void {
@@ -316,36 +468,87 @@ export class Store {
     // database changes nothing — because the one thing worse than an
     // un-migrated database is a half-migrated one, and the only way to be able
     // to say "just run it again" is to make that true.
-    let from = this.schemaVersion();
-    if (from < 2) {
-      // v1 → v2: the trail becomes a ledger. Rows written before the chain
-      // existed are numbered and hashed in time order, ONCE. This does not make
-      // them trustworthy — nothing can, after the fact — it makes everything
-      // written from here on detectable if it is altered.
-      this.chainExistingActivity();
-      from = 2;
-      this.setSchemaVersion(2);
-    }
-    if (from < 3) {
-      // v2 → v3: membership becomes rows.
-      this.backfillChannelMembers();
-      from = 3;
-      this.setSchemaVersion(3);
-    }
-    if (from < 4) {
-      // v3 → v4: run records.
-      //
-      // NOTHING TO BACKFILL, and that is the honest answer rather than a
-      // missing step: a database written before this round holds no record of
-      // what any agent did, and inventing rows for turns nobody watched is
-      // exactly the lie this feature exists to stop. The table itself is
-      // brand new, so `CREATE TABLE IF NOT EXISTS` above has already made it on
-      // a fresh file and an old one alike — and because no migration step adds
-      // a COLUMN here, its indexes may safely live up there with it (the rule
-      // the activity(seq) bug taught us).
-      from = 4;
-      this.setSchemaVersion(4);
-    }
+    //
+    // AND EACH STEP IS ONE TRANSACTION, together with the version bump that
+    // records it (`step`). Idempotence alone was not enough: a step that was
+    // killed part-way through left rows that no version number described, and a
+    // version bump that landed while its own work had not finished left the
+    // work undone forever. Now there are only two outcomes per step — it
+    // happened and the number moved, or nothing happened at all and the next
+    // start does it again.
+
+    // v1 → v2: the trail becomes a ledger. Rows written before the chain
+    // existed are numbered and hashed in time order, ONCE. This does not make
+    // them trustworthy — nothing can, after the fact — it makes everything
+    // written from here on detectable if it is altered.
+    this.step(2, () => this.chainExistingActivity());
+
+    // v2 → v3: membership becomes rows.
+    this.step(3, () => this.backfillChannelMembers());
+
+    // v3 → v4: run records.
+    //
+    // NOTHING TO BACKFILL, and that is the honest answer rather than a
+    // missing step: a database written before this round holds no record of
+    // what any agent did, and inventing rows for turns nobody watched is
+    // exactly the lie this feature exists to stop. The table itself is
+    // brand new, so `CREATE TABLE IF NOT EXISTS` above has already made it on
+    // a fresh file and an old one alike — and because no migration step adds
+    // a COLUMN here, its indexes may safely live up there with it (the rule
+    // the activity(seq) bug taught us).
+    this.step(4, () => { /* nothing to carry forward */ });
+
+    // v4 → v5: a membership row per SPELL in the room, not per person.
+    this.step(5, () => this.rekeyChannelMembers());
+
+    // The one thing that still says a person can only be in a room once at a
+    // time, now that the primary key no longer does. It lives here, below the
+    // step that reshapes the table, for the same reason act_seq does.
+    this.db.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS cm_live ON channel_members(channelId,memberId) WHERE removedAt IS NULL",
+    );
+  }
+
+  /**
+   * Run one migration step and record it, as a single all-or-nothing write.
+   *
+   * The version bump is INSIDE the transaction on purpose. That is the whole
+   * fix: the number in the file and the shape of the file can no longer
+   * disagree, whatever happens to the process in the middle.
+   */
+  private step(to: number, work: () => void): void {
+    if (this.schemaVersion() >= to) return;
+    this.tx(() => {
+      work();
+      this.setSchemaVersion(to);
+    });
+  }
+
+  /**
+   * v4 → v5. Re-key `channel_members` on (channelId, memberId, joinedAt).
+   *
+   * SQLite cannot change a primary key in place, so the table is rebuilt beside
+   * itself and renamed. Every existing row is copied verbatim — no role, no
+   * `joinedAt` and no `invitedBy` is touched — so this migration cannot lose a
+   * fact; it only makes room for the NEXT rejoin to be a new row instead of an
+   * overwrite. It runs inside `step`, so an interruption leaves the old table
+   * exactly as it was.
+   */
+  private rekeyChannelMembers(): void {
+    this.db.exec(`
+      CREATE TABLE channel_members_v5(
+        channelId TEXT NOT NULL, memberId TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'member',
+        joinedAt INTEGER NOT NULL, invitedBy TEXT,
+        removedAt INTEGER, removedBy TEXT,
+        PRIMARY KEY (channelId, memberId, joinedAt)
+      );
+      INSERT INTO channel_members_v5(channelId,memberId,role,joinedAt,invitedBy,removedAt,removedBy)
+        SELECT channelId,memberId,role,joinedAt,invitedBy,removedAt,removedBy FROM channel_members;
+      DROP TABLE channel_members;
+      ALTER TABLE channel_members_v5 RENAME TO channel_members;
+      CREATE INDEX IF NOT EXISTS cm_member ON channel_members(memberId);
+    `);
   }
 
   /**
@@ -372,16 +575,24 @@ export class Store {
    * there is nothing to administer.
    */
   private backfillChannelMembers(): void {
-    const ownerId = (this.db.prepare(
-      "SELECT userId FROM tokens ORDER BY rowid ASC LIMIT 1",
-    ).get() as { userId: string } | undefined)?.userId;
+    // WHO THE OWNER IS, ASKED RATHER THAN GUESSED. This used to read the first
+    // row of `tokens` by rowid, which is the owner only if he happened to sign
+    // in first. On a file where somebody else's token was written first, every
+    // non-direct room was handed to a guest and the owner was demoted to a
+    // plain member of his own Cloud9. The hub knows its own owner token, so it
+    // hands it in and we look the answer up. No token, no owner: everyone stays
+    // a plain member, which is the narrow, honest answer.
+    const ownerId = this.ownerToken === undefined ? undefined : (this.db.prepare(
+      "SELECT userId FROM tokens WHERE token=?",
+    ).get(this.ownerToken) as { userId: string } | undefined)?.userId;
     const rows = this.db.prepare("SELECT id,json FROM channels").all() as
       { id: string; json: string }[];
     const insert = this.db.prepare(
       "INSERT OR IGNORE INTO channel_members(channelId,memberId,role,joinedAt,invitedBy) VALUES(?,?,?,?,NULL)",
     );
     for (const r of rows) {
-      const ch = JSON.parse(r.json) as Channel;
+      const ch = this.safeParse<Channel>(r.json, "a conversation", r.id);
+      if (!ch) continue;
       const joinedAt = ch.createdAt ?? Date.now();
       for (const memberId of ch.memberIds ?? []) {
         const role: ChannelRole =
@@ -417,7 +628,12 @@ export class Store {
     let seq = (this.db.prepare("SELECT MAX(seq) m FROM activity").get() as { m: number | null }).m ?? 0;
     let prevHash = seq > 0 ? this.lastActivityHash() : "";
     for (const r of rows) {
-      const rec = JSON.parse(r.json) as ActivityRecord;
+      // A line nobody can read cannot be chained, and refusing to open the
+      // database over it would lose every OTHER line too. It is left unnumbered
+      // and reported — `verifyActivity` will show the gap, which is exactly the
+      // outcome an unreadable audit line deserves.
+      const rec = this.safeParse<ActivityRecord>(r.json, "an activity line", r.id);
+      if (!rec) continue;
       seq += 1;
       const full: ActivityRecord = { ...rec, seq, prevHash, hash: "" };
       full.hash = activityHash(full);
@@ -528,10 +744,12 @@ export class Store {
     for (const agent of this.agents()) {
       if (agent.ownerId === id) this.deleteAgent(agent.id);
     }
+    // Taken out of each room EXPLICITLY, one row at a time. It used to be done
+    // by handing `saveChannel` a shortened member list, which reconciled the
+    // whole room against a snapshot and could evict bystanders with them.
     for (const channel of this.channels()) {
       if (!channel.memberIds.includes(id)) continue;
-      channel.memberIds = channel.memberIds.filter(m => m !== id);
-      this.saveChannel(channel);
+      this.removeChannelMember(channel.id, id);
     }
     this.db.prepare("DELETE FROM tokens WHERE userId=?").run(id);
     this.db.prepare("UPDATE invites SET revoked=1 WHERE usedBy=? OR createdBy=?").run(id, id);
@@ -562,33 +780,44 @@ export class Store {
 
   // ---- channels ----
   /**
-   * Write a channel — and keep the membership rows in step with it.
+   * Write a channel's own SETTINGS. It never touches who is in the room.
    *
-   * `memberIds` is still the shape every existing caller holds, so this is the
-   * ONE place that turns it into rows: ids that are new get a row, ids that
-   * have gone get a `removedAt`. Nothing else in the codebase had to change,
-   * and no caller can add a member without a row appearing, because there is
-   * no other way to save a channel.
+   * IT USED TO, and that was three bugs in one function. Every save reconciled
+   * the whole membership list against whatever `memberIds` the caller happened
+   * to be holding — so setting a topic evicted anyone who had joined since that
+   * copy was read, a save from a stale screen resurrected someone an admin had
+   * just removed, and neither was anything the person had asked for.
    *
-   * The list is still written into the JSON as well. That is deliberate for
-   * one release: an older build reading this file still finds the members
-   * where it expects them (and it is what the migration checks itself against).
+   * THE CLASS RULE, and it is why this function is now this short: a frame that
+   * does not change membership must not touch membership at all. Joining,
+   * inviting, removing and re-adding each have their own call below, each says
+   * exactly who and exactly why, and none of them goes through here.
+   *
+   * `memberIds` is still written into the JSON so an older build reading this
+   * file still finds the members where it expects them — but it is never read
+   * back as the truth. `hydrateChannel` replaces it from the rows on every read.
    */
-  saveChannel(channel: Channel, by?: ID): void {
+  saveChannel(channel: Channel): void {
     this.db.prepare("INSERT OR REPLACE INTO channels(id,json) VALUES(?,?)")
       .run(channel.id, JSON.stringify(channel));
-    this.syncMembers(channel, by);
   }
 
-  private syncMembers(channel: Channel, by?: ID): void {
-    const wanted = new Set(channel.memberIds ?? []);
-    const now = Date.now();
-    for (const id of wanted) {
-      this.addChannelMember(channel.id, id, { invitedBy: by, at: now });
-    }
-    for (const live of this.liveMemberIds(channel.id)) {
-      if (!wanted.has(live)) this.removeChannelMember(channel.id, live, by);
-    }
+  /**
+   * Create a room and seed the people it starts with, in one write.
+   *
+   * The ONLY place a membership list turns into rows wholesale, and it applies
+   * to a room that did not exist a moment ago — so there is nothing stale to
+   * reconcile against and nobody to evict. Anything after this moment is an
+   * explicit add or an explicit remove.
+   */
+  createChannel(channel: Channel, by?: ID): void {
+    this.tx(() => {
+      this.saveChannel(channel);
+      const at = channel.createdAt ?? Date.now();
+      for (const id of new Set(channel.memberIds ?? [])) {
+        this.addChannelMember(channel.id, id, { role: "member", invitedBy: by, at });
+      }
+    });
   }
 
   /** Everyone in this room right now — the derived `memberIds`. */
@@ -628,32 +857,66 @@ export class Store {
   /**
    * Put someone in a room.
    *
-   * Re-joining REVIVES the existing row rather than making a second one (the
-   * primary key would not allow a second anyway), and it keeps whatever role
-   * they had. Only one spell in a room is kept — the current one — which is
-   * the honest limit of a single row per pair, and it is written down here
-   * rather than discovered later.
+   * COMING BACK IS A NEW ROW, not an edit of the old one. The row recording the
+   * first visit — when they arrived, who let them in, when and by whom they
+   * were removed — is left exactly as it was written, and a second row records
+   * this arrival. That is why the key carries `joinedAt`: "who was in this room
+   * when this was said" now has a true answer for the time in between, and
+   * nothing about the first visit is destroyed to record the second.
+   *
+   * THE ROLE IS ALWAYS SAID OUT LOUD, and it defaults to `member`. It used to
+   * be inherited from the row being revived, which meant re-adding someone who
+   * had been an admin quietly made them an admin again — a plain member could
+   * hand out adminship by removing nobody and simply adding a name. Being let
+   * back into a room is not the same act as being given power in it; the second
+   * one is `setMemberRole` and it needs the owner.
+   *
+   * Already in the room: nothing happens, except an explicit `role` being
+   * applied. Adding someone twice is not a way to change their standing.
    */
   addChannelMember(
     channelId: ID, memberId: ID,
     opts: { role?: ChannelRole; invitedBy?: ID; at?: number } = {},
   ): void {
-    const at = opts.at ?? Date.now();
-    const existing = this.db.prepare(
-      "SELECT role, removedAt FROM channel_members WHERE channelId=? AND memberId=?",
-    ).get(channelId, memberId) as { role: string; removedAt: number | null } | undefined;
-    if (!existing) {
-      this.db.prepare(
-        "INSERT INTO channel_members(channelId,memberId,role,joinedAt,invitedBy) VALUES(?,?,?,?,?)",
-      ).run(channelId, memberId, opts.role ?? "member", at, opts.invitedBy ?? null);
+    const live = this.db.prepare(
+      "SELECT role FROM channel_members WHERE channelId=? AND memberId=? AND removedAt IS NULL",
+    ).get(channelId, memberId) as { role: string } | undefined;
+    if (live) {
+      if (opts.role && opts.role !== live.role) this.setMemberRole(channelId, memberId, opts.role);
       return;
     }
-    if (existing.removedAt !== null) {
-      this.db.prepare(
-        "UPDATE channel_members SET removedAt=NULL, removedBy=NULL, joinedAt=?, invitedBy=? WHERE channelId=? AND memberId=?",
-      ).run(at, opts.invitedBy ?? null, channelId, memberId);
-    }
-    if (opts.role && opts.role !== existing.role) this.setMemberRole(channelId, memberId, opts.role);
+    // `joinedAt` is half the key, so two spells that land in the same
+    // millisecond would collide. Step forward until the moment is free —
+    // a millisecond of drift on a rejoin, never a lost row.
+    let at = opts.at ?? Date.now();
+    const taken = this.db.prepare(
+      "SELECT 1 FROM channel_members WHERE channelId=? AND memberId=? AND joinedAt=?",
+    );
+    while (taken.get(channelId, memberId, at)) at += 1;
+    this.db.prepare(
+      "INSERT INTO channel_members(channelId,memberId,role,joinedAt,invitedBy) VALUES(?,?,?,?,?)",
+    ).run(channelId, memberId, opts.role ?? "member", at, opts.invitedBy ?? null);
+    this.mirrorMemberIds(channelId);
+  }
+
+  /**
+   * Copy the live member list back into the channel JSON.
+   *
+   * The list in the JSON is a COMPATIBILITY MIRROR kept for one release, so a
+   * build that has not caught up still finds members where it expects them. It
+   * is never read as the truth — `hydrateChannel` rebuilds it from the rows on
+   * every read — so it only has to be refreshed whenever the rows move, and it
+   * is refreshed HERE, in the two functions that move them, rather than by
+   * every caller remembering to.
+   */
+  private mirrorMemberIds(channelId: ID): void {
+    const row = this.db.prepare("SELECT json FROM channels WHERE id=?").get(channelId) as
+      { json: string } | undefined;
+    if (!row) return;
+    const ch = this.safeParse<Channel>(row.json, "a conversation", channelId);
+    if (!ch) return;
+    ch.memberIds = this.liveMemberIds(channelId);
+    this.db.prepare("UPDATE channels SET json=? WHERE id=?").run(JSON.stringify(ch), channelId);
   }
 
   /** Take someone out — softly, so the record still knows they were here. */
@@ -661,6 +924,7 @@ export class Store {
     this.db.prepare(
       "UPDATE channel_members SET removedAt=?, removedBy=? WHERE channelId=? AND memberId=? AND removedAt IS NULL",
     ).run(Date.now(), by ?? null, channelId, memberId);
+    this.mirrorMemberIds(channelId);
   }
 
   setMemberRole(channelId: ID, memberId: ID, role: ChannelRole): void {
@@ -805,23 +1069,37 @@ export class Store {
     const terms = searchTerms(query);
     if (terms.length === 0) return { items: [], hasMore: false };
 
+    // EVERY CONDITION IS IN THE QUERY, because `LIMIT` is applied by the
+    // database and anything filtered afterwards is filtered out of a page that
+    // has already been cut. `from:Priya` used to be applied in JavaScript to
+    // the 51 rows SQL had already chosen, so on any conversation with more than
+    // one page of matches it threw away all 51 and reported no hits and no more
+    // pages — a filter the app advertises in its own placeholder that could
+    // only ever work on a small room. Same for the tombstone rule: a page of
+    // deleted messages used to come back empty rather than skipping them.
+    const authorId = opts.authorId;
+    const authorSql = authorId ? " AND json_extract(m.json,'$.authorId') = ?" : "";
+    const authorArgs = authorId ? [authorId] : [];
+    const aliveSql = " AND json_extract(m.json,'$.deletedAt') IS NULL";
+
     let hits: { json: string; snippet: string }[];
     if (this.searchIndexed) {
       const match = terms.map(t => `"${t}"`).join(" ") + "*";
       hits = this.db.prepare(
         `SELECT m.json AS json, snippet(messages_fts, 0, '«', '»', '…', 12) AS snippet
          FROM messages_fts f JOIN messages m ON m.id = f.messageId
-         WHERE messages_fts MATCH ? AND f.channelId IN (${slots})
+         WHERE messages_fts MATCH ? AND f.channelId IN (${slots})${aliveSql}${authorSql}
          ORDER BY m.ts DESC LIMIT ?`,
-      ).all(match, ...ids, size + 1) as { json: string; snippet: string }[];
+      ).all(match, ...ids, ...authorArgs, size + 1) as { json: string; snippet: string }[];
     } else {
       // No FTS5 on this SQLite: a plain contains-scan. Slower and it matches
       // inside words, but it never lies about what it found.
       const like = `%${terms.join(" ")}%`;
       hits = (this.db.prepare(
-        `SELECT json FROM messages WHERE channelId IN (${slots}) AND json LIKE ?
-         ORDER BY ts DESC LIMIT ?`,
-      ).all(...ids, like, size + 1) as { json: string }[])
+        `SELECT m.json AS json FROM messages m WHERE m.channelId IN (${slots}) AND m.json LIKE ?
+         ${aliveSql}${authorSql}
+         ORDER BY m.ts DESC LIMIT ?`,
+      ).all(...ids, like, ...authorArgs, size + 1) as { json: string }[])
         .map(r => ({ json: r.json, snippet: "" }));
     }
 
@@ -829,9 +1107,6 @@ export class Store {
       message: JSON.parse(h.json) as Message,
       snippet: h.snippet,
     }));
-    // a tombstone has no words left, so it can never be a search result
-    items = items.filter(x => !x.message.deletedAt);
-    if (opts.authorId) items = items.filter(x => x.message.authorId === opts.authorId);
     const hasMore = items.length > size;
     if (hasMore) items = items.slice(0, size);
     for (const x of items) {
@@ -963,6 +1238,48 @@ export class Store {
     this.db.prepare("UPDATE attachments SET messageId=? WHERE id=?").run(messageId, id);
   }
 
+  /**
+   * How many bytes this person has PARKED — uploaded but not yet sent.
+   *
+   * A parked file belongs to nobody but its uploader and is invisible to
+   * everyone else, so nothing was ever going to make it go away on its own.
+   * This is the number the quota is checked against.
+   */
+  parkedBytes(userId: ID): number {
+    return (this.db.prepare(
+      "SELECT COALESCE(SUM(json_extract(json,'$.size')),0) n FROM attachments " +
+      "WHERE uploadedBy=? AND messageId IS NULL",
+    ).get(userId) as { n: number }).n;
+  }
+
+  /** How many files this person parked or sent since a moment — the rate check. */
+  uploadsSince(userId: ID, since: number): number {
+    return (this.db.prepare(
+      "SELECT COUNT(*) n FROM attachments WHERE uploadedBy=? AND uploadedAt >= ?",
+    ).get(userId, since) as { n: number }).n;
+  }
+
+  /**
+   * Throw away parked files nobody ever sent.
+   *
+   * A file that was uploaded and never attached to a message is a draft that
+   * was abandoned. Without this it sat on the owner's disk forever, and since
+   * only the uploader could even see it, the owner had no way to find it, let
+   * alone delete it. Bytes and row go together, so neither can outlive the
+   * other. Returns how many were reclaimed.
+   */
+  sweepParkedAttachments(olderThan: number): number {
+    const rows = this.db.prepare(
+      "SELECT id,json FROM attachments WHERE messageId IS NULL AND uploadedAt < ?",
+    ).all(olderThan) as { id: string; json: string }[];
+    for (const r of rows) {
+      const a = this.safeParse<Attachment>(r.json, "a parked file", r.id);
+      if (a?.storedAs) this.removeAttachmentBytes(a.storedAs);
+      this.db.prepare("DELETE FROM attachments WHERE id=?").run(r.id);
+    }
+    return rows.length;
+  }
+
   /** Forget a message's files (used by delete) and say which bytes to remove. */
   releaseAttachments(messageId: ID): Attachment[] {
     const rows = this.db.prepare("SELECT json FROM attachments WHERE messageId=?")
@@ -1068,8 +1385,17 @@ export class Store {
     const rows = this.db.prepare("SELECT json FROM activity ORDER BY seq ASC").all() as { json: string }[];
     let expected = 1;
     let prevHash = "";
+    let prevTs = 0;
     for (const r of rows) {
       const rec = JSON.parse(r.json) as ActivityRecord;
+      // TIME MUST NOT RUN BACKWARDS. The chain proved the ORDER of the lines
+      // and that none had been edited, but it said nothing about their clocks —
+      // so a line dated before the one it follows verified perfectly. That is
+      // exactly the shape of a back-dated entry, and it is now the first thing
+      // a reader would have asked about.
+      if (typeof rec.ts === "number" && rec.ts < prevTs) {
+        return { seq: rec.seq ?? expected, problem: "this line is dated before the one before it" };
+      }
       if (rec.seq !== expected) {
         return { seq: expected, problem: `the trail jumps from ${expected - 1} to ${rec.seq}` };
       }
@@ -1080,6 +1406,7 @@ export class Store {
         return { seq: expected, problem: "this line has been changed since it was written" };
       }
       prevHash = rec.hash!;
+      prevTs = typeof rec.ts === "number" ? rec.ts : prevTs;
       expected += 1;
     }
     return null;
@@ -1146,9 +1473,22 @@ export class Store {
    * shares it is not bounded at all. Returns how many were removed.
    */
   pruneRuns(agentId: ID, keep: number = RUN_RETENTION.perAgent): number {
-    const doomed = (this.db.prepare(
-      "SELECT id FROM runs WHERE agentId=? ORDER BY startedAt DESC, id DESC LIMIT -1 OFFSET ?",
-    ).all(agentId, Math.max(0, keep)) as { id: string }[]).map(r => r.id);
+    const overflow = (this.db.prepare(
+      "SELECT id, taskId FROM runs WHERE agentId=? ORDER BY startedAt DESC, id DESC LIMIT -1 OFFSET ?",
+    ).all(agentId, Math.max(0, keep)) as { id: string; taskId: string | null }[]);
+    // A JOB'S OWN RECORD IS NOT THE AGENT'S SPARE CAPACITY. A busy agent used
+    // to push every older run out, including the ones that were the whole
+    // answer to "what did this delegated job actually do" — so opening a task
+    // from last week showed nothing, which is the one thing the feature exists
+    // for. A run attached to a task is kept while it is among that TASK's
+    // newest, whatever its agent has been doing since.
+    const keptForTask = new Set<string>();
+    for (const taskId of new Set(overflow.map(r => r.taskId).filter((t): t is string => !!t))) {
+      for (const r of this.db.prepare(
+        "SELECT id FROM runs WHERE taskId=? ORDER BY startedAt DESC, id DESC LIMIT ?",
+      ).all(taskId, RUN_RETENTION.perTask) as { id: string }[]) keptForTask.add(r.id);
+    }
+    const doomed = overflow.filter(r => !keptForTask.has(r.id)).map(r => r.id);
     for (const id of doomed) this.db.prepare("DELETE FROM runs WHERE id=?").run(id);
     return doomed.length;
   }
@@ -1183,8 +1523,10 @@ const AFTER_EVERY_ID = "\uffff";
  * 1 = before the chat basics. 2 = reactions, attachments, read state, ledger.
  * 3 = membership as rows, and rooms that can carry a topic and be archived.
  * 4 = run records — what an agent actually did, turn by turn.
+ * 5 = a membership row per spell in a room, so a rejoin cannot overwrite a
+ *     first arrival.
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * The fingerprint of one line of the trail.

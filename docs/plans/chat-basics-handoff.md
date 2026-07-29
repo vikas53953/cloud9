@@ -788,3 +788,146 @@ built after the migration, never in the CREATE block.**
   still blocked on nothing.
 - **Retiring `Channel.memberIds`** — it is derived now, so this is a delete once
   every screen reads `channelMembers`. Not before.
+
+---
+
+# 11. Handoff to whoever owns `apps/desktop/src/**` — from the hardening round
+
+Written after the review that came back NOT READY. Everything below is a
+RENDERER-side item: the server half of each one has landed and is tested, but
+the screen still has to catch up or the person using it will be misled.
+
+Server-side test counts after this round: **174 engine, 112 relay** (was 92),
+build clean.
+
+## 11.1 URGENT — `markdown.tsx` is a binary file to git
+
+`apps/desktop/src/markdown.tsx` contains **one raw NUL byte, at line 47, byte
+offset 2198**, inside a character class:
+
+```
+  if (/[<NUL>- <>"']/.test(url)) return null;
+```
+
+Because of it `git` classifies the whole file as binary (`file` reports `data`,
+and `git diff` will not show its contents). That file is the app's entire XSS
+boundary — the URL scheme check and the escaping that keeps a `<script>` in a
+message rendered as the word "<script>" — and **no review of it can be diffed**.
+It is invisible to every code-review tool in the repo.
+
+**The exact fix**: replace the raw NUL with its escape. In a regular expression
+literal, write it as `\x00`:
+
+```ts
+  if (/[\x00- <>"']/.test(url)) return null;
+```
+
+The regex means the same thing afterwards (control characters, space, and the
+four HTML-dangerous characters), and the file becomes text. Verify with
+`git check-attr` / `file apps/desktop/src/markdown.tsx` — it must stop saying
+`data` — and confirm `git diff` shows real lines.
+
+Do not "fix" it by adding `*.tsx binary` to `.gitattributes` or by deleting the
+NUL and leaving the class open — the intent is to reject control characters, and
+that intent must stay expressed.
+
+## 11.2 "Add people" must not be offered to someone who cannot use it
+
+`addMembers` moved from `writableChannel` (any member) to `adminChannel`
+(admin or owner) — it was the last channel-administration frame still on the
+member gate, and a plain member could hand a private room's whole scrollback to
+anybody. Three consequences for the screen:
+
+1. Show the add-people control **only when `channelMembers` says this person's
+   role is `admin` or `owner`** in this room. Same test the other room controls
+   already use (topic, description, visibility, archive, remove).
+2. In a **direct conversation** there is no add-people control at all, for
+   anybody, including the owner. The hub refuses it outright: "a direct
+   conversation has no settings to change". A DM is between two people by
+   definition; the way to include a third is to start a room.
+3. New refusals to render as plain sentences, not as a red toast with a raw
+   `Error:` prefix:
+   - `you don't run this conversation`
+   - `a direct conversation has no settings to change`
+   - `that agent's owner isn't in this conversation — invite them first`
+   - `that conversation is archived — nobody new can be added to it`
+
+## 11.3 An agent in a member list is a PERSON in the room — say so
+
+This is the part that "looked like nothing on screen", and it is the reason the
+breach went unnoticed in review. `visibleChannels` counts a room as yours when
+an **agent** of yours is in it. So adding somebody else's agent to a room adds
+that agent's **owner** to the room's readership — they can read every message,
+including everything said before they arrived.
+
+The hub now refuses to add an agent whose owner is not already a member. The
+screen still has to make the relationship visible:
+
+- Wherever an agent appears in a member list, show **whose agent it is** — the
+  owner's name beside it, not just the agent's name and emoji. A row that says
+  only "🔭 Scout" hides a person.
+- In the add-people picker, an agent belonging to somebody who is not in the
+  room should either be hidden or shown greyed with the reason ("Neha isn't in
+  this conversation"). It will be refused by the hub either way; being refused
+  after clicking is a worse way to learn it.
+- The member count in the room header counts agents. Consider "4 people · 2
+  agents" rather than "6".
+
+## 11.4 `from:` search now works — and the placeholder is finally honest
+
+The author filter used to be applied in JavaScript *after* SQL's `LIMIT 51`, so
+on any room with more than a page of matches `from:Priya` returned zero hits and
+`hasMore: false`, with no way to page further. It is filtered in SQL now.
+
+- The composer/search placeholder already advertises `from:Priya`. It is true
+  now; leave it.
+- Empty results are now genuinely empty. If the screen has any "search is
+  limited / try fewer words" hedging copy that was papering over this, remove it.
+
+## 11.5 Sizes and refusals the screen should be able to say
+
+New bounds, all in `@cloud9/shared` so the screen reads the same numbers the hub
+enforces — **never hard-code them in the renderer**:
+
+- `ATTACHMENT_LIMITS.parkedBytesPerUser` (50 MB) — total uploaded-but-not-yet-sent.
+  Refusal: `you have too many files waiting to be sent (max 50 MB) — send or
+  discard some first`. Ideally show a "files waiting" indicator before they hit it.
+- `ATTACHMENT_LIMITS.parkedTtlMs` (24 h) — an attached-but-never-sent draft is
+  swept. If the composer can hold a draft attachment across a restart, it must
+  cope with the file having been reclaimed: say "that file expired, attach it
+  again", never a broken thumbnail.
+- `ATTACHMENT_LIMITS.uploadsPerMinute` (30). Refusal: `that's a lot of files at
+  once — wait a minute and try again`.
+- `WS_LIMITS.maxPayloadBytes` — the socket now refuses an oversized frame
+  outright, which closes the connection rather than returning an error frame.
+  The reconnect path should not present that as data loss.
+
+## 11.6 Membership history is now real — two rows, not one
+
+Being removed from a room and let back in writes a **second** membership row; the
+first is left exactly as written. `channelMembers(channelId, { includeRemoved:
+true })` can therefore return more than one row per person.
+
+- Any renderer code that keys a member list by `memberId` alone will collide.
+  Key by `memberId + joinedAt`.
+- Re-joining no longer restores the role someone was removed with. A person let
+  back into a room comes back as a plain **member**; giving power back is a
+  separate, deliberate act by the room's owner. If the UI implied otherwise, fix
+  the wording.
+- "Who was in this room when this was said" (`channelMembers` with `at`) is now
+  correct across a gap in membership — it was not before.
+
+## 11.7 The database will step 0 → 5 the next time he opens the app
+
+Not a renderer change, but the screen is where he will see it go wrong if it
+does. Rehearsed on a **copy of his real `cloud9-relay.db`** (22 rooms, 182
+messages, 290 trail rows, no version stamp): 0 → 5 in **198 ms**, every row
+count identical, every member list identical, the ledger verifies, the search
+index came out complete, and re-opening changed nothing. An interruption
+mid-step was also rehearsed on his file: it rolled back to the last completed
+version with zero half-written rows, and the retry finished the job.
+
+If a database ever *cannot* be read, the hub now throws a `StoreOpenError` whose
+message names the file and the reason and states that nothing was changed. That
+sentence is written to be shown to him as-is — please surface it on a plain
+"Cloud9 could not open your messages" screen rather than a stack trace.

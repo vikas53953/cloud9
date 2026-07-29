@@ -5,7 +5,8 @@ import {
   AgentDef, AgentRespondTo, AgentSkill, AgentSkillFile, Approval, Attachment, ATTACHMENT_LIMITS,
   Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
   HarnessInfo, ID, isInlineViewable, isSafeSkillFileName, mayAdministerChannel, mayDriveAgent,
-  MENU_ACTIONS, MenuAction, Message, SearchHit, SKILL_LIMITS, Task, User,
+  MENU_ACTIONS, MenuAction, Message, RunListEntry, RunRecord, RunStep, RunStepKind,
+  SearchHit, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
 } from "@cloud9/shared";
 import { client } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -821,7 +822,17 @@ function Workspace(): React.JSX.Element {
       ticket: (attachmentId: ID) => client.ticketFor(attachmentId),
       opened: () => client.openFileIds(),
     };
+    // QA hook, same shape again: what the screen is HOLDING about runs, so a
+    // missing card can be told apart from a record that never arrived. It
+    // reports only ids and outcomes — never the record's words.
+    (window as unknown as { cloud9Runs?: unknown }).cloud9Runs = {
+      held: () => Object.entries(client.world.runs)
+        .map(([id, r]) => ({ id, outcome: r.outcome, taskId: r.taskId ?? null, steps: r.steps.length })),
+      jobs: () => client.world.tasks
+        .map(t => ({ id: t.id, status: t.status, runId: t.runId ?? null })),
+    };
     return () => {
+      delete (window as unknown as { cloud9Runs?: unknown }).cloud9Runs;
       delete (window as unknown as { cloud9Files?: unknown }).cloud9Files;
       delete (window as unknown as { cloud9Menu?: unknown }).cloud9Menu;
       window.removeEventListener("cloud9:menu", onEvent as EventListener);
@@ -1383,6 +1394,241 @@ function AnswerCard({ title, rows, tone, lead, actions }: {
   );
 }
 
+/* ================= WHAT AN AGENT ACTUALLY DID (FR-TL-003) =================
+
+   An agent can say it did something. Until now the screen could not show what
+   it ACTUALLY did. The engine writes a record of every turn, the hub stores and
+   serves it with the permission checks and the redaction already applied, and
+   everything below draws it — in the prototype's own shape: a titled card, a
+   plain-words line, labelled rows, and a disclosure.
+
+   THE ONE LAW HERE: a row whose value is absent is not rendered at all. No
+   "—", no "0", no "about". Claude reports money and refused tools; Codex
+   reports neither, so a Codex run simply has no COST row. Showing a zero where
+   the CLI said nothing is the exact lie this feature was built to stop.
+
+   The words come from `@cloud9/shared` — `summarizeRun`, `humanDuration`,
+   `humanMoney` — never from a second spelling written here. The hub puts the
+   same sentence in the activity trail, and two spellings of "76 cents" is a bug
+   the owner would see before we did.                                        */
+
+/** One line-drawn mark per kind of thing an agent did (§4.2 of the handoff). */
+function StepMark({ kind }: { kind: RunStepKind }): React.JSX.Element {
+  const path = ((): React.ReactNode => {
+    switch (kind) {
+      case "command": return <><rect x="3" y="4.5" width="18" height="15" rx="2.2" /><path d="M7 10l2.6 2.2L7 14.4M12.4 15h4" /></>;
+      case "read": return <><path d="M6 3.5h8l4 4v13H6z" /><path d="M14 3.5v4h4M9 12h6M9 15.5h6" /></>;
+      case "write": return <><path d="M4 20l.9-3.6L15.2 6.1a1.8 1.8 0 0 1 2.6 0l1.1 1.1a1.8 1.8 0 0 1 0 2.6L8.6 20.1z" /><path d="M14 7.5l2.5 2.5" /></>;
+      case "search": return <><circle cx="10.5" cy="10.5" r="6" /><path d="M15 15l4.5 4.5" /></>;
+      case "web": return <><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.4 2.4 2.4 14.6 0 17M12 3.5c-2.4 2.4-2.4 14.6 0 17" /></>;
+      case "tool": return <><path d="M14.6 5.4a4.2 4.2 0 0 0 5.3 5.4l-9 9a2.1 2.1 0 0 1-3-3l9-9a4.2 4.2 0 0 0-2.3-2.4z" /></>;
+      case "thinking": return <><circle cx="12" cy="12" r="8.5" strokeDasharray="2.6 2.6" /><path d="M9.5 12h.01M12 12h.01M14.5 12h.01" /></>;
+      case "message": return <><path d="M4 5.5h16v11H9l-5 3.5z" /><path d="M8 9.5h8M8 12.5h5" /></>;
+      case "note": return <><path d="M12 3.2l7 2.6v6c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9v-6z" /><path d="M9 12l2.2 2.2L15.2 10" /></>;
+    }
+  })();
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {path}
+    </svg>
+  );
+}
+
+/** A `web` step's detail is a real URL, deliberately protected from redaction. */
+const isLink = (s: string): boolean => /^https?:\/\//i.test(s);
+
+/**
+ * Every step, in the order it happened.
+ *
+ * Thinking and talking are collapsed to start with — they are the steps a
+ * person scrolls past to find the four that matter. A refusal (`note`) is the
+ * opposite: it is the first evidence Cloud9 has ever had that a permission
+ * boundary actually held, so it is drawn as a good thing, not an error.
+ */
+function RunSteps({ record }: { record: RunRecord }): React.JSX.Element {
+  const [showQuiet, setShowQuiet] = useState(false);
+  const isQuiet = (s: RunStep): boolean => s.kind === "thinking" || s.kind === "message";
+  const quiet = record.steps.filter(isQuiet);
+  // already in `seq` order, and a filter keeps it that way
+  const shown = showQuiet ? record.steps : record.steps.filter(s => !isQuiet(s));
+  return (
+    <div className="runsteps">
+      <ol>
+        {shown.map(s => (
+          <li key={s.seq} className={`runstep${s.ok === false ? " bad" : ""}${s.kind === "note" ? " held" : ""}`}
+            data-kind={s.kind} data-seq={s.seq} data-ok={s.ok === undefined ? "unsaid" : String(s.ok)}>
+            <span className="sq">{s.seq}</span>
+            <span className="ic"><StepMark kind={s.kind} /></span>
+            <span className="tx">
+              <span className="lb">{s.label}</span>
+              {/* The text arrived redacted TWICE — by the engine on the way out
+                  and by the hub on the way in. What survived is what the owner
+                  is meant to see, so it is drawn as it came: no tidying, no
+                  rebuilding a path, and never through the markdown renderer. */}
+              {s.detail && (isLink(s.detail) && s.kind === "web"
+                ? <a className="dt lnk" href={s.detail} target="_blank" rel="noreferrer noopener">{s.detail}</a>
+                : <span className="dt">{s.detail}</span>)}
+            </span>
+            {/* Absent means the app never said. No tick AND no cross. */}
+            {s.ok === true && <span className="mk yes" title="the app said this worked">✓</span>}
+            {s.ok === false && <span className="mk no" title="the app said this failed">✕</span>}
+          </li>
+        ))}
+      </ol>
+      {quiet.length > 0 && (
+        <button className="runquiet" aria-expanded={showQuiet} onClick={() => setShowQuiet(v => !v)}>
+          {showQuiet ? "Hide" : "Show"} what it thought and said · {quiet.length}
+        </button>
+      )}
+      {record.truncated && (
+        <p className="runtrunc">Some steps were left out to keep this small.</p>
+      )}
+    </div>
+  );
+}
+
+/** ✓ / ✕ / ⏸ for the three ways a turn can end. */
+function RunMark({ outcome }: { outcome: RunRecord["outcome"] }): React.JSX.Element {
+  if (outcome === "failed") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--madder)"
+        strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="8.6" /><path d="M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6" />
+      </svg>
+    );
+  }
+  if (outcome === "cancelled") return <MarkClock />;
+  return <MarkAnswer />;
+}
+
+/**
+ * One run, drawn as the prototype's callout: a titled head, the plain-words
+ * line, labelled rows, and the steps behind a disclosure.
+ */
+function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const provider = PROVIDER_LABEL[record.provider] ?? record.provider;
+  // what the app SAID it used, or failing that what we asked for — and if
+  // neither was reported, the app's name alone rather than an invented model
+  const model = record.actualModel ?? record.model;
+
+  const rows: [string, string, React.ReactNode][] = [
+    ["asked-by", "Asked by", `${record.requestedBy} · ${clock(record.startedAt)}`],
+    ["ran-on", "Ran on", model ? `${provider} · ${modelLabel(model)}` : provider],
+    ["took", "Took", humanDuration(record.durationMs)],
+  ];
+  // THE ROW THAT MUST BE ABSENT WHEN THE VALUE IS. Codex never reports money,
+  // so a Codex run has no COST row at all — not a zero, not an estimate.
+  if (typeof record.usage?.costUsd === "number") {
+    rows.push(["cost", "Cost", humanMoney(record.usage.costUsd)]);
+  }
+  if (record.error) rows.push(["went-wrong", "What went wrong", record.error]);
+
+  const title = record.outcome === "failed"
+    ? `${record.agentName} didn't finish “${record.ask}”`
+    : record.outcome === "cancelled"
+      ? `${record.agentName} was stopped on “${record.ask}”`
+      : `${record.agentName} finished “${record.ask}”`;
+
+  return (
+    <div className={`callout run out-${record.outcome}`} data-run={record.id}
+      data-outcome={record.outcome} data-provider={record.provider}>
+      <div className="hd"><RunMark outcome={record.outcome} /><h4>{title}</h4></div>
+      {/* verbatim from shared — the one line a non-developer reads, and the
+          reason this whole feature exists */}
+      <p className="runsum">{summarizeRun(record)}</p>
+      <dl className="kv">
+        {rows.map(([key, label, value]) => (
+          <React.Fragment key={key}>
+            <dt data-row={key}>{label}</dt><dd data-row={key}>{value}</dd>
+          </React.Fragment>
+        ))}
+      </dl>
+      {record.steps.length > 0 && (
+        <button className="runmore" aria-expanded={open} data-steps={record.steps.length}
+          onClick={() => setOpen(v => !v)}>
+          <span className="tri" aria-hidden="true">{open ? "▾" : "▸"}</span>
+          What it did<span className="n">{record.steps.length} {record.steps.length === 1 ? "step" : "steps"}</span>
+        </button>
+      )}
+      {open && record.steps.length > 0 && <RunSteps record={record} />}
+    </div>
+  );
+}
+
+/**
+ * The record behind one finished job, wherever that job is shown.
+ *
+ * A `run` frame arrives unasked for every turn in a conversation this person
+ * can see, so most of the time the record is already here and the card is drawn
+ * without a word going over the wire. When it is not — an older job, a run that
+ * happened before this screen connected — the card is one click away, and the
+ * click is what asks. Nothing is drawn from a `runId` alone.
+ */
+function TaskRun({ runId }: { runId: string }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [asked, setAsked] = useState(false);
+  const record = world.runs[runId];
+  if (record) return <RunCard record={record} />;
+  if (world.runsGone[runId]) {
+    return <div className="runmissing" data-run={runId}>That record isn't there any more.</div>;
+  }
+  if (asked) return <div className="runwait" data-run={runId}>Fetching what it did…</div>;
+  return (
+    <button className="btn small runopen" data-run={runId}
+      onClick={() => { setAsked(true); client.askRun(runId); }}>
+      What it did
+    </button>
+  );
+}
+
+/**
+ * What this agent has been doing lately — FR-ME-003, with evidence behind it.
+ *
+ * OWNER ONLY, and that is the hub's rule, not a courtesy: being in a room with
+ * someone's agent shows you the turns it takes THERE; it is not a licence to
+ * read everything it has ever done. Callers must not render this for an agent
+ * that is not this person's.
+ */
+function RecentWork({ agentId }: { agentId: ID }): React.JSX.Element {
+  // subscribed for the re-render: the list itself is read through the client,
+  // so there is one spelling of a history's key and not two
+  useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [open, setOpen] = useState<string | null>(null);
+  const list = client.runsFor("agent", agentId);
+  useEffect(() => { client.askRuns("agent", agentId, 10); }, [agentId]);
+
+  return (
+    <div className="recentwork" data-agent={agentId}>
+      {!list.asked && <div className="d-empty">Looking up what it has been doing…</div>}
+      {list.asked && list.entries.length === 0 && (
+        <div className="d-empty">Nothing yet. Every turn it takes from now on is written down here.</div>
+      )}
+      {list.entries.map((e: RunListEntry) => (
+        <div className="workrow" key={e.id} data-run={e.id} data-outcome={e.outcome}>
+          <button className="wr-head" aria-expanded={open === e.id}
+            onClick={() => {
+              const next = open === e.id ? null : e.id;
+              setOpen(next);
+              if (next) client.askRun(e.id);
+            }}>
+            <span className="wr-when">{clock(e.startedAt)}</span>
+            <span className="wr-tx">
+              <b>{e.ask}</b>
+              <span className="wr-sum">{e.summary}</span>
+            </span>
+            <span className={`chip ${e.outcome === "ok" ? "is-pine" : e.outcome === "failed" ? "is-madder" : ""}`}>
+              {e.outcome === "ok" ? "Done" : e.outcome === "failed" ? "Didn't finish" : "Stopped"}
+            </span>
+          </button>
+          {open === e.id && <TaskRun runId={e.id} />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ChatView({
   channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpenTasks,
   jumpTo, onJumped, onOpenThread, threadRoot, onToggleDetails, detailsOpen,
@@ -1910,6 +2156,29 @@ function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, va
     </div>
   ));
 
+  /**
+   * The job this "📦 Task done" message is the result of — or nothing.
+   *
+   * A message carries no job id, so the only honest link is the RESULT ITSELF:
+   * the hub stores a finished job's result, and the agent posts exactly that
+   * text under the 📦 line. Matching on the words is exact, not a guess about
+   * timing — and if two jobs somehow match, or none does, no card is drawn at
+   * all. A run card under the wrong job would be worse than no run card.
+   *
+   * (A very long result is stored clipped at 2,000 characters, so that one case
+   * matches on the stored prefix — still exact about which job it was.)
+   */
+  const doneRunId = useMemo(() => {
+    if (!isAgent || deleted) return undefined;
+    const head = /^📦 (?:Background t|T)ask done:\n/.exec(m.text);
+    if (!head) return undefined;
+    const body = m.text.slice(head[0].length);
+    const hits = world.tasks.filter(t =>
+      t.channelId === m.channelId && t.agentId === m.authorId && t.runId && t.result
+      && (t.result === body || (t.result.length === 2000 && body.startsWith(t.result))));
+    return hits.length === 1 ? hits[0].runId : undefined;
+  }, [m.text, m.channelId, m.authorId, world.tasks, isAgent, deleted]);
+
   const reactions = (m.reactions ?? []).filter(r => r.userIds.length > 0);
   const reactionRow = (!deleted && reactions.length > 0) && (
     <div className="reactions">
@@ -2027,6 +2296,7 @@ function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, va
         <div className="when-gutter">{clock(m.ts)}</div>
         <div className="body">
           {deleted ? tombstone : editing ? editor : paragraph(m.text)}
+          {!deleted && doneRunId && <TaskRun runId={doneRunId} />}
           {!deleted && m.attachments && m.attachments.length > 0 &&
             <MessageFiles attachments={m.attachments} />}
           {!deleted && m.editedAt && <span className="editedmark">edited</span>}
@@ -2109,6 +2379,7 @@ function MessageRow({ row, agent, working, onOpenThread, inOpenThread, litUp, va
           </div>
         )}
         {deleted ? tombstone : editing ? editor : body}
+        {!deleted && doneRunId && <TaskRun runId={doneRunId} />}
         {!deleted && m.attachments && m.attachments.length > 0 &&
           <MessageFiles attachments={m.attachments} />}
         {refusedNotes}
@@ -3461,6 +3732,21 @@ function AgentEditor({ agent, onDone }: { agent: AgentDef | null; onDone: () => 
             </p>
             <SkillsEditor skills={skills} onChange={setSkills} />
           </section>
+
+          {/* WHAT THEY HAVE ACTUALLY BEEN DOING. Only for an agent that is
+              yours: the hub answers this question for the owner and nobody
+              else, so an agent you merely share a room with is not asked
+              about at all rather than asked and refused. */}
+          {!creating && agent!.ownerId === world.me?.id && (
+            <section className="fieldset recentsec">
+              <div className="sec-head"><h3>What they've been doing</h3><span className="eyebrow">Recent work</span></div>
+              <p className="sec-note">
+                Every turn {shownName} takes is written down — what it did, how long it took,
+                and what it cost when the app says so. Only you can see this.
+              </p>
+              <RecentWork agentId={agent!.id} />
+            </section>
+          )}
         </div>
 
         <aside className="preview-col">
@@ -4328,6 +4614,11 @@ function TasksScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): Re
           {t.result && (
             <div className="taskresult"><b>Result</b>{t.result.slice(0, 240)}</div>
           )}
+          {/* WHAT IT ACTUALLY DID. Drawn only when the hub has attached a run
+              to this job — absent on every job from before records existed, and
+              a placeholder there would be a claim nobody can check. This is
+              what turns approving a job into a decision rather than a guess. */}
+          {t.runId && <TaskRun runId={t.runId} />}
         </div>
         <div className="taskbtns">
           <span className="chip">{elapsed(t.updatedAt - t.createdAt)}</span>

@@ -4,8 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import {
-  assertHarnessIsHonest, qaTarget, reportAndExit, signInAsOwner, waitFor, waitForAgentReply,
+  assertHarnessIsHonest, qaOwnerToken, qaTarget, reportAndExit, signInAsOwner, waitFor,
+  waitForAgentReply,
 } from "./qa-target.mjs";
+// The screen shows `summarizeRun`'s sentence VERBATIM, so the check that it did
+// has to be able to say the sentence itself. Imported from the same package the
+// app imports, never re-spelled here.
+import { humanMoney, summarizeRun } from "@cloud9/shared";
 
 const SHOTS = new URL("../docs/qa", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 fs.mkdirSync(SHOTS, { recursive: true });
@@ -21,7 +26,7 @@ const { ui: UI } = qaTarget();
  * run stops early it now FAILS and says so. Add or remove an `ok(...)` and this
  * number must move with it — a mismatch is the suite telling you it drifted.
  */
-const EXPECTED_CHECKS = 122;
+const EXPECTED_CHECKS = 156;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -937,6 +942,30 @@ try {
     drawn.w === 180 && drawn.h === 120, JSON.stringify(drawn));
   await page.screenshot({ path: `${SHOTS}/files-message.png` });
 
+  /* ---- ONE ROUTE TO A FILE, and this is the run that proves it ----
+     The screen is served on :4173 and the hub answers on :8799, so every fetch
+     below really is cross-origin. There used to be a second code path for
+     exactly this case, because the hub sent no CORS header and the page could
+     not read its own answer; the header is there now and the branch is gone.
+     A `blob:` source is the evidence: only the fetch → blob route can produce
+     one, so if the old handing-the-ticket-to-the-img shortcut were still in
+     use this check would fail. */
+  const origins = await page.evaluate(() => ({
+    screen: location.origin,
+    hub: new URL((new URLSearchParams(location.search).get("relay") ?? "").replace(/^ws/, "http")).origin,
+  }));
+  ok("the screen and the hub really are on different addresses, so the next check means something",
+    !!origins.hub && origins.screen !== origins.hub, `${origins.screen} vs ${origins.hub}`);
+  ok("a picture takes the one intended route — fetched, held as a blob, freed on close",
+    drawn.src === "blob:", `img src begins "${drawn.src}"`);
+
+  // and saving still hands the file to the browser's own download path
+  const saving = page.waitForEvent("download", { timeout: 20000 });
+  await page.click('.fileblock[data-file="ledger.bin"] .fileopen');
+  const saved = await saving;
+  ok("saving a file still hands it to the browser, under its own name",
+    saved.suggestedFilename() === "ledger.bin", saved.suggestedFilename());
+
   ok("an opened file is held for this screen, so a second look does not re-ticket",
     (await page.evaluate(() => window.cloud9Files.opened())).includes(pictureId));
 
@@ -1108,6 +1137,263 @@ try {
   }
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+
+  /* ================= WHAT AN AGENT ACTUALLY DID (FR-TL-003) =================
+
+     The whole point of this feature is that the screen can show what an agent
+     really did instead of repeating what it SAID it did. So these checks are
+     written against records that came off the wire, never against anything the
+     page invented — and the one they lean on hardest is the absence check:
+     a record with no money must render no COST ROW AT ALL. Asserting that the
+     row does not say "0" would pass on a card that says "0"; asserting the row
+     is not in the document is the only version that means anything. */
+
+  await page.click('.rail-btn[data-go="tasks"]');
+  // What the screen is holding, printed before anything is asserted — a missing
+  // card and a record that never arrived look identical on screen and are two
+  // completely different bugs.
+  const jobs = await page.evaluate(() => window.cloud9Runs.jobs());
+  console.log("[qa] jobs the screen knows about: " + JSON.stringify(jobs));
+  console.log("[qa] runs held by the screen: " + JSON.stringify(
+    await page.evaluate(() => window.cloud9Runs.held())));
+
+  const doneJob = jobs.find(j => j.status === "completed" && j.runId);
+  ok("a finished job carries the record of what its agent actually did",
+    !!doneJob && /^r-/.test(doneJob.runId), JSON.stringify(doneJob ?? null));
+  const jobRunId = doneJob?.runId;
+
+  /* This suite reloads the page three times before it gets here, so the record
+     that was PUSHED when the job finished is long gone — which is exactly the
+     everyday case of opening the app the morning after. The job offers the
+     record and the click is what asks for it. Nothing is drawn from a runId
+     alone. (The unasked push is proved further down, on a live run.) */
+  await page.waitForSelector(`.taskrow .runopen[data-run="${jobRunId}"]`, { timeout: 30000 });
+  await page.click(`.taskrow .runopen[data-run="${jobRunId}"]`);
+  await page.waitForSelector(`.taskrow .callout.run[data-run="${jobRunId}"]`, { timeout: 30000 });
+  const jobCard = page.locator(`.taskrow .callout.run[data-run="${jobRunId}"]`);
+  ok("opening it fetches the real record from the hub and draws it as a finished run",
+    (await jobCard.getAttribute("data-outcome")) === "ok",
+    await jobCard.getAttribute("data-outcome"));
+
+  const jobTook = (await jobCard.locator('dd[data-row="took"]').innerText()).trim();
+  const jobSum = (await jobCard.locator(".runsum").innerText()).trim();
+  // This demo turn used no tools, so `summarizeRun` has exactly one sentence for
+  // it — and the TOOK row is the same `humanDuration` of the same field. If the
+  // screen had grown a second way of saying either, these two would disagree.
+  ok("the plain-words line is the hub's own sentence, built from the same numbers as the rows",
+    jobSum === `Answered straight from what it knew — no tools used, took ${jobTook}.`,
+    `${jobSum} :: took=${jobTook}`);
+
+  const jobRows = await jobCard.locator("dl.kv dt").evaluateAll(ds => ds.map(d => d.dataset.row));
+  ok("a run the app reported no money for renders NO COST ROW AT ALL — not a zero, not an estimate",
+    (await jobCard.locator('[data-row="cost"]').count()) === 0 && !jobRows.includes("cost"),
+    jobRows.join("/"));
+  ok("and the rows it does carry are the ones the record really holds",
+    jobRows.join("/") === "asked-by/ran-on/took", jobRows.join("/"));
+  await page.screenshot({ path: `${SHOTS}/run-task.png` });
+
+  // ---- the same record, under the 📦 result in the conversation ----
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# trip-goa");
+  await page.waitForSelector(`.msg .callout.run[data-run="${jobRunId}"]`, { timeout: 30000 });
+  ok("the 📦 job result in the conversation carries that job's own record, not a lookalike",
+    (await page.locator(`.msg .callout.run[data-run="${jobRunId}"]`).count()) === 1);
+  await page.screenshot({ path: `${SHOTS}/run-chat.png` });
+
+  /* A run card is the widest thing the app draws: a long ask in its title, a
+     full URL in a step. It is checked in EVERY place it renders, because the
+     column it sits in differs in each of them. */
+  const overflowNow = async () => page.evaluate(() => ({
+    doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    body: document.body.scrollWidth - document.body.clientWidth,
+  }));
+  const noSidewaysWithACard = async (where, shot) => {
+    for (const [width, height] of [[1280, 800], [1440, 900]]) {
+      for (const theme of ["light", "dark"]) {
+        await page.setViewportSize({ width, height });
+        await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+        await page.waitForTimeout(220);
+        const over = await overflowNow();
+        ok(`a run card ${where} does not scroll sideways at ${width} in the ${theme} look`,
+          over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+        if (width === 1280 && shot) await page.screenshot({ path: `${SHOTS}/${shot}-${theme}.png` });
+      }
+    }
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+  };
+  await noSidewaysWithACard("under a job result in the conversation", "run-chat");
+
+  await page.click('.rail-btn[data-go="tasks"]');
+  await page.waitForSelector(`.taskrow .callout.run[data-run="${jobRunId}"]`, { timeout: 20000 });
+  await noSidewaysWithACard("in the Tasks in-tray", "run-tasks");
+
+  /* ---- records with the things a demo turn cannot have ----
+     A mock harness reports no tools, no tokens and no money, which is honest and
+     is exactly why the absence check above is real. To see the OTHER half — a
+     step list, a refused tool, a cost — this opens a second connection as the
+     engine and reports three runs through the real frame the real engine uses.
+     Nothing is faked on the screen's side: the hub validates them, checks they
+     belong to this owner's agent, redacts them and pushes them out like any
+     other. */
+  const { relayPort } = qaTarget();
+  const engineWs = new WebSocket(`ws://127.0.0.1:${relayPort}`);
+  const hub = await new Promise((resolve, reject) => {
+    const giveUp = setTimeout(() => reject(new Error("the hub never answered the QA engine")), 20000);
+    engineWs.onerror = () => { clearTimeout(giveUp); reject(new Error("the QA engine could not connect")); };
+    engineWs.onmessage = ev => {
+      const f = JSON.parse(ev.data);
+      if (f.type === "welcome") { clearTimeout(giveUp); resolve(f.state); }
+      if (f.type === "error") { clearTimeout(giveUp); reject(new Error(f.error)); }
+    };
+    engineWs.onopen = () => engineWs.send(JSON.stringify({
+      type: "hello", token: qaOwnerToken(), client: "engine",
+    }));
+  });
+  const scout = hub.agents.find(a => a.name === "Scout");
+  const general = hub.channels.find(c => c.name === "general");
+  if (!scout || !general) throw new Error("the QA engine could not find Scout and #general to report against");
+
+  const base = {
+    kind: "chat", agentId: scout.id, agentName: "Scout", channelId: general.id,
+    requestedBy: "Vikas", requestedByKind: "human",
+    // the newest runs this agent has: "Recent work" shows the last ten, and by
+    // now Scout has taken more turns than that
+    startedAt: Date.now(), finishedAt: Date.now() + 41000, durationMs: 41000,
+    replyChars: 812, events: 24,
+  };
+  const RICH_URL = "https://villas.example/goa";
+  const rich = {
+    ...base, id: "r-qa-rich-1", provider: "claude",
+    model: "claude-sonnet-5", actualModel: "claude-sonnet-5",
+    ask: "find three villas in Goa under 8k", outcome: "ok",
+    steps: [
+      { seq: 1, kind: "web", label: "Read a web page", detail: RICH_URL, ok: true },
+      { seq: 2, kind: "read", label: "Read notes.md", detail: "notes.md", ok: true },
+      { seq: 3, kind: "note", label: "Refused to use Bash" },
+      { seq: 4, kind: "command", label: "Ran a command", detail: "ls", ok: false },
+      { seq: 5, kind: "thinking", label: "Thought it through" },
+      { seq: 6, kind: "message", label: "Said something" },
+    ],
+    usage: { inputTokens: 9291, outputTokens: 640, cachedInputTokens: 4100, costUsd: 0.76 },
+    sessionId: "qa-session", numTurns: 3,
+  };
+  const codexRun = {
+    ...base, id: "r-qa-codex-1", provider: "codex", model: "gpt-5.6-sol",
+    ask: "tidy the shortlist", outcome: "ok",
+    steps: [{ seq: 1, kind: "command", label: "Ran a command", detail: "sort list.txt", ok: true }],
+    // tokens but NO money: Codex never reports a cost, and we never compute one
+    usage: { inputTokens: 400, outputTokens: 90, reasoningTokens: 120 },
+  };
+  const brokenRun = {
+    ...base, id: "r-qa-failed-1", provider: "claude", model: "claude-sonnet-5",
+    ask: "book the second villa", outcome: "failed",
+    error: "the booking site refused the card",
+    steps: [{ seq: 1, kind: "web", label: "Read a web page", detail: "https://villas.example/book", ok: false }],
+    truncated: true,
+  };
+  for (const record of [rich, codexRun, brokenRun]) {
+    engineWs.send(JSON.stringify({ type: "runRecorded", record }));
+  }
+
+  /* THE UNASKED PUSH. Nothing on screen asked for these; the hub sends a run to
+     everyone who could see the conversation it happened in, the moment it
+     finishes. The screen has to hold one that arrives for a room it is not even
+     looking at, keyed by the record's own id. */
+  await waitFor(page, ids => {
+    const held = window.cloud9Runs.held().map(r => r.id);
+    return ids.every(id => held.includes(id));
+  }, [rich.id, codexRun.id, brokenRun.id], { timeout: 20000, what: "runs to arrive unasked" });
+  ok("a run that finishes anywhere this person can see arrives unasked, and is kept by its own id",
+    (await page.evaluate(id => window.cloud9Runs.held().find(r => r.id === id)?.steps, rich.id)) === 6);
+  // ---- an agent's own history, in its editor. Owner only. ----
+  await page.click('.rail-btn[data-go="crew"]');
+  await page.click('.cast[data-crew="Scout"] >> text=Edit');
+  await page.waitForSelector(".recentwork", { timeout: 20000 });
+  await page.waitForSelector(`.recentwork .workrow[data-run="${rich.id}"]`, { timeout: 20000 });
+  const richRow = page.locator(`.recentwork .workrow[data-run="${rich.id}"]`);
+  ok("an agent's recent work lists what it did, with the ask and the same plain-words line",
+    (await richRow.locator(".wr-tx b").innerText()).trim() === rich.ask &&
+    (await richRow.locator(".wr-sum").innerText()).trim() === summarizeRun(rich),
+    (await richRow.locator(".wr-sum").innerText()).trim());
+  await page.screenshot({ path: `${SHOTS}/run-recent-work.png` });
+
+  await richRow.locator(".wr-head").click();
+  await page.waitForSelector(`.workrow[data-run="${rich.id}"] .callout.run`, { timeout: 20000 });
+  const richCard = page.locator(`.workrow[data-run="${rich.id}"] .callout.run`);
+  ok("a run the app DID report money for shows the cost, in the hub's own words",
+    (await richCard.locator('dd[data-row="cost"]').innerText()).trim() === humanMoney(0.76),
+    (await richCard.locator('dd[data-row="cost"]').innerText()).trim());
+
+  await richCard.locator(".runmore").click();
+  await page.waitForSelector(`.workrow[data-run="${rich.id}"] .runsteps .runstep`, { timeout: 20000 });
+  const kinds = await richCard.locator(".runstep").evaluateAll(
+    ls => ls.map(l => `${l.dataset.seq}:${l.dataset.kind}`));
+  ok("every step is listed in the order it happened, each as its own kind of thing",
+    kinds.join(" ") === "1:web 2:read 3:note 4:command", kinds.join(" "));
+  const link = richCard.locator('.runstep[data-kind="web"] a.dt');
+  ok("a web step's detail is a real link to the page it read",
+    (await link.getAttribute("href")) === RICH_URL &&
+    (await link.innerText()).trim() === RICH_URL,
+    await link.getAttribute("href"));
+  // The refusal is the one step here the app reported no outcome for. It gets
+  // neither a tick nor a cross — the two steps the app DID vouch for get ticks,
+  // so this is not passing because no marks are drawn at all.
+  ok("a step the app said nothing about gets NO tick and NO cross",
+    (await richCard.locator('.runstep[data-ok="unsaid"]').count()) === 1 &&
+    (await richCard.locator('.runstep[data-ok="unsaid"] .mk').count()) === 0 &&
+    (await richCard.locator('.runstep[data-ok="true"] .mk.yes').count()) === 2,
+    `${await richCard.locator('.runstep[data-ok="unsaid"]').count()} unsaid, ` +
+    `${await richCard.locator(".mk").count()} marks in all`);
+  ok("a step the app said failed is marked failed, and only that one",
+    (await richCard.locator(".runstep.bad .mk.no").count()) === 1 &&
+    (await richCard.locator('.runstep[data-kind="command"].bad').count()) === 1);
+  ok("a refused tool reads as a boundary that held, not as an error",
+    (await richCard.locator('.runstep[data-kind="note"].held').count()) === 1 &&
+    (await richCard.locator('.runstep[data-kind="note"].bad').count()) === 0 &&
+    /Refused to use Bash/.test(await richCard.locator('.runstep[data-kind="note"]').innerText()));
+  ok("what it thought and what it said are folded away until they are asked for",
+    (await richCard.locator('.runstep[data-kind="thinking"]').count()) === 0 &&
+    (await richCard.locator(".runquiet").innerText()).includes("2"));
+  await richCard.locator(".runquiet").click();
+  await page.waitForSelector(`.workrow[data-run="${rich.id}"] .runstep[data-kind="thinking"]`, { timeout: 10000 });
+  await page.screenshot({ path: `${SHOTS}/run-steps.png` });
+
+  // ---- the Codex half: tokens, and never a price ----
+  await page.locator(`.recentwork .workrow[data-run="${codexRun.id}"] .wr-head`).click();
+  await page.waitForSelector(`.workrow[data-run="${codexRun.id}"] .callout.run`, { timeout: 20000 });
+  const codexCard = page.locator(`.workrow[data-run="${codexRun.id}"] .callout.run`);
+  const codexRows = await codexCard.locator("dl.kv dt").evaluateAll(ds => ds.map(d => d.dataset.row));
+  ok("a Codex run shows NO cost row at all — the app reports no money and none is invented",
+    (await codexCard.locator('[data-row="cost"]').count()) === 0 && !codexRows.includes("cost") &&
+    !/cost|\$|cents/i.test(await codexCard.locator("dl.kv").innerText()),
+    codexRows.join("/"));
+
+  // ---- a run that failed says so, in the record's own words ----
+  await page.locator(`.recentwork .workrow[data-run="${brokenRun.id}"] .wr-head`).click();
+  await page.waitForSelector(`.workrow[data-run="${brokenRun.id}"] .callout.run[data-outcome="failed"]`,
+    { timeout: 20000 });
+  const brokenCard = page.locator(`.workrow[data-run="${brokenRun.id}"] .callout.run`);
+  ok("a run that failed says what went wrong, word for word from the record",
+    (await brokenCard.locator('dd[data-row="went-wrong"]').innerText()).trim() === brokenRun.error,
+    (await brokenCard.locator('dd[data-row="went-wrong"]').innerText()).trim());
+  await brokenCard.locator(".runmore").click();
+  await page.waitForSelector(`.workrow[data-run="${brokenRun.id}"] .runtrunc`, { timeout: 10000 });
+  ok("a record that had steps dropped to keep it small says so",
+    /left out/.test(await brokenCard.locator(".runtrunc").innerText()));
+  await page.screenshot({ path: `${SHOTS}/run-failed.png` });
+
+  // ---- and none of it is offered for somebody else's agent ----
+  await fpage.click('.rail-btn[data-go="crew"]');
+  await fpage.waitForSelector(".cast", { timeout: 20000 });
+  ok("a friend is never shown — and never asks for — the history of an agent that isn't theirs",
+    (await fpage.locator(".recentwork").count()) === 0 &&
+    (await fpage.locator('.cast[data-crew="Scout"] >> text=Edit').count()) === 0);
+
+  // ---- and the third place it renders: an agent's own history ----
+  await noSidewaysWithACard("with every step showing, in an agent's history", "run-card");
+  engineWs.close();
+  await page.click(".editor >> text=← Crew");
 
   // ---------- nothing new scrolls sideways, in either look ----------
   await page.click('.rail-btn[data-go="chat"]');
