@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-07-29T07:09:27.066Z",
+  "ranAt": "2026-07-29T07:45:12.221Z",
   "expected": 48,
   "executed": 48,
   "results": [
@@ -161,7 +161,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch qumjk :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch s4v8j :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +176,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_HTZJwQ6LKybdaHQon2KZag"
+      "detail": "inv__mnGH3eFTQteff7vhQ7TtQ"
     },
     {
       "name": "friend joins via invite",

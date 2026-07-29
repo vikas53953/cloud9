@@ -234,6 +234,19 @@ export class RelayClient {
       case "push":        // relay → mobile only
       case "harnessRequest": // relay → engine host only
         break;
+      // ---- chat basics: the relay half is built, the renderer half is not ----
+      //
+      // These are listed BY NAME rather than swept under a `default:` so the
+      // exhaustiveness check below keeps its teeth. Each one is a real feature
+      // waiting for a screen; how to handle every one of them is written out in
+      // `docs/plans/chat-basics-handoff.md`.
+      case "searchResults":   // search across everything you can see
+      case "reaction":        // someone put an emoji on a message
+      case "messageUpdated":  // a message was edited or turned into a tombstone
+      case "thread":          // one thread: the root and its replies
+      case "attachment":      // a file parked on the hub, ready to send
+      case "read":            // read state, from the account rather than this browser
+        break;
       default: {
         /**
          * If a new frame is added to `ServerFrame` and not handled above, this
