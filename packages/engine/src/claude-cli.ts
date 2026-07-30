@@ -14,7 +14,9 @@ import { AgentDef, MODEL_ID_RE, validateAgentInput } from "@cloud9/shared";
 import {
   buildAgentPrompt, ClaudeProvider, HarnessUnavailableError, RespondInput,
 } from "./provider.js";
-import { claudeToolsFor, NEVER_ALLOWED_TOOLS } from "./abilities.js";
+import {
+  allowsConnections, claudeToolsFor, deniedClaudeTools, reachesBeyondOwnFolder,
+} from "./abilities.js";
 import { EMPTY_ARG, Runner, run, safeArg } from "./run.js";
 import { envWithoutCredentials } from "./env.js";
 import {
@@ -30,6 +32,14 @@ export interface ClaudeCliProviderOptions {
   timeoutMs?: number;
   /** the models this harness offers; a turn is refused for anything else */
   models?: () => string[];
+  /**
+   * Folders an agent with the `wholeComputer` switch may reach, asked fresh per
+   * turn so a settings change takes effect immediately. Ignored entirely for an
+   * agent without that switch — see `claudeArgs`.
+   */
+  wholeComputerRoots?: (agentId: string) => string[];
+  /** path to the MCP config the owner chose for THIS agent, if any */
+  mcpConfigPath?: (agentId: string) => string | undefined;
   runner?: Runner;
 }
 
@@ -297,7 +307,30 @@ export const CLAUDE_ISOLATION_FLAGS = [
  * moment it would become a command line — the relay's check is the first gate,
  * this is the last one, and neither trusts the other.
  */
-export function claudeArgs(agent: AgentDef, models: string[] = []): string[] {
+export interface ClaudeArgExtras {
+  /**
+   * Folders outside the agent's own one that it may reach, when — and ONLY when
+   * — the `wholeComputer` switch is on. Passing roots for an agent without that
+   * switch is ignored, so a caller cannot widen an agent by handing it a path.
+   */
+  wholeComputerRoots?: string[];
+  /**
+   * PATH to an MCP config chosen FOR THIS AGENT by its owner, honoured only
+   * when the `connections` switch is on. `--strict-mcp-config` stays on
+   * regardless, so this is the only way a server can exist for the run — the
+   * owner's own servers are never among them.
+   *
+   * A path, never inline JSON, even though the CLI accepts both. Inline JSON
+   * would put `{`, `"` and whatever a server name contains onto a command line,
+   * and `run.ts` rightly refuses those characters. A file keeps the argument
+   * boring and the content out of argv entirely.
+   */
+  mcpConfigPath?: string;
+}
+
+export function claudeArgs(
+  agent: AgentDef, models: string[] = [], extras: ClaudeArgExtras = {},
+): string[] {
   const problem = validateAgentInput(agent, { models });
   if (problem) throw new Error(`refusing to run this agent: ${problem}`);
 
@@ -328,7 +361,31 @@ export function claudeArgs(agent: AgentDef, models: string[] = []): string[] {
   // machine. Declaring the set is what actually closes that.
   args.push("--tools", ...(allowed.length > 0 ? allowed.map(safeArg) : [EMPTY_ARG]));
   if (allowed.length > 0) args.push("--allowed-tools", ...allowed.map(safeArg));
-  args.push("--disallowed-tools", ...NEVER_ALLOWED_TOOLS.map(safeArg));
+  // Belt and braces, and it is now DERIVED rather than a hand-written list.
+  // It used to be the constant `["Bash"]`, which had two faults: it promised no
+  // agent could ever run a command (the ceiling Vikas asked us to lift), and it
+  // missed `PowerShell`, which the 2026-07-30 probe proved is its own separate
+  // tool on this machine. Deriving it from the measured built-in set means a
+  // tool the CLI grows next month is denied by default rather than by luck.
+  const denied = deniedClaudeTools(agent);
+  if (denied.length > 0) args.push("--disallowed-tools", ...denied.map(safeArg));
+  // Beyond its own folder — only for an agent whose owner switched that on, and
+  // only to the folders he named. `--add-dir` is the CLI's own flag for it
+  // (`claude --help`, 2.1.220): "Additional directories to allow tool access to".
+  //
+  // Paths go through RAW. Quoting has exactly one owner — `run.ts` — and this
+  // file learned that lesson the expensive way on the Codex side, where quoting
+  // a path here as well made `run()` reject its own quotes and broke every turn
+  // for anyone with a space in their user folder.
+  if (reachesBeyondOwnFolder(agent)) {
+    for (const root of extras.wholeComputerRoots ?? []) args.push("--add-dir", root);
+  }
+  // Connected services the owner chose for THIS agent. `--strict-mcp-config` is
+  // already on the line above and stays there, so this config is the only one
+  // that can exist for the run — his own servers cannot arrive through it.
+  if (allowsConnections(agent) && extras.mcpConfigPath) {
+    args.push("--mcp-config", extras.mcpConfigPath);
+  }
   return args;
 }
 
@@ -346,7 +403,11 @@ export class ClaudeCliProvider implements ClaudeProvider {
   async respond({ agent, context, onTrace }: RespondInput): Promise<string> {
     const cwd = this.opts.agentDataDir(agent.id);
     const prompt = buildAgentPrompt(agent, context);
-    const result = await this.runner(this.command, claudeArgs(agent, this.opts.models?.() ?? []), {
+    const args = claudeArgs(agent, this.opts.models?.() ?? [], {
+      wholeComputerRoots: this.opts.wholeComputerRoots?.(agent.id) ?? [],
+      mcpConfigPath: this.opts.mcpConfigPath?.(agent.id),
+    });
+    const result = await this.runner(this.command, args, {
       cwd,
       timeoutMs: this.timeoutMs,
       stdin: prompt,

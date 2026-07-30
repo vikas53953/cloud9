@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-07-29T19:42:28.530Z",
+  "ranAt": "2026-07-30T02:27:22.026Z",
   "expected": 247,
   "executed": 247,
   "results": [
@@ -161,7 +161,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch hnnjl :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch w6j72 :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +176,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_7H-IKFfcHYQxDoJVI147UA"
+      "detail": "inv_7JyF78jD9nocA7qu59zM4g"
     },
     {
       "name": "friend joins via invite",
@@ -306,7 +306,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 01:10"
+      "detail": "↳ 1 reply · last at 07:56"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -376,7 +376,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 01:10 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 07:56 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -696,7 +696,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms6hpbc42xy73d\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms6w71d475twa5\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -736,12 +736,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms6hnd7hjnoi3j:1785354033025 a_ms6hnfhl6fpi86:1785354047820 u_ms6hnt29r5a2yu:1785354048633 a_ms6hpbc42xy73d:1785354049011"
+      "detail": "u_ms6w6d2vwzhdwy:1785378384219 a_ms6w6fzs90tf3n:1785378388739 u_ms6w6kmn9clkst:1785378389237 a_ms6w71d475twa5:1785378389318"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785354043676 · now 1785354048633"
+      "detail": "first 1785378387028 · now 1785378389237"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -846,7 +846,7 @@
     {
       "name": "REPRODUCED: a refusal was provoked with one file on the wire and a second read and queued behind it",
       "pass": true,
-      "detail": "{\"onTheWire\":1,\"queuedBehind\":1,\"asked\":[\"archiveChannel\",\"archiveChannel\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setMemberRole\",\"channelMembers\",\"removeMember\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"markRead\",\"uploadAttachment\",\"editMessage\"]}"
+      "detail": "{\"onTheWire\":1,\"queuedBehind\":1,\"asked\":[\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setChannelInfo\",\"markRead\",\"setChannelVisibility\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"archiveChannel\",\"archiveChannel\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setMemberRole\",\"channelMembers\",\"removeMember\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"markRead\",\"uploadAttachment\",\"editMessage\"]}"
     },
     {
       "name": "REPRODUCED: the refusal really did land while the upload was still unanswered",
@@ -881,7 +881,7 @@
     {
       "name": "and the send button says it is waiting for the file rather than offering to send without it",
       "pass": true,
-      "detail": "Waiting for a file…"
+      "detail": "Send with 1 file"
     },
     {
       "name": "nothing was lost by waiting — the file goes out with the words that were typed",
@@ -946,7 +946,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":49,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
+      "detail": "{\"followedToBottom\":0,\"samples\":20,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1021,7 +1021,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms6hnipd7xnx99\",\"status\":\"completed\",\"runId\":\"r-0ms6hniqc-16z4\"}"
+      "detail": "{\"id\":\"t_ms6w6hd4bdgu0m\",\"status\":\"completed\",\"runId\":\"r-0ms6w6hdh-kufj\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",

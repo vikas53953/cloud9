@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { AgentAbilities, AgentDef } from "@cloud9/shared";
 import { claudeToolsFor } from "./abilities.js";
 import { claudeArgs, CLAUDE_ISOLATION_FLAGS } from "./claude-cli.js";
-import { codexArgs, CODEX_DISABLED_FEATURES, CODEX_ISOLATION_FLAGS } from "./codex.js";
+import { codexArgs, CODEX_ALWAYS_DISABLED, CODEX_ISOLATION_FLAGS } from "./codex.js";
 import { HARNESS_ISOLATION, isolationFor } from "./isolation.js";
 import { EMPTY_ARG, run, UnsafeArgumentError } from "./run.js";
 
@@ -136,15 +136,15 @@ test("Codex cannot declare its built-in tool set — this is recorded, not fixed
 
 test("a Codex agent is told to drop the owner's plugins, apps, MCP resources and image tool", () => {
   const args = codexArgs(agent({ files: true }), "C:/data/a1");
-  for (const feature of CODEX_DISABLED_FEATURES) {
+  for (const feature of CODEX_ALWAYS_DISABLED) {
     const at = args.indexOf(feature);
     assert.ok(at > 0, `feature ${feature} is never switched off`);
     assert.equal(args[at - 1], "--disable", `${feature} is not attached to a --disable`);
   }
   // named individually so dropping one fails here, loudly, with the tool it costs
-  assert.ok(CODEX_DISABLED_FEATURES.includes("plugins"), "functions.request_plugin_install");
-  assert.ok(CODEX_DISABLED_FEATURES.includes("apps"), "the owner's connected apps");
-  assert.ok(CODEX_DISABLED_FEATURES.includes("image_generation"), "image_gen.imagegen");
+  assert.ok(CODEX_ALWAYS_DISABLED.includes("plugins"), "functions.request_plugin_install");
+  assert.ok(CODEX_ALWAYS_DISABLED.includes("apps"), "the owner's connected apps");
+  assert.ok(CODEX_ALWAYS_DISABLED.includes("image_generation"), "image_gen.imagegen");
 });
 
 test("Codex's own web-search switch follows the ability, both ways", () => {
@@ -173,6 +173,22 @@ test("the engine can say, per harness, whether the toggles are the boundary", ()
   assert.notEqual(HARNESS_ISOLATION.claude.headline, HARNESS_ISOLATION.codex.headline);
   assert.equal(isolationFor("codex"), HARNESS_ISOLATION.codex);
   assert.equal(isolationFor("mock")?.togglesAreTheBoundary, true, "a mock agent runs no tools at all");
+});
+
+test("the report says how high the switches GO, not only what they keep out", () => {
+  // Raising the ceiling on 2026-07-30 made "nothing else reaches it" only half
+  // the answer. A screen that shows only the reassuring half now understates
+  // what he has switched on, which is the same class of lie in reverse.
+  for (const report of Object.values(HARNESS_ISOLATION)) {
+    assert.ok(report.ceiling, `${report.harness} does not say what its switches can reach`);
+    assert.ok(Array.isArray(report.unknowns), `${report.harness} has no place for what we could not settle`);
+  }
+  assert.match(HARNESS_ISOLATION.claude.ceiling, /running programs/i,
+    "Claude's switches can now grant a shell — the report has to say so");
+  assert.notEqual(HARNESS_ISOLATION.claude.ceiling, HARNESS_ISOLATION.codex.ceiling);
+  // and what we saw but could not settle is written down rather than rounded off
+  assert.ok(HARNESS_ISOLATION.claude.unknowns.length > 0,
+    "safe-mode still names his plugins; silence about that would be a false 'clean'");
 });
 
 test("a harness may not claim the toggles are the boundary while leaking tools", () => {

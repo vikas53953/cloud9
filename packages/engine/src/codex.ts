@@ -7,7 +7,9 @@ import { AgentDef, MODEL_ID_RE, validateAgentInput } from "@cloud9/shared";
 import {
   buildAgentPrompt, ClaudeProvider, HarnessUnavailableError, RespondInput,
 } from "./provider.js";
-import { codexSandboxFor, codexWebSearchFor } from "./abilities.js";
+import {
+  CAPABILITIES, codexSandboxFor, codexWebSearchFor, reachesBeyondOwnFolder,
+} from "./abilities.js";
 import { envWithoutCredentials } from "./env.js";
 import { run, Runner, safeArg } from "./run.js";
 import {
@@ -32,6 +34,11 @@ export interface CodexProviderOptions {
   apiKey?: () => string | undefined;
   /** the models this harness offers; a turn is refused for anything else */
   models?: () => string[];
+  /**
+   * Folders an agent with the `wholeComputer` switch may write in, asked fresh
+   * per turn. Ignored entirely for an agent without that switch.
+   */
+  wholeComputerRoots?: (agentId: string) => string[];
   runner?: Runner;
 }
 
@@ -281,11 +288,16 @@ function str(v: unknown): string | undefined {
 export const CODEX_ISOLATION_FLAGS = ["--ignore-user-config", "--ignore-rules"] as const;
 
 /**
- * Codex feature switches turned OFF for every agent, whatever its abilities say.
+ * Features that are OFF for every agent at every reach, because every one of
+ * them is a door into VIKAS'S OWN setup — his plugins, his connected apps, his
+ * memories, his hook scripts, his desktop and his browser. Raising the ceiling
+ * on 2026-07-30 did not touch this list: "an agent may do everything Codex can
+ * do" was never "an agent may be me".
  *
- * `--disable <name>` is the CLI's documented shorthand for `-c
- * features.<name>=false`, and every name here came from `codex features list` on
- * this machine, so none of them can be a typo the CLI silently ignores.
+ * Each name came from `codex features list` on this machine (re-read at
+ * 0.146.0 on 2026-07-30), so none of them can be a typo the CLI silently
+ * ignores. `--disable X` is the CLI's documented shorthand for
+ * `-c features.X=false`.
  *
  * MEASURED, not hoped for. Two real `codex exec` turns on codex-cli 0.146.0,
  * 2026-07-29, differing only in these switches, asked the model to name its own
@@ -300,22 +312,36 @@ export const CODEX_ISOLATION_FLAGS = ["--ignore-user-config", "--ignore-rules"] 
  * offline and for free) confirms the matching text goes too: the owner's
  * `<plugins_instructions>`, `<apps_instructions>` and `<recommended_plugins>`
  * blocks — 4,641 characters of his setup that every turn used to pay for.
- *
- * `multi_agent` is in the list even though it did NOT remove `collaboration.*`
- * on the probe. It costs nothing, it is the switch the CLI offers, and if a
- * later version honours it we get the fix for free. What it does NOT do is
- * recorded honestly in `isolation.ts` rather than assumed here.
  */
-export const CODEX_DISABLED_FEATURES = [
+export const CODEX_ALWAYS_DISABLED = [
   "plugins",          // functions.request_plugin_install + the owner's installed plugins
   "apps",             // the owner's connected apps and their MCP tools
-  "multi_agent",      // collaboration.* — requested; NOT granted on 0.146.0
   "image_generation", // image_gen.imagegen — confirmed gone
   "computer_use",     // driving the owner's actual desktop
   "browser_use",      // driving the owner's actual browser
   "memories",         // the owner's own memories, written by his own sessions
   "hooks",            // the owner's hook scripts
 ] as const;
+
+/**
+ * The features switched off for THIS agent: the always-off list above, plus
+ * every feature a capability row would have kept on that this agent was not
+ * given. Today that is exactly one — `multi_agent`, owned by the `helpers`
+ * switch — but it is derived from the table rather than listed here, so a
+ * second one cannot be added to the table and forgotten on the command line.
+ *
+ * `multi_agent` did NOT remove `collaboration.*` when measured on 0.146.0. It is
+ * still driven, because it costs nothing, it is the switch the CLI offers, and
+ * a later version that honours it fixes us for free. What it does not do is
+ * recorded honestly in `isolation.ts` rather than assumed here.
+ */
+export function codexDisabledFeaturesFor(agent: AgentDef): string[] {
+  const off = [...CODEX_ALWAYS_DISABLED] as string[];
+  for (const cap of CAPABILITIES) {
+    if (cap.codexFeature && agent.abilities?.[cap.ability] !== true) off.push(cap.codexFeature);
+  }
+  return off;
+}
 
 /**
  * Build the `codex exec` argument list for an agent.
@@ -334,7 +360,9 @@ export const CODEX_DISABLED_FEATURES = [
  * produced something neither of them would accept. The cwd is ALSO passed
  * through `RunOptions.cwd`, exactly as the Claude path does it.
  */
-export function codexArgs(agent: AgentDef, cwd: string, models: string[] = []): string[] {
+export function codexArgs(
+  agent: AgentDef, cwd: string, models: string[] = [], wholeComputerRoots: string[] = [],
+): string[] {
   const problem = validateAgentInput(agent, { models });
   if (problem) throw new Error(`refusing to run this agent: ${problem}`);
 
@@ -350,8 +378,16 @@ export function codexArgs(agent: AgentDef, cwd: string, models: string[] = []): 
     args.push("-m", safeArg(agent.model));
   }
   args.push("-c", "approval_policy=never", "--ephemeral", ...CODEX_ISOLATION_FLAGS);
-  // Every feature switch the CLI offers that takes a tool away. See the list.
-  for (const feature of CODEX_DISABLED_FEATURES) args.push("--disable", feature);
+  // Every feature switch this agent's switches say to take away — the owner's
+  // own setup always, plus anything a capability row would have kept on.
+  for (const feature of codexDisabledFeaturesFor(agent)) args.push("--disable", feature);
+  // Beyond its own folder, only when that switch is on. `--add-dir` is the CLI's
+  // own flag ("Additional directories that should be writable alongside the
+  // primary workspace", `codex exec --help` at 0.146.0). Paths go through RAW:
+  // quoting has exactly one owner, see the note above.
+  if (reachesBeyondOwnFolder(agent)) {
+    for (const root of wholeComputerRoots) args.push("--add-dir", root);
+  }
   // The only per-tool switch Codex has (`[tools] web_search`), driven by the
   // same table that writes the sentence the agent reads about itself. It did
   // NOT remove `web.run` when measured — that is recorded in isolation.ts, not
@@ -385,7 +421,9 @@ export class CodexProvider implements ClaudeProvider {
     const cwd = this.opts.agentDataDir(agent.id);
     const prompt = buildAgentPrompt(agent, context);
     const key = this.opts.apiKey?.();
-    const result = await this.runner(this.command, codexArgs(agent, cwd, this.opts.models?.() ?? []), {
+    const args = codexArgs(agent, cwd, this.opts.models?.() ?? [],
+      this.opts.wholeComputerRoots?.(agent.id) ?? []);
+    const result = await this.runner(this.command, args, {
       cwd,
       timeoutMs: this.timeoutMs,
       stdin: prompt,

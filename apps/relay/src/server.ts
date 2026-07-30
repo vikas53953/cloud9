@@ -5,14 +5,18 @@ import http from "node:http";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import {
-  AgentDef, AgentStatus, Approval, Attachment, Channel, ChannelMember, ChannelRole,
-  ChannelSummary, ClientFrame, HarnessState, ID, Message,
-  MESSAGE_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, RunRecord, RUN_RETENTION,
+  AgentDef, AgentPresenceState, AgentStatus, Approval, Attachment, Channel, ChannelMember,
+  ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
+  MESSAGE_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
+  RunRecord, RUN_RETENTION,
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
-  downloadContentType, fitRunRecord, isInlineViewable, isSafeSkillFileName,
-  mayAdministerChannel, mayDriveAgent, runListEntry, setMachineNames, shareableRun,
+  agentPresence, downloadContentType, fitRunRecord, isInlineViewable, isSafeSkillFileName,
+  mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
+  setMachineNames, shareableRun,
   extractMentions, newId, validateAgentInput, validateAttachment, validateChannelText,
-  validateMessageText, validateReactionEmoji, validateRunRecord, WS_LIMITS,
+  validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji,
+  validateRepo, validateRunRecord, validateTaskSummary,
+  WS_LIMITS,
 } from "@cloud9/shared";
 import os from "node:os";
 import { RunRow, Store } from "./store.js";
@@ -208,6 +212,15 @@ export class Relay {
       if (conn.client === "engine" && !this.hasEngine(conn.userId)) {
         delete this.harness[conn.userId];
         delete this.signInFlight[conn.userId];
+        // THE SAME REASONING, APPLIED TO THE LAMP. The last idle/working/braked
+        // an engine reported is a claim about a machine nobody is watching any
+        // more, and keeping it meant an engine that died mid-turn left its agent
+        // "working" for ever. Dropped, and everyone is told what is true now:
+        // nobody can run these agents.
+        for (const agent of this.store.agents()) {
+          if (agent.ownerId === conn.userId) delete this.agentStatus[agent.id];
+        }
+        this.announcePresenceForOwner(conn.userId);
         this.toUser(conn.userId, {
           type: "harness",
           state: {
@@ -265,7 +278,77 @@ export class Relay {
     const conn: Conn = { ws, userId: user.id, client: frame.client };
     this.conns.add(conn);
     send(ws, { type: "welcome", state: this.worldFor(user.id) });
+    // An engine arriving changes the answer for every agent it can run, and
+    // everyone in a room with those agents needs to hear it — not only the
+    // owner. This is the other half of the disconnect rule above.
+    if (conn.client === "engine") this.announcePresenceForOwner(user.id);
     return conn;
+  }
+
+  // -------------------------------------------------------------------------
+  // CAN THIS AGENT ACTUALLY BE USED RIGHT NOW? (his item 2 — a BUG)
+  //
+  // WHAT THE HUB REALLY KNEW BEFORE THIS, verified by reading every write to
+  // `agentStatus`:
+  //   * `this.agentStatus` was written in exactly ONE place — an engine sending
+  //     an `agentStatus` frame — and was never seeded and never cleared. So a
+  //     hub that had just started knew NOTHING about any agent, and a client
+  //     asking "is this agent available?" got `undefined`.
+  //   * It was never cleared when the engine went away either, so a "working"
+  //     left behind by an engine that died mid-turn was reported forever, about
+  //     a machine nobody was watching.
+  //   * `this.harness[ownerId]` (installed / signedIn, per app) WAS known and
+  //     nothing ever consulted it when answering "is this agent available".
+  //   * Whether the owner's engine host is connected at all WAS known
+  //     (`hasEngine`) and nothing consulted that either.
+  //
+  // So the hub had the facts and no rule. The rule now lives in ONE function in
+  // shared (`agentPresence`); everything here is fact-gathering and telling
+  // people. Nothing below invents a status: every field handed to that function
+  // is an observed fact or is absent.
+  // -------------------------------------------------------------------------
+
+  /** Everything the hub genuinely knows about one agent, turned into presence. */
+  private presenceFor(agent: AgentDef): AgentPresenceState {
+    const reported = this.harness[agent.ownerId];
+    const info = reported?.[agent.provider === "codex" ? "codex" : "claude"];
+    const status = this.agentStatus[agent.id] ?? "idle";
+    const { presence, reason } = agentPresence(agent, {
+      engineConnected: this.hasEngine(agent.ownerId),
+      ...(info ? { harness: info } : {}),
+      status,
+    });
+    return { agentId: agent.id, presence, reason, status, updatedAt: Date.now() };
+  }
+
+  /** Presence for every agent in this Cloud9 — what the opening frame carries. */
+  private presenceMap(): Record<ID, AgentPresenceState> {
+    const out: Record<ID, AgentPresenceState> = {};
+    for (const agent of this.store.agents()) out[agent.id] = this.presenceFor(agent);
+    return out;
+  }
+
+  /**
+   * Tell everyone that the answer changed for these agents.
+   *
+   * ONE broadcaster, called from every event that can change the answer — an
+   * engine arriving or leaving, a harness report, a lamp, an agent being made
+   * or edited. A second place that broadcast this frame would be a second place
+   * that could compute presence differently.
+   */
+  private announcePresence(agents: AgentDef[]): void {
+    for (const agent of agents) {
+      const p = this.presenceFor(agent);
+      this.broadcast({
+        type: "agentStatus", agentId: agent.id,
+        status: p.status, presence: p.presence, reason: p.reason,
+      });
+    }
+  }
+
+  /** The same, for everything one person owns — used when their engine moves. */
+  private announcePresenceForOwner(userId: ID): void {
+    this.announcePresence(this.store.agents().filter(a => a.ownerId === userId));
   }
 
   private worldFor(userId: ID): WorldState {
@@ -280,6 +363,10 @@ export class Relay {
       // frame used to carry the backlog of EVERY channel in the database.
       messages: this.hydrate(this.store.recentMessages(channels)),
       agentStatus: this.agentStatus,
+      // …and the same fact in words a person can act on, for every agent —
+      // including the ones nobody has ever reported a lamp for, which used to
+      // be every agent on a hub that had just started.
+      presence: this.presenceMap(),
       tasks: this.store.tasks(),
       approvals: this.store.approvals(),
       // read state comes from the RELAY now, not from one browser's storage, so
@@ -341,6 +428,21 @@ export class Relay {
     const agent = this.store.agents().find(a => a.id === agentId);
     if (!agent || agent.ownerId !== userId) throw new Error("not your agent");
     return agent;
+  }
+
+  /**
+   * The project this connection is allowed to act on, or an error.
+   *
+   * The same law as `myAgent`, deliberately shaped the same way: a project runs
+   * through its owner's machine and their GitHub sign-in, so ownership is read
+   * from what is STORED and never from the frame. "no such project" is the
+   * answer for somebody else's project as well as an invented id, so an id
+   * cannot be probed.
+   */
+  private myProject(userId: ID, projectId: ID): Project {
+    const project = this.store.project(projectId);
+    if (!project || project.ownerId !== userId) throw new Error("no such project");
+    return project;
   }
 
   /**
@@ -469,6 +571,38 @@ export class Relay {
       out.push(row.attachment);
     }
     return out;
+  }
+
+  /**
+   * Put one emoji on one message, or take it off — for a person OR an agent.
+   *
+   * ONE BODY, TWO CALLERS. `react` passes the person on the socket; `agentReact`
+   * passes an agent that `myAgent` has already proved belongs to them. Every
+   * gate below is asked once, here, so "an agent reacts" can never become a
+   * cheaper path than "a person reacts": the conversation must be one THIS
+   * connection can post in, an archived room is still read-only, and a
+   * tombstone still has nothing left to react to.
+   */
+  private setReaction(
+    conn: Conn, messageId: ID, reactorId: ID, emoji: string, on: boolean | undefined,
+  ): void {
+    const message = this.messageFor(conn.userId, messageId);
+    this.writableChannel(conn.userId, message.channelId); // an archived room is read-only
+    if (message.deletedAt) throw new Error("that message was deleted");
+    const bad = validateReactionEmoji(emoji);
+    if (bad) throw new Error(bad);
+    // idempotent by the reactions table's primary key, not by hoping the client
+    // only pressed once
+    const userIds = this.store.setReaction(message.id, reactorId, emoji, on !== false);
+    const ch = this.store.channel(message.channelId)!;
+    const audience = this.audienceFor(ch);
+    for (const c of this.conns) {
+      if (audience.has(c.userId)) {
+        send(c.ws, {
+          type: "reaction", channelId: ch.id, messageId: message.id, emoji, userIds,
+        });
+      }
+    }
   }
 
   /** Tell every client of every member that a stored message changed. */
@@ -716,9 +850,14 @@ export class Relay {
         break;
       }
       case "agentStatus": {
-        this.myAgent(conn.userId, frame.agentId); // nobody sets someone else's lamp
+        const agent = this.myAgent(conn.userId, frame.agentId); // nobody sets someone else's lamp
+        if (frame.status !== "idle" && frame.status !== "working" && frame.status !== "braked") {
+          throw new Error("that isn't a status");
+        }
         this.agentStatus[frame.agentId] = frame.status;
-        this.broadcast({ type: "agentStatus", agentId: frame.agentId, status: frame.status });
+        // The lamp is what the engine SAID; presence is what the hub can back
+        // up. One frame carries both, so nothing has to ask twice.
+        this.announcePresence([agent]);
         break;
       }
       case "createChannel": {
@@ -923,6 +1062,9 @@ export class Relay {
         this.store.saveAgent(agent);
         this.audit(conn, "agent_created", agent.id, `created agent ${agent.name}`);
         this.broadcast({ type: "agent", agent });
+        // a brand-new agent has a presence from its first second, so the rail
+        // never has to draw a row it knows nothing about
+        this.announcePresence([agent]);
         break;
       }
       case "updateAgent": {
@@ -941,11 +1083,16 @@ export class Relay {
         // broadcast what was STORED, not what was sent — otherwise every other
         // client would be told the files are gone even though they are not
         this.broadcast({ type: "agent", agent: saved });
+        // pausing an agent IS a presence change — this is the path his "paused"
+        // state actually travels down
+        this.announcePresence([saved]);
         break;
       }
       case "deleteAgent": {
         const existing = this.myAgent(conn.userId, frame.agentId);
         this.store.deleteAgent(frame.agentId);
+        // a deleted agent's lamp is not a fact about anything any more
+        delete this.agentStatus[frame.agentId];
         this.audit(conn, "agent_deleted", frame.agentId, `deleted agent ${existing.name}`);
         this.broadcast({ type: "agentDeleted", agentId: frame.agentId });
         break;
@@ -974,7 +1121,10 @@ export class Relay {
         const theirAgents = this.store.agents().filter(a => a.ownerId === target.id);
         this.store.removeUser(target.id);
         this.audit(conn, "agent_deleted", target.id, `removed ${target.name} from this Cloud9`);
-        for (const a of theirAgents) this.broadcast({ type: "agentDeleted", agentId: a.id });
+        for (const a of theirAgents) {
+          delete this.agentStatus[a.id];
+          this.broadcast({ type: "agentDeleted", agentId: a.id });
+        }
         for (const c of this.store.channels()) this.broadcastChannel(c);
         this.broadcast({ type: "userRemoved", userId: target.id });
         // and close whatever they still have open — their tokens are gone
@@ -1043,10 +1193,25 @@ export class Relay {
         if (!task) throw new Error("no such task");
         const agent = this.store.agents().find(a => a.id === task.agentId);
         if (!agent || agent.ownerId !== conn.userId) throw new Error("not your agent's task");
+        // WHAT ACTUALLY HAPPENED, in the agent's own words (his item 3). It is
+        // stored and broadcast like any other task field and goes through the
+        // gate that already exists two lines up — an engine may only write a
+        // summary onto a job belonging to an agent it owns. There is no second
+        // authorisation path and no new frame.
+        const badSummary = validateTaskSummary(frame.summary);
+        if (badSummary) throw new Error(badSummary);
         if (task.status === "cancelled") break; // FR-TS-005: cancelled stays cancelled
         task.status = frame.status;
         if (frame.result !== undefined) task.result = frame.result;
         if (frame.error !== undefined) task.error = frame.error;
+        // ABSENT means "leave it alone"; "" means "clear it" — the same
+        // sentence-vs-silence rule `setChannelInfo` and `keepSkillFiles` use.
+        // Nothing here ever writes a summary of its own: a job with nothing
+        // honest to say keeps none, and the screen shows nothing.
+        if (frame.summary !== undefined) {
+          const said = frame.summary.trim();
+          if (said) task.summary = said; else delete task.summary;
+        }
         task.updatedAt = Date.now();
         this.store.saveTask(task);
         this.audit(conn, "task_status", task.id, `task "${task.title}" → ${task.status}`, { asAgent: agent });
@@ -1098,6 +1263,115 @@ export class Relay {
           type: "activity",
           records: this.store.activity(frame.before ?? Date.now() + 1, frame.limit ?? 100),
         });
+        break;
+      }
+      // ---- projects: a GitHub repository connected to Cloud9 (his item 7) ----
+      //
+      // ONE GATE, `myProject`, on stored state — the same law `myAgent` follows
+      // and for the same reason: a project runs through its owner's machine and
+      // their `gh` sign-in, so being able to see one is not permission to act on
+      // it. Nothing in this section reaches GitHub; the engine owns that.
+      case "connectProject": {
+        const bad = validateRepo(frame.repo);
+        if (bad) throw new Error(bad);
+        const badText = validateProjectText(frame.name, frame.description);
+        if (badText) throw new Error(badText);
+        // CONNECTING THE SAME REPOSITORY TWICE FINDS THE ONE YOU HAVE, exactly
+        // as clicking a person twice finds the same direct conversation. Two
+        // projects over one repository would be two lists of the same pull
+        // requests, disagreeing.
+        const already = this.store.projectByRepo(conn.userId, frame.repo);
+        if (already) { send(conn.ws, { type: "project", project: already }); break; }
+        if (this.store.projectsOf(conn.userId).length >= PROJECT_LIMITS.perUser) {
+          throw new Error(`that's too many projects (max ${PROJECT_LIMITS.perUser})`);
+        }
+        // a project may only report into a conversation you are actually in
+        if (frame.channelId) this.channelFor(conn.userId, frame.channelId);
+        const project: Project = {
+          id: newId("pr"), ownerId: conn.userId, repo: frame.repo,
+          name: frame.name?.trim() || frame.repo.split("/")[1],
+          ...(frame.description ? { description: frame.description } : {}),
+          ...(frame.channelId ? { channelId: frame.channelId } : {}),
+          createdAt: Date.now(),
+        };
+        this.store.saveProject(project);
+        this.audit(conn, "project_connected", project.id, `connected ${project.repo}`);
+        this.toUser(conn.userId, { type: "project", project });
+        break;
+      }
+      case "updateProject": {
+        const project = this.myProject(conn.userId, frame.projectId);
+        const badText = validateProjectText(frame.name, frame.description);
+        if (badText) throw new Error(badText);
+        if (frame.channelId) this.channelFor(conn.userId, frame.channelId);
+        // absent = leave alone, "" = clear — the same sentence-vs-silence rule
+        if (frame.name !== undefined && frame.name.trim()) project.name = frame.name.trim();
+        if (frame.description !== undefined) {
+          if (frame.description) project.description = frame.description;
+          else delete project.description;
+        }
+        if (frame.channelId !== undefined) {
+          if (frame.channelId) project.channelId = frame.channelId;
+          else delete project.channelId;
+        }
+        this.store.saveProject(project);
+        this.audit(conn, "project_updated", project.id, `updated ${project.repo}`);
+        this.toUser(conn.userId, { type: "project", project });
+        break;
+      }
+      case "forgetProject": {
+        const project = this.myProject(conn.userId, frame.projectId);
+        // FORGETS OUR COPY. The repository is untouched — the hub has no way to
+        // reach GitHub at all, and that is the design, not an omission.
+        this.store.forgetProject(project.id);
+        this.audit(conn, "project_forgotten", project.id, `disconnected ${project.repo}`);
+        this.toUser(conn.userId, { type: "projectForgotten", projectId: project.id });
+        break;
+      }
+      case "projects": {
+        send(conn.ws, { type: "projects", projects: this.store.projectsOf(conn.userId) });
+        break;
+      }
+      case "projectItems": {
+        const project = this.myProject(conn.userId, frame.projectId);
+        send(conn.ws, {
+          type: "projectItems", projectId: project.id,
+          items: this.store.projectItems(project.id),
+        });
+        break;
+      }
+      case "projectSynced": {
+        if (conn.client !== "engine") throw new Error("only the engine looks at GitHub");
+        const project = this.myProject(conn.userId, frame.projectId);
+        if (frame.items !== undefined) {
+          if (!Array.isArray(frame.items)) throw new Error("that isn't a list of work");
+          if (frame.items.length > PROJECT_LIMITS.items) {
+            throw new Error("that's too much work to hold — the newest are kept");
+          }
+          for (const item of frame.items) {
+            const bad = validateProjectItem(item);
+            if (bad) throw new Error(bad);
+          }
+          // stamped with the project WE verified, never the one the item claimed
+          const items = frame.items.map(i => ({ ...i, projectId: project.id }));
+          const stored = this.store.syncProjectItems(project.id, items);
+          this.toUser(conn.userId, { type: "projectItems", projectId: project.id, items: stored });
+        }
+        if (frame.defaultBranch !== undefined) {
+          // it becomes part of "nothing lands here without him", so it is
+          // checked as a name and not taken on trust
+          if (!isSafeBranchName(frame.defaultBranch)) throw new Error("that isn't a branch name");
+          project.defaultBranch = frame.defaultBranch;
+        }
+        project.syncedAt = Date.now();
+        if (frame.problem !== undefined) {
+          const said = String(frame.problem).slice(0, PROJECT_LIMITS.problem).trim();
+          if (said) project.problem = said; else delete project.problem;
+        } else {
+          delete project.problem;
+        }
+        this.store.saveProject(project);
+        this.toUser(conn.userId, { type: "project", project });
         break;
       }
       // ---- what an agent actually did (FR-TL-003) ----
@@ -1204,6 +1478,10 @@ export class Relay {
           delete this.signInFlight[conn.userId];
         }
         this.toUser(conn.userId, { type: "harness", state: frame.state });
+        // "Codex isn't signed in" is a presence fact, not just a settings card:
+        // it is the difference between an agent that will answer and one that
+        // cannot. Everyone in a room with these agents hears it.
+        this.announcePresenceForOwner(conn.userId);
         break;
       }
       case "history": {
@@ -1248,26 +1526,18 @@ export class Relay {
         break;
       }
       case "react": {
-        const message = this.messageFor(conn.userId, frame.messageId);
-        this.writableChannel(conn.userId, message.channelId); // an archived room is read-only
-        // a tombstone has nothing left to react to
-        if (message.deletedAt) throw new Error("that message was deleted");
-        const bad = validateReactionEmoji(frame.emoji);
-        if (bad) throw new Error(bad);
-        const on = frame.on !== false;
-        // idempotent by the reactions table's primary key, not by hoping the
-        // client only pressed once
-        const userIds = this.store.setReaction(message.id, conn.userId, frame.emoji, on);
-        const ch = this.store.channel(message.channelId)!;
-        const audience = this.audienceFor(ch);
-        for (const c of this.conns) {
-          if (audience.has(c.userId)) {
-            send(c.ws, {
-              type: "reaction", channelId: ch.id, messageId: message.id,
-              emoji: frame.emoji, userIds,
-            });
-          }
-        }
+        // reacting as YOURSELF — the reactor is the person on this socket
+        this.setReaction(conn, frame.messageId, conn.userId, frame.emoji, frame.on);
+        break;
+      }
+      case "agentReact": {
+        // REACTING AS ONE OF YOUR AGENTS (his item 5). Authorised exactly as
+        // `agentSend` is, and by the same function: ownership is read from
+        // stored state, never from the frame, so an engine cannot react as an
+        // agent it does not own. Everything after that is the same code path a
+        // person's reaction takes — same table, same gates, same frame out.
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        this.setReaction(conn, frame.messageId, agent.id, frame.emoji, frame.on);
         break;
       }
       case "editMessage": {
@@ -1705,6 +1975,24 @@ export class Relay {
 }
 
 /**
+ * Is this a branch name, and only a branch name?
+ *
+ * It arrives from the engine and becomes part of "nothing lands here without
+ * him", so it is checked with the same law every other command-line-bound value
+ * in this app is checked with: an allowlist that must START with a letter or a
+ * digit, so a value can never be read as an option. `..`, a trailing `.lock`,
+ * and the shell's own characters are all out — git refuses most of them itself,
+ * and the ones it does not are exactly the ones we must.
+ */
+export function isSafeBranchName(name: unknown): name is string {
+  if (typeof name !== "string" || name.length === 0 || name.length > 255) return false;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(name)) return false;
+  if (name.includes("..") || name.includes("//")) return false;
+  if (name.endsWith("/") || name.endsWith(".") || name.endsWith(".lock")) return false;
+  return true;
+}
+
+/**
  * Does this task need the owner to say yes first?
  *
  * Answered from the agent's own stored `approvals` setting, plus what KIND of
@@ -1712,6 +2000,13 @@ export class Relay {
  * opinion is not consulted — that was the hole in P1 #6.
  */
 export function requiresApproval(agent: AgentDef, title: string): boolean {
+  // An agent that can run programs, reach the whole computer, or use connected
+  // services ALWAYS asks first — whatever its stored approvals say. That rule
+  // is decided in one place (`mustAskBeforeActing`, in shared) because the hub
+  // and the engine cannot see each other's code, and reading `agent.approvals`
+  // here alone was exactly how a job from a shell-capable agent could have run
+  // unattended without the owner ever being asked.
+  if (mustAskBeforeActing(agent)) return true;
   const isSchedule = /^!schedule\b/i.test(title.trim());
   return isSchedule
     ? agent.approvals?.schedules === true

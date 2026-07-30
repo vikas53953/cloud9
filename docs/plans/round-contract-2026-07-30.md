@@ -58,6 +58,26 @@ the SAME mechanism — do not build a second one.
 - The hub must accept a reaction from an engine connection on behalf of an
   agent, authorised exactly as `agentSend` already is.
 
+## What Protocol & hub landed, and the ONE thing it needs from Screens
+
+Added to `@cloud9/shared` and `apps/relay` on 2026-07-30 night. Relay tests
+117 → 147, all passing; engine typechecks against it unchanged.
+
+| Fact | Shape |
+|---|---|
+| Presence | `AgentPresence`, `AgentPresenceState`, `agentPresence(agent, facts)` — the ONE rule. Server frame `agentStatus` now also carries `presence` and `reason` (both required). `WorldState.presence?: Record<ID, AgentPresenceState>`. |
+| Job summary | `Task.summary?: string`; `updateTask` gained `summary?`. Absent = leave alone, `""` = clear. |
+| Work emoji | `WORK_REACTIONS` (`picked 👀 / working ⚙️ / done ✅ / failed ❌`), `WorkReaction`, `isWorkReaction`. New client frame `agentReact { agentId, messageId, emoji, on? }`, authorised by `myAgent` exactly as `agentSend`. It comes back out as the ordinary `reaction` frame with the AGENT's id in `userIds`. |
+| Projects (storage half) | `Project`, `ProjectItem`, `PROJECT_LIMITS`, `validateRepo`, `validateProjectText`, `validateProjectItem`. Frames in: `connectProject`, `updateProject`, `forgetProject`, `projects`, `projectItems`, engine-only `projectSynced`. Frames out: `project`, `projects`, `projectForgotten`, `projectItems`. |
+
+**SCREENS AGENT — one small thing.** `apps/desktop/src/store.ts` ends its frame
+switch with `const unhandled: never = frame`, which is a good guard and is now
+failing on purpose: the four new **server** frames above (`project`,
+`projects`, `projectForgotten`, `projectItems`) need cases. Handling them is the
+Projects screen's job; until it exists, four `break`s clear the build. Nothing
+else in the protocol changed shape — `agentStatus` only GAINED two fields, so
+every existing handler still compiles.
+
 ## Standing rules for this round
 - Class over case: one owner per rule, in one file.
 - Every change needs a test that fails before it. Prove it by putting the bug

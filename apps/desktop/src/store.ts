@@ -1279,6 +1279,17 @@ export class RelayClient {
         w.directory = { asked: false, channels: [] };
         break;
       }
+      // Projects: the hub can already talk about them, the screen cannot yet.
+      // These are named rather than swept into `default`, so the guard below
+      // keeps its teeth — and so the day someone builds the Projects screen,
+      // grepping for "project" finds exactly where the data arrives. Dropping
+      // them here is a decision, not an oversight: nothing on screen asks for
+      // a project yet, so nothing is being lost.
+      case "project":
+      case "projects":
+      case "projectForgotten":
+      case "projectItems":
+        break;
       default: {
         /**
          * If a new frame is added to `ServerFrame` and not handled above, this

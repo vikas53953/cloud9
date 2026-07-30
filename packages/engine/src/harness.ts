@@ -177,6 +177,18 @@ export class HarnessManager {
   private lastProblem: Partial<Record<HarnessName, string>> = {};
   /** a detection round already running — callers share it instead of piling up */
   private refreshing?: Promise<HarnessState>;
+  /**
+   * Has a detection round ever actually FINISHED?
+   *
+   * Until it has, everything in `state` is a placeholder: BLANK says
+   * `installed: false` about both apps because nothing has been looked at yet,
+   * not because they are missing. Telling anyone else that placeholder is how
+   * every agent ends up wearing a grey dot on a machine where both apps are
+   * signed in — his item 2. So the difference between "we looked and it is not
+   * there" and "we have not looked" is kept, and `Engine.reportHarness` will
+   * not put the second one on the wire.
+   */
+  private detected = false;
 
   constructor(private opts: HarnessOptions = {}) {
     this.runner = opts.runner ?? run;
@@ -208,7 +220,18 @@ export class HarnessManager {
    */
   setState(state: HarnessState): void {
     this.state = state;
+    // a state that came from somewhere real IS an observation, so from here on
+    // this manager has something worth telling the hub
+    this.detected = true;
     this.publish();
+  }
+
+  /**
+   * True once this computer has actually been looked at. Read by the host
+   * before it reports anything to the hub — see `detected` above.
+   */
+  get hasDetected(): boolean {
+    return this.detected;
   }
 
   /** The models one harness offers, for the last-gate check before a turn. */
@@ -243,6 +266,9 @@ export class HarnessManager {
     this.state.claude = this.merge(claude);
     this.state.codex = this.merge(codex);
     this.state.checking = false;
+    // set BEFORE publishing: the listener that forwards this to the hub reads
+    // it, and a round that has finished must be forwarded on its own frame
+    this.detected = true;
     this.publish();
     this.log(
       `claude installed=${claude.installed} signedIn=${claude.signedIn} ` +

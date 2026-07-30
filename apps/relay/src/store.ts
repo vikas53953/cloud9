@@ -5,7 +5,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   ActivityRecord, AgentDef, Approval, Attachment, Channel, ChannelMember, ChannelRole, ID, Message,
-  MessageReaction, MESSAGE_LIMITS, RunRecord, RUN_RETENTION, Task, User, newId,
+  MessageReaction, MESSAGE_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
+  RunRecord, RUN_RETENTION, Task, User, newId,
 } from "@cloud9/shared";
 import { secureId, secureToken } from "./secureid.js";
 
@@ -279,6 +280,35 @@ export class Store {
         lastReadTs INTEGER NOT NULL, updatedAt INTEGER NOT NULL,
         PRIMARY KEY (userId, channelId)
       );
+
+      -- A GITHUB REPOSITORY CONNECTED TO CLOUD9 (his item 7).
+      --
+      -- A WHOLE NEW TABLE NEEDS NO MIGRATION STEP, and that is not a shortcut:
+      -- CREATE TABLE IF NOT EXISTS above makes it on a fresh file and on an
+      -- old one alike, and nothing here is a COLUMN added to an existing table
+      -- or an index over one. The rule the migration comment states — never
+      -- index a column a migration adds — is respected because no migration
+      -- step is involved at all. ownerId sits beside the JSON because it is
+      -- the column authorisation is decided from, exactly as the runs table.
+      CREATE TABLE IF NOT EXISTS projects(
+        id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, repo TEXT NOT NULL,
+        createdAt INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS proj_owner ON projects(ownerId);
+      -- one person may connect one repository once; connecting it again finds
+      -- the project they already have rather than making a second one
+      CREATE UNIQUE INDEX IF NOT EXISTS proj_owner_repo ON projects(ownerId, repo);
+
+      -- ITS PULL REQUESTS AND ITS ISSUES — a cache of GitHub's truth, never
+      -- ours. The key is (project, kind, number) because that is what GitHub
+      -- guarantees unique, so a re-sync UPDATES a row instead of growing a
+      -- second copy of the same pull request.
+      CREATE TABLE IF NOT EXISTS project_items(
+        projectId TEXT NOT NULL, kind TEXT NOT NULL, number INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL, json TEXT NOT NULL,
+        PRIMARY KEY (projectId, kind, number)
+      );
+      CREATE INDEX IF NOT EXISTS proj_item_updated ON project_items(projectId, updatedAt);
     `);
       this.migrate();
       this.initSearch();
@@ -1354,6 +1384,76 @@ export class Store {
     return (this.db.prepare("SELECT json FROM approvals").all() as { json: string }[])
       .map(r => JSON.parse(r.json) as Approval).slice(-limit);
   }
+  // ---- projects: a GitHub repository connected to Cloud9 (his item 7) ----
+  //
+  // Storage only. Nothing in this section runs `git` or `gh`, and nothing here
+  // decides who may do anything: `ownerId` is a column so the server can ask
+  // that question of stored state, exactly as it does for a run.
+
+  saveProject(p: Project): void {
+    this.db.prepare(
+      "INSERT INTO projects(id,ownerId,repo,createdAt,json) VALUES(?,?,?,?,?) " +
+      "ON CONFLICT(id) DO UPDATE SET repo=excluded.repo, json=excluded.json",
+    ).run(p.id, p.ownerId, p.repo, p.createdAt, JSON.stringify(p));
+  }
+
+  project(id: ID): Project | undefined {
+    const row = this.db.prepare("SELECT json FROM projects WHERE id=?").get(id) as
+      { json: string } | undefined;
+    return row ? (JSON.parse(row.json) as Project) : undefined;
+  }
+
+  /** One person's projects, newest first. Never anybody else's. */
+  projectsOf(ownerId: ID): Project[] {
+    return (this.db.prepare("SELECT json FROM projects WHERE ownerId=? ORDER BY createdAt DESC")
+      .all(ownerId) as { json: string }[]).map(r => JSON.parse(r.json) as Project);
+  }
+
+  /** The one this person already has for this repository, if any. */
+  projectByRepo(ownerId: ID, repo: string): Project | undefined {
+    const row = this.db.prepare("SELECT json FROM projects WHERE ownerId=? AND repo=?")
+      .get(ownerId, repo) as { json: string } | undefined;
+    return row ? (JSON.parse(row.json) as Project) : undefined;
+  }
+
+  /** Forget our copy. THE REPOSITORY IS NOT TOUCHED — it is not ours to touch. */
+  forgetProject(id: ID): void {
+    this.db.prepare("DELETE FROM project_items WHERE projectId=?").run(id);
+    this.db.prepare("DELETE FROM projects WHERE id=?").run(id);
+  }
+
+  /**
+   * Replace what we hold for one project with what the engine just found, as
+   * ALL OF IT OR NONE OF IT.
+   *
+   * A re-sync is a replacement, not an append: a pull request that was merged
+   * and closed on GitHub has to DISAPPEAR from our copy, and a merge that only
+   * ever added rows would have left it on the list for ever. The cap is applied
+   * here rather than trusted from the caller, and the newest survive.
+   */
+  syncProjectItems(projectId: ID, items: ProjectItem[]): ProjectItem[] {
+    const keep = [...items]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, PROJECT_LIMITS.items);
+    this.tx(() => {
+      this.db.prepare("DELETE FROM project_items WHERE projectId=?").run(projectId);
+      const insert = this.db.prepare(
+        "INSERT INTO project_items(projectId,kind,number,updatedAt,json) VALUES(?,?,?,?,?)",
+      );
+      for (const i of keep) {
+        insert.run(projectId, i.kind, i.number, i.updatedAt, JSON.stringify({ ...i, projectId }));
+      }
+    });
+    return this.projectItems(projectId);
+  }
+
+  /** What we hold for one project, newest change first. */
+  projectItems(projectId: ID): ProjectItem[] {
+    return (this.db.prepare(
+      "SELECT json FROM project_items WHERE projectId=? ORDER BY updatedAt DESC",
+    ).all(projectId) as { json: string }[]).map(r => JSON.parse(r.json) as ProjectItem);
+  }
+
   /**
    * Append one line to the trail — and to the CHAIN.
    *

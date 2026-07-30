@@ -15,19 +15,76 @@
 // adding the words is now a change to one object with both fields on it; you
 // cannot do one and forget the other, because there is nowhere else to do it.
 //
-// It also collapses the copy-and-paste that made this inevitable: the
-// abilities→tools mapping used to exist three times (`claudeArgs`,
-// `codexArgs`, `SdkProvider.respond`). Three copies of one rule is the same
-// class of bug, just waiting for its turn.
-import { AgentAbilities, AgentDef } from "@cloud9/shared";
+// THE CEILING, raised 2026-07-30. Vikas: "these agents are fully agentic and
+// using the harness from claude and codex, they already have access to
+// everything… whatever functions we have as codex and claude code on my system,
+// every functionality should be replicated." The day before, the switches were
+// made a real boundary — and set too low: `Bash` was on a NEVER_ALLOWED list, so
+// no switch he could set would ever let an agent run a program on his own PC.
+// Both facts are right, so both are kept:
+//
+//   * the switches are still the whole boundary (Claude's `--tools` DECLARES
+//     the set, and everything not granted is spelled out in `--disallowed-tools`);
+//   * his own dev setup is still shut out at EVERY reach (`--safe-mode`,
+//     `--strict-mcp-config`, `--disable-slash-commands`, `--ignore-user-config`);
+//   * but the top of the ladder now grants the CLI's whole built-in surface;
+//   * and every row that changes the machine or spends money carries
+//     `alwaysAsk`, so the honest guard is "ask first", never "cannot".
+//
+// MEASURED, not remembered. `CLAUDE_BUILTIN_TOOLS` below is the tool list the
+// installed CLI reported for itself on 2026-07-30 — see the comment on it. This
+// matters more than it looks: `claude -p --tools NotARealToolXYZ` was run and it
+// exits 0 and answers normally. An unknown tool name is NOT an error; it is a
+// capability that silently never arrives. A test checks every name in this table
+// against that measured list, so a typo cannot become a switch that does nothing.
+import { AgentAbilities, AgentApprovals, AgentDef, mustAskBeforeActing } from "@cloud9/shared";
+
+/**
+ * Every built-in tool claude-code **2.1.220** has, measured on 2026-07-30 by
+ * running the real command line Cloud9 ships and reading the CLI's own
+ * `system/init` event:
+ *
+ *   claude -p --output-format stream-json --verbose --permission-mode dontAsk \
+ *     --safe-mode --strict-mcp-config --disable-slash-commands --tools default
+ *
+ *   tools: Task, Bash, CronCreate, CronDelete, CronList, DesignSync, Edit,
+ *          EnterWorktree, ExitWorktree, Glob, Grep, Monitor, NotebookEdit,
+ *          PowerShell, PushNotification, Read, RemoteTrigger, ReportFindings,
+ *          ScheduleWakeup, SendMessage, TaskCreate, TaskGet, TaskList,
+ *          TaskOutput, TaskStop, TaskUpdate, ToolSearch, WebFetch, WebSearch,
+ *          Workflow, Write
+ *   mcp_servers: []   slash_commands: []   skills: []
+ *
+ * TWO THINGS THAT WERE ASSUMED AND ARE NOT TRUE:
+ *  - `PowerShell` is its own tool, separate from `Bash`. The old
+ *    `NEVER_ALLOWED_TOOLS = ["Bash"]` would not have stopped a shell on Windows
+ *    if the declaration had ever slipped. The denied list is derived from THIS
+ *    list now, so it cannot miss a sibling again.
+ *  - the same probe still reported seven of Vikas's **plugins** by path under
+ *    `--safe-mode`, while reporting zero skills, zero slash commands and zero
+ *    MCP servers. Nothing measurably reached the agent, so it is not listed as a
+ *    leak — but it is written down in `isolation.ts` as an unknown rather than
+ *    quietly rounded to "clean".
+ */
+export const CLAUDE_BUILTIN_TOOLS = [
+  "Task", "Bash", "CronCreate", "CronDelete", "CronList", "DesignSync", "Edit",
+  "EnterWorktree", "ExitWorktree", "Glob", "Grep", "Monitor", "NotebookEdit",
+  "PowerShell", "PushNotification", "Read", "RemoteTrigger", "ReportFindings",
+  "ScheduleWakeup", "SendMessage", "TaskCreate", "TaskGet", "TaskList",
+  "TaskOutput", "TaskStop", "TaskUpdate", "ToolSearch", "WebFetch", "WebSearch",
+  "Workflow", "Write",
+] as const;
 
 /**
  * One switch on an agent, and everything that follows from it: the tools it
- * hands the CLI, the sandbox it opens, and — in the same object — exactly what
- * the agent is told about itself, both when it is on and when it is off.
+ * hands the CLI, the sandbox it opens, whether the owner is asked first, and —
+ * in the same object — exactly what the agent is told about itself, both when it
+ * is on and when it is off.
  */
 export interface Capability {
   ability: keyof AgentAbilities;
+  /** the switch in the owner's words, for a screen. Never jargon. */
+  label: string;
   /** Claude CLI / SDK tool names this switch grants. Empty = not a CLI tool. */
   claudeTools: string[];
   /** true if this switch is what opens Codex's sandbox for writing */
@@ -39,6 +96,19 @@ export interface Capability {
    * `isolation.ts`. It lives here so the switch and the sentence stay one row.
    */
   opensCodexWebSearch?: boolean;
+  /** the Codex feature flag this switch keeps ON; off means `--disable <name>` */
+  codexFeature?: string;
+  /** true if this switch is what widens the agent beyond its own folder */
+  widensBeyondOwnFolder?: boolean;
+  /** true if this switch is what lets a per-agent MCP config be passed in */
+  opensConnections?: boolean;
+  /**
+   * TRUE when using this changes the machine or spends money. The owner is
+   * ALWAYS asked first — `approvalsFor()` forces the approval on and no stored
+   * agent definition can turn it off. This is the honest guard Vikas asked for:
+   * he owns the PC, so the answer is "ask first", not "cannot".
+   */
+  alwaysAsk?: boolean;
   /** what the agent is told when the switch is ON */
   can: string;
   /** what the agent is told when the switch is OFF — never left to guess */
@@ -46,12 +116,17 @@ export interface Capability {
 }
 
 /**
- * The table. Every row is a fact with two faces: what the machine is given, and
- * what the agent is told. They cannot disagree because they are one row.
+ * The table. Every row is a fact with several faces: what the machine is given,
+ * whether the owner is asked, and what the agent is told. They cannot disagree
+ * because they are one row.
+ *
+ * ORDER MATTERS: it runs from harmless to powerful, and the ladder below is
+ * built by taking a prefix of it. A new row goes where its danger puts it.
  */
 export const CAPABILITIES: readonly Capability[] = [
   {
     ability: "webSearch",
+    label: "Look things up on the web",
     claudeTools: ["WebSearch", "WebFetch"],
     opensCodexWebSearch: true,
     can: "You CAN search the web and open web pages, so you can check things that are " +
@@ -61,33 +136,165 @@ export const CAPABILITIES: readonly Capability[] = [
   },
   {
     ability: "files",
-    claudeTools: ["Read", "Write", "Glob", "Grep"],
+    label: "Keep and change files in its own folder",
+    claudeTools: ["Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep"],
     opensCodexWorkspace: true,
-    can: "You CAN read, write and search files in your own folder — the folder you are " +
+    can: "You CAN read, write and change files in your own folder — the folder you are " +
       "working in right now. Anything you write there is still there next time we talk, " +
       "so it is the one place you can keep notes for yourself.",
     cannot: "You CANNOT read or write any files, and you have no folder of your own to " +
       "keep notes in.",
   },
   {
+    ability: "helpers",
+    label: "Get help from its own helper agents",
+    // the harness's own working tools: sub-agents, their task family, tool
+    // discovery, workflows, and the small note-to-self tools it ships with.
+    claudeTools: [
+      "Task", "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
+      "ToolSearch", "Workflow", "Monitor", "SendMessage", "ReportFindings", "DesignSync",
+    ],
+    codexFeature: "multi_agent",
+    can: "You CAN hand parts of a job to helper agents of your own and wait for what they " +
+      "find, instead of doing every step yourself in one long answer.",
+    cannot: "You CANNOT hand work to helper agents — whatever you do, you do yourself in " +
+      "this one answer.",
+  },
+  {
     ability: "schedules",
-    claudeTools: [],
+    label: "Check in on a repeating schedule",
+    claudeTools: ["ScheduleWakeup", "CronCreate", "CronList", "CronDelete"],
     can: "You CAN be given a repeating check-in, so your owner can ask you to do something " +
       "every day or every few minutes without asking again each time.",
     cannot: "You CANNOT be given a repeating check-in.",
   },
   {
     ability: "background",
-    claudeTools: [],
+    label: "Work on jobs in the background",
+    claudeTools: ["EnterWorktree", "ExitWorktree", "RemoteTrigger", "PushNotification"],
     can: "You CAN be handed a job to work on in the background and report back on when it " +
       "is finished, instead of answering in one go.",
     cannot: "You CANNOT be handed background jobs — you answer in the conversation only.",
   },
+  {
+    ability: "connections",
+    label: "Use connected services your owner picked for you",
+    // no built-in tool: the surface arrives as an MCP config passed in for THIS
+    // agent. His own servers never load — `--strict-mcp-config` stays on always.
+    claudeTools: [],
+    opensConnections: true,
+    alwaysAsk: true,
+    can: "You CAN use the connected services your owner set up for you specifically. Those " +
+      "are real accounts, so your owner is asked before you act through them.",
+    cannot: "You CANNOT use any connected service or outside account.",
+  },
+  {
+    ability: "wholeComputer",
+    label: "Reach files outside its own folder",
+    claudeTools: [],
+    widensBeyondOwnFolder: true,
+    alwaysAsk: true,
+    can: "You CAN reach files outside your own folder, in the places your owner opened up " +
+      "for you. Because that changes his computer, he is asked first.",
+    cannot: "You CANNOT reach anything outside your own folder.",
+  },
+  {
+    ability: "commands",
+    label: "Run programs on this computer",
+    claudeTools: ["Bash", "PowerShell"],
+    alwaysAsk: true,
+    can: "You CAN run programs and commands on this computer, the same way Claude Code and " +
+      "Codex do. Because that changes his machine, your owner is asked first — say what " +
+      "you intend to run and wait, rather than promising it is already done.",
+    cannot: "You CANNOT run programs, shell scripts or terminal commands.",
+  },
 ] as const;
 
-/** Is this switch on for this agent? */
+/**
+ * The ladder Vikas actually picks from. Four rungs, plain words, each one
+ * everything below it plus more — from "answer questions only" to "everything
+ * this app can do on this computer".
+ *
+ * It is NOT a second source of truth: a rung is a PREFIX of the table above, so
+ * a new capability row automatically lands on the rungs its position implies and
+ * there is nowhere to forget it.
+ */
+export type Reach = "talk" | "look" | "work" | "computer";
+
+export interface ReachLevel {
+  level: Reach;
+  /** the choice as a button on a screen */
+  label: string;
+  /** one line: what it means for him, no jargon */
+  plainWords: string;
+  /** how many rows of CAPABILITIES this rung turns on */
+  rows: number;
+}
+
+export const REACH_LEVELS: readonly ReachLevel[] = [
+  {
+    level: "talk",
+    label: "Just talk",
+    plainWords: "Answers questions from what it knows. No tools at all.",
+    rows: 0,
+  },
+  {
+    level: "look",
+    label: "Look things up and keep notes",
+    plainWords: "Can check the web and keep files in its own folder. Nothing on your PC changes.",
+    rows: 2,
+  },
+  {
+    level: "work",
+    label: "Do real work for you",
+    plainWords: "Adds helper agents, repeating check-ins and background jobs. Still only its own folder.",
+    rows: 5,
+  },
+  {
+    level: "computer",
+    label: "Everything this app can do on this computer",
+    plainWords:
+      "The same reach Claude Code and Codex have on your PC — running programs, files anywhere, " +
+      "connected services. Anything that changes your machine or spends money asks you first.",
+    rows: CAPABILITIES.length,
+  },
+] as const;
+
+/** The switches a rung turns on. The only place a rung becomes abilities. */
+export function abilitiesForReach(level: Reach): AgentAbilities {
+  const rung = REACH_LEVELS.find(l => l.level === level) ?? REACH_LEVELS[0];
+  const on = new Set(CAPABILITIES.slice(0, rung.rows).map(c => c.ability));
+  const abilities: AgentAbilities = {
+    webSearch: false, files: false, schedules: false, background: false,
+  };
+  for (const cap of CAPABILITIES) {
+    (abilities as unknown as Record<string, boolean>)[cap.ability] = on.has(cap.ability);
+  }
+  return abilities;
+}
+
+/**
+ * The rung an agent's switches amount to: the HIGHEST rung whose every switch is
+ * on. An agent with an odd hand-picked mix reads as the highest rung it fully
+ * covers, which is the honest way round — never round a mix UP.
+ */
+export function reachOf(agent: AgentDef): Reach {
+  let answer: Reach = "talk";
+  for (const rung of REACH_LEVELS) {
+    const needed = CAPABILITIES.slice(0, rung.rows);
+    if (needed.every(c => isOn(agent, c.ability))) answer = rung.level;
+  }
+  return answer;
+}
+
+/** Is this switch on for this agent? Absent always means off. */
 function isOn(agent: AgentDef, ability: keyof AgentAbilities): boolean {
   return agent.abilities?.[ability] === true;
+}
+
+/** The rows this agent has switched on, in table order. */
+export function grantedCapabilities(agent: AgentDef): Capability[] {
+  return CAPABILITIES.filter(c => isOn(agent, c.ability));
 }
 
 /**
@@ -95,7 +302,24 @@ function isOn(agent: AgentDef, ability: keyof AgentAbilities): boolean {
  * `claudeArgs` and `SdkProvider` both call this — there is no second list.
  */
 export function claudeToolsFor(agent: AgentDef): string[] {
-  return CAPABILITIES.filter(c => isOn(agent, c.ability)).flatMap(c => [...c.claudeTools]);
+  return grantedCapabilities(agent).flatMap(c => [...c.claudeTools]);
+}
+
+/**
+ * Every built-in tool this agent has NOT been granted — spelled out on the
+ * command line as `--disallowed-tools`.
+ *
+ * This REPLACES the old `NEVER_ALLOWED_TOOLS = ["Bash"]`, and is strictly
+ * stronger in both directions. Stronger, because it is derived from the CLI's
+ * whole measured surface, so it already covers `PowerShell` (which the old list
+ * missed) and every tool a future CLI version adds to `CLAUDE_BUILTIN_TOOLS`.
+ * And honest, because "no agent may EVER run a command" was the wrong promise:
+ * Vikas owns the machine and asked for the ceiling to be lifted. A tool is
+ * denied because HE did not switch it on, not because we decided for him.
+ */
+export function deniedClaudeTools(agent: AgentDef): string[] {
+  const granted = new Set(claudeToolsFor(agent));
+  return CLAUDE_BUILTIN_TOOLS.filter(t => !granted.has(t));
 }
 
 /** Codex's sandbox setting, from the same table. */
@@ -109,12 +333,66 @@ export function codexWebSearchFor(agent: AgentDef): boolean {
   return CAPABILITIES.some(c => c.opensCodexWebSearch && isOn(agent, c.ability));
 }
 
+/** Does this agent's own folder stop being the edge of its world? */
+export function reachesBeyondOwnFolder(agent: AgentDef): boolean {
+  return CAPABILITIES.some(c => c.widensBeyondOwnFolder && isOn(agent, c.ability));
+}
+
+/** May a per-agent MCP config be passed in for this agent at all? */
+export function allowsConnections(agent: AgentDef): boolean {
+  return CAPABILITIES.some(c => c.opensConnections && isOn(agent, c.ability));
+}
+
+/** The switches that change the machine or spend money. From the table only. */
+export function alwaysAskAbilities(): (keyof AgentAbilities)[] {
+  return CAPABILITIES.filter(c => c.alwaysAsk).map(c => c.ability);
+}
+
 /**
- * Tools no agent may ever have, on any path, whatever its switches say.
- * Kept here so the prompt's promise and the command line's `--disallowed-tools`
- * are the same list.
+ * The approvals that actually apply to this agent.
+ *
+ * The owner chooses whether background jobs and schedules need his nod. He does
+ * NOT get to choose for anything marked `alwaysAsk` — if the switch is on, the
+ * approval is on, whatever a stored (or forged) agent definition says. That is
+ * the one rule that lets the ceiling be raised safely: full power, and a hand on
+ * the door.
+ *
+ * It reuses the app's EXISTING approvals — the same `AgentApprovals` the Tasks
+ * panel and `decideApproval` already work on. There is no second mechanism.
  */
-export const NEVER_ALLOWED_TOOLS = ["Bash"] as const;
+export function approvalsFor(agent: AgentDef): Required<AgentApprovals> {
+  const stored = agent.approvals;
+  const answer: Required<AgentApprovals> = {
+    background: stored?.background === true,
+    schedules: stored?.schedules === true,
+    commands: false, wholeComputer: false, connections: false,
+  };
+  for (const ability of alwaysAskAbilities()) {
+    if (isOn(agent, ability)) (answer as Record<string, boolean>)[ability] = true;
+  }
+  return answer;
+}
+
+/**
+ * Does this agent hold anything that has to be asked about before it acts?
+ *
+ * ONE OWNER, AND IT IS NOT THIS FILE. `mustAskBeforeActing` lives in
+ * `@cloud9/shared` because the hub has to answer the same question and cannot
+ * see this code — when the rule lived only here, the hub read `agent.approvals`
+ * directly and would have let an unattended job from an agent that can run
+ * programs straight through. This function is now a name for that rule, not a
+ * second copy of it; `alwaysAskAbilities()` still exists because the CAPABILITY
+ * TABLE is what turns those ability names into words for a screen, and
+ * `abilities.test.ts` holds the two lists to each other.
+ */
+export function needsApprovalToRun(agent: AgentDef): boolean {
+  return mustAskBeforeActing(agent);
+}
+
+/** The powers this agent holds that will ask first, in his words. For a screen. */
+export function describeApprovalNeeds(agent: AgentDef): string[] {
+  return CAPABILITIES.filter(c => c.alwaysAsk && isOn(agent, c.ability)).map(c => c.label);
+}
 
 /**
  * The capability section of the prompt: an honest account of what this agent
@@ -123,20 +401,30 @@ export const NEVER_ALLOWED_TOOLS = ["Bash"] as const;
  * It is deliberately blunt about the limits as well as the powers. An agent
  * that overstates itself is the same failure as one that understates itself —
  * the owner ends up believing something that is not true either way.
+ *
+ * The blanket "you cannot run commands, and your owner cannot switch that on"
+ * paragraph is GONE, because it stopped being true on 2026-07-30. Anything that
+ * used to be said unconditionally is now said by the row that owns it, so the
+ * words can never outlive the rule again.
  */
 export function renderCapabilities(agent: AgentDef): string {
   const lines = CAPABILITIES.map(c => `• ${isOn(agent, c.ability) ? c.can : c.cannot}`);
   const hasSkills = (agent.skills ?? []).length > 0;
+  const asks = describeApprovalNeeds(agent);
 
   return (
     `\nWhat you can actually do (your owner set these switches, and they are ` +
     `enforced outside this conversation — this list is the truth, not a wish):\n` +
     `${lines.join("\n")}\n` +
+    (asks.length > 0
+      ? `\nSome of that asks your owner first — ${asks.map(a => a.toLowerCase()).join("; ")}. ` +
+        `When one of those is what a job needs, say what you intend to do and wait to be ` +
+        `let through. Never report it as already done.\n`
+      : "") +
     `\nTrue for every agent in Cloud9, whatever your switches say:\n` +
-    `• You CANNOT run commands, shell scripts or terminal programs. That is refused ` +
-    `for every agent on every path, and it is not something your owner can switch on ` +
-    `for you here.\n` +
-    `• You have no tools at all beyond the ones listed above.\n` +
+    `• You have no tools at all beyond the ones listed above. Your owner's own ` +
+    `Claude Code and Codex setup — his instructions, his connected accounts, his ` +
+    `shortcuts — is not loaded for you, and you should not act as if it were.\n` +
     `• You do not remember past conversations. What you have is the recent messages ` +
     `below` + (isOn(agent, "files")
       ? `, plus whatever you have written into your own folder.\n`

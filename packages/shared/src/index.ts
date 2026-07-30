@@ -9,17 +9,74 @@ export interface User {
   invitedBy?: ID;
 }
 
+/**
+ * WHAT AN AGENT MAY DO. The switches, and nothing else, decide it.
+ *
+ * The four original switches are required, because every stored agent has them.
+ * The four added on 2026-07-30 are OPTIONAL, and that is deliberate: absent must
+ * mean OFF, so raising the ceiling cannot silently hand an existing agent the
+ * power to run programs on the owner's computer. Nobody gains anything without
+ * someone typing it in.
+ *
+ * The plain-words meaning of each switch, the tools it grants and whether it
+ * needs the owner's approval all live in ONE table — `CAPABILITIES` in
+ * `@cloud9/engine`. This interface is only the field names on the wire.
+ */
 export interface AgentAbilities {
   webSearch: boolean;
   files: boolean;
   schedules: boolean;
   background: boolean;
+  /** get help from its own helper agents and the harness's own working tools */
+  helpers?: boolean;
+  /** run programs on this computer — ALWAYS asks the owner first */
+  commands?: boolean;
+  /** reach files outside its own folder — ALWAYS asks the owner first */
+  wholeComputer?: boolean;
+  /** use connected services (MCP servers) the owner chose FOR THIS AGENT */
+  connections?: boolean;
 }
 
-/** Which controlled actions need the owner's approval first (FR-AP-001, FR-TL-004). */
+/**
+ * Which controlled actions need the owner's approval first (FR-AP-001, FR-TL-004).
+ *
+ * `background` and `schedules` are the owner's choice. The three added on
+ * 2026-07-30 are NOT a choice: anything that changes the machine or spends money
+ * is forced on by `approvalsFor()` in `@cloud9/engine`, whatever is stored here.
+ * They are still fields so the screen can show them and the wire can carry them —
+ * but a client that sends `commands: false` does not get a silent machine.
+ */
 export interface AgentApprovals {
   background: boolean;   // !bg / !task delegated work
   schedules: boolean;    // creating a schedule
+  /** forced true whenever the `commands` ability is on */
+  commands?: boolean;
+  /** forced true whenever the `wholeComputer` ability is on */
+  wholeComputer?: boolean;
+  /** forced true whenever the `connections` ability is on */
+  connections?: boolean;
+}
+
+/**
+ * The abilities that ALWAYS ask the owner first, whatever anyone stored.
+ *
+ * This lives in shared because two different processes have to agree about it
+ * and they cannot see each other's code: the engine decides what an agent may
+ * carry, and the hub decides whether a job needs a yes before it runs. When the
+ * rule lived only in the engine, the hub read `agent.approvals` directly and
+ * would have let a job from an agent that can run programs through **without
+ * asking** — the switch said "always ask" and the hub had never heard of it.
+ *
+ * One fact, one home. Anything marked here is forced on at every gate; a stored
+ * `false` (or a client claiming one) cannot turn it off.
+ */
+export const ALWAYS_ASK_ABILITIES = ["commands", "wholeComputer", "connections"] as const;
+
+/** Does this agent hold a power that must be asked about before it acts alone? */
+export function mustAskBeforeActing(agent: { abilities?: Partial<AgentAbilities> }): boolean {
+  const a = agent.abilities;
+  if (!a) return false;
+  return ALWAYS_ASK_ABILITIES.some(k => a[k] === true);
 }
 
 /** Which locally-installed AI harness runs this agent's turns (FR-PC-002/003). */
@@ -143,6 +200,20 @@ export interface Task {
   status: TaskStatus;
   result?: string;
   error?: string;
+  /**
+   * WHAT ACTUALLY HAPPENED, IN ONE OR TWO SENTENCES — written by the agent
+   * itself (his item 3; he explicitly agreed the agent should write it).
+   *
+   * It rides on the task rather than becoming a new entity because it IS a
+   * property of the job: "the job finished" and "here is what it did" are the
+   * same row of the same list.
+   *
+   * ABSENT IS A REAL ANSWER and the important one. A job that failed before it
+   * had anything to say has no summary, and the screen must show nothing rather
+   * than a filler sentence — an invented TLDR is worse than none, because it
+   * reads exactly like a real one.
+   */
+  summary?: string;
   approvalId?: ID;
   /**
    * WHAT ACTUALLY HAPPENED when this job ran (FR-TL-003).
@@ -315,6 +386,187 @@ export const RUN_RETENTION = {
   listDefault: 20,
 } as const;
 
+// ---------- projects: a GitHub repository connected to Cloud9 ----------
+//
+// HIS ITEM 7. A project IS a repository — not a folder of tasks that happens to
+// mention one — holding its pull requests and its issues, the shape he saw in
+// Buzz and asked for.
+//
+// WHAT THIS HALF IS AND IS NOT. Everything below is storage and wire: what a
+// project is, what one of its rows is, and how it travels. NOTHING here runs
+// `git` or `gh` — the engine owns that, on the owner's own machine, behind the
+// approvals that already sit in front of anything that leaves it. That split is
+// deliberate and load-bearing: the hub must never become a thing that can reach
+// GitHub, because the hub is the part a guest can talk to.
+//
+// TWO DECISIONS HE ALREADY MADE travel with this and are not re-opened:
+//  • branch + pull request, ALWAYS. Nothing lands on the default branch without
+//    him, which is why `defaultBranch` is recorded as a thing to protect rather
+//    than a thing to push to.
+//  • `gh` is signed in over HTTPS as `vikas53953`; there is no SSH key. So a
+//    project is identified the way `gh` identifies one — "owner/name" — and
+//    never by a URL a client made up.
+
+/**
+ * A repository connected to this Cloud9.
+ *
+ * It belongs to a PERSON, exactly as an agent does, and for the same reason:
+ * the work happens on their machine, through their `gh` sign-in, spending their
+ * account's permissions. Being able to see a project has never been permission
+ * to act on it.
+ */
+export interface Project {
+  id: ID;
+  /** whose machine and whose GitHub sign-in this project runs through */
+  ownerId: ID;
+  /** "vikas53953/cloud9" — exactly as `gh` names a repository */
+  repo: string;
+  /** the name a person reads. Defaults to the repository's own name. */
+  name: string;
+  /** what this project is for, in the owner's words */
+  description?: string;
+  /**
+   * The branch NOTHING lands on without him (his decision, item 6). Recorded
+   * from what the engine actually found on GitHub — never guessed as "main",
+   * because a repository whose trunk is called something else would then have
+   * had its protection pointed at a branch that does not exist.
+   */
+  defaultBranch?: string;
+  /** the conversation this project reports into, when he picked one */
+  channelId?: ID;
+  createdAt: number;
+  /** when the engine last looked at GitHub. Absent means it never has. */
+  syncedAt?: number;
+  /** what went wrong the last time it looked, in plain words. Absent = fine. */
+  problem?: string;
+}
+
+/** A pull request or an issue — the two lists a project holds. */
+export type ProjectItemKind = "pull" | "issue";
+
+/**
+ * Where one of those has got to.
+ *
+ * `merged` is deliberately its own answer rather than a flavour of `closed`: a
+ * pull request that was merged and one that was thrown away are the opposite
+ * outcome, and a list that draws them the same way is lying about the work.
+ */
+export type ProjectItemState = "draft" | "open" | "merged" | "closed";
+
+/**
+ * One pull request or issue, as it stood the last time the engine looked.
+ *
+ * A CACHE OF SOMEBODY ELSE'S TRUTH, and it says so: GitHub owns these, we only
+ * hold the copy that lets a screen draw a list without a network call. Nothing
+ * here is ever the basis of a permission decision.
+ */
+export interface ProjectItem {
+  projectId: ID;
+  kind: ProjectItemKind;
+  /** the number GitHub gave it — unique per repository, per kind */
+  number: number;
+  title: string;
+  state: ProjectItemState;
+  /** the GitHub login that opened it. Display only. */
+  author?: string;
+  /** the branch the work is on — a pull request only */
+  branch?: string;
+  /**
+   * WHICH OF HIS AGENTS DID THIS, when one did. Our agent id, not a GitHub
+   * name — an agent has no GitHub account of its own, it works through his.
+   * Absent means a person opened it, which is the ordinary case.
+   */
+  agentId?: ID;
+  /** the address a person clicks. Always GitHub's own. */
+  url: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export const PROJECT_LIMITS = {
+  /** how many repositories one person may connect */
+  perUser: 50,
+  name: 80,
+  description: 500,
+  /** pull requests + issues kept per project — the newest survive */
+  items: 200,
+  itemTitle: 300,
+  /** the plain-words failure kept on a project */
+  problem: 200,
+} as const;
+
+/**
+ * The shape of "owner/name", and nothing else.
+ *
+ * SAME LAW AS `MODEL_ID_RE`, for the same reason: this string ends up as an
+ * argument to `gh`. Each half must START with a letter or a digit, so a value
+ * can never be mistaken for an option — `--repo` is not a repository, it is a
+ * flag, and that is exactly how round 2's model ids got onto a command line.
+ * Exactly one slash, no dots that could climb out of anything, no spaces.
+ */
+export const REPO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/** Check a repository name before it is stored or handed to `gh`. */
+export function validateRepo(repo: unknown): string | null {
+  if (typeof repo !== "string" || repo.trim().length === 0) {
+    return "say which repository, as owner/name — for example vikas53953/cloud9";
+  }
+  if (repo.includes("..")) return "that isn't a repository name";
+  if (!REPO_RE.test(repo)) {
+    return "that isn't a repository name — use owner/name, like vikas53953/cloud9";
+  }
+  return null;
+}
+
+/** Check the words a person wrote about a project. */
+export function validateProjectText(name: unknown, description: unknown): string | null {
+  if (name !== undefined && name !== null) {
+    if (typeof name !== "string") return "a project name is words";
+    if (name.length > PROJECT_LIMITS.name) {
+      return `that name is too long (max ${PROJECT_LIMITS.name} characters)`;
+    }
+    if (/[\r\n]/.test(name)) return "a project name is one line";
+  }
+  if (description !== undefined && description !== null) {
+    if (typeof description !== "string") return "a description is words";
+    if (description.length > PROJECT_LIMITS.description) {
+      return `that description is too long (max ${PROJECT_LIMITS.description} characters)`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Check one pull request or issue the engine reports back.
+ *
+ * It arrives over the wire, so it is UNTRUSTED INPUT exactly as a run record
+ * is — same law, same shape of answer. GitHub's own reply came through somebody
+ * else's network and an engine we did not write could hand us anything.
+ */
+export function validateProjectItem(item: unknown): string | null {
+  if (!item || typeof item !== "object") return "that isn't a pull request or an issue";
+  const i = item as Partial<ProjectItem>;
+  if (i.kind !== "pull" && i.kind !== "issue") return "that is neither a pull request nor an issue";
+  if (typeof i.number !== "number" || !Number.isInteger(i.number) || i.number <= 0) {
+    return "that has no number";
+  }
+  if (typeof i.title !== "string" || i.title.length === 0) return "that has no title";
+  if (i.title.length > PROJECT_LIMITS.itemTitle) return "that title is too long";
+  if (i.state !== "draft" && i.state !== "open" && i.state !== "merged" && i.state !== "closed") {
+    return "that isn't a state we know";
+  }
+  // the address is a LINK A PERSON CLICKS, so it must be GitHub's own and
+  // nothing else — a `javascript:` or a look-alike host is the whole reason
+  // this check exists rather than a length check
+  if (typeof i.url !== "string" || !/^https:\/\/github\.com\/[^\s"'<>]{1,300}$/.test(i.url)) {
+    return "that link isn't a GitHub address";
+  }
+  for (const [what, value] of [["created", i.createdAt], ["updated", i.updatedAt]] as const) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return `that ${what} time isn't a number`;
+  }
+  return null;
+}
+
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
 export interface Approval {
@@ -341,7 +593,11 @@ export type ActivityKind =
   // FR-TL-003: an agent took a turn and we wrote down what it did. This is the
   // row the Activity panel was always missing — until now it could say an agent
   // spoke, but never what the agent DID to be able to say it.
-  | "run_recorded";
+  | "run_recorded"
+  // his item 7: connecting a repository to Cloud9 is an action on this Cloud9,
+  // so it belongs in the trail like every other one. Nothing here touches
+  // GitHub — these three lines are about OUR copy.
+  | "project_connected" | "project_updated" | "project_forgotten";
 
 /**
  * One line of the trail.
@@ -573,8 +829,17 @@ export interface Attachment {
  * list, because that is all a client can draw.
  */
 export interface MessageReaction {
+  /**
+   * Who currently has this emoji on the message: user ids AND agent ids,
+   * sorted, never duplicated — one reactor, one emoji, one vote.
+   *
+   * Agent ids appear here because an agent reacting to the message that asked
+   * for its work (`agentReact`) uses THIS mechanism rather than a second one,
+   * exactly as an agent speaking uses `Message` rather than a second kind of
+   * message. A client that draws a name for each id already has agents in the
+   * same directory it looks people up in.
+   */
   emoji: string;
-  /** user ids, sorted, never duplicated — one person, one emoji, one vote */
   userIds: ID[];
 }
 
@@ -705,6 +970,22 @@ export type ClientFrame =
   | { type: "markRead"; channelId: ID; ts?: number }
   // engine-host only: post a message authored by one of the owner's agents
   | { type: "agentSend"; agentId: ID; channelId: ID; text: string; proactive?: boolean; replyTo?: ID }
+  /**
+   * engine-host only in practice: put an emoji on a message AS ONE OF YOUR
+   * AGENTS — "picked it up", "working", "done" (his item 5).
+   *
+   * THE SAME MECHANISM AS `react`, not a second one: it ends in the same
+   * reactions table and comes back out in the same `reaction` frame, with the
+   * agent's own id in the list. What it adds is the one thing `react` could not
+   * express — that the reactor is an agent rather than the person holding the
+   * socket — and it is authorised exactly as `agentSend` is, so an engine can
+   * never react as an agent it does not own.
+   *
+   * The emoji is not restricted to `WORK_REACTIONS` here. That set is the
+   * VOCABULARY the engine uses; making it a wire rule as well would mean a
+   * second owner for the same fact, and would refuse an agent a 🎉 forever.
+   */
+  | { type: "agentReact"; agentId: ID; messageId: ID; emoji: string; on?: boolean }
   | { type: "agentStatus"; agentId: ID; status: AgentStatus }
   // v2 — tasks / approvals / activity
   // `requesterId` says WHO ASKED for this work. The engine host relays a task on
@@ -713,10 +994,41 @@ export type ClientFrame =
   // connection may set it, and the relay still checks that person is real and
   // can see the channel — it is a claim, not a permission.
   | { type: "createTask"; agentId: ID; channelId: ID; title: string; requesterId?: ID; needsApproval?: boolean; action?: string }
-  | { type: "updateTask"; taskId: ID; status: TaskStatus; result?: string; error?: string } // engine (agent owner) only
+  /**
+   * engine (agent owner) only. `summary` follows the same sentence-vs-silence
+   * rule as every other optional field in this protocol: ABSENT means "I am not
+   * talking about the summary, leave it alone", and `""` means "clear it".
+   * Those are two different sentences and the hub treats them differently.
+   */
+  | { type: "updateTask"; taskId: ID; status: TaskStatus; result?: string; error?: string; summary?: string }
   | { type: "cancelTask"; taskId: ID }
   | { type: "decideApproval"; approvalId: ID; decision: "approved" | "rejected" }
   | { type: "activity"; before?: number; limit?: number }
+  // ---- projects: a GitHub repository connected to Cloud9 (his item 7) ----
+  /** Connect a repository. Yours: it runs through YOUR machine and YOUR `gh`. */
+  | { type: "connectProject"; repo: string; name?: string; description?: string; channelId?: ID }
+  /** Rename it, describe it, or point it at a conversation. Absent = leave alone. */
+  | { type: "updateProject"; projectId: ID; name?: string; description?: string; channelId?: ID }
+  /**
+   * Disconnect it. THE REPOSITORY IS NOT TOUCHED — this forgets our copy of the
+   * lists and nothing else. Deleting somebody's code is not a thing this hub
+   * will ever be able to do.
+   */
+  | { type: "forgetProject"; projectId: ID }
+  /** The repositories you have connected. */
+  | { type: "projects" }
+  /** One project's pull requests and issues, as of the last time we looked. */
+  | { type: "projectItems"; projectId: ID }
+  /**
+   * ENGINE-HOST ONLY: I asked GitHub, and here is what it said.
+   *
+   * The engine ran `gh` on the owner's machine; this is the report. Like a run
+   * record it is a REPORT AND NOT A PERMISSION — the hub reads whose project it
+   * is from stored state, never from this frame. `problem` is how the engine
+   * says it could not look, so the screen can show why instead of an empty list
+   * that reads like "no open work".
+   */
+  | { type: "projectSynced"; projectId: ID; defaultBranch?: string; items?: ProjectItem[]; problem?: string }
   // ---- what an agent actually did (FR-TL-003) ----
   /**
    * ENGINE-HOST ONLY: one turn finished, here is what it did.
@@ -752,6 +1064,153 @@ export type ClientFrame =
 
 export type AgentStatus = "idle" | "working" | "braked";
 
+// ---------- can this agent actually be used right now? ----------
+//
+// HIS ITEM 2, AND IT IS A BUG: every agent showed offline. The fix is not a
+// prettier lamp, it is an honest one — so this is the ONE place that says what
+// the four answers mean, and `agentPresence` below is the ONE place that
+// decides which of them is true. Two copies of that decision is how a sidebar
+// and a conversation header end up disagreeing about the same agent.
+//
+// It EXTENDS `agentStatus` rather than sitting beside it: the same frame
+// carries both, and `status` still says idle/working/braked so nothing that
+// already reads it breaks.
+
+/**
+ * What a person needs to know before they type at an agent.
+ *
+ * - `ready`    — its app is signed in and its engine is up. It will answer.
+ * - `working`  — mid-turn right now.
+ * - `paused`   — its owner paused it. It will not answer until they unpause it.
+ * - `offline`  — nobody can run it: the engine is not running, its app is not
+ *                signed in, or the owner switched it off.
+ *
+ * There is deliberately no fifth answer, and no "unknown": when the hub cannot
+ * back a claim up, the honest word is `offline`.
+ */
+export type AgentPresence = "ready" | "working" | "paused" | "offline";
+
+/**
+ * Presence, plus WHY — because a grey dot with no explanation is the thing he
+ * was actually complaining about. The reason is a plain sentence a
+ * non-developer reads ("Codex isn't signed in"), never a code.
+ */
+export interface AgentPresenceState {
+  agentId: ID;
+  presence: AgentPresence;
+  /** one plain sentence saying why it is what it is. Never empty. */
+  reason: string;
+  /** the older lamp — the same fact in the older words, so no client breaks */
+  status: AgentStatus;
+  updatedAt: number;
+}
+
+export const PRESENCE_LIMITS = { reason: 200 } as const;
+
+export function isAgentPresence(value: unknown): value is AgentPresence {
+  return value === "ready" || value === "working" || value === "paused" || value === "offline";
+}
+
+/** "Claude" / "Codex" — the app's name as a person says it. */
+export function harnessLabel(name: HarnessName | string | undefined): string {
+  return name === "codex" ? "Codex" : "Claude";
+}
+
+/**
+ * The things the hub GENUINELY KNOWS about one agent. Nothing here is guessed:
+ * each field is either an observed fact or absent.
+ */
+export interface PresenceFacts {
+  /** is this agent's owner's engine host connected to the hub RIGHT NOW? */
+  engineConnected: boolean;
+  /**
+   * What that engine last said about the app this agent runs on. ABSENT means
+   * it has not said — which is not the same as "not signed in", and must never
+   * be reported as if it were.
+   */
+  harness?: Pick<HarnessInfo, "installed" | "signedIn">;
+  /** the last idle/working/braked the engine reported for this agent */
+  status?: AgentStatus;
+}
+
+/**
+ * THE ONE PLACE THAT DECIDES WHETHER AN AGENT IS AVAILABLE.
+ *
+ * Read the order as a ladder of honesty rather than a list of cases:
+ *
+ *  1. If no engine is connected, nobody can run this agent — whatever the last
+ *     lamp said. This is what stops a "working" left behind by an engine that
+ *     died mid-turn from being reported forever, and it is the rule the
+ *     contract states first: the hub must NEVER report `ready` for an agent
+ *     nobody can run.
+ *  2. Switched off by its owner is also "nobody can run it", so it is `offline`
+ *     and not a fourth word.
+ *  3. Mid-turn beats paused and ready (the contract's tie-break).
+ *  4. Then the app itself: not installed, or not signed in, are both `offline`
+ *     WITH THE REASON, which is the whole point of the reason existing.
+ *  5. `braked` is the loop guard, not a lifecycle state: the agent will still
+ *     answer a person, so it stays `ready` and the reason explains the pause.
+ *     Inventing a fifth state for it would be inventing a status we cannot
+ *     support.
+ */
+export function agentPresence(
+  agent: Pick<AgentDef, "provider" | "lifecycle">,
+  facts: PresenceFacts,
+): { presence: AgentPresence; reason: string } {
+  const app = harnessLabel(agent.provider ?? "claude");
+  if (!facts.engineConnected) {
+    return { presence: "offline", reason: "its agent engine isn't running" };
+  }
+  if (agent.lifecycle === "disabled") {
+    return { presence: "offline", reason: "switched off by its owner" };
+  }
+  if (facts.status === "working") {
+    return { presence: "working", reason: "working now" };
+  }
+  if (agent.lifecycle === "paused") {
+    return { presence: "paused", reason: "paused by its owner" };
+  }
+  if (facts.harness && !facts.harness.installed) {
+    return { presence: "offline", reason: `${app} isn't installed on that computer` };
+  }
+  if (facts.harness && !facts.harness.signedIn) {
+    return { presence: "offline", reason: `${app} isn't signed in` };
+  }
+  if (facts.status === "braked") {
+    return { presence: "ready", reason: "waiting for a person to speak" };
+  }
+  if (!facts.harness) {
+    return { presence: "ready", reason: `its engine is running — ${app} hasn't reported in yet` };
+  }
+  return { presence: "ready", reason: `signed in to ${app}` };
+}
+
+// ---------- the emoji an agent puts on your message as it works ----------
+//
+// HIS ITEM 5. Reactions already exist, so agents use THAT mechanism — there is
+// no second one. What is new is only the VOCABULARY, and it is fixed and lives
+// here so the engine, the hub and the screen cannot each pick their own tick.
+
+export const WORK_REACTIONS = {
+  /** picked your message up — the job is queued */
+  picked: "👀",
+  /** mid-turn right now */
+  working: "⚙️",
+  /** finished, and it worked */
+  done: "✅",
+  /** finished, and it didn't */
+  failed: "❌",
+} as const;
+
+export type WorkReaction = keyof typeof WORK_REACTIONS;
+
+export const WORK_REACTION_EMOJI: readonly string[] = Object.values(WORK_REACTIONS);
+
+/** Is this one of the four work-state emoji? Exported so tests can pin the set. */
+export function isWorkReaction(emoji: string): boolean {
+  return WORK_REACTION_EMOJI.includes(emoji);
+}
+
 export interface WorldState {
   me: User;
   users: User[];
@@ -760,6 +1219,13 @@ export interface WorldState {
   /** most recent messages per channel */
   messages: Message[];
   agentStatus: Record<ID, AgentStatus>;
+  /**
+   * Who can actually be used, and why — computed by the hub from what it really
+   * knows (see `agentPresence`). Absent only on a hub older than this round;
+   * a client that finds it absent must fall back to `agentStatus` rather than
+   * inventing a presence of its own.
+   */
+  presence?: Record<ID, AgentPresenceState>;
   tasks: Task[];
   approvals: Approval[];
   /**
@@ -775,7 +1241,13 @@ export type ServerFrame =
   | { type: "channel"; channel: Channel }
   | { type: "agent"; agent: AgentDef }
   | { type: "agentDeleted"; agentId: ID }
-  | { type: "agentStatus"; agentId: ID; status: AgentStatus }
+  /**
+   * ONE FRAME FOR ONE FACT. `status` is the old lamp and still means exactly
+   * what it always did; `presence` and `reason` are the same fact said in words
+   * a person can act on. Both are REQUIRED here on purpose — the hub computes
+   * them in one place, so a new place that sends this frame cannot forget them.
+   */
+  | { type: "agentStatus"; agentId: ID; status: AgentStatus; presence: AgentPresence; reason: string }
   | { type: "invite"; code: string }
   /**
    * One page of scrollback, oldest first. `hasMore` is the only honest way to
@@ -823,6 +1295,13 @@ export type ServerFrame =
   | { type: "task"; task: Task }
   | { type: "approval"; approval: Approval }
   | { type: "activity"; records: ActivityRecord[] }
+  /** One project changed — connected, renamed, or freshly looked at. */
+  | { type: "project"; project: Project }
+  /** Answers `projects`. Only ever the asker's own. */
+  | { type: "projects"; projects: Project[] }
+  | { type: "projectForgotten"; projectId: ID }
+  /** Answers `projectItems`, and pushed again whenever the engine re-syncs. */
+  | { type: "projectItems"; projectId: ID; items: ProjectItem[] }
   /**
    * One run — pushed the moment it finishes to everyone who can see the
    * conversation it happened in, and sent back on its own to whoever asked for
@@ -1182,6 +1661,31 @@ export function validateMessageText(text: unknown, allowEmpty = false): string |
   if (!allowEmpty && text.trim().length === 0) return "a message needs some words";
   if (text.length > MESSAGE_LIMITS.text) {
     return `that message is too long (max ${MESSAGE_LIMITS.text} characters)`;
+  }
+  return null;
+}
+
+/**
+ * How long an agent's own account of a finished job may be.
+ *
+ * Bounded for the same reason a message is: it arrives over the wire and lands
+ * in the database, so an unbounded one is a way to put a blob in through a path
+ * nobody sized. A TLDR is a couple of sentences — this is generous, not tight.
+ */
+export const TASK_LIMITS = { summary: 500 } as const;
+
+/**
+ * Check the summary an agent wrote about its own finished job.
+ *
+ * Absent is FINE and is the honest answer when there is nothing to say, so it
+ * returns null — the caller's job is to leave the field alone, not to invent
+ * one.
+ */
+export function validateTaskSummary(summary: unknown): string | null {
+  if (summary === undefined || summary === null) return null;
+  if (typeof summary !== "string") return "a summary is words";
+  if (summary.length > TASK_LIMITS.summary) {
+    return `that summary is too long (max ${TASK_LIMITS.summary} characters)`;
   }
   return null;
 }

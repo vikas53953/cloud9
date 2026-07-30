@@ -166,7 +166,11 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
           ? `[engine-host] Codex connected (${state.codex.authKind}) — Codex agents can run`
           : "[engine-host] Codex disconnected — Codex agents will ask you to sign in");
       }
-      engine.reportHarness(state);
+      // the second argument is the honesty gate: the hub hears about this
+      // computer only once this computer has actually been looked at. Before
+      // that, `state` is the placeholder every harness starts as, and telling
+      // the hub "neither app is installed" would put every agent's lamp out.
+      engine.reportHarness(state, harness.hasDetected);
     },
     log: opts.harness?.log ?? ((m: string) => log(m)),
   });

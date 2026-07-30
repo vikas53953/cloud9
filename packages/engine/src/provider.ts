@@ -4,7 +4,7 @@
 //    credential (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN).
 import os from "node:os";
 import { AgentDef, DEMO_REPLY_PREFIX, setMachineNames } from "@cloud9/shared";
-import { claudeToolsFor, NEVER_ALLOWED_TOOLS, renderCapabilities } from "./abilities.js";
+import { claudeToolsFor, deniedClaudeTools, renderCapabilities } from "./abilities.js";
 // type-only: erased at compile time, so runrecord.ts may import this file back
 // without creating a runtime import cycle.
 import type { ProviderTrace } from "./runrecord.js";
@@ -196,7 +196,9 @@ export class SdkProvider implements ClaudeProvider {
       options: {
         model: agent.model,
         allowedTools,
-        disallowedTools: [...NEVER_ALLOWED_TOOLS],
+        // derived from the same table, so the SDK path denies exactly what the
+        // command-line path denies — never a shorter hand-written list
+        disallowedTools: deniedClaudeTools(agent),
         permissionMode: "dontAsk",
         maxTurns: 6,
         cwd: this.agentDataDir(agent.id),

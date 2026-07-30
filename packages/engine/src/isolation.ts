@@ -36,6 +36,13 @@ export interface LeakedSurface {
 export interface HarnessIsolation {
   harness: HarnessName;
   /**
+   * How far the switches can be turned UP on this harness — the other half of
+   * the same honesty. `togglesAreTheBoundary` says nothing can get in that he
+   * did not switch on; this says whether everything the CLI can do is available
+   * to be switched on. Added 2026-07-30, when Vikas said the ceiling was wrong.
+   */
+  ceiling: string;
+  /**
    * TRUE only when the owner's ability toggles govern the agent's WHOLE tool
    * surface. False means the toggles govern something narrower — for Codex,
    * only the sandbox — and the screen must say so.
@@ -47,6 +54,15 @@ export interface HarnessIsolation {
   stillLoaded: readonly LeakedSurface[];
   /** what the toggles DO control, when they do not control everything */
   togglesControl: string;
+  /**
+   * Things we SAW and could not settle either way. Not leaks — nothing here was
+   * measured reaching an agent — but not "clean" either. A screen may ignore
+   * these; a person auditing this file may not. Keeping them out of
+   * `stillLoaded` is what stops the class rule below from being a lie in the
+   * other direction: "we found nothing" and "we looked and could not tell" are
+   * different sentences and are stored as different fields.
+   */
+  unknowns: readonly string[];
   /** the run this was measured on: version and date, so a stale claim is visible */
   measuredOn: string;
 }
@@ -60,10 +76,23 @@ export interface HarnessIsolation {
 const CLAUDE: HarnessIsolation = {
   harness: "claude",
   togglesAreTheBoundary: true,
+  ceiling:
+    "Everything Claude Code can do on this computer is available to switch on — " +
+    "running programs, files anywhere, helper agents, connected services.",
   headline: "This agent can only use what you switched on. Nothing else reaches it.",
   stillLoaded: [],
   togglesControl: "every tool the agent has",
-  measuredOn: "claude-code, 2026-07-29",
+  unknowns: [
+    "Under --safe-mode the CLI still NAMES seven of your installed plugins in its " +
+    "own start-up report, while reporting no skills, no slash commands and no " +
+    "connected accounts. Nothing from them was measured reaching an agent, and the " +
+    "declared tool set is the same either way — but we cannot prove they contribute " +
+    "nothing, so it is written down instead of rounded off.",
+    "--safe-mode documents that admin-managed (policy) settings still apply. There " +
+    "is no such file on this machine, so this has never been observed. On a " +
+    "work-managed PC it would be a real hole and Cloud9 could not close it.",
+  ],
+  measuredOn: "claude-code 2.1.220, 2026-07-30",
 };
 
 /**
@@ -91,6 +120,11 @@ const CLAUDE: HarnessIsolation = {
 const CODEX: HarnessIsolation = {
   harness: "codex",
   togglesAreTheBoundary: false,
+  ceiling:
+    "Codex agents already hold running commands and changing files at every " +
+    "setting — the switches decide WHERE, not WHETHER. Turning 'run programs' on " +
+    "opens the fence; leaving it off keeps the fence shut but the tool is still " +
+    "in its hand.",
   headline:
     "These switches control what this agent may CHANGE on your PC. They do not " +
     "control every tool it holds — Codex does not let us take the rest away yet.",
@@ -125,16 +159,25 @@ const CODEX: HarnessIsolation = {
         "under CODEX_HOME at all and stayed loaded regardless.",
     },
   ],
-  measuredOn: "codex-cli 0.146.0, 2026-07-29",
+  unknowns: [
+    "Codex's own sub-agent switch (`--disable multi_agent`) is now driven by the " +
+    "'helper agents' switch in both directions, but it did not remove " +
+    "collaboration.* when measured. So switching helpers OFF is a request the CLI " +
+    "does not honour, not a boundary. It is still sent, so a version that starts " +
+    "honouring it fixes this for free.",
+  ],
+  measuredOn: "codex-cli 0.146.0, help + `codex features list` re-read 2026-07-30",
 };
 
 /** A mock agent runs nothing at all, so there is nothing to leak. */
 const MOCK: HarnessIsolation = {
   harness: "mock",
   togglesAreTheBoundary: true,
+  ceiling: "None. A stand-in agent cannot be given anything, at any setting.",
   headline: "This agent is a stand-in. It runs no tools at all.",
   stillLoaded: [],
   togglesControl: "nothing — there is no real harness behind it",
+  unknowns: [],
   measuredOn: "by construction",
 };
 

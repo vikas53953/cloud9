@@ -20,8 +20,15 @@ export class Scheduler {
     if (this.timer) clearInterval(this.timer); // reconnects must not leak intervals
     this.timer = setInterval(() => this.tick(new Date()), this.tickMs);
   }
+  /**
+   * Put the clock down. The handle is FORGOTTEN as well as cleared: a scheduler
+   * that has been stopped must not still be holding something that looks
+   * startable, because "stopped" and "stopped but still has a handle" are the
+   * difference between the packaged app closing and a process Vikas has to kill.
+   */
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
   }
 
   /** exposed for tests */

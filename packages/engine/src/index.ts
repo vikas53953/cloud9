@@ -11,7 +11,7 @@ export {
 } from "./claude-cli.js";
 export {
   CodexProvider, parseCodexJsonl, traceCodex, codexMapper, codexArgs,
-  CODEX_ISOLATION_FLAGS, CODEX_DISABLED_FEATURES,
+  CODEX_ISOLATION_FLAGS, CODEX_ALWAYS_DISABLED, codexDisabledFeaturesFor,
   type CodexProviderOptions, type CodexTranscript,
 } from "./codex.js";
 // The honest per-harness answer to "are these toggles the permission boundary?"
@@ -38,8 +38,12 @@ export {
 // The ONE owner of "what this agent can do" — read by the command line, the
 // sandbox and the prompt alike, so they cannot disagree.
 export {
-  CAPABILITIES, NEVER_ALLOWED_TOOLS, claudeToolsFor, codexSandboxFor, codexWebSearchFor,
-  renderCapabilities, type Capability,
+  CAPABILITIES, CLAUDE_BUILTIN_TOOLS, REACH_LEVELS,
+  abilitiesForReach, reachOf, grantedCapabilities,
+  claudeToolsFor, deniedClaudeTools, codexSandboxFor, codexWebSearchFor,
+  reachesBeyondOwnFolder, allowsConnections,
+  alwaysAskAbilities, approvalsFor, needsApprovalToRun, describeApprovalNeeds,
+  renderCapabilities, type Capability, type Reach, type ReachLevel,
 } from "./abilities.js";
 export {
   HarnessManager, detectClaude, detectCodex, type HarnessOptions,
@@ -55,4 +59,25 @@ export {
   type RunResult, type RunOptions, type Runner, type VisibleRunner,
 } from "./run.js";
 export { isBraked, shouldReply, DEFAULT_BRAKE, type BrakeConfig } from "./chatter.js";
+// The short TLDR an agent writes about its own finished job (his item 3).
+export { taskTldr, headlineOf, TLDR_HEADLINE_MAX } from "./tldr.js";
+// The four work emoji and the bookkeeping that puts them on the right message
+// (his item 5). The VOCABULARY itself lives in `@cloud9/shared`.
+export {
+  WORK_REACTIONS, workEmoji, rememberAsk, takeAsk, PENDING_ASK_LIMIT,
+  type WorkReaction, type PendingAsk,
+} from "./reactions.js";
+// Parallel git worktrees — one workspace per agent, so several can work one
+// repository at once without colliding (his items 6 and 7).
+export {
+  GitWorkspace, GitError, branchNameFor, isSafeBranchName, worktreePathFor,
+  commitMessage, BRANCH_PREFIX,
+  type Worktree, type GitWorkspaceOptions, type WorkingTreeState, type CommitResult,
+} from "./worktree.js";
+// Everything that leaves this machine — behind the approval gate, always.
+export {
+  GitHubClient, ApprovalRequiredError, REMOTE_ACTIONS, findPullRequestUrl,
+  type RemoteAction, type RemoteApprover, type GitHubOptions, type GitHubAccount,
+  type PullRequest,
+} from "./github.js";
 export { Scheduler } from "./scheduler.js";

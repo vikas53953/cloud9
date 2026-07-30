@@ -6,16 +6,19 @@ import path from "node:path";
 import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, Channel, ClientFrame, HarnessName, HarnessState, ID,
-  Message, RunRecord, ServerFrame, Task, WorldState, isSafeSkillFileName, mayDriveAgent,
-  shareableRun, validateAgentInput,
+  Message, RunRecord, ServerFrame, Task, WorkReaction, WorldState, isSafeSkillFileName,
+  mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
 } from "@cloud9/shared";
+import { approvalsFor, needsApprovalToRun } from "./abilities.js";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
   ClaudeProvider, HarnessUnavailableError, MockProvider, redactForSharing, sanitizeForChat,
 } from "./provider.js";
+import { PendingAsk, rememberAsk, takeAsk, workEmoji } from "./reactions.js";
 import { buildRunRecord, ProviderTrace, RunFinish, RunKind, RunSeed } from "./runrecord.js";
 import { RunStore } from "./runstore.js";
 import { Scheduler } from "./scheduler.js";
+import { taskTldr } from "./tldr.js";
 
 export interface EngineOptions {
   relayUrl: string;      // ws://host:port
@@ -79,6 +82,13 @@ export class Engine {
   private history = new Map<ID, Message[]>();
   tasks = new Map<ID, Task>();
   private claimed = new Set<ID>();
+  /**
+   * Jobs asked for in a message whose task the hub has not minted yet, and then
+   * the answer: which message each job's ticks belong on. Both are small,
+   * capped, and in memory only — a tick is a nice-to-have, never a record.
+   */
+  private pendingAsks: PendingAsk[] = [];
+  private askMessageFor = new Map<ID, ID>();
   private turnsInFlight = 0;
   private queue: (() => Promise<void>)[] = [];
   private opts: EngineOptions;
@@ -225,7 +235,12 @@ export class Engine {
       const bg = message.authorKind === "human" && /^!(bg|task)\s+/i.test(bare);
       if (bg) {
         const title = bare.replace(/^!(bg|task)\s+/i, "").trim();
-        const needsApproval = agent.approvals?.background === true;
+        // `approvalsFor` is the ONE owner of "does this need his nod?". Reading
+        // `agent.approvals` directly is what let a switch that changes the
+        // machine be paired with an approval flag set to false. An agent holding
+        // any always-ask power is asked about the whole job, because a
+        // background turn is exactly where nobody is watching it.
+        const needsApproval = approvalsFor(agent).background || needsApprovalToRun(agent);
         this.sendFrame({
           type: "createTask", agentId: agent.id, channelId: channel.id, title,
           // the person who TYPED it, not the account this engine runs as — a
@@ -233,6 +248,14 @@ export class Engine {
           requesterId: message.authorId,
           needsApproval, action: needsApproval ? `Run background task: ${title}` : undefined,
         });
+        // 👀 straight away: the first thing he asked for is being able to SEE
+        // that the ask landed, before anything slow starts. The rest of the
+        // ticks follow the job, so the message it was asked in has to be
+        // remembered until the hub gives that job an id.
+        this.pendingAsks = rememberAsk(this.pendingAsks, {
+          agentId: agent.id, channelId: channel.id, title, messageId: message.id, at: Date.now(),
+        });
+        this.reactAs(agent.id, message.id, "picked");
         this.agentSend(agent.id, channel.id, needsApproval
           ? `I can do that — waiting for my owner's approval first. 🔒 (see Tasks panel)`
           : `On it — I'll work on this in the background and post here when done. ⏳`);
@@ -432,6 +455,13 @@ export class Engine {
     if (this.claimed.has(task.id)) return;
     const agent = this.myAgents.find(a => a.id === task.agentId);
     if (!agent) return;
+    // the hub has now given this job an id, so the message it was asked in can
+    // be tied to it and wear the rest of its ticks
+    if (!this.askMessageFor.has(task.id)) {
+      const { messageId, rest } = takeAsk(this.pendingAsks, task);
+      this.pendingAsks = rest;
+      if (messageId) this.askMessageFor.set(task.id, messageId);
+    }
     if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") return; // FR-AG-007
     // Last gate on "who may make this agent act". The relay checks the same
     // rule when the task is created; this is the check that runs on the machine
@@ -448,6 +478,8 @@ export class Engine {
 
   private async runTask(agent: AgentDef, task: Task): Promise<void> {
     this.setStatus(agent.id, "working");
+    this.markWork(task, "picked", false);
+    this.markWork(task, "working");
     this.sendFrame({ type: "updateTask", taskId: task.id, status: "working" });
     try {
       // schedule-creation tasks (approved via the task machine)
@@ -458,7 +490,15 @@ export class Engine {
           when: sched[1].toLowerCase(), prompt: sched[2], enabled: true,
         };
         this.saveSchedule(s);
-        this.sendFrame({ type: "updateTask", taskId: task.id, status: "completed", result: `schedule ${s.id} created` });
+        this.sendFrame({
+          type: "updateTask", taskId: task.id, status: "completed",
+          result: `schedule ${s.id} created`,
+          // this job did not run a turn, so there is no run record and nothing
+          // measured. The one true sentence about it is the one it can prove.
+          summary: `Scheduled: ${s.when} — ${s.prompt}`.slice(0, 200),
+        });
+        this.markWork(task, "working", false);
+        this.markWork(task, "done");
         this.agentSend(agent.id, task.channelId, `⏰ Approved & scheduled: ${s.when} — "${s.prompt}" (id ${s.id})`);
         return;
       }
@@ -473,16 +513,77 @@ export class Engine {
       // FR-TS-005: if cancelled while we worked, discard the result
       if (this.tasks.get(task.id)?.status === "cancelled") {
         this.markRunCancelled(task.id);
+        this.markWork(task, "working", false);
         return;
       }
-      this.sendFrame({ type: "updateTask", taskId: task.id, status: "completed", result: text.slice(0, 2000) });
+      this.sendFrame({
+        type: "updateTask", taskId: task.id, status: "completed", result: text.slice(0, 2000),
+        ...this.summaryFor(text),
+      });
+      this.markWork(task, "working", false);
+      this.markWork(task, "done");
       this.agentSend(agent.id, task.channelId, `📦 Task done:\n${text}`, true);
     } catch (err) {
       const said = sanitizeForChat(err, `task "${task.title}" failed`);
-      this.sendFrame({ type: "updateTask", taskId: task.id, status: "failed", error: said });
+      this.sendFrame({
+        type: "updateTask", taskId: task.id, status: "failed", error: said,
+        ...this.summaryFor(undefined),
+      });
+      this.markWork(task, "working", false);
+      this.markWork(task, "failed");
       this.agentSend(agent.id, task.channelId, said);
     } finally {
       this.setStatus(agent.id, "idle");
+      this.askMessageFor.delete(task.id);
+    }
+  }
+
+  /**
+   * The TLDR the agent writes about its own finished job (his item 3).
+   *
+   * Built from the run record this turn ALREADY produced — `lastRun` is the one
+   * this engine wrote most recently, and it is checked against the task before
+   * it is used, so a summary can never be borrowed from somebody else's job.
+   * Returns an empty patch when there is nothing honest to say, which is how a
+   * `summary` field simply does not appear on the frame.
+   */
+  private summaryFor(reply: string | undefined): { summary?: string } {
+    try {
+      const record = this.lastRun;
+      if (!record) return {};
+      const summary = taskTldr(record, reply);
+      // the hub will check this too; checking here as well means an unusable
+      // sentence is dropped rather than bouncing off the gate mid-job
+      if (!summary || validateTaskSummary(summary)) return {};
+      return { summary };
+    } catch (err) {
+      console.error("[engine] could not summarise a finished job:", err);
+      return {};
+    }
+  }
+
+  /**
+   * Put one of the four work emoji on the message that asked for this job — or
+   * take it off again.
+   *
+   * ONE CALL SITE FOR THE VOCABULARY: every tick in this file goes through here
+   * and `workEmoji`, so no call site can invent a fifth emoji or use a different
+   * tick for the same moment. A job nobody asked for in a message (one made
+   * from the Tasks panel) has no message to mark, and gets no ticks rather than
+   * somebody else's.
+   */
+  private markWork(task: Task, phase: WorkReaction, on = true): void {
+    const messageId = this.askMessageFor.get(task.id);
+    if (!messageId) return;
+    this.reactAs(task.agentId, messageId, phase, on);
+  }
+
+  /** Send one reaction as an agent. Never throws — a tick is never worth a turn. */
+  private reactAs(agentId: ID, messageId: ID, phase: WorkReaction, on = true): void {
+    try {
+      this.sendFrame({ type: "agentReact", agentId, messageId, emoji: workEmoji(phase), on });
+    } catch (err) {
+      console.error("[engine] could not react to a message:", err);
     }
   }
 
@@ -533,7 +634,22 @@ export class Engine {
    * Tell the relay (and through it, this owner's other clients) what the local
    * harnesses look like. Status only — no credential material (decision 5/6).
    */
-  reportHarness(state: HarnessState): void {
+  reportHarness(state: HarnessState, looked = true): void {
+    // HIS ITEM 2, AND THIS IS THE ENGINE'S HALF OF THE BUG.
+    //
+    // The hub works out presence from what this engine tells it about the two
+    // apps (`agentPresence` in shared: not installed → offline, not signed in →
+    // offline, ABSENT → "it hasn't said"). Detection starts by publishing a
+    // PLACEHOLDER — both apps `installed: false`, detail "not checked yet" —
+    // because the local settings card needs its spinner. Forwarding that
+    // placeholder tells the hub "neither app is on this computer" as though it
+    // were a finding, and every agent goes grey on a machine where both apps
+    // are signed in. It also never corrects itself if detection then hangs.
+    //
+    // So: we report what we HAVE ESTABLISHED, never what we have assumed.
+    // Absent is a state the hub already understands and says out loud; a false
+    // "not installed" is one it can only repeat.
+    if (!looked) return;
     // demo mode travels WITH the status every client already listens to, so the
     // screen can say "these answers are made up" without anyone having to
     // remember to ask a second question
@@ -558,7 +674,10 @@ export class Engine {
   handleScheduleCommand(agent: AgentDef, channelId: ID, text: string, requesterId?: ID): boolean {
     const t = text.trim();
     const create = /^!schedule\s+(daily \d{1,2}:\d{2}|every \d+m)\s*:?\s+(.+)$/i.exec(t);
-    if (create && agent.approvals?.schedules === true) {
+    // same one owner. A schedule for an agent that can run programs is a
+    // standing order to change the machine while nobody is looking, so it is
+    // asked about whatever the schedules flag says.
+    if (create && (approvalsFor(agent).schedules || needsApprovalToRun(agent))) {
       this.sendFrame({
         type: "createTask", agentId: agent.id, channelId,
         title: `!schedule ${create[1].toLowerCase()}: ${create[2]}`,

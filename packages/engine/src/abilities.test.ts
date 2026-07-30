@@ -11,9 +11,11 @@
 // table, so switching an ability changes both or neither.
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as shared from "@cloud9/shared";
 import { AgentAbilities, AgentDef } from "@cloud9/shared";
 import {
-  CAPABILITIES, claudeToolsFor, codexSandboxFor, NEVER_ALLOWED_TOOLS, renderCapabilities,
+  alwaysAskAbilities, approvalsFor, CAPABILITIES, claudeToolsFor, codexSandboxFor,
+  deniedClaudeTools, needsApprovalToRun, renderCapabilities,
 } from "./abilities.js";
 import { claudeArgs, ClaudeCliProvider, traceClaude } from "./claude-cli.js";
 import { codexArgs } from "./codex.js";
@@ -44,27 +46,42 @@ test("switching an ability changes BOTH the tools and the words, or neither", ()
     assert.ok(promptOff.includes(cap.cannot), `"${cap.ability}" off: the agent is not told it CANNOT`);
     assert.ok(!promptOff.includes(cap.can), `"${cap.ability}" off: the agent is told it CAN anyway`);
 
-    const argsOn = claudeArgs(on).join(" ");
-    const argsOff = claudeArgs(off).join(" ");
+    // the DECLARED set, not the whole command line: since the ceiling was
+    // raised, an ungranted tool is also named on the line, in --disallowed-tools
+    const declared = (a: AgentDef): string[] => {
+      const args = claudeArgs(a);
+      const at = args.indexOf("--tools");
+      const out: string[] = [];
+      for (let i = at + 1; i < args.length && !args[i].startsWith("--"); i++) out.push(args[i]);
+      return out;
+    };
+    const grantedOn = declared(on);
+    const grantedOff = declared(off);
     for (const tool of cap.claudeTools) {
-      assert.ok(argsOn.includes(tool), `"${cap.ability}" on: ${tool} was not granted`);
-      assert.ok(!argsOff.includes(tool),
+      assert.ok(grantedOn.includes(tool), `"${cap.ability}" on: ${tool} was not granted`);
+      assert.ok(!grantedOff.includes(tool),
         `"${cap.ability}" off: ${tool} was granted to an agent that is not told it has it`);
     }
   }
 });
 
 test("no tool can reach a command line that the prompt does not account for", () => {
-  const everything = agent({ webSearch: true, files: true, schedules: true, background: true });
+  const everything = agent(Object.fromEntries(CAPABILITIES.map(c => [c.ability, true])));
   const granted = claudeToolsFor(everything);
   const fromTable = CAPABILITIES.flatMap(c => c.claudeTools);
   assert.deepEqual(granted, fromTable, "the granted list IS the table, not a copy of it");
-  // and the args carry exactly those, plus the always-refused list
+  // and the args carry exactly those, plus everything refused
   const args = claudeArgs(everything);
   for (const tool of granted) assert.ok(args.includes(tool));
-  for (const never of NEVER_ALLOWED_TOOLS) {
-    assert.ok(args.includes(never), "the refused list is spelled out on the command line");
-    assert.ok(!granted.includes(never), "and is never in the granted list");
+  // the refused list is DERIVED from the CLI's whole measured surface, so it is
+  // the exact complement of what was granted — never a hand-written short list
+  const halfPowered = agent({ webSearch: true });
+  const denied = deniedClaudeTools(halfPowered);
+  const halfArgs = claudeArgs(halfPowered);
+  assert.ok(denied.length > 0);
+  for (const tool of denied) {
+    assert.ok(halfArgs.includes(tool), `${tool} is not spelled out on the command line`);
+    assert.ok(!claudeToolsFor(halfPowered).includes(tool), `${tool} is both granted and denied`);
   }
 });
 
@@ -74,8 +91,8 @@ test("the Codex sandbox comes from the same table as the words", () => {
   assert.ok(codexArgs(agent(), "C:/data/a1").includes("read-only"));
   assert.ok(codexArgs(agent({ files: true }), "C:/data/a1").includes("workspace-write"));
   // and the same switch is what changed the sentence
-  assert.ok(buildAgentPrompt(agent({ files: true }), "").includes("read, write and search files"));
-  assert.ok(!buildAgentPrompt(agent(), "").includes("read, write and search files"));
+  assert.ok(buildAgentPrompt(agent({ files: true }), "").includes("read, write and change files"));
+  assert.ok(!buildAgentPrompt(agent(), "").includes("read, write and change files"));
 });
 
 // ------------------------------------------------------------- the actual bug
@@ -93,11 +110,16 @@ test("an ability that is off is stated as off, never left to guess", () => {
 });
 
 test("the limits every agent has are always stated, whatever the switches say", () => {
-  for (const abilities of [ALL_OFF, { webSearch: true, files: true, schedules: true, background: true }]) {
+  // "you cannot run commands" stopped being one of these on 2026-07-30 — it is
+  // a ROW now, and rows are checked above, both ways. What is left here is what
+  // is genuinely true at every reach.
+  const everything = Object.fromEntries(CAPABILITIES.map(c => [c.ability, true]));
+  for (const abilities of [ALL_OFF, everything]) {
     const prompt = buildAgentPrompt(agent(abilities), "");
-    assert.match(prompt, /CANNOT run commands, shell scripts or terminal programs/);
     assert.match(prompt, /no tools at all beyond the ones listed above/);
     assert.match(prompt, /do not remember past conversations/i);
+    assert.match(prompt, /own\s+Claude Code and Codex setup — his instructions/,
+      "an agent is never left thinking its owner's own setup is loaded for it");
   }
 });
 
@@ -175,4 +197,37 @@ test("an agent NOT given web search cannot produce a web step, and is told so", 
   const args = claudeArgs(homebody);
   assert.ok(!args.includes("--allowed-tools"), "an agent with no abilities is granted no tools at all");
   assert.ok(!traceClaude(`{"type":"result","result":"done"}`).steps.some(s => s.kind === "web"));
+});
+
+// ---------------------------------------------------------------------------
+// "Must ask before acting" has ONE owner, and it is shared
+// ---------------------------------------------------------------------------
+//
+// The engine used to answer this question from its own capability table while
+// the hub answered it from `agent.approvals`. Two answers to one question is
+// how an unattended job from an agent that can run programs got through without
+// a yes. The rule now lives in `@cloud9/shared`; the table below still owns the
+// WORDS for a screen, and these two tests hold the two together so they cannot
+// drift apart again in silence.
+
+test("the engine does not re-decide who must ask — it calls the one rule", () => {
+  const canRunPrograms = agent({ commands: true });
+  assert.equal(needsApprovalToRun(canRunPrograms), shared.mustAskBeforeActing(canRunPrograms));
+  assert.equal(needsApprovalToRun(canRunPrograms), true);
+
+  const harmless = agent({ webSearch: true });
+  assert.equal(needsApprovalToRun(harmless), shared.mustAskBeforeActing(harmless));
+  assert.equal(needsApprovalToRun(harmless), false);
+
+  // and a stored "no, don't ask me" cannot switch it off
+  const lying: AgentDef = { ...canRunPrograms, approvals: { background: false, schedules: false, commands: false } };
+  assert.equal(needsApprovalToRun(lying), true);
+  assert.equal(approvalsFor(lying).commands, true);
+});
+
+test("the engine's table and shared's list name the SAME always-ask abilities", () => {
+  assert.deepEqual(
+    [...alwaysAskAbilities()].sort(),
+    [...shared.ALWAYS_ASK_ABILITIES].sort(),
+    "a new always-ask switch added to one and not the other is the drift this catches");
 });
