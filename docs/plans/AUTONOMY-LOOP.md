@@ -62,3 +62,6 @@ Cursor gets work that does NOT touch whatever the in-house agent holds this roun
 - 2026-07-31 ~01:xx — 4 Cursor lanes (notify/github/memory/joinhub) + 3 conductor
   hub modules merged; 784 tests clean. GitHub-to-screen wiring started (Opus).
   Cursor round 3 (7 new-file lanes) pushed to cursor/auto with autonomy note.
+- 2026-07-31 ~03:00 — GitHub WRITES ON SCREEN, verified + installed + walked 16/16
+  (798 tests, 448 browser). !issue/!comment/!review → approval card. Read-result
+  UI deferred (types in). Next in-house feature STARTED: join-a-friend on screen.
