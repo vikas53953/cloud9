@@ -104,3 +104,10 @@ export {
   type RepoTurnInput, type RepoTurnDeps, type RepoTurnResult, type RepoOutcome,
 } from "./repowork.js";
 export { Scheduler, isScheduleWhen, SCHEDULE_WHEN } from "./scheduler.js";
+// NOTICING that an agent's turn produced a file, so the hub can hold it and
+// anybody can open it — instead of a Windows path pasted into the chat.
+// (docs/plans/artifact-store-handoff.md)
+export {
+  sweepProduced, describeRefusals, SKIP_FOLDERS, SWEEP_DEFAULTS,
+  type ProducedFile, type RefusedFile, type ArtifactSweep, type SweepOptions,
+} from "./artifacts.js";

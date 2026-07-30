@@ -4,9 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
-  ActivityRecord, AgentDef, Approval, Attachment, Channel, ChannelMember, ChannelRole, ID, Message,
+  ActivityRecord, AgentDef, Approval, Artifact, ArtifactVersion, Attachment, Channel, ChannelMember,
+  ChannelRole, ID, Message,
   MessageReaction, MESSAGE_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
-  RunRecord, RUN_RETENTION, Task, User, newId,
+  RunRecord, RUN_RETENTION, Task, User, nameKey, newId,
 } from "@cloud9/shared";
 // THE ONE OWNER of "write a file this app will later believe" — write next
 // door, flush it down to the disk, rename it into place. It lives in the engine
@@ -78,6 +79,24 @@ export interface RunRow {
   taskId?: ID;
 }
 
+/**
+ * The identity of one artifact, without its bytes or its history.
+ *
+ * It is a row and not the wire shape on purpose: `nextVersion` is the hub's own
+ * counter and no client ever sees it. `Artifact` (in shared) is what travels.
+ */
+export interface ArtifactRow {
+  id: ID;
+  channelId: ID;
+  name: string;
+  /** `nameKey(name)` — what makes two spellings of one name one file */
+  nameKey: string;
+  createdAt: number;
+  updatedAt: number;
+  /** the number the NEXT version will get. Only ever goes up. */
+  nextVersion: number;
+}
+
 interface RawRun {
   id: string; agentId: string; ownerId: string;
   channelId: string | null; taskId: string | null; startedAt: number; json: string;
@@ -147,6 +166,15 @@ export class Store {
    * so a file can never be written anywhere a client asked for.
    */
   attachmentsDir: string;
+  /**
+   * Where files agents made live — a SEPARATE folder beside the attachments
+   * one, on the same machine and under the same rules.
+   *
+   * Separate on purpose: an artifact is kept for as long as its version history
+   * is, and an attachment is swept when its message is deleted. One folder would
+   * mean one sweep deciding about two different promises.
+   */
+  artifactsDir: string;
 
   /**
    * Rows this build could not make sense of, in plain words.
@@ -168,9 +196,13 @@ export class Store {
       throw new StoreOpenError(dbPath, e);
     }
     this.attachmentsDir = path.join(path.dirname(path.resolve(dbPath)), "cloud9-attachments");
+    this.artifactsDir = path.join(path.dirname(path.resolve(dbPath)), "cloud9-artifacts");
     // Litter from an upload that was interrupted last time. Nothing swept this
     // folder before today, so it only ever grew.
     this.sweepAttachmentLitter();
+    // The same sweep for the artifacts folder — the same class of litter, from
+    // the same whole-write mechanism, so it is not left to grow either.
+    sweepPending(this.artifactsDir);
     // EVERYTHING FROM HERE TO THE END OF THE MIGRATION IS ONE GUARDED OPEN.
     // `new DatabaseSync` succeeds on a file that is not a database at all —
     // SQLite does not look inside until the first statement — so guarding only
@@ -240,6 +272,41 @@ export class Store {
         messageId TEXT, uploadedAt INTEGER NOT NULL, json TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS att_msg ON attachments(messageId);
+
+      -- A FILE AN AGENT MADE. Two tables, because an artifact has an identity
+      -- that outlives any one set of bytes.
+      --
+      -- "artifacts" is the identity: one row per (conversation, name). The
+      -- UNIQUE index over (channelId, nameKey) is what MAKES "the same name
+      -- again is a new version" true — if two publishes race, SQLite refuses
+      -- the second row rather than letting two files with one name exist and
+      -- letting the screen pick whichever it read first. "nextVersion" is kept
+      -- HERE and only ever goes up, so a version number is never reused even
+      -- after the oldest versions have been pruned away.
+      --
+      -- A WHOLE NEW TABLE NEEDS NO MIGRATION STEP: CREATE TABLE IF NOT EXISTS
+      -- makes it on a fresh file and on an old one alike, and no index here is
+      -- over a column a migration adds (see migrate()).
+      CREATE TABLE IF NOT EXISTS artifacts(
+        id TEXT PRIMARY KEY, channelId TEXT NOT NULL, name TEXT NOT NULL,
+        nameKey TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL,
+        nextVersion INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS art_chan_name ON artifacts(channelId, nameKey);
+      CREATE INDEX IF NOT EXISTS art_chan ON artifacts(channelId, updatedAt);
+
+      -- "artifact_versions" is one row per set of bytes, and the bytes
+      -- themselves are on disk exactly as an attachment's are. The columns
+      -- beside the JSON are the ones authorisation, ordering and pruning are
+      -- decided from: channelId is written by the hub from the artifact's own
+      -- row, never from the frame, because a report is not a permission.
+      CREATE TABLE IF NOT EXISTS artifact_versions(
+        id TEXT PRIMARY KEY, artifactId TEXT NOT NULL, channelId TEXT NOT NULL,
+        agentId TEXT NOT NULL, version INTEGER NOT NULL,
+        producedAt INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS av_art ON artifact_versions(artifactId, version);
+      CREATE INDEX IF NOT EXISTS av_agent ON artifact_versions(agentId, producedAt);
 
       -- WHO IS IN A ROOM — a row each, not an array of ids inside the channel.
       --
@@ -1363,6 +1430,183 @@ export class Store {
       .all(messageId) as { json: string }[];
     this.db.prepare("DELETE FROM attachments WHERE messageId=?").run(messageId);
     return rows.map(r => JSON.parse(r.json) as Attachment);
+  }
+
+  // ---- artifacts: files agents made ----
+  //
+  // The BYTES go through `writeWholeFile`, exactly as an attachment's do and for
+  // exactly the same reason: a row that promises a whole file beside a file that
+  // is half there is a file he opens next month and finds truncated, with
+  // nothing anywhere saying it is damaged. A version's bytes can never be
+  // re-derived — the agent's worktree is long gone — so a failed write is a
+  // refusal, never a row.
+
+  /** Put one version's bytes on disk. Throws when they did not land. */
+  writeArtifactBytes(versionId: ID, safeName: string, bytes: Buffer): string {
+    fs.mkdirSync(this.artifactsDir, { recursive: true });
+    const storedAs = `${versionId}-${path.basename(safeName)}`;
+    let why = "";
+    const ok = writeWholeFile(path.join(this.artifactsDir, storedAs), bytes, m => { why = m; });
+    if (!ok) {
+      console.error(`[hub] could not store an artifact: ${why}`);
+      throw new Error(
+        "that file could not be saved on this computer — check there is free disk space " +
+        "and try again");
+    }
+    return storedAs;
+  }
+
+  /** Remove one version's bytes. Missing is not an error. */
+  removeArtifactBytes(storedAs: string): void {
+    try { fs.rmSync(path.join(this.artifactsDir, path.basename(storedAs))); } catch { /* already gone */ }
+  }
+
+  /**
+   * The identity row for one name in one conversation, or nothing.
+   *
+   * Looked up by `nameKey` — the SAME function that decides two agents are
+   * called the same thing — so `Report.md` and `report.md` are one artifact with
+   * two versions rather than two files nobody can tell apart in a list.
+   */
+  artifactRowByName(channelId: ID, name: string): ArtifactRow | undefined {
+    const row = this.db.prepare(
+      "SELECT id,channelId,name,nameKey,createdAt,updatedAt,nextVersion FROM artifacts " +
+      "WHERE channelId=? AND nameKey=?",
+    ).get(channelId, nameKey(name)) as ArtifactRow | undefined;
+    return row;
+  }
+
+  artifactRow(id: ID): ArtifactRow | undefined {
+    return this.db.prepare(
+      "SELECT id,channelId,name,nameKey,createdAt,updatedAt,nextVersion FROM artifacts WHERE id=?",
+    ).get(id) as ArtifactRow | undefined;
+  }
+
+  /**
+   * Take the next version number for this artifact, making the identity row if
+   * this is the first version.
+   *
+   * ONE STATEMENT DECIDES A VERSION NUMBER, and it is a write. Reading the
+   * highest stored version and adding one is the race that gives two publishes
+   * the same number; `nextVersion` is claimed and incremented in the same step,
+   * so the number a caller gets is theirs alone.
+   */
+  claimArtifactVersion(input: { channelId: ID; name: string; at: number }): ArtifactRow {
+    const existing = this.artifactRowByName(input.channelId, input.name);
+    if (existing) {
+      this.db.prepare("UPDATE artifacts SET nextVersion=nextVersion+1, updatedAt=? WHERE id=?")
+        .run(input.at, existing.id);
+      return { ...existing, nextVersion: existing.nextVersion + 1, updatedAt: input.at };
+    }
+    const row: ArtifactRow = {
+      id: newId("af"), channelId: input.channelId, name: input.name,
+      nameKey: nameKey(input.name), createdAt: input.at, updatedAt: input.at,
+      // 1 is handed out; the NEXT one is 2
+      nextVersion: 2,
+    };
+    this.db.prepare(
+      "INSERT INTO artifacts(id,channelId,name,nameKey,createdAt,updatedAt,nextVersion) " +
+      "VALUES(?,?,?,?,?,?,?)",
+    ).run(row.id, row.channelId, row.name, row.nameKey, row.createdAt, row.updatedAt, row.nextVersion);
+    return row;
+  }
+
+  /** Store one version's row. The bytes are already on disk. */
+  saveArtifactVersion(artifactId: ID, channelId: ID, v: ArtifactVersion): void {
+    this.db.prepare(
+      "INSERT OR REPLACE INTO artifact_versions" +
+      "(id,artifactId,channelId,agentId,version,producedAt,json) VALUES(?,?,?,?,?,?,?)",
+    ).run(v.id, artifactId, channelId, v.agentId, v.version, v.producedAt, JSON.stringify(v));
+  }
+
+  /**
+   * Throw away versions past the cap, bytes and row together.
+   *
+   * The oldest go first, and the newest is never a candidate however low a cap
+   * somebody sets — an artifact with no version would be a row that promises a
+   * file and has none. Returns how many were reclaimed.
+   */
+  pruneArtifactVersions(artifactId: ID, keep: number): number {
+    const rows = this.db.prepare(
+      "SELECT id,json FROM artifact_versions WHERE artifactId=? ORDER BY version DESC",
+    ).all(artifactId) as { id: string; json: string }[];
+    const doomed = rows.slice(Math.max(1, keep));
+    for (const r of doomed) {
+      const v = this.safeParse<ArtifactVersion>(r.json, "a version of a shared file", r.id);
+      if (v?.storedAs) this.removeArtifactBytes(v.storedAs);
+      this.db.prepare("DELETE FROM artifact_versions WHERE id=?").run(r.id);
+    }
+    return doomed.length;
+  }
+
+  /** One artifact and its versions, newest first — the wire shape, assembled. */
+  artifact(id: ID): Artifact | undefined {
+    const row = this.artifactRow(id);
+    if (!row) return undefined;
+    const versions = this.artifactVersionsOf(id);
+    // An identity row with no version left is not something a screen can draw,
+    // so it is not something this hands out. It can only happen to a database
+    // edited by hand, and saying nothing is better than saying half a file.
+    if (versions.length === 0) return undefined;
+    return {
+      id: row.id, channelId: row.channelId, name: row.name,
+      versions, createdAt: row.createdAt, updatedAt: row.updatedAt,
+    };
+  }
+
+  artifactVersionsOf(artifactId: ID): ArtifactVersion[] {
+    const rows = this.db.prepare(
+      "SELECT id,json FROM artifact_versions WHERE artifactId=? ORDER BY version DESC",
+    ).all(artifactId) as { id: string; json: string }[];
+    const out: ArtifactVersion[] = [];
+    for (const r of rows) {
+      const v = this.safeParse<ArtifactVersion>(r.json, "a version of a shared file", r.id);
+      if (v) out.push(v);
+    }
+    return out;
+  }
+
+  /**
+   * One version by ITS OWN id, with the conversation it belongs to.
+   *
+   * This is what a download ticket is redeemed against: the ticket names a
+   * version, and the permission question is about the CHANNEL, which is read
+   * from the artifact's own row and never from the ticket.
+   */
+  artifactVersion(versionId: ID): { version: ArtifactVersion; artifactId: ID; channelId: ID } | undefined {
+    const row = this.db.prepare(
+      "SELECT artifactId,channelId,json FROM artifact_versions WHERE id=?",
+    ).get(versionId) as { artifactId: string; channelId: string; json: string } | undefined;
+    if (!row) return undefined;
+    const version = this.safeParse<ArtifactVersion>(row.json, "a version of a shared file", versionId);
+    if (!version) return undefined;
+    return { version, artifactId: row.artifactId, channelId: row.channelId };
+  }
+
+  /** Every artifact in one conversation, the most recently changed first. */
+  artifactsIn(channelId: ID, limit: number): Artifact[] {
+    const rows = this.db.prepare(
+      "SELECT id FROM artifacts WHERE channelId=? ORDER BY updatedAt DESC, id DESC LIMIT ?",
+    ).all(channelId, Math.max(1, Math.floor(limit))) as { id: string }[];
+    const out: Artifact[] = [];
+    for (const r of rows) {
+      const a = this.artifact(r.id);
+      if (a) out.push(a);
+    }
+    return out;
+  }
+
+  /** How many artifacts this conversation holds — the per-channel ceiling. */
+  artifactCountIn(channelId: ID): number {
+    return (this.db.prepare("SELECT COUNT(*) n FROM artifacts WHERE channelId=?")
+      .get(channelId) as { n: number }).n;
+  }
+
+  /** How many versions this agent has published since a moment — the rate check. */
+  artifactPublishesSince(agentId: ID, since: number): number {
+    return (this.db.prepare(
+      "SELECT COUNT(*) n FROM artifact_versions WHERE agentId=? AND producedAt >= ?",
+    ).get(agentId, since) as { n: number }).n;
   }
 
   // ---- read state (on the account, not the machine) ----

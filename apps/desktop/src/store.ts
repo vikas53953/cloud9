@@ -1549,6 +1549,20 @@ export class RelayClient {
       // ordinary `project` and `projectItems` frame, handled above.
       case "lookAtProject":
         break;
+      // FILES AGENTS MADE — the server half of the shared artifact store landed
+      // first, and the screen half is deliberately a separate round. These three
+      // frames are DROPPED ON PURPOSE, and that is a stated gap and not a
+      // silence: nothing on this screen draws an artifact yet, so pretending to
+      // keep one in the world state would be a card nobody can see.
+      //
+      // The exhaustive `never` below is what forced these lines to exist, which
+      // is exactly what it is for. What to draw, and the field names to draw it
+      // from, are written down in `docs/plans/artifact-store-handoff.md` — the
+      // follow-up round replaces these three lines with real handling.
+      case "artifact":
+      case "artifacts":
+      case "artifactTicket":
+        break;
       default: {
         /**
          * If a new frame is added to `ServerFrame` and not handled above, this

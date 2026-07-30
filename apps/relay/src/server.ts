@@ -1,17 +1,20 @@
 // Cloud9 relay — the small always-on hub. All clients (desktop renderer,
 // engine host, iPhone app) speak the same WS protocol defined in @cloud9/shared.
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import {
-  AgentDef, AgentPresenceState, AgentStatus, Approval, Attachment, Channel, ChannelMember,
+  AgentDef, AgentPresenceState, AgentStatus, Approval, Artifact, ArtifactVersion, Attachment,
+  Channel, ChannelMember,
   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
-  MESSAGE_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
+  MESSAGE_LIMITS, ARTIFACT_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
   RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
   contentDisposition, downloadContentType, fitRunRecord, isBranchName, isSafeFileName,
+  isSafeStoredId, latestVersion, looksLikeText, versionOf, validateArtifact,
   mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
   setMachineNames, shareableRun,
   extractMentions, nameKey, newId, validateAgentInput, validateAttachment, validateChannelText,
@@ -32,6 +35,18 @@ try {
   setMachineNames([os.homedir(), os.userInfo().username, os.hostname()]);
 } catch { /* best effort — a locked-down machine still gets the path rules */ }
 import { secureId } from "./secureid.js";
+
+/**
+ * WHAT ONE DOWNLOAD TICKET IS FOR.
+ *
+ * Two kinds, one mint, one endpoint. `attachment` names an `Attachment` (a file
+ * a PERSON sent); `artifact` names an `ArtifactVersion` — the exact bytes, not
+ * the artifact — so a ticket minted for version 2 can never serve version 3
+ * because somebody published in between.
+ */
+type TicketTarget =
+  | { kind: "attachment"; id: ID }
+  | { kind: "artifact"; id: ID };
 
 interface Conn {
   ws: WebSocket;
@@ -136,7 +151,7 @@ export class Relay {
    * a credential somebody has to remember to expire. These die with the process,
    * with the clock, and with their first use — whichever comes first.
    */
-  private tickets = new Map<string, { attachmentId: ID; userId: ID; expiresAt: number }>();
+  private tickets = new Map<string, { target: TicketTarget; userId: ID; expiresAt: number }>();
 
   constructor(opts: RelayOptions = {}) {
     this.ownerToken = opts.ownerToken ?? process.env.CLOUD9_OWNER_TOKEN ?? "dev-owner-token";
@@ -760,6 +775,49 @@ export class Relay {
     return out;
   }
 
+  /** One frame to everyone who can see this conversation, and nobody else. */
+  private toChannel(channel: Channel, frame: ServerFrame): void {
+    const audience = this.audienceFor(channel);
+    for (const conn of this.conns) {
+      if (audience.has(conn.userId)) send(conn.ws, frame);
+    }
+  }
+
+  /**
+   * The artifact this person may read, or "no such file".
+   *
+   * The same shape as `myAgent` and `myProject`, and the same law: the gate is
+   * the CONVERSATION the artifact lives in, asked with `channelFor` on stored
+   * state, because reading a file an agent shared in a room is reading that
+   * room. `channelFor` and not `writableChannel` — an archived room is still
+   * readable, and the file he asked an agent for last month is exactly the thing
+   * archiving must not take away.
+   *
+   * "no such file" is the answer for an artifact in somebody else's room as well
+   * as for an invented id, so an id cannot be probed.
+   */
+  private artifactFor(userId: ID, artifactId: ID): Artifact {
+    const artifact = this.store.artifact(artifactId);
+    if (!artifact) throw new Error("no such file");
+    try { this.channelFor(userId, artifact.channelId); }
+    catch { throw new Error("no such file"); }
+    return artifact;
+  }
+
+  /**
+   * The job this claim is really about, or nothing.
+   *
+   * A `taskId` on a published artifact is a CLAIM, exactly as it is on a run
+   * record, and it is checked the same way: the job has to exist and it has to
+   * be this agent's, or the field is dropped rather than stored as a link to
+   * somebody else's work.
+   */
+  private taskOf(agentId: ID, taskId: ID | undefined): Task | undefined {
+    if (!taskId) return undefined;
+    const task = this.store.task(taskId);
+    return task && task.agentId === agentId ? task : undefined;
+  }
+
   // -------------------------------------------------------------------------
   // Handing a file's bytes back — the one thing this relay does over plain
   // HTTP rather than over the socket.
@@ -793,7 +851,7 @@ export class Relay {
   // -------------------------------------------------------------------------
 
   /** Mint the one-use ticket. Only ever called after `channelFor` has passed. */
-  private mintTicket(userId: ID, attachmentId: ID): { ticket: string; expiresAt: number } {
+  private mintTicket(userId: ID, target: TicketTarget): { ticket: string; expiresAt: number } {
     const now = Date.now();
     for (const [key, t] of this.tickets) if (t.expiresAt <= now) this.tickets.delete(key);
     let mine = 0;
@@ -806,8 +864,42 @@ export class Relay {
     // `secureId`, never `newId`, which is `Math.random()` and a clock.
     const ticket = secureId("tk");
     const expiresAt = now + ATTACHMENT_TICKET.ttlMs;
-    this.tickets.set(ticket, { attachmentId, userId, expiresAt });
+    this.tickets.set(ticket, { target, userId, expiresAt });
     return { ticket, expiresAt };
+  }
+
+  /**
+   * WHAT A TICKET IS FOR, resolved to bytes on disk, at redeem time.
+   *
+   * A person's attachment and an agent's artifact are two DIFFERENT things in
+   * the database and the SAME thing on the way out: a name, a folder, and the
+   * conversation whose membership decides who may read it. This is the one
+   * place that turns one into the other, which is why there is one download
+   * endpoint and one set of headers rather than a second copy of both.
+   *
+   * Nothing here trusts the ticket for permission — it returns the channel, and
+   * the caller asks `channelFor` about it, now, on stored state.
+   */
+  private ticketFile(target: TicketTarget): { channelId: ID; name: string; storedAs: string; dir: string } | undefined {
+    if (target.kind === "attachment") {
+      const row = this.store.attachment(target.id);
+      if (!row) return undefined;
+      return {
+        channelId: row.channelId, name: row.attachment.name,
+        storedAs: row.attachment.storedAs, dir: this.store.attachmentsDir,
+      };
+    }
+    const row = this.store.artifactVersion(target.id);
+    if (!row) return undefined;
+    // The NAME comes from the artifact's identity row, not from the version:
+    // the shared name is the thing every version of one file has in common, and
+    // it is what a browser should save it as.
+    const artifact = this.store.artifactRow(row.artifactId);
+    if (!artifact) return undefined;
+    return {
+      channelId: row.channelId, name: artifact.name,
+      storedAs: row.version.storedAs, dir: this.store.artifactsDir,
+    };
   }
 
   /**
@@ -835,19 +927,18 @@ export class Relay {
     this.tickets.delete(ticket);
     if (!held || held.expiresAt <= Date.now()) { nope(); return; }
 
-    const row = this.store.attachment(held.attachmentId);
-    if (!row) { nope(); return; }
+    const file = this.ticketFile(held.target);
+    if (!file) { nope(); return; }
     // THE SAME GATE, ASKED AGAIN, NOW. Not a copy of it — the function itself.
-    try { this.channelFor(held.userId, row.channelId); } catch { nope(); return; }
+    try { this.channelFor(held.userId, file.channelId); } catch { nope(); return; }
 
-    const file = row.attachment;
     // The name was checked by `isSafeFileName` before it was stored. It is
     // checked again on the way out, because a row could have been written by an
     // older build, and because it is about to become a header and a file name on
     // somebody's disk. Same rule, one owner, no second copy of it anywhere.
     if (!isSafeFileName(file.name)) { nope(); return; }
-    const stored = path.join(this.store.attachmentsDir, path.basename(file.storedAs));
-    const root = path.resolve(this.store.attachmentsDir);
+    const stored = path.join(file.dir, path.basename(file.storedAs));
+    const root = path.resolve(file.dir);
     if (path.resolve(stored) !== path.join(root, path.basename(file.storedAs))) { nope(); return; }
 
     let size: number;
@@ -857,7 +948,9 @@ export class Relay {
       size = stat.size;
     } catch { nope(); return; }
     // the same ceiling the upload was held to — a file that grew on disk since
-    // is not a file this hub agreed to serve
+    // is not a file this hub agreed to serve. An agent's artifact is held to the
+    // SAME number, by construction (`ARTIFACT_LIMITS.bytes` IS this one), so one
+    // check covers both and there is nothing here to drift.
     if (size > ATTACHMENT_LIMITS.bytes) { nope(); return; }
 
     // The type is computed from the NAME, never from the `mime` the sender
@@ -1898,11 +1991,117 @@ export class Relay {
         if (!row.messageId && row.attachment.uploadedBy !== conn.userId) {
           throw new Error("no such file");
         }
-        const { ticket, expiresAt } = this.mintTicket(conn.userId, row.attachment.id);
+        const { ticket, expiresAt } = this.mintTicket(
+          conn.userId, { kind: "attachment", id: row.attachment.id });
         send(conn.ws, {
           type: "attachmentTicket", attachmentId: row.attachment.id,
           ticket, url: ATTACHMENT_TICKET.path + ticket, expiresAt,
           attachment: row.attachment,
+        });
+        break;
+      }
+      // ---- files an AGENT made (docs/plans/artifact-store-handoff.md) ----
+      case "publishArtifact": {
+        // ENGINE ONLY, the same law as `runRecorded` and `agentSend`: a desktop
+        // client able to send this could put a file into a conversation wearing
+        // an agent's name, and the whole value of the store is that the
+        // attribution on a version is TRUE.
+        if (conn.client !== "engine") {
+          throw new Error("only your own agent engine can share a file an agent made");
+        }
+        const agent = this.myAgent(conn.userId, frame.agentId); // never from the frame
+        const channel = this.writableChannel(conn.userId, frame.channelId);
+        let bytes: Buffer;
+        try { bytes = Buffer.from(String(frame.dataBase64 ?? ""), "base64"); }
+        catch { throw new Error("that file didn't arrive properly"); }
+        // ONE OWNER for the name rule and the size rule — `validateArtifact`
+        // reaches `isSafeFileName` and `ARTIFACT_LIMITS`, and the sentence a
+        // refused file gets is written there, in plain words, beside the number.
+        const bad = validateArtifact(frame.name, bytes.length);
+        if (bad) throw new Error(bad);
+        if (this.store.artifactPublishesSince(agent.id, Date.now() - 60_000)
+          >= ARTIFACT_LIMITS.publishesPerMinute) {
+          throw new Error(
+            `${agent.name} is sharing files faster than anyone can read them — ` +
+            `it has to wait a minute`);
+        }
+        // The per-conversation ceiling is asked about a NEW name only: a new
+        // version of a file that is already here adds no row to count, and
+        // refusing an update because the room is full would leave the newest
+        // version of his report permanently unreachable.
+        const already = this.store.artifactRowByName(channel.id, frame.name);
+        if (!already && this.store.artifactCountIn(channel.id) >= ARTIFACT_LIMITS.perChannel) {
+          throw new Error(
+            `this conversation already holds ${ARTIFACT_LIMITS.perChannel} shared files — ` +
+            `the oldest have to be cleared before another can be added`);
+        }
+        const now = Date.now();
+        const row = this.store.claimArtifactVersion({ channelId: channel.id, name: frame.name, at: now });
+        const version = row.nextVersion - 1;
+        const versionId = newId("av");
+        // Bytes FIRST, and this throws if they did not land — a row that
+        // promises a version whose file is not there is the truncated-PDF class.
+        const storedAs = this.store.writeArtifactBytes(versionId, frame.name, bytes);
+        const stored: ArtifactVersion = {
+          id: versionId, version, size: bytes.length,
+          // COMPUTED HERE, from the bytes: the sha and "is it text" are facts
+          // about what was stored, never claims from the producer.
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+          text: looksLikeText(bytes),
+          storedAs,
+          agentId: agent.id, agentName: agent.name, ownerId: agent.ownerId,
+          ...(typeof frame.runId === "string" && isSafeStoredId(frame.runId)
+            ? { runId: frame.runId } : {}),
+          ...(this.taskOf(agent.id, frame.taskId) ? { taskId: frame.taskId as ID } : {}),
+          ...(typeof frame.note === "string" && frame.note.trim()
+            ? { note: frame.note.trim().slice(0, ARTIFACT_LIMITS.note) } : {}),
+          producedAt: now,
+        };
+        this.store.saveArtifactVersion(row.id, channel.id, stored);
+        this.store.pruneArtifactVersions(row.id, ARTIFACT_LIMITS.versions);
+        const artifact = this.store.artifact(row.id)!;
+        this.store.logActivity({
+          actorKind: "agent", actorId: agent.id, actorName: agent.name,
+          kind: "message", refId: artifact.id,
+          detail: `shared ${artifact.name} (version ${version}) in channel ${channel.id}`,
+        });
+        // EVERYONE IN THE ROOM, not just the owner: a file an agent made is the
+        // conversation's, which is the entire point of the store.
+        this.toChannel(channel, { type: "artifact", artifact });
+        break;
+      }
+      case "artifacts": {
+        const channel = this.channelFor(conn.userId, frame.channelId);
+        send(conn.ws, {
+          type: "artifacts", channelId: channel.id,
+          artifacts: this.store.artifactsIn(channel.id, ARTIFACT_LIMITS.listPage),
+        });
+        break;
+      }
+      case "artifact": {
+        send(conn.ws, { type: "artifact", artifact: this.artifactFor(conn.userId, frame.artifactId) });
+        break;
+      }
+      case "artifactTicket": {
+        const artifact = this.artifactFor(conn.userId, frame.artifactId);
+        // Absent version means the newest, which is what a card drawn from a
+        // reference in a message asks for. A named version that is no longer
+        // here (pruned) is NOT quietly answered with the newest one — that would
+        // hand him different bytes than the ones he asked for and say nothing.
+        const wanted = frame.version === undefined
+          ? latestVersion(artifact)
+          : versionOf(artifact, frame.version);
+        if (!wanted) {
+          throw new Error(frame.version === undefined
+            ? "no such file"
+            : `version ${frame.version} of ${artifact.name} is no longer kept — ` +
+              `the newest is version ${latestVersion(artifact)!.version}`);
+        }
+        const { ticket, expiresAt } = this.mintTicket(
+          conn.userId, { kind: "artifact", id: wanted.id });
+        send(conn.ws, {
+          type: "artifactTicket", artifactId: artifact.id, version: wanted.version,
+          ticket, url: ATTACHMENT_TICKET.path + ticket, expiresAt, artifact,
         });
         break;
       }

@@ -5,11 +5,12 @@ import fs from "node:fs";
 import path from "node:path";
 import WebSocket from "ws";
 import {
-  AgentDef, AgentSchedule, Channel, ClientFrame, HarnessName, HarnessState, ID,
+  AgentDef, AgentSchedule, ARTIFACT_LIMITS, Channel, ClientFrame, HarnessName, HarnessState, ID,
   Message, RunRecord, ServerFrame, Task, WorkReaction, WorldState, isSafeFileName,
   mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
+import { describeRefusals, sweepProduced } from "./artifacts.js";
 import { ApprovalDesk, ApprovalOutcome } from "./approvaldesk.js";
 import { GitHubClient, GitHubOptions } from "./github.js";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
@@ -435,7 +436,11 @@ export class Engine {
         ...(input.workdir ? { workdir: input.workdir } : {}),
         onTrace: t => { trace = t; },
       });
-      this.recordRun(seed, { finishedAt: Date.now(), outcome: "ok", trace, reply: text });
+      const record = this.recordRun(seed, { finishedAt: Date.now(), outcome: "ok", trace, reply: text });
+      // THE FILES THIS TURN MADE, offered to the hub before the reply is
+      // returned, so the message the agent is about to say and the file it is
+      // talking about arrive together rather than minutes apart.
+      this.shareProduced(agent, input, seed.startedAt, record?.id);
       return text;
     } catch (err) {
       this.recordRun(seed, {
@@ -463,6 +468,64 @@ export class Engine {
     } catch (err) {
       console.error(`[engine] could not record what ${seed.agentName} did:`, err);
       return undefined;
+    }
+  }
+
+  /**
+   * OFFER THE FILES THIS TURN PRODUCED to the hub — the engine's half of the
+   * shared artifact store (docs/plans/artifact-store-handoff.md).
+   *
+   * WHY IT LIVES HERE, in `respondAs`, and nowhere else: every kind of turn ends
+   * up in this one function — an ordinary chat reply, a delegated job, a
+   * scheduled check-in, and a turn working inside a git worktree. One owner
+   * means a new kind of turn cannot be added that quietly shares nothing.
+   *
+   * WHAT IT SENDS is bytes plus facts: the agent, the run, the job. Everything
+   * derived — the version number, the sha, whether it is text, the stored name —
+   * is the hub's, so an engine can never publish a version 1 over version 7 or
+   * label a binary as text on somebody else's screen.
+   *
+   * WHERE IT LOOKS is the folder the turn ran in: the agent's own worktree when
+   * it had one, its own data folder otherwise. Never the owner's repository and
+   * never anywhere else on this machine — an agent shares its own work, not
+   * whatever it happened to be able to read.
+   *
+   * Wrapped, like every other piece of turn paperwork: a hub that is briefly
+   * away, or a folder that cannot be read, must never be the reason a turn that
+   * really worked is reported as broken.
+   */
+  private shareProduced(agent: AgentDef, input: TurnInput, since: number, runId?: string): void {
+    // No conversation means nowhere to put a file. A turn with no channel is
+    // not a turn anybody is waiting on a file from.
+    const channelId = input.channelId;
+    if (!channelId) return;
+    try {
+      const dir = input.workdir ?? this.agentDataDir(agent.id);
+      const sweep = sweepProduced(dir, { since });
+      for (const file of sweep.offers) {
+        let bytes: Buffer;
+        try { bytes = fs.readFileSync(file.path); }
+        catch (err) {
+          console.error(`[engine] could not read a file ${agent.name} made:`, err);
+          continue;
+        }
+        // A file that changed between the sweep and the read is not a file we
+        // agreed to share — the cap is checked against the BYTES WE HOLD.
+        if (bytes.length === 0 || bytes.length > ARTIFACT_LIMITS.bytes) continue;
+        this.sendFrame({
+          type: "publishArtifact", channelId, agentId: agent.id, name: file.name,
+          dataBase64: bytes.toString("base64"),
+          ...(runId ? { runId } : {}),
+          ...(input.taskId ? { taskId: input.taskId } : {}),
+        });
+      }
+      // A REFUSAL IS SAID OUT LOUD, in the room, in the agent's own voice. The
+      // file really is on this computer; silence here is the "the file's on
+      // disk" complaint all over again, with the app doing the hiding.
+      const said = describeRefusals(sweep.refused);
+      if (said) this.agentSend(agent.id, channelId, said);
+    } catch (err) {
+      console.error(`[engine] could not share the files ${agent.name} made:`, err);
     }
   }
 

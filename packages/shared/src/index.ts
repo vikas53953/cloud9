@@ -1068,6 +1068,93 @@ export interface Attachment {
   uploadedAt: number;
 }
 
+// ---------- a file an AGENT made: the shared artifact ----------
+//
+// THE #1 GAP, in one sentence: an agent that produced a file could only paste a
+// Windows path into the chat, and a path on one machine is not a file anybody
+// else can open. A person's file already worked — `Attachment`, above, with the
+// one-use ticket — so this is deliberately NOT a second file system. It reuses:
+//
+//  • `isSafeFileName` for the name (the same one owner, not a copy of it),
+//  • `validateAttachment`'s size ceiling, through `ARTIFACT_LIMITS.bytes`,
+//  • the ONE download endpoint at `ATTACHMENT_TICKET.path`, with the same
+//    one-use, thirty-second, permission-checked-twice ticket,
+//  • `downloadContentType` / `contentDisposition`, so a type is still computed
+//    from the NAME and never from anything the producer claimed.
+//
+// WHAT IT ADDS is the three things an attachment cannot say:
+//  1. WHO MADE IT — the agent, and the run and job its turn was, so the file
+//     carries its own provenance instead of a sentence in the chat.
+//  2. VERSIONS — the same name produced again is a NEW version and the old
+//     bytes are kept, because "the file on disk" changed four times in one
+//     evening and nobody could see what it used to say.
+//  3. A STABLE REFERENCE — `artifactRef()`, which can sit in a message and be
+//     resolved by any client, by another agent, and by the owner.
+//
+// THE IDENTITY OF AN ARTIFACT IS (channel, name) — decided, and written down in
+// `docs/plans/artifact-store-handoff.md`. Not (agent, name): one agent writing
+// `report.md` and a second one revising it is a HANDOFF, which is the thing this
+// store exists to make possible, and it stays one file with two authors in its
+// history rather than two files with the same name. Attribution is therefore
+// PER VERSION, never on the artifact itself.
+
+/** One stored version of a shared artifact — one set of bytes, forever. */
+export interface ArtifactVersion {
+  /** "av-…" — the reference to THESE bytes, which never change */
+  id: ID;
+  /** 1 upwards, never reused even after older versions are pruned */
+  version: number;
+  size: number;
+  /**
+   * sha-256 of the bytes, lower-case hex. It is what lets a client say "this is
+   * the same file again" without downloading it, and it is computed by the HUB
+   * from the bytes it stored — never copied from what the producer claimed.
+   */
+  sha256: string;
+  /**
+   * True when the hub could read these bytes as text (see `looksLikeText`).
+   * DECIDED FROM THE BYTES, not from a flag on the frame: a producer that could
+   * label a binary "text" would be a producer that could decide how a screen
+   * treats it. A screen may preview text; everything else is a download.
+   */
+  text: boolean;
+  /** file name inside the hub's artifacts folder. RELAY-OWNED. */
+  storedAs: string;
+  /** the agent that produced it, and the person whose agent that is */
+  agentId: ID;
+  agentName: string;
+  ownerId: ID;
+  /** the run whose turn produced it — `RunRecord.id`, so the two join up */
+  runId?: string;
+  /** the delegated job it came out of, when it came out of one */
+  taskId?: ID;
+  /** the agent's own one line about what changed. Absent means it said nothing. */
+  note?: string;
+  producedAt: number;
+}
+
+/**
+ * A file an agent made, with every version of it the hub still holds.
+ *
+ * `versions` is NEWEST FIRST and is never empty — an artifact with no version is
+ * not an artifact, so nothing here can be drawn as "no file yet". Use
+ * `latestVersion()` rather than indexing, so the ordering has one owner.
+ */
+export interface Artifact {
+  /** "af-…" — the reference that survives every new version */
+  id: ID;
+  channelId: ID;
+  /** the shared name, checked by `isSafeFileName`. The identity, with the channel. */
+  name: string;
+  /** newest first, capped at `ARTIFACT_LIMITS.versions`, never empty */
+  versions: ArtifactVersion[];
+  /** when version 1 landed */
+  createdAt: number;
+  /** when the newest version landed */
+  updatedAt: number;
+}
+
+
 /**
  * Everyone who currently has this one emoji on a message.
  *
@@ -1214,6 +1301,43 @@ export type ClientFrame =
    * `ATTACHMENT_TICKET` and the `attachmentTicket` server frame.
    */
   | { type: "attachmentTicket"; attachmentId: ID }
+  // ---- files an AGENT made (docs/plans/artifact-store-handoff.md) ----
+  /**
+   * ENGINE-HOST ONLY: share a file one of the owner's agents just produced.
+   *
+   * The engine sends FACTS and bytes; every derived thing is the hub's —
+   * the version number, the sha, whether it is text, the stored file name and
+   * the owner. An engine that could set those could publish a version 1 over
+   * somebody's version 7, or label a binary as text on somebody else's screen.
+   *
+   * `name` is the SHARED name, not a path: the engine sends the base name and
+   * keeps the machine path to itself (`producedFrom` is the agent's own record
+   * of where it came from, already redacted, and may be absent).
+   *
+   * Publishing the same `name` in the same channel again is an UPDATE — a new
+   * version of the same artifact — never a second artifact.
+   */
+  | {
+      type: "publishArtifact"; channelId: ID; agentId: ID; name: string;
+      dataBase64: string;
+      /** the run whose turn made it, so the file and the record join up */
+      runId?: string; taskId?: ID;
+      /** the agent's own line about what changed */
+      note?: string;
+    }
+  /** Every artifact in one conversation, newest change first. */
+  | { type: "artifacts"; channelId: ID }
+  /** One artifact and its whole version history, by id. */
+  | { type: "artifact"; artifactId: ID }
+  /**
+   * Ask for permission to fetch one artifact version's bytes.
+   *
+   * THE SAME TICKET as an attachment, from the same mint, redeemed at the same
+   * path, spent by the first byte, checked again when it is spent. `version`
+   * absent means the newest one, which is what a card drawn from a message ref
+   * asks for.
+   */
+  | { type: "artifactTicket"; artifactId: ID; version?: number }
   /** "I have read this conversation up to here" — kept on the account, not the machine. */
   | { type: "markRead"; channelId: ID; ts?: number }
   // engine-host only: post a message authored by one of the owner's agents
@@ -1563,6 +1687,27 @@ export type ServerFrame =
       /** the file this ticket is for, so a client can draw it without asking again */
       attachment: Attachment;
     }
+  /**
+   * An artifact was published or updated — pushed to EVERYONE who can see the
+   * conversation, because a file an agent made is the conversation's, not the
+   * producer's. Also the answer to `artifact`.
+   */
+  | { type: "artifact"; artifact: Artifact }
+  /** Answers `artifacts`. Newest change first. */
+  | { type: "artifacts"; channelId: ID; artifacts: Artifact[] }
+  /**
+   * Permission to fetch ONE version of one artifact, ONCE, for a few seconds.
+   * `url` is relative to the hub's own address and is the SAME endpoint an
+   * attachment is served from — one download path, one set of headers.
+   */
+  | {
+      type: "artifactTicket"; artifactId: ID; version: number; ticket: string;
+      /** e.g. "/attachment/<ticket>" */
+      url: string;
+      expiresAt: number;
+      /** the artifact this ticket is for, so a card can be drawn without asking again */
+      artifact: Artifact;
+    }
   /** A room you are not in, as seen from outside. Answers `browseChannels`. */
   | { type: "channelDirectory"; channels: ChannelSummary[] }
   /** Who is (or was) in one room. Answers `channelMembers`. */
@@ -1868,6 +2013,166 @@ export const ATTACHMENT_TICKET = {
   /** the path a ticket is redeemed at, relative to the hub's own address */
   path: "/attachment/",
 } as const;
+
+/**
+ * Ceilings, in one place, read by the engine, the hub and the screen.
+ *
+ * `bytes` IS the attachment ceiling, on purpose and not by coincidence:
+ * `WS_LIMITS.maxPayloadBytes` is derived from that number, so an artifact cap
+ * above it would be a cap the socket silently refuses first — a legal file that
+ * vanishes with no sentence anywhere. One number, one owner, no drift.
+ */
+export const ARTIFACT_LIMITS = {
+  /** biggest single file an agent may share */
+  bytes: ATTACHMENT_LIMITS.bytes,
+  /** versions kept per artifact; the oldest bytes go with their row */
+  versions: 20,
+  /** artifacts one conversation may hold */
+  perChannel: 200,
+  /** how many versions one agent may publish in a minute */
+  publishesPerMinute: 30,
+  /** the agent's own note about a version */
+  note: 300,
+  /** most artifacts one `artifacts` answer carries */
+  listPage: 100,
+} as const;
+
+/**
+ * THE REFUSAL, in plain words, from the one place that knows the numbers.
+ *
+ * A refused artifact is the honest case, not the broken one: the file really is
+ * on the agent's machine, and the sentence has to say so and say what to do
+ * instead — never "error" and never silence.
+ */
+export function artifactTooBigSentence(name: string, size: number): string {
+  const mb = (n: number) => `${Math.round(n / 100_000) / 10} MB`;
+  return `"${name}" is ${mb(size)}, which is too big to share here ` +
+    `(the limit is ${mb(ARTIFACT_LIMITS.bytes)}). It is still on this computer — ` +
+    `put it in a repository, or share a smaller part of it.`;
+}
+
+/**
+ * Check a name and a size before any bytes are stored. Plain words, or null.
+ *
+ * The name rule is `isSafeFileName` REACHED, not restated — the same function
+ * an attachment and a skill file go through.
+ */
+export function validateArtifact(name: unknown, size: number): string | null {
+  if (!isSafeFileName(name)) return FILE_NAME_SENTENCE;
+  if (!Number.isFinite(size) || size <= 0) return "there are no bytes in that file";
+  if (size > ARTIFACT_LIMITS.bytes) return artifactTooBigSentence(name, size);
+  return null;
+}
+
+/** The newest version. The one owner of "which end of the list is new". */
+export function latestVersion(artifact: Artifact): ArtifactVersion | undefined {
+  return artifact.versions[0];
+}
+
+/** One version by number, or nothing. */
+export function versionOf(artifact: Artifact, version: number): ArtifactVersion | undefined {
+  return artifact.versions.find(v => v.version === version);
+}
+
+/**
+ * Can these bytes be treated as TEXT?
+ *
+ * Asked of the bytes and nothing else. A NUL byte, or anything that is not
+ * valid UTF-8, means no — those are the two ways a "text file" turns into
+ * mojibake or a truncated preview on a screen. Being wrong in this direction is
+ * safe: a text file mislabelled binary is offered as a download, which always
+ * works; a binary mislabelled text is drawn into a chat window.
+ */
+export function looksLikeText(bytes: Uint8Array): boolean {
+  if (bytes.length === 0) return false;
+  const look = bytes.subarray(0, Math.min(bytes.length, 8192));
+  for (const b of look) if (b === 0) return false;
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(look);
+  } catch {
+    // a multi-byte character cut in half by the 8 KB window is not a binary
+    // file, so the whole thing gets one more chance before we say no
+    if (bytes.length <= look.length) return false;
+    try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    catch { return false; }
+  }
+  return true;
+}
+
+/**
+ * THE STABLE REFERENCE, and the only shape of it.
+ *
+ * `cloud9://artifact/af-123` means "the newest version"; `…/af-123@3` means
+ * that exact version and will mean the same thing next year. It is written into
+ * ordinary message text — no new field on `Message`, so every part of the app
+ * that already carries text carries these for free, including a message an
+ * agent writes and one the owner types back.
+ */
+export const ARTIFACT_REF_SCHEME = "cloud9://artifact/";
+
+export function artifactRef(artifactId: string, version?: number): string {
+  return version === undefined
+    ? `${ARTIFACT_REF_SCHEME}${artifactId}`
+    : `${ARTIFACT_REF_SCHEME}${artifactId}@${version}`;
+}
+
+export interface ArtifactRef { artifactId: string; version?: number }
+
+/** Read one reference, or nothing when this is not one. */
+export function parseArtifactRef(text: unknown): ArtifactRef | undefined {
+  if (typeof text !== "string") return undefined;
+  if (!text.startsWith(ARTIFACT_REF_SCHEME)) return undefined;
+  const rest = text.slice(ARTIFACT_REF_SCHEME.length);
+  const at = rest.indexOf("@");
+  const id = at < 0 ? rest : rest.slice(0, at);
+  if (!isSafeStoredId(id)) return undefined;
+  if (at < 0) return { artifactId: id };
+  const version = Number(rest.slice(at + 1));
+  if (!Number.isInteger(version) || version < 1) return undefined;
+  return { artifactId: id, version };
+}
+
+/**
+ * Every reference in a piece of message text, in the order they appear.
+ *
+ * This is what a renderer calls to turn words into cards. It is here rather
+ * than in the screen because an agent's own message, the owner's typed reply
+ * and a job summary are three callers of the same question.
+ */
+export function findArtifactRefs(text: unknown): ArtifactRef[] {
+  if (typeof text !== "string") return [];
+  const out: ArtifactRef[] = [];
+  const seen = new Set<string>();
+  const pattern = /cloud9:\/\/artifact\/[A-Za-z0-9][A-Za-z0-9._-]*(@\d+)?/g;
+  for (const hit of text.match(pattern) ?? []) {
+    // A REFERENCE AT THE END OF A SENTENCE IS STILL A REFERENCE. An id never
+    // ends in a dot or a dash (`newId` cannot make one, and `isSafeStoredId`
+    // refuses one), so trailing punctuation belongs to the writing and not to
+    // the id — and without this, "the report is at cloud9://artifact/af_1."
+    // drew no card at all, which is exactly how someone writes it.
+    const ref = parseArtifactRef(hit.replace(/[.\-]+$/, ""));
+    if (!ref) continue;
+    const key = artifactRef(ref.artifactId, ref.version);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(ref);
+  }
+  return out;
+}
+
+/**
+ * The one line a screen shows under an artifact's name.
+ *
+ * Built from the version, so nothing on any screen has to compose provenance
+ * itself — and so "version 1" never gets a "(v1)" it does not need. Absent
+ * facts are absent: a version with no note gets no dash and no empty quotes.
+ */
+export function describeArtifactVersion(v: ArtifactVersion): string {
+  const bits = [`made by ${v.agentName}`];
+  if (v.version > 1) bits.push(`version ${v.version}`);
+  if (v.note) bits.push(v.note);
+  return bits.join(" · ");
+}
 
 /**
  * How long a room's own words may be.
