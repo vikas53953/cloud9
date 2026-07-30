@@ -242,21 +242,48 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
   - Also landed: `docs/plans/tailscale-setup.md` and
     `docs/plans/wholefile-handoff.md`.
 
+- **2026-07-30 ~19:45 — THE LADDER ROUND IS VERIFIED AND MERGED** (`b9bac74`,
+  pushed; `wip/ladder-round` deleted after merging). A new Fable session took
+  over from the Opus conductor at Vikas's word and ran all four proof commands
+  itself: build clean, **552 tests** (353 engine + 188 hub + 11 desktop),
+  **397/397 + 8/8 + 4/4** browser (expectation raised 381 → 397), **16/16 on
+  the installed app**, all executed.
+  - Landed from the round: the ladder is DERIVED from the switches by exact
+    match (a hand-picked mix says "Your own mixture" and no rung claims to be
+    his choice); Escape closes every overlay through one owner (stack checked,
+    newest-first); the "1 CATEGORIES" plural fixed at its one owner.
+  - **The round's own banner said "2 abilitys"** — caught by its own new check
+    on my re-run. Fixed as a class: `plural()` in App.tsx now knows
+    consonant-y → "-ies", so every caller is covered (`547038d`).
+  - **NOT reached by the round, still open:** the six older renderer findings
+    (#9, #16, #17, #18, #19, #21) — verified by diff, no claim of credit.
+  - **Honest label:** the installed app on this machine is the PRE-round build;
+    16/16 proves no regression there, but the ladder fix is not on the app he
+    double-clicks until the installer is rebuilt. Fold `npm run dist` +
+    reinstall into the next round's proof.
+
+- **2026-07-30 evening — VIKAS'S DIRECTION (from his agents' gap analysis run
+  inside Cloud9 by Opus/Sol/sonnet):** spawn agents on every feedback item,
+  but LIST FIRST AND ASK before implementing. The list, as put to him:
+  1. Shared artifact store with attribution (the #1 gap — no more pasted file
+     paths; acceptance test = re-run the same workflow, friction gone).
+  2. Verify the "absent" claims before building — the analysis calls search and
+     threads absent, but both are on screen; either their agents can't reach
+     them (a real, different bug) or the analysis ran on an old build.
+  3. Turn discipline — he repeated "the file's on disk" four times.
+  4. Visible agent state + errors in words (no "check the app's log").
+  5. Parked: zero-install onboarding (the Buzz risk), notifications,
+     integrations, export, mobile; re-verify Slack pricing + Buzz README before
+     the analysis doc is published anywhere.
+  Awaiting his go on the order at the review page (artifact 67419530).
+
 ## Still open, in priority order (nothing here needs Vikas)
-0. **IN FLIGHT 2026-07-30 night, three agents on a strict file boundary:**
-   - **The skill library screen** — 15 researched skills exist in shared and he
-     can see none of them. Owns `apps/desktop/src/**`,
-     `packages/shared/src/skill-library.ts`, `apps/relay/src/server.ts`,
-     `scripts/qa.mjs`. Ports 8900-8909 / 4330-4339.
-   - **The four writes still unsafe** (`wholefile-handoff.md`) — worst is the
-     OWNER TOKEN in `main.cjs`: a torn write mints a new key and the app comes
-     back as a stranger to its own hub. Needs `writeWholeFile` widened to accept
-     a Buffer first, with `mode 0o600` on the temp file. Owns
-     `packages/engine/src/wholefile.ts`, `apps/relay/src/store.ts`,
-     `apps/desktop/electron/main.cjs`.
-   - **vibe-qa phase 6** (UI/UX, never run) — auditor only, writes
-     `docs/qa/phase6-ui.md`. Ports 8910-8919 / 4340-4349.
-1. **Remaining review findings**, none yet fixed: an unrelated refusal kills an
+0. **The feedback batch from his agents' gap analysis** — list put to him
+   2026-07-30 evening, WAITING ON HIS GO (see the log entry above for the five
+   items). Nothing starts until he answers.
+1. **Rebuild the installer** so the ladder round reaches the app he
+   double-clicks, then re-run `npm run qa:app`.
+2. **Remaining review findings**, none yet fixed: an unrelated refusal kills an
    in-flight upload (#9); a blob URL revoked while the picture is still on
    screen (#16); Enter drops a file still uploading (#17); a late search result
    resurrects a cleared search (#18); the scroll anchor is undone by the
@@ -264,11 +291,13 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
    plus the P3 list (unread capped at 1000 reporting "999", the no-FTS5
    fallback searching raw JSON, `runstore` non-atomic writes, two unlinked
    retention constants).
-2. **Codex cannot be isolated** as tightly as Claude — four of its own tools and
+3. **The 7 Majors from phase 5** (`docs/qa/phase5-negative.md`) and the 2
+   Minors from phase 6 (`docs/qa/phase6-ui.md`) — phase 6's Major (the ladder)
+   is now fixed and merged; the rest are not.
+4. **No way to join someone else's Cloud9** — the packaged app always starts
+   its own hub; Tailscale is not the blocker. The next big feature.
+5. **Codex cannot be isolated** as tightly as Claude — four of its own tools and
    the owner's Codex skills still load. Written down, not fixed.
-3. **vibe-qa phases 5 and 6 have never been run** — negative/edge testing and
-   the UI/UX pass. The suite proves features work; nobody has tried to break
-   them with bad input.
 
 ## DECIDED BY VIKAS 2026-07-30 (do not re-ask — spec rule 15)
 
