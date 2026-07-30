@@ -175,15 +175,46 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
   - **NOT claimed:** the button has never been clicked in the INSTALLED app and
     no browser check covers it. By the law above it is not DONE until it is.
 
+- **2026-07-30 late afternoon — AN AGENT CAN DECIDE TO PUSH BY ITSELF**
+  (`2050572`), and **PHASE 5 NEGATIVE TESTING RAN FOR THE FIRST TIME**
+  (`89ec976`), and the installed-app walk now presses the Look button
+  (`360c8c2`). All pushed.
+  - `@Agent !code <what to do>` in a room: the agent works in its OWN git
+    worktree, commits to its own branch, and only if it writes `!publish` does
+    it ask — through the existing approval path, drawing the existing card.
+    The card's facts are COUNTED by git/gh, never quoted from the agent, so an
+    agent that calls two files "a one-line comment, straight onto main" still
+    produces a card reading 2 files / 1 commit / its own branch / base master.
+    An agent that changed nothing produces no card at all.
+    Proved three ways on the real repository — refused, ignored, approved (PR #3
+    into master) — then cleaned up, and the CLEANUP was re-checked by the
+    conductor against real GitHub: 0 open PRs, 0 remote `cloud9/*`, one
+    worktree, `* master` alone.
+  - **Phase 5: ~90 hostile inputs, 0 crashes, 0 blockers, 7 Majors, 11 Minors,
+    and no way in for an attacker anywhere** — script tags, SQL injection and
+    FTS5 operators all held. Full report: `docs/qa/phase5-negative.md`. It also
+    caught and discarded THREE false findings of its own, one of which would
+    have reported three blockers that do not exist. Review page:
+    https://claude.ai/code/artifact/3a662b7c-d50f-47a4-be30-e20b45efa769
+  - **Verified by the conductor:** build clean; **315 engine**; **166 hub**;
+    **354/354 + 8/8 + 4/4** browser, all executed; **15/15 on the INSTALLED
+    app** — the fifteenth check is new and it PRESSES the Look button. It was
+    proved real by breaking it on purpose (14/15, "NOT ON SCREEN") and restoring.
+  - Two honest gaps: `!code` is a typed command with no control on his screen,
+    and nothing links a Cloud9 project to a folder on this computer
+    (`approval-handoff.md` §8).
+
 ## Still open, in priority order (nothing here needs Vikas)
-0. **IN FLIGHT 2026-07-30 afternoon, two agents:**
-   - **Let an agent decide to push by itself** — no agent turn calls `githubFor`,
-     so the permission card only ever appears when the engine is driven
-     directly. Also owes the missing browser coverage of the Look button.
-     Owns `packages/engine/**`, `apps/relay/**`, `scripts/qa.mjs`.
-   - **vibe-qa phase 5** (negative/edge testing, never run) — auditor only,
-     writes `docs/qa/phase5-negative.md`, changes no product code. 20 confirmed
-     findings and still going at 13:05.
+0. **IN FLIGHT 2026-07-30 evening, two agents on a strict file boundary:**
+   - **The phase 5 Majors** — the composer throwing away his typing; ONE naming
+     rule to replace five disagreeing forms (duplicate agents, duplicate
+     channels, no length cap, six spaces becoming `-`); ordinary filenames like
+     `report(1).pdf` being refused with a sentence that misdescribes the rule;
+     and a mistyped repository looking identical to a good one forever.
+     Owns `apps/desktop/src/**`, `packages/shared/src/**`, `apps/relay/src/**`.
+   - **Engine durability (P3)** — non-atomic `runstore` writes, and two
+     retention constants that can silently drift apart.
+     Owns `packages/engine/src/**` ONLY.
 1. **Remaining review findings**, none yet fixed: an unrelated refusal kills an
    in-flight upload (#9); a blob URL revoked while the picture is still on
    screen (#16); Enter drops a file still uploading (#17); a late search result
