@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   parseHubAddress, classifyHost, hubWebSocketUrl, formatHubAddress,
   reachInWords, DEFAULT_HUB_PORT,
-} from "./hubaddress.ts";
+} from "./hubaddress.js";
 
 function ok(input: string) {
   const r = parseHubAddress(input);
