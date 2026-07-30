@@ -118,10 +118,16 @@ const plainError = (text?: string): string | undefined => {
  * in thirty places is a rule that is wrong in one of them.
  *
  * `plural` answers "the word for this many", and `countOf` answers "the number
- * and its word". Irregulars are passed in — English is not derivable — but the
- * DECISION is made here and only here.
+ * and its word". True irregulars are passed in — English is not derivable — but
+ * the regular rules ("-s", and consonant-y → "-ies", which "abilitys" proved is
+ * also a rule and not a spelling) live here, and the DECISION is made here and
+ * only here.
  */
-const plural = (n: number, one: string, many = `${one}s`): string => (n === 1 ? one : many);
+const plural = (n: number, one: string, many?: string): string =>
+  n === 1 ? one
+  : many !== undefined ? many
+  : /[^aeiou]y$/i.test(one) ? `${one.slice(0, -1)}ies`
+  : `${one}s`;
 
 /** "1 category" · "3 categories" — a number and the right word for it, together. */
 const countOf = (n: number, one: string, many?: string): string =>

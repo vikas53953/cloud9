@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-30T13:40:51.064Z",
+  "ranAt": "2026-07-30T13:55:52.101Z",
   "expected": 397,
-  "executed": 284,
+  "executed": 397,
   "results": [
     {
       "name": "join screen renders",
@@ -176,7 +176,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch k7wg7 :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch kqtkg :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -191,7 +191,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_Fdj2fMTfmxYTXYaqyHOS8Q"
+      "detail": "inv_rUe5iEqRWXET7AGJfTS6Lw"
     },
     {
       "name": "friend joins via invite",
@@ -321,7 +321,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 19:09"
+      "detail": "↳ 1 reply · last at 19:24"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -391,7 +391,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 19:09 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 19:24 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -511,12 +511,12 @@
     {
       "name": "TWO ABILITIES ON: no rung claims to be his choice — the dot is off “Just talk” entirely",
       "pass": true,
-      "detail": "{\"ladder\":\"mixture\",\"pressed\":[],\"inked\":[],\"banner\":\"Your own mixture — 2 abilitys of 8 switched on. On right now: Look things up on the web, Work on jobs in the background. This is not one of the four rungs, so none of them is picked below. Pick a rung to replace your mixture, or leave it as it is — the switches are what the agent actually gets.\",\"on\":2}"
+      "detail": "{\"ladder\":\"mixture\",\"pressed\":[],\"inked\":[],\"banner\":\"Your own mixture — 2 abilities of 8 switched on. On right now: Look things up on the web, Work on jobs in the background. This is not one of the four rungs, so none of them is picked below. Pick a rung to replace your mixture, or leave it as it is — the switches are what the agent actually gets.\",\"on\":2}"
     },
     {
       "name": "and the screen says his own mixture, names what is really on, and names NO rung",
-      "pass": false,
-      "detail": "Your own mixture — 2 abilitys of 8 switched on. On right now: Look things up on the web, Work on jobs in the background. This is not one of the four rungs, so none of the"
+      "pass": true,
+      "detail": "Your own mixture — 2 abilities of 8 switched on. On right now: Look things up on the web, Work on jobs in the background. This is not one of the four rungs, so none of th"
     },
     {
       "name": "every rung, picked, reads back as exactly itself — and nothing then calls it a mixture",
@@ -531,7 +531,7 @@
     {
       "name": "and it is described by what is switched on, never by the rung it merely covers",
       "pass": true,
-      "detail": "Your own mixture — 3 abilitys of 8 switched on. On right now: Look things up on the web, Keep and change files in its own folder, Run programs on this computer. This is not one of the four rungs, so none of them is picked below. Pick a rung to replace your mixture, or leave it as it is — the switches are what the agent actually gets."
+      "detail": "Your own mixture — 3 abilities of 8 switched on. On right now: Look things up on the web, Keep and change files in its own folder, Run programs on this computer. This is not one of the four rungs, so none of them is picked below. Pick a rung to replace your mixture, or leave it as it is — the switches are what the agent actually gets."
     },
     {
       "name": "switching one power on is enough to make the screen promise he will be asked",
@@ -991,7 +991,7 @@
     {
       "name": "the screen and the hub really are on different addresses, so the next check means something",
       "pass": true,
-      "detail": "http://127.0.0.1:4331 vs http://127.0.0.1:8901"
+      "detail": "http://127.0.0.1:4173 vs http://127.0.0.1:8799"
     },
     {
       "name": "a picture takes the one intended route — fetched, held as a blob, freed on close",
@@ -1111,7 +1111,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms7k94yxe9u7ds\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms7krwagpga7kc\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -1151,12 +1151,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms7k7fb4bso4w3:1785418790324 a_ms7k7ppz98phw3:1785418797561 u_ms7k8065v7qboa:1785418797953 a_ms7k94yxe9u7ds:1785418798061"
+      "detail": "u_ms7kqj95i8zg8o:1785419665979 a_ms7kqn49bk5e5l:1785419672938 u_ms7kqw6dl9b3fb:1785419673497 a_ms7krwagpga7kc:1785419673677"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785418795399 · now 1785418797953"
+      "detail": "first 1785419670099 · now 1785419673497"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -1386,7 +1386,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":18,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
+      "detail": "{\"followedToBottom\":0,\"samples\":20,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1414,9 +1414,574 @@
       "detail": "Cloud9 could not open its message database at C:\\Users\\vikasmit\\AppData\\Local\\Temp\\cloud9-"
     },
     {
-      "name": "UNCAUGHT",
-      "pass": false,
-      "detail": "Error: browserContext.newPage: Target crashed "
+      "name": "when the hub cannot open its database the screen says its sentence as-is, never a stack trace",
+      "pass": true,
+      "detail": "Cloud9 could not open its message database at C:\\Users\\vikasmit\\AppData\\Local\\Temp\\cloud9-"
+    },
+    {
+      "name": "the room-details panel does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the room-details panel does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the room-details panel does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the room-details panel does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "files on a message do not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "files on a message do not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "files on a message do not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "files on a message do not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a finished job carries the record of what its agent actually did",
+      "pass": true,
+      "detail": "{\"id\":\"t_ms7kqq5xxuj1wc\",\"status\":\"completed\",\"runId\":\"r-0ms7kqq67-vf4y\"}"
+    },
+    {
+      "name": "opening it fetches the real record from the hub and draws it as a finished run",
+      "pass": true,
+      "detail": "ok"
+    },
+    {
+      "name": "the plain-words line is the hub's own sentence, built from the same numbers as the rows",
+      "pass": true,
+      "detail": "Answered straight from what it knew — no tools used, took under a second. :: took=under a second"
+    },
+    {
+      "name": "a run the app reported no money for renders NO COST ROW AT ALL — not a zero, not an estimate",
+      "pass": true,
+      "detail": "asked-by/ran-on/took"
+    },
+    {
+      "name": "and the rows it does carry are the ones the record really holds",
+      "pass": true,
+      "detail": "asked-by/ran-on/took"
+    },
+    {
+      "name": "the 📦 job result in the conversation carries that job's own record, not a lookalike",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a run card under a job result in the conversation does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card under a job result in the conversation does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card under a job result in the conversation does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card under a job result in the conversation does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card in the Tasks in-tray does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card in the Tasks in-tray does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card in the Tasks in-tray does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card in the Tasks in-tray does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run that finishes anywhere this person can see arrives unasked, and is kept by its own id",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "an agent's recent work lists what it did, with the ask and the same plain-words line",
+      "pass": true,
+      "detail": "Checked 1 site, read 1 file, ran 1 command, took 41 seconds, cost 76 cents."
+    },
+    {
+      "name": "a run the app DID report money for shows the cost, in the hub's own words",
+      "pass": true,
+      "detail": "76 cents"
+    },
+    {
+      "name": "every step is listed in the order it happened, each as its own kind of thing",
+      "pass": true,
+      "detail": "1:web 2:read 3:note 4:command"
+    },
+    {
+      "name": "a web step's detail is a real link to the page it read",
+      "pass": true,
+      "detail": "https://villas.example/goa"
+    },
+    {
+      "name": "a step the app said nothing about gets NO tick and NO cross",
+      "pass": true,
+      "detail": "1 unsaid, 3 marks in all"
+    },
+    {
+      "name": "a step the app said failed is marked failed, and only that one",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a refused tool reads as a boundary that held, not as an error",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "what it thought and what it said are folded away until they are asked for",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a Codex run shows NO cost row at all — the app reports no money and none is invented",
+      "pass": true,
+      "detail": "asked-by/ran-on/took"
+    },
+    {
+      "name": "a run that failed says what went wrong, word for word from the record",
+      "pass": true,
+      "detail": "the booking site refused the card"
+    },
+    {
+      "name": "a record that had steps dropped to keep it small says so",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a friend is never shown — and never asks for — the history of an agent that isn't theirs",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a run card with every step showing, in an agent's history does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card with every step showing, in an agent's history does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card with every step showing, in an agent's history does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a run card with every step showing, in an agent's history does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "PROJECTS is in the icon rail, beside the four screens he approved",
+      "pass": true,
+      "detail": "chat, crew, tasks, projects, activity, Quick chat (Ctrl K), settings"
+    },
+    {
+      "name": "with nothing connected the screen says so, rather than drawing an empty list of nothing",
+      "pass": true,
+      "detail": "No repository connected yet A project is a repository — its pull requests and its issues,"
+    },
+    {
+      "name": "a name that isn't owner/name is refused in the contract's own sentence, in the form",
+      "pass": true,
+      "detail": "that isn't a repository name — use owner/name, like vikas53953/cloud9"
+    },
+    {
+      "name": "C12: a repository GitHub cannot see is told so when he connects it, not left looking like a good one",
+      "pass": true,
+      "detail": "nope definitely-not-a-real-owner-xyz987/nope Look at GitHub now Rename Disconnect Looked at GitHub 30 Jul The last look at GitHub did not work GitHub has no repository called definitely-not-a-real-own"
+    },
+    {
+      "name": "connecting a repository puts it on screen, named the way GitHub names it",
+      "pass": true,
+      "detail": "vikas53953/cloud9"
+    },
+    {
+      "name": "connecting a repository looks at GitHub there and then, rather than leaving him to find out later",
+      "pass": true,
+      "detail": "Cloud9 itself vikas53953/cloud9 Look at GitHub now Rename Disconnect Trunk master Looked at GitHub 30 Jul Pull requests · 0 Issues · 0 No pull requests recorded This is what GitHub"
+    },
+    {
+      "name": "a connected repository offers a way to ask GitHub, ready and named in plain words",
+      "pass": true,
+      "detail": "Look at GitHub now Rename Disconnect"
+    },
+    {
+      "name": "pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
+      "pass": true,
+      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms7ksxugyjihms\",\"repo\":\"vikas53953/cloud9\"}"
+    },
+    {
+      "name": "while it is looking the button says so and cannot be pressed again",
+      "pass": true,
+      "detail": "Trunk master Looking at GitHub now…"
+    },
+    {
+      "name": "when the answer lands the button settles and the screen stamps when GitHub was last asked",
+      "pass": true,
+      "detail": "Trunk master Looked at GitHub 30 Jul"
+    },
+    {
+      "name": "the pull requests the engine reported are on screen, in the project's own list",
+      "pass": true,
+      "detail": "pull-41,pull-39,pull-38"
+    },
+    {
+      "name": "the trunk it must never land on is drawn only now that GitHub actually said what it is",
+      "pass": true,
+      "detail": "Trunk master Looked at GitHub 30 Jul"
+    },
+    {
+      "name": "a pull request that landed and one that was thrown away are told apart in words, not only colour",
+      "pass": true,
+      "detail": "{\"pull-41\":\"Open\",\"pull-39\":\"Merged in\",\"pull-38\":\"Closed, not merged\"}"
+    },
+    {
+      "name": "a pull request one of his agents opened carries its branch and that agent's face",
+      "pass": true,
+      "detail": "cloud9/architect-1\n→\nmaster"
+    },
+    {
+      "name": "the trunk a branch is aimed at is named from what GitHub said, never guessed as main",
+      "pass": true,
+      "detail": "cloud9/architect-1\n→\nmaster"
+    },
+    {
+      "name": "the crew panel says which agent is on which branch in this repository",
+      "pass": true,
+      "detail": "YOUR CREW IN THIS REPOSITORY Scout 1 pull request here cloud9/architect-1 → master Open The folder each agent works in s"
+    },
+    {
+      "name": "the folder an agent works in is NOT claimed — it never crosses the wire, and the screen says so",
+      "pass": true,
+      "detail": "The folder each agent works in stays on this computer and is not reported to Cloud9 yet — the branch above is what travels."
+    },
+    {
+      "name": "opening a pull request shows the facts we hold — its number, its branch and where it is aimed",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and says the description and the conversation stay on GitHub rather than pretending to hold them",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the link out is GitHub's own address, opened away from this window",
+      "pass": true,
+      "detail": "https://github.com/vikas53953/cloud9/pull/41"
+    },
+    {
+      "name": "a branch no held run names is reported as untraced, not linked to a turn we guessed at",
+      "pass": true,
+      "detail": "No turn we are holding names cloud9/architect-1. Its history is below."
+    },
+    {
+      "name": "a pull request opens onto the work its agent actually did, from the run records the hub holds",
+      "pass": true,
+      "detail": "7 turns"
+    },
+    {
+      "name": "once a turn names the branch, the pull request is traced to the very job that made it",
+      "pass": true,
+      "detail": "Scout finished “open a pull request for the Projects screen” Ran 1 command, took 41 second"
+    },
+    {
+      "name": "issues are a list of their own, and only issues are in it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "reading an issue offers GitHub's own address for it, and never a made-up one",
+      "pass": true,
+      "detail": "https://github.com/vikas53953/cloud9/issues/12"
+    },
+    {
+      "name": "a failed look at GitHub is shown in the hub's own words, not as an empty list reading 'no open work'",
+      "pass": true,
+      "detail": "gh could not reach github.com — check the network"
+    },
+    {
+      "name": "and a project with a problem is flagged in the list beside it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the Projects screen does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the Projects screen does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the Projects screen does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the Projects screen does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "before disconnecting, the screen promises the repository itself is untouched",
+      "pass": true,
+      "detail": "Disconnecting forgets Cloud9's copy of these lists. Your repository is not touched — Cloud9 has no way to delete anything on GitHub."
+    },
+    {
+      "name": "a disconnected project takes its pull requests and its issues off the screen with it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a push request draws the sentence the machine wrote, word for word",
+      "pass": true,
+      "detail": "push 2 commits to a new branch cloud9/scout-7 on vikas53953/cloud9"
+    },
+    {
+      "name": "the smaller line under it is the contract's own detail — how much is going up",
+      "pass": true,
+      "detail": "3 files changed"
+    },
+    {
+      "name": "the card names which repository and which branch, in the sentence he judges",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "it says this is something outside this computer, and that nothing has left it yet",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and which of the three things Cloud9 asks about this is, from the shared table",
+      "pass": true,
+      "detail": "PUSH A BRANCH TO GITHUB"
+    },
+    {
+      "name": "it says when it runs out — an agent is standing there waiting for the answer",
+      "pass": true,
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 19:25 EXPIRES in 9 minutes"
+    },
+    {
+      "name": "a request with no job behind it offers no 'see the job' button to press",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the gold pill counts a mid-run request as something waiting on him",
+      "pass": true,
+      "detail": "1 approval waiting"
+    },
+    {
+      "name": "a request that reported no size shows NO size line at all — not a zero",
+      "pass": true,
+      "detail": "OPEN A PULL REQUEST ON GITHUB\nopen a pull request into master from cloud9/scout-7 on vikas53953/cloud9\nnothing runs until you say so"
+    },
+    {
+      "name": "the same request is in the Tasks in-tray, carrying its sentence and its deadline",
+      "pass": true,
+      "detail": "Expires in 9 minutes."
+    },
+    {
+      "name": "saying 'not now' answers it, and it stops waiting on him",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "before the deadline the request is answerable, with both buttons on it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a request nobody answered says nobody answered — it is not quietly a refusal",
+      "pass": true,
+      "detail": "Nobody answered in time — it didn't happen. Ask again and the agent will stop here once more."
+    },
+    {
+      "name": "and it offers no button, because there is nothing left to answer",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "an expired request is not painted as an error — nothing happened, which is the safe outcome",
+      "pass": true,
+      "detail": "nothing happened"
+    },
+    {
+      "name": "the card stays where it was, so a request that ran out while he was away is FOUND, not vanished",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "this section leaves nothing waiting behind it — the in-tray is back the way it was",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a thread beside the conversation does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a thread beside the conversation does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a thread beside the conversation does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a thread beside the conversation does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "search results do not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "search results do not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "search results do not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "search results do not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the reach ladder at full stretch does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the reach ladder at full stretch does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the reach ladder at full stretch does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the reach ladder at full stretch does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room's role cards do not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room's role cards do not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room's role cards do not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room's role cards do not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room and an open brief do not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room and an open brief do not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room and an open brief do not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room and an open brief do not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a rail showing every agent's state does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a rail showing every agent's state does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a rail showing every agent's state does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a rail showing every agent's state does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
     },
     {
       "name": "no console errors",
