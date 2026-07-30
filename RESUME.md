@@ -336,6 +336,34 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
     notifications) — awaiting Cursor agents; the conductor watches `cursor/*` and
     reviews+merges each push.
 
+- **2026-07-31 ~01:xx — ALL FOUR CURSOR LANES + THREE CONDUCTOR MODULES MERGED.**
+  Master, pushed, final CLEAN full rebuild (dist wiped) by the conductor:
+  **784 tests, 0 fail** (shared 55, engine 453, hub 261+4 skipped, desktop 11),
+  build clean. Note: earlier per-lane verification counts were inflated by stale
+  `dist/*.test.js` files lingering across worktree checkouts — a counting
+  artifact only; the wiped clean run above is the authoritative number.
+  Lanes (each new-files-only, contract doc written, NOT wired to screen/hub yet):
+  - **Notifications** (`packages/shared/src/notify.ts`): 4 kinds, quiet-hours
+    math matching Settings, de-dupe, self-suppression. `notify-handoff.md`.
+  - **GitHub** (`packages/engine/src/github-ops.ts`): 9 dev operations (issues,
+    PR comments, review requests, update PR branch, resolve thread, CI status)
+    as pure argv builders, every write approval-gated, none executing.
+    `github-ops-handoff.md`. **Vikas's top-priority feature.**
+  - **Agent memory + handoff** (`packages/engine/src/agent-memory.ts`,
+    `agent-handoff.ts`): durable per-agent notes with a budget, and a structured
+    "@AgentB take this" object. `agent-memory-handoff.md`.
+  - **Join-hub relay** (`apps/relay/src/joinhub.ts`): hub join-tokens
+    (single-use/expiring/revocable) + safe-bind rule, built on `classifyHost`.
+    `join-hub-handoff.md`.
+  - Conductor's own join-a-hub client trilogy (all `packages/shared`, merged):
+    `hubaddress.ts` (parse+classify+refuse-public), `hubbook.ts` (address book,
+    self is the floor), `hubconnection.ts` (lifecycle + fall-back-to-self).
+  - **THE NEXT PHASE (needs the conductor, not Cursor):** wire these modules into
+    the hub and engine per their handoff docs, add the on-screen controls
+    (GitHub button, join-a-friend screen, notification toasts, memory surface),
+    then rebuild the installer. Until then the app Vikas double-clicks is still
+    round 2 — these are built and tested underneath, unreachable on screen.
+
 ## Still open, in priority order (nothing here needs Vikas)
 0. **Round 2 of the feedback batch** (he said go on the whole batch):
    the audit's five fixes as classes (trigger reaching `buildAgentPrompt`; the
