@@ -306,6 +306,36 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
     no "jump to newest" control; `qa-stack.mjs` deletes every `cloud9-qa-*`
     workspace at startup so parallel QA runs can destroy each other.
 
+- **2026-07-31 ~00:25 — ROUND 2 IS SHIPPED AND ON THE INSTALLED APP.** While
+  Vikas was out (birthday), the Fable conductor drained the whole queue.
+  On master, pushed, verified by the conductor on the combined tree: build
+  clean, **660 tests** (407 engine + 242 hub + 11 desktop, incl. Cursor's
+  insider/naming/phase-5 suites), **440/440 + 8/8 + 4/4** browser, **16/16 on the
+  freshly installed app** (built 00:21, reinstalled, walked).
+  - Engine (`cea8b57`): TurnBrief so the instruction can't be dropped; a named
+    character context budget; the `search_conversation` doorway proved end to end
+    on this machine; the top rung derived from what host.ts grants; `refusal.ts`.
+  - Screen (`acdc518`): artifact cards from `cloud9://artifact/…`, `useUnsavedWork`
+    guarding every navigation, `sayable()` for plain-word errors.
+  - Cursor round 2 (`0ab921b`, merged): insider security sweep (NO data-leak
+    holes; its one finding was the Error: prefix, already fixed by refusal.ts),
+    naming torture, phase-5 repro, keep-awake script.
+  - Cursor round 1 earlier (`06f19a6`): honest search fallback, true unread
+    counts, safe parallel QA, +10 skills (25 total).
+  - Conductor's own slice (`feat/join-invites`, merged): `hubaddress.ts` — the
+    one owner for "where is the hub I'm joining", the foundation of friends
+    connecting; refuses public-internet addresses. 18 tests.
+  - **A conductor bug, caught and fixed by the installer build, not hidden:** the
+    hubaddress test imported `./hubaddress.ts`; the strict `build:app` rejects a
+    `.ts` import extension, so the FIRST installer build failed. Root cause: shared
+    had no test script and was never built with its tests. Fixed the import to the
+    `.js` convention AND gave shared a real test script wired into the root suite,
+    so its 18 tests run with the rest from now on (`fix` before the rebuild).
+  - **In flight for when he returns:** four Cursor feature lanes queued in
+    `CURSOR-BACKLOG.md` (GitHub-deep, join-hub relay, agent memory+handoff,
+    notifications) — awaiting Cursor agents; the conductor watches `cursor/*` and
+    reviews+merges each push.
+
 ## Still open, in priority order (nothing here needs Vikas)
 0. **Round 2 of the feedback batch** (he said go on the whole batch):
    the audit's five fixes as classes (trigger reaching `buildAgentPrompt`; the
