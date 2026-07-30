@@ -277,20 +277,49 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
      the analysis doc is published anywhere.
   Awaiting his go on the order at the review page (artifact 67419530).
 
+- **2026-07-30 ~21:40 — ROUND 1 OF THE FEEDBACK BATCH IS ON HIS MACHINE.**
+  Commits `bfc2b9b` (gap audit), `70514f8` (artifact store server half),
+  `0f4e3e7` (chat follow), all pushed. Verified by the conductor on the
+  combined tree: build clean, **582 tests** (369 engine + 202 hub + 11
+  desktop), **410/410 + 8/8 + 4/4** browser, all executed. Installer rebuilt
+  (`Cloud9-Setup-0.1.0.exe`, exe stamped 21:30), silently installed, and the
+  fresh install walked: **16/16**.
+  - Chat: `useFollowToBottom` is the one owner of when a list follows its
+    bottom (room + thread panel, four named reasons, never steals from a
+    reader scrolled back); `scrollBehavior()` owns may-this-machine-animate;
+    the composer grows; Send-by-click keeps the cursor. 13 new checks, each
+    proved by putting the bug back.
+  - Findings #9 #16 #17 #18 #21 were proved ALREADY FIXED by `fd36680` —
+    "Still open" item is corrected below.
+  - Artifact store server half: identity (conversation, name), per-version
+    attribution, hub computes every fact, one-use ticket reuse, publishes via
+    `respondAs`. NOT on screen yet — `artifact-store-handoff.md` is the
+    contract for the screen half.
+  - THE GAP AUDIT (`docs/qa/gap-audit.md`): agents live in a 20-message
+    keyhole; the `trigger` never reaches any real provider (scheduled/job
+    turns get a chat prompt); agents have no doorway back into Cloud9 (their
+    "no search" claim was true of THEIR world); the top rung's prompt promises
+    reach `host.ts` never grants; the agent editor discards typed work
+    silently (MAJOR); six error-legibility spots named.
+  - New known rough edges from the chat agent's sweep: the emoji tray ignores
+    Escape and click-away (needs a popover-dismissal class decision); there is
+    no "jump to newest" control; `qa-stack.mjs` deletes every `cloud9-qa-*`
+    workspace at startup so parallel QA runs can destroy each other.
+
 ## Still open, in priority order (nothing here needs Vikas)
-0. **The feedback batch from his agents' gap analysis** — list put to him
-   2026-07-30 evening, WAITING ON HIS GO (see the log entry above for the five
-   items). Nothing starts until he answers.
-1. **Rebuild the installer** so the ladder round reaches the app he
-   double-clicks, then re-run `npm run qa:app`.
-2. **Remaining review findings**, none yet fixed: an unrelated refusal kills an
-   in-flight upload (#9); a blob URL revoked while the picture is still on
-   screen (#16); Enter drops a file still uploading (#17); a late search result
-   resurrects a cleared search (#18); the scroll anchor is undone by the
-   follow-to-bottom effect (#19); roles are shown but cannot be changed (#21);
-   plus the P3 list (unread capped at 1000 reporting "999", the no-FTS5
-   fallback searching raw JSON, `runstore` non-atomic writes, two unlinked
-   retention constants).
+0. **Round 2 of the feedback batch** (he said go on the whole batch):
+   the audit's five fixes as classes (trigger reaching `buildAgentPrompt`; the
+   context keyhole; a doorway tool — search first; prompt derived from
+   truly-granted flags; unsaved-work guard on the editor; one error-sentence
+   owner), the artifact store SCREEN half (`artifact-store-handoff.md`), and
+   the GitHub controls on screen (`!code` button + project↔folder link,
+   `approval-handoff.md` §8).
+1. **Old renderer findings**: #9 #16 #17 #18 #19 #21 are all CLOSED (proved
+   2026-07-30). Still open from that list: the P3s (unread capped at 1000
+   reporting "999", the no-FTS5 fallback searching raw JSON, `runstore`
+   non-atomic writes, two unlinked retention constants), plus the new sweep
+   finds: emoji-tray dismissal, no "jump to newest", parallel-QA workspace
+   deletion.
 3. **The 7 Majors from phase 5** (`docs/qa/phase5-negative.md`) and the 2
    Minors from phase 6 (`docs/qa/phase6-ui.md`) — phase 6's Major (the ladder)
    is now fixed and merged; the rest are not.
