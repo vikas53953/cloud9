@@ -156,6 +156,31 @@ sleeps; and prove a new check by putting the bug back and watching it fail.
 
 ---
 
+## 8b. IN FLIGHT right now (2026-07-30, late)
+
+**Projects in the rail is being built.** An agent is working in
+`apps/desktop/src/**` and `scripts/qa.mjs`. If that work is half-finished when
+you pick this up:
+
+- `git status` will show uncommitted changes in those two places and nowhere
+  else. Everything up to and including commit `a1a7d31` is pushed and green.
+- Its brief: PROJECTS added to the icon rail beside Chat / Crew / Tasks / Log;
+  inside it the repository, pull requests and issues; which agent is in which
+  worktree on which branch; and the push-approval card drawing the new
+  `kind: "action"` / `remoteAction` / `expiresAt` / `expired` fields the hub
+  already sends and the screen currently ignores.
+- The hub frames it needs already exist and are currently handled as named
+  no-ops in `apps/desktop/src/store.ts` with a comment saying this screen would
+  claim them.
+- It was told: **do not report done until `npm run qa:app` shows Projects on
+  screen in the INSTALLED app** — that check is one of the two currently
+  failing.
+
+To judge it: `npm run build`, `npm test`, `npm run qa`, then `npm run dist`,
+install, and `npm run qa:app`. If it is half-done and not building, the safe
+move is `git checkout -- apps/desktop/src scripts/qa.mjs` and start that item
+fresh from the brief above.
+
 ## 9. What I would do next, in order
 
 1. **Projects in the rail** — repository, pull requests, issues. This unlocks
