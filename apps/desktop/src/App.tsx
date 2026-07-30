@@ -32,7 +32,7 @@ import {
    half of the engine that spawns processes, and none of that belongs in a
    browser bundle. These two modules read `@cloud9/shared` and nothing else.) */
 import {
-  abilitiesForReach, CAPABILITIES, describeApprovalNeeds, REACH_LEVELS, reachOf,
+  abilitiesForReach, CAPABILITIES, describeApprovalNeeds, REACH_LEVELS, Reach,
 } from "@cloud9/engine/dist/abilities.js";
 import { isolationFor } from "@cloud9/engine/dist/isolation.js";
 
@@ -106,6 +106,32 @@ const plainError = (text?: string): string | undefined => {
 };
 
 /* ================= small formatters ================= */
+
+/**
+ * WHERE A COUNT MEETS A WORD — one owner, and there is nowhere else to decide it.
+ *
+ * The bug this exists to make impossible: the casting room printed
+ * "1 CATEGORIES" because the number came from a list and the word was typed by
+ * hand beside it. Every such pair in this file used to answer the question its
+ * own way — some with a `n === 1 ? "" : "s"`, some with two spelled-out words,
+ * and some (this one, "N models", "N Jobs this month") not at all. A rule kept
+ * in thirty places is a rule that is wrong in one of them.
+ *
+ * `plural` answers "the word for this many", and `countOf` answers "the number
+ * and its word". True irregulars are passed in — English is not derivable — but
+ * the regular rules ("-s", and consonant-y → "-ies", which "abilitys" proved is
+ * also a rule and not a spelling) live here, and the DECISION is made here and
+ * only here.
+ */
+const plural = (n: number, one: string, many?: string): string =>
+  n === 1 ? one
+  : many !== undefined ? many
+  : /[^aeiou]y$/i.test(one) ? `${one.slice(0, -1)}ies`
+  : `${one}s`;
+
+/** "1 category" · "3 categories" — a number and the right word for it, together. */
+const countOf = (n: number, one: string, many?: string): string =>
+  `${n} ${plural(n, one, many)}`;
 
 const initials = (name: string): string =>
   name.trim().split(/[\s._-]+/).slice(0, 2).map(p => p[0] ?? "").join("").toUpperCase() || "?";
@@ -182,6 +208,75 @@ const ROOM_ARCHIVED_WORDS = "Archived";
 const ARCHIVED_SENTENCE = "that conversation is archived — nothing new can be said in it";
 
 const newId = (): string => `sk_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+
+/* ================= ESCAPE CLOSES WHAT IT OPENED =================
+ *
+ * ONE OWNER for the whole app. Phase 6 found Escape closing the Ctrl-K palette
+ * and doing nothing on the casting room's "Read the brief" — and the reason is
+ * the shape of the old code, not one forgotten line: the palette's Escape lived
+ * in the window listener at the top of `App`, the search panel's lived in an
+ * `onKeyDown` on the panel (so it only worked while the focus was inside it),
+ * and four other overlays had no Escape at all. Six overlays, five different
+ * answers to one question.
+ *
+ * There is now one answer. Every overlay calls `useEscapeCloses(onClose)`, which
+ * puts its close on a STACK. One window listener serves them all and calls the
+ * TOP of the stack only, so a brief opened over a palette closes the brief and
+ * leaves the palette — the newest thing closes first, which is what a person
+ * means by Escape. Nothing depends on where the focus is, because Escape is
+ * about the overlay, not about the box inside it.
+ *
+ * Adding an overlay without Escape is now a thing you have to leave out on
+ * purpose, not something you can forget to add.
+ *
+ * WHERE THIS DELIBERATELY STOPS. An overlay is a thing with a backdrop that
+ * stands in front of the app: the quick-chat palette, the casting-room brief,
+ * the skill library, search, invite, browse rooms, new channel — all seven are
+ * on the stack and a QA check counts them. The find bar and the thread/room side
+ * panels are NOT: they sit beside the conversation rather than over it, and a
+ * message being edited underneath them has its own Escape ("put my words back")
+ * which stealing would be a worse bug than the one this fixes. When the stack is
+ * empty this handler does nothing at all, so those keep working exactly as they
+ * did.
+ */
+const escapeStack: (() => void)[] = [];
+
+if (typeof window !== "undefined") {
+  window.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key !== "Escape") return;
+    const top = escapeStack[escapeStack.length - 1];
+    if (!top) return;
+    /* Stop the same press being read a second time by anything below — including
+       the app's own Ctrl-K handler, which used to close the palette from under a
+       modal opened on top of it. */
+    e.preventDefault();
+    e.stopPropagation();
+    top();
+  }, true);
+}
+
+/**
+ * "Escape closes this." Give it the same close the backdrop and the button use,
+ * so the three ways out can never mean different things.
+ *
+ * @param onClose what closing means — the overlay's own close, never a copy
+ * @param enabled false while the overlay is not on screen
+ */
+function useEscapeCloses(onClose: () => void, enabled = true): void {
+  /* The latest close, without re-stacking on every render: a handler that is
+     replaced mid-press is how the stack would get out of order. */
+  const latest = useRef(onClose);
+  latest.current = onClose;
+  useEffect(() => {
+    if (!enabled) return;
+    const entry = (): void => latest.current();
+    escapeStack.push(entry);
+    return () => {
+      const at = escapeStack.lastIndexOf(entry);
+      if (at >= 0) escapeStack.splice(at, 1);
+    };
+  }, [enabled]);
+}
 
 /* ================= the house marks ================= */
 
@@ -934,7 +1029,7 @@ function respondWords(a: AgentDef, ownerName: string): string {
       const n = (a.respondToAllowlist ?? []).length;
       return n === 0
         ? `Only ${ownerName} — nobody has been named yet`
-        : `${ownerName} and ${n} ${n === 1 ? "other person" : "others"} can use it`;
+        : `${ownerName} and ${countOf(n, "other person", "others")} can use it`;
     }
     default: return `Only ${ownerName} can use it`;
   }
@@ -1031,7 +1126,9 @@ function Workspace(): React.JSX.Element {
         setScreen("chat");
         setFindOpen(true);
       }
-      if (e.key === "Escape") setQuick(false);
+      /* Escape is NOT handled here. `useEscapeCloses` owns it for every overlay,
+         including this palette — one handler per overlay is exactly how the
+         palette and the casting-room brief got out of step. */
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -1125,6 +1222,14 @@ function Workspace(): React.JSX.Element {
       unreadSays: (n: number) => unreadLabel(n),
       unreadCeiling: () => UNREAD_CEILING,
     };
+    /* QA hook: HOW MANY OVERLAYS ARE ON THE ONE ESCAPE OWNER'S STACK. Pressing
+       Escape proves the behaviour, and this proves the MECHANISM — that an
+       overlay on screen really did register with the one owner rather than
+       answering the key its own way. A per-overlay handler is what got the
+       palette and the brief out of step, so the suite checks the stack itself. */
+    (window as unknown as { cloud9Escape?: unknown }).cloud9Escape = {
+      stacked: () => escapeStack.length,
+    };
     // QA hook, same shape again: what the screen is HOLDING about runs, so a
     // missing card can be told apart from a record that never arrived. It
     // reports only ids and outcomes — never the record's words.
@@ -1137,6 +1242,7 @@ function Workspace(): React.JSX.Element {
     return () => {
       delete (window as unknown as { cloud9Wire?: unknown }).cloud9Wire;
       delete (window as unknown as { cloud9Runs?: unknown }).cloud9Runs;
+      delete (window as unknown as { cloud9Escape?: unknown }).cloud9Escape;
       delete (window as unknown as { cloud9Files?: unknown }).cloud9Files;
       delete (window as unknown as { cloud9Menu?: unknown }).cloud9Menu;
       window.removeEventListener("cloud9:menu", onEvent as EventListener);
@@ -1509,8 +1615,8 @@ function ChatScreen({
           {/* The relay does not report who is at their desk, so this counts who
               is IN this Cloud9 — never "online", which we cannot know. */}
           <span className="chip"
-            title={`${agents.length} ${agents.length === 1 ? "agent" : "agents"} and ` +
-              `${people.length} ${people.length === 1 ? "person" : "people"} in this Cloud9`}>
+            title={`${countOf(agents.length, "agent")} and ` +
+              `${countOf(people.length, "person", "people")} in this Cloud9`}>
             {people.length + agents.length} here
           </span>
         </div>
@@ -1914,7 +2020,7 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
         <button className="runmore" aria-expanded={open} data-steps={record.steps.length}
           onClick={() => setOpen(v => !v)}>
           <span className="tri" aria-hidden="true">{open ? "▾" : "▸"}</span>
-          What it did<span className="n">{record.steps.length} {record.steps.length === 1 ? "step" : "steps"}</span>
+          What it did<span className="n">{countOf(record.steps.length, "step")}</span>
         </button>
       )}
       {open && record.steps.length > 0 && <RunSteps record={record} />}
@@ -2267,8 +2373,8 @@ function ChatView({
         <header className="topbar chathead">
           <h2 className="ch-title"><span className="h">#</span><span className="n">{channel.name}</span></h2>
           <span className="sub">
-            {people.length} {people.length === 1 ? "person" : "people"} ·{" "}
-            {agents.length} {agents.length === 1 ? "agent" : "agents"}
+            {countOf(people.length, "person", "people")} ·{" "}
+            {countOf(agents.length, "agent")}
           </span>
           {/* Open or shut, said where the room is named. A room that anyone in
               this Cloud9 can find and let themselves into is a different thing
@@ -2283,7 +2389,7 @@ function ChatView({
           {waitingHere.length > 0 && (
             <button className="chip is-gold approvalpill" onClick={onOpenTasks}>
               <span className="dot wait" />
-              {waitingHere.length} approval{waitingHere.length === 1 ? "" : "s"} waiting
+              {countOf(waitingHere.length, "approval")} waiting
             </button>
           )}
           {!channel.archivedAt && <AddToChannel channel={channel} />}
@@ -2303,7 +2409,7 @@ function ChatView({
             onKeyDown={e => { if (e.key === "Escape") onCloseFind(); }} />
           <span className="find-count">
             {needle
-              ? `${messages.length} ${messages.length === 1 ? "message" : "messages"}`
+              ? countOf(messages.length, "message")
               : `${all.length} in this conversation`}
           </span>
           <button className="find-x" aria-label="Close find" onClick={onCloseFind}>✕</button>
@@ -2896,7 +3002,7 @@ function MessageRow({
     <button className="threadline" data-replies={replyCount}
       onClick={() => onOpenThread(m.id)}>
       <span className="arrow" aria-hidden="true">↳</span>
-      {replyCount} {replyCount === 1 ? "reply" : "replies"}
+      {countOf(replyCount, "reply", "replies")}
       {m.lastReplyAt ? <span className="ago">· last at {clock(m.lastReplyAt)}</span> : null}
     </button>
   );
@@ -3121,7 +3227,7 @@ function ThreadPanel({ channel, rootId, onClose }: {
           <div className="threadcount">
             {replies.length === 0
               ? "No replies yet — yours would be the first."
-              : `${replies.length} ${replies.length === 1 ? "reply" : "replies"}`}
+              : countOf(replies.length, "reply", "replies")}
           </div>
         )}
         {replies.map(m => (
@@ -3487,7 +3593,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering }: {
             disabled={busy || (!text.trim() && ready === 0)}>
             {busy
               ? "Waiting for a file…"
-              : `Send${ready > 0 ? ` with ${ready} ${ready === 1 ? "file" : "files"}` : ""}`}
+              : `Send${ready > 0 ? ` with ${countOf(ready, "file")}` : ""}`}
           </button>
           {emojiOpen && (
             <div className="emojipop">
@@ -3979,6 +4085,27 @@ function ChannelRail({ channel, onEditAgent, onOpenDm }: {
 
 /* ================= 4 · THE CREW (call sheet) ================= */
 
+/**
+ * ONE STAT TILE — a number over the word for that many.
+ *
+ * The casting room printed **"1 CATEGORIES"** because the number came from a
+ * list and the word was typed by hand beside it (Phase 6). This component takes
+ * BOTH forms of the word, so a tile cannot be added without answering "what does
+ * this say when there is one of them" — and where the answer is genuinely the
+ * same phrase either way ("Waiting on you"), saying it twice is the author
+ * stating that on purpose rather than forgetting to think about it.
+ *
+ * `plural` is still the one owner of the decision; this is where a tile asks it.
+ */
+function Stat({ n, one, many }: { n: number; one: string; many: string }): React.JSX.Element {
+  return (
+    <div className="stat" data-stat={one}>
+      <div className="n">{n}</div>
+      <div className="l">{plural(n, one, many)}</div>
+    </div>
+  );
+}
+
 function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
   onHire: () => void;
   onEdit: (a: AgentDef) => void;
@@ -4020,16 +4147,16 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
           <span className="eyebrow">Cloud9 · the crew</span>
           {agents.length === 0
             ? <h1>Nobody on the<br />floor <em>yet</em>.</h1>
-            : <h1>{agents.length} {agents.length === 1 ? "hire" : "hires"},<br />no <em>payroll</em>.</h1>}
+            : <h1>{countOf(agents.length, "hire")},<br />no <em>payroll</em>.</h1>}
           <p>
             Everyone here was written by you in plain words. They keep their own skills,
             run on the app you gave them, and stop at the line you drew.
           </p>
         </div>
         <div className="crew-stats">
-          <div className="stat"><div className="n">{workingCount}</div><div className="l">Working now</div></div>
-          <div className="stat"><div className="n">{waitingCount}</div><div className="l">Waiting on you</div></div>
-          <div className="stat"><div className="n">{jobsThisMonth}</div><div className="l">Jobs this month</div></div>
+          <Stat n={workingCount} one="Working now" many="Working now" />
+          <Stat n={waitingCount} one="Waiting on you" many="Waiting on you" />
+          <Stat n={jobsThisMonth} one="Job this month" many="Jobs this month" />
         </div>
       </header>
 
@@ -4104,7 +4231,7 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
                     </span>
                     <span className="chip" title={a.model ? undefined : MODEL_UNSET_HINT}>{modelWords(a.model)}</span>
                     {(a.skills?.length ?? 0) > 0 &&
-                      <span className="chip">{a.skills!.length} {a.skills!.length === 1 ? "skill" : "skills"}</span>}
+                      <span className="chip">{countOf(a.skills!.length, "skill")}</span>}
                   </div>
                   <div className="now whocan" data-respond={a.respondTo ?? "owner"}>
                     <MarkGate />
@@ -4143,7 +4270,7 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
               <path d="M18.5 7.5v11.5a1.5 1.5 0 0 1-1.5 1.5" />
             </svg>
             <h3>The casting room</h3>
-            <p>{MARKET_TEMPLATES.length} roles already written. Read the brief, pick the app, hire.</p>
+            <p>{countOf(MARKET_TEMPLATES.length, "role")} already written. Read the brief, pick the app, hire.</p>
           </button>
           <button className="cast cast-new" onClick={onHire}>
             <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -4193,14 +4320,14 @@ function MarketScreen({ onHired, onBack, onWriteMyOwn }: {
           <span className="eyebrow">Cloud9 · the casting room</span>
           <h1>Hire someone<br />already <em>written</em>.</h1>
           <p>
-            {MARKET_TEMPLATES.length} roles that ship inside Cloud9 — no download, no account,
+            {countOf(MARKET_TEMPLATES.length, "role")} that ship inside Cloud9 — no download, no account,
             and they work with the internet off. Hiring one copies it onto your floor,
             where you can change every word of it.
           </p>
         </div>
         <div className="crew-stats">
-          <div className="stat"><div className="n">{MARKET_TEMPLATES.length}</div><div className="l">Roles ready</div></div>
-          <div className="stat"><div className="n">{MARKET_CATEGORIES.length}</div><div className="l">Categories</div></div>
+          <Stat n={MARKET_TEMPLATES.length} one="Role ready" many="Roles ready" />
+          <Stat n={MARKET_CATEGORIES.length} one="Category" many="Categories" />
         </div>
       </header>
 
@@ -4284,6 +4411,9 @@ function HireModal({ template, onClose, onHired }: {
   const { ids, fallback, preferred } = useModels(provider);
   const [model, setModel] = useState<string>(preferred);
   useEffect(() => { if (!ids.includes(model)) setModel(preferred); }, [provider, ids.join(","), model]);
+  /* Finding UI-2 was exactly this line being missing. It is not a line to
+     remember any more — it is the one owner every overlay calls. */
+  useEscapeCloses(onClose);
 
   /* Two hires of the same role are two agents, and an @name is how everyone
      points at one — so the second gets its own. The relay is still the judge
@@ -4392,6 +4522,14 @@ function QuickChat({ onClose, standalone }: { onClose?: () => void; standalone?:
 
   useEffect(() => inputRef.current?.focus(), []);
 
+  /* The one owner of "Escape closes what it opened". In its own window there is
+     no overlay to close, so Escape closes the window — the same intent. */
+  const leave = useCallback(() => {
+    onClose?.();
+    if (standalone) window.close();
+  }, [onClose, standalone]);
+  useEscapeCloses(leave);
+
   const targets = [
     ...world.agents.map(a => ({ id: a.id, label: `${a.emoji} ${a.name}`, name: a.name, kind: "agent" as const })),
     ...world.channels.filter(c => c.kind === "channel").map(c => ({ id: c.id, label: `# ${c.name}`, name: c.name, kind: "channel" as const })),
@@ -4441,7 +4579,8 @@ function QuickChat({ onClose, standalone }: { onClose?: () => void; standalone?:
             if (e.key === "ArrowDown") { e.preventDefault(); setSel(i => (i + 1) % targets.length); }
             if (e.key === "ArrowUp") { e.preventDefault(); setSel(i => (i - 1 + targets.length) % targets.length); }
             if (e.key === "Enter") fire();
-            if (e.key === "Escape") { onClose?.(); if (standalone) window.close(); }
+            /* Escape is NOT handled here — `useEscapeCloses` above owns it for
+               every overlay in the app, so this box cannot answer it its own way. */
           }}
         />
         <span className="kbd">Esc</span>
@@ -4587,7 +4726,7 @@ function SkillsEditor({ skills, onChange, agentName, roleId }: {
     if (instructions.length > SKILL_LIMITS.instructions) { setNote("Those instructions are too long. Trim them a little."); return; }
     if (draft.description.trim().length > SKILL_LIMITS.description) { setNote("Keep the one-line description shorter."); return; }
     if (!skills.some(s => s.id === draft.id) && skills.length >= SKILL_LIMITS.perAgent) {
-      setNote(`One agent can hold ${SKILL_LIMITS.perAgent} skills. Delete one first.`); return;
+      setNote(`One agent can hold ${countOf(SKILL_LIMITS.perAgent, "skill")}. Delete one first.`); return;
     }
     const clean: AgentSkill = {
       id: draft.id || newId(),
@@ -4653,7 +4792,7 @@ function SkillsEditor({ skills, onChange, agentName, roleId }: {
     let problem: string | null = null;
     for (const file of Array.from(files)) {
       if (skills.length + added.length >= SKILL_LIMITS.perAgent) {
-        problem = `One agent can hold ${SKILL_LIMITS.perAgent} skills. Delete one first.`; break;
+        problem = `One agent can hold ${countOf(SKILL_LIMITS.perAgent, "skill")}. Delete one first.`; break;
       }
       const r = await readSkillFile(file);
       if (r.problem) problem = r.problem;
@@ -4663,7 +4802,7 @@ function SkillsEditor({ skills, onChange, agentName, roleId }: {
       onChange([...skills, ...added]);
       const withFiles = added.filter(s => (s.files?.length ?? 0) > 0).length;
       setNote(
-        `Added ${added.length} ${added.length === 1 ? "skill" : "skills"}` +
+        `Added ${countOf(added.length, "skill")}` +
         (withFiles > 0 ? `, and ${withFiles === 1 ? "its file goes" : "their files go"} into the agent's folder.` : ".") +
         (problem ? ` ${problem}` : ""));
     } else if (problem) {
@@ -4678,7 +4817,7 @@ function SkillsEditor({ skills, onChange, agentName, roleId }: {
     let problem: string | null = null;
     for (const file of Array.from(files)) {
       if (kept.length >= SKILL_LIMITS.files) {
-        problem = `One skill can carry ${SKILL_LIMITS.files} files.`; break;
+        problem = `One skill can carry ${countOf(SKILL_LIMITS.files, "file")}.`; break;
       }
       const r = await readSkillFile(file);
       const attached = r.skill?.files?.[0];
@@ -4690,7 +4829,7 @@ function SkillsEditor({ skills, onChange, agentName, roleId }: {
       }
     }
     setDraft(d => ({ ...d, files: kept }));
-    setNote(problem ?? `${kept.length} ${kept.length === 1 ? "file" : "files"} will go into the agent's folder when you save.`);
+    setNote(problem ?? `${countOf(kept.length, "file")} will go into the agent's folder when you save.`);
   };
 
   const detach = (fileName: string) =>
@@ -4757,7 +4896,7 @@ function SkillsEditor({ skills, onChange, agentName, roleId }: {
             <span className="skill-desc">{s.description || "No description yet."}</span>
             {(s.files?.length ?? 0) > 0 && (
               <span className="skill-files" title={s.files!.map(f => f.name).join(", ")}>
-                📎 {s.files!.length} {s.files!.length === 1 ? "file" : "files"} in the agent's folder
+                📎 {countOf(s.files!.length, "file")} in the agent's folder
               </span>
             )}
           </span>
@@ -4854,6 +4993,7 @@ function SkillLibraryPanel({ have, agentName, roleId, onClose, onTake }: {
   const [shelf, setShelf] = useState<string>("all");
   const [reading, setReading] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
+  useEscapeCloses(onClose);
 
   /* THE ORDER, AND THE ONE PLACE IT IS DECIDED. With a role known this second
      the ones written for that role come first; with no role it is the natural
@@ -4943,7 +5083,7 @@ function SkillLibraryPanel({ have, agentName, roleId, onClose, onTake }: {
         </div>
         <div className="body">
           <p className="hiretag">
-            {SKILL_LIBRARY.length} ready-written skills that ship inside Cloud9 — no download,
+            {countOf(SKILL_LIBRARY.length, "ready-written skill")} that ship inside Cloud9 — no download,
             no account, and they work with the internet off. Taking one copies its words onto
             this agent, where you can change or delete every one of them.
           </p>
@@ -4951,7 +5091,7 @@ function SkillLibraryPanel({ have, agentName, roleId, onClose, onTake }: {
           {/* SAY IT BEFORE HE PICKS, not after he is refused. */}
           <div className="libroom" data-full={full ? "yes" : "no"}>
             {full
-              ? `This agent already holds ${SKILL_LIMITS.perAgent} skills, which is as many as one can hold. Delete one before taking another.`
+              ? `This agent already holds ${countOf(SKILL_LIMITS.perAgent, "skill")}, which is as many as one can hold. Delete one before taking another.`
               : `${have.length} of ${SKILL_LIMITS.perAgent} taught · room for ${room} more`}
           </div>
 
@@ -5077,6 +5217,52 @@ function HarnessHonesty({ provider }: { provider: Provider }): React.JSX.Element
   );
 }
 
+/* ================= THE LADDER AND THE SWITCHES ARE ONE FACT =================
+ *
+ * WHAT WAS WRONG (Phase 6, finding UI-1 — and it is on the feature Vikas asked
+ * for by name). Switching on "Look things up on the web" and "Work on jobs in
+ * the background" left the ladder's dot sitting on **"Just talk — No tools at
+ * all"**, forty pixels above two switches saying the opposite. The whole point
+ * of a ladder is that a glance tells him what an agent can do; a glance told him
+ * the reverse of the truth.
+ *
+ * WHY IT HAPPENED, AND WHY IT IS A CLASS OF BUG. The screen asked the engine's
+ * `reachOf()` — "the HIGHEST rung whose every switch is on" — and drew its
+ * answer as the chosen rung. That function is right about what it answers, and
+ * it is the wrong question for a picker: `{web, background}` fully covers only
+ * the empty rung, so it truthfully answers "talk". The ladder then presented
+ * that as HIS CHOICE. Two views of one fact, each computing its own answer, are
+ * always free to disagree.
+ *
+ * THE FIX. **The switches are the truth.** They are what the engine reads to
+ * build a command line, so they are the only thing that can be. The ladder is
+ * DERIVED from them, by exact match and nothing else:
+ *
+ *   • a rung is drawn as chosen only when the switches are EXACTLY that rung;
+ *   • no combination can therefore produce a rung that contradicts them;
+ *   • and a set that matches no rung is said out loud as HIS OWN MIXTURE —
+ *     never rounded to the nearest rung, because an invented answer is worse
+ *     than "this is your own mixture".
+ *
+ * `rungOfExactly` is the whole derivation and the only one. `reachOf` is no
+ * longer asked in this file at all.
+ */
+
+/**
+ * The rung these switches ARE, or null when they are his own mixture.
+ *
+ * Exact match in both directions, over every row of the engine's table — so a
+ * capability added to that table lands here with no change, and a mixture can
+ * never be reported as a rung it merely covers.
+ */
+function rungOfExactly(ab: AgentAbilities): Reach | null {
+  const found = REACH_LEVELS.find(level => {
+    const rung = abilitiesForReach(level.level);
+    return CAPABILITIES.every(c => (ab[c.ability] === true) === (rung[c.ability] === true));
+  });
+  return found?.level ?? null;
+}
+
 /* ================= 5 · CREATE / EDIT AN AGENT ================= */
 
 function AgentEditor({ agent, onDone, onMarket, justHired }: {
@@ -5171,29 +5357,25 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
     : null;
   const jobsRun = agent ? world.tasks.filter(t => t.agentId === agent.id).length : 0;
 
-  /* THE LADDER, read from the engine and never re-decided here.
-     `reachOf` answers from the switches alone, so a draft that has not been
-     saved yet is asked the same question a stored agent is. */
+  /* THE LADDER, DERIVED FROM THE SWITCHES AND NOTHING ELSE (see the note above
+     this component). `chosenRung` is null when his switches are a mixture of his
+     own, and every part of the drawing below reads that one value — the dot, the
+     inked spine, the words. There is no second derivation to disagree with it. */
   const draft = { ...(agent ?? {}), abilities: ab } as AgentDef;
-  const reach = reachOf(draft);
-  const reachIndex = REACH_LEVELS.findIndex(r => r.level === reach);
-  const reachLabel = REACH_LEVELS[reachIndex]?.label ?? REACH_LEVELS[0].label;
-  /* Does his mix EXACTLY equal that rung, or is it a hand-picked set that merely
-     covers it? `reachOf` never rounds a mix up, so the two can differ and the
-     screen has to say which one he is looking at. */
-  const sameAsRung = CAPABILITIES.every(
-    c => (ab[c.ability] === true) === (abilitiesForReach(reach)[c.ability] === true));
+  const chosenRung = rungOfExactly(ab);
+  const chosenIndex = chosenRung ? REACH_LEVELS.findIndex(r => r.level === chosenRung) : -1;
+  /* What is actually switched on, in the table's own words — the honest answer
+     when no rung fits, and the only thing said in that case. */
+  const abilitiesOnNow = CAPABILITIES.filter(c => ab[c.ability] === true);
   /* The powers that will stop and ask. NOT checkboxes: the switch being on IS
      the ask being on, so rendering them as something he could clear would be
      showing him a control that does nothing. */
   const willAsk = describeApprovalNeeds(draft);
-  /* Open the switch list only if the agent WALKED IN with a hand-picked mix —
-     after that it is his to open and close, and nothing re-decides it. */
-  const [showSwitches, setShowSwitches] = useState(() => {
-    const start = agent?.abilities ?? NEW_AGENT_ABILITIES;
-    const rung = abilitiesForReach(reachOf({ abilities: start } as AgentDef));
-    return CAPABILITIES.some(c => (start[c.ability] === true) !== (rung[c.ability] === true));
-  });
+  /* Open the switch list only if the agent WALKED IN with a mixture of its own —
+     after that it is his to open and close, and nothing re-decides it. The same
+     one owner answers "is this a mixture", here too. */
+  const [showSwitches, setShowSwitches] = useState(
+    () => rungOfExactly(agent?.abilities ?? NEW_AGENT_ABILITIES) === null);
   const switchesOpen = showSwitches;
   /* The powers that are switched ON and still hand the agent nothing, because
      the thing they need — a folder list, a connected service — has nowhere to
@@ -5219,7 +5401,7 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
         <h2>{shownName}</h2>
         <span className="sub">
           {creating ? "New hire · nothing is saved until you press create"
-            : `${jobsRun} ${jobsRun === 1 ? "job" : "jobs"} run · ${skills.length} ${skills.length === 1 ? "skill" : "skills"}`}
+            : `${countOf(jobsRun, "job")} run · ${countOf(skills.length, "skill")}`}
         </span>
         <div className="grow" />
         {!creating && (confirmDelete
@@ -5255,7 +5437,7 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
               <span className="fh-tx">
                 <b>Not sure what to write?</b>
                 <span>
-                  {MARKET_TEMPLATES.length} roles are already written — architect, backend,
+                  {countOf(MARKET_TEMPLATES.length, "role")} {plural(MARKET_TEMPLATES.length, "is", "are")} already written — architect, backend,
                   QA and more. Hire one and change it here afterwards.
                 </span>
               </span>
@@ -5321,7 +5503,7 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
                       <span className="nm">{PROVIDER_LABEL[id]}</span>
                       <span className="ms">
                         {info?.signedIn ? "Signed in" : info?.installed ? "Not signed in" : "Not found"}
-                        {(info?.models?.length ?? 0) > 0 ? ` · ${info!.models!.length} models` : ""}
+                        {(info?.models?.length ?? 0) > 0 ? ` · ${countOf(info!.models!.length, "model")}` : ""}
                       </span>
                     </span>
                   </button>
@@ -5340,7 +5522,7 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
             <p className="sec-note" style={{ marginTop: 8 }}>
               {fallback
                 ? "This is the list Cloud9 ships with. Once the app is signed in under Setup, its own list is used."
-                : `${ids.length} models offered by your ${PROVIDER_LABEL[provider]} app.`}
+                : `${countOf(ids.length, "model")} offered by your ${PROVIDER_LABEL[provider]} app.`}
             </p>
             {!creating && !agent!.model && (
               <div className="notice modelunset">
@@ -5356,12 +5538,37 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
               One choice, four rungs. Each rung is everything below it and more — and anything
               that changes this computer or spends money stops and asks you first.
             </p>
+            {/* THE MIXTURE, SAID BEFORE THE LADDER AND NOT UNDER IT. A glance at
+                a ladder is the whole point of a ladder, so the one case where no
+                rung is his answer has to be inside that glance — above the rungs,
+                not in a footnote below them. It names what is really on, because
+                that is the truth the switches hold; it names no rung at all,
+                because naming one would be inventing an answer. */}
+            {!chosenRung && (
+              <div className="notice reachmixed" data-mixture="yes"
+                data-on={abilitiesOnNow.map(c => c.ability).join(",")}>
+                <b>
+                  Your own mixture — {countOf(abilitiesOnNow.length, "ability")} of{" "}
+                  {CAPABILITIES.length} switched on.
+                </b>
+                <span>
+                  {abilitiesOnNow.length === 0
+                    ? "Nothing is switched on."
+                    : `On right now: ${abilitiesOnNow.map(c => c.label).join(", ")}.`}
+                  {" "}This is not one of the four rungs, so none of them is picked below.
+                  Pick a rung to replace your mixture, or leave it as it is — the switches
+                  are what the agent actually gets.
+                </span>
+              </div>
+            )}
+
             <div className="reachladder" role="group" aria-label="How far this agent can go"
-              data-reach={reach}>
+              data-reach={chosenRung ?? "mixture"}>
               {REACH_LEVELS.map((rung, i) => (
                 <button key={rung.level} className="reachrung" data-reach={rung.level}
-                  data-within={i <= reachIndex ? "yes" : "no"}
-                  aria-pressed={rung.level === reach} onClick={() => setAb(abilitiesForReach(rung.level))}>
+                  data-within={chosenIndex >= 0 && i <= chosenIndex ? "yes" : "no"}
+                  aria-pressed={rung.level === chosenRung}
+                  onClick={() => setAb(abilitiesForReach(rung.level))}>
                   <span className="rr-spine" aria-hidden="true"><span className="rr-node" /></span>
                   <span className="rr-tx">
                     <b>{rung.label}</b>
@@ -5373,15 +5580,6 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
                 </button>
               ))}
             </div>
-
-            {/* His mix may sit between two rungs. Saying which rung it reads as —
-                never rounding UP — is the honest half of offering a ladder. */}
-            {!sameAsRung && (
-              <p className="sec-note reachmixed">
-                You have picked your own mix below. It reads as “{reachLabel}”, because that is the
-                highest rung it covers all of.
-              </p>
-            )}
 
             {/* A DISCLOSURE HE OWNS, not one the ladder keeps re-deciding for him.
                 Written as a button and a conditional rather than <details open>,
@@ -5653,6 +5851,9 @@ function SearchOverlay({ onClose, onGo }: {
   const state = world.search;
 
   useEffect(() => { boxRef.current?.focus(); }, []);
+  /* Was an `onKeyDown` on the panel, which meant Escape worked only while the
+     focus was still inside it. One owner now, focus or no focus. */
+  useEscapeCloses(onClose);
 
   /**
    * `in:` and `from:` are resolved to ids HERE, because the relay does not take
@@ -5704,8 +5905,7 @@ function SearchOverlay({ onClose, onGo }: {
 
   return (
     <div className="overlay searchveil" onClick={onClose}>
-      <div className="panel searchpanel" onClick={e => e.stopPropagation()}
-        onKeyDown={e => { if (e.key === "Escape") onClose(); }}>
+      <div className="panel searchpanel" onClick={e => e.stopPropagation()}>
         <div className="head">
           Search everything you can see
           <span className="eyebrow">Esc to close</span>
@@ -5786,6 +5986,7 @@ function InviteModal({ onClose }: { onClose: () => void }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [copied, setCopied] = useState(false);
   const code = world.inviteCode;
+  useEscapeCloses(onClose);
   return (
     <div className="overlay" onClick={onClose}>
       <div className="panel" onClick={e => e.stopPropagation()}>
@@ -5821,6 +6022,7 @@ function BrowseRoomsModal({ onClose, onJoined }: {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [joining, setJoining] = useState<ID | null>(null);
   const dir = world.directory;
+  useEscapeCloses(onClose);
 
   // Asked every time this opens: a list from the last time it was open is not
   // an answer about now, and rooms are opened and shut while it is closed.
@@ -5861,7 +6063,7 @@ function BrowseRoomsModal({ onClose, onJoined }: {
                   {c.topic && <p className="rc-topic">Topic: {c.topic}</p>}
                   <div className="rc-foot">
                     <span className="rc-count">
-                      {c.memberCount} {c.memberCount === 1 ? "person" : "people"} · started {dayStamp(c.createdAt)}
+                      {countOf(c.memberCount, "person", "people")} · started {dayStamp(c.createdAt)}
                     </span>
                     <button className="primary small roomjoin" disabled={joining === c.id}
                       onClick={() => { setJoining(c.id); client.send({ type: "joinChannel", channelId: c.id }); }}>
@@ -5884,6 +6086,7 @@ function ChannelModal({ onClose }: { onClose: () => void }): React.JSX.Element {
   const [name, setName] = useState("");
   const [members, setMembers] = useState<ID[]>([]);
   const [refusal, setRefusal] = useState<string | null>(null);
+  useEscapeCloses(onClose);
 
   /* THE HUB'S OWN NAMING RULE, asked here first so he reads the sentence before
      the room fails to appear — the same function `createChannel` runs, never a
@@ -6391,7 +6594,7 @@ function HarnessCard({
         </span>
         <span className={signedIn ? "yes" : "no"}>{signedIn ? "✓ signed in" : "✗ not signed in"}</span>
         {authWords && <span>{authWords}</span>}
-        {(info?.models?.length ?? 0) > 0 && <span>{info!.models!.length} models available</span>}
+        {(info?.models?.length ?? 0) > 0 && <span>{countOf(info!.models!.length, "model")} available</span>}
         {savedKey && <span>✓ key saved on this computer</span>}
       </div>
 
@@ -7051,7 +7254,7 @@ function ProjectDetail({ project, onOpenChannel }: {
                 <div className="cb-tx">
                   <b>{agent.name}</b>
                   <span className="cb-sub">
-                    {items.length} pull request{items.length === 1 ? "" : "s"} here
+                    {countOf(items.length, "pull request")} here
                   </span>
                 </div>
                 <div className="cb-branches">

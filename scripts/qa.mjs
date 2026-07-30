@@ -108,7 +108,19 @@ const { ui: UI } = qaTarget();
 // and then the promise: what he takes is drawn as the SAME row as one he typed,
 // with the same pencil and the same bin, editable word for word, deletable, and
 // still ordinary after a round trip through the hub.
-const EXPECTED_CHECKS = 381;
+// 381 → 397: sixteen checks added for Phase 6's UI findings, and TWO EXISTING
+// checks rewritten rather than added — the pair that used to assert the old,
+// wrong behaviour of the ladder (that a hand-picked mix reads as the highest rung
+// it covers). Of the sixteen: three hold the ladder to the switches (the exact
+// two-abilities case he was shown, the words it says instead, and every rung
+// reading back as exactly itself); ten hold "Escape closes what it opened" to
+// its one owner (the casting-room brief, the quick-chat palette, the skill
+// library, search with the focus deliberately taken away, and two overlays at
+// once closing newest-first) — half of those read the STACK itself, so the
+// mechanism is checked and not only the behaviour; and three hold the pluralising
+// owner (the "1 CATEGORIES" tile in the singular, the same header in the plural,
+// and a sweep of the whole screen for the shape of that bug).
+const EXPECTED_CHECKS = 397;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -1222,16 +1234,84 @@ try {
   ok("and nothing then claims it will ask him about anything",
     (await page.locator(".editor .willask").count()) === 0);
 
-  // ---- a hand-picked mix is never rounded UP ----
+  /* ================= THE LADDER MAY NOT CONTRADICT THE SWITCHES =============
+   *
+   * Phase 6's one Major (UI-1), on the feature Vikas named himself. Switching on
+   * "Look things up on the web" and "Work on jobs in the background" left the
+   * ladder's dot on "Just talk — No tools at all", forty pixels above two
+   * switches saying the opposite: the screen asked the engine for the highest
+   * rung those two FULLY COVER (truthfully, the empty one) and then drew that
+   * answer as HIS CHOICE.
+   *
+   * The switches are the truth — they are what the engine reads to build a
+   * command line — and the ladder is now derived from them by EXACT match only.
+   * So there are exactly two honest outcomes, and both are checked here: the
+   * switches are a rung, or the switches are his own mixture and no rung is
+   * drawn as chosen at all. The pair below is the reported case, key for key.
+   */
+  await page.locator('.editor .reachrung[data-reach="talk"]').click();
+  await openSwitches();
+  await page.locator('.editor .toggle-row[data-ability="webSearch"] input').check();
+  await page.locator('.editor .toggle-row[data-ability="background"] input').check();
+  const mixState = await page.evaluate(() => ({
+    ladder: document.querySelector(".editor .reachladder").dataset.reach,
+    pressed: [...document.querySelectorAll('.editor .reachrung[aria-pressed="true"]')]
+      .map(b => b.dataset.reach),
+    inked: [...document.querySelectorAll('.editor .reachrung[data-within="yes"]')]
+      .map(b => b.dataset.reach),
+    banner: (document.querySelector(".editor .reachmixed")?.innerText ?? "").replace(/\s+/g, " "),
+    on: [...document.querySelectorAll(".editor .abilitypick input")].filter(i => i.checked).length,
+  }));
+  ok("TWO ABILITIES ON: no rung claims to be his choice — the dot is off “Just talk” entirely",
+    mixState.on === 2 && mixState.ladder === "mixture" &&
+    mixState.pressed.length === 0 && mixState.inked.length === 0,
+    JSON.stringify(mixState));
+  ok("and the screen says his own mixture, names what is really on, and names NO rung",
+    /Your own mixture/.test(mixState.banner) &&
+    /2 abilities of 8 switched on/.test(mixState.banner) &&
+    /Look things up on the web/.test(mixState.banner) &&
+    /Work on jobs in the background/.test(mixState.banner) &&
+    !REACH_LEVELS.some(r => mixState.banner.includes(r.label)),
+    mixState.banner.slice(0, 170));
+  await page.locator(".editor .reachsec").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/reach-mixture-light.png` });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: `${SHOTS}/reach-mixture-dark.png` });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+
+  /* ONE FACT, TWO VIEWS. Every rung, picked, must read back as exactly itself —
+     the other half of "no combination can produce a rung that contradicts the
+     switches", checked in the direction a person actually uses. */
+  const rungRoundTrip = [];
+  for (const level of REACH_LEVELS.map(r => r.level)) {
+    await page.locator(`.editor .reachrung[data-reach="${level}"]`).click();
+    rungRoundTrip.push(await page.evaluate(() => ({
+      ladder: document.querySelector(".editor .reachladder").dataset.reach,
+      pressed: [...document.querySelectorAll('.editor .reachrung[aria-pressed="true"]')]
+        .map(b => b.dataset.reach),
+      mixture: document.querySelectorAll(".editor .reachmixed").length,
+      on: [...document.querySelectorAll(".editor .abilitypick input")].filter(i => i.checked).length,
+    })));
+  }
+  ok("every rung, picked, reads back as exactly itself — and nothing then calls it a mixture",
+    rungRoundTrip.every((s, i) => s.ladder === REACH_LEVELS[i].level &&
+      s.pressed.length === 1 && s.pressed[0] === REACH_LEVELS[i].level &&
+      s.mixture === 0 && s.on === REACH_LEVELS[i].rows),
+    JSON.stringify(rungRoundTrip));
+
+  // ---- a hand-picked mix is never rounded, in either direction ----
   await page.locator('.editor .reachrung[data-reach="look"]').click();
   await openSwitches();
   await page.locator('.editor .toggle-row[data-ability="commands"] input').check();
-  ok("a mix that adds a power without the rungs beneath it is NOT rounded up to that rung",
-    (await page.getAttribute(".editor .reachladder", "data-reach")) === "look",
+  ok("a mix that adds a power without the rungs beneath it is not reported as a rung at all",
+    (await page.getAttribute(".editor .reachladder", "data-reach")) === "mixture" &&
+    (await page.locator('.editor .reachrung[aria-pressed="true"]').count()) === 0,
     `reads as ${await page.getAttribute(".editor .reachladder", "data-reach")}`);
-  ok("and the screen says out loud that this is his own mix, and which rung it covers",
+  ok("and it is described by what is switched on, never by the rung it merely covers",
     (await page.locator(".editor .reachmixed").count()) === 1 &&
-    /Look things up and keep notes/.test(await page.locator(".editor .reachmixed").innerText()),
+    !/Look things up and keep notes/.test(await page.locator(".editor .reachmixed").innerText()) &&
+    /Run programs on this computer/.test(await page.locator(".editor .reachmixed").innerText()),
     (await page.locator(".editor .reachmixed").innerText()).replace(/\s+/g, " "));
   ok("switching one power on is enough to make the screen promise he will be asked",
     (await asksList()).includes("Run programs on this computer"),
@@ -1382,6 +1462,63 @@ try {
     (await page.locator(".hirepanel .hireface .portrait svg").count()) === 1);
   await page.screenshot({ path: `${SHOTS}/market-brief.png` });
   await page.screenshot({ path: `${SHOTS}/hall-brief.png` });
+
+  /* ---- ESCAPE CLOSES WHAT IT OPENED (Phase 6, UI-2) ----
+     This brief ignored Escape while the Ctrl-K palette obeyed it, because every
+     overlay answered the key its own way — six overlays, five answers. There is
+     one owner now: an overlay registers its close on a stack and one listener
+     calls the top of it, so this is checked as behaviour AND as mechanism. The
+     click first is deliberate: the old handler depended on where the focus was,
+     and this one must not. */
+  await page.click(".hirepanel .briefbox");
+  ok("an overlay on screen has put its close on the one Escape owner's stack",
+    (await page.evaluate(() => window.cloud9Escape.stacked())) === 1,
+    `${await page.evaluate(() => window.cloud9Escape.stacked())} on the stack`);
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".hirepanel", { state: "detached", timeout: 10000 });
+  ok("ESCAPE CLOSES THE CASTING-ROOM BRIEF, the same as it closes the quick-chat palette",
+    (await page.locator(".hirepanel").count()) === 0 &&
+    (await page.evaluate(() => window.cloud9Escape.stacked())) === 0 &&
+    (await page.locator(".market .cast.role").count()) >= 8,
+    "brief closed, stack empty, the casting room still behind it");
+  /* And the palette itself, in the same run and through the same owner — the
+     control case that made UI-2 a consistency bug rather than a one-off. */
+  await page.keyboard.press("Control+k");
+  await page.waitForSelector(".qc-input", { timeout: 10000 });
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".qc-input", { state: "detached", timeout: 10000 });
+  ok("and the quick-chat palette still closes on Escape now that it goes through that owner too",
+    (await page.locator(".qc-input").count()) === 0 &&
+    (await page.evaluate(() => window.cloud9Escape.stacked())) === 0);
+
+  /* ---- WHERE A COUNT MEETS A WORD (Phase 6, minor) ----
+     "1 CATEGORIES" was a plural label typed by hand beside a number that came
+     from a list. One owner pluralises now, and a stat tile has to be given both
+     forms of its word — so the singular case and the plural case are read off
+     the SAME header here, and a sweep says no visible line prints "1 <word>s". */
+  const tiles = await page.$$eval(".market .crew-stats .stat", ts => ts.map(t => ({
+    n: Number(t.querySelector(".n").innerText.trim()),
+    label: t.querySelector(".l").innerText.trim(),
+  })));
+  ok("a count of one takes the singular word — “1 Category”, never “1 CATEGORIES”",
+    tiles.some(t => t.n === 1 && /^Category$/i.test(t.label)) &&
+    !tiles.some(t => t.n === 1 && /ies$|s$/i.test(t.label)),
+    JSON.stringify(tiles));
+  ok("and a count of many still takes the plural, from that same one owner",
+    tiles.some(t => t.n > 1 && /^Roles ready$/i.test(t.label)),
+    JSON.stringify(tiles));
+  const singularSlips = await page.evaluate(() => {
+    const text = document.querySelector(".market").innerText.replace(/\s+/g, " ");
+    // a "1" followed by a word ending in s — the shape of the bug, anywhere on screen
+    return [...text.matchAll(/\b1 ([a-z]+(?:ies|s))\b/gi)].map(m => m[0]);
+  });
+  ok("and no line anywhere on this screen prints a plural word on a count of one",
+    singularSlips.length === 0, singularSlips.join(" | ") || "none");
+  await page.screenshot({ path: `${SHOTS}/count-one-category.png` });
+
+  // back into the brief, and on with the hire
+  await page.click('.market .cast.role[data-role="sw-architect"] .rolesee');
+  await page.waitForSelector(".hirepanel", { timeout: 15000 });
 
   // hire it, for real, on Codex — and prove what landed
   await page.selectOption(".hirepanel .hireapp", "codex");
@@ -1569,8 +1706,17 @@ try {
   ok("and replacing leaves one, not two",
     (await page.locator(`.editor .skillrow[data-skill="${taken.name}"]`).count()) === 1);
 
-  await page.click(".librarypanel .librarydone");
+  /* The same one Escape owner, on the library — an overlay that never had an
+     Escape of its own at all. Closed with the key here rather than the button,
+     so the run proves the key and not only the button. */
+  ok("the skill library is on the one Escape owner's stack while it is open",
+    (await page.evaluate(() => window.cloud9Escape.stacked())) === 1);
+  await page.keyboard.press("Escape");
   await page.waitForSelector(".librarypanel", { state: "detached", timeout: 10000 });
+  ok("ESCAPE CLOSES THE SKILL LIBRARY, and leaves the agent's file open behind it",
+    (await page.locator(".librarypanel").count()) === 0 &&
+    (await page.locator(".editor .skills").count()) === 1 &&
+    (await page.evaluate(() => window.cloud9Escape.stacked())) === 0);
 
   /* THE PROMISE. Compare the row a library skill draws with the row a skill he
      typed out draws — they must be the same row. Anything that could only be
@@ -2774,7 +2920,44 @@ try {
   { timeout: 25000, what: "a result whose marks can be trusted" });
   ok("an ordinary result is still highlighted where the hub really found the word",
     (await page.locator('.searchhit .snippet[data-marked="marks"] mark').count()) >= 1);
+
+  /* ---- ESCAPE DOES NOT DEPEND ON WHERE THE FOCUS IS ----
+     Search's Escape used to live on an `onKeyDown` on the panel, so it worked
+     only while the cursor was still in the box — one of the five different
+     answers the app had to one question. The focus is taken away from the box on
+     purpose here before the key is pressed. */
+  await page.evaluate(() => document.activeElement?.blur());
+  ok("search is on the one Escape owner's stack, whatever holds the focus",
+    (await page.evaluate(() => window.cloud9Escape.stacked())) === 1 &&
+    (await page.evaluate(() => document.activeElement === document.body ||
+      !document.activeElement?.closest(".searchpanel"))));
   await page.keyboard.press("Escape");
+  await page.waitForSelector(".searchpanel", { state: "detached", timeout: 10000 });
+  ok("ESCAPE CLOSES SEARCH even with nothing in the app focused",
+    (await page.locator(".searchpanel").count()) === 0 &&
+    (await page.evaluate(() => window.cloud9Escape.stacked())) === 0);
+
+  /* ---- and the newest overlay closes FIRST, which is what a person means ----
+     Two overlays at once is the case a per-overlay handler cannot get right: the
+     palette used to be closed from under whatever was opened on top of it. */
+  await page.keyboard.press("Control+k");
+  await page.waitForSelector(".qc-input", { timeout: 10000 });
+  await page.evaluate(() => window.cloud9Menu.run("new-channel"));
+  await page.waitForSelector('.panel input[placeholder="trip-goa"]', { timeout: 10000 });
+  ok("with two overlays open, both are on the stack and neither is guessing",
+    (await page.evaluate(() => window.cloud9Escape.stacked())) === 2);
+  await page.keyboard.press("Escape");
+  await page.waitForSelector('.panel input[placeholder="trip-goa"]',
+    { state: "detached", timeout: 10000 });
+  ok("Escape closes the newest one and leaves the one underneath exactly where it was",
+    (await page.locator('.panel input[placeholder="trip-goa"]').count()) === 0 &&
+    (await page.locator(".qc-input").count()) === 1 &&
+    (await page.evaluate(() => window.cloud9Escape.stacked())) === 1);
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".qc-input", { state: "detached", timeout: 10000 });
+  ok("and the second press closes that one, leaving nothing on the stack",
+    (await page.locator(".qc-input").count()) === 0 &&
+    (await page.evaluate(() => window.cloud9Escape.stacked())) === 0);
 
   /* ================= THE VIEW HAS ONE OWNER (#19) ==========================
 

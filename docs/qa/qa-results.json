@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-30T12:27:16.945Z",
-  "expected": 381,
-  "executed": 381,
+  "ranAt": "2026-07-30T13:55:52.101Z",
+  "expected": 397,
+  "executed": 397,
   "results": [
     {
       "name": "join screen renders",
@@ -176,7 +176,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch hkk0f :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch kqtkg :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -191,7 +191,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_GoeDslsrEbpcpFWLVtmDgw"
+      "detail": "inv_rUe5iEqRWXET7AGJfTS6Lw"
     },
     {
       "name": "friend joins via invite",
@@ -321,7 +321,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 17:55"
+      "detail": "↳ 1 reply · last at 19:24"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -391,7 +391,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 17:55 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 19:24 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -509,14 +509,29 @@
       "detail": ""
     },
     {
-      "name": "a mix that adds a power without the rungs beneath it is NOT rounded up to that rung",
+      "name": "TWO ABILITIES ON: no rung claims to be his choice — the dot is off “Just talk” entirely",
       "pass": true,
-      "detail": "reads as look"
+      "detail": "{\"ladder\":\"mixture\",\"pressed\":[],\"inked\":[],\"banner\":\"Your own mixture — 2 abilities of 8 switched on. On right now: Look things up on the web, Work on jobs in the background. This is not one of the four rungs, so none of them is picked below. Pick a rung to replace your mixture, or leave it as it is — the switches are what the agent actually gets.\",\"on\":2}"
     },
     {
-      "name": "and the screen says out loud that this is his own mix, and which rung it covers",
+      "name": "and the screen says his own mixture, names what is really on, and names NO rung",
       "pass": true,
-      "detail": "You have picked your own mix below. It reads as “Look things up and keep notes”, because that is the highest rung it covers all of."
+      "detail": "Your own mixture — 2 abilities of 8 switched on. On right now: Look things up on the web, Work on jobs in the background. This is not one of the four rungs, so none of th"
+    },
+    {
+      "name": "every rung, picked, reads back as exactly itself — and nothing then calls it a mixture",
+      "pass": true,
+      "detail": "[{\"ladder\":\"talk\",\"pressed\":[\"talk\"],\"mixture\":0,\"on\":0},{\"ladder\":\"look\",\"pressed\":[\"look\"],\"mixture\":0,\"on\":2},{\"ladder\":\"work\",\"pressed\":[\"work\"],\"mixture\":0,\"on\":5},{\"ladder\":\"computer\",\"pressed\":[\"computer\"],\"mixture\":0,\"on\":8}]"
+    },
+    {
+      "name": "a mix that adds a power without the rungs beneath it is not reported as a rung at all",
+      "pass": true,
+      "detail": "reads as mixture"
+    },
+    {
+      "name": "and it is described by what is switched on, never by the rung it merely covers",
+      "pass": true,
+      "detail": "Your own mixture — 3 abilities of 8 switched on. On right now: Look things up on the web, Keep and change files in its own folder, Run programs on this computer. This is not one of the four rungs, so none of them is picked below. Pick a rung to replace your mixture, or leave it as it is — the switches are what the agent actually gets."
     },
     {
       "name": "switching one power on is enough to make the screen promise he will be asked",
@@ -629,6 +644,36 @@
       "detail": ""
     },
     {
+      "name": "an overlay on screen has put its close on the one Escape owner's stack",
+      "pass": true,
+      "detail": "1 on the stack"
+    },
+    {
+      "name": "ESCAPE CLOSES THE CASTING-ROOM BRIEF, the same as it closes the quick-chat palette",
+      "pass": true,
+      "detail": "brief closed, stack empty, the casting room still behind it"
+    },
+    {
+      "name": "and the quick-chat palette still closes on Escape now that it goes through that owner too",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a count of one takes the singular word — “1 Category”, never “1 CATEGORIES”",
+      "pass": true,
+      "detail": "[{\"n\":8,\"label\":\"ROLES READY\"},{\"n\":1,\"label\":\"CATEGORY\"}]"
+    },
+    {
+      "name": "and a count of many still takes the plural, from that same one owner",
+      "pass": true,
+      "detail": "[{\"n\":8,\"label\":\"ROLES READY\"},{\"n\":1,\"label\":\"CATEGORY\"}]"
+    },
+    {
+      "name": "and no line anywhere on this screen prints a plural word on a count of one",
+      "pass": true,
+      "detail": "none"
+    },
+    {
       "name": "hiring opens the new agent's own file, instead of telling him to go and press Edit",
       "pass": true,
       "detail": "✓ @Architect is on the floor, and this is their file. Everything below is yours "
@@ -646,7 +691,7 @@
     {
       "name": "a hired role starts no more powerful than a hand-written agent plus what its brief asked for",
       "pass": true,
-      "detail": "reads as look"
+      "detail": "reads as mixture"
     },
     {
       "name": "the brief really was copied onto the agent, word for word",
@@ -715,6 +760,16 @@
     },
     {
       "name": "and replacing leaves one, not two",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the skill library is on the one Escape owner's stack while it is open",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "ESCAPE CLOSES THE SKILL LIBRARY, and leaves the agent's file open behind it",
       "pass": true,
       "detail": ""
     },
@@ -936,7 +991,7 @@
     {
       "name": "the screen and the hub really are on different addresses, so the next check means something",
       "pass": true,
-      "detail": "http://127.0.0.1:4291 vs http://127.0.0.1:8861"
+      "detail": "http://127.0.0.1:4173 vs http://127.0.0.1:8799"
     },
     {
       "name": "a picture takes the one intended route — fetched, held as a blob, freed on close",
@@ -1056,7 +1111,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms7hluhmnszd9r\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms7krwagpga7kc\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -1096,12 +1151,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms7hka9kl4vvh7:1785414343274 a_ms7hkdhs8okmuc:1785414351729 u_ms7hkn10d6bqry:1785414352186 a_ms7hluhmnszd9r:1785414352320"
+      "detail": "u_ms7kqj95i8zg8o:1785419665979 a_ms7kqn49bk5e5l:1785419672938 u_ms7kqw6dl9b3fb:1785419673497 a_ms7krwagpga7kc:1785419673677"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785414349031 · now 1785414352186"
+      "detail": "first 1785419670099 · now 1785419673497"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -1299,6 +1354,31 @@
       "detail": ""
     },
     {
+      "name": "search is on the one Escape owner's stack, whatever holds the focus",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "ESCAPE CLOSES SEARCH even with nothing in the app focused",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "with two overlays open, both are on the stack and neither is guessing",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "Escape closes the newest one and leaves the one underneath exactly where it was",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and the second press closes that one, leaving nothing on the stack",
+      "pass": true,
+      "detail": ""
+    },
+    {
       "name": "REPRODUCED: the message asked for is several pages further back than what is on screen, so pages must really be walked",
       "pass": true,
       "detail": "50 of 161 messages on screen, target already loaded: false"
@@ -1381,7 +1461,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms7hkgik4wp8t0\",\"status\":\"completed\",\"runId\":\"r-0ms7hkgiu-s8qv\"}"
+      "detail": "{\"id\":\"t_ms7kqq5xxuj1wc\",\"status\":\"completed\",\"runId\":\"r-0ms7kqq67-vf4y\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1571,7 +1651,7 @@
     {
       "name": "pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
       "pass": true,
-      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms7hn4gkjp9211\",\"repo\":\"vikas53953/cloud9\"}"
+      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms7ksxugyjihms\",\"repo\":\"vikas53953/cloud9\"}"
     },
     {
       "name": "while it is looking the button says so and cannot be pressed again",
@@ -1726,7 +1806,7 @@
     {
       "name": "it says when it runs out — an agent is standing there waiting for the answer",
       "pass": true,
-      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 17:56 EXPIRES in 9 minutes"
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 19:25 EXPIRES in 9 minutes"
     },
     {
       "name": "a request with no job behind it offers no 'see the job' button to press",
