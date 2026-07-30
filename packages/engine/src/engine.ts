@@ -23,7 +23,8 @@ import {
 } from "./provider.js";
 import { PendingAsk, rememberAsk, takeAsk, workEmoji } from "./reactions.js";
 import { describeRepoTurn, repoTurn, RepoTurnResult } from "./repowork.js";
-import { GitWorkspace } from "./worktree.js";
+import { GitWorkspace, Worktree } from "./worktree.js";
+import { GitHubWriteRequest, GitHubWriteRequestWithoutRepo, runGitHubWrite } from "./githubwrite.js";
 import { buildRunRecord, ProviderTrace, RunFinish, RunKind, RunSeed } from "./runrecord.js";
 import { RunStore } from "./runstore.js";
 import { isScheduleWhen, Scheduler } from "./scheduler.js";
@@ -375,6 +376,18 @@ export class Engine {
           });
         });
         continue;
+      }
+      // A GITHUB WRITE, asked for in the room: "!issue <title>",
+      // "!comment <pr#> <text>", "!review <pr#> <user> [user…]". Everything up to
+      // the yes is local — deriving the repository is a read — and the only thing
+      // that leaves this computer is behind the SAME approval card the push uses.
+      // The title/text is prose and rides on stdin; it never touches the card.
+      if (message.authorKind === "human") {
+        const write = this.parseGitHubWriteCommand(bare);
+        if (write) {
+          this.enqueue(() => this.workGitHubWriteInRoom(agent, channel.id, write));
+          continue;
+        }
       }
       this.enqueue(() => this.takeTurn(agent, channel.id, message));
     }
@@ -1084,6 +1097,93 @@ export class Engine {
   /** A GitHub client that can only READ — no approver, so every gate refuses. */
   private readOnlyGitHub(): GitHubClient {
     return new GitHubClient(this.opts.github ?? {});
+  }
+
+  /**
+   * Read a room command into a structured GitHub write, or nothing.
+   *
+   * The `repo` is filled in later, by ASKING gh what this checkout is called —
+   * never from anything typed here. A number that is not a number, or a review
+   * with no reviewers, is simply not a command, so it falls through to an
+   * ordinary turn rather than becoming a card nobody can act on.
+   */
+  parseGitHubWriteCommand(text: string): GitHubWriteRequestWithoutRepo | undefined {
+    const t = text.trim();
+    const issue = /^!issue\s+(.+)$/is.exec(t);
+    if (issue) {
+      const title = issue[1].trim();
+      return title ? { kind: "openIssue", title } : undefined;
+    }
+    const comment = /^!comment\s+(\d+)\s+([\s\S]+)$/i.exec(t);
+    if (comment) {
+      const number = Number(comment[1]);
+      const body = comment[2].trim();
+      return Number.isSafeInteger(number) && number > 0 && body
+        ? { kind: "comment", target: "pullRequest", number, body } : undefined;
+    }
+    const review = /^!review\s+(\d+)\s+(.+)$/i.exec(t);
+    if (review) {
+      const pullRequest = Number(review[1]);
+      const reviewers = review[2].trim().split(/\s+/).map(s => s.replace(/^@/, "")).filter(Boolean);
+      return Number.isSafeInteger(pullRequest) && pullRequest > 0 && reviewers.length
+        ? { kind: "requestReview", pullRequest, reviewers } : undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * PERFORM A GITHUB WRITE ASKED FOR IN A ROOM — through the SAME approval desk
+   * the push uses. It reads the repository name first (a read, no approval),
+   * then hands the counted facts to the desk; only a yes builds and runs the
+   * `gh` command. A no, an expiry or a dropped hub runs nothing and says which.
+   */
+  async workGitHubWriteInRoom(
+    agent: AgentDef, channelId: ID, partial: GitHubWriteRequestWithoutRepo,
+  ): Promise<void> {
+    const repoDir = this.opts.repoDir;
+    if (!repoDir) {
+      this.agentSend(agent.id, channelId,
+        "Nobody has told Cloud9 where this project's code lives on this computer yet, " +
+        "so I have no repository to act on. Once it does, I can ask before anything goes to GitHub.");
+      return;
+    }
+    this.setStatus(agent.id, "working");
+    try {
+      // WHAT IS THIS REPOSITORY CALLED — a read, so no card. A repository gh
+      // cannot name is reported honestly rather than guessed at.
+      const repo = await this.readOnlyGitHub().repoName({ path: repoDir } as Worktree);
+      if (!repo) {
+        this.agentSend(agent.id, channelId,
+          "I could not work out which GitHub repository this folder belongs to, so I have " +
+          "not asked to do anything. Check that this project is a GitHub checkout signed in with gh.");
+        return;
+      }
+      const request = { ...partial, repo } as GitHubWriteRequest;
+      const outcome = await runGitHubWrite({
+        request,
+        ask: async facts => {
+          const o: ApprovalOutcome = await this.approvals.ask({ agent, channelId, facts });
+          return { approved: o.approved, reason: o.reason };
+        },
+        ...(this.opts.github?.runner ? { run: this.opts.github.runner } : {}),
+      });
+      if (!outcome.ran) {
+        this.agentSend(agent.id, channelId,
+          `I asked to ${outcome.description}, and ${outcome.reason}. Nothing left this computer.`);
+        return;
+      }
+      if (outcome.problem) {
+        this.agentSend(agent.id, channelId,
+          `You approved it, but GitHub would not take it: ${outcome.problem}`);
+        return;
+      }
+      this.agentSend(agent.id, channelId, `Approved — done. I went ahead to ${outcome.description}.`);
+    } catch (err) {
+      this.agentSend(agent.id, channelId,
+        sanitizeForChat(err, `${agent.name} could not do that on GitHub`));
+    } finally {
+      this.setStatus(agent.id, "idle");
+    }
   }
 
   agentSend(agentId: ID, channelId: ID, text: string, proactive = false): void {

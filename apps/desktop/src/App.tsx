@@ -9,7 +9,7 @@ import {
   Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
   HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectItemKind, ProjectItemState,
-  REMOTE_ACTIONS, RunListEntry, RunRecord, RunStep, RunStepKind,
+  REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
   SearchHit, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
   validateMessageText, validateName,
   /* THE SKILL LIBRARY — the same two lists the relay and the engine can read.
@@ -3257,6 +3257,22 @@ function approvalIsDead(approval: Approval, now: number): boolean {
 }
 
 /**
+ * The sentence on an action card, in OWNER WORDS. The nouns still come only from
+ * the hub's `approval.action` (counted facts, never the agent). The screen adds
+ * nothing but the pending framing: a GitHub write is a request, so it reads
+ * "wants to open an issue in …". The git push keeps its established wording.
+ *
+ * ONE OWNER for that framing, so the conversation card and the tray card cannot
+ * drift apart.
+ */
+function actionHeadline(approval: Approval): string {
+  if (approval.kind === "action" && isGitHubWriteKind(approval.remoteAction)) {
+    return `wants to ${approval.action}`;
+  }
+  return approval.action;
+}
+
+/**
  * WHAT IS GENUINELY STILL WAITING ON THIS PERSON — one owner for the count.
  *
  * Three places count approvals: the badge on the rail, the gold pill above a
@@ -3305,7 +3321,7 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
      reason it can be trusted. It is not reworded, not shortened, and never
      swapped for a job title the agent chose. A job-shaped approval keeps the
      old behaviour: its title if it has one, its sentence if it does not. */
-  const headline = action ? approval.action : (task?.title ?? approval.action);
+  const headline = action ? actionHeadline(approval) : (task?.title ?? approval.action);
 
   return (
     <div className="msg from-agent" data-approval={approval.id}
@@ -3389,7 +3405,7 @@ function ApprovalTray({ approval, agent, task }: {
   const now = useCountdown(action && approval.status === "pending" && !!approval.expiresAt);
   const dead = approvalIsDead(approval, now);
   const rule = action ? null : ruleWords(agent);
-  const headline = action ? approval.action : (task?.title ?? approval.action);
+  const headline = action ? actionHeadline(approval) : (task?.title ?? approval.action);
 
   return (
     <div className="approval" key={approval.id} data-appr={approval.id}

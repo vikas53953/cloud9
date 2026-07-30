@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-30T18:41:05.931Z",
-  "expected": 440,
-  "executed": 440,
+  "ranAt": "2026-07-30T21:26:20.336Z",
+  "expected": 448,
+  "executed": 448,
   "results": [
     {
       "name": "join screen renders",
@@ -176,7 +176,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch uwl67 :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch 0txml :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -191,7 +191,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_50LCjoNzxasq-IDoXLMgqQ"
+      "detail": "inv_z7Tiz0ys1YEzxoDNj9A_Ow"
     },
     {
       "name": "friend joins via invite",
@@ -321,7 +321,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 00:08"
+      "detail": "↳ 1 reply · last at 02:54"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -391,7 +391,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 00:08 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 02:54 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -801,7 +801,7 @@
     {
       "name": "and it runs on the app he chose, not the one the catalogue suggested",
       "pass": true,
-      "detail": "Codex gpt-5.6-sol 1 skill"
+      "detail": "Codex gpt-5.6-sol"
     },
     {
       "name": "the crew screen says the hire is his to change",
@@ -1111,7 +1111,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms7uxzslcpr3m9\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms80uy10bjgwuc\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -1151,12 +1151,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms7uwbucz1l7p2:1785436747209 a_ms7uweupyt7dya:1785436753483 u_ms7uwqbidqwo42:1785436754098 a_ms7uxzslcpr3m9:1785436754198"
+      "detail": "u_ms80tpqbl0kowk:1785446683269 a_ms80ts3jz53f4y:1785446688798 u_ms80u0c90a6m6x:1785446689227 a_ms80uy10bjgwuc:1785446689290"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785436751097 · now 1785436754098"
+      "detail": "first 1785446687038 · now 1785446689227"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -1386,7 +1386,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":26,\"pinned\":0,\"min\":40,\"max\":4087,\"endedAt\":4087}"
+      "detail": "{\"followedToBottom\":0,\"samples\":24,\"pinned\":0,\"min\":40,\"max\":4087,\"endedAt\":4087}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1406,7 +1406,7 @@
     {
       "name": "SENDING takes the view to what he just said, wherever he had read back to",
       "pass": true,
-      "detail": "{\"fromBottom\":0,\"mineInSight\":true}"
+      "detail": "{\"fromBottom\":1,\"mineInSight\":true}"
     },
     {
       "name": "and the rule says so in its own words — a send, not just an arrival",
@@ -1526,7 +1526,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms7uwho4i3asfs\",\"status\":\"completed\",\"runId\":\"r-0ms7uwhob-0xqk\"}"
+      "detail": "{\"id\":\"t_ms80tufika6823\",\"status\":\"completed\",\"runId\":\"r-0ms80tufy-m3bd\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1716,7 +1716,7 @@
     {
       "name": "pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
       "pass": true,
-      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms7uz93sb7qugy\",\"repo\":\"vikas53953/cloud9\"}"
+      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms80vzavk8rdt9\",\"repo\":\"vikas53953/cloud9\"}"
     },
     {
       "name": "while it is looking the button says so and cannot be pressed again",
@@ -1871,7 +1871,7 @@
     {
       "name": "it says when it runs out — an agent is standing there waiting for the answer",
       "pass": true,
-      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 00:10 EXPIRES in 9 minutes"
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 02:55 EXPIRES in 9 minutes"
     },
     {
       "name": "a request with no job behind it offers no 'see the job' button to press",
@@ -1920,6 +1920,46 @@
     },
     {
       "name": "the card stays where it was, so a request that ran out while he was away is FOUND, not vanished",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a GitHub write asks on the same card, in owner words that say 'wants to'",
+      "pass": true,
+      "detail": "wants to open an issue in vikas53953/cloud9"
+    },
+    {
+      "name": "the write card names which repository it acts in, in the sentence he judges",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the write card carries the counted fact underneath — one issue, not a zero",
+      "pass": true,
+      "detail": "1 issue"
+    },
+    {
+      "name": "the write card names which shared kind it is (open an issue on GitHub)",
+      "pass": true,
+      "detail": "OPEN AN ISSUE ON GITHUB"
+    },
+    {
+      "name": "the write card is drawn as a pending request, nothing changed yet",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "open-issue is one of the shared GitHub write kinds, and push is not",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a request-review write reads with the reviewer count and PR number the machine set",
+      "pass": true,
+      "detail": "wants to request 3 reviewers for pull request #31 in vikas53953/cloud9"
+    },
+    {
+      "name": "no issue title or comment body from the agent appears anywhere on a write card",
       "pass": true,
       "detail": ""
     },
@@ -2056,7 +2096,7 @@
     {
       "name": "the card says which agent made it, and how big it is",
       "pass": true,
-      "detail": "made by Scout :: 45 bytes · text · 31 Jul 00:10"
+      "detail": "made by Scout :: 45 bytes · text · 31 Jul 02:55"
     },
     {
       "name": "version 1 is not labelled with a version number nobody needs",
@@ -2066,7 +2106,7 @@
     {
       "name": "the reference itself is not printed beside the card it draws",
       "pass": true,
-      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 31 Jul 00:10 Show it"
+      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 31 Jul 02:55 Show it"
     },
     {
       "name": "the file really comes back, byte for byte, through the attachment ticket path",
@@ -2086,7 +2126,7 @@
     {
       "name": "the history shows the earlier version, who made it and when",
       "pass": true,
-      "detail": "v1 Scout 31 Jul 00:10 45 bytes Show it"
+      "detail": "v1 Scout 31 Jul 02:55 45 bytes Show it"
     },
     {
       "name": "an older version can still be downloaded, and it is the OLD bytes",
@@ -2101,7 +2141,7 @@
     {
       "name": "a file that is not text is a download and is never drawn into the room",
       "pass": true,
-      "detail": "74 bytes · a file to save · 31 Jul 00:10"
+      "detail": "74 bytes · a file to save · 31 Jul 02:55"
     },
     {
       "name": "a reference to a file that is not there says so in plain words, with no jargon",

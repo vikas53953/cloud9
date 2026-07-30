@@ -22,6 +22,7 @@ import {
 // made up.
 import {
   ATTACHMENT_LIMITS, describeRemoteAction, detailRemoteAction, FILE_NAME_SENTENCE, humanMoney,
+  isGitHubWriteKind,
   MESSAGE_LIMITS, NAME_LIMITS, REMOTE_ACTIONS, summarizeRun, validateName, validateRepo,
   // THE SKILL LIBRARY, from the package the screen reads. Every count and every
   // sentence below is DERIVED from these two lists, never typed here — so a
@@ -217,7 +218,7 @@ function publishAsEngine({ channelId, agentId, name, data, note, runId }) {
 // catch-all reaches him with no "Error:" anywhere on the page, and the audit's
 // own photograph (one refusal, said twice, once politely and once not) is
 // reproduced and comes back said exactly ONCE.
-const EXPECTED_CHECKS = 440;
+const EXPECTED_CHECKS = 448;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -4395,6 +4396,76 @@ try {
   await deadCard.scrollIntoViewIfNeeded();
   await clockPage.screenshot({ path: `${SHOTS}/projects-approval-expired.png` });
   await clockCtx.close();
+
+  /* ==========================================================================
+     THE GITHUB WRITES — the SAME card, not a second one.
+
+     An agent that reaches "open an issue" or "request a review" asks on the
+     exact `askApproval` frame the push uses, and it lands on the exact same
+     action card. Every noun the owner reads is a COUNTED fact the hub turned
+     into words — never the issue title or the comment body, which rode in on
+     stdin and appear NOWHERE on the card. A write is a request, so it reads
+     "wants to …". Proved on screen here, in his own words.
+
+     Cards are found by their content, not by position — the push section above
+     leaves its own action cards on this page, and an index would drift.
+     ====================================================================== */
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# general");
+  await page.waitForSelector(".composer textarea", { timeout: 20000 });
+
+  const ISSUE_FACTS = { action: "openIssue", repo: REPO, issues: 1 };
+  engineWs.send(JSON.stringify({
+    type: "askApproval", askId: "qa-issue-1", agentId: scout.id, channelId: general.id,
+    facts: ISSUE_FACTS,
+  }));
+  const issueCard = page.locator('.msg[data-kind="action"]', { hasText: "wants to open an issue" }).first();
+  await issueCard.waitFor({ timeout: 20000 });
+  /* THE SENTENCE, IN OWNER WORDS. The "wants to" framing is the screen's, but
+     every noun is the hub's `describeRemoteAction`, so it is held to the
+     contract's own words rather than to something like them. */
+  ok("a GitHub write asks on the same card, in owner words that say 'wants to'",
+    (await issueCard.locator(".spend .amt").innerText()).trim()
+      === `wants to ${describeRemoteAction(ISSUE_FACTS)}`,
+    (await issueCard.locator(".spend .amt").innerText()).trim());
+  ok("the write card names which repository it acts in, in the sentence he judges",
+    /wants to open an issue in vikas53953\/cloud9/.test(await issueCard.innerText()));
+  ok("the write card carries the counted fact underneath — one issue, not a zero",
+    (await issueCard.locator(".spend .apdetail").innerText()).trim()
+      === detailRemoteAction(ISSUE_FACTS),
+    (await issueCard.locator(".spend .apdetail").innerText()).trim());
+  ok("the write card names which shared kind it is (open an issue on GitHub)",
+    (await issueCard.locator(".remoteact").innerText()).trim().toLowerCase()
+      === REMOTE_ACTIONS.openIssue.toLowerCase(),
+    (await issueCard.locator(".remoteact").innerText()).trim());
+  ok("the write card is drawn as a pending request, nothing changed yet",
+    (await issueCard.getAttribute("data-state")) === "pending" &&
+    /Nothing has been changed yet/i.test(await issueCard.innerText()));
+  ok("open-issue is one of the shared GitHub write kinds, and push is not",
+    isGitHubWriteKind("openIssue") && !isGitHubWriteKind("push"));
+  await issueCard.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/projects-approval-issue.png` });
+
+  /* A REQUEST-REVIEW WRITE — the reviewer count is the machine's, read with a
+     public pull-request number, and no prose from the agent anywhere on it. */
+  const REVIEW_FACTS = {
+    action: "requestReview", repo: REPO, target: "pullRequest", number: 31,
+    pullRequests: 1, reviewers: 3,
+  };
+  engineWs.send(JSON.stringify({
+    type: "askApproval", askId: "qa-review-1", agentId: scout.id, channelId: general.id,
+    facts: REVIEW_FACTS,
+  }));
+  const reviewCard = page.locator('.msg[data-kind="action"]', { hasText: "wants to request 3 reviewers" }).first();
+  await reviewCard.waitFor({ timeout: 20000 });
+  ok("a request-review write reads with the reviewer count and PR number the machine set",
+    (await reviewCard.locator(".spend .amt").innerText()).trim()
+      === `wants to request 3 reviewers for pull request #31 in ${REPO}`,
+    (await reviewCard.locator(".spend .amt").innerText()).trim());
+  ok("no issue title or comment body from the agent appears anywhere on a write card",
+    !/A title|A body|Please fix|steps:/i.test(
+      (await issueCard.innerText()) + (await reviewCard.innerText())));
+  await page.screenshot({ path: `${SHOTS}/projects-approval-review.png` });
 
   engineWs.close();
 

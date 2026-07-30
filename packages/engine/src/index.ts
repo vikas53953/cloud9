@@ -108,6 +108,23 @@ export {
   type RemoteAction, type RemoteApprover, type GitHubOptions, type GitHubAccount,
   type PullRequest,
 } from "./github.js";
+// GitHub work as DATA, not side effects — the pure builders that make a guarded
+// `gh` argv, its stdin, the counted facts and one plain sentence, and execute
+// nothing. Their caller (githubwrite.ts) is the only thing that runs them.
+export {
+  buildOpenIssue, buildComment, buildRequestReview,
+  buildCheckoutOrUpdatePullRequestBranch, buildResolveReviewThread,
+  buildListReviewComments, buildReadReviewComment, buildReadCiStatus,
+  GitHubOperationApprovalError,
+  type GitHubOperation, type GitHubOperationTool, type GitHubOperationFacts,
+} from "./github-ops.js";
+// PERFORMING one of those operations — writes only after a yes, reads never
+// asking, and raw gh JSON parsed into the capped shared views before it leaves.
+export {
+  runGitHubWrite, runGitHubRead, writeFactsFor, buildGitHubWrite, parseRead,
+  type GitHubWriteRequest, type GitHubReadRequest, type GitHubWriteOutcome,
+  type AskForApproval,
+} from "./githubwrite.js";
 // Asking him MID-RUN, and waiting for the answer without stopping the engine.
 // This is what makes the gate in github.ts answerable rather than just closed.
 export {

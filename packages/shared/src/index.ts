@@ -88,9 +88,54 @@ export const REMOTE_ACTIONS = {
   push: "push a branch to GitHub",
   pullRequest: "open a pull request on GitHub",
   createRepo: "create a new repository on GitHub",
+  // The GitHub WRITES an agent can ask to make from inside a repository, added
+  // 2026-07-31. Each one changes GitHub or the local checkout, so each is on
+  // this ONE table for the same reason the first three are: the engine performs
+  // it, the hub writes the sentence the owner reads, the screen draws the card.
+  // The pure argv/stdin builders for these live in
+  // `packages/engine/src/github-ops.ts` and never execute.
+  openIssue: "open an issue on GitHub",
+  comment: "comment on GitHub",
+  requestReview: "request a review on GitHub",
+  checkoutPullRequest: "check out a pull request branch",
+  resolveReviewThread: "resolve a review thread on GitHub",
 } as const;
 
 export type RemoteAction = keyof typeof REMOTE_ACTIONS;
+
+/**
+ * The subset of `RemoteAction` that names a GitHub WRITE built by
+ * `github-ops.ts`. It is spelled out (not derived) so the type system proves,
+ * at compile time, that every kind the builders speak is a real row on the ONE
+ * `REMOTE_ACTIONS` table — a sixth write kind added to `github-ops.ts` without a
+ * label here is a type error, not a silent card that says nothing.
+ */
+export type GitHubWriteKind =
+  | "openIssue"
+  | "comment"
+  | "requestReview"
+  | "checkoutPullRequest"
+  | "resolveReviewThread";
+
+// Compile-time proof that every GitHubWriteKind is on the shared table.
+const _githubWriteKindsAreRemoteActions: Record<GitHubWriteKind, string> = {
+  openIssue: REMOTE_ACTIONS.openIssue,
+  comment: REMOTE_ACTIONS.comment,
+  requestReview: REMOTE_ACTIONS.requestReview,
+  checkoutPullRequest: REMOTE_ACTIONS.checkoutPullRequest,
+  resolveReviewThread: REMOTE_ACTIONS.resolveReviewThread,
+};
+void _githubWriteKindsAreRemoteActions;
+
+/** The five GitHub write rows, as a set the screen can test membership against. */
+export const GITHUB_WRITE_KINDS: ReadonlySet<string> = new Set<GitHubWriteKind>([
+  "openIssue", "comment", "requestReview", "checkoutPullRequest", "resolveReviewThread",
+]);
+
+/** Is this remote action one of the GitHub writes github-ops.ts builds? */
+export function isGitHubWriteKind(value: unknown): value is GitHubWriteKind {
+  return typeof value === "string" && GITHUB_WRITE_KINDS.has(value);
+}
 
 export function isRemoteAction(value: unknown): value is RemoteAction {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(REMOTE_ACTIONS, value);
@@ -119,6 +164,24 @@ export interface RemoteActionFacts {
   files?: number;
   /** the name of a repository about to be created */
   name?: string;
+  // ---- the GitHub writes (github-ops.ts). Every number here is COUNTED by the
+  // engine from what it is about to do, never quoted from an agent. ----
+  /** which kind of thing a comment or checkout is aimed at */
+  target?: "issue" | "pullRequest";
+  /** the public issue or pull-request number the write is aimed at */
+  number?: number;
+  /** how many issues this touches (open one issue → 1) */
+  issues?: number;
+  /** how many pull requests this touches */
+  pullRequests?: number;
+  /** how many comments this writes */
+  comments?: number;
+  /** how many reviewers are being requested */
+  reviewers?: number;
+  /** how many local branches this checks out or updates */
+  branches?: number;
+  /** how many review threads this resolves */
+  reviewThreads?: number;
 }
 
 /**
@@ -127,6 +190,7 @@ export interface RemoteActionFacts {
  */
 export function describeRemoteAction(f: RemoteActionFacts): string {
   const on = f.repo ? ` on ${f.repo}` : "";
+  const inRepo = f.repo ? ` in ${f.repo}` : "";
   switch (f.action) {
     case "push": {
       if (typeof f.commits === "number" && f.commits > 0 && f.branch) {
@@ -142,6 +206,29 @@ export function describeRemoteAction(f: RemoteActionFacts): string {
     }
     case "createRepo":
       return `create a new repository${f.name ? ` called ${f.name}` : ""} on GitHub`;
+    // ---- the GitHub writes. Every noun below is a COUNTED fact or the public
+    // number the write is aimed at; no title, body or thread id is ever named.
+    // These read " in owner/name" (the thing lives IN the repository), where a
+    // push reads " on owner/name" (it goes ON to GitHub). ----
+    case "openIssue":
+      return `open an issue${inRepo}`;
+    case "comment": {
+      const target = f.target === "issue" ? "issue" : "pull request";
+      const at = typeof f.number === "number" && f.number > 0 ? ` #${f.number}` : "";
+      return `comment on ${target}${at}${inRepo}`;
+    }
+    case "requestReview": {
+      const n = typeof f.reviewers === "number" && f.reviewers > 0 ? f.reviewers : 0;
+      const who = n > 0 ? `${n} ${n === 1 ? "reviewer" : "reviewers"}` : "a review";
+      const at = typeof f.number === "number" && f.number > 0 ? ` #${f.number}` : "";
+      return `request ${who} for pull request${at}${inRepo}`;
+    }
+    case "checkoutPullRequest": {
+      const at = typeof f.number === "number" && f.number > 0 ? ` #${f.number}` : "";
+      return `check out or update the branch for pull request${at}${inRepo}`;
+    }
+    case "resolveReviewThread":
+      return `resolve a review thread${inRepo}`;
   }
 }
 
@@ -153,6 +240,18 @@ export function detailRemoteAction(f: RemoteActionFacts): string | undefined {
   }
   if (f.action === "pullRequest" && typeof f.commits === "number" && f.commits > 0) {
     bits.push(`${f.commits} commit${f.commits === 1 ? "" : "s"}`);
+  }
+  // Each non-zero GitHub-write count, in plain words, so the card carries the
+  // proof underneath the sentence — "1 pull request · 1 comment".
+  for (const [n, one, many] of [
+    [f.issues, "issue", "issues"],
+    [f.pullRequests, "pull request", "pull requests"],
+    [f.comments, "comment", "comments"],
+    [f.reviewers, "reviewer", "reviewers"],
+    [f.branches, "branch", "branches"],
+    [f.reviewThreads, "review thread", "review threads"],
+  ] as const) {
+    if (typeof n === "number" && n > 0) bits.push(`${n} ${n === 1 ? one : many}`);
   }
   return bits.length ? bits.join(", ") : undefined;
 }
@@ -193,6 +292,22 @@ export function validateRemoteActionFacts(f: unknown): string | null {
     if (value === undefined) continue;
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 1_000_000) {
       return `that ${what} isn't a number`;
+    }
+  }
+  // The GitHub-write facts. `target` is one of two words; every COUNT is a
+  // POSITIVE integer (a write always touches at least one thing, so 0 is a bug,
+  // not a card); the public number is a positive integer.
+  if (r.target !== undefined && r.target !== "issue" && r.target !== "pullRequest") {
+    return "that isn't a thing Cloud9 knows how to comment on";
+  }
+  for (const [what, value] of [
+    ["number", r.number], ["issue count", r.issues], ["pull request count", r.pullRequests],
+    ["comment count", r.comments], ["reviewer count", r.reviewers],
+    ["branch count", r.branches], ["review thread count", r.reviewThreads],
+  ] as const) {
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > 1_000_000) {
+      return `that ${what} isn't a positive number`;
     }
   }
   return null;
@@ -765,6 +880,116 @@ export function validateProjectItem(item: unknown): string | null {
   }
   for (const [what, value] of [["created", i.createdAt], ["updated", i.updatedAt]] as const) {
     if (typeof value !== "number" || !Number.isFinite(value)) return `that ${what} time isn't a number`;
+  }
+  return null;
+}
+
+// ---------- what a GitHub READ hands back (github-ops.ts read builders) ----------
+//
+// A read never changes anything and never asks for approval — but its ANSWER is
+// still `gh`'s raw JSON, which came through somebody else's network. So the same
+// law the project items obey applies here: the engine turns raw `gh` output into
+// THESE capped, validated shapes before anything leaves it, and RAW `gh` JSON is
+// NEVER forwarded to a screen. One place decides how big an answer may be.
+
+export const GITHUB_READ_LIMITS = {
+  /** most review comments one list returns; the rest are counted and dropped */
+  comments: 100,
+  /** most CI checks one status returns */
+  checks: 200,
+  /** longest a comment body may be once stored — the rest is trimmed with `…` */
+  body: 4000,
+  /** longest any short label (author, path, name, workflow) may be */
+  label: 300,
+  /** how many reply ancestors one comment detail carries */
+  replyAncestry: 50,
+} as const;
+
+/**
+ * One pull-request review comment, in the fields a screen can draw. Author,
+ * path and body are DISPLAY ONLY — never used to decide anything — and the URL
+ * must be GitHub's own, exactly like a project item's.
+ */
+export interface GitHubReviewCommentView {
+  /** GitHub's own comment id */
+  id: number;
+  /** the login that wrote it. Absent when GitHub did not say. */
+  author?: string;
+  /** the file it is against */
+  path?: string;
+  /** the line it is against */
+  line?: number;
+  /** "LEFT" or "RIGHT" — which side of the diff */
+  side?: "LEFT" | "RIGHT";
+  /** the comment text, trimmed to `GITHUB_READ_LIMITS.body` */
+  body: string;
+  /** the address a person clicks. GitHub's own. */
+  url: string;
+  /** GitHub only supplies this on some replies; absent means unknown, not false */
+  resolved?: boolean;
+  /** the comment this one replies to, when it is a reply */
+  inReplyToId?: number;
+}
+
+/** A CI check's state, kept as GitHub's own buckets so nothing is flattened. */
+export type GitHubCheckBucket = "pass" | "fail" | "pending" | "skipping" | "cancel";
+
+/** One CI check on a pull request. */
+export interface GitHubCiCheckView {
+  /** the check's name */
+  name: string;
+  /** the workflow it belongs to, when GitHub named one */
+  workflow?: string;
+  /** GitHub's own state string, e.g. "SUCCESS", "FAILURE", "IN_PROGRESS" */
+  state: string;
+  /** GitHub's own bucket — the honest pass/fail/pending grouping */
+  bucket: GitHubCheckBucket;
+}
+
+/**
+ * The answer to one read. A discriminated union so a screen knows which of the
+ * three views it is drawing, and an honest EMPTY is a real answer (an open pull
+ * request with no review comments is not an error).
+ */
+export type GitHubReadResult =
+  | { kind: "reviewComments"; comments: GitHubReviewCommentView[]; more: number }
+  | { kind: "reviewComment"; comment: GitHubReviewCommentView; ancestry: GitHubReviewCommentView[] }
+  | { kind: "ciStatus"; checks: GitHubCiCheckView[]; more: number };
+
+/** Is this a review-comment view we could hand to a screen? Untrusted input. */
+export function validateReviewCommentView(v: unknown): string | null {
+  if (!v || typeof v !== "object") return "that isn't a review comment";
+  const c = v as Partial<GitHubReviewCommentView>;
+  if (typeof c.id !== "number" || !Number.isSafeInteger(c.id) || c.id <= 0) return "that comment has no id";
+  if (typeof c.body !== "string") return "that comment has no body";
+  if (c.body.length > GITHUB_READ_LIMITS.body) return "that comment body is too long";
+  if (typeof c.url !== "string" || !/^https:\/\/github\.com\/[^\s"'<>]{1,300}$/.test(c.url)) {
+    return "that comment link isn't a GitHub address";
+  }
+  if (c.author !== undefined && (typeof c.author !== "string" || c.author.length > GITHUB_READ_LIMITS.label)) {
+    return "that comment author can't be shown";
+  }
+  if (c.path !== undefined && (typeof c.path !== "string" || c.path.length > GITHUB_READ_LIMITS.label)) {
+    return "that comment path can't be shown";
+  }
+  if (c.side !== undefined && c.side !== "LEFT" && c.side !== "RIGHT") return "that comment side isn't one we know";
+  return null;
+}
+
+/** Is this a CI-check view we could hand to a screen? Untrusted input. */
+export function validateCiCheckView(v: unknown): string | null {
+  if (!v || typeof v !== "object") return "that isn't a CI check";
+  const c = v as Partial<GitHubCiCheckView>;
+  if (typeof c.name !== "string" || c.name.length === 0 || c.name.length > GITHUB_READ_LIMITS.label) {
+    return "that check has no name";
+  }
+  if (typeof c.state !== "string" || c.state.length === 0 || c.state.length > GITHUB_READ_LIMITS.label) {
+    return "that check has no state";
+  }
+  const buckets: GitHubCheckBucket[] = ["pass", "fail", "pending", "skipping", "cancel"];
+  if (!buckets.includes(c.bucket as GitHubCheckBucket)) return "that check has no bucket we know";
+  if (c.workflow !== undefined && (typeof c.workflow !== "string" || c.workflow.length > GITHUB_READ_LIMITS.label)) {
+    return "that check workflow can't be shown";
   }
   return null;
 }
