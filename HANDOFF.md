@@ -11,10 +11,25 @@ Everything below is written so he could read it.
 
 ---
 
-## 0. FIRST THING TO DO — there is work in flight
+## 0. FIRST THING TO DO — there is UNVERIFIED work parked on a branch
 
-**One agent was still running when this was written.** It owns
-`apps/desktop/src/**` and `scripts/qa.mjs`, and its job is:
+That round was **stopped at Vikas's word, moments before its tests and QA suite
+ran**. Nothing in it is proven. Rather than leave it loose or throw it away, it
+is committed to the branch **`wip/ladder-round`** (`76416d3`), and `master` is
+clean.
+
+```
+git checkout wip/ladder-round     # to pick it up
+npm run build && npm test && npm run qa && npm run qa:app
+```
+
+Only merge it into `master` after all four of those pass with real counts. Two
+screenshots it left — `docs/qa/reach-mixture-{light,dark}.png` and
+`count-one-category.png` — suggest it reached the ladder and the plural label;
+the six older renderer findings were probably NOT reached. Verify, do not
+assume. It changed `apps/desktop/src/App.tsx`, `styles.css` and `scripts/qa.mjs`.
+
+Its job was:
 
 1. **The Major from the UI pass** — in the agent editor, switching on individual
    abilities leaves the ladder's dot on *"Just talk — No tools at all"*, which is
