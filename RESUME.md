@@ -150,15 +150,40 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
        instead. The feature was fine and the walk was stale — fixed, and that is
        why the count went to 14/14 rather than 13/14.
 
+- **2026-07-30 afternoon — CLOUD9 CAN ACTUALLY ASK GITHUB** (`abbf06a`, pushed).
+  The Projects hole is closed: `lookAtRepository` is the one owner of "how we
+  ask GitHub about a repository", `commandLine()` the one owner of "how a
+  command line is built", `isBranchName()` moved to shared as the one owner of
+  its question. On screen: "Look at GitHub now" with a busy state the HUB owns
+  (so it always ends), a three-state last-looked-at chip, and the refusal
+  printed beside the button.
+  - Read-only by construction: a four-command allowlist, and the client is built
+    with no approver so every writing method throws. Both asserted in tests, so
+    nothing here needs the approval path.
+  - Eight failure sentences a person can act on. None is a stack trace; none is
+    a silent empty list.
+  - The comma trap is pinned: every command line a look builds is run through
+    the REAL guard in a test. The guard was NOT widened — the need for the comma
+    was removed.
+  - **Verified by the conductor, not the worker:** build clean; **302 engine**
+    (was 279); **166 hub** (was 159 — the worker never ran its own 7, I did);
+    **350/350 + 8/8 + 4/4** browser, all executed; and a live read through the
+    real `gh` — `cli/cli` returned **161 open items** with its trunk read as
+    `trunk` (never guessed as `main`), `vikas53953/cloud9` returned 0 because it
+    truthfully has none, a non-existent repository returned the plain sentence,
+    and the writing path refused with `ApprovalRequiredError`.
+  - **NOT claimed:** the button has never been clicked in the INSTALLED app and
+    no browser check covers it. By the law above it is not DONE until it is.
+
 ## Still open, in priority order (nothing here needs Vikas)
 0. **IN FLIGHT 2026-07-30 afternoon, two agents:**
-   - **Make the Projects lists real** — `projectSynced` has a handler and no
-     sender, so a connected repository is permanently empty. Building the
-     `syncProject` frame plus a `gh`-driven path that answers it, and a
-     look-at-GitHub-now control on his screen. Owns `packages/**`,
-     `apps/relay/**`, `apps/desktop/src/**`.
+   - **Let an agent decide to push by itself** — no agent turn calls `githubFor`,
+     so the permission card only ever appears when the engine is driven
+     directly. Also owes the missing browser coverage of the Look button.
+     Owns `packages/engine/**`, `apps/relay/**`, `scripts/qa.mjs`.
    - **vibe-qa phase 5** (negative/edge testing, never run) — auditor only,
-     writes `docs/qa/phase5-negative.md`, changes no product code.
+     writes `docs/qa/phase5-negative.md`, changes no product code. 20 confirmed
+     findings and still going at 13:05.
 1. **Remaining review findings**, none yet fixed: an unrelated refusal kills an
    in-flight upload (#9); a blob URL revoked while the picture is still on
    screen (#16); Enter drops a file still uploading (#17); a late search result
