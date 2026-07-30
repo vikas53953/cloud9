@@ -1916,7 +1916,22 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .reachrung:hover .rr-tx b{color:var(--ink);}
 .reachrung:focus-visible{outline:2px solid var(--pine);outline-offset:2px;border-radius:var(--radius-s);}
 
-.reachmixed{margin-top:12px;color:var(--marigold);}
+/* HIS OWN MIXTURE — the honest answer when the switches are no named rung.
+   It sits ABOVE the rungs, because the reason a ladder exists is that one glance
+   answers "how far can this agent go", and the one case where the answer is not
+   a rung has to be inside that glance rather than in a footnote below it. Drawn
+   in marigold and boxed, the same way every other "read this before you believe
+   the thing next to it" line in the app is drawn. */
+.reachmixed{
+  display:block;margin-bottom:12px;
+  border-color:color-mix(in srgb,var(--marigold) 45%,transparent);
+  background:var(--marigold-soft);color:var(--ink);
+}
+.reachmixed b{display:block;margin-bottom:2px;}
+.reachmixed span{color:var(--ink-2);}
+/* No rung is his answer, so no node is filled and no spine is inked — the
+   drawing says "none of these" by showing none of these. */
+.reachladder[data-reach="mixture"] .rr-node{opacity:.75;}
 
 .abilitypick{margin-top:14px;}
 .abilityshow{
