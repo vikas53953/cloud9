@@ -105,6 +105,11 @@ const EXPECTED_CHECKS = [
      at GitHub" was a permanent condition; now it is something he can change, so
      the walk has to prove the control is really there and really presses. */
   "the project offers a way to look at GitHub, and pressing it does something",
+  /* The 15 researched skills sat in shared code for a day with nothing on screen
+     to reach them. This asks the INSTALLED app whether he can open the library
+     and whether what a skill came from is on the card — the provenance is the
+     part he specifically asked for when he asked for research. */
+  "the skill library opens from an agent, with its shelves and its sources",
 ];
 
 /* ---------------------------------------------------------------- results */
@@ -506,7 +511,9 @@ async function walk(page) {
 
   /* --- 4. the agent editor: ladder, models, skills ----------------------- */
 
-  const EDITOR_GROUP = [EXPECTED_CHECKS[4], EXPECTED_CHECKS[5], EXPECTED_CHECKS[6]];
+  const EDITOR_GROUP = [
+    EXPECTED_CHECKS[4], EXPECTED_CHECKS[5], EXPECTED_CHECKS[6], EXPECTED_CHECKS[15],
+  ];
 
   try {
     await page.click('.cast[data-crew] button:has-text("Edit")');
@@ -544,6 +551,41 @@ async function walk(page) {
       const skills = await page.locator(".editor .skills").count();
       if (skills === 0) throw new Error("NOT ON SCREEN — no skills section in the agent editor");
       return "skills section present";
+    });
+
+    /* Opening it is the point, and so is what the card says. A library he cannot
+       reach from an agent is a list nobody sees, and a skill whose source is
+       missing is the opposite of what he asked for when he asked for research
+       first. Both are asked of the app he double-clicks, not of the preview. */
+    await check(EXPECTED_CHECKS[15], async () => {
+      const way = page.locator('.editor .skills button:has-text("library")');
+      if (await way.count() === 0) {
+        const buttons = await page.$$eval(".editor .skills button", bs => bs.map(b => b.innerText.trim()));
+        throw new Error("NOT ON SCREEN — no way into the skill library from an agent. " +
+          `The skills section offers only: ${buttons.join(", ") || "nothing"}`);
+      }
+      await way.first().click();
+      await page.waitForSelector("[data-libskill]", { timeout: 30000 });
+      const cards = await page.locator("[data-libskill]").count();
+      const shelves = await page.locator("[data-libgroup]").count();
+      const sourced = await page.locator("[data-libskill] .ls-source").count();
+      await shot(page, "library-installed");
+      /* CLOSE IT AGAIN. A check that leaves a panel open over the app makes every
+         later step fail and reads as nine broken features — which is exactly what
+         happened the first time this check was written. */
+      const done = page.locator("button.librarydone");
+      if (await done.count()) await done.first().click();
+      else await page.keyboard.press("Escape");
+      await page.waitForSelector("[data-libskill]", { state: "detached", timeout: 15000 })
+        .catch(() => {});
+      if (cards === 0) {
+        throw new Error("the library opened but holds no skills — 15 exist in the code");
+      }
+      if (sourced < cards) {
+        throw new Error(`${cards} skills on screen and only ${sourced} say where they came from — ` +
+          "he asked for research, and the source is the research");
+      }
+      return `${cards} skills on ${shelves} shelves, every one saying where it came from`;
     });
   } catch (err) {
     failGroup(EDITOR_GROUP.filter(n => !results.some(r => r.name === n)),
