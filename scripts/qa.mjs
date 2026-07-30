@@ -138,6 +138,43 @@ function publishAsEngine({ channelId, agentId, name, data, note, runId }) {
 }
 
 /**
+ * A SECOND, real Cloud9 hub on another loopback port — a friend's, for the join
+ * proof. It is the very same `Relay` the app runs, on a brand-new database, so
+ * nothing here is stubbed: the browser dials it over a real socket, redeems a
+ * real join token, and becomes a real member of it.
+ */
+async function startSecondHub() {
+  const { Relay } = await import("@cloud9/relay");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-hubB-"));
+  const token = "hubB-owner-" + crypto.randomBytes(8).toString("hex");
+  const relay = new Relay({
+    dbPath: path.join(dir, "hubB.db"), ownerToken: token, ownerName: "Priya", devMode: false,
+  });
+  const port = await relay.listen(0);
+  return { relay, port, token, dir };
+}
+
+/** Mint a single-use join link ON a hub, as its owner — what the friend shares. */
+function mintJoinTokenOn(port, token) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch { /* already gone */ }
+      reject(new Error("the second hub never minted a join token"));
+    }, 15000);
+    ws.onopen = () => ws.send(JSON.stringify({ type: "hello", token, client: "desktop" }));
+    ws.onmessage = ev => {
+      let f;
+      try { f = JSON.parse(ev.data); } catch { return; }
+      if (f.type === "welcome") ws.send(JSON.stringify({ type: "createJoinToken" }));
+      else if (f.type === "joinToken") { clearTimeout(timer); try { ws.close(); } catch { /* gone */ } resolve(f.code); }
+      else if (f.type === "error") { clearTimeout(timer); reject(new Error(f.error)); }
+    };
+    ws.onerror = () => { clearTimeout(timer); reject(new Error("the second hub socket failed")); };
+  });
+}
+
+/**
  * How many checks a complete run of this file performs.
  *
  * This number is the difference between "12 of 13 passed" (which reads like a
@@ -218,7 +255,17 @@ function publishAsEngine({ channelId, agentId, name, data, note, runId }) {
 // catch-all reaches him with no "Error:" anywhere on the page, and the audit's
 // own photograph (one refusal, said twice, once politely and once not) is
 // reproduced and comes back said exactly ONCE.
-const EXPECTED_CHECKS = 448;
+// 448 → 456: eight checks for "join a friend's Cloud9" (docs/plans/join-hub-handoff.md).
+// A SECOND hub is stood up on another loopback port, a join link minted on it,
+// and the browser walked through the real feature: the address book lists this
+// computer's own Cloud9 as the live one; a public-internet address is refused
+// in the preview, in words; a valid loopback link previews with its honest reach
+// ("this PC") and names the host; adding it actually DIALS the second hub and the
+// connection sentence says so; a message sent there round-trips; KILLING the
+// second hub falls the client back to this computer's own; the owner can mint a
+// cloud9://…#join_ link; and the invite panel says plainly that reaching a friend
+// over the internet needs Tailscale and is not wired tonight.
+const EXPECTED_CHECKS = 456;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -353,7 +400,17 @@ try {
 
   const page = await owner.newPage();
   failShot = page;
-  page.on("console", m => { if (m.type() === "error") consoleErrors.push("owner: " + m.text()); });
+  /* A failed WebSocket connection is logged by the BROWSER itself (net::
+   * ERR_CONNECTION_REFUSED), not by the app — and the join proof below
+   * deliberately KILLS a hub to prove the client falls back to its own, which
+   * means the client retrying that downed hub necessarily produces exactly this
+   * message. It is the honest symptom of the feature working, not an app error,
+   * so this one network noise is not counted. Every other console error still is. */
+  const isExpectedDeadHubNoise = t =>
+    /WebSocket connection to/i.test(t) && /ERR_CONNECTION_REFUSED/i.test(t);
+  page.on("console", m => {
+    if (m.type() === "error" && !isExpectedDeadHubNoise(m.text())) consoleErrors.push("owner: " + m.text());
+  });
   page.on("pageerror", e => consoleErrors.push("owner pageerror: " + e.message));
 
   await page.goto(UI);
@@ -4976,6 +5033,103 @@ try {
     (await page.evaluate(t => window.cloud9Say.showing(t), inlineSays)) === 1,
     String(await page.evaluate(t => window.cloud9Say.showing(t), inlineSays)));
   await page.screenshot({ path: `${SHOTS}/error-said-once.png` });
+
+  /* ================= JOIN A FRIEND'S CLOUD9 (docs/plans/join-hub-handoff.md) =================
+   *
+   * The owner is on hub A (this QA run's own hub). We stand up a SECOND real hub
+   * on another loopback port, mint a join link on it, and walk the owner's own
+   * screen through joining it — then kill it and prove the fall-back to self.
+   * Loopback is honest here: the mechanism is proved end to end; reaching a
+   * friend over the internet needs Tailscale (his sign-in) and is deferred. */
+  const hubB = await startSecondHub();
+  const joinCodeB = await mintJoinTokenOn(hubB.port, hubB.token);
+
+  // clear whatever overlay the previous check left open, then open the address book
+  await page.keyboard.press("Escape");
+  await page.click(".rail-btn.hubswitch");
+  await page.waitForSelector(".friendspanel", { timeout: 10000 });
+  const selfActive = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll(".friendspanel .hubrow")];
+    const self = rows.find(r => r.dataset.self === "1");
+    return { count: rows.length, selfActive: !!self && self.classList.contains("is-active") };
+  });
+  ok("the address book lists this computer's own Cloud9, and it is the live one",
+    selfActive.count >= 1 && selfActive.selfActive, JSON.stringify(selfActive));
+
+  // a PUBLIC-INTERNET address is refused in the preview, in plain words
+  await page.fill(".friendspanel .joinlink", "cloud9://8.8.8.8:8787");
+  await page.waitForSelector(".friendspanel .joinpreview.bad", { timeout: 10000 });
+  const publicRefusal = (await page.locator(".friendspanel .joinpreview.bad").innerText()).trim();
+  ok("a public-internet address is refused before it can be added, in words",
+    /open internet|public internet/i.test(publicRefusal) && !/^Error:/i.test(publicRefusal),
+    publicRefusal.slice(0, 90));
+
+  // a valid LOOPBACK link previews honestly — "this computer" reach, host named
+  await page.fill(".friendspanel .joinlink", `cloud9://127.0.0.1:${hubB.port}#${process.env.CLOUD9_QA_BREAK_JOIN ? "join_BROKEN_code_xxxxxxxxxxxxxxxx" : joinCodeB}`);
+  await page.waitForSelector(".friendspanel .joinpreview.ok", { timeout: 10000 });
+  const goodPreview = (await page.locator(".friendspanel .joinpreview.ok").innerText()).trim();
+  ok("a valid link previews with its honest reach and names the hub, and sees the join link",
+    goodPreview.includes(`127.0.0.1:${hubB.port}`) && /this computer/i.test(goodPreview)
+      && /join link/i.test(goodPreview),
+    goodPreview.slice(0, 110));
+
+  /* Two break-proof switches (law: a check that cannot fail is not a check),
+   * inert unless the env var is set, so the conductor can reproduce the proof:
+   *   CLOUD9_QA_BREAK_JOIN=1     — corrupt the token: the "dials it" check fails.
+   *   CLOUD9_QA_BREAK_FALLBACK=1 — never kill hub B: the "falls back" check fails. */
+  // name it and connect — this really dials the second hub
+  await page.fill(".friendspanel .joinlabel", "Priya's Cloud9");
+  await page.click(".friendspanel .addhubbtn");
+  await waitFor(page, () => {
+    const line = document.querySelector(".friendspanel .hubconn")?.textContent ?? "";
+    return /Connected to Priya's Cloud9/i.test(line);
+  }, undefined, { timeout: 30000, what: "the client to report it is connected to the friend's hub" });
+  const nowActive = await page.evaluate(() => {
+    const active = document.querySelector(".friendspanel .hubrow.is-active .hubname");
+    return active ? active.textContent.replace(/On now/i, "").trim() : "";
+  });
+  ok("adding a friend's Cloud9 actually dials it — the connection says so, and it is the live hub",
+    /Priya's Cloud9/.test(nowActive), nowActive);
+
+  // messages flow on the friend's hub: send one and watch it land
+  await page.click(".friendspanel .foot button");            // Done — close the modal
+  await page.click('.rail-btn[data-go="chat"]');             // make sure we are on the chat screen
+  await page.click("text=# general");
+  const jbox = page.locator(".composer textarea");
+  await jbox.fill("hello from a joined Cloud9");
+  await jbox.press("Enter");
+  await page.waitForSelector(".msg p:has-text('hello from a joined Cloud9')", { timeout: 30000 });
+  ok("a message sent on the friend's hub round-trips — messages really flow over the join",
+    (await page.locator(".msg p:has-text('hello from a joined Cloud9')").count()) >= 1);
+
+  // KILL the friend's hub → the client must fall back to this computer's own
+  if (!process.env.CLOUD9_QA_BREAK_FALLBACK) hubB.relay.close();
+  await page.click(".rail-btn.hubswitch");
+  await page.waitForSelector(".friendspanel", { timeout: 10000 });
+  await waitFor(page, () => {
+    const rows = [...document.querySelectorAll(".friendspanel .hubrow")];
+    const self = rows.find(r => r.dataset.self === "1");
+    const line = document.querySelector(".friendspanel .hubconn")?.textContent ?? "";
+    return !!self && self.classList.contains("is-active") && /Connected to This computer/i.test(line);
+  }, undefined, { timeout: 45000, what: "the client to fall back to this computer's own hub" });
+  ok("killing the friend's hub falls the client back to this computer's own — it is never locked out",
+    true);
+
+  // the OWNER can mint a join link on this hub, and it is a real cloud9://…#join_
+  await page.click(".friendspanel .mintjoin");
+  await page.waitForSelector(".friendspanel .joincode", { timeout: 10000 });
+  const mintedLink = (await page.locator(".friendspanel .joincode").innerText()).trim();
+  ok("the owner can mint a join link, and it is a cloud9:// link carrying a join_ token",
+    /^cloud9:\/\/[^#\s]+#join_[A-Za-z0-9_-]+$/.test(mintedLink), mintedLink.slice(0, 80));
+
+  // and the panel is honest that a friend over the internet needs Tailscale (deferred)
+  const tailscaleNote = (await page.locator(".friendspanel .honesttailscale").innerText()).trim();
+  ok("the panel says plainly that reaching a friend over the internet needs Tailscale, not wired tonight",
+    /Tailscale/i.test(tailscaleNote) && /not wired/i.test(tailscaleNote), tailscaleNote.slice(0, 90));
+
+  await page.screenshot({ path: `${SHOTS}/join-a-friend.png` });
+  try { hubB.relay.close(); } catch { /* already closed */ }
+  try { fs.rmSync(hubB.dir, { recursive: true, force: true }); } catch { /* best effort */ }
 
   await owner.close();
   await friendCtx.close();

@@ -2388,3 +2388,27 @@ button.chip{cursor:pointer;}
 
 /* the unsaved-work question — the app's own modal, nothing new invented */
 .overlay.leaveask .panel{max-width:440px;}
+
+/* ---- joining a friend's Cloud9 (docs/plans/join-hub-handoff.md) ---- */
+.rail-btn.hubswitch b, .rail-btn.hubswitch{max-width:56px;}
+.rail-btn.hubswitch{overflow:hidden;text-overflow:ellipsis;}
+.friendspanel{max-width:560px;}
+.friendspanel .hubconn{font-family:var(--mono);font-size:12px;}
+.friendspanel .hubconn.phase-connected{color:var(--pine);}
+.friendspanel .hubconn.phase-waiting,.friendspanel .hubconn.phase-fellBack{color:var(--marigold);}
+.hublist{display:grid;gap:8px;margin:10px 0;}
+.hubrow{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);
+  border-radius:12px;background:var(--surface);}
+.hubrow.is-active{border-color:color-mix(in srgb,var(--pine) 45%,transparent);background:var(--pine-soft);}
+.hubrow-main{display:grid;gap:2px;flex:1;min-width:0;}
+.hubrow-main .hubname{display:flex;align-items:center;gap:8px;color:var(--ink);}
+.hubrow-main .hubreach{color:var(--ink-2);font-size:12px;}
+.hubrow-main .hubaddr{color:var(--ink-3);font-family:var(--mono);font-size:11px;}
+.hubrow-act{display:flex;gap:6px;flex:none;}
+.addfriend,.invitefriend{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);}
+.addfriend h4,.invitefriend h4{margin:0 0 8px;color:var(--ink);}
+.addfriend .joinpreview.ok{color:var(--ink);}
+.addfriend .joinpreview.bad{color:var(--madder);}
+.addfriend .addhubbtn{margin-top:10px;}
+.invitefriend .joincode{margin:8px 0;word-break:break-all;}
+.invitefriend .loopbackwarn{margin-top:10px;}

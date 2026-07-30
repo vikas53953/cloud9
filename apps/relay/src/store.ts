@@ -16,6 +16,7 @@ import {
 // quietly stops being true.
 import { sweepPending, writeWholeFile } from "@cloud9/engine";
 import { secureId, secureToken } from "./secureid.js";
+import { JoinHubStore, JoinTokenRow } from "./joinhub.js";
 
 /**
  * One page of scrollback, and whether there is more behind it.
@@ -44,6 +45,11 @@ export interface InviteRow {
 interface RawInvite {
   code: string; createdBy: string; usedBy: string | null;
   usedAt: number | null; revoked: number;
+}
+
+interface RawJoinToken {
+  code: string; createdBy: string; createdAt: number; expiresAt: number;
+  usedBy: string | null; usedAt: number | null; revoked: number;
 }
 
 interface RawMember {
@@ -126,6 +132,14 @@ function toInvite(r: RawInvite): InviteRow {
   };
 }
 
+function toJoinToken(r: RawJoinToken): JoinTokenRow {
+  return {
+    code: r.code, createdBy: r.createdBy, createdAt: r.createdAt, expiresAt: r.expiresAt,
+    usedBy: r.usedBy ?? undefined, usedAt: r.usedAt ?? undefined,
+    revoked: r.revoked === 1,
+  };
+}
+
 /** How a store was asked to open itself. */
 export interface StoreOptions {
   /**
@@ -158,7 +172,7 @@ export class StoreOpenError extends Error {
   }
 }
 
-export class Store {
+export class Store implements JoinHubStore {
   db: DatabaseSync;
   /**
    * Where attached files live: a folder beside the database, on the machine
@@ -219,6 +233,14 @@ export class Store {
       CREATE TABLE IF NOT EXISTS invites(
         code TEXT PRIMARY KEY, createdBy TEXT NOT NULL, usedBy TEXT,
         usedAt INTEGER, revoked INTEGER NOT NULL DEFAULT 0
+      );
+      -- A join token is a SECOND, distinct credential from an invite: it carries
+      -- its own deadline (expiresAt) and is redeemed over a network by a
+      -- friend on another computer. See docs/plans/join-hub-handoff.md.
+      CREATE TABLE IF NOT EXISTS join_tokens(
+        code TEXT PRIMARY KEY, createdBy TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        expiresAt INTEGER NOT NULL, usedBy TEXT, usedAt INTEGER,
+        revoked INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS agents(
         id TEXT PRIMARY KEY, json TEXT NOT NULL
@@ -820,6 +842,47 @@ export class Store {
     // spend the ticket in the same breath, on the row's OWN id
     this.db.prepare("UPDATE invites SET usedBy=?, usedAt=? WHERE code=?")
       .run(user.id, Date.now(), code);
+    return { user, token };
+  }
+
+  // ---- join tokens (docs/plans/join-hub-handoff.md) --------------------------
+  // The `JoinHubStore` interface `joinhub.ts` needs, implemented as thin mirrors
+  // of the invite methods above. `joinhub.ts` owns the arithmetic (expired?
+  // spent? revoked?); this is only storage.
+
+  insertJoinToken(row: { code: string; createdBy: ID; createdAt: number; expiresAt: number }): void {
+    this.db.prepare(
+      "INSERT INTO join_tokens(code,createdBy,createdAt,expiresAt) VALUES(?,?,?,?)",
+    ).run(row.code, row.createdBy, row.createdAt, row.expiresAt);
+  }
+
+  joinToken(code: string): JoinTokenRow | undefined {
+    const row = this.db.prepare(
+      "SELECT code,createdBy,createdAt,expiresAt,usedBy,usedAt,revoked FROM join_tokens WHERE code=?",
+    ).get(code) as RawJoinToken | undefined;
+    return row ? toJoinToken(row) : undefined;
+  }
+
+  spendJoinToken(code: string, usedBy: ID, usedAt: number): void {
+    this.db.prepare("UPDATE join_tokens SET usedBy=?, usedAt=? WHERE code=?").run(usedBy, usedAt, code);
+  }
+
+  revokeJoinToken(code: string): void {
+    this.db.prepare("UPDATE join_tokens SET revoked=1 WHERE code=?").run(code);
+  }
+
+  /**
+   * Admit a friend who redeemed a join token: a fresh account plus its durable
+   * token, exactly as `redeemInvite` mints them (P0 #1 — the display name is a
+   * label, the id is minted here and never derived from anything the caller
+   * carried). The join token is spent by the caller through `redeemJoinToken`,
+   * on the id this returns.
+   */
+  admitJoinedUser(name: string, invitedBy: ID): { user: User; token: string } {
+    const user: User = { id: newId("u"), name, invitedBy };
+    const token = secureToken();
+    this.db.prepare("INSERT INTO users(id,name,invitedBy) VALUES(?,?,?)").run(user.id, user.name, invitedBy);
+    this.db.prepare("INSERT INTO tokens(token,userId) VALUES(?,?)").run(token, user.id);
     return { user, token };
   }
 

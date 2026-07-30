@@ -18,8 +18,10 @@ import {
      is a row in `skill-library.ts` and nothing here. */
   SKILL_CATEGORIES, SKILL_LIBRARY, librarySkillsFor, skillFromLibrary, LibrarySkill,
   CLAUDE_DEFAULT_MODEL, CLAUDE_MODELS, modelLabel as sharedModelLabel,
+  // joining a friend's Cloud9 — the address book type and the reach words
+  KnownHub, reachInWords,
 } from "@cloud9/shared";
-import { client, UNREAD_CEILING, unreadLabel, World } from "./store.js";
+import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, World } from "./store.js";
 import { Markdown } from "./markdown.js";
 import {
   abilitiesOn, abilityWords, MARKET_CATEGORIES, MARKET_TEMPLATES, MarketTemplate,
@@ -1566,7 +1568,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 /* ================= the workspace shell ================= */
 
 type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "projects" | "activity" | "settings";
-type ModalName = "invite" | "channel" | "browse";
+type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
 function agentStatusLine(a: AgentDef, status?: string): { line: string; lamp: string; busy: boolean } {
@@ -2073,6 +2075,14 @@ function Workspace(): React.JSX.Element {
             <IconBolt />Ctrl K
           </button>
           {railBtn("settings", "Setup", <IconGear />)}
+          {/* Which Cloud9 am I on, and a door to join a friend's. The active
+              hub's name rides on the button so it is glanceable, and the
+              connection sentence is its tooltip — both from `hubConn`, never a
+              hopeful label. */}
+          <button className="rail-btn hubswitch" title={world.hubConn.line || "Connect to a friend's Cloud9"}
+            onClick={() => setModal("friends")}>
+            <CloudMark />{activeHubName(world)}
+          </button>
           <span className={`rail-lamp ${world.connected ? "ok" : ""}`}
             title={world.connected ? `On the floor as ${world.me?.name ?? "you"}` : "Reconnecting…"} />
         </nav>
@@ -2146,8 +2156,14 @@ function Workspace(): React.JSX.Element {
         <BrowseRoomsModal onClose={() => setModal(null)}
           onJoined={id => { setScreen("chat"); setActiveId(id); setModal(null); }} />
       )}
+      {modal === "friends" && <FriendsModal onClose={() => setModal(null)} />}
     </div>
   );
+}
+
+/** The short name of the hub the client is on right now. */
+function activeHubName(world: World): string {
+  return world.hubs.find(h => h.id === world.activeHubId)?.label ?? "This computer";
 }
 
 /** When the relay refuses something, say so — a save must never fail in silence. */
@@ -7145,6 +7161,168 @@ function InviteModal({ onClose }: { onClose: () => void }): React.JSX.Element {
   );
 }
 
+/* ================= joining a friend's Cloud9 ================= */
+
+/** The port this computer's own hub answers on, read off the app's own URL. */
+function hubPort(): number {
+  const m = RELAY_URL.match(/:(\d+)(?:\/|$)/);
+  return m ? Number(m[1]) : 8787;
+}
+
+/**
+ * Every Cloud9 this person can reach — their own and any friends' — with the
+ * one that is live, an honest reachability line for each, and the ways to add,
+ * switch and forget. Plus, for the owner, minting a link a friend can join with.
+ *
+ * Nothing here draws a green "connected" for a hub nobody reached: the one
+ * connection sentence comes from `connInWords` (via `world.hubConn`), and each
+ * hub's reach line comes from `reachInWords` — never a hopeful label.
+ */
+function FriendsModal({ onClose }: { onClose: () => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const owner = isOwner(world.me);
+  useEscapeCloses(onClose);
+  // A minted join link is dropped when this panel closes — it opens a door, so
+  // it should not linger.
+  useEffect(() => () => client.clearJoinToken(), []);
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="panel friendspanel" onClick={e => e.stopPropagation()}>
+        <div className="head">Cloud9s you can reach</div>
+        <div className="body">
+          <div className={`notice hubconn phase-${world.hubConn.phase}`} data-phase={world.hubConn.phase}>
+            {world.hubConn.line || `On this computer's Cloud9`}
+          </div>
+
+          <div className="hublist">
+            {world.hubs.map(h => (
+              <KnownHubRow key={h.id} hub={h} active={h.id === world.activeHubId} />
+            ))}
+          </div>
+
+          <AddFriendHub myName={world.me?.name ?? ""} />
+
+          {owner && <InviteFriendLink joinToken={world.joinToken} />}
+
+          <div className="notice honesttailscale">
+            Reaching a friend on <b>another</b> computer needs Tailscale — a private network you both
+            sign into. That sign-in is yours to do and is <b>not wired up tonight</b>. Everything on
+            this screen works today between Cloud9s reachable from here, and over Tailscale once it is
+            set up. Cloud9 will never connect to a plain public-internet address.
+          </div>
+        </div>
+        <div className="foot"><button className="primary" onClick={onClose}>Done</button></div>
+      </div>
+    </div>
+  );
+}
+
+function KnownHubRow({ hub, active }: { hub: KnownHub; active: boolean }): React.JSX.Element {
+  return (
+    <div className={`hubrow${active ? " is-active" : ""}`} data-hub={hub.id} data-self={hub.isSelf ? "1" : "0"}>
+      <div className="hubrow-main">
+        <b className="hubname">{hub.label}{active && <span className="chip onnow">On now</span>}</b>
+        <span className="hubreach">
+          {hub.isSelf ? "only this computer — your own Cloud9" : reachInWords(hub.address.reach)}
+        </span>
+        <span className="hubaddr">{hub.address.host}:{hub.address.port}</span>
+      </div>
+      <div className="hubrow-act">
+        {!active && (
+          <button className="btn small hubswitchbtn" onClick={() => client.switchHub(hub.id)}>Switch to this</button>
+        )}
+        {!hub.isSelf && (
+          <button className="btn small hubforget" onClick={() => client.removeHub(hub.id)}>Forget</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AddFriendHub({ myName }: { myName: string }): React.JSX.Element {
+  const [link, setLink] = useState("");
+  const [label, setLabel] = useState("");
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const preview = link.trim() ? client.previewLink(link) : null;
+
+  const add = (): void => {
+    const res = client.addHub(label, link, myName);
+    if (!res.ok) { setRefusal(res.reason ?? "That link could not be added."); return; }
+    setLink(""); setLabel(""); setRefusal(null);
+    if (res.id) client.switchHub(res.id); // added — go there now
+  };
+
+  return (
+    <div className="addfriend">
+      <h4>Connect to a friend's Cloud9</h4>
+      <div className="field-row">
+        <label>Their link</label>
+        <input className="input joinlink" type="text" value={link} placeholder="cloud9://100.x.y.z:8787#join_…"
+          onChange={e => { setLink(e.target.value); setRefusal(null); }} />
+      </div>
+      {preview && (preview.ok ? (
+        <div className="notice joinpreview ok" data-reach={preview.reach}>
+          <b>{preview.host}:{preview.port}</b> — {preview.reachWords}
+          {preview.hasToken
+            ? " · carries a join link, so you'll be let straight in"
+            : " · no join link on it — you'll need one from your friend to be let in"}
+        </div>
+      ) : (
+        <div className="notice joinpreview bad">{preview.reason}</div>
+      ))}
+      <div className="field-row">
+        <label>Call it</label>
+        <input className="input joinlabel" type="text" value={label} placeholder="Priya's Cloud9"
+          onChange={e => { setLabel(e.target.value); setRefusal(null); }} />
+      </div>
+      <Problem text={refusal ?? undefined} />
+      <button className="primary small addhubbtn" disabled={!preview?.ok || !label.trim()} onClick={add}>
+        Add and connect
+      </button>
+    </div>
+  );
+}
+
+function InviteFriendLink({ joinToken }: {
+  joinToken?: { code: string; expiresInMs: number; ts: number };
+}): React.JSX.Element {
+  const [net, setNet] = useState<{ address: string; loopbackOnly: boolean } | null>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { void desktop()?.hubNetwork?.().then(setNet).catch(() => setNet(null)); }, []);
+
+  // Built honestly from where the hub actually answers: its private-network
+  // address if one is set, otherwise loopback — and we SAY which it is.
+  const host = net && !net.loopbackOnly ? net.address : "127.0.0.1";
+  const link = joinToken ? `cloud9://${host}:${hubPort()}#${joinToken.code}` : "";
+  const loopbackOnly = !net || net.loopbackOnly;
+
+  return (
+    <div className="invitefriend">
+      <h4>Invite a friend to your Cloud9</h4>
+      {!joinToken ? (
+        <button className="btn small mintjoin" onClick={() => client.requestJoinLink()}>Make a join link</button>
+      ) : (
+        <>
+          <div className="code joincode">{link}</div>
+          <button className="btn small copyjoin"
+            onClick={() => { void navigator.clipboard?.writeText(link).then(() => setCopied(true)); }}>
+            {copied ? "Copied ✓" : "Copy the link"}
+          </button>
+          <div className="notice">Good for {Math.max(1, Math.round(joinToken.expiresInMs / 60000))} minutes, and only once.</div>
+        </>
+      )}
+      {loopbackOnly && (
+        <div className="notice loopbackwarn">
+          Right now this link points at <b>this computer only</b> — a friend on another computer can't
+          reach it yet. To let them in, put your private-network (Tailscale) address in Setup and make a
+          fresh link. That step is yours; it isn't wired up tonight.
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * The open rooms you are not in (§10.5).
  *
@@ -7298,6 +7476,11 @@ interface DesktopBridge {
   credentialStatus?: () => Promise<CredentialStatus>;
   openAgentFolder?: () => Promise<IpcResult>;
   agentFolder?: () => Promise<string>;
+  /** Which address this computer's hub answers on, so a friend can reach it. */
+  hubNetwork?: () => Promise<{
+    address: string; loopbackOnly: boolean;
+    candidates: { name: string; address: string; likelyTailscale: boolean }[];
+  }>;
 }
 const desktop = (): DesktopBridge | undefined =>
   (window as unknown as { cloud9?: DesktopBridge }).cloud9;

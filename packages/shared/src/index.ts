@@ -1496,6 +1496,18 @@ export type ClientFrame =
   | { type: "updateAgent"; agent: AgentDef }
   | { type: "deleteAgent"; agentId: ID }
   | { type: "createInvite" }
+  // ---- joining a friend's Cloud9 over a network (docs/plans/join-hub-handoff.md) ----
+  /** Owner only: mint a single-use, time-limited link a friend can join with. */
+  | { type: "createJoinToken" }
+  /** Owner only: cancel a join link before anyone has used it. */
+  | { type: "revokeJoinToken"; code: string }
+  /**
+   * Redeem a join link from another computer — sent INSTEAD of `hello`, because
+   * a join has to be decided against the address the hub is bound to, which the
+   * ordinary sign-in path never looks at. `displayName` is a LABEL, never an
+   * identity (P0 #1): the account that comes out of it is created fresh.
+   */
+  | { type: "joinWithToken"; token: string; displayName: string }
   // owner only: take a person out of this Cloud9 (their agents go with them)
   | { type: "removeUser"; userId: ID }
   /**
@@ -1880,6 +1892,11 @@ export type ServerFrame =
    */
   | { type: "agentStatus"; agentId: ID; status: AgentStatus; presence: AgentPresence; reason: string }
   | { type: "invite"; code: string }
+  /**
+   * A freshly minted join link's code and how long it is good for, sent only to
+   * the owner who asked. The screen wraps it into a `cloud9://…#<code>` link.
+   */
+  | { type: "joinToken"; code: string; expiresInMs: number }
   /**
    * One page of scrollback, oldest first. `hasMore` is the only honest way to
    * know whether to keep scrolling — an empty page is NOT the signal, because a
@@ -3353,3 +3370,24 @@ export {
   SKILL_CATEGORIES, SKILL_LIBRARY, libraryCategory, librarySkillsFor,
   skillFromLibrary, type LibrarySkill, type SkillCategory,
 } from "./skill-library.js";
+
+// ---------------------------------------------------------------------------
+// Joining a friend's Cloud9 — the address, the address book, the connection
+// lifecycle. These three modules are the client half of the network-join
+// feature; re-exported here (same as the skill library got a home) so the
+// screen and the client import one package and never reach for a build path.
+// `joinhub.ts` on the hub side already imports `classifyHost` off the built
+// output; this is the idiomatic long-term home the handoff asked for.
+export {
+  DEFAULT_HUB_PORT, parseHubAddress, hubWebSocketUrl, formatHubAddress, reachInWords,
+  classifyHost, type HubAddress, type HubAddressResult, type HubReach,
+} from "./hubaddress.js";
+export {
+  selfOnlyBook, activeHub, addHub, removeHub, renameHub, switchTo, reconcile, describeHub,
+  type KnownHub, type HubBook, type HubBookResult,
+} from "./hubbook.js";
+export {
+  MAX_ATTEMPTS_BEFORE_FALLBACK, BACKOFF_MIN_MS, BACKOFF_MAX_MS,
+  initialConn, backoffMs, reduceConn, connInWords,
+  type ConnPhase, type ConnState, type ConnEffect, type ConnEvent,
+} from "./hubconnection.js";

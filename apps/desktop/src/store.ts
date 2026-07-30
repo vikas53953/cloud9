@@ -5,7 +5,29 @@ import {
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   Project, ProjectItem, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, UnreadEntry, User,
   validateAttachment, validateProjectText, validateRepo,
+  // Joining a friend's Cloud9 — the address, the address book, the connection
+  // lifecycle. All three are the shared modules the handoff says to build ON,
+  // never reimplement (docs/plans/join-hub-handoff.md).
+  HubAddress, HubReach, KnownHub, HubBook, ConnState, DEFAULT_HUB_PORT,
+  parseHubAddress, hubWebSocketUrl, reachInWords,
+  selfOnlyBook, activeHub, addHub as addHubToBook, removeHub as removeHubFromBook,
+  renameHub as renameHubInBook, switchTo, reconcile,
+  initialConn, reduceConn, connInWords,
 } from "@cloud9/shared";
+
+/**
+ * Pull a join token (`join_…`) off the end of a pasted link, however it was
+ * attached, leaving the bare address for `parseHubAddress`. An `inv_…` code is
+ * NOT split here — `parseHubAddress` already understands those; only a join
+ * token is a credential the address parser was never taught, so it would choke
+ * on the fragment if it were left on.
+ */
+export function splitJoinLink(raw: string): { address: string; joinToken?: string } {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  const m = text.match(/[#?/](?:token=)?(join_[A-Za-z0-9_-]+)\s*$/);
+  if (m && m.index !== undefined) return { address: text.slice(0, m.index).trim(), joinToken: m[1] };
+  return { address: text };
+}
 
 /**
  * Where scrollback has got to in ONE conversation.
@@ -107,6 +129,18 @@ export interface World {
    */
   presence: Record<ID, AgentPresenceState>;
   inviteCode?: string;
+  /**
+   * A freshly minted join link, waiting for the screen to wrap it into a
+   * `cloud9://…` a friend can paste. Cleared when the "Invite a friend" panel
+   * closes. The code alone is enough to become a member, so it is never logged.
+   */
+  joinToken?: { code: string; expiresInMs: number; ts: number };
+  /** Every Cloud9 this person knows — their own (self) and any friends' added. */
+  hubs: KnownHub[];
+  /** Which known hub the client is connected to (or falling back from) right now. */
+  activeHubId: string;
+  /** Where the live connection stands, in one plain sentence (`connInWords`). */
+  hubConn: { phase: ConnState["phase"]; line: string };
   tasks: Task[];
   approvals: Approval[];
   activity: ActivityRecord[];
@@ -284,6 +318,30 @@ const params = new URLSearchParams(location.search);
 export const RELAY_URL =
   params.get("relay") ?? localStorage.getItem("cloud9.relay") ?? "ws://127.0.0.1:8787";
 
+/** Where localStorage keeps the address book of known hubs. */
+const HUBBOOK_KEY = "cloud9.hubbook";
+
+/**
+ * This computer's own hub, as a checked address — the floor every install has.
+ * Derived from the loopback URL the shell handed the screen, so "self" is
+ * always exactly the hub the app runs for itself.
+ */
+export function selfAddress(): HubAddress {
+  const parsed = parseHubAddress(RELAY_URL);
+  if (parsed.ok) return parsed.address;
+  return { host: "127.0.0.1", port: DEFAULT_HUB_PORT, reach: "thisPc" };
+}
+
+/** Load and repair the saved book; a fresh install starts with self only. */
+function loadHubBook(): HubBook {
+  let raw: unknown;
+  try {
+    const s = localStorage.getItem(HUBBOOK_KEY);
+    if (s) raw = JSON.parse(s);
+  } catch { /* unreadable — reconcile falls back to self only */ }
+  return reconcile(raw, selfAddress());
+}
+
 /**
  * v1 kept the Claude credential in localStorage. That was wrong, and simply
  * removing the code that writes it does not remove the copy already sitting in
@@ -327,10 +385,32 @@ export class RelayClient {
     runs: {}, runLists: {}, runsGone: {},
     projects: { asked: false, list: [] }, projectItems: {},
     artifacts: {}, artifactsGone: {}, channelArtifacts: {},
+    hubs: [], activeHubId: "self", hubConn: { phase: "idle", line: "" },
   };
   private ws?: WebSocket;
   private listeners = new Set<Listener>();
   private snapshotCache: World = { ...this.world };
+
+  /* ---------------- which hub, and how the connection to it is going ----------------
+   *
+   * `hubaddress.ts` says whether an address is dialable; `hubbook.ts` remembers
+   * the hubs and which is active; `hubconnection.ts` is the reducer that decides
+   * dial / retry / FALL BACK TO SELF. This client OWNS the socket and the timer
+   * and does nothing but carry out the effects those pure modules hand back —
+   * it never re-decides a backoff or a fallback here.
+   */
+  private book: HubBook = loadHubBook();
+  private conn: ConnState = initialConn("self", true);
+  private retryTimer?: ReturnType<typeof setTimeout>;
+  /** The url the live socket is on — so file downloads follow the active hub. */
+  private currentUrl: string = RELAY_URL;
+  /** The token to say `hello` with for THIS computer's own hub, this session. */
+  private selfHello = "";
+
+  constructor() {
+    this.syncHubWorld();
+    this.snapshotCache = { ...this.world };
+  }
 
   subscribe = (fn: Listener): (() => void) => {
     this.listeners.add(fn);
@@ -343,35 +423,144 @@ export class RelayClient {
     for (const fn of this.listeners) fn();
   }
 
+  /** Mirror the book + connection sentence into the world so the screen updates. */
+  private syncHubWorld(): void {
+    const hub = activeHub(this.book);
+    this.world.hubs = this.book.hubs;
+    this.world.activeHubId = this.book.activeId;
+    this.world.hubConn = { phase: this.conn.phase, line: connInWords(this.conn, hub.label) };
+  }
+
+  private saveBook(): void {
+    try { localStorage.setItem(HUBBOOK_KEY, JSON.stringify(this.book)); } catch { /* storage full — the book stays in memory */ }
+  }
+
+  /**
+   * Sign into THIS computer's own hub. Kept as the public entry the app has
+   * always called (`connect(token)`); it always lands you on self, because your
+   * own Cloud9 is the floor you can never be locked out of. Friends' hubs are
+   * reached with `switchHub`, not this.
+   */
   connect(token: string): void {
-    this.ws?.close();
-    // a fresh attempt starts with a clean slate: the last refusal belonged to the
-    // last attempt, and leaving it up would explain the wrong thing
+    this.selfHello = token;
+    const sw = switchTo(this.book, "self");
+    if (sw.ok) this.book = sw.book;
+    this.saveBook();
+    this.connectActive();
+  }
+
+  /** Dial whichever hub is active, from a clean slate. */
+  private connectActive(): void {
+    const hub = activeHub(this.book);
+    this.conn = initialConn(hub.id, hub.isSelf);
+    // a fresh attempt starts clean: last attempt's refusal belonged to it
     this.world.authFailed = false;
     this.world.lastError = undefined;
-    // Questions asked of the LAST connection will never be answered by this
-    // one. They are told so, rather than left on a list where a refusal
-    // belonging to this connection could be handed to one of them.
+    // questions asked of the last connection will never be answered by this one
     const orphaned = this.asked;
     this.asked = [];
     for (const a of orphaned) a.lost?.();
+    this.syncHubWorld();
     this.emit();
-    const ws = new WebSocket(RELAY_URL);
-    this.ws = ws;
-    ws.onopen = () => this.send({ type: "hello", token, client: "desktop" });
-    ws.onclose = () => {
-      this.world.connected = false;
-      // Retrying on an EMPTY token is not a retry — it is a guaranteed "bad
-      // token", and that second refusal used to overwrite the real reason the
-      // first one gave (a spent invite). No token, no reconnect.
-      if (!this.world.authFailed && this.token()) {
-        setTimeout(() => this.connect(this.token()), 2500);
-      } else if (!this.token()) {
-        this.world.authFailed = true;
-      }
+    this.dialActive();
+  }
+
+  /** The url to dial for a hub — loopback for self, the checked address for a friend. */
+  private urlFor(hub: KnownHub): string {
+    return hub.isSelf ? RELAY_URL : hubWebSocketUrl(hub.address);
+  }
+
+  private dialActive(): void {
+    const hub = activeHub(this.book);
+    const url = this.urlFor(hub);
+    this.currentUrl = url;
+    this.applyConn(reduceConn(this.conn, { t: "dialed", url }));
+  }
+
+  /**
+   * Carry out ONE reducer transition: set the new state and perform the single
+   * effect the pure module returned. This is the only place a socket is opened,
+   * a backoff timer is started, or a fallback is triggered.
+   */
+  private applyConn(next: { state: ConnState; effect: ReturnType<typeof reduceConn>["effect"] }): void {
+    this.conn = next.state;
+    this.syncHubWorld();
+    this.emit();
+    const e = next.effect;
+    if (e.do === "openSocket") {
+      this.openSocketTo(e.url);
+    } else if (e.do === "waitThenRetry") {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = setTimeout(() => {
+        this.conn = reduceConn(this.conn, { t: "timerFired" }).state;
+        this.dialActive();
+      }, e.ms);
+    } else if (e.do === "fallBackToSelf") {
+      // The friend's hub would not answer. Drop to this computer's own so the
+      // person is never locked out — the whole point of "self is the floor".
+      const sw = switchTo(this.book, "self");
+      if (sw.ok) { this.book = sw.book; this.saveBook(); }
+      this.conn = reduceConn(this.conn, { t: "switched", targetId: "self", targetIsSelf: true }).state;
+      this.world.lastError = {
+        text: `${activeHub(this.book).label === "This computer" ? "That Cloud9" : "Your friend's Cloud9"} couldn't be reached — you're back on this computer's Cloud9.`,
+        ts: Date.now(),
+      };
+      this.syncHubWorld();
       this.emit();
+      this.dialActive();
+    }
+  }
+
+  private openSocketTo(url: string): void {
+    this.ws?.close();
+    const ws = new WebSocket(url);
+    this.ws = ws;
+    let opened = false;
+    ws.onopen = () => {
+      opened = true;
+      this.helloForActive();
+      this.applyConn(reduceConn(this.conn, { t: "opened" }));
+    };
+    ws.onclose = () => {
+      // A newer socket has already taken over (a switch or a retry) — this close
+      // belongs to a connection nobody is on any more.
+      if (this.ws !== ws) return;
+      this.world.connected = false;
+      // A credential the hub REFUSED must not spin: the reason is on screen and
+      // retrying it would only overwrite it with the same refusal.
+      if (this.world.authFailed) { this.syncHubWorld(); this.emit(); return; }
+      this.applyConn(reduceConn(this.conn, { t: opened ? "dropped" : "failed" }));
     };
     ws.onmessage = ev => this.onFrame(JSON.parse(ev.data) as ServerFrame);
+  }
+
+  /** Prove who we are to the active hub — the right credential for THIS hub. */
+  private helloForActive(): void {
+    const hub = activeHub(this.book);
+    if (hub.isSelf) {
+      const t = this.token() || this.selfHello;
+      if (!t) { this.world.authFailed = true; this.emit(); return; }
+      this.send({ type: "hello", token: t, client: "desktop" });
+      return;
+    }
+    const durable = this.hubTokenFor(hub.id);
+    if (durable) { this.send({ type: "hello", token: durable, client: "desktop" }); return; }
+    const pending = this.pendingJoinFor(hub.id);
+    if (pending) {
+      this.send({ type: "joinWithToken", token: pending.token, displayName: pending.name });
+      return;
+    }
+    // Nothing to authenticate with — this friend's link has no join token and we
+    // were never admitted, so fall back rather than sit on a dead socket.
+    this.friendJoinFailed("This Cloud9 needs a fresh join link — ask your friend for a new one.");
+  }
+
+  /** A friend's hub refused us (or we had nothing to offer): say so, drop to self. */
+  private friendJoinFailed(why: string): void {
+    this.world.lastError = { text: why, ts: Date.now() };
+    const sw = switchTo(this.book, "self");
+    if (sw.ok) { this.book = sw.book; this.saveBook(); }
+    this.connectActive();
   }
 
   token(): string {
@@ -379,6 +568,117 @@ export class RelayClient {
   }
   setToken(token: string): void {
     localStorage.setItem("cloud9.token", token);
+  }
+
+  /* ---- per-hub credentials (a friend's durable token, and a pending join) ----
+   * A friend's hub issues its OWN durable token; it must never overwrite the
+   * owner key for this computer's own hub, so it is filed under the hub's id. */
+  private hubTokenFor(id: string): string | null {
+    try { return localStorage.getItem(`cloud9.hubToken.${id}`); } catch { return null; }
+  }
+  private setHubToken(id: string, t: string): void {
+    try { localStorage.setItem(`cloud9.hubToken.${id}`, t); } catch { /* nothing to do */ }
+  }
+  private clearHubToken(id: string): void {
+    try { localStorage.removeItem(`cloud9.hubToken.${id}`); } catch { /* nothing to do */ }
+  }
+  private pendingJoinFor(id: string): { token: string; name: string } | null {
+    try { const s = localStorage.getItem(`cloud9.pendingJoin.${id}`); return s ? JSON.parse(s) : null; } catch { return null; }
+  }
+  private setPendingJoin(id: string, v: { token: string; name: string }): void {
+    try { localStorage.setItem(`cloud9.pendingJoin.${id}`, JSON.stringify(v)); } catch { /* nothing to do */ }
+  }
+  private clearPendingJoin(id: string): void {
+    try { localStorage.removeItem(`cloud9.pendingJoin.${id}`); } catch { /* nothing to do */ }
+  }
+
+  /* ---------------- the join screen's own methods ---------------- */
+
+  /**
+   * Check a pasted link WITHOUT saving it, so the screen can show — honestly —
+   * who could reach it before the person commits. A public address is refused
+   * in words here, the same as it is at add time.
+   */
+  previewLink(raw: string): {
+    ok: boolean; reason?: string; host?: string; port?: number;
+    reach?: HubReach; reachWords?: string; hasToken: boolean;
+  } {
+    const { address, joinToken } = splitJoinLink(raw);
+    const parsed = parseHubAddress(address);
+    if (!parsed.ok) return { ok: false, reason: parsed.reason, hasToken: !!joinToken };
+    return {
+      ok: true, host: parsed.address.host, port: parsed.address.port,
+      reach: parsed.address.reach, reachWords: reachInWords(parsed.address.reach),
+      hasToken: !!joinToken,
+    };
+  }
+
+  /**
+   * Add a friend's Cloud9 to the address book from a pasted link, keeping any
+   * join token as the credential for the first connection. Refuses whatever
+   * `hubbook.addHub` refuses (bad address, blank/over-long name, duplicate,
+   * over the ceiling) in its own words.
+   */
+  addHub(label: string, raw: string, myName: string): { ok: boolean; reason?: string; id?: string } {
+    const { address, joinToken } = splitJoinLink(raw);
+    const id = `hub_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+    const res = addHubToBook(this.book, id, label, address);
+    if (!res.ok) return { ok: false, reason: res.reason };
+    this.book = res.book;
+    if (joinToken) this.setPendingJoin(id, { token: joinToken, name: (myName || "Friend").trim() });
+    this.saveBook();
+    this.syncHubWorld();
+    this.emit();
+    return { ok: true, id };
+  }
+
+  /** Switch which Cloud9 is live and dial it. */
+  switchHub(id: string): { ok: boolean; reason?: string } {
+    const res = switchTo(this.book, id);
+    if (!res.ok) return { ok: false, reason: res.reason };
+    this.book = res.book;
+    this.saveBook();
+    this.connectActive();
+    return { ok: true };
+  }
+
+  /** Forget a friend's hub. If it was live, drop back to this computer's own. */
+  removeHub(id: string): { ok: boolean; reason?: string } {
+    const wasActive = this.book.activeId === id;
+    const res = removeHubFromBook(this.book, id);
+    if (!res.ok) return { ok: false, reason: res.reason };
+    this.book = res.book;
+    this.clearHubToken(id);
+    this.clearPendingJoin(id);
+    this.saveBook();
+    if (wasActive) this.connectActive();
+    else { this.syncHubWorld(); this.emit(); }
+    return { ok: true };
+  }
+
+  /** Rename a friend's hub. "This computer" keeps its name (hubbook refuses). */
+  renameHub(id: string, label: string): { ok: boolean; reason?: string } {
+    const res = renameHubInBook(this.book, id, label);
+    if (!res.ok) return { ok: false, reason: res.reason };
+    this.book = res.book;
+    this.saveBook();
+    this.syncHubWorld();
+    this.emit();
+    return { ok: true };
+  }
+
+  /** The known hubs and which is active — for the screen and the QA suite. */
+  hubs(): KnownHub[] { return this.book.hubs; }
+  activeHubId(): string { return this.book.activeId; }
+
+  /** Owner action: ask the hub to mint a one-time join link. */
+  requestJoinLink(): void {
+    this.send({ type: "createJoinToken" });
+  }
+  /** Drop a minted link once the "Invite a friend" panel is closed. */
+  clearJoinToken(): void {
+    this.world.joinToken = undefined;
+    this.emit();
   }
 
   /**
@@ -1077,9 +1377,9 @@ export class RelayClient {
 
   /* ---------------- getting an attached file back ---------------- */
 
-  /** where the hub's own HTTP lives — derived from the socket, never stored twice */
+  /** where the active hub's own HTTP lives — follows whichever hub is live */
   private hubHttp(): string {
-    return RELAY_URL.replace(/^ws/, "http");
+    return this.currentUrl.replace(/^ws/, "http");
   }
 
   /**
@@ -1552,8 +1852,19 @@ export class RelayClient {
         for (const entry of frame.state.unread ?? []) w.unread[entry.channelId] = entry;
         break;
       }
-      case "token":
-        this.setToken(frame.token);
+      case "token": {
+        // A durable token is filed against the hub that issued it: this
+        // computer's own key never gets overwritten by a friend hub's token.
+        const hub = activeHub(this.book);
+        if (hub.isSelf) this.setToken(frame.token);
+        else { this.setHubToken(hub.id, frame.token); this.clearPendingJoin(hub.id); }
+        break;
+      }
+      case "joinToken":
+        // A minted "invite a friend" link. The code alone opens the door, so it
+        // is held only long enough for the screen to wrap it into a link and is
+        // never logged.
+        w.joinToken = { code: frame.code, expiresInMs: frame.expiresInMs, ts: Date.now() };
         break;
       case "message": {
         // new arrays, not in-place pushes: the UI compares references to decide
@@ -1696,10 +2007,18 @@ export class RelayClient {
            disclosure that had nothing to do with it. The toast above still says
            the hub's own sentence, whoever the refusal turns out to belong to. */
         this.asked.shift()?.refused?.(frame.error);
-        // A refusal that arrives before we were ever let in is a FAILED JOIN:
-        // send the person back to the welcome screen, where the reason is
-        // visible, instead of leaving them staring at an empty workspace.
-        if (frame.error === "bad token" || !w.me) w.authFailed = true;
+        // WHOSE hub refused matters. On THIS computer's own hub, a refusal
+        // before we were let in is a failed sign-in — back to the welcome
+        // screen, where the reason is visible. On a FRIEND'S hub it must never
+        // throw the person out of their own Cloud9: drop back to self, carrying
+        // the friend's own words, so a bad or spent join link is explained
+        // rather than dead-ending on an empty workspace.
+        if (!w.me) {
+          if (activeHub(this.book).isSelf) w.authFailed = true;
+          else this.friendJoinFailed(frame.error);
+        } else if (frame.error === "bad token") {
+          w.authFailed = true;
+        }
         break;
       }
       // Frames that are not ours to act on. Named, not defaulted, so the

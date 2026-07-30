@@ -36,6 +36,10 @@ try {
 } catch { /* best effort — a locked-down machine still gets the path rules */ }
 import { secureId } from "./secureid.js";
 import { refusalText } from "./refusal.js";
+import {
+  mintJoinToken, checkJoinToken, redeemJoinToken, resolveJoinBind,
+  revokeJoinToken as retireJoinToken, JOIN_TOKEN_TTL_MS,
+} from "./joinhub.js";
 
 /**
  * WHAT ONE DOWNLOAD TICKET IS FOR.
@@ -234,6 +238,13 @@ export class Relay {
           conn = this.handleHello(ws, frame);
           return;
         }
+        // A join arrives INSTEAD of `hello`, because whether to admit it depends
+        // on the address this hub is bound to — which `handleHello` never looks
+        // at. (docs/plans/join-hub-handoff.md §4)
+        if (frame.type === "joinWithToken") {
+          conn = this.handleJoinWithToken(ws, frame);
+          return;
+        }
         if (!conn) { send(ws, { type: "error", error: "not authenticated" }); return; }
         this.handleFrame(conn, frame);
       } catch (err) {
@@ -321,6 +332,58 @@ export class Relay {
     // everyone in a room with those agents needs to hear it — not only the
     // owner. This is the other half of the disconnect rule above.
     if (conn.client === "engine") this.announcePresenceForOwner(user.id);
+    return conn;
+  }
+
+  /**
+   * Admit a friend on another computer who redeemed a join link.
+   *
+   * Two gates, in order:
+   *   1. `resolveJoinBind(this.bind)` — is the address THIS PROCESS is bound to
+   *      one where admitting a stranger even makes sense? A loopback hub answers
+   *      only this computer, which is exactly the local two-hub proof; a
+   *      private-network (Tailscale) or LAN bind is allowed; a public or
+   *      wildcard bind is refused in plain words. The wildcard was already
+   *      refused at startup (`resolveBind`); this is the join-specific tier.
+   *   2. `checkJoinToken` — is the code alive (known, unspent, unrevoked, not
+   *      expired)?
+   *
+   * Only then is a fresh account minted (never derived from the token's text —
+   * P0 #1) and the token spent on that new id, once.
+   */
+  private handleJoinWithToken(
+    ws: WebSocket,
+    frame: Extract<ClientFrame, { type: "joinWithToken" }>,
+  ): Conn | undefined {
+    const bind = resolveJoinBind(this.bind === LOOPBACK ? undefined : this.bind);
+    if (!bind.ok) {
+      send(ws, { type: "error", error: bind.reason });
+      ws.close();
+      return undefined;
+    }
+    const check = checkJoinToken(this.store, frame.token);
+    if (!check.ok) {
+      send(ws, { type: "error", error: check.reason });
+      ws.close();
+      return undefined;
+    }
+    const { user, token } = this.store.admitJoinedUser(
+      (frame.displayName || "Friend").slice(0, 60), check.token.createdBy);
+    // Spend the token on the id we just created, never on anything the token's
+    // own text carried — the same law `redeemInvite` follows.
+    redeemJoinToken(this.store, frame.token, user.id);
+
+    const conn: Conn = { ws, userId: user.id, client: "desktop" };
+    this.conns.add(conn);
+    send(ws, { type: "token", token });
+    // new members land in #general, exactly like an invite redemption
+    const general = this.store.channels().find(c => c.name === "general");
+    if (general && !general.memberIds.includes(user.id)) {
+      this.store.addChannelMember(general.id, user.id, { role: "member" });
+      this.broadcastChannel(this.store.channel(general.id)!);
+    }
+    this.broadcast({ type: "userJoined", user });
+    send(ws, { type: "welcome", state: this.worldFor(user.id) });
     return conn;
   }
 
@@ -1360,6 +1423,25 @@ export class Relay {
         const code = this.store.createInvite(conn.userId);
         this.audit(conn, "invite_created", code, "created an invite");
         send(conn.ws, { type: "invite", code });
+        break;
+      }
+      case "createJoinToken": {
+        // A join link admits a NEW PERSON over the network, so — like an invite —
+        // only the owner may cut one.
+        if (conn.userId !== this.ownerId) {
+          throw new Error("only the owner of this Cloud9 can create a join link");
+        }
+        const code = mintJoinToken(this.store, conn.userId);
+        this.audit(conn, "invite_created", code, "created a join link");
+        send(conn.ws, { type: "joinToken", code, expiresInMs: JOIN_TOKEN_TTL_MS });
+        break;
+      }
+      case "revokeJoinToken": {
+        if (conn.userId !== this.ownerId) {
+          throw new Error("only the owner of this Cloud9 can cancel a join link");
+        }
+        retireJoinToken(this.store, frame.code);
+        this.audit(conn, "invite_created", frame.code, "cancelled a join link");
         break;
       }
       case "removeUser": {
