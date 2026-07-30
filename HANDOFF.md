@@ -71,7 +71,8 @@ own private key on first run.
 
 ## 4. What is DONE — and visible on his screen
 
-Verified by clicking the installed app (`npm run qa:app`, 8/10 at last run):
+Verified by clicking the installed app (`npm run qa:app`, **14/14** at last run,
+2026-07-30):
 
 - **Sign in with Claude and Codex** through the apps already on his PC. No API
   key. Proven with real answers from both.
@@ -93,23 +94,40 @@ Verified by clicking the installed app (`npm run qa:app`, 8/10 at last run):
 - **Jobs**: delegate, approve/reject, a record of what the agent actually did,
   its own written summary, and emoji as work happens.
 - **A real Windows app**: own installer, icon, Start-menu entry, no terminal.
+- **PROJECTS in the icon rail** (2026-07-30). Added beside Chat / Crew / Tasks /
+  Log; the approved Studio navigation is otherwise unchanged. He can connect a
+  repository by name (`owner/name`), see its pull requests and its issues, read
+  which of his agents is on which branch, and open any of them on GitHub.
+  Verified on the INSTALLED app: `npm run qa:app` **14/14**, including
+  "Projects is in the icon rail", which had been failing.
+- **The permission card for pushing.** An agent stopping mid-job to ask before
+  anything leaves this computer now draws the whole thing: what it will do, to
+  which repository and branch, how many commits, how many files, and when the
+  request runs out. `expired` is drawn as its own state — nobody answered is not
+  the same as he said no, and it is never painted as an error.
 
 ## 5. What is DONE UNDERNEATH but NOT on his screen
 
 Say this plainly to him; do not let it read as finished.
 
-- **GitHub / git worktrees.** Agents can prepare their own worktree and branch
-  and commit — proven against his real repo. **Push and pull-request are built
-  but gated**, and there is no Projects screen, so none of it is reachable.
-- **Projects storage** — entities and frames exist in the hub; nothing to click.
+- **Nothing ever asks GitHub for a repository's lists.** The Projects screen
+  draws pull requests and issues perfectly, and no code path in Cloud9 puts one
+  there: `projectSynced` is handled by the hub and sent by nobody. So a
+  repository he connects stays empty, and the screen SAYS so rather than showing
+  an empty list that reads like "no open work". **This is the next thing to
+  build** — `docs/plans/projects-handoff.md` §2 has the two pieces needed.
+- **Which agent is in which worktree.** The branch travels and is on screen with
+  the agent's face on it; the worktree does not cross the wire at all
+  (`Worktree` is engine-local). The screen says that in words rather than
+  drawing a path it invented. See `projects-handoff.md` §3.
+- **No agent turn calls `githubFor` yet**, so an agent cannot decide by itself
+  that it wants to push. The round trip is proved end to end with the engine
+  driving it (`docs/plans/approval-handoff.md` §6).
 - **Skill library** — 15 researched software skills exist in shared code; no
   screen yet (`docs/plans/skills-library-handoff.md` has the contract).
 
 ## 6. What is NOT done at all
 
-- **Projects in the rail** — decided with him: it is ADDED to the existing icon
-  rail (Chat / Crew / Tasks / Projects / Log). The Studio navigation does not
-  change. Inside: repository, pull requests, issues.
 - **Friends cannot connect.** The hub is loopback-only. Decided: **Tailscale**,
   free, about an evening; he must do the browser sign-in himself.
 - **Agents cannot hand work to each other**, and they remember nothing between
@@ -148,7 +166,9 @@ npm run dist           # build the installer
 ```
 
 Current green baselines — re-run, do not trust: **279 engine, 159 relay,
-305/305 + 8/8 + 4/4 browser, 8/10 on the installed app.**
+350/350 + 8/8 + 4/4 browser, 14/14 on the installed app.** (The browser suite
+went 305 → 350 and the installed-app walk 10 → 14 when Projects landed on
+2026-07-30; every one of those ran.)
 
 Rules the test suites learned the hard way: a run that executes fewer checks
 than expected is a FAILURE, never a pass; wait on observable conditions, never
@@ -156,37 +176,40 @@ sleeps; and prove a new check by putting the bug back and watching it fail.
 
 ---
 
-## 8b. IN FLIGHT right now (2026-07-30, late)
+## 8b. Projects LANDED — 2026-07-30
 
-**Projects in the rail is being built.** An agent is working in
-`apps/desktop/src/**` and `scripts/qa.mjs`. If that work is half-finished when
-you pick this up:
+The round that built PROJECTS is **finished and on his screen**, uncommitted in
+`apps/desktop/src/**`, `scripts/qa.mjs`, `scripts/drive-app.mjs` and
+`docs/plans/projects-handoff.md`. Evidence, all run in that session:
 
-- `git status` will show uncommitted changes in those two places and nowhere
-  else. Everything up to and including commit `a1a7d31` is pushed and green.
-- Its brief: PROJECTS added to the icon rail beside Chat / Crew / Tasks / Log;
-  inside it the repository, pull requests and issues; which agent is in which
-  worktree on which branch; and the push-approval card drawing the new
-  `kind: "action"` / `remoteAction` / `expiresAt` / `expired` fields the hub
-  already sends and the screen currently ignores.
-- The hub frames it needs already exist and are currently handled as named
-  no-ops in `apps/desktop/src/store.ts` with a comment saying this screen would
-  claim them.
-- It was told: **do not report done until `npm run qa:app` shows Projects on
-  screen in the INSTALLED app** — that check is one of the two currently
-  failing.
+| What | Result |
+|---|---|
+| `npm run build` | clean |
+| `npm run qa` | **350/350 + 8/8 + 4/4**, all executed |
+| `npm run dist`, installed, `npm run qa:app` | **14/14** — "Projects is in the icon rail" now passes |
+| Screenshots at 1280 | `docs/qa/projects-*.png`, and `docs/qa/app-09..11-projects*.png` from the real app |
 
-To judge it: `npm run build`, `npm test`, `npm run qa`, then `npm run dist`,
-install, and `npm run qa:app`. If it is half-done and not building, the safe
-move is `git checkout -- apps/desktop/src scripts/qa.mjs` and start that item
-fresh from the brief above.
+Two things worth knowing before you touch it:
+
+- **`npm run qa:app` went 8/10 → 14/14 and one of those was a harness fault, not
+  a fix.** "A hired agent's editor offers exactly what a hand-made one's does"
+  had been failing because the harness waited for a crew card, and the app
+  deliberately drops him straight into the hired agent's own file. The feature
+  was working; the walk was out of date. It now follows the app.
+- **Nothing ever sends `projectSynced`,** so a connected repository is
+  permanently empty until the engine half is built. The screen says so instead
+  of pretending. `docs/plans/projects-handoff.md` is the request to whoever owns
+  `packages/**` and `apps/relay/**`; §2 is the next thing to build.
 
 ## 9. What I would do next, in order
 
-1. **Projects in the rail** — repository, pull requests, issues. This unlocks
-   everything already built underneath and is the biggest visible gap.
-2. **Finish the mid-run approval** so an agent can actually push and open a pull
-   request (an agent was mid-flight on this; check `docs/plans/approval-handoff.md`).
+1. **Make the Projects lists real** — `docs/plans/projects-handoff.md` §2. The
+   screen is built and honest; nothing asks GitHub for a repository's pull
+   requests and issues, so it is always empty. Needs a `syncProject` client
+   frame and an engine path that runs `gh` and answers `projectSynced`.
+2. **Let an agent decide to push by itself** — no agent turn calls `githubFor`
+   yet, so the permission card only appears when the engine is driven directly.
+   `docs/plans/approval-handoff.md` §7.
 3. **The skill library screen.**
 4. **Tailscale**, so his phone and friends can reach it.
 5. Agent-to-agent handoff, and memory between conversations.

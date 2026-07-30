@@ -91,6 +91,16 @@ const EXPECTED_CHECKS = [
   "role cards in the marketplace show pictures, not emoji",
   "a hired agent's editor offers exactly what a hand-made one's does",
   "a message offers a Reply / thread control",
+  /* HIS ITEM 7, and the reason this harness went red for a day: the hub has
+     stored projects, pull requests and issues all along and there was no screen
+     to reach them from. These four ask the INSTALLED app, in order: does the
+     screen open, can he connect a repository, does the repository he connected
+     appear with its own name, and does the screen refuse to claim anything
+     nobody has checked. */
+  "the Projects screen opens and offers to connect a repository",
+  "a repository can be connected and appears by name",
+  "a project shows its repository, its pull requests and its issues",
+  "a repository nobody has looked at says so instead of showing a green tick",
 ];
 
 /* ---------------------------------------------------------------- results */
@@ -584,16 +594,25 @@ async function walk(page) {
       const hireName = await page.locator(".hirepanel .hirebtn").innerText();
       await shot(page, "hire-panel");
       await page.click(".hirepanel .hirebtn");
-      await page.waitForSelector(".cast[data-crew]", { timeout: 40000 });
 
-      // The newest crew card is the hired one; find it by the name on the button.
+      /* HIRING LANDS HIM IN THE NEW AGENT'S OWN FILE, and that is deliberate:
+         he hired the Architect, was dropped on the crew screen with a note
+         telling him to press Edit, never did, and concluded a hired role had no
+         tool permissions, no files folder and no skills. So the app now opens
+         the editor itself.
+
+         This harness was still waiting for `.cast[data-crew]` — a crew card that
+         is on screen for a single frame before the editor replaces it. It timed
+         out every run and reported "NOT ON SCREEN" against a feature that was
+         working, which is the same false alarm in the opposite direction and
+         costs exactly as much trust. It now follows the app's real behaviour. */
+      await page.waitForSelector(".editor .persona-input", { timeout: 40000 });
       const wanted = hireName.replace(/^Hire\s+/i, "").trim();
-      const card = page.locator(`.cast[data-crew="${wanted}"]`);
-      if (await card.count() === 0) {
-        throw new Error(`hired "${wanted}" from role ${role} but no crew card by that name appeared`);
+      const opened = await page.inputValue(".editor #f-name").catch(() => "");
+      if (opened.trim() !== wanted) {
+        throw new Error(`hired "${wanted}" from role ${role} but the editor that opened ` +
+          `is for "${opened.trim() || "(nothing)"}"`);
       }
-      await card.locator('button:has-text("Edit")').click();
-      await page.waitForSelector(".editor .persona-input", { timeout: 30000 });
       await shot(page, "hired-editor");
       const hired = await readEditor();
       console.log(`  hired editor: ${JSON.stringify(hired)}`);
@@ -649,6 +668,94 @@ async function walk(page) {
     failGroup([EXPECTED_CHECKS[9]].filter(n => !results.some(r => r.name === n)),
       `the chat screen did not open (${err.message})`);
     await shot(page, "chat-broken");
+  }
+
+  /* --- 7. projects: a repository, its pull requests, its issues ----------
+   *
+   * On a fresh run this CONNECTS a repository, because "can he see his
+   * repositories" cannot be answered by a screen with nothing on it. On his
+   * real data nothing is connected — the projects he already has are what is
+   * looked at, and the one check that needs a connection says it was not made
+   * rather than making one on his floor.
+   */
+  const PROJECT_GROUP = [
+    EXPECTED_CHECKS[10], EXPECTED_CHECKS[11], EXPECTED_CHECKS[12], EXPECTED_CHECKS[13],
+  ];
+  const DRIVE_REPO = "vikas53953/cloud9";
+
+  try {
+    await page.click('.rail .rail-btn[data-go="projects"]');
+    await page.waitForSelector(".projects", { timeout: 30000 });
+    await shot(page, "projects");
+
+    await check(EXPECTED_CHECKS[10], async () => {
+      const connect = await page.locator(".projects .topbar [data-connect]").count();
+      if (connect === 0) {
+        throw new Error("NOT ON SCREEN — the Projects screen opened but offers no way to connect a repository");
+      }
+      return "Projects opens with a way in";
+    });
+
+    await check(EXPECTED_CHECKS[11], async () => {
+      const already = await page.locator(`.proj-list .side-item[data-repo="${DRIVE_REPO}"]`).count();
+      if (already === 0) {
+        if (!OPTS.fresh) {
+          const have = await page.$$eval(".proj-list .side-item", is => is.map(i => i.dataset.repo));
+          if (have.length === 0) {
+            throw new Error("NOT CHECKED — nothing is connected in your real Cloud9, and this run was told " +
+              "to change nothing. Run it without --real-data to have it connect one.");
+          }
+          return `already connected: ${have.join(", ")}`;
+        }
+        await page.click(".projects .topbar [data-connect]");
+        await page.waitForSelector(".connectproj #f-repo", { timeout: 20000 });
+        await page.fill(".connectproj #f-repo", DRIVE_REPO);
+        await page.click('.connectproj button:has-text("Connect")');
+        await page.waitForSelector(`.proj-list .side-item[data-repo="${DRIVE_REPO}"]`, { timeout: 30000 });
+      }
+      const name = await page.locator(`.proj-list .side-item[data-repo="${DRIVE_REPO}"] .txt`).innerText();
+      return `connected and listed as "${name.trim()}"`;
+    });
+    await shot(page, "projects-connected");
+
+    await check(EXPECTED_CHECKS[12], async () => {
+      await page.waitForSelector(".projdetail", { timeout: 20000 });
+      const seen = await page.evaluate(() => ({
+        repo: document.querySelector(".projdetail .reponame")?.innerText.replace(/\s+/g, "") ?? "",
+        tabs: [...document.querySelectorAll(".pd-tabs .seg button")].map(b => b.innerText.trim()),
+      }));
+      if (!seen.repo) throw new Error("NOT ON SCREEN — the open project does not name its repository");
+      const hasPulls = seen.tabs.some(t => /pull request/i.test(t));
+      const hasIssues = seen.tabs.some(t => /issue/i.test(t));
+      if (!hasPulls || !hasIssues) {
+        throw new Error(`NOT ON SCREEN — a project must hold its pull requests AND its issues. ` +
+          `All that is offered: ${seen.tabs.join(" / ") || "(nothing)"}`);
+      }
+      return `${seen.repo} · ${seen.tabs.join(" / ")}`;
+    });
+
+    /* ABSENT MEANS ABSENT — rule 8, on the one screen most tempted to break it.
+       No agent has run `gh` against this repository inside this run, so there
+       is nothing to report and the screen has to SAY that rather than show an
+       empty list that reads like "no open work". */
+    await check(EXPECTED_CHECKS[13], async () => {
+      const words = await page.locator(".projdetail").innerText();
+      const neverLooked = await page.locator(".pd-never").count();
+      const syncedChip = /looked at github/i.test(words);
+      if (neverLooked === 0 && !syncedChip) {
+        throw new Error("NOT ON SCREEN — the project says nothing at all about whether anyone has " +
+          "looked at GitHub, so an empty list reads as 'nothing is open'");
+      }
+      if (neverLooked > 0 && /trunk/i.test(await page.locator(".pd-facts").innerText())) {
+        throw new Error("a repository nobody has looked at is showing a trunk branch nobody reported");
+      }
+      return neverLooked > 0 ? "says nobody has looked at GitHub yet" : "says when it last looked";
+    });
+    await shot(page, "projects-honest");
+  } catch (err) {
+    failGroup(PROJECT_GROUP.filter(n => !results.some(r => r.name === n)),
+      `the Projects screen did not open (${err.message})`);
+    await shot(page, "projects-broken");
   }
 }
 

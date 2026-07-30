@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-30T05:03:41.710Z",
-  "expected": 305,
-  "executed": 305,
+  "ranAt": "2026-07-30T06:10:56.428Z",
+  "expected": 350,
+  "executed": 350,
   "results": [
     {
       "name": "join screen renders",
@@ -161,7 +161,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch 1ptc3 :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch 43zqy :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +176,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_Q2cfGNv0v0jBC4qqIT47-A"
+      "detail": "inv_ib8wWYC6lW0yC0NeA68OGg"
     },
     {
       "name": "friend joins via invite",
@@ -306,7 +306,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 10:31"
+      "detail": "↳ 1 reply · last at 11:38"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -376,7 +376,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 10:31 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 11:38 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -926,7 +926,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms71r49jlb547d\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms7452cvsw8hh8\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -966,12 +966,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms71phq8t3ubyb:1785387714690 a_ms71pnm11zqikv:1785387723951 u_ms71px6ivjp3ur:1785387724573 a_ms71r49jlb547d:1785387724697"
+      "detail": "u_ms743l9ltj7y1v:1785391726078 a_ms743tc819blx2:1785391733821 u_ms7443hmbjl3ll:1785391734060 a_ms7452cvsw8hh8:1785391734274"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785387721160 · now 1785387724573"
+      "detail": "first 1785391730952 · now 1785391734060"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -1176,7 +1176,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":23,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
+      "detail": "{\"followedToBottom\":0,\"samples\":22,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1251,7 +1251,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms71pq4vvh5y97\",\"status\":\"completed\",\"runId\":\"r-0ms71pq55-imyp\"}"
+      "detail": "{\"id\":\"t_ms743w0fcw5ci1\",\"status\":\"completed\",\"runId\":\"r-0ms743w0u-w40a\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1402,6 +1402,231 @@
       "name": "a run card with every step showing, in an agent's history does not scroll sideways at 1440 in the dark look",
       "pass": true,
       "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "PROJECTS is in the icon rail, beside the four screens he approved",
+      "pass": true,
+      "detail": "chat, crew, tasks, projects, activity, Quick chat (Ctrl K), settings"
+    },
+    {
+      "name": "with nothing connected the screen says so, rather than drawing an empty list of nothing",
+      "pass": true,
+      "detail": "No repository connected yet A project is a repository — its pull requests and its issues,"
+    },
+    {
+      "name": "a name that isn't owner/name is refused in the contract's own sentence, in the form",
+      "pass": true,
+      "detail": "that isn't a repository name — use owner/name, like vikas53953/cloud9"
+    },
+    {
+      "name": "connecting a repository puts it on screen, named the way GitHub names it",
+      "pass": true,
+      "detail": "vikas53953/cloud9"
+    },
+    {
+      "name": "a repository nobody has looked at says so, and shows no trunk it was never told",
+      "pass": true,
+      "detail": "Not looked at GitHub yet"
+    },
+    {
+      "name": "the pull requests the engine reported are on screen, in the project's own list",
+      "pass": true,
+      "detail": "pull-41,pull-39,pull-38"
+    },
+    {
+      "name": "the trunk it must never land on is drawn only now that GitHub actually said what it is",
+      "pass": true,
+      "detail": "Trunk master Looked at GitHub 30 Jul"
+    },
+    {
+      "name": "a pull request that landed and one that was thrown away are told apart in words, not only colour",
+      "pass": true,
+      "detail": "{\"pull-41\":\"Open\",\"pull-39\":\"Merged in\",\"pull-38\":\"Closed, not merged\"}"
+    },
+    {
+      "name": "a pull request one of his agents opened carries its branch and that agent's face",
+      "pass": true,
+      "detail": "cloud9/architect-1\n→\nmaster"
+    },
+    {
+      "name": "the trunk a branch is aimed at is named from what GitHub said, never guessed as main",
+      "pass": true,
+      "detail": "cloud9/architect-1\n→\nmaster"
+    },
+    {
+      "name": "the crew panel says which agent is on which branch in this repository",
+      "pass": true,
+      "detail": "YOUR CREW IN THIS REPOSITORY Scout 1 pull request here cloud9/architect-1 → master Open The folder each agent works in s"
+    },
+    {
+      "name": "the folder an agent works in is NOT claimed — it never crosses the wire, and the screen says so",
+      "pass": true,
+      "detail": "The folder each agent works in stays on this computer and is not reported to Cloud9 yet — the branch above is what travels."
+    },
+    {
+      "name": "opening a pull request shows the facts we hold — its number, its branch and where it is aimed",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and says the description and the conversation stay on GitHub rather than pretending to hold them",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the link out is GitHub's own address, opened away from this window",
+      "pass": true,
+      "detail": "https://github.com/vikas53953/cloud9/pull/41"
+    },
+    {
+      "name": "a branch no held run names is reported as untraced, not linked to a turn we guessed at",
+      "pass": true,
+      "detail": "No turn we are holding names cloud9/architect-1. Its history is below."
+    },
+    {
+      "name": "a pull request opens onto the work its agent actually did, from the run records the hub holds",
+      "pass": true,
+      "detail": "7 turns"
+    },
+    {
+      "name": "once a turn names the branch, the pull request is traced to the very job that made it",
+      "pass": true,
+      "detail": "Scout finished “open a pull request for the Projects screen” Ran 1 command, took 41 second"
+    },
+    {
+      "name": "issues are a list of their own, and only issues are in it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "reading an issue offers GitHub's own address for it, and never a made-up one",
+      "pass": true,
+      "detail": "https://github.com/vikas53953/cloud9/issues/12"
+    },
+    {
+      "name": "a failed look at GitHub is shown in the hub's own words, not as an empty list reading 'no open work'",
+      "pass": true,
+      "detail": "gh could not reach github.com — check the network"
+    },
+    {
+      "name": "and a project with a problem is flagged in the list beside it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the Projects screen does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the Projects screen does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the Projects screen does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the Projects screen does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "before disconnecting, the screen promises the repository itself is untouched",
+      "pass": true,
+      "detail": "Disconnecting forgets Cloud9's copy of these lists. Your repository is not touched — Cloud9 has no way to delete anything on GitHub."
+    },
+    {
+      "name": "a disconnected project takes its pull requests and its issues off the screen with it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a push request draws the sentence the machine wrote, word for word",
+      "pass": true,
+      "detail": "push 2 commits to a new branch cloud9/scout-7 on vikas53953/cloud9"
+    },
+    {
+      "name": "the smaller line under it is the contract's own detail — how much is going up",
+      "pass": true,
+      "detail": "3 files changed"
+    },
+    {
+      "name": "the card names which repository and which branch, in the sentence he judges",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "it says this is something outside this computer, and that nothing has left it yet",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and which of the three things Cloud9 asks about this is, from the shared table",
+      "pass": true,
+      "detail": "PUSH A BRANCH TO GITHUB"
+    },
+    {
+      "name": "it says when it runs out — an agent is standing there waiting for the answer",
+      "pass": true,
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 11:39 EXPIRES in 9 minutes"
+    },
+    {
+      "name": "a request with no job behind it offers no 'see the job' button to press",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the gold pill counts a mid-run request as something waiting on him",
+      "pass": true,
+      "detail": "1 approval waiting"
+    },
+    {
+      "name": "a request that reported no size shows NO size line at all — not a zero",
+      "pass": true,
+      "detail": "OPEN A PULL REQUEST ON GITHUB\nopen a pull request into master from cloud9/scout-7 on vikas53953/cloud9\nnothing runs until you say so"
+    },
+    {
+      "name": "the same request is in the Tasks in-tray, carrying its sentence and its deadline",
+      "pass": true,
+      "detail": "Expires in 9 minutes."
+    },
+    {
+      "name": "saying 'not now' answers it, and it stops waiting on him",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "before the deadline the request is answerable, with both buttons on it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a request nobody answered says nobody answered — it is not quietly a refusal",
+      "pass": true,
+      "detail": "Nobody answered in time — it didn't happen. Ask again and the agent will stop here once more."
+    },
+    {
+      "name": "and it offers no button, because there is nothing left to answer",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "an expired request is not painted as an error — nothing happened, which is the safe outcome",
+      "pass": true,
+      "detail": "nothing happened"
+    },
+    {
+      "name": "the card stays where it was, so a request that ran out while he was away is FOUND, not vanished",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "this section leaves nothing waiting behind it — the in-tray is back the way it was",
+      "pass": true,
+      "detail": ""
     },
     {
       "name": "a thread beside the conversation does not scroll sideways at 1280 in the light look",

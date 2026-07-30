@@ -2,7 +2,8 @@
 import {
   ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, Attachment, ATTACHMENT_LIMITS, Channel,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
-  RunListEntry, RunRecord, SearchHit, ServerFrame, Task, UnreadEntry, User, validateAttachment,
+  Project, ProjectItem, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, UnreadEntry, User,
+  validateAttachment,
 } from "@cloud9/shared";
 
 /**
@@ -163,6 +164,27 @@ export interface World {
    * ever waiting for an answer that already came.
    */
   runsGone: Record<string, true>;
+  /**
+   * THE REPOSITORIES THIS PERSON HAS CONNECTED, and what is open in each.
+   *
+   * `asked` is the same law the room directory and the run histories already
+   * follow: an empty list nobody has requested is not "you have no projects",
+   * it is "we have not looked". Without it the Projects screen would greet a
+   * person with "connect your first repository" for the moment between opening
+   * and the hub answering — a claim nobody had checked, about the one screen
+   * whose whole job is to say what GitHub holds.
+   */
+  projects: { asked: boolean; list: Project[] };
+  /**
+   * One project's pull requests and issues, by project id.
+   *
+   * A CACHE OF SOMEBODY ELSE'S TRUTH twice over: the hub holds GitHub's answer
+   * as of the last time the engine looked, and this holds the hub's. So the
+   * screen never says "no open pull requests" off the back of an unanswered
+   * question — `asked` is what tells the two apart, and `Project.syncedAt` is
+   * what says how old the answer is.
+   */
+  projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
 }
 
 type Listener = () => void;
@@ -262,6 +284,7 @@ export class RelayClient {
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
+    projects: { asked: false, list: [] }, projectItems: {},
   };
   private ws?: WebSocket;
   private listeners = new Set<Listener>();
@@ -684,6 +707,86 @@ export class RelayClient {
     this.send({ type: "channelMembers", channelId });
   }
 
+  /* ---------------- projects: a repository, its pull requests, its issues ----------------
+   *
+   * ONE OWNER FOR "WHAT IS IN THIS REPOSITORY", and it is the hub. Nothing in
+   * this app reaches GitHub, guesses a default branch, or invents a state for a
+   * pull request; every value drawn on the Projects screen arrived on a frame.
+   * That is the same split the hub keeps for the same reason — the part a guest
+   * can talk to must never be the part that can reach out of the machine.
+   */
+
+  /** One project's lists, answered or not. Never undefined — an unasked list says so. */
+  itemsFor(projectId: ID): { asked: boolean; items: ProjectItem[] } {
+    return this.world.projectItems[projectId] ?? { asked: false, items: [] };
+  }
+
+  /**
+   * Ask for the repositories this person has connected.
+   *
+   * Asked EVERY time the screen opens, not once: a project gains a
+   * `defaultBranch`, a `syncedAt` and sometimes a `problem` the moment the
+   * engine looks at GitHub, so a list cached from the last visit would show a
+   * repository as never-looked-at long after it had been.
+   */
+  askProjects(): void {
+    this.ask({ type: "projects" }, {
+      answers: f => f.type === "projects",
+      answered: f => {
+        if (f.type !== "projects") return;
+        this.world.projects = { asked: true, list: f.projects };
+      },
+      /* A refusal and a silence both mean the same thing here: we asked and got
+         no list. The screen must not be left spinning on either, and the hub's
+         own sentence is already on screen through `lastError`. */
+      refused: () => { this.world.projects = { ...this.world.projects, asked: true }; this.emit(); },
+      lost: () => { this.world.projects = { ...this.world.projects, asked: true }; this.emit(); },
+    });
+  }
+
+  /** Ask for one project's pull requests and issues, as of the last look. */
+  askProjectItems(projectId: ID): void {
+    const settled = (): void => {
+      this.world.projectItems = {
+        ...this.world.projectItems,
+        [projectId]: { ...this.itemsFor(projectId), asked: true },
+      };
+      this.emit();
+    };
+    this.ask({ type: "projectItems", projectId }, {
+      answers: f => f.type === "projectItems" && f.projectId === projectId,
+      answered: f => {
+        if (f.type !== "projectItems") return;
+        this.world.projectItems = {
+          ...this.world.projectItems,
+          [f.projectId]: { asked: true, items: f.items },
+        };
+      },
+      refused: settled,
+      lost: settled,
+    });
+  }
+
+  /**
+   * Connect a repository, named the way `gh` names one.
+   *
+   * The refusal is the hub's own sentence, handed back to the caller so the
+   * form can print it where the person is looking instead of only in the toast
+   * that floats above every screen.
+   */
+  connectProject(
+    repo: string,
+    extra: { name?: string; description?: string; channelId?: ID } = {},
+    onRefused?: (why: string) => void,
+  ): void {
+    const sent = this.ask({ type: "connectProject", repo, ...extra }, {
+      answers: f => f.type === "project",
+      refused: why => onRefused?.(why),
+      lost: () => onRefused?.("the hub did not answer — is it still running?"),
+    });
+    if (!sent) onRefused?.("not connected to the hub yet");
+  }
+
   /* ---------------- attaching a file ---------------- */
 
   private uploadQueue: Array<{ channelId: ID; localId: string; frame: ClientFrame }> = [];
@@ -1089,6 +1192,11 @@ export class RelayClient {
         w.runLists = {};
         w.runsGone = {};
         this.runAsked.clear();
+        // Projects belonged to the last connection too, and `asked` goes back
+        // to false with them: this world has not asked anything yet, so the
+        // screen must say "looking" rather than "you have none".
+        w.projects = { asked: false, list: [] };
+        w.projectItems = {};
         for (const entry of frame.state.unread ?? []) w.unread[entry.channelId] = entry;
         break;
       }
@@ -1306,16 +1414,49 @@ export class RelayClient {
         w.directory = { asked: false, channels: [] };
         break;
       }
-      // Projects: the hub can already talk about them, the screen cannot yet.
-      // These are named rather than swept into `default`, so the guard below
-      // keeps its teeth — and so the day someone builds the Projects screen,
-      // grepping for "project" finds exactly where the data arrives. Dropping
-      // them here is a decision, not an oversight: nothing on screen asks for
-      // a project yet, so nothing is being lost.
-      case "project":
+      /* Projects. These four used to be dropped with a comment saying the
+         Projects screen would claim them one day. It has. */
+      case "project": {
+        /* A `project` frame arrives UNASKED as well as in answer: connecting a
+           repository, renaming it, and the engine reporting back what it found
+           on GitHub all send the same frame to every window this person has
+           open. So it is applied here rather than by whoever asked — and the
+           list is marked `asked`, because a project we are holding is proof the
+           hub has talked to us about projects. */
+        const list = w.projects.list;
+        const i = list.findIndex(p => p.id === frame.project.id);
+        const next = i >= 0
+          ? list.map(p => (p.id === frame.project.id ? frame.project : p))
+          : [...list, frame.project];
+        w.projects = { asked: true, list: next };
+        break;
+      }
       case "projects":
-      case "projectForgotten":
+        // Applied by `askProjects`, which is the only thing that asks. A list
+        // arriving for a question nobody is asking any more goes nowhere.
+        break;
+      case "projectForgotten": {
+        w.projects = {
+          ...w.projects,
+          list: w.projects.list.filter(p => p.id !== frame.projectId),
+        };
+        // Its lists go with it, exactly as they do in the hub. Keeping them
+        // would leave this screen able to draw pull requests for a repository
+        // it is no longer connected to.
+        const { [frame.projectId]: goneItems, ...restItems } = w.projectItems;
+        void goneItems;
+        w.projectItems = restItems;
+        break;
+      }
       case "projectItems":
+        /* Pushed UNASKED every time the engine re-syncs a project, as well as
+           in answer to `askProjectItems`. Applied unconditionally for the same
+           reason `read` is: this frame is how a window finds out that GitHub
+           moved underneath it. */
+        w.projectItems = {
+          ...w.projectItems,
+          [frame.projectId]: { asked: true, items: frame.items },
+        };
         break;
       // ENGINE-ONLY RECEIPT, and it is right that the screen drops it. When an
       // agent asks mid-run "may I push this branch?", the hub answers the

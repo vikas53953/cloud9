@@ -2030,3 +2030,181 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .inertswitch>b{font-size:13px;}
 .inertswitch ul{margin:0;padding:0 0 0 17px;display:flex;flex-direction:column;gap:5px;}
 .inertswitch li{font-size:12.5px;line-height:1.55;}
+
+/* ============================================================
+   PROJECTS — a repository, its branches, its pull requests
+   (his item 7). Studio language throughout: the two-column body
+   of the Tasks screen, the sidebar rows of the chat screen, the
+   printed chips and the display serif of the cast plates.
+
+   THE ONE NEW OBJECT is the branch ribbon: a named branch set in
+   the data face on a tinted rail, with the agent's face attached
+   to it. His whole rule for how agents touch code is "branch and
+   pull request, always, one worktree each", so the thing this
+   screen is built around is a branch with somebody standing on
+   it — not a row in a table.
+
+   Every value below goes through the token layer. No raw colour.
+   ============================================================ */
+
+.projects{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;}
+.proj-body{
+  flex:1;min-height:0;display:grid;grid-template-columns:250px minmax(0,1fr);
+  overflow:hidden;min-width:0;
+}
+.proj-list{
+  border-right:1px solid var(--line);background:var(--bg-2);
+  overflow-y:auto;padding:20px 12px;min-width:0;
+}
+.proj-list>.eyebrow{display:block;padding:0 9px;margin-bottom:10px;}
+.proj-list .side-item .cnt.hot{color:var(--madder);font-weight:700;}
+.proj-main{overflow-y:auto;padding:24px 30px 52px;min-width:0;}
+
+/* ---- the repository's own name, set as the printed label it is ---- */
+.reponame{font-family:var(--mono);font-size:12.5px;min-width:0;overflow-wrap:anywhere;}
+.reponame .ro{color:var(--ink-3);}
+.reponame .rs{color:var(--line);margin:0 1px;}
+.reponame .rn{color:var(--ink-2);}
+
+/* ---- connecting one ---- */
+.connectproj{padding:18px 20px 20px;margin-bottom:24px;}
+.connectproj>.eyebrow{display:block;margin-bottom:6px;}
+.connectproj .hint{margin-bottom:12px;max-width:62ch;}
+.connectproj code,.projdetail code{
+  font-family:var(--mono);font-size:.92em;background:var(--sunk);
+  border-radius:var(--radius-xs);padding:1px 5px;color:var(--ink-2);
+}
+.cp-row{display:flex;gap:9px;align-items:center;flex-wrap:wrap;}
+.cp-row .input{flex:1;min-width:180px;}
+.connectproj .problemline{margin-top:12px;color:var(--madder);font-size:12.5px;}
+
+/* ---- one project ---- */
+.projdetail{min-width:0;}
+.pd-head{display:flex;align-items:flex-start;gap:14px;margin-bottom:12px;flex-wrap:wrap;}
+.pd-title{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px;}
+.pd-title h3{
+  font-family:var(--display);font-size:27px;line-height:1.1;letter-spacing:-.02em;min-width:0;
+}
+.pd-btns{display:flex;gap:7px;flex:none;padding-top:5px;}
+.pd-reassure{
+  font-size:12.5px;color:var(--ink-2);line-height:1.55;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:var(--radius-s);padding:10px 13px;margin-bottom:14px;
+}
+.pd-facts{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;}
+.pd-facts .chip code{background:transparent;padding:0;color:inherit;}
+button.chip{cursor:pointer;}
+.pd-desc{font-size:13.5px;color:var(--ink-2);line-height:1.6;max-width:72ch;margin-bottom:16px;}
+
+/* A failure and a never-looked-at are DIFFERENT things and are drawn
+   differently: one is a problem, the other is simply an absence of news. */
+.pd-problem,.pd-never{
+  display:flex;flex-direction:column;gap:4px;padding:12px 14px;margin-bottom:18px;
+  border-radius:var(--radius-s);font-size:12.5px;line-height:1.6;
+}
+.pd-problem{
+  background:var(--madder-soft);
+  border:1px solid color-mix(in srgb,var(--madder) 40%,transparent);
+}
+.pd-problem b{color:var(--madder);font-family:var(--display);font-size:13.5px;}
+.pd-problem span{color:var(--ink-2);}
+.pd-never{background:var(--surface-2);border:1px dashed var(--line);}
+.pd-never b{font-family:var(--display);font-size:13.5px;color:var(--ink);}
+.pd-never span{color:var(--ink-3);max-width:74ch;}
+.pd-note{font-size:12px;color:var(--ink-3);line-height:1.55;margin-top:10px;max-width:70ch;}
+
+/* ---- the crew standing on this repository's branches ---- */
+.pd-crew{margin-bottom:24px;}
+.pd-crew>.eyebrow{display:block;margin-bottom:10px;}
+.crewbranches{display:flex;flex-direction:column;gap:10px;}
+.crewbranch{
+  display:grid;grid-template-columns:auto minmax(120px,1fr) minmax(0,2fr);
+  gap:12px;align-items:center;
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);
+  padding:12px 14px;box-shadow:var(--shadow);min-width:0;
+}
+.cb-tx{min-width:0;display:flex;flex-direction:column;gap:1px;}
+.cb-tx b{font-size:14px;}
+.cb-sub{font-size:12px;color:var(--ink-3);}
+.cb-branches{display:flex;flex-direction:column;gap:7px;min-width:0;}
+.cb-one{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;}
+
+/* ---- THE SIGNATURE: a branch with a face on it ---- */
+.branchribbon{
+  display:inline-flex;align-items:center;gap:7px;min-width:0;flex:none;
+  padding:3px 10px 3px 4px;border-radius:99px;
+  background:var(--pine-soft);
+  border:1px solid color-mix(in srgb,var(--pine) 26%,transparent);
+  color:var(--pine);
+}
+.branchribbon>svg{flex:none;}
+.branchribbon .bname,.branchribbon .bbase{
+  font-family:var(--mono);font-size:11.5px;color:var(--pine);background:transparent;padding:0;
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:26ch;
+}
+.branchribbon .bbase{color:var(--ink-3);}
+.branchribbon .barrow{font-family:var(--mono);font-size:11px;color:var(--ink-3);flex:none;}
+
+/* ---- pull requests and issues ---- */
+.pd-tabs{margin:4px 0 14px;}
+.pd-items{display:flex;flex-direction:column;gap:9px;}
+.projitem{
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);
+  box-shadow:var(--shadow);overflow:hidden;min-width:0;
+}
+.pi-head{
+  width:100%;display:flex;align-items:center;gap:12px;padding:13px 15px;border:0;
+  background:transparent;text-align:left;cursor:pointer;color:var(--ink);min-width:0;
+  transition:background .12s var(--ease);
+}
+.pi-head:hover{background:var(--surface-2);}
+.pi-no{font-family:var(--mono);font-size:12px;color:var(--ink-3);flex:none;}
+.pi-tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+.pi-tx b{font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.pi-sub{font-size:12px;color:var(--ink-3);}
+.pi-head>.chip{flex:none;}
+/* one that was thrown away must never read like one that landed */
+.projitem[data-state="closed"] .pi-tx b{color:var(--ink-3);}
+.projitem[data-state="merged"]{border-color:color-mix(in srgb,var(--ultra) 32%,var(--line));}
+.projitem[data-state="open"]{border-color:color-mix(in srgb,var(--pine) 26%,var(--line));}
+.pi-body{border-top:1px solid var(--line-soft);padding:14px 16px 16px;background:var(--surface-2);}
+.pi-body .kv{margin-top:0;}
+.pi-note{font-size:12px;color:var(--ink-3);line-height:1.55;max-width:70ch;margin-top:10px;}
+.pi-work{margin-top:16px;border-top:1px dashed var(--line);padding-top:14px;}
+.pi-work>.eyebrow{display:block;margin:14px 0 8px;}
+.projlink{display:inline-flex;align-items:center;gap:7px;}
+.traced>.eyebrow{display:block;margin-bottom:8px;}
+.tracenone{
+  font-size:12.5px;color:var(--ink-3);line-height:1.55;
+  border-left:2px solid var(--line);padding-left:11px;margin-bottom:6px;
+}
+
+/* ============================================================
+   AN APPROVAL THAT LEAVES THIS COMPUTER, AND ONE THAT RAN OUT
+
+   A `kind:"action"` card names a branch, a repository and a
+   deadline. `expired` is its OWN state and is never painted as
+   an error: nothing happened, which is the safe outcome — but
+   the card stays where it was, so a request that timed out is
+   something he FINDS rather than a silence he has to notice.
+   ============================================================ */
+.spend .eyebrow.remoteact,.approval .eyebrow.remoteact{
+  display:block;width:100%;color:var(--marigold);margin-bottom:2px;
+}
+.spend .apdetail{font-family:var(--mono);font-size:12px;color:var(--ink-2);width:100%;}
+.approval .apdetail{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);margin:0 0 8px;}
+.approval .ap-say{font-size:12.5px;margin:0 0 10px;color:var(--ink-2);}
+.approval .apexpiry{color:var(--marigold);}
+.expiredline{
+  font-size:12.5px;color:var(--ink-2);line-height:1.55;background:var(--surface-2);
+  border:1px dashed var(--line);border-radius:var(--radius-s);padding:9px 12px;
+  margin:0;max-width:64ch;
+}
+[data-state="expired"] .spend .amt{color:var(--ink-3);}
+[data-state="expired"] .callout.approval{border-color:var(--line);background:var(--surface);}
+
+@media (max-width:1100px){
+  .proj-body{grid-template-columns:minmax(0,1fr);}
+  .proj-list{border-right:0;border-bottom:1px solid var(--line);max-height:180px;}
+  .crewbranch{grid-template-columns:auto minmax(0,1fr);}
+  .cb-branches{grid-column:1 / -1;}
+}

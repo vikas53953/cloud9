@@ -7,8 +7,9 @@ import {
   Approval, Attachment, ATTACHMENT_LIMITS,
   Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
   HarnessInfo, ID, isInlineViewable, isSafeSkillFileName, mayAdministerChannel, mayDriveAgent,
-  MENU_ACTIONS, MenuAction, Message, RunListEntry, RunRecord, RunStep, RunStepKind,
-  SearchHit, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
+  MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectItemKind, ProjectItemState,
+  REMOTE_ACTIONS, RunListEntry, RunRecord, RunStep, RunStepKind,
+  SearchHit, SKILL_LIMITS, summarizeRun, Task, User, validateRepo, humanDuration, humanMoney,
   CLAUDE_DEFAULT_MODEL, CLAUDE_MODELS, modelLabel as sharedModelLabel,
 } from "@cloud9/shared";
 import { client, UNREAD_CEILING, unreadLabel, World } from "./store.js";
@@ -206,6 +207,19 @@ const IconCrew = (): React.JSX.Element => (
 const IconTasks = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <rect x="4" y="4.5" width="16" height="15" rx="2.4" /><path d="M8 10l2.2 2.2L15.5 7" /><path d="M8 15.5h8" />
+  </svg>
+);
+/**
+ * PROJECTS — a branch leaving the trunk and coming back.
+ *
+ * Not a folder and not a box: the one decision he has already made about how
+ * agents touch his code is "branch and pull request, always", and that shape is
+ * what the rail should say this section is about.
+ */
+const IconProjects = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="7" cy="5.6" r="2.1" /><circle cx="7" cy="18.4" r="2.1" /><circle cx="17.5" cy="9.2" r="2.1" />
+    <path d="M7 7.7v8.6" /><path d="M17.5 11.3v.8a3.2 3.2 0 0 1-3.2 3.2h-2.1a3.2 3.2 0 0 0-3.2 3.1" />
   </svg>
 );
 const IconLog = (): React.JSX.Element => (
@@ -882,7 +896,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "activity" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "projects" | "activity" | "settings";
 type ModalName = "invite" | "channel" | "browse";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -964,9 +978,9 @@ function Workspace(): React.JSX.Element {
     client.send({ type: "createInvite" });
     setModal("invite");
   }, []);
-  const pendingApprovals = world.approvals.filter(
-    a => a.status === "pending" && a.ownerId === world.me?.id,
-  ).length;
+  // One owner for "how many are waiting" — see `useMyApprovals`. A request past
+  // its deadline is not waiting on him, whatever the database still says.
+  const pendingApprovals = useMyApprovals(world).waiting.length;
 
   const openEditor = useCallback((a: AgentDef | "new") => {
     setEditorFor(a);
@@ -988,6 +1002,15 @@ function Workspace(): React.JSX.Element {
   const openActivity = useCallback(() => {
     client.send({ type: "activity", limit: 100 });
     setScreen("activity");
+  }, []);
+
+  /* Asked on the way in, the same way the Log is: a project gains a default
+     branch, a "last looked at" and sometimes a problem the moment the engine
+     talks to GitHub, so a list held over from the last visit would be showing
+     yesterday's answer to today's question. */
+  const openProjects = useCallback(() => {
+    client.askProjects();
+    setScreen("projects");
   }, []);
 
   /* ---- keyboard ---- */
@@ -1278,6 +1301,10 @@ function Workspace(): React.JSX.Element {
           {railBtn("chat", "Chat", <IconChat />)}
           {railBtn("crew", "Crew", <IconCrew />)}
           {railBtn("tasks", "Tasks", <IconTasks />, pendingApprovals)}
+          {/* ADDED beside the four he approved — the Studio navigation is
+              otherwise unchanged. Everything the hub and the engine already
+              hold about his repositories arrives through this one door. */}
+          {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
           {railBtn("activity", "Log", <IconLog />, undefined, openActivity)}
           <div className="rail-spacer" />
           <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
@@ -1327,6 +1354,9 @@ function Workspace(): React.JSX.Element {
             />
           )}
           {screen === "tasks" && <TasksScreen onOpenChannel={id => { setActiveId(id); setScreen("chat"); }} />}
+          {screen === "projects" && (
+            <ProjectsScreen onOpenChannel={id => { setActiveId(id); setScreen("chat"); }} />
+          )}
           {screen === "activity" && <ActivityScreen />}
           {screen === "settings" && <SettingsScreen />}
         </main>
@@ -2167,11 +2197,29 @@ function ChatView({
 
   const working = agents.filter(a => world.agentStatus[a.id] === "working");
 
-  const myApprovals = world.approvals.filter(ap => {
-    if (ap.status !== "pending" || ap.ownerId !== world.me?.id) return false;
+  /**
+   * The approvals that belong in THIS conversation.
+   *
+   * TWO WAYS AN APPROVAL KNOWS WHERE IT LIVES, and it used to only understand
+   * one. A job-shaped approval is placed by its job's channel. A mid-run one
+   * carries `channelId` itself, because an agent can be asked to push in
+   * ordinary conversation with no job at all — matching only through the job
+   * would have left every push request with nowhere to be drawn.
+   *
+   * `expired` is drawn as well as `pending`, deliberately. A request that ran
+   * out while he was away must be something he FINDS, not something that
+   * vanished: "he never saw it" is the outcome this card exists to make
+   * visible. It is not counted below — nothing is waiting on him any more.
+   */
+  const { mine: myApprovalsAll, waiting: waitingAll } = useMyApprovals(world);
+  const inThisRoom = (ap: Approval): boolean => {
+    if (ap.channelId) return ap.channelId === channel.id;
     const task = world.tasks.find(t => t.id === ap.taskId);
     return task?.channelId === channel.id;
-  });
+  };
+  const myApprovals = myApprovalsAll.filter(
+    ap => (ap.status === "pending" || ap.status === "expired") && inThisRoom(ap));
+  const waitingHere = waitingAll.filter(inThisRoom);
 
   /* The same fact as the sidebar row, from the same one place, so the rail and
      the conversation can never disagree about whether anyone is home. */
@@ -2224,10 +2272,12 @@ function ChatView({
             <span className="ch-topic" title={`Topic: ${channel.topic}`}>{channel.topic}</span>
           )}
           <div className="grow" />
-          {myApprovals.length > 0 && (
+          {/* Counts what is genuinely WAITING. An expired card is still drawn
+              below, but nothing is waiting on him for it any more. */}
+          {waitingHere.length > 0 && (
             <button className="chip is-gold approvalpill" onClick={onOpenTasks}>
               <span className="dot wait" />
-              {myApprovals.length} approval{myApprovals.length === 1 ? "" : "s"} waiting
+              {waitingHere.length} approval{waitingHere.length === 1 ? "" : "s"} waiting
             </button>
           )}
           {!channel.archivedAt && <AddToChannel channel={channel} />}
@@ -2342,58 +2392,233 @@ function ChatView({
   );
 }
 
+/* ---- an approval that can run out of time ---------------------------------
+ *
+ * A mid-run request (`kind: "action"`) carries an `expiresAt`, because an agent
+ * is standing still waiting for it: a request nobody answers has to die rather
+ * than be approved next Tuesday against a branch that has moved on.
+ *
+ * "HE SAID NO" AND "HE NEVER SAW IT" ARE DIFFERENT EVENTS and this screen draws
+ * them differently. Expiry is not an error and is never painted red: nothing
+ * happened, which is the safe outcome. It is also not silent — the card stays
+ * where it was, with the buttons replaced, so a request that timed out while he
+ * was away is something he FINDS rather than something that vanished.
+ */
+
+/** How long is left, in words. `now` is passed in so one clock drives every card. */
+function expiryWords(expiresAt: number, now: number): string {
+  const left = expiresAt - now;
+  if (left <= 0) return "the time ran out";
+  const mins = Math.floor(left / 60_000);
+  if (mins >= 2) return `in ${mins} minutes`;
+  if (left >= 60_000) return "in about a minute";
+  return `in ${Math.max(1, Math.round(left / 1000))} seconds`;
+}
+
+/**
+ * A clock that only ticks while something is actually counting down.
+ *
+ * An interval that runs for the life of the app would re-render every message
+ * on screen once a second for the sake of a card that is usually not there.
+ */
+function useCountdown(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  return now;
+}
+
+/**
+ * Can this request still be answered?
+ *
+ * The HUB owns the status and sends an `approval` frame with `expired` when its
+ * own timer fires. This owns the clock only, and for one reason: between the
+ * deadline passing and that frame arriving, an Approve button would be a button
+ * that cannot work — the hub refuses a late decision. Offering it would be the
+ * lie. So the card goes quiet the moment the time is up, and the frame that
+ * follows changes nothing he can see.
+ */
+function approvalIsDead(approval: Approval, now: number): boolean {
+  if (approval.status === "expired") return true;
+  return approval.status === "pending" && !!approval.expiresAt && approval.expiresAt <= now;
+}
+
+/**
+ * WHAT IS GENUINELY STILL WAITING ON THIS PERSON — one owner for the count.
+ *
+ * Three places count approvals: the badge on the rail, the gold pill above a
+ * conversation, and the Tasks in-tray. They used to count `status === "pending"`
+ * each in their own words, which was right until a card could run out of time:
+ * a request past its deadline is still `pending` in the hub's database for the
+ * moment before the hub's own timer fires, so the pill said "2 waiting" over two
+ * cards that both read "nobody answered". A number that argues with the thing
+ * underneath it is worse than no number.
+ *
+ * `mine` is everything of his the screen is holding; `waiting` is the subset
+ * that can still be answered. Everything that counts, counts this.
+ */
+function useMyApprovals(world: World): { mine: Approval[]; waiting: Approval[]; now: number } {
+  const mine = world.approvals.filter(a => a.ownerId === world.me?.id);
+  const ticking = mine.some(a => a.status === "pending" && !!a.expiresAt);
+  const now = useCountdown(ticking);
+  return { mine, waiting: mine.filter(a => a.status === "pending" && !approvalIsDead(a, now)), now };
+}
+
 /** The moment an agent stops and asks — the prototype's permission card. */
 function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
   approval: Approval; agent?: AgentDef; task?: Task; onOpenTasks: () => void;
 }): React.JSX.Element {
+  /* ABSENT MEANS `task` — every approval stored before mid-run asking existed
+     is a job-shaped one, and treating a missing field as "action" would draw a
+     branch-and-repository card for a job that has neither. */
+  const action = approval.kind === "action";
+  const now = useCountdown(action && approval.status === "pending" && !!approval.expiresAt);
+  const dead = approvalIsDead(approval, now);
+
   const rows: [string, string][] = [];
   if (agent) {
     rows.push(["Agent", `${agent.name} · ${PROVIDER_LABEL[(agent.provider ?? "claude") as Provider]} · ${modelWords(agent.model)}`]);
   }
-  const rule = ruleWords(agent);
+  const rule = action ? null : ruleWords(agent);
   if (rule) rows.push(["Rule hit", rule]);
   rows.push(["Asked", clock(approval.createdAt)]);
-  /* The prototype sets a money amount huge, in the display serif. Cloud9 holds
-     no amounts — nothing here spends — so the same slot carries the one thing
-     it does hold: what the agent is asking to do. Nothing is invented to fill
-     the shape. */
-  const headline = task?.title ?? approval.action;
+  if (action && approval.expiresAt) {
+    rows.push(["Expires", dead ? "the time ran out" : expiryWords(approval.expiresAt, now)]);
+  }
+
+  /* THE SENTENCE HE JUDGES, VERBATIM. On an action card every noun in
+     `approval.action` — the branch, the repository, the number of commits —
+     came from `git` and `gh` rather than from the agent, and that is the entire
+     reason it can be trusted. It is not reworded, not shortened, and never
+     swapped for a job title the agent chose. A job-shaped approval keeps the
+     old behaviour: its title if it has one, its sentence if it does not. */
+  const headline = action ? approval.action : (task?.title ?? approval.action);
 
   return (
-    <div className="msg from-agent" data-approval={approval.id}>
-      {agent ? <AgentFace name={agent.name} size={34} lamp="wait" /> : <PersonFace name="?" size={34} />}
+    <div className="msg from-agent" data-approval={approval.id}
+      data-kind={action ? "action" : "task"} data-state={dead ? "expired" : approval.status}>
+      {agent ? <AgentFace name={agent.name} size={34} lamp={dead ? "idle" : "wait"} /> : <PersonFace name="?" size={34} />}
       <div className="body">
         <div className="who">
           <b>{agent?.name ?? "An agent"}</b>
           <span className="badge">Agent</span>
           <span className="t">{clock(approval.createdAt)}</span>
-          <span className="chip is-gold"><span className="dot wait" />Waiting on you</span>
+          {dead
+            ? <span className="chip"><span className="dot idle" />Nobody answered</span>
+            : <span className="chip is-gold"><span className="dot wait" />Waiting on you</span>}
         </div>
-        <p>I've stopped before doing this — it needs your go-ahead.</p>
+        <p>
+          {action
+            ? "I've stopped before doing something outside this computer. Nothing has left it."
+            : "I've stopped before doing this — it needs your go-ahead."}
+        </p>
         <AnswerCard
           tone="approval"
-          title="Permission to act"
+          title={action ? "Permission to act outside this computer" : "Permission to act"}
           rows={rows}
           lead={
             <div className="spend">
+              {/* The category comes from the shared REMOTE_ACTIONS table — the
+                  same three rows the engine and the hub read — so the screen
+                  cannot name a fourth kind of thing that does not exist. */}
+              {action && approval.remoteAction && (
+                <span className="eyebrow remoteact">{REMOTE_ACTIONS[approval.remoteAction]}</span>
+              )}
               <span className="amt">{headline}</span>
-              <span className="per">nothing runs until you say so</span>
+              {/* Absent when we do not know. No "0 files". */}
+              {approval.detail && <span className="apdetail">{approval.detail}</span>}
+              <span className="per">
+                {dead ? "nothing happened" : "nothing runs until you say so"}
+              </span>
             </div>
           }
-          actions={<>
-            <button className="gold"
-              onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "approved" })}>
-              Approve
-            </button>
-            <button className="btn danger"
-              onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "rejected" })}>
-              Reject
-            </button>
-            <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>
-            <span className="eyebrow">Nothing has been changed yet</span>
-          </>}
+          actions={dead ? (
+            <>
+              <span className="expiredline" data-expired={approval.id}>
+                Nobody answered in time — it didn't happen. Ask again and the agent will
+                stop here once more.
+              </span>
+              {!action && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
+            </>
+          ) : (
+            <>
+              <button className="gold"
+                onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "approved" })}>
+                Approve
+              </button>
+              <button className={action ? "btn" : "btn danger"}
+                onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "rejected" })}>
+                {action ? "Not now" : "Reject"}
+              </button>
+              {/* Only a job-shaped approval HAS a job to look at. */}
+              {approval.taskId && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
+              <span className="eyebrow">Nothing has been changed yet</span>
+            </>
+          )}
         />
       </div>
+    </div>
+  );
+}
+
+/**
+ * The same request, in the Tasks in-tray — smaller, and held to the same laws.
+ *
+ * ONE COMPONENT for "an approval in the side panel", so the sentence, the
+ * detail line, the deadline and the expired wording cannot drift between the
+ * conversation and the tray. The tray used to keep its own copy and it showed
+ * neither the branch card's detail nor its deadline at all.
+ */
+function ApprovalTray({ approval, agent, task }: {
+  approval: Approval; agent?: AgentDef; task?: Task;
+}): React.JSX.Element {
+  const action = approval.kind === "action";
+  const now = useCountdown(action && approval.status === "pending" && !!approval.expiresAt);
+  const dead = approvalIsDead(approval, now);
+  const rule = action ? null : ruleWords(agent);
+  const headline = action ? approval.action : (task?.title ?? approval.action);
+
+  return (
+    <div className="approval" key={approval.id} data-appr={approval.id}
+      data-kind={action ? "action" : "task"} data-state={dead ? "expired" : approval.status}>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 8 }}>
+        {agent ? <AgentFace name={agent.name} size={30} lamp={dead ? "idle" : "wait"} /> : <PersonFace name="?" size={30} />}
+        <div style={{ minWidth: 0 }}>
+          {action && approval.remoteAction && (
+            <span className="eyebrow remoteact">{REMOTE_ACTIONS[approval.remoteAction]}</span>
+          )}
+          <h4>{headline}</h4>
+          <div className="meta">{agent?.name ?? "An agent"} · {clock(approval.createdAt)}</div>
+        </div>
+      </div>
+      {/* On an action card the headline IS the sentence, so repeating it below
+          would be the same words twice. A job-shaped one still needs it. */}
+      {!action && <p className="ap-say">{approval.action}</p>}
+      {approval.detail && <p className="apdetail">{approval.detail}</p>}
+      {rule && <p className="meta" style={{ margin: "0 0 10px" }}>Rule hit: {rule}</p>}
+      {action && approval.expiresAt && (
+        <p className="meta apexpiry" style={{ margin: "0 0 10px" }}>
+          {dead ? "The time ran out." : `Expires ${expiryWords(approval.expiresAt, now)}.`}
+        </p>
+      )}
+      {dead ? (
+        <p className="expiredline" data-expired={approval.id}>
+          Nobody answered in time — it didn't happen.
+        </p>
+      ) : (
+        <div className="actions">
+          <button className="gold small"
+            onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "approved" })}>Approve</button>
+          <button className={action ? "btn small" : "btn small danger"}
+            onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "rejected" })}>
+            {action ? "Not now" : "Reject"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -5961,8 +6186,16 @@ function TasksScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): Re
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [filter, setFilter] = useState<"all" | "running" | "done" | "failed">("all");
 
-  const mineWaiting = world.approvals.filter(
-    a => a.status === "pending" && a.ownerId === world.me?.id);
+  /* Waiting, and — separately — the ones that ran out. A mid-run request nobody
+     answered has to be findable here too, or the only record of it is a job
+     that quietly did less than he thinks it did. */
+  /* Both off `useMyApprovals`, so this panel, the pill above a conversation and
+     the badge on the rail can never disagree about what is still waiting. A
+     request past its deadline moves to the second list even before the hub's
+     own timer has caught up with it. */
+  const { mine: mineAll, waiting: mineWaiting, now: apNow } = useMyApprovals(world);
+  const mineExpired = mineAll.filter(a =>
+    (a.status === "expired" || a.status === "pending") && approvalIsDead(a, apNow));
 
   const shown = world.tasks.filter(t => {
     if (filter === "running") return RUNNING_STATES.includes(t.status);
@@ -6061,35 +6294,538 @@ function TasksScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): Re
             <span className={`chip ${mineWaiting.length > 0 ? "is-gold" : ""}`}>{mineWaiting.length}</span>
           </div>
 
-          {mineWaiting.map(ap => {
-            const agent = world.agents.find(a => a.id === ap.agentId);
-            const task = world.tasks.find(t => t.id === ap.taskId);
-            const rule = ruleWords(agent);
-            return (
-              <div className="approval" key={ap.id} data-appr={ap.id}>
-                <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 8 }}>
-                  {agent ? <AgentFace name={agent.name} size={30} lamp="wait" /> : <PersonFace name="?" size={30} />}
-                  <div style={{ minWidth: 0 }}>
-                    <h4>{task?.title ?? ap.action}</h4>
-                    <div className="meta">{agent?.name ?? "An agent"} · {clock(ap.createdAt)}</div>
-                  </div>
-                </div>
-                <p style={{ fontSize: 12.5, margin: "0 0 10px", color: "var(--ink-2)" }}>{ap.action}</p>
-                {rule && <p className="meta" style={{ margin: "0 0 10px" }}>Rule hit: {rule}</p>}
-                <div className="actions">
-                  <button className="gold small"
-                    onClick={() => client.send({ type: "decideApproval", approvalId: ap.id, decision: "approved" })}>Approve</button>
-                  <button className="btn small danger"
-                    onClick={() => client.send({ type: "decideApproval", approvalId: ap.id, decision: "rejected" })}>Reject</button>
-                </div>
-              </div>
-            );
-          })}
+          {mineWaiting.map(ap => (
+            <ApprovalTray key={ap.id} approval={ap}
+              agent={world.agents.find(a => a.id === ap.agentId)}
+              task={world.tasks.find(t => t.id === ap.taskId)} />
+          ))}
 
           {mineWaiting.length === 0 && (
             <EmptyTray title="Nothing waiting" line="Every request has an answer. The crew carries on." />
           )}
+
+          {mineExpired.length > 0 && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 9, margin: "26px 0 14px" }}>
+                <span className="eyebrow">Ran out before you saw them</span>
+                <span className="chip">{mineExpired.length}</span>
+              </div>
+              {mineExpired.map(ap => (
+                <ApprovalTray key={ap.id} approval={ap}
+                  agent={world.agents.find(a => a.id === ap.agentId)}
+                  task={world.tasks.find(t => t.id === ap.taskId)} />
+              ))}
+            </>
+          )}
         </aside>
+      </div>
+    </div>
+  );
+}
+
+/* ================= 10 · PROJECTS ==============================================
+
+   A PROJECT IS A REPOSITORY — his item 7, and the screen that makes everything
+   already built underneath reachable: the hub has stored projects, pull
+   requests and issues for a day, the engine can prepare a worktree, branch and
+   commit, and an agent can now stop mid-job and ask before it pushes. None of
+   it had a door. This is the door.
+
+   THE LAWS THIS SCREEN IS HELD TO, all of them learned the hard way:
+
+   • Nothing here reaches GitHub. Every value drawn below arrived on a frame
+     from the hub, which got it from the engine, which ran `gh` on his machine
+     behind the approvals. The screen does not guess a default branch, does not
+     infer that a pull request must be open because it has no end date, and does
+     not turn a repository name into a link it made up.
+   • ABSENT MEANS ABSENT. A project nobody has looked at yet says so; it does
+     not show a green "in sync". An empty list that was never asked for says
+     "looking", never "you have none". `merged` and `closed` are drawn as the
+     opposite outcomes they are, in words as well as colour, because a list that
+     paints them the same is lying about the work.
+   • A pull request is traceable to the turn that made it, or it says it is not.
+     Nothing here invents a link between an agent and a branch.               */
+
+/** What state a pull request or an issue is in, in words a non-developer reads. */
+const ITEM_STATE_WORDS: Record<ProjectItemState, string> = {
+  draft: "Draft",
+  open: "Open",
+  /* MERGED AND CLOSED ARE THE OPPOSITE OUTCOMES and the words say so before the
+     colour does. "Closed" on its own reads like a job finished; this one means
+     the work was thrown away, and he is the person who would have to notice. */
+  merged: "Merged in",
+  closed: "Closed, not merged",
+};
+
+/* Colour SUPPORTS the words; it never carries the meaning on its own. Closed is
+   deliberately plain rather than red — throwing a pull request away is a normal
+   outcome and not a fault, and he said himself a bad run should cost one click
+   to close. The distinction he must not miss is merged-versus-not, and that is
+   in the words above. */
+const ITEM_STATE_TONE: Record<ProjectItemState, string> = {
+  draft: "", open: "is-pine", merged: "is-ultra", closed: "",
+};
+
+/** "vikas53953/cloud9" drawn as the printed label it is — owner quiet, name loud. */
+function RepoName({ repo }: { repo: string }): React.JSX.Element {
+  const cut = repo.indexOf("/");
+  const owner = cut > 0 ? repo.slice(0, cut) : "";
+  const name = cut > 0 ? repo.slice(cut + 1) : repo;
+  return (
+    <span className="reponame" title={repo}>
+      {owner && <><span className="ro">{owner}</span><span className="rs">/</span></>}
+      <span className="rn">{name}</span>
+    </span>
+  );
+}
+
+/** GitHub's own address and nothing else — `validateProjectItem` already proved it. */
+function GitHubLink({ url, children }: { url: string; children: React.ReactNode }): React.JSX.Element {
+  return (
+    <a className="btn small projlink" href={url} target="_blank" rel="noreferrer noopener">
+      {children}
+      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor"
+        strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M14 4.5h5.5V10M19 5l-8 8M18 14v4.5A1.5 1.5 0 0 1 16.5 20h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10" />
+      </svg>
+    </a>
+  );
+}
+
+/**
+ * THE SIGNATURE OF THIS SCREEN: a branch, and who is standing on it.
+ *
+ * His whole decision about how agents touch his code is "branch and pull
+ * request, always, one worktree each". So the object this screen is built
+ * around is not a row in a table — it is a named branch with a face attached to
+ * it. Drawn only when there IS a branch; a pull request without one gets
+ * nothing rather than an empty rail.
+ */
+function BranchRibbon({ branch, base, agent }: {
+  branch: string; base?: string; agent?: AgentDef;
+}): React.JSX.Element {
+  return (
+    <span className="branchribbon" data-branch={branch}>
+      {agent && <AgentFace name={agent.name} size={20} lamp="live" />}
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
+        strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="6.5" cy="5.5" r="2" /><circle cx="6.5" cy="18.5" r="2" /><circle cx="17.5" cy="9" r="2" />
+        <path d="M6.5 7.5v9M17.5 11v.6a3 3 0 0 1-3 3h-2a3 3 0 0 0-3 3" />
+      </svg>
+      <code className="bname">{branch}</code>
+      {/* The trunk is only named when the hub told us what it is. Guessing
+          "main" would point his one protected branch at something that may not
+          exist — the exact thing `defaultBranch` was recorded to prevent. */}
+      {base && <><span className="barrow">→</span><code className="bbase">{base}</code></>}
+    </span>
+  );
+}
+
+/**
+ * WHICH TURN MADE THIS BRANCH — traced, or honestly not traced.
+ *
+ * The run records the engine writes carry every command an agent ran, so a turn
+ * that created or pushed a branch NAMES it. This looks for that name among the
+ * records this screen is already holding and shows the turn it belongs to. It
+ * never invents the link: when no held record mentions the branch it says so,
+ * and offers the agent's full history instead of a guess.
+ *
+ * It matches against records ALREADY HELD rather than fetching every run of
+ * every agent: a `run` frame arrives unasked the moment any turn finishes, so
+ * the trace fills in for work done while he is watching, which is the case that
+ * matters — and no click of his puts a hundred frames on the wire.
+ */
+function TracedRun({ agentId, branch }: { agentId: ID; branch: string }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const needle = branch.toLowerCase();
+  const traced = Object.values(world.runs)
+    .filter(r => r.agentId === agentId)
+    .filter(r => r.steps.some(s =>
+      s.label.toLowerCase().includes(needle) || (s.detail ?? "").toLowerCase().includes(needle)))
+    .sort((a, b) => b.startedAt - a.startedAt);
+
+  if (traced.length === 0) {
+    return (
+      <div className="tracenone" data-branch={branch}>
+        No turn we are holding names <code>{branch}</code>. Its history is below.
+      </div>
+    );
+  }
+  return (
+    <div className="traced" data-branch={branch}>
+      <span className="eyebrow">The turn that made this branch</span>
+      {traced.slice(0, 2).map(r => <RunCard key={r.id} record={r} />)}
+    </div>
+  );
+}
+
+/** Connect a repository — the only form on this screen that changes anything. */
+function ConnectProject({ onConnected }: { onConnected: (repo: string) => void }): React.JSX.Element {
+  const [repo, setRepo] = useState("");
+  const [name, setName] = useState("");
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+
+  const submit = (): void => {
+    /* `validateRepo` is the HUB'S OWN function, imported rather than re-spelled,
+       so the sentence he reads before it goes and the sentence he would read
+       after it was refused are the same sentence. */
+    const bad = validateRepo(repo.trim());
+    if (bad) { setRefusal(bad); return; }
+    setRefusal(null);
+    setSending(true);
+    client.connectProject(repo.trim(), name.trim() ? { name: name.trim() } : {}, why => {
+      setSending(false);
+      setRefusal(why);
+    });
+    onConnected(repo.trim());
+  };
+
+  return (
+    <div className="connectproj panelbox">
+      <span className="eyebrow">Connect a repository</span>
+      <p className="hint">
+        Name it the way GitHub does — <code>owner/name</code>. It runs through the
+        GitHub sign-in already on this computer; Cloud9 never asks for a token.
+      </p>
+      <div className="cp-row">
+        <input className="input" id="f-repo" placeholder="vikas53953/cloud9" value={repo}
+          autoComplete="off" spellCheck={false}
+          onChange={e => { setRepo(e.target.value); setRefusal(null); }}
+          onKeyDown={e => { if (e.key === "Enter") submit(); }} />
+        <input className="input" id="f-repo-name" placeholder="Call it something (optional)" value={name}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") submit(); }} />
+        <button className="btn primary" disabled={sending} onClick={submit}>Connect</button>
+      </div>
+      {refusal && <p className="problemline" role="alert">{refusal}</p>}
+    </div>
+  );
+}
+
+/** One project's pull requests and issues, and the crew standing on its branches. */
+function ProjectDetail({ project, onOpenChannel }: {
+  project: Project; onOpenChannel: (id: ID) => void;
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [tab, setTab] = useState<ProjectItemKind>("pull");
+  const [open, setOpen] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(project.name);
+  const [forgetAsked, setForgetAsked] = useState(false);
+
+  const held = client.itemsFor(project.id);
+  useEffect(() => {
+    client.askProjectItems(project.id);
+    setOpen(null);
+    setForgetAsked(false);
+    setRenaming(false);
+  }, [project.id]);
+  useEffect(() => { setDraftName(project.name); }, [project.name, renaming]);
+
+  const pulls = held.items.filter(i => i.kind === "pull");
+  const issues = held.items.filter(i => i.kind === "issue");
+  const shown = tab === "pull" ? pulls : issues;
+  const reportsInto = project.channelId
+    ? world.channels.find(c => c.id === project.channelId)
+    : undefined;
+
+  /* WHO OF HIS CREW IS WORKING IN THIS REPOSITORY. Built from the pull requests
+     the engine reported, and from nothing else: an agent appears here because
+     it opened something, not because somebody said it might. */
+  const crewAtWork = world.agents
+    .map(a => ({ agent: a, items: pulls.filter(i => i.agentId === a.id) }))
+    .filter(x => x.items.length > 0);
+
+  const itemRow = (item: ProjectItem): React.JSX.Element => {
+    const key = `${item.kind}-${item.number}`;
+    const agent = item.agentId ? world.agents.find(a => a.id === item.agentId) : undefined;
+    const isOpen = open === key;
+    return (
+      <div className="projitem" key={key} data-item={key} data-state={item.state}
+        data-agent={item.agentId ?? ""}>
+        <button className="pi-head" aria-expanded={isOpen}
+          onClick={() => setOpen(isOpen ? null : key)}>
+          <span className="pi-no">#{item.number}</span>
+          <span className="pi-tx">
+            <b>{item.title}</b>
+            <span className="pi-sub">
+              {item.author ? `${item.author} · ` : ""}opened {dayStamp(item.createdAt)}
+            </span>
+          </span>
+          {item.branch && <BranchRibbon branch={item.branch} base={project.defaultBranch} agent={agent} />}
+          <span className={`chip ${ITEM_STATE_TONE[item.state]}`}>{ITEM_STATE_WORDS[item.state]}</span>
+        </button>
+
+        {isOpen && (
+          <div className="pi-body">
+            <dl className="kv">
+              <dt>Number</dt><dd>#{item.number}</dd>
+              {item.author && <><dt>Opened by</dt><dd>{item.author}</dd></>}
+              {agent && <><dt>Your agent</dt><dd>{agent.name}</dd></>}
+              {item.branch && <><dt>Branch</dt><dd><code>{item.branch}</code></dd></>}
+              {item.kind === "pull" && project.defaultBranch && (
+                <><dt>Aimed at</dt><dd><code>{project.defaultBranch}</code></dd></>
+              )}
+              <dt>Opened</dt><dd>{dayStamp(item.createdAt)}</dd>
+              <dt>Last change</dt><dd>{dayStamp(item.updatedAt)}</dd>
+              <dt>State</dt><dd>{ITEM_STATE_WORDS[item.state]}</dd>
+            </dl>
+
+            {/* WHAT WE DO NOT HAVE, said plainly rather than left as a blank
+                space he would read as "there is nothing written here". Cloud9
+                keeps the title and where to find it; the conversation lives on
+                GitHub and that is where it is read. */}
+            <p className="pi-note">
+              Cloud9 keeps the title, the state and where to find it. The description and
+              the conversation stay on GitHub.
+            </p>
+
+            <div className="actions">
+              <GitHubLink url={item.url}>
+                {item.kind === "pull" ? "Read the pull request" : "Read the issue"}
+              </GitHubLink>
+            </div>
+
+            {/* Traceable to the job that made it — his point 3. Only for a pull
+                request one of HIS agents opened, and only from records already
+                held; an untraced branch says so. */}
+            {agent && item.branch && agent.ownerId === world.me?.id && (
+              <div className="pi-work">
+                <TracedRun agentId={agent.id} branch={item.branch} />
+                <span className="eyebrow">Everything {agent.name} has done</span>
+                <RecentWork agentId={agent.id} />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="projdetail" data-project={project.id} data-repo={project.repo}>
+      <div className="pd-head">
+        <div className="pd-title">
+          {renaming ? (
+            <div className="cp-row">
+              <input className="input" value={draftName} autoFocus
+                onChange={e => setDraftName(e.target.value)}
+                onKeyDown={e => { if (e.key === "Escape") setRenaming(false); }} />
+              <button className="btn primary small" onClick={() => {
+                client.send({ type: "updateProject", projectId: project.id, name: draftName });
+                setRenaming(false);
+              }}>Save the name</button>
+              <button className="btn small" onClick={() => setRenaming(false)}>Cancel</button>
+            </div>
+          ) : (
+            <>
+              <h3>{project.name}</h3>
+              <RepoName repo={project.repo} />
+            </>
+          )}
+        </div>
+        {!renaming && (
+          <div className="pd-btns">
+            <button className="btn small" onClick={() => setRenaming(true)}>Rename</button>
+            {!forgetAsked
+              ? <button className="btn small" onClick={() => setForgetAsked(true)}>Disconnect</button>
+              : <>
+                <button className="btn small danger" onClick={() => {
+                  client.send({ type: "forgetProject", projectId: project.id });
+                }}>Yes, forget it</button>
+                <button className="btn small" onClick={() => setForgetAsked(false)}>Keep it</button>
+              </>}
+          </div>
+        )}
+      </div>
+
+      {forgetAsked && (
+        <p className="pd-reassure">
+          Disconnecting forgets Cloud9's copy of these lists. <b>Your repository is not
+          touched</b> — Cloud9 has no way to delete anything on GitHub.
+        </p>
+      )}
+
+      <div className="pd-facts">
+        {/* Each of these is drawn ONLY when the hub told us. A repository nobody
+            has looked at has no branch chip and no "last looked" chip, and says
+            that in words instead. */}
+        {project.defaultBranch && (
+          <span className="chip" title="Nothing lands here without you">
+            Trunk <code>{project.defaultBranch}</code>
+          </span>
+        )}
+        {project.syncedAt
+          ? <span className="chip">Looked at GitHub {dayStamp(project.syncedAt)}</span>
+          : <span className="chip is-gold">Not looked at GitHub yet</span>}
+        {reportsInto && (
+          <button className="chip is-ultra" onClick={() => onOpenChannel(reportsInto.id)}>
+            Reports into #{reportsInto.name}
+          </button>
+        )}
+      </div>
+
+      {project.description && <p className="pd-desc">{project.description}</p>}
+
+      {/* The hub's own sentence for why the last look failed, never a paraphrase
+          and never an empty list pretending to be "no open work". */}
+      {project.problem && (
+        <div className="pd-problem" role="status">
+          <b>The last look at GitHub did not work</b>
+          <span>{project.problem}</span>
+        </div>
+      )}
+
+      {!project.syncedAt && (
+        <div className="pd-never">
+          <b>Nobody has asked GitHub about this repository yet.</b>
+          {/* AND THE HONEST REASON. Nothing in Cloud9 asks GitHub for a
+              repository's lists yet — the half that runs `gh` and reports back
+              is written down in docs/plans/projects-handoff.md and is not
+              built. Saying "the lists fill in when your crew works here" would
+              be the same kind of claim this whole round exists to stop. */}
+          <span>
+            Cloud9 never calls GitHub itself — your agents do, through the sign-in
+            already on this computer. Nothing asks for these lists on a schedule yet, so
+            until one of your agents reports back, what is below is Cloud9's copy and not
+            what GitHub has.
+          </span>
+        </div>
+      )}
+
+      {crewAtWork.length > 0 && (
+        <div className="pd-crew">
+          <span className="eyebrow">Your crew in this repository</span>
+          <div className="crewbranches">
+            {crewAtWork.map(({ agent, items }) => (
+              <div className="crewbranch" key={agent.id} data-agent={agent.id}>
+                <AgentFace name={agent.name} size={32} presence={presenceOf(world, agent.id)} hasPresence />
+                <div className="cb-tx">
+                  <b>{agent.name}</b>
+                  <span className="cb-sub">
+                    {items.length} pull request{items.length === 1 ? "" : "s"} here
+                  </span>
+                </div>
+                <div className="cb-branches">
+                  {items.map(i => (
+                    <span className="cb-one" key={i.number}>
+                      {i.branch
+                        ? <BranchRibbon branch={i.branch} base={project.defaultBranch} />
+                        : <code className="bname">#{i.number}</code>}
+                      <span className={`chip ${ITEM_STATE_TONE[i.state]}`}>{ITEM_STATE_WORDS[i.state]}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* The worktree an agent is standing in is the engine's own business
+              and never crosses the wire, so this screen does not claim to know
+              it. Written down in docs/plans/projects-handoff.md rather than
+              filled in with a plausible-looking path. */}
+          <p className="pd-note">
+            The folder each agent works in stays on this computer and is not reported to
+            Cloud9 yet — the branch above is what travels.
+          </p>
+        </div>
+      )}
+
+      <div className="pd-tabs">
+        <div className="seg" role="group" aria-label="Pull requests or issues">
+          <button aria-pressed={tab === "pull"} data-tab="pull" onClick={() => setTab("pull")}>
+            Pull requests{held.asked ? ` · ${pulls.length}` : ""}
+          </button>
+          <button aria-pressed={tab === "issue"} data-tab="issue" onClick={() => setTab("issue")}>
+            Issues{held.asked ? ` · ${issues.length}` : ""}
+          </button>
+        </div>
+      </div>
+
+      <div className="pd-items">
+        {!held.asked && <div className="runwait">Asking the hub what it is holding…</div>}
+        {held.asked && shown.length === 0 && (
+          <EmptyTray
+            title={tab === "pull" ? "No pull requests recorded" : "No issues recorded"}
+            line={project.syncedAt
+              ? <>This is what GitHub said when your crew last looked, {dayStamp(project.syncedAt)}.</>
+              : <>Nobody has looked at GitHub yet, so this is what Cloud9 holds — not what GitHub has.</>} />
+        )}
+        {shown.map(itemRow)}
+      </div>
+    </div>
+  );
+}
+
+function ProjectsScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [pickedId, setPickedId] = useState<ID | null>(null);
+  const [connecting, setConnecting] = useState(false);
+
+  useEffect(() => { client.askProjects(); }, []);
+
+  const projects = world.projects.list;
+  const picked = projects.find(p => p.id === pickedId) ?? projects[0];
+
+  /* A repository just connected is the one he wants to look at. Matched on the
+     repository name because the id only exists once the hub has answered. */
+  const connectedRepo = useRef<string | null>(null);
+  useEffect(() => {
+    if (!connectedRepo.current) return;
+    const made = projects.find(p => p.repo === connectedRepo.current);
+    if (!made) return;
+    connectedRepo.current = null;
+    setPickedId(made.id);
+    setConnecting(false);
+  }, [projects]);
+
+  return (
+    <div className="projects">
+      <header className="topbar">
+        <h2>Projects</h2>
+        <span className="sub">The repositories your crew works in — branches, pull requests, issues</span>
+        <div className="grow" />
+        <button className="btn primary" data-connect
+          onClick={() => setConnecting(v => !v)}>
+          {connecting ? "Not now" : "Connect a repository"}
+        </button>
+      </header>
+
+      <div className="proj-body">
+        <aside className="proj-list">
+          <span className="eyebrow">Connected</span>
+          {!world.projects.asked && <div className="railempty">Looking…</div>}
+          {world.projects.asked && projects.length === 0 && (
+            <div className="railempty">
+              Nothing connected yet. Connect <code>owner/name</code> and this fills in.
+            </div>
+          )}
+          {projects.map(p => (
+            <button key={p.id} className="side-item" data-project={p.id} data-repo={p.repo}
+              aria-current={picked?.id === p.id ? "true" : "false"}
+              onClick={() => setPickedId(p.id)}>
+              <span className="txt">{p.name}</span>
+              {p.problem && <span className="cnt hot" title={p.problem}>!</span>}
+            </button>
+          ))}
+        </aside>
+
+        <div className="proj-main">
+          {connecting && (
+            <ConnectProject onConnected={repo => { connectedRepo.current = repo; }} />
+          )}
+
+          {!connecting && projects.length === 0 && world.projects.asked && (
+            <EmptyTray title="No repository connected yet"
+              line={<>
+                A project is a repository — its pull requests and its issues, together.
+                Press <b>Connect a repository</b> and name it the way GitHub does,
+                like <code>vikas53953/cloud9</code>.
+              </>} />
+          )}
+
+          {picked && <ProjectDetail project={picked} onOpenChannel={onOpenChannel} />}
+        </div>
       </div>
     </div>
   );

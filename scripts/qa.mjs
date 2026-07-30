@@ -14,7 +14,16 @@ import {
 // The size ceilings are the HUB's numbers. The screen reads them from this
 // package and so does this suite, so a check can never agree with a number the
 // renderer made up on its own.
-import { ATTACHMENT_LIMITS, humanMoney, summarizeRun } from "@cloud9/shared";
+// The Projects and mid-run-approval checks below hold the SCREEN to the
+// contract's own sentences — `describeRemoteAction` writes the words the hub
+// puts on the card, `validateRepo` writes the refusal the form prints, and
+// REMOTE_ACTIONS is the one table naming what Cloud9 asks about. Imported
+// rather than re-typed, so a check can never agree with a sentence this file
+// made up.
+import {
+  ATTACHMENT_LIMITS, describeRemoteAction, detailRemoteAction, humanMoney,
+  REMOTE_ACTIONS, summarizeRun, validateRepo,
+} from "@cloud9/shared";
 // THE LADDER AND THE TABLE, from the engine that owns them. Every count below
 // is derived, never typed: a ninth capability or a fifth rung moves this suite
 // with it instead of leaving a number here that used to be right.
@@ -73,7 +82,7 @@ const { ui: UI } = qaTarget();
  * run stops early it now FAILS and says so. Add or remove an `ok(...)` and this
  * number must move with it — a mismatch is the suite telling you it drifted.
  */
-const EXPECTED_CHECKS = 305;
+const EXPECTED_CHECKS = 350;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -2878,8 +2887,416 @@ try {
 
   // ---- and the third place it renders: an agent's own history ----
   await noSidewaysWithACard("with every step showing, in an agent's history", "run-card");
-  engineWs.close();
   await page.click(".editor >> text=← Crew");
+
+  /* ==========================================================================
+     PROJECTS — a repository, its pull requests, its issues (his item 7)
+
+     WHAT THIS SECTION IS PROVING. The hub has been able to store projects,
+     pull requests and issues for a day, and the desktop dropped all four
+     frames on the floor with a comment saying the Projects screen would claim
+     them. He said twice that he could not see any of it. So every check below
+     asks the SCREEN, never the store: is it drawn, does it say the true thing,
+     and does it refuse to say anything nobody has checked.
+
+     The lists are seeded through `projectSynced` on the SAME engine connection
+     the run records used — the real frame the real engine sends, validated and
+     redacted by the hub on the way through. Nothing is written straight onto
+     the screen.
+     ====================================================================== */
+
+  const REPO = "vikas53953/cloud9";
+  await page.click('.rail-btn[data-go="projects"]');
+  await page.waitForSelector(".projects", { timeout: 20000 });
+
+  ok("PROJECTS is in the icon rail, beside the four screens he approved",
+    await page.evaluate(() => {
+      const rail = [...document.querySelectorAll(".rail .rail-btn")]
+        .map(b => b.dataset.go ?? b.title ?? "");
+      return rail.includes("projects")
+        && ["chat", "crew", "tasks", "activity", "settings"].every(s => rail.includes(s));
+    }),
+    (await page.$$eval(".rail .rail-btn", bs => bs.map(b => b.dataset.go ?? b.title).join(", "))));
+
+  await page.waitForSelector(".proj-list .railempty, .proj-list .side-item", { timeout: 20000 });
+  ok("with nothing connected the screen says so, rather than drawing an empty list of nothing",
+    (await page.locator(".proj-main .empty, .proj-main .emptyplate").count()) > 0 ||
+    /nothing connected/i.test(await page.locator(".proj-list").innerText()),
+    (await page.locator(".proj-main").innerText()).slice(0, 90).replace(/\s+/g, " "));
+
+  /* ---- a name that is not owner/name is refused WHERE HE IS LOOKING ---- */
+  await page.click(".projects .topbar [data-connect]");
+  await page.waitForSelector(".connectproj", { timeout: 15000 });
+  await page.fill("#f-repo", "not a repository");
+  await page.click('.connectproj button:has-text("Connect")');
+  await page.waitForSelector(".connectproj .problemline", { timeout: 10000 });
+  ok("a name that isn't owner/name is refused in the contract's own sentence, in the form",
+    (await page.locator(".connectproj .problemline").innerText()).trim()
+      === validateRepo("not a repository"),
+    (await page.locator(".connectproj .problemline").innerText()).trim());
+
+  /* ---- connecting a real one ---- */
+  await page.fill("#f-repo", REPO);
+  await page.fill("#f-repo-name", "Cloud9 itself");
+  await page.click('.connectproj button:has-text("Connect")');
+  await page.waitForSelector(`.proj-list .side-item[data-repo="${REPO}"]`, { timeout: 20000 });
+  await page.waitForSelector(`.projdetail[data-repo="${REPO}"]`, { timeout: 20000 });
+  ok("connecting a repository puts it on screen, named the way GitHub names it",
+    (await page.locator(".projdetail .reponame").innerText()).replace(/\s+/g, "") === REPO,
+    await page.locator(".projdetail .reponame").innerText());
+
+  /* ABSENT MEANS ABSENT. Nobody has run `gh` against this yet, so there is no
+     trunk to protect and no "in sync" to claim — and the screen says which. */
+  ok("a repository nobody has looked at says so, and shows no trunk it was never told",
+    (await page.locator(".pd-never").count()) === 1 &&
+    /not looked at github yet/i.test(await page.locator(".pd-facts").innerText()) &&
+    !/trunk/i.test(await page.locator(".pd-facts").innerText()),
+    (await page.locator(".pd-facts").innerText()).replace(/\s+/g, " "));
+
+  const projectId = await page.getAttribute(`.proj-list .side-item[data-repo="${REPO}"]`, "data-project");
+
+  /* ---- what GitHub said, reported by the engine through the real frame ---- */
+  const nowIso = Date.now();
+  const ITEMS = [
+    {
+      projectId, kind: "pull", number: 41, title: "Add the Projects screen",
+      state: "open", author: "vikas53953", branch: "cloud9/architect-1", agentId: scout.id,
+      url: "https://github.com/vikas53953/cloud9/pull/41",
+      createdAt: nowIso - 3 * 3600_000, updatedAt: nowIso - 600_000,
+    },
+    {
+      projectId, kind: "pull", number: 39, title: "Redact secrets inside a URL",
+      state: "merged", author: "vikas53953", branch: "cloud9/redact-2",
+      url: "https://github.com/vikas53953/cloud9/pull/39",
+      createdAt: nowIso - 26 * 3600_000, updatedAt: nowIso - 20 * 3600_000,
+    },
+    {
+      projectId, kind: "pull", number: 38, title: "Widen visibleChannels",
+      state: "closed", author: "vikas53953", branch: "cloud9/widen-1",
+      url: "https://github.com/vikas53953/cloud9/pull/38",
+      createdAt: nowIso - 40 * 3600_000, updatedAt: nowIso - 30 * 3600_000,
+    },
+    {
+      projectId, kind: "issue", number: 12, title: "Agents cannot hand work to each other",
+      state: "open", author: "vikas53953",
+      url: "https://github.com/vikas53953/cloud9/issues/12",
+      createdAt: nowIso - 50 * 3600_000, updatedAt: nowIso - 2 * 3600_000,
+    },
+  ];
+  engineWs.send(JSON.stringify({
+    type: "projectSynced", projectId, defaultBranch: "master", items: ITEMS,
+  }));
+  await page.waitForSelector('.pd-items .projitem[data-item="pull-41"]', { timeout: 20000 });
+
+  ok("the pull requests the engine reported are on screen, in the project's own list",
+    await page.$$eval(".pd-items .projitem", rows => rows.map(r => r.dataset.item).join(",")) ===
+      "pull-41,pull-39,pull-38",
+    await page.$$eval(".pd-items .projitem", rows => rows.map(r => r.dataset.item).join(",")));
+
+  ok("the trunk it must never land on is drawn only now that GitHub actually said what it is",
+    /master/.test(await page.locator(".pd-facts").innerText()) &&
+    (await page.locator(".pd-never").count()) === 0,
+    (await page.locator(".pd-facts").innerText()).replace(/\s+/g, " "));
+
+  /* MERGED AND CLOSED ARE THE OPPOSITE OUTCOMES. A list that draws them the
+     same way is lying about the work, so the WORDS are compared, not the tint:
+     a colour he cannot name is not a difference he can read. */
+  const stateWords = await page.$$eval(".pd-items .projitem",
+    rows => Object.fromEntries(rows.map(r => [r.dataset.item, r.querySelector(".chip").innerText.trim()])));
+  ok("a pull request that landed and one that was thrown away are told apart in words, not only colour",
+    stateWords["pull-39"] !== stateWords["pull-38"] &&
+    /merged/i.test(stateWords["pull-39"]) && /not merged/i.test(stateWords["pull-38"]),
+    JSON.stringify(stateWords));
+
+  ok("a pull request one of his agents opened carries its branch and that agent's face",
+    await page.evaluate(() => {
+      const row = document.querySelector('.projitem[data-item="pull-41"]');
+      const ribbon = row?.querySelector(".branchribbon");
+      return !!ribbon && ribbon.dataset.branch === "cloud9/architect-1"
+        && !!ribbon.querySelector("svg .portrait, .portrait svg, svg");
+    }),
+    await page.locator('.projitem[data-item="pull-41"] .branchribbon').innerText());
+
+  ok("the trunk a branch is aimed at is named from what GitHub said, never guessed as main",
+    /master/.test(await page.locator('.projitem[data-item="pull-41"] .branchribbon').innerText()),
+    await page.locator('.projitem[data-item="pull-41"] .branchribbon').innerText());
+
+  /* ---- who of his crew is standing where ---- */
+  await page.waitForSelector(`.pd-crew .crewbranch[data-agent="${scout.id}"]`, { timeout: 15000 });
+  ok("the crew panel says which agent is on which branch in this repository",
+    /Scout/.test(await page.locator(".pd-crew").innerText()) &&
+    /cloud9\/architect-1/.test(await page.locator(".pd-crew").innerText()),
+    (await page.locator(".pd-crew").innerText()).replace(/\s+/g, " ").slice(0, 120));
+
+  ok("the folder an agent works in is NOT claimed — it never crosses the wire, and the screen says so",
+    /not reported to\s+Cloud9 yet|not reported to Cloud9 yet/i
+      .test((await page.locator(".pd-crew .pd-note").innerText()).replace(/\s+/g, " ")),
+    (await page.locator(".pd-crew .pd-note").innerText()).replace(/\s+/g, " "));
+
+  /* ---- opening one ---- */
+  await page.click('.projitem[data-item="pull-41"] .pi-head');
+  await page.waitForSelector('.projitem[data-item="pull-41"] .pi-body', { timeout: 15000 });
+  const pullBody = page.locator('.projitem[data-item="pull-41"] .pi-body');
+  ok("opening a pull request shows the facts we hold — its number, its branch and where it is aimed",
+    /#41/.test(await pullBody.innerText()) &&
+    /cloud9\/architect-1/.test(await pullBody.innerText()) &&
+    /master/.test(await pullBody.innerText()));
+  ok("and says the description and the conversation stay on GitHub rather than pretending to hold them",
+    /stay on GitHub/i.test((await pullBody.locator(".pi-note").innerText()).replace(/\s+/g, " ")));
+  ok("the link out is GitHub's own address, opened away from this window",
+    (await pullBody.locator("a.projlink").getAttribute("href")) === ITEMS[0].url &&
+    (await pullBody.locator("a.projlink").getAttribute("rel")).includes("noopener"),
+    await pullBody.locator("a.projlink").getAttribute("href"));
+
+  /* TRACEABLE TO THE TURN THAT MADE IT — or honestly not traceable. No run this
+     screen holds names that branch, and the screen says exactly that instead of
+     drawing a link nobody established. */
+  ok("a branch no held run names is reported as untraced, not linked to a turn we guessed at",
+    (await pullBody.locator(".tracenone").count()) === 1 &&
+    /cloud9\/architect-1/.test(await pullBody.locator(".tracenone").innerText()),
+    (await pullBody.locator(".tracenone").innerText()).replace(/\s+/g, " "));
+
+  /* and the same panel offers the agent's real history, from the hub */
+  await page.waitForSelector('.projitem[data-item="pull-41"] .recentwork .workrow', { timeout: 20000 });
+  ok("a pull request opens onto the work its agent actually did, from the run records the hub holds",
+    (await page.locator('.projitem[data-item="pull-41"] .recentwork .workrow').count()) > 0,
+    `${await page.locator('.projitem[data-item="pull-41"] .recentwork .workrow').count()} turns`);
+  await page.screenshot({ path: `${SHOTS}/projects-pull.png` });
+
+  /* ---- and now a run that DOES name the branch: the trace fills in ---- */
+  engineWs.send(JSON.stringify({
+    type: "runRecorded",
+    record: {
+      ...base, id: "r-qa-branch-1", provider: "claude", model: "claude-sonnet-5",
+      ask: "open a pull request for the Projects screen", outcome: "ok",
+      steps: [
+        { seq: 1, kind: "command", label: "Ran a command", detail: "git push origin cloud9/architect-1", ok: true },
+      ],
+    },
+  }));
+  await page.waitForSelector('.projitem[data-item="pull-41"] .traced .callout.run', { timeout: 20000 });
+  ok("once a turn names the branch, the pull request is traced to the very job that made it",
+    (await page.locator('.projitem[data-item="pull-41"] .traced').innerText()).includes("pull request"),
+    (await page.locator('.projitem[data-item="pull-41"] .traced .callout.run').innerText())
+      .replace(/\s+/g, " ").slice(0, 90));
+  await page.click('.projitem[data-item="pull-41"] .pi-head');
+
+  /* ---- issues are their own list, and read honestly ---- */
+  await page.click('.pd-tabs .seg button[data-tab="issue"]');
+  await page.waitForSelector('.pd-items .projitem[data-item="issue-12"]', { timeout: 15000 });
+  ok("issues are a list of their own, and only issues are in it",
+    await page.$$eval(".pd-items .projitem", rows => rows.every(r => r.dataset.item.startsWith("issue-"))) &&
+    (await page.locator(".pd-items .projitem").count()) === 1);
+  await page.click('.projitem[data-item="issue-12"] .pi-head');
+  await page.waitForSelector('.projitem[data-item="issue-12"] .pi-body', { timeout: 15000 });
+  ok("reading an issue offers GitHub's own address for it, and never a made-up one",
+    (await page.locator('.projitem[data-item="issue-12"] a.projlink').getAttribute("href")) === ITEMS[3].url,
+    await page.locator('.projitem[data-item="issue-12"] a.projlink').getAttribute("href"));
+  await page.screenshot({ path: `${SHOTS}/projects-issue.png` });
+
+  /* ---- the hub's own sentence when the last look failed ---- */
+  const PROBLEM = "gh could not reach github.com — check the network";
+  engineWs.send(JSON.stringify({ type: "projectSynced", projectId, problem: PROBLEM }));
+  await page.waitForSelector(".pd-problem", { timeout: 20000 });
+  ok("a failed look at GitHub is shown in the hub's own words, not as an empty list reading 'no open work'",
+    (await page.locator(".pd-problem span").innerText()).trim() === PROBLEM,
+    (await page.locator(".pd-problem span").innerText()).trim());
+  ok("and a project with a problem is flagged in the list beside it",
+    (await page.locator(`.proj-list .side-item[data-project="${projectId}"] .cnt.hot`).count()) === 1);
+
+  /* ---- the whole screen, in both looks, at both widths ---- */
+  await page.click('.pd-tabs .seg button[data-tab="pull"]');
+  await page.waitForSelector('.projitem[data-item="pull-41"]', { timeout: 15000 });
+  for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.waitForTimeout(220);
+      const over = await page.evaluate(() => ({
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        body: document.body.scrollWidth - document.body.clientWidth,
+      }));
+      ok(`the Projects screen does not scroll sideways at ${width} in the ${theme} look`,
+        over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+      if (width === 1280) await page.screenshot({ path: `${SHOTS}/projects-${theme}.png` });
+    }
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+
+  /* ---- disconnecting forgets OUR copy, and says so before it does ---- */
+  await page.click('.pd-btns button:has-text("Disconnect")');
+  await page.waitForSelector(".pd-reassure", { timeout: 10000 });
+  ok("before disconnecting, the screen promises the repository itself is untouched",
+    /repository is not\s*touched/i.test((await page.locator(".pd-reassure").innerText()).replace(/\s+/g, " ")),
+    (await page.locator(".pd-reassure").innerText()).replace(/\s+/g, " "));
+  await page.click('.pd-btns button:has-text("Yes, forget it")');
+  await page.waitForSelector(`.proj-list .side-item[data-repo="${REPO}"]`, { state: "detached", timeout: 20000 });
+  ok("a disconnected project takes its pull requests and its issues off the screen with it",
+    (await page.locator(".pd-items .projitem").count()) === 0 &&
+    (await page.locator(`.projdetail[data-repo="${REPO}"]`).count()) === 0);
+
+  /* ==========================================================================
+     THE APPROVAL FOR PUSHING — `kind:"action"` (docs/plans/approval-handoff.md)
+
+     An agent standing still mid-job, asking to do something OUTSIDE this
+     computer. The card has to read as clearly as the money moment in the
+     prototype: what will happen, to which repository and branch, how many
+     commits, and that it runs out. `expired` is its own state — "he never saw
+     it" is not "he said no" — and it is never painted as an error.
+
+     Sent through `askApproval` on the engine connection, which is the only
+     connection allowed to send it. The SCREEN cannot mint one, deliberately.
+     ====================================================================== */
+
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# general");
+  await page.waitForSelector(".composer textarea", { timeout: 20000 });
+
+  const PUSH_FACTS = {
+    action: "push", repo: REPO, branch: "cloud9/scout-7", commits: 2, files: 3,
+  };
+  engineWs.send(JSON.stringify({
+    type: "askApproval", askId: "qa-push-1", agentId: scout.id, channelId: general.id,
+    facts: PUSH_FACTS,
+  }));
+  await page.waitForSelector('.msg[data-kind="action"]', { timeout: 20000 });
+  const pushCard = page.locator('.msg[data-kind="action"]').first();
+
+  /* THE SENTENCE, VERBATIM. Every noun in it came from `git` and `gh` rather
+     than from the agent, and that is the whole reason he can trust it — so the
+     screen is held to the contract's own words, not to something like them. */
+  ok("a push request draws the sentence the machine wrote, word for word",
+    (await pushCard.locator(".spend .amt").innerText()).trim() === describeRemoteAction(PUSH_FACTS),
+    (await pushCard.locator(".spend .amt").innerText()).trim());
+  ok("the smaller line under it is the contract's own detail — how much is going up",
+    (await pushCard.locator(".spend .apdetail").innerText()).trim() === detailRemoteAction(PUSH_FACTS),
+    (await pushCard.locator(".spend .apdetail").innerText()).trim());
+  ok("the card names which repository and which branch, in the sentence he judges",
+    /vikas53953\/cloud9/.test(await pushCard.innerText()) &&
+    /cloud9\/scout-7/.test(await pushCard.innerText()));
+  ok("it says this is something outside this computer, and that nothing has left it yet",
+    /outside this computer/i.test(await pushCard.innerText()) &&
+    /Nothing has been changed yet/i.test(await pushCard.innerText()));
+  /* The eyebrow is set in small caps by the sheet, so the WORDS are compared
+     and not the casing — `innerText` hands back what the CSS did. */
+  ok("and which of the three things Cloud9 asks about this is, from the shared table",
+    (await pushCard.locator(".remoteact").innerText()).trim().toLowerCase()
+      === REMOTE_ACTIONS.push.toLowerCase(),
+    (await pushCard.locator(".remoteact").innerText()).trim());
+  ok("it says when it runs out — an agent is standing there waiting for the answer",
+    /minutes|about a minute|seconds/.test(
+      await pushCard.locator("dl.kv").innerText()) &&
+    /EXPIRES/i.test(await pushCard.locator("dl.kv").innerText()),
+    (await pushCard.locator("dl.kv").innerText()).replace(/\s+/g, " "));
+  ok("a request with no job behind it offers no 'see the job' button to press",
+    (await pushCard.locator("text=See the job").count()) === 0);
+  /* The pill and the cards read the same list, so the only check worth making
+     is that they AGREE — a hard-coded "1" would pass while the two drifted. */
+  ok("the gold pill counts a mid-run request as something waiting on him",
+    await page.evaluate(() => {
+      const pill = document.querySelector(".approvalpill");
+      const said = Number((pill?.innerText ?? "").match(/\d+/)?.[0] ?? -1);
+      const drawn = document.querySelectorAll('.msg[data-approval][data-state="pending"]').length;
+      return said === drawn && drawn >= 1;
+    }),
+    await page.locator(".approvalpill").innerText());
+  await pushCard.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/projects-approval-push.png` });
+
+  /* A REQUEST WHOSE SIZE WE DO NOT KNOW HAS NO SIZE LINE. Same law as a run
+     record: absent is absent, and "0 files changed" is a claim nobody made. */
+  engineWs.send(JSON.stringify({
+    type: "askApproval", askId: "qa-push-2", agentId: scout.id, channelId: general.id,
+    facts: { action: "pullRequest", repo: REPO, branch: "cloud9/scout-7", base: "master" },
+  }));
+  await waitFor(page, () => document.querySelectorAll('.msg[data-kind="action"]').length === 2,
+    undefined, { timeout: 20000, what: "the second mid-run request" });
+  const prCard = page.locator('.msg[data-kind="action"]').nth(1);
+  ok("a request that reported no size shows NO size line at all — not a zero",
+    (await prCard.locator(".apdetail").count()) === 0,
+    await prCard.locator(".spend").innerText());
+
+  /* ---- the same request, in the Tasks in-tray ---- */
+  await page.click('.rail-btn[data-go="tasks"]');
+  await page.waitForSelector('.tasks-side .approval[data-kind="action"]', { timeout: 20000 });
+  const trayCard = page.locator('.tasks-side .approval[data-kind="action"]').first();
+  ok("the same request is in the Tasks in-tray, carrying its sentence and its deadline",
+    (await trayCard.locator("h4").innerText()).trim() === describeRemoteAction(PUSH_FACTS) &&
+    /Expires/.test(await trayCard.locator(".apexpiry").innerText()),
+    (await trayCard.locator(".apexpiry").innerText()).trim());
+  await page.screenshot({ path: `${SHOTS}/projects-approval-tray.png` });
+
+  /* ---- HE SAID NO, and nothing happened ---- */
+  const noId = await trayCard.getAttribute("data-appr");
+  await trayCard.locator('button:has-text("Not now")').click();
+  await waitFor(page, id => !document.querySelector(`.approval[data-appr="${id}"]`), noId,
+    { timeout: 20000, what: "the refused request to leave the in-tray" });
+  ok("saying 'not now' answers it, and it stops waiting on him",
+    (await page.locator(`.tasks-side .approval[data-appr="${noId}"]`).count()) === 0);
+
+  /* ---- NOBODY ANSWERED, which is a different event and is drawn differently.
+     The hub's own deadline is ten minutes, so this proves the rendering in a
+     throwaway window with a controlled clock: the app decides a card is past
+     answering from `expiresAt`, and the hub refuses a late decision anyway — so
+     an Approve button after the deadline would be a button that cannot work.
+     The main window is untouched. */
+  const clockCtx = await browser.newContext();
+  const clockPage = await clockCtx.newPage();
+  await clockPage.clock.install();
+  await clockPage.goto(UI);
+  await signInAsOwner(clockPage);
+  engineWs.send(JSON.stringify({
+    type: "askApproval", askId: "qa-push-3", agentId: scout.id, channelId: general.id,
+    facts: { action: "push", repo: REPO, branch: "cloud9/lonely-1", commits: 1 },
+  }));
+  await clockPage.click(".sidebar >> text=# general");
+  await clockPage.waitForSelector('.msg[data-kind="action"][data-state="pending"]', { timeout: 20000 });
+  ok("before the deadline the request is answerable, with both buttons on it",
+    (await clockPage.locator('.msg[data-kind="action"] button:has-text("Approve")').count()) > 0);
+  // eleven minutes, so the ten-minute deadline is certainly behind us. A jump
+  // rather than a run: the countdown ticks once a second, and running six
+  // hundred of those would be six hundred renders to prove one thing.
+  await clockPage.clock.fastForward(11 * 60 * 1000);
+  await clockPage.waitForSelector('.msg[data-kind="action"][data-state="expired"]', { timeout: 20000 });
+  const deadCard = clockPage.locator('.msg[data-kind="action"][data-state="expired"]').first();
+  ok("a request nobody answered says nobody answered — it is not quietly a refusal",
+    /Nobody answered/i.test(await deadCard.innerText()) &&
+    !/reject/i.test(await deadCard.innerText()),
+    (await deadCard.locator(".expiredline").innerText()).replace(/\s+/g, " "));
+  ok("and it offers no button, because there is nothing left to answer",
+    (await deadCard.locator("button:has-text('Approve')").count()) === 0 &&
+    (await deadCard.locator("button:has-text('Not now')").count()) === 0);
+  ok("an expired request is not painted as an error — nothing happened, which is the safe outcome",
+    (await deadCard.locator(".chip.is-madder, .callout.approval .danger").count()) === 0 &&
+    /nothing happened/i.test(await deadCard.locator(".spend .per").innerText()),
+    (await deadCard.locator(".spend .per").innerText()).trim());
+  ok("the card stays where it was, so a request that ran out while he was away is FOUND, not vanished",
+    (await clockPage.locator('.msg[data-kind="action"]').count()) >= 1);
+  await deadCard.scrollIntoViewIfNeeded();
+  await clockPage.screenshot({ path: `${SHOTS}/projects-approval-expired.png` });
+  await clockCtx.close();
+
+  engineWs.close();
+
+  /* ---- PUT THE IN-TRAY BACK THE WAY IT WAS ----------------------------------
+   * Every QA script in this run shares one hub, and the next one waits for the
+   * rail to read exactly "1" approval. Requests this section left standing were
+   * therefore not junk in a throwaway database — they were a failure in the
+   * NEXT script, blamed on a feature that was working perfectly. A section that
+   * mints approvals answers all of them before it leaves.
+   */
+  await page.click('.rail-btn[data-go="tasks"]');
+  await page.waitForSelector(".tasks-side", { timeout: 20000 });
+  for (const left of await page.$$eval('.tasks-side .approval[data-kind="action"]',
+    els => els.map(e => e.dataset.appr))) {
+    await page.evaluate(id => window.cloud9Wire.ask(
+      { type: "decideApproval", approvalId: id, decision: "rejected" }), left);
+  }
+  await waitFor(page, () => document.querySelectorAll('.tasks-side .approval[data-kind="action"]').length === 0,
+    undefined, { timeout: 20000, what: "this section's own requests to be answered and gone" });
+  ok("this section leaves nothing waiting behind it — the in-tray is back the way it was",
+    (await page.locator('.tasks-side .approval[data-kind="action"]').count()) === 0);
 
   // ---------- nothing new scrolls sideways, in either look ----------
   await page.click('.rail-btn[data-go="chat"]');
