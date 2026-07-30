@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-07-30T04:59:13.095Z",
+  "ranAt": "2026-07-30T05:03:41.710Z",
   "expected": 305,
   "executed": 305,
   "results": [
@@ -161,7 +161,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch 1k6vm :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch 1ptc3 :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +176,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_QGsadBkIKlL5qlt2q3mZQg"
+      "detail": "inv_Q2cfGNv0v0jBC4qqIT47-A"
     },
     {
       "name": "friend joins via invite",
@@ -306,7 +306,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 10:27"
+      "detail": "↳ 1 reply · last at 10:31"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -376,7 +376,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 10:27 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 10:31 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -926,7 +926,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms71lgp7lxjuwz\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms71r49jlb547d\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -966,12 +966,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms71jpthipuu5u:1785387450908 a_ms71jzp56ubup2:1785387460102 u_ms71kdais1ctgs:1785387460862 a_ms71lgp7lxjuwz:1785387461011"
+      "detail": "u_ms71phq8t3ubyb:1785387714690 a_ms71pnm11zqikv:1785387723951 u_ms71px6ivjp3ur:1785387724573 a_ms71r49jlb547d:1785387724697"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785387457444 · now 1785387460862"
+      "detail": "first 1785387721160 · now 1785387724573"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -1176,7 +1176,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":18,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
+      "detail": "{\"followedToBottom\":0,\"samples\":23,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1251,7 +1251,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms71k2iofxo9hk\",\"status\":\"completed\",\"runId\":\"r-0ms71k2j2-q8b7\"}"
+      "detail": "{\"id\":\"t_ms71pq4vvh5y97\",\"status\":\"completed\",\"runId\":\"r-0ms71pq55-imyp\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",

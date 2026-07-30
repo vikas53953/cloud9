@@ -156,7 +156,27 @@ screen define a second shape for a pull request.
 
 The one shared thing that WILL be needed first:
 
-### 9. A mid-run approval round trip
+### 9. A mid-run approval round trip — **LANDED 2026-07-30**
+
+> **DONE, and proved against the real repository.** `askApproval` (engine-only)
+> and `approvalAsked` are on the wire; the hub mints the same `Approval` entity
+> with `kind: "action"`, writes the sentence itself from
+> `describeRemoteAction(facts)`, shows it to the owner alone, and expires it on
+> a timer. `ApprovalDesk` in the engine waits without blocking or spinning, and
+> `Engine.githubFor(agent, { channelId })` is the approver `GitHubClient` was
+> always missing — the gate is still closed by default, there is now somebody to
+> ask. `mustAskBeforeActing(agent, { remoteAction })` is the ONE owner of "must
+> ask" on both sides; a remote action always returns true whatever the switches
+> say.
+>
+> Real evidence: PR #2 on `vikas53953/cloud9`, opened after a real approval and
+> closed again; the branch deleted. A refusal and a timeout each proved to reach
+> GitHub with nothing. Full detail and the renderer's half:
+> `docs/plans/approval-handoff.md`.
+>
+> Everything below is the original request, kept for the record.
+
+
 
 Anything that leaves this machine goes through `GitHubClient`, whose gate is
 CLOSED BY DEFAULT: built without an approver it refuses everything, and there is
