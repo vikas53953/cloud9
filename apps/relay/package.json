@@ -10,11 +10,11 @@
   },
   "dependencies": {
     "@cloud9/shared": "*",
+    "@cloud9/engine": "*",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/ws": "^8.5.12",
-    "@types/node": "^22.0.0",
-    "@cloud9/engine": "*"
+    "@types/node": "^22.0.0"
   }
 }

@@ -11,6 +11,11 @@ import {
   REMOTE_ACTIONS, RunListEntry, RunRecord, RunStep, RunStepKind,
   SearchHit, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
   validateMessageText, validateName,
+  /* THE SKILL LIBRARY — the same two lists the relay and the engine can read.
+     The screen owns NO copy of a shelf or a skill: the filter bar, the group
+     headings and the ordering are all computed from these, so adding a skill
+     is a row in `skill-library.ts` and nothing here. */
+  SKILL_CATEGORIES, SKILL_LIBRARY, librarySkillsFor, skillFromLibrary, LibrarySkill,
   CLAUDE_DEFAULT_MODEL, CLAUDE_MODELS, modelLabel as sharedModelLabel,
 } from "@cloud9/shared";
 import { client, UNREAD_CEILING, unreadLabel, World } from "./store.js";
@@ -4542,14 +4547,24 @@ function useModels(provider: Provider): { ids: string[]; fallback: boolean; pref
 
 /* ================= skills (his 9) ================= */
 
-function SkillsEditor({ skills, onChange }: {
+function SkillsEditor({ skills, onChange, agentName, roleId }: {
   skills: AgentSkill[];
   onChange: (next: AgentSkill[]) => void;
+  /** whose list this is, so the library can say where a skill is going */
+  agentName?: string;
+  /**
+   * The casting-room role this agent was hired as, if we know it THIS SECOND.
+   * Only ever known at the hiring moment — an agent does not remember which
+   * template it came from — so it is optional and its absence changes nothing
+   * but the order. Never guessed.
+   */
+  roleId?: string | null;
 }): React.JSX.Element {
   const [openId, setOpenId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState<AgentSkill>({ id: "", name: "", description: "", instructions: "" });
   const [note, setNote] = useState<string | null>(null);
+  const [libraryOpen, setLibraryOpen] = useState(false);
 
   const startAdd = () => {
     setDraft({ id: newId(), name: "", description: "", instructions: "" });
@@ -4681,6 +4696,30 @@ function SkillsEditor({ skills, onChange }: {
   const detach = (fileName: string) =>
     setDraft(d => ({ ...d, files: (d.files ?? []).filter(f => f.name !== fileName) }));
 
+  /**
+   * TAKE ONE OFF THE SHELF — and this is the whole of it.
+   *
+   * `skillFromLibrary` hands back a plain `AgentSkill` with nothing pointing
+   * back at the library, and it goes into the very same array every skill he
+   * typed goes into. There is deliberately NO second list, no flag, no badge
+   * and no branch anywhere below this line: the row it draws, the pencil that
+   * edits it and the bin that deletes it are the ones that were already there.
+   * A hired agent that felt second-class is the mistake this avoids repeating.
+   */
+  const takeFromLibrary = (lib: LibrarySkill, replaceId?: string) => {
+    const made = skillFromLibrary(lib, newId());
+    if (replaceId) {
+      onChange(skills.map(s => (s.id === replaceId
+        // his files stay: the words are being replaced, not the documents.
+        ? { ...made, id: s.id, ...(s.files && s.files.length > 0 ? { files: s.files } : {}) }
+        : s)));
+      setNote(`“${lib.name}” was rewritten from the library. Any files you attached are still on it.`);
+    } else {
+      onChange([...skills, made]);
+      setNote(`“${lib.name}” is now one of ${agentName ? `${agentName}'s` : "this agent's"} skills — change any word of it with the pencil.`);
+    }
+  };
+
   return (
     <div className="skills">
       <div className="skillhead">
@@ -4690,6 +4729,9 @@ function SkillsEditor({ skills, onChange }: {
         </span>
         <div className="skillheadbtns">
           <button className="btn small skill-add" onClick={startAdd}>＋ Write a skill</button>
+          <button className="btn small skill-library-open" onClick={() => setLibraryOpen(true)}>
+            ◆ Take one from the library
+          </button>
           <label className="skill-uploadlabel">
             ⬆ Upload a file
             <input className="skill-upload" type="file" accept=".md,.txt" multiple
@@ -4702,6 +4744,8 @@ function SkillsEditor({ skills, onChange }: {
         <div className="skillempty">
           No skills yet. A skill is a short note telling this agent how to do one job —
           for example “Weekly report: pull the week's notes and write five bullet points.”
+          Write your own, or take one of the {SKILL_LIBRARY.length} ready-written ones
+          from the library.
         </div>
       )}
 
@@ -4768,6 +4812,188 @@ function SkillsEditor({ skills, onChange }: {
       )}
 
       {note && <div className="notice skillnote">{note}</div>}
+
+      {libraryOpen && (
+        <SkillLibraryPanel
+          have={skills} agentName={agentName} roleId={roleId ?? null}
+          onClose={() => setLibraryOpen(false)}
+          onTake={takeFromLibrary}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ================= 5c · THE SKILL LIBRARY ==================================
+ *
+ * READY-WRITTEN SKILLS, SHIPPED INSIDE THE APP — the same idea as the casting
+ * room, one floor down. No server, no download, no account: the catalogue is
+ * `skill-library.ts` in `@cloud9/shared`, compiled into the app, so it works
+ * with the network unplugged.
+ *
+ * THE PROMISE THIS SCREEN KEEPS. Taking a skill produces an ORDINARY skill.
+ * It lands in the same list, wears no badge, carries no mark saying where it
+ * came from, and is edited and deleted by the same two buttons as one he typed
+ * out himself. He hired a role once and found it was second-class; a skill
+ * taken from a shelf must never be.
+ *
+ * Nothing here is hard-coded. The filter bar and the group headings are built
+ * from `SKILL_CATEGORIES`, the cards from `SKILL_LIBRARY`, and the ordering
+ * from `librarySkillsFor` — so a sixth shelf or a sixteenth skill is two pieces
+ * of data and no change to this file.
+ */
+function SkillLibraryPanel({ have, agentName, roleId, onClose, onTake }: {
+  /** what the agent already holds — for the room left, and for "already there" */
+  have: AgentSkill[];
+  agentName?: string;
+  /** the casting-room role, when it is known this second; null otherwise */
+  roleId: string | null;
+  onClose: () => void;
+  onTake: (lib: LibrarySkill, replaceId?: string) => void;
+}): React.JSX.Element {
+  const [shelf, setShelf] = useState<string>("all");
+  const [reading, setReading] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  /* THE ORDER, AND THE ONE PLACE IT IS DECIDED. With a role known this second
+     the ones written for that role come first; with no role it is the natural
+     order, which the library itself calls a sensible default rather than an
+     error. Never guessed from a name or a persona. */
+  const ordered = librarySkillsFor(roleId ?? "");
+  const suggested = roleId ? ordered.filter(s => s.recommendedFor.includes(roleId)) : [];
+
+  const room = SKILL_LIMITS.perAgent - have.length;
+  const full = room <= 0;
+
+  /** the skill already on the agent with this name, if there is one */
+  const clash = (lib: LibrarySkill): AgentSkill | undefined =>
+    have.find(s => s.name.trim().toLowerCase() === lib.name.trim().toLowerCase());
+
+  const shown = shelf === "all" ? ordered
+    : shelf === "suggested" ? suggested
+      : ordered.filter(s => s.category === shelf);
+
+  /* Groups are drawn only when there is more than one shelf in view, so a
+     filtered list is a list rather than a list under a heading of itself. */
+  const groups = shelf === "all"
+    ? SKILL_CATEGORIES.filter(c => shown.some(s => s.category === c.id))
+    : [];
+
+  const card = (s: LibrarySkill): React.JSX.Element => {
+    const already = clash(s);
+    const open = reading === s.id;
+    return (
+      <article className="libskill" key={s.id} data-libskill={s.id}
+        data-taken={already ? "yes" : "no"}>
+        <div className="ls-head">
+          <span className="ls-mark" aria-hidden="true">{s.emoji}</span>
+          <h4>{s.name}</h4>
+          {roleId && s.recommendedFor.includes(roleId) && (
+            <span className="chip is-gold ls-forrole">Written for this role</span>
+          )}
+        </div>
+        <p className="ls-desc">{s.description}</p>
+
+        <button className="linkbtn ls-read" aria-expanded={open}
+          onClick={() => setReading(open ? null : s.id)}>
+          {open ? "Hide what it tells the agent to do" : "Read what it tells the agent to do"}
+        </button>
+        {open && <div className="ls-instructions" data-libinstructions={s.id}>{s.instructions}</div>}
+
+        <div className="ls-foot">
+          {/* WHERE IT CAME FROM. Small, at the bottom, and always there — he can
+              go and read the original rather than take our word for it. */}
+          <span className="ls-source">Taken from: {s.source}</span>
+          {already ? (
+            confirming === s.id ? (
+              <span className="ls-confirm">
+                <span className="ls-confirmtx">
+                  Replace the words in your “{already.name}”?
+                </span>
+                <button className="subtle small" onClick={() => setConfirming(null)}>Keep mine</button>
+                <button className="primary small ls-replace"
+                  onClick={() => { onTake(s, already.id); setConfirming(null); }}>Replace</button>
+              </span>
+            ) : (
+              <span className="ls-confirm">
+                <span className="ls-already">Already on this agent.</span>
+                <button className="btn small ls-replaceask" onClick={() => setConfirming(s.id)}>
+                  Replace it with this
+                </button>
+              </span>
+            )
+          ) : (
+            <button className="primary small ls-take" disabled={full}
+              onClick={() => onTake(s)}>
+              {agentName ? `Give it to ${agentName}` : "Add to this agent"}
+            </button>
+          )}
+        </div>
+      </article>
+    );
+  };
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="panel librarypanel" onClick={e => e.stopPropagation()}>
+        <div className="head">
+          <span className="ls-headmark" aria-hidden="true">◆</span>
+          <span className="hiretitle">The skill library</span>
+          <span className="eyebrow">{agentName ? `for @${agentName}` : "ready-written"}</span>
+        </div>
+        <div className="body">
+          <p className="hiretag">
+            {SKILL_LIBRARY.length} ready-written skills that ship inside Cloud9 — no download,
+            no account, and they work with the internet off. Taking one copies its words onto
+            this agent, where you can change or delete every one of them.
+          </p>
+
+          {/* SAY IT BEFORE HE PICKS, not after he is refused. */}
+          <div className="libroom" data-full={full ? "yes" : "no"}>
+            {full
+              ? `This agent already holds ${SKILL_LIMITS.perAgent} skills, which is as many as one can hold. Delete one before taking another.`
+              : `${have.length} of ${SKILL_LIMITS.perAgent} taught · room for ${room} more`}
+          </div>
+
+          <div className="seg libseg" role="group" aria-label="Which skills to show">
+            <button data-shelf="all" aria-pressed={shelf === "all"}
+              onClick={() => setShelf("all")}>All skills</button>
+            {/* only offered when a role is actually known — absent means absent */}
+            {suggested.length > 0 && (
+              <button data-shelf="suggested" aria-pressed={shelf === "suggested"}
+                onClick={() => setShelf("suggested")}>Written for this role</button>
+            )}
+            {SKILL_CATEGORIES.map(c => (
+              <button key={c.id} data-shelf={c.id} aria-pressed={shelf === c.id}
+                onClick={() => setShelf(c.id)}>{c.label}</button>
+            ))}
+          </div>
+
+          {shelf === "all"
+            ? groups.map(g => (
+              <section className="libgroup" key={g.id} data-libgroup={g.id}>
+                <div className="lg-head">
+                  <h5>{g.label}</h5>
+                  <p>{g.blurb}</p>
+                </div>
+                <div className="libgrid">
+                  {shown.filter(s => s.category === g.id).map(card)}
+                </div>
+              </section>
+            ))
+            : <div className="libgrid">{shown.map(card)}</div>}
+
+          {shown.length === 0 && (
+            <div className="skillempty">Nothing on that shelf yet.</div>
+          )}
+        </div>
+        <div className="foot">
+          <span className="ls-footnote">
+            A skill you take is yours — the same pencil and the same bin as one you wrote.
+          </span>
+          <button className="primary librarydone" onClick={onClose}>Done</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -4932,6 +5158,17 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
   };
 
   const shownName = creating ? (name.trim() || "Unnamed") : agent!.name;
+
+  /* WHICH CASTING-ROOM ROLE THIS IS — known only in the second after hiring.
+     An agent does not remember the template it came from (there is no field on
+     `AgentDef` for it, and inventing one in the renderer would be a lie that
+     survives a rename), so this is read from the hire that is happening RIGHT
+     NOW and is null every other time. All it changes is the ORDER the library
+     offers, and an unknown role gets the natural order — never an error, never
+     a guess about an agent whose history we do not have. */
+  const hiredRoleId = justHired && !creating && agent!.name === justHired
+    ? MARKET_TEMPLATES.find(t => justHired === t.name || justHired.startsWith(`${t.name}-`))?.id ?? null
+    : null;
   const jobsRun = agent ? world.tasks.filter(t => t.agentId === agent.id).length : 0;
 
   /* THE LADDER, read from the engine and never re-decided here.
@@ -5280,8 +5517,11 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
             <div className="sec-head"><h3>Skills</h3><span className="eyebrow">Things you have taught them</span></div>
             <p className="sec-note">
               A skill is a named routine with your instructions. {shownName} picks the right one when a job matches it.
+              Write your own, upload one, or take one of the {SKILL_LIBRARY.length} ready-written
+              skills Cloud9 ships with — whichever way it arrives, it is an ordinary skill you can change.
             </p>
-            <SkillsEditor skills={skills} onChange={setSkills} />
+            <SkillsEditor skills={skills} onChange={setSkills}
+              agentName={shownName} roleId={hiredRoleId} />
           </section>
 
           {/* WHAT THEY HAVE ACTUALLY BEEN DOING. Only for an agent that is
@@ -6154,6 +6394,20 @@ function HarnessCard({
         {(info?.models?.length ?? 0) > 0 && <span>{info!.models!.length} models available</span>}
         {savedKey && <span>✓ key saved on this computer</span>}
       </div>
+
+      {/* WHERE THAT MODEL LIST CAME FROM, in the engine's own sentence.
+          A list proved by running each model and a list we are falling back on
+          are not the same thing, and a chip reading "13 models" cannot tell him
+          which he is looking at. The words are `modelsDetail` verbatim — this
+          screen never writes its own, so the sentence can never disagree with
+          what actually happened. Absent means absent: nothing is drawn until
+          the harness has something to say. */}
+      {info?.modelsDetail && (
+        <div className="modelsource" data-checked={info.modelsChecked ? "yes" : "no"}>
+          <span className="ms-mark" aria-hidden="true">{info.modelsChecked ? "✓" : "·"}</span>
+          <span className="ms-tx">{info.modelsDetail}</span>
+        </div>
+      )}
 
       {signedIn && !waiting && (
         <div className="signedinline" data-state="signed-in">

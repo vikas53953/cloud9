@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-30T10:47:57.831Z",
-  "expected": 363,
-  "executed": 363,
+  "ranAt": "2026-07-30T12:27:16.945Z",
+  "expected": 381,
+  "executed": 381,
   "results": [
     {
       "name": "join screen renders",
@@ -114,6 +114,11 @@
       "detail": "signedIn=true waiting=false failed=false"
     },
     {
+      "name": "where the model list came from is printed in the engine's own words, marked proved or not",
+      "pass": true,
+      "detail": "claude: 13 models available → [no] the list Cloud9 last proved by running it, not checked just now | codex: 7 models available → (nothing claimed)"
+    },
+    {
       "name": "settings still offers the API-key fallback on both cards",
       "pass": true,
       "detail": "Switch account · ▸ Use an API key instead · Switch account · ▸ Use an API key instead"
@@ -171,7 +176,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch e0vp9 :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch hkk0f :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -186,7 +191,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_N83_ERAiPUKQvGxPtL4ANw"
+      "detail": "inv_GoeDslsrEbpcpFWLVtmDgw"
     },
     {
       "name": "friend joins via invite",
@@ -316,7 +321,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 16:15"
+      "detail": "↳ 1 reply · last at 17:55"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -386,7 +391,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 16:15 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 17:55 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -559,6 +564,11 @@
       "detail": "[\"Who they are\",\"Where they run\",\"How far they can go\",\"Who can use this agent?\",\"When to stop and ask\",\"Skills\",\"What they've been doing\"]"
     },
     {
+      "name": "an agent whose role nobody knows is not told a role it does not have",
+      "pass": true,
+      "detail": "15 skills, no role claimed"
+    },
+    {
       "name": "the casting room is reachable from where he already goes to add an agent",
       "pass": true,
       "detail": "Browse the casting room"
@@ -654,6 +664,81 @@
       "detail": ""
     },
     {
+      "name": "the skill library is reachable from the skills section of an agent's own file",
+      "pass": true,
+      "detail": "◆ Take one from the library"
+    },
+    {
+      "name": "every skill it ships with is on screen, grouped on the shelves the library itself names",
+      "pass": true,
+      "detail": "15 skills on 5 shelves: Checking work (4), Building it right (3), Finding and fixing (3), Shipping safely (3), Writing it down (2)"
+    },
+    {
+      "name": "each one says in plain words when it helps, and names where the procedure came from",
+      "pass": true,
+      "detail": "all fifteen carry their own words and their own source"
+    },
+    {
+      "name": "the whole procedure can be read before it is taken, word for word",
+      "pass": true,
+      "detail": "1907 characters of “Code review”"
+    },
+    {
+      "name": "the library says which of its skills were written for the role he just hired",
+      "pass": true,
+      "detail": "8 of 15 written for sw-architect"
+    },
+    {
+      "name": "it says how much room is left BEFORE he picks, not after he is refused",
+      "pass": true,
+      "detail": "0 of 20 taught · room for 20 more"
+    },
+    {
+      "name": "nothing in the library shows a rating, a popularity or a count nobody has measured",
+      "pass": true,
+      "detail": "6895 characters read"
+    },
+    {
+      "name": "a shelf on the filter bar shows that shelf and nothing else",
+      "pass": true,
+      "detail": "Checking work: 4"
+    },
+    {
+      "name": "giving a skill to an agent puts it straight into the same list every other skill is in",
+      "pass": true,
+      "detail": "1 of 20 taught · room for 19 more"
+    },
+    {
+      "name": "taking one he already has offers to replace it rather than silently making a second",
+      "pass": true,
+      "detail": "Already on this agent."
+    },
+    {
+      "name": "and replacing leaves one, not two",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "A SKILL TAKEN FROM THE LIBRARY IS DRAWN AS THE SAME ROW AS ONE HE TYPED — no badge, no lock",
+      "pass": true,
+      "detail": "both: iconbtn skill-delete + iconbtn skill-edit"
+    },
+    {
+      "name": "its words arrived in full and sit in the ordinary skill editor, not a preview",
+      "pass": true,
+      "detail": "1492 characters, editable"
+    },
+    {
+      "name": "every word of it can be changed, exactly like one he wrote himself",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and it can be deleted by the same bin, with nothing refusing",
+      "pass": true,
+      "detail": ""
+    },
+    {
       "name": "hiring copies the role onto his floor as one of his own agents",
       "pass": true,
       "detail": ""
@@ -661,7 +746,7 @@
     {
       "name": "and it runs on the app he chose, not the one the catalogue suggested",
       "pass": true,
-      "detail": "Codex gpt-5.6-sol"
+      "detail": "Codex gpt-5.6-sol 1 skill"
     },
     {
       "name": "the crew screen says the hire is his to change",
@@ -682,6 +767,11 @@
       "name": "and every word of it can be changed afterwards — the change survives the hub",
       "pass": true,
       "detail": "wait.\n\nAlways answer in British English."
+    },
+    {
+      "name": "a skill taken from the library is saved on the agent, and comes back as an ordinary skill",
+      "pass": true,
+      "detail": "“Prove it before saying done (mine)” survived the hub"
     },
     {
       "name": "every agent row on screen carries a presence, and it is one the hub can actually say",
@@ -966,7 +1056,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms7e1zk3hl4pjl\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms7hluhmnszd9r\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -1006,12 +1096,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms7e0k0ngw1ffb:1785408379403 a_ms7e0ntdq75lip:1785408386438 u_ms7e0yyxamdzxp:1785408387034 a_ms7e1zk3hl4pjl:1785408387160"
+      "detail": "u_ms7hka9kl4vvh7:1785414343274 a_ms7hkdhs8okmuc:1785414351729 u_ms7hkn10d6bqry:1785414352186 a_ms7hluhmnszd9r:1785414352320"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785408383396 · now 1785408387034"
+      "detail": "first 1785414349031 · now 1785414352186"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -1216,7 +1306,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":21,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
+      "detail": "{\"followedToBottom\":0,\"samples\":20,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1291,7 +1381,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms7e0rgtad229b\",\"status\":\"completed\",\"runId\":\"r-0ms7e0rh2-a69e\"}"
+      "detail": "{\"id\":\"t_ms7hkgik4wp8t0\",\"status\":\"completed\",\"runId\":\"r-0ms7hkgiu-s8qv\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1481,7 +1571,7 @@
     {
       "name": "pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
       "pass": true,
-      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms7e3cbxrcpts6\",\"repo\":\"vikas53953/cloud9\"}"
+      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms7hn4gkjp9211\",\"repo\":\"vikas53953/cloud9\"}"
     },
     {
       "name": "while it is looking the button says so and cannot be pressed again",
@@ -1636,7 +1726,7 @@
     {
       "name": "it says when it runs out — an agent is standing there waiting for the answer",
       "pass": true,
-      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 16:17 EXPIRES in 9 minutes"
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 17:56 EXPIRES in 9 minutes"
     },
     {
       "name": "a request with no job behind it offers no 'see the job' button to press",

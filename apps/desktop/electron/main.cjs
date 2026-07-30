@@ -37,6 +37,95 @@ let hubError = "";
 /** The key that proves "I am the owner of this Cloud9". Filled in on startup. */
 let ownerToken = "dev-owner-token";
 
+/* ---------- writing a file this app will later believe ----------
+ *
+ * Three files in this process are written now and trusted later: this install's
+ * private key, his settings, and his saved Claude/Codex sign-ins. A plain
+ * `fs.writeFileSync` is not one action — it empties the file and then fills it,
+ * so a power cut, a crash or antivirus arriving mid-write leaves HALF A FILE
+ * under a name the app trusts. For the private key that is total, silent loss:
+ * the app cannot read it, mints a new one over the top, and comes back as a
+ * stranger to its own hub.
+ *
+ * The rule that fixes it already exists and has ONE owner — `writeWholeFile` in
+ * `@cloud9/engine`: write next door, flush to the disk, rename into place,
+ * retrying the rename while Defender holds a handle. This file is plain
+ * CommonJS in the Electron main process and cannot `import` TypeScript, but it
+ * CAN load the engine's built JavaScript, and it already does exactly that for
+ * the engine host. So it loads the real rule rather than keeping a second copy
+ * of it here. A second copy that drifts from the first is precisely the bug
+ * this whole round removed.
+ *
+ * If the engine cannot be loaded at all, nothing is written unsafely — the
+ * write returns false and every caller says so out loud. A save he can see fail
+ * beats a save that quietly did not happen. */
+let writeWholeFile = null;
+let sweepPending = null;
+
+/**
+ * Load the one owner of the safe write. Called once, before anything is written.
+ *
+ * TWO WAYS TO THE SAME FILE, not two copies of the rule. The first is the file
+ * itself, and it costs about 20 ms; the second is the engine's front door, which
+ * costs about 300 ms because it drags in the whole agent SDK behind it. That
+ * 300 ms would be spent before Vikas's window appeared, every single launch, to
+ * load code the app is going to load a second later anyway. The front door is
+ * kept as the fallback because it is the supported surface and it will survive
+ * the day someone rearranges the engine's folders.
+ */
+async function loadDurableWrite() {
+  const routes = ["@cloud9/engine/dist/wholefile.js", "@cloud9/engine"];
+  const failures = [];
+  for (const route of routes) {
+    try {
+      const mod = route === "@cloud9/engine"
+        ? await import("@cloud9/engine")
+        : await import("@cloud9/engine/dist/wholefile.js");
+      if (typeof mod.writeWholeFile !== "function") throw new Error("no writeWholeFile in it");
+      ({ writeWholeFile, sweepPending } = mod);
+      return true;
+    } catch (err) {
+      failures.push(`${route}: ${err?.message ?? err}`);
+    }
+  }
+  console.error(`[cloud9] could not load the safe-write rule from the engine — ${failures.join("; ")}`);
+  writeWholeFile = null;
+  sweepPending = null;
+  return false;
+}
+
+/**
+ * Write a file whole or not at all. `data` may be text or bytes — the encrypted
+ * blobs below are bytes, and turning them into a string would mangle them.
+ * Returns true only when the bytes are really under the real name.
+ */
+function writeFileWhole(target, data, onError, options) {
+  if (!writeWholeFile) {
+    onError?.(
+      "Cloud9 could not load its own safe-saving code, so nothing was written rather " +
+      "than written half-way");
+    return false;
+  }
+  return writeWholeFile(target, data, onError, options);
+}
+
+/**
+ * Clear away the litter of a write this app was killed in the middle of.
+ * Only the top of the settings folder: that is where all three of these files
+ * live, and the engine sweeps its own folder underneath already.
+ */
+function sweepOwnLitter() {
+  if (!sweepPending) return 0;
+  try {
+    const n = sweepPending(app.getPath("userData"));
+    if (n) console.log(`[cloud9] cleared ${n} leftover part-file(s) from an interrupted save`);
+    return n;
+  } catch (err) {
+    console.error("[cloud9] could not tidy leftover part-files:", err);
+    return 0;
+  }
+}
+
 /* ---------- this install's own private key ----------
  * The relay refuses to start programs on this computer for anyone holding the
  * token every checkout ships with — rightly so, it is public. A real install
@@ -63,29 +152,78 @@ function readOwnerToken() {
   }
 }
 
+/**
+ * Write this install's private key so that it either fully happens or does not
+ * happen at all. Returns `{ ok }`, and a sentence when it is false.
+ *
+ * THIS IS THE MOST VALUABLE WRITE IN THE APP. It happens once, on first run —
+ * while the installer is also hammering the disk — and every run afterwards
+ * depends on reading it back. Torn, it is not recoverable: `readOwnerToken`
+ * returns null, `ensureOwnerToken` mints a new key over the top, and the app is
+ * a stranger to its own hub for ever. So it goes through the whole-file rule,
+ * `0o600` travels with it on the temporary file, and the answer is acted on.
+ */
 function writeOwnerToken(token) {
   const canEncrypt = safeStorage.isEncryptionAvailable();
   const blob = canEncrypt
     ? Buffer.concat([Buffer.from([0x01]), safeStorage.encryptString(token)])
     : Buffer.concat([Buffer.from([0x00]), Buffer.from(token, "utf8")]);
-  fs.writeFileSync(ownerTokenPath(), blob, { mode: 0o600 });
+  let why = "";
+  const ok = writeFileWhole(ownerTokenPath(), blob, (m) => { why = m; }, { mode: 0o600 });
+  if (!ok) {
+    // never the value, only that it did not land
+    console.error(`[cloud9] this install's private key could NOT be saved: ${why}`);
+    return { ok: false, why: why || "the key could not be written to this computer" };
+  }
   console.log(
     `[cloud9] made this install its own private key (length ${token.length}, ` +
     `${canEncrypt ? "encrypted by Windows" : "NOT encrypted — this computer can't"})`);
+  return { ok: true };
+}
+
+/**
+ * A key file that is THERE but cannot be read is never thrown away silently.
+ *
+ * The whole-file write above means a torn key is no longer possible. Other
+ * things still are — a disk fault, or Windows refusing to decrypt a blob made
+ * under a different account. In every one of those cases the old behaviour was
+ * to mint a new key straight over the top of the old one, which destroys the
+ * only copy of the thing that proves who this install is. Keeping a copy costs
+ * nothing and is the difference between "recoverable by hand" and "gone".
+ */
+function keepUnreadableOwnerToken() {
+  const from = ownerTokenPath();
+  const to = `${from}.unreadable-${Date.now()}`;
+  try {
+    fs.renameSync(from, to);
+    console.error(
+      "[cloud9] there was already a private key here and it could not be read. A copy was " +
+      `kept as ${path.basename(to)} and a new key made — this Cloud9 may not recognise ` +
+      "things signed with the old one.");
+  } catch (err) {
+    console.error("[cloud9] could not keep a copy of the unreadable private key:", err);
+  }
 }
 
 /**
  * Dev keeps today's behaviour exactly (the well-known token plus CLOUD9_DEV=1).
  * The installed app never uses either: it makes a real key on first run.
+ *
+ * Returns `{ ok, token }`, or `{ ok: false, why }` when a new key could not be
+ * put on the disk. A key that is only in memory is worse than no key: this run
+ * would work, the next would not, and nothing would have said why.
  */
 function ensureOwnerToken() {
-  if (!PACKAGED) return process.env.CLOUD9_OWNER_TOKEN || SHIPPED_DEFAULT_TOKEN;
-  let token = readOwnerToken();
-  if (!token || token === SHIPPED_DEFAULT_TOKEN) {
-    token = crypto.randomBytes(32).toString("base64url");
-    writeOwnerToken(token);
-  }
-  return token;
+  if (!PACKAGED) return { ok: true, token: process.env.CLOUD9_OWNER_TOKEN || SHIPPED_DEFAULT_TOKEN };
+  const existing = readOwnerToken();
+  if (existing && existing !== SHIPPED_DEFAULT_TOKEN) return { ok: true, token: existing };
+  // about to REPLACE this install's identity — if there is something there we
+  // simply could not read, keep it rather than write over it
+  if (existing === null && fs.existsSync(ownerTokenPath())) keepUnreadableOwnerToken();
+  const token = crypto.randomBytes(32).toString("base64url");
+  const wrote = writeOwnerToken(token);
+  if (!wrote.ok) return { ok: false, why: wrote.why };
+  return { ok: true, token };
 }
 
 /**
@@ -116,11 +254,49 @@ function migrateUnnamedUserData() {
 function settingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
 }
+/**
+ * Read his settings, and SAY SO when they could not be believed.
+ *
+ * One file holds every preference he has ever set. Returning `{}` in silence
+ * means the next `writeSettings` writes the defaults straight over whatever was
+ * left — so a single bad read wipes the lot and nothing anywhere mentions it.
+ * There is nothing sensible to do but carry on with defaults; there is a great
+ * deal of difference between carrying on loudly and carrying on quietly.
+ */
 function readSettings() {
-  try { return JSON.parse(fs.readFileSync(settingsPath(), "utf8")); } catch { return {}; }
+  let text;
+  try {
+    text = fs.readFileSync(settingsPath(), "utf8");
+  } catch {
+    return {}; // no settings yet — an ordinary first run, not a problem
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("the file is not a set of settings");
+    }
+    return parsed;
+  } catch (err) {
+    console.error(
+      `[cloud9] your settings file could not be read (${String(err)}). Cloud9 is carrying on ` +
+      `with its defaults; the file is ${settingsPath()} if you want to look at it.`);
+    return {};
+  }
 }
+
+/**
+ * Save his settings whole or not at all, and hand back whether it landed.
+ *
+ * Torn, this file silently resets every preference he has ever set — the reader
+ * above cannot tell a half-written file from an absent one, and the next save
+ * writes the defaults over the wreckage. Same class as the engine's schedules
+ * file, which is what started this round.
+ */
 function writeSettings(s) {
-  fs.writeFileSync(settingsPath(), JSON.stringify(s, null, 2));
+  let why = "";
+  const ok = writeFileWhole(settingsPath(), JSON.stringify(s, null, 2), (m) => { why = m; });
+  if (!ok) console.error(`[cloud9] your settings could not be saved: ${why}`);
+  return ok;
 }
 
 /* ---------- secrets (harness-signin.md decision 4) ----------
@@ -148,7 +324,16 @@ function saveSecret(harness, kind, value) {
       Buffer.from(`${kind}\n`, "utf8"),
       safeStorage.encryptString(value),
     ]);
-    fs.writeFileSync(secretPath(harness), blob, { mode: 0o600 });
+    // Whole or not at all: a torn credential file makes the sign-in stop
+    // working with no explanation, and sends him back through "Sign in with
+    // Claude" wondering what he did. `0o600` goes on the temporary file so the
+    // permission travels with the rename and the blob is never briefly readable.
+    let why = "";
+    const ok = writeFileWhole(secretPath(harness), blob, (m) => { why = m; }, { mode: 0o600 });
+    if (!ok) {
+      console.error(`[cloud9] could not save the ${harness} sign-in: ${why}`);
+      return false;
+    }
     console.log(`[cloud9] saved a ${harness} ${kind} securely (length ${value.length})`);
     return true;
   } catch (err) {
@@ -199,7 +384,14 @@ function migratePlaintextCredential() {
   }
   delete s.cred;
   delete s.credKind;
-  writeSettings(s);
+  if (!writeSettings(s)) {
+    // The encrypted copy IS saved, so nothing is lost — but the plain-text one
+    // is still sitting in settings.json and saying otherwise would be a lie.
+    console.error(
+      "[cloud9] the encrypted sign-in was saved, but the old plain-text copy could not be " +
+      "removed from your settings file. It will be tried again next time Cloud9 starts.");
+    return;
+  }
   console.log("[cloud9] moved an old plain-text credential into encrypted storage");
   // also drop the pre-v2 single-slot file, now superseded by the per-harness one
   try { fs.unlinkSync(path.join(app.getPath("userData"), "cloud9-credential.bin")); } catch { /* none */ }
@@ -438,9 +630,15 @@ ipcMain.handle("cloud9:setQuickChatHotkey", (_ev, enabled, key) => {
   const s = readSettings();
   s.globalQuickChat = enabled === true;
   if (typeof key === "string" && key.trim()) s.globalQuickChatKey = key.trim();
-  writeSettings(s);
+  const saved = writeSettings(s);
   // apply it now and report honestly whether the key could actually be claimed
-  return quickChatHotkeyStatus(applyGlobalQuickChatShortcut());
+  const status = quickChatHotkeyStatus(applyGlobalQuickChatShortcut());
+  // A setting that works this time and is gone tomorrow must not read as saved.
+  if (!saved) {
+    status.error = "that worked for now, but it could not be saved — it will be back to " +
+      "how it was next time you start Cloud9";
+  }
+  return status;
 });
 
 /* ---------- letting a friend on another computer reach this hub ---------- */
@@ -464,7 +662,16 @@ ipcMain.handle("cloud9:setHubNetwork", (_ev, address) => {
   }
   const s = readSettings();
   if (want) s.networkBind = want; else delete s.networkBind;
-  writeSettings(s);
+  if (!writeSettings(s)) {
+    // This one only takes effect on the NEXT start, so an unsaved change does
+    // nothing at all. Saying "restart to apply" would be sending him to look at
+    // a change that is not there.
+    return {
+      ok: false,
+      error: "that address could not be saved on this computer, so nothing was changed. " +
+        "Check there is free disk space and try again.",
+    };
+  }
   return { ok: true, address: want || "127.0.0.1", restartNeeded: true };
 });
 
@@ -692,9 +899,27 @@ if (PACKAGED && !app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    // FIRST, before a single byte is written: load the one owner of the safe
+    // write, and clear away the part-files of a save this app was killed during.
+    await loadDurableWrite();
     migrateUnnamedUserData();
+    sweepOwnLitter();
     migratePlaintextCredential();
-    ownerToken = ensureOwnerToken();
+    const owner = ensureOwnerToken();
+    if (!owner.ok) {
+      // The private key is what proves this install is itself. Carrying on with
+      // a key held only in memory would work today and be gone tomorrow, with
+      // nothing to say why — so stop, and say it in words he can act on.
+      dialog.showErrorBox(
+        "Cloud9 could not start",
+        "Cloud9 makes its own private key the first time it runs, and that key could not be " +
+        `saved on this computer.\n\n${owner.why}\n\nNothing has been lost. Check there is ` +
+        "free disk space, and that your antivirus is not holding the Cloud9 folder, then " +
+        "start Cloud9 again.");
+      app.quit();
+      return;
+    }
+    ownerToken = owner.token;
     // The installed app carries its own hub. Dev keeps using the one
     // Start Cloud9.cmd opened, exactly as before.
     if (PACKAGED) {
@@ -738,3 +963,23 @@ app.on("window-all-closed", () => {
   stopRelay();
   app.quit();
 });
+
+/* ---------- a way in for the durability test, and nothing else ----------
+ *
+ * Electron ignores `module.exports` on the file it launches, so this costs the
+ * running app exactly nothing. It exists because the owner-token write is the
+ * single most valuable write in Cloud9 and "it looks right" is not evidence:
+ * `main.durability.test.cjs` loads this file with a stand-in for Electron, KILLS
+ * A REAL PROCESS in the middle of a real write, and then asks this same code
+ * whether the app still knows who it is.
+ *
+ * Nothing here is a second implementation. Every name below is the one the app
+ * itself runs. */
+module.exports = {
+  __test: {
+    loadDurableWrite, writeFileWhole, sweepOwnLitter,
+    ownerTokenPath, readOwnerToken, writeOwnerToken, ensureOwnerToken,
+    settingsPath, readSettings, writeSettings,
+    secretPath, saveSecret, loadSecret, clearSecret,
+  },
+};

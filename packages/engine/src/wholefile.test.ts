@@ -105,6 +105,173 @@ test("a write that fails leaves the OLD file exactly as it was, and no litter", 
   assert.deepEqual(fs.readdirSync(dir), ["thing.json"], "and our own temporary file was cleared up");
 });
 
+// ---------------------------------------------------------------------------
+// BYTES, NOT ONLY TEXT.
+//
+// The three most valuable files in this app are not text: an attachment Vikas
+// uploaded, this install's own private key, and his saved Claude/Codex
+// sign-ins. If the one owner of "write a file this app will later believe" only
+// took a string, each of those would have to make its own binary copy of the
+// rule — or, worse, stringify a Buffer on the way past and mangle every byte
+// that is not valid UTF-8. These tests write bytes that are DELIBERATELY not
+// valid UTF-8 and demand them back exactly.
+// ---------------------------------------------------------------------------
+
+/** Bytes no UTF-8 decoder can round-trip: lone surrogates, a bare 0xFF, a NUL. */
+function notUtf8(): Buffer {
+  const b = Buffer.from([
+    0x00, 0xff, 0xfe, 0x80, 0x81, 0xc0, 0xc1, 0xed, 0xa0, 0x80, 0xf5, 0x90, 0x0d, 0x0a, 0x1a,
+  ]);
+  // prove the premise of this whole test before relying on it
+  assert.notEqual(Buffer.from(b.toString("utf8"), "utf8").toString("hex"), b.toString("hex"),
+    "these bytes survive a string round-trip, so they prove nothing — pick worse ones");
+  return b;
+}
+
+test("bytes that are not valid UTF-8 come back byte for byte", () => {
+  const dir = tmp();
+  const target = path.join(dir, "attachment.bin");
+  const original = Buffer.concat([notUtf8(), Buffer.alloc(64 * 1024, 0xab), notUtf8()]);
+
+  assert.equal(writeWholeFile(target, original), true);
+
+  const back = fs.readFileSync(target);
+  assert.equal(back.length, original.length, "the file changed length going through the write");
+  assert.equal(Buffer.compare(back, original), 0,
+    "the bytes were mangled — this is what stringifying a Buffer does to a PDF");
+  assert.deepEqual(fs.readdirSync(dir), ["attachment.bin"], "no litter left behind");
+});
+
+test("a Buffer is never turned into text on the way past", () => {
+  // The proof above could also be passed by a lucky encoding. This one watches
+  // what is actually handed to the disk.
+  const dir = tmp();
+  const target = path.join(dir, "credential.bin");
+  const original = notUtf8();
+  let handed: unknown = "nothing was written";
+
+  const realWrite = fs.writeFileSync;
+  (fs as { writeFileSync: typeof fs.writeFileSync }).writeFileSync =
+    ((p: fs.PathOrFileDescriptor, d: string | NodeJS.ArrayBufferView, o?: unknown) => {
+      handed = d;
+      return realWrite(p as string, d as string, o as never);
+    }) as typeof fs.writeFileSync;
+  try {
+    assert.equal(writeWholeFile(target, original), true);
+  } finally {
+    (fs as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = realWrite;
+  }
+
+  assert.ok(Buffer.isBuffer(handed), `the bytes arrived as ${typeof handed}, not as bytes`);
+  assert.equal(Buffer.compare(handed as Buffer, original), 0);
+});
+
+test("the permission travels with the rename — it goes on the TEMPORARY file", () => {
+  // A key written world-readable and tightened a moment later HAS been readable.
+  // The window is small and on a shared machine it is the whole leak, so the
+  // mode goes on the file the bytes are written into, before it has the name
+  // anything looks for.
+  const dir = tmp();
+  const target = path.join(dir, "cloud9-owner-token.bin");
+  const modes: (number | undefined)[] = [];
+  const paths: string[] = [];
+
+  const realWrite = fs.writeFileSync;
+  (fs as { writeFileSync: typeof fs.writeFileSync }).writeFileSync =
+    ((p: fs.PathOrFileDescriptor, d: string | NodeJS.ArrayBufferView, o?: { mode?: number }) => {
+      if (typeof p === "string") paths.push(p);
+      modes.push(o?.mode);
+      return realWrite(p as string, d as string, o as never);
+    }) as typeof fs.writeFileSync;
+  try {
+    assert.equal(writeWholeFile(target, Buffer.from("a private key"), undefined, { mode: 0o600 }),
+      true);
+  } finally {
+    (fs as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = realWrite;
+  }
+
+  assert.equal(paths.length, 1, "written exactly once");
+  assert.ok(isPendingName(path.basename(paths[0])), "and that one write was the temporary file");
+  assert.deepEqual(modes, [0o600],
+    "the permission was not on the temporary file, so it did not travel with the rename");
+
+  if (process.platform !== "win32") {
+    // Windows does not carry POSIX bits at all; asserting them there would be
+    // asserting the operating system, not this function.
+    assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+  }
+});
+
+test("no mode asked for means no mode forced — an ordinary file stays ordinary", () => {
+  const dir = tmp();
+  const target = path.join(dir, "plain.json");
+  const modes: (number | undefined)[] = [];
+  const realWrite = fs.writeFileSync;
+  (fs as { writeFileSync: typeof fs.writeFileSync }).writeFileSync =
+    ((p: fs.PathOrFileDescriptor, d: string | NodeJS.ArrayBufferView, o?: { mode?: number }) => {
+      modes.push(o?.mode);
+      return realWrite(p as string, d as string, o as never);
+    }) as typeof fs.writeFileSync;
+  try {
+    assert.equal(writeWholeFile(target, "{}"), true);
+  } finally {
+    (fs as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = realWrite;
+  }
+  assert.deepEqual(modes, [undefined]);
+  assert.equal(fs.readFileSync(target, "utf8"), "{}");
+});
+
+test("a killed write of BYTES leaves the old bytes whole, not a mixture", async () => {
+  // The kill test at the bottom of this file proves it for text. An attachment
+  // is the one file on this list Vikas cannot get back, so it is proved for
+  // bytes too — with real processes, not a simulation.
+  const dir = tmp();
+  const target = path.join(dir, "his-upload.bin");
+  const good = Buffer.concat([notUtf8(), Buffer.from("THE OLD FILE, WHOLE")]);
+  fs.writeFileSync(target, good);
+
+  const script = path.join(dir, "writer.mjs");
+  fs.writeFileSync(script, [
+    `import { writeWholeFile } from ${JSON.stringify(pathToImport(path.join(here, "wholefile.js")))};`,
+    `const big = Buffer.alloc(24 * 1024 * 1024, 0xff);`,
+    `process.send?.("about-to-write");`,
+    `setTimeout(() => {`,
+    `  writeWholeFile(${JSON.stringify(target)}, big);`,
+    `  process.send?.("finished");`,
+    `}, 1);`,
+  ].join("\n"), "utf8");
+
+  let caughtMidWrite = false;
+  for (let attempt = 0; attempt < 20 && !caughtMidWrite; attempt++) {
+    const child = spawn(process.execPath, [script], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+    let finished = false;
+    child.on("message", m => { if (m === "finished") finished = true; });
+    await new Promise<void>(resolve => child.once("message", () => resolve()));
+    await new Promise(r => setTimeout(r, 2 + attempt * 2));
+    child.kill("SIGKILL");
+    await new Promise<void>(resolve => child.once("exit", () => resolve()));
+
+    const onDisk = fs.readFileSync(target);
+    const litter = fs.readdirSync(dir).filter(n => isPendingName(n)).map(n => path.join(dir, n));
+
+    if (finished) {
+      assert.equal(onDisk.length, 24 * 1024 * 1024, "the new file landed half-written");
+      fs.writeFileSync(target, good);
+      for (const f of litter) fs.rmSync(f, { force: true });
+      continue;
+    }
+
+    assert.equal(Buffer.compare(onDisk, good), 0,
+      "his uploaded file was torn by a killed write — and an upload cannot be re-derived");
+
+    const inFlight = litter.filter(f => fs.statSync(f).size > 0);
+    for (const f of litter) fs.rmSync(f, { force: true });
+    if (inFlight.length === 0) continue;
+    caughtMidWrite = true;
+  }
+  assert.ok(caughtMidWrite, "never caught a write in flight — this proof did not actually run");
+});
+
 test("two writes in the same millisecond do not use the same temporary name", () => {
   const target = path.join(tmp(), "thing.json");
   const names = new Set<string>();

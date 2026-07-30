@@ -2208,3 +2208,94 @@ button.chip{cursor:pointer;}
   .crewbranch{grid-template-columns:auto minmax(0,1fr);}
   .cb-branches{grid-column:1 / -1;}
 }
+
+/* ============================================================
+   THE SKILL LIBRARY — ready-written skills that ship in the app
+   ------------------------------------------------------------
+   Deliberately the SAME vocabulary as the casting room, one floor down: the
+   same overlay, the same pill filter bar (`.seg`), the same card rhythm and
+   the same "read the whole thing before you take it" panel. It has to read as
+   one idea, not a second marketplace.
+
+   Note what is NOT here: there is no styling for a library skill sitting on an
+   agent, because there is no such thing. Once taken it is a `.skillrow` like
+   every other, with the same pencil and the same bin.
+   ============================================================ */
+
+.librarypanel{width:min(920px,95vw);}
+.librarypanel>.head .ls-headmark{color:var(--pine);font-size:13px;flex:none;}
+.librarypanel>.body{max-height:66vh;gap:14px;}
+/* The body is a flex COLUMN that scrolls, and the library is the first thing
+   put in it that is taller than it. Flex children shrink by default, so every
+   shelf was being squeezed to fit and painting over the one below it — the
+   cards looked right and the pointer landed on the wrong thing. A scrolling
+   flex column must never let its children shrink. */
+.librarypanel>.body>*{flex:none;}
+.librarypanel>.foot .ls-footnote{
+  margin-right:auto;font-size:12px;color:var(--ink-3);line-height:1.5;max-width:56ch;
+}
+
+.libroom{
+  font-family:var(--mono);font-size:11px;letter-spacing:.03em;color:var(--ink-3);
+}
+.libroom[data-full="yes"]{
+  color:var(--marigold);background:var(--marigold-soft);border-radius:var(--radius-s);
+  border:1px solid color-mix(in srgb,var(--marigold) 40%,transparent);
+  padding:8px 11px;line-height:1.55;letter-spacing:0;font-family:inherit;font-size:12.5px;
+}
+
+.libseg{align-self:flex-start;max-width:100%;overflow-x:auto;}
+
+.libgroup{display:flex;flex-direction:column;gap:10px;}
+.lg-head h5{font-family:var(--display);font-size:16.5px;font-weight:600;letter-spacing:-.01em;margin:0;}
+.lg-head p{margin:2px 0 0;color:var(--ink-3);font-size:12.5px;line-height:1.5;}
+
+/* `align-items:start` deliberately: a card is as tall as its own words. Left to
+   stretch, opening one skill's procedure dragged its two neighbours down with
+   it and pushed their buttons and their source line off the bottom of the
+   panel — three cards that looked blank because one of them was being read. */
+.libgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(272px,1fr));gap:12px;align-items:start;}
+
+.libskill{
+  display:flex;flex-direction:column;gap:8px;min-width:0;
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);
+  padding:13px 15px;box-shadow:var(--shadow);
+  transition:border-color .15s var(--ease);
+}
+.libskill:hover{border-color:var(--ink-3);}
+.libskill[data-taken="yes"]{background:var(--surface-2);}
+.ls-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;min-width:0;}
+.ls-mark{font-size:17px;line-height:1;flex:none;}
+.ls-head h4{
+  font-family:var(--display);font-size:16px;font-weight:600;color:var(--ink);margin:0;
+  min-width:0;overflow-wrap:anywhere;
+}
+.ls-desc{margin:0;font-size:13px;line-height:1.55;color:var(--ink-2);overflow-wrap:anywhere;}
+.ls-read{align-self:flex-start;font-size:12.5px;}
+.ls-instructions{
+  border:1px solid var(--line);border-left:3px solid var(--pine);border-radius:var(--radius-s);
+  background:var(--surface-2);padding:12px 14px;
+  font-size:12.5px;line-height:1.6;color:var(--ink);
+  white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow-y:auto;
+}
+.ls-foot{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:auto;padding-top:4px;
+}
+.ls-source{
+  flex:1 1 100%;font-family:var(--mono);font-size:10.5px;line-height:1.5;color:var(--ink-3);
+  overflow-wrap:anywhere;
+}
+.ls-foot>.primary,.ls-foot>.btn{margin-left:auto;}
+.ls-confirm{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-left:auto;}
+.ls-already,.ls-confirmtx{font-size:12px;color:var(--ink-3);}
+.ls-confirmtx{color:var(--ink-2);}
+
+/* WHERE THE MODEL LIST CAME FROM — quiet by default, and it says so when the
+   list is the fallback rather than one proved by running it. */
+.modelsource{
+  display:flex;align-items:flex-start;gap:7px;font-size:12px;line-height:1.5;color:var(--ink-3);
+}
+.modelsource .ms-mark{flex:none;font-family:var(--mono);}
+.modelsource[data-checked="yes"] .ms-mark{color:var(--pine);}
+.modelsource[data-checked="no"]{color:var(--ink-2);}
+.modelsource[data-checked="no"] .ms-mark{color:var(--marigold);}

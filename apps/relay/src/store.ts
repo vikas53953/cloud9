@@ -8,6 +8,12 @@ import {
   MessageReaction, MESSAGE_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
   RunRecord, RUN_RETENTION, Task, User, newId,
 } from "@cloud9/shared";
+// THE ONE OWNER of "write a file this app will later believe" — write next
+// door, flush it down to the disk, rename it into place. It lives in the engine
+// because that is where it was first needed; the hub uses the same one rather
+// than keeping a second copy, because two copies of a rule is how one of them
+// quietly stops being true.
+import { sweepPending, writeWholeFile } from "@cloud9/engine";
 import { secureId, secureToken } from "./secureid.js";
 
 /**
@@ -162,6 +168,9 @@ export class Store {
       throw new StoreOpenError(dbPath, e);
     }
     this.attachmentsDir = path.join(path.dirname(path.resolve(dbPath)), "cloud9-attachments");
+    // Litter from an upload that was interrupted last time. Nothing swept this
+    // folder before today, so it only ever grew.
+    this.sweepAttachmentLitter();
     // EVERYTHING FROM HERE TO THE END OF THE MIGRATION IS ONE GUARDED OPEN.
     // `new DatabaseSync` succeeds on a file that is not a database at all —
     // SQLite does not look inside until the first statement — so guarding only
@@ -1233,11 +1242,49 @@ export class Store {
    * with anything a client controls. `path.basename` is the last belt on top of
    * the braces of `isSafeFileName`.
    */
+  /**
+   * WHOLE OR NOT AT ALL, and the answer is acted on.
+   *
+   * The hub writes the bytes and then writes a row saying the file is there. A
+   * plain write is not one action — it empties the file and then fills it — so
+   * a crash, a sleeping machine or a full disk in between leaves a row that
+   * promises a whole file and a file that is half there. He opens his
+   * attachment months later and gets a truncated PDF, and nothing anywhere says
+   * it is damaged, because the row looks perfectly healthy.
+   *
+   * This is the same class as the torn run record with one difference that
+   * makes it worse: a run record can be re-derived and HIS UPLOADED FILE CANNOT.
+   *
+   * So it throws when the bytes did not land. Returning the name after a failed
+   * write is the "⏰ Scheduled!" bug in another costume: the row would be
+   * written, the upload reported as done, and the file would not be there. The
+   * throw becomes the hub's ordinary refusal sentence back to whoever uploaded.
+   */
   writeAttachmentBytes(id: ID, safeName: string, bytes: Buffer): string {
     fs.mkdirSync(this.attachmentsDir, { recursive: true });
     const storedAs = `${id}-${path.basename(safeName)}`;
-    fs.writeFileSync(path.join(this.attachmentsDir, storedAs), bytes);
+    let why = "";
+    const ok = writeWholeFile(path.join(this.attachmentsDir, storedAs), bytes, m => { why = m; });
+    if (!ok) {
+      console.error(`[hub] could not store an attachment: ${why}`);
+      throw new Error(
+        "that file could not be saved on this computer — check there is free disk space " +
+        "and try again");
+    }
     return storedAs;
+  }
+
+  /**
+   * Clear away the part-files of an upload the hub was killed in the middle of.
+   *
+   * Nothing swept this folder before, so every interrupted upload left bytes
+   * behind for ever under a name nothing reads. Once at startup, not once per
+   * upload: this folder grows to thousands of files and reading it on every
+   * upload would be a cost paid for ever to tidy something that happens almost
+   * never. A temporary file another live process is still filling is left alone.
+   */
+  sweepAttachmentLitter(): number {
+    return sweepPending(this.attachmentsDir);
   }
 
   /** Remove the bytes behind an attachment. Missing is not an error. */

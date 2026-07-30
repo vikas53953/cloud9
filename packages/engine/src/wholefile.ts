@@ -84,16 +84,37 @@ function nextTicket(): number {
  * a `WRITE OUTCOME IGNORED:` line saying why it genuinely does not matter, and
  * `writeoutcome.test.ts` reads the source of this package and fails if a new
  * one does neither.
+ *
+ * TEXT **OR** BYTES. Not everything this app must not tear is text: an
+ * attachment Vikas uploaded, and the encrypted blobs holding this install's
+ * private key and his Claude/Codex sign-ins, are all raw bytes. Turning a
+ * `Buffer` into a string on the way past would quietly mangle every byte that
+ * is not valid UTF-8 — which is most of a PDF, a picture, or a ciphertext — so
+ * this takes both and hands them to `fs.writeFileSync` untouched. The
+ * alternative was a second, binary-only copy of the whole rule, and a second
+ * copy is the bug this module exists to stop.
+ *
+ * `options.mode` goes on the TEMPORARY file, not on the final name. A file
+ * created world-readable and tightened afterwards has already been readable —
+ * on a shared machine that window is the leak. Putting the permission on the
+ * temporary file means it travels with the rename and there is no window at
+ * all. (Windows ignores the bits; POSIX does not, and this app is meant to
+ * move.)
  */
 export function writeWholeFile(
   target: string,
-  text: string,
+  data: string | NodeJS.ArrayBufferView,
   onError?: (message: string) => void,
+  options?: { mode?: number },
 ): boolean {
   const pending = pendingNameFor(target);
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(pending, text, "utf8");
+    // `encoding` is what a string is written as and is ignored for bytes, so one
+    // call covers both without a branch that could drift.
+    fs.writeFileSync(pending, data, options?.mode === undefined
+      ? { encoding: "utf8" }
+      : { encoding: "utf8", mode: options.mode });
     flushFile(pending);
     renameOverRetrying(pending, target);
     flushDir(path.dirname(target));

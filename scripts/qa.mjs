@@ -23,6 +23,12 @@ import {
 import {
   ATTACHMENT_LIMITS, describeRemoteAction, detailRemoteAction, FILE_NAME_SENTENCE, humanMoney,
   MESSAGE_LIMITS, NAME_LIMITS, REMOTE_ACTIONS, summarizeRun, validateName, validateRepo,
+  // THE SKILL LIBRARY, from the package the screen reads. Every count and every
+  // sentence below is DERIVED from these two lists, never typed here — so a
+  // sixteenth skill or a sixth shelf moves this suite with it instead of
+  // leaving a number that used to be right, and a check can never agree with
+  // wording this file made up.
+  SKILL_CATEGORIES, SKILL_LIBRARY, SKILL_LIMITS,
 } from "@cloud9/shared";
 // THE LADDER AND THE TABLE, from the engine that owns them. Every count below
 // is derived, never typed: a ninth capability or a fifth rung moves this suite
@@ -88,7 +94,21 @@ const { ui: UI } = qaTarget();
 // and the sentence is the rule's own), C12 (connecting asks GitHub there and
 // then). One EXISTING check changed rather than being added: the one that used
 // to assert a freshly connected repository says "Not looked at GitHub yet".
-const EXPECTED_CHECKS = 363;
+// 363 → 381: eighteen checks added. One is the model list's provenance on the
+// harness card (skills-library-handoff §1 — a list proved by running each model
+// and a list we are falling back on are not the same thing, and the screen now
+// prints the engine's own sentence saying which). The other seventeen are the
+// SKILL LIBRARY screen. One holds the
+// no-role case (a hand-written agent is never told a role it does not have);
+// the rest walk the library on a just-hired agent — it is reachable from the
+// skills section, everything it ships with is on the shelves the library itself
+// names, each card carries its own plain words and its own source, the whole
+// procedure is readable before it is taken, the room left is said before he
+// picks, nothing shows a rating or a count nobody measured, a shelf filters —
+// and then the promise: what he takes is drawn as the SAME row as one he typed,
+// with the same pencil and the same bin, editable word for word, deletable, and
+// still ordinary after a round trip through the hub.
+const EXPECTED_CHECKS = 381;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -427,6 +447,35 @@ try {
     }
     ok(`${title} card shows exactly one state`, states <= 1, `signedIn=${signedIn} waiting=${waiting} failed=${failed}`);
   }
+  /* WHERE THE MODEL LIST CAME FROM (skills-library-handoff §1).
+     "13 models" cannot tell him whether each one was proved by running it or
+     whether Cloud9 is falling back on the list it ships with. The engine writes
+     that sentence; the screen prints it verbatim and marks which of the two it
+     is. Absent means absent — a harness with nothing to say draws nothing. */
+  const modelSource = await page.$$eval(".harnesscard", cards => cards.map(c => ({
+    harness: c.dataset.harness,
+    chip: [...c.querySelectorAll(".harnessfacts span")]
+      .map(s => s.textContent.trim()).find(t => /models available$/.test(t)) ?? "",
+    line: c.querySelector(".modelsource .ms-tx")?.textContent.trim() ?? "",
+    checked: c.querySelector(".modelsource")?.dataset.checked ?? "",
+  })));
+  /* Only Claude's list has a provenance sentence to print — the engine proves
+     Claude by running each model and writes that down; Codex answers a listing
+     command and no sentence is written for it. So this check holds the CLASS
+     rule rather than demanding two lines: whatever is drawn must be a real
+     sentence with a real yes/no beside it, and a harness with nothing to say
+     draws nothing at all rather than a reassuring blank. */
+  const claudeSource = modelSource.find(m => m.harness === "claude");
+  ok("where the model list came from is printed in the engine's own words, marked proved or not",
+    modelSource.length === 2 &&
+    claudeSource.line.length > 20 && ["yes", "no"].includes(claudeSource.checked) &&
+    modelSource.every(m => (m.line === "") === (m.checked === "")),
+    modelSource.map(m => `${m.harness}: ${m.chip || "no models"} → ` +
+      (m.line ? `[${m.checked}] ${m.line}` : "(nothing claimed)")).join(" | "));
+
+  await page.locator('.harnesscard[data-harness="claude"]').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/models-provenance.png`, animations: "disabled" });
+
   const fallbacks = await page.$$eval(".harnesscard .linkbtn", bs => bs.map(b => b.textContent.trim()));
   ok("settings still offers the API-key fallback on both cards",
     fallbacks.filter(b => /API key instead/.test(b)).length === 2, fallbacks.join(" · "));
@@ -1237,6 +1286,23 @@ try {
     handMadeOffers.abilities.length === CAPABILITIES.length &&
     handMadeOffers.skillsEditor === 1 && handMadeOffers.honestReport === 1,
     JSON.stringify(handMadeOffers.sections));
+
+  /* ABSENT MEANS ABSENT, IN THE LIBRARY TOO.
+     Nobody knows what role a hand-written agent is, because an agent does not
+     remember one — so the library must not tell it that anything was "written
+     for this role", and must not offer a shelf it cannot fill. The ordering
+     falls back to the library's own, which is a sensible default, not an
+     error. */
+  await page.click(".editor .skills .skill-library-open");
+  await page.waitForSelector(".librarypanel .libskill", { timeout: 15000 });
+  ok("an agent whose role nobody knows is not told a role it does not have",
+    (await page.locator(".librarypanel .ls-forrole").count()) === 0 &&
+    (await page.locator('.librarypanel .libseg button[data-shelf="suggested"]').count()) === 0 &&
+    (await page.locator(".librarypanel .libskill").count()) === SKILL_LIBRARY.length,
+    `${await page.locator(".librarypanel .libskill").count()} skills, no role claimed`);
+  await page.click(".librarypanel .librarydone");
+  await page.waitForSelector(".librarypanel", { state: "detached", timeout: 10000 });
+
   await page.click(".editor .topbar >> text=Cancel");
   await page.waitForSelector(".crew-grid", { timeout: 20000 });
 
@@ -1362,6 +1428,204 @@ try {
   await page.locator(".editor .reachladder").scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${SHOTS}/hall-hired-reach.png` });
 
+  /* ================= THE SKILL LIBRARY ======================================
+   *
+   * Fifteen researched skills shipped inside the app, on the shelves the
+   * library itself names. What these checks hold shut, in order: he can find
+   * it, he can see everything on it grouped the way the contract groups it, he
+   * can read the whole procedure and where it came from BEFORE he takes it,
+   * and — the one that matters most — a skill he takes is an ORDINARY skill.
+   *
+   * That last one is the mistake this must not repeat. He hired a role once
+   * and found it second-class: no tool permissions, no files folder, no
+   * skills. A skill off a shelf gets no badge, no read-only mark and no second
+   * code path; it lands in the same list, under the same pencil and the same
+   * bin, and it is proved here by editing it and deleting it like any other.
+   */
+  const LIB_ROLE = "sw-architect"; // the role just hired, above
+  const forThisRole = SKILL_LIBRARY.filter(s => s.recommendedFor.includes(LIB_ROLE));
+  const shelfWithMost = SKILL_CATEGORIES
+    .map(c => ({ c, n: SKILL_LIBRARY.filter(s => s.category === c.id).length }))
+    .sort((a, b) => b.n - a.n)[0];
+
+  ok("the skill library is reachable from the skills section of an agent's own file",
+    (await page.locator(".editor .skills .skill-library-open").count()) === 1,
+    (await page.locator(".editor .skills .skill-library-open").innerText()).trim());
+
+  await page.click(".editor .skills .skill-library-open");
+  await page.waitForSelector(".librarypanel .libskill", { timeout: 15000 });
+  const shelvesOnScreen = await page.$$eval(".librarypanel .libgroup", gs => gs.map(g => ({
+    id: g.dataset.libgroup,
+    heading: g.querySelector("h5")?.innerText.trim() ?? "",
+    blurb: g.querySelector("p")?.innerText.trim() ?? "",
+    cards: g.querySelectorAll(".libskill").length,
+  })));
+  ok("every skill it ships with is on screen, grouped on the shelves the library itself names",
+    (await page.locator(".librarypanel .libskill").count()) === SKILL_LIBRARY.length &&
+    shelvesOnScreen.length === SKILL_CATEGORIES.length &&
+    shelvesOnScreen.every((g, i) => g.id === SKILL_CATEGORIES[i].id
+      && g.heading === SKILL_CATEGORIES[i].label
+      && g.blurb === SKILL_CATEGORIES[i].blurb
+      && g.cards === SKILL_LIBRARY.filter(s => s.category === g.id).length),
+    `${SKILL_LIBRARY.length} skills on ${shelvesOnScreen.length} shelves: ` +
+    shelvesOnScreen.map(g => `${g.heading} (${g.cards})`).join(", "));
+
+  const cardsOnScreen = await page.$$eval(".librarypanel .libskill", cs => cs.map(c => ({
+    id: c.dataset.libskill,
+    name: c.querySelector("h4")?.innerText.trim() ?? "",
+    desc: c.querySelector(".ls-desc")?.innerText.trim() ?? "",
+    source: c.querySelector(".ls-source")?.innerText.trim() ?? "",
+  })));
+  ok("each one says in plain words when it helps, and names where the procedure came from",
+    cardsOnScreen.length === SKILL_LIBRARY.length &&
+    cardsOnScreen.every(c => {
+      const real = SKILL_LIBRARY.find(s => s.id === c.id);
+      return real && c.name === real.name && c.desc === real.description
+        && c.source.includes(real.source);
+    }),
+    cardsOnScreen.find(c => {
+      const real = SKILL_LIBRARY.find(s => s.id === c.id);
+      return !real || c.desc !== real.description || !c.source.includes(real.source);
+    })?.id ?? "all fifteen carry their own words and their own source");
+
+  /* THE PRODUCT IS THE PROCEDURE. He must be able to read the whole of what the
+     agent will be told, before he hands it over — not a summary of it. */
+  const readMe = SKILL_LIBRARY[0];
+  await page.click(`.librarypanel .libskill[data-libskill="${readMe.id}"] .ls-read`);
+  await page.waitForSelector(`.librarypanel [data-libinstructions="${readMe.id}"]`, { timeout: 10000 });
+  const onScreenInstructions =
+    await page.locator(`.librarypanel [data-libinstructions="${readMe.id}"]`).innerText();
+  ok("the whole procedure can be read before it is taken, word for word",
+    onScreenInstructions.replace(/\s+/g, " ").trim()
+      === readMe.instructions.replace(/\s+/g, " ").trim(),
+    `${onScreenInstructions.length} characters of “${readMe.name}”`);
+
+  ok("the library says which of its skills were written for the role he just hired",
+    (await page.locator(".librarypanel .ls-forrole").count()) === forThisRole.length &&
+    forThisRole.length > 0 && forThisRole.length < SKILL_LIBRARY.length &&
+    (await page.locator(`.librarypanel .libskill[data-libskill="${forThisRole[0].id}"] .ls-forrole`)
+      .count()) === 1,
+    `${await page.locator(".librarypanel .ls-forrole").count()} of ${SKILL_LIBRARY.length} written for ${LIB_ROLE}`);
+
+  ok("it says how much room is left BEFORE he picks, not after he is refused",
+    new RegExp(`0 of ${SKILL_LIMITS.perAgent} taught`).test(
+      await page.locator(".librarypanel .libroom").innerText()),
+    (await page.locator(".librarypanel .libroom").innerText()).trim());
+
+  /* NOTHING NOBODY MEASURED. No stars, no downloads, no "popular", no green
+     tick on a skill nobody has scored — absent means absent (law 8). */
+  const libraryWords = await page.locator(".librarypanel").innerText();
+  ok("nothing in the library shows a rating, a popularity or a count nobody has measured",
+    /* "review" is the NAME of three of these skills, so the words hunted for
+       here are only the ones that would claim a measurement nobody took. */
+    !/★|⭐|\bstars?\b|\bratings?\b|\bpopular\b|\btrending\b|\bbest[- ]sell|\d[\d,.]*\s*(downloads|installs|uses|users|people)\b/i
+      .test(libraryWords),
+    `${libraryWords.length} characters read`);
+
+  await page.screenshot({ path: `${SHOTS}/library-reading.png` });
+  // fold it away again, so the shelves are shot in the state he first meets
+  await page.click(`.librarypanel .libskill[data-libskill="${readMe.id}"] .ls-read`);
+  await page.waitForSelector(`.librarypanel [data-libinstructions="${readMe.id}"]`,
+    { state: "detached", timeout: 10000 });
+  /* `animations: "disabled"` matters here and not by habit: the buttons carry a
+     .15s background transition, so a shot taken the instant the theme flips
+     catches every one of them half-way between the two looks and they read as
+     disabled. This runs them to their end first. */
+  await page.screenshot({ path: `${SHOTS}/library-light.png`, animations: "disabled" });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
+  await page.screenshot({ path: `${SHOTS}/library-dark.png`, animations: "disabled" });
+  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+
+  await page.click(`.librarypanel .libseg button[data-shelf="${shelfWithMost.c.id}"]`);
+  await waitFor(page,
+    n => document.querySelectorAll(".librarypanel .libskill").length === n,
+    shelfWithMost.n, { what: `the ${shelfWithMost.c.label} shelf to be the only one shown` });
+  ok("a shelf on the filter bar shows that shelf and nothing else",
+    (await page.locator(".librarypanel .libskill").count()) === shelfWithMost.n &&
+    (await page.$$eval(".librarypanel .libskill", cs => cs.map(c => c.dataset.libskill)))
+      .every(id => SKILL_LIBRARY.find(s => s.id === id)?.category === shelfWithMost.c.id),
+    `${shelfWithMost.c.label}: ${shelfWithMost.n}`);
+  await page.click('.librarypanel .libseg button[data-shelf="all"]');
+  await waitFor(page, n => document.querySelectorAll(".librarypanel .libskill").length === n,
+    SKILL_LIBRARY.length, { what: "the whole library to come back" });
+
+  /* TAKE ONE. From here on the only thing being checked is that what landed is
+     an ordinary skill. */
+  const taken = SKILL_LIBRARY.find(s => s.id === "sk-verify") ?? SKILL_LIBRARY[1];
+  await page.click(`.librarypanel .libskill[data-libskill="${taken.id}"] .ls-take`);
+  await page.waitForSelector(`.editor .skillrow[data-skill="${taken.name}"]`, { timeout: 10000 });
+  ok("giving a skill to an agent puts it straight into the same list every other skill is in",
+    (await page.locator(`.editor .skillrow[data-skill="${taken.name}"]`).count()) === 1 &&
+    (await page.locator(".librarypanel .libroom").innerText()).includes(`1 of ${SKILL_LIMITS.perAgent}`),
+    (await page.locator(".librarypanel .libroom").innerText()).trim());
+
+  /* TAKING IT TWICE MUST NOT MAKE TWO. */
+  ok("taking one he already has offers to replace it rather than silently making a second",
+    (await page.locator(`.librarypanel .libskill[data-libskill="${taken.id}"] .ls-take`).count()) === 0 &&
+    (await page.locator(`.librarypanel .libskill[data-libskill="${taken.id}"] .ls-replaceask`).count()) === 1,
+    (await page.locator(`.librarypanel .libskill[data-libskill="${taken.id}"] .ls-already`).innerText()).trim());
+  await page.click(`.librarypanel .libskill[data-libskill="${taken.id}"] .ls-replaceask`);
+  await page.click(`.librarypanel .libskill[data-libskill="${taken.id}"] .ls-replace`);
+  ok("and replacing leaves one, not two",
+    (await page.locator(`.editor .skillrow[data-skill="${taken.name}"]`).count()) === 1);
+
+  await page.click(".librarypanel .librarydone");
+  await page.waitForSelector(".librarypanel", { state: "detached", timeout: 10000 });
+
+  /* THE PROMISE. Compare the row a library skill draws with the row a skill he
+     typed out draws — they must be the same row. Anything that could only be
+     true of a library skill (a badge, a lock, a source line, a missing bin) is
+     a failure of the whole feature, not a cosmetic one. */
+  const handWritten = `Villa notes ${Date.now().toString(36)}`;
+  await page.click(".editor .skills .skill-add");
+  await page.fill(".skill-name-input", handWritten);
+  await page.fill(".skill-desc-input", "Reads the villa notes and picks three");
+  await page.fill(".skill-instructions-input", "Read the notes and keep the three best under budget.");
+  await page.click(".editor .skills .skill-save");
+  await page.waitForSelector(`.editor .skillrow[data-skill="${handWritten}"]`, { timeout: 10000 });
+  const rowShape = (page, name) => page.$eval(
+    `.editor .skillrow[data-skill="${name}"]`,
+    row => ({
+      classes: row.className,
+      controls: [...row.querySelectorAll("button")].map(b => b.className).sort(),
+      extras: row.querySelectorAll("[data-libskill],.ls-source,.readonly,.locked,.chip").length,
+    }));
+  const fromLibraryRow = await rowShape(page, taken.name);
+  const handWrittenRow = await rowShape(page, handWritten);
+  ok("A SKILL TAKEN FROM THE LIBRARY IS DRAWN AS THE SAME ROW AS ONE HE TYPED — no badge, no lock",
+    JSON.stringify(fromLibraryRow) === JSON.stringify(handWrittenRow) &&
+    fromLibraryRow.extras === 0,
+    JSON.stringify(fromLibraryRow) === JSON.stringify(handWrittenRow)
+      ? `both: ${fromLibraryRow.controls.join(" + ")}`
+      : `library ${JSON.stringify(fromLibraryRow)} vs typed ${JSON.stringify(handWrittenRow)}`);
+  /* THE PICTURE OF THE PROMISE: the skill off the shelf and the skill he typed,
+     side by side in one list, telling nobody which was which. */
+  await page.locator(".editor .skills").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/library-same-row.png`, animations: "disabled" });
+
+  /* AND IT IS EDITABLE, WORD FOR WORD, IN THE EDITOR HE ALREADY HAS. */
+  await page.click(`.editor .skillrow[data-skill="${taken.name}"] .skill-edit`);
+  await page.waitForSelector(".skill-instructions-input", { timeout: 10000 });
+  const takenInstructions = await page.inputValue(".skill-instructions-input");
+  ok("its words arrived in full and sit in the ordinary skill editor, not a preview",
+    takenInstructions.trim() === taken.instructions.trim() &&
+    (await page.inputValue(".skill-desc-input")).trim() === taken.description.trim(),
+    `${takenInstructions.length} characters, editable`);
+  const renamed = `${taken.name} (mine)`;
+  await page.fill(".skill-name-input", renamed);
+  await page.fill(".skill-instructions-input", `${taken.instructions}\n\nAnd say it in British English.`);
+  await page.click(".editor .skills .skill-save");
+  await page.waitForSelector(`.editor .skillrow[data-skill="${renamed}"]`, { timeout: 10000 });
+  ok("every word of it can be changed, exactly like one he wrote himself",
+    (await page.locator(`.editor .skillrow[data-skill="${renamed}"]`).count()) === 1 &&
+    (await page.locator(`.editor .skillrow[data-skill="${taken.name}"]`).count()) === 0);
+
+  /* …and removable. A skill nobody can delete is a second class of skill. */
+  await page.click(`.editor .skillrow[data-skill="${handWritten}"] .skill-delete`);
+  ok("and it can be deleted by the same bin, with nothing refusing",
+    (await page.locator(`.editor .skillrow[data-skill="${handWritten}"]`).count()) === 0 &&
+    (await page.locator(`.editor .skillrow[data-skill="${renamed}"]`).count()) === 1);
+
   // …and it is genuinely editable, not a locked template
   await page.fill(".editor .persona-input", `${hiredPersona}\n\nAlways answer in British English.`);
   await page.click('.editor .topbar >> text=Save');
@@ -1388,6 +1652,18 @@ try {
     /Always answer in British English\.$/.test(
       (await page.locator(".editor .persona-input").inputValue()).trim()),
     (await page.locator(".editor .persona-input").inputValue()).trim().slice(-40));
+  /* THE SKILL WENT THROUGH THE HUB AND CAME BACK THE SAME. A library skill is
+     stored as an `AgentSkill` and nothing else, so there is nowhere for a
+     "where it came from" to survive — and if it had, the row would be drawing
+     something the hub does not hold. */
+  ok("a skill taken from the library is saved on the agent, and comes back as an ordinary skill",
+    (await page.locator(`.editor .skillrow[data-skill="${renamed}"]`).count()) === 1 &&
+    (await page.locator(`.editor .skillrow[data-skill="${renamed}"] .skill-edit`).count()) === 1 &&
+    (await page.locator(`.editor .skillrow[data-skill="${renamed}"] .skill-delete`).count()) === 1 &&
+    (await page.locator(".editor .skillrow .ls-source").count()) === 0,
+    `“${renamed}” survived the hub`);
+  await page.locator(".editor .skills").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/library-on-agent.png`, animations: "disabled" });
   await page.screenshot({ path: `${SHOTS}/market-editable.png` });
   await page.click(".editor >> text=← Crew");
   await page.waitForSelector(".crew-grid", { timeout: 20000 });
