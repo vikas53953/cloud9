@@ -1,153 +1,130 @@
-# CURSOR BRIEF — Cloud9 quality + content round     2026-07-30, ~22:40
+# CURSOR BRIEF          ROUND: 2          branch: cursor/auto
 
-READ THIS WHOLE FILE BEFORE TOUCHING ANY CODE. Do the tasks in order.
-If anything is genuinely ambiguous, write your question into CURSOR-REPORT.md
-and move to the next task — NEVER guess, never widen scope.
+READ THIS WHOLE FILE FIRST. This is a STANDING brief — the same file is
+reused every round. The `ROUND:` number above tells you which task set is
+live. When it changes, a new task set is waiting for you (see THE LOOP).
 
-## What this project is (30 seconds)
+If anything is genuinely ambiguous: write the question in CURSOR-REPORT.md and
+move on. NEVER guess, never widen scope.
 
-Cloud9 is a Windows desktop chat app (Electron + React; Node hub with SQLite;
-a TypeScript engine that spawns the Claude/Codex CLIs). The owner is Vikas —
-a network engineer, NOT a developer. Monorepo layout:
+## The project (30 seconds)
 
-- `apps/relay`   — "the hub": WebSocket server + SQLite. Holds messages/agents/jobs.
-- `apps/desktop` — the Electron/React screen. **FORBIDDEN to you today.**
-- `packages/engine` — spawns the AI CLIs for agent turns.
+Cloud9 — a Windows desktop chat app (Electron + React; Node hub with SQLite;
+a TypeScript engine that spawns the Claude/Codex CLIs). Owner is Vikas, a
+network engineer, NOT a developer. Layout:
+- `apps/relay`   — the hub: WebSocket server + SQLite.
+- `apps/desktop` — the screen. FORBIDDEN to you.
+- `packages/engine` — spawns the AI CLIs.
 - `packages/shared` — types/validation both sides import.
-- `scripts/`     — build and QA harnesses.
+- `scripts/` — build + QA harnesses.
 
-## Ground rules — these override anything else you decide
+## GROUND RULES (override anything else you decide)
 
-1. Work ONLY in this folder (`C:\Users\vikasmit\cloud9-cursor`). It is a git
-   worktree on branch `cursor/quality-round`. The main checkout at
-   `C:\Users\vikasmit\cloud9` has other AI agents in it — never open it.
-2. Commit ONLY to branch `cursor/quality-round`. Push ONLY that branch:
-   `git push -u origin cursor/quality-round`
-   NEVER push, merge, or rebase `master`. NEVER open a pull request.
-   A Claude conductor session verifies and merges your branch afterwards.
-3. FORBIDDEN FILES (other agents own them today; editing them guarantees a
-   merge conflict and your work gets dropped):
-   - `apps/desktop/**`  (everything under it)
+1. Work ONLY in this folder (`C:\Users\vikasmit\cloud9-cursor`). Never open the
+   main checkout at `C:\Users\vikasmit\cloud9` — other AI agents are in it.
+2. This folder stays on branch **`cursor/auto`**. Commit only here. Push only
+   this branch: `git push origin cursor/auto`. NEVER touch `master`, never open
+   a pull request. A Claude conductor reviews and merges your branch.
+3. FORBIDDEN FILES (editing them gets your work dropped in a conflict):
+   - `apps/desktop/**` (all of it)
    - `scripts/qa.mjs`
-   - `apps/relay/src/server.ts`
-   - `packages/shared/src/index.ts`
-   - `packages/engine/src/provider.ts`, `abilities.ts`, `claude-cli.ts`,
-     `codex.ts`, `engine.ts`, `host.ts`, `context.ts`
-   If a task seems to need one of these, STOP that task and write why in
-   CURSOR-REPORT.md.
-4. Never claim something works without running it in this folder. Paste real
-   numbers in CURSOR-REPORT.md.
+   - `apps/relay/src/server.ts`  — you may READ it, never edit it
+   - `packages/shared/src/index.ts`  — read-only (import from it, don't edit)
+   - `packages/engine/src/**` EXCEPT `*.test.ts` files (those you may add/edit)
+   Allowed to edit: `apps/relay/src/store.ts`, any `*.test.ts`, new files under
+   `docs/qa/` and `docs/plans/`, and `scripts/*` except `qa.mjs`.
+   If a task needs a forbidden file: STOP that task, write why in the report.
+4. Never claim without running. Paste real numbers in CURSOR-REPORT.md.
 5. Fix the class, not the case: one rule = one owner in one file.
-6. Every new test must be proven able to fail: break the fix once, watch the
-   test fail, restore it, say so in the report.
-7. First command: `npm install` (this worktree has no node_modules yet).
-   Gate for finishing: `npm run build` clean AND `npm test` all green.
-   Do NOT run `npm run qa` or `npm run qa:app` — they fight the other agents'
-   test stacks and the installed app. Unit tests only in this folder.
-8. Commit style: small commits, one concern each, message = one plain-English
-   sentence about the value (look at `git log --oneline -20` and copy the tone).
+6. Prove every new test can fail: break the thing once, watch it fail, restore,
+   record the pair in the report.
+7. First: `npm install` (fresh worktree). Gate to finish: `npm run build` clean
+   AND `npm test` green. Do NOT run `npm run qa` or `npm run qa:app`.
+8. Small commits, one concern each, plain-English messages.
 
-## THE TASKS
+## THE LOOP — how to keep picking up new work automatically
 
-### Task 1 — Make run-record writes atomic
-- File: `apps/relay/src/runstore.ts`.
-- Problem: run records are written with a direct whole-file write; a process
-  kill mid-write corrupts the record permanently.
-- Required fix: route every write in that file through the repo's one safe
-  writer, `writeWholeFile` from `packages/engine/src/wholefile.ts` (see
-  `apps/relay/src/store.ts` for how the relay already imports and uses it —
-  copy that pattern exactly). Every write's RESULT must be used or the failure
-  surfaced — see `apps/desktop/writeoutcome.test.ts` for the law's test style
-  (read it; do not edit it).
-- Acceptance: a new `apps/relay/src/runstore.test.ts` (node:test style, copy
-  an existing relay test's harness) proving (a) a record survives a simulated
-  torn write — temp file litter present, real file intact; (b) a failed write
-  is reported, not swallowed.
+After you finish the current ROUND and push, DO NOT stop. Enter this loop:
 
-### Task 2 — The search fallback must not match JSON plumbing
-- File: `apps/relay/src/store.ts` (allowed — only `server.ts` is forbidden).
-- Problem: when SQLite lacks FTS5, search falls back to a LIKE over the raw
-  stored JSON, so searching `text` or `attachment` matches every message.
-- Required fix: the fallback must search only the same human-written text the
-  FTS5 index holds (find where the FTS5 index extracts text; extract the same
-  way in the fallback).
-- Acceptance: one test file with BOTH paths exercised (FTS5 present and the
-  fallback forced): the word `text` (a JSON field name) matches only messages
-  that truly contain the word "text"; a normal word matches the same set of
-  messages under both engines.
+```
+while true:
+  git fetch origin cursor/auto
+  git reset --hard origin/cursor/auto      # safe: you already pushed your work
+  read CURSOR-BRIEF.md
+  if ROUND number is HIGHER than the one you just finished:
+     do that new task set, write CURSOR-REPORT.md, commit, push cursor/auto
+  else:
+     wait ~5 minutes, then loop again
+```
 
-### Task 3 — Link the retention constants
-- Search: `grep -rn -iE "retention|prune|keepDays|daysToKeep" apps/relay/src packages`
-- Problem: two constants both mean "how long we keep things" and nothing ties
-  them together, so someone edits one and the other silently disagrees.
-- Required fix: one named constant is the truth; the other is derived from it
-  (or both become two named faces of one exported object), with a comment
-  saying which is the owner.
-- Acceptance: a test that imports both and asserts the relationship, plus a
-  read-your-own-source test (style: `writeoutcome.test.ts`) that fails if a
-  new literal with that meaning appears in those files.
+The conductor bumps the ROUND number and rewrites THE TASKS below each time he
+merges your previous round. So: finish, push, then keep fetching — a new task
+set arrives in this same file with a higher ROUND number, and you pick it up
+with no message from anyone. (If your Cursor mode cannot loop on its own, the
+owner will paste "read CURSOR-BRIEF.md and go" each round — same result.)
 
-### Task 4 — Parallel QA runs must not delete each other
-- File: `scripts/qa-stack.mjs` (allowed; `qa.mjs` is not).
-- Problem: at startup it deletes EVERY `cloud9-qa-*` temp workspace, so two QA
-  runs at once destroy each other's databases mid-run.
-- Required fix: it may delete (a) its own workspace and (b) workspaces whose
-  directory mtime is older than 3 hours (abandoned). It must never delete a
-  younger sibling. Keep the cleanup purpose — litter must still go.
-- Acceptance: a unit test (new file `scripts/qa-stack.test.mjs`, node:test,
-  runnable by `node --test scripts/qa-stack.test.mjs`) with the deletion rule
-  extracted into an exported function: given fake ages, asserts keep/delete
-  decisions. Wire that exported function into the script.
-  Note: `npm test` may not pick up this file — run it directly and paste the
-  output; say so in the report.
+Always overwrite CURSOR-REPORT.md fresh each round (git history keeps the old
+ones). Start it with `REPORT FOR ROUND: N` so the conductor knows which set it
+covers.
 
-### Task 5 — The unread count must not lie ("999")
-- Problem: account-level unread is capped at 1000 and shown as "999".
-- Find where unread is COUNTED (hub side; grep `unread` in `apps/relay/src`
-  and `packages/shared/src` — remember `packages/shared/src/index.ts` is
-  READ-ONLY for you).
-- Required fix, hub side only: report the true count, or an honest
-  `{count, capped: true}` shape — whichever the existing frame shape allows
-  WITHOUT editing `packages/shared/src/index.ts` or any `apps/desktop` file.
-- If honesty is impossible without those files: implement nothing, write
-  exactly what change is needed in which forbidden file in CURSOR-REPORT.md,
-  and move on. That written note is a valid completion of this task.
+## THE TASKS  (for ROUND 2)
 
-### Task 6 — Fact-check two market claims (research only, no code)
-- Create `docs/plans/market-facts.md`.
-- Verify from live public sources, quoting exactly, with URL and today's date:
-  (a) Slack Pro and Business+ per-user prices, annual billing, USD and INR;
-  (b) what Buzz — Block Inc.'s open-source agent chat app — publicly promises
-  in its README today (find the real repository; do not guess its contents).
-- These numbers appear in an internal comparison the owner may publish;
-  they were flagged as unverified. If you cannot browse the web, say so in the
-  report and skip — do NOT write numbers from memory.
+Context: on 2026-07-29 a private room was widened by a plain member, and the
+relay test suite missed it because **every admin frame in the suite was sent by
+the owner**. Law since: *test what an insider can do, not only an outsider.*
+Nobody has swept the rest of the hub with that lens. That is this round.
 
-### Task 7 — Grow the skill library (content feature, exact contract)
-- File: `packages/shared/src/skill-library.ts` (allowed — it is not index.ts).
-- Today it holds 15 ready-made software-engineering skills shown in the app's
-  Skill Library screen. Open the file and match its exact shape: every entry
-  has id, name, one-line description, category/shelf, the skill body, and a
-  SOURCE (where the practice comes from — a real, checkable origin).
-- Add 10 more skills, same shape, categories chosen from the shelves already
-  in the file (extend a shelf only if 3+ new skills need it). Real,
-  practitioner-grade content only — e.g. code review checklists, incident
-  writeups, release checklists, API design review, accessibility audit,
-  performance budgets, test triage, database migration safety, security
-  review basics, technical writing. Every skill MUST name a real source; no
-  invented citations. Plain English, no jargon in names/descriptions (the
-  owner is not a developer).
-- Acceptance: `npm run build` still clean; if a test asserts the library's
-  count or shape, update it honestly and say so. Do not renumber or edit the
-  existing 15.
+### Task 1 — The insider sweep (the big one)
+Create `apps/relay/src/insider.test.ts` (split into more files if large).
+Read `server.ts` (reading is allowed) and list every client→hub frame that
+mutates state or reads something access-controlled. For each, add tests where
+the sender is (a) a plain member of the room, not owner/admin; (b) a hub member
+who is NOT in that room; (c) where relevant, an agent's owner vs a stranger to
+that agent. Assert the hub refuses or correctly scopes every case the frame's
+purpose does not require. Cover at least: channel admin (rename, topic,
+archive, roles, add/remove members), editing/deleting SOMEONE ELSE'S message,
+reactions in rooms you're not in, reading scrollback/search/unread across room
+boundaries, attachment tickets for other rooms' files, artifact frames
+(`artifacts`/`artifact`/`artifactTicket`) across boundaries, run records
+(`runDetail`) of agents you don't own, approval frames sent by a non-approver,
+project frames, skill frames.
+For every refusal you assert, also assert the sentence has no `Error:` prefix
+and no file path (the `refusal.ts` law).
+If you find a REAL hole: do NOT fix `server.ts` (forbidden). Write it in
+`docs/qa/insider-audit.md` under FINDINGS — exact frame, sender, what leaked —
+and leave the test `.todo`/skipped with the reason. A found hole is a SUCCESS.
 
-## When you are done
+### Task 2 — Name and filename torture tests
+New `apps/relay/src/naming-torture.test.ts`, importing `validateName` and
+`isSafeFileName` from `@cloud9/shared` (import only). Cases, each asserting the
+decision AND that any refusal is plain words: zero-width chars
+(U+200B/200C/200D, U+FEFF); bidi overrides (U+202A–202E, U+2066–2069);
+confusables (Cyrillic а vs Latin a — two look-alike names must either collide
+as duplicates or both be refused; assert what the code does, write which);
+NFC vs NFD of one accented name (must be the same name); emoji-only names;
+1-char and max-length boundaries; names that are only spaces/dots; Windows
+device names (CON, PRN, AUX, NUL, COM1, LPT1) as filenames; trailing dots and
+spaces in filenames; a 300-char filename. Note surprising-but-harmless
+behaviour; propose (in words, no code) a fix for anything genuinely wrong.
 
-1. `npm run build` — must be clean. `npm test` — must be all green. Paste both
-   summaries into the report.
-2. Write `CURSOR-REPORT.md` in this folder: per task — DONE (with evidence) /
-   STOPPED (with the exact reason and the question to ask) — plus every file
-   you touched, and every test you proved able to fail.
-3. Commit everything to `cursor/quality-round`, push that branch to origin.
-4. Tell the owner you are finished; he hands your report back to the Claude
-   conductor, who verifies on a clean machine state and merges.
+### Task 3 — Reproduce the phase-5 majors as tests
+Read `docs/qa/phase5-negative.md` (7 Majors). For each: if reproducible at the
+hub level, write a test; if the fix lives in `apps/relay/src/store.ts`, fix it
+there with the test; if it needs `server.ts` or a desktop file, leave the test
+skipped with a one-line reason and record it. If it is purely screen behaviour,
+list it as "screen-side, not mine". Number findings 5-M1…5-M7 to match.
+
+### Task 4 — The keep-awake helper
+Create `scripts/keep-awake.ps1`: a PowerShell script that stops Windows sleeping
+while it runs (SetThreadExecutionState via Add-Type, ES_CONTINUOUS |
+ES_SYSTEM_REQUIRED — display may sleep, system must not), prints one plain
+sentence when engaged, restores normal behaviour on Ctrl+C/exit (finally block),
+and refuses with a plain sentence if Add-Type fails. Plus `docs/plans/keep-awake.md`
+in words a non-developer can follow. No test framework — run it ~10s yourself,
+`powercfg /requests` while running (paste output showing the SYSTEM request),
+stop it, `powercfg /requests` again showing it cleared. Paste both.
+
+## WHEN DONE THIS ROUND
+Build + test summaries into CURSOR-REPORT.md; per task DONE/STOPPED with
+evidence; files touched; break-proof pairs. Commit, push `cursor/auto`, then
+enter THE LOOP above and wait for ROUND 3.
