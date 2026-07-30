@@ -65,3 +65,8 @@ Cursor gets work that does NOT touch whatever the in-house agent holds this roun
 - 2026-07-31 ~03:00 — GitHub WRITES ON SCREEN, verified + installed + walked 16/16
   (798 tests, 448 browser). !issue/!comment/!review → approval card. Read-result
   UI deferred (types in). Next in-house feature STARTED: join-a-friend on screen.
+- 2026-07-31 ~04:05 — JOIN-A-FRIEND ON SCREEN, verified + installed + walked 16/16
+  (803 tests, 456 browser, real two-hub local proof). Tailscale (real internet)
+  deferred to Vikas's sign-in, said on screen. Build hiccup: a leftover Cloud9.exe
+  locked release/win-unpacked (EBUSY) — killed procs, cleaned dir, rebuilt clean.
+  Next in-house feature STARTED: notifications on screen.
