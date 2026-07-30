@@ -768,6 +768,30 @@ export class RelayClient {
   }
 
   /**
+   * "LOOK AT GITHUB NOW" for one project.
+   *
+   * This app still never reaches GitHub. It asks the hub, the hub asks the
+   * engine on this computer, and the engine runs `gh` with the sign-in that is
+   * already here. Everything that comes back arrives on the ordinary `project`
+   * and `projectItems` frames, so there is nothing to apply here.
+   *
+   * The BUTTON'S STATE is not invented either: the hub marks the project
+   * `looking` while a look is in flight and clears it when the engine answers
+   * or stops answering. A spinner this app started itself would have no way to
+   * end. The refusal is handed back so the screen can print the hub's own
+   * sentence — "nothing is running on this computer to ask GitHub" is the one a
+   * person can actually act on.
+   */
+  lookAtProject(projectId: ID, onRefused?: (why: string) => void): void {
+    const sent = this.ask({ type: "syncProject", projectId }, {
+      answers: f => f.type === "project" && f.project.id === projectId,
+      refused: why => onRefused?.(why),
+      lost: () => onRefused?.("the hub did not answer — is it still running?"),
+    });
+    if (!sent) onRefused?.("not connected to the hub yet");
+  }
+
+  /**
    * Connect a repository, named the way `gh` names one.
    *
    * The refusal is the hub's own sentence, handed back to the caller so the
@@ -1465,6 +1489,12 @@ export class RelayClient {
       // on the ordinary `approval` frame the screen already handles — this is
       // the plumbing behind it, and nothing on screen needs it.
       case "approvalAsked":
+        break;
+      // ENGINE-ONLY ORDER, and the screen is right to drop it: "go and ask
+      // GitHub about this repository" is addressed to the copy of Cloud9 that
+      // has the GitHub sign-in, not to a window. What comes back arrives as an
+      // ordinary `project` and `projectItems` frame, handled above.
+      case "lookAtProject":
         break;
       default: {
         /**

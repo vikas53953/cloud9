@@ -47,6 +47,12 @@ export interface EngineOptions {
    * only ever produce MORE refusals, never a yes nobody gave.
    */
   approvalWaitMs?: number;
+  /**
+   * How the read-only half of GitHub is reached — the `gh` command and the
+   * runner. Only ever used WITHOUT an approver, so nothing built from it can
+   * change anything on GitHub. Tests point it at a fake runner.
+   */
+  github?: Omit<GitHubOptions, "approve">;
 }
 
 /** Everything a turn needs, plus who is asking and on whose behalf. */
@@ -208,6 +214,14 @@ export class Engine {
         break;
       case "harnessRequest":
         this.onHarnessRequest?.(frame.action, frame.harness);
+        break;
+      /* THE HUB ASKED US TO LOOK AT A REPOSITORY (his item 7).
+         The hub cannot reach GitHub; this machine can, because the GitHub
+         sign-in is here. It has already checked that the person who pressed
+         the button owns this project — an engine is told what to look at, it
+         does not choose. Read only, so there is nothing to approve. */
+      case "lookAtProject":
+        void this.lookAtProject(frame.projectId, frame.repo);
         break;
       // ---- the mid-run approval round trip (his item 6) ----
       // The receipt tells us WHICH card belongs to which waiting agent; the
@@ -726,6 +740,43 @@ export class Engine {
       },
     });
     return { client, lastRefusal: () => refusal };
+  }
+
+  /**
+   * Ask GitHub what is open in one repository, and tell the hub.
+   *
+   * THE ANSWER ALWAYS GOES BACK. A look that failed reports `problem` and no
+   * items, so the screen can print why instead of showing an empty list that
+   * reads like "no open work" — and so the hub can stop saying "looking". A
+   * silent failure here is the one outcome that would leave a button spinning
+   * for ever, so there is no path out of this method that sends nothing.
+   *
+   * `readOnlyGitHub` has NO approver, deliberately: `github.ts` refuses every
+   * gated method without one, so this client physically cannot push, open a
+   * pull request or create anything. The only thing it can do is read.
+   */
+  async lookAtProject(projectId: ID, repo: string): Promise<void> {
+    try {
+      const { items, ...rest } = await this.readOnlyGitHub().lookAtRepository(repo);
+      this.sendFrame({
+        type: "projectSynced", projectId,
+        ...rest,
+        // the id the HUB gave us, put on every row. The hub stamps its own
+        // verified id over the top regardless — this is the shape, not a claim.
+        ...(items ? { items: items.map(i => ({ ...i, projectId })) } : {}),
+      });
+    } catch (err) {
+      console.error(`[engine] could not look at ${repo}:`, err);
+      this.sendFrame({
+        type: "projectSynced", projectId,
+        problem: "Cloud9 could not ask GitHub about this repository. Try again in a moment.",
+      });
+    }
+  }
+
+  /** A GitHub client that can only READ — no approver, so every gate refuses. */
+  private readOnlyGitHub(): GitHubClient {
+    return new GitHubClient(this.opts.github ?? {});
   }
 
   agentSend(agentId: ID, channelId: ID, text: string, proactive = false): void {

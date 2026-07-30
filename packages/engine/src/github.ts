@@ -33,7 +33,8 @@
 // on the commit subject via `--fill`, and the body goes in on standard input
 // via `--body-file -`.
 import {
-  REMOTE_ACTIONS, RemoteAction, RemoteActionFacts, describeRemoteAction,
+  PROJECT_LIMITS, ProjectItem, REMOTE_ACTIONS, RemoteAction, RemoteActionFacts,
+  describeRemoteAction, isBranchName, validateProjectItem, validateRepo,
 } from "@cloud9/shared";
 import { run, Runner } from "./run.js";
 import { GitError, Worktree } from "./worktree.js";
@@ -93,6 +94,56 @@ export interface PullRequest {
   url: string;
   branch: string;
   base: string;
+}
+
+/**
+ * What one look at a repository found — or, honestly, why it found nothing.
+ *
+ * `items` carries no `projectId`: the engine does not decide which project a
+ * pull request belongs to. The hub stamps the project it verified, exactly as
+ * it already does for anything else arriving on a frame.
+ */
+export interface RepositoryLook {
+  /** the trunk GitHub reports, only when it is a name we may repeat */
+  defaultBranch?: string;
+  /** open pull requests and open issues. Absent means we never got a list. */
+  items?: Array<Omit<ProjectItem, "projectId">>;
+  /** why the look did not work, in words a non-developer can act on */
+  problem?: string;
+}
+
+/**
+ * EVERY `gh` COMMAND THIS FILE'S READ PATH IS ALLOWED TO RUN.
+ *
+ * A list, not a habit. "Reading a repository can never change it" is a promise
+ * that is only worth anything if something enforces it, so `readOnly` refuses
+ * anything not on here — `pr create`, `issue close`, `repo delete` cannot be
+ * reached from a look even by a future edit that forgets why.
+ */
+const READ_ONLY_GH: ReadonlySet<string> = new Set([
+  "repo view", "pr list", "issue list", "auth status",
+]);
+
+/** The columns we ask GitHub for, ONE PER FLAG. */
+const PULL_FIELDS = [
+  "number", "title", "url", "state", "headRefName", "author", "createdAt", "updatedAt", "isDraft",
+] as const;
+const ISSUE_FIELDS = [
+  "number", "title", "url", "state", "author", "createdAt", "updatedAt",
+] as const;
+
+/**
+ * `--json a --json b`, never `--json a,b`.
+ *
+ * THE COMMA IS THE WHOLE POINT. `run.ts` refuses one, on purpose — its
+ * allowlist is what stops an agent's text ever reaching a command line — and
+ * the last code that wanted several JSON fields wrote `--json number,url` and
+ * threw `UnsafeArgumentError` against the real tool for a day, because only a
+ * fake runner had ever called it. gh accepts the flag repeated (checked by
+ * running gh 2.92.0 on this machine, 2026-07-30), so nothing has to be widened.
+ */
+function jsonFields(fields: readonly string[]): string[] {
+  return fields.flatMap(f => ["--json", f]);
 }
 
 /** What `gh auth status` says, in plain words. Never a token, never a scope value. */
@@ -298,6 +349,203 @@ export class GitHubClient {
     const number = Number(/\/pull\/(\d+)$/.exec(url)?.[1]);
     return Number.isSafeInteger(number) ? { number, url } : undefined;
   }
+
+  /**
+   * WHAT IS OPEN IN THIS REPOSITORY — the ONE owner of "how we ask GitHub
+   * about a repository". The Projects screen, any schedule we ever add, and any
+   * agent that wants the same answer all come through here, so there is one
+   * spelling of the question and one set of words for every way it can fail.
+   *
+   * READ ONLY, AND ENFORCED. Three commands, all on `READ_ONLY_GH`, all with
+   * `--repo` so nothing depends on which folder we happen to be in. Nothing
+   * leaves this machine and nothing on GitHub changes, which is why this method
+   * is not behind `mayI` — the approval gate exists for the things that DO
+   * change something, and putting a list-reading call behind it would teach
+   * everyone that approval cards are noise.
+   *
+   * IT NEVER THROWS AND IT NEVER RETURNS A STACK TRACE. Every failure comes
+   * back as `problem`, in a sentence Vikas can act on, because the screen
+   * prints it word for word.
+   */
+  async lookAtRepository(repo: string): Promise<RepositoryLook> {
+    try {
+      const badName = validateRepo(repo);
+      if (badName) return { problem: badName };
+
+      // Is there a GitHub sign-in on this computer at all? `account()` already
+      // owns the sentences for "gh isn't installed" and "you're not signed in",
+      // so they are not written a second time here.
+      const who = await this.account();
+      if (!who.signedIn) {
+        return { problem: `${who.detail} — sign in to GitHub on this computer, then look again.` };
+      }
+
+      const trunk = await this.readOnly(
+        ["repo", "view", repo, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"], repo);
+      if ("problem" in trunk) return trunk;
+      const branch = firstLine(trunk.stdout);
+      // a trunk we could not repeat safely is simply not reported: the hub
+      // refuses a name that is not a branch name, and a refused frame would
+      // take the pull requests down with it
+      const defaultBranch = isBranchName(branch) ? branch : undefined;
+      const found = defaultBranch ? { defaultBranch } : {};
+
+      const pulls = await this.readOnly([
+        "pr", "list", "--repo", repo, "--state", "open",
+        "--limit", String(PROJECT_LIMITS.lookItems), ...jsonFields(PULL_FIELDS),
+      ], repo);
+      if ("problem" in pulls) return { ...found, problem: pulls.problem };
+
+      const issues = await this.readOnly([
+        "issue", "list", "--repo", repo, "--state", "open",
+        "--limit", String(PROJECT_LIMITS.lookItems), ...jsonFields(ISSUE_FIELDS),
+      ], repo);
+      if ("problem" in issues) return { ...found, problem: issues.problem };
+
+      const asPulls = readItems("pull", pulls.stdout);
+      if ("problem" in asPulls) return { ...found, problem: asPulls.problem };
+      const asIssues = readItems("issue", issues.stdout);
+      if ("problem" in asIssues) return { ...found, problem: asIssues.problem };
+
+      return { ...found, items: [...asPulls.items, ...asIssues.items] };
+    } catch (err) {
+      // belt and braces: a look must never be the reason anything falls over,
+      // and the owner must never be shown the inside of a program
+      this.log(`could not look at ${repo}: ${err instanceof Error ? err.message : String(err)}`);
+      return { problem: "Cloud9 could not ask GitHub about this repository. Try again in a moment." };
+    }
+  }
+
+  /**
+   * Run one gh command that CANNOT change anything, and turn every way it can
+   * fail into a sentence.
+   *
+   * The allowlist is checked here rather than trusted from the caller, so
+   * "reading a repository never writes to it" is a property of this method and
+   * not of everyone remembering.
+   */
+  private async readOnly(args: string[], repo: string): Promise<{ stdout: string } | { problem: string }> {
+    const verb = `${args[0]} ${args[1]}`;
+    if (!READ_ONLY_GH.has(verb)) {
+      // not a sentence for the owner — this is a programming mistake, and it is
+      // the only path in here that is allowed to be loud
+      throw new Error(`refusing to run "gh ${verb}" while looking at a repository: it is not read-only`);
+    }
+    const r = await this.runner(this.command, args, { timeoutMs: 60_000 });
+    if (r.notFound) {
+      return { problem: "the GitHub command line (gh) isn't installed on this computer, so nothing can look at GitHub." };
+    }
+    if (r.timedOut) {
+      return { problem: "GitHub did not answer in time. It may be busy, or this computer's connection may be down." };
+    }
+    if (r.code !== 0) return { problem: whyGitHubSaidNo(`${r.stderr}\n${r.stdout}`, repo) };
+    return { stdout: r.stdout };
+  }
+}
+
+/**
+ * ONE PLACE THAT TURNS GH'S COMPLAINT INTO A SENTENCE VIKAS CAN ACT ON.
+ *
+ * Every one of these was a real failure mode named in the round's brief: not
+ * signed in, no such repository (or somebody else's private one), the network
+ * down, GitHub rate limiting us. A stack trace or a raw `gh` line is never the
+ * answer — the screen prints this verbatim.
+ */
+export function whyGitHubSaidNo(text: string, repo: string): string {
+  const said = String(text ?? "");
+  if (/rate limit|secondary rate|abuse detection|429/i.test(said)) {
+    return "GitHub is asking us to slow down for a while (it calls this a rate limit). Try again in a few minutes.";
+  }
+  if (/could not resolve to a (repository|user)|404|not found|does not exist/i.test(said)) {
+    return `GitHub has no repository called ${repo} that this computer's sign-in can see. Check the name — and if it is private, the GitHub account signed in here needs to be given access.`;
+  }
+  if (/gh auth login|not logged (in)?to|authentication|bad credentials|401|403/i.test(said)) {
+    return "this computer's GitHub sign-in was refused. Sign in to GitHub again, then look once more.";
+  }
+  if (/dial tcp|no such host|getaddrinfo|connection refused|network is unreachable|i\/o timeout|TLS handshake|EOF|proxy/i.test(said)) {
+    return "this computer could not reach github.com. The network looks down — check the connection and try again.";
+  }
+  const line = firstLine(said);
+  const sentence = line === "no detail given"
+    ? "GitHub refused the request and did not say why."
+    : `GitHub refused the request: ${line}`;
+  // it has to FIT where the hub keeps it, or the hub trims it mid-word and the
+  // sentence he reads stops making sense
+  return sentence.length <= PROJECT_LIMITS.problem
+    ? sentence
+    : `${sentence.slice(0, PROJECT_LIMITS.problem - 1).trimEnd()}…`;
+}
+
+/**
+ * Turn what `gh ... --json` printed into pull requests and issues.
+ *
+ * IT ARRIVED FROM OUTSIDE, so every row is checked with the hub's OWN
+ * `validateProjectItem` before it is kept. A row that does not pass is dropped
+ * rather than repaired: one unusable row must never cost the whole list, which
+ * is exactly what would happen if the hub refused the frame.
+ */
+export function readItems(
+  kind: "pull" | "issue", stdout: string,
+): { items: Array<Omit<ProjectItem, "projectId">> } | { problem: string } {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout.trim() || "[]");
+  } catch {
+    return { problem: "GitHub's answer could not be read. Try looking again." };
+  }
+  if (!Array.isArray(raw)) return { problem: "GitHub's answer could not be read. Try looking again." };
+  const items: Array<Omit<ProjectItem, "projectId">> = [];
+  for (const row of raw as Array<Record<string, unknown>>) {
+    const item = readItem(kind, row);
+    // the hub's own rule, run here so a bad row costs itself and nothing else
+    if (item && !validateProjectItem({ ...item, projectId: "check" })) items.push(item);
+  }
+  return { items };
+}
+
+function readItem(
+  kind: "pull" | "issue", row: Record<string, unknown>,
+): Omit<ProjectItem, "projectId"> | undefined {
+  if (!row || typeof row !== "object") return undefined;
+  const number = typeof row.number === "number" ? row.number : NaN;
+  const title = typeof row.title === "string" ? row.title.slice(0, PROJECT_LIMITS.itemTitle) : "";
+  const url = typeof row.url === "string" ? row.url : "";
+  const author = (row.author as { login?: unknown } | undefined)?.login;
+  const branch = typeof row.headRefName === "string" ? row.headRefName : undefined;
+  const state = readState(kind, row);
+  const createdAt = when(row.createdAt);
+  const updatedAt = when(row.updatedAt);
+  if (!Number.isInteger(number) || !title || !url || createdAt === undefined || updatedAt === undefined) {
+    return undefined;
+  }
+  return {
+    kind, number, title, state, url, createdAt, updatedAt,
+    ...(typeof author === "string" && author ? { author: author.slice(0, 80) } : {}),
+    // a branch name we could not repeat safely is left off rather than shown:
+    // the same rule the hub applies to a trunk, for the same reason
+    ...(kind === "pull" && isBranchName(branch) ? { branch } : {}),
+  };
+}
+
+/**
+ * MERGED AND CLOSED ARE OPPOSITE OUTCOMES and the screen says so in words, so
+ * this must not flatten them. gh shouts its states (`OPEN`, `MERGED`); a draft
+ * is an open pull request wearing `isDraft`, and it is drawn as its own thing
+ * because a draft is not asking to be reviewed yet.
+ */
+function readState(kind: "pull" | "issue", row: Record<string, unknown>): ProjectItem["state"] {
+  const said = String(row.state ?? "").toLowerCase();
+  if (said === "merged") return "merged";
+  if (said === "closed") return "closed";
+  if (kind === "pull" && row.isDraft === true) return "draft";
+  return "open";
+}
+
+function when(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return undefined;
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? at : undefined;
 }
 
 /**

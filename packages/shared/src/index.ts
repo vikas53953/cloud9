@@ -589,6 +589,15 @@ export interface Project {
   syncedAt?: number;
   /** what went wrong the last time it looked, in plain words. Absent = fine. */
   problem?: string;
+  /**
+   * TRUE WHILE SOMEBODY IS ACTUALLY LOOKING RIGHT NOW.
+   *
+   * Not stored — the hub adds it on the way out, because "a look is under way"
+   * is true of this hub at this moment and would be a lie the second it
+   * restarted. It exists so a button can show a real in-progress state instead
+   * of a spinner the screen started on its own and has no way to end.
+   */
+  looking?: boolean;
 }
 
 /** A pull request or an issue — the two lists a project holds. */
@@ -643,6 +652,17 @@ export const PROJECT_LIMITS = {
   itemTitle: 300,
   /** the plain-words failure kept on a project */
   problem: 200,
+  /**
+   * How long the hub waits for an engine to come back from GitHub before it
+   * stops saying "looking".
+   *
+   * A spinner with no end is the dishonest failure this number exists to
+   * prevent: if the engine dies mid-look, the hub says so in words rather than
+   * leaving the button spinning for ever.
+   */
+  lookMs: 90_000,
+  /** how many pull requests, and how many issues, one look asks GitHub for */
+  lookItems: 100,
 } as const;
 
 /**
@@ -684,6 +704,31 @@ export function validateProjectText(name: unknown, description: unknown): string
     }
   }
   return null;
+}
+
+/**
+ * Is this a branch name, and only a branch name?
+ *
+ * THE ONE OWNER OF THAT QUESTION for a branch somebody ELSE named — GitHub's
+ * trunk, the head branch on a pull request. (A branch Cloud9 makes for itself
+ * is a narrower question and `engine/worktree.ts` answers it: it also demands
+ * our own `cloud9/` prefix, because nothing we create may land anywhere else.)
+ *
+ * It lived in the hub until 2026-07-30, when the engine started reading a
+ * repository's trunk off `gh` and needed the same answer. Two copies of this
+ * rule is exactly how the engine ends up reporting a name the hub then refuses
+ * — and a refused frame takes the whole list of work down with it.
+ *
+ * Same law as every other command-line-bound value here: an allowlist that
+ * must START with a letter or a digit, so a value can never be read as an
+ * option. `..`, a trailing `.lock`, and the shell's own characters are all out.
+ */
+export function isBranchName(name: unknown): name is string {
+  if (typeof name !== "string" || name.length === 0 || name.length > 255) return false;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(name)) return false;
+  if (name.includes("..") || name.includes("//")) return false;
+  if (name.endsWith("/") || name.endsWith(".") || name.endsWith(".lock")) return false;
+  return true;
 }
 
 /**
@@ -1235,6 +1280,21 @@ export type ClientFrame =
   /** One project's pull requests and issues, as of the last time we looked. */
   | { type: "projectItems"; projectId: ID }
   /**
+   * "LOOK AT GITHUB NOW." The owner asking for a fresh look at one project.
+   *
+   * OWNER ONLY, AND CHECKED AT THE HUB — `myProject`, on stored state, exactly
+   * like every other project frame. The screen may draw the button however it
+   * likes; being able to press it is not the permission.
+   *
+   * The hub cannot reach GitHub and never will: it forwards this to the
+   * OWNER'S OWN engine as `lookAtProject`, and that engine runs `gh` with the
+   * sign-in already on the owner's computer. Reading two lists changes nothing
+   * outside this machine, so it is not on the `REMOTE_ACTIONS` table and does
+   * not go through the approval gate — and there is no frame here that could
+   * ever make it write.
+   */
+  | { type: "syncProject"; projectId: ID }
+  /**
    * ENGINE-HOST ONLY: I asked GitHub, and here is what it said.
    *
    * The engine ran `gh` on the owner's machine; this is the report. Like a run
@@ -1539,6 +1599,16 @@ export type ServerFrame =
   | { type: "harness"; state: HarnessState }
   // relay → engine host: do the harness work (the engine owns the CLIs)
   | { type: "harnessRequest"; action: "status" | "signIn" | "cancel"; harness?: HarnessName }
+  /**
+   * relay → THE OWNER'S ENGINE HOST ONLY: go and ask GitHub about this
+   * repository, then answer with `projectSynced`.
+   *
+   * The `repo` travels with it so the engine never has to hold a copy of the
+   * project table — and, more importantly, so the name it hands to `gh` is the
+   * one the HUB has stored for a project it has already checked belongs to the
+   * person who asked. An engine is told what to look at; it does not choose.
+   */
+  | { type: "lookAtProject"; projectId: ID; repo: string }
   | { type: "error"; error: string };
 
 // ---------- desktop menu actions ----------

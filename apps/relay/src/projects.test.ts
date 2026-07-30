@@ -235,3 +235,126 @@ test("forgetting a project forgets our copy and its lists, and nothing else", as
   assert.equal(relay.store.project(project.id), undefined);
   assert.deepEqual(relay.store.projectItems(project.id), [], "its lists go with it");
 });
+
+// ---------------------------------------------------------------------------
+// "LOOK AT GITHUB NOW" — the ask, the owner gate, and the honest in-between
+//
+// The hub cannot reach GitHub and never will. What it CAN do is decide whose
+// project this is, tell the right engine to go and look, and be the one honest
+// answer to "is anybody looking right now?" — because nothing else knows.
+// ---------------------------------------------------------------------------
+
+test("the owner asking for a look reaches THEIR engine, with the repository the hub has stored", async t => {
+  const { owner, engine } = await stand(t, "proj-look-ask.db");
+  const project = await connect(owner, "vikas53953/cloud9");
+
+  owner.send({ type: "syncProject", projectId: project.id });
+  const told = await engine.wait<Extract<ServerFrame, { type: "lookAtProject" }>>(
+    f => f.type === "lookAtProject");
+  assert.equal(told.projectId, project.id);
+  // the name comes from stored state, not from the frame the client sent
+  assert.equal(told.repo, "vikas53953/cloud9");
+});
+
+test("while a look is under way the hub SAYS so, and stops saying it the moment the engine answers", async t => {
+  const { owner, engine } = await stand(t, "proj-look-state.db");
+  const project = await connect(owner, "vikas53953/cloud9");
+
+  owner.frames.length = 0;
+  owner.send({ type: "syncProject", projectId: project.id });
+  const busy = await owner.wait<Extract<ServerFrame, { type: "project" }>>(
+    f => f.type === "project" && f.project.looking === true);
+  assert.equal(busy.project.looking, true);
+  assert.equal(busy.project.syncedAt, undefined, "asking is not looking — nothing has been looked at yet");
+
+  // and it is on the LIST too, not only on the one that changed
+  owner.send({ type: "projects" });
+  const list = await owner.wait<Extract<ServerFrame, { type: "projects" }>>(f => f.type === "projects");
+  assert.equal(list.projects[0].looking, true);
+
+  engine.send({ type: "projectSynced", projectId: project.id, defaultBranch: "master", items: [item()] });
+  const done = await owner.wait<Extract<ServerFrame, { type: "project" }>>(
+    f => f.type === "project" && f.project.looking !== true);
+  assert.equal(done.project.looking, undefined, "nobody is looking any more");
+  assert.ok((done.project.syncedAt ?? 0) > 0, "and the hub is the one that stamped when");
+});
+
+test("a second look while one is still running is refused rather than piled on", async t => {
+  const { owner } = await stand(t, "proj-look-twice.db");
+  const project = await connect(owner, "vikas53953/cloud9");
+  owner.send({ type: "syncProject", projectId: project.id });
+  await owner.wait(f => f.type === "project" && f.project.looking === true);
+
+  owner.frames.length = 0;
+  owner.send({ type: "syncProject", projectId: project.id });
+  const refused = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(refused.error, /already looking/);
+});
+
+test("only the OWNER may set a look going, and it is checked here rather than on the screen", async t => {
+  const { owner, engine, open } = await stand(t, "proj-look-owner.db");
+  const project = await connect(owner, "vikas53953/cloud9");
+
+  owner.send({ type: "createInvite" });
+  const inv = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
+  const friend = open(`invite:${inv.code}:Priya`);
+  await friend.wait(f => f.type === "welcome");
+  engine.frames.length = 0;
+
+  friend.send({ type: "syncProject", projectId: project.id });
+  const refused = await friend.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  // the same answer an invented id gets, so an id cannot be probed
+  assert.match(refused.error, /no such project/);
+  assert.ok(!engine.frames.some(f => f.type === "lookAtProject"),
+    "nothing reached the engine on somebody else's say-so");
+
+  friend.send({ type: "syncProject", projectId: "pr_invented" });
+  const invented = await friend.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.equal(invented.error, refused.error);
+});
+
+test("with no Cloud9 running on this computer, the hub says so in words and claims no look", async t => {
+  // deliberately WITHOUT the engine `stand` opens: this is the case where the
+  // button has nothing to talk to
+  const relay = new Relay({ dbPath: tmp("proj-look-noengine.db"), ownerToken: "tok-owner", ownerName: "Vikas" });
+  const port = await relay.listen(0);
+  const owner = new TestClient(`ws://127.0.0.1:${port}`, "tok-owner", "desktop");
+  t.after(() => { owner.close(); relay.close(); });
+  await owner.wait(f => f.type === "welcome");
+  const project = await connect(owner, "vikas53953/cloud9");
+
+  owner.frames.length = 0;
+  owner.send({ type: "syncProject", projectId: project.id });
+  const refused = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(refused.error, /isn't running on the computer/);
+
+  const said = await owner.wait<Extract<ServerFrame, { type: "project" }>>(f => f.type === "project");
+  assert.match(said.project.problem ?? "", /isn't running on the computer/);
+  assert.equal(said.project.looking, undefined, "nothing is looking, so nothing says it is");
+  // ABSENT MEANS ABSENT: nobody looked, so "last looked at" stays empty
+  assert.equal(said.project.syncedAt, undefined);
+});
+
+test("an engine cannot start a look on somebody else's project by asking for one", async t => {
+  const { owner, open } = await stand(t, "proj-look-engine.db");
+  const project = await connect(owner, "vikas53953/cloud9");
+
+  owner.send({ type: "createInvite" });
+  const inv = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
+  const friend = open(`invite:${inv.code}:Priya`, "engine");
+  await friend.wait(f => f.type === "welcome");
+  friend.send({ type: "syncProject", projectId: project.id });
+  const refused = await friend.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(refused.error, /no such project/);
+});
+
+test("forgetting a project while a look is in flight leaves nothing waiting behind it", async t => {
+  const { relay, owner } = await stand(t, "proj-look-forget.db");
+  const project = await connect(owner, "vikas53953/cloud9");
+  owner.send({ type: "syncProject", projectId: project.id });
+  await owner.wait(f => f.type === "project" && f.project.looking === true);
+
+  owner.send({ type: "forgetProject", projectId: project.id });
+  await owner.wait(f => f.type === "projectForgotten" && f.projectId === project.id);
+  assert.equal(relay.store.project(project.id), undefined);
+});

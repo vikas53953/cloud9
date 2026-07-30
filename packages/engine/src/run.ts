@@ -58,6 +58,24 @@ export function shellQuote(value: string): string {
   return /\s/.test(value) ? `"${value}"` : value;
 }
 
+/**
+ * THE ONE PLACE A COMMAND LINE IS BUILT, and therefore the one place the
+ * allowlist is applied. `run` and `runVisibleTerminal` both call it, so there
+ * is no second spelling of "is this argv safe?" to drift.
+ *
+ * It is EXPORTED so a test can prove a caller's argv against the real guard
+ * rather than against a fake runner that never checks anything. That is not a
+ * theoretical worry: `gh --json number,url` shipped and threw
+ * `UnsafeArgumentError` every time it met the real runner, because the only
+ * thing that had ever called it was a fake (github.ts, `pullRequestFor`).
+ * Anything that hands arguments to `gh` should assert on this function.
+ *
+ * Throws `UnsafeArgumentError` — it never escapes and never repairs.
+ */
+export function commandLine(cmd: string, args: string[]): string {
+  return [shellQuote(cmd), ...args.map(a => checkArg(a))].join(" ");
+}
+
 /** Stop a runaway harness from eating memory through its own output. */
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 
@@ -72,7 +90,7 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
   // synchronous throw, so every caller's `await` handles it the same way.
   let line: string;
   try {
-    line = [shellQuote(cmd), ...args.map(a => checkArg(a))].join(" ");
+    line = commandLine(cmd, args);
   } catch (err) {
     return Promise.reject(err);
   }
@@ -154,7 +172,7 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
 export function runVisibleTerminal(cmd: string, args: string[]): Promise<RunResult> {
   let inner: string;
   try {
-    inner = [shellQuote(cmd), ...args.map(a => checkArg(a))].join(" ");
+    inner = commandLine(cmd, args);
   } catch (err) {
     return Promise.reject(err);
   }

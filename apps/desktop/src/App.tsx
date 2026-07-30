@@ -6513,6 +6513,13 @@ function ProjectDetail({ project, onOpenChannel }: {
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(project.name);
   const [forgetAsked, setForgetAsked] = useState(false);
+  /* Pressed, and the hub has not said anything back yet. It covers the moment
+     between the click and the hub's answer, and NOTHING ELSE — once the hub is
+     talking, `project.looking` is the truth, because only the hub knows whether
+     the engine is still out there looking. */
+  const [justAsked, setJustAsked] = useState(false);
+  const [lookRefusal, setLookRefusal] = useState<string | null>(null);
+  const looking = project.looking === true || justAsked;
 
   const held = client.itemsFor(project.id);
   useEffect(() => {
@@ -6520,7 +6527,14 @@ function ProjectDetail({ project, onOpenChannel }: {
     setOpen(null);
     setForgetAsked(false);
     setRenaming(false);
+    setJustAsked(false);
+    setLookRefusal(null);
   }, [project.id]);
+  /* The hub has spoken about this project — it is either looking, or it has
+     finished. Either way this app is no longer the one holding the spinner. */
+  useEffect(() => {
+    setJustAsked(false);
+  }, [project.looking, project.syncedAt, project.problem]);
   useEffect(() => { setDraftName(project.name); }, [project.name, renaming]);
 
   const pulls = held.items.filter(i => i.kind === "pull");
@@ -6627,6 +6641,22 @@ function ProjectDetail({ project, onOpenChannel }: {
         </div>
         {!renaming && (
           <div className="pd-btns">
+            {/* THE WAY IN. Cloud9 does not reach GitHub — this asks the hub,
+                which asks the copy of Cloud9 running on this computer, which
+                uses the GitHub sign-in already here. Reading two lists changes
+                nothing on GitHub, so nothing is approved and nothing can be
+                written. While a look is under way the button says so and
+                cannot be pressed again; that state comes from the hub, which
+                is the only party that knows whether anyone is still looking. */}
+            <button className="btn small primary" data-look={looking ? "busy" : "ready"}
+              disabled={looking}
+              onClick={() => {
+                setLookRefusal(null);
+                setJustAsked(true);
+                client.lookAtProject(project.id, why => { setJustAsked(false); setLookRefusal(why); });
+              }}>
+              {looking ? "Looking at GitHub…" : "Look at GitHub now"}
+            </button>
             <button className="btn small" onClick={() => setRenaming(true)}>Rename</button>
             {!forgetAsked
               ? <button className="btn small" onClick={() => setForgetAsked(true)}>Disconnect</button>
@@ -6656,9 +6686,17 @@ function ProjectDetail({ project, onOpenChannel }: {
             Trunk <code>{project.defaultBranch}</code>
           </span>
         )}
-        {project.syncedAt
-          ? <span className="chip">Looked at GitHub {dayStamp(project.syncedAt)}</span>
-          : <span className="chip is-gold">Not looked at GitHub yet</span>}
+        {/* WHEN IT WAS LAST LOOKED AT, and the hub is the only thing that
+            decides that — it stamps `syncedAt` when the engine reports back.
+            No stamp means nobody has looked, and it says exactly that. */}
+        {looking
+          ? <span className="chip is-gold" data-look-state="busy">Looking at GitHub now…</span>
+          : project.syncedAt
+            ? <span className="chip" data-look-state="looked"
+              title={new Date(project.syncedAt).toLocaleString()}>
+              Looked at GitHub {dayStamp(project.syncedAt)}
+            </span>
+            : <span className="chip is-gold" data-look-state="never">Not looked at GitHub yet</span>}
         {reportsInto && (
           <button className="chip is-ultra" onClick={() => onOpenChannel(reportsInto.id)}>
             Reports into #{reportsInto.name}
@@ -6667,6 +6705,11 @@ function ProjectDetail({ project, onOpenChannel }: {
       </div>
 
       {project.description && <p className="pd-desc">{project.description}</p>}
+
+      {/* The hub's refusal, where the button he pressed is — not only in the
+          toast that floats above every screen. Its own words, never a
+          paraphrase. */}
+      {lookRefusal && <p className="problemline" role="alert" data-look-refusal>{lookRefusal}</p>}
 
       {/* The hub's own sentence for why the last look failed, never a paraphrase
           and never an empty list pretending to be "no open work". */}
@@ -6680,16 +6723,17 @@ function ProjectDetail({ project, onOpenChannel }: {
       {!project.syncedAt && (
         <div className="pd-never">
           <b>Nobody has asked GitHub about this repository yet.</b>
-          {/* AND THE HONEST REASON. Nothing in Cloud9 asks GitHub for a
-              repository's lists yet — the half that runs `gh` and reports back
-              is written down in docs/plans/projects-handoff.md and is not
-              built. Saying "the lists fill in when your crew works here" would
-              be the same kind of claim this whole round exists to stop. */}
+          {/* THE SENTENCE CHANGED ON 2026-07-30, because the thing it was
+              apologising for now exists. It used to say nothing in Cloud9 could
+              ask GitHub at all — true then, a lie now that "Look at GitHub now"
+              runs `gh` on this computer. What it still refuses to say is that
+              there is no open work: nobody has looked, and an empty list below
+              is our copy, not GitHub's. */}
           <span>
-            Cloud9 never calls GitHub itself — your agents do, through the sign-in
-            already on this computer. Nothing asks for these lists on a schedule yet, so
-            until one of your agents reports back, what is below is Cloud9's copy and not
-            what GitHub has.
+            Cloud9 never calls GitHub itself — it uses the GitHub sign-in already on this
+            computer. Press <b>Look at GitHub now</b> and it will fetch the open pull
+            requests and issues. Nothing looks on a schedule yet, so until you do, the
+            lists below are Cloud9's copy and not what GitHub has.
           </span>
         </div>
       )}
@@ -6748,8 +6792,9 @@ function ProjectDetail({ project, onOpenChannel }: {
           <EmptyTray
             title={tab === "pull" ? "No pull requests recorded" : "No issues recorded"}
             line={project.syncedAt
-              ? <>This is what GitHub said when your crew last looked, {dayStamp(project.syncedAt)}.</>
-              : <>Nobody has looked at GitHub yet, so this is what Cloud9 holds — not what GitHub has.</>} />
+              ? <>This is what GitHub said when it was last looked at, {dayStamp(project.syncedAt)}.</>
+              : <>Nobody has looked at GitHub yet, so this is what Cloud9 holds — not what
+                GitHub has. Press <b>Look at GitHub now</b> above.</>} />
         )}
         {shown.map(itemRow)}
       </div>

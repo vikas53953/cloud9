@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-07-30T06:10:56.428Z",
+  "ranAt": "2026-07-30T07:30:14.378Z",
   "expected": 350,
   "executed": 350,
   "results": [
@@ -161,7 +161,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch 43zqy :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch 6wv6z :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +176,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_ib8wWYC6lW0yC0NeA68OGg"
+      "detail": "inv_5nw9ttYaf0kCxglzDNxiEg"
     },
     {
       "name": "friend joins via invite",
@@ -306,7 +306,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 11:38"
+      "detail": "↳ 1 reply · last at 12:56"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -376,7 +376,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 11:38 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 12:56 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -806,7 +806,7 @@
     {
       "name": "the screen and the hub really are on different addresses, so the next check means something",
       "pass": true,
-      "detail": "http://127.0.0.1:4173 vs http://127.0.0.1:8799"
+      "detail": "http://127.0.0.1:4291 vs http://127.0.0.1:8861"
     },
     {
       "name": "a picture takes the one intended route — fetched, held as a blob, freed on close",
@@ -926,7 +926,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms7452cvsw8hh8\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms76y05ec3a3ly\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -966,12 +966,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms743l9ltj7y1v:1785391726078 a_ms743tc819blx2:1785391733821 u_ms7443hmbjl3ll:1785391734060 a_ms7452cvsw8hh8:1785391734274"
+      "detail": "u_ms76w52rasha6t:1785396433915 a_ms76wo2v1ruxfd:1785396443269 u_ms76wxz9p56oja:1785396444050 a_ms76y05ec3a3ly:1785396444205"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785391730952 · now 1785391734060"
+      "detail": "first 1785396440394 · now 1785396444050"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -1076,7 +1076,7 @@
     {
       "name": "REPRODUCED: a refusal was provoked with one file on the wire and a second read and queued behind it",
       "pass": true,
-      "detail": "{\"onTheWire\":1,\"queuedBehind\":1,\"asked\":[\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setChannelInfo\",\"setChannelVisibility\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"archiveChannel\",\"archiveChannel\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setMemberRole\",\"channelMembers\",\"removeMember\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"markRead\",\"uploadAttachment\",\"editMessage\"]}"
+      "detail": "{\"onTheWire\":1,\"queuedBehind\":1,\"asked\":[\"setChannelVisibility\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"archiveChannel\",\"archiveChannel\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setMemberRole\",\"channelMembers\",\"removeMember\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"markRead\",\"uploadAttachment\",\"editMessage\"]}"
     },
     {
       "name": "REPRODUCED: the refusal really did land while the upload was still unanswered",
@@ -1176,7 +1176,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":22,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
+      "detail": "{\"followedToBottom\":0,\"samples\":18,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1251,7 +1251,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms743w0fcw5ci1\",\"status\":\"completed\",\"runId\":\"r-0ms743w0u-w40a\"}"
+      "detail": "{\"id\":\"t_ms76wrauenhkzg\",\"status\":\"completed\",\"runId\":\"r-0ms76wrvw-21gk\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1571,7 +1571,7 @@
     {
       "name": "it says when it runs out — an agent is standing there waiting for the answer",
       "pass": true,
-      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 11:39 EXPIRES in 9 minutes"
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 12:59 EXPIRES in 9 minutes"
     },
     {
       "name": "a request with no job behind it offers no 'see the job' button to press",

@@ -11,7 +11,7 @@ import {
   RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
-  downloadContentType, fitRunRecord, isInlineViewable, isSafeSkillFileName,
+  downloadContentType, fitRunRecord, isBranchName, isInlineViewable, isSafeSkillFileName,
   mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
   setMachineNames, shareableRun,
   extractMentions, newId, validateAgentInput, validateAttachment, validateChannelText,
@@ -201,6 +201,8 @@ export class Relay {
   close(): void {
     for (const t of this.expiryTimers) clearTimeout(t);
     this.expiryTimers.clear();
+    for (const t of this.looking.values()) clearTimeout(t);
+    this.looking.clear();
     for (const c of this.conns) c.ws.close();
     this.wss.close();
     this.server.close();
@@ -463,6 +465,71 @@ export class Relay {
     const project = this.store.project(projectId);
     if (!project || project.ownerId !== userId) throw new Error("no such project");
     return project;
+  }
+
+  /* ---------------- looking at GitHub, and knowing when we are ----------------
+   *
+   * ONE OWNER FOR "IS SOMEBODY LOOKING RIGHT NOW", and it is these three
+   * methods. The hub cannot reach GitHub — it asks the owner's own engine and
+   * waits — so it is the only party that knows a look is in flight, and it is
+   * the only one that should be saying so. A screen that started its own
+   * spinner would have no way to end it when the engine died.
+   *
+   * It is deliberately NOT stored. "A look is under way" is true of this hub at
+   * this moment; written to the database it would come back a lie after a
+   * restart, and law 8 says absent means absent.
+   */
+
+  /** the projects an engine has been asked about and has not answered for yet */
+  private looking = new Map<ID, ReturnType<typeof setTimeout>>();
+
+  /** Every project leaves the hub through here, so "looking" cannot be forgotten. */
+  private viewProject(project: Project): Project {
+    return this.looking.has(project.id) ? { ...project, looking: true } : project;
+  }
+
+  /**
+   * Ask this owner's engine to go and look. Refuses rather than pretending in
+   * the two cases where nothing can actually happen.
+   */
+  private startLook(userId: ID, project: Project): void {
+    if (this.looking.has(project.id)) {
+      throw new Error("Cloud9 is already looking at that repository — give it a moment");
+    }
+    if (!this.hasEngine(userId)) {
+      // NOT A SILENT NO-OP, and not a spinner either. The failure is written on
+      // the project in words, exactly like a failure gh reported, so the screen
+      // has something true to print. `syncedAt` is deliberately NOT touched:
+      // nobody looked, so nothing was looked at.
+      project.problem = "Cloud9 isn't running on the computer this repository lives on, so nothing could ask GitHub. Open Cloud9 there and try again.";
+      this.store.saveProject(project);
+      this.toUser(userId, { type: "project", project: this.viewProject(project) });
+      throw new Error(project.problem);
+    }
+    const timer = setTimeout(
+      () => this.lookRanOut(userId, project.id), PROJECT_LIMITS.lookMs);
+    // a pending look must never be the reason this process refuses to exit
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.looking.set(project.id, timer);
+    this.toEngines(userId, { type: "lookAtProject", projectId: project.id, repo: project.repo });
+    this.toUser(userId, { type: "project", project: this.viewProject(project) });
+  }
+
+  /** The engine answered (or the project went away). Stop saying "looking". */
+  private endLook(projectId: ID): void {
+    const timer = this.looking.get(projectId);
+    if (timer) clearTimeout(timer);
+    this.looking.delete(projectId);
+  }
+
+  /** Nobody came back. Say so in words rather than spinning for ever. */
+  private lookRanOut(userId: ID, projectId: ID): void {
+    this.endLook(projectId);
+    const project = this.store.project(projectId);
+    if (!project || project.ownerId !== userId) return;
+    project.problem = "the look at GitHub never finished — Cloud9 on this computer stopped answering. Try again.";
+    this.store.saveProject(project);
+    this.toUser(userId, { type: "project", project: this.viewProject(project) });
   }
 
   /**
@@ -1362,7 +1429,7 @@ export class Relay {
         // projects over one repository would be two lists of the same pull
         // requests, disagreeing.
         const already = this.store.projectByRepo(conn.userId, frame.repo);
-        if (already) { send(conn.ws, { type: "project", project: already }); break; }
+        if (already) { send(conn.ws, { type: "project", project: this.viewProject(already) }); break; }
         if (this.store.projectsOf(conn.userId).length >= PROJECT_LIMITS.perUser) {
           throw new Error(`that's too many projects (max ${PROJECT_LIMITS.perUser})`);
         }
@@ -1377,7 +1444,7 @@ export class Relay {
         };
         this.store.saveProject(project);
         this.audit(conn, "project_connected", project.id, `connected ${project.repo}`);
-        this.toUser(conn.userId, { type: "project", project });
+        this.toUser(conn.userId, { type: "project", project: this.viewProject(project) });
         break;
       }
       case "updateProject": {
@@ -1397,20 +1464,25 @@ export class Relay {
         }
         this.store.saveProject(project);
         this.audit(conn, "project_updated", project.id, `updated ${project.repo}`);
-        this.toUser(conn.userId, { type: "project", project });
+        this.toUser(conn.userId, { type: "project", project: this.viewProject(project) });
         break;
       }
       case "forgetProject": {
         const project = this.myProject(conn.userId, frame.projectId);
         // FORGETS OUR COPY. The repository is untouched — the hub has no way to
         // reach GitHub at all, and that is the design, not an omission.
+        // a look still in flight has nothing left to report into
+        this.endLook(project.id);
         this.store.forgetProject(project.id);
         this.audit(conn, "project_forgotten", project.id, `disconnected ${project.repo}`);
         this.toUser(conn.userId, { type: "projectForgotten", projectId: project.id });
         break;
       }
       case "projects": {
-        send(conn.ws, { type: "projects", projects: this.store.projectsOf(conn.userId) });
+        send(conn.ws, {
+          type: "projects",
+          projects: this.store.projectsOf(conn.userId).map(p => this.viewProject(p)),
+        });
         break;
       }
       case "projectItems": {
@@ -1421,9 +1493,23 @@ export class Relay {
         });
         break;
       }
+      /* "LOOK AT GITHUB NOW."
+         OWNER ONLY, AND CHECKED HERE rather than on the screen: `myProject`
+         reads ownership from stored state, so a friend's client pressing a
+         button it drew itself gets "no such project" — the same answer an
+         invented id gets, so an id cannot be probed either. */
+      case "syncProject": {
+        const project = this.myProject(conn.userId, frame.projectId);
+        this.startLook(conn.userId, project);
+        break;
+      }
       case "projectSynced": {
         if (conn.client !== "engine") throw new Error("only the engine looks at GitHub");
         const project = this.myProject(conn.userId, frame.projectId);
+        // the look is over, whatever it found — before anything else, so a
+        // refused frame below still ends the "looking" state rather than
+        // leaving a button spinning until the timer runs out
+        this.endLook(project.id);
         if (frame.items !== undefined) {
           if (!Array.isArray(frame.items)) throw new Error("that isn't a list of work");
           if (frame.items.length > PROJECT_LIMITS.items) {
@@ -1441,9 +1527,14 @@ export class Relay {
         if (frame.defaultBranch !== undefined) {
           // it becomes part of "nothing lands here without him", so it is
           // checked as a name and not taken on trust
-          if (!isSafeBranchName(frame.defaultBranch)) throw new Error("that isn't a branch name");
+          if (!isBranchName(frame.defaultBranch)) throw new Error("that isn't a branch name");
           project.defaultBranch = frame.defaultBranch;
         }
+        // WHEN IT WAS LAST LOOKED AT IS DECIDED HERE AND NOWHERE ELSE. Not by
+        // the engine, which could report any clock it liked, and not by the
+        // screen, which would then have a second answer. Somebody looked, and
+        // this is when — even if what they found was a problem, because
+        // "we tried at 14:02 and GitHub refused" is still a look.
         project.syncedAt = Date.now();
         if (frame.problem !== undefined) {
           const said = String(frame.problem).slice(0, PROJECT_LIMITS.problem).trim();
@@ -1452,7 +1543,7 @@ export class Relay {
           delete project.problem;
         }
         this.store.saveProject(project);
-        this.toUser(conn.userId, { type: "project", project });
+        this.toUser(conn.userId, { type: "project", project: this.viewProject(project) });
         break;
       }
       // ---- what an agent actually did (FR-TL-003) ----
@@ -2129,20 +2220,13 @@ export class Relay {
 /**
  * Is this a branch name, and only a branch name?
  *
- * It arrives from the engine and becomes part of "nothing lands here without
- * him", so it is checked with the same law every other command-line-bound value
- * in this app is checked with: an allowlist that must START with a letter or a
- * digit, so a value can never be read as an option. `..`, a trailing `.lock`,
- * and the shell's own characters are all out — git refuses most of them itself,
- * and the ones it does not are exactly the ones we must.
+ * IT MOVED TO `@cloud9/shared` on 2026-07-30 and this is the same function, not
+ * a copy. The engine now reads a repository's trunk off `gh` and has to know
+ * whether it may report it; if it used a slightly different rule from this one,
+ * a name the engine reported would be refused here and the whole list of pull
+ * requests would go down with it. One rule, one place.
  */
-export function isSafeBranchName(name: unknown): name is string {
-  if (typeof name !== "string" || name.length === 0 || name.length > 255) return false;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(name)) return false;
-  if (name.includes("..") || name.includes("//")) return false;
-  if (name.endsWith("/") || name.endsWith(".") || name.endsWith(".lock")) return false;
-  return true;
-}
+export { isBranchName as isSafeBranchName } from "@cloud9/shared";
 
 /**
  * Does this task need the owner to say yes first?
