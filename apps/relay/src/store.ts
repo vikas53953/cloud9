@@ -1198,14 +1198,18 @@ export class Store {
          ORDER BY m.ts DESC LIMIT ?`,
       ).all(match, ...ids, ...authorArgs, size + 1) as { json: string; snippet: string }[];
     } else {
-      // No FTS5 on this SQLite: a plain contains-scan. Slower and it matches
-      // inside words, but it never lies about what it found.
-      const like = `%${terms.join(" ")}%`;
+      // No FTS5 on this SQLite: a plain contains-scan over the SAME text the
+      // FTS5 index holds (`message.text`), never over the raw JSON row. A LIKE
+      // on `m.json` matched every message when you searched for a field name
+      // like "text" or "attachment" — the plumbing, not the words people wrote.
+      const textSql = terms.map(() =>
+        "instr(lower(coalesce(json_extract(m.json,'$.text'),'')), lower(?)) > 0"
+      ).join(" AND ");
       hits = (this.db.prepare(
-        `SELECT m.json AS json FROM messages m WHERE m.channelId IN (${slots}) AND m.json LIKE ?
+        `SELECT m.json AS json FROM messages m WHERE m.channelId IN (${slots}) AND ${textSql}
          ${aliveSql}${authorSql}
          ORDER BY m.ts DESC LIMIT ?`,
-      ).all(...ids, like, ...authorArgs, size + 1) as { json: string }[])
+      ).all(...ids, ...terms, ...authorArgs, size + 1) as { json: string }[])
         .map(r => ({ json: r.json, snippet: "" }));
     }
 
@@ -1635,9 +1639,14 @@ export class Store {
    * own words never count as unread and an @mention of their agent still does.
    */
   unreadFor(userId: ID, channelId: ID, mine: Set<ID>): { unread: number; mentions: number } {
+    // THE COUNT IS THE TRUTH. This used to stop at 1000 rows, so a conversation
+    // with more unread than that reported exactly 1000 — and the screen then
+    // printed "999+" as if it had hit a ceiling. A capped number dressed as an
+    // exact one is a lie; if the frame cannot carry "capped" (shared types are
+    // closed today), the only honest hub answer is the real total.
     const since = this.lastRead(userId, channelId);
     const rows = this.db
-      .prepare("SELECT json FROM messages WHERE channelId=? AND ts>? ORDER BY ts ASC LIMIT 1000")
+      .prepare("SELECT json FROM messages WHERE channelId=? AND ts>? ORDER BY ts ASC")
       .all(channelId, since) as { json: string }[];
     let unread = 0;
     let mentions = 0;

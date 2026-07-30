@@ -337,6 +337,57 @@ test("a leftover temporary file is swept and never counted as a run", () => {
   assert.deepEqual(fs.readdirSync(runs), [`${good.id}.json`], "the half-written file is gone");
 });
 
+// Acceptance (Cursor quality round): a torn write leaves litter beside an
+// intact real file, and a failed write is reported rather than swallowed.
+test("a simulated torn write leaves temp litter while the real record stays intact", () => {
+  const dir = tmp();
+  const store = storeIn(dir);
+  const good = record();
+  const at = store.save(good);
+  assert.ok(at);
+
+  const runs = path.join(dir, "agents", "a1", "runs");
+  // Exactly what an interrupted write-then-rename leaves: the old final file
+  // untouched, and a half-filled temporary name next to it.
+  const litter = `${good.id}.json.tmp-${process.pid}-${Date.now()}-1`;
+  fs.writeFileSync(path.join(runs, litter), '{"id":"half', "utf8");
+
+  assert.ok(fs.readdirSync(runs).includes(litter), "the temporary litter is still there");
+  assert.ok(fs.readdirSync(runs).includes(`${good.id}.json`), "and so is the real file");
+  assert.equal(store.read("a1", good.id)?.id, good.id,
+    "the real record must still be readable while litter sits beside it");
+  assert.deepEqual(JSON.parse(fs.readFileSync(at!, "utf8")).id, good.id,
+    "the final name must hold the whole record, not the torn bytes");
+});
+
+test("a failed write is reported to the log, not swallowed as a quiet success", () => {
+  const dir = tmp();
+  const said: string[] = [];
+  const store = storeIn(dir, { log: (m: string) => said.push(m) });
+  const saved = record();
+
+  // Force the rename step to fail the way a full disk does — writeWholeFile
+  // returns false and the store must surface that, not pretend it saved.
+  const realRename = fs.renameSync;
+  (fs as { renameSync: typeof fs.renameSync }).renameSync = (() => {
+    const err = new Error("ENOSPC") as NodeJS.ErrnoException;
+    err.code = "ENOSPC";
+    throw err;
+  }) as typeof fs.renameSync;
+  let at: string | undefined;
+  try {
+    at = store.save(saved);
+  } finally {
+    (fs as { renameSync: typeof fs.renameSync }).renameSync = realRename;
+  }
+
+  assert.equal(at, undefined, "a failed write must not claim a path");
+  assert.ok(said.some(m => m.includes(saved.id) && /could not store/i.test(m)),
+    `the failure must be said out loud — got ${JSON.stringify(said)}`);
+  assert.equal(store.read("a1", saved.id), undefined,
+    "and nothing readable may appear under the final name");
+});
+
 test("how many runs are kept is ONE number, shared with the hub", async () => {
   const { RUN_RETENTION } = await import("@cloud9/shared");
   const { RUN_STORE_DEFAULTS } = await import("./runstore.js");
