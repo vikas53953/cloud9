@@ -278,6 +278,250 @@ function useEscapeCloses(onClose: () => void, enabled = true): void {
   }, [enabled]);
 }
 
+/* ================= HOW THE VIEW MOVES, AND WHEN ==========================
+ *
+ * Two rules that used to be spread across the app, and both of them are here.
+ */
+
+/**
+ * ONE OWNER OF "MAY THE VIEW ANIMATE ON THIS MACHINE".
+ *
+ * Asked at the moment of every move rather than read once at start-up, because
+ * the answer can change while the app is open — this is a setting on the
+ * computer, and somebody who turns motion off mid-session means it now.
+ *
+ * There were two spellings of a moving view before this: the settings screen
+ * asked for `behavior: "smooth"` unconditionally, and the message list asked for
+ * no behaviour at all (so it jumped). Neither respected the setting. One
+ * function answers for both.
+ */
+function scrollBehavior(): ScrollBehavior {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
+
+/** Why a message list followed to its bottom. */
+type FollowReason = "opened" | "arrived" | "sent" | "resized";
+
+/**
+ * EVERY TIME A MESSAGE LIST FOLLOWED TO ITS BOTTOM, AND WHY.
+ *
+ * Module-level for exactly the reason `escapeStack` is: the QA suite has to be
+ * able to ask the RULE what it did, rather than infer it from a pixel
+ * measurement that a slow paint or a smooth animation can make a liar of.
+ *
+ * A TRAIL AND NOT JUST THE LAST ONE, because one act of his can honestly move
+ * the view twice: he sends a message ("sent"), and a moment later that very
+ * message comes back from the hub and lands while he is now at the bottom
+ * ("arrived"). Reading only the last reason said his send had been an arrival,
+ * which is a true fact about the wrong event.
+ */
+let followed: { n: number; why: FollowReason | null; recent: FollowReason[] } =
+  { n: 0, why: null, recent: [] };
+
+/** How far off the bottom still counts as "he is down there, reading the newest". */
+const AT_BOTTOM_SLACK = 80;
+
+/**
+ * How long a follow of ours may still be considered "in flight".
+ *
+ * A smooth scroll in a browser takes a few hundred milliseconds however far it
+ * has to go. This is not a guess at that length — it is the point past which a
+ * follow that has not landed is over, so the rule below can never be left
+ * permanently believing the view is moving when it is not.
+ */
+const FOLLOW_SETTLES_MS = 700;
+
+/** Where `scrollTop` would have to be for this list to be at its bottom. */
+function bottomOf(el: HTMLElement): number {
+  return el.scrollHeight - el.clientHeight;
+}
+
+/**
+ * ONE OWNER OF "WHEN DOES A MESSAGE LIST FOLLOW TO ITS BOTTOM".
+ *
+ * WHY THIS EXISTS. Vikas reported it in his own words: he types in a
+ * conversation and the view does not move to what he just said. Reproduced three
+ * ways before a line was changed, and it was never one bug — it was one MISSING
+ * RULE with three faces:
+ *
+ *  1. He had read back a little way, so the app had decided he was "not at the
+ *     bottom" — and then he SENT a message and the app left him where he was.
+ *     His own message landed 1461px below the foot of a 591px list: he typed,
+ *     pressed Enter, and nothing on screen changed at all. Sending is not a
+ *     message arriving. Nobody sends a message they do not want to see, so a
+ *     send follows ALWAYS, wherever he had scrolled to.
+ *  2. Everything that moves the bottom without adding a message was ignored: the
+ *     file tray opening pushed the newest message 154px out of sight, a row
+ *     growing taller as its picture finished loading pushed it 150px out, and
+ *     the box growing as he types a second line does the same. The rule was
+ *     watching for new messages when what it should watch for is THE BOTTOM
+ *     MOVING, whatever moved it.
+ *  3. When it did follow, it jumped. He asked for smooth — and smooth has to
+ *     mean "unless this computer has asked for no movement".
+ *
+ * This is also the other half of finding #19. That finding was a walk back
+ * through pages being yanked to the newest message; the cure was one owner for
+ * the view. Widening the rule without widening that owner would have put the
+ * yank straight back, so the two are the same function: `claimed` is how
+ * anything that owns the view — an older page going on the front, a jump to one
+ * particular message — says so, and it is asked on EVERY path in here.
+ *
+ * @param ref     the scrolling list
+ * @param claimed something other than "follow the newest" owns the view now
+ */
+function useFollowToBottom(
+  ref: React.RefObject<HTMLDivElement | null>,
+  claimed: () => boolean,
+): {
+  follow: (why: FollowReason) => void;
+  atBottom: React.MutableRefObject<boolean>;
+  noteScrolled: () => void;
+} {
+  const atBottom = useRef(true);
+  /** the first placement is an arrangement, not a movement, so it never animates */
+  const placed = useRef(false);
+  /** where the bottom was the last time this rule put the view on it */
+  const lastBottom = useRef(-1);
+  /** a follow this rule started is still running — the view is moving on its own */
+  const following = useRef(false);
+  /** how far down the last scroll event found the view */
+  const lastTop = useRef(-1);
+  const settle = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const claimedRef = useRef(claimed);
+  claimedRef.current = claimed;
+
+  const follow = useCallback((why: FollowReason): void => {
+    const el = ref.current;
+    if (!el) return;
+    /* He is at the bottom BY DEFINITION from here on, said rather than measured.
+       A smooth scroll reports its progress over several frames, so anything that
+       measured the position in the middle of one would decide he was not down
+       there and stop following — the animation would fight the rule that started
+       it. */
+    atBottom.current = true;
+    lastBottom.current = bottomOf(el);
+    following.current = true;
+    /* WHERE THIS FOLLOW STARTS FROM, and not a sentinel below every real
+       position. It was `-1`, which made the FIRST event after a follow began
+       always look like ours — so a reader who jumped to the very top of the
+       scrollback inside that first frame was ignored, the app went on believing
+       he was at the bottom, and the next page put on the front yanked him down
+       902px. An existing check caught it; the follow now knows the one thing that
+       makes its own movement recognisable, which is that it only ever goes down
+       from here. */
+    lastTop.current = el.scrollTop;
+    clearTimeout(settle.current);
+    settle.current = setTimeout(() => { following.current = false; }, FOLLOW_SETTLES_MS);
+    const behavior: ScrollBehavior = placed.current ? scrollBehavior() : "auto";
+    placed.current = true;
+    followed = {
+      n: followed.n + 1, why,
+      // bounded: a trail is evidence, not a log
+      recent: [...followed.recent, why].slice(-12),
+    };
+    el.scrollTo({ top: el.scrollHeight, behavior });
+  }, [ref]);
+
+  const noteScrolled = useCallback((): void => {
+    const el = ref.current;
+    if (!el) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const down = dist < AT_BOTTOM_SLACK;
+    /**
+     * THE APP MUST NOT MISTAKE ITS OWN MOVEMENT FOR THE READER'S.
+     *
+     * Found by the very check written for the rule above, which is the only
+     * reason it is known: a smooth follow reports its progress as ordinary
+     * scroll events, and reading those as "where he is" is how the app talked
+     * itself out of its own follow. Halfway down a long list it wrote down "he
+     * is not at the bottom" — so when the picture in that message finished
+     * loading a moment later and pushed the bottom further, the rule declined to
+     * follow it and left 115px of the newest message off screen.
+     *
+     * HOW OURS IS TOLD FROM HIS, and it is not a timer: a follow only ever moves
+     * the view FURTHER DOWN the list. So an event that arrives while one is in
+     * flight and reports the view further down is ours, and one that reports it
+     * further UP cannot be — that is him, and it is believed at once. (A timer
+     * alone got this wrong and an existing check caught it: a jump back through
+     * the scrollback that began within the same moment as a follow was swallowed
+     * whole, and the reader lost their place by 903px.)
+     *
+     * MEASURED AS A POSITION AND NOT AS A DISTANCE FROM THE BOTTOM, which is a
+     * mistake this rule made once and a check caught: the distance from the
+     * bottom GROWS during a perfectly good follow whenever the content grows
+     * under it — a picture finishing loading does exactly that, and reading it as
+     * "he scrolled away" abandoned the follow 115px short of the newest message,
+     * which is the very bug all this exists to fix.
+     *
+     * On top of that his own wheel, drag or key ends a follow immediately
+     * (below), and one that has not landed inside `FOLLOW_SETTLES_MS` is over
+     * regardless — so the rule can never be left believing the view is moving
+     * when it is still.
+     */
+    if (following.current) {
+      if (down) { following.current = false; atBottom.current = true; lastTop.current = el.scrollTop; return; }
+      if (el.scrollTop >= lastTop.current) { lastTop.current = el.scrollTop; return; }
+      following.current = false;
+    }
+    lastTop.current = el.scrollTop;
+    atBottom.current = down;
+  }, [ref]);
+
+  /* HE CAN ALWAYS INTERRUPT. A wheel, a drag or a key is the reader taking the
+     view back, and it ends our follow there and then — otherwise scrolling away
+     during an animation would be read as part of the animation and undone. */
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const his = (): void => { following.current = false; };
+    const opts = { passive: true } as const;
+    el.addEventListener("wheel", his, opts);
+    el.addEventListener("touchstart", his, opts);
+    el.addEventListener("mousedown", his, opts);
+    el.addEventListener("keydown", his);
+    return () => {
+      el.removeEventListener("wheel", his);
+      el.removeEventListener("touchstart", his);
+      el.removeEventListener("mousedown", his);
+      el.removeEventListener("keydown", his);
+    };
+  }, [ref]);
+
+  useEffect(() => () => clearTimeout(settle.current), []);
+
+  /**
+   * THE BOTTOM MOVING IS THE TRIGGER, not a message arriving.
+   *
+   * The list itself is watched (it shrinks when the box below it grows — a
+   * second line typed, the file tray opening, the "answering…" bar appearing)
+   * and so is every row in it (a row grows when its picture finishes loading, or
+   * when a reaction wraps onto a second line). Between them there is nothing
+   * that can move the bottom without this being told.
+   *
+   * Deliberately re-run on every render with no dependency list: a row that
+   * appeared in this render has to be watched too, and a list of dependencies
+   * that tried to describe "every row" is a list that would be wrong the first
+   * time anything new was drawn.
+   */
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      if (claimedRef.current()) return;
+      if (!atBottom.current) return;
+      /* Only a bottom that really MOVED. A row starts reporting its size the
+         moment it is watched, and that first report is news about nothing. */
+      if (bottomOf(el) === lastBottom.current) return;
+      follow("resized");
+    });
+    ro.observe(el);
+    for (const row of Array.from(el.children)) ro.observe(row);
+    return () => ro.disconnect();
+  });
+
+  return { follow, atBottom, noteScrolled };
+}
+
 /* ================= the house marks ================= */
 
 const stroke = {
@@ -1230,6 +1474,18 @@ function Workspace(): React.JSX.Element {
     (window as unknown as { cloud9Escape?: unknown }).cloud9Escape = {
       stacked: () => escapeStack.length,
     };
+    /* QA hook: ASK THE FOLLOW RULE WHAT IT DID, rather than measure pixels and
+       hope. A smooth scroll takes several frames and a picture can finish
+       loading in the middle of one, so a reading of `scrollTop` alone cannot say
+       whether the rule fired, how often, or for which of the four reasons. The
+       reasons are the rule's own words, so a check can name the case it is
+       holding — "he sent it" is a different claim from "it arrived". */
+    (window as unknown as { cloud9View?: unknown }).cloud9View = {
+      followed: () => ({ ...followed }),
+      /* Whether this machine has asked for no movement, answered by the one
+         function every moving view in the app asks. */
+      motion: () => scrollBehavior(),
+    };
     // QA hook, same shape again: what the screen is HOLDING about runs, so a
     // missing card can be told apart from a record that never arrived. It
     // reports only ids and outcomes — never the record's words.
@@ -1242,6 +1498,7 @@ function Workspace(): React.JSX.Element {
     return () => {
       delete (window as unknown as { cloud9Wire?: unknown }).cloud9Wire;
       delete (window as unknown as { cloud9Runs?: unknown }).cloud9Runs;
+      delete (window as unknown as { cloud9View?: unknown }).cloud9View;
       delete (window as unknown as { cloud9Escape?: unknown }).cloud9Escape;
       delete (window as unknown as { cloud9Files?: unknown }).cloud9Files;
       delete (window as unknown as { cloud9Menu?: unknown }).cloud9Menu;
@@ -2166,7 +2423,6 @@ function ChatView({
    *     reader's eyes — the view is nailed to what it was looking at;
    *  3. reaching the top asks for the page before, and stops when the relay
    *     says there is nothing older. */
-  const atBottom = useRef(true);
   /**
    * The message the reader is looking at, and where it sat on screen.
    *
@@ -2177,6 +2433,22 @@ function ChatView({
    * A row cannot lie about where it is.
    */
   const anchor = useRef<{ id: ID; top: number } | null>(null);
+  /** the walk asked for by a search result, read from inside the rules below */
+  const jumpRef = useRef(jumpTo);
+  jumpRef.current = jumpTo;
+
+  /**
+   * SOMETHING OTHER THAN "FOLLOW THE NEWEST" OWNS THE VIEW.
+   *
+   * Said ONCE, and asked by both halves of the rule — the effect below and the
+   * resize watcher inside `useFollowToBottom`. This one expression is what stops
+   * a wider follow rule from putting finding #19 back: an older page going on the
+   * front, and a walk to one particular message, both still win.
+   */
+  const viewIsClaimed = useCallback(
+    () => anchor.current !== null || jumpRef.current !== null, []);
+
+  const { follow, atBottom, noteScrolled } = useFollowToBottom(streamRef, viewIsClaimed);
 
   const askForOlder = useCallback(() => {
     const el = streamRef.current;
@@ -2203,6 +2475,11 @@ function ChatView({
    * Two effects cannot guard against each other; whichever runs first wins by
    * accident. So there is one, it is a layout effect (the reader must never see
    * the intermediate position), and the priority is stated once, here.
+   *
+   * How and WHEN the third rule moves the view is `useFollowToBottom`'s — the one
+   * owner of that question, shared with the thread panel and asked again by every
+   * other thing that moves the bottom (a growing box, a picture that finished
+   * loading, the file tray opening).
    */
   const newest = messages.length ? messages[messages.length - 1].id : "";
   React.useLayoutEffect(() => {
@@ -2220,10 +2497,10 @@ function ChatView({
     // 2. somebody asked to be taken to one particular message. That walk owns
     //    the view until it lands — following the newest message would be
     //    yanking the reader away from the thing they asked for.
-    if (jumpTo) return;
+    if (viewIsClaimed()) return;
     // 3. otherwise a new arrival follows a reader who is already at the bottom.
-    if (atBottom.current) el.scrollTo({ top: el.scrollHeight });
-  }, [world.prepended, newest, messages.length, jumpTo]);
+    if (atBottom.current) follow("arrived");
+  }, [world.prepended, newest, messages.length, jumpTo, viewIsClaimed, atBottom, follow]);
 
   /**
    * Take the reader to one message already on screen, and mark it.
@@ -2241,14 +2518,14 @@ function ChatView({
     el.scrollIntoView({ block: "center" });
     setLitUp(id);
     setTimeout(() => setLitUp(now => (now === id ? null : now)), 2600);
-  }, []);
+  }, [atBottom]);
 
   const onStreamScroll = useCallback(() => {
     const el = streamRef.current;
     if (!el) return;
-    atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    noteScrolled();
     if (el.scrollTop < 160) askForOlder();
-  }, [askForOlder]);
+  }, [askForOlder, noteScrolled]);
 
   /* ---- a search result asked for one particular message ----
    * If it is already loaded, go to it. If it is further back than we have
@@ -2280,7 +2557,8 @@ function ChatView({
       return;
     }
     if (!p.loading) { walked.current += 1; askForOlder(); }
-  }, [jumpTo, messages.length, page.loading, page.hasMore, channel.id, askForOlder, onJumped]);
+  }, [jumpTo, messages.length, page.loading, page.hasMore, channel.id, askForOlder, onJumped,
+    atBottom]);
 
   const people = onePerPerson(
     channel.memberIds.map(id => world.users.find(u => u.id === id)).filter(Boolean) as User[]);
@@ -2494,7 +2772,13 @@ function ChatView({
 
       {/* In inline mode the conversation's own box is what carries a reply, so
           it says which message it is answering and offers a way out of it. */}
+      {/* SENDING IS NOT A MESSAGE ARRIVING. Nobody sends a message they do not
+          want to see, so this takes the view down whatever the reader had
+          scrolled back to — the one thing Vikas named, and the case the old rule
+          had no branch for at all. It goes through the same owner as every other
+          follow, so it animates by the same rule and cannot fight it. */}
       <Composer channel={channel}
+        onSent={() => follow("sent")}
         replyTo={!threading && replyingTo ? replyingTo : undefined}
         answering={!threading && replyingTo
           ? all.find(m => m.id === replyingTo)
@@ -3210,6 +3494,18 @@ function ThreadPanel({ channel, rootId, onClose }: {
 
   const rowFor = (m: Message): Row => ({ m, cont: false, dayStart: false, firstUnread: false });
 
+  /* THE SAME OWNER AS THE ROOM'S OWN LIST, not a second answer to the same
+     question. A thread is a conversation too: a reply typed here, and a reply
+     arriving here while he is at the foot of it, both follow. Nothing else ever
+     claims this view — there is no walking back through pages in a thread — so
+     the claim is honestly `false` rather than a guard copied from next door. */
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const neverClaimed = useCallback(() => false, []);
+  const { follow, atBottom, noteScrolled } = useFollowToBottom(bodyRef, neverClaimed);
+  React.useLayoutEffect(() => {
+    if (atBottom.current) follow("arrived");
+  }, [messages.length, follow, atBottom]);
+
   return (
     <aside className="aside threadpanel" aria-label="Thread">
       <div className="threadhead">
@@ -3217,7 +3513,7 @@ function ThreadPanel({ channel, rootId, onClose }: {
         <div className="grow" />
         <button className="iconbtn threadclose" aria-label="Close the thread" onClick={onClose}>✕</button>
       </div>
-      <div className="threadbody">
+      <div className="threadbody" ref={bodyRef} onScroll={noteScrolled}>
         {!root && <div className="d-empty">Fetching this thread…</div>}
         {root && (
           <MessageRow row={rowFor(root)} variant="thread" archived={!!channel.archivedAt}
@@ -3236,7 +3532,7 @@ function ThreadPanel({ channel, rootId, onClose }: {
             working={world.agentStatus[m.authorId] === "working"} />
         ))}
       </div>
-      <Composer channel={channel} replyTo={rootId} />
+      <Composer channel={channel} replyTo={rootId} onSent={() => follow("sent")} />
     </aside>
   );
 }
@@ -3321,7 +3617,7 @@ function AddToChannel({ channel }: { channel: Channel }): React.JSX.Element | nu
 
 const QUICK_EMOJI = ["👍", "🙏", "🎉", "🔥", "✅", "❌", "😀", "😅", "🤔", "👀", "🚀", "☁️", "📌", "⏰", "💡", "❤️"];
 
-function Composer({ channel, replyTo, answering, onStopAnswering }: {
+function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   channel: Channel;
   /** set in a thread panel, and in the conversation's own box when threads are
       off and he has pressed Reply: everything typed here answers that message */
@@ -3329,6 +3625,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering }: {
   /** inline mode only — the message being answered, so the box can say so */
   answering?: Message;
   onStopAnswering?: () => void;
+  /** a message really went — the list above takes the view down to it */
+  onSent?: () => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [text, setText] = useState("");
@@ -3359,6 +3657,27 @@ function Composer({ channel, replyTo, answering, onStopAnswering }: {
       .reduce((n, u) => n + u.size, 0),
     [world.uploads]);
   const parkedHours = Math.round(ATTACHMENT_LIMITS.parkedTtlMs / 3_600_000);
+
+  /**
+   * THE BOX GROWS WITH WHAT IS IN IT.
+   *
+   * It was `rows={1}` and nothing else, so a five-line message was typed into a
+   * one-line slot with its own hidden scrollbar: he could see the line he was on
+   * and none of the ones above it. Measured (`scrollHeight`) rather than counted
+   * in newlines, because a long line that wraps takes the same room as two.
+   * The ceiling is the stylesheet's `max-height`, so the box stops growing and
+   * scrolls instead of swallowing the conversation.
+   *
+   * The list above shrinks as this grows, which is one of the three ways the
+   * bottom used to run away from him — `useFollowToBottom` is watching for
+   * exactly that, so the newest message stays in sight while he types.
+   */
+  React.useLayoutEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, [text]);
 
   const mentionQuery = useMemo(() => {
     const m = /(?:^|\s)@([\w-]*)$/.exec(text);
@@ -3434,6 +3753,15 @@ function Composer({ channel, replyTo, answering, onStopAnswering }: {
     setText("");
     setEmojiOpen(false);
     client.clearUploads(channel.id);
+    /* THE CURSOR STAYS WHERE HE IS TYPING. Pressing Enter always left it there;
+       clicking Send moved the focus onto the button, so the next thing he typed
+       went nowhere at all and he had to click back into the box. Both ways of
+       sending now end in the same place. */
+    taRef.current?.focus();
+    /* The list above takes the view down to what he just said. Told rather than
+       worked out from the message arriving: a send is his own act and follows
+       wherever he had scrolled back to. */
+    onSent?.();
     /* The box stops being aimed the moment the reply is away, so the next
        thing typed goes to the conversation unless he aims it again. */
     onStopAnswering?.();
@@ -6207,7 +6535,10 @@ function SettingsScreen(): React.JSX.Element {
 
   const goTo = (id: string) => {
     setHere(id);
-    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    /* The same one owner of "may the view animate on this machine" the message
+       list uses. This used to ask for a smooth scroll whatever the computer had
+       been told about motion. */
+    document.getElementById(id)?.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
   };
 
   const claudeInfo = world.harness?.claude;

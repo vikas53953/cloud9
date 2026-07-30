@@ -120,7 +120,22 @@ const { ui: UI } = qaTarget();
 // mechanism is checked and not only the behaviour; and three hold the pluralising
 // owner (the "1 CATEGORIES" tile in the singular, the same header in the plural,
 // and a sweep of the whole screen for the shape of that bug).
-const EXPECTED_CHECKS = 397;
+// 397 → 410: thirteen checks added for the one thing Vikas named — the view not
+// following to what he just typed — and for the whole CLASS of it, which is one
+// missing rule with three faces rather than three bugs. Two hold the two halves
+// that must not be confused (a message ARRIVING never drags him off what he is
+// reading; SENDING follows wherever he had read back to) and one asks the rule
+// itself which of the two it thought it was doing. Two hold the motion setting in
+// both directions — smooth on a machine that has not asked for stillness, and no
+// animation at all on one that has. Four hold "the bottom moving is the trigger":
+// the file tray opening and a picture finishing loading each REPRODUCED as a real
+// movement of the bottom with nothing arriving, and each followed. One holds the
+// composer growing with what is typed into it (it was a one-line slot with a
+// hidden scrollbar). One holds the cursor staying in the box when Send is CLICKED
+// rather than pressed. One holds a thread's own list, through the same owner. And
+// the last is the first: a check that he really was a long way from the newest
+// message before any of it, so none of the rest can pass on a technicality.
+const EXPECTED_CHECKS = 410;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -3093,6 +3108,331 @@ try {
     (await page.locator(`.msgs .msg[data-msg="${oldestHit}"].litup`).count()) === 1);
   await page.screenshot({ path: `${SHOTS}/fix2-jump-holds.png` });
   await page.keyboard.press("Escape");
+
+  /* ================= AND THE VIEW FOLLOWS HIM =================================
+
+     HIS OWN WORDS: he types in a conversation and the view does not move to what
+     he just said. Reproduced three ways before a line was changed, and it was
+     never three bugs — it was one MISSING RULE with three faces:
+
+       1. he had read back a little way, so the app had decided he was "not at
+          the bottom", and then he SENT a message and was left where he was. His
+          own message landed 1461px below the foot of a 591px list;
+       2. everything that moves the bottom without adding a message was ignored —
+          the file tray opening pushed the newest message 154px out of sight, a
+          picture finishing loading pushed it 150px out, and the box growing as he
+          types a second line does the same;
+       3. when it did follow, it jumped.
+
+     `useFollowToBottom` is the one owner of all of it, and it is the SAME owner
+     finding #19 needed — which is why the checks above run first and must still
+     pass: a wider follow rule that put the yank back would fail them.
+
+     This walk starts exactly where the #19 walk left the reader: several pages
+     back in a 161-message conversation, a long way from the newest message.
+     That is the state his complaint lives in, and it was reached by the app's own
+     search-and-jump rather than arranged here. */
+  const viewNow = () => page.evaluate(() => {
+    const m = document.querySelector(".msgs");
+    const rows = [...m.querySelectorAll(".msg")];
+    const last = rows[rows.length - 1];
+    const lb = m.getBoundingClientRect();
+    return {
+      fromBottom: Math.round(m.scrollHeight - m.scrollTop - m.clientHeight),
+      /* WHERE THE VIEW ACTUALLY IS. The distance from the bottom is not that: a
+         message arriving makes the list longer, so a view nobody moved is
+         FURTHER from the bottom afterwards than it was before. Holding "nothing
+         moved him" to an unchanged distance asserted the wrong thing and failed a
+         working app for it. */
+      scrollTop: Math.round(m.scrollTop),
+      /* Where `scrollTop` would have to be for this list to be at its bottom.
+         This is the number that MOVES when the box below the list grows or a row
+         gets taller, and it moves without a single message arriving — which is
+         the whole of face 2. */
+      bottom: Math.round(m.scrollHeight - m.clientHeight),
+      newestInSight: !!last && last.getBoundingClientRect().top < lb.bottom,
+      followed: window.cloud9View.followed(),
+      motion: window.cloud9View.motion(),
+    };
+  });
+
+  const readBack = await viewNow();
+  ok("REPRODUCED: he is a long way from the newest message, exactly as he is after reading back",
+    readBack.fromBottom >= 200 && readBack.newestInSight === false,
+    JSON.stringify(readBack));
+
+  /* ---- a message ARRIVING must still not drag him off what he is reading ----
+     The one thing a wider rule could break. It goes through the hub and comes
+     back on an ordinary `message` frame, which is exactly how anybody else's
+     would — the rule cannot tell whose it is, and must not. */
+  const arrived = await page.evaluate(async () => {
+    const wire = window.cloud9Wire;
+    const id = wire.channels().find(c => c.name === "longhaul").id;
+    const before = wire.seen().message ?? 0;
+    wire.ask({ type: "send", channelId: id, text: "something arriving while he reads" });
+    const until = Date.now() + 20000;
+    while ((wire.seen().message ?? 0) <= before && Date.now() < until) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+    await new Promise(r => setTimeout(r, 700)); // let anything wrong happen
+    return (wire.seen().message ?? 0) - before;
+  });
+  const afterArrival = await viewNow();
+  ok("a message arriving while he has read back does NOT drag him down to it",
+    arrived >= 1 && afterArrival.scrollTop === readBack.scrollTop &&
+    afterArrival.followed.n === readBack.followed.n &&
+    afterArrival.newestInSight === false,
+    `${arrived} message frame(s); the view stayed at ${afterArrival.scrollTop} ` +
+    `(was ${readBack.scrollTop}), and the rule did not fire (${afterArrival.followed.n} follows, ` +
+    `same as before)`);
+
+  /* ---- BUT SENDING IS NOT ARRIVING (face 1, the one he named) ----
+     Nobody sends a message they do not want to see. Typed into the app's own box
+     and sent with the app's own Enter, from exactly where he had read back to. */
+  const spyOnFollow = () => page.evaluate(() => {
+    window.__followBehavior = [];
+    if (!window.__followSpy) {
+      const real = Element.prototype.scrollTo;
+      window.__followSpy = real;
+      Element.prototype.scrollTo = function (...args) {
+        if (this.classList && this.classList.contains("msgs")) {
+          window.__followBehavior.push((args[0] && args[0].behavior) ?? "none");
+        }
+        return real.apply(this, args);
+      };
+    }
+  });
+  await spyOnFollow();
+  await page.fill(".composer textarea", "and this is the thing I just typed");
+  await page.press(".composer textarea", "Enter");
+  await page.waitForSelector('.msg p:has-text("the thing I just typed")', { timeout: 25000 });
+  await waitFor(page, () => {
+    const m = document.querySelector(".msgs");
+    return m.scrollHeight - m.scrollTop - m.clientHeight < 3;
+  }, undefined, { timeout: 20000, what: "the view to follow what he just sent" });
+  const afterSend = await page.evaluate(() => {
+    const m = document.querySelector(".msgs");
+    const mine = [...m.querySelectorAll(".msg")]
+      .find(r => r.textContent.includes("the thing I just typed"));
+    const lb = m.getBoundingClientRect();
+    const mb = mine?.getBoundingClientRect();
+    return {
+      fromBottom: Math.round(m.scrollHeight - m.scrollTop - m.clientHeight),
+      mineInSight: !!mb && mb.top < lb.bottom && mb.bottom > lb.top,
+      followed: window.cloud9View.followed(),
+      behaviors: window.__followBehavior,
+      motion: window.cloud9View.motion(),
+      cursorInBox: document.activeElement === document.querySelector(".composer textarea"),
+    };
+  });
+  ok("SENDING takes the view to what he just said, wherever he had read back to",
+    afterSend.fromBottom < 3 && afterSend.mineInSight === true,
+    JSON.stringify({ fromBottom: afterSend.fromBottom, mineInSight: afterSend.mineInSight }));
+  /* ONE ACT OF HIS HONESTLY MOVES THE VIEW TWICE — he sent it ("sent"), and a
+     moment later that same message comes back from the hub and lands while he is
+     now at the bottom ("arrived"). So the claim is that a SEND is among the
+     reasons since he pressed the key, not that it was the last one; reading only
+     the last said his send had been an arrival, which is a true fact about the
+     wrong event. */
+  const sinceHePressed = afterSend.followed.recent.slice(
+    -(afterSend.followed.n - afterArrival.followed.n));
+  ok("and the rule says so in its own words — a send, not just an arrival",
+    afterSend.followed.n > afterArrival.followed.n && sinceHePressed.includes("sent"),
+    `${afterSend.followed.n - afterArrival.followed.n} follow(s) since he pressed Enter: ` +
+    JSON.stringify(sinceHePressed));
+  ok("it moved smoothly, because this machine has not asked for stillness (face 3)",
+    afterSend.motion === "smooth" && afterSend.behaviors.length >= 1 &&
+    afterSend.behaviors.every(b => b === "smooth"),
+    `motion=${afterSend.motion} behaviours=${JSON.stringify(afterSend.behaviors)}`);
+  await page.screenshot({ path: `${SHOTS}/fix3-follows-his-own-message.png` });
+
+  /* ---- and a computer that has asked for no movement gets none ----
+     Smooth is a courtesy, not a law. The setting is asked at the moment of every
+     move by ONE function, so this changes the app's behaviour without a reload. */
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await spyOnFollow();
+  await page.fill(".composer textarea", "sent with motion turned off");
+  await page.press(".composer textarea", "Enter");
+  await page.waitForSelector('.msg p:has-text("motion turned off")', { timeout: 25000 });
+  await waitFor(page, () => {
+    const m = document.querySelector(".msgs");
+    return m.scrollHeight - m.scrollTop - m.clientHeight < 3;
+  }, undefined, { timeout: 20000, what: "the view to follow with no animation" });
+  const still = await page.evaluate(() => ({
+    motion: window.cloud9View.motion(),
+    behaviors: window.__followBehavior,
+    fromBottom: (() => {
+      const m = document.querySelector(".msgs");
+      return Math.round(m.scrollHeight - m.scrollTop - m.clientHeight);
+    })(),
+  }));
+  ok("a computer asking for no movement gets none — and still ends at the newest message",
+    still.motion === "auto" && still.behaviors.length >= 1 &&
+    still.behaviors.every(b => b === "auto") && still.fromBottom < 3,
+    JSON.stringify(still));
+  await page.emulateMedia({ reducedMotion: null });
+
+  /* ---- face 2: THE BOTTOM MOVING IS THE TRIGGER, not a message arriving ----
+     Picking a file opens the tray above the words, the box below the list grows,
+     and the list shrinks by that much. Nothing arrives, nothing is sent, and the
+     newest message used to slide out of sight. */
+  const beforeTray = await viewNow();
+  await page.setInputFiles(".composer input.filepick", {
+    name: "follow-note.txt", mimeType: "text/plain", buffer: Buffer.from("keeping him at the bottom"),
+  });
+  await page.waitForSelector('.uploadtray .uptile[data-upload="follow-note.txt"]', { timeout: 20000 });
+  await page.waitForTimeout(600);
+  const afterTray = await viewNow();
+  ok("REPRODUCED: opening the file tray really does move the bottom, with nothing arriving at all",
+    afterTray.bottom > beforeTray.bottom + 20 &&
+    afterTray.followed.n > beforeTray.followed.n,
+    `bottom ${beforeTray.bottom} → ${afterTray.bottom}`);
+  const sinceTray = afterTray.followed.recent.slice(
+    -(afterTray.followed.n - beforeTray.followed.n));
+  ok("and the view follows the bottom when the bottom is what moved",
+    afterTray.fromBottom < 3 && afterTray.newestInSight === true &&
+    sinceTray.length >= 1 && sinceTray.every(w => w === "resized"),
+    `${afterTray.fromBottom}px from the bottom, reasons since: ${JSON.stringify(sinceTray)}`);
+
+  /* ---- the box grows with what is in it ----
+     It was `rows={1}` and nothing else, so a five-line message was typed into a
+     one-line slot with its own hidden scrollbar: he could see the line he was on
+     and none of the ones above it. And the list shrinks as it grows, which is
+     the very thing the rule above is watching for. */
+  const oneLine = await page.$eval(".composer textarea", ta => Math.round(ta.getBoundingClientRect().height));
+  await page.fill(".composer textarea", "one\ntwo\nthree\nfour\nfive");
+  await page.waitForTimeout(500);
+  const fiveLines = await page.$eval(".composer textarea",
+    ta => ({ h: Math.round(ta.getBoundingClientRect().height), scrollH: ta.scrollHeight }));
+  const whileTyping = await viewNow();
+  ok("the box grows with what is typed into it, and the newest message stays in sight while it does",
+    fiveLines.h >= oneLine * 3 && fiveLines.h >= fiveLines.scrollH - 2 &&
+    whileTyping.fromBottom < 3 && whileTyping.newestInSight === true,
+    `${oneLine}px empty → ${fiveLines.h}px for five lines (content ${fiveLines.scrollH}px), ` +
+    `${whileTyping.fromBottom}px from the bottom`);
+  await page.screenshot({ path: `${SHOTS}/fix3-box-grows.png` });
+
+  /* ---- and the cursor stays where he is typing, whichever way he sends ----
+     Enter always left it there; the Send BUTTON took the focus with it, so the
+     next thing he typed went nowhere and he had to click back into the box. */
+  await page.waitForSelector('.uploadtray .uptile[data-upload="follow-note.txt"].done', { timeout: 30000 });
+  await page.fill(".composer textarea", "sent with the button, not the key");
+  await page.click(".composer .primary.small");
+  await page.waitForSelector('.msg p:has-text("sent with the button")', { timeout: 25000 });
+  /* Waited on the movement HAVING FINISHED rather than measured a fixed moment
+     after the click: a smooth scroll is still settling for a few hundred
+     milliseconds, and a reading taken inside that window failed a working app on
+     six pixels. */
+  await waitFor(page, () => {
+    const m = document.querySelector(".msgs");
+    return m.scrollHeight - m.scrollTop - m.clientHeight < 3;
+  }, undefined, { timeout: 20000, what: "the view to settle after the button was clicked" });
+  const afterButton = await page.evaluate(() => ({
+    cursorInBox: document.activeElement === document.querySelector(".composer textarea"),
+    boxHeight: Math.round(document.querySelector(".composer textarea").getBoundingClientRect().height),
+    fromBottom: (() => {
+      const m = document.querySelector(".msgs");
+      return Math.round(m.scrollHeight - m.scrollTop - m.clientHeight);
+    })(),
+  }));
+  ok("clicking Send leaves the cursor in the box, and the box back to one line",
+    afterButton.cursorInBox === true && afterButton.boxHeight <= oneLine + 2 &&
+    afterButton.fromBottom < 3,
+    JSON.stringify(afterButton));
+
+  /* ---- face 2 again, the way he will actually meet it: A PICTURE FINISHING ----
+     A row is short until its picture is drawn and then it is 120px taller. The
+     rule watches every ROW as well as the list, so this is the same one owner and
+     not a second answer. */
+  const PLAN2 = pngOfSolidColour(180, 120, [70, 40, 18]);
+  await page.setInputFiles(".composer input.filepick", {
+    name: "late-picture.png", mimeType: "image/png", buffer: PLAN2,
+  });
+  await page.waitForSelector('.uploadtray .uptile[data-upload="late-picture.png"].done', { timeout: 40000 });
+  await page.fill(".composer textarea", "a picture that draws late");
+  await page.click(".composer .primary.small");
+  await page.waitForSelector('.msgs .fileblock[data-file="late-picture.png"]', { timeout: 30000 });
+  await waitFor(page, () => {
+    const m = document.querySelector(".msgs");
+    return m.scrollHeight - m.scrollTop - m.clientHeight < 3;
+  }, undefined, { timeout: 20000, what: "the view to settle at the newest message" });
+  const beforeDrawn = await viewNow();
+  await page.click('.msgs .fileblock[data-file="late-picture.png"] .fileopen');
+  await waitFor(page, () => {
+    const img = document.querySelector('.msgs .fileblock[data-file="late-picture.png"] .fileshot img');
+    return !!img && img.complete && img.naturalHeight > 0;
+  }, undefined, { timeout: 25000, what: "the picture to finish drawing" });
+  await page.waitForTimeout(600);
+  const afterDrawn = await viewNow();
+  ok("REPRODUCED: a picture finishing really does push the bottom down after the message landed",
+    afterDrawn.bottom > beforeDrawn.bottom + 40,
+    `bottom ${beforeDrawn.bottom} → ${afterDrawn.bottom}`);
+  const sinceDrawn = afterDrawn.followed.recent.slice(
+    -(afterDrawn.followed.n - beforeDrawn.followed.n));
+  ok("and the view follows a row that grew, not only a message that arrived",
+    afterDrawn.fromBottom < 3 && afterDrawn.newestInSight === true &&
+    sinceDrawn.length >= 1 && sinceDrawn.every(w => w === "resized"),
+    `${afterDrawn.fromBottom}px from the bottom, reasons since: ${JSON.stringify(sinceDrawn)}`);
+  await page.screenshot({ path: `${SHOTS}/fix3-picture-keeps-him-down.png` });
+
+  /* ---- a thread is a conversation too, and it has the SAME owner ----
+     Not a second rule with the same shape: `useFollowToBottom` is called by both
+     lists, so a reply typed in a thread follows for the same reason and animates
+     by the same setting. */
+  const threadOn = page.locator('.msgs .msg:has-text("a picture that draws late")').last();
+  await threadOn.hover();
+  await threadOn.locator(".ma.reply").click();
+  await page.waitForSelector(".threadpanel .threadbody", { timeout: 20000 });
+  /* A THREAD LONG ENOUGH TO SCROLL, and the reader put at the top of it. Without
+     that this check passes on a thread that never overflowed its panel — "0px
+     from the bottom" is free when there is no bottom to be away from, and the
+     follow counter is shared with the room's list, so a thread that followed
+     nothing at all would have sailed through on the room's own follows. Both
+     holes were found by putting the bug back. */
+  const threadRoot = await page.getAttribute(
+    '.msgs .msg:has-text("a picture that draws late")', "data-msg");
+  await page.evaluate(async ({ id, channel }) => {
+    const wire = window.cloud9Wire;
+    const cid = wire.channels().find(c => c.name === channel).id;
+    for (let i = 1; i <= 14; i++) {
+      wire.ask({ type: "send", channelId: cid, text: `thread filler ${i}`, replyTo: id });
+      if (i % 7 === 0) await new Promise(r => setTimeout(r, 80));
+    }
+  }, { id: threadRoot, channel: "longhaul" });
+  await page.waitForSelector('.threadpanel .msg:has-text("thread filler 14")', { timeout: 30000 });
+  const threadBefore = await page.evaluate(async () => {
+    const b = document.querySelector(".threadpanel .threadbody");
+    b.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -600 }));
+    b.scrollTop = 0;
+    await new Promise(r => setTimeout(r, 400));
+    return {
+      overflowBy: Math.round(b.scrollHeight - b.clientHeight),
+      fromBottom: Math.round(b.scrollHeight - b.scrollTop - b.clientHeight),
+    };
+  });
+  await page.fill(".threadpanel .composer textarea", "a reply in the thread");
+  await page.press(".threadpanel .composer textarea", "Enter");
+  await page.waitForSelector('.threadpanel .msg:has-text("a reply in the thread")', { timeout: 25000 });
+  await page.waitForTimeout(900);
+  const threadView = await page.evaluate(() => {
+    const b = document.querySelector(".threadpanel .threadbody");
+    const mine = [...b.querySelectorAll(".msg")]
+      .find(r => r.textContent.includes("a reply in the thread"));
+    const bb = b.getBoundingClientRect();
+    const mb = mine?.getBoundingClientRect();
+    return {
+      fromBottom: Math.round(b.scrollHeight - b.scrollTop - b.clientHeight),
+      mineInSight: !!mb && mb.top < bb.bottom && mb.bottom > bb.top,
+    };
+  });
+  ok("a reply typed in a thread brings the thread's own view down to it, through the same one owner",
+    threadBefore.overflowBy > 150 && threadBefore.fromBottom > 150 &&
+    threadView.fromBottom < 3 && threadView.mineInSight === true,
+    `the thread overflowed by ${threadBefore.overflowBy}px and he was ${threadBefore.fromBottom}px ` +
+    `off its bottom; after his reply, ${threadView.fromBottom}px (in sight: ${threadView.mineInSight})`);
+  await page.screenshot({ path: `${SHOTS}/fix3-thread-follows.png` });
+  await page.click(".threadpanel .threadclose");
+  await page.waitForSelector(".threadpanel", { state: "detached", timeout: 15000 });
 
   /* ---- `from:` really filters now, so the placeholder is not a promise the
      hub breaks (§11.4). The author filter used to be applied in JavaScript
