@@ -17,6 +17,8 @@ import {
   ClaudeProvider, HarnessUnavailableError, MockProvider, redactForSharing, sanitizeForChat,
 } from "./provider.js";
 import { PendingAsk, rememberAsk, takeAsk, workEmoji } from "./reactions.js";
+import { describeRepoTurn, repoTurn, RepoTurnResult } from "./repowork.js";
+import { GitWorkspace } from "./worktree.js";
 import { buildRunRecord, ProviderTrace, RunFinish, RunKind, RunSeed } from "./runrecord.js";
 import { RunStore } from "./runstore.js";
 import { Scheduler } from "./scheduler.js";
@@ -53,6 +55,17 @@ export interface EngineOptions {
    * change anything on GitHub. Tests point it at a fake runner.
    */
   github?: Omit<GitHubOptions, "approve">;
+  /**
+   * THE CHECKOUT ON THIS COMPUTER that agents work in when someone says
+   * `!code …`. Absent means no agent can work in a repository, and an agent
+   * asked to says exactly that rather than inventing a folder.
+   *
+   * It is a local folder, not `owner/name`: a Cloud9 PROJECT names a repository
+   * on GitHub and nothing yet records where its code is on this machine. That
+   * gap is written down in `docs/plans/projects-handoff.md`; until it closes,
+   * the person launching the engine says which folder, once.
+   */
+  repoDir?: string;
 }
 
 /** Everything a turn needs, plus who is asking and on whose behalf. */
@@ -65,6 +78,11 @@ export interface TurnInput {
   channelId?: ID;
   taskId?: ID;
   requesterKind?: "human" | "agent" | "schedule";
+  /**
+   * Where the turn happens. Absent — every ordinary turn — means the agent's
+   * own folder. Set only for a turn working inside its own git worktree.
+   */
+  workdir?: string;
 }
 
 export class Engine {
@@ -310,6 +328,20 @@ export class Engine {
           : `On it — I'll work on this in the background and post here when done. ⏳`);
         continue;
       }
+      // WORK IN THE CODE: "!code <what to do>". The agent gets its own git
+      // worktree, does the job in it, and — if IT decides it wants to — asks to
+      // push and open a pull request. Everything up to the ask is local, so
+      // starting one needs no approval; the only thing that leaves this
+      // computer is behind the card, exactly as it was before.
+      if (message.authorKind === "human" && /^!code\s+/i.test(bare)) {
+        const what = bare.replace(/^!code\s+/i, "").trim();
+        this.enqueue(async () => {
+          await this.workInRepository(agent, {
+            channelId: channel.id, ask: what, triggerAuthor: message.authorName,
+          });
+        });
+        continue;
+      }
       this.enqueue(() => this.takeTurn(agent, channel.id, message));
     }
   }
@@ -378,6 +410,7 @@ export class Engine {
         context: input.context,
         trigger: input.trigger,
         triggerAuthor: input.triggerAuthor,
+        ...(input.workdir ? { workdir: input.workdir } : {}),
         onTrace: t => { trace = t; },
       });
       this.recordRun(seed, { finishedAt: Date.now(), outcome: "ok", trace, reply: text });
@@ -740,6 +773,68 @@ export class Engine {
       },
     });
     return { client, lastRefusal: () => refusal };
+  }
+
+  /**
+   * ONE AGENT, WORKING IN THE CODE, ABLE TO ASK FOR ITS WORK TO BE PUBLISHED.
+   *
+   * This is the caller `githubFor` never had. `repowork.ts` owns the order of
+   * events and the four laws; this method owns the wiring — which worktree
+   * root, which provider, which conversation the card belongs to — and turns
+   * the result into the one sentence the room reads.
+   *
+   * The worktree root is the AGENT'S OWN data folder, so two agents working the
+   * same repository at the same time cannot be handed the same folder, and git
+   * itself refuses a second checkout of one branch.
+   *
+   * It never throws. A repository turn that falls over says so in the room.
+   */
+  async workInRepository(agent: AgentDef, input: {
+    channelId: ID; ask: string; triggerAuthor: string; taskId?: ID; repoDir?: string;
+  }): Promise<RepoTurnResult | undefined> {
+    const repoDir = input.repoDir ?? this.opts.repoDir;
+    if (!repoDir) {
+      // ABSENT MEANS ABSENT. Nobody has told this computer where the code is,
+      // and a folder we invented would be the worst possible guess.
+      this.agentSend(agent.id, input.channelId,
+        "Nobody has told Cloud9 where this project's code lives on this computer yet, " +
+        "so I have no repository to work in. Once it does, I can work on my own branch " +
+        "and ask before anything goes to GitHub.");
+      return undefined;
+    }
+    this.setStatus(agent.id, "working");
+    try {
+      const result = await repoTurn({
+        agent, repoDir, channelId: input.channelId, ask: input.ask,
+        ...(input.taskId ? { taskId: input.taskId } : {}),
+      }, {
+        git: new GitWorkspace({ root: this.agentDataDir(agent.id) }),
+        respond: ({ workdir, briefing }) => this.respondAs(agent, {
+          context: this.renderContext(input.channelId),
+          trigger: `${input.ask}${briefing}`,
+          triggerAuthor: input.triggerAuthor,
+          kind: input.taskId ? "task" : "chat",
+          channelId: input.channelId,
+          ...(input.taskId ? { taskId: input.taskId } : {}),
+          workdir,
+        }),
+        github: () => this.githubFor(agent, {
+          channelId: input.channelId,
+          ...(input.taskId ? { taskId: input.taskId } : {}),
+        }, this.opts.github ?? {}),
+      });
+      // what it wrote, then what really happened to it. The second half is
+      // never the agent's account of itself — it is built from git's.
+      const said = result.reply ? `${result.reply}\n\n` : "";
+      this.agentSend(agent.id, input.channelId, `${said}${describeRepoTurn(result)}`);
+      return result;
+    } catch (err) {
+      this.agentSend(agent.id, input.channelId,
+        sanitizeForChat(err, `${agent.name} could not work in the repository`));
+      return undefined;
+    } finally {
+      this.setStatus(agent.id, "idle");
+    }
   }
 
   /**

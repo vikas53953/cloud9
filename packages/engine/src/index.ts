@@ -88,4 +88,10 @@ export {
 export {
   ApprovalDesk, type ApprovalOutcome, type ApprovalDeskOptions,
 } from "./approvaldesk.js";
+// An agent working in a repository, and deciding BY ITSELF that it wants its
+// branch published. This is the caller `Engine.githubFor` never had.
+export {
+  repoTurn, describeRepoTurn, repoBriefing, wantsToPublish, withoutPublishMarker,
+  type RepoTurnInput, type RepoTurnDeps, type RepoTurnResult, type RepoOutcome,
+} from "./repowork.js";
 export { Scheduler } from "./scheduler.js";

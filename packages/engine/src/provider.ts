@@ -17,6 +17,17 @@ export interface RespondInput {
   trigger: string;
   triggerAuthor: string;
   /**
+   * WHERE THE TURN HAPPENS. Absent means the agent's own folder, which is what
+   * every ordinary turn has always used and still uses.
+   *
+   * It is set for one thing only: a turn that works inside a repository. The
+   * agent is then standing in ITS OWN git worktree (`worktree.ts`), so the files
+   * it edits are on its own branch and no other agent's workspace is in reach.
+   * Nothing about the approval law changes — a worktree is still entirely on
+   * this computer, and pushing it anywhere is still asked about separately.
+   */
+  workdir?: string;
+  /**
    * Optional: hand back what the agent actually did, parsed out of the CLI's
    * own stream (see runrecord.ts). A provider that cannot produce one simply
    * does not call it, and a provider that can MUST NOT let a failure here cost
@@ -178,7 +189,7 @@ export class SdkProvider implements ClaudeProvider {
     private agentDataDir: (agentId: string) => string,
   ) {}
 
-  async respond({ agent, context }: RespondInput): Promise<string> {
+  async respond({ agent, context, workdir }: RespondInput): Promise<string> {
     // Lazy import so mock mode never loads the SDK.
     const { query } = await import("@anthropic-ai/claude-agent-sdk");
     // the same table the CLI path and the prompt read — no third copy
@@ -201,7 +212,9 @@ export class SdkProvider implements ClaudeProvider {
         disallowedTools: deniedClaudeTools(agent),
         permissionMode: "dontAsk",
         maxTurns: 6,
-        cwd: this.agentDataDir(agent.id),
+        // the agent's own worktree when it is working in a repository, its own
+        // folder otherwise — never anywhere else, and never the app's folder
+        cwd: workdir ?? this.agentDataDir(agent.id),
         env,
       },
     })) {

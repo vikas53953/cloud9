@@ -82,7 +82,7 @@ const { ui: UI } = qaTarget();
  * run stops early it now FAILS and says so. Add or remove an `ok(...)` and this
  * number must move with it — a mismatch is the suite telling you it drifted.
  */
-const EXPECTED_CHECKS = 350;
+const EXPECTED_CHECKS = 354;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -2745,6 +2745,23 @@ try {
       type: "hello", token: qaOwnerToken(), client: "engine",
     }));
   });
+  /* WHAT THE HUB ASKS THIS COMPUTER TO DO. From here on every frame the hub
+     sends the engine is kept, because the only honest way to prove the "Look at
+     GitHub now" button is to watch the request arrive where the `gh` command
+     would really be run. The screen cannot reach GitHub and must not pretend to. */
+  const engineFrames = [];
+  engineWs.onmessage = ev => { engineFrames.push(JSON.parse(ev.data)); };
+  /** Wait for one frame the hub sent the engine. Never a sleep. */
+  const engineGot = async (match, why, ms = 20000) => {
+    const until = Date.now() + ms;
+    for (;;) {
+      const found = engineFrames.find(match);
+      if (found) return found;
+      if (Date.now() > until) return undefined;
+      await new Promise(r => setTimeout(r, 50));
+    }
+  };
+
   const scout = hub.agents.find(a => a.name === "Scout");
   const general = hub.channels.find(c => c.name === "general");
   if (!scout || !general) throw new Error("the QA engine could not find Scout and #general to report against");
@@ -2983,10 +3000,62 @@ try {
       createdAt: nowIso - 50 * 3600_000, updatedAt: nowIso - 2 * 3600_000,
     },
   ];
+  /* ==========================================================================
+     "LOOK AT GITHUB NOW" — the button, and the round trip behind it
+
+     WHY THIS SECTION EXISTS. The lists below used to be seeded by sending
+     `projectSynced` straight down the engine connection, which proved the
+     screen DRAWS them and nothing else. The button that asks for them had zero
+     coverage: nothing checked that pressing it reaches the copy of Cloud9
+     running on this computer, that the screen says a look is under way, or
+     that it stops saying so when the answer lands.
+
+     So the lists are now filled the way they are filled in the real app: he
+     presses the button, the hub asks the engine, the engine answers. The
+     checks below are the whole path, and the seeding is what the answer
+     carries.
+     ====================================================================== */
+
+  ok("a connected repository offers a way to ask GitHub, and says it has not yet",
+    (await page.locator('.pd-btns button[data-look="ready"]').innerText()).trim()
+      === "Look at GitHub now" &&
+    (await page.locator('.pd-facts [data-look-state="never"]').count()) === 1,
+    (await page.locator(".pd-btns").innerText()).replace(/\s+/g, " "));
+
+  await page.click('.pd-btns button[data-look="ready"]');
+
+  /* THE SCREEN NEVER REACHES GITHUB. The request has to arrive at the engine —
+     the only party with the GitHub sign-in — naming the repository the hub
+     verified, not one the screen sent along with it. */
+  const lookAsk = await engineGot(f => f.type === "lookAtProject" && f.projectId === projectId,
+    "the hub to ask this computer to look at GitHub");
+  ok("pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
+    !!lookAsk && lookAsk.repo === REPO,
+    JSON.stringify(lookAsk ?? engineFrames.map(f => f.type)));
+
+  /* AND THE WAITING STATE IS THE HUB'S, NOT A SPINNER THE SCREEN STARTED. A
+     look he could press twice would run `gh` twice. */
+  ok("while it is looking the button says so and cannot be pressed again",
+    (await page.locator('.pd-btns button[data-look="busy"]').innerText()).trim()
+      === "Looking at GitHub…" &&
+    await page.locator('.pd-btns button[data-look="busy"]').isDisabled() &&
+    (await page.locator('.pd-facts [data-look-state="busy"]').count()) === 1,
+    (await page.locator(".pd-facts").innerText()).replace(/\s+/g, " "));
+
   engineWs.send(JSON.stringify({
     type: "projectSynced", projectId, defaultBranch: "master", items: ITEMS,
   }));
   await page.waitForSelector('.pd-items .projitem[data-item="pull-41"]', { timeout: 20000 });
+
+  /* ABSENT MEANS ABSENT, AND SO DOES PRESENT. Once the engine has answered, the
+     screen stops saying "looking", stops saying "nobody has looked", and stamps
+     when it was — from the hub's own `syncedAt`, never from the moment the
+     button was pressed. */
+  ok("when the answer lands the button settles and the screen stamps when GitHub was last asked",
+    (await page.locator('.pd-facts [data-look-state="looked"]').count()) === 1 &&
+    (await page.locator('.pd-btns button[data-look="ready"]').count()) === 1 &&
+    (await page.locator(".pd-never").count()) === 0,
+    (await page.locator(".pd-facts").innerText()).replace(/\s+/g, " "));
 
   ok("the pull requests the engine reported are on screen, in the project's own list",
     await page.$$eval(".pd-items .projitem", rows => rows.map(r => r.dataset.item).join(",")) ===

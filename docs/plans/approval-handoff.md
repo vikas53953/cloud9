@@ -189,10 +189,7 @@ Nothing was ever pushed to `master`.
 
 ## 7. Still open, and honest about it
 
-- **No agent turn calls `githubFor` yet.** The round trip is proved with the
-  engine driving it directly. Wiring it into an agent's own turn — "the agent
-  decides it wants to push" — is the next round, and it needs the PROJECTS
-  screen to say which repository an agent is working in.
+- ~~**No agent turn calls `githubFor` yet.**~~ **CLOSED 2026-07-30 — see §8.**
 - **`Worktree`, `PullRequest` and `GitHubAccount` are still engine-local.**
   `REMOTE_ACTIONS` and `RemoteActionFacts` moved to shared this round because
   three programs needed them. The rest move when Projects gets a screen — see
@@ -204,3 +201,62 @@ Nothing was ever pushed to `master`.
   for the URL alone; there is now a test that drives every argument this file
   builds through the real `safeArg`, so the next one fails in the suite instead
   of in front of him.
+
+---
+
+## 8. AN AGENT NOW DECIDES BY ITSELF THAT IT WANTS TO PUSH (2026-07-30)
+
+`Engine.githubFor` has a caller. The new file is
+`packages/engine/src/repowork.ts`; the wiring is `Engine.workInRepository`, and
+the way in is a message in a room: **`@Agent !code <what to do>`**.
+
+### What happens, in order
+
+1. The agent is given **its own git worktree** off the local checkout —
+   `GitWorkspace.prepare`, the one that already existed. No second worktree
+   implementation was written. Several agents work one repository at once
+   because git itself refuses a second checkout of one branch.
+2. Its turn runs **inside that worktree** (`RespondInput.workdir`, honoured by
+   all three providers). It is told, in the prompt, that it cannot push
+   anything itself and that writing `!publish` on a line of its own is how it
+   asks.
+3. Whatever it changed is **committed to its own branch, on this computer**.
+4. Only if it asked does anything go near GitHub: `pushBranch` then
+   `openPullRequest`, each through the existing gate, each drawing the existing
+   card. **Branch + pull request, always.**
+
+### The four laws it keeps, each with a test
+
+| Law | Where it is proved |
+|---|---|
+| The card's facts are **counted by git**, never quoted from the agent | `repowork.test.ts` — an agent that says "only a one-line comment, nothing risky, straight onto main" while writing two files gets a card reading `files: 2`, `commits: 1`, its generated branch and `base: master` |
+| An agent that **changed nothing cannot ask** | a reply full of `!publish` and no files produces **no `askApproval` frame at all** |
+| **Refusal and silence stay different**, and neither lets anything out | "the owner said no, so it did not happen" vs "nobody answered in N seconds, so it did not happen" — different sentences, both with `git push` never reached |
+| **Not asking is a normal ending** | the commit stays on its branch on this computer, and nobody is interrupted |
+
+### Proved for real, 2026-07-30, against `vikas53953/cloud9`
+
+Real hub, real `Engine`, real worktree off this repository, real `git`, real
+`gh`, real GitHub. Only the harness was stubbed (a provider that writes one file
+and writes `!publish`), so the run is free and deterministic.
+
+| Scenario | What GitHub saw |
+|---|---|
+| He says **no** | `git ls-remote` empty — the branch never left this computer, and the agent did not go on to ask for a pull request anyway |
+| **Nobody answers** (15s leash) | `git ls-remote` empty, and the agent said so in different words |
+| He says **yes** | branch pushed, **pull request #3 opened into `master`** (`gh pr view 3` → `OPEN`) |
+
+**Cleaned up in the same run:** PR #3 closed (`gh pr view 3` → `CLOSED`), the
+remote branch deleted (`ls-remote` for `cloud9/*` → none), both leftover
+worktrees removed and all three local `cloud9/*` branches deleted. `master` was
+never touched.
+
+### What is STILL missing, and it is the next thing
+
+**Nothing links a Cloud9 project to a folder on this computer.** A `Project`
+names `owner/name` on GitHub; `!code` works in `EngineOptions.repoDir`, which
+the person launching the engine sets once. Until a project carries a local path
+(or Cloud9 clones one itself), an agent asked to work in code with no `repoDir`
+says so in plain words rather than inventing a folder — and there is a test for
+that too. `Task.projectId` and `ProjectItem.runId` (projects-handoff §4, §5)
+would then finish the loop from a job to the pull request it opened.

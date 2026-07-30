@@ -417,8 +417,11 @@ export class CodexProvider implements ClaudeProvider {
     this.timeoutMs = opts.timeoutMs ?? 120_000;
   }
 
-  async respond({ agent, context, onTrace }: RespondInput): Promise<string> {
-    const cwd = this.opts.agentDataDir(agent.id);
+  async respond({ agent, context, workdir, onTrace }: RespondInput): Promise<string> {
+    // its own git worktree when it is working in a repository (`repowork.ts`),
+    // its own folder otherwise. `codexArgs` puts the same folder in `-C`, so
+    // the sandbox root and the working folder cannot drift apart.
+    const cwd = workdir ?? this.opts.agentDataDir(agent.id);
     const prompt = buildAgentPrompt(agent, context);
     const key = this.opts.apiKey?.();
     const args = codexArgs(agent, cwd, this.opts.models?.() ?? [],

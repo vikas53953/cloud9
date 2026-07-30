@@ -120,9 +120,17 @@ Say this plainly to him; do not let it read as finished.
   the agent's face on it; the worktree does not cross the wire at all
   (`Worktree` is engine-local). The screen says that in words rather than
   drawing a path it invented. See `projects-handoff.md` §3.
-- **No agent turn calls `githubFor` yet**, so an agent cannot decide by itself
-  that it wants to push. The round trip is proved end to end with the engine
-  driving it (`docs/plans/approval-handoff.md` §6).
+- **An agent CAN now decide by itself that it wants to push** (2026-07-30). Say
+  `@Agent !code <what to do>` in a room: it works in its own git worktree,
+  commits to its own branch, and if it writes `!publish` it asks — through the
+  existing approval path, drawing the existing card — before anything leaves the
+  machine. Proved three ways against the real repository: refused, ignored, and
+  approved (pull request #3 opened into `master`, then closed; every branch and
+  worktree removed; `master` never touched).
+  **Two honest gaps:** `!code` is a typed command, not a control on his screen;
+  and nothing links a Cloud9 project to a folder on this computer — the engine
+  is told once by whoever launches it, and with no folder the agent says so
+  plainly rather than inventing one. `docs/plans/approval-handoff.md` §8.
 - **Skill library** — 15 researched software skills exist in shared code; no
   screen yet (`docs/plans/skills-library-handoff.md` has the contract).
 

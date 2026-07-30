@@ -400,8 +400,11 @@ export class ClaudeCliProvider implements ClaudeProvider {
     this.timeoutMs = opts.timeoutMs ?? 180_000;
   }
 
-  async respond({ agent, context, onTrace }: RespondInput): Promise<string> {
-    const cwd = this.opts.agentDataDir(agent.id);
+  async respond({ agent, context, workdir, onTrace }: RespondInput): Promise<string> {
+    // its own git worktree when it is working in a repository (`repowork.ts`),
+    // its own folder otherwise. One line, and it is the only way a turn can
+    // happen anywhere but the agent's folder.
+    const cwd = workdir ?? this.opts.agentDataDir(agent.id);
     const prompt = buildAgentPrompt(agent, context);
     const args = claudeArgs(agent, this.opts.models?.() ?? [], {
       wholeComputerRoots: this.opts.wholeComputerRoots?.(agent.id) ?? [],
