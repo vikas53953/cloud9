@@ -204,17 +204,58 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
     and nothing links a Cloud9 project to a folder on this computer
     (`approval-handoff.md` §8).
 
+- **2026-07-30 evening — ONE RULE FOR NAMES, ONE RULE FOR SAVING** (`bf64cc3`,
+  proof from the installed app `86fe446`). Both pushed.
+  - `validateName` in shared is the only thing that answers "is this a name" —
+    length, is-this-actually-a-name, no control characters, and
+    you-already-have-one-of-these folded on case/spacing/Unicode. Enforced at the
+    HUB across channels, agents and projects, and it caught a fifth namer nobody
+    had listed: skill names. Six spaces are REFUSED IN WORDS, never rewritten.
+    The duplicate question is only asked when a name actually CHANGES, so names
+    already in his database stay editable — a rule that locked him out of his own
+    data would be the worse bug.
+  - `client.refused` / `client.submit` own "what happens to what he typed when a
+    form is refused": nothing is cleared until the hub has accepted it. Composer,
+    quick chat, new channel, agent editor, connect-a-repository.
+  - `isSafeFileName` is one list where each rule carries its own test AND its own
+    words, and the sentence is those words joined — the check and the explanation
+    are now the same object, which is the real fix for the drift. `report(1).pdf`
+    and `café-menu.txt` land; separators, `..`, device names still refused.
+  - Connecting a repository now really asks GitHub, so a typo says so at once —
+    and "could not ask" stays a different sentence from "does not exist".
+  - **A regression WE introduced this afternoon, caught by the Fable review and
+    fixed:** making writes atomic had made them silent, so the app said
+    "⏰ Scheduled!" when the save failed, and the approved-job path marked tasks
+    COMPLETED the same way. `writeoutcome.test.ts` now reads this package's own
+    source and fails unless every write uses its result or carries a written
+    justification — future callers are covered without anyone remembering.
+  - **Verified by the conductor:** build clean; **engine 348** (was 329);
+    **hub 180** (was 166); **363/363 + 8/8 + 4/4** browser, all executed;
+    **15/15 on the INSTALLED app**; twelve bug-backs between the rounds.
+  - **A false claim of mine, corrected in the same session:** I repeated a
+    worker's line that "his 23 Scouts stay editable". Those 23 Scouts are in the
+    DEV database at the repo root (35 of them now); his real database at
+    `%APPDATA%\cloud9` holds five agents with distinct names — Opus, Sol, terra,
+    Architect, sonnet. The protection is proved 5/5 against the dev database and
+    4/5 against his own, the one failure being that file's own assertion that
+    duplicates exist there.
+  - Also landed: `docs/plans/tailscale-setup.md` and
+    `docs/plans/wholefile-handoff.md`.
+
 ## Still open, in priority order (nothing here needs Vikas)
-0. **IN FLIGHT 2026-07-30 evening, two agents on a strict file boundary:**
-   - **The phase 5 Majors** — the composer throwing away his typing; ONE naming
-     rule to replace five disagreeing forms (duplicate agents, duplicate
-     channels, no length cap, six spaces becoming `-`); ordinary filenames like
-     `report(1).pdf` being refused with a sentence that misdescribes the rule;
-     and a mistyped repository looking identical to a good one forever.
-     Owns `apps/desktop/src/**`, `packages/shared/src/**`, `apps/relay/src/**`.
-   - **Engine durability (P3)** — non-atomic `runstore` writes, and two
-     retention constants that can silently drift apart.
-     Owns `packages/engine/src/**` ONLY.
+0. **IN FLIGHT 2026-07-30 night, three agents on a strict file boundary:**
+   - **The skill library screen** — 15 researched skills exist in shared and he
+     can see none of them. Owns `apps/desktop/src/**`,
+     `packages/shared/src/skill-library.ts`, `apps/relay/src/server.ts`,
+     `scripts/qa.mjs`. Ports 8900-8909 / 4330-4339.
+   - **The four writes still unsafe** (`wholefile-handoff.md`) — worst is the
+     OWNER TOKEN in `main.cjs`: a torn write mints a new key and the app comes
+     back as a stranger to its own hub. Needs `writeWholeFile` widened to accept
+     a Buffer first, with `mode 0o600` on the temp file. Owns
+     `packages/engine/src/wholefile.ts`, `apps/relay/src/store.ts`,
+     `apps/desktop/electron/main.cjs`.
+   - **vibe-qa phase 6** (UI/UX, never run) — auditor only, writes
+     `docs/qa/phase6-ui.md`. Ports 8910-8919 / 4340-4349.
 1. **Remaining review findings**, none yet fixed: an unrelated refusal kills an
    in-flight upload (#9); a blob URL revoked while the picture is still on
    screen (#16); Enter drops a file still uploading (#17); a late search result
