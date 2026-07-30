@@ -117,10 +117,10 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
   - Shipped: run records on screen, files, rooms, scrollback, search,
     reactions, edit/delete, threads, account-level unread, markdown.
 
-- **2026-07-30 — PROJECTS IS ON HIS SCREEN.** Not committed (worker agents never
-  commit). Changed: `apps/desktop/src/{App,store,styles}`, `scripts/qa.mjs`,
-  `scripts/drive-app.mjs`, and a new `docs/plans/projects-handoff.md`.
-  Verified by running, in that session:
+- **2026-07-30 — PROJECTS IS ON HIS SCREEN, COMMITTED AND PUSHED** (`d273984`,
+  with `dd857d4` correcting the handoff). Changed: `apps/desktop/src/{App,store,
+  styles}`, `scripts/qa.mjs`, `scripts/drive-app.mjs`, and a new
+  `docs/plans/projects-handoff.md`. Verified by running, in that session:
   - `npm run build` clean; `npm run qa` **350/350 + 8/8 + 4/4**, every check
     executed (was 305/305); `npm run dist`, installed, `npm run qa:app`
     **14/14** (was 8/10). The check that read *"Projects is in the icon rail —
@@ -151,6 +151,14 @@ again. Do not wait for instruction. Do not re-ask him anything answered below.
        why the count went to 14/14 rather than 13/14.
 
 ## Still open, in priority order (nothing here needs Vikas)
+0. **IN FLIGHT 2026-07-30 afternoon, two agents:**
+   - **Make the Projects lists real** — `projectSynced` has a handler and no
+     sender, so a connected repository is permanently empty. Building the
+     `syncProject` frame plus a `gh`-driven path that answers it, and a
+     look-at-GitHub-now control on his screen. Owns `packages/**`,
+     `apps/relay/**`, `apps/desktop/src/**`.
+   - **vibe-qa phase 5** (negative/edge testing, never run) — auditor only,
+     writes `docs/qa/phase5-negative.md`, changes no product code.
 1. **Remaining review findings**, none yet fixed: an unrelated refusal kills an
    in-flight upload (#9); a blob URL revoked while the picture is still on
    screen (#16); Enter drops a file still uploading (#17); a late search result
