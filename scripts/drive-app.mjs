@@ -101,6 +101,10 @@ const EXPECTED_CHECKS = [
   "a repository can be connected and appears by name",
   "a project shows its repository, its pull requests and its issues",
   "a repository nobody has looked at says so instead of showing a green tick",
+  /* The button that closed the hole above. Until it existed, "nobody has looked
+     at GitHub" was a permanent condition; now it is something he can change, so
+     the walk has to prove the control is really there and really presses. */
+  "the project offers a way to look at GitHub, and pressing it does something",
 ];
 
 /* ---------------------------------------------------------------- results */
@@ -680,6 +684,7 @@ async function walk(page) {
    */
   const PROJECT_GROUP = [
     EXPECTED_CHECKS[10], EXPECTED_CHECKS[11], EXPECTED_CHECKS[12], EXPECTED_CHECKS[13],
+    EXPECTED_CHECKS[14],
   ];
   const DRIVE_REPO = "vikas53953/cloud9";
 
@@ -752,6 +757,42 @@ async function walk(page) {
       return neverLooked > 0 ? "says nobody has looked at GitHub yet" : "says when it last looked";
     });
     await shot(page, "projects-honest");
+
+    /* Pressing it is the point. A button that exists and does nothing is the
+       thing this project keeps promising not to ship, so the check is not
+       "is there a button" — it is "does the screen change when he presses it".
+       Either state is an honest answer: it went to work, or it came back with
+       a reason. Only "nothing happened at all" is a failure. */
+    await check(EXPECTED_CHECKS[14], async () => {
+      const look = page.locator(".projdetail [data-look]");
+      if (await look.count() === 0) {
+        throw new Error("NOT ON SCREEN — a project offers no way to look at GitHub, so " +
+          "'nobody has looked yet' is a state he can never leave");
+      }
+      const before = await page.locator(".projdetail").innerText();
+      await look.first().click();
+      const moved = await page.waitForFunction(
+        prev => {
+          const el = document.querySelector(".projdetail");
+          if (!el) return false;
+          const busy = document.querySelector(".projdetail [data-look-state]");
+          const refused = document.querySelector(".projdetail [data-look-refusal]");
+          return !!busy || !!refused || el.innerText !== prev;
+        },
+        before, { timeout: 30000 },
+      ).then(() => true).catch(() => false);
+      if (!moved) {
+        throw new Error("the look button is on screen but pressing it changed nothing — " +
+          "no busy state, no answer, no refusal");
+      }
+      const after = await page.locator(".projdetail").innerText();
+      const refusal = await page.locator(".projdetail [data-look-refusal]").count();
+      await shot(page, "projects-looked");
+      return refusal > 0
+        ? "pressed, and the reason it could not is on screen beside the button"
+        : /looking at github/i.test(after) ? "pressed, and it says it is looking now"
+        : "pressed, and what the screen says about GitHub changed";
+    });
   } catch (err) {
     failGroup(PROJECT_GROUP.filter(n => !results.some(r => r.name === n)),
       `the Projects screen did not open (${err.message})`);
