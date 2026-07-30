@@ -1,6 +1,7 @@
 export { Engine, type EngineOptions, type TurnInput } from "./engine.js";
 export {
-  MockProvider, SdkProvider, HarnessUnavailableError, HARNESS_DISCONNECTED_REPLY,
+  MockProvider, SdkProvider, HarnessUnavailableError, InstructionsNotSavedError,
+  HARNESS_DISCONNECTED_REPLY,
   buildAgentPrompt, renderSkills, sanitizeForChat, redactForSharing,
   type ClaudeProvider, type SdkCredentials, type RespondInput,
 } from "./provider.js";
@@ -35,6 +36,14 @@ export {
 export {
   RunStore, RUN_STORE_DEFAULTS, type RunStoreOptions, type RunListEntry,
 } from "./runstore.js";
+// THE ONE OWNER of "write a file this app will later believe" — write next
+// door, flush it to the disk, rename it into place. Everything the engine
+// stores and reads back goes through here, so a power cut can never leave half
+// a file under a name something trusts.
+export {
+  writeWholeFile, sweepPending, sweepPendingTree, isPendingName, pendingNameFor,
+  PENDING_MARK, IN_FLIGHT_GRACE_MS, RENAME_TRIES, RENAME_WAIT_MS,
+} from "./wholefile.js";
 // The ONE owner of "what this agent can do" — read by the command line, the
 // sandbox and the prompt alike, so they cannot disagree.
 export {
@@ -94,4 +103,4 @@ export {
   repoTurn, describeRepoTurn, repoBriefing, wantsToPublish, withoutPublishMarker,
   type RepoTurnInput, type RepoTurnDeps, type RepoTurnResult, type RepoOutcome,
 } from "./repowork.js";
-export { Scheduler } from "./scheduler.js";
+export { Scheduler, isScheduleWhen, SCHEDULE_WHEN } from "./scheduler.js";

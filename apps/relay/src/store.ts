@@ -1231,7 +1231,7 @@ export class Store {
    * The stored name is built HERE from an id we minted plus the already-checked
    * display name; it is never the name the client sent, and it is never joined
    * with anything a client controls. `path.basename` is the last belt on top of
-   * the braces of `isSafeSkillFileName`.
+   * the braces of `isSafeFileName`.
    */
   writeAttachmentBytes(id: ID, safeName: string, bytes: Buffer): string {
     fs.mkdirSync(this.attachmentsDir, { recursive: true });

@@ -6,7 +6,7 @@ import path from "node:path";
 import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, Channel, ClientFrame, HarnessName, HarnessState, ID,
-  Message, RunRecord, ServerFrame, Task, WorkReaction, WorldState, isSafeSkillFileName,
+  Message, RunRecord, ServerFrame, Task, WorkReaction, WorldState, isSafeFileName,
   mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
@@ -14,15 +14,17 @@ import { ApprovalDesk, ApprovalOutcome } from "./approvaldesk.js";
 import { GitHubClient, GitHubOptions } from "./github.js";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
-  ClaudeProvider, HarnessUnavailableError, MockProvider, redactForSharing, sanitizeForChat,
+  ClaudeProvider, HarnessUnavailableError, InstructionsNotSavedError, MockProvider,
+  redactForSharing, sanitizeForChat,
 } from "./provider.js";
 import { PendingAsk, rememberAsk, takeAsk, workEmoji } from "./reactions.js";
 import { describeRepoTurn, repoTurn, RepoTurnResult } from "./repowork.js";
 import { GitWorkspace } from "./worktree.js";
 import { buildRunRecord, ProviderTrace, RunFinish, RunKind, RunSeed } from "./runrecord.js";
 import { RunStore } from "./runstore.js";
-import { Scheduler } from "./scheduler.js";
+import { isScheduleWhen, Scheduler } from "./scheduler.js";
 import { taskTldr } from "./tldr.js";
+import { sweepPendingTree, writeWholeFile } from "./wholefile.js";
 
 export interface EngineOptions {
   relayUrl: string;      // ws://host:port
@@ -151,6 +153,19 @@ export class Engine {
     this.dataDir = opts.dataDir ?? path.join(process.cwd(), "cloud9-engine-data");
     this.brake = opts.brake ?? DEFAULT_BRAKE;
     fs.mkdirSync(this.dataDir, { recursive: true });
+    // Clear up after the last time this was killed mid-write. A temporary file
+    // holds bytes nobody was ever told about, so nothing can want it — but left
+    // alone it sits in his data folder for ever, and a big one (a long run
+    // record) sits there taking up room.
+    //
+    // EVERYWHERE, NOT THE TOP FLOOR. This used to sweep `dataDir` itself, which
+    // covered the schedules and the model cache and missed the two folders
+    // underneath: an agent's runs and — the one that matters — an agent's SKILL
+    // files, which are instructions the CLI reads. Litter there is a
+    // half-written instruction sitting in a folder an agent is pointed at.
+    // Naming the folders is a list someone has to remember to extend, so this
+    // walks everything the app writes under one root instead.
+    sweepPendingTree(this.dataDir);
     this.runs = new RunStore({
       agentDataDir: this.agentDataDir,
       ...(opts.keepRunsPerAgent ? { keepPerAgent: opts.keepRunsPerAgent } : {}),
@@ -404,7 +419,14 @@ export class Engine {
       if (!provider) {
         throw new HarnessUnavailableError(harness, `${harness} is not connected on this machine`);
       }
-      this.writeSkillFiles(agent);
+      // An agent whose instructions did not all reach the disk does NOT take
+      // the turn. Running it anyway would answer from an incomplete brief and
+      // present that answer as an ordinary one; the run is recorded as failed
+      // and the sentence says which file is missing.
+      const missingSkillFiles = this.writeSkillFiles(agent);
+      if (missingSkillFiles.length > 0) {
+        throw new InstructionsNotSavedError(agent.name, missingSkillFiles);
+      }
       const text = await provider.respond({
         agent,
         context: input.context,
@@ -488,27 +510,35 @@ export class Engine {
    * same allowlist the relay used — a name that could point outside the folder
    * is SKIPPED, never rewritten into something safe (run.ts's law).
    */
-  writeSkillFiles(agent: AgentDef): void {
+  writeSkillFiles(agent: AgentDef): string[] {
+    const failed: string[] = [];
     const skills = agent.skills ?? [];
-    if (skills.length === 0) return;
+    if (skills.length === 0) return failed;
     const dir = path.join(this.agentDataDir(agent.id), "skills");
     for (const skill of skills) {
       for (const file of skill.files ?? []) {
-        if (!isSafeSkillFileName(file.name)) {
+        if (!isSafeFileName(file.name)) {
           console.error(`[engine] skipped a skill file with an unusable name on agent ${agent.id}`);
           continue;
         }
         const target = path.join(dir, file.name);
         // belt and braces: the resolved path must still be inside the folder
         if (path.relative(dir, target).startsWith("..")) continue;
-        try {
-          fs.mkdirSync(dir, { recursive: true });
-          fs.writeFileSync(target, file.text, "utf8");
-        } catch (err) {
-          console.error(`[engine] could not write skill file for agent ${agent.id}:`, err);
-        }
+        // Whole or not at all. A skill file is read by the CLI, not by us, so a
+        // half-written one is not refused anywhere — the agent simply follows
+        // instructions that stop mid-sentence. Same owner, same rule.
+        //
+        // AND A MISSING ONE IS NOT ALLOWED TO PASS QUIETLY EITHER. `writeWholeFile`
+        // does not throw, so ignoring its answer meant a disk failure left the
+        // instructions incomplete and the turn ran anyway, on whatever files
+        // happened to be there from last time. The names of what did not land
+        // go back to the caller, which refuses the turn — see `respondAs`.
+        const written = writeWholeFile(target, file.text,
+          m => console.error(`[engine] could not write skill file for agent ${agent.id}: ${m}`));
+        if (!written) failed.push(file.name);
       }
     }
+    return failed;
   }
 
   /** Run one chat turn for an agent on its own harness. Public so tests can drive it. */
@@ -571,7 +601,20 @@ export class Engine {
           id: `s_${Date.now().toString(36)}`, agentId: agent.id, channelId: task.channelId,
           when: sched[1].toLowerCase(), prompt: sched[2], enabled: true,
         };
-        this.saveSchedule(s);
+        // The approved half of the same lie. This job's whole product is a row
+        // in a file; if the file did not take it, the job did not succeed and
+        // is not marked completed.
+        if (!this.saveSchedule(s)) {
+          this.sendFrame({
+            type: "updateTask", taskId: task.id, status: "failed",
+            error: SCHEDULE_NOT_SAVED,
+            summary: "The schedule could not be saved on this computer.",
+          });
+          this.markWork(task, "working", false);
+          this.markWork(task, "failed");
+          this.agentSend(agent.id, task.channelId, SCHEDULE_NOT_SAVED);
+          return;
+        }
         this.sendFrame({
           type: "updateTask", taskId: task.id, status: "completed",
           result: `schedule ${s.id} created`,
@@ -910,7 +953,14 @@ export class Engine {
         id: `s_${Date.now().toString(36)}`, agentId: agent.id, channelId,
         when: create[1].toLowerCase(), prompt: create[2], enabled: true,
       };
-      this.saveSchedule(s);
+      // NOTHING SAYS "SAVED" UNLESS IT IS SAVED. This said "⏰ Scheduled!" come
+      // what may: the write failed, one line went to a console nobody reads,
+      // the schedule ran until the app closed and was then gone without a word.
+      // A failure he can see is better than one he cannot.
+      if (!this.saveSchedule(s)) {
+        this.agentSend(agent.id, channelId, SCHEDULE_NOT_SAVED);
+        return true;
+      }
       this.agentSend(agent.id, channelId,
         `⏰ Scheduled! I'll do this ${s.when}: "${s.prompt}" (id ${s.id} — "@${agent.name} !unschedule ${s.id}" to cancel)`);
       return true;
@@ -925,8 +975,16 @@ export class Engine {
     const remove = /^!unschedule\s+(\S+)$/i.exec(t);
     if (remove) {
       const existed = this.schedules.some(s => s.id === remove[1] && s.agentId === agent.id);
-      if (existed) this.deleteSchedule(remove[1]);
-      this.agentSend(agent.id, channelId, existed ? `Cancelled ${remove[1]} ✅` : `I don't have a schedule ${remove[1]}.`);
+      if (!existed) {
+        this.agentSend(agent.id, channelId, `I don't have a schedule ${remove[1]}.`);
+        return true;
+      }
+      // same rule the other way round: a cancellation that did not reach the
+      // disk comes BACK at the next restart, so it is not called "cancelled"
+      this.agentSend(agent.id, channelId, this.deleteSchedule(remove[1])
+        ? `Cancelled ${remove[1]} ✅`
+        : `⚠️ I could NOT cancel ${remove[1]} — the change could not be saved on this computer, ` +
+          `so it is still set. Check there is room on the disk and try again.`);
       return true;
     }
     if (/^!schedule\b/i.test(t)) {
@@ -938,21 +996,81 @@ export class Engine {
   }
 
   // ---- schedules persistence (JSON file in dataDir) ----
+  //
+  // SAME CLASS AS THE RUN RECORDS, AND WORSE. This one file holds EVERY
+  // schedule for every agent, and it was rewritten whole with a plain
+  // `writeFileSync`. Interrupt that — the app closing, the machine sleeping, a
+  // full disk — and the file is half JSON, `loadSchedules` cannot parse it,
+  // and every schedule he ever set is silently gone: the app starts with an
+  // empty list and the very next save writes that empty list back over the
+  // wreckage. It goes through the one owner of whole writes now.
   private schedulesPath(): string {
     return path.join(this.dataDir, "schedules.json");
   }
+  /**
+   * The saved schedules — or nothing, said out loud, if the file cannot be
+   * believed. A file that parses but is not a LIST used to be handed straight
+   * back, and the first `.filter` on it crashed the engine at startup.
+   */
   private loadSchedules(): AgentSchedule[] {
-    try { return JSON.parse(fs.readFileSync(this.schedulesPath(), "utf8")); }
-    catch { return []; }
+    let text: string;
+    try { text = fs.readFileSync(this.schedulesPath(), "utf8"); }
+    catch { return []; } // no file yet, or we cannot read it — both mean "none"
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); }
+    catch {
+      console.error("[engine] the schedules file is damaged (the text stops part-way " +
+        "through) — starting with no schedules rather than half of them");
+      return [];
+    }
+    if (!Array.isArray(parsed)) {
+      console.error("[engine] the schedules file does not hold a list of schedules — ignoring it");
+      return [];
+    }
+    // PRESENT IS NOT THE SAME AS SENSIBLE. This asked only whether `id` was a
+    // string, so `{"id":"s_1","when":12}` came back as a schedule, went into
+    // the list, matched no pattern the scheduler knows and therefore never
+    // fired — silently, for ever. A row that cannot be acted on is not kept and
+    // half-believed; it is dropped, and it is said out loud.
+    const usable: AgentSchedule[] = [];
+    for (const row of parsed) {
+      const problem = scheduleProblem(row);
+      if (problem) {
+        console.error(`[engine] ignoring a saved schedule that cannot be acted on: ${problem}`);
+        continue;
+      }
+      usable.push(row as AgentSchedule);
+    }
+    return usable;
   }
-  saveSchedule(s: AgentSchedule): void {
+  /**
+   * Add or replace one schedule. Returns whether it is now ON THE DISK.
+   *
+   * These three used to return nothing, so a caller had no way to know a save
+   * had failed and every caller told the owner it had worked. They report now,
+   * and the tests refuse a caller that ignores the answer.
+   */
+  saveSchedule(s: AgentSchedule): boolean {
     const i = this.schedules.findIndex(x => x.id === s.id);
+    const before = this.schedules.slice();
     if (i >= 0) this.schedules[i] = s; else this.schedules.push(s);
-    fs.writeFileSync(this.schedulesPath(), JSON.stringify(this.schedules, null, 2));
+    const saved = this.writeSchedules();
+    // Memory must not disagree with the disk. Leaving the schedule in the list
+    // after a failed save is how it fires all afternoon and is then gone at the
+    // next restart with nobody told — the exact silence this round is closing.
+    if (!saved) this.schedules = before;
+    return saved;
   }
-  deleteSchedule(id: string): void {
+  deleteSchedule(id: string): boolean {
+    const before = this.schedules.slice();
     this.schedules = this.schedules.filter(s => s.id !== id);
-    fs.writeFileSync(this.schedulesPath(), JSON.stringify(this.schedules, null, 2));
+    const saved = this.writeSchedules();
+    if (!saved) this.schedules = before;
+    return saved;
+  }
+  private writeSchedules(): boolean {
+    return writeWholeFile(this.schedulesPath(), JSON.stringify(this.schedules, null, 2),
+      m => console.error(`[engine] could not save the schedules: ${m}`));
   }
   agentDataDir = (agentId: string): string => {
     const dir = path.join(this.dataDir, "agents", agentId);
@@ -960,6 +1078,39 @@ export class Engine {
     return dir;
   };
 }
+
+/**
+ * Is this row off the disk a schedule this engine could actually run? Returns
+ * the problem in plain words, or null when it is fine — the same shape of
+ * answer `validateRunRecord` gives, so the two read alike.
+ *
+ * `when` is checked by `isScheduleWhen`, which is the SCHEDULER'S own grammar
+ * rather than a second copy of it here. A `when` this file accepted and the
+ * scheduler did not would be a schedule that exists and never happens.
+ */
+function scheduleProblem(row: unknown): string | null {
+  if (!row || typeof row !== "object") return "that isn't a schedule";
+  const s = row as Partial<AgentSchedule>;
+  for (const [what, value] of [
+    ["id", s.id], ["agent", s.agentId], ["conversation", s.channelId], ["instruction", s.prompt],
+  ] as const) {
+    if (typeof value !== "string" || value.length === 0) return `a schedule needs a ${what}`;
+  }
+  if (!isScheduleWhen(s.when)) return `"${String(s.when)}" is not a time this can act on`;
+  if (typeof s.enabled !== "boolean") return "a schedule is either on or off";
+  return null;
+}
+
+/**
+ * What the owner is told when a schedule could not be written down.
+ *
+ * ONE sentence, said the same way by the typed command and by the approved
+ * job, because they are the same failure. No stack trace, no path, no error
+ * code — what happened, and what he can do about it.
+ */
+export const SCHEDULE_NOT_SAVED =
+  "⚠️ I could NOT save that schedule on this computer, so it is NOT set — " +
+  "nothing will happen at that time. Check there is room on the disk and try again.";
 
 function isBrakedReset(history: Message[]): boolean {
   return history.length > 0 && history[history.length - 1].authorKind === "human";

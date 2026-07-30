@@ -13,6 +13,7 @@ import {
   CLAUDE_DEFAULT_MODEL, CLAUDE_MODEL_CATALOGUE, CLAUDE_MODELS, MODEL_ID_RE,
 } from "@cloud9/shared";
 import { Runner, run } from "./run.js";
+import { writeWholeFile } from "./wholefile.js";
 
 export interface ModelList {
   models: string[];
@@ -191,13 +192,26 @@ export function readClaudeModelCache(file: string, version: string): ModelList |
   };
 }
 
-/** Remember a proved list. A cache we can't write is not worth crashing over. */
+/**
+ * Remember a proved list. A cache we can't write is not worth crashing over.
+ *
+ * Whole or not at all, through the one owner of that rule. Two Cloud9 windows
+ * opening at the same moment both prove the list and both write this file; with
+ * a plain `writeFileSync` one could be filling the file while the other is
+ * reading it, and the reader would see a version line with half a model list
+ * under it. Writing next door and renaming into place means a reader sees the
+ * old cache or the new one and never a mixture of the two.
+ */
 export function writeClaudeModelCache(file: string, version: string, models: string[]): void {
   const record: ClaudeModelCache = { version, models, checkedAt: Date.now() };
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(record, null, 2));
-  } catch { /* the list still works, it just gets proved again next time */ }
+  // WRITE OUTCOME IGNORED: this is the only write in the engine where a failure
+  // genuinely costs nothing and nobody needs telling. It is a REMEMBERED copy
+  // of an answer we can always get again — the caller already holds the proved
+  // list and uses it either way, and the next start simply asks the CLI again
+  // and takes a second or two longer. Nothing is ever told it was saved, and no
+  // decision anywhere depends on the file being there. Every OTHER caller in
+  // this package acts on the answer; `writeoutcome.test.ts` enforces that.
+  writeWholeFile(file, JSON.stringify(record, null, 2));
 }
 
 /**

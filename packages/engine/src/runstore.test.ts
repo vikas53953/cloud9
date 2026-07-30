@@ -360,6 +360,135 @@ test("how many runs are kept is ONE number, shared with the hub", async () => {
     `keepPerAgent must be derived from RUN_RETENTION.perAgent, not written out again: ${line.trim()}`);
 });
 
+test("how BIG a stored run may be is ONE number too, shared with the hub", async () => {
+  const { RUN_RETENTION } = await import("@cloud9/shared");
+  const { RUN_STORE_DEFAULTS } = await import("./runstore.js");
+  assert.equal(RUN_STORE_DEFAULTS.maxBytes, RUN_RETENTION.bytes,
+    "the engine's size cap and the hub's must be the same fact, not two copies of 64 * 1024");
+
+  // The SECOND half of the same finding, and the one that was left behind:
+  // `keepPerAgent` was derived, `maxBytes` was still its own `64 * 1024`. Equal
+  // today is exactly how two numbers drift tomorrow — raise the hub's cap and
+  // the engine keeps trimming to the old one, so the same run has its steps on
+  // one screen and missing on another. Assert the SOURCE derives it.
+  const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+  const source = fs.readFileSync(path.resolve(here, "..", "src", "runstore.ts"), "utf8");
+  const line = source.split(String.fromCharCode(10)).find(l => l.trimStart().startsWith("maxBytes:")) ?? "";
+  assert.ok(line.includes("RUN_RETENTION.bytes"),
+    `maxBytes must be derived from RUN_RETENTION.bytes, not written out again: ${line.trim()}`);
+});
+
+// -------------------------------------------- a damaged record is REFUSED,
+// in plain words, and never half-believed.
+
+test("a record damaged by a power cut is refused out loud, not half-read", () => {
+  // The tag is deliberately meaningless — it becomes part of the file name, and
+  // a tag like "empty" would appear in the log line by accident and make the
+  // "did it say what was wrong?" assertion pass for the wrong reason.
+  const cases: [string, string, string][] = [
+    // [what is on disk, the file's own name, the words the log must carry]
+    ["", "aa", "empty"],
+    ['{"id":"x","agentId":"a1","start', "bb", "stops part-way"],
+    ['"just a string"', "cc", "does not hold a run"],
+    // an id and nothing else. The words come from `validateRunRecord` now —
+    // the SAME refusal the hub gives a record arriving over the wire — rather
+    // than from a key-counting rule this file kept for itself.
+    ['{"id":"r-000000000001-dd"}', "dd", "a run is a chat reply, a job or a scheduled check-in"],
+  ];
+  for (const [bytes, tag, words] of cases) {
+    const dir = tmp();
+    const said: string[] = [];
+    const store = storeIn(dir, { log: (m: string) => said.push(m) });
+    const good = record();
+    store.save(good);
+
+    const runs = path.join(dir, "agents", "a1", "runs");
+    const bad = `r-000000000001-${tag}`;
+    fs.writeFileSync(path.join(runs, `${bad}.json`), bytes, "utf8");
+
+    assert.equal(store.read("a1", bad), undefined,
+      `${tag}: a damaged file was handed back as if it were a run`);
+    assert.ok(said.some(m => m.includes(words)),
+      `${tag}: the refusal must say what is wrong in plain words — got ${JSON.stringify(said)}`);
+    assert.ok(said.some(m => m.includes(bad)), `${tag}: the refusal must name the run`);
+
+    // and the good one beside it is untouched and still readable
+    assert.deepEqual(store.list("a1").map(r => r.id), [good.id]);
+    assert.equal(store.read("a1", good.id)?.id, good.id);
+  }
+});
+
+// FINDING 2 OF THE DURABILITY REVIEW. Checking that the KEYS are there is not
+// checking that the record means anything: `{"id":42,"outcome":"banana"}` has
+// every key the old rule counted, so it was cast to a RunRecord and drawn on
+// the screen. The reader now asks `validateRunRecord` — the very function the
+// hub already applies to a record arriving over the wire — so there is ONE
+// rule about what a run record is, not two that can drift apart.
+test("a run with every field present and nonsense in them is refused, by the hub's own rule", () => {
+  const whole = record();
+  const poisoned: [string, Partial<Record<string, unknown>>, string][] = [
+    // [tag, what to break, the plain words the refusal must carry]
+    ["aa", { outcome: "banana" }, "a run either worked, failed or was stopped"],
+    ["bb", { agentId: {} }, "a run belongs to an agent"],
+    ["cc", { startedAt: "soup" }, "that start time isn't a number"],
+    ["dd", { kind: "whenever" }, "a run is a chat reply, a job or a scheduled check-in"],
+    ["ee", { steps: "three of them" }, "a run record needs a list of steps"],
+  ];
+
+  for (const [tag, breakage, words] of poisoned) {
+    const dir = tmp();
+    const said: string[] = [];
+    const store = storeIn(dir, { log: (m: string) => said.push(m) });
+    const good = record();
+    store.save(good);
+
+    const runs = path.join(dir, "agents", "a1", "runs");
+    const bad = `r-000000000002-${tag}`;
+    const object = { ...whole, id: bad, ...breakage } as Record<string, unknown>;
+
+    // this is WHY the old rule let it through: every key it counted is present
+    for (const key of ["id", "agentId", "startedAt", "outcome"]) {
+      assert.notEqual(object[key], undefined,
+        `${tag}: this case only proves something if the key-counting rule would have passed it`);
+    }
+    fs.writeFileSync(path.join(runs, `${bad}.json`), JSON.stringify(object, null, 2), "utf8");
+
+    assert.equal(store.read("a1", bad), undefined,
+      `${tag}: a nonsense record was handed back as if it were a run`);
+    assert.ok(said.some(m => m.includes(words)),
+      `${tag}: the refusal must say what is actually wrong — got ${JSON.stringify(said)}`);
+    assert.ok(said.some(m => m.includes(bad)), `${tag}: the refusal must name the run`);
+
+    // and it is not offered in the list, nor allowed to hold a retention slot
+    assert.deepEqual(store.list("a1").map(r => r.id), [good.id],
+      `${tag}: the nonsense record was listed as a run`);
+    assert.deepEqual(fs.readdirSync(runs), [`${good.id}.json`],
+      `${tag}: the nonsense record is still occupying a slot`);
+  }
+});
+
+test("a file we merely could not read is left alone — that is not damage", () => {
+  const dir = tmp();
+  const store = storeIn(dir);
+  const good = record();
+  store.save(good);
+  const runs = path.join(dir, "agents", "a1", "runs");
+
+  const realRead = fs.readFileSync;
+  (fs as { readFileSync: typeof fs.readFileSync }).readFileSync = ((p: fs.PathOrFileDescriptor, o?: unknown) => {
+    if (typeof p === "string" && p.endsWith(`${good.id}.json`)) throw new Error("EBUSY");
+    return realRead(p as string, o as never);
+  }) as typeof fs.readFileSync;
+  try {
+    assert.deepEqual(store.list("a1"), [], "a file we cannot open right now offers nothing");
+  } finally {
+    (fs as { readFileSync: typeof fs.readFileSync }).readFileSync = realRead;
+  }
+  assert.deepEqual(fs.readdirSync(runs), [`${good.id}.json`],
+    "…but deleting it would have thrown away a perfectly good run");
+  assert.equal(store.read("a1", good.id)?.id, good.id);
+});
+
 test("an absurd keep can never empty an agent's history", () => {
   for (const keep of [-5, 0, Number.NaN, -0.5]) {
     const dir = tmp();

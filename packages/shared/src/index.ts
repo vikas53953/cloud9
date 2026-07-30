@@ -688,14 +688,21 @@ export function validateRepo(repo: unknown): string | null {
   return null;
 }
 
-/** Check the words a person wrote about a project. */
-export function validateProjectText(name: unknown, description: unknown): string | null {
-  if (name !== undefined && name !== null) {
-    if (typeof name !== "string") return "a project name is words";
-    if (name.length > PROJECT_LIMITS.name) {
-      return `that name is too long (max ${PROJECT_LIMITS.name} characters)`;
-    }
-    if (/[\r\n]/.test(name)) return "a project name is one line";
+/**
+ * Check the words a person wrote about a project.
+ *
+ * The NAME goes through `validateName`, the one naming rule every form asks —
+ * so a repository called something already taken is refused in the same words a
+ * duplicate agent is. An ABSENT name is fine and means "call it what the
+ * repository is called"; an empty one means the same thing, which is why both
+ * skip the rule rather than being refused for having no letters in them.
+ */
+export function validateProjectText(
+  name: unknown, description: unknown, takenNames?: Iterable<string>,
+): string | null {
+  if (name !== undefined && name !== null && name !== "") {
+    const bad = validateName("project", name, takenNames);
+    if (bad) return bad;
   }
   if (description !== undefined && description !== null) {
     if (typeof description !== "string") return "a description is words";
@@ -1049,7 +1056,7 @@ export type AuthorKind = "human" | "agent";
  */
 export interface Attachment {
   id: ID;
-  /** the name a person sees — validated by `isSafeSkillFileName` */
+  /** the name a person sees — validated by `isSafeFileName` */
   name: string;
   /** size of the stored bytes */
   size: number;
@@ -1656,6 +1663,128 @@ export const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export const AGENT_LIMITS = { name: 64, emoji: 16, persona: 8000 } as const;
 
+// =====================================================================
+// THE NAMING RULE — one owner for "what is a name", used by every form
+// =====================================================================
+//
+// WHY THIS EXISTS. Phase 5 found five Majors that were all the same missing
+// rule wearing different clothes: four agents could all be called `Scout` (so
+// the `@` picker offered four identical rows and he would hand real work to the
+// wrong one); two channels could both be `#goa-trip`; a channel name of 3,000
+// characters was accepted while an agent name capped at 64 and said so; and six
+// spaces became a channel literally named `-`.
+//
+// So there is now ONE rule and ONE place it lives. Every form that names
+// anything asks THIS. Three questions, in this order:
+//   1. how long may it be
+//   2. is it actually a name (not punctuation, not whitespace, not a control
+//      character, not a second line)
+//   3. do you already have one of these
+//
+// ENFORCED AT THE HUB, because the screen is not a boundary. The screen imports
+// the same function and asks it first, so the sentence he reads before it goes
+// is the same sentence he would read after it came back — but the hub's answer
+// is the one that decides.
+//
+// A NAME IS NEVER REWRITTEN INTO SHAPE. Six spaces are refused with a sentence,
+// not quietly turned into `-`. Same law as `validateReactionEmoji` and
+// `isSafeFileName`: refuse, never repair.
+//
+// EXISTING DATA KEEPS WORKING. Nothing here runs over stored rows — it runs
+// when somebody types a NEW name or renames something. A rule that locked him
+// out of his own crew would be a worse bug than the one it fixed.
+
+/** The things Cloud9 lets a person name, and how long each may be. */
+export const NAME_LIMITS = {
+  agent: AGENT_LIMITS.name,
+  /** the missing rule phase 5 found: a channel had no cap at all */
+  channel: 64,
+  project: PROJECT_LIMITS.name,
+  /**
+   * A skill is named too, and two skills on one agent called the same thing is
+   * the same confusion in miniature — he opens one and edits the other. It is
+   * here because "every form that names anything" means every form, not the
+   * three that happened to be in the bug report.
+   */
+  skill: 64,
+} as const;
+
+/** What kind of thing is being named — decides the length and the words. */
+export type NameKind = keyof typeof NAME_LIMITS;
+
+/**
+ * The words for each kind, exactly as they appear in the sentence he reads.
+ *
+ * The article travels WITH the word because "a agent" is the kind of sentence
+ * that tells him a machine wrote it. `an agent needs a name` is also the exact
+ * sentence the agent form printed before this rule existed — kept letter for
+ * letter, so nothing he already recognises changes underneath him.
+ */
+const NAMED: Record<NameKind, string> = {
+  agent: "an agent", channel: "a channel", project: "a project", skill: "a skill",
+};
+
+/**
+ * The key uniqueness is judged on.
+ *
+ * `Scout`, `scout` and `Scout ` are ONE name for this purpose, because they are
+ * one name to a person reading a sidebar and to anyone typing `@Sco`. Folded
+ * with `toLowerCase` after Unicode normalisation so two spellings that draw the
+ * same glyphs cannot slip past each other.
+ */
+export function nameKey(name: string): string {
+  return name.normalize("NFC").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * IS THERE A NAME IN HERE AT ALL?
+ *
+ * At least one letter, digit or picture character. This is the question that
+ * refuses six spaces, `---` and `...` — all of which are things a person can
+ * type by accident and none of which he could ever say out loud to point at a
+ * room. Emoji count: `🐙🐙🐙` is a name he chose, and phase 5 proved it works.
+ */
+const NAME_HAS_SUBSTANCE = /[\p{L}\p{N}\p{Extended_Pictographic}]/u;
+
+/** Characters that are never part of a name a person typed on purpose. */
+const NAME_CONTROL = /[\u0000-\u001f\u007f]/;
+
+/**
+ * THE ONE NAMING RULE. Returns a plain-words problem, or null when the name is
+ * fine.
+ *
+ * `taken` is the names that already exist in the same place — other agents in
+ * his crew, other rooms he can see, other repositories he has connected. Leave
+ * it out and the duplicate question simply is not asked (the caller does not
+ * know the answer, so it must not pretend to).
+ */
+export function validateName(
+  kind: NameKind, name: unknown, taken?: Iterable<string>,
+): string | null {
+  const one = NAMED[kind];
+  if (typeof name !== "string") return `${one} needs a name`;
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return `${one} needs a name`;
+  if (trimmed.length > NAME_LIMITS[kind]) {
+    return `that name is too long (max ${NAME_LIMITS[kind]} characters)`;
+  }
+  if (NAME_CONTROL.test(trimmed) || /[\r\n]/.test(name)) {
+    return "a name is one line of ordinary text";
+  }
+  if (!NAME_HAS_SUBSTANCE.test(trimmed)) {
+    return "that isn't a name — it needs at least one letter or number";
+  }
+  if (taken) {
+    const key = nameKey(trimmed);
+    for (const other of taken) {
+      if (nameKey(other) === key) {
+        return `you already have ${one} called "${other.trim()}" — give this one a different name`;
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * How big a message, a page of scrollback, and a reaction may be.
  *
@@ -1679,7 +1808,7 @@ export const MESSAGE_LIMITS = {
 } as const;
 
 /**
- * Attachment rules. The name is checked by `isSafeSkillFileName` — the same
+ * Attachment rules. The name is checked by `isSafeFileName` — the same
  * one, deliberately: a name that may become a real file in the agents folder
  * and a name that may become a real file in the attachments folder are the
  * SAME question, and asking it in two places is how the two answers drift.
@@ -1760,7 +1889,7 @@ export function validateChannelText(value: unknown, what: "description" | "topic
 }
 
 export const SKILL_LIMITS = {
-  perAgent: 20, name: 64, description: 200, instructions: 8000,
+  perAgent: 20, /** the length lives in NAME_LIMITS.skill — one owner */ name: 64, description: 200, instructions: 8000,
   files: 10, fileName: 128, fileText: 40_000,
 } as const;
 
@@ -1848,6 +1977,15 @@ export const RESPOND_TO_LIMITS = { allowlist: 50 } as const;
 
 export interface AgentInputRules {
   /**
+   * The names already in his crew, so a second `Scout` is refused in words
+   * rather than created in silence. Leave it out and the duplicate question is
+   * not asked at all — a caller that does not know the crew must not guess.
+   *
+   * The agent being EDITED is left out of this list by the caller: renaming
+   * something to what it is already called is not a clash.
+   */
+  takenNames?: string[];
+  /**
    * The real model list for this agent's harness. When given, a model id that
    * isn't on it is REJECTED. When the list is unknown (the engine hasn't
    * reported yet) the shape check above is still the floor — it is the
@@ -1861,12 +1999,11 @@ export interface AgentInputRules {
  * Returns a plain-words problem description, or null when the agent is fine.
  */
 export function validateAgentInput(agent: AgentInput, rules: AgentInputRules = {}): string | null {
-  if (typeof agent.name !== "string" || agent.name.trim().length === 0) {
-    return "an agent needs a name";
-  }
-  if (agent.name.length > AGENT_LIMITS.name) {
-    return `that name is too long (max ${AGENT_LIMITS.name} characters)`;
-  }
+  // THE NAMING RULE, not a second copy of it. Length, "is this actually a
+  // name", and "you already have one of these" all come from `validateName`,
+  // which is the same function the channel form and the project form ask.
+  const badName = validateName("agent", agent.name, rules.takenNames);
+  if (badName) return badName;
   if (typeof agent.emoji === "string" && agent.emoji.length > AGENT_LIMITS.emoji) {
     return `that emoji is too long (max ${AGENT_LIMITS.emoji} characters)`;
   }
@@ -1914,13 +2051,15 @@ export function validateSkills(skills: unknown): string | null {
   if (skills.length > SKILL_LIMITS.perAgent) {
     return `that's too many skills (max ${SKILL_LIMITS.perAgent})`;
   }
+  const seen: string[] = [];
   for (const raw of skills) {
     if (!raw || typeof raw !== "object") return "a skill must have a name and instructions";
     const s = raw as Partial<AgentSkill>;
-    if (typeof s.name !== "string" || s.name.trim().length === 0) return "every skill needs a name";
-    if (s.name.length > SKILL_LIMITS.name) {
-      return `a skill name is too long (max ${SKILL_LIMITS.name} characters)`;
-    }
+    // the ONE naming rule again, including "you already have one of these" —
+    // `seen` is every skill named so far on this same agent
+    const badSkillName = validateName("skill", s.name, seen);
+    if (badSkillName) return badSkillName;
+    seen.push(s.name as string);
     if (typeof s.description === "string" && s.description.length > SKILL_LIMITS.description) {
       return `a skill description is too long (max ${SKILL_LIMITS.description} characters)`;
     }
@@ -1936,12 +2075,40 @@ export function validateSkills(skills: unknown): string | null {
   return null;
 }
 
-/**
- * Skill file names become real files in the agent's folder, so a name is
- * REFUSED (never rewritten) if it could point anywhere but that folder.
- * Same law as run.ts: allowlist, don't escape.
- */
-export const SKILL_FILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$/;
+// =====================================================================
+// IS THIS A SAFE FILE NAME — one owner, and the sentence comes FROM the rule
+// =====================================================================
+//
+// WHY THIS WAS REWRITTEN. Phase 5 (F3) attached ordinary files and watched them
+// bounce: `report(1).pdf` — the exact name every browser gives a re-downloaded
+// file — plus `café-menu.txt`, `photo#3.png`, `budget,notes.txt`,
+// `notes'quote.txt` and `मेरी फ़ाइल.txt`. The old rule was an ASCII allowlist
+// (`[A-Za-z0-9._ -]`), which is far tighter than any real desktop.
+//
+// AND THE SENTENCE WAS WRONG. It said "use plain letters, numbers, dots and
+// dashes" while quietly allowing spaces and underscores — so it described a
+// STRICTER rule than the one enforced, and doing what it said did not help.
+// They drifted because the check and the sentence were written separately and
+// nothing tied them together.
+//
+// THE FIX FOR THAT CLASS: there is now ONE list below. Each entry carries its
+// own test AND its own words. `isSafeFileName` runs every test; the sentence is
+// those same words joined up. A rule cannot change without its sentence
+// changing, because they are the same object.
+//
+// WHAT IS STILL REFUSED, and why — none of this is about tidiness:
+//  • path separators and `..` — the only way a name reaches outside its folder
+//  • control characters — invisible, and a NUL truncates a path in some layers
+//  • a leading character that is not a letter, a number or a picture — so a
+//    name can never be read as an option (`-rf`) or hide as a dotfile
+//  • a trailing dot or space — Windows strips them, so two names become one file
+//  • Windows device names — `CON.md` writes to the console, not to a file
+
+/** The most characters a file name may have. */
+export const FILE_NAME_MAX = 128;
+
+/** Characters that can never be part of a file name on Windows or anywhere else. */
+export const FILE_NAME_FORBIDDEN = ["/", "\\", ":", "*", "?", "\"", "<", ">", "|"] as const;
 
 /**
  * Names Windows refuses to treat as ordinary files. `CON`, `NUL`, `COM1` and
@@ -1959,20 +2126,105 @@ const WINDOWS_DEVICE_NAMES = new Set([
 ]);
 
 /**
- * One place that decides whether a skill file name may become a real file.
- * Both the relay (before storing) and the engine (before writing) call THIS —
- * so the two checks can never drift apart.
+ * THE FILE-NAME RULE. One entry per thing that is checked, each carrying the
+ * words a person reads when it is the thing they broke.
+ *
+ * Order matters only for how the sentence reads; every test is run.
  */
-export function isSafeSkillFileName(name: unknown): name is string {
+const FILE_NAME_RULES: { says: string; ok: (name: string) => boolean }[] = [
+  {
+    says: `keep it to ${FILE_NAME_MAX} characters or fewer`,
+    ok: n => n.length > 0 && n.length <= FILE_NAME_MAX,
+  },
+  {
+    says: "start it with a letter, a number or a picture",
+    ok: n => /^[\p{L}\p{N}\p{Extended_Pictographic}]/u.test(n),
+  },
+  {
+    says: `leave out ${FILE_NAME_FORBIDDEN.join(" ")} and ..`,
+    ok: n => !FILE_NAME_FORBIDDEN.some(c => n.includes(c)) && !n.includes(".."),
+  },
+  {
+    says: "don't end it with a dot or a space",
+    ok: n => !/[. ]$/.test(n),
+  },
+  {
+    says: "leave out hidden control characters",
+    ok: n => ![...n].some(c => {
+      const point = c.codePointAt(0) ?? 0;
+      return point < 0x20 || point === 0x7f;
+    }),
+  },
+  {
+    says: "and don't name it after a Windows device (CON, NUL, COM1 and friends)",
+    // device names, with or without an extension: CON, con.md, COM1.txt
+    ok: n => !WINDOWS_DEVICE_NAMES.has(n.split(".")[0].trim().toUpperCase()),
+  },
+];
+
+/**
+ * ONE PLACE that decides whether a name may become a real file.
+ *
+ * The relay (before storing an attachment or a skill file), the engine (before
+ * writing one) and the screen (before offering to send one) all call THIS, so
+ * the three can never drift apart — that drift is what F3 actually was.
+ */
+export function isSafeFileName(name: unknown): name is string {
   if (typeof name !== "string") return false;
-  if (!SKILL_FILE_NAME_RE.test(name)) return false;
-  if (name.includes("..")) return false;
-  // the OS strips these, turning two names into one file
-  if (/[. ]$/.test(name)) return false;
-  // device names, with or without an extension: CON, con.md, COM1.txt
-  const stem = name.split(".")[0].trim().toUpperCase();
-  if (WINDOWS_DEVICE_NAMES.has(stem)) return false;
-  return true;
+  return FILE_NAME_RULES.every(rule => rule.ok(name));
+}
+
+/**
+ * The sentence a person reads when a file name is refused — BUILT FROM THE
+ * RULES ABOVE, never typed out beside them. This is the whole point: the old
+ * sentence described a rule nobody was enforcing, and following its advice did
+ * not help. Now there is nothing to keep in step.
+ */
+export const FILE_NAME_SENTENCE =
+  `that file name isn't allowed — ${FILE_NAME_RULES.map(r => r.says).join(", ")}`;
+
+/**
+ * Is this an id we are willing to turn into a file name?
+ *
+ * A DIFFERENT QUESTION from `isSafeFileName`, deliberately, and much narrower:
+ * a run id is not something a person types, it is something Cloud9 generates,
+ * so there is no real-world name to accommodate and no reason to accept
+ * anything but the plainest possible characters. Loosening file names for `café`
+ * must not quietly loosen what may become a record on disk.
+ */
+export function isSafeStoredId(id: unknown): id is string {
+  if (typeof id !== "string") return false;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) return false;
+  if (id.includes("..")) return false;
+  /* A TRAILING DOT OR SPACE IS REFUSED IN THE ID ITSELF, not only in the file
+     it becomes. `trailing.` is a legal-looking id that lands on disk as
+     `trailing..json` — the `..` appears when the extension is added, after
+     every check. Fixing that in the one place that writes the file would leave
+     the hub still willing to STORE the id; fixing it here means the bad id
+     never exists. Same class as the sentence that drifted from its rule: a
+     rule about a name must hold for what the name becomes. */
+  if (/[. ]$/.test(id)) return false;
+  return !WINDOWS_DEVICE_NAMES.has(id.split(".")[0].toUpperCase());
+}
+
+/**
+ * What the hub puts in `Content-Disposition` when it serves this file.
+ *
+ * IT HAS TO COPE WITH THE NAMES THE RULE NOW ALLOWS. A header is Latin-1 only,
+ * so `मेरी फ़ाइल.txt` in a plain `filename=` would make Node throw and the
+ * download would fail outright — the ordinary-filenames fix would have moved
+ * the breakage rather than removed it. So the real name travels in the RFC 5987
+ * `filename*` form, percent-encoded as UTF-8, and a stripped-down ASCII name is
+ * left in `filename=` for anything too old to read it.
+ */
+export function contentDisposition(name: string): string {
+  const how = isInlineViewable(name) ? "inline" : "attachment";
+  // the fallback is allowed to be ugly; it is never the name a modern browser
+  // uses, and it must not contain a quote or a backslash that ends the field
+  const plain = [...name]
+    .map(c => (c.codePointAt(0) ?? 0) < 0x80 && !/["\\]/.test(c) ? c : "_")
+    .join("") || "file";
+  return `${how}; filename="${plain}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
 function validateSkillFiles(files: unknown, skillName?: string): string | null {
@@ -1984,9 +2236,7 @@ function validateSkillFiles(files: unknown, skillName?: string): string | null {
   for (const raw of files) {
     if (!raw || typeof raw !== "object") return "a skill file needs a name and some text";
     const f = raw as Partial<AgentSkillFile>;
-    if (!isSafeSkillFileName(f.name)) {
-      return "that file name isn't allowed — use plain letters, numbers, dots and dashes";
-    }
+    if (!isSafeFileName(f.name)) return FILE_NAME_SENTENCE;
     if (typeof f.text !== "string") return `file "${f.name}" has no text`;
     if (f.text.length > SKILL_LIMITS.fileText) {
       return `file "${f.name}" is too big (max ${SKILL_LIMITS.fileText} characters)`;
@@ -2051,13 +2301,11 @@ export function validateReactionEmoji(emoji: unknown): string | null {
 /**
  * Check an attachment's name and size.
  *
- * The name question is delegated to `isSafeSkillFileName` on purpose — see
+ * The name question is delegated to `isSafeFileName` on purpose — see
  * ATTACHMENT_LIMITS. There is no second copy of that rule anywhere.
  */
 export function validateAttachment(name: unknown, size: number): string | null {
-  if (!isSafeSkillFileName(name)) {
-    return "that file name isn't allowed — use plain letters, numbers, dots and dashes";
-  }
+  if (!isSafeFileName(name)) return FILE_NAME_SENTENCE;
   if (!Number.isFinite(size) || size <= 0) return "that file is empty";
   if (size > ATTACHMENT_LIMITS.bytes) {
     return `that file is too big (max ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB)`;
@@ -2451,14 +2699,15 @@ function capitalise(s: string): string {
  * rather than putting it in the database and discovering the problem when a
  * screen tries to draw it.
  *
- * The id is checked with `isSafeSkillFileName` on purpose. A run id becomes a
- * real file name in the engine's own folder, and asking that question in two
- * places with two answers is how the two drift.
+ * The id is checked with `isSafeStoredId`, which is deliberately NARROWER than
+ * the rule for a file a person named. A run id is generated, never typed, so
+ * there is no real-world name to make room for — and loosening file names so
+ * `café-menu.txt` works must not quietly loosen what may land on disk here.
  */
 export function validateRunRecord(record: unknown): string | null {
   if (!record || typeof record !== "object") return "that isn't a run record";
   const r = record as Partial<RunRecord>;
-  if (!isSafeSkillFileName(typeof r.id === "string" ? `${r.id}.json` : undefined)) {
+  if (!isSafeStoredId(r.id)) {
     return "that run id isn't usable";
   }
   if (r.kind !== "chat" && r.kind !== "task" && r.kind !== "schedule") {

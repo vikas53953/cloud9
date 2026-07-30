@@ -12,6 +12,7 @@ import {
   parseClaudeProbe, parseCodexModels, readClaudeModelCache, readCodexDefault,
   writeClaudeModelCache,
 } from "./models.js";
+import { isPendingName } from "./wholefile.js";
 
 /** A trimmed copy of the real `codex debug models` shape (CLI 0.144.4). */
 const CODEX_JSON = JSON.stringify({
@@ -131,6 +132,35 @@ test("the proved list is remembered per CLI build and thrown away when it change
   assert.equal(readClaudeModelCache(file, "2.1.220 (Claude Code)"), undefined);
   fs.writeFileSync(file, "not json");
   assert.equal(readClaudeModelCache(file, "2.1.220 (Claude Code)"), undefined);
+});
+
+test("the remembered model list is written whole or not at all", () => {
+  // Same class as the run records and the schedules: this file is written now
+  // and believed later, so it must never be catchable half-written. Two windows
+  // opening at once both write it, and the reader has no way to tell a torn file
+  // from a short one.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-modelcache-"));
+  const file = path.join(dir, "claude-models.json");
+  const written: string[] = [];
+
+  const realWrite = fs.writeFileSync;
+  (fs as { writeFileSync: typeof fs.writeFileSync }).writeFileSync =
+    ((p: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, o?: unknown) => {
+      if (typeof p === "string") written.push(path.basename(p));
+      return realWrite(p as string, data as string, o as never);
+    }) as typeof fs.writeFileSync;
+  try {
+    writeClaudeModelCache(file, "2.1.220 (Claude Code)", ["claude-sonnet-5"]);
+  } finally {
+    (fs as { writeFileSync: typeof fs.writeFileSync }).writeFileSync = realWrite;
+  }
+
+  assert.equal(written.length, 1);
+  assert.notEqual(written[0], "claude-models.json",
+    "the bytes went straight to the real name — a reader can catch that half-written");
+  assert.ok(isPendingName(written[0]), `and the temporary name says so: ${written[0]}`);
+  assert.deepEqual(fs.readdirSync(dir), ["claude-models.json"], "no litter left behind");
+  assert.deepEqual(readClaudeModelCache(file, "2.1.220 (Claude Code)")?.models, ["claude-sonnet-5"]);
 });
 
 test("Codex models come back in the CLI's own priority order, hidden ones dropped", () => {

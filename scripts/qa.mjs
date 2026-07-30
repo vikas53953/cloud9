@@ -21,8 +21,8 @@ import {
 // rather than re-typed, so a check can never agree with a sentence this file
 // made up.
 import {
-  ATTACHMENT_LIMITS, describeRemoteAction, detailRemoteAction, humanMoney,
-  REMOTE_ACTIONS, summarizeRun, validateRepo,
+  ATTACHMENT_LIMITS, describeRemoteAction, detailRemoteAction, FILE_NAME_SENTENCE, humanMoney,
+  MESSAGE_LIMITS, NAME_LIMITS, REMOTE_ACTIONS, summarizeRun, validateName, validateRepo,
 } from "@cloud9/shared";
 // THE LADDER AND THE TABLE, from the engine that owns them. Every count below
 // is derived, never typed: a ninth capability or a fifth rung moves this suite
@@ -82,7 +82,13 @@ const { ui: UI } = qaTarget();
  * run stops early it now FAILS and says so. Add or remove an `ok(...)` and this
  * number must move with it — a mismatch is the suite telling you it drifted.
  */
-const EXPECTED_CHECKS = 354;
+// 354 → 363: nine checks added for the phase 5 Majors — A3 (the composer keeps
+// what he typed), B6/B6b (one Scout, and the refusal says so), D2/D3/D4 (a room
+// name obeys the same rule an agent name does), F3 (everyday file names land,
+// and the sentence is the rule's own), C12 (connecting asks GitHub there and
+// then). One EXISTING check changed rather than being added: the one that used
+// to assert a freshly connected repository says "Not looked at GitHub yet".
+const EXPECTED_CHECKS = 363;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -270,6 +276,33 @@ try {
   await page.click('.rail-btn[data-go="chat"]');
   await page.waitForSelector(".sidebar >> text=Scout");
   ok("agent created and listed", true);
+
+  /* ---- B6 / B6b: he must be able to tell his agents apart ----
+     Phase 5 made FOUR agents called `Scout`; typing `@Sco` then offered four
+     rows reading exactly `✨ Scout AGENT`, with different personalities,
+     different apps and different reach behind them. Nothing stopped it and
+     nothing said anything. The second one is now refused in words, in the form,
+     with everything he typed still in it. */
+  await page.click('button[title="New agent"]');
+  await page.fill('input[placeholder="Scout"]', "scout");
+  await page.fill("textarea.persona-input", "a second scout, typed out in full and not to be thrown away");
+  await page.click(".editor >> text=Create agent");
+  await page.waitForSelector('.editor [data-namerefusal="agent"]', { timeout: 10000 });
+  const dupeSays = (await page.locator('.editor [data-namerefusal="agent"]').innerText()).trim();
+  const dupeKeptName = await page.inputValue('input[placeholder="Scout"]');
+  const dupeKeptPersona = await page.inputValue("textarea.persona-input");
+  ok("B6: a second agent with a name already taken is refused in plain words, and nothing he typed is lost",
+    dupeSays === validateName("agent", "scout", ["Scout"])
+    && dupeKeptName === "scout" && dupeKeptPersona.startsWith("a second scout"),
+    `${dupeSays} :: name "${dupeKeptName}", ${dupeKeptPersona.length} characters of personality kept`);
+  await page.screenshot({ path: `${SHOTS}/name-duplicate-agent.png` });
+  await page.click(".editor .topbar >> text=Cancel");
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.waitForSelector('.sidebar .agentrow[data-agent="Scout"]', { timeout: 15000 });
+  const scoutRows = await page.$$eval(".sidebar .agentrow", rows =>
+    rows.filter(r => (r.dataset.agent ?? "").toLowerCase() === "scout").length);
+  ok("B6b: there is exactly ONE Scout to point at, so an @ mention can only mean one agent",
+    scoutRows === 1, `${scoutRows} agents named Scout`);
 
   // ---- his 15: clicking an agent opens the direct conversation, never a dead click ----
   await page.click('.sidebar .agentrow[data-agent="Scout"] .agentmain');
@@ -1500,11 +1533,65 @@ try {
    * to what was sent. */
   await page.click('.rail-btn[data-go="chat"]');
   await page.click('button[title="New channel"]');
+
+  /* ---- D3 / D4 / D2: the room name is held to the SAME rule as an agent's ----
+     Before this the channel box had no length cap, no uniqueness rule and no
+     "is this actually a name" rule, while the agent box next door had all
+     three. One rule now answers for both, and it answers HERE — in the form —
+     as well as at the hub. */
+  const roomSays = async name => {
+    await page.fill('.panel input[placeholder="trip-goa"]', name);
+    await page.click(".panel .foot >> text=Create");
+    await page.waitForSelector(".panel .problemline", { timeout: 10000 });
+    return {
+      said: (await page.locator(".panel .problemline").innerText()).trim(),
+      kept: await page.inputValue('.panel input[placeholder="trip-goa"]'),
+      open: (await page.locator(".panel").count()) > 0,
+    };
+  };
+  const dupe = await roomSays("trip-goa");
+  ok("D3: a second room with a name he already has is refused in plain words, and the box keeps it",
+    dupe.said === validateName("channel", "trip-goa", ["trip-goa"])
+    && dupe.kept === "trip-goa" && dupe.open,
+    `${dupe.said} :: kept "${dupe.kept}"`);
+
+  const huge = await roomSays("x".repeat(3000));
+  ok("D4: a 3,000-character room name is refused, in the same words the agent name uses",
+    new RegExp(`too long \\(max ${NAME_LIMITS.channel} characters\\)`).test(huge.said)
+    && huge.kept.length === 3000,
+    `${huge.said} :: kept ${huge.kept.length} characters`);
+
+  /* D2 — six spaces. The box turns whitespace into hyphens as he types, so what
+     the rule actually sees is `-`; either way it is not a name and he is told
+     so, rather than getting a room he never asked for. */
+  const spaces = await roomSays("      ");
+  const dashRooms = await page.locator('.sidebar .side-item:text-is("# -")').count();
+  ok("D2: six spaces is not a room name — it is refused, and no room called - appears",
+    /at least one letter or number|needs a name/.test(spaces.said) && dashRooms === 0,
+    `${spaces.said} :: ${dashRooms} room(s) named -`);
+
   await page.fill('.panel input[placeholder="trip-goa"]', "paperwork");
   await page.click(".panel .foot >> text=Create");
   await page.waitForSelector(".sidebar >> text=# paperwork");
   await page.click("text=# paperwork");
   await page.waitForSelector('.chathead .ch-title .n:text-is("paperwork")', { timeout: 15000 });
+
+  /* ---- A3: a refused message must not cost him what he typed ----
+     Phase 5's worst finding for him: press Enter with a long message and the
+     box emptied BEFORE the hub answered "that message is too long". Every word
+     was gone and he could not shorten what he had written. */
+  const TOO_LONG = "x".repeat(MESSAGE_LIMITS.text + 1000);
+  await page.fill(".composer textarea", TOO_LONG);
+  await page.locator(".composer textarea").press("Enter");
+  await page.waitForSelector(".toast .toast-text", { timeout: 15000 });
+  const tooLongSays = (await page.locator(".toast .toast-text").innerText()).trim();
+  const stillTyped = await page.inputValue(".composer textarea");
+  ok("A3: a message too long is refused in plain words AND every character he typed is still there",
+    new RegExp(`too long \\(max ${MESSAGE_LIMITS.text} characters\\)`).test(tooLongSays)
+    && stillTyped.length === TOO_LONG.length,
+    `${tooLongSays} :: box holds ${stillTyped.length} of ${TOO_LONG.length}`);
+  await page.fill(".composer textarea", "");
+  await page.click(".toast .toast-x");
 
   ok("the composer offers a way to attach a file",
     (await page.locator(".composer .mini.attach").count()) === 1 &&
@@ -1527,15 +1614,50 @@ try {
   });
   await page.waitForSelector('.uploadtray .uptile[data-upload="ledger.bin"].done', { timeout: 20000 });
 
+  /* ---- F3: the file names a real person actually has ----
+     Phase 5 attached these and watched them bounce. `report(1).pdf` is the
+     exact name every browser gives a re-downloaded file, and `café-menu.txt`
+     is an ordinary word. They are ordinary files, and they must land. */
+  for (const everyday of ["report(1).pdf", "café-menu.txt", "photo#3.png"]) {
+    await page.setInputFiles(".composer input.filepick", {
+      name: everyday, mimeType: "application/octet-stream", buffer: LEDGER,
+    });
+  }
+  await page.waitForFunction(
+    () => document.querySelectorAll(".uploadtray .uptile.done").length >= 5,
+    null, { timeout: 30000 });
+  const everydayLanded = await page.$$eval(".uploadtray .uptile",
+    tiles => tiles.map(t => `${t.dataset.upload}:${t.className}`));
+  ok("F3: the everyday file names a person really has are accepted, not bounced",
+    ["report(1).pdf", "café-menu.txt", "photo#3.png"].every(
+      n => everydayLanded.some(t => t.startsWith(`${n}:`) && !t.includes("failed"))),
+    everydayLanded.join(" | "));
+  for (const everyday of ["report(1).pdf", "café-menu.txt", "photo#3.png"]) {
+    await page.click(`.uploadtray .uptile[data-upload="${everyday}"] .upx`);
+  }
+  await waitFor(page, () => document.querySelectorAll(".uploadtray .uptile").length === 2,
+    undefined, { timeout: 10000, what: "the everyday files to be taken back off" });
+
   // a name the hub would refuse is refused HERE, in the hub's own sentence,
-  // before the bytes are ever read — and it is said, never swallowed
+  // before the bytes are ever read — and it is said, never swallowed.
+  // `CON.png` is a Windows DEVICE, not a file: it is refused for a reason a
+  // person can act on, unlike `report(1).pdf`, which never should have been.
   await page.setInputFiles(".composer input.filepick", {
-    name: "bad name!.png", mimeType: "image/png", buffer: PICTURE,
+    name: "CON.png", mimeType: "image/png", buffer: PICTURE,
   });
   await page.waitForSelector('.uploadtray .uptile.failed', { timeout: 15000 });
   const refusedSays = (await page.locator(".uploadtray .uptile.failed .meta").innerText()).trim();
   ok("a file the hub would refuse is refused in the composer, in plain words",
     /file name isn't allowed/.test(refusedSays), refusedSays);
+  /* F3's second half: the sentence used to describe a STRICTER rule than the
+     one enforced ("plain letters, numbers, dots and dashes" — while allowing
+     spaces and underscores), so doing what it said did not help. It is now
+     generated from the rule, and this compares the words on his screen with
+     the words the rule itself produced. */
+  ok("F3: the refusal on screen is the sentence the rule generated, word for word",
+    refusedSays === FILE_NAME_SENTENCE
+    && !/plain letters, numbers, dots and dashes/.test(refusedSays),
+    `${refusedSays}\n  rule says: ${FILE_NAME_SENTENCE}`);
   await page.screenshot({ path: `${SHOTS}/files-composer.png` });
 
   // a refused file can be taken back off, and the ones that landed stay
@@ -2952,7 +3074,40 @@ try {
       === validateRepo("not a repository"),
     (await page.locator(".connectproj .problemline").innerText()).trim());
 
+  /* ---- C12: a repository GitHub has never heard of must not look like a good one ----
+     Phase 5 connected `definitely-not-a-real-owner-xyz987/nope` and the form
+     closed happily; the row then said "Not looked at GitHub yet" for ever —
+     word for word what a correctly-typed repository said. Connecting now ASKS,
+     and the answer is on the row. "We could not check" and "it does not exist"
+     are different answers and must read differently, so this accepts either the
+     no-such-repository sentence or an honest could-not-check one, and fails
+     only on silence. */
+  const GHOST = "definitely-not-a-real-owner-xyz987/nope";
+  await page.fill("#f-repo", GHOST);
+  await page.fill("#f-repo-name", "");
+  await page.click('.connectproj button:has-text("Connect")');
+  await page.waitForSelector(`.proj-list .side-item[data-repo="${GHOST}"]`, { timeout: 20000 });
+  await waitFor(page, () => {
+    const detail = document.querySelector(".projdetail");
+    if (!detail) return false;
+    // either GitHub answered (the chip stamps when) or it said why it could not
+    return !!detail.querySelector(".pd-problem")
+      || !!detail.querySelector('[data-look-state="looked"]');
+  }, undefined, { timeout: 90000, what: "the look that connecting started to come back" });
+  const ghostSays = (await page.locator(".projdetail").innerText()).replace(/\s+/g, " ").trim();
+  ok("C12: a repository GitHub cannot see is told so when he connects it, not left looking like a good one",
+    !/not looked at github yet/i.test(ghostSays)
+    && /(has no repository called|could not reach|isn't running on the computer|isn't installed|sign in to github)/i.test(ghostSays),
+    ghostSays.slice(0, 200));
+  await page.screenshot({ path: `${SHOTS}/projects-ghost.png` });
+  // and it is taken back off, so the rest of this section sees the list it expects
+  await page.click(".projdetail .pd-btns >> text=Disconnect");
+  await page.click(".projdetail .pd-btns >> text=Yes, forget it");
+  await page.waitForSelector(`.proj-list .side-item[data-repo="${GHOST}"]`, { state: "detached", timeout: 20000 });
+
   /* ---- connecting a real one ---- */
+  await page.click(".projects .topbar [data-connect]");
+  await page.waitForSelector(".connectproj", { timeout: 15000 });
   await page.fill("#f-repo", REPO);
   await page.fill("#f-repo-name", "Cloud9 itself");
   await page.click('.connectproj button:has-text("Connect")');
@@ -2962,13 +3117,22 @@ try {
     (await page.locator(".projdetail .reponame").innerText()).replace(/\s+/g, "") === REPO,
     await page.locator(".projdetail .reponame").innerText());
 
-  /* ABSENT MEANS ABSENT. Nobody has run `gh` against this yet, so there is no
-     trunk to protect and no "in sync" to claim — and the screen says which. */
-  ok("a repository nobody has looked at says so, and shows no trunk it was never told",
-    (await page.locator(".pd-never").count()) === 1 &&
-    /not looked at github yet/i.test(await page.locator(".pd-facts").innerText()) &&
-    !/trunk/i.test(await page.locator(".pd-facts").innerText()),
-    (await page.locator(".pd-facts").innerText()).replace(/\s+/g, " "));
+  /* CONNECTING LOOKS (C12). This check used to assert the opposite — that a
+     freshly connected repository says "Not looked at GitHub yet" — and that
+     sentence was exactly the bug: it read identically for a typo and for a
+     good repository. It now asserts the new promise: connecting asks, and by
+     the time he is looking at the row it either says WHEN it looked or says
+     why it could not. It never sits in the in-between saying nothing. */
+  await waitFor(page, () => {
+    const detail = document.querySelector(".projdetail");
+    return !!detail && (!!detail.querySelector(".pd-problem")
+      || !!detail.querySelector('[data-look-state="looked"]'));
+  }, undefined, { timeout: 90000, what: "the look connecting started on the real repository" });
+  const realFacts = (await page.locator(".projdetail").innerText()).replace(/\s+/g, " ");
+  ok("connecting a repository looks at GitHub there and then, rather than leaving him to find out later",
+    !/not looked at github yet/i.test(realFacts)
+    && (await page.locator(".pd-never").count()) === 0,
+    realFacts.slice(0, 180));
 
   const projectId = await page.getAttribute(`.proj-list .side-item[data-repo="${REPO}"]`, "data-project");
 
@@ -3016,10 +3180,15 @@ try {
      carries.
      ====================================================================== */
 
-  ok("a connected repository offers a way to ask GitHub, and says it has not yet",
+  /* The second half of this check used to be "and says it has not yet". That is
+     no longer true and must not be asserted: connecting ASKS now (C12), so by
+     the time he is here the row already says when it looked. What still has to
+     be true — and is what this check is for — is that the button to ask again
+     is there, ready, and says so in words. */
+  ok("a connected repository offers a way to ask GitHub, ready and named in plain words",
     (await page.locator('.pd-btns button[data-look="ready"]').innerText()).trim()
       === "Look at GitHub now" &&
-    (await page.locator('.pd-facts [data-look-state="never"]').count()) === 1,
+    (await page.locator('.pd-facts [data-look-state="never"]').count()) === 0,
     (await page.locator(".pd-btns").innerText()).replace(/\s+/g, " "));
 
   await page.click('.pd-btns button[data-look="ready"]');

@@ -6,7 +6,7 @@
 //   <dataDir>/agents/<agentId>/runs/r-<time>-<noise>.json
 //
 // SAFE PATHS HAVE ONE OWNER. This module writes no rule of its own: the file
-// name is checked with `isSafeSkillFileName` — the same function the relay and
+// the id is checked with `isSafeStoredId` — the same function the relay and
 // `Engine.writeSkillFiles` already use — and the finished path is then checked
 // with the same `path.relative` backstop. A second, subtly different rule is
 // how a hole gets opened, so there isn't one.
@@ -21,13 +21,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
-  RunListEntry, RunRecord, RUN_RETENTION, fitRunRecord, isSafeSkillFileName, runListEntry,
+  RunListEntry, RunRecord, RUN_RETENTION, fitRunRecord, isSafeStoredId, runListEntry,
+  validateRunRecord,
 } from "@cloud9/shared";
+import { isPendingName, writeWholeFile } from "./wholefile.js";
 
 export type { RunListEntry };
-
-/** The suffix a half-written record carries until it is whole. Never listed. */
-const PENDING = ".tmp-";
 
 export interface RunStoreOptions {
   /** the agent's own folder — the engine already owns this decision */
@@ -40,16 +39,26 @@ export interface RunStoreOptions {
 }
 
 /**
- * HOW MANY RUNS ARE KEPT IS ONE FACT. `RUN_RETENTION.perAgent` in
- * `@cloud9/shared` is what the hub keeps; this store keeps the same number on
- * disk. They used to be two unrelated 50s in two packages, which is a drift
- * waiting to happen: change one and the app quietly keeps two different amounts
- * of history in two places and nobody notices until a run is missing from one
- * screen and present on another. Derived, not copied — and a test asserts it.
+ * HOW MUCH HISTORY IS KEPT IS ONE FACT, NOT TWO.
+ *
+ * `RUN_RETENTION` in `@cloud9/shared` is what the hub keeps; this store keeps
+ * the same amounts on disk. Every number here is DERIVED from that one source,
+ * never written out again:
+ *
+ *   - `keepPerAgent` ← `RUN_RETENTION.perAgent` — how many runs an agent keeps.
+ *   - `maxBytes`     ← `RUN_RETENTION.bytes`    — how big one stored run may be.
+ *
+ * `maxBytes` was a second `64 * 1024` sitting here, unconnected to the hub's.
+ * Two equal numbers in two packages are the drift itself, not the safety: raise
+ * the hub's cap and the engine silently keeps trimming to the old one, so the
+ * SAME run has its steps on one screen and missing on another and nothing says
+ * why. A comment asking the next person to keep them in step is not a fix; the
+ * fix is that there is only one number and a test that fails if either line
+ * stops deriving it.
  */
 export const RUN_STORE_DEFAULTS = {
   keepPerAgent: RUN_RETENTION.perAgent,
-  maxBytes: 64 * 1024,
+  maxBytes: RUN_RETENTION.bytes,
 } as const;
 
 /**
@@ -102,8 +111,12 @@ export class RunStore {
   /** The full path a run id would be written to, or undefined if it is unusable. */
   private fileFor(dir: string, runId: string): string | undefined {
     const name = `${runId}.json`;
-    // the SAME rule skill files go through — one owner, no second opinion
-    if (!isSafeSkillFileName(name)) return undefined;
+    // The SAME rule the hub applies to a run id — one owner, no second opinion —
+    // asked of BOTH the id and the name it turns into. Asking only about the id
+    // let `trailing.` through, because the id itself has no `..` in it; it is
+    // `trailing..json` that lands on the disk. The thing being written is the
+    // NAME, so the name is what has to pass.
+    if (!isSafeStoredId(runId) || !isSafeStoredId(name)) return undefined;
     const target = path.resolve(path.join(dir, name));
     if (path.relative(dir, target) !== name) return undefined;
     return target;
@@ -125,25 +138,17 @@ export class RunStore {
       this.log(`[engine] refused to store run ${record.id}: unusable name`);
       return undefined;
     }
-    // WRITE THEN RENAME. A record must become visible whole or not at all.
+    // WRITE THEN RENAME — through the one owner of that rule, `wholefile.ts`.
     // `writeFileSync` straight to the final name meant a turn interrupted
     // mid-write — the app closing, the machine sleeping, a full disk — left half
     // a file under a name `list` trusts. It parsed as nothing, so it showed
     // nothing, and it still counted towards the 50 kept runs, so it pushed a
-    // real run out and then sat there for ever. Renaming is atomic on both
-    // Windows and POSIX, so the final name only ever holds finished bytes.
-    const pending = `${target}${PENDING}${process.pid}-${Date.now()}`;
-    try {
-      fs.writeFileSync(pending, serialize(this.fit(record)), "utf8");
-      fs.renameSync(pending, target);
-      this.prune(record.agentId);
-      return target;
-    } catch (err) {
-      // never leave our own litter behind
-      try { fs.rmSync(pending, { force: true }); } catch { /* nothing more to do */ }
-      this.log(`[engine] could not store run ${record.id}: ${String(err)}`);
-      return undefined;
-    }
+    // real run out and then sat there for ever.
+    const written = writeWholeFile(target, serialize(this.fit(record)),
+      m => this.log(`[engine] could not store run ${record.id}: ${m}`));
+    if (!written) return undefined;
+    this.prune(record.agentId);
+    return target;
   }
 
   /**
@@ -178,20 +183,37 @@ export class RunStore {
       // TORN, NOT LOST. The bytes were read fine and are not a record — half a
       // file from a version that wrote straight to the final name, or something
       // truncated. It holds no information and it is holding a retention slot,
-      // so it goes. Anything we merely failed to READ (busy, locked, no
-      // permission) is left exactly where it is.
-      if (found.junk) this.discard(target);
+      // so it goes, AND IT IS SAID OUT LOUD. Refusing something in silence is
+      // how "one run is missing" turns into an afternoon of guessing.
+      // Anything we merely failed to READ (busy, locked, no permission) is left
+      // exactly where it is.
+      if (found.junk) {
+        this.log(`[engine] run ${id} for agent ${agentId} is damaged (${found.reason}) — ` +
+          `it is not a run record, so it is being left out of the list and removed`);
+        this.discard(target);
+      }
     }
     return out;
   }
 
-  /** One stored run, or undefined if it is missing or unreadable. */
+  /**
+   * One stored run, or undefined if it is missing or damaged.
+   *
+   * REFUSES IN PLAIN WORDS. A damaged file is never half-believed and never
+   * passed back as a partly-filled record: the caller gets nothing, and the log
+   * gets a sentence saying which run it was and what was wrong with it.
+   */
   read(agentId: string, runId: string): RunRecord | undefined {
     const dir = this.dirFor(agentId, false);
     if (!dir) return undefined;
     const target = this.fileFor(dir, runId);
     if (!target) return undefined;
-    return readRecord(target).record;
+    const found = readRecord(target);
+    if (found.junk) {
+      this.log(`[engine] refused run ${runId} for agent ${agentId}: ${found.reason} — ` +
+        `the file on disk is not a whole run record`);
+    }
+    return found.record;
   }
 
   /**
@@ -206,7 +228,7 @@ export class RunStore {
     if (!dir) return 0;
     let removed = 0;
     for (const name of this.namesIn(dir)) {
-      if (!name.includes(PENDING)) continue;
+      if (!isPendingName(name)) continue;
       if (this.discard(path.join(dir, name))) removed++;
     }
     for (const id of this.idsNewestFirst(dir).slice(this.keep)) {
@@ -259,18 +281,42 @@ export class RunStore {
  * should go, while a file we could not read at all may be perfectly good and
  * merely busy, and deleting it would be the bug.
  */
-function readRecord(target: string): { record?: RunRecord; junk?: boolean } {
+function readRecord(target: string): { record?: RunRecord; junk?: boolean; reason?: string } {
   let text: string;
   try {
     text = fs.readFileSync(target, "utf8");
   } catch {
     return {}; // could not read it — say nothing, touch nothing
   }
+  if (text.trim().length === 0) {
+    // exactly what a power cut between "empty the file" and "fill it" leaves
+    return { junk: true, reason: "the file is empty" };
+  }
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(text) as RunRecord;
-    if (parsed && typeof parsed === "object" && parsed.id) return { record: parsed };
-  } catch { /* falls through to junk */ }
-  return { junk: true };
+    parsed = JSON.parse(text);
+  } catch {
+    return { junk: true, reason: "the text stops part-way through" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { junk: true, reason: "the file does not hold a run at all" };
+  }
+  // A HALF-RECORD IS NOT A RECORD — AND NEITHER IS A NONSENSE ONE.
+  //
+  // This used to ask only whether `id`, `agentId`, `startedAt` and `outcome`
+  // were PRESENT. `{"id":42,"agentId":{},"startedAt":"soup","outcome":"banana"}`
+  // passed every one of those and was handed on to the screen as a run.
+  //
+  // ONE JUDGE, NOT TWO. `validateRunRecord` in `@cloud9/shared` is the rule the
+  // hub already applies to a record arriving over the wire, and it type-checks
+  // every field rather than counting keys. A file coming off this disk is
+  // untrusted for exactly the same reasons — a power cut, an older version, a
+  // person with Notepad — so it is asked the same question by the same
+  // function. A second checker here would be a second opinion, and two rules
+  // that can disagree about the same object is the bug, not the safety.
+  const problem = validateRunRecord(parsed);
+  if (problem) return { junk: true, reason: problem };
+  return { record: parsed as RunRecord };
 }
 
 function serialize(record: RunRecord): string {

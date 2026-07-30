@@ -77,7 +77,10 @@ test("a member of the room gets the bytes, once, with a type the hub chose", asy
   assert.equal(await res.text(), "the plan is fine");
   assert.equal(res.headers.get("content-type"), "text/plain; charset=utf-8");
   assert.equal(res.headers.get("x-content-type-options"), "nosniff");
-  assert.equal(res.headers.get("content-disposition"), 'inline; filename="notes.txt"');
+  // the header now carries the RFC 5987 form as well, because the file rule
+  // (correctly) accepts names a Latin-1 header cannot hold on its own
+  assert.equal(res.headers.get("content-disposition"),
+    `inline; filename="notes.txt"; filename*=UTF-8''notes.txt`);
   assert.equal(res.headers.get("cache-control"), "no-store");
 
   // ONE USE. The second request gets nothing, so a ticket sitting in a log line
@@ -179,7 +182,8 @@ test("the sender does not get to choose how the file is treated", async () => {
   const t2 = await ticketFor(owner, zip.id);
   const res2 = await fetch(http + t2.url);
   assert.equal(res2.headers.get("content-type"), "application/octet-stream");
-  assert.equal(res2.headers.get("content-disposition"), 'attachment; filename="bundle.zip"');
+  assert.equal(res2.headers.get("content-disposition"),
+    `attachment; filename="bundle.zip"; filename*=UTF-8''bundle.zip`);
 
   owner.close(); relay.close();
 });

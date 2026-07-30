@@ -176,7 +176,7 @@ export interface RunFinish {
 }
 
 /** A run id that is also a safe file name and sorts by time. No underscores: the
- *  shared file-name rule (`isSafeSkillFileName`) does not allow them. */
+ *  shared file-name rule (`isSafeFileName`) does not allow them. */
 export function newRunId(now = Date.now(), rand = Math.random): string {
   const time = now.toString(36).padStart(9, "0");
   const noise = Math.floor(rand() * 36 ** 4).toString(36).padStart(4, "0");

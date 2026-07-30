@@ -6,6 +6,30 @@ export interface FiredSchedule {
   schedule: AgentSchedule;
 }
 
+/**
+ * THE ONE OWNER OF "WHEN IS A SCHEDULE DUE" — the grammar itself.
+ *
+ * `due()` below reads these, and so does the engine when it loads schedules
+ * back off the disk. A second spelling of the same two patterns is how a
+ * `when` gets saved that nothing will ever fire: it looks fine to whoever wrote
+ * it and matches nothing here, so the schedule simply never happens and nobody
+ * is told. There is one spelling.
+ */
+export const SCHEDULE_WHEN = {
+  daily: /^daily (\d{1,2}):(\d{2})$/,
+  every: /^every (\d+)m$/,
+} as const;
+
+/** Is this something this scheduler could actually act on? */
+export function isScheduleWhen(when: unknown): when is string {
+  if (typeof when !== "string") return false;
+  const daily = SCHEDULE_WHEN.daily.exec(when);
+  if (daily) return Number(daily[1]) <= 23 && Number(daily[2]) <= 59;
+  const every = SCHEDULE_WHEN.every.exec(when);
+  // "every 0m" is not a schedule, it is a spin
+  return !!every && Number(every[1]) >= 1;
+}
+
 export class Scheduler {
   private lastFired = new Map<string, number>();
   private timer?: ReturnType<typeof setInterval>;
@@ -44,14 +68,14 @@ export class Scheduler {
 
   private due(s: AgentSchedule, now: Date): boolean {
     const last = this.lastFired.get(s.id) ?? 0;
-    const daily = /^daily (\d{1,2}):(\d{2})$/.exec(s.when);
+    const daily = SCHEDULE_WHEN.daily.exec(s.when);
     if (daily) {
       const [, hh, mm] = daily;
       const hit = now.getHours() === Number(hh) && now.getMinutes() === Number(mm);
       const firedThisMinute = now.getTime() - last < 60_000;
       return hit && !firedThisMinute;
     }
-    const every = /^every (\d+)m$/.exec(s.when);
+    const every = SCHEDULE_WHEN.every.exec(s.when);
     if (every) {
       return now.getTime() - last >= Number(every[1]) * 60_000;
     }

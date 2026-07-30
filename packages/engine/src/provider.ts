@@ -52,6 +52,26 @@ export class HarnessUnavailableError extends Error {
   }
 }
 
+/**
+ * The agent's own instructions could not be written to this computer, so the
+ * turn was NOT run.
+ *
+ * Why this gets to speak for itself when other errors do not: its message is
+ * built out of two things that are already safe to show — the agent's name and
+ * its skill FILE NAMES, both of which the app validated before they ever
+ * reached the disk. No path, no argv, no error code. And it is exactly the sort
+ * of failure the owner must see rather than find later: the alternative is an
+ * agent answering from half a brief and the answer looking completely ordinary.
+ */
+export class InstructionsNotSavedError extends Error {
+  constructor(public readonly agentName: string, public readonly files: string[]) {
+    super(`${agentName} could not be given its instructions — ` +
+      `${files.join(", ")} could not be saved on this computer, so I did NOT run this. ` +
+      `Check there is room on the disk and ask me again.`);
+    this.name = "InstructionsNotSavedError";
+  }
+}
+
 /** What the agent says when its harness isn't connected. No jargon. */
 export const HARNESS_DISCONNECTED_REPLY =
   "my engine isn't connected — open Settings and sign in, then ask me again.";
@@ -66,6 +86,8 @@ export const HARNESS_DISCONNECTED_REPLY =
 export function sanitizeForChat(err: unknown, where: string): string {
   console.error(`[engine] ${where}:`, err);
   if (err instanceof HarnessUnavailableError) return HARNESS_DISCONNECTED_REPLY;
+  // carries only the agent's name and its own file names — see the class
+  if (err instanceof InstructionsNotSavedError) return err.message;
   return "something went wrong on my side and I couldn't finish that — " +
     "the details are in the app's log.";
 }

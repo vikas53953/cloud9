@@ -11,12 +11,12 @@ import {
   RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
-  downloadContentType, fitRunRecord, isBranchName, isInlineViewable, isSafeSkillFileName,
+  contentDisposition, downloadContentType, fitRunRecord, isBranchName, isSafeFileName,
   mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
   setMachineNames, shareableRun,
-  extractMentions, newId, validateAgentInput, validateAttachment, validateChannelText,
+  extractMentions, nameKey, newId, validateAgentInput, validateAttachment, validateChannelText,
   validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji,
-  validateRepo, validateRunRecord, validateTaskSummary,
+  validateName, validateRepo, validateRunRecord, validateTaskSummary,
   WS_LIMITS,
 } from "@cloud9/shared";
 import os from "node:os";
@@ -405,6 +405,24 @@ export class Relay {
   }
 
   /**
+   * The room names this person would see clashing — the answer the naming rule
+   * needs for "you already have one of these".
+   *
+   * It is what he CAN SEE, not every room in the database: two rooms with the
+   * same name in two groups that never meet are not a confusion he can suffer,
+   * and refusing the second would be telling him about a room he is not allowed
+   * to know exists. Direct conversations are left out because their names are
+   * machine-made, never typed.
+   *
+   * A room ARCHIVED is deliberately still counted. It is still in his sidebar,
+   * it can still be reopened, and two rooms called `#goa-trip` would still be
+   * two rows he cannot tell apart.
+   */
+  private namedChannels(userId: ID): string[] {
+    return this.visibleChannels(userId).filter(c => c.kind !== "dm").map(c => c.name);
+  }
+
+  /**
    * The rooms you could join — open, not archived, and not already yours.
    *
    * DELIBERATELY NOT PART OF `visibleChannels` (§7 suggested folding it in
@@ -513,6 +531,33 @@ export class Relay {
     this.looking.set(project.id, timer);
     this.toEngines(userId, { type: "lookAtProject", projectId: project.id, repo: project.repo });
     this.toUser(userId, { type: "project", project: this.viewProject(project) });
+  }
+
+  /**
+   * LOOK AT A REPOSITORY THE MOMENT IT IS CONNECTED — and never let that look
+   * be the reason connecting failed.
+   *
+   * Phase 5 (C12) connected `definitely-not-a-real-owner-xyz987/nope` and the
+   * form closed happily; the row then said "Not looked at GitHub yet" for ever,
+   * which is word for word what a correctly-typed repository says. A typo and a
+   * real repository were indistinguishable, permanently.
+   *
+   * TWO ANSWERS THAT MUST NOT BE CONFUSED, and this is why the throw is
+   * swallowed rather than passed on:
+   *  • "GitHub has no repository called that" — the engine's own sentence, on
+   *    the project, after a real look. He should fix the name.
+   *  • "we could not check" — no engine on this machine, gh missing, network
+   *    down. `startLook` has already written that sentence on the project, and
+   *    it reads completely differently. He should NOT be stopped from
+   *    connecting: not being able to ask is not the same as the answer being no.
+   */
+  private lookOnConnect(userId: ID, project: Project): void {
+    try {
+      this.startLook(userId, project);
+    } catch {
+      // `startLook` already said why, in words, on the project itself. The
+      // connect stands.
+    }
   }
 
   /** The engine answered (or the project went away). Stop saying "looking". */
@@ -796,11 +841,11 @@ export class Relay {
     try { this.channelFor(held.userId, row.channelId); } catch { nope(); return; }
 
     const file = row.attachment;
-    // The name was checked by `isSafeSkillFileName` before it was stored. It is
+    // The name was checked by `isSafeFileName` before it was stored. It is
     // checked again on the way out, because a row could have been written by an
     // older build, and because it is about to become a header and a file name on
     // somebody's disk. Same rule, one owner, no second copy of it anywhere.
-    if (!isSafeSkillFileName(file.name)) { nope(); return; }
+    if (!isSafeFileName(file.name)) { nope(); return; }
     const stored = path.join(this.store.attachmentsDir, path.basename(file.storedAs));
     const root = path.resolve(this.store.attachmentsDir);
     if (path.resolve(stored) !== path.join(root, path.basename(file.storedAs))) { nope(); return; }
@@ -822,8 +867,10 @@ export class Relay {
     res.writeHead(200, {
       "content-type": downloadContentType(file.name),
       "content-length": String(size),
-      "content-disposition":
-        `${isInlineViewable(file.name) ? "inline" : "attachment"}; filename="${file.name}"`,
+      // ONE OWNER for how a name becomes a header. It has to survive the
+      // non-English names the file rule now (correctly) allows — a header is
+      // Latin-1, so a Devanagari name in a plain `filename=` would throw.
+      "content-disposition": contentDisposition(file.name),
       "x-content-type-options": "nosniff",
       "content-security-policy": "default-src 'none'; sandbox",
       "cache-control": "no-store",
@@ -957,6 +1004,17 @@ export class Relay {
         if (kind === "dm" && memberIds.length !== 2) {
           throw new Error("a direct conversation is between two people — make a room instead");
         }
+        // THE NAMING RULE, at the hub, because the screen is not a boundary.
+        // Before this the channel box had no length cap, no uniqueness rule and
+        // no "is this actually a name" rule at all — six spaces became a room
+        // literally called `-`, and a second `#goa-trip` sat beside the first.
+        // A DIRECT CONVERSATION IS EXEMPT FROM THE DUPLICATE QUESTION only:
+        // its name is machine-made ("dm-priya") and two people may legitimately
+        // produce the same one, which `dmBetween` above already resolves to a
+        // single room. Its shape is still checked, like everything else.
+        const badName = validateName("channel", frame.name,
+          kind === "dm" ? undefined : this.namedChannels(conn.userId));
+        if (badName) throw new Error(badName);
         // the same rule adding uses: an agent may not drag its owner in behind it
         this.assertMayAdd(conn.userId, memberIds, new Set(memberIds.filter(id =>
           this.store.users().some(u => u.id === id))));
@@ -1155,9 +1213,20 @@ export class Relay {
         break;
       }
       case "updateAgent": {
-        const bad = validateAgentInput(frame.agent, this.agentRules(conn, frame.agent.provider));
-        if (bad) throw new Error(bad);
         const existing = this.myAgent(conn.userId, frame.agent.id);
+        // AN AGENT KEEPING ITS OWN NAME IS NOT A DUPLICATE, and this is the
+        // line that protects his EXISTING data. Two agents already called
+        // `Scout` are in his database right now; asked the uniqueness question
+        // afresh, saving either of them would fail for ever and he could never
+        // edit his way out of it. So the question is only asked when the name
+        // is actually being CHANGED — a rename must not collide, a save must
+        // not be refused for a clash that was already there.
+        const renaming = typeof frame.agent.name === "string"
+          && nameKey(frame.agent.name) !== nameKey(existing.name);
+        const bad = validateAgentInput(frame.agent, renaming
+          ? this.agentRules(conn, frame.agent.provider, frame.agent.id)
+          : { ...this.agentRules(conn, frame.agent.provider), takenNames: undefined });
+        if (bad) throw new Error(bad);
         // An edit that never mentions a skill's files must not delete them
         // (M3). One rule, here, for every client — see `keepSkillFiles`.
         const saved: AgentDef = {
@@ -1422,7 +1491,9 @@ export class Relay {
       case "connectProject": {
         const bad = validateRepo(frame.repo);
         if (bad) throw new Error(bad);
-        const badText = validateProjectText(frame.name, frame.description);
+        // the same naming rule the crew and the rooms are held to
+        const badText = validateProjectText(frame.name, frame.description,
+          this.store.projectsOf(conn.userId).map(p => p.name));
         if (badText) throw new Error(badText);
         // CONNECTING THE SAME REPOSITORY TWICE FINDS THE ONE YOU HAVE, exactly
         // as clicking a person twice finds the same direct conversation. Two
@@ -1445,11 +1516,23 @@ export class Relay {
         this.store.saveProject(project);
         this.audit(conn, "project_connected", project.id, `connected ${project.repo}`);
         this.toUser(conn.userId, { type: "project", project: this.viewProject(project) });
+        // AND LOOK AT IT NOW, so a mistyped repository is not indistinguishable
+        // from a good one for ever. Before this, `definitely-not-a-real-owner/
+        // nope` joined the list and sat there saying "Not looked at GitHub yet"
+        // — the exact words a perfectly good repository says.
+        this.lookOnConnect(conn.userId, project);
         break;
       }
       case "updateProject": {
         const project = this.myProject(conn.userId, frame.projectId);
-        const badText = validateProjectText(frame.name, frame.description);
+        // renaming a project to what it is already called is not a clash, and a
+        // name that clashed before this rule existed must not become unsavable
+        const renamingIt = typeof frame.name === "string" && frame.name.trim()
+          && nameKey(frame.name) !== nameKey(project.name);
+        const badText = validateProjectText(frame.name, frame.description,
+          renamingIt
+            ? this.store.projectsOf(conn.userId).filter(p => p.id !== project.id).map(p => p.name)
+            : undefined);
         if (badText) throw new Error(badText);
         if (frame.channelId) this.channelFor(conn.userId, frame.channelId);
         // absent = leave alone, "" = clear — the same sentence-vs-silence rule
@@ -1767,7 +1850,7 @@ export class Relay {
         let bytes: Buffer;
         try { bytes = Buffer.from(String(frame.dataBase64 ?? ""), "base64"); }
         catch { throw new Error("that file didn't arrive properly"); }
-        // The name rule is `isSafeSkillFileName`, reached through
+        // The name rule is `isSafeFileName`, reached through
         // `validateAttachment` — the SAME rule that guards skill files, on
         // purpose. There is no second copy of it to drift.
         const bad = validateAttachment(frame.name, bytes.length);
@@ -2044,9 +2127,19 @@ export class Relay {
    * injection guard and applies either way, so an unknown list can never widen
    * what is allowed onto a command line.
    */
-  private agentRules(conn: Conn, provider?: string): { models?: string[] } {
+  private agentRules(
+    conn: Conn, provider?: string, except?: ID,
+  ): { models?: string[]; takenNames?: string[] } {
     const harness = provider === "codex" ? "codex" : "claude";
-    return { models: this.harness[conn.userId]?.[harness].models };
+    return {
+      models: this.harness[conn.userId]?.[harness].models,
+      // WHAT MAKES A SECOND `Scout` A REFUSAL RATHER THAN A SILENT COPY.
+      // Every agent in this Cloud9 counts, not only his own: the `@` picker
+      // offers all of them side by side, and four identical rows is the whole
+      // bug. `except` is the agent being EDITED — renaming something to what it
+      // is already called is not a clash.
+      takenNames: this.store.agents().filter(a => a.id !== except).map(a => a.name),
+    };
   }
 
   private directory(): { id: ID; name: string }[] {

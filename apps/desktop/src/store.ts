@@ -3,7 +3,7 @@ import {
   ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, Attachment, ATTACHMENT_LIMITS, Channel,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   Project, ProjectItem, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, UnreadEntry, User,
-  validateAttachment,
+  validateAttachment, validateProjectText, validateRepo,
 } from "@cloud9/shared";
 
 /**
@@ -411,6 +411,54 @@ export class RelayClient {
   }
 
   /**
+   * THE ONE ANSWER TO "WHAT HAPPENS TO WHAT HE TYPED WHEN A FORM REFUSES IT".
+   *
+   * WHY THIS EXISTS. Phase 5 (A3) typed 100,000 characters into the composer
+   * and pressed Enter. The box emptied, and only THEN did the hub answer "that
+   * message is too long (max 40000 characters)". Every word was gone and he
+   * could not shorten what he had written. Two screens away the agent-name box
+   * and the personality box get it exactly right — they say why and keep the
+   * text — so the app already knew how, in one place and not the other. Three
+   * boxes were each deciding for themselves.
+   *
+   * THE RULE, and there is only one: nothing is ever cleared before it is known
+   * to have been ACCEPTED. So the check runs FIRST, here, using the hub's own
+   * validator imported rather than re-spelled; a refusal is said out loud and
+   * `false` comes back, and the caller's box is untouched because the caller
+   * only ever clears on `true`.
+   *
+   * The hub is still the boundary and still checks everything again — this does
+   * not replace it, it just means the ordinary refusals happen before his words
+   * can be thrown away.
+   *
+   * @param problem the plain-words refusal, or null when there is nothing wrong
+   * @param say     where to print it; the toast unless the form has its own line
+   * @returns true only if the frame really went
+   */
+  submit(problem: string | null, frame: ClientFrame, say?: (why: string) => void): boolean {
+    if (this.refused(problem, say)) return false;
+    this.send(frame);
+    return true;
+  }
+
+  /**
+   * The judgement half of `submit`, on its own.
+   *
+   * A form that needs `ask` (because it wants the HUB'S refusal routed back to
+   * its own line rather than to the toast) cannot call `submit`, and without
+   * this it would have to re-decide what a refusal means — which is exactly how
+   * three boxes ended up with three different answers. So the decision lives
+   * here, once, and both routes ask it.
+   *
+   * @returns true when this was refused and the caller must change NOTHING
+   */
+  refused(problem: string | null, say?: (why: string) => void): boolean {
+    if (!problem) return false;
+    (say ?? ((why: string) => this.notify(why)))(problem);
+    return true;
+  }
+
+  /**
    * What has been asked and not yet answered, oldest first.
    *
    * Exposed because the one thing that matters about the ledger cannot be seen
@@ -803,6 +851,11 @@ export class RelayClient {
     extra: { name?: string; description?: string; channelId?: ID } = {},
     onRefused?: (why: string) => void,
   ): void {
+    /* Checked HERE, in the store, so no form can forget to — and through the
+       same `refused` the composer and every other box goes through, so there is
+       one answer to "what happens to what he typed when it is refused". */
+    if (this.refused(validateRepo(repo) ?? validateProjectText(extra.name, extra.description),
+      onRefused)) return;
     const sent = this.ask({ type: "connectProject", repo, ...extra }, {
       answers: f => f.type === "project",
       refused: why => onRefused?.(why),

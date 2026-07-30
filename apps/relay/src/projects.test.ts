@@ -35,10 +35,36 @@ async function stand(t: TestContext, name: string) {
   return { relay, owner, engine, open };
 }
 
-async function connect(client: TestClient, repo: string) {
+/**
+ * Connect a repository AND let the look that connecting now starts finish.
+ *
+ * Connecting asks GitHub straight away (C12 — a mistyped repository must not be
+ * indistinguishable from a good one). Every test below that is about something
+ * else needs to start from a settled project rather than one mid-look, so the
+ * engine answers that first look here. The auto-look itself is pinned by its
+ * own test further down; this helper is deliberately NOT where it is proved.
+ */
+async function connect(client: TestClient, repo: string, engine?: TestClient) {
   client.send({ type: "connectProject", repo });
   const f = await client.wait<Extract<ServerFrame, { type: "project" }>>(
     f => f.type === "project" && f.project.repo === repo);
+  if (engine) {
+    await engine.wait(g => g.type === "lookAtProject" && g.projectId === f.project.id);
+    engine.send({ type: "projectSynced", projectId: f.project.id, items: [] });
+    /* Waited on `syncedAt`, not on "not looking": the frame that CREATED the
+       project is also not-looking, and matching that one would hand every test
+       a project from before the look instead of after it. */
+    const settled = await client.wait<Extract<ServerFrame, { type: "project" }>>(
+      g => g.type === "project" && g.project.id === f.project.id && !!g.project.syncedAt);
+    // the auto-look's own frames are not this test's subject — clear them, so a
+    // later `wait` cannot match the look that connecting did. The ENGINE is
+    // waited on separately first: it is a different socket, so its copy of the
+    // same frames can land after the owner's and survive an earlier clear.
+    await engine.wait(g => g.type === "project"
+      && g.project.id === f.project.id && !!g.project.syncedAt);
+    engine.frames.length = 0;
+    return settled.project;
+  }
   return f.project;
 }
 
@@ -97,10 +123,12 @@ test("a pull request that arrived from somewhere else is checked before it is st
 // ---------------------------------------------------------------------------
 
 test("connecting a repository, twice, finds the one you already have", async t => {
-  const { relay, owner } = await stand(t, "proj-connect.db");
-  const first = await connect(owner, "vikas53953/cloud9");
+  const { relay, owner, engine } = await stand(t, "proj-connect.db");
+  const first = await connect(owner, "vikas53953/cloud9", engine);
   assert.equal(first.name, "cloud9", "the repository's own name unless he says otherwise");
-  assert.equal(first.syncedAt, undefined, "nobody has looked at GitHub yet, and we do not pretend");
+  // connecting asks GitHub straight away now (C12), and the engine in this
+  // stand answered it — so "last looked at" is a real stamp, not a pretend one
+  assert.ok((first.syncedAt ?? 0) > 0, "connecting looks, and the hub stamps when it did");
 
   owner.send({ type: "connectProject", repo: "vikas53953/cloud9" });
   const again = await owner.wait<Extract<ServerFrame, { type: "project" }>>(
@@ -110,8 +138,8 @@ test("connecting a repository, twice, finds the one you already have", async t =
 });
 
 test("a project is its owner's — a friend cannot see it, act on it, or probe for it", async t => {
-  const { relay, owner, open } = await stand(t, "proj-owner.db");
-  const project = await connect(owner, "vikas53953/cloud9");
+  const { relay, owner, engine, open } = await stand(t, "proj-owner.db");
+  const project = await connect(owner, "vikas53953/cloud9", engine);
 
   owner.send({ type: "createInvite" });
   const inv = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
@@ -139,7 +167,7 @@ test("a project is its owner's — a friend cannot see it, act on it, or probe f
 
 test("only the engine reports what GitHub said, and only for its own projects", async t => {
   const { relay, owner, engine, open } = await stand(t, "proj-sync-gate.db");
-  const project = await connect(owner, "vikas53953/cloud9");
+  const project = await connect(owner, "vikas53953/cloud9", engine);
 
   // an ordinary client cannot claim to have looked at GitHub
   owner.send({ type: "projectSynced", projectId: project.id, items: [] });
@@ -174,7 +202,7 @@ test("only the engine reports what GitHub said, and only for its own projects", 
 
 test("a re-sync REPLACES the lists — a merged pull request stops being open work", async t => {
   const { relay, owner, engine } = await stand(t, "proj-resync.db");
-  const project = await connect(owner, "vikas53953/cloud9");
+  const project = await connect(owner, "vikas53953/cloud9", engine);
 
   engine.send({
     type: "projectSynced", projectId: project.id,
@@ -196,7 +224,7 @@ test("a re-sync REPLACES the lists — a merged pull request stops being open wo
 
 test("nothing unbounded gets in through the new field, and a bad link is refused whole", async t => {
   const { relay, owner, engine } = await stand(t, "proj-bounds.db");
-  const project = await connect(owner, "vikas53953/cloud9");
+  const project = await connect(owner, "vikas53953/cloud9", engine);
 
   engine.send({
     type: "projectSynced", projectId: project.id,
@@ -226,7 +254,7 @@ test("nothing unbounded gets in through the new field, and a bad link is refused
 
 test("forgetting a project forgets our copy and its lists, and nothing else", async t => {
   const { relay, owner, engine } = await stand(t, "proj-forget.db");
-  const project = await connect(owner, "vikas53953/cloud9");
+  const project = await connect(owner, "vikas53953/cloud9", engine);
   engine.send({ type: "projectSynced", projectId: project.id, items: [item()] });
   await engine.wait(f => f.type === "projectItems" && f.items.length === 1);
 
@@ -246,7 +274,7 @@ test("forgetting a project forgets our copy and its lists, and nothing else", as
 
 test("the owner asking for a look reaches THEIR engine, with the repository the hub has stored", async t => {
   const { owner, engine } = await stand(t, "proj-look-ask.db");
-  const project = await connect(owner, "vikas53953/cloud9");
+  const project = await connect(owner, "vikas53953/cloud9", engine);
 
   owner.send({ type: "syncProject", projectId: project.id });
   const told = await engine.wait<Extract<ServerFrame, { type: "lookAtProject" }>>(
@@ -258,12 +286,14 @@ test("the owner asking for a look reaches THEIR engine, with the repository the 
 
 test("while a look is under way the hub SAYS so, and stops saying it the moment the engine answers", async t => {
   const { owner, engine } = await stand(t, "proj-look-state.db");
-  const project = await connect(owner, "vikas53953/cloud9");
-
+  /* Deliberately NOT settled by the helper: the look this test is about is the
+     one CONNECTING starts (C12). It is the same look the button starts — one
+     path, one state — so this pins both at once. */
   owner.frames.length = 0;
-  owner.send({ type: "syncProject", projectId: project.id });
+  owner.send({ type: "connectProject", repo: "vikas53953/cloud9" });
   const busy = await owner.wait<Extract<ServerFrame, { type: "project" }>>(
     f => f.type === "project" && f.project.looking === true);
+  const project = busy.project;
   assert.equal(busy.project.looking, true);
   assert.equal(busy.project.syncedAt, undefined, "asking is not looking — nothing has been looked at yet");
 
@@ -272,6 +302,9 @@ test("while a look is under way the hub SAYS so, and stops saying it the moment 
   const list = await owner.wait<Extract<ServerFrame, { type: "projects" }>>(f => f.type === "projects");
   assert.equal(list.projects[0].looking, true);
 
+  // from here on, only what the ANSWER produces counts — the frames that made
+  // the project exist are already read and must not be matched again
+  owner.frames.length = 0;
   engine.send({ type: "projectSynced", projectId: project.id, defaultBranch: "master", items: [item()] });
   const done = await owner.wait<Extract<ServerFrame, { type: "project" }>>(
     f => f.type === "project" && f.project.looking !== true);
@@ -279,9 +312,58 @@ test("while a look is under way the hub SAYS so, and stops saying it the moment 
   assert.ok((done.project.syncedAt ?? 0) > 0, "and the hub is the one that stamped when");
 });
 
+// ---------------------------------------------------------------------------
+// C12 — a mistyped repository must not be indistinguishable from a good one
+// ---------------------------------------------------------------------------
+
+test("C12: connecting a repository asks GitHub there and then, with the name the hub stored", async t => {
+  const { owner, engine } = await stand(t, "proj-connect-looks.db");
+  owner.send({ type: "connectProject", repo: "vikas53953/cloud9" });
+
+  // the ask reaches THIS owner's engine without anybody pressing anything
+  const told = await engine.wait<Extract<ServerFrame, { type: "lookAtProject" }>>(
+    f => f.type === "lookAtProject");
+  assert.equal(told.repo, "vikas53953/cloud9", "the repository comes from stored state");
+  const busy = await owner.wait<Extract<ServerFrame, { type: "project" }>>(
+    f => f.type === "project" && f.project.looking === true);
+  assert.equal(busy.project.id, told.projectId);
+
+  // and what GitHub said lands on the project, in GitHub's own words
+  engine.send({
+    type: "projectSynced", projectId: told.projectId,
+    problem: "GitHub has no repository called vikas53953/nope that this computer's sign-in can see.",
+  });
+  const answered = await owner.wait<Extract<ServerFrame, { type: "project" }>>(
+    f => f.type === "project" && f.project.looking !== true && !!f.project.problem);
+  assert.match(answered.project.problem ?? "", /has no repository called/);
+  assert.ok((answered.project.syncedAt ?? 0) > 0, "we tried, and the hub stamped when");
+});
+
+test("C12: 'we could not check' is not 'it does not exist' — the connect still stands", async t => {
+  // deliberately WITHOUT an engine: nothing on this computer can ask GitHub
+  const relay = new Relay({
+    dbPath: tmp("proj-connect-noengine.db"), ownerToken: "tok-owner", ownerName: "Vikas",
+  });
+  const port = await relay.listen(0);
+  const owner = new TestClient(`ws://127.0.0.1:${port}`, "tok-owner", "desktop");
+  t.after(() => { owner.close(); relay.close(); });
+  await owner.wait(f => f.type === "welcome");
+
+  owner.send({ type: "connectProject", repo: "vikas53953/cloud9" });
+  const said = await owner.wait<Extract<ServerFrame, { type: "project" }>>(
+    f => f.type === "project" && !!f.project.problem);
+  // NOT BLOCKED. Not being able to ask is not the same as the answer being no.
+  assert.equal(relay.store.projectsOf(relay.ownerId).length, 1, "he is still connected");
+  assert.match(said.project.problem ?? "", /isn't running on the computer/);
+  assert.doesNotMatch(said.project.problem ?? "", /no repository called/);
+  // ABSENT MEANS ABSENT: nobody looked, so "last looked at" stays empty
+  assert.equal(said.project.syncedAt, undefined);
+  assert.equal(said.project.looking, undefined);
+});
+
 test("a second look while one is still running is refused rather than piled on", async t => {
-  const { owner } = await stand(t, "proj-look-twice.db");
-  const project = await connect(owner, "vikas53953/cloud9");
+  const { owner, engine } = await stand(t, "proj-look-twice.db");
+  const project = await connect(owner, "vikas53953/cloud9", engine);
   owner.send({ type: "syncProject", projectId: project.id });
   await owner.wait(f => f.type === "project" && f.project.looking === true);
 
@@ -293,7 +375,7 @@ test("a second look while one is still running is refused rather than piled on",
 
 test("only the OWNER may set a look going, and it is checked here rather than on the screen", async t => {
   const { owner, engine, open } = await stand(t, "proj-look-owner.db");
-  const project = await connect(owner, "vikas53953/cloud9");
+  const project = await connect(owner, "vikas53953/cloud9", engine);
 
   owner.send({ type: "createInvite" });
   const inv = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
@@ -336,8 +418,8 @@ test("with no Cloud9 running on this computer, the hub says so in words and clai
 });
 
 test("an engine cannot start a look on somebody else's project by asking for one", async t => {
-  const { owner, open } = await stand(t, "proj-look-engine.db");
-  const project = await connect(owner, "vikas53953/cloud9");
+  const { owner, engine, open } = await stand(t, "proj-look-engine.db");
+  const project = await connect(owner, "vikas53953/cloud9", engine);
 
   owner.send({ type: "createInvite" });
   const inv = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
@@ -349,8 +431,8 @@ test("an engine cannot start a look on somebody else's project by asking for one
 });
 
 test("forgetting a project while a look is in flight leaves nothing waiting behind it", async t => {
-  const { relay, owner } = await stand(t, "proj-look-forget.db");
-  const project = await connect(owner, "vikas53953/cloud9");
+  const { relay, owner, engine } = await stand(t, "proj-look-forget.db");
+  const project = await connect(owner, "vikas53953/cloud9", engine);
   owner.send({ type: "syncProject", projectId: project.id });
   await owner.wait(f => f.type === "project" && f.project.looking === true);
 

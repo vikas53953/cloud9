@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-30T08:20:17.215Z",
-  "expected": 354,
-  "executed": 354,
+  "ranAt": "2026-07-30T10:47:57.831Z",
+  "expected": 363,
+  "executed": 363,
   "results": [
     {
       "name": "join screen renders",
@@ -37,6 +37,16 @@
       "name": "agent created and listed",
       "pass": true,
       "detail": ""
+    },
+    {
+      "name": "B6: a second agent with a name already taken is refused in plain words, and nothing he typed is lost",
+      "pass": true,
+      "detail": "you already have an agent called \"Scout\" — give this one a different name :: name \"scout\", 59 characters of personality kept"
+    },
+    {
+      "name": "B6b: there is exactly ONE Scout to point at, so an @ mention can only mean one agent",
+      "pass": true,
+      "detail": "1 agents named Scout"
     },
     {
       "name": "clicking an agent opens the direct conversation with it",
@@ -161,7 +171,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch 8r7ws :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch e0vp9 :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +186,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_GtVckX7jb4J5oPn3Yh1VHA"
+      "detail": "inv_N83_ERAiPUKQvGxPtL4ANw"
     },
     {
       "name": "friend joins via invite",
@@ -306,7 +316,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 13:48"
+      "detail": "↳ 1 reply · last at 16:15"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -376,7 +386,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 13:48 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 16:15 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -734,6 +744,26 @@
       "detail": "Scout only answers Vikas, so it hasn't been asked."
     },
     {
+      "name": "D3: a second room with a name he already has is refused in plain words, and the box keeps it",
+      "pass": true,
+      "detail": "you already have a channel called \"trip-goa\" — give this one a different name :: kept \"trip-goa\""
+    },
+    {
+      "name": "D4: a 3,000-character room name is refused, in the same words the agent name uses",
+      "pass": true,
+      "detail": "that name is too long (max 64 characters) :: kept 3000 characters"
+    },
+    {
+      "name": "D2: six spaces is not a room name — it is refused, and no room called - appears",
+      "pass": true,
+      "detail": "that isn't a name — it needs at least one letter or number :: 0 room(s) named -"
+    },
+    {
+      "name": "A3: a message too long is refused in plain words AND every character he typed is still there",
+      "pass": true,
+      "detail": "that message is too long (max 40000 characters) :: box holds 41000 of 41000"
+    },
+    {
       "name": "the composer offers a way to attach a file",
       "pass": true,
       "detail": ""
@@ -744,9 +774,19 @@
       "detail": "362 bytes · ready to send"
     },
     {
+      "name": "F3: the everyday file names a person really has are accepted, not bounced",
+      "pass": true,
+      "detail": "site-plan.png:uptile done | ledger.bin:uptile done | report(1).pdf:uptile done | café-menu.txt:uptile done | photo#3.png:uptile done"
+    },
+    {
       "name": "a file the hub would refuse is refused in the composer, in plain words",
       "pass": true,
-      "detail": "that file name isn't allowed — use plain letters, numbers, dots and dashes"
+      "detail": "that file name isn't allowed — keep it to 128 characters or fewer, start it with a letter, a number or a picture, leave out / \\ : * ? \" < > | and .., don't end it with a dot or a space, leave out hidden control characters, and don't name it after a Windows device (CON, NUL, COM1 and friends)"
+    },
+    {
+      "name": "F3: the refusal on screen is the sentence the rule generated, word for word",
+      "pass": true,
+      "detail": "that file name isn't allowed — keep it to 128 characters or fewer, start it with a letter, a number or a picture, leave out / \\ : * ? \" < > | and .., don't end it with a dot or a space, leave out hidden control characters, and don't name it after a Windows device (CON, NUL, COM1 and friends)\n  rule says: that file name isn't allowed — keep it to 128 characters or fewer, start it with a letter, a number or a picture, leave out / \\ : * ? \" < > | and .., don't end it with a dot or a space, leave out hidden control characters, and don't name it after a Windows device (CON, NUL, COM1 and friends)"
     },
     {
       "name": "a file can be taken back off the message before it is sent",
@@ -786,7 +826,7 @@
     {
       "name": "the hub decides the type from the name, and tells the browser not to sniff",
       "pass": true,
-      "detail": "image/png · inline; filename=\"site-plan.png\""
+      "detail": "image/png · inline; filename=\"site-plan.png\"; filename*=UTF-8''site-plan.png"
     },
     {
       "name": "a ticket is spent by the first request — a second one is refused",
@@ -796,7 +836,7 @@
     {
       "name": "a file the hub will not draw comes back as bytes with a download, unchanged",
       "pass": true,
-      "detail": "application/octet-stream · attachment; filename=\"ledger.bin\""
+      "detail": "application/octet-stream · attachment; filename=\"ledger.bin\"; filename*=UTF-8''ledger.bin"
     },
     {
       "name": "clicking a picture opens it in place, with the picture really loaded",
@@ -926,7 +966,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms78sbgzrlfb15\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms7e1zk3hl4pjl\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -966,12 +1006,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms78qx3qnyvp56:1785399528981 a_ms78r1bh67c5nu:1785399537236 u_ms78rb4hrwjler:1785399538006 a_ms78sbgzrlfb15:1785399538123"
+      "detail": "u_ms7e0k0ngw1ffb:1785408379403 a_ms7e0ntdq75lip:1785408386438 u_ms7e0yyxamdzxp:1785408387034 a_ms7e1zk3hl4pjl:1785408387160"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785399534559 · now 1785399538006"
+      "detail": "first 1785408383396 · now 1785408387034"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -1251,7 +1291,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms78r400a7vr3p\",\"status\":\"completed\",\"runId\":\"r-0ms78r409-rwjb\"}"
+      "detail": "{\"id\":\"t_ms7e0rgtad229b\",\"status\":\"completed\",\"runId\":\"r-0ms7e0rh2-a69e\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1419,29 +1459,34 @@
       "detail": "that isn't a repository name — use owner/name, like vikas53953/cloud9"
     },
     {
+      "name": "C12: a repository GitHub cannot see is told so when he connects it, not left looking like a good one",
+      "pass": true,
+      "detail": "nope definitely-not-a-real-owner-xyz987/nope Look at GitHub now Rename Disconnect Looked at GitHub 30 Jul The last look at GitHub did not work GitHub has no repository called definitely-not-a-real-own"
+    },
+    {
       "name": "connecting a repository puts it on screen, named the way GitHub names it",
       "pass": true,
       "detail": "vikas53953/cloud9"
     },
     {
-      "name": "a repository nobody has looked at says so, and shows no trunk it was never told",
+      "name": "connecting a repository looks at GitHub there and then, rather than leaving him to find out later",
       "pass": true,
-      "detail": "Not looked at GitHub yet"
+      "detail": "Cloud9 itself vikas53953/cloud9 Look at GitHub now Rename Disconnect Trunk master Looked at GitHub 30 Jul Pull requests · 0 Issues · 0 No pull requests recorded This is what GitHub"
     },
     {
-      "name": "a connected repository offers a way to ask GitHub, and says it has not yet",
+      "name": "a connected repository offers a way to ask GitHub, ready and named in plain words",
       "pass": true,
       "detail": "Look at GitHub now Rename Disconnect"
     },
     {
       "name": "pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
       "pass": true,
-      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms78tjk5b0spwj\",\"repo\":\"vikas53953/cloud9\"}"
+      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms7e3cbxrcpts6\",\"repo\":\"vikas53953/cloud9\"}"
     },
     {
       "name": "while it is looking the button says so and cannot be pressed again",
       "pass": true,
-      "detail": "Looking at GitHub now…"
+      "detail": "Trunk master Looking at GitHub now…"
     },
     {
       "name": "when the answer lands the button settles and the screen stamps when GitHub was last asked",
@@ -1591,7 +1636,7 @@
     {
       "name": "it says when it runs out — an agent is standing there waiting for the answer",
       "pass": true,
-      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 13:49 EXPIRES in 9 minutes"
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 16:17 EXPIRES in 9 minutes"
     },
     {
       "name": "a request with no job behind it offers no 'see the job' button to press",

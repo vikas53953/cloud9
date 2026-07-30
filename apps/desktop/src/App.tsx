@@ -6,10 +6,11 @@ import {
   AgentRespondTo, AgentSkill, AgentSkillFile,
   Approval, Attachment, ATTACHMENT_LIMITS,
   Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
-  HarnessInfo, ID, isInlineViewable, isSafeSkillFileName, mayAdministerChannel, mayDriveAgent,
+  HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectItemKind, ProjectItemState,
   REMOTE_ACTIONS, RunListEntry, RunRecord, RunStep, RunStepKind,
-  SearchHit, SKILL_LIMITS, summarizeRun, Task, User, validateRepo, humanDuration, humanMoney,
+  SearchHit, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
+  validateMessageText, validateName,
   CLAUDE_DEFAULT_MODEL, CLAUDE_MODELS, modelLabel as sharedModelLabel,
 } from "@cloud9/shared";
 import { client, UNREAD_CEILING, unreadLabel, World } from "./store.js";
@@ -3308,10 +3309,17 @@ function Composer({ channel, replyTo, answering, onStopAnswering }: {
       if (ready.why) client.notify(ready.why);
       return;
     }
-    client.send({
-      type: "send", channelId: channel.id, text: t, replyTo,
-      ...(ready.ids.length ? { attachmentIds: ready.ids } : {}),
-    });
+    /* HIS WORDS ARE NOT THROWN AWAY UNTIL THEY ARE ACCEPTED (A3). `client.submit`
+       is the one owner of that rule — it asks the HUB'S OWN `validateMessageText`
+       first, says the refusal in the hub's own words, and answers false with the
+       box untouched. Nothing below it runs unless the message really went. */
+    const went = client.submit(
+      validateMessageText(t, ready.ids.length > 0),
+      {
+        type: "send", channelId: channel.id, text: t, replyTo,
+        ...(ready.ids.length ? { attachmentIds: ready.ids } : {}),
+      });
+    if (!went) return;
     setText("");
     setEmojiOpen(false);
     client.clearUploads(channel.id);
@@ -4387,6 +4395,11 @@ function QuickChat({ onClose, standalone }: { onClose?: () => void; standalone?:
   const fire = () => {
     const t = targets[sel];
     if (!t || !text.trim()) return;
+    /* THE SAME ONE RULE the composer follows (A3): quick chat is a box he types
+       into too, and a refusal must not cost him the words. Asked once, here,
+       before anything is sent or cleared. */
+    const bad = validateMessageText(text.trim());
+    if (bad) { client.notify(bad); return; }
     if (t.kind === "channel") {
       client.send({ type: "send", channelId: t.id, text: text.trim() });
     } else {
@@ -4597,7 +4610,7 @@ function SkillsEditor({ skills, onChange }: {
     }
     // Same rule the relay and the engine use, so a name this app accepts is a
     // name that really becomes a file — refuse, never rewrite.
-    const keepFile = isSafeSkillFileName(file.name);
+    const keepFile = isSafeFileName(file.name);
     const trimmed = body.length > SKILL_LIMITS.instructions;
     const attached: AgentSkillFile[] = keepFile ? [{ name: file.name, text: body }] : [];
     const instructions = trimmed
@@ -4874,18 +4887,31 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
 
   const ready = !!name.trim() && !!persona.trim();
 
+  /* Said in the form rather than only in a toast, because the name box is right
+     here and the toast is at the other end of the window. */
+  const [refusal, setRefusal] = useState<string | null>(null);
+
   const save = () => {
     if (creating) {
       if (!ready) return;
-      client.send({
-        type: "createAgent",
-        agent: {
-          name: name.trim().replace(/\s+/g, "-"), emoji, persona: persona.trim(),
-          abilities: ab, approvals: ap, provider,
-          model: model || MODEL_DEFAULT[provider],
-          skills, respondTo, respondToAllowlist: respondTo === "allowlist" ? allowlist : [],
-        },
-      });
+      const wanted = name.trim().replace(/\s+/g, "-");
+      /* THE HUB'S OWN NAMING RULE, asked early so the sentence he reads before
+         it goes is the sentence the hub would send back — including "you
+         already have an agent called Scout", which is the whole of B6/B6b.
+         `client.submit` is the one owner of what happens when it says no: the
+         file stays open and every word he typed is still in it. */
+      const went = client.submit(
+        validateName("agent", wanted, world.agents.map(a => a.name)),
+        {
+          type: "createAgent",
+          agent: {
+            name: wanted, emoji, persona: persona.trim(),
+            abilities: ab, approvals: ap, provider,
+            model: model || MODEL_DEFAULT[provider],
+            skills, respondTo, respondToAllowlist: respondTo === "allowlist" ? allowlist : [],
+          },
+        }, setRefusal);
+      if (!went) return;
     } else {
       client.send({
         type: "updateAgent",
@@ -5002,12 +5028,15 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
           <section className="fieldset">
             <div className="sec-head"><h3>Who they are</h3><span className="eyebrow">The basics</span></div>
             <p className="sec-note">Names matter — you'll be typing this one a lot, after an @.</p>
+            {/* The refusal sits beside the box he has to change, and nothing he
+                typed is cleared to make room for it. */}
+            {refusal && <p className="problemline" role="alert" data-namerefusal="agent">{refusal}</p>}
             <div className="two">
               <div className="field-row">
                 <label htmlFor="f-name">Name <span className="hint">no spaces</span></label>
                 {creating
                   ? <input className="input" id="f-name" type="text" value={name} placeholder="Scout"
-                    onChange={e => setName(e.target.value)} />
+                    onChange={e => { setName(e.target.value); setRefusal(null); }} />
                   : <input className="input" id="f-name" type="text" value={agent!.name} disabled
                     title="An agent keeps the name it was hired under — everyone's @ mentions point at it" />}
               </div>
@@ -5614,6 +5643,22 @@ function ChannelModal({ onClose }: { onClose: () => void }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [name, setName] = useState("");
   const [members, setMembers] = useState<ID[]>([]);
+  const [refusal, setRefusal] = useState<string | null>(null);
+
+  /* THE HUB'S OWN NAMING RULE, asked here first so he reads the sentence before
+     the room fails to appear — the same function `createChannel` runs, never a
+     second copy of it. The hub is still the boundary; this is the early word. */
+  const create = (): void => {
+    const taken = world.channels.filter(c => c.kind !== "dm").map(c => c.name);
+    const went = client.submit(
+      validateName("channel", name, taken),
+      { type: "createChannel", name: name.trim(), memberIds: members, kind: "channel" },
+      setRefusal);
+    /* CLOSED ONLY ON ACCEPTED. A refused name leaves the box, the name and the
+       ticked members exactly where they were, so he can fix the one word that
+       was wrong (A3's rule, applied to every form and not just the composer). */
+    if (went) onClose();
+  };
   const candidates = [
     ...world.agents.map(a => ({ id: a.id, label: `${a.emoji} ${a.name}` })),
     ...onePerPerson(world.users).filter(u => u.id !== world.me?.id).map(u => ({ id: u.id, label: u.name })),
@@ -5625,7 +5670,10 @@ function ChannelModal({ onClose }: { onClose: () => void }): React.JSX.Element {
         <div className="body">
           <div className="field-row"><label>Name</label>
             <input className="input" type="text" value={name}
-              onChange={e => setName(e.target.value.replace(/\s+/g, "-").toLowerCase())} placeholder="trip-goa" /></div>
+              onChange={e => { setName(e.target.value.replace(/\s+/g, "-").toLowerCase()); setRefusal(null); }}
+              onKeyDown={e => { if (e.key === "Enter") create(); }}
+              placeholder="trip-goa" /></div>
+          {refusal && <p className="problemline" role="alert">{refusal}</p>}
           <div className="field-row"><label>Members</label>
             {candidates.length === 0
               ? <div className="skillempty">Nobody to add yet — you can make the channel now and add people later.</div>
@@ -5642,8 +5690,7 @@ function ChannelModal({ onClose }: { onClose: () => void }): React.JSX.Element {
         </div>
         <div className="foot">
           <button className="subtle" onClick={onClose}>Cancel</button>
-          <button className="primary" disabled={!name.trim()}
-            onClick={() => { if (name.trim()) { client.send({ type: "createChannel", name: name.trim(), memberIds: members, kind: "channel" }); onClose(); } }}>Create</button>
+          <button className="primary" disabled={!name.trim()} onClick={create}>Create</button>
         </div>
       </div>
     </div>
@@ -6467,18 +6514,20 @@ function ConnectProject({ onConnected }: { onConnected: (repo: string) => void }
   const [sending, setSending] = useState(false);
 
   const submit = (): void => {
-    /* `validateRepo` is the HUB'S OWN function, imported rather than re-spelled,
-       so the sentence he reads before it goes and the sentence he would read
-       after it was refused are the same sentence. */
-    const bad = validateRepo(repo.trim());
-    if (bad) { setRefusal(bad); return; }
+    /* THE CHECK LIVES IN THE STORE, not here (`connectProject` → `refused`), so
+       every box in the app gives the same answer to "it was refused — what
+       happens to what he typed": say why, in the HUB'S OWN words, right where
+       he is looking, and change nothing else. */
     setRefusal(null);
     setSending(true);
+    let stopped = false;
     client.connectProject(repo.trim(), name.trim() ? { name: name.trim() } : {}, why => {
+      stopped = true;
       setSending(false);
       setRefusal(why);
     });
-    onConnected(repo.trim());
+    /* only leave the form when it was actually accepted */
+    if (!stopped) onConnected(repo.trim());
   };
 
   return (

@@ -439,7 +439,7 @@ test("a file name that could escape the attachments folder is refused, never rew
   const { relay, owner, general } = await stand("chat-files-names.db");
   const data = Buffer.from("x").toString("base64");
 
-  // exactly the names isSafeSkillFileName already refuses — one rule, one owner
+  // exactly the names isSafeFileName already refuses — one rule, one owner
   for (const name of ["../escape.txt", "..\\escape.txt", "CON.md", "evil.md.", "evil.md ", "/etc/passwd"]) {
     owner.frames.length = 0;
     owner.send({ type: "uploadAttachment", channelId: general.id, name, dataBase64: data });
