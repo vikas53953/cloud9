@@ -8,7 +8,7 @@ import {
   buildAgentPrompt, ClaudeProvider, HarnessUnavailableError, RespondInput,
 } from "./provider.js";
 import {
-  CAPABILITIES, codexSandboxFor, codexWebSearchFor, reachesBeyondOwnFolder,
+  CAPABILITIES, codexSandboxFor, codexWebSearchFor, grantedSupply, reachesBeyondOwnFolder,
 } from "./abilities.js";
 import { envWithoutCredentials } from "./env.js";
 import { run, Runner, safeArg } from "./run.js";
@@ -417,15 +417,23 @@ export class CodexProvider implements ClaudeProvider {
     this.timeoutMs = opts.timeoutMs ?? 120_000;
   }
 
-  async respond({ agent, context, workdir, onTrace }: RespondInput): Promise<string> {
+  async respond(input: RespondInput): Promise<string> {
+    const { agent, workdir, onTrace } = input;
     // its own git worktree when it is working in a repository (`repowork.ts`),
     // its own folder otherwise. `codexArgs` puts the same folder in `-C`, so
     // the sandbox root and the working folder cannot drift apart.
     const cwd = workdir ?? this.opts.agentDataDir(agent.id);
-    const prompt = buildAgentPrompt(agent, context);
+    const roots = this.opts.wholeComputerRoots?.(agent.id) ?? [];
+    // THE SAME ONE ANSWER the Claude path uses. Codex has no MCP config at all
+    // in Cloud9, so `mcpConfigPath` is genuinely never supplied here — and a
+    // Codex agent with the `connections` switch on is therefore told, truthfully,
+    // that nothing is connected for it, instead of being told it can.
+    const prompt = buildAgentPrompt(agent, {
+      ...input,
+      supply: grantedSupply(agent, { wholeComputerRoots: roots }),
+    });
     const key = this.opts.apiKey?.();
-    const args = codexArgs(agent, cwd, this.opts.models?.() ?? [],
-      this.opts.wholeComputerRoots?.(agent.id) ?? []);
+    const args = codexArgs(agent, cwd, this.opts.models?.() ?? [], roots);
     const result = await this.runner(this.command, args, {
       cwd,
       timeoutMs: this.timeoutMs,

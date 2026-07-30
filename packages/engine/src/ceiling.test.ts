@@ -23,6 +23,7 @@ import {
 import { claudeArgs, CLAUDE_ISOLATION_FLAGS } from "./claude-cli.js";
 import { codexArgs, CODEX_ALWAYS_DISABLED, codexDisabledFeaturesFor } from "./codex.js";
 import { buildAgentPrompt } from "./provider.js";
+import { aTurn } from "./turnfixture.js";
 
 const ALL_OFF: AgentAbilities = {
   webSearch: false, files: false, schedules: false, background: false,
@@ -152,7 +153,7 @@ test("an unattended job for an agent that can change the machine is ALWAYS asked
 // ------------------------------------------- the agent is told the same story
 
 test("an agent that CAN run programs is never told it cannot", () => {
-  const prompt = buildAgentPrompt(agent({ commands: true }), "");
+  const prompt = buildAgentPrompt(agent({ commands: true }), aTurn(""));
   assert.ok(!/CANNOT run commands/i.test(prompt),
     "the old blanket sentence would tell a shell-enabled agent it has no shell");
   assert.match(prompt, /You CAN run programs/);
@@ -161,13 +162,19 @@ test("an agent that CAN run programs is never told it cannot", () => {
 });
 
 test("an agent that cannot run programs is still told so, plainly", () => {
-  assert.match(buildAgentPrompt(agent(), ""), /CANNOT run programs/);
+  assert.match(buildAgentPrompt(agent(), aTurn("")), /CANNOT run programs/);
 });
 
 test("every row still has two faces: the tools and the words move together", () => {
   for (const cap of CAPABILITIES) {
-    const on = buildAgentPrompt(agent({ [cap.ability]: true }), "");
-    const off = buildAgentPrompt(agent(), "");
+    // supplied, because this test is about the SWITCH — see gap-audit.test.ts
+    // for the case where the switch is on and the launcher hands over nothing.
+    const supply = {
+      wholeComputerRoots: ["C:\\Users\\Vikas\\Documents"],
+      mcpConfigPath: "C:\\Users\\Vikas\\AppData\\cloud9\\mcp.json",
+    };
+    const on = buildAgentPrompt(agent({ [cap.ability]: true }), aTurn("", { supply }));
+    const off = buildAgentPrompt(agent(), aTurn("", { supply }));
     assert.ok(on.includes(cap.can), `"${cap.ability}" on: not told it CAN`);
     assert.ok(off.includes(cap.cannot), `"${cap.ability}" off: not told it CANNOT`);
     for (const tool of cap.claudeTools) {

@@ -20,6 +20,7 @@ import {
 import { claudeArgs, ClaudeCliProvider, traceClaude } from "./claude-cli.js";
 import { codexArgs } from "./codex.js";
 import { buildAgentPrompt } from "./provider.js";
+import { aTurn } from "./turnfixture.js";
 import { RunOptions, RunResult } from "./run.js";
 import { buildRunRecord, summarizeRun } from "./runrecord.js";
 
@@ -32,6 +33,15 @@ const agent = (abilities: Partial<AgentAbilities> = {}, over: Partial<AgentDef> 
   abilities: { ...ALL_OFF, ...abilities }, createdAt: 0, ...over,
 });
 
+/**
+ * A launcher that really did hand over everything the switches allow. Used where
+ * a test is about the SWITCH, so the supply is not what is under examination.
+ */
+const FULLY_SUPPLIED = {
+  wholeComputerRoots: ["C:\\Users\\Vikas\\Documents"],
+  mcpConfigPath: "C:\\Users\\Vikas\\AppData\\cloud9\\mcp.json",
+};
+
 // ------------------------------------------- the invariant: one source, two faces
 
 test("switching an ability changes BOTH the tools and the words, or neither", () => {
@@ -39,8 +49,11 @@ test("switching an ability changes BOTH the tools and the words, or neither", ()
     const on = agent({ [cap.ability]: true });
     const off = agent();
 
-    const promptOn = buildAgentPrompt(on, "");
-    const promptOff = buildAgentPrompt(off, "");
+    // THE SUPPLY IS PART OF THE FACT NOW. A row that needs the launcher to hand
+    // something over only says "you CAN" when the launcher really did — so this
+    // test hands it over, and `gap-audit.test.ts` proves the other direction.
+    const promptOn = buildAgentPrompt(on, aTurn("", { supply: FULLY_SUPPLIED }));
+    const promptOff = buildAgentPrompt(off, aTurn("", { supply: FULLY_SUPPLIED }));
     assert.ok(promptOn.includes(cap.can), `"${cap.ability}" on: the agent is not told it CAN`);
     assert.ok(!promptOn.includes(cap.cannot), `"${cap.ability}" on: the agent is still told it CANNOT`);
     assert.ok(promptOff.includes(cap.cannot), `"${cap.ability}" off: the agent is not told it CANNOT`);
@@ -91,21 +104,21 @@ test("the Codex sandbox comes from the same table as the words", () => {
   assert.ok(codexArgs(agent(), "C:/data/a1").includes("read-only"));
   assert.ok(codexArgs(agent({ files: true }), "C:/data/a1").includes("workspace-write"));
   // and the same switch is what changed the sentence
-  assert.ok(buildAgentPrompt(agent({ files: true }), "").includes("read, write and change files"));
-  assert.ok(!buildAgentPrompt(agent(), "").includes("read, write and change files"));
+  assert.ok(buildAgentPrompt(agent({ files: true }), aTurn("")).includes("read, write and change files"));
+  assert.ok(!buildAgentPrompt(agent(), aTurn("")).includes("read, write and change files"));
 });
 
 // ------------------------------------------------------------- the actual bug
 
 test("an agent with web search on is never told it cannot browse the internet", () => {
-  const prompt = buildAgentPrompt(agent({ webSearch: true }), "");
+  const prompt = buildAgentPrompt(agent({ webSearch: true }), aTurn(""));
   assert.match(prompt, /You CAN search the web and open web pages/);
   assert.ok(!prompt.includes("You CANNOT search the web"),
     "the exact answer Vikas was given must not be derivable from this prompt");
 });
 
 test("an ability that is off is stated as off, never left to guess", () => {
-  const prompt = buildAgentPrompt(agent(), "");
+  const prompt = buildAgentPrompt(agent(), aTurn(""));
   for (const cap of CAPABILITIES) assert.ok(prompt.includes(cap.cannot), `${cap.ability} is silent`);
 });
 
@@ -115,7 +128,7 @@ test("the limits every agent has are always stated, whatever the switches say", 
   // is genuinely true at every reach.
   const everything = Object.fromEntries(CAPABILITIES.map(c => [c.ability, true]));
   for (const abilities of [ALL_OFF, everything]) {
-    const prompt = buildAgentPrompt(agent(abilities), "");
+    const prompt = buildAgentPrompt(agent(abilities), aTurn(""));
     assert.match(prompt, /no tools at all beyond the ones listed above/);
     assert.match(prompt, /do not remember past conversations/i);
     assert.match(prompt, /own\s+Claude Code and Codex setup — his instructions/,
@@ -145,7 +158,7 @@ test("told it can search → searches → the record shows it searched", async (
   const scout = agent({ webSearch: true });
 
   // 1. it is told
-  const prompt = buildAgentPrompt(scout, "Vikas: what's the going rate for a Goa villa?");
+  const prompt = buildAgentPrompt(scout, aTurn("Vikas: what's the going rate for a Goa villa?"));
   assert.match(prompt, /You CAN search the web/);
 
   // 2. it is given the tools to do it
@@ -171,7 +184,7 @@ test("told it can search → searches → the record shows it searched", async (
   const text = await new ClaudeCliProvider({ agentDataDir: () => process.cwd(), runner })
     .respond({
       agent: scout, context: "Vikas: what's the going rate for a Goa villa?",
-      trigger: "what's the going rate?", triggerAuthor: "Vikas",
+      trigger: "what's the going rate?", triggerAuthor: "Vikas", kind: "chat",
       onTrace: t => { trace = t; },
     });
 
@@ -193,7 +206,7 @@ test("told it can search → searches → the record shows it searched", async (
 test("an agent NOT given web search cannot produce a web step, and is told so", () => {
   const homebody = agent();
   assert.deepEqual(claudeToolsFor(homebody), []);
-  assert.match(buildAgentPrompt(homebody, ""), /You CANNOT search the web or open web pages/);
+  assert.match(buildAgentPrompt(homebody, aTurn("")), /You CANNOT search the web or open web pages/);
   const args = claudeArgs(homebody);
   assert.ok(!args.includes("--allowed-tools"), "an agent with no abilities is granted no tools at all");
   assert.ok(!traceClaude(`{"type":"result","result":"done"}`).steps.some(s => s.kind === "web"));

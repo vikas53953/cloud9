@@ -105,7 +105,7 @@ test("a CLI-login turn is spawned with every credential variable stripped", asyn
       };
     };
   const said = await h.engine.provider!.respond({
-    agent: agent({ model: "claude-sonnet-5" }), context: "V: hi", trigger: "hi", triggerAuthor: "V",
+    agent: agent({ model: "claude-sonnet-5" }), context: "V: hi", trigger: "hi", triggerAuthor: "V", kind: "chat",
   });
   assert.equal(said, "ready");
   for (const key of CREDENTIAL_ENV_VARS) {
@@ -124,7 +124,7 @@ test("the engine refuses a model the harness doesn't actually offer", async () =
   };
   await assert.rejects(
     () => h.engine.respondAs(agent({ model: "claude-not-a-real-model" }), {
-      context: "V: hi", trigger: "hi", triggerAuthor: "V",
+      context: "V: hi", trigger: "hi", triggerAuthor: "V", kind: "chat",
     }),
     /isn't one this app offers/,
   );
@@ -169,7 +169,7 @@ test("a Codex key is passed as CODEX_API_KEY and never as an ANTHROPIC variable"
       };
     };
   await h.engine.codexProvider!.respond({
-    agent: agent({ provider: "codex" }), context: "", trigger: "hi", triggerAuthor: "V",
+    agent: agent({ provider: "codex" }), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat",
   });
   assert.equal(seenEnv?.CODEX_API_KEY, "sk-codex-secret-value");
   assert.notEqual(seenEnv?.ANTHROPIC_API_KEY, "sk-codex-secret-value");

@@ -2,13 +2,28 @@ export { Engine, type EngineOptions, type TurnInput } from "./engine.js";
 export {
   MockProvider, SdkProvider, HarnessUnavailableError, InstructionsNotSavedError,
   HARNESS_DISCONNECTED_REPLY,
-  buildAgentPrompt, renderSkills, sanitizeForChat, redactForSharing,
+  buildAgentPrompt, promptTurnKind, renderSkills, sanitizeForChat, redactForSharing,
   type ClaudeProvider, type SdkCredentials, type RespondInput,
+  type TurnBrief, type PromptTurnKind,
 } from "./provider.js";
+// HOW MUCH CONVERSATION AN AGENT SEES — one named budget, in characters, with
+// its justification written down. It replaced a `slice(-20)` nobody had chosen.
+export {
+  renderConversation, CONVERSATION_BUDGET, type ConversationBudget,
+} from "./context.js";
+// THE DOORWAY BACK INTO CLOUD9 — the tools Cloud9 itself supplies to an agent,
+// and the law that an agent may search only where it may read.
+export {
+  CLOUD9_TOOLS, CLOUD9_MCP_SERVER, CLOUD9_SEARCH_LIMIT, cloud9ToolNames,
+  renderCloud9Tools, answerCloud9Rpc, callCloud9Tool, cloud9McpConfig,
+  type Cloud9Tool, type Cloud9ToolTurn, type Cloud9SearchAnswer, type Cloud9McpTicket,
+} from "./cloud9tools.js";
+export { ToolBridge, type OpenTurn } from "./toolbridge.js";
 export {
   ClaudeCliProvider, parseClaudeJson, traceClaude, claudeMapper, claudeArgs,
+  claudeSupply, cloud9McpEntry,
   CLAUDE_ISOLATION_FLAGS, envWithoutCredentials, CREDENTIAL_ENV_VARS,
-  type ClaudeCliProviderOptions,
+  type ClaudeCliProviderOptions, type ClaudeArgExtras,
 } from "./claude-cli.js";
 export {
   CodexProvider, parseCodexJsonl, traceCodex, codexMapper, codexArgs,
@@ -52,7 +67,8 @@ export {
   claudeToolsFor, deniedClaudeTools, codexSandboxFor, codexWebSearchFor,
   reachesBeyondOwnFolder, allowsConnections,
   alwaysAskAbilities, approvalsFor, needsApprovalToRun, describeApprovalNeeds,
-  renderCapabilities, type Capability, type Reach, type ReachLevel,
+  renderCapabilities, grantedSupply,
+  type Capability, type Reach, type ReachLevel, type Supply,
 } from "./abilities.js";
 export {
   HarnessManager, detectClaude, detectCodex, type HarnessOptions,

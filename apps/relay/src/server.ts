@@ -35,6 +35,7 @@ try {
   setMachineNames([os.homedir(), os.userInfo().username, os.hostname()]);
 } catch { /* best effort — a locked-down machine still gets the path rules */ }
 import { secureId } from "./secureid.js";
+import { refusalText } from "./refusal.js";
 
 /**
  * WHAT ONE DOWNLOAD TICKET IS FOR.
@@ -236,7 +237,10 @@ export class Relay {
         if (!conn) { send(ws, { type: "error", error: "not authenticated" }); return; }
         this.handleFrame(conn, frame);
       } catch (err) {
-        send(ws, { type: "error", error: String(err) });
+        // ONE OWNER FOR "NO" (refusal.ts). This used to be `String(err)`, which
+        // put the word "Error:" in front of every hand-written refusal and would
+        // have shown a raw `TypeError` under a form in his app.
+        send(ws, { type: "error", error: refusalText(err, `frame "${frame.type}"`) });
       }
     });
     ws.on("close", () => {

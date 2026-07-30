@@ -132,7 +132,7 @@ test("the codex turn never inherits ambient credentials", async () => {
   process.env.ANTHROPIC_API_KEY = "sk-ant-should-not-travel";
   process.env.GITHUB_TOKEN = "ghp-should-not-travel";
   try {
-    await provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V" });
+    await provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" });
   } finally {
     process.env = before;
   }
@@ -149,7 +149,7 @@ test("provider sends the prompt on stdin and returns the reply", async () => {
     runner: fakeRunner({ stdout: TRANSCRIPT }, (_a, o) => { seenStdin = o.stdin ?? ""; }),
   });
   const text = await provider.respond({
-    agent: agent(), context: "Vikas: find villas", trigger: "find villas", triggerAuthor: "Vikas",
+    agent: agent(), context: "Vikas: find villas", trigger: "find villas", triggerAuthor: "Vikas", kind: "chat",
   });
   assert.equal(text, "Found 3 villas in Goa under 8k.");
   assert.ok(seenStdin.includes("Scout"), "prompt goes on stdin, not argv");
@@ -162,7 +162,7 @@ test("a missing codex CLI is a harness problem, not a crash", async () => {
     runner: fakeRunner({ code: 1, notFound: true, stderr: "'codex' is not recognized" }),
   });
   await assert.rejects(
-    () => provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V" }),
+    () => provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" }),
     (err: unknown) => err instanceof HarnessUnavailableError && err.harness === "codex",
   );
 });
@@ -173,7 +173,7 @@ test("a signed-out codex is a harness problem", async () => {
     runner: fakeRunner({ code: 1, stderr: "Not logged in. Please run `codex login`." }),
   });
   await assert.rejects(
-    () => provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V" }),
+    () => provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" }),
     (err: unknown) => err instanceof HarnessUnavailableError,
   );
 });
@@ -185,7 +185,7 @@ test("a timeout is reported in plain words", async () => {
     runner: fakeRunner({ code: null, timedOut: true }),
   });
   await assert.rejects(
-    () => provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V" }),
+    () => provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" }),
     /longer than 120s/,
   );
 });

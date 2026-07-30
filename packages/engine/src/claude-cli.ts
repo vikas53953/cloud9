@@ -10,13 +10,18 @@
 // Same seam and same hardening as CodexProvider: the prompt goes on STDIN
 // (never argv), every argument is allowlist-checked, and there is a wall-clock
 // leash with a process-tree kill.
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { AgentDef, MODEL_ID_RE, validateAgentInput } from "@cloud9/shared";
 import {
   buildAgentPrompt, ClaudeProvider, HarnessUnavailableError, RespondInput,
 } from "./provider.js";
 import {
-  allowsConnections, claudeToolsFor, deniedClaudeTools, reachesBeyondOwnFolder,
+  claudeToolsFor, deniedClaudeTools, grantedSupply, Supply,
 } from "./abilities.js";
+import { cloud9McpConfig, cloud9ToolNames } from "./cloud9tools.js";
+import { OpenTurn } from "./toolbridge.js";
 import { EMPTY_ARG, Runner, run, safeArg } from "./run.js";
 import { envWithoutCredentials } from "./env.js";
 import {
@@ -40,6 +45,13 @@ export interface ClaudeCliProviderOptions {
   wholeComputerRoots?: (agentId: string) => string[];
   /** path to the MCP config the owner chose for THIS agent, if any */
   mcpConfigPath?: (agentId: string) => string | undefined;
+  /**
+   * THE DOORWAY BACK INTO CLOUD9 (`cloud9tools.ts`). Opens Cloud9's own tools —
+   * search, today — for ONE turn in ONE conversation. Absent means no doorway,
+   * and the prompt then says nothing about one: an agent is never told about a
+   * tool it does not have.
+   */
+  cloud9Tools?: (turn: { channelId: string }) => OpenTurn | undefined;
   runner?: Runner;
 }
 
@@ -326,6 +338,17 @@ export interface ClaudeArgExtras {
    * boring and the content out of argv entirely.
    */
   mcpConfigPath?: string;
+  /**
+   * CLOUD9'S OWN MCP CONFIG — the search doorway. Deliberately NOT the same slot
+   * as `mcpConfigPath` above: that one is the owner's connected services and is
+   * gated behind the `connections` switch, while this one is Cloud9 handing an
+   * agent a way to search the conversation it is already reading. Sharing a slot
+   * would have made "search the room you are in" require the top rung.
+   *
+   * `--strict-mcp-config` stays on either way, so these are the only servers
+   * that can exist for the run.
+   */
+  cloud9McpConfigPath?: string;
 }
 
 export function claudeArgs(
@@ -352,7 +375,14 @@ export function claudeArgs(
   // abilities → tools, from the ONE table that also writes the sentences the
   // agent reads about itself (abilities.ts). Granting a tool here without the
   // agent being told is no longer possible: it is the same row.
-  const allowed = claudeToolsFor(agent);
+  // WHAT IS TRULY GRANTED, from the same function the prompt asks. A flag on
+  // this line and a sentence in the prompt can no longer disagree, because
+  // neither of them decides on its own — see `grantedSupply` in abilities.ts.
+  const granted = grantedSupply(agent, extras);
+  // Cloud9's own tools ride alongside the harness's built-ins. They are only in
+  // the list when the doorway is really open for this turn.
+  const cloud9 = extras.cloud9McpConfigPath ? cloud9ToolNames() : [];
+  const allowed = [...claudeToolsFor(agent), ...cloud9];
   // `--tools` DECLARES which built-in tools exist for this run. `--allowed-tools`
   // is only a permission allowlist, and with `--permission-mode dontAsk` it was
   // never a boundary at all: a probe on 2026-07-29 showed an agent with
@@ -377,16 +407,25 @@ export function claudeArgs(
   // file learned that lesson the expensive way on the Codex side, where quoting
   // a path here as well made `run()` reject its own quotes and broke every turn
   // for anyone with a space in their user folder.
-  if (reachesBeyondOwnFolder(agent)) {
-    for (const root of extras.wholeComputerRoots ?? []) args.push("--add-dir", root);
-  }
+  for (const root of granted.wholeComputerRoots ?? []) args.push("--add-dir", root);
   // Connected services the owner chose for THIS agent. `--strict-mcp-config` is
   // already on the line above and stays there, so this config is the only one
   // that can exist for the run — his own servers cannot arrive through it.
-  if (allowsConnections(agent) && extras.mcpConfigPath) {
-    args.push("--mcp-config", extras.mcpConfigPath);
-  }
+  if (granted.mcpConfigPath) args.push("--mcp-config", granted.mcpConfigPath);
+  // Cloud9's own doorway. Ungated, because reading the room you are standing in
+  // is not a new power — every agent, on every rung, is already handed the
+  // recent messages of this conversation.
+  if (extras.cloud9McpConfigPath) args.push("--mcp-config", extras.cloud9McpConfigPath);
   return args;
+}
+
+/**
+ * The Supply this argument list will really deliver — the same answer the prompt
+ * is built from. Exported so a test can hold the two against each other in BOTH
+ * directions rather than trusting that they were written from the same variable.
+ */
+export function claudeSupply(agent: AgentDef, extras: ClaudeArgExtras = {}): Supply {
+  return grantedSupply(agent, extras);
 }
 
 export class ClaudeCliProvider implements ClaudeProvider {
@@ -400,23 +439,51 @@ export class ClaudeCliProvider implements ClaudeProvider {
     this.timeoutMs = opts.timeoutMs ?? 180_000;
   }
 
-  async respond({ agent, context, workdir, onTrace }: RespondInput): Promise<string> {
+  async respond(input: RespondInput): Promise<string> {
+    const { agent, workdir, onTrace } = input;
     // its own git worktree when it is working in a repository (`repowork.ts`),
     // its own folder otherwise. One line, and it is the only way a turn can
     // happen anywhere but the agent's folder.
     const cwd = workdir ?? this.opts.agentDataDir(agent.id);
-    const prompt = buildAgentPrompt(agent, context);
-    const args = claudeArgs(agent, this.opts.models?.() ?? [], {
+    // THE DOORWAY, opened for this turn only and shut in the `finally` below.
+    const doorway = input.channelId
+      ? this.opts.cloud9Tools?.({ channelId: input.channelId })
+      : undefined;
+    const cloud9McpConfigPath = doorway
+      ? this.writeCloud9Config(agent.id, doorway) : undefined;
+    const extras: ClaudeArgExtras = {
       wholeComputerRoots: this.opts.wholeComputerRoots?.(agent.id) ?? [],
       mcpConfigPath: this.opts.mcpConfigPath?.(agent.id),
+      ...(cloud9McpConfigPath ? { cloud9McpConfigPath } : {}),
+    };
+    // ONE ANSWER, TWO USES. The prompt is built from what this very argument
+    // list will deliver — not from the agent's switches, which is what let an
+    // agent be told "you CAN use connected services" while `--mcp-config` was
+    // never on the line at all.
+    const prompt = buildAgentPrompt(agent, {
+      ...input,
+      supply: claudeSupply(agent, extras),
+      cloud9Tools: !!cloud9McpConfigPath,
     });
-    const result = await this.runner(this.command, args, {
-      cwd,
-      timeoutMs: this.timeoutMs,
-      stdin: prompt,
-      // no credential variables: the local app's own login pays for this turn
-      env: envWithoutCredentials(),
-    });
+    const args = claudeArgs(agent, this.opts.models?.() ?? [], extras);
+    let result;
+    try {
+      result = await this.runner(this.command, args, {
+        cwd,
+        timeoutMs: this.timeoutMs,
+        stdin: prompt,
+        // no credential variables: the local app's own login pays for this turn
+        env: envWithoutCredentials(),
+      });
+    } finally {
+      // The ticket dies with the turn. A copy of the config file left on disk is
+      // then worth nothing — but it goes too, because a stale one would point a
+      // later run at a doorway that has moved.
+      doorway?.close();
+      if (cloud9McpConfigPath) {
+        try { fs.rmSync(cloud9McpConfigPath, { force: true }); } catch { /* best effort */ }
+      }
+    }
 
     if (result.notFound) {
       throw new HarnessUnavailableError("claude", "the Claude app isn't installed on this machine");
@@ -443,6 +510,34 @@ export class ClaudeCliProvider implements ClaudeProvider {
     if (trace.error && !trace.text) throw new Error(trace.error);
     return trace.text || "(no response)";
   }
+
+  /**
+   * Write the one-turn MCP config the CLI is pointed at.
+   *
+   * A DOT-FILE, in the agent's own folder. Dot-files are the one thing the
+   * artifact sweep skips (`artifacts.ts`), so this cannot be mistaken for
+   * something the agent made and published into the room. It is never written
+   * into a worktree, because a worktree belongs to a git branch.
+   *
+   * Returns undefined if it could not be written: an agent then takes its turn
+   * without Cloud9's tools, and — because the prompt is built from this same
+   * answer — is not told it has them.
+   */
+  private writeCloud9Config(agentId: string, doorway: OpenTurn): string | undefined {
+    try {
+      const target = path.join(this.opts.agentDataDir(agentId), ".cloud9-mcp.json");
+      fs.writeFileSync(target, cloud9McpConfig(cloud9McpEntry(), doorway), { mode: 0o600 });
+      return target;
+    } catch (err) {
+      console.error("[engine] could not open Cloud9's tool doorway for this turn:", err);
+      return undefined;
+    }
+  }
+}
+
+/** Where Cloud9's MCP server lives on disk — beside this compiled file. */
+export function cloud9McpEntry(): string {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "cloud9mcp.js");
 }
 
 function looksSignedOut(output: string): boolean {

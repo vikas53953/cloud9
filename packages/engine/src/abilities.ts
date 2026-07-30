@@ -113,6 +113,62 @@ export interface Capability {
   can: string;
   /** what the agent is told when the switch is OFF — never left to guess */
   cannot: string;
+  /**
+   * THE THIRD FACE OF THE FACT (docs/qa/gap-audit.md §3, Integrations).
+   *
+   * Some switches grant nothing by themselves: they only say that a thing MAY be
+   * passed to the harness. Whether it actually IS passed is decided by the
+   * launcher, at the moment the command line is built. When it is not, the `can`
+   * sentence above is a lie — and it was being told. `host.ts` never supplied
+   * `wholeComputerRoots` or `mcpConfigPath`, so an agent on the top rung was
+   * told word for word "You CAN use the connected services your owner set up for
+   * you" while `--mcp-config` was never on the line at all. `HANDOFF.md` was
+   * honest that these are inert. The screen was honest. The prompt was not.
+   *
+   * So a row that needs something supplied NAMES what it needs, and gets a third
+   * sentence for "switched on, nothing behind it". The prompt asks the same
+   * function the command line asks (`grantedSupply`), so the sentence and the
+   * flag are one fact — which is exactly what this file exists for, applied to
+   * the one face of it that was left out.
+   */
+  needsSupply?: keyof Supply;
+  /** what the agent is told when the switch is ON and nothing was supplied */
+  onButNothingSupplied?: string;
+}
+
+/**
+ * What the LAUNCHER actually hands the harness for this turn. Not what the owner
+ * switched on — what is really going onto the command line.
+ */
+export interface Supply {
+  /** folders outside the agent's own one, for `--add-dir` */
+  wholeComputerRoots?: string[];
+  /** a per-agent MCP config file, for `--mcp-config` */
+  mcpConfigPath?: string;
+}
+
+/**
+ * THE ONE ANSWER to "what does this agent truly get?", asked by the command line
+ * and by the prompt.
+ *
+ * Offered is what a caller has; granted is what the switches allow of it. A
+ * caller cannot widen an agent by handing it a path (the switch decides), and a
+ * switch cannot promise something the caller does not have (the supply decides).
+ * Both directions are tested.
+ */
+export function grantedSupply(agent: AgentDef, offered: Supply): Supply {
+  const granted: Supply = {};
+  const roots = (offered.wholeComputerRoots ?? []).filter(r => r.length > 0);
+  if (reachesBeyondOwnFolder(agent) && roots.length > 0) granted.wholeComputerRoots = roots;
+  if (allowsConnections(agent) && offered.mcpConfigPath) granted.mcpConfigPath = offered.mcpConfigPath;
+  return granted;
+}
+
+/** Is this row's supply actually present for this turn? */
+function isSupplied(cap: Capability, granted: Supply): boolean {
+  if (!cap.needsSupply) return true;
+  const value = granted[cap.needsSupply];
+  return Array.isArray(value) ? value.length > 0 : !!value;
 }
 
 /**
@@ -184,9 +240,15 @@ export const CAPABILITIES: readonly Capability[] = [
     claudeTools: [],
     opensConnections: true,
     alwaysAsk: true,
+    needsSupply: "mcpConfigPath",
     can: "You CAN use the connected services your owner set up for you specifically. Those " +
       "are real accounts, so your owner is asked before you act through them.",
     cannot: "You CANNOT use any connected service or outside account.",
+    onButNothingSupplied:
+      "You CANNOT use any connected service right now. Your owner has allowed it, but this " +
+      "computer has not given you one — no service is connected for you on this turn, and " +
+      "no tool for one is in your hands. Say that plainly if you are asked; do not promise " +
+      "work through an account you cannot reach.",
   },
   {
     ability: "wholeComputer",
@@ -194,9 +256,14 @@ export const CAPABILITIES: readonly Capability[] = [
     claudeTools: [],
     widensBeyondOwnFolder: true,
     alwaysAsk: true,
+    needsSupply: "wholeComputerRoots",
     can: "You CAN reach files outside your own folder, in the places your owner opened up " +
       "for you. Because that changes his computer, he is asked first.",
     cannot: "You CANNOT reach anything outside your own folder.",
+    onButNothingSupplied:
+      "You CANNOT reach anything outside your own folder right now. Your owner has allowed " +
+      "it, but he has not opened up any folder for you, so there is nowhere outside your " +
+      "own folder you can actually get to. Say that plainly rather than trying.",
   },
   {
     ability: "commands",
@@ -389,7 +456,16 @@ export function needsApprovalToRun(agent: AgentDef): boolean {
   return mustAskBeforeActing(agent);
 }
 
-/** The powers this agent holds that will ask first, in his words. For a screen. */
+/**
+ * The powers this agent holds that will ask first, in his words. For a screen.
+ *
+ * NO SUPPLY ARGUMENT, on purpose. This answers the AGENT EDITOR, where Vikas is
+ * setting switches: what he needs to know there is "if I turn this on, I will be
+ * asked first", which is true of the switch whatever any particular turn's
+ * launcher hands over. The PROMPT is a different question — "what do you hold
+ * right now" — and it filters this list by what was really supplied (see
+ * `renderCapabilities`).
+ */
 export function describeApprovalNeeds(agent: AgentDef): string[] {
   return CAPABILITIES.filter(c => c.alwaysAsk && isOn(agent, c.ability)).map(c => c.label);
 }
@@ -407,10 +483,15 @@ export function describeApprovalNeeds(agent: AgentDef): string[] {
  * used to be said unconditionally is now said by the row that owns it, so the
  * words can never outlive the rule again.
  */
-export function renderCapabilities(agent: AgentDef): string {
-  const lines = CAPABILITIES.map(c => `• ${isOn(agent, c.ability) ? c.can : c.cannot}`);
+export function renderCapabilities(agent: AgentDef, granted: Supply = {}): string {
+  const lines = CAPABILITIES.map(c => `• ${sentenceFor(agent, c, granted)}`);
   const hasSkills = (agent.skills ?? []).length > 0;
-  const asks = describeApprovalNeeds(agent);
+  // Only powers this agent REALLY holds this turn. Telling an agent that
+  // connected services ask first, when no service is connected for it, is the
+  // same lie in a politer coat.
+  const asks = CAPABILITIES
+    .filter(c => c.alwaysAsk && isOn(agent, c.ability) && isSupplied(c, granted))
+    .map(c => c.label);
 
   return (
     `\nWhat you can actually do (your owner set these switches, and they are ` +
@@ -436,4 +517,16 @@ export function renderCapabilities(agent: AgentDef): string {
     `\nWhen someone asks what you can do, answer from this list. Do not tell them you ` +
     `cannot do something that is switched on above.\n`
   );
+}
+
+/**
+ * The one sentence this agent is told about one switch — derived from BOTH the
+ * switch and what the launcher truly supplied, never from the switch alone.
+ * The default supply being empty is what makes silence honest: a caller who
+ * supplies nothing gets "switched on, nothing behind it", not "you CAN".
+ */
+function sentenceFor(agent: AgentDef, cap: Capability, granted: Supply): string {
+  if (!isOn(agent, cap.ability)) return cap.cannot;
+  if (isSupplied(cap, granted)) return cap.can;
+  return cap.onButNothingSupplied ?? cap.cannot;
 }

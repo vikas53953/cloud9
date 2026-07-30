@@ -10,6 +10,9 @@ import {
   mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
+import { Cloud9SearchAnswer } from "./cloud9tools.js";
+import { ConversationBudget, CONVERSATION_BUDGET, renderConversation } from "./context.js";
+import { OpenTurn, ToolBridge } from "./toolbridge.js";
 import { describeRefusals, sweepProduced } from "./artifacts.js";
 import { ApprovalDesk, ApprovalOutcome } from "./approvaldesk.js";
 import { GitHubClient, GitHubOptions } from "./github.js";
@@ -131,6 +134,14 @@ export class Engine {
    * silence is never a yes.
    */
   approvals: ApprovalDesk;
+  /**
+   * CLOUD9'S OWN TOOLS, and the turns that currently hold a ticket to them.
+   * See `toolbridge.ts` — loopback only, one secret per turn, forgotten when the
+   * turn ends.
+   */
+  tools = new ToolBridge();
+  /** whoever is waiting on a `searchResults` frame right now */
+  private searchWaiters = new Set<(f: Extract<ServerFrame, { type: "searchResults" }>) => boolean>();
   private turnsInFlight = 0;
   private queue: (() => Promise<void>)[] = [];
   private opts: EngineOptions;
@@ -201,6 +212,7 @@ export class Engine {
 
   stop(): void {
     this.stopped = true;
+    this.tools.stop();
     this.approvals.giveUpAll("Cloud9 stopped before anyone answered, so it did not happen");
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.scheduler.stop();
@@ -267,6 +279,12 @@ export class Engine {
         break;
       case "approval":
         this.approvals.onApproval(frame.approval);
+        break;
+      // an agent asked Cloud9 to search the conversation it is standing in
+      case "searchResults":
+        for (const waiter of [...this.searchWaiters]) {
+          if (waiter(frame)) this.searchWaiters.delete(waiter);
+        }
         break;
       default:
         break;
@@ -431,8 +449,14 @@ export class Engine {
       const text = await provider.respond({
         agent,
         context: input.context,
+        // THE INSTRUCTION TRAVELS WITH THE TURN, and `buildAgentPrompt` refuses
+        // to render without it. This is the line the old `buildAgentPrompt(agent,
+        // context)` threw away, which is why a 6:30am check-in was woken up and
+        // told nothing at all.
         trigger: input.trigger,
         triggerAuthor: input.triggerAuthor,
+        kind: seed.kind,
+        ...(input.channelId ? { channelId: input.channelId } : {}),
         ...(input.workdir ? { workdir: input.workdir } : {}),
         onTrace: t => { trace = t; },
       });
@@ -813,9 +837,91 @@ export class Engine {
     }
   }
 
-  private renderContext(channelId: ID, n = this.opts.contextMessages ?? 20): string {
+  /**
+   * The conversation as the agent reads it. The RULE lives in `context.ts` —
+   * this is only "which conversation". It used to be a `slice(-20)` written
+   * inline here, with the 20 as a default argument nobody ever set; see the long
+   * note in that file for why that was the single most damaging line in the
+   * engine.
+   */
+  private renderContext(channelId: ID): string {
     const history = this.history.get(channelId) ?? [];
-    return history.slice(-n).map(m => `${m.authorName}: ${m.text}`).join("\n");
+    return renderConversation(history, this.contextBudget);
+  }
+
+  /**
+   * How much conversation this engine gives an agent. `contextMessages` is still
+   * honoured because tests and QA set it, but it is now a CEILING on top of the
+   * real budget rather than the whole rule.
+   */
+  private get contextBudget(): ConversationBudget {
+    const n = this.opts.contextMessages;
+    return n === undefined
+      ? CONVERSATION_BUDGET
+      : { characters: CONVERSATION_BUDGET.characters, messages: n };
+  }
+
+  /**
+   * SEARCH THIS ONE CONVERSATION, on behalf of an agent taking a turn in it.
+   *
+   * The channel is not a parameter the model can reach: `openToolTurn` below
+   * binds it when the turn opens, and this method is the only thing that binding
+   * can call. It is also sent to the hub as `channelId`, which the hub checks
+   * against stored membership on its own side — so the scope is enforced twice,
+   * by two processes that do not trust each other.
+   */
+  async searchChannel(channelId: ID, query: string, limit: number): Promise<Cloud9SearchAnswer> {
+    const results = await this.askHubToSearch(channelId, query, limit);
+    return {
+      hits: results.results
+        // BELT AND BRACES. Even if the hub ever widened a scope, nothing from
+        // another conversation gets past this line.
+        .filter(hit => hit.message.channelId === channelId)
+        .map(hit => ({
+          author: hit.message.authorName,
+          when: hit.message.ts,
+          text: hit.message.deletedAt ? "(this message was deleted)" : hit.message.text,
+        })),
+      hasMore: results.hasMore,
+    };
+  }
+
+  /** One `search` frame out, one `searchResults` frame back. Never waits for ever. */
+  private askHubToSearch(
+    channelId: ID, query: string, limit: number,
+  ): Promise<Extract<ServerFrame, { type: "searchResults" }>> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.searchWaiters.delete(waiter);
+        reject(new Error("the hub did not answer the search in time"));
+      }, SEARCH_WAIT_MS);
+      const waiter = (frame: Extract<ServerFrame, { type: "searchResults" }>): boolean => {
+        if (frame.query !== query) return false;
+        clearTimeout(timer);
+        resolve(frame);
+        return true;
+      };
+      this.searchWaiters.add(waiter);
+      this.sendFrame({ type: "search", channelId, query, limit });
+    });
+  }
+
+  /**
+   * OPEN CLOUD9'S OWN TOOLS FOR ONE TURN. The conversation is closed over here,
+   * where it is known, and there is no way to pass a different one in — which is
+   * the whole of the "an agent may search only where it may read" law.
+   */
+  openToolTurn = (turn: { channelId: string }): OpenTurn | undefined => {
+    return this.tools.openTurn({
+      channelId: turn.channelId,
+      search: (query, limit) => this.searchChannel(turn.channelId, query, limit),
+    });
+  };
+
+  /** Start listening for tool calls. Until this runs there is simply no doorway. */
+  async startTools(): Promise<void> {
+    try { await this.tools.start(); }
+    catch (err) { console.error("[engine] could not open the tool doorway:", err); }
   }
 
   /**
@@ -1174,6 +1280,16 @@ function scheduleProblem(row: unknown): string | null {
 export const SCHEDULE_NOT_SAVED =
   "⚠️ I could NOT save that schedule on this computer, so it is NOT set — " +
   "nothing will happen at that time. Check there is room on the disk and try again.";
+
+/**
+ * How long an agent's search may wait on the hub before it gives up.
+ *
+ * Short on purpose. The agent is mid-turn on a wall-clock leash of its own, and
+ * a search that hangs would spend that leash on nothing. Giving up says so — the
+ * agent is told the search did not run and to carry on without guessing, which
+ * is the honest answer and takes four seconds rather than three minutes.
+ */
+const SEARCH_WAIT_MS = 4_000;
 
 function isBrakedReset(history: Message[]): boolean {
   return history.length > 0 && history[history.length - 1].authorKind === "human";

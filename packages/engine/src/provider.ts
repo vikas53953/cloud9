@@ -3,22 +3,51 @@
 //  - SdkProvider: Claude Agent SDK (query()), billing to the user's own
 //    credential (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN).
 import os from "node:os";
-import { AgentDef, DEMO_REPLY_PREFIX, setMachineNames } from "@cloud9/shared";
-import { claudeToolsFor, deniedClaudeTools, renderCapabilities } from "./abilities.js";
+import { AgentDef, DEMO_REPLY_PREFIX, RunKind, setMachineNames } from "@cloud9/shared";
+import { claudeToolsFor, deniedClaudeTools, renderCapabilities, Supply } from "./abilities.js";
+import { renderCloud9Tools } from "./cloud9tools.js";
 // type-only: erased at compile time, so runrecord.ts may import this file back
 // without creating a runtime import cycle.
 import type { ProviderTrace } from "./runrecord.js";
 
-export interface RespondInput {
-  agent: AgentDef;
-  /** rendered conversation context, oldest first, "Name: text" lines */
+/**
+ * WHAT KIND OF TURN THIS IS. It decides how long an answer suits, and it is the
+ * difference between "write your next chat message" and "do the work".
+ *
+ * `repo` is not a `RunKind` — a repository turn is recorded as a chat or a job
+ * depending on how it was asked for. It is derived here, from the one thing that
+ * is only ever true of a repository turn: the agent is standing in a worktree.
+ */
+export type PromptTurnKind = "chat" | "task" | "schedule" | "repo";
+
+/**
+ * THE BRIEF A TURN IS. Everything `buildAgentPrompt` needs, in one object, so
+ * that a provider physically cannot render a prompt with the instruction
+ * missing — which is exactly what all three real providers were doing.
+ */
+export interface TurnBrief {
+  /** rendered conversation, oldest first (see context.ts) */
   context: string;
-  /** the message being answered (already included in context) */
+  /** WHAT THIS TURN WAS ASKED TO DO. Never optional, never empty. */
   trigger: string;
   triggerAuthor: string;
+  /** chat reply, delegated job, scheduled check-in — set by the engine */
+  kind: RunKind;
+  workdir?: string;
+  /** what the launcher will TRULY hand the harness, for this turn */
+  supply?: Supply;
+  /** true when Cloud9's own tools are really in the agent's hands this turn */
+  cloud9Tools?: boolean;
+}
+
+export interface RespondInput extends TurnBrief {
+  agent: AgentDef;
+  /** the conversation this turn is happening in, when there is one */
+  channelId?: string;
   /**
-   * WHERE THE TURN HAPPENS. Absent means the agent's own folder, which is what
-   * every ordinary turn has always used and still uses.
+   * WHERE THE TURN HAPPENS (declared on `TurnBrief`). Absent means the agent's
+   * own folder, which is what every ordinary turn has always used and still
+   * uses.
    *
    * It is set for one thing only: a turn that works inside a repository. The
    * agent is then standing in ITS OWN git worktree (`worktree.ts`), so the files
@@ -26,7 +55,6 @@ export interface RespondInput {
    * Nothing about the approval law changes — a worktree is still entirely on
    * this computer, and pushing it anywhere is still asked about separately.
    */
-  workdir?: string;
   /**
    * Optional: hand back what the agent actually did, parsed out of the CLI's
    * own stream (see runrecord.ts). A provider that cannot produce one simply
@@ -153,19 +181,92 @@ export function renderSkills(agent: AgentDef): string {
  * table (abilities.ts), which is the only arrangement in which they cannot
  * disagree.
  */
-export function buildAgentPrompt(agent: AgentDef, context: string): string {
+export function buildAgentPrompt(agent: AgentDef, turn: TurnBrief): string {
+  // THE CHECK THAT WOULD HAVE CAUGHT THIS THE DAY THE SCHEDULE FEATURE SHIPPED.
+  // A turn with no instruction is not a turn — it is an agent being woken up and
+  // told nothing, which is exactly what a 6:30am check-in was. Refusing here is
+  // louder than a lint rule and it cannot be forgotten by a new provider.
+  if (!turn.trigger || !turn.trigger.trim()) {
+    throw new Error("refusing to build a prompt with no instruction in it: " +
+      "every turn must say what it was asked to do");
+  }
+  const kind = promptTurnKind(turn);
   return (
     `You are "${agent.name}", an agent in the Cloud9 group chat.\n` +
     `Your persona/brief: ${agent.persona}\n` +
-    renderCapabilities(agent) +
+    renderCapabilities(agent, turn.supply ?? {}) +
+    (turn.cloud9Tools ? renderCloud9Tools() : "") +
     renderSkills(agent) +
-    `\nRecent conversation (oldest first):\n${context}\n\n` +
-    `Write your next chat message as ${agent.name}. Stay in persona, be genuinely useful, ` +
-    `and keep it chat-length (1-4 sentences unless a list is clearly needed). ` +
-    `Mention other participants with @Name only when addressing them. ` +
-    `Do not prefix your reply with your own name.`
+    `\n${WHAT_YOU_WERE_ASKED[kind]}\n${turn.trigger.trim()}\n` +
+    (turn.workdir
+      ? `\nYou are working inside a checkout on this computer, not in your own folder.\n`
+      : "") +
+    `\nRecent conversation (oldest first). ` +
+    `A line starting "↳" is a reply inside a thread; a line in square brackets is ` +
+    `something about the message above it, not something anybody said:\n${turn.context}\n\n` +
+    HOW_TO_ANSWER[kind](agent.name)
   );
 }
+
+/**
+ * Which kind of turn this is, for the prompt. Derived, not passed twice: a
+ * worktree is the one thing only a repository turn has, so the two facts cannot
+ * drift apart the way the trigger and the prompt did.
+ */
+export function promptTurnKind(turn: TurnBrief): PromptTurnKind {
+  if (turn.workdir) return "repo";
+  return turn.kind;
+}
+
+/** The heading over the instruction. Named per kind, so the agent knows why it woke up. */
+const WHAT_YOU_WERE_ASKED: Record<PromptTurnKind, string> = {
+  chat: "What you have been asked to do right now (this is the message you are answering):",
+  task: "What you have been asked to do right now — THIS IS THE JOB, and it is the reason " +
+    "this turn is happening. It may not appear in the conversation below at all:",
+  schedule: "What you have been asked to do right now — this turn was started by a REPEATING " +
+    "CHECK-IN your owner set up, not by anybody speaking. Nobody is sitting waiting for you. " +
+    "This standing instruction is the whole reason you are awake, and it will NOT appear in " +
+    "the conversation below:",
+  repo: "What you have been asked to do right now — this is a piece of work inside a code " +
+    "repository, together with the briefing about where you are standing:",
+};
+
+/**
+ * HOW LONG AN ANSWER SUITS THIS TURN — and this is a fix, not a flourish.
+ *
+ * Every turn used to end with "keep it chat-length (1-4 sentences unless a list
+ * is clearly needed)", including background jobs and repository work, where that
+ * is precisely wrong: the owner delegates an hour of work and asks for it in four
+ * sentences. All three prompts were byte-for-byte identical — 3,233 characters,
+ * measured. A chat reply, a delegated job and a 6:30am check-in are different
+ * pieces of work and now read as different pieces of work.
+ */
+const HOW_TO_ANSWER: Record<PromptTurnKind, (name: string) => string> = {
+  chat: name =>
+    `Write your next chat message as ${name}. Stay in persona, be genuinely useful, ` +
+    `and keep it chat-length (1-4 sentences unless a list is clearly needed). ` +
+    `Mention other participants with @Name only when addressing them. ` +
+    `Do not prefix your reply with your own name.`,
+  task: name =>
+    `Do the job above, then report back as ${name}. This is delegated work, not chat: ` +
+    `there is no length rule beyond fitting what you actually did — a job that took ten ` +
+    `steps needs more than two sentences, and one that took a single step needs no more ` +
+    `than that. Say what you DID, what came of it, and anything you could not finish and ` +
+    `why. Never report as done something you only intended to do. ` +
+    `Do not prefix your reply with your own name.`,
+  schedule: name =>
+    `Carry out the standing instruction above, then post the outcome as ${name}. Nobody ` +
+    `asked just now and nobody is waiting, so lead with what is new or what changed. If ` +
+    `there is genuinely nothing to report, say exactly that in one line rather than ` +
+    `filling the room. Do not comment on the conversation below unless the instruction ` +
+    `asks you to. Do not prefix your reply with your own name.`,
+  repo: name =>
+    `Do the work above in the checkout you are standing in, then report as ${name}. ` +
+    `Length should fit the change: say what you changed, in which files, and why, plus ` +
+    `anything you deliberately did not touch. Nothing leaves this computer unless your ` +
+    `owner is asked and says yes, so never describe a change as published. ` +
+    `Do not prefix your reply with your own name.`,
+};
 
 /**
  * Canned answers, for tests, QA and demo mode.
@@ -180,7 +281,9 @@ export class MockProvider implements ClaudeProvider {
     return DEMO_REPLY_PREFIX + this.cannedBody({ agent, trigger, triggerAuthor });
   }
 
-  private cannedBody({ agent, trigger, triggerAuthor }: Omit<RespondInput, "context">): string {
+  private cannedBody(
+    { agent, trigger, triggerAuthor }: Pick<RespondInput, "agent" | "trigger" | "triggerAuthor">,
+  ): string {
     const gist = trigger.replace(/@[\w-]+/g, "").trim().slice(0, 80) || "that";
     const flavor: Record<string, string> = {
       webSearch: "I'd search the web for this",
@@ -211,7 +314,8 @@ export class SdkProvider implements ClaudeProvider {
     private agentDataDir: (agentId: string) => string,
   ) {}
 
-  async respond({ agent, context, workdir }: RespondInput): Promise<string> {
+  async respond(input: RespondInput): Promise<string> {
+    const { agent, workdir } = input;
     // Lazy import so mock mode never loads the SDK.
     const { query } = await import("@anthropic-ai/claude-agent-sdk");
     // the same table the CLI path and the prompt read — no third copy
@@ -221,7 +325,10 @@ export class SdkProvider implements ClaudeProvider {
     if (this.creds.apiKey) env.ANTHROPIC_API_KEY = this.creds.apiKey;
     if (this.creds.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = this.creds.oauthToken;
 
-    const prompt = buildAgentPrompt(agent, context);
+    // THE WHOLE BRIEF, not just the conversation. This path supplies neither
+    // `--add-dir` nor an MCP config and hands out no Cloud9 tool, so the supply
+    // it declares is empty — and the prompt says so instead of promising them.
+    const prompt = buildAgentPrompt(agent, { ...input, supply: {} });
 
     let result = "";
     for await (const message of query({

@@ -121,7 +121,7 @@ test("a model id that isn't on the harness's real list never becomes a command l
 test("the prompt travels on stdin and never in the argument list", async () => {
   const { calls, runner } = fakeRunner();
   await provider(runner).respond({
-    agent: agent(), context: "Vikas: hi there", trigger: "hi there", triggerAuthor: "Vikas",
+    agent: agent(), context: "Vikas: hi there", trigger: "hi there", triggerAuthor: "Vikas", kind: "chat",
   });
   const call = calls[0];
   assert.equal(call.cmd, "claude");
@@ -133,7 +133,7 @@ test("the prompt travels on stdin and never in the argument list", async () => {
 test("a missing Claude app becomes 'my engine isn't connected', not a stack trace", async () => {
   const { runner } = fakeRunner({ notFound: true, code: null });
   await assert.rejects(
-    () => provider(runner).respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V" }),
+    () => provider(runner).respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" }),
     (err: unknown) => err instanceof HarnessUnavailableError,
   );
 });
@@ -143,7 +143,7 @@ test("only the CLI's own complaint counts as signed out", async () => {
     code: 1, stdout: "", stderr: "Invalid API key · Please run `claude login`",
   });
   await assert.rejects(
-    () => provider(signedOut.runner).respond({ agent: agent(), context: "", trigger: "h", triggerAuthor: "V" }),
+    () => provider(signedOut.runner).respond({ agent: agent(), context: "", trigger: "h", triggerAuthor: "V", kind: "chat" }),
     (err: unknown) => err instanceof HarnessUnavailableError,
   );
 
@@ -153,7 +153,7 @@ test("only the CLI's own complaint counts as signed out", async () => {
     stdout: `{"subtype":"success","is_error":false,"result":"You should run claude login first"}`,
   });
   const said = await provider(chatty.runner).respond({
-    agent: agent(), context: "", trigger: "h", triggerAuthor: "V",
+    agent: agent(), context: "", trigger: "h", triggerAuthor: "V", kind: "chat",
   });
   assert.equal(said, "You should run claude login first");
 });
@@ -163,7 +163,7 @@ test("a turn that blows the leash is stopped and explained in plain words", asyn
   await assert.rejects(
     () => new ClaudeCliProvider({
       agentDataDir: () => process.cwd(), runner, timeoutMs: 1_000, models: () => CLAUDE_MODELS,
-    }).respond({ agent: agent(), context: "", trigger: "h", triggerAuthor: "V" }),
+    }).respond({ agent: agent(), context: "", trigger: "h", triggerAuthor: "V", kind: "chat" }),
     /longer than 1s/,
   );
 });
@@ -174,7 +174,7 @@ test("an agent whose name carries shell characters still cannot reach a shell", 
   await assert.rejects(
     () => provider(runner).respond({
       agent: agent({ model: "claude-sonnet-5; shutdown" }),
-      context: "", trigger: "h", triggerAuthor: "V",
+      context: "", trigger: "h", triggerAuthor: "V", kind: "chat",
     }),
     (err: unknown) => err instanceof UnsafeArgumentError || /model id|isn't one this app/.test(String(err)),
   );

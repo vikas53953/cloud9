@@ -109,6 +109,14 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
         agentDataDir: engine.agentDataDir,
         command: opts.harness?.claudeCommand,
         models: () => modelsFor("claude"),
+        // CLOUD9'S OWN DOORWAY — search, scoped to the conversation the turn is
+        // in. It is passed; `wholeComputerRoots` and `mcpConfigPath` are still
+        // NOT, because nothing on any screen chooses a folder or an MCP file
+        // yet. That is deliberate and it is now honest: the prompt is derived
+        // from what is passed here, so an agent on the top rung is told those
+        // two are switched on with nothing behind them rather than being told
+        // it can use them (docs/qa/gap-audit.md §3, Integrations).
+        cloud9Tools: engine.openToolTurn,
       });
     } else {
       engine.provider = undefined; // agents will say "my engine isn't connected"
@@ -194,6 +202,11 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
     opts.onReady?.();
     void harness.refresh();
   };
+
+  // The doorway is opened before the socket, so a turn can never arrive at a
+  // half-open one. It never throws: no doorway means agents take their turns
+  // without Cloud9's tools and are not told they have any.
+  void engine.startTools();
 
   if (opts.connect !== false) engine.connect();
   return {
