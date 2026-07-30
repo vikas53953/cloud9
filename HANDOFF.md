@@ -178,9 +178,9 @@ sleeps; and prove a new check by putting the bug back and watching it fail.
 
 ## 8b. Projects LANDED — 2026-07-30
 
-The round that built PROJECTS is **finished and on his screen**, uncommitted in
-`apps/desktop/src/**`, `scripts/qa.mjs`, `scripts/drive-app.mjs` and
-`docs/plans/projects-handoff.md`. Evidence, all run in that session:
+The round that built PROJECTS is **finished, on his screen, and pushed** —
+commit `d273984` on `master` at `github.com/vikas53953/cloud9`. Evidence, all
+re-run by the conductor before that commit:
 
 | What | Result |
 |---|---|
