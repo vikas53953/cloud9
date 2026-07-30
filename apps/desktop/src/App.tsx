@@ -4,7 +4,8 @@ import React, {
 import {
   AgentAbilities, AgentApprovals, AgentDef, AgentPresence, AgentPresenceState,
   AgentRespondTo, AgentSkill, AgentSkillFile,
-  Approval, Attachment, ATTACHMENT_LIMITS,
+  Approval, ARTIFACT_LIMITS, Artifact, artifactRef, ArtifactVersion, Attachment, ATTACHMENT_LIMITS,
+  describeArtifactVersion, findArtifactRefs, latestVersion, versionOf,
   Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
   HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectItemKind, ProjectItemState,
@@ -100,10 +101,207 @@ const PLAIN_ERROR: Record<string, string> = {
     "Only Vikas can invite people to this Cloud9.",
 };
 
-const plainError = (text?: string): string | undefined => {
-  if (!text) return undefined;
-  return PLAIN_ERROR[text] ?? text.replace(/^Error:\s*/i, "");
+/* ================= WHAT A FAILURE SAYS ON SCREEN — ONE OWNER =============
+ *
+ * WHY THIS EXISTS. The gap audit found six places where computer-speak reached
+ * his eyes, and the worst of them was the same refusal drawn TWICE on one
+ * screen in two different states of politeness: the toast said *you already
+ * have a project called "Audit Box" — give this one a different name*, and the
+ * line under the form said the identical sentence with **`Error:`** stuck on
+ * the front. Two owners for one sentence, and one of them showed him a word
+ * that was never part of what went wrong.
+ *
+ * So there is one owner now, and it answers two questions:
+ *
+ *  1. WHAT DOES THIS SAY? `sayable` strips the transport's own decoration
+ *     (`Error:`, `TypeError:`, `Uncaught …`) — which is the wrapper the hub's
+ *     catch-all puts on with `String(err)`, not something anybody wrote for
+ *     him. If what is left is still computer-speak (a property read off
+ *     nothing, a SQLite code, a stack frame, a Windows path) it is not shown at
+ *     all: he gets a sentence a person can act on, and the computer's own words
+ *     stay reachable for whoever looks after the machine.
+ *
+ *  2. IS IT ALREADY ON THIS SCREEN? Every place that draws a failure claims its
+ *     sentence while it is visible (`useSaid`), and the toast — the one thing
+ *     that floats above every screen — refuses to say a sentence that is
+ *     already written somewhere the person is looking.
+ *
+ * THIS IS SAFE WHETHER OR NOT THE HUB IS FIXED. The hub's catch-all is another
+ * agent's work; this owner assumes nothing about it, because it strips what
+ * arrives rather than trusting what was sent.
+ */
+
+/** The transport's own decoration, never part of what went wrong. */
+const TRANSPORT_PREFIX = /^\s*(?:Uncaught\s+)?(?:[A-Za-z_$][\w$]*)?Error(?:\s*\[[^\]]*\])?:\s*/;
+
+/**
+ * Shapes that mean "this sentence was written by a computer for a computer".
+ *
+ * Deliberately narrow: a hub refusal in plain English must pass through
+ * untouched, because ~70 of them are already better than anything this file
+ * could say instead. Only the things a person can do nothing with are caught.
+ */
+const COMPUTER_TALK: RegExp[] = [
+  /cannot read propert/i,
+  /is not a function\b/i,
+  /is not defined\b/i,
+  /\bundefined\b|\bnull\b/,
+  /SQLITE_[A-Z]+/,
+  /\b(?:ENOENT|EACCES|EPERM|EBUSY|ECONNREFUSED|ECONNRESET|ETIMEDOUT)\b/,
+];
+
+/** A stack frame is never anybody's writing, wherever in the text it turns up. */
+const STACK_FRAME = /^\s*at\s+\S+\s*\(/m;
+
+/**
+ * HOW FAR INTO A SENTENCE IS STILL ITS BEGINNING.
+ *
+ * Computer-speak is judged on the OPENING of what arrived, and that is not a
+ * detail — it is what tells `String(err)` apart from somebody's writing. A
+ * thrown error leads with its jargon ("Cannot read properties of undefined…");
+ * a sentence written for a person leads with words and may QUOTE a code further
+ * in, the way the hub's unreadable-database sentence names the file and then
+ * says what SQLite said about it. Replacing that one wholesale would throw away
+ * the half he can act on — worse than the leak it was meant to fix — so it is
+ * shown as written, and the hub owns whether it should quote a code at all.
+ */
+const SENTENCE_OPENING = 48;
+
+/**
+ * The sentence a person gets when the computer's own words are no use to them.
+ * It says what is true (it did not happen), what is not at risk (nothing was
+ * changed), and what to do — and nothing else.
+ */
+const COMPUTER_TALK_SENTENCE =
+  "Something inside Cloud9 went wrong, so that didn't happen — nothing was changed. " +
+  "Try it once more, and if it happens again say what you were doing when it did.";
+
+export interface Said {
+  /** what to put on screen */
+  text: string;
+  /** the computer's own words, ONLY when they were too raw to show as the sentence */
+  detail?: string;
+}
+
+/**
+ * Turn anything that failed into something a person can read. One owner.
+ *
+ * @param raw whatever arrived — a hub refusal, a browser exception's message,
+ *            a line of `git` output. Never assumed to be any of them.
+ */
+function sayable(raw?: string): Said | undefined {
+  if (!raw) return undefined;
+  const known = PLAIN_ERROR[raw.trim()];
+  if (known) return { text: known };
+  const stripped = raw.replace(TRANSPORT_PREFIX, "").trim();
+  if (!stripped) return { text: COMPUTER_TALK_SENTENCE, detail: raw.trim() };
+  const known2 = PLAIN_ERROR[stripped];
+  if (known2) return { text: known2 };
+  const opening = stripped.slice(0, SENTENCE_OPENING);
+  if (STACK_FRAME.test(stripped) || COMPUTER_TALK.some(p => p.test(opening))) {
+    return { text: COMPUTER_TALK_SENTENCE, detail: stripped };
+  }
+  return { text: stripped };
+}
+
+/** The old name, kept for the places that only ever want the words. */
+const plainError = (text?: string): string | undefined => sayable(text)?.text;
+
+/* ---- IS THIS SENTENCE ALREADY ON THE SCREEN? ----
+ *
+ * A count per sentence rather than a flag, because the same refusal can
+ * legitimately be claimed by two surfaces at once (a form and the panel it sits
+ * in) and the last one to go must be the one that releases it. */
+const saidOnScreen = new Map<string, number>();
+const saidListeners = new Set<() => void>();
+let saidVersion = 0;
+const saidChanged = (): void => { saidVersion++; for (const fn of saidListeners) fn(); };
+const subscribeSaid = (fn: () => void): (() => void) => {
+  saidListeners.add(fn);
+  return () => { saidListeners.delete(fn); };
 };
+/** how many places are showing one sentence — the QA suite asks, so it is provable */
+function saidCount(text: string): number {
+  return saidOnScreen.get(text) ?? 0;
+}
+
+/**
+ * "This failure is written HERE, where he is looking."
+ *
+ * Returns the words to draw, and while they are drawn claims the sentence so
+ * the toast will not say it a second time. Every place that shows a failure
+ * goes through this — that is what makes the claim complete enough to trust.
+ */
+function useSaid(raw?: string): Said | null {
+  const said = useMemo(() => sayable(raw), [raw]);
+  const text = said?.text;
+  useEffect(() => {
+    if (!text) return;
+    saidOnScreen.set(text, saidCount(text) + 1);
+    saidChanged();
+    return () => {
+      const left = saidCount(text) - 1;
+      if (left > 0) saidOnScreen.set(text, left);
+      else saidOnScreen.delete(text);
+      saidChanged();
+    };
+  }, [text]);
+  return said ?? null;
+}
+
+/**
+ * The computer's own words, folded away.
+ *
+ * Shown only when `sayable` decided the raw text was no use to him — so this is
+ * never a second copy of a sentence he has already read. It exists because the
+ * one person who CAN act on `SQLITE_CORRUPT` is whoever looks after the
+ * machine, and hiding it from them entirely would be a different kind of lie.
+ */
+function ComputerWords({ detail }: { detail?: string }): React.JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  if (!detail) return null;
+  return (
+    <span className="rawsay">
+      <button className="linkish rawsay-open" aria-expanded={open} onClick={() => setOpen(o => !o)}>
+        {open ? "Hide what the computer said" : "What the computer said"}
+      </button>
+      {open && <code className="rawsay-text">{detail}</code>}
+    </span>
+  );
+}
+
+/**
+ * One failure, drawn where he is looking, in the app's own two shapes.
+ *
+ * Every inline refusal in this file goes through this component rather than
+ * printing a string of its own, which is what makes "one owner" a property of
+ * the code and not a promise in a comment.
+ */
+function Problem({ text, tone = "line", attrs, className, mark = true }: {
+  text?: string;
+  /** "line" is the line under a form; "notice" is the boxed one on a whole screen */
+  tone?: "line" | "notice";
+  /** the marks a QA check finds this by — the call site's own, not invented here */
+  attrs?: Record<string, string>;
+  className?: string;
+  /** the exclamation beside it. Off where the whole screen is already the alarm. */
+  mark?: boolean;
+}): React.JSX.Element | null {
+  const said = useSaid(text);
+  if (!said) return null;
+  return tone === "notice" ? (
+    <div className={`notice refused${className ? " " + className : ""}`} role="alert" {...attrs}>
+      {mark && <span className="refused-mark" aria-hidden="true">!</span>}
+      <span className="problemtext">{said.text}</span>
+      <ComputerWords detail={said.detail} />
+    </div>
+  ) : (
+    <p className={`problemline${className ? " " + className : ""}`} role="alert" {...attrs}>
+      <span className="problemtext">{said.text}</span>
+      <ComputerWords detail={said.detail} />
+    </p>
+  );
+}
 
 /* ================= small formatters ================= */
 
@@ -276,6 +474,135 @@ function useEscapeCloses(onClose: () => void, enabled = true): void {
       if (at >= 0) escapeStack.splice(at, 1);
     };
   }, [enabled]);
+}
+
+/* ============ MAY THIS SCREEN BE LEFT WHILE IT HOLDS UNSAVED WORK? ========
+ *
+ * ONE OWNER for the whole app, and the reason is the audit's worst finding:
+ * type a sentence into an agent's brief, click any icon in the left rail, and
+ * the editor closes with **no warning, no question, no toast and nothing
+ * saved**. The words are simply gone. The editor has a Cancel and a Save, so
+ * the app plainly knows there is such a thing as unsaved work — the rail just
+ * never asked.
+ *
+ * The class fix is not a guard bolted onto the rail. It is this: a screen that
+ * holds unsaved words SAYS SO (`useUnsavedWork`), every way out of a screen goes
+ * through `attemptLeave`, and the question is asked once, in one dialog, in
+ * plain words. A new editor-like surface inherits it by declaring itself, and a
+ * new way to navigate inherits it by being routed — there is no third place
+ * where the rule could be forgotten differently.
+ *
+ * WHAT COUNTS AS LEAVING: changing the screen, and changing which conversation
+ * is open — both of them throw away what an editor-like surface is holding.
+ * Opening an overlay (the palette, a modal) does NOT: nothing unmounts, so
+ * nothing is lost, and asking would be a question about nothing.
+ *
+ * WHAT DOES NOT GO THROUGH IT: Save and Delete. Those are his decision ABOUT
+ * the work, not a way out of it — asking "are you sure you want to lose this?"
+ * the moment he pressed Save would be the app failing to listen. Escape is not
+ * touched either; it belongs to the escape stack above, and this dialog is on
+ * that stack like every other overlay.
+ */
+
+interface UnsavedGuard {
+  /** what he is in the middle of, in his words — used in the question */
+  what: string;
+  /** is there anything unsaved right now? asked at the moment of leaving */
+  dirty: () => boolean;
+}
+
+const unsavedGuards: UnsavedGuard[] = [];
+
+/** What is holding unsaved work right now, or nothing. Newest surface first. */
+function unsavedNow(): string | null {
+  for (let i = unsavedGuards.length - 1; i >= 0; i--) {
+    if (unsavedGuards[i].dirty()) return unsavedGuards[i].what;
+  }
+  return null;
+}
+
+let leaveAsk: { what: string; go: () => void } | null = null;
+const leaveListeners = new Set<() => void>();
+const leaveChanged = (): void => { for (const fn of leaveListeners) fn(); };
+const subscribeLeave = (fn: () => void): (() => void) => {
+  leaveListeners.add(fn);
+  return () => { leaveListeners.delete(fn); };
+};
+const leaveSnapshot = (): { what: string; go: () => void } | null => leaveAsk;
+
+/**
+ * Go somewhere — unless something on this screen would lose his words.
+ *
+ * The ONE door every navigation in the app goes through. When nothing is
+ * unsaved this is exactly what it always was: it just goes.
+ */
+function attemptLeave(go: () => void): void {
+  const what = unsavedNow();
+  if (!what) { go(); return; }
+  leaveAsk = { what, go };
+  leaveChanged();
+}
+
+/** His answer to the question. "Keep editing" simply puts the screen back. */
+function answerLeave(discard: boolean): void {
+  const asked = leaveAsk;
+  leaveAsk = null;
+  leaveChanged();
+  if (asked && discard) asked.go();
+}
+
+/**
+ * "This surface is holding unsaved words." One line per editor-like screen.
+ *
+ * `dirty` is read at the MOMENT of leaving, through a ref, so a surface can
+ * never register a stale answer: what matters is whether there are unsaved
+ * words when he clicks away, not whether there were when React last rendered.
+ */
+function useUnsavedWork(what: string, dirty: boolean): void {
+  const latest = useRef(dirty);
+  latest.current = dirty;
+  useEffect(() => {
+    const entry: UnsavedGuard = { what, dirty: () => latest.current };
+    unsavedGuards.push(entry);
+    return () => {
+      const at = unsavedGuards.lastIndexOf(entry);
+      if (at >= 0) unsavedGuards.splice(at, 1);
+    };
+  }, [what]);
+}
+
+/**
+ * The question itself — asked once, in one place, in plain words.
+ *
+ * Two ways out and both are named: keep editing (the safe one, and the one
+ * Escape and the backdrop mean) or throw the words away deliberately. There is
+ * no third button, and no "OK".
+ */
+function LeaveGuardDialog(): React.JSX.Element | null {
+  const asked = useSyncExternalStore(subscribeLeave, leaveSnapshot);
+  useEscapeCloses(() => answerLeave(false), !!asked);
+  if (!asked) return null;
+  return (
+    <div className="overlay leaveask" onClick={() => answerLeave(false)}>
+      <div className="panel" onClick={e => e.stopPropagation()}>
+        <div className="head">You haven't saved what you wrote</div>
+        <div className="body">
+          <div className="notice">
+            {asked.what} still has words in it that have not been saved. If you leave
+            now they are thrown away, and there is no way to get them back.
+          </div>
+        </div>
+        <div className="foot">
+          <button className="primary keepediting" autoFocus onClick={() => answerLeave(false)}>
+            Keep editing
+          </button>
+          <button className="subtle discardwork" onClick={() => answerLeave(true)}>
+            Leave and throw them away
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ================= HOW THE VIEW MOVES, AND WHEN ==========================
@@ -1091,7 +1418,9 @@ function HubUnreadable({ text }: { text: string }): React.JSX.Element {
           <span className="wordmark">Cloud9</span>
         </div>
         <h1>Cloud9 could not open your <em>messages</em>.</h1>
-        <div className="notice refused hubsay" role="alert">{text}</div>
+        {/* No mark: this whole screen is the alarm, and the check that the
+            hub's own sentence arrives WORD FOR WORD reads this element. */}
+        <Problem text={text} tone="notice" className="hubsay" mark={false} />
         <p className="sec-note">
           Nothing on this screen can change that file. Close Cloud9, put the file back
           where it was, or hand this sentence to whoever looks after this machine.
@@ -1212,12 +1541,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
                 </div>
               </>
             )}
-            {refusal && (
-              <div className="notice refused joinerror" role="alert">
-                <span className="refused-mark" aria-hidden="true">!</span>
-                <span>{refusal}</span>
-              </div>
-            )}
+            <Problem text={world.lastError?.text} tone="notice" className="joinerror" />
             <div className="notice">Your chats stay on your crew's own machine. Nothing goes to a big platform.</div>
           </div>
           <div className="foot">
@@ -1327,9 +1651,27 @@ function Workspace(): React.JSX.Element {
   // its deadline is not waiting on him, whatever the database still says.
   const pendingApprovals = useMyApprovals(world).waiting.length;
 
+  /* ---- EVERY WAY OUT OF A SCREEN GOES THROUGH ONE DOOR ----
+   *
+   * `go` is that door. Changing the screen and changing which conversation is
+   * open both throw away whatever an editor-like surface is holding, so both
+   * are routed through the one owner of "may this be left" — see
+   * `attemptLeave`. Nothing below calls `setScreen` or `setActiveId` directly;
+   * that is the whole rule, and it is why the rail cannot forget it the way it
+   * did before.
+   */
+  const leaveThen = useCallback((then: () => void) => attemptLeave(then), []);
+  const goScreen = useCallback((s: ScreenName) => attemptLeave(() => setScreen(s)), []);
+  const goChannel = useCallback((id: ID) => attemptLeave(() => {
+    setActiveId(id);
+    setScreen("chat");
+  }), []);
+
   const openEditor = useCallback((a: AgentDef | "new") => {
-    setEditorFor(a);
-    setScreen("editor");
+    attemptLeave(() => {
+      setEditorFor(a);
+      setScreen("editor");
+    });
   }, []);
   /* The agent only exists once the hub says so, so this waits for it to arrive
      rather than guessing an id. If it never arrives, nothing happens and the
@@ -1345,8 +1687,10 @@ function Workspace(): React.JSX.Element {
   }, [awaitingHire, world.agents, world.me?.id]);
 
   const openActivity = useCallback(() => {
-    client.send({ type: "activity", limit: 100 });
-    setScreen("activity");
+    attemptLeave(() => {
+      client.send({ type: "activity", limit: 100 });
+      setScreen("activity");
+    });
   }, []);
 
   /* Asked on the way in, the same way the Log is: a project gains a default
@@ -1354,8 +1698,10 @@ function Workspace(): React.JSX.Element {
      talks to GitHub, so a list held over from the last visit would be showing
      yesterday's answer to today's question. */
   const openProjects = useCallback(() => {
-    client.askProjects();
-    setScreen("projects");
+    attemptLeave(() => {
+      client.askProjects();
+      setScreen("projects");
+    });
   }, []);
 
   /* ---- keyboard ---- */
@@ -1367,8 +1713,9 @@ function Workspace(): React.JSX.Element {
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
         e.preventDefault();
-        setScreen("chat");
-        setFindOpen(true);
+        /* Through the one door as well: Ctrl+F is a way to the chat screen, and
+           a way to a screen is a way OFF the one he is on. */
+        attemptLeave(() => { setScreen("chat"); setFindOpen(true); });
       }
       /* Escape is NOT handled here. `useEscapeCloses` owns it for every overlay,
          including this palette — one handler per overlay is exactly how the
@@ -1391,18 +1738,18 @@ function Workspace(): React.JSX.Element {
     "invite": () => owner
       ? openInvite()
       : client.notify("only the owner of this Cloud9 can invite someone"),
-    "settings": () => setScreen("settings"),
+    "settings": () => goScreen("settings"),
     // Search looks EVERYWHERE you are allowed to see. Finding words in the one
     // conversation on screen is a different job and keeps its own bar (Ctrl+F).
-    "search": () => { setScreen("chat"); setSearchOpen(true); },
+    "search": () => leaveThen(() => { setScreen("chat"); setSearchOpen(true); }),
     "toggle-theme": () => {
       const now = document.documentElement.getAttribute("data-theme");
       prefs.set({ theme: now === "dark" ? "light" : "dark" });
     },
     "activity": openActivity,
-    "tasks": () => setScreen("tasks"),
+    "tasks": () => goScreen("tasks"),
     "quick-chat": () => setQuick(true),
-  }), [owner, openInvite, openActivity, openEditor]);
+  }), [owner, openInvite, openActivity, openEditor, leaveThen, goScreen]);
 
   const menuRef = useRef(menuHandlers);
   menuRef.current = menuHandlers;
@@ -1452,6 +1799,11 @@ function Workspace(): React.JSX.Element {
       outstanding: () => client.outstanding(),
       seen: () => client.framesSeen(),
       ask: (frame: Parameters<typeof client.send>[0]) => client.send(frame),
+      /* The app's own "say this went wrong" door — the very method a refused
+         button calls. The hub's catch-all is another agent's to fix; this is how
+         a check proves the SCREEN is safe whether or not it was, by handing the
+         screen the exact wrapper text a raw failure arrives in. */
+      notify: (text: string) => client.notify(text),
       search: (q: string) => client.search(q),
       clearSearch: () => client.clearSearch(),
       searching: () => client.world.search ?? null,
@@ -1459,6 +1811,12 @@ function Workspace(): React.JSX.Element {
          seed a conversation long enough to prove the scroll rules against; the
          alternative was typing a hundred and sixty messages one key at a time. */
       channels: () => client.world.channels.map(c => ({ id: c.id, name: c.name })),
+      /* The agents this screen knows, by name. A file an agent made can only be
+         published BY an agent, so a suite that proves the store end to end has
+         to be able to name one — the same way it names a conversation. */
+      agents: () => client.world.agents.map(a => ({ id: a.id, name: a.name, ownerId: a.ownerId })),
+      /** who this window is signed in as — so "his own agent" is a fact, not a guess */
+      me: () => client.world.me?.id ?? null,
       /* The very function the unread badge calls. A conversation with more
          than a thousand unread messages cannot be built in a QA run, so the
          RULE is checked here and the badge is checked on screen; between them
@@ -1473,6 +1831,36 @@ function Workspace(): React.JSX.Element {
        palette and the brief out of step, so the suite checks the stack itself. */
     (window as unknown as { cloud9Escape?: unknown }).cloud9Escape = {
       stacked: () => escapeStack.length,
+    };
+    /* QA hook: A FILE AN AGENT MADE, through the app's own path. `ticket` is the
+       very method the card's buttons call, so the suite can fetch the bytes back
+       over real HTTP and compare them with what was published — a card on screen
+       is not evidence that a file came back. `held` reports what the world is
+       holding, so "the card is missing" can be told apart from "the frame never
+       arrived". */
+    (window as unknown as { cloud9Artifacts?: unknown }).cloud9Artifacts = {
+      ticket: (artifactId: ID, version?: number) => client.artifactTicketFor(artifactId, version),
+      held: () => Object.values(client.world.artifacts).map(a => ({
+        id: a.id, name: a.name, channelId: a.channelId,
+        versions: a.versions.map(v => ({ version: v.version, agent: v.agentName, size: v.size, text: v.text })),
+      })),
+      inRoom: (channelId: ID) => client.artifactsIn(channelId).list.map(a => a.id),
+    };
+    /* QA hook: THE UNSAVED-WORK OWNER ITSELF. Pressing a rail icon proves the
+       behaviour; this proves the MECHANISM — that the surface he is typing into
+       really registered with the one owner, and that the question on screen is
+       that owner's and not a dialog somebody bolted onto one screen. */
+    (window as unknown as { cloud9Leave?: unknown }).cloud9Leave = {
+      unsaved: () => unsavedNow(),
+      guards: () => unsavedGuards.length,
+      asking: () => leaveSnapshot()?.what ?? null,
+    };
+    /* QA hook: WHAT A FAILURE WOULD SAY, and how many places are saying it. The
+       duplicate the audit photographed is only visible as a COUNT — two surfaces
+       drawing one sentence — so the suite asks the owner, and checks the screen. */
+    (window as unknown as { cloud9Say?: unknown }).cloud9Say = {
+      says: (raw: string) => sayable(raw) ?? null,
+      showing: (text: string) => saidCount(text),
     };
     /* QA hook: ASK THE FOLLOW RULE WHAT IT DID, rather than measure pixels and
        hope. A smooth scroll takes several frames and a picture can finish
@@ -1499,6 +1887,9 @@ function Workspace(): React.JSX.Element {
       delete (window as unknown as { cloud9Wire?: unknown }).cloud9Wire;
       delete (window as unknown as { cloud9Runs?: unknown }).cloud9Runs;
       delete (window as unknown as { cloud9View?: unknown }).cloud9View;
+      delete (window as unknown as { cloud9Say?: unknown }).cloud9Say;
+      delete (window as unknown as { cloud9Leave?: unknown }).cloud9Leave;
+      delete (window as unknown as { cloud9Artifacts?: unknown }).cloud9Artifacts;
       delete (window as unknown as { cloud9Escape?: unknown }).cloud9Escape;
       delete (window as unknown as { cloud9Files?: unknown }).cloud9Files;
       delete (window as unknown as { cloud9Menu?: unknown }).cloud9Menu;
@@ -1529,11 +1920,13 @@ function Workspace(): React.JSX.Element {
 
   const openDm = useCallback((peerId: ID, peerName: string) => {
     if (!world.me || peerId === world.me.id) return;
-    setScreen("chat");
-    const existing = findDm(peerId);
-    if (existing) { setActiveId(existing.id); setPendingPeer(null); return; }
-    setPendingPeer({ id: peerId, since: Date.now() });
-    client.send({ type: "createChannel", name: `dm-${slug(peerName)}`, memberIds: [peerId], kind: "dm" });
+    attemptLeave(() => {
+      setScreen("chat");
+      const existing = findDm(peerId);
+      if (existing) { setActiveId(existing.id); setPendingPeer(null); return; }
+      setPendingPeer({ id: peerId, since: Date.now() });
+      client.send({ type: "createChannel", name: `dm-${slug(peerName)}`, memberIds: [peerId], kind: "dm" });
+    });
   }, [world.me, findDm]);
 
   // the relay answers a beat later — open exactly what it hands back
@@ -1649,7 +2042,7 @@ function Workspace(): React.JSX.Element {
   ) => (
     <button className={`rail-btn${badge ? " rail-badge" : ""}`} data-go={go}
       aria-current={screen === go ? "true" : "false"} title={label}
-      onClick={onClick ?? (() => setScreen(go))}>
+      onClick={onClick ?? (() => goScreen(go))}>
       {icon}{label}
       {badge ? <b className="rail-count">{badge}</b> : null}
     </button>
@@ -1687,25 +2080,25 @@ function Workspace(): React.JSX.Element {
         <main className="stage">
           {screen === "chat" && (
             <ChatScreen
-              active={active} setActiveId={id => setActiveId(id)}
+              active={active} setActiveId={id => goChannel(id)}
               channels={channels} humanDms={humanDms} agents={agents} people={people}
               unreadFor={unreadFor} peerOf={peerOf} owner={owner}
               onNewChannel={() => setModal("channel")} onBrowseRooms={() => setModal("browse")}
-              onNewAgent={() => openEditor("new")} onBrowseMarket={() => setScreen("market")}
+              onNewAgent={() => openEditor("new")} onBrowseMarket={() => goScreen("market")}
               onInvite={openInvite} onEditAgent={a => openEditor(a)} onOpenDm={openDm}
               lastRead={active ? world.unread[active.id]?.lastReadTs ?? 0 : 0}
               findOpen={findOpen} onCloseFind={() => setFindOpen(false)}
-              onOpenTasks={() => setScreen("tasks")}
+              onOpenTasks={() => goScreen("tasks")}
               jumpTo={jumpTo} onJumped={() => setJumpTo(null)}
             />
           )}
           {screen === "crew" && (
             <CrewScreen onHire={() => openEditor("new")} onEdit={a => openEditor(a)} onOpen={openDm}
-              onMarket={() => setScreen("market")} justHired={justHired} />
+              onMarket={() => goScreen("market")} justHired={justHired} />
           )}
           {screen === "market" && (
             <MarketScreen
-              onBack={() => setScreen("crew")}
+              onBack={() => goScreen("crew")}
               onWriteMyOwn={() => openEditor("new")}
               /* Hiring lands him IN the new agent's own file — the same editor,
                  with the same reach ladder, files switch, skills and approval
@@ -1719,12 +2112,13 @@ function Workspace(): React.JSX.Element {
               justHired={justHired}
               agent={editorFor === "new" || editorFor === null ? null : editorFor}
               onDone={() => { setEditorFor(null); setScreen("crew"); }}
-              onMarket={() => { setEditorFor(null); setScreen("market"); }}
+              onLeave={() => leaveThen(() => { setEditorFor(null); setScreen("crew"); })}
+              onMarket={() => leaveThen(() => { setEditorFor(null); setScreen("market"); })}
             />
           )}
-          {screen === "tasks" && <TasksScreen onOpenChannel={id => { setActiveId(id); setScreen("chat"); }} />}
+          {screen === "tasks" && <TasksScreen onOpenChannel={id => goChannel(id)} />}
           {screen === "projects" && (
-            <ProjectsScreen onOpenChannel={id => { setActiveId(id); setScreen("chat"); }} />
+            <ProjectsScreen onOpenChannel={id => goChannel(id)} />
           )}
           {screen === "activity" && <ActivityScreen />}
           {screen === "settings" && <SettingsScreen />}
@@ -1743,6 +2137,8 @@ function Workspace(): React.JSX.Element {
           }}
         />
       )}
+      {/* The one question about unsaved words, for every screen in the app. */}
+      <LeaveGuardDialog />
       {quick && <QuickChat onClose={() => setQuick(false)} />}
       {modal === "invite" && <InviteModal onClose={() => setModal(null)} />}
       {modal === "channel" && <ChannelModal onClose={() => setModal(null)} />}
@@ -1759,16 +2155,29 @@ function Toast(): React.JSX.Element | null {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const err = world.lastError;
   const [dismissed, setDismissed] = useState(0);
+  /* Re-read when what is written on the screen changes, not only when a new
+     refusal arrives: a form that puts the same sentence under its own box a
+     moment later must take this one down. */
+  useSyncExternalStore(subscribeSaid, () => saidVersion);
   useEffect(() => {
     if (!err) return;
     const t = setTimeout(() => setDismissed(err.ts), 7000);
     return () => clearTimeout(t);
   }, [err?.ts]);
   if (!err || dismissed === err.ts) return null;
+  const said = sayable(err.text);
+  if (!said) return null;
+  /* THE SAME SENTENCE IS NEVER SAID TWICE ON ONE SCREEN. The audit photographed
+     exactly that — the refusal about a duplicate project name in a toast AND
+     under the form, one of them wearing the word "Error:". The form is the
+     right place for it, because that is where the box he has to change is, so
+     the floating one stands down. */
+  if (saidCount(said.text) > 0) return null;
   return (
     <div className="toast" role="status">
       <span className="toast-mark" aria-hidden="true">!</span>
-      <span className="toast-text">{plainError(err.text)}</span>
+      <span className="toast-text">{said.text}</span>
+      <ComputerWords detail={said.detail} />
       <button className="toast-x" aria-label="Dismiss" onClick={() => setDismissed(err.ts)}>✕</button>
     </div>
   );
@@ -2251,7 +2660,11 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
   if (typeof record.usage?.costUsd === "number") {
     rows.push(["cost", "Cost", humanMoney(record.usage.costUsd)]);
   }
-  if (record.error) rows.push(["went-wrong", "What went wrong", record.error]);
+  /* THE ONE OWNER OF WHAT A FAILURE SAYS, applied to the row a person is most
+     likely to meet one in. `redactForSharing` on the engine side took the
+     secrets and the paths out; it does not turn computer-speak into English,
+     which is why this row could read `Claude exited with 1: fatal: …`. */
+  if (record.error) rows.push(["went-wrong", "What went wrong", plainError(record.error)]);
 
   const title = record.outcome === "failed"
     ? `${record.agentName} didn't finish “${record.ask}”`
@@ -3086,7 +3499,7 @@ function MessageFiles({ attachments }: { attachments: Attachment[] }): React.JSX
                 person is offered the retry, never just told off. (§9.3.) */}
             {held?.state === "failed" && (
               <div className="filefail" role="status">
-                <span>{held.error}</span>
+                <span className="problemtext">{plainError(held.error)}</span>
                 <button className="linkish fileretry"
                   onClick={() => { client.closeFile(a.id); void (picture ? client.openFile(a) : client.saveFile(a)); }}>
                   Open it again
@@ -3101,6 +3514,311 @@ function MessageFiles({ attachments }: { attachments: Attachment[] }): React.JSX
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/* ================= FILES AN AGENT MADE ================= */
+
+/**
+ * HOW MUCH OF A TEXT FILE IS DRAWN WHERE IT SITS.
+ *
+ * A shared file may be 10 MB, and 10 MB of words pasted into a conversation is
+ * not a preview — it is the conversation gone. So a peek is a peek, it says
+ * exactly how much of the file it is showing, and the whole thing is one click
+ * away as a download.
+ */
+const PEEK_CHARS = 4000;
+
+/**
+ * ONE FILE AN AGENT MADE, drawn as a card — never as a path.
+ *
+ * This is the whole point of the artifact store on the screen side. Before it,
+ * an agent that produced a file could only paste a Windows path into the chat,
+ * and a path on this machine is not a file anybody else can open.
+ *
+ * WHAT IT DRAWS, and every one of them comes off the frame (`Artifact`,
+ * `ArtifactVersion` in `@cloud9/shared`) rather than out of this file:
+ *   • the name — the thing he clicks;
+ *   • `describeArtifactVersion` — who made it, which version, its own note. The
+ *     one owner of that line, so nothing here composes provenance itself;
+ *   • the size, and whether it can be read as words at all — which is the HUB'S
+ *     answer about the bytes, never a guess from the name;
+ *   • the history, when there is more than one version: each one's number, who
+ *     made it, when, and its own way in;
+ *   • the run that produced it, when the version names one — that join is the
+ *     entire reason attribution is stored per version.
+ *
+ * ABSENT MEANS ABSENT throughout: no note draws no note, version 1 draws no
+ * "v1", no run draws no button.
+ */
+function ArtifactCard({ artifactId, version, place = "chat" }: {
+  artifactId: ID;
+  /** the exact version a reference asked for; absent means the newest */
+  version?: number;
+  /** "chat" is the card in a message; "room" is the row in a room's file list */
+  place?: "chat" | "room";
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showRun, setShowRun] = useState(false);
+  /** which version's bytes are being looked at — a number, never a boolean */
+  const [peeking, setPeeking] = useState<number | null>(null);
+
+  /* Asked once, by id. A newer version arrives here by itself on an `artifact`
+     frame, so there is nothing to poll and nothing to refresh. */
+  useEffect(() => { client.askArtifact(artifactId); }, [artifactId]);
+
+  const artifact = world.artifacts[artifactId];
+  if (!artifact) {
+    /* THE TWO HONEST STATES OF A CARD WITH NOTHING BEHIND IT YET. "It is not
+       there" and "we have not looked" are different, and neither of them is an
+       empty box. A file that is not yours to see gets the SAME sentence as one
+       that never existed — the hub gives one answer to both on purpose, so an
+       id cannot be probed by watching the screen. */
+    return world.artifactsGone[artifactId] ? (
+      <div className="artcard is-gone" data-artifact={artifactId} data-state="gone">
+        <div className="artmain">
+          <span className="glyph" aria-hidden="true">?</span>
+          <span className="filenames">
+            <span className="nm">That file isn't here</span>
+            <span className="meta">
+              It has been taken off this Cloud9, or it is in a conversation you are not in.
+            </span>
+          </span>
+        </div>
+      </div>
+    ) : (
+      <div className="artcard is-waiting" data-artifact={artifactId} data-state="looking">
+        <div className="artmain">
+          <span className="glyph" aria-hidden="true">…</span>
+          <span className="filenames">
+            <span className="nm">Looking for that file…</span>
+            <span className="meta">Asking the hub what an agent shared here</span>
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  const newest = latestVersion(artifact)!;
+  const asked = version === undefined ? newest : versionOf(artifact, version);
+  /* A VERSION THAT IS NO LONGER KEPT IS NOT QUIETLY SWAPPED FOR THE NEWEST.
+     Twenty versions are kept and the oldest bytes are deleted with their row,
+     so a reference written last month can name bytes that are genuinely gone.
+     He is told which one he asked for and which one is here — and the card then
+     shows the newest, labelled as the newest, rather than nothing at all. */
+  const pruned = version !== undefined && !asked;
+  const shown = asked ?? newest;
+  const held = world.files[shown.id];
+  const peekingThis = peeking === shown.version;
+  const older = artifact.versions.filter(v => v.version !== shown.version);
+
+  const open = (v: ArtifactVersion): void => {
+    if (v.text) { setPeeking(v.version); void client.openArtifact(artifact, v); }
+    else void client.saveArtifact(artifact, v);
+  };
+
+  return (
+    <div className={`artcard place-${place}`} data-artifact={artifact.id}
+      data-name={artifact.name} data-version={shown.version} data-state="here"
+      data-versions={artifact.versions.length}>
+      <div className="artmain">
+        <span className="glyph" aria-hidden="true">{fileKind(artifact.name)}</span>
+        <span className="filenames">
+          <span className="nm artname">{artifact.name}</span>
+          {/* THE ONE LINE, from the one owner of it. */}
+          <span className="meta artby">{describeArtifactVersion(shown)}</span>
+          <span className="meta artfacts">
+            {fileSize(shown.size)} · {shown.text ? "text" : "a file to save"}
+            {" · "}{dayStamp(shown.producedAt)} {clock(shown.producedAt)}
+          </span>
+        </span>
+        <span className="act">
+          {held?.state === "opening" ? (
+            <span className="eyebrow">Opening…</span>
+          ) : shown.text && peekingThis && held?.state === "ready" ? (
+            <button className="btn small ghost arthide" onClick={() => {
+              setPeeking(null); client.closeFile(shown.id);
+            }}>Hide</button>
+          ) : (
+            <button className="btn small artopen" onClick={() => open(shown)}>
+              {shown.text ? "Show it" : "Save it"}
+            </button>
+          )}
+        </span>
+      </div>
+
+      {pruned && (
+        <p className="artpruned" role="status">
+          Version {version} isn't kept any more — Cloud9 keeps the last{" "}
+          {countOf(ARTIFACT_LIMITS.versions, "version")} of a file. This is version{" "}
+          {newest.version}, the newest one.
+        </p>
+      )}
+
+      {/* A refusal is the HUB'S own sentence — "version 9 of notes.txt is no
+          longer kept", "that link has expired" — and it comes with the way out
+          rather than just the bad news. */}
+      {held?.state === "failed" && (
+        <div className="filefail" role="status">
+          <span className="problemtext">{plainError(held.error)}</span>
+          <button className="linkish artretry"
+            onClick={() => { client.closeFile(shown.id); open(shown); }}>Try again</button>
+        </div>
+      )}
+
+      {shown.text && peekingThis && held?.state === "ready" && held.text !== undefined && (
+        <div className="artpeek">
+          <pre>{held.text.slice(0, PEEK_CHARS)}</pre>
+          {held.text.length > PEEK_CHARS && (
+            <p className="hint artpeekmore">
+              This is the first {PEEK_CHARS.toLocaleString()} characters of {fileSize(shown.size)}.
+              {" "}
+              <button className="linkish artsave"
+                onClick={() => void client.saveArtifact(artifact, shown)}>Save the whole file</button>
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* THE HISTORY. One file with two authors in it is the entire reason this
+          store exists — so who made each version, and when, is on the screen. */}
+      {older.length > 0 && (
+        <>
+          <button className="runmore arthistory" aria-expanded={showHistory}
+            data-older={older.length} onClick={() => setShowHistory(o => !o)}>
+            <span className="tri" aria-hidden="true">{showHistory ? "▾" : "▸"}</span>
+            Earlier versions<span className="n">{countOf(older.length, "version")}</span>
+          </button>
+          {showHistory && (
+            <ol className="artversions">
+              {older.map(v => (
+                <li key={v.id} className="artversion" data-version={v.version}>
+                  <span className="vnum">v{v.version}</span>
+                  <span className="vwho">
+                    <b>{v.agentName}</b>
+                    <span className="vwhen">{dayStamp(v.producedAt)} {clock(v.producedAt)}</span>
+                    {v.note && <span className="vnote">{v.note}</span>}
+                    <span className="vsize">{fileSize(v.size)}</span>
+                  </span>
+                  <span className="act">
+                    {world.files[v.id]?.state === "opening"
+                      ? <span className="eyebrow">Opening…</span>
+                      : <button className="btn small artopen-old" onClick={() => {
+                        if (v.text) { setPeeking(v.version); void client.openArtifact(artifact, v); }
+                        else void client.saveArtifact(artifact, v);
+                      }}>{v.text ? "Show it" : "Save it"}</button>}
+                  </span>
+                  {world.files[v.id]?.state === "failed" && (
+                    <span className="filefail vfail" role="status">
+                      <span className="problemtext">{plainError(world.files[v.id].error)}</span>
+                    </span>
+                  )}
+                  {v.text && peeking === v.version && world.files[v.id]?.state === "ready"
+                    && world.files[v.id].text !== undefined && (
+                    <div className="artpeek">
+                      <pre>{world.files[v.id].text!.slice(0, PEEK_CHARS)}</pre>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ol>
+          )}
+        </>
+      )}
+
+      {/* THE JOIN THE ATTRIBUTION EXISTS FOR: the turn that produced these bytes.
+          Drawn only when the version names one — never a button that would ask
+          about a run nobody recorded. */}
+      {shown.runId && (
+        <>
+          <button className="runmore artrun" aria-expanded={showRun} data-run={shown.runId}
+            onClick={() => setShowRun(o => !o)}>
+            <span className="tri" aria-hidden="true">{showRun ? "▾" : "▸"}</span>
+            The turn that made this
+          </button>
+          {showRun && <TaskRun runId={shown.runId} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Every file named in one message, drawn as cards.
+ *
+ * The reference lives in the ORDINARY TEXT of a message — there is no new field
+ * on `Message`, on purpose — so every place that already carries words carries
+ * these for free: an agent's own answer, a job summary, and a sentence he types
+ * back himself. `findArtifactRefs` is the one reader of that text.
+ */
+function MessageArtifacts({ text }: { text: string }): React.JSX.Element | null {
+  const refs = useMemo(() => findArtifactRefs(text), [text]);
+  if (refs.length === 0) return null;
+  return (
+    <div className="artifacts" data-artifacts={refs.length}>
+      {refs.map(r => (
+        <ArtifactCard key={artifactRef(r.artifactId, r.version)}
+          artifactId={r.artifactId} version={r.version} />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * THE WORDS WITHOUT THE REFERENCE.
+ *
+ * The card IS the file, so leaving `cloud9://artifact/af_…` in the sentence
+ * beside it would be the pasted path this whole feature exists to kill — twice
+ * over, once as machine text and once as a card. The reference stays in the
+ * real message (copying it, editing it and searching it all see it); only the
+ * drawing drops it.
+ */
+const withoutArtifactRefs = (text: string): string =>
+  text.replace(/cloud9:\/\/artifact\/[A-Za-z0-9][A-Za-z0-9._-]*(@\d+)?/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+/**
+ * EVERY FILE AGENTS HAVE MADE IN ONE CONVERSATION.
+ *
+ * The card in a message is how he meets a file; this is how he finds one again
+ * a week later without scrolling for it. Asked when the panel opens, and every
+ * `artifact` frame that lands afterwards replaces the row with the same id.
+ */
+function RoomFiles({ channel }: { channel: Channel }): React.JSX.Element {
+  useSyncExternalStore(client.subscribe, client.getSnapshot);
+  useEffect(() => { client.askArtifacts(channel.id); }, [channel.id]);
+  const { asked, list } = client.artifactsIn(channel.id);
+
+  return (
+    <div className="aside-sec roomfiles" data-files={list.length}>
+      <span className="eyebrow">Files agents made</span>
+      {!asked && list.length === 0 ? (
+        <p className="sec-note" data-files-state="looking">Looking…</p>
+      ) : list.length === 0 ? (
+        /* ABSENT MEANS ABSENT: this only appears once the hub has answered, so
+           it is never "there are none" said about a question nobody asked. */
+        <p className="sec-note" data-files-state="empty">
+          No agent has shared a file here yet. When one does, it appears in the
+          conversation as a card — and again in this list.
+        </p>
+      ) : (
+        <div className="roomfilelist" data-files-state="some">
+          {list.map(a => <ArtifactCard key={a.id} artifactId={a.id} place="room" />)}
+        </div>
+      )}
+      {list.length > 0 && (
+        /* SAID RATHER THAN DRAWN. Nothing removes a shared file yet — there is no
+           frame for it — so there is no bin here that could only ever fail.
+           (`artifact-store-handoff.md` §8.3.) */
+        <p className="sec-note filesnote">
+          A file an agent shared stays in this room. Nothing can take one back yet.
+        </p>
+      )}
     </div>
   );
 }
@@ -3299,6 +4017,14 @@ function MessageRow({
     <Markdown key={key} text={text} />
   );
 
+  /* THE FILE, NOT THE PATH. A reference in the words is drawn as a card below,
+     so the reference itself comes OUT of the sentence — otherwise he would be
+     shown the machine text this whole feature exists to replace, sitting right
+     beside the card that replaces it. Nothing else reads `drawn`: copying,
+     editing and searching all still see the real message. */
+  const artifactRefs = useMemo(() => findArtifactRefs(m.text), [m.text]);
+  const drawn = artifactRefs.length > 0 ? withoutArtifactRefs(m.text) : m.text;
+
   /* A tombstone has no actions: there is nothing left to react to, copy, edit
      or reply to, and a button that always errors is a dead click. */
   /* Nothing new can be put into an archived room — reacting, editing, deleting
@@ -3387,7 +4113,8 @@ function MessageRow({
         data-msg={m.id}>
         <div className="when-gutter">{clock(m.ts)}</div>
         <div className="body">
-          {deleted ? tombstone : editing ? editor : paragraph(m.text)}
+          {deleted ? tombstone : editing ? editor : drawn ? paragraph(drawn) : null}
+          {!deleted && !editing && <MessageArtifacts text={m.text} />}
           {!deleted && doneRunId && <TaskRun runId={doneRunId} />}
           {!deleted && m.attachments && m.attachments.length > 0 &&
             <MessageFiles attachments={m.attachments} />}
@@ -3416,7 +4143,7 @@ function MessageRow({
     }
   }
 
-  const shape = isAgent ? parseAnswer(m.text) : { lead: [], tail: [], card: undefined };
+  const shape = isAgent ? parseAnswer(drawn) : { lead: [], tail: [], card: undefined };
 
   const body = shape.card
     ? (
@@ -3437,8 +4164,8 @@ function MessageRow({
       </div>
     )
     : isAgent
-      ? <div className="answer">{paragraph(m.text)}</div>
-      : paragraph(m.text);
+      ? <div className="answer">{drawn ? paragraph(drawn) : null}</div>
+      : drawn ? paragraph(drawn) : null;
 
   return (
     <article data-msg={m.id}
@@ -3467,6 +4194,7 @@ function MessageRow({
           </div>
         )}
         {deleted ? tombstone : editing ? editor : body}
+        {!deleted && !editing && <MessageArtifacts text={m.text} />}
         {!deleted && doneRunId && <TaskRun runId={doneRunId} />}
         {!deleted && m.attachments && m.attachments.length > 0 &&
           <MessageFiles attachments={m.attachments} />}
@@ -3859,7 +4587,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
                   <span className="meta">
                     {u.state === "sending" ? "Going up…"
                       : u.state === "done" ? `${fileSize(u.size)} · ready to send`
-                        : u.error}
+                        : plainError(u.error)}
                   </span>
                 </span>
                 {u.state === "sending" && <span className="upbar" aria-hidden="true"><i /></span>}
@@ -4065,12 +4793,22 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
     return { name: agent?.name ?? user?.name ?? "Someone who has left", agent, user };
   };
 
+  /* THE SAME OWNER, A DIFFERENT SURFACE. Room details is an editor too — it has
+     a Save and a Cancel and it holds typed words — and switching conversation
+     used to throw them away exactly as the rail threw away an agent's brief.
+     It says so here and the one owner does the rest. */
+  const infoChanged = editInfo
+    && (topic !== (channel.topic ?? "") || description !== (channel.description ?? ""));
+  const infoSettled = useRef(false);
+  useUnsavedWork(`The details of #${channel.name}`, infoChanged && !infoSettled.current);
+
   /* Absent means "leave alone", "" means "clear it" — the same rule skill files
      follow. So only the field that actually changed is ever sent. */
   const saveInfo = () => {
     const patch: { description?: string; topic?: string } = {};
     if (description !== (channel.description ?? "")) patch.description = description;
     if (topic !== (channel.topic ?? "")) patch.topic = topic;
+    infoSettled.current = true;
     setEditInfo(false);
     if (Object.keys(patch).length === 0) return;
     client.send({ type: "setChannelInfo", channelId: channel.id, ...patch });
@@ -4104,7 +4842,10 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
                 <span className="lb">Topic — one line</span>
                 <input className="input roomtopic-input" type="text" value={topic}
                   maxLength={200} placeholder="What it's about today"
-                  onChange={e => setTopic(e.target.value.replace(/[\r\n]/g, " "))} />
+                  onChange={e => {
+                    infoSettled.current = false;
+                    setTopic(e.target.value.replace(/[\r\n]/g, " "));
+                  }} />
               </label>
               <div className="roomeditbtns">
                 <button className="primary small roominfo-save" onClick={saveInfo}>Save</button>
@@ -4127,6 +4868,10 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
             </button>
           )}
         </div>
+
+        {/* WHAT THE AGENTS IN HERE HAVE MADE. A file is the room's, not the
+            agent's — which is why it is listed with the room's own details. */}
+        <RoomFiles channel={channel} />
 
         <div className="aside-sec roommembers">
           <span className="eyebrow">Who's here ({rows.length})</span>
@@ -5593,8 +6338,22 @@ function rungOfExactly(ab: AgentAbilities): Reach | null {
 
 /* ================= 5 · CREATE / EDIT AN AGENT ================= */
 
-function AgentEditor({ agent, onDone, onMarket, justHired }: {
-  agent: AgentDef | null; onDone: () => void; onMarket: () => void;
+function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
+  agent: AgentDef | null;
+  /**
+   * Leaving BECAUSE he decided what happens to the words — Save, Create,
+   * Delete, and Cancel, which is a labelled discard and not navigation. None of
+   * them asks, because he has just answered the question. (Asking after a Save
+   * is the bug this guard would otherwise introduce, and this split is the fix
+   * for the whole class of it.)
+   */
+  onDone: () => void;
+  /**
+   * Walking out of the file without saying anything about the words — the back
+   * arrow. This is navigation, so it goes through the unsaved-work owner.
+   */
+  onLeave: () => void;
+  onMarket: () => void;
   /** the @name he has this second hired, so the file says why he is looking at it */
   justHired?: string | null;
 }): React.JSX.Element {
@@ -5626,6 +6385,39 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
   }, [provider, ids.join(","), model]);
 
   const ready = !!name.trim() && !!persona.trim();
+
+  /* ---- HAS HE WRITTEN ANYTHING THAT IS NOT SAVED? ----
+   *
+   * Compared against what this file was OPENED with, field by field — a new
+   * agent against an empty page, an existing one against itself. That is what
+   * makes "I typed a sentence into the brief" different from "I opened the
+   * editor and looked at it", which is the difference between a question worth
+   * asking and one that would train him to click through it.
+   */
+  const changed =
+    name !== (agent?.name ?? "")
+    || emoji !== (agent?.emoji ?? "✨")
+    || persona !== (agent?.persona ?? "")
+    || JSON.stringify(ab) !== JSON.stringify(agent?.abilities ?? NEW_AGENT_ABILITIES)
+    || JSON.stringify(ap) !== JSON.stringify(agent?.approvals ?? NEW_AGENT_APPROVALS)
+    || life !== (agent?.lifecycle ?? "enabled")
+    || provider !== ((agent?.provider ?? p.defaultProvider ?? "claude") as Provider)
+    || JSON.stringify(skills) !== JSON.stringify(Array.isArray(agent?.skills) ? agent!.skills! : [])
+    || respondTo !== (agent?.respondTo ?? "owner")
+    || JSON.stringify(allowlist) !== JSON.stringify(agent?.respondToAllowlist ?? []);
+  /* THE MODEL IS DELIBERATELY NOT IN THAT LIST. An agent saved before a model
+     list changed has one picked FOR it on the way in (see the effect above), so
+     counting it would mark a file he has only looked at as unsaved — and a
+     question asked when nothing was typed is how a person learns to click
+     through the question that matters. */
+  /* Save and Delete settle the question of what happens to these words, so from
+     that instant there is nothing unsaved to warn about — even though this
+     component is still mounted while the screen changes underneath it. A ref
+     rather than state: the guard is asked in the same tick as the click. */
+  const settled = useRef(false);
+  useUnsavedWork(
+    creating ? "The new agent you are writing" : `${agent!.name}'s file`,
+    changed && !settled.current);
 
   /* Said in the form rather than only in a toast, because the name box is right
      here and the toast is at the other end of the window. */
@@ -5663,11 +6455,13 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
         },
       });
     }
+    settled.current = true;
     onDone();
   };
 
   const del = () => {
     if (agent) client.send({ type: "deleteAgent", agentId: agent.id });
+    settled.current = true;
     onDone();
   };
 
@@ -5725,7 +6519,7 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
   return (
     <div className="editor">
       <header className="topbar">
-        <button className="btn small ghost" onClick={onDone}>← Crew</button>
+        <button className="btn small ghost" onClick={onLeave}>← Crew</button>
         <h2>{shownName}</h2>
         <span className="sub">
           {creating ? "New hire · nothing is saved until you press create"
@@ -5777,7 +6571,7 @@ function AgentEditor({ agent, onDone, onMarket, justHired }: {
             <p className="sec-note">Names matter — you'll be typing this one a lot, after an @.</p>
             {/* The refusal sits beside the box he has to change, and nothing he
                 typed is cleared to make room for it. */}
-            {refusal && <p className="problemline" role="alert" data-namerefusal="agent">{refusal}</p>}
+            <Problem text={refusal ?? undefined} attrs={{ "data-namerefusal": "agent" }} />
             <div className="two">
               <div className="field-row">
                 <label htmlFor="f-name">Name <span className="hint">no spaces</span></label>
@@ -6444,7 +7238,7 @@ function ChannelModal({ onClose }: { onClose: () => void }): React.JSX.Element {
               onChange={e => { setName(e.target.value.replace(/\s+/g, "-").toLowerCase()); setRefusal(null); }}
               onKeyDown={e => { if (e.key === "Enter") create(); }}
               placeholder="trip-goa" /></div>
-          {refusal && <p className="problemline" role="alert">{refusal}</p>}
+          <Problem text={refusal ?? undefined} />
           <div className="field-row"><label>Members</label>
             {candidates.length === 0
               ? <div className="skillempty">Nobody to add yet — you can make the channel now and add people later.</div>
@@ -6961,7 +7755,7 @@ function HarnessCard({
 
       {!signedIn && !waiting && problem && (
         <div className="problemline" data-state="failed">
-          <span className="problemtext">{problem}</span>
+          <span className="problemtext">{plainError(problem)}</span>
           <button className="primary" disabled={!installed} onClick={signIn}>Try again</button>
         </div>
       )}
@@ -7301,6 +8095,13 @@ function ConnectProject({ onConnected }: { onConnected: (repo: string) => void }
   const [refusal, setRefusal] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
+  /* THE THIRD SURFACE ON THE SAME OWNER. A half-typed repository name is unsaved
+     work like any other, and leaving Projects used to lose it without a word. */
+  const settled = useRef(false);
+  useUnsavedWork(
+    "The repository you are connecting",
+    (!!repo.trim() || !!name.trim()) && !settled.current);
+
   const submit = (): void => {
     /* THE CHECK LIVES IN THE STORE, not here (`connectProject` → `refused`), so
        every box in the app gives the same answer to "it was refused — what
@@ -7315,7 +8116,7 @@ function ConnectProject({ onConnected }: { onConnected: (repo: string) => void }
       setRefusal(why);
     });
     /* only leave the form when it was actually accepted */
-    if (!stopped) onConnected(repo.trim());
+    if (!stopped) { settled.current = true; onConnected(repo.trim()); }
   };
 
   return (
@@ -7335,7 +8136,7 @@ function ConnectProject({ onConnected }: { onConnected: (repo: string) => void }
           onKeyDown={e => { if (e.key === "Enter") submit(); }} />
         <button className="btn primary" disabled={sending} onClick={submit}>Connect</button>
       </div>
-      {refusal && <p className="problemline" role="alert">{refusal}</p>}
+      <Problem text={refusal ?? undefined} />
     </div>
   );
 }
@@ -7546,14 +8347,14 @@ function ProjectDetail({ project, onOpenChannel }: {
       {/* The hub's refusal, where the button he pressed is — not only in the
           toast that floats above every screen. Its own words, never a
           paraphrase. */}
-      {lookRefusal && <p className="problemline" role="alert" data-look-refusal>{lookRefusal}</p>}
+      <Problem text={lookRefusal ?? undefined} attrs={{ "data-look-refusal": "" }} />
 
       {/* The hub's own sentence for why the last look failed, never a paraphrase
           and never an empty list pretending to be "no open work". */}
       {project.problem && (
         <div className="pd-problem" role="status">
           <b>The last look at GitHub did not work</b>
-          <span>{project.problem}</span>
+          <span className="problemtext">{plainError(project.problem)}</span>
         </div>
       )}
 

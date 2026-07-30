@@ -29,6 +29,11 @@ import {
   // leaving a number that used to be right, and a check can never agree with
   // wording this file made up.
   SKILL_CATEGORIES, SKILL_LIBRARY, SKILL_LIMITS,
+  // THE FILE AN AGENT MADE — the reference a message carries and the one line a
+  // card draws under its name, taken from the package the screen reads them
+  // from. A check that spelled either of them here could agree with a card that
+  // was wrong in exactly the same way.
+  artifactRef, describeArtifactVersion,
 } from "@cloud9/shared";
 // THE LADDER AND THE TABLE, from the engine that owns them. Every count below
 // is derived, never typed: a ninth capability or a fifth rung moves this suite
@@ -78,7 +83,58 @@ const SHOTS = new URL("../docs/qa", import.meta.url).pathname.replace(/^\/([A-Za
 fs.mkdirSync(SHOTS, { recursive: true });
 // A QA run points at the throwaway stack by default, never at the real hub
 // (finding #18). `qa-target.mjs` owns that decision for every QA script.
-const { ui: UI } = qaTarget();
+const { ui: UI, relayPort: RELAY_PORT } = qaTarget();
+
+/**
+ * PUT A FILE INTO A CONVERSATION THE WAY THE ENGINE DOES — the only way there is.
+ *
+ * `publishArtifact` is ENGINE ONLY at the hub: a desktop client that sends it is
+ * refused with *"only your own agent engine can share a file an agent made"*,
+ * and that refusal is the entire value of the store — attribution nobody can
+ * fake. So this suite cannot type a file into the app, and must not pretend to:
+ * it opens a second connection, says `hello` as an engine exactly as
+ * `scripts/engine-host.mjs` does, and sends the real frame. Everything after
+ * that — the storing, the versioning, the attribution, the push to everyone in
+ * the room, the ticket, the bytes — is the hub's own code doing its own job.
+ *
+ * Closing this socket is safe: the real engine host stays connected, so the hub
+ * still has an engine for this owner and nobody's agents go offline.
+ */
+function publishAsEngine({ channelId, agentId, name, data, note, runId }) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${RELAY_PORT}`);
+    let over = false;
+    const finish = (err, artifact) => {
+      if (over) return;
+      over = true;
+      try { ws.close(); } catch { /* already gone */ }
+      err ? reject(err) : resolve(artifact);
+    };
+    const timer = setTimeout(
+      () => finish(new Error(`the hub never answered the publish of ${name}`)), 20000);
+    ws.onopen = () => ws.send(JSON.stringify({
+      type: "hello", token: qaOwnerToken(), client: "engine",
+    }));
+    ws.onmessage = ev => {
+      let frame;
+      try { frame = JSON.parse(ev.data); } catch { return; }
+      if (frame.type === "welcome") {
+        ws.send(JSON.stringify({
+          type: "publishArtifact", channelId, agentId, name,
+          dataBase64: Buffer.from(data).toString("base64"),
+          ...(note ? { note } : {}), ...(runId ? { runId } : {}),
+        }));
+      } else if (frame.type === "artifact" && frame.artifact.name === name) {
+        clearTimeout(timer);
+        finish(null, frame.artifact);
+      } else if (frame.type === "error") {
+        clearTimeout(timer);
+        finish(new Error(frame.error));
+      }
+    };
+    ws.onerror = () => { clearTimeout(timer); finish(new Error("the QA engine socket failed")); };
+  });
+}
 
 /**
  * How many checks a complete run of this file performs.
@@ -135,7 +191,33 @@ const { ui: UI } = qaTarget();
 // rather than pressed. One holds a thread's own list, through the same owner. And
 // the last is the first: a check that he really was a long way from the newest
 // message before any of it, so none of the rest can pass on a technicality.
-const EXPECTED_CHECKS = 410;
+// 410 → 440: thirty checks added by the artifact-store screen round.
+// THIRTEEN are the file an agent made, finally on his screen: it arrives as a
+// card with its name (never a path), the card says which agent made it and how
+// big it is, version 1 is not labelled "version 1", the reference in the words
+// is not printed beside the card that replaces it, the bytes really come back
+// through the attachment's own one-use ticket, a second agent publishing the
+// same name updates the SAME card and says whose version this now is, the
+// earlier version is still listed with its author and still downloadable AS the
+// old bytes, text can be read where it sits, a picture is a download and is
+// never drawn into the room, a reference to something that is not there says so
+// in plain words, the room's details list every file agents made in it, and a
+// room where nobody has shared anything says that rather than showing a blank.
+// EIGHT are the unsaved-work owner, on TWO different surfaces: an untouched
+// editor is not "holding work", a typed one tells the one owner it is, a rail
+// click then ASKS instead of throwing the words away, "keep editing" leaves
+// every word where it was, saving does not ask (the bug the guard itself would
+// introduce), "throw them away" really does, and the room-details panel — a
+// completely different screen — reaches the same owner and asks on a change of
+// conversation.
+// NINE are error legibility: the owner strips the transport's "Error:",
+// refuses to show computer-speak as the sentence while keeping the raw words
+// reachable, passes a plain-English hub refusal through untouched, does the same
+// for a database code, and then on the screen — a raw refusal from the hub's
+// catch-all reaches him with no "Error:" anywhere on the page, and the audit's
+// own photograph (one refusal, said twice, once politely and once not) is
+// reproduced and comes back said exactly ONCE.
+const EXPECTED_CHECKS = 440;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -4461,6 +4543,368 @@ try {
 
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+
+  /* ================= FILES AN AGENT MADE, ON HIS SCREEN =================
+   *
+   * The store's server half landed first and nothing was ever drawn, so every
+   * check below is about the SCREEN. Nothing here is stubbed: the file is
+   * published through the hub's own `publishArtifact` frame from an engine
+   * connection (`publishAsEngine`), which is the only way any file can enter
+   * the store at all — a desktop client sending that frame is refused, and that
+   * refusal is the whole value of the attribution. The bytes come back through
+   * the one download endpoint an attachment uses, and are compared with what
+   * went in.
+   */
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# general");
+  await page.waitForSelector(".composer textarea", { timeout: 15000 });
+  const world9 = await page.evaluate(() => ({
+    channels: window.cloud9Wire.channels(),
+    agents: window.cloud9Wire.agents(),
+    me: window.cloud9Wire.me(),
+  }));
+  const generalId = world9.channels.find(c => c.name === "general").id;
+  /* HIS OWN AGENTS, and only those: the hub refuses to publish a file wearing
+     somebody else's agent's name, which is the point. Two different ones,
+     because one file with two authors in its history is the thing the store
+     exists to make possible. */
+  const mineAgents = world9.agents.filter(a => a.ownerId === world9.me);
+  const artAgent = mineAgents.find(a => a.name === "Scout") ?? mineAgents[0];
+  const artAgent2 = mineAgents.find(a => a.id !== artAgent.id) ?? artAgent;
+
+  const REPORT_V1 = "# Villas in Goa\nThree that fit, with prices.\n";
+  const REPORT_V2 = "# Villas in Goa\nThree that fit, with the prices corrected.\n";
+  const v1 = await publishAsEngine({
+    channelId: generalId, agentId: artAgent.id, name: "villas.md", data: REPORT_V1,
+  });
+  const artId = v1.id;
+
+  const artBox = page.locator(".composer textarea");
+  await artBox.fill(`here is the write-up ${artifactRef(artId)}`);
+  await artBox.press("Enter");
+  await page.waitForSelector(`.msg .artcard[data-artifact="${artId}"]`, { timeout: 20000 });
+  const artCard = page.locator(`.msg .artcard[data-artifact="${artId}"]`).last();
+
+  ok("a file an agent made appears in the conversation as a card with its name",
+    (await artCard.locator(".artname").innerText()).trim() === "villas.md",
+    (await artCard.locator(".artname").innerText()).trim());
+
+  const cardLine = (await artCard.locator(".artby").innerText()).trim();
+  const cardFacts = (await artCard.locator(".artfacts").innerText()).trim();
+  ok("the card says which agent made it, and how big it is",
+    cardLine === describeArtifactVersion(v1.versions[0])
+    && cardLine.includes(`made by ${artAgent.name}`)
+    && /\d/.test(cardFacts),
+    `${cardLine} :: ${cardFacts}`);
+
+  /* VERSION 1 DRAWS NO "v1". Absent means absent, and `describeArtifactVersion`
+     is the one owner that decides it — so this is a check on the screen using
+     that owner's own answer, never a sentence typed here. */
+  ok("version 1 is not labelled with a version number nobody needs",
+    !/version 1\b/.test(cardLine), cardLine);
+
+  /* THE PATH IS GONE. The reference is still in the real message — copying and
+     editing see it — but the words drawn beside the card must not be the
+     machine text the card replaces. */
+  const bodyWords = (await page.locator(`.msg:has(.artcard[data-artifact="${artId}"]) .body`)
+    .last().innerText());
+  ok("the reference itself is not printed beside the card it draws",
+    !bodyWords.includes("cloud9://") && bodyWords.includes("here is the write-up"),
+    bodyWords.replace(/\s+/g, " ").slice(0, 120));
+
+  /* THE BYTES, back through the same one-use ticket an attachment uses, fetched
+     over real HTTP from the app's own method. A card on screen is not evidence
+     that a file came back. */
+  const gotBack = await page.evaluate(async id => {
+    const t = await window.cloud9Artifacts.ticket(id);
+    const res = await fetch(t.url);
+    return { status: res.status, text: await res.text() };
+  }, artId);
+  ok("the file really comes back, byte for byte, through the attachment ticket path",
+    gotBack.status === 200 && gotBack.text === REPORT_V1,
+    `${gotBack.status} ${JSON.stringify(gotBack.text).slice(0, 80)}`);
+
+  /* A SECOND AGENT REVISING THE SAME NAME IS A HANDOFF — one file, two authors,
+     and NOT two cards with the same name that nobody can tell apart. */
+  const v2 = await publishAsEngine({
+    channelId: generalId, agentId: artAgent2.id, name: "villas.md", data: REPORT_V2,
+    note: "fixed the numbers",
+  });
+  await waitFor(page, id => document.querySelector(`.msg .artcard[data-artifact="${id}"]`)
+    ?.dataset.version === "2", artId,
+  { timeout: 20000, what: "the card on screen to become version 2 by itself" });
+  ok("publishing the same name again updates the SAME card, and says so",
+    v2.id === artId
+    && (await page.locator(`.msg .artcard[data-artifact="${artId}"]`).count()) === 1
+    && /version 2/.test(await artCard.locator(".artby").innerText())
+    && /fixed the numbers/.test(await artCard.locator(".artby").innerText()),
+    (await artCard.locator(".artby").innerText()).trim());
+
+  ok("the newest version names the agent that made THAT version, not the first one",
+    artAgent2.id !== artAgent.id
+    && (await artCard.locator(".artby").innerText()).includes(`made by ${artAgent2.name}`),
+    (await artCard.locator(".artby").innerText()).trim());
+
+  /* THE HISTORY: who made each version, and when — visible, and openable. */
+  await artCard.locator(".arthistory").click();
+  await page.waitForSelector(`.artcard[data-artifact="${artId}"] .artversion[data-version="1"]`,
+    { timeout: 15000 });
+  const oldRow = artCard.locator('.artversion[data-version="1"]');
+  ok("the history shows the earlier version, who made it and when",
+    (await oldRow.locator(".vwho b").innerText()).trim() === artAgent.name
+    && /\d/.test(await oldRow.locator(".vwhen").innerText()),
+    (await oldRow.innerText()).replace(/\s+/g, " ").slice(0, 100));
+
+  const oldBytes = await page.evaluate(async id => {
+    const t = await window.cloud9Artifacts.ticket(id, 1);
+    const res = await fetch(t.url);
+    return { status: res.status, text: await res.text() };
+  }, artId);
+  ok("an older version can still be downloaded, and it is the OLD bytes",
+    oldBytes.status === 200 && oldBytes.text === REPORT_V1 && oldBytes.text !== REPORT_V2,
+    `${oldBytes.status} ${JSON.stringify(oldBytes.text).slice(0, 60)}`);
+  await page.screenshot({ path: `${SHOTS}/artifact-artCard.png` });
+
+  /* TEXT MAY BE READ WHERE IT SITS; ANYTHING ELSE IS A DOWNLOAD AND NOTHING
+     MORE. Which of the two it is, is the HUB's answer about the bytes. */
+  await artCard.locator(".artopen").click();
+  await page.waitForSelector(`.artcard[data-artifact="${artId}"] .artpeek pre`, { timeout: 20000 });
+  ok("a text file can be read where it sits, and it is the file's own words",
+    (await artCard.locator(".artpeek pre").innerText()).includes("prices corrected"),
+    (await artCard.locator(".artpeek pre").innerText()).slice(0, 60));
+
+  const shot = pngOfSolidColour(6, 6, [12, 90, 60]);
+  const pic = await publishAsEngine({
+    channelId: generalId, agentId: artAgent.id, name: "chart.png", data: shot,
+  });
+  await artBox.fill(`and the chart ${artifactRef(pic.id)}`);
+  await artBox.press("Enter");
+  await page.waitForSelector(`.msg .artcard[data-artifact="${pic.id}"]`, { timeout: 20000 });
+  const picCard = page.locator(`.msg .artcard[data-artifact="${pic.id}"]`).last();
+  ok("a file that is not text is a download and is never drawn into the room",
+    (await picCard.locator(".artopen").innerText()).trim() === "Save it"
+    && (await picCard.locator(".artpeek").count()) === 0,
+    (await picCard.locator(".artfacts").innerText()).trim());
+
+  /* A REFERENCE TO SOMETHING THAT IS NOT THERE says so in plain words — and
+     gets the same sentence a file you may not see gets, on purpose. */
+  await artBox.fill("what about cloud9://artifact/af-nothinghere");
+  await artBox.press("Enter");
+  /* A CARD FIRST SAYS IT IS LOOKING, AND ONLY THEN THAT IT IS NOT THERE — and
+     the gap between the two is the request ledger's own answer window. An
+     `error` frame carries no echo of the question it refuses, so a refusal is
+     given to the OLDEST question still waiting (see `asked` in `store.ts`); a
+     question that never gets one is told so when its window closes. That is
+     `ANSWER_WINDOW_MS`, 20 seconds, so this waits past it rather than racing
+     it. It never guesses: the card is drawn either way, and neither state is
+     an empty box. */
+  await waitFor(page, () => document.querySelector('.artcard[data-artifact="af-nothinghere"]')
+    ?.dataset.state === "gone",
+  undefined, { timeout: 45000, what: "the card for a file that is not there to say so" });
+  ok("a reference to a file that is not there says so in plain words, with no jargon",
+    /isn't here/i.test(await page.locator('.artcard[data-artifact="af-nothinghere"] .nm').innerText())
+    && !/error|null|undefined/i.test(
+      await page.locator('.artcard[data-artifact="af-nothinghere"]').innerText()),
+    (await page.locator('.artcard[data-artifact="af-nothinghere"]').innerText())
+      .replace(/\s+/g, " ").slice(0, 120));
+
+  /* THE ROOM'S OWN LIST of what agents have made in it — and the empty state,
+     which only ever appears after the hub has answered. */
+  await page.click(".chathead .roomdetailsbtn");
+  await page.waitForSelector(".roompanel .roomfiles", { timeout: 15000 });
+  await waitFor(page, () => !!document.querySelector('.roomfiles [data-files-state="some"]'),
+    undefined, { timeout: 20000, what: "the room's file list to come back from the hub" });
+  ok("the room's details list every file agents have made in it",
+    (await page.locator(`.roomfiles .artcard[data-artifact="${artId}"]`).count()) === 1
+    && (await page.locator(`.roomfiles .artcard[data-artifact="${pic.id}"]`).count()) === 1,
+    await page.locator(".roomfiles").getAttribute("data-files"));
+  await page.screenshot({ path: `${SHOTS}/artifact-room-files.png` });
+
+  await page.click(".roompanel .roomclose");
+  await page.click(".sidebar >> text=# paperwork");
+  await page.click(".chathead .roomdetailsbtn");
+  await page.waitForSelector(".roompanel .roomfiles", { timeout: 15000 });
+  await waitFor(page, () => !!document.querySelector('.roomfiles [data-files-state="empty"]'),
+    undefined, { timeout: 20000, what: "the hub to answer that this room holds no agent files" });
+  ok("a room where no agent has shared anything says so in plain words, not with a blank",
+    /No agent has shared a file here yet/i.test(
+      await page.locator('.roomfiles [data-files-state="empty"]').innerText()),
+    (await page.locator(".roomfiles").innerText()).replace(/\s+/g, " ").slice(0, 120));
+  await page.click(".roompanel .roomclose");
+
+  /* ================= WHAT HE TYPED IS NEVER THROWN AWAY IN SILENCE =========
+   *
+   * The audit's Major, reproduced first and then held shut: type into an
+   * agent's brief, click any icon in the rail, and everything went with no
+   * warning and nothing saved. The checks below hold the CLASS — one owner,
+   * asked by every way out, on more than one surface.
+   */
+  await page.click('.rail-btn[data-go="crew"]');
+  await page.waitForSelector(".crew-grid", { timeout: 20000 });
+  /* One of his own agents — the Edit button only exists on those, which is the
+     hub's rule and not a courtesy, so this picks the first card that has one. */
+  const editable = page.locator('.crew-grid .cast:has(button:has-text("Edit"))').first();
+  const editableName = await editable.getAttribute("data-crew");
+  const openEditable = async () => {
+    await page.click(`.crew-grid .cast[data-crew="${editableName}"] button:has-text("Edit")`);
+    await page.waitForSelector(".editor textarea.persona-input", { timeout: 20000 });
+  };
+  await openEditable();
+
+  ok("an editor nobody has typed into is not holding unsaved work",
+    (await page.evaluate(() => window.cloud9Leave.unsaved())) === null);
+
+  const typed = "AUDIT EDIT: this sentence should not vanish without a word.";
+  await page.fill(".editor textarea.persona-input",
+    (await page.inputValue(".editor textarea.persona-input")) + "\n" + typed);
+  const owns = await page.evaluate(() => window.cloud9Leave.unsaved());
+  ok("the agent editor tells the one owner it is holding unsaved words",
+    typeof owns === "string" && owns.length > 0, String(owns));
+
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.waitForSelector(".overlay.leaveask", { timeout: 15000 });
+  ok("clicking a rail icon with unsaved words ASKS, in plain words, instead of throwing them away",
+    (await page.locator(".editor textarea.persona-input").count()) === 1
+    && /not been saved/i.test(await page.locator(".overlay.leaveask .body").innerText())
+    && (await page.locator(".overlay.leaveask .keepediting").count()) === 1
+    && (await page.locator(".overlay.leaveask .discardwork").count()) === 1,
+    (await page.locator(".overlay.leaveask .body").innerText()).replace(/\s+/g, " ").slice(0, 120));
+  await page.screenshot({ path: `${SHOTS}/unsaved-asks.png` });
+
+  await page.click(".overlay.leaveask .keepediting");
+  await page.waitForSelector(".overlay.leaveask", { state: "detached", timeout: 10000 });
+  ok("keeping editing leaves every word exactly where it was",
+    (await page.inputValue(".editor textarea.persona-input")).includes(typed)
+    && (await page.evaluate(() => window.cloud9Leave.asking())) === null);
+
+  /* SAVING IS HIS DECISION ABOUT THE WORDS, not a way out of them — so it must
+     never ask. (This is the bug the guard itself would introduce.) */
+  await page.click(".editor .topbar >> text=Save");
+  await page.waitForSelector(".crew-grid", { timeout: 20000 });
+  ok("saving does not ask about unsaved work — there is none left to lose",
+    (await page.locator(".overlay.leaveask").count()) === 0
+    && (await page.evaluate(() => window.cloud9Leave.unsaved())) === null);
+
+  /* AND THE OTHER WAY: told to throw them away, it really does. */
+  await openEditable();
+  const kept = await page.inputValue(".editor textarea.persona-input");
+  await page.fill(".editor textarea.persona-input", kept + "\nTHROWN AWAY ON PURPOSE");
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.waitForSelector(".overlay.leaveask", { timeout: 15000 });
+  await page.click(".overlay.leaveask .discardwork");
+  await page.waitForSelector(".composer textarea", { timeout: 20000 });
+  await page.click('.rail-btn[data-go="crew"]');
+  await openEditable();
+  ok("choosing to throw the words away really leaves, and really discards them",
+    !(await page.inputValue(".editor textarea.persona-input")).includes("THROWN AWAY ON PURPOSE")
+    && (await page.inputValue(".editor textarea.persona-input")).includes(typed));
+  await page.click(".editor .topbar >> text=Cancel");
+  await page.waitForSelector(".crew-grid", { timeout: 20000 });
+
+  /* A SECOND, COMPLETELY DIFFERENT SURFACE ON THE SAME OWNER — which is what
+     makes this a class fix rather than a guard bolted onto the rail. */
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# general");
+  await page.click(".chathead .roomdetailsbtn");
+  await page.waitForSelector(".roompanel", { timeout: 15000 });
+  await page.click(".roominfo-edit");
+  await page.fill(".roomtopic-input", "half-written and not saved");
+  ok("the room details panel tells the SAME owner it is holding unsaved words",
+    /general/.test(String(await page.evaluate(() => window.cloud9Leave.unsaved()))),
+    String(await page.evaluate(() => window.cloud9Leave.unsaved())));
+
+  await page.click(".sidebar >> text=# paperwork");
+  await page.waitForSelector(".overlay.leaveask", { timeout: 15000 });
+  ok("changing conversation with unsaved room details asks too — the rail is not a special case",
+    /not been saved/i.test(await page.locator(".overlay.leaveask .body").innerText()));
+  await page.click(".overlay.leaveask .discardwork");
+  await waitFor(page, () => !document.querySelector(".overlay.leaveask"),
+    undefined, { timeout: 10000, what: "the question to go away" });
+  await page.waitForSelector(".composer textarea", { timeout: 15000 });
+
+  /* ================= A FAILURE READS LIKE A SENTENCE ======================
+   *
+   * The audit photographed one refusal drawn twice on one screen, in two
+   * different states of politeness, one of them wearing the word "Error:".
+   */
+  const says = await page.evaluate(() => ({
+    prefixed: window.cloud9Say.says("Error: you already have a project called \"Audit Box\""),
+    jargon: window.cloud9Say.says("TypeError: Cannot read properties of undefined (reading 'id')"),
+    plain: window.cloud9Say.says("that's too many files (max 4)"),
+    sqlite: window.cloud9Say.says("SQLITE_CORRUPT: database disk image is malformed"),
+  }));
+  ok("the one owner takes the transport's own 'Error:' off a sentence somebody wrote for him",
+    says.prefixed.text === 'you already have a project called "Audit Box"'
+    && says.prefixed.detail === undefined, JSON.stringify(says.prefixed));
+  ok("computer-speak is never shown as the sentence — he gets words he can act on",
+    !/TypeError|properties of undefined/.test(says.jargon.text)
+    && says.jargon.text.length > 20
+    && says.jargon.detail.includes("Cannot read properties"), JSON.stringify(says.jargon));
+  ok("a hub refusal already written in plain English passes through untouched",
+    says.plain.text === "that's too many files (max 4)" && says.plain.detail === undefined,
+    JSON.stringify(says.plain));
+  ok("a database code is not what he is shown either",
+    !says.sqlite.text.includes("SQLITE_CORRUPT")
+    && says.sqlite.detail.includes("SQLITE_CORRUPT"), JSON.stringify(says.sqlite));
+
+  /* ON SCREEN, through the hub's own catch-all: everything it refuses arrives
+     as `String(err)`, which is "Error: …". Nothing anywhere may print that. */
+  await page.evaluate(() => window.cloud9Wire.ask({ type: "artifact", artifactId: "af_nope_zzz" }));
+  await waitFor(page, () => !!document.querySelector(".toast .toast-text"),
+    undefined, { timeout: 15000, what: "the hub's refusal to reach the screen" });
+  const toastSays = (await page.locator(".toast .toast-text").innerText()).trim();
+  ok("a raw refusal from the hub's catch-all never reaches him with 'Error:' on the front",
+    !/^Error:/i.test(toastSays) && toastSays.length > 0, toastSays);
+  /* AND THE SAME THING WITH THE WRAPPER PUT BACK ON BY HAND. The check above
+     goes the whole way through the hub, which is the real path — but the hub's
+     catch-all belongs to another round, and if it stops wrapping refusals that
+     check would quietly stop being able to fail. This hands the SCREEN the exact
+     text a wrapped failure arrives in, through the app's own "say this" method,
+     so the screen's own promise is proved whatever the hub does. */
+  await page.evaluate(() => window.cloud9Wire.notify(
+    "Error: that conversation is archived — nothing new can be said in it"));
+  await waitFor(page, () => /archived/.test(
+    document.querySelector(".toast .toast-text")?.textContent ?? ""),
+  undefined, { timeout: 15000, what: "the wrapped refusal to reach the screen" });
+  const anyPrefix = await page.evaluate(() =>
+    [...document.querySelectorAll("body *")]
+      .filter(el => el.children.length === 0 && /^\s*Error:/i.test(el.textContent ?? "")).length);
+  ok("nothing anywhere on the screen is wearing the word 'Error:'",
+    anyPrefix === 0
+    && (await page.locator(".toast .toast-text").innerText()).trim()
+      === "that conversation is archived — nothing new can be said in it",
+    `${anyPrefix} :: ${(await page.locator(".toast .toast-text").innerText()).trim()}`);
+
+  /* THE PICTURE ITSELF: two repositories, one nickname. It used to be said
+     twice — a clean toast and an "Error:"-prefixed line under the form. */
+  await page.click('.rail-btn[data-go="projects"]');
+  await page.waitForSelector(".projects", { timeout: 20000 });
+  await page.click(".projects .topbar [data-connect]");
+  await page.waitForSelector(".connectproj", { timeout: 20000 });
+  await page.fill("#f-repo", "vikas53953/cloud9");
+  await page.fill("#f-repo-name", "Audit Box");
+  await page.click('.connectproj button:has-text("Connect")');
+  await page.waitForSelector('.proj-list .side-item[data-repo="vikas53953/cloud9"]',
+    { timeout: 30000 });
+  /* AND NOW THE AUDIT'S OWN PICTURE: a second repository given the SAME
+     nickname. The hub refuses on the name before it goes anywhere near GitHub,
+     and that refusal used to arrive twice — a clean toast, and a line under the
+     form with the word "Error:" on the front of it. */
+  await page.click(".projects .topbar [data-connect]");
+  await page.waitForSelector(".connectproj", { timeout: 20000 });
+  await page.fill("#f-repo", "vikas53953/cloud9-audit-box");
+  await page.fill("#f-repo-name", "Audit Box");
+  await page.click('.connectproj button:has-text("Connect")');
+  await page.waitForSelector(".connectproj .problemline", { timeout: 20000 });
+  const inlineSays = (await page.locator(".connectproj .problemline").innerText()).trim();
+  const toastCount = await page.locator(".toast").count();
+  ok("the same refusal is said ONCE on the screen, where the box he must change is",
+    !/^Error:/i.test(inlineSays) && inlineSays.length > 0 && toastCount === 0,
+    `${inlineSays.slice(0, 80)} :: toasts=${toastCount}`);
+  ok("the one owner knows exactly one place is saying that sentence",
+    (await page.evaluate(t => window.cloud9Say.showing(t), inlineSays)) === 1,
+    String(await page.evaluate(t => window.cloud9Say.showing(t), inlineSays)));
+  await page.screenshot({ path: `${SHOTS}/error-said-once.png` });
 
   await owner.close();
   await friendCtx.close();

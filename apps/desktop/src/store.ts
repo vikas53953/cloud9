@@ -1,6 +1,7 @@
 // Renderer-side relay client: one WebSocket, one mutable world, subscribers.
 import {
-  ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, Attachment, ATTACHMENT_LIMITS, Channel,
+  ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, Artifact, ArtifactVersion,
+  Attachment, ATTACHMENT_LIMITS, Channel,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   Project, ProjectItem, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, UnreadEntry, User,
   validateAttachment, validateProjectText, validateRepo,
@@ -64,6 +65,13 @@ export interface OpenFile {
   url?: string;
   direct?: boolean;
   error?: string;
+  /**
+   * The bytes read back as words, and ONLY when the thing that stored them said
+   * they were text — which for an artifact is the HUB's answer about the bytes
+   * (`ArtifactVersion.text`), never a guess made from the file's name here. A
+   * screen may draw this; nothing else may.
+   */
+  text?: string;
 }
 
 /**
@@ -185,6 +193,39 @@ export interface World {
    * what says how old the answer is.
    */
   projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
+  /**
+   * FILES AGENTS MADE, by artifact id.
+   *
+   * Keyed by the artifact's own id and nothing else, for the same reason runs
+   * are: an `artifact` frame arrives UNASKED the moment any agent publishes or
+   * updates a file, in a conversation this screen has open or one it does not.
+   * A card drawn from a reference in a message looks the file up here by id, so
+   * it does not matter which room it came from or whether anybody asked.
+   *
+   * WHAT IS NOT HERE: the bytes. An artifact is a name, a history and an
+   * attribution; the bytes come through the same one-use ticket an attachment's
+   * do, and land in `files` under the VERSION's id.
+   */
+  artifacts: Record<ID, Artifact>;
+  /**
+   * Artifacts the hub has said are not there — or are not ours to see.
+   *
+   * The same law the run records follow: both refusals get one sentence,
+   * deliberately, so an id cannot be probed, and both mean one thing to a
+   * screen. Without this a card asked for once would spin for ever on an answer
+   * that had already come back as a "no".
+   */
+  artifactsGone: Record<ID, true>;
+  /**
+   * Which files are in one conversation, by channel — ids only, so there is one
+   * copy of an artifact (above) and not a second one per room.
+   *
+   * `asked` is the same law as the room directory, the run histories and the
+   * projects: an empty list nobody has requested is not "no agent has shared a
+   * file here", it is "we have not looked". An `artifact` push does NOT set it —
+   * one file arriving is proof of that file, never proof that we know them all.
+   */
+  channelArtifacts: Record<ID, { asked: boolean; ids: ID[] }>;
 }
 
 type Listener = () => void;
@@ -285,6 +326,7 @@ export class RelayClient {
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
     projects: { asked: false, list: [] }, projectItems: {},
+    artifacts: {}, artifactsGone: {}, channelArtifacts: {},
   };
   private ws?: WebSocket;
   private listeners = new Set<Listener>();
@@ -1053,19 +1095,54 @@ export class RelayClient {
    * a refusal is — and matches the ticket that comes back to the file it is for.
    */
   private mintTicket(attachmentId: ID): Promise<{ url: string; expiresAt: number }> {
+    return this.askTicket(
+      { type: "attachmentTicket", attachmentId },
+      f => f.type === "attachmentTicket" && f.attachmentId === attachmentId);
+  }
+
+  /**
+   * ONE OWNER OF "ASK FOR PERMISSION TO FETCH SOMETHING, ONCE".
+   *
+   * A person's attachment and a file an agent made are two kinds of thing with
+   * ONE download endpoint behind them (`artifact-store-handoff.md` §4), so they
+   * get one way of asking as well: the same request ledger, the same twenty
+   * seconds, the same three ways it can end, and the same rule that a refusal
+   * is the hub's own sentence handed back rather than a paraphrase. A second
+   * copy of this would be a second set of behaviour to get right.
+   */
+  private askTicket(
+    frame: ClientFrame, answers: (f: ServerFrame) => boolean,
+  ): Promise<{ url: string; expiresAt: number }> {
     return new Promise((resolve, reject) => {
       let done = false;
       const once = (fn: () => void): void => { if (!done) { done = true; fn(); } };
-      const sent = this.ask({ type: "attachmentTicket", attachmentId }, {
-        answers: f => f.type === "attachmentTicket" && f.attachmentId === attachmentId,
+      const sent = this.ask(frame, {
+        answers,
         answered: f => once(() => {
-          if (f.type === "attachmentTicket") resolve({ url: f.url, expiresAt: f.expiresAt });
+          if (f.type === "attachmentTicket" || f.type === "artifactTicket") {
+            resolve({ url: f.url, expiresAt: f.expiresAt });
+          }
         }),
         refused: why => once(() => reject(new Error(why))),
         lost: () => once(() => reject(new Error("the hub didn't answer — try again"))),
       });
       if (!sent) once(() => reject(new Error("there's no connection to the hub — try again in a moment")));
     });
+  }
+
+  /**
+   * Ask for permission to fetch ONE version of a file an agent made.
+   *
+   * No version means the newest, which is what a card drawn from a reference in
+   * a message wants. A version that the hub no longer keeps is NOT quietly
+   * swapped for the newest — the hub refuses with its own sentence naming both
+   * numbers, and that sentence is what the screen shows.
+   */
+  private mintArtifactTicket(artifactId: ID, version?: number): Promise<{ url: string; expiresAt: number }> {
+    return this.askTicket(
+      { type: "artifactTicket", artifactId, ...(version === undefined ? {} : { version }) },
+      f => f.type === "artifactTicket" && f.artifactId === artifactId
+        && (version === undefined || f.version === version));
   }
 
   /**
@@ -1102,12 +1179,28 @@ export class RelayClient {
    *    click on the same file must not re-ticket.
    */
   async openFile(a: Attachment): Promise<void> {
-    const held = this.world.files[a.id];
+    await this.fetchTicketed(a.id, () => this.mintTicket(a.id));
+  }
+
+  /**
+   * The body of `openFile`, with the question of WHICH ticket left to the caller.
+   *
+   * There is one download endpoint behind an attachment and an artifact alike,
+   * so there is one place that spends a ticket, retries the one failure worth
+   * retrying, and decides what a person is told when it still will not come.
+   *
+   * @param asText read the bytes back as words too, for a screen that may show
+   *               them. Only ever passed when the HUB said these bytes are text.
+   */
+  private async fetchTicketed(
+    key: ID, mint: () => Promise<{ url: string }>, asText = false,
+  ): Promise<void> {
+    const held = this.world.files[key];
     if (held && (held.state === "ready" || held.state === "opening")) return;
-    this.setFile(a.id, { state: "opening" });
+    this.setFile(key, { state: "opening" });
 
     const fetchOnce = async (): Promise<Response> => {
-      const t = await this.mintTicket(a.id);
+      const t = await mint();
       return fetch(this.hubHttp() + t.url);
     };
 
@@ -1129,12 +1222,17 @@ export class RelayClient {
       // a problem the app can fix by itself.
       if (res.status === 404) res = await fetchOnce();
       if (!res.ok) {
-        this.setFile(a.id, { state: "failed", error: "that link has expired — open the file again" });
+        this.setFile(key, { state: "failed", error: "that link has expired — open the file again" });
         return;
       }
-      this.setFile(a.id, { state: "ready", url: URL.createObjectURL(await res.blob()) });
+      const blob = await res.blob();
+      const text = asText ? await blob.text() : undefined;
+      this.setFile(key, {
+        state: "ready", url: URL.createObjectURL(blob),
+        ...(text === undefined ? {} : { text }),
+      });
     } catch (err) {
-      this.setFile(a.id, {
+      this.setFile(key, {
         state: "failed",
         error: (err as Error).message || "that file could not be opened",
       });
@@ -1148,20 +1246,190 @@ export class RelayClient {
    * free afterwards. The ticket is minted here, at the click.
    */
   async saveFile(a: Attachment): Promise<void> {
-    this.setFile(a.id, { state: "opening" });
+    await this.downloadTicketed(a.id, a.name, () => this.mintTicket(a.id));
+  }
+
+  /**
+   * The body of `saveFile`, with the ticket left to the caller — the same one
+   * owner as `fetchTicketed`, for the same reason.
+   *
+   * The fallback sentence is not decoration. A browser exception can carry an
+   * EMPTY message, and this line used to print it: a "failed" banner with no
+   * words beside it (the gap audit's 4.6). A failure that says nothing is the
+   * silence this whole app is against, so there is always a sentence.
+   */
+  private async downloadTicketed(
+    key: ID, name: string, mint: () => Promise<{ url: string }>,
+  ): Promise<void> {
+    this.setFile(key, { state: "opening" });
     try {
-      const t = await this.mintTicket(a.id);
+      const t = await mint();
       const link = document.createElement("a");
       link.href = this.hubHttp() + t.url;
-      link.download = a.name;
+      link.download = name;
       link.rel = "noopener";
       document.body.appendChild(link);
       link.click();
       link.remove();
-      this.setFile(a.id, { state: "ready", url: link.href, direct: true });
+      this.setFile(key, { state: "ready", url: link.href, direct: true });
     } catch (err) {
-      this.setFile(a.id, { state: "failed", error: (err as Error).message });
+      this.setFile(key, {
+        state: "failed",
+        error: (err as Error).message || "that file could not be saved",
+      });
     }
+  }
+
+  /* ---------------- files an AGENT made ----------------
+   *
+   * The screen half of the shared artifact store. Everything below reads the
+   * shapes in `@cloud9/shared` and the frames in
+   * `docs/plans/artifact-store-handoff.md`; nothing here invents a field, and
+   * the BYTES take the attachment's own road — one endpoint, one ticket, one
+   * use, thirty seconds, permission checked twice.
+   */
+
+  /** One file an agent made, if this screen is holding it. */
+  artifact(artifactId: ID): Artifact | undefined {
+    return this.world.artifacts[artifactId];
+  }
+
+  /** ids already asked for, so a render cannot ask for the same one twice */
+  private artifactAsked = new Set<ID>();
+
+  /**
+   * Ask for one file an agent made, by id — the card behind a reference.
+   *
+   * Asked ONCE per id for the life of this screen, the same way a run record
+   * is: a card that re-asked on every render would put a frame on the wire for
+   * every message drawn. It does not go stale, because a NEW version of the
+   * file arrives here unasked on an `artifact` frame the moment it is published.
+   *
+   * A file this person may not read and one that never existed get the same
+   * sentence from the hub, deliberately, so an id cannot be probed. Both mean
+   * the same thing to a screen — it is not there — and saying so is better than
+   * a card that spins for ever on an answer that already came.
+   */
+  askArtifact(artifactId: ID): void {
+    if (this.world.artifacts[artifactId] || this.artifactAsked.has(artifactId)) return;
+    this.artifactAsked.add(artifactId);
+    const gone = (): void => {
+      this.world.artifactsGone = { ...this.world.artifactsGone, [artifactId]: true };
+      this.emit();
+    };
+    this.ask({ type: "artifact", artifactId }, {
+      answers: f => f.type === "artifact" && f.artifact.id === artifactId,
+      refused: gone,
+      lost: gone,
+    });
+  }
+
+  /** Every file agents have made in one conversation, answered or not. */
+  artifactsIn(channelId: ID): { asked: boolean; list: Artifact[] } {
+    const held = this.world.channelArtifacts[channelId] ?? { asked: false, ids: [] };
+    return {
+      asked: held.asked,
+      list: held.ids.map(id => this.world.artifacts[id]).filter((a): a is Artifact => !!a),
+    };
+  }
+
+  /**
+   * Ask what files agents have made in one conversation.
+   *
+   * Asked every time the list is opened, like the projects list and for the
+   * same reason: a room gains files while nobody is looking at it, and a list
+   * cached from the last visit would be an answer to an older question. A
+   * refusal and a silence both mark it `asked` — the screen must not be left
+   * spinning on either, and the hub's own sentence is already on screen through
+   * `lastError`.
+   */
+  askArtifacts(channelId: ID): void {
+    const settled = (): void => {
+      const held = this.world.channelArtifacts[channelId] ?? { asked: false, ids: [] };
+      this.world.channelArtifacts = {
+        ...this.world.channelArtifacts, [channelId]: { ...held, asked: true },
+      };
+      this.emit();
+    };
+    this.ask({ type: "artifacts", channelId }, {
+      answers: f => f.type === "artifacts" && f.channelId === channelId,
+      answered: f => {
+        if (f.type !== "artifacts") return;
+        this.holdArtifacts(f.channelId, f.artifacts, true);
+      },
+      refused: settled,
+      lost: settled,
+    });
+  }
+
+  /**
+   * Put artifacts into the world — the ONE way any of them gets there.
+   *
+   * @param complete true only for an answer to `artifacts`, which really is the
+   *                 whole list for that room. A single pushed file is proof of
+   *                 itself and never proof that we know them all, so it adds an
+   *                 id and leaves `asked` exactly where it was.
+   */
+  private holdArtifacts(channelId: ID, list: Artifact[], complete: boolean): void {
+    const w = this.world;
+    const held = w.channelArtifacts[channelId] ?? { asked: false, ids: [] };
+    const artifacts = { ...w.artifacts };
+    for (const a of list) artifacts[a.id] = a;
+    w.artifacts = artifacts;
+    // an artifact that turned up is not missing, whatever an older ask decided
+    if (list.some(a => w.artifactsGone[a.id])) {
+      const kept: Record<ID, true> = { ...w.artifactsGone };
+      for (const a of list) delete kept[a.id];
+      w.artifactsGone = kept;
+    }
+    const ids = complete
+      ? list.map(a => a.id)
+      // NEWEST CHANGE FIRST, the same order the hub answers `artifacts` in —
+      // an updated file moves to the front rather than sitting where its first
+      // version happened to land.
+      : [...list.map(a => a.id), ...held.ids.filter(id => !list.some(a => a.id === id))];
+    w.channelArtifacts = {
+      ...w.channelArtifacts,
+      [channelId]: { asked: complete || held.asked, ids },
+    };
+  }
+
+  /**
+   * Open one version of a file an agent made — its bytes, into this screen.
+   *
+   * Held under the VERSION's id, not the artifact's: version 2 and version 3 of
+   * one file are two different sets of bytes, and one blob standing for both
+   * would show him the wrong one the moment he looked back at an older version.
+   * That is also why the same holder-counting and the same revoke apply — this
+   * is the attachment's own road, reached from a different door.
+   */
+  async openArtifact(artifact: Artifact, version: ArtifactVersion): Promise<void> {
+    await this.fetchTicketed(
+      version.id,
+      () => this.mintArtifactTicket(artifact.id, version.version),
+      // WHETHER THIS IS TEXT IS THE HUB'S ANSWER ABOUT THE BYTES, never a guess
+      // from the name. A binary called `.md` is still a download.
+      version.text);
+  }
+
+  /** Save one version of a file an agent made — the browser's own download. */
+  async saveArtifact(artifact: Artifact, version: ArtifactVersion): Promise<void> {
+    await this.downloadTicketed(
+      version.id, artifact.name,
+      () => this.mintArtifactTicket(artifact.id, version.version));
+  }
+
+  /**
+   * One ticket to one version, as a whole URL.
+   *
+   * The same mint the buttons use, exposed for the same reason `ticketFor` is:
+   * the QA suite fetches the bytes back over the real HTTP path and compares
+   * them with what the agent published. "A card appeared" is not evidence that
+   * a file came back.
+   */
+  async artifactTicketFor(artifactId: ID, version?: number): Promise<{ url: string; expiresAt: number }> {
+    const t = await this.mintArtifactTicket(artifactId, version);
+    return { url: this.hubHttp() + t.url, expiresAt: t.expiresAt };
   }
 
   /** May this file be drawn where it sits, or must it be saved first? */
@@ -1274,6 +1542,13 @@ export class RelayClient {
         // screen must say "looking" rather than "you have none".
         w.projects = { asked: false, list: [] };
         w.projectItems = {};
+        // Files agents made belonged to the last connection too, and `asked`
+        // goes back to false with them: this world has not asked anything yet,
+        // so a room's file list says "looking" rather than "there are none".
+        w.artifacts = {};
+        w.artifactsGone = {};
+        w.channelArtifacts = {};
+        this.artifactAsked.clear();
         for (const entry of frame.state.unread ?? []) w.unread[entry.channelId] = entry;
         break;
       }
@@ -1486,6 +1761,12 @@ export class RelayClient {
         const { [frame.channelId]: goneUploads, ...restUploads } = w.uploads;
         void goneUploads;
         w.uploads = restUploads;
+        /* The room's files go with the room. The hub will refuse to ticket them
+           now — permission is checked against membership at the moment of the
+           click — so a list left on screen would be a list of dead buttons. */
+        const { [frame.channelId]: goneArtifacts, ...restArtifacts } = w.channelArtifacts;
+        void goneArtifacts;
+        w.channelArtifacts = restArtifacts;
         // A room you just left may now be one you could join, so the browser's
         // list is no longer an answer to anything.
         w.directory = { asked: false, channels: [] };
@@ -1549,19 +1830,28 @@ export class RelayClient {
       // ordinary `project` and `projectItems` frame, handled above.
       case "lookAtProject":
         break;
-      // FILES AGENTS MADE — the server half of the shared artifact store landed
-      // first, and the screen half is deliberately a separate round. These three
-      // frames are DROPPED ON PURPOSE, and that is a stated gap and not a
-      // silence: nothing on this screen draws an artifact yet, so pretending to
-      // keep one in the world state would be a card nobody can see.
-      //
-      // The exhaustive `never` below is what forced these lines to exist, which
-      // is exactly what it is for. What to draw, and the field names to draw it
-      // from, are written down in `docs/plans/artifact-store-handoff.md` — the
-      // follow-up round replaces these three lines with real handling.
+      /* FILES AGENTS MADE. These three used to be dropped with a comment saying
+         a later round would claim them. It has. */
       case "artifact":
+        /* Pushed UNASKED to everyone who can see the conversation the moment a
+           file is published or updated, as well as answering an `artifact` ask.
+           Applied here rather than by whoever asked, for the same reason
+           `project` is: this frame is how a window finds out that an agent just
+           put a file in the room, and the card on screen has to become the new
+           version by itself. */
+        this.holdArtifacts(frame.artifact.channelId, [frame.artifact], false);
+        break;
       case "artifacts":
+        // Applied by `askArtifacts`, which is the only thing that asks. A list
+        // arriving for a question nobody is asking any more goes nowhere.
+        break;
       case "artifactTicket":
+        /* The permission itself is applied by the click that asked for it (see
+           `askTicket`). What is taken here is the ARTIFACT the frame carries:
+           it is the hub's current answer about that file, so a card that was
+           only ever drawn from a message reference learns its whole history
+           from the first download without a second question. */
+        this.holdArtifacts(frame.artifact.channelId, [frame.artifact], false);
         break;
       default: {
         /**

@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-30T15:56:49.890Z",
-  "expected": 410,
-  "executed": 410,
+  "ranAt": "2026-07-30T18:41:05.931Z",
+  "expected": 440,
+  "executed": 440,
   "results": [
     {
       "name": "join screen renders",
@@ -176,7 +176,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch p2ew9 :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch uwl67 :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -191,7 +191,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_C531pX4tJ1t6ihAiiHm5BQ"
+      "detail": "inv_50LCjoNzxasq-IDoXLMgqQ"
     },
     {
       "name": "friend joins via invite",
@@ -321,7 +321,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 21:25"
+      "detail": "↳ 1 reply · last at 00:08"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -391,7 +391,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 21:25 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 00:08 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -581,7 +581,7 @@
     {
       "name": "an agent whose role nobody knows is not told a role it does not have",
       "pass": true,
-      "detail": "15 skills, no role claimed"
+      "detail": "25 skills, no role claimed"
     },
     {
       "name": "the casting room is reachable from where he already goes to add an agent",
@@ -716,7 +716,7 @@
     {
       "name": "every skill it ships with is on screen, grouped on the shelves the library itself names",
       "pass": true,
-      "detail": "15 skills on 5 shelves: Checking work (4), Building it right (3), Finding and fixing (3), Shipping safely (3), Writing it down (2)"
+      "detail": "25 skills on 5 shelves: Checking work (5), Building it right (4), Finding and fixing (6), Shipping safely (6), Writing it down (4)"
     },
     {
       "name": "each one says in plain words when it helps, and names where the procedure came from",
@@ -731,7 +731,7 @@
     {
       "name": "the library says which of its skills were written for the role he just hired",
       "pass": true,
-      "detail": "8 of 15 written for sw-architect"
+      "detail": "12 of 25 written for sw-architect"
     },
     {
       "name": "it says how much room is left BEFORE he picks, not after he is refused",
@@ -741,12 +741,12 @@
     {
       "name": "nothing in the library shows a rating, a popularity or a count nobody has measured",
       "pass": true,
-      "detail": "6895 characters read"
+      "detail": "10344 characters read"
     },
     {
       "name": "a shelf on the filter bar shows that shelf and nothing else",
       "pass": true,
-      "detail": "Checking work: 4"
+      "detail": "Finding and fixing: 6"
     },
     {
       "name": "giving a skill to an agent puts it straight into the same list every other skill is in",
@@ -1016,7 +1016,7 @@
     {
       "name": "the room panel lists who is in the room, with their role and when they joined",
       "pass": true,
-      "detail": "Runs this room · joined 30 Jul"
+      "detail": "Runs this room · joined 31 Jul"
     },
     {
       "name": "a room's description and one-line topic can be set, and come back from the hub",
@@ -1046,7 +1046,7 @@
     {
       "name": "an open room can be found by somebody who is not in it, with what it's for and how many are in it",
       "pass": true,
-      "detail": "1 person · started 30 Jul"
+      "detail": "1 person · started 31 Jul"
     },
     {
       "name": "browsing offers no members and no messages — finding a room is not permission to read it",
@@ -1066,7 +1066,7 @@
     {
       "name": "letting yourself into an open room is recorded as exactly that — nobody added you",
       "pass": true,
-      "detail": "Member · joined 30 Jul"
+      "detail": "Member · joined 31 Jul"
     },
     {
       "name": "leaving a room takes it out of the sidebar, there and then",
@@ -1111,7 +1111,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms7p3htbbyt7zq\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms7uxzslcpr3m9\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -1151,17 +1151,17 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms7p23mgwfktd8:1785426926402 a_ms7p273rbxcs9e:1785426932317 u_ms7p2hjukz0xkm:1785426932701 a_ms7p3htbbyt7zq:1785426932771"
+      "detail": "u_ms7uwbucz1l7p2:1785436747209 a_ms7uweupyt7dya:1785436753483 u_ms7uwqbidqwo42:1785436754098 a_ms7uxzslcpr3m9:1785436754198"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785426930013 · now 1785426932701"
+      "detail": "first 1785436751097 · now 1785436754098"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
       "pass": true,
-      "detail": "Member · joined 30 Jul"
+      "detail": "Member · joined 31 Jul"
     },
     {
       "name": "a member list naming an agent's owner does not scroll sideways at 1280 in the light look",
@@ -1261,7 +1261,7 @@
     {
       "name": "REPRODUCED: a refusal was provoked with one file on the wire and a second read and queued behind it",
       "pass": true,
-      "detail": "{\"onTheWire\":1,\"queuedBehind\":1,\"asked\":[\"markRead\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setChannelInfo\",\"setChannelVisibility\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"archiveChannel\",\"archiveChannel\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setMemberRole\",\"channelMembers\",\"removeMember\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"markRead\",\"uploadAttachment\",\"editMessage\"]}"
+      "detail": "{\"onTheWire\":1,\"queuedBehind\":1,\"asked\":[\"channelMembers\",\"setMemberRole\",\"channelMembers\",\"removeMember\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"markRead\",\"uploadAttachment\",\"editMessage\"]}"
     },
     {
       "name": "REPRODUCED: the refusal really did land while the upload was still unanswered",
@@ -1406,7 +1406,7 @@
     {
       "name": "SENDING takes the view to what he just said, wherever he had read back to",
       "pass": true,
-      "detail": "{\"fromBottom\":2,\"mineInSight\":true}"
+      "detail": "{\"fromBottom\":0,\"mineInSight\":true}"
     },
     {
       "name": "and the rule says so in its own words — a send, not just an arrival",
@@ -1526,7 +1526,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms7p29yamktu8w\",\"status\":\"completed\",\"runId\":\"r-0ms7p29yz-6kel\"}"
+      "detail": "{\"id\":\"t_ms7uwho4i3asfs\",\"status\":\"completed\",\"runId\":\"r-0ms7uwhob-0xqk\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1696,7 +1696,7 @@
     {
       "name": "C12: a repository GitHub cannot see is told so when he connects it, not left looking like a good one",
       "pass": true,
-      "detail": "nope definitely-not-a-real-owner-xyz987/nope Look at GitHub now Rename Disconnect Looked at GitHub 30 Jul The last look at GitHub did not work GitHub has no repository called definitely-not-a-real-own"
+      "detail": "nope definitely-not-a-real-owner-xyz987/nope Look at GitHub now Rename Disconnect Looked at GitHub 31 Jul The last look at GitHub did not work GitHub has no repository called definitely-not-a-real-own"
     },
     {
       "name": "connecting a repository puts it on screen, named the way GitHub names it",
@@ -1706,7 +1706,7 @@
     {
       "name": "connecting a repository looks at GitHub there and then, rather than leaving him to find out later",
       "pass": true,
-      "detail": "Cloud9 itself vikas53953/cloud9 Look at GitHub now Rename Disconnect Trunk master Looked at GitHub 30 Jul Pull requests · 0 Issues · 0 No pull requests recorded This is what GitHub"
+      "detail": "Cloud9 itself vikas53953/cloud9 Look at GitHub now Rename Disconnect Trunk master Looked at GitHub 31 Jul Pull requests · 0 Issues · 0 No pull requests recorded This is what GitHub"
     },
     {
       "name": "a connected repository offers a way to ask GitHub, ready and named in plain words",
@@ -1716,7 +1716,7 @@
     {
       "name": "pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
       "pass": true,
-      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms7p4ndrwhtbvv\",\"repo\":\"vikas53953/cloud9\"}"
+      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms7uz93sb7qugy\",\"repo\":\"vikas53953/cloud9\"}"
     },
     {
       "name": "while it is looking the button says so and cannot be pressed again",
@@ -1726,7 +1726,7 @@
     {
       "name": "when the answer lands the button settles and the screen stamps when GitHub was last asked",
       "pass": true,
-      "detail": "Trunk master Looked at GitHub 30 Jul"
+      "detail": "Trunk master Looked at GitHub 31 Jul"
     },
     {
       "name": "the pull requests the engine reported are on screen, in the project's own list",
@@ -1736,7 +1736,7 @@
     {
       "name": "the trunk it must never land on is drawn only now that GitHub actually said what it is",
       "pass": true,
-      "detail": "Trunk master Looked at GitHub 30 Jul"
+      "detail": "Trunk master Looked at GitHub 31 Jul"
     },
     {
       "name": "a pull request that landed and one that was thrown away are told apart in words, not only colour",
@@ -1871,7 +1871,7 @@
     {
       "name": "it says when it runs out — an agent is standing there waiting for the answer",
       "pass": true,
-      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 21:26 EXPIRES in 9 minutes"
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 00:10 EXPIRES in 9 minutes"
     },
     {
       "name": "a request with no job behind it offers no 'see the job' button to press",
@@ -2047,6 +2047,156 @@
       "name": "a rail showing every agent's state does not scroll sideways at 1440 in the dark look",
       "pass": true,
       "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a file an agent made appears in the conversation as a card with its name",
+      "pass": true,
+      "detail": "villas.md"
+    },
+    {
+      "name": "the card says which agent made it, and how big it is",
+      "pass": true,
+      "detail": "made by Scout :: 45 bytes · text · 31 Jul 00:10"
+    },
+    {
+      "name": "version 1 is not labelled with a version number nobody needs",
+      "pass": true,
+      "detail": "made by Scout"
+    },
+    {
+      "name": "the reference itself is not printed beside the card it draws",
+      "pass": true,
+      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 31 Jul 00:10 Show it"
+    },
+    {
+      "name": "the file really comes back, byte for byte, through the attachment ticket path",
+      "pass": true,
+      "detail": "200 \"# Villas in Goa\\nThree that fit, with prices.\\n\""
+    },
+    {
+      "name": "publishing the same name again updates the SAME card, and says so",
+      "pass": true,
+      "detail": "made by Architect · version 2 · fixed the numbers"
+    },
+    {
+      "name": "the newest version names the agent that made THAT version, not the first one",
+      "pass": true,
+      "detail": "made by Architect · version 2 · fixed the numbers"
+    },
+    {
+      "name": "the history shows the earlier version, who made it and when",
+      "pass": true,
+      "detail": "v1 Scout 31 Jul 00:10 45 bytes Show it"
+    },
+    {
+      "name": "an older version can still be downloaded, and it is the OLD bytes",
+      "pass": true,
+      "detail": "200 \"# Villas in Goa\\nThree that fit, with prices.\\n\""
+    },
+    {
+      "name": "a text file can be read where it sits, and it is the file's own words",
+      "pass": true,
+      "detail": "# Villas in Goa\nThree that fit, with the prices corrected.\n"
+    },
+    {
+      "name": "a file that is not text is a download and is never drawn into the room",
+      "pass": true,
+      "detail": "74 bytes · a file to save · 31 Jul 00:10"
+    },
+    {
+      "name": "a reference to a file that is not there says so in plain words, with no jargon",
+      "pass": true,
+      "detail": "? That file isn't here It has been taken off this Cloud9, or it is in a conversation you are not in."
+    },
+    {
+      "name": "the room's details list every file agents have made in it",
+      "pass": true,
+      "detail": "2"
+    },
+    {
+      "name": "a room where no agent has shared anything says so in plain words, not with a blank",
+      "pass": true,
+      "detail": "FILES AGENTS MADE No agent has shared a file here yet. When one does, it appears in the conversation as a card — and aga"
+    },
+    {
+      "name": "an editor nobody has typed into is not holding unsaved work",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the agent editor tells the one owner it is holding unsaved words",
+      "pass": true,
+      "detail": "Scout's file"
+    },
+    {
+      "name": "clicking a rail icon with unsaved words ASKS, in plain words, instead of throwing them away",
+      "pass": true,
+      "detail": "Scout's file still has words in it that have not been saved. If you leave now they are thrown away, and there is no way "
+    },
+    {
+      "name": "keeping editing leaves every word exactly where it was",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "saving does not ask about unsaved work — there is none left to lose",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "choosing to throw the words away really leaves, and really discards them",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the room details panel tells the SAME owner it is holding unsaved words",
+      "pass": true,
+      "detail": "The details of #general"
+    },
+    {
+      "name": "changing conversation with unsaved room details asks too — the rail is not a special case",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the one owner takes the transport's own 'Error:' off a sentence somebody wrote for him",
+      "pass": true,
+      "detail": "{\"text\":\"you already have a project called \\\"Audit Box\\\"\"}"
+    },
+    {
+      "name": "computer-speak is never shown as the sentence — he gets words he can act on",
+      "pass": true,
+      "detail": "{\"text\":\"Something inside Cloud9 went wrong, so that didn't happen — nothing was changed. Try it once more, and if it happens again say what you were doing when it did.\",\"detail\":\"Cannot read properties of undefined (reading 'id')\"}"
+    },
+    {
+      "name": "a hub refusal already written in plain English passes through untouched",
+      "pass": true,
+      "detail": "{\"text\":\"that's too many files (max 4)\"}"
+    },
+    {
+      "name": "a database code is not what he is shown either",
+      "pass": true,
+      "detail": "{\"text\":\"Something inside Cloud9 went wrong, so that didn't happen — nothing was changed. Try it once more, and if it happens again say what you were doing when it did.\",\"detail\":\"SQLITE_CORRUPT: database disk image is malformed\"}"
+    },
+    {
+      "name": "a raw refusal from the hub's catch-all never reaches him with 'Error:' on the front",
+      "pass": true,
+      "detail": "no such file"
+    },
+    {
+      "name": "nothing anywhere on the screen is wearing the word 'Error:'",
+      "pass": true,
+      "detail": "0 :: that conversation is archived — nothing new can be said in it"
+    },
+    {
+      "name": "the same refusal is said ONCE on the screen, where the box he must change is",
+      "pass": true,
+      "detail": "you already have a project called \"Audit Box\" — give this one a different name :: toasts=0"
+    },
+    {
+      "name": "the one owner knows exactly one place is saying that sentence",
+      "pass": true,
+      "detail": "1"
     },
     {
       "name": "no console errors",
