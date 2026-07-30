@@ -22,7 +22,10 @@
 import {
   HarnessAuthKind, HarnessInfo, HarnessName, HarnessState,
 } from "@cloud9/shared";
-import { claudeModels, detectCodexModels, ModelList } from "./models.js";
+import {
+  claudeModels, detectClaudeModels, detectCodexModels, ModelList,
+  readClaudeModelCache, writeClaudeModelCache,
+} from "./models.js";
 import { run, Runner, runVisibleTerminal, VisibleRunner } from "./run.js";
 
 export interface HarnessOptions {
@@ -47,6 +50,13 @@ export interface HarnessOptions {
   pollTimeoutMs?: number;
   /** where the user's Codex default model is configured (tests override) */
   codexConfigPath?: string;
+  /**
+   * Where the proved Claude model list is remembered, keyed on the CLI version.
+   * Absent means "don't remember and don't prove" — which is what tests want.
+   */
+  claudeModelCachePath?: string;
+  /** leash for ONE model probe (there are ~18 of them, run a few at a time) */
+  modelProbeTimeoutMs?: number;
   /** called after every state change (fresh detection, sign-in start/finish) */
   onChange?: (state: HarnessState) => void;
   /**
@@ -63,11 +73,18 @@ const BLANK = (name: HarnessName): HarnessInfo => ({
   models: [], detail: "not checked yet",
 });
 
-/** `claude --version` + `claude auth status` (harness-signin.md verified facts). */
+/**
+ * `claude --version` + `claude auth status` (harness-signin.md verified facts).
+ *
+ * The model list is the one PROVED against this exact CLI build if we have
+ * already proved one (see `readClaudeModelCache`), and otherwise the last-known
+ * good list. Detection never runs the probe itself — that takes half a minute
+ * and detection has to be quick; `HarnessManager` starts it afterwards.
+ */
 export async function detectClaude(
   runner: Runner, command = "claude", timeoutMs = 20_000,
+  opts: { modelCachePath?: string } = {},
 ): Promise<HarnessInfo> {
-  const list = claudeModels();
   const info: HarnessInfo = {
     name: "claude", installed: false, signedIn: false, authKind: "none",
     models: [], detail: "the Claude app isn't installed on this computer",
@@ -76,9 +93,15 @@ export async function detectClaude(
   if (version.notFound || version.code !== 0) return info;
 
   info.installed = true;
+  info.version = (version.stdout.trim().split(/\r?\n/)[0] ?? "").slice(0, 60) || undefined;
+  const cached = opts.modelCachePath && info.version
+    ? readClaudeModelCache(opts.modelCachePath, info.version)
+    : undefined;
+  const list = cached ?? claudeModels();
   info.models = list.models;
   info.defaultModel = list.defaultModel;
-  info.version = (version.stdout.trim().split(/\r?\n/)[0] ?? "").slice(0, 60) || undefined;
+  info.modelsChecked = list.checked ?? false;
+  info.modelsDetail = list.detail;
 
   const status = await runner(command, ["auth", "status"], { timeoutMs });
   const parsed = parseJsonish(status.stdout) ?? parseJsonish(status.stderr);
@@ -189,6 +212,8 @@ export class HarnessManager {
    * not put the second one on the wire.
    */
   private detected = false;
+  /** a model-proving round already running — one at a time, they cost money */
+  private provingModels = false;
 
   constructor(private opts: HarnessOptions = {}) {
     this.runner = opts.runner ?? run;
@@ -255,7 +280,9 @@ export class HarnessManager {
   private async doRefresh(): Promise<HarnessState> {
     const t = this.opts.detectTimeoutMs ?? 20_000;
     const [claude, codex] = await Promise.all([
-      detectClaude(this.runner, this.commands.claude, t),
+      detectClaude(this.runner, this.commands.claude, t, {
+        modelCachePath: this.opts.claudeModelCachePath,
+      }),
       detectCodex(this.runner, this.commands.codex, t, {
         modelsTimeoutMs: this.opts.modelsTimeoutMs,
         configPath: this.opts.codexConfigPath,
@@ -276,7 +303,53 @@ export class HarnessManager {
       `codex installed=${codex.installed} signedIn=${codex.signedIn} ` +
       `auth=${this.state.codex.authKind} models=${codex.models.length}`,
     );
+    // nothing waits on this: detection has already answered, and proving the
+    // model list takes about half a minute
+    void this.proveClaudeModels();
     return this.state;
+  }
+
+  /**
+   * Find out which Claude models this computer can REALLY run, by running them.
+   *
+   * Runs at most once per Claude Code build: the answer is remembered against
+   * the CLI version, so this is silent after the first time and wakes up by
+   * itself when he updates Claude Code. Skipped entirely when Claude isn't
+   * signed in — every probe would fail for the same reason and prove nothing.
+   *
+   * Returns the ids now on offer, so a caller (and a test) can await it.
+   */
+  async proveClaudeModels(force = false): Promise<string[]> {
+    const cachePath = this.opts.claudeModelCachePath;
+    const info = this.state.claude;
+    if (!cachePath || this.provingModels) return info.models;
+    if (!info.installed || !info.signedIn || !info.version) return info.models;
+    if (!force && info.modelsChecked) return info.models;
+
+    this.provingModels = true;
+    try {
+      const list = await detectClaudeModels(this.runner, this.commands.claude, {
+        timeoutMs: this.opts.modelProbeTimeoutMs ?? 60_000,
+      });
+      if (this.stopped) return list.models;
+      if (list.checked) writeClaudeModelCache(cachePath, info.version, list.models);
+      this.state.claude = {
+        ...this.state.claude,
+        models: list.models,
+        defaultModel: list.defaultModel,
+        modelsChecked: list.checked ?? false,
+        modelsDetail: list.detail,
+      };
+      this.log(`claude models proved: ${list.models.length} — ${list.detail ?? ""}`);
+      this.publish();
+      return list.models;
+    } catch (err) {
+      // an unproved list is the old list, never an empty one
+      this.log(`could not prove the Claude model list: ${(err as Error).message}`);
+      return this.state.claude.models;
+    } finally {
+      this.provingModels = false;
+    }
   }
 
   /**

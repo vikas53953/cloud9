@@ -8,9 +8,10 @@ import {
   AgentDef, AgentPresenceState, AgentStatus, Approval, Attachment, Channel, ChannelMember,
   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
   MESSAGE_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
-  RunRecord, RUN_RETENTION,
+  RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
-  agentPresence, downloadContentType, fitRunRecord, isInlineViewable, isSafeSkillFileName,
+  agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
+  downloadContentType, fitRunRecord, isInlineViewable, isSafeSkillFileName,
   mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
   setMachineNames, shareableRun,
   extractMentions, newId, validateAgentInput, validateAttachment, validateChannelText,
@@ -47,6 +48,12 @@ export interface RelayOptions {
   bind?: string;
   /** allow harness control with the well-known default token (dev/QA only) */
   devMode?: boolean;
+  /**
+   * How long a mid-run "may I push this?" card stays answerable. Defaults to
+   * the shared ten minutes; tests shorten it. Shortening it can only ever
+   * produce MORE expiries, never a yes nobody gave.
+   */
+  approvalWaitMs?: number;
 }
 
 /**
@@ -111,6 +118,14 @@ export class Relay {
   ownerId: ID;
   bind: string;
   devMode: boolean;
+  /**
+   * How long a mid-run approval stays answerable, and the one-shot timers that
+   * make it die ON TIME rather than the next time somebody happens to read it.
+   * Without these a card sits on his screen looking live for as long as nobody
+   * opens anything — which is exactly the moment he would click it.
+   */
+  private approvalWaitMs: number;
+  private expiryTimers = new Set<ReturnType<typeof setTimeout>>();
   /** last sign-in request per user, and whether one is still running */
   private signInAt: Record<ID, number> = {};
   private signInFlight: Record<ID, number> = {};
@@ -138,6 +153,7 @@ export class Relay {
     this.ownerName = opts.ownerName ?? process.env.CLOUD9_OWNER_NAME ?? "Vikas";
     this.bind = resolveBind(opts.bind ?? process.env.CLOUD9_BIND);
     this.devMode = opts.devMode ?? process.env.CLOUD9_DEV === "1";
+    this.approvalWaitMs = opts.approvalWaitMs ?? APPROVAL_LIMITS.waitMs;
     // Owner exists from first boot; a default #general channel too.
     const owner = this.store.ensureOwner(this.ownerName, this.ownerToken);
     this.ownerId = owner.id;
@@ -183,6 +199,8 @@ export class Relay {
   }
 
   close(): void {
+    for (const t of this.expiryTimers) clearTimeout(t);
+    this.expiryTimers.clear();
     for (const c of this.conns) c.ws.close();
     this.wss.close();
     this.server.close();
@@ -368,7 +386,9 @@ export class Relay {
       // be every agent on a hub that had just started.
       presence: this.presenceMap(),
       tasks: this.store.tasks(),
-      approvals: this.store.approvals(),
+      // Swept FIRST, so nobody is ever handed a card that is already dead and
+      // invited to click Approve on it.
+      approvals: this.visibleApprovals(userId),
       // read state comes from the RELAY now, not from one browser's storage, so
       // reading on the laptop is read on the phone too
       unread: this.unreadFor(userId, channels),
@@ -1179,7 +1199,7 @@ export class Relay {
           this.store.saveApproval(approval);
           this.audit(conn, "approval_requested", approval.id,
             `${agent.name} requests approval: ${approval.action}`, { asUser: requester });
-          this.broadcast({ type: "approval", approval });
+          this.sendApproval(approval);
         }
         this.store.saveTask(task);
         // credited to WHO ASKED, not to whichever socket carried the request
@@ -1235,8 +1255,69 @@ export class Relay {
         this.broadcast({ type: "task", task });
         break;
       }
+      // ---- an agent is MID-RUN and has reached something that leaves this PC ----
+      //
+      // ONE ENTITY, ONE ANSWER. This mints the same `Approval` a delegated job
+      // mints and it is answered by the same `decideApproval` below. The only
+      // thing that is new is WHEN it is asked: while the agent is standing
+      // there, with a real branch and a real diff to describe.
+      case "askApproval": {
+        // ENGINE ONLY — the same law as `recordRun`. A desktop client able to
+        // mint approval cards could manufacture a harmless-looking one and then
+        // approve it with its own second frame.
+        if (conn.client !== "engine") {
+          throw new Error("only the engine can ask to do something outside this computer");
+        }
+        // WHOSE AGENT and WHICH ROOM, both from stored state, never the frame.
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        const channel = this.channelFor(conn.userId, frame.channelId);
+        const bad = validateRemoteActionFacts(frame.facts);
+        if (bad) throw new Error(bad);
+        const askId = typeof frame.askId === "string"
+          ? frame.askId.slice(0, APPROVAL_LIMITS.askId).trim() : "";
+        if (!askId) throw new Error("that request has no label to answer against");
+        // ONE OWNER FOR "MUST ASK", and it is shared's. Reading it here rather
+        // than assuming makes this frame obey the same rule the engine obeys —
+        // and it is the line that fails loudly if anyone ever teaches
+        // `mustAskBeforeActing` to say no to something on the REMOTE_ACTIONS
+        // table.
+        if (!mustAskBeforeActing(agent, { remoteAction: frame.facts.action })) {
+          throw new Error("that isn't something Cloud9 asks about");
+        }
+        // a job may only be NAMED if it really is this agent's job — the same
+        // check `recordRun` makes, for the same reason
+        const namedTask = frame.taskId ? this.store.task(frame.taskId) : undefined;
+        const taskId = namedTask && namedTask.agentId === agent.id ? namedTask.id : undefined;
+        const now = Date.now();
+        // THE SENTENCE IS WRITTEN HERE, from the facts, exactly as
+        // `describeApproval` writes the job-shaped one. The agent supplied a
+        // branch name and a count; it did not supply a single word he reads.
+        const detail = detailRemoteAction(frame.facts);
+        const approval: Approval = {
+          id: newId("ap"), agentId: agent.id, ownerId: agent.ownerId,
+          action: describeRemoteAction(frame.facts).slice(0, APPROVAL_LIMITS.action),
+          status: "pending", createdAt: now,
+          kind: "action", remoteAction: frame.facts.action, channelId: channel.id,
+          // it dies if nobody answers — see `sweepExpiredApprovals`
+          expiresAt: now + this.approvalWaitMs,
+          ...(taskId ? { taskId } : {}),
+          ...(detail ? { detail: detail.slice(0, APPROVAL_LIMITS.detail) } : {}),
+        };
+        this.store.saveApproval(approval);
+        this.audit(conn, "approval_requested", approval.id,
+          `${agent.name} asks to ${approval.action}`, { asAgent: agent });
+        // the receipt goes to the asking socket only; the CARD goes to the
+        // owner's screens (and to that same engine, which is one of them)
+        send(conn.ws, { type: "approvalAsked", askId, approvalId: approval.id });
+        this.sendApproval(approval);
+        // and it dies on the clock, not on the next person to look
+        this.scheduleExpiry(approval.expiresAt!);
+        break;
+      }
       case "decideApproval": {
-        const approval = this.store.approval(frame.approvalId);
+        // a card that ran out of time is not answerable, and saying so is the
+        // whole point of `expired` — silence must never read as a yes
+        const approval = this.freshApproval(frame.approvalId);
         if (!approval) throw new Error("no such approval");
         // Provisional policy (PARKING-LOT D4): only the agent's owner decides.
         if (approval.ownerId !== conn.userId) throw new Error("only the agent's owner can decide this");
@@ -1246,7 +1327,7 @@ export class Relay {
         approval.decidedAt = Date.now();
         this.store.saveApproval(approval);
         this.audit(conn, "approval_decided", approval.id, `${frame.decision}: ${approval.action}`);
-        const task = this.store.task(approval.taskId);
+        const task = approval.taskId ? this.store.task(approval.taskId) : undefined;
         if (task && task.status === "waiting_approval") {
           task.status = frame.decision === "approved" ? "not_started" : "cancelled";
           if (frame.decision === "rejected") task.error = "rejected by owner";
@@ -1255,7 +1336,7 @@ export class Relay {
           this.audit(conn, "task_status", task.id, `task "${task.title}" → ${task.status}`);
           this.broadcast({ type: "task", task });
         }
-        this.broadcast({ type: "approval", approval });
+        this.sendApproval(approval);
         break;
       }
       case "activity": {
@@ -1952,6 +2033,77 @@ export class Relay {
         "set your own owner token before connecting the AI apps (the default one isn't private)",
       );
     }
+  }
+
+  // ------------------------------------------------------------- approvals
+  //
+  // ONE PLACE decides who sees an approval, when it dies, and how it is sent.
+  // Three call sites used to be `this.broadcast({type:"approval"...})` copied
+  // three times, which is how a card that names a private branch on a private
+  // repository ends up on an invited friend's screen.
+
+  /**
+   * Who is shown this card.
+   *
+   * A JOB-SHAPED approval keeps the audience it has always had — the whole
+   * house — because that is existing behaviour and narrowing it is somebody
+   * else's decision, not this round's.
+   *
+   * An ACTION-SHAPED one goes to the agent's OWNER only. It names a branch, a
+   * repository and a diff size, and he is the only person who may answer it, so
+   * there is nobody else it could usefully reach. `toUser` covers his desktop,
+   * his phone and the engine that asked, all at once.
+   */
+  private sendApproval(approval: Approval): void {
+    if (approval.kind === "action") this.toUser(approval.ownerId, { type: "approval", approval });
+    else this.broadcast({ type: "approval", approval });
+  }
+
+  /**
+   * NOBODY ANSWERED, so the request is dead — and it says so.
+   *
+   * `expired` is a fourth word rather than a quiet `rejected` because they are
+   * not the same event: he said no, versus he never saw it. The agent is told
+   * the difference and so is the activity trail.
+   */
+  private sweepExpiredApprovals(now = Date.now()): void {
+    for (const a of this.store.approvals(1000)) {
+      if (a.status !== "pending" || typeof a.expiresAt !== "number" || a.expiresAt > now) continue;
+      a.status = "expired";
+      this.store.saveApproval(a);
+      this.store.logActivity({
+        actorKind: "system", actorId: a.agentId, actorName: "Cloud9",
+        kind: "approval_decided", refId: a.id,
+        detail: `expired with nobody answering: ${a.action}`,
+      });
+      this.sendApproval(a);
+    }
+  }
+
+  /**
+   * Come back at the deadline and sweep. One shot per card, unref'd so a
+   * waiting approval is never the reason this process stays alive, and cleared
+   * on close so a test does not leave one behind.
+   */
+  private scheduleExpiry(at: number): void {
+    const t = setTimeout(() => {
+      this.expiryTimers.delete(t);
+      this.sweepExpiredApprovals();
+    }, Math.max(0, at - Date.now()) + 25);
+    t.unref?.();
+    this.expiryTimers.add(t);
+  }
+
+  /** The stored approval, after the clock has been allowed to catch up with it. */
+  private freshApproval(id: ID): Approval | undefined {
+    this.sweepExpiredApprovals();
+    return this.store.approval(id);
+  }
+
+  /** The approvals this person may be shown, swept first. */
+  private visibleApprovals(userId: ID): Approval[] {
+    this.sweepExpiredApprovals();
+    return this.store.approvals().filter(a => a.kind !== "action" || a.ownerId === userId);
   }
 
   /** Send to one user's engine host connection(s) only. */

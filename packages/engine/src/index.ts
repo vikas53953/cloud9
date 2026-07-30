@@ -49,7 +49,10 @@ export {
   HarnessManager, detectClaude, detectCodex, type HarnessOptions,
 } from "./harness.js";
 export {
-  claudeModels, detectCodexModels, parseCodexModels, readCodexDefault, type ModelList,
+  claudeModels, claudeProbeArgs, detectClaudeModels, detectCodexModels,
+  parseClaudeProbe, parseCodexModels, readClaudeModelCache, readCodexDefault,
+  writeClaudeModelCache,
+  type ClaudeModelCache, type ModelList, type ProbeVerdict,
 } from "./models.js";
 export {
   startEngineHost, type EngineHost, type EngineHostOptions, type StoredCredential,
@@ -80,4 +83,9 @@ export {
   type RemoteAction, type RemoteApprover, type GitHubOptions, type GitHubAccount,
   type PullRequest,
 } from "./github.js";
+// Asking him MID-RUN, and waiting for the answer without stopping the engine.
+// This is what makes the gate in github.ts answerable rather than just closed.
+export {
+  ApprovalDesk, type ApprovalOutcome, type ApprovalDeskOptions,
+} from "./approvaldesk.js";
 export { Scheduler } from "./scheduler.js";

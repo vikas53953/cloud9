@@ -15,6 +15,49 @@ import {
 // package and so does this suite, so a check can never agree with a number the
 // renderer made up on its own.
 import { ATTACHMENT_LIMITS, humanMoney, summarizeRun } from "@cloud9/shared";
+// THE LADDER AND THE TABLE, from the engine that owns them. Every count below
+// is derived, never typed: a ninth capability or a fifth rung moves this suite
+// with it instead of leaving a number here that used to be right.
+import {
+  abilitiesForReach, CAPABILITIES, REACH_LEVELS,
+} from "@cloud9/engine/dist/abilities.js";
+import { isolationFor } from "@cloud9/engine/dist/isolation.js";
+
+/**
+ * EVERYTHING ONE AGENT EDITOR PUTS IN FRONT OF HIM.
+ *
+ * The point of reading it as one object is the comparison it makes possible:
+ * a role hired from the catalogue must offer EXACTLY this, field for field,
+ * against an agent he typed out himself. He reported that it did not — no tool
+ * permissions, no files folder, no skills — and the only check that can hold
+ * that shut for good is one that compares the two screens rather than looking
+ * for three things by name.
+ */
+const editorOffers = page => page.evaluate(() => ({
+  sections: [...document.querySelectorAll(".editor .form-col > section h3")]
+    .map(h => h.innerText.trim()),
+  rungs: [...document.querySelectorAll(".editor .reachrung")].map(b => b.dataset.reach),
+  abilities: [...document.querySelectorAll(".editor .abilitypick .toggle-row")]
+    .map(r => r.dataset.ability),
+  approvals: [...document.querySelectorAll(".editor .asksec .panelbox .toggle-row .tx b")]
+    .map(b => b.innerText.trim()),
+  whoCanUse: [...document.querySelectorAll(".editor .respondpick")].map(b => b.dataset.respond),
+  skillsEditor: document.querySelectorAll(".editor .skills").length,
+  skillButtons: [...document.querySelectorAll(".editor .skillhead button")]
+    .map(b => b.innerText.trim()),
+  honestReport: document.querySelectorAll(".editor .harnesshonest").length,
+  namePlate: document.querySelectorAll(".editor .preview-card .plate .portrait svg").length,
+}));
+
+/**
+ * The drawing of one portrait, so two screens can be held to the same face.
+ *
+ * The gradient's id is unique per render (React's `useId`), and it is the one
+ * thing in there that is allowed to differ — so it is normalised out. Without
+ * that, this would compare two identical drawings and call them different.
+ */
+const portraitOf = async (page, sel) =>
+  (await page.$eval(sel, el => el.innerHTML)).replace(/plate-[A-Za-z0-9_:-]+/g, "PLATE");
 
 const SHOTS = new URL("../docs/qa", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 fs.mkdirSync(SHOTS, { recursive: true });
@@ -30,7 +73,7 @@ const { ui: UI } = qaTarget();
  * run stops early it now FAILS and says so. Add or remove an `ok(...)` and this
  * number must move with it — a mismatch is the suite telling you it drifted.
  */
-const EXPECTED_CHECKS = 247;
+const EXPECTED_CHECKS = 305;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -978,23 +1021,205 @@ try {
     /Only you/.test((await page.locator('.cast[data-crew="Scout"] .whocan').innerText())),
     (await page.locator('.cast[data-crew="Scout"] .whocan').innerText()).replace(/\s+/g, " "));
 
-  /* ================= THE HIRING HALL (the marketplace) =====================
+  /* ================= THE REACH LADDER (capability-handoff.md 4.1-4.3) =======
    *
-   * A catalogue that ships INSIDE the app: no server, no download. The three
-   * things that make it a product rather than a list — you can get to it from
-   * where you already go to add an agent, the brief is real, and what you hire
-   * is an ordinary agent you can edit — are each checked, and hiring is done
-   * for real, against the hub.
+   * WHAT WAS WRONG. The engine grew a full ladder — from "just talk" up to
+   * everything Claude Code and Codex can do on his PC — and the agent editor
+   * still showed the same four checkboxes it always had. He said so himself:
+   * "I told you last night." The switches that let an agent run a program on
+   * his computer existed, were enforced, and were unreachable from any screen.
+   *
+   * Every number in these checks is read from `@cloud9/engine`, so the suite
+   * cannot agree with a screen that has quietly drifted from the table.
+   */
+  await page.click('.rail-btn[data-go="crew"]');
+  await page.waitForSelector(".crew-bar", { timeout: 15000 });
+  await page.click('.cast[data-crew="Scout"] button:has-text("Edit")');
+  await page.waitForSelector(".editor .reachladder", { timeout: 20000 });
+
+  const rungs = await page.$$eval(".editor .reachrung", bs => bs.map(b => ({
+    level: b.dataset.reach,
+    label: b.querySelector(".rr-tx b")?.innerText.trim() ?? "",
+    plain: b.querySelector(".rr-tx span")?.innerText.trim() ?? "",
+    count: b.querySelector(".rr-count")?.innerText.trim() ?? "",
+  })));
+  ok("the agent editor leads with the whole ladder the engine offers, not four checkboxes",
+    rungs.length === REACH_LEVELS.length &&
+    rungs.every((r, i) => r.level === REACH_LEVELS[i].level && r.label === REACH_LEVELS[i].label),
+    rungs.map(r => r.level).join(" → "));
+  ok("every rung says in his words what it means for his computer",
+    rungs.every((r, i) => r.plain === REACH_LEVELS[i].plainWords),
+    rungs.find((r, i) => r.plain !== REACH_LEVELS[i].plainWords)?.level ?? "all match");
+  ok("the top rung is offered as a thing he can pick, not hidden behind a warning",
+    rungs[rungs.length - 1].level === "computer" &&
+    /Everything this app can do on this computer/.test(rungs[rungs.length - 1].label),
+    rungs[rungs.length - 1].label);
+
+  const abilityRows = () => page.$$eval(".editor .abilitypick .toggle-row", rs => rs.map(r => ({
+    ability: r.dataset.ability,
+    label: r.querySelector(".tx b")?.innerText.trim() ?? "",
+    on: r.querySelector("input")?.checked === true,
+  })));
+  /* Open the one-by-one list once, deliberately, and leave it open: it is his
+     disclosure, and nothing in the ladder re-decides it under him. */
+  const openSwitches = async () => {
+    if ((await page.getAttribute(".editor .abilitypick", "data-open")) !== "yes") {
+      await page.click(".editor .abilityshow");
+    }
+    await page.waitForSelector('.editor .abilitypick[data-open="yes"]', { timeout: 10000 });
+  };
+  await openSwitches();
+  const rows = await abilityRows();
+  ok("every power the engine's table owns has a switch on this screen, in the same order",
+    rows.length === CAPABILITIES.length &&
+    rows.every((r, i) => r.ability === CAPABILITIES[i].ability),
+    `${rows.length} rows: ${rows.map(r => r.ability).join(", ")}`);
+  ok("each switch is named in his words, never with a tool name",
+    rows.every((r, i) => r.label.startsWith(CAPABILITIES[i].label)) &&
+    !/Bash|PowerShell|WebFetch|MCP/.test(rows.map(r => r.label).join(" ")),
+    rows.map(r => r.label).join(" | "));
+  ok("the powers that change his machine or spend money are marked as asking first",
+    CAPABILITIES.filter(c => c.alwaysAsk).every((c, _i) =>
+      rows.find(r => r.ability === c.ability)?.label.includes("asks you first")) &&
+    CAPABILITIES.filter(c => !c.alwaysAsk).every(c =>
+      !rows.find(r => r.ability === c.ability)?.label.includes("asks you first")),
+    rows.filter(r => r.label.includes("asks you first")).map(r => r.ability).join(", "));
+
+  // ---- a rung really is a prefix of the table, in both directions ----
+  await page.locator('.editor .reachrung[data-reach="computer"]').click();
+  const atTop = await abilityRows();
+  ok("picking the top rung really hands over every power the engine has",
+    atTop.every(r => r.on) && atTop.length === CAPABILITIES.length,
+    atTop.filter(r => !r.on).map(r => r.ability).join(", ") || "all on");
+  ok("and the ladder then reads as the top rung",
+    (await page.getAttribute(".editor .reachladder", "data-reach")) === "computer" &&
+    (await page.locator('.editor .reachrung[data-reach="computer"]').getAttribute("aria-pressed")) === "true");
+  /* HONESTY IN THE OTHER DIRECTION. Two of those powers are wired in the engine
+     and inert until he can choose a folder list and a service, and there is
+     nowhere to choose either yet. A switch that is ON and hands the agent
+     nothing must say so, or it reads as broken and every other switch is
+     doubted with it. */
+  ok("a power that is on and still grants nothing today admits it, rather than looking broken",
+    (await page.locator(".editor .inertswitch").count()) === 1 &&
+    (await page.locator('.editor .inertswitch [data-inert-row="wholeComputer"]').count()) === 1 &&
+    (await page.locator('.editor .inertswitch [data-inert-row="connections"]').count()) === 1,
+    (await page.locator(".editor .inertswitch").innerText()).replace(/\s+/g, " ").slice(0, 110));
+  await page.screenshot({ path: `${SHOTS}/reach-top.png` });
+
+  // ---- what will ask first, and that it is NOT something he can clear ----
+  const asksList = () => page.$$eval(".editor .willask li", ls => ls.map(l => l.dataset.ask));
+  const shownAsks = await asksList();
+  ok("with the top rung on, the screen names exactly the powers that will stop and ask him",
+    JSON.stringify(shownAsks) ===
+      JSON.stringify(CAPABILITIES.filter(c => c.alwaysAsk).map(c => c.label)),
+    shownAsks.join(" / "));
+  ok("and those are stated, never offered as switches he could clear",
+    (await page.locator(".editor .willask input").count()) === 0 &&
+    /not switches/i.test(await page.locator(".editor .willask .wa-note").innerText()));
+  ok("the two approvals that really are his choice stay editable",
+    (await page.locator(".editor .asksec .panelbox .toggle-row input").count()) === 2);
+  await page.locator(".editor .willask").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/reach-asks.png` });
+
+  await page.locator('.editor .reachrung[data-reach="talk"]').click();
+  const atBottom = await abilityRows();
+  ok("and with nothing switched on, nothing claims to be inert either",
+    (await page.locator(".editor .inertswitch").count()) === 0);
+  ok("picking the bottom rung takes every one of them back",
+    atBottom.every(r => !r.on),
+    atBottom.filter(r => r.on).map(r => r.ability).join(", ") || "all off");
+  ok("and nothing then claims it will ask him about anything",
+    (await page.locator(".editor .willask").count()) === 0);
+
+  // ---- a hand-picked mix is never rounded UP ----
+  await page.locator('.editor .reachrung[data-reach="look"]').click();
+  await openSwitches();
+  await page.locator('.editor .toggle-row[data-ability="commands"] input').check();
+  ok("a mix that adds a power without the rungs beneath it is NOT rounded up to that rung",
+    (await page.getAttribute(".editor .reachladder", "data-reach")) === "look",
+    `reads as ${await page.getAttribute(".editor .reachladder", "data-reach")}`);
+  ok("and the screen says out loud that this is his own mix, and which rung it covers",
+    (await page.locator(".editor .reachmixed").count()) === 1 &&
+    /Look things up and keep notes/.test(await page.locator(".editor .reachmixed").innerText()),
+    (await page.locator(".editor .reachmixed").innerText()).replace(/\s+/g, " "));
+  ok("switching one power on is enough to make the screen promise he will be asked",
+    (await asksList()).includes("Run programs on this computer"),
+    (await asksList()).join(" / "));
+  await page.locator(".editor .reachladder").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/reach-ladder.png` });
+
+  /* ---- the honest report: how high the switches go, and whether they hold ---- */
+  const claudeIso = isolationFor("claude");
+  const codexIso = isolationFor("codex");
+  ok("the screen says how high these switches GO, not only what they keep out",
+    (await page.locator('.editor .harnesshonest [data-field="ceiling"]').innerText()).trim()
+      === claudeIso.ceiling,
+    (await page.locator('.editor .harnesshonest [data-field="ceiling"]').innerText()).trim().slice(0, 70));
+  ok("a Claude agent is told the switches really are the whole boundary",
+    (await page.getAttribute(".editor .harnesshonest", "data-boundary")) === "yes" &&
+    (await page.locator('.editor .harnesshonest [data-field="headline"]').innerText()).trim()
+      === claudeIso.headline);
+  await page.locator(".editor .harnesshonest").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/reach-honest-claude.png` });
+
+  await page.click('.editor .app-pick[data-app="codex"]');
+  await page.waitForSelector('.editor .harnesshonest[data-boundary="no"]', { timeout: 10000 });
+  ok("and a Codex agent is NOT — the same screen refuses to tell him the same story twice",
+    (await page.locator('.editor .harnesshonest [data-field="headline"]').innerText()).trim()
+      === codexIso.headline,
+    (await page.locator('.editor .harnesshonest [data-field="headline"]').innerText()).trim().slice(0, 70));
+  ok("it says instead what those switches DO control on Codex",
+    new RegExp(codexIso.togglesControl.split(":")[0]).test(
+      await page.locator('.editor .harnesshonest [data-field="controls"]').innerText()));
+  await page.locator(".editor .harnesshonest .hh-more summary").click();
+  ok("everything Codex keeps hold of anyway is named, one line each",
+    (await page.locator(".editor .honestleaks li").count()) === codexIso.stillLoaded.length,
+    `${await page.locator(".editor .honestleaks li").count()} of ${codexIso.stillLoaded.length}`);
+  ok("and what we looked at and could not settle is kept apart from it, under its own heading",
+    (await page.locator(".editor .honestunknowns li").count()) === codexIso.unknowns.length &&
+    /could not tell/i.test(await page.locator(".editor .harnesshonest .hh-more").innerText()),
+    `${await page.locator(".editor .honestunknowns li").count()} unknown(s)`);
+  /* textContent, not innerText: the line is set in small caps by the stylesheet
+     and innerText hands back what the CSS did, not what the engine said. */
+  ok("the report carries the version and date it was measured on, so a stale claim shows",
+    (await page.locator(".editor .hh-measured").textContent()).includes(codexIso.measuredOn),
+    (await page.locator(".editor .hh-measured").textContent()).trim());
+  await page.locator(".editor .harnesshonest").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/reach-honest-codex.png` });
+
+  /* WHAT A HAND-MADE AGENT'S EDITOR OFFERS — held for the comparison below.
+     Nothing typed here is saved: the editor is left with Cancel. */
+  const handMadeOffers = await editorOffers(page);
+  ok("a hand-written agent's file offers the ladder, the switches, who may use it, and skills",
+    handMadeOffers.rungs.length === REACH_LEVELS.length &&
+    handMadeOffers.abilities.length === CAPABILITIES.length &&
+    handMadeOffers.skillsEditor === 1 && handMadeOffers.honestReport === 1,
+    JSON.stringify(handMadeOffers.sections));
+  await page.click(".editor .topbar >> text=Cancel");
+  await page.waitForSelector(".crew-grid", { timeout: 20000 });
+
+  /* ================= THE CASTING ROOM (the marketplace) =====================
+   *
+   * A catalogue that ships INSIDE the app: no server, no download. The things
+   * that make it a product rather than a list — you can get to it from where
+   * you already go to add an agent, the brief is real, a role looks like a
+   * person, and what you hire is an ordinary agent in every respect — are each
+   * checked, and hiring is done for real, against the hub.
    */
   await page.click('.rail-btn[data-go="chat"]');
   await page.waitForSelector(".sidebar", { timeout: 15000 });
-  ok("the hiring hall is reachable from where he already goes to add an agent",
+  ok("the casting room is reachable from where he already goes to add an agent",
     (await page.locator(".sidebar .side-head .browsebtn.tomarket").count()) === 1,
+    (await page.getAttribute(".sidebar .side-head .browsebtn.tomarket", "aria-label")) ?? "");
+  ok("and nothing on screen calls it a hiring hall any more",
+    !/hiring hall/i.test(await page.locator("body").innerText()),
     (await page.getAttribute(".sidebar .side-head .browsebtn.tomarket", "aria-label")) ?? "");
   await page.click('.rail-btn[data-go="crew"]');
   await page.waitForSelector(".crew-bar", { timeout: 15000 });
   ok("and from the crew screen",
-    (await page.locator(".crew-bar .tomarket").count()) === 1);
+    (await page.locator(".crew-bar .tomarket").count()) === 1 &&
+    /casting room/i.test(await page.locator(".crew-bar .tomarket").innerText()),
+    (await page.locator(".crew-bar .tomarket").innerText()).trim());
   await page.click(".crew-bar .tomarket");
   await page.waitForSelector(".market .cast.role", { timeout: 15000 });
 
@@ -1016,6 +1241,17 @@ try {
   ok("the catalogue is grouped by category, so a second category is data and not a redesign",
     (await page.locator('.market .marketgroup[data-group="software"]').count()) === 1 &&
     (await page.locator('.market .seg button[data-cat]').count()) >= 1);
+  /* A ROLE LOOKS LIKE A PERSON. Static emoji was a placeholder that never
+     became anybody; a role now wears the same drawn-from-the-name portrait an
+     agent gets, on the same square plate, so the picture he chooses by is the
+     picture his crew shows him afterwards. */
+  ok("every role in the catalogue wears a drawn portrait, and no emoji face is left",
+    (await page.locator(".market .cast.role .plate.roleplate .portrait svg").count()) === roles.length &&
+    (await page.locator(".market .roleface").count()) === 0,
+    `${await page.locator(".market .cast.role .plate.roleplate .portrait svg").count()} portraits`);
+  const hallFace = await portraitOf(page,
+    '.market .cast.role[data-role="sw-architect"] .roleplate .portrait svg');
+  await page.screenshot({ path: `${SHOTS}/hall-roles.png` });
   await page.screenshot({ path: `${SHOTS}/market-hall.png` });
 
   // the brief itself — the product, not filler
@@ -1034,13 +1270,60 @@ try {
     (await page.locator(".hirepanel .hireapp").count()) === 1 &&
     (await page.locator(".hirepanel .hiremodel option").count()) >= 1,
     `${await page.locator(".hirepanel .hiremodel option").count()} models offered`);
+  ok("the panel he hires from wears the face the agent will really be hired with",
+    (await page.locator(".hirepanel .hireface .portrait svg").count()) === 1);
   await page.screenshot({ path: `${SHOTS}/market-brief.png` });
+  await page.screenshot({ path: `${SHOTS}/hall-brief.png` });
 
   // hire it, for real, on Codex — and prove what landed
   await page.selectOption(".hirepanel .hireapp", "codex");
   const hireModel = await page.locator(".hirepanel .hiremodel").inputValue();
   await page.click(".hirepanel .hirebtn");
-  await page.waitForSelector('.crew-grid .cast[data-crew="Architect"]', { timeout: 25000 });
+  /* HIS COMPLAINT, AND THE FIX FOR IT. He hired the Architect and reported it
+     had no tool permissions, no files folder and no skills. All three were
+     there — one click away, behind a note on the crew screen telling him to
+     press Edit, which he had no reason to do. A role he has just taken on now
+     opens ITS OWN FILE, so everything a hand-written agent has is the first
+     thing he sees rather than something he has to go and find. */
+  await page.waitForSelector(".editor .reachladder", { timeout: 25000 });
+  ok("hiring opens the new agent's own file, instead of telling him to go and press Edit",
+    (await page.locator('.editor .hirednote[data-hired="Architect"]').count()) === 1 &&
+    (await page.locator(".editor .topbar h2").innerText()).trim() === "Architect",
+    (await page.locator(".editor .hirednote").innerText()).replace(/\s+/g, " ").slice(0, 80));
+
+  const hiredOffers = await editorOffers(page);
+  ok("A HIRED AGENT'S FILE OFFERS EXACTLY WHAT A HAND-WRITTEN ONE'S DOES — nothing less",
+    JSON.stringify(hiredOffers) === JSON.stringify(handMadeOffers),
+    JSON.stringify(hiredOffers) === JSON.stringify(handMadeOffers)
+      ? `${hiredOffers.sections.length} sections, ${hiredOffers.rungs.length} rungs, ` +
+        `${hiredOffers.abilities.length} switches, skills editor present`
+      : `hired ${JSON.stringify(hiredOffers)} vs hand-made ${JSON.stringify(handMadeOffers)}`);
+  await openSwitches();
+  ok("and the three he could not find are each on that screen, by name",
+    (await page.locator('.editor .toggle-row[data-ability="files"]').count()) === 1 &&
+    (await page.locator(".editor .abilitypick .toggle-row").count()) === CAPABILITIES.length &&
+    (await page.locator(".editor .skills").count()) === 1);
+  ok("a hired role starts no more powerful than a hand-written agent plus what its brief asked for",
+    (await page.locator('.editor .toggle-row[data-ability="commands"] input').isChecked()) === false &&
+    (await page.locator('.editor .toggle-row[data-ability="wholeComputer"] input').isChecked()) === false,
+    `reads as ${await page.getAttribute(".editor .reachladder", "data-reach")}`);
+  const hiredPersona = await page.locator(".editor .persona-input").inputValue();
+  ok("the brief really was copied onto the agent, word for word",
+    hiredPersona.trim() === brief, `${hiredPersona.length} characters on the agent`);
+  ok("the model he picked was saved on the agent too",
+    (await page.locator(".editor .modelpick").inputValue()) === hireModel,
+    `${await page.locator(".editor .modelpick").inputValue()} (picked ${hireModel})`);
+  const editorFace = await portraitOf(page, ".editor .preview-card .plate .portrait svg");
+  ok("the face on the role card is the face the agent now wears — the same drawing",
+    editorFace === hallFace);
+  await page.screenshot({ path: `${SHOTS}/hall-hired-editor.png` });
+  await page.locator(".editor .reachladder").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/hall-hired-reach.png` });
+
+  // …and it is genuinely editable, not a locked template
+  await page.fill(".editor .persona-input", `${hiredPersona}\n\nAlways answer in British English.`);
+  await page.click('.editor .topbar >> text=Save');
+  await page.waitForSelector(".crew-grid", { timeout: 20000 });
   ok("hiring copies the role onto his floor as one of his own agents",
     (await page.locator('.cast[data-crew="Architect"]').count()) === 1);
   ok("and it runs on the app he chose, not the one the catalogue suggested",
@@ -1052,20 +1335,11 @@ try {
   ok("a hire is owner-only, exactly like an agent he wrote himself",
     /Only you/.test(await page.locator('.cast[data-crew="Architect"] .whocan').innerText()),
     (await page.locator('.cast[data-crew="Architect"] .whocan').innerText()).replace(/\s+/g, " "));
+  ok("and the crew shows the very same picture the casting room showed",
+    (await portraitOf(page, '.cast[data-crew="Architect"] .plate .portrait svg')) === hallFace);
   await page.screenshot({ path: `${SHOTS}/market-hired.png` });
+  await page.screenshot({ path: `${SHOTS}/hall-crew.png` });
 
-  // …and it is genuinely editable afterwards, not a locked template
-  await page.click('.cast[data-crew="Architect"] button:has-text("Edit")');
-  await page.waitForSelector(".editor .persona-input", { timeout: 15000 });
-  const hiredPersona = await page.locator(".editor .persona-input").inputValue();
-  ok("the brief really was copied onto the agent, word for word",
-    hiredPersona.trim() === brief, `${hiredPersona.length} characters on the agent`);
-  ok("the model he picked was saved on the agent too",
-    (await page.locator(".editor .modelpick").inputValue()) === hireModel,
-    `${await page.locator(".editor .modelpick").inputValue()} (picked ${hireModel})`);
-  await page.fill(".editor .persona-input", `${hiredPersona}\n\nAlways answer in British English.`);
-  await page.click('.editor .topbar >> text=Save');
-  await page.waitForSelector(".crew-grid", { timeout: 20000 });
   await page.click('.cast[data-crew="Architect"] button:has-text("Edit")');
   await page.waitForSelector(".editor .persona-input", { timeout: 15000 });
   ok("and every word of it can be changed afterwards — the change survives the hub",
@@ -1075,6 +1349,132 @@ try {
   await page.screenshot({ path: `${SHOTS}/market-editable.png` });
   await page.click(".editor >> text=← Crew");
   await page.waitForSelector(".crew-grid", { timeout: 20000 });
+
+  /* ================= CAN THIS AGENT ACTUALLY BE USED RIGHT NOW? ============
+   *
+   * HIS BUG, IN HIS WORDS: "every agent shows offline." The hub was taught to
+   * work the answer out from what it genuinely observes and to send a plain
+   * sentence saying why — and none of it reached the screen. An agent row was
+   * a name and a pencil.
+   *
+   * The rule these checks hold shut: the word, the dot and the reason are ONE
+   * fact from ONE place, and an agent nobody has reported on is never drawn as
+   * if all were well.
+   */
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.waitForSelector(".sidebar .agentrow", { timeout: 20000 });
+  const rowState = pg => pg.$$eval(".sidebar .agentrow", rs => rs.map(r => ({
+    agent: r.dataset.agent,
+    presence: r.dataset.presence,
+    word: r.querySelector(".an-state b")?.innerText.trim() ?? "",
+    why: (r.querySelector(".an-state")?.innerText ?? "").replace(/\s+/g, " ").trim(),
+    dot: [...(r.querySelector(".pdot")?.classList ?? [])].find(c => c.startsWith("p-")) ?? "",
+  })));
+  const mine = await rowState(page);
+  const WORDS = { ready: "Ready", working: "Working", paused: "Paused", offline: "Offline" };
+  ok("every agent row on screen carries a presence, and it is one the hub can actually say",
+    mine.length >= 2 && mine.every(r => ["ready", "working", "paused", "offline"].includes(r.presence)),
+    mine.map(r => `${r.agent}=${r.presence}`).join(", "));
+  ok("the row says the state in words, not only as a colour",
+    mine.every(r => r.word === WORDS[r.presence]),
+    mine.map(r => `${r.agent}:${r.word}`).join(", "));
+  ok("and it says WHY, in a plain sentence",
+    mine.every(r => r.why.length > r.word.length + 3),
+    mine.map(r => r.why).join(" | "));
+  ok("the dot and the word can never disagree — they are drawn from the same one field",
+    mine.every(r => r.dot === `p-${r.presence}`),
+    mine.map(r => `${r.agent}:${r.dot}`).join(", "));
+  await page.screenshot({ path: `${SHOTS}/presence-sidebar.png` });
+
+  // ---- the conversation says the same thing the rail says ----
+  await page.click('.sidebar .agentrow[data-agent="Scout"] .agentmain');
+  await page.waitForSelector(".dm-head .presencehere", { timeout: 20000 });
+  const inHead = await page.evaluate(() => {
+    const el = document.querySelector(".dm-head .presencehere");
+    return {
+      presence: el.dataset.presence,
+      word: el.querySelector("b").innerText.trim(),
+      why: el.querySelector(".ph-why").innerText.trim(),
+    };
+  });
+  const scoutRow = (await rowState(page)).find(r => r.agent === "Scout");
+  ok("the conversation header says the same state as the rail, and the reason with it",
+    inHead.presence === scoutRow.presence && inHead.word === scoutRow.word &&
+    scoutRow.why.endsWith(inHead.why),
+    `${inHead.word} — ${inHead.why}`);
+  await page.screenshot({ path: `${SHOTS}/presence-conversation.png` });
+
+  // ---- paused is a real answer, and it is the owner's own doing ----
+  await page.click('.rail-btn[data-go="crew"]');
+  await page.waitForSelector(".crew-grid", { timeout: 20000 });
+  await page.click('.cast[data-crew="Architect"] button:has-text("Edit")');
+  await page.waitForSelector(".editor .lifecyclepick", { timeout: 20000 });
+  await page.selectOption(".editor .lifecyclepick", "paused");
+  await page.click('.editor .topbar >> text=Save');
+  await page.waitForSelector('.crew-grid .cast[data-crew="Architect"][data-presence="paused"]',
+    { timeout: 25000 });
+  ok("pausing an agent is shown as paused, with the owner's own doing given as the reason",
+    /Paused — paused by its owner/.test(
+      await page.locator('.cast[data-crew="Architect"] .nowpresence').innerText()),
+    (await page.locator('.cast[data-crew="Architect"] .nowpresence').innerText()).replace(/\s+/g, " "));
+  ok("and the crew card's pill says it too, rather than leaving a green dot behind",
+    (await page.locator('.cast[data-crew="Architect"] .presencepill').innerText()).trim() === "Paused" &&
+    (await page.locator('.cast[data-crew="Architect"] .presencepill .pdot.p-ready').count()) === 0);
+  await page.screenshot({ path: `${SHOTS}/presence-paused.png` });
+  ok("the Off duty filter finds it by that state, not by guessing from the record",
+    await (async () => {
+      await page.click('.crew-bar .seg >> text=Off duty');
+      await page.waitForTimeout(300);
+      return (await page.locator('.crew-grid .cast[data-crew="Architect"]').count()) === 1;
+    })());
+  await page.click('.crew-bar .seg >> text=Everyone');
+
+  // put it back, and prove the screen follows
+  await page.click('.cast[data-crew="Architect"] button:has-text("Edit")');
+  await page.waitForSelector(".editor .lifecyclepick", { timeout: 20000 });
+  await page.selectOption(".editor .lifecyclepick", "enabled");
+  await page.click('.editor .topbar >> text=Save');
+  await page.waitForSelector('.crew-grid .cast[data-crew="Architect"][data-presence="ready"]',
+    { timeout: 25000 });
+  ok("un-pausing puts it back to ready on screen, without a reload",
+    (await page.locator('.cast[data-crew="Architect"] .presencepill').innerText()).trim() === "Ready");
+
+  /* ---- AN AGENT NOBODY CAN RUN SAYS SO, AND SAYS WHY ----
+     "Offline" is the answer the hub gives whenever nobody could run this agent
+     if they tried — no engine, no signed-in app, or switched off by its owner.
+     Switching one off is the one of those three a QA run can cause on purpose
+     without lying about the machine, so that is the one driven here: it goes
+     down the same branch and must come back with a REASON and a hollow dot,
+     never the green one. */
+  await page.click('.cast[data-crew="Architect"] button:has-text("Edit")');
+  await page.waitForSelector(".editor .lifecyclepick", { timeout: 20000 });
+  await page.selectOption(".editor .lifecyclepick", "disabled");
+  await page.click('.editor .topbar >> text=Save');
+  await page.waitForSelector('.crew-grid .cast[data-crew="Architect"][data-presence="offline"]',
+    { timeout: 25000 });
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.waitForSelector('.sidebar .agentrow[data-agent="Architect"][data-presence="offline"]',
+    { timeout: 20000 });
+  const dead = (await rowState(page)).find(r => r.agent === "Architect");
+  ok("an agent nobody can run reads Offline, with the honest reason — never a green dot",
+    !!dead && dead.presence === "offline" && dead.dot === "p-offline" &&
+    /switched off by its owner/.test(dead.why),
+    dead ? dead.why : "(Architect not on screen)");
+  await page.screenshot({ path: `${SHOTS}/presence-offline.png` });
+  await page.click('.rail-btn[data-go="crew"]');
+  await page.waitForSelector(".crew-grid", { timeout: 20000 });
+  await page.click('.cast[data-crew="Architect"] button:has-text("Edit")');
+  await page.waitForSelector(".editor .lifecyclepick", { timeout: 20000 });
+  await page.selectOption(".editor .lifecyclepick", "enabled");
+  await page.click('.editor .topbar >> text=Save');
+  await page.waitForSelector('.crew-grid .cast[data-crew="Architect"][data-presence="ready"]',
+    { timeout: 25000 });
+  ok("switching it back on is enough — the screen follows the hub, not a reload",
+    (await page.locator('.cast[data-crew="Architect"] .presencepill').innerText()).trim() === "Ready");
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.waitForSelector(".sidebar", { timeout: 20000 });
+  await page.click('.sidebar .side-item[data-channel="general"]');
+  await page.waitForSelector(".composer textarea", { timeout: 20000 });
 
   await fpage.fill(".composer textarea", "@Scout could you find me a villa too?");
   await fpage.press(".composer textarea", "Enter");
@@ -1799,10 +2199,20 @@ try {
       if (/still going up/.test(said)) break;
       await new Promise(r => setTimeout(r, 20));
     }
+    /* The send button is read HERE, at the instant of the refusal, and not out
+       in the script afterwards. Read afterwards it is a race the checker
+       usually loses on a busy machine: the upload finishes, the button flips
+       back to "Send with 1 file", and a correct app is failed for being quick.
+       The claim is unchanged — while it is refusing, the button must say what
+       it is waiting for — it is only asked at the moment it is true. */
+    const btn = document.querySelector(".composer .sendbtn");
     return {
       reproduced: true, waitingWhenPressed, said,
       stillThere: !!tile(),
       wordsKept: box.value,
+      stillGoingWhenRead: stillGoing(),
+      sendWaiting: btn?.dataset.waiting ?? "",
+      sendSays: (btn?.textContent ?? "").trim(),
       wentAnyway: [...document.querySelectorAll(".msg p")]
         .filter(p => p.textContent.includes("sending this before the file is up")).length,
     };
@@ -1816,9 +2226,10 @@ try {
     pressedEarly.wordsKept === "sending this before the file is up",
     JSON.stringify(pressedEarly));
   ok("and the send button says it is waiting for the file rather than offering to send without it",
-    (await page.getAttribute(".composer .sendbtn", "data-waiting")) === "file" &&
-    /Waiting for a file/.test(await page.locator(".composer .sendbtn").innerText()),
-    (await page.locator(".composer .sendbtn").innerText()).trim());
+    pressedEarly.stillGoingWhenRead === true &&
+    pressedEarly.sendWaiting === "file" && /Waiting for a file/.test(pressedEarly.sendSays),
+    `${pressedEarly.sendSays} (data-waiting=${pressedEarly.sendWaiting}, ` +
+    `still going: ${pressedEarly.stillGoingWhenRead})`);
   await page.screenshot({ path: `${SHOTS}/fix2-enter-waits.png` });
 
   // and once it lands, the very same message goes with the file it was holding
@@ -2511,11 +2922,54 @@ try {
   }
   await page.keyboard.press("Escape");
 
-  /* ---- and the hiring hall, with a brief open over it ---- */
+  /* ---- the reach ladder, at its widest: top rung, everything disclosed ---- */
   await page.click('.rail-btn[data-go="crew"]');
+  await page.waitForSelector(".crew-bar", { timeout: 20000 });
+  await page.click('.cast[data-crew="Scout"] button:has-text("Edit")');
+  await page.waitForSelector(".editor .reachladder", { timeout: 20000 });
+  await page.locator('.editor .reachrung[data-reach="computer"]').click();
+  if ((await page.getAttribute(".editor .abilitypick", "data-open")) !== "yes") {
+    await page.click(".editor .abilityshow");
+  }
+  await page.locator(".editor .harnesshonest .hh-more summary").click();
+  await page.locator(".editor .reachladder").scrollIntoViewIfNeeded();
+  for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.waitForTimeout(200);
+      const over = await overflow();
+      ok(`the reach ladder at full stretch does not scroll sideways at ${width} in the ${theme} look`,
+        over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+      if (width === 1280) {
+        await page.locator(".editor .reachladder").scrollIntoViewIfNeeded();
+        await page.screenshot({ path: `${SHOTS}/reach-ladder-${theme}.png` });
+        await page.locator(".editor .harnesshonest").scrollIntoViewIfNeeded();
+        await page.screenshot({ path: `${SHOTS}/reach-honest-${theme}.png` });
+      }
+    }
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.click(".editor .topbar >> text=Cancel");
+  await page.waitForSelector(".crew-grid", { timeout: 20000 });
+
+  /* ---- and the casting room, with a brief open over it ---- */
   await page.waitForSelector(".crew-bar .tomarket", { timeout: 20000 });
   await page.click(".crew-bar .tomarket");
   await page.waitForSelector(".market .cast.role", { timeout: 20000 });
+  for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.waitForTimeout(200);
+      const over = await overflow();
+      ok(`the casting room's role cards do not scroll sideways at ${width} in the ${theme} look`,
+        over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+      if (width === 1280) {
+        await page.screenshot({ path: `${SHOTS}/hall-roles-${theme}.png` });
+      }
+    }
+  }
   await page.click('.market .cast.role[data-role="sw-devops"] .rolesee');
   await page.waitForSelector(".hirepanel", { timeout: 15000 });
   for (const [width, height] of [[1280, 800], [1440, 900]]) {
@@ -2524,14 +2978,32 @@ try {
       await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
       await page.waitForTimeout(200);
       const over = await overflow();
-      ok(`the hiring hall and an open brief do not scroll sideways at ${width} in the ${theme} look`,
+      ok(`the casting room and an open brief do not scroll sideways at ${width} in the ${theme} look`,
         over.doc <= 0 && over.body <= 0, JSON.stringify(over));
       if (width === 1280) {
         await page.screenshot({ path: `${SHOTS}/market-brief-${theme}.png` });
+        await page.screenshot({ path: `${SHOTS}/hall-brief-${theme}.png` });
       }
     }
   }
   await page.click('.hirepanel .foot >> text=Not now');
+
+  /* ---- and the rail carrying a presence line on every agent ---- */
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.waitForSelector(".sidebar .agentrow", { timeout: 20000 });
+  for (const [width, height] of [[1280, 800], [1440, 900]]) {
+    for (const theme of ["light", "dark"]) {
+      await page.setViewportSize({ width, height });
+      await page.evaluate(t => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.waitForTimeout(200);
+      const over = await overflow();
+      ok(`a rail showing every agent's state does not scroll sideways at ${width} in the ${theme} look`,
+        over.doc <= 0 && over.body <= 0, JSON.stringify(over));
+      if (width === 1280) {
+        await page.screenshot({ path: `${SHOTS}/presence-sidebar-${theme}.png` });
+      }
+    }
+  }
 
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));

@@ -1795,7 +1795,7 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .answeringbar .ab-x:hover{background:var(--surface);color:var(--ink);}
 
 /* ============================================================
-   THE HIRING HALL — ready-written roles that ship in the app
+   THE CASTING ROOM — ready-written roles that ship in the app
    ============================================================ */
 
 .marketgroup{padding:0 0 8px;}
@@ -1805,10 +1805,12 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 
 .cast.role{cursor:default;}
 .cast.role:hover{transform:none;box-shadow:var(--shadow);border-color:var(--line);}
-.roleface{
-  height:96px;display:grid;place-items:center;border-bottom:1px solid var(--line);
-  background:var(--surface-2);font-size:34px;line-height:1;
-}
+/* A ROLE WEARS THE FACE IT WILL WEAR ON THE FLOOR.
+   Same portrait, same square plate as a crew card, deliberately: he picks a
+   role by its picture and then has to recognise that same person on the floor
+   afterwards. A shallower band would have cropped the crest off and made the
+   two pictures look like two different drawings of the same agent. */
+.cast.role .plate.roleplate{aspect-ratio:1/1;}
 .roleasks{margin:2px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:5px;}
 .roleasks li{
   position:relative;padding-left:15px;font-size:12.5px;color:var(--ink-2);line-height:1.45;
@@ -1845,7 +1847,8 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 
 /* the brief, and the one decision before hiring */
 .hirepanel{width:min(680px,94vw);}
-.hirepanel>.head .hireface{font-size:22px;line-height:1;}
+.hirepanel>.head .hireface{flex:none;line-height:0;}
+.hirepanel>.head .hireface .portrait{border-radius:var(--radius-s);}
 .hirepanel>.head .hiretitle{min-width:0;overflow:hidden;text-overflow:ellipsis;}
 .hiretag{margin:0;color:var(--ink-2);font-size:14px;line-height:1.5;}
 .briefbox{
@@ -1858,3 +1861,172 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   flex-basis:100%;font-size:12px;color:var(--ink-3);line-height:1.5;margin-top:2px;
 }
 .abilitywords .ab-none{font-size:13px;color:var(--ink-3);}
+
+
+/* ============================================================
+   THE REACH LADDER — how far one agent may go
+   ------------------------------------------------------------
+   Four rungs, and the drawing says the one thing that is actually true of
+   them: a rung is everything below it plus more. So the spine inks in up to
+   the chosen rung and goes faint above it. That is not decoration — it is the
+   only structural fact about this control, and it is why he can reason about
+   the top rung without reading eight switch names.
+   ============================================================ */
+
+.reachladder{display:flex;flex-direction:column;}
+.reachrung{
+  display:flex;align-items:flex-start;gap:0;width:100%;text-align:left;
+  background:transparent;border:0;padding:0;color:inherit;font:inherit;
+}
+.reachrung .rr-spine{
+  position:relative;flex:none;width:34px;align-self:stretch;display:flex;justify-content:center;
+}
+/* the spine itself: one continuous line down the whole ladder */
+.reachrung .rr-spine::before{
+  content:"";position:absolute;top:0;bottom:0;width:2px;background:var(--line);
+}
+.reachrung:first-child .rr-spine::before{top:22px;}
+.reachrung:last-child .rr-spine::before{bottom:calc(100% - 22px);}
+.reachrung[data-within="yes"] .rr-spine::before{background:var(--pine);}
+.reachrung .rr-node{
+  position:relative;margin-top:15px;width:13px;height:13px;border-radius:99px;
+  border:2px solid var(--line);background:var(--bg);
+  transition:background .16s var(--ease),border-color .16s var(--ease),transform .16s var(--ease);
+}
+.reachrung[data-within="yes"] .rr-node{border-color:var(--pine);}
+.reachrung[aria-pressed="true"] .rr-node{background:var(--pine);border-color:var(--pine);transform:scale(1.25);}
+
+.reachrung .rr-tx{
+  flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;padding:11px 12px 11px 4px;
+  border-bottom:1px solid var(--line-soft);
+}
+.reachrung:last-child .rr-tx{border-bottom:0;}
+.reachrung .rr-tx b{font-size:13.5px;font-weight:600;color:var(--ink-2);}
+.reachrung .rr-tx span{font-size:12.5px;color:var(--ink-3);line-height:1.5;}
+.reachrung[data-within="yes"] .rr-tx b{color:var(--ink);}
+.reachrung[aria-pressed="true"] .rr-tx b{color:var(--pine);}
+/* the count sits inside the same ruled row, so the rule runs the whole width */
+.reachrung .rr-count{
+  flex:none;padding:14px 0 11px;border-bottom:1px solid var(--line-soft);align-self:stretch;
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-3);white-space:nowrap;
+}
+.reachrung:last-child .rr-count{border-bottom:0;}
+.reachrung[aria-pressed="true"] .rr-count{color:var(--pine);}
+.reachrung:hover .rr-tx b{color:var(--ink);}
+.reachrung:focus-visible{outline:2px solid var(--pine);outline-offset:2px;border-radius:var(--radius-s);}
+
+.reachmixed{margin-top:12px;color:var(--marigold);}
+
+.abilitypick{margin-top:14px;}
+.abilityshow{
+  cursor:pointer;font-size:12.5px;color:var(--ink-2);padding:6px 0;background:transparent;
+  border:0;display:flex;align-items:center;gap:7px;font-family:inherit;
+}
+.abilityshow::before{content:"›";font-family:var(--mono);color:var(--ink-3);
+  transition:transform .16s var(--ease);display:inline-block;}
+.abilitypick[data-open="yes"] .abilityshow::before{transform:rotate(90deg);}
+.abilityshow:hover{color:var(--ink);}
+.abilitypick .toggle-row .tx b{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+
+/* the honest report: what these switches ARE, on this app */
+.harnesshonest{
+  margin-top:16px;padding:13px 15px;border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--surface-2);display:flex;flex-direction:column;gap:7px;
+}
+.harnesshonest[data-boundary="no"]{
+  border-color:color-mix(in srgb,var(--marigold) 45%,transparent);background:var(--marigold-soft);
+}
+.harnesshonest .hh-line{margin:0;font-size:12.5px;line-height:1.55;color:var(--ink);}
+.harnesshonest .hh-ceiling{color:var(--ink-2);}
+.harnesshonest .hh-measured{margin:0;font-family:var(--mono);font-size:10px;letter-spacing:.08em;
+  color:var(--ink-3);text-transform:uppercase;}
+.hh-more>summary{
+  cursor:pointer;font-size:12.5px;color:var(--ink-2);list-style:none;
+  display:flex;align-items:center;gap:7px;padding:3px 0;
+}
+.hh-more>summary::-webkit-details-marker{display:none;}
+.hh-more>summary::before{content:"›";font-family:var(--mono);color:var(--ink-3);
+  transition:transform .16s var(--ease);display:inline-block;}
+.hh-more[open]>summary::before{transform:rotate(90deg);}
+.hh-more .eyebrow{display:block;margin:10px 0 5px;}
+.honestleaks,.honestunknowns{margin:0;padding:0 0 0 15px;display:flex;flex-direction:column;gap:7px;}
+.honestleaks li,.honestunknowns li{font-size:12px;line-height:1.55;color:var(--ink-2);
+  overflow-wrap:anywhere;}
+.honestleaks li b{display:block;color:var(--ink);font-weight:600;}
+.honestleaks li span{color:var(--ink-3);}
+
+/* what will stop and ask — a statement, never a control */
+.willask{
+  margin-bottom:14px;padding:12px 15px;border-radius:var(--radius);
+  border:1px solid color-mix(in srgb,var(--marigold) 45%,transparent);
+  background:var(--marigold-soft);display:flex;flex-direction:column;gap:6px;
+}
+.willask .wa-head{font-size:13px;font-weight:600;color:var(--ink);}
+.willask ul{margin:0;padding:0 0 0 17px;display:flex;flex-direction:column;gap:3px;}
+.willask li{font-size:13px;color:var(--ink);}
+.willask .wa-note{font-size:12px;color:var(--ink-2);line-height:1.5;}
+
+/* ============================================================
+   PRESENCE — can this agent actually be used right now
+   ------------------------------------------------------------
+   Filled means somebody can run it. Hollow means nobody can. Dotted means
+   nobody has told us yet, and that is drawn as its own thing on purpose: a
+   green dot we could not stand behind is the bug this replaces.
+   ============================================================ */
+
+.pdot{
+  width:9px;height:9px;border-radius:99px;flex:none;display:inline-block;
+  border:2px solid var(--ink-3);background:transparent;
+}
+.avatar .pdot{
+  position:absolute;right:-3px;bottom:-3px;width:12px;height:12px;
+  border-width:2.5px;box-shadow:0 0 0 2.5px var(--surface);
+}
+.sidebar .avatar .pdot,.aside .avatar .pdot{box-shadow:0 0 0 2.5px var(--bg-2);}
+.pdot.p-ready{background:var(--pine);border-color:var(--pine);}
+.pdot.p-working{background:var(--marigold-hi);border-color:var(--marigold-hi);}
+.pdot.p-paused{background:var(--ink-3);border-color:var(--ink-3);}
+.pdot.p-offline{background:transparent;border-color:var(--ink-3);}
+.pdot.p-unknown{background:transparent;border-style:dotted;border-color:var(--ink-3);opacity:.7;}
+@media (prefers-reduced-motion:no-preference){
+  .pdot.p-working{animation:pworking 1.9s var(--ease) infinite;}
+}
+@keyframes pworking{0%,100%{opacity:1;}50%{opacity:.42;}}
+
+/* the sidebar row says the state in words, not only a colour */
+.side-item .txt.agent-name{display:flex;flex-direction:column;gap:1px;line-height:1.25;}
+.agentrow .an-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.an-state{
+  font-size:11px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.an-state b{font-weight:600;}
+[data-presence="ready"] .an-state b{color:var(--pine);}
+[data-presence="working"] .an-state b{color:var(--marigold);}
+[data-presence="offline"] .an-state b,[data-presence="unknown"] .an-state b{color:var(--ink-3);}
+.mini-agent .an-state{display:block;margin-top:2px;}
+
+/* and the conversation header says it in full */
+.presencehere{
+  display:flex;align-items:center;gap:7px;min-width:0;flex:none;max-width:300px;
+  font-size:12.5px;color:var(--ink-2);
+}
+.presencehere b{font-weight:600;color:var(--ink);flex:none;}
+.presencehere[data-presence="ready"] b{color:var(--pine);}
+.presencehere[data-presence="working"] b{color:var(--marigold);}
+.presencehere[data-presence="offline"] b,.presencehere[data-presence="unknown"] b{color:var(--ink-3);}
+.presencehere .ph-why{
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-3);
+}
+.chip.presencepill{display:inline-flex;align-items:center;gap:6px;}
+.chip.presencepill.p-ready{color:var(--pine);border-color:color-mix(in srgb,var(--pine) 35%,transparent);
+  background:var(--pine-soft);}
+.chip.presencepill.p-working{color:var(--marigold);
+  border-color:color-mix(in srgb,var(--marigold) 40%,transparent);background:var(--marigold-soft);}
+.cast .nowpresence span{-webkit-line-clamp:3;}
+
+/* a switch that is on and still grants nothing says so, rather than looking broken */
+.inertswitch{display:flex;flex-direction:column;gap:6px;margin-top:14px;}
+.inertswitch>b{font-size:13px;}
+.inertswitch ul{margin:0;padding:0 0 0 17px;display:flex;flex-direction:column;gap:5px;}
+.inertswitch li{font-size:12.5px;line-height:1.55;}

@@ -10,6 +10,8 @@ import {
   mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
+import { ApprovalDesk, ApprovalOutcome } from "./approvaldesk.js";
+import { GitHubClient, GitHubOptions } from "./github.js";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
   ClaudeProvider, HarnessUnavailableError, MockProvider, redactForSharing, sanitizeForChat,
@@ -39,6 +41,12 @@ export interface EngineOptions {
   maxConcurrentTurns?: number;
   /** how many run records to keep per agent before the oldest are deleted */
   keepRunsPerAgent?: number;
+  /**
+   * How long an agent waits for a mid-run "may I push this?" before giving up.
+   * Defaults to the shared ten minutes; tests shorten it. Shortening it can
+   * only ever produce MORE refusals, never a yes nobody gave.
+   */
+  approvalWaitMs?: number;
 }
 
 /** Everything a turn needs, plus who is asking and on whose behalf. */
@@ -89,6 +97,13 @@ export class Engine {
    */
   private pendingAsks: PendingAsk[] = [];
   private askMessageFor = new Map<ID, ID>();
+  /**
+   * AGENTS STANDING AT THE GATE. One per thing an agent has asked to do that
+   * would leave this computer, waiting on his answer without holding anything
+   * up. See `approvaldesk.ts` — the engine keeps working while they wait, and
+   * silence is never a yes.
+   */
+  approvals: ApprovalDesk;
   private turnsInFlight = 0;
   private queue: (() => Promise<void>)[] = [];
   private opts: EngineOptions;
@@ -116,6 +131,10 @@ export class Engine {
       agentDataDir: this.agentDataDir,
       ...(opts.keepRunsPerAgent ? { keepPerAgent: opts.keepRunsPerAgent } : {}),
     });
+    this.approvals = new ApprovalDesk({
+      send: frame => this.sendFrame(frame),
+      ...(opts.approvalWaitMs ? { waitMs: opts.approvalWaitMs } : {}),
+    });
     this.schedules = this.loadSchedules();
     this.scheduler = new Scheduler(
       () => this.schedules,
@@ -130,6 +149,10 @@ export class Engine {
     });
     this.ws.on("message", raw => this.onFrame(JSON.parse(String(raw)) as ServerFrame));
     this.ws.on("close", () => {
+      // NOBODY IS THERE TO ANSWER, so nothing leaves this machine. A dropped
+      // socket is the one moment where carrying on and assuming it was fine
+      // would be most tempting and most wrong.
+      this.approvals.giveUpAll("the hub went away before anyone answered, so it did not happen");
       if (this.stopped) return;
       this.reconnectTimer = setTimeout(() => this.connect(), 2000);
     });
@@ -138,6 +161,7 @@ export class Engine {
 
   stop(): void {
     this.stopped = true;
+    this.approvals.giveUpAll("Cloud9 stopped before anyone answered, so it did not happen");
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.scheduler.stop();
     this.ws?.removeAllListeners("close");
@@ -184,6 +208,17 @@ export class Engine {
         break;
       case "harnessRequest":
         this.onHarnessRequest?.(frame.action, frame.harness);
+        break;
+      // ---- the mid-run approval round trip (his item 6) ----
+      // The receipt tells us WHICH card belongs to which waiting agent; the
+      // ordinary `approval` frame carries the decision. There is no special
+      // decision frame, on purpose: `decideApproval` already produces this one
+      // and a second path would be a second answer to "did we ask?".
+      case "approvalAsked":
+        this.approvals.onAsked(frame.askId, frame.approvalId);
+        break;
+      case "approval":
+        this.approvals.onApproval(frame.approval);
         break;
       default:
         break;
@@ -654,6 +689,43 @@ export class Engine {
     // screen can say "these answers are made up" without anyone having to
     // remember to ask a second question
     this.sendFrame({ type: "harnessState", state: { ...state, demo: this.demoMode } });
+  }
+
+  /**
+   * THE THING THAT WAS MISSING. A `GitHubClient` for one agent, wired to ask
+   * HIM at the moment of the push rather than refusing because nobody was set
+   * up to be asked.
+   *
+   * `github.ts` is closed by default and stays closed by default — this does
+   * not open it, it supplies the one approver that can answer. Everything on
+   * the `REMOTE_ACTIONS` table still goes through the gate, the sentence he
+   * reads is still written by the hub from facts, and a refusal is still an
+   * error the agent has to report rather than a silent no-op.
+   *
+   * `lastRefusal` is how the caller turns "it did not happen" into a true
+   * sentence in the conversation: the outcome carries the plain-words reason
+   * (he said no / nobody answered / the hub went away) and it would otherwise
+   * be lost inside the boolean the gate wants.
+   */
+  githubFor(
+    agent: AgentDef,
+    where: { channelId: ID; taskId?: ID },
+    extra: Omit<GitHubOptions, "approve"> = {},
+  ): { client: GitHubClient; lastRefusal: () => string | undefined } {
+    let refusal: string | undefined;
+    const client = new GitHubClient({
+      ...extra,
+      approve: async (_action, _detail, facts): Promise<boolean> => {
+        const outcome: ApprovalOutcome = await this.approvals.ask({
+          agent, channelId: where.channelId,
+          ...(where.taskId ? { taskId: where.taskId } : {}),
+          facts,
+        });
+        refusal = outcome.approved ? undefined : outcome.reason;
+        return outcome.approved;
+      },
+    });
+    return { client, lastRefusal: () => refusal };
   }
 
   agentSend(agentId: ID, channelId: ID, text: string, proactive = false): void {

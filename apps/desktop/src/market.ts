@@ -1,5 +1,5 @@
 /* ============================================================
-   THE HIRING HALL — the catalogue Cloud9 ships with.
+   THE CASTING ROOM — the catalogue Cloud9 ships with.
    ============================================================
 
    A curated set of ready-written agents. It ships INSIDE the app:

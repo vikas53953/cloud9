@@ -82,8 +82,14 @@ try {
    * is paused in plain words, AND the rail's own portrait lamp must go dark. */
   await p.locator('.cast[data-crew="Echo"] .now:has-text("Paused")').waitFor({ timeout: 30000 });
   await p.click('.rail-btn[data-go="chat"]');
-  await echoRow.locator(".avatar .status.st-asleep").waitFor({ timeout: 30000 });
-  ok("the app says the agent is paused after the edit", true);
+  /* The rail's lamp is now driven by the hub's PRESENCE, not by a lifecycle
+     guess made in the browser — so the thing to wait for is the paused dot and
+     the paused word, together. Stricter than the old `.st-asleep`, which said
+     only "not lit" and would have been just as happy about an agent whose
+     engine had died. */
+  await echoRow.locator(".avatar .pdot.p-paused").waitFor({ timeout: 30000 });
+  await echoRow.locator('.an-state:has-text("Paused")').waitFor({ timeout: 30000 });
+  ok("the app says the agent is paused after the edit, and says who paused it", true);
 
   /* ---- DOES A PAUSED AGENT ACTUALLY STAY SILENT? ----
    *

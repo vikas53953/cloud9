@@ -8,6 +8,7 @@
 // Credentials are PER HARNESS. A Claude key and a Codex key are different
 // accounts on different services; they are stored, injected and cleared
 // separately, and a Codex key must never reach an ANTHROPIC_* variable.
+import path from "node:path";
 import { HarnessName, HarnessState } from "@cloud9/shared";
 import { ClaudeCliProvider } from "./claude-cli.js";
 import { CodexProvider } from "./codex.js";
@@ -143,6 +144,9 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
   applyProviders();
 
   const harness = new HarnessManager({
+    // the proved Claude model list lives beside the engine's other state, so it
+    // survives a restart and is thrown away when the CLI is updated
+    claudeModelCachePath: path.join(engine.dataDir, "claude-models.json"),
     ...opts.harness,
     // a held credential outranks the CLI's own login when deciding authKind,
     // because it is what the engine will actually bill against

@@ -1,6 +1,6 @@
 // Renderer-side relay client: one WebSocket, one mutable world, subscribers.
 import {
-  ActivityRecord, AgentDef, AgentStatus, Approval, Attachment, ATTACHMENT_LIMITS, Channel,
+  ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, Attachment, ATTACHMENT_LIMITS, Channel,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   RunListEntry, RunRecord, SearchHit, ServerFrame, Task, UnreadEntry, User, validateAttachment,
 } from "@cloud9/shared";
@@ -87,6 +87,16 @@ export interface World {
   channels: Channel[];
   messages: Record<ID, Message[]>; // by channel
   agentStatus: Record<ID, AgentStatus>;
+  /**
+   * CAN THIS AGENT ACTUALLY BE USED RIGHT NOW — the hub's answer, never ours.
+   *
+   * ABSENT IS A REAL ANSWER AND IT IS NOT "FINE". A missing entry means nobody
+   * has reported on that agent yet, which is why this is a sparse map rather
+   * than a map with a cheerful default: the screen has to be able to tell "we
+   * have not looked" apart from "it is ready", and a default would erase the
+   * difference at the only place it matters.
+   */
+  presence: Record<ID, AgentPresenceState>;
   inviteCode?: string;
   tasks: Task[];
   approvals: Approval[];
@@ -248,7 +258,7 @@ export function purgeLegacySecrets(): void {
 export class RelayClient {
   world: World = {
     connected: false, authFailed: false, users: [], agents: [], channels: [],
-    messages: {}, agentStatus: {}, tasks: [], approvals: [], activity: [],
+    messages: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
@@ -1048,6 +1058,10 @@ export class RelayClient {
         w.agents = frame.state.agents;
         w.channels = frame.state.channels;
         w.agentStatus = frame.state.agentStatus;
+        // A hub from before presence existed sends nothing here. Empty is the
+        // honest landing place: every row then says "we have not looked yet"
+        // rather than a green dot nobody stood behind.
+        w.presence = frame.state.presence ?? {};
         w.tasks = frame.state.tasks;
         w.approvals = frame.state.approvals;
         w.messages = {};
@@ -1112,12 +1126,25 @@ export class RelayClient {
         w.agents = [...w.agents];
         break;
       }
-      case "agentDeleted":
+      case "agentDeleted": {
         w.agents = w.agents.filter(a => a.id !== frame.agentId);
+        // a deleted agent's presence is not a fact about anything any more
+        const { [frame.agentId]: _gone, ...rest } = w.presence;
+        w.presence = rest;
         this.forgetRunsOf(frame.agentId);
         break;
+      }
       case "agentStatus":
         w.agentStatus = { ...w.agentStatus, [frame.agentId]: frame.status };
+        // The SAME frame carries both halves, so the lamp and the words on the
+        // row can never drift apart the way two frames would let them.
+        w.presence = {
+          ...w.presence,
+          [frame.agentId]: {
+            agentId: frame.agentId, status: frame.status,
+            presence: frame.presence, reason: frame.reason, updatedAt: Date.now(),
+          },
+        };
         break;
       case "invite":
         w.inviteCode = frame.code;
@@ -1289,6 +1316,14 @@ export class RelayClient {
       case "projects":
       case "projectForgotten":
       case "projectItems":
+        break;
+      // ENGINE-ONLY RECEIPT, and it is right that the screen drops it. When an
+      // agent asks mid-run "may I push this branch?", the hub answers the
+      // ENGINE with the id of the card it just minted, so the engine knows
+      // which decision belongs to which waiting agent. The card itself arrives
+      // on the ordinary `approval` frame the screen already handles — this is
+      // the plumbing behind it, and nothing on screen needs it.
+      case "approvalAsked":
         break;
       default: {
         /**

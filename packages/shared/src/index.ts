@@ -72,8 +72,158 @@ export interface AgentApprovals {
  */
 export const ALWAYS_ASK_ABILITIES = ["commands", "wholeComputer", "connections"] as const;
 
-/** Does this agent hold a power that must be asked about before it acts alone? */
-export function mustAskBeforeActing(agent: { abilities?: Partial<AgentAbilities> }): boolean {
+/**
+ * THE THINGS AN AGENT CAN DO THAT ARE VISIBLE FROM OUTSIDE THIS COMPUTER.
+ *
+ * ONE TABLE. It lives in shared rather than in the engine because three
+ * programs have to agree about it: the engine performs the action, the hub
+ * writes the sentence the owner reads, and the screen draws the card. A second
+ * copy of this list is how "everything that leaves the machine asks first"
+ * quietly becomes "everything the engine remembered to add".
+ *
+ * `packages/engine/src/github.ts` re-exports this and a test asserts object
+ * IDENTITY, so a fourth remote action cannot be added on one side only.
+ */
+export const REMOTE_ACTIONS = {
+  push: "push a branch to GitHub",
+  pullRequest: "open a pull request on GitHub",
+  createRepo: "create a new repository on GitHub",
+} as const;
+
+export type RemoteAction = keyof typeof REMOTE_ACTIONS;
+
+export function isRemoteAction(value: unknown): value is RemoteAction {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(REMOTE_ACTIONS, value);
+}
+
+/**
+ * WHAT the agent wants to do, as facts rather than as a sentence.
+ *
+ * The agent never writes the words the owner reads. It reports the branch it
+ * generated, the repository `gh` named and the number `git rev-list` counted;
+ * `describeRemoteAction` below turns those into English. That split is the same
+ * law `describeApproval` already follows in the hub — a request that gets to
+ * describe itself can describe itself as something harmless.
+ */
+export interface RemoteActionFacts {
+  action: RemoteAction;
+  /** "vikas53953/cloud9" — read from GitHub, never typed */
+  repo?: string;
+  /** the branch, always one Cloud9 generated */
+  branch?: string;
+  /** what a pull request would aim at */
+  base?: string;
+  /** how many commits are going up */
+  commits?: number;
+  /** how many files those commits touched */
+  files?: number;
+  /** the name of a repository about to be created */
+  name?: string;
+}
+
+/**
+ * The sentence a non-developer judges. Plain words, and every noun in it came
+ * from the machine rather than from the agent.
+ */
+export function describeRemoteAction(f: RemoteActionFacts): string {
+  const on = f.repo ? ` on ${f.repo}` : "";
+  switch (f.action) {
+    case "push": {
+      if (typeof f.commits === "number" && f.commits > 0 && f.branch) {
+        const n = `${f.commits} commit${f.commits === 1 ? "" : "s"}`;
+        return `push ${n} to a new branch ${f.branch}${on}`;
+      }
+      return f.branch ? `push the branch ${f.branch}${on}` : `push a branch${on}`;
+    }
+    case "pullRequest": {
+      const into = f.base ? ` into ${f.base}` : "";
+      const from = f.branch ? ` from ${f.branch}` : "";
+      return `open a pull request${into}${from}${on}`;
+    }
+    case "createRepo":
+      return `create a new repository${f.name ? ` called ${f.name}` : ""} on GitHub`;
+  }
+}
+
+/** The smaller line under it: how big this is. Absent when we do not know. */
+export function detailRemoteAction(f: RemoteActionFacts): string | undefined {
+  const bits: string[] = [];
+  if (typeof f.files === "number" && f.files > 0) {
+    bits.push(`${f.files} file${f.files === 1 ? "" : "s"} changed`);
+  }
+  if (f.action === "pullRequest" && typeof f.commits === "number" && f.commits > 0) {
+    bits.push(`${f.commits} commit${f.commits === 1 ? "" : "s"}`);
+  }
+  return bits.length ? bits.join(", ") : undefined;
+}
+
+/** How long a mid-run request waits before it is dead. Ten minutes, one owner. */
+export const APPROVAL_LIMITS = {
+  /** the sentence the owner reads */
+  action: 300,
+  /** the smaller line under it */
+  detail: 300,
+  /** the engine's own correlation token */
+  askId: 64,
+  /** nobody answered — the request expires and the agent is told so */
+  waitMs: 10 * 60_000,
+} as const;
+
+/**
+ * Is this a request the hub can safely turn into a card? Shapes only — WHOSE
+ * agent and WHICH room are answered from stored state by the hub, never here.
+ */
+export function validateRemoteActionFacts(f: unknown): string | null {
+  if (!f || typeof f !== "object") return "that isn't a request to do anything";
+  const r = f as Partial<RemoteActionFacts>;
+  if (!isRemoteAction(r.action)) return "that isn't something Cloud9 knows how to ask about";
+  for (const [what, value] of [["repository", r.repo], ["branch", r.branch],
+    ["base", r.base], ["name", r.name]] as const) {
+    if (value === undefined) continue;
+    if (typeof value !== "string" || !value.trim() || value.length > 200) {
+      return `that ${what} name can't be shown to anyone`;
+    }
+    // the sentence goes on a screen, so nothing that could pretend to be
+    // another line of it
+    if (new RegExp("[\\u0000-\\u001f\\u007f\\u200b-\\u200f\\u2028\\u2029]").test(value) || /\s/.test(value)) {
+      return `that ${what} name has hidden characters in it`;
+    }
+  }
+  for (const [what, value] of [["commit count", r.commits], ["file count", r.files]] as const) {
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 1_000_000) {
+      return `that ${what} isn't a number`;
+    }
+  }
+  return null;
+}
+
+/**
+ * DOES THIS HAVE TO BE ASKED ABOUT FIRST?
+ *
+ * ONE OWNER FOR "MUST ASK", and this is it. It answers two questions that used
+ * to feel separate and are not:
+ *
+ *  • *may this agent be left to run a job alone?* — decided by the abilities it
+ *    holds, exactly as before. No caller changes.
+ *  • *may this particular thing happen?* — and if the thing LEAVES THIS
+ *    COMPUTER, the answer is always no, whatever the agent holds. A read-only
+ *    agent that somehow reached `git push` still has to ask; an agent with every
+ *    switch on does not get a free pass either.
+ *
+ * The second question is a parameter rather than a second function on purpose.
+ * A separate `mustAskBeforeRemoteAction` would be a second rule, and two rules
+ * about asking is how the hub and the engine came to disagree the first time.
+ */
+export function mustAskBeforeActing(
+  agent: { abilities?: Partial<AgentAbilities> },
+  what?: { remoteAction?: RemoteAction },
+): boolean {
+  // Anything on the REMOTE_ACTIONS table is visible from outside this machine,
+  // and his decision — branch + pull request, ALWAYS — means it is never the
+  // agent's call. Deliberately BEFORE the ability check so no combination of
+  // switches can reach a `false`.
+  if (what?.remoteAction !== undefined) return true;
   const a = agent.abilities;
   if (!a) return false;
   return ALWAYS_ASK_ABILITIES.some(k => a[k] === true);
@@ -567,11 +717,35 @@ export function validateProjectItem(item: unknown): string | null {
   return null;
 }
 
-export type ApprovalStatus = "pending" | "approved" | "rejected";
+/**
+ * `expired` is not a decision — it is the honest record that NOBODY MADE ONE.
+ * An agent that waited and was never answered must not read that as a yes, and
+ * the owner must not come back to a card that has been quietly cancelled or
+ * quietly still live. It is its own word for its own reason.
+ */
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
+
+/**
+ * The two shapes an approval comes in:
+ *
+ *  • `task` — the one that already existed: *may this agent run this job at
+ *    all?* Asked BEFORE anything starts, answered once, and the job waits.
+ *  • `action` — asked MID-RUN, when the agent is already working and has come
+ *    to one specific thing it may not do on its own: *may I push this branch?*
+ *    The branch is real by then and the request can name it.
+ *
+ * ABSENT MEANS `task`. Every approval stored before 2026-07-30 is a job-shaped
+ * one, and re-writing history to add a field is how a migration breaks.
+ */
+export type ApprovalKind = "task" | "action";
 
 export interface Approval {
   id: ID;
-  taskId: ID;
+  /**
+   * Absent on an `action` approval that did not come out of a delegated job —
+   * an agent can be asked to push in ordinary conversation, with no job at all.
+   */
+  taskId?: ID;
   agentId: ID;
   ownerId: ID;             // only the agent's owner may decide (provisional, D4)
   action: string;          // human-readable intended action (FR-AP-002)
@@ -579,6 +753,20 @@ export interface Approval {
   decidedBy?: ID;
   decidedAt?: number;
   createdAt: number;
+  /** absent means `task` — see `ApprovalKind` */
+  kind?: ApprovalKind;
+  /** which REMOTE_ACTIONS row this is, on an `action` approval */
+  remoteAction?: RemoteAction;
+  /** the conversation it came out of, so the card can be shown in context */
+  channelId?: ID;
+  /** the smaller line under the sentence — "3 files changed" */
+  detail?: string;
+  /**
+   * When this stops being answerable. Only an `action` approval has one: an
+   * agent is standing there waiting, so a request nobody answers has to die
+   * rather than be approved next Tuesday against a branch that has moved on.
+   */
+  expiresAt?: number;
 }
 
 export type ActivityKind =
@@ -669,6 +857,14 @@ export interface HarnessInfo {
   models: string[];
   /** the id an agent gets when the owner doesn't pick one */
   defaultModel?: string;
+  /**
+   * Did that model list come from asking the app itself, or is it the list
+   * Cloud9 last proved? The screen says which, because "these are the models
+   * you can run" is only true when something actually checked.
+   */
+  modelsChecked?: boolean;
+  /** one plain sentence about where the model list came from */
+  modelsDetail?: string;
   /** one plain sentence, user-facing */
   detail: string;
   /** a sign-in is in progress (browser window open, waiting) */
@@ -1003,6 +1199,25 @@ export type ClientFrame =
   | { type: "updateTask"; taskId: ID; status: TaskStatus; result?: string; error?: string; summary?: string }
   | { type: "cancelTask"; taskId: ID }
   | { type: "decideApproval"; approvalId: ID; decision: "approved" | "rejected" }
+  /**
+   * ENGINE-HOST ONLY: an agent is MID-RUN and has reached one specific thing it
+   * may not do on its own. "May I push this branch?"
+   *
+   * This is the same `Approval` entity and the same `decideApproval` answer as
+   * a job-shaped approval — deliberately, because a second approval mechanism
+   * would be a second place for "did we ask?" to be answered, and this project
+   * has already been bitten once by exactly that.
+   *
+   * WHAT IT DOES NOT CARRY IS THE SENTENCE. The engine sends FACTS —
+   * `{ action: "push", repo, branch, commits }` — and the hub writes the words
+   * with `describeRemoteAction`. An agent that could write its own approval
+   * card could describe a push to somebody else's repository as "tidying up".
+   *
+   * `askId` is the engine's own correlation token, echoed back on
+   * `approvalAsked`, so an engine with several agents waiting at once knows
+   * which id belongs to which. It is a label, never a permission.
+   */
+  | { type: "askApproval"; askId: string; agentId: ID; channelId: ID; taskId?: ID; facts: RemoteActionFacts }
   | { type: "activity"; before?: number; limit?: number }
   // ---- projects: a GitHub repository connected to Cloud9 (his item 7) ----
   /** Connect a repository. Yours: it runs through YOUR machine and YOUR `gh`. */
@@ -1294,6 +1509,15 @@ export type ServerFrame =
   | { type: "token"; token: string } // durable token issued after invite redemption
   | { type: "task"; task: Task }
   | { type: "approval"; approval: Approval }
+  /**
+   * "I heard you, and this is the id of the card he is now looking at."
+   *
+   * Goes ONLY to the engine connection that asked. It is not the answer — the
+   * answer arrives later on an ordinary `approval` frame, exactly like every
+   * other decision — it is the receipt that lets the engine match one to the
+   * other without guessing.
+   */
+  | { type: "approvalAsked"; askId: string; approvalId: ID }
   | { type: "activity"; records: ActivityRecord[] }
   /** One project changed — connected, renamed, or freshly looked at. */
   | { type: "project"; project: Project }
@@ -1471,22 +1695,71 @@ export const SKILL_LIMITS = {
 } as const;
 
 /**
- * The Claude models Cloud9 offers. Ids are NOT guessed — this is the documented
- * set from the contract (feedback-round-1.md "Model lists"), stored as ids and
- * shown by friendly name. Sonnet 5 is the default: fast and cheap for chat.
+ * EVERY Claude model name the installed Claude Code CLI knows about.
+ *
+ * This is the CANDIDATE list, not the offer. The Claude CLI has no command that
+ * prints its models (verified on 2026-07-30 against CLI 2.1.220: `claude --help`
+ * lists agents/auth/mcp/plugin/project/doctor/… and no `models`; `claude models`
+ * is treated as a prompt). What it does carry is its own model registry, and
+ * that registry is where these ids and labels come from — read out of the
+ * shipped binary, not invented here:
+ *
+ *   grep -aoE '\{id:"claude-[a-z0-9-]+",family:"[a-z]+",display_name:"[^"]*"' claude.exe
+ *
+ * Knowing a name is not the same as being allowed to run it: retired models and
+ * models outside the account's plan are in there too. So this list is only ever
+ * the set of things to ASK about — `detectClaudeModels` in the engine runs the
+ * CLI once per model and serves back the ones that actually answered.
+ *
+ * Ordered best-first, which is the order the picker shows.
  */
-export const CLAUDE_MODELS: ModelChoice[] = [
+export const CLAUDE_MODEL_CATALOGUE: ModelChoice[] = [
   { id: "claude-fable-5", label: "Fable 5" },
   { id: "claude-opus-5", label: "Opus 5" },
+  { id: "claude-opus-4-8", label: "Opus 4.8" },
+  { id: "claude-opus-4-7", label: "Opus 4.7" },
+  { id: "claude-opus-4-6", label: "Opus 4.6" },
+  { id: "claude-opus-4-5", label: "Opus 4.5" },
+  { id: "claude-opus-4-1", label: "Opus 4.1" },
+  { id: "claude-opus-4-0", label: "Opus 4" },
   { id: "claude-sonnet-5", label: "Sonnet 5" },
-  { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+  { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+  { id: "claude-sonnet-4-5", label: "Sonnet 4.5" },
+  { id: "claude-sonnet-4-0", label: "Sonnet 4" },
+  { id: "claude-haiku-4-5", label: "Haiku 4.5" },
+  { id: "claude-3-7-sonnet", label: "Sonnet 3.7" },
+  { id: "claude-3-5-sonnet", label: "Sonnet 3.5" },
+  { id: "claude-3-5-haiku", label: "Haiku 3.5" },
+  { id: "claude-mythos-5", label: "Mythos 5" },
+  // Not from the CLI registry: this is the exact dated id Cloud9 offered before
+  // today, so agents already saved against it keep working. It still runs
+  // (proved 2026-07-30). Dropping it would silently break his crew.
+  { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5 (dated build)" },
 ];
+
+/**
+ * The models that were PROVED to run on this machine, by running them.
+ *
+ * Method, 2026-07-30, Claude Code 2.1.220: every id in the catalogue above was
+ * put through `claude -p --model <id> --system-prompt x --tools "" "hi"`. A
+ * model that answered is here. A model that came back
+ * "There's an issue with the selected model (…)" is not — that covers the
+ * retired ones (Sonnet 3.5/3.7, Haiku 3.5, Sonnet 4) and Mythos 5, which the
+ * CLI names but this account cannot reach.
+ *
+ * This is the FALLBACK, used when the live check cannot be run or cannot be
+ * trusted. The live check is the real answer; a stale honest list beats a guess.
+ */
+export const CLAUDE_MODELS: ModelChoice[] = CLAUDE_MODEL_CATALOGUE.filter(
+  m => !["claude-3-7-sonnet", "claude-3-5-sonnet", "claude-3-5-haiku",
+    "claude-sonnet-4-0", "claude-mythos-5"].includes(m.id),
+);
 
 export const CLAUDE_DEFAULT_MODEL = "claude-sonnet-5";
 
 /** Friendly name for a model id — falls back to the id for Codex slugs. */
 export function modelLabel(id: string): string {
-  return CLAUDE_MODELS.find(m => m.id === id)?.label ?? id;
+  return CLAUDE_MODEL_CATALOGUE.find(m => m.id === id)?.label ?? id;
 }
 
 export interface AgentInput {
@@ -2219,3 +2492,15 @@ function escapeRe(s: string): string {
 export function newId(prefix: string): ID {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
+
+// ---------------------------------------------------------------------------
+// The skill library — ready-made skills the app ships with (his item 7).
+//
+// It lives in its own file because it is CONTENT, not rules: pages of written
+// instructions that will grow, next to a table of shelves. Re-exported here so
+// every part of the app keeps importing one package, and so the renderer never
+// has to know it is a separate module.
+export {
+  SKILL_CATEGORIES, SKILL_LIBRARY, libraryCategory, librarySkillsFor,
+  skillFromLibrary, type LibrarySkill, type SkillCategory,
+} from "./skill-library.js";

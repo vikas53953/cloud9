@@ -2,18 +2,32 @@ import React, {
   useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore,
 } from "react";
 import {
-  AgentAbilities, AgentApprovals, AgentDef, AgentRespondTo, AgentSkill, AgentSkillFile,
+  AgentAbilities, AgentApprovals, AgentDef, AgentPresence, AgentPresenceState,
+  AgentRespondTo, AgentSkill, AgentSkillFile,
   Approval, Attachment, ATTACHMENT_LIMITS,
   Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
   HarnessInfo, ID, isInlineViewable, isSafeSkillFileName, mayAdministerChannel, mayDriveAgent,
   MENU_ACTIONS, MenuAction, Message, RunListEntry, RunRecord, RunStep, RunStepKind,
   SearchHit, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
+  CLAUDE_DEFAULT_MODEL, CLAUDE_MODELS, modelLabel as sharedModelLabel,
 } from "@cloud9/shared";
 import { client, UNREAD_CEILING, unreadLabel, World } from "./store.js";
 import { Markdown } from "./markdown.js";
 import {
   abilitiesOn, abilityWords, MARKET_CATEGORIES, MARKET_TEMPLATES, MarketTemplate,
 } from "./market.js";
+/* THE ONE TABLE THAT OWNS WHAT AN AGENT MAY DO — the same rows the casting room
+   already reads, the same rows the command line and the agent's own prompt read.
+   The editor used to keep its OWN four labels beside it, which is exactly why a
+   role hired from the catalogue looked like a different kind of animal from one
+   he wrote himself: two vocabularies for one fact. There is now one.
+   (Imported by path, like `market.ts` does: the package index also exports the
+   half of the engine that spawns processes, and none of that belongs in a
+   browser bundle. These two modules read `@cloud9/shared` and nothing else.) */
+import {
+  abilitiesForReach, CAPABILITIES, describeApprovalNeeds, REACH_LEVELS, reachOf,
+} from "@cloud9/engine/dist/abilities.js";
+import { isolationFor } from "@cloud9/engine/dist/isolation.js";
 
 const isQuickWindow = location.hash === "#quick";
 
@@ -29,25 +43,27 @@ type Provider = "claude" | "codex";
 
 const PROVIDER_LABEL: Record<string, string> = { claude: "Claude", codex: "Codex" };
 
-/** Friendly names for the model ids in the contract. Unknown ids show as-is. */
-const MODEL_LABEL: Record<string, string> = {
-  "claude-fable-5": "Fable 5",
-  "claude-opus-5": "Opus 5",
-  "claude-sonnet-5": "Sonnet 5",
-  "claude-haiku-4-5-20251001": "Haiku 4.5",
-};
-
-/** Used only until the engine sends a real list for a harness. */
+/**
+ * WHAT TO CALL A MODEL, AND WHICH MODELS EXIST — from `@cloud9/shared`, never
+ * from a list kept here.
+ *
+ * This file used to hold its own four-name map and its own four-id fallback
+ * beside the contract's. The moment the catalogue grew, the screen went on
+ * printing `claude-opus-4-8` at him while the hub knew perfectly well it was
+ * called Opus 4.8, and offered four models where the app could run a dozen.
+ * A second list is not a convenience; it is a slow lie with a delay fuse.
+ */
 const MODEL_FALLBACK: Record<Provider, string[]> = {
-  claude: ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+  claude: CLAUDE_MODELS.map(m => m.id),
   codex: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
 };
 const MODEL_DEFAULT: Record<Provider, string> = {
-  claude: "claude-sonnet-5",
+  claude: CLAUDE_DEFAULT_MODEL,
   codex: "gpt-5.6-sol",
 };
 
-const modelLabel = (id?: string): string => (id ? MODEL_LABEL[id] ?? id : "—");
+/** The contract's own name for a model, and an em dash when there isn't one saved. */
+const modelLabel = (id?: string): string => (id ? sharedModelLabel(id) : "—");
 
 /**
  * What to SAY about the model an agent runs on. The engine only passes
@@ -361,12 +377,57 @@ type Lamp = "working" | "waiting" | "idle" | "asleep";
 const lampToPlate = (lamp: string): Lamp =>
   lamp === "run" ? "working" : lamp === "off" ? "asleep" : lamp === "wait" ? "waiting" : "idle";
 
-function AgentFace({ name, size, lamp }: { name: string; size: number; lamp?: string }): React.JSX.Element {
+/* ================= is this agent actually usable right now? =================
+ *
+ * HIS BUG: every agent showed offline, forever. The hub now works the answer
+ * out from what it genuinely observes — is the owner's engine connected, is
+ * Claude or Codex signed in on that machine, did the owner pause it — and sends
+ * it down with a plain sentence saying WHY. None of that reached the screen.
+ *
+ * Nothing on this side decides anything. These are only the words for the four
+ * answers, and the rule for the fifth case that is not an answer:
+ *
+ *   AN ABSENT ENTRY IS NOT "READY". It means nobody has reported on that agent
+ *   yet, and it is drawn as an empty ring, never a green dot. Defaulting the
+ *   other way is precisely the lie he caught — a screen saying all is well
+ *   because it had not looked.
+ */
+const PRESENCE_WORDS: Record<AgentPresence, string> = {
+  ready: "Ready", working: "Working", paused: "Paused", offline: "Offline",
+};
+
+/** What the hub said about this agent, or undefined for "nobody has said". */
+function presenceOf(world: World, agentId: ID): AgentPresenceState | undefined {
+  return world.presence[agentId];
+}
+
+const NOT_YET_LOOKED = "Nobody has reported on this agent yet.";
+
+/** The one sentence a hover shows: the state, and why it is that state. */
+function presenceTitle(p: AgentPresenceState | undefined): string {
+  return p ? `${PRESENCE_WORDS[p.presence]} — ${p.reason}` : NOT_YET_LOOKED;
+}
+
+/**
+ * @param presence pass it and the dot tells the truth about availability, with
+ * `undefined` drawn as "we have not looked". Leave it off entirely and the face
+ * falls back to the older `lamp`, which is about a job rather than an agent.
+ */
+function AgentFace({ name, size, lamp, presence, hasPresence }: {
+  name: string; size: number; lamp?: string;
+  presence?: AgentPresenceState;
+  /** true when `presence` is the field being shown, even if it is undefined */
+  hasPresence?: boolean;
+}): React.JSX.Element {
   const state = lampToPlate(lamp ?? "live");
+  const working = hasPresence ? presence?.presence === "working" : state === "working";
   return (
     <span className="avatar">
-      <Portrait identity={name} size={size} working={state === "working"} />
-      <span className={`status st-${state}`} />
+      <Portrait identity={name} size={size} working={working} />
+      {hasPresence
+        ? <span className={`status pdot p-${presence?.presence ?? "unknown"}`}
+          title={presenceTitle(presence)} />
+        : <span className={`status st-${state}`} />}
     </span>
   );
 }
@@ -877,8 +938,19 @@ function Workspace(): React.JSX.Element {
   const [modal, setModal] = useState<null | ModalName>(null);
   /** null = not editing. "new" = hiring. An agent = editing that one. */
   const [editorFor, setEditorFor] = useState<AgentDef | "new" | null>(null);
-  /** the @name of the role just hired from the hiring hall, so the crew says so */
+  /** the @name of the role just hired from the casting room, so the crew says so */
   const [justHired, setJustHired] = useState<string | null>(null);
+  /**
+   * A hire we have asked the hub for and are waiting to see come back.
+   *
+   * WHY IT IS WORTH A PIECE OF STATE. Hiring used to drop him on the crew screen
+   * with a note telling him to press Edit, and he never did — so he decided a
+   * hired role had no tool permissions, no files switch and no skills, when in
+   * truth all three were one click away and he had no reason to look. A role he
+   * has just taken on goes STRAIGHT to its own file, open, with everything a
+   * hand-written agent has on the same screen.
+   */
+  const [awaitingHire, setAwaitingHire] = useState<string | null>(null);
   const [quick, setQuick] = useState(false);
   const [pendingPeer, setPendingPeer] = useState<{ id: ID; since: number } | null>(null);
   const [findOpen, setFindOpen] = useState(false);
@@ -900,6 +972,19 @@ function Workspace(): React.JSX.Element {
     setEditorFor(a);
     setScreen("editor");
   }, []);
+  /* The agent only exists once the hub says so, so this waits for it to arrive
+     rather than guessing an id. If it never arrives, nothing happens and the
+     crew screen is still there — a hire is not lost by this. */
+  useEffect(() => {
+    if (!awaitingHire) return;
+    const made = world.agents.find(
+      a => a.name === awaitingHire && a.ownerId === world.me?.id);
+    if (!made) return;
+    setAwaitingHire(null);
+    setEditorFor(made);
+    setScreen("editor");
+  }, [awaitingHire, world.agents, world.me?.id]);
+
   const openActivity = useCallback(() => {
     client.send({ type: "activity", limit: 100 });
     setScreen("activity");
@@ -1226,13 +1311,16 @@ function Workspace(): React.JSX.Element {
             <MarketScreen
               onBack={() => setScreen("crew")}
               onWriteMyOwn={() => openEditor("new")}
-              /* Hiring lands him where the new agent is: on the floor, with an
-                 Edit button on it. Nothing about it is locked. */
-              onHired={name => { setJustHired(name); setScreen("crew"); }}
+              /* Hiring lands him IN the new agent's own file — the same editor,
+                 with the same reach ladder, files switch, skills and approval
+                 rules a hand-written agent has. Nothing about it is locked, and
+                 nothing about it is a click away. */
+              onHired={name => { setJustHired(name); setAwaitingHire(name); setScreen("crew"); }}
             />
           )}
           {screen === "editor" && (
             <AgentEditor
+              justHired={justHired}
               agent={editorFor === "new" || editorFor === null ? null : editorFor}
               onDone={() => { setEditorFor(null); setScreen("crew"); }}
               onMarket={() => { setEditorFor(null); setScreen("market"); }}
@@ -1424,24 +1512,35 @@ function ChatScreen({
               <span className="eyebrow">Direct</span>
               {/* The same pair as Channels above: browse what exists, or make
                   one. This is where he already comes to add an agent, so this
-                  is where the hiring hall has to be. */}
-              <button className="browsebtn tomarket" title="Browse the hiring hall"
-                aria-label="Browse the hiring hall" onClick={onBrowseMarket}>⌕</button>
+                  is where the casting room has to be. */}
+              <button className="browsebtn tomarket" title="Browse the casting room"
+                aria-label="Browse the casting room" onClick={onBrowseMarket}>⌕</button>
               <button title="New agent" aria-label="New agent" onClick={onNewAgent}>＋</button>
             </div>
             {agents.length === 0 && humanDms.length === 0 &&
-              <RailEmpty text="Nobody hired yet." action="Browse the hiring hall" onAction={onBrowseMarket} />}
+              <RailEmpty text="Nobody hired yet." action="Browse the casting room" onAction={onBrowseMarket} />}
             {agents.map(a => {
-              const s = agentStatusLine(a, world.agentStatus[a.id]);
               const dm = agentDmFor(a);
               const unread = dm ? unreadFor(dm) : { unread: 0, mentions: 0 };
+              /* WHETHER IT CAN BE USED, ON THE ROW ITSELF — the hub's answer and
+                 its reason, so he never has to open a conversation to find out
+                 that nothing there is going to answer him. */
+              const pres = presenceOf(world, a.id);
               return (
                 <div key={a.id} className="side-item agentrow agent-row" data-agent={a.name}
+                  data-presence={pres?.presence ?? "unknown"}
                   aria-current={dm && active?.id === dm.id ? "true" : "false"} title={a.persona}>
                   <button className="agentmain" onClick={() => onOpenDm(a.id, a.name)}
-                    title={`Open your chat with ${a.name}`}>
-                    <AgentFace name={a.name} size={22} lamp={s.lamp} />
-                    <span className="txt agent-name">{a.name}</span>
+                    title={`${presenceTitle(pres)}
+Open your chat with ${a.name}`}>
+                    <AgentFace name={a.name} size={22} presence={pres} hasPresence />
+                    <span className="txt agent-name">
+                      <span className="an-name">{a.name}</span>
+                      <span className="an-state">
+                        <b>{pres ? PRESENCE_WORDS[pres.presence] : "Not looked yet"}</b>
+                        {pres && <> · {pres.reason}</>}
+                      </span>
+                    </span>
                     <UnreadMarks n={unread} />
                   </button>
                   {a.ownerId === world.me?.id &&
@@ -2074,14 +2173,16 @@ function ChatView({
     return task?.channelId === channel.id;
   });
 
-  const dmAgentStatus = peerAgent ? agentStatusLine(peerAgent, world.agentStatus[peerAgent.id]) : null;
+  /* The same fact as the sidebar row, from the same one place, so the rail and
+     the conversation can never disagree about whether anyone is home. */
+  const dmPresence = peerAgent ? presenceOf(world, peerAgent.id) : undefined;
 
   return (
     <div className="thread">
       {isDm ? (
         <header className="topbar dm-head chathead">
           {peerAgent
-            ? <AgentFace name={peerAgent.name} size={48} lamp={dmAgentStatus?.lamp} />
+            ? <AgentFace name={peerAgent.name} size={48} presence={dmPresence} hasPresence />
             : <PersonFace name={peerName ?? "?"} size={48} />}
           <div style={{ minWidth: 0 }}>
             <h2 className="ch-title"><span className="n">{peerName}</span></h2>
@@ -2093,10 +2194,11 @@ function ChatView({
             {peerAgent && <AgentOwnerTag agent={peerAgent} place="conversation" />}
           </div>
           <div className="grow" />
-          {peerAgent && dmAgentStatus && (
-            <span className={`chip ${dmAgentStatus.busy ? "is-pine" : ""}`}>
-              <span className={`dot ${dmAgentStatus.busy ? "live" : "off"}`} />
-              {dmAgentStatus.busy ? "Working" : dmAgentStatus.lamp === "off" ? "Off duty" : "Free"}
+          {peerAgent && (
+            <span className="presencehere" data-presence={dmPresence?.presence ?? "unknown"}>
+              <span className={`pdot p-${dmPresence?.presence ?? "unknown"}`} aria-hidden="true" />
+              <b>{dmPresence ? PRESENCE_WORDS[dmPresence.presence] : "Not looked yet"}</b>
+              <span className="ph-why">{dmPresence ? dmPresence.reason : NOT_YET_LOOKED}</span>
             </span>
           )}
           {peerAgent && (
@@ -3574,15 +3676,20 @@ function ChannelRail({ channel, onEditAgent, onOpenDm }: {
         {agents.length === 0 && people.length === 0 &&
           <div className="d-empty">Nobody in this room yet. Use “Add agent” above to bring someone in.</div>}
         {agents.map(a => {
-          const s = agentStatusLine(a, world.agentStatus[a.id]);
+          const pres = presenceOf(world, a.id);
           const provider = (a.provider ?? "claude") as Provider;
           return (
-            <div className="mini-agent" key={a.id} data-agent={a.name}>
-              <AgentFace name={a.name} size={36} lamp={s.lamp} />
+            <div className="mini-agent" key={a.id} data-agent={a.name}
+              data-presence={pres?.presence ?? "unknown"}>
+              <AgentFace name={a.name} size={36} presence={pres} hasPresence />
               <span style={{ minWidth: 0 }}>
                 <span className="nm">{a.name}</span>
                 <span className="rl two-lines" title={a.persona}>
-                  {PROVIDER_LABEL[provider]} · {s.busy ? "Working now" : roleOf(a.persona)}
+                  {PROVIDER_LABEL[provider]} · {roleOf(a.persona)}
+                </span>
+                <span className="an-state" title={presenceTitle(pres)}>
+                  <b>{pres ? PRESENCE_WORDS[pres.presence] : "Not looked yet"}</b>
+                  {pres && <> · {pres.reason}</>}
                 </span>
                 {/* who is in this room BECAUSE this agent is */}
                 <AgentOwnerTag agent={a} />
@@ -3639,7 +3746,7 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
   onEdit: (a: AgentDef) => void;
   onOpen: (id: ID, name: string) => void;
   onMarket: () => void;
-  /** just hired from the hiring hall — say so, and say it is editable */
+  /** just hired from the casting room — say so, and say it is editable */
   justHired?: string | null;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
@@ -3649,7 +3756,7 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
   const waitingOn = (id: ID) =>
     world.approvals.some(a => a.status === "pending" && a.agentId === id && a.ownerId === world.me?.id);
 
-  const workingCount = agents.filter(a => world.agentStatus[a.id] === "working").length;
+  const workingCount = agents.filter(a => presenceOf(world, a.id)?.presence === "working").length;
   const waitingCount = agents.filter(a => waitingOn(a.id)).length;
 
   const monthStart = new Date();
@@ -3657,9 +3764,12 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
   const jobsThisMonth = world.tasks.filter(t => t.createdAt >= monthStart.getTime()).length;
 
   const shown = agents.filter(a => {
-    if (filter === "working") return world.agentStatus[a.id] === "working";
+    if (filter === "working") return presenceOf(world, a.id)?.presence === "working";
     if (filter === "waiting") return waitingOn(a.id);
-    if (filter === "off") return a.lifecycle === "paused" || a.lifecycle === "disabled";
+    if (filter === "off") {
+      const p = presenceOf(world, a.id)?.presence;
+      return p === "paused" || p === "offline";
+    }
     return true;
   });
 
@@ -3695,7 +3805,7 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
         {byProvider("claude") > 0 && <span className="chip is-gold">Claude · {byProvider("claude")}</span>}
         {byProvider("codex") > 0 && <span className="chip is-ultra">Codex · {byProvider("codex")}</span>}
         <div className="grow" />
-        <button className="btn tomarket" onClick={onMarket}>Browse the hiring hall</button>
+        <button className="btn tomarket" onClick={onMarket}>Browse the casting room</button>
         <button className="primary" onClick={onHire}>Write an agent</button>
       </div>
 
@@ -3705,7 +3815,8 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
           <span className="hn-mark" aria-hidden="true">✓</span>
           <span>
             <b>@{justHired}</b> is on the floor. Everything about them — the brief, the app,
-            what they can touch — is yours to change. Press <b>Edit</b> on their card.
+            how far they can go, what you teach them — is yours to change, any time,
+            from <b>Edit</b> on their card.
           </span>
         </div>
       )}
@@ -3719,7 +3830,7 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
             Or hire one that is already written and change it afterwards.
           </p>
           <div className="crew-emptybtns">
-            <button className="primary" onClick={onMarket}>Browse the hiring hall</button>
+            <button className="primary" onClick={onMarket}>Browse the casting room</button>
             <button className="btn" onClick={onHire}>Write your first agent</button>
           </div>
         </div>
@@ -3728,16 +3839,19 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
           {shown.map((a, i) => {
             const provider = (a.provider ?? "claude") as Provider;
             const waiting = waitingOn(a.id);
-            const busy = world.agentStatus[a.id] === "working";
+            const pres = presenceOf(world, a.id);
+            const busy = pres?.presence === "working";
+            /* Waiting on him beats everything, because it is the only one he can
+               do something about. Otherwise the hub's own word, never ours. */
             const flag = waiting
               ? <span className="chip is-gold"><span className="dot wait" />Waiting on you</span>
-              : busy
-                ? <span className="chip is-pine"><span className="dot live" />Working</span>
-                : a.lifecycle && a.lifecycle !== "enabled"
-                  ? <span className="chip"><span className="dot off" />Off duty</span>
-                  : <span className="chip"><span className="dot off" />Free</span>;
+              : <span className={`chip presencepill p-${pres?.presence ?? "unknown"}`}>
+                <span className={`pdot p-${pres?.presence ?? "unknown"}`} />
+                {pres ? PRESENCE_WORDS[pres.presence] : "Not looked yet"}
+              </span>;
             return (
-              <article className="cast" key={a.id} data-crew={a.name}>
+              <article className="cast" key={a.id} data-crew={a.name}
+                data-presence={pres?.presence ?? "unknown"}>
                 <div className="plate">
                   <Portrait identity={a.name} fill working={busy} />
                   <span className="no">No. {String(i + 1).padStart(2, "0")}</span>
@@ -3762,14 +3876,14 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
                         : world.users.find(u => u.id === a.ownerId)?.name ?? "its owner")}
                     </span>
                   </div>
-                  <div className="now">
+                  <div className="now nowpresence">
                     <MarkClock />
                     <span>
-                      {waiting ? "Waiting on your word before it carries on"
-                        : busy ? "On a job right now"
-                        : a.lifecycle === "paused" ? "Paused — it will not answer until you switch it back on"
-                        : a.lifecycle === "disabled" ? "Switched off"
-                        : "Free — nothing running"}
+                      {waiting
+                        ? "Waiting on your word before it carries on"
+                        : pres
+                          ? `${PRESENCE_WORDS[pres.presence]} — ${pres.reason}`
+                          : NOT_YET_LOOKED}
                     </span>
                   </div>
                 </div>
@@ -3784,10 +3898,13 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
           <button className="cast cast-new castmarket" onClick={onMarket}>
             <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 8h16l-1 11.5a1.5 1.5 0 0 1-1.5 1.4h-11A1.5 1.5 0 0 1 5 19.5Z" />
-              <path d="M8.5 8V6a3.5 3.5 0 0 1 7 0v2" />
+              {/* a headshot card, not a shopping bag: this is a place where you
+                  look at people, not a checkout */}
+              <rect x="3.5" y="4" width="12" height="16" rx="2" />
+              <circle cx="9.5" cy="10" r="2.4" /><path d="M6 17a3.5 3.5 0 0 1 7 0" />
+              <path d="M18.5 7.5v11.5a1.5 1.5 0 0 1-1.5 1.5" />
             </svg>
-            <h3>The hiring hall</h3>
+            <h3>The casting room</h3>
             <p>{MARKET_TEMPLATES.length} roles already written. Read the brief, pick the app, hire.</p>
           </button>
           <button className="cast cast-new" onClick={onHire}>
@@ -3805,7 +3922,7 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
   );
 }
 
-/* ================= 5b · THE HIRING HALL (the marketplace) ================= */
+/* ================= 5b · THE CASTING ROOM (the marketplace) ================= */
 
 /**
  * READY-WRITTEN AGENTS, SHIPPED INSIDE THE APP.
@@ -3835,7 +3952,7 @@ function MarketScreen({ onHired, onBack, onWriteMyOwn }: {
     <div className="crew market">
       <header className="crew-hero">
         <div>
-          <span className="eyebrow">Cloud9 · the marketplace</span>
+          <span className="eyebrow">Cloud9 · the casting room</span>
           <h1>Hire someone<br />already <em>written</em>.</h1>
           <p>
             {MARKET_TEMPLATES.length} roles that ship inside Cloud9 — no download, no account,
@@ -3871,7 +3988,11 @@ function MarketScreen({ onHired, onBack, onWriteMyOwn }: {
           <div className="crew-grid">
             {shown.filter(t => t.category === group.id).map(t => (
               <article className="cast role" key={t.id} data-role={t.id}>
-                <div className="roleface" aria-hidden="true"><span>{t.emoji}</span></div>
+                {/* THE SAME FACE IT WILL WEAR ON THE FLOOR. A portrait is drawn
+                    from the name, and hiring keeps the name — so the picture he
+                    picks a role by is the picture his crew shows afterwards. An
+                    emoji was a placeholder that never became the person. */}
+                <div className="plate roleplate"><Portrait identity={t.name} fill /></div>
                 <div className="info">
                   <h3>{t.title}</h3>
                   <div className="role">{t.tagline}</div>
@@ -3943,20 +4064,7 @@ function HireModal({ template, onClose, onHired }: {
   const hire = () => {
     client.send({
       type: "createAgent",
-      agent: {
-        name: hireName,
-        emoji: template.emoji,
-        persona: template.persona,
-        // start from what any new agent starts with, then only what this role asks for
-        abilities: { ...NEW_AGENT_ABILITIES, ...template.abilities },
-        approvals: NEW_AGENT_APPROVALS,
-        provider,
-        model,
-        skills: [],
-        // the same default a hand-written agent gets: nobody but him can set it working
-        respondTo: "owner",
-        respondToAllowlist: [],
-      },
+      agent: agentFromTemplate(template, { name: hireName, provider, model }),
     });
     onHired(hireName);
   };
@@ -3965,7 +4073,9 @@ function HireModal({ template, onClose, onHired }: {
     <div className="overlay" onClick={onClose}>
       <div className="panel hirepanel" onClick={e => e.stopPropagation()}>
         <div className="head">
-          <span className="hireface" aria-hidden="true">{template.emoji}</span>
+          {/* seeded on the name it will really be hired under, so a second
+              Architect shows the second Architect's face, not the first's */}
+          <span className="hireface"><Portrait identity={hireName} size={34} /></span>
           <span className="hiretitle">{template.title}</span>
           <span className="eyebrow">hired as @{hireName}</span>
         </div>
@@ -4133,7 +4243,7 @@ function QuickChat({ onClose, standalone }: { onClose?: () => void; standalone?:
 /**
  * WHAT A BRAND NEW AGENT STARTS WITH — one owner for the answer.
  *
- * The editor starts here and so does a hire from the hiring hall, which is why
+ * The editor starts here and so does a hire from the casting room, which is why
  * it is a constant rather than a literal typed into two places. A hired role
  * only ever says which switches it wants ON; everything it does not name keeps
  * whatever this says, and any switch added to the abilities model later is
@@ -4146,6 +4256,42 @@ const NEW_AGENT_ABILITIES: AgentAbilities = {
 
 /** The same answer, for approvals. A hire is no more permissive than a hand-written agent. */
 const NEW_AGENT_APPROVALS: AgentApprovals = { background: false, schedules: false };
+
+/**
+ * THE FIELDS A HIRE IS MADE OF — and the reason this is a function rather than
+ * an object literal inside the hire panel.
+ *
+ * Hiring used to hand-assemble its own `createAgent` frame, field by field,
+ * beside the editor's. Two independent answers to "what is an agent made of",
+ * and nothing holding them together: anything the editor grew, the catalogue
+ * quietly did not, and a role hired in two clicks was a slightly different
+ * animal from one typed out — which is exactly what Vikas found. There is one
+ * answer now, and both paths spell it the same way because they call it.
+ *
+ * It starts from `NEW_AGENT_ABILITIES` and lays only the switches the role asks
+ * for on top, so an ability added to the model tomorrow is absent here too, and
+ * absent means off (`@cloud9/shared`). Nobody is handed the power to run
+ * programs by a catalogue entry arriving.
+ */
+function agentFromTemplate(
+  template: MarketTemplate,
+  chosen: { name: string; provider: Provider; model: string },
+): Omit<AgentDef, "id" | "ownerId" | "createdAt"> {
+  return {
+    name: chosen.name,
+    emoji: template.emoji,
+    persona: template.persona,
+    abilities: { ...NEW_AGENT_ABILITIES, ...template.abilities },
+    approvals: NEW_AGENT_APPROVALS,
+    provider: chosen.provider,
+    model: chosen.model,
+    skills: [],
+    lifecycle: "enabled",
+    // the same default a hand-written agent gets: nobody but him sets it working
+    respondTo: "owner",
+    respondToAllowlist: [],
+  };
+}
 
 function useModels(provider: Provider): { ids: string[]; fallback: boolean; preferred: string } {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
@@ -4388,10 +4534,91 @@ function SkillsEditor({ skills, onChange }: {
   );
 }
 
+/* ================= what the switches really are, per app =================
+ *
+ * TWO LIES ARE POSSIBLE HERE AND THIS SHOWS BOTH SIDES SO NEITHER CAN BE TOLD.
+ *
+ * The first is the one we already knew about: a Claude agent's switches really
+ * are the whole boundary, and a Codex agent's are not — Codex holds shell and
+ * file tools at every setting and the switches only decide WHERE it may write.
+ * Showing one reassuring sentence for both apps tells him something false about
+ * one of them.
+ *
+ * The second is the same lie in reverse, and it appeared the day the ceiling was
+ * raised: a screen that says only "nothing else reaches it" now UNDERSTATES what
+ * he has switched on. So `ceiling` is shown beside `headline`, always.
+ *
+ * Everything here is read from `isolationFor()` — measured by running the real
+ * command lines, with the version and date it was measured on printed at the
+ * bottom so a stale claim is visible rather than invisible. Nothing on this card
+ * is written here. An app we have never measured gets NO sentence at all, because
+ * falling back to the comforting one is how this goes wrong.
+ */
+function HarnessHonesty({ provider }: { provider: Provider }): React.JSX.Element {
+  const iso = isolationFor(provider);
+  if (!iso) {
+    return (
+      <div className="notice harnessunknown">
+        Nobody has measured what a {PROVIDER_LABEL[provider] ?? provider} agent really carries,
+        so nothing on this screen is a promise about it.
+      </div>
+    );
+  }
+  return (
+    <div className="harnesshonest" data-harness={iso.harness}
+      data-boundary={iso.togglesAreTheBoundary ? "yes" : "no"}>
+      <p className="hh-line" data-field="headline">{iso.headline}</p>
+      <p className="hh-line hh-ceiling" data-field="ceiling">{iso.ceiling}</p>
+      {!iso.togglesAreTheBoundary && (
+        <p className="hh-line" data-field="controls">
+          What the switches <em>do</em> control: {iso.togglesControl}.
+        </p>
+      )}
+      {(iso.stillLoaded.length > 0 || iso.unknowns.length > 0) && (
+        <details className="hh-more">
+          <summary>
+            {/* built as one sentence rather than two fragments glued together:
+                with no leaks at all, the glued version read "…hands?, 2 we
+                couldn't tell" */}
+            {`What else is in its hands? ${[
+              iso.stillLoaded.length > 0 ? `${iso.stillLoaded.length} known` : "",
+              iso.unknowns.length > 0 ? `${iso.unknowns.length} we couldn't tell` : "",
+            ].filter(Boolean).join(", ")}`}
+          </summary>
+          {iso.stillLoaded.length > 0 && (
+            <>
+              <span className="eyebrow">There whatever you switch off</span>
+              <ul className="honestleaks">
+                {iso.stillLoaded.map(leak => (
+                  <li key={leak.name} data-leak={leak.name}>
+                    <b>{leak.plainWords}</b>
+                    <span>{leak.why}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {iso.unknowns.length > 0 && (
+            <>
+              <span className="eyebrow">We looked and could not tell either way</span>
+              <ul className="honestunknowns">
+                {iso.unknowns.map(u => <li key={u.slice(0, 40)}>{u}</li>)}
+              </ul>
+            </>
+          )}
+        </details>
+      )}
+      <p className="hh-measured">Measured on {iso.measuredOn}.</p>
+    </div>
+  );
+}
+
 /* ================= 5 · CREATE / EDIT AN AGENT ================= */
 
-function AgentEditor({ agent, onDone, onMarket }: {
+function AgentEditor({ agent, onDone, onMarket, justHired }: {
   agent: AgentDef | null; onDone: () => void; onMarket: () => void;
+  /** the @name he has this second hired, so the file says why he is looking at it */
+  justHired?: string | null;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const p = usePrefs();
@@ -4456,6 +4683,37 @@ function AgentEditor({ agent, onDone, onMarket }: {
   const shownName = creating ? (name.trim() || "Unnamed") : agent!.name;
   const jobsRun = agent ? world.tasks.filter(t => t.agentId === agent.id).length : 0;
 
+  /* THE LADDER, read from the engine and never re-decided here.
+     `reachOf` answers from the switches alone, so a draft that has not been
+     saved yet is asked the same question a stored agent is. */
+  const draft = { ...(agent ?? {}), abilities: ab } as AgentDef;
+  const reach = reachOf(draft);
+  const reachIndex = REACH_LEVELS.findIndex(r => r.level === reach);
+  const reachLabel = REACH_LEVELS[reachIndex]?.label ?? REACH_LEVELS[0].label;
+  /* Does his mix EXACTLY equal that rung, or is it a hand-picked set that merely
+     covers it? `reachOf` never rounds a mix up, so the two can differ and the
+     screen has to say which one he is looking at. */
+  const sameAsRung = CAPABILITIES.every(
+    c => (ab[c.ability] === true) === (abilitiesForReach(reach)[c.ability] === true));
+  /* The powers that will stop and ask. NOT checkboxes: the switch being on IS
+     the ask being on, so rendering them as something he could clear would be
+     showing him a control that does nothing. */
+  const willAsk = describeApprovalNeeds(draft);
+  /* Open the switch list only if the agent WALKED IN with a hand-picked mix —
+     after that it is his to open and close, and nothing re-decides it. */
+  const [showSwitches, setShowSwitches] = useState(() => {
+    const start = agent?.abilities ?? NEW_AGENT_ABILITIES;
+    const rung = abilitiesForReach(reachOf({ abilities: start } as AgentDef));
+    return CAPABILITIES.some(c => (start[c.ability] === true) !== (rung[c.ability] === true));
+  });
+  const switchesOpen = showSwitches;
+  /* The powers that are switched ON and still hand the agent nothing, because
+     the thing they need — a folder list, a connected service — has nowhere to
+     be chosen yet (`capability-handoff.md` §4.4). Named here so the screen can
+     admit it instead of leaving him with a switch that looks broken. */
+  const inertSwitches = (["wholeComputer", "connections"] as const)
+    .filter(key => ab[key] === true);
+
   const toggle = (
     title: string, why: string, on: boolean, set: (v: boolean) => void,
   ) => (
@@ -4491,6 +4749,16 @@ function AgentEditor({ agent, onDone, onMarket }: {
 
       <div className="editor-body">
         <div className="form-col">
+          {!creating && justHired === agent!.name && (
+            <div className="hirednote" data-hired={agent!.name}>
+              <span className="hn-mark" aria-hidden="true">✓</span>
+              <span>
+                <b>@{agent!.name}</b> is on the floor, and this is their file. Everything below is
+                yours — how far they can go, what they may touch, what you teach them, when they
+                have to stop and ask. A hired role is an ordinary agent in every respect.
+              </span>
+            </div>
+          )}
           {/* The blank page is the hardest part of writing an agent, so the
               way out of it is offered on the blank page itself. */}
           {creating && (
@@ -4503,7 +4771,7 @@ function AgentEditor({ agent, onDone, onMarket }: {
                   QA and more. Hire one and change it here afterwards.
                 </span>
               </span>
-              <button className="btn small tomarket" onClick={onMarket}>Browse the hiring hall</button>
+              <button className="btn small tomarket" onClick={onMarket}>Browse the casting room</button>
             </div>
           )}
           <section className="fieldset">
@@ -4591,15 +4859,102 @@ function AgentEditor({ agent, onDone, onMarket }: {
             )}
           </section>
 
-          <section className="fieldset">
-            <div className="sec-head"><h3>What they're allowed to do</h3><span className="eyebrow">Abilities</span></div>
-            <p className="sec-note">Off means the ability doesn't exist for this agent — not even with permission.</p>
-            <div className="panelbox">
-              {toggle("Web search", "Vendor docs, status pages, prices", ab.webSearch, v => setAb({ ...ab, webSearch: v }))}
-              {toggle("Files folder", "Reads and writes in its own folder on this computer", ab.files, v => setAb({ ...ab, files: v }))}
-              {toggle("Schedules", "Can set itself a repeating job", ab.schedules, v => setAb({ ...ab, schedules: v }))}
-              {toggle("Background jobs", "Can carry on working after you walk away", ab.background, v => setAb({ ...ab, background: v }))}
+          <section className="fieldset reachsec">
+            <div className="sec-head"><h3>How far they can go</h3><span className="eyebrow">Reach</span></div>
+            <p className="sec-note">
+              One choice, four rungs. Each rung is everything below it and more — and anything
+              that changes this computer or spends money stops and asks you first.
+            </p>
+            <div className="reachladder" role="group" aria-label="How far this agent can go"
+              data-reach={reach}>
+              {REACH_LEVELS.map((rung, i) => (
+                <button key={rung.level} className="reachrung" data-reach={rung.level}
+                  data-within={i <= reachIndex ? "yes" : "no"}
+                  aria-pressed={rung.level === reach} onClick={() => setAb(abilitiesForReach(rung.level))}>
+                  <span className="rr-spine" aria-hidden="true"><span className="rr-node" /></span>
+                  <span className="rr-tx">
+                    <b>{rung.label}</b>
+                    <span>{rung.plainWords}</span>
+                  </span>
+                  <span className="rr-count">
+                    {rung.rows === 0 ? "nothing" : `${rung.rows} of ${CAPABILITIES.length}`}
+                  </span>
+                </button>
+              ))}
             </div>
+
+            {/* His mix may sit between two rungs. Saying which rung it reads as —
+                never rounding UP — is the honest half of offering a ladder. */}
+            {!sameAsRung && (
+              <p className="sec-note reachmixed">
+                You have picked your own mix below. It reads as “{reachLabel}”, because that is the
+                highest rung it covers all of.
+              </p>
+            )}
+
+            {/* A DISCLOSURE HE OWNS, not one the ladder keeps re-deciding for him.
+                Written as a button and a conditional rather than <details open>,
+                because a controlled `open` fights the browser: he opens it, a
+                rung click re-renders, and it shuts under his hand. It starts
+                open only when the agent arrived with a mix of its own. */}
+            <div className="abilitypick" data-open={switchesOpen ? "yes" : "no"}>
+              <button className="abilityshow" aria-expanded={switchesOpen}
+                onClick={() => setShowSwitches(v => !v)}>
+                Or pick them one by one
+              </button>
+              <div className="panelbox" hidden={!switchesOpen}>
+                {CAPABILITIES.map(cap => (
+                  <label className="toggle-row" key={cap.ability} data-ability={cap.ability}>
+                    <span className="tx">
+                      <b>
+                        {cap.label}
+                        {cap.alwaysAsk && <span className="chip is-gold">asks you first</span>}
+                      </b>
+                    </span>
+                    <input className="sw" type="checkbox" aria-label={cap.label}
+                      checked={ab[cap.ability] === true}
+                      onChange={e => setAb({ ...ab, [cap.ability]: e.target.checked })} />
+                  </label>
+                ))}
+              </div>
+              {switchesOpen && (
+                <p className="sec-note" style={{ marginTop: 10 }}>
+                  Off means the ability doesn't exist for this agent — not even with permission.
+                </p>
+              )}
+            </div>
+
+            {/* A SWITCH THAT IS ON AND STILL GRANTS NOTHING MUST SAY SO.
+                Two of these powers need something the app cannot yet ask him
+                for — which folders, and which service. The engine reads both
+                fresh every turn and, with nothing chosen, hands the agent
+                nothing extra. That is the safe way round, and it would read as
+                a broken switch if the screen kept quiet about it. Saying it
+                here costs a sentence; letting him believe he opened a door that
+                is still shut costs his trust in every other switch. */}
+            {inertSwitches.length > 0 && (
+              <div className="notice inertswitch" data-inert={inertSwitches.join(",")}>
+                <b>On, but not doing anything yet.</b>
+                <ul>
+                  {inertSwitches.includes("wholeComputer") && (
+                    <li data-inert-row="wholeComputer">
+                      <b>Reach files outside its own folder</b> needs you to say which folders,
+                      and there is nowhere yet to choose them. Until there is, {shownName} gets
+                      nothing beyond its own folder.
+                    </li>
+                  )}
+                  {inertSwitches.includes("connections") && (
+                    <li data-inert-row="connections">
+                      <b>Use connected services</b> needs a service picked for {shownName}{" "}
+                      specifically, and there is nowhere yet to pick one. Your own connected
+                      accounts are never used, at any setting.
+                    </li>
+                  )}
+                </ul>
+              </div>
+            )}
+
+            <HarnessHonesty provider={provider} />
           </section>
 
           <section className="fieldset whocanuse">
@@ -4644,9 +4999,23 @@ function AgentEditor({ agent, onDone, onMarket }: {
             )}
           </section>
 
-          <section className="fieldset">
+          <section className="fieldset asksec">
             <div className="sec-head"><h3>When to stop and ask</h3><span className="eyebrow">Approval rules</span></div>
             <p className="sec-note">Anything matching a rule pauses the job and lands in Tasks with your name on it.</p>
+            {willAsk.length > 0 && (
+              <div className="willask" data-asks={willAsk.length}>
+                <span className="wa-head">You'll be asked before it:</span>
+                <ul>
+                  {willAsk.map(w => (
+                    <li key={w} data-ask={w}>{w.charAt(0).toLowerCase() + w.slice(1)}</li>
+                  ))}
+                </ul>
+                <span className="wa-note">
+                  These are not switches. Handing {shownName} one of those powers IS turning the
+                  asking on — the only way to stop being asked is to take the power back above.
+                </span>
+              </div>
+            )}
             <div className="panelbox">
               {toggle("Background work", "Ask before it takes a job away to work on", ap.background, v => setAp({ ...ap, background: v }))}
               {toggle("Making a schedule", "Ask before it sets itself a repeating job", ap.schedules, v => setAp({ ...ap, schedules: v }))}

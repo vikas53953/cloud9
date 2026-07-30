@@ -250,8 +250,13 @@ test("v2: task lifecycle with approvals and audit trail", async () => {
   assert.match(err.error, /owner/);
 
   // --- cancel a pending task directly (FR-TS-005) ---
-  owner.send({ type: "cancelTask", taskId: pend3.approval.taskId });
-  await owner.wait(f => f.type === "task" && f.task.id === pend3.approval.taskId && f.task.status === "cancelled");
+  // `taskId` is optional on an Approval now that an agent can ask mid-run about
+  // one specific action with no job behind it. A JOB-shaped approval always has
+  // one, and this asserts that rather than assuming it.
+  const pend3Task = pend3.approval.taskId;
+  assert.ok(pend3Task, "a job-shaped approval always names its job");
+  owner.send({ type: "cancelTask", taskId: pend3Task });
+  await owner.wait(f => f.type === "task" && f.task.id === pend3Task && f.task.status === "cancelled");
 
   // --- audit trail (FR-AU-001..004) ---
   owner.send({ type: "activity", limit: 100 });

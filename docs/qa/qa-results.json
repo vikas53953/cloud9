@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-30T02:27:22.026Z",
-  "expected": 247,
-  "executed": 247,
+  "ranAt": "2026-07-30T04:59:13.095Z",
+  "expected": 305,
+  "executed": 305,
   "results": [
     {
       "name": "join screen renders",
@@ -21,12 +21,12 @@
     {
       "name": "agent create offers a model picker with a model already chosen",
       "pass": true,
-      "detail": "claude-fable-5/claude-opus-5/claude-sonnet-5/claude-haiku-4-5-20251001 value=claude-sonnet-5"
+      "detail": "claude-fable-5/claude-opus-5/claude-opus-4-8/claude-opus-4-7/claude-opus-4-6/claude-opus-4-5/claude-opus-4-1/claude-opus-4-0/claude-sonnet-5/claude-sonnet-4-6/claude-sonnet-4-5/claude-haiku-4-5/claude-haiku-4-5-20251001 value=claude-sonnet-5"
     },
     {
       "name": "models are shown by friendly name, not raw ids",
       "pass": true,
-      "detail": "Fable 5/Opus 5/Sonnet 5/Haiku 4.5"
+      "detail": "Fable 5/Opus 5/Opus 4.8/Opus 4.7/Opus 4.6/Opus 4.5/Opus 4.1/Opus 4/Sonnet 5/Sonnet 4.6/Sonnet 4.5/Haiku 4.5/Haiku 4.5 (dated build)"
     },
     {
       "name": "agent create has a Skills section with a way to write and to upload one",
@@ -51,7 +51,7 @@
     {
       "name": "that conversation is found, not created a second time",
       "pass": true,
-      "detail": "1 then 1 rows named Scout"
+      "detail": "0 then 0 rows named Scout"
     },
     {
       "name": "channel created with agent member",
@@ -116,7 +116,7 @@
     {
       "name": "settings sets which app + model new agents start on",
       "pass": true,
-      "detail": "4 models"
+      "detail": "13 models"
     },
     {
       "name": "settings has notifications on/off and quiet hours that switch on",
@@ -146,7 +146,7 @@
     {
       "name": "agent edit offers a model picker with this agent's model selected",
       "pass": true,
-      "detail": "claude-fable-5/claude-opus-5/claude-sonnet-5/claude-haiku-4-5-20251001 value=claude-sonnet-5"
+      "detail": "claude-fable-5/claude-opus-5/claude-opus-4-8/claude-opus-4-7/claude-opus-4-6/claude-opus-4-5/claude-opus-4-1/claude-opus-4-0/claude-sonnet-5/claude-sonnet-4-6/claude-sonnet-4-5/claude-haiku-4-5/claude-haiku-4-5-20251001 value=claude-sonnet-5"
     },
     {
       "name": "a skill can be written in plain words and saved",
@@ -161,7 +161,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch w6j72 :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch 1k6vm :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -176,7 +176,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_7JyF78jD9nocA7qu59zM4g"
+      "detail": "inv_QGsadBkIKlL5qlt2q3mZQg"
     },
     {
       "name": "friend joins via invite",
@@ -306,7 +306,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 07:56"
+      "detail": "↳ 1 reply · last at 10:27"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -376,7 +376,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 07:56 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 10:27 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -419,14 +419,149 @@
       "detail": "Only you can use it"
     },
     {
-      "name": "the hiring hall is reachable from where he already goes to add an agent",
+      "name": "the agent editor leads with the whole ladder the engine offers, not four checkboxes",
       "pass": true,
-      "detail": "Browse the hiring hall"
+      "detail": "talk → look → work → computer"
+    },
+    {
+      "name": "every rung says in his words what it means for his computer",
+      "pass": true,
+      "detail": "all match"
+    },
+    {
+      "name": "the top rung is offered as a thing he can pick, not hidden behind a warning",
+      "pass": true,
+      "detail": "Everything this app can do on this computer"
+    },
+    {
+      "name": "every power the engine's table owns has a switch on this screen, in the same order",
+      "pass": true,
+      "detail": "8 rows: webSearch, files, helpers, schedules, background, connections, wholeComputer, commands"
+    },
+    {
+      "name": "each switch is named in his words, never with a tool name",
+      "pass": true,
+      "detail": "Look things up on the web | Keep and change files in its own folder | Get help from its own helper agents | Check in on a repeating schedule | Work on jobs in the background | Use connected services your owner picked for you\nasks you first | Reach files outside its own folder\nasks you first | Run programs on this computer\nasks you first"
+    },
+    {
+      "name": "the powers that change his machine or spend money are marked as asking first",
+      "pass": true,
+      "detail": "connections, wholeComputer, commands"
+    },
+    {
+      "name": "picking the top rung really hands over every power the engine has",
+      "pass": true,
+      "detail": "all on"
+    },
+    {
+      "name": "and the ladder then reads as the top rung",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a power that is on and still grants nothing today admits it, rather than looking broken",
+      "pass": true,
+      "detail": "On, but not doing anything yet. Reach files outside its own folder needs you to say which folders, and there i"
+    },
+    {
+      "name": "with the top rung on, the screen names exactly the powers that will stop and ask him",
+      "pass": true,
+      "detail": "Use connected services your owner picked for you / Reach files outside its own folder / Run programs on this computer"
+    },
+    {
+      "name": "and those are stated, never offered as switches he could clear",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the two approvals that really are his choice stay editable",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and with nothing switched on, nothing claims to be inert either",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "picking the bottom rung takes every one of them back",
+      "pass": true,
+      "detail": "all off"
+    },
+    {
+      "name": "and nothing then claims it will ask him about anything",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a mix that adds a power without the rungs beneath it is NOT rounded up to that rung",
+      "pass": true,
+      "detail": "reads as look"
+    },
+    {
+      "name": "and the screen says out loud that this is his own mix, and which rung it covers",
+      "pass": true,
+      "detail": "You have picked your own mix below. It reads as “Look things up and keep notes”, because that is the highest rung it covers all of."
+    },
+    {
+      "name": "switching one power on is enough to make the screen promise he will be asked",
+      "pass": true,
+      "detail": "Run programs on this computer"
+    },
+    {
+      "name": "the screen says how high these switches GO, not only what they keep out",
+      "pass": true,
+      "detail": "Everything Claude Code can do on this computer is available to switch "
+    },
+    {
+      "name": "a Claude agent is told the switches really are the whole boundary",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and a Codex agent is NOT — the same screen refuses to tell him the same story twice",
+      "pass": true,
+      "detail": "These switches control what this agent may CHANGE on your PC. They do "
+    },
+    {
+      "name": "it says instead what those switches DO control on Codex",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "everything Codex keeps hold of anyway is named, one line each",
+      "pass": true,
+      "detail": "4 of 4"
+    },
+    {
+      "name": "and what we looked at and could not settle is kept apart from it, under its own heading",
+      "pass": true,
+      "detail": "1 unknown(s)"
+    },
+    {
+      "name": "the report carries the version and date it was measured on, so a stale claim shows",
+      "pass": true,
+      "detail": "Measured on codex-cli 0.146.0, help + `codex features list` re-read 2026-07-30."
+    },
+    {
+      "name": "a hand-written agent's file offers the ladder, the switches, who may use it, and skills",
+      "pass": true,
+      "detail": "[\"Who they are\",\"Where they run\",\"How far they can go\",\"Who can use this agent?\",\"When to stop and ask\",\"Skills\",\"What they've been doing\"]"
+    },
+    {
+      "name": "the casting room is reachable from where he already goes to add an agent",
+      "pass": true,
+      "detail": "Browse the casting room"
+    },
+    {
+      "name": "and nothing on screen calls it a hiring hall any more",
+      "pass": true,
+      "detail": "Browse the casting room"
     },
     {
       "name": "and from the crew screen",
       "pass": true,
-      "detail": ""
+      "detail": "Browse the casting room"
     },
     {
       "name": "the software roles he asked for are all in the catalogue",
@@ -442,6 +577,11 @@
       "name": "the catalogue is grouped by category, so a second category is data and not a redesign",
       "pass": true,
       "detail": ""
+    },
+    {
+      "name": "every role in the catalogue wears a drawn portrait, and no emoji face is left",
+      "pass": true,
+      "detail": "8 portraits"
     },
     {
       "name": "the brief he is hiring is shown in full, in the agent's own words",
@@ -461,7 +601,47 @@
     {
       "name": "he picks which app runs it, and from his app's real model list",
       "pass": true,
-      "detail": "4 models offered"
+      "detail": "13 models offered"
+    },
+    {
+      "name": "the panel he hires from wears the face the agent will really be hired with",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "hiring opens the new agent's own file, instead of telling him to go and press Edit",
+      "pass": true,
+      "detail": "✓ @Architect is on the floor, and this is their file. Everything below is yours "
+    },
+    {
+      "name": "A HIRED AGENT'S FILE OFFERS EXACTLY WHAT A HAND-WRITTEN ONE'S DOES — nothing less",
+      "pass": true,
+      "detail": "7 sections, 4 rungs, 8 switches, skills editor present"
+    },
+    {
+      "name": "and the three he could not find are each on that screen, by name",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a hired role starts no more powerful than a hand-written agent plus what its brief asked for",
+      "pass": true,
+      "detail": "reads as look"
+    },
+    {
+      "name": "the brief really was copied onto the agent, word for word",
+      "pass": true,
+      "detail": "1034 characters on the agent"
+    },
+    {
+      "name": "the model he picked was saved on the agent too",
+      "pass": true,
+      "detail": "gpt-5.6-sol (picked gpt-5.6-sol)"
+    },
+    {
+      "name": "the face on the role card is the face the agent now wears — the same drawing",
+      "pass": true,
+      "detail": ""
     },
     {
       "name": "hiring copies the role onto his floor as one of his own agents",
@@ -476,7 +656,7 @@
     {
       "name": "the crew screen says the hire is his to change",
       "pass": true,
-      "detail": "✓ @Architect is on the floor. Everything about them — the brief, the app, what they can to"
+      "detail": "✓ @Architect is on the floor. Everything about them — the brief, the app, how far they can"
     },
     {
       "name": "a hire is owner-only, exactly like an agent he wrote himself",
@@ -484,19 +664,69 @@
       "detail": "Only you can use it"
     },
     {
-      "name": "the brief really was copied onto the agent, word for word",
+      "name": "and the crew shows the very same picture the casting room showed",
       "pass": true,
-      "detail": "1034 characters on the agent"
-    },
-    {
-      "name": "the model he picked was saved on the agent too",
-      "pass": true,
-      "detail": "gpt-5.6-sol (picked gpt-5.6-sol)"
+      "detail": ""
     },
     {
       "name": "and every word of it can be changed afterwards — the change survives the hub",
       "pass": true,
       "detail": "wait.\n\nAlways answer in British English."
+    },
+    {
+      "name": "every agent row on screen carries a presence, and it is one the hub can actually say",
+      "pass": true,
+      "detail": "Scout=ready, Architect=ready"
+    },
+    {
+      "name": "the row says the state in words, not only as a colour",
+      "pass": true,
+      "detail": "Scout:Ready, Architect:Ready"
+    },
+    {
+      "name": "and it says WHY, in a plain sentence",
+      "pass": true,
+      "detail": "Ready · signed in to Claude | Ready · signed in to Codex"
+    },
+    {
+      "name": "the dot and the word can never disagree — they are drawn from the same one field",
+      "pass": true,
+      "detail": "Scout:p-ready, Architect:p-ready"
+    },
+    {
+      "name": "the conversation header says the same state as the rail, and the reason with it",
+      "pass": true,
+      "detail": "Ready — signed in to Claude"
+    },
+    {
+      "name": "pausing an agent is shown as paused, with the owner's own doing given as the reason",
+      "pass": true,
+      "detail": "Paused — paused by its owner"
+    },
+    {
+      "name": "and the crew card's pill says it too, rather than leaving a green dot behind",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the Off duty filter finds it by that state, not by guessing from the record",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "un-pausing puts it back to ready on screen, without a reload",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "an agent nobody can run reads Offline, with the honest reason — never a green dot",
+      "pass": true,
+      "detail": "Offline · switched off by its owner"
+    },
+    {
+      "name": "switching it back on is enough — the screen follows the hub, not a reload",
+      "pass": true,
+      "detail": ""
     },
     {
       "name": "an agent that will not answer you says so, instead of silently doing nothing",
@@ -696,7 +926,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms6w71d475twa5\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms71lgp7lxjuwz\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -736,12 +966,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms6w6d2vwzhdwy:1785378384219 a_ms6w6fzs90tf3n:1785378388739 u_ms6w6kmn9clkst:1785378389237 a_ms6w71d475twa5:1785378389318"
+      "detail": "u_ms71jpthipuu5u:1785387450908 a_ms71jzp56ubup2:1785387460102 u_ms71kdais1ctgs:1785387460862 a_ms71lgp7lxjuwz:1785387461011"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785378387028 · now 1785378389237"
+      "detail": "first 1785387457444 · now 1785387460862"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -846,7 +1076,7 @@
     {
       "name": "REPRODUCED: a refusal was provoked with one file on the wire and a second read and queued behind it",
       "pass": true,
-      "detail": "{\"onTheWire\":1,\"queuedBehind\":1,\"asked\":[\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setChannelInfo\",\"markRead\",\"setChannelVisibility\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"archiveChannel\",\"archiveChannel\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setMemberRole\",\"channelMembers\",\"removeMember\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"markRead\",\"uploadAttachment\",\"editMessage\"]}"
+      "detail": "{\"onTheWire\":1,\"queuedBehind\":1,\"asked\":[\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setChannelInfo\",\"setChannelVisibility\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"archiveChannel\",\"archiveChannel\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"addMembers\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"setMemberRole\",\"channelMembers\",\"removeMember\",\"channelMembers\",\"channelMembers\",\"channelMembers\",\"markRead\",\"uploadAttachment\",\"editMessage\"]}"
     },
     {
       "name": "REPRODUCED: the refusal really did land while the upload was still unanswered",
@@ -871,17 +1101,17 @@
     {
       "name": "REPRODUCED: the Enter key was pressed while a file was genuinely still on its way up",
       "pass": true,
-      "detail": "{\"reproduced\":true,\"waitingWhenPressed\":true,\"said\":\"that file is still going up — give it a moment, or take it off\",\"stillThere\":true,\"wordsKept\":\"sending this before the file is up\",\"wentAnyway\":0}"
+      "detail": "{\"reproduced\":true,\"waitingWhenPressed\":true,\"said\":\"that file is still going up — give it a moment, or take it off\",\"stillThere\":true,\"wordsKept\":\"sending this before the file is up\",\"stillGoingWhenRead\":true,\"sendWaiting\":\"file\",\"sendSays\":\"Waiting for a file…\",\"wentAnyway\":0}"
     },
     {
       "name": "Enter mid-upload refuses in a sentence instead of throwing the file away in silence",
       "pass": true,
-      "detail": "{\"reproduced\":true,\"waitingWhenPressed\":true,\"said\":\"that file is still going up — give it a moment, or take it off\",\"stillThere\":true,\"wordsKept\":\"sending this before the file is up\",\"wentAnyway\":0}"
+      "detail": "{\"reproduced\":true,\"waitingWhenPressed\":true,\"said\":\"that file is still going up — give it a moment, or take it off\",\"stillThere\":true,\"wordsKept\":\"sending this before the file is up\",\"stillGoingWhenRead\":true,\"sendWaiting\":\"file\",\"sendSays\":\"Waiting for a file…\",\"wentAnyway\":0}"
     },
     {
       "name": "and the send button says it is waiting for the file rather than offering to send without it",
       "pass": true,
-      "detail": "Send with 1 file"
+      "detail": "Waiting for a file… (data-waiting=file, still going: true)"
     },
     {
       "name": "nothing was lost by waiting — the file goes out with the words that were typed",
@@ -946,7 +1176,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":20,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
+      "detail": "{\"followedToBottom\":0,\"samples\":18,\"pinned\":0,\"min\":40,\"max\":4088,\"endedAt\":4088}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1021,7 +1251,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms6w6hd4bdgu0m\",\"status\":\"completed\",\"runId\":\"r-0ms6w6hdh-kufj\"}"
+      "detail": "{\"id\":\"t_ms71k2iofxo9hk\",\"status\":\"completed\",\"runId\":\"r-0ms71k2j2-q8b7\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1214,22 +1444,82 @@
       "detail": "{\"doc\":0,\"body\":0}"
     },
     {
-      "name": "the hiring hall and an open brief do not scroll sideways at 1280 in the light look",
+      "name": "the reach ladder at full stretch does not scroll sideways at 1280 in the light look",
       "pass": true,
       "detail": "{\"doc\":0,\"body\":0}"
     },
     {
-      "name": "the hiring hall and an open brief do not scroll sideways at 1280 in the dark look",
+      "name": "the reach ladder at full stretch does not scroll sideways at 1280 in the dark look",
       "pass": true,
       "detail": "{\"doc\":0,\"body\":0}"
     },
     {
-      "name": "the hiring hall and an open brief do not scroll sideways at 1440 in the light look",
+      "name": "the reach ladder at full stretch does not scroll sideways at 1440 in the light look",
       "pass": true,
       "detail": "{\"doc\":0,\"body\":0}"
     },
     {
-      "name": "the hiring hall and an open brief do not scroll sideways at 1440 in the dark look",
+      "name": "the reach ladder at full stretch does not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room's role cards do not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room's role cards do not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room's role cards do not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room's role cards do not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room and an open brief do not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room and an open brief do not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room and an open brief do not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "the casting room and an open brief do not scroll sideways at 1440 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a rail showing every agent's state does not scroll sideways at 1280 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a rail showing every agent's state does not scroll sideways at 1280 in the dark look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a rail showing every agent's state does not scroll sideways at 1440 in the light look",
+      "pass": true,
+      "detail": "{\"doc\":0,\"body\":0}"
+    },
+    {
+      "name": "a rail showing every agent's state does not scroll sideways at 1440 in the dark look",
       "pass": true,
       "detail": "{\"doc\":0,\"body\":0}"
     },

@@ -32,22 +32,24 @@
 // written by an agent, so neither ever becomes an argument: the title rides in
 // on the commit subject via `--fill`, and the body goes in on standard input
 // via `--body-file -`.
+import {
+  REMOTE_ACTIONS, RemoteAction, RemoteActionFacts, describeRemoteAction,
+} from "@cloud9/shared";
 import { run, Runner } from "./run.js";
 import { GitError, Worktree } from "./worktree.js";
 
 /**
  * The things an agent can do that are visible from outside this machine.
  *
- * ONE TABLE, so a new remote action cannot be added without appearing in front
- * of the approval gate. Anything not on this list does not leave the computer.
+ * ONE TABLE, AND IT IS NOT THIS FILE'S. It moved to `@cloud9/shared` on
+ * 2026-07-30 because three programs have to agree about it: the engine does the
+ * thing, the hub writes the sentence the owner reads, and the screen draws the
+ * card. This is a re-export, and `github.test.ts` asserts object IDENTITY with
+ * shared's — two lists that happen to agree today are exactly the drift that
+ * check exists to prevent.
  */
-export const REMOTE_ACTIONS = {
-  push: "push a branch to GitHub",
-  pullRequest: "open a pull request on GitHub",
-  createRepo: "create a new repository on GitHub",
-} as const;
-
-export type RemoteAction = keyof typeof REMOTE_ACTIONS;
+export { REMOTE_ACTIONS };
+export type { RemoteAction, RemoteActionFacts };
 
 /** The owner has not said yes, so nothing left the machine. */
 export class ApprovalRequiredError extends Error {
@@ -62,8 +64,16 @@ export class ApprovalRequiredError extends Error {
  *
  * Returning false is a normal answer, not an error condition — the caller turns
  * it into `ApprovalRequiredError` and the agent says so in the conversation.
+ *
+ * `facts` is the structured version of the same request — the branch, the
+ * repository, the number of commits — and it is what a real approver forwards
+ * to the hub. The two string arguments are kept because they are what a LOCAL
+ * approver (a test, a script, a host with its own prompt) actually needs, and
+ * because dropping them would have been a breaking change for no gain.
  */
-export type RemoteApprover = (action: RemoteAction, detail: string) => Promise<boolean> | boolean;
+export type RemoteApprover = (
+  action: RemoteAction, detail: string, facts: RemoteActionFacts,
+) => Promise<boolean> | boolean;
 
 export interface GitHubOptions {
   runner?: Runner;
@@ -116,17 +126,74 @@ export class GitHubClient {
    * ask?" has exactly one answer — the same reason `mayDriveAgent` and
    * `mustAskBeforeActing` each live in one place.
    */
-  private async mayI(action: RemoteAction, detail: string): Promise<void> {
+  private async mayI(
+    action: RemoteAction, gather: () => Promise<RemoteActionFacts>,
+  ): Promise<void> {
     const approver = this.opts.approve;
+    // FIRST, AND BEFORE ANY COMMAND AT ALL. A client with nobody to ask does
+    // not even look at the repository — it refuses. That is what keeps the
+    // original promise of this file literally true: with no approver wired,
+    // not one command runs.
     if (!approver) throw new ApprovalRequiredError(action, "nobody is set up to approve it");
+    // Only now, and only with read-only commands, do we find out WHAT we would
+    // be asking about. "Push a branch" cannot be judged; "push 3 commits to a
+    // new branch cloud9/architect-1 on vikas53953/cloud9" can.
+    const facts = await gather();
+    // THE SENTENCE IS COMPOSED, NOT WRITTEN — by shared's `describeRemoteAction`,
+    // the same function the hub uses to fill the card. One spelling of "push 3
+    // commits to a new branch …", so the log line, the refusal message and the
+    // thing he actually reads on screen cannot drift apart.
+    const detail = describeRemoteAction(facts);
     let allowed = false;
     try {
-      allowed = await approver(action, detail);
+      allowed = await approver(action, detail, facts);
     } catch {
       allowed = false;
     }
     if (!allowed) throw new ApprovalRequiredError(action, detail);
     this.log(`approved: ${REMOTE_ACTIONS[action]} — ${detail}`);
+  }
+
+  /**
+   * WHAT THIS REPOSITORY IS CALLED ON GITHUB. Read only, so it is not gated —
+   * and it is asked BEFORE the gate on purpose, because "push a branch" and
+   * "push a branch to vikas53953/cloud9" are two very different questions and
+   * only the second one can actually be judged.
+   *
+   * A repository gh cannot name is reported as absent rather than guessed at.
+   * The sentence then reads "push 3 commits to a new branch …" with no
+   * repository in it, which is honest; inventing one would not be.
+   */
+  async repoName(wt: Worktree): Promise<string | undefined> {
+    const r = await this.runner(this.command, [
+      "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner",
+    ], { cwd: wt.path, timeoutMs: 60_000 });
+    if (r.notFound || r.code !== 0) return undefined;
+    const name = r.stdout.trim().split(/\r?\n/)[0]?.trim();
+    return name && /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(name) ? name : undefined;
+  }
+
+  /** How many commits this branch has that its base does not. Read only. */
+  async commitsAhead(wt: Worktree): Promise<number | undefined> {
+    const r = await this.runner("git", ["rev-list", "--count", `${wt.base}..HEAD`], {
+      cwd: wt.path, timeoutMs: 60_000,
+    });
+    if (r.notFound || r.code !== 0) return undefined;
+    const n = Number(r.stdout.trim());
+    return Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+  }
+
+  /**
+   * The facts an approval card is built from, gathered from git and gh rather
+   * than from anything an agent said. Nothing here changes anything.
+   */
+  async factsFor(action: RemoteAction, wt: Worktree): Promise<RemoteActionFacts> {
+    const [repo, commits] = await Promise.all([this.repoName(wt), this.commitsAhead(wt)]);
+    return {
+      action, branch: wt.branch, base: wt.base,
+      ...(repo ? { repo } : {}),
+      ...(commits !== undefined ? { commits } : {}),
+    };
   }
 
   /**
@@ -162,8 +229,11 @@ export class GitHubClient {
    * name is one WE generated, so it is allowlist-clean by construction. The
    * folder goes in `cwd`, never in argv.
    */
-  async pushBranch(wt: Worktree): Promise<void> {
-    await this.mayI("push", `branch ${wt.branch}`);
+  async pushBranch(wt: Worktree, extra: { files?: number } = {}): Promise<void> {
+    await this.mayI("push", async () => ({
+      ...await this.factsFor("push", wt),
+      ...(extra.files ? { files: extra.files } : {}),
+    }));
     const r = await this.runner("git", ["push", "-u", "origin", wt.branch], {
       cwd: wt.path, timeoutMs: this.timeoutMs,
     });
@@ -183,7 +253,7 @@ export class GitHubClient {
    * commit's own body and nothing is written to stdin at all.
    */
   async openPullRequest(wt: Worktree, opts: { body?: string; draft?: boolean } = {}): Promise<PullRequest> {
-    await this.mayI("pullRequest", `${wt.branch} → ${wt.base}`);
+    await this.mayI("pullRequest", () => this.factsFor("pullRequest", wt));
     const args = ["pr", "create", "--head", wt.branch, "--base", wt.base, "--fill"];
     if (opts.draft) args.push("--draft");
     const body = (opts.body ?? "").trim();
@@ -206,18 +276,27 @@ export class GitHubClient {
     return { url, branch: wt.branch, base: wt.base };
   }
 
-  /** The pull request already open for this branch, if there is one. Read only. */
+  /**
+   * The pull request already open for this branch, if there is one. Read only.
+   *
+   * FOUND BY RUNNING IT, 2026-07-30: this used to ask for `--json number,url`,
+   * and `run.ts` REFUSES a comma — its allowlist is `[A-Za-z0-9._:\/=+@-]`. So
+   * against the real runner this method never reached gh at all; it threw
+   * `UnsafeArgumentError` every single time, and only a fake runner had ever
+   * called it. The fix is not to widen the allowlist — that guard is why an
+   * agent's text can never reach a command line — but to stop needing a comma:
+   * ask for the URL alone and read the number off it, with the same shape check
+   * `findPullRequestUrl` already applies everywhere else.
+   */
   async pullRequestFor(wt: Worktree): Promise<{ number: number; url: string } | undefined> {
     const r = await this.runner(this.command, [
-      "pr", "list", "--head", wt.branch, "--state", "open", "--json", "number,url",
+      "pr", "list", "--head", wt.branch, "--state", "open", "--json", "url",
     ], { cwd: wt.path, timeoutMs: 60_000 });
     if (r.notFound || r.code !== 0) return undefined;
-    try {
-      const rows = JSON.parse(r.stdout.trim() || "[]") as { number: number; url: string }[];
-      return rows[0];
-    } catch {
-      return undefined;
-    }
+    const url = findPullRequestUrl(r.stdout);
+    if (!url) return undefined;
+    const number = Number(/\/pull\/(\d+)$/.exec(url)?.[1]);
+    return Number.isSafeInteger(number) ? { number, url } : undefined;
   }
 }
 
