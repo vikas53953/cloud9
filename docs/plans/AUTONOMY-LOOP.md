@@ -70,3 +70,9 @@ Cursor gets work that does NOT touch whatever the in-house agent holds this roun
   deferred to Vikas's sign-in, said on screen. Build hiccup: a leftover Cloud9.exe
   locked release/win-unpacked (EBUSY) — killed procs, cleaned dir, rebuilt clean.
   Next in-house feature STARTED: notifications on screen.
+- 2026-07-31 ~10:30 — NOTIFICATIONS ON SCREEN, installed + walked clean (exit 0,
+  all checks on-screen). 3/5 features now on the installed app (GitHub, friends,
+  notifications). ~928 tests green. The LAST TWO features handed to Cursor round 4,
+  full-stack, in parallel: LANE MEM (agent memory+handoff on screen, cursor/mem-screen)
+  and LANE CODEX (isolation fix per the audit, cursor/codex-fix). Conductor reviews +
+  merges + rebuilds + walks each. This ends the sequential in-house bottleneck.
