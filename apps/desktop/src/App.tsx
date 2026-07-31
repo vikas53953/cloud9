@@ -38,6 +38,21 @@ import {
   abilitiesForReach, CAPABILITIES, describeApprovalNeeds, REACH_LEVELS, Reach,
 } from "@cloud9/engine/dist/abilities.js";
 import { isolationFor } from "@cloud9/engine/dist/isolation.js";
+/* THE NOTIFICATION RULES AND THE FOUR EVENTS THAT FEED THEM.
+   `decideNotification` is the ONE gate (quiet hours, de-dupe, self-suppression,
+   the master switch) — the same one the phone will read. The `notify-feed`
+   builders are the ONE place a hub fact (a finished job, a pending approval, a
+   mention, a published file) becomes the plain-words event that gate reads.
+   The screen never re-decides any of that; it draws what the gate raises.
+   Imported by path for the same reason the two lines above are: these are the
+   halves of shared/engine the browser is allowed to see. */
+import {
+  decideNotification, dedupeKey,
+  type Cloud9Notification, type NotifyEvent,
+} from "@cloud9/shared/dist/notify.js";
+import {
+  approvalEvent, artifactEvent, jobFinishedEvent, mentionEvent, type NotifyViewer,
+} from "@cloud9/engine/dist/notify-feed.js";
 
 const isQuickWindow = location.hash === "#quick";
 
@@ -1280,16 +1295,10 @@ function isDarkNow(): boolean {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
 }
 
-function inQuietHours(p: Prefs, now = new Date()): boolean {
-  if (!p.quietOn) return false;
-  const mins = (s: string) => {
-    const [h, m] = s.split(":").map(Number);
-    return (h || 0) * 60 + (m || 0);
-  };
-  const t = now.getHours() * 60 + now.getMinutes();
-  const from = mins(p.quietFrom), to = mins(p.quietTo);
-  return from <= to ? t >= from && t < to : t >= from || t < to;
-}
+/* Quiet-hours math no longer lives here: it is `inQuietHours` inside the shared
+   `decideNotification` gate (packages/shared/src/notify.ts), which every toast
+   now passes through. One owner for "is it quiet", read by the screen and the
+   phone alike — a second copy here is exactly how the two drifted before. */
 
 /**
  * One row per person. The relay can hand back the same person more than once
@@ -1471,7 +1480,7 @@ export function App(): React.JSX.Element {
     : isQuickWindow ? <QuickChat standalone />
     : <Workspace />;
 
-  return <>{screen}{!onJoinScreen && <Toast />}</>;
+  return <>{screen}{!onJoinScreen && <Toast />}{!onJoinScreen && <NotifyToasts />}</>;
 }
 
 /* ================= 1 · WELCOME / JOIN ================= */
@@ -1999,22 +2008,14 @@ function Workspace(): React.JSX.Element {
     if (!client.page(active.id).asked) client.loadOlder(active.id);
   }, [active?.id, world.connected]);
 
-  /* ---- notifications you asked for, silent in quiet hours ---- */
-  const knownCount = useRef<number>(-1);
-  useEffect(() => {
-    const all = Object.values(world.messages).reduce((n, m) => n + m.length, 0);
-    const previous = knownCount.current;
-    knownCount.current = all;
-    if (previous < 0 || all <= previous) return;
-    if (!p.notify || inQuietHours(p)) return;
-    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-    const newest = Object.values(world.messages).flat().sort((a, b) => b.ts - a.ts)[0];
-    if (!newest || newest.authorId === world.me?.id) return;
-    if (!document.hidden && newest.channelId === active?.id) return;
-    try {
-      new Notification(`${newest.authorName} in Cloud9`, { body: newest.text.slice(0, 140) });
-    } catch { /* the system said no — nothing to do */ }
-  }, [world.messages, p, world.me, active]);
+  /* ---- notifications ---- The four events that interrupt him are drawn by
+     `<NotifyToasts />` (mounted once at the top of the app), each fed through
+     the one `decideNotification` gate. The old effect here fired a raw
+     `new Notification(...)` for EVERY new message — a second, half-right rules
+     path that knew nothing of the four kinds, of self-suppression, or of
+     de-dupe. It has been removed in favour of the shared gate. An OS/tray toast
+     is a later, honest add-on on top of the same decision; tonight the
+     deliverable is the in-app toast. */
 
   const channels = world.channels.filter(c => c.kind === "channel");
   const agents = world.agents as AgentDefPlus[];
@@ -2195,6 +2196,129 @@ function Toast(): React.JSX.Element | null {
       <span className="toast-text">{said.text}</span>
       <ComputerWords detail={said.detail} />
       <button className="toast-x" aria-label="Dismiss" onClick={() => setDismissed(err.ts)}>✕</button>
+    </div>
+  );
+}
+
+/**
+ * THE FOUR EVENTS THAT INTERRUPT HIM — each as one on-screen toast.
+ *
+ * A finished job, an agent asking for a yes, a mention of him, a file an agent
+ * published. Each hub fact is turned into a `NotifyEvent` by the engine's
+ * `notify-feed` builders — the ONE place that maps a fact to plain words — and
+ * then handed to `decideNotification`, the SAME shared gate the rules module
+ * owns. Quiet hours, de-dupe, the master switch and never toasting his OWN
+ * action are all that gate's job; this component only draws what it raises, and
+ * forgets a toast when he dismisses it or after a short while.
+ *
+ * PRIMING: the first pass after we know who he is folds everything already on
+ * screen into `seen` WITHOUT drawing anything. Reconnecting to a full backlog
+ * must not fire a toast for every job that finished while he was away — only
+ * what arrives AFTER that first pass is allowed to interrupt him.
+ *
+ * The toast wears its OWN class (`.notify-toast`), never the error `.toast`:
+ * they are different news, live in different corners, and a check that counts
+ * one must never accidentally count the other.
+ */
+function NotifyToasts(): React.JSX.Element | null {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const p = usePrefs();
+  const seen = useRef<Set<string>>(new Set());
+  const primed = useRef(false);
+  const [live, setLive] = useState<Cloud9Notification[]>([]);
+  const meId = world.me?.id;
+
+  useEffect(() => {
+    if (!meId) return;
+    const viewer: NotifyViewer = {
+      id: meId,
+      agentIds: world.agents.filter(a => a.ownerId === meId).map(a => a.id),
+    };
+    const nameOf = (agentId: ID): string | undefined =>
+      world.agents.find(a => a.id === agentId)?.name;
+
+    /* Every candidate the world currently holds. The builders return null for
+       anything that is not this person's news, so the list is already his. */
+    const events: NotifyEvent[] = [];
+    for (const list of Object.values(world.messages)) {
+      for (const m of list) {
+        const e = mentionEvent(m, viewer);
+        if (e) events.push(e);
+      }
+    }
+    for (const t of world.tasks) {
+      const e = jobFinishedEvent(t, viewer, nameOf(t.agentId));
+      if (e) events.push(e);
+    }
+    for (const a of world.approvals) {
+      const e = approvalEvent(a, viewer, nameOf(a.agentId));
+      if (e) events.push(e);
+    }
+    for (const art of Object.values(world.artifacts)) {
+      const v = latestVersion(art);
+      if (!v) continue;
+      const e = artifactEvent(v, art.channelId, art.name, viewer);
+      if (e) events.push(e);
+    }
+
+    if (!primed.current) {
+      for (const e of events) seen.current.add(dedupeKey(e));
+      primed.current = true;
+      return;
+    }
+
+    const fresh: Cloud9Notification[] = [];
+    for (const e of events) {
+      const d = decideNotification(e, p, seen.current, new Date());
+      /* Once an event has been CONSIDERED it is never reconsidered — whether it
+         raised or was suppressed. That is deliberate: a toast is a moment. If it
+         was silenced because notifications were off, because it was quiet hours,
+         or because it was his own doing, it must not pop later when he flips a
+         switch or when the clock leaves the quiet window. (Settings already
+         promises the other half: anything urgent still waits for him in Tasks.) */
+      seen.current.add(d.key);
+      if (d.raise) fresh.push(d.notification);
+    }
+    if (fresh.length) setLive(cur => [...cur, ...fresh]);
+  }, [world.messages, world.tasks, world.approvals, world.artifacts, world.agents, meId, p]);
+
+  const dismiss = useCallback((id: string) => {
+    setLive(cur => cur.filter(n => n.id !== id));
+  }, []);
+
+  if (!live.length) return null;
+  return (
+    <div className="notify-stack" role="region" aria-label="Notifications">
+      {live.map(n => <NotifyToast key={n.id} note={n} onDismiss={() => dismiss(n.id)} />)}
+    </div>
+  );
+}
+
+/** The little mark on each kind of toast — plain glyphs, no new icon set. */
+const NOTIFY_ICON: Record<NotifyEvent["kind"], string> = {
+  job_finished: "✓",
+  approval_asked: "?",
+  mention: "@",
+  artifact_published: "⇪",
+};
+
+function NotifyToast(
+  { note, onDismiss }: { note: Cloud9Notification; onDismiss: () => void },
+): React.JSX.Element {
+  /* A toast stands down on its own after a while, so a stack cannot grow without
+     end. He can always take it down sooner with the ✕. */
+  useEffect(() => {
+    const t = setTimeout(onDismiss, 9000);
+    return () => clearTimeout(t);
+  }, [onDismiss]);
+  return (
+    <div className="notify-toast" role="status" data-kind={note.kind} data-subject={note.subjectId}>
+      <span className="notify-mark" aria-hidden="true">{NOTIFY_ICON[note.kind] ?? "•"}</span>
+      <div className="notify-copy">
+        <b className="notify-title">{note.title}</b>
+        <span className="notify-text">{note.body}</span>
+      </div>
+      <button className="notify-x" aria-label="Dismiss" onClick={onDismiss}>✕</button>
     </div>
   );
 }

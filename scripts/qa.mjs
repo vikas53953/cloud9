@@ -265,7 +265,7 @@ function mintJoinTokenOn(port, token) {
 // second hub falls the client back to this computer's own; the owner can mint a
 // cloud9://…#join_ link; and the invite panel says plainly that reaching a friend
 // over the internet needs Tailscale and is not wired tonight.
-const EXPECTED_CHECKS = 456;
+const EXPECTED_CHECKS = 461;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -1233,6 +1233,128 @@ try {
     document.querySelectorAll('.side-item[data-channel="general"] .cnt').length === 0,
   undefined, { timeout: 20000, what: "the unread marks to clear once the room is read" });
   ok("reading the conversation clears the marks", true);
+
+  // ---------- NOTIFICATIONS: the four events that interrupt him ----------
+  //
+  // Each raises ONE on-screen toast, through the single `decideNotification`
+  // gate (packages/shared/src/notify.ts) fed by the engine's `notify-feed`
+  // builders. These checks drive the REAL client pipeline — a real mention, a
+  // real background job, a real quiet window — with nothing stubbed. Pop-ups
+  // default OFF, so they are switched on through his OWN Settings screen and
+  // switched back off at the end so the rest of the run sees the app as it was.
+  {
+    const goSettings = async () => {
+      await page.click('.rail-btn[data-go="settings"]');
+      await page.waitForSelector("#set-notify", { timeout: 15000 });
+    };
+    const backToGeneral = async () => {
+      await page.click('.rail-btn[data-go="chat"]');
+      await page.click(".sidebar >> text=# general");
+      await page.waitForSelector(".composer textarea", { timeout: 15000 });
+    };
+    const notifyBox = () => page.locator('input.sw[aria-label="Tell me about new messages"]');
+    const quietBox = () => page.locator('input.sw[aria-label="Quiet hours"]');
+
+    // switch his notifications on — the real Settings toggle, not a back door
+    await goSettings();
+    if (!(await notifyBox().isChecked())) await notifyBox().click();
+    await backToGeneral();
+
+    // --- 1. a MENTION shows a toast, in plain words ---
+    await fpage.click("text=# general");
+    await fpage.fill(".composer textarea", "@Vikas notify-mention-alpha please");
+    await fpage.press(".composer textarea", "Enter");
+    await page.waitForSelector('.notify-toast[data-kind="mention"]', { timeout: 25000 });
+    const mTitle = (await page.locator('.notify-toast[data-kind="mention"] .notify-title').first().innerText()).trim();
+    const mText = (await page.locator('.notify-toast[data-kind="mention"] .notify-text').first().innerText()).trim();
+    const mSubject = await page.locator('.notify-toast[data-kind="mention"]').first().getAttribute("data-subject");
+    ok("a mention raises an on-screen toast, in plain words",
+      /mentioned you/i.test(mTitle) && /notify-mention-alpha/.test(mText), `${mTitle} :: ${mText}`);
+    await page.screenshot({ path: `${SHOTS}/notify-mention.png` });
+
+    // --- 2. a DUPLICATE does not stack: another world update re-considers the
+    //        same mention, and it must not mint a second toast for that subject ---
+    await fpage.fill(".composer textarea", "just chatting, no one in particular");
+    await fpage.press(".composer textarea", "Enter");
+    await page.waitForTimeout(1200);   // let the plain line land and re-render
+    const dupeCount = await page.locator(`.notify-toast[data-subject="${mSubject}"]`).count();
+    ok("a duplicate does not stack — the same mention subject shows exactly one toast",
+      dupeCount === 1, `toasts for that subject: ${dupeCount}`);
+
+    // --- 3. his OWN action shows nothing: a line he sends, even one that @s
+    //        himself, never becomes a toast for him ---
+    await page.fill(".composer textarea", "@Vikas note-to-self-should-not-toast");
+    await page.press(".composer textarea", "Enter");
+    await page.waitForTimeout(1500);
+    const selfToasts = await page.locator(".notify-toast .notify-text",
+      { hasText: "note-to-self-should-not-toast" }).count();
+    ok("his own action shows nothing — a line he sends never toasts him",
+      selfToasts === 0, `self toasts: ${selfToasts}`);
+
+    // --- 4. a finished JOB shows a toast with the right words ---
+    //   Proven-deterministic terminal path (mirrors qa-v2): a throwaway
+    //   approval-gated agent is delegated a job, and the job is REJECTED — which
+    //   drives its Task straight to the terminal `cancelled` state without any
+    //   wait on a model. A cancelled job is a finished job, and the toast says
+    //   so. The throwaway agent is deleted afterwards so the rest of the run —
+    //   which edits the FIRST sidebar agent, Scout — is left exactly as it was.
+    await page.click('button[title="New agent"]');
+    await page.fill('input[placeholder="Scout"]', "Ping");
+    await page.fill("textarea.persona-input", "A throwaway agent for the notification test");
+    await page.click('.toggle-row:has-text("Background work") input');   // require approval for !bg
+    await page.click('.editor >> text=Create agent');
+    await page.click('.rail-btn[data-go="chat"]');
+    await page.waitForSelector(".sidebar >> text=Ping", { timeout: 20000 });
+    await page.click(".sidebar >> text=# general");
+    await page.selectOption(".chathead select", { label: "✨ Ping" }).catch(async () => {
+      const opt = await page.$$eval(".chathead select option",
+        os => os.find(o => o.textContent.includes("Ping"))?.value);
+      await page.selectOption(".chathead select", opt);
+    });
+    await page.fill(".composer textarea", "@Ping !bg a job to reject");
+    await page.press(".composer textarea", "Enter");
+    await page.waitForSelector('.rail-btn[data-go="tasks"] .rail-count', { timeout: 90000 });
+    await page.click('.rail-btn[data-go="tasks"]');
+    await page.click('.taskrow button:has-text("Reject")');
+    await page.waitForSelector('.notify-toast[data-kind="job_finished"]', { timeout: 30000 });
+    const jTitle = (await page.locator('.notify-toast[data-kind="job_finished"] .notify-title').first().innerText()).trim();
+    ok("a job finishing shows a toast with the right words",
+      /finished a job|couldn.t finish a job|was cancelled/i.test(jTitle), jTitle);
+    await page.screenshot({ path: `${SHOTS}/notify-job-finished.png` });
+    // delete the throwaway agent so `.sidebar .agentrow` is Scout again
+    await page.click('.rail-btn[data-go="chat"]');
+    await page.hover('.sidebar .agentrow[data-agent="Ping"]');
+    await page.click('.sidebar .agentrow[data-agent="Ping"] button[title="Edit agent"]');
+    await page.waitForSelector(".editor", { timeout: 15000 });
+    await page.click('.editor >> text=Delete agent');
+    await page.click('.editor >> text=Yes, delete');
+    await page.waitForSelector('.sidebar .agentrow[data-agent="Ping"]', { state: "detached", timeout: 15000 });
+    await backToGeneral();
+
+    // --- 5. QUIET HOURS silence a toast: a window that covers right now ---
+    const pad = n => String(n).padStart(2, "0");
+    const hhmm = total => { const m = ((total % 1440) + 1440) % 1440; return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`; };
+    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+    await goSettings();
+    if (!(await quietBox().isChecked())) await quietBox().click();
+    await page.fill('#set-quiet .quietrow .field-row:nth-child(1) input[type="time"]', hhmm(nowMin - 30));
+    await page.fill('#set-quiet .quietrow .field-row:nth-child(2) input[type="time"]', hhmm(nowMin + 30));
+    await backToGeneral();
+    await fpage.fill(".composer textarea", "@Vikas notify-quiet-should-stay-silent");
+    await fpage.press(".composer textarea", "Enter");
+    await page.waitForTimeout(2500);
+    const quietToasts = await page.locator(".notify-toast .notify-text",
+      { hasText: "notify-quiet-should-stay-silent" }).count();
+    ok("quiet hours silence the toast — nothing pops inside the window",
+      quietToasts === 0, `toasts during quiet: ${quietToasts}`);
+    await page.screenshot({ path: `${SHOTS}/notify-quiet.png` });
+
+    // restore: quiet off, pop-ups off — leave the rest of the run untouched
+    await goSettings();
+    if (await quietBox().isChecked()) await quietBox().click();
+    if (await notifyBox().isChecked()) await notifyBox().click();
+    await backToGeneral();
+  }
 
   // ---------- who may set an agent working ----------
   await page.hover(".sidebar .agentrow");

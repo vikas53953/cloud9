@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-30T22:27:04.886Z",
-  "expected": 456,
-  "executed": 456,
+  "ranAt": "2026-07-31T04:45:17.806Z",
+  "expected": 461,
+  "executed": 461,
   "results": [
     {
       "name": "join screen renders",
@@ -176,7 +176,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch 2yuuf :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch gednt :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -191,7 +191,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_13zyqWBuXESv-6v3oibiBA"
+      "detail": "inv_mtFgREYODkeB23A1wgvgSA"
     },
     {
       "name": "friend joins via invite",
@@ -321,7 +321,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 03:54"
+      "detail": "↳ 1 reply · last at 10:10"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -391,7 +391,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 03:54 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 10:10 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -412,6 +412,31 @@
       "name": "reading the conversation clears the marks",
       "pass": true,
       "detail": ""
+    },
+    {
+      "name": "a mention raises an on-screen toast, in plain words",
+      "pass": true,
+      "detail": "Priya mentioned you :: @Vikas notify-mention-alpha please"
+    },
+    {
+      "name": "a duplicate does not stack — the same mention subject shows exactly one toast",
+      "pass": true,
+      "detail": "toasts for that subject: 1"
+    },
+    {
+      "name": "his own action shows nothing — a line he sends never toasts him",
+      "pass": true,
+      "detail": "self toasts: 0"
+    },
+    {
+      "name": "a job finishing shows a toast with the right words",
+      "pass": true,
+      "detail": "A job was cancelled"
+    },
+    {
+      "name": "quiet hours silence the toast — nothing pops inside the window",
+      "pass": true,
+      "detail": "toasts during quiet: 0"
     },
     {
       "name": "the agent editor asks who may use this agent, and starts closed",
@@ -1111,7 +1136,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms8301tbs4ly2f\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms8ghn00t71g09\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -1151,12 +1176,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms82ymk71u4ppu:1785450279752 a_ms82yp6rkevp66:1785450286311 u_ms82yxaeja7ko9:1785450286805 a_ms8301tbs4ly2f:1785450286876"
+      "detail": "u_ms8ge23p64mjw1:1785472932763 a_ms8ge5hw8v5yb7:1785472942049 u_ms8gejc5jeqjqw:1785472942505 a_ms8ghn00t71g09:1785472942596"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785450284314 · now 1785450286805"
+      "detail": "first 1785472939159 · now 1785472942505"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -1386,7 +1411,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":20,\"pinned\":0,\"min\":40,\"max\":4087,\"endedAt\":4087}"
+      "detail": "{\"followedToBottom\":0,\"samples\":38,\"pinned\":0,\"min\":40,\"max\":4087,\"endedAt\":4087}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1396,12 +1421,12 @@
     {
       "name": "REPRODUCED: he is a long way from the newest message, exactly as he is after reading back",
       "pass": true,
-      "detail": "{\"fromBottom\":4087,\"scrollTop\":0,\"bottom\":4087,\"newestInSight\":false,\"followed\":{\"n\":4,\"why\":\"resized\",\"recent\":[\"arrived\",\"arrived\",\"resized\",\"resized\"]},\"motion\":\"smooth\"}"
+      "detail": "{\"fromBottom\":4087,\"scrollTop\":0,\"bottom\":4087,\"newestInSight\":false,\"followed\":{\"n\":6,\"why\":\"resized\",\"recent\":[\"arrived\",\"resized\",\"resized\",\"arrived\",\"resized\",\"resized\"]},\"motion\":\"smooth\"}"
     },
     {
       "name": "a message arriving while he has read back does NOT drag him down to it",
       "pass": true,
-      "detail": "1 message frame(s); the view stayed at 0 (was 0), and the rule did not fire (4 follows, same as before)"
+      "detail": "1 message frame(s); the view stayed at 0 (was 0), and the rule did not fire (6 follows, same as before)"
     },
     {
       "name": "SENDING takes the view to what he just said, wherever he had read back to",
@@ -1526,7 +1551,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms82yrpd3frc22\",\"status\":\"completed\",\"runId\":\"r-0ms82yrpn-hbgb\"}"
+      "detail": "{\"id\":\"t_ms8ge99r53cyfs\",\"status\":\"completed\",\"runId\":\"r-0ms8ge9a4-57ov\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1716,7 +1741,7 @@
     {
       "name": "pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
       "pass": true,
-      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms831fdrxxnyxy\",\"repo\":\"vikas53953/cloud9\"}"
+      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms8gj7yvcjlcrq\",\"repo\":\"vikas53953/cloud9\"}"
     },
     {
       "name": "while it is looking the button says so and cannot be pressed again",
@@ -1871,7 +1896,7 @@
     {
       "name": "it says when it runs out — an agent is standing there waiting for the answer",
       "pass": true,
-      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 03:55 EXPIRES in 9 minutes"
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 10:13 EXPIRES in 9 minutes"
     },
     {
       "name": "a request with no job behind it offers no 'see the job' button to press",
@@ -2096,7 +2121,7 @@
     {
       "name": "the card says which agent made it, and how big it is",
       "pass": true,
-      "detail": "made by Scout :: 45 bytes · text · 31 Jul 03:56"
+      "detail": "made by Scout :: 45 bytes · text · 31 Jul 10:14"
     },
     {
       "name": "version 1 is not labelled with a version number nobody needs",
@@ -2106,7 +2131,7 @@
     {
       "name": "the reference itself is not printed beside the card it draws",
       "pass": true,
-      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 31 Jul 03:56 Show it"
+      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 31 Jul 10:14 Show it"
     },
     {
       "name": "the file really comes back, byte for byte, through the attachment ticket path",
@@ -2126,7 +2151,7 @@
     {
       "name": "the history shows the earlier version, who made it and when",
       "pass": true,
-      "detail": "v1 Scout 31 Jul 03:56 45 bytes Show it"
+      "detail": "v1 Scout 31 Jul 10:14 45 bytes Show it"
     },
     {
       "name": "an older version can still be downloaded, and it is the OLD bytes",
@@ -2141,7 +2166,7 @@
     {
       "name": "a file that is not text is a download and is never drawn into the room",
       "pass": true,
-      "detail": "74 bytes · a file to save · 31 Jul 03:56"
+      "detail": "74 bytes · a file to save · 31 Jul 10:14"
     },
     {
       "name": "a reference to a file that is not there says so in plain words, with no jargon",
@@ -2251,7 +2276,7 @@
     {
       "name": "a valid link previews with its honest reach and names the hub, and sees the join link",
       "pass": true,
-      "detail": "127.0.0.1:53341 — only this computer — this is the address the app uses for itself · carries a join link, so y"
+      "detail": "127.0.0.1:58297 — only this computer — this is the address the app uses for itself · carries a join link, so y"
     },
     {
       "name": "adding a friend's Cloud9 actually dials it — the connection says so, and it is the live hub",
@@ -2271,7 +2296,7 @@
     {
       "name": "the owner can mint a join link, and it is a cloud9:// link carrying a join_ token",
       "pass": true,
-      "detail": "cloud9://127.0.0.1:8799#join_5H-HhIqxOMKoz05VvlRlRw"
+      "detail": "cloud9://127.0.0.1:8799#join__vKh0lS5VuGC0yWInKGi4g"
     },
     {
       "name": "the panel says plainly that reaching a friend over the internet needs Tailscale, not wired tonight",
