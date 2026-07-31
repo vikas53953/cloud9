@@ -121,52 +121,39 @@ const CODEX: HarnessIsolation = {
   harness: "codex",
   togglesAreTheBoundary: false,
   ceiling:
-    "Codex agents already hold running commands and changing files at every " +
-    "setting — the switches decide WHERE, not WHETHER. Turning 'run programs' on " +
-    "opens the fence; leaving it off keeps the fence shut but the tool is still " +
-    "in its hand.",
+    "Everything Codex can do is available only on an agent whose matching switches " +
+    "are on. Codex cannot remove some built-ins, so Cloud9 refuses the whole turn " +
+    "when web, files, helper agents or commands are switched off.",
   headline:
-    "These switches control what this agent may CHANGE on your PC. They do not " +
-    "control every tool it holds — Codex does not let us take the rest away yet.",
-  togglesControl: "the sandbox: which folders the agent may write in, and whether it may search the web",
+    "Codex still cannot remove every built-in tool. Cloud9 now refuses the whole turn " +
+    "when one of their switches is off, instead of pretending the tool disappeared.",
+  togglesControl:
+    "whether the turn may start, which folders it may write in, web search, and Cloud9-supplied powers",
   stillLoaded: [
     {
       name: "collaboration.spawn_agent (and 5 more collaboration tools)",
-      plainWords: "it can start further agents of its own and talk to them",
-      why: "`--disable multi_agent` was tried on a live turn and the tools were still " +
-        "there. `-c agents.max_depth=0` does not help either: the CLI refuses the value " +
-        "outright (\"agents.max_depth must be at least 1\"). Codex has no `--tools`.",
+      plainWords: "Codex always carries helper-agent tools once a turn starts",
+      why: "Codex cannot remove them. Cloud9 now refuses to start the turn unless helper agents " +
+        "are switched on.",
     },
     {
       name: "web.run",
-      plainWords: "it can read web pages even with 'search the web' switched off",
-      why: "`-c tools.web_search=false` is the CLI's own switch and the tool was still " +
-        "present on a live turn. It is set anyway, because it is the only switch there is.",
+      plainWords: "Codex always carries its web tool once a turn starts",
+      why: "Codex cannot remove it. Cloud9 now refuses to start the turn unless web search is " +
+        "switched on.",
     },
     {
       name: "functions.exec / functions.shell_command / functions.apply_patch",
-      plainWords: "it can run commands and change files",
-      why: "Codex has no way to remove them. What stops them is the sandbox " +
-        "(`-s read-only` unless the files switch is on) — a fence, not an absence.",
-    },
-    {
-      name: "your Codex skills",
-      plainWords: "standing instructions you wrote for yourself are read by this agent too",
-      why: "Skills load from `$CODEX_HOME/skills` AND from `~/.agents/skills`. There is no " +
-        "config key to turn them off (`skills.enabled=false` was measured to do nothing), " +
-        "and pointing CODEX_HOME elsewhere signs the agent out — `codex login status` " +
-        "reported \"Not logged in\" against a fresh CODEX_HOME. `~/.agents/skills` is not " +
-        "under CODEX_HOME at all and stayed loaded regardless.",
+      plainWords: "Codex always carries command and file tools once a turn starts",
+      why: "Codex cannot remove them. Cloud9 now refuses to start the turn unless both files and " +
+        "run-programs are switched on.",
     },
   ],
   unknowns: [
-    "Codex's own sub-agent switch (`--disable multi_agent`) is now driven by the " +
-    "'helper agents' switch in both directions, but it did not remove " +
-    "collaboration.* when measured. So switching helpers OFF is a request the CLI " +
-    "does not honour, not a boundary. It is still sent, so a version that starts " +
-    "honouring it fixes this for free.",
+    "The disposable auth clone preserves today's signed-in turn. Whether a Codex token refresh " +
+    "rotates the owner's refresh token, making a later clone stale, has not been measured yet.",
   ],
-  measuredOn: "codex-cli 0.146.0, help + `codex features list` re-read 2026-07-30",
+  measuredOn: "codex-cli 0.146.0, enforced admission and isolated-home tests 2026-07-31",
 };
 
 /** A mock agent runs nothing at all, so there is nothing to leak. */

@@ -16,7 +16,10 @@ const isWin = process.platform === "win32";
 
 const agent = (over: Partial<AgentDef> = {}): AgentDef => ({
   id: "a1", ownerId: "u1", name: "Scout", emoji: "🔭", persona: "You research travel",
-  abilities: { webSearch: true, files: false, schedules: false, background: false },
+  abilities: {
+    webSearch: true, files: true, helpers: true, commands: true,
+    schedules: false, background: false,
+  },
   provider: "codex", createdAt: 0, ...over,
 });
 

@@ -169,7 +169,14 @@ test("a Codex key is passed as CODEX_API_KEY and never as an ANTHROPIC variable"
       };
     };
   await h.engine.codexProvider!.respond({
-    agent: agent({ provider: "codex" }), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat",
+    agent: agent({
+      provider: "codex",
+      abilities: {
+        webSearch: true, files: true, helpers: true, commands: true,
+        schedules: false, background: false,
+      },
+    }),
+    context: "", trigger: "hi", triggerAuthor: "V", kind: "chat",
   });
   assert.equal(seenEnv?.CODEX_API_KEY, "sk-codex-secret-value");
   assert.notEqual(seenEnv?.ANTHROPIC_API_KEY, "sk-codex-secret-value");
