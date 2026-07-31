@@ -19,7 +19,7 @@ import {
 } from "./abilities.js";
 import { claudeArgs, ClaudeCliProvider, traceClaude } from "./claude-cli.js";
 import { codexArgs } from "./codex.js";
-import { buildAgentPrompt } from "./provider.js";
+import { buildAgentPrompt, HarnessAbilityBoundaryError } from "./provider.js";
 import { aTurn } from "./turnfixture.js";
 import { RunOptions, RunResult } from "./run.js";
 import { buildRunRecord, summarizeRun } from "./runrecord.js";
@@ -98,11 +98,13 @@ test("no tool can reach a command line that the prompt does not account for", ()
   }
 });
 
-test("the Codex sandbox comes from the same table as the words", () => {
+test("the Codex sandbox stays table-driven after the admission gate", () => {
   assert.equal(codexSandboxFor(agent()), "read-only");
   assert.equal(codexSandboxFor(agent({ files: true })), "workspace-write");
-  assert.ok(codexArgs(agent(), "C:/data/a1").includes("read-only"));
-  assert.ok(codexArgs(agent({ files: true }), "C:/data/a1").includes("workspace-write"));
+  assert.throws(() => codexArgs(agent(), "C:/data/a1"), HarnessAbilityBoundaryError,
+    "a read-only fence is not a substitute for removing Codex's built-in tools");
+  const admitted = agent({ webSearch: true, files: true, helpers: true, commands: true });
+  assert.ok(codexArgs(admitted, "C:/data/a1").includes("workspace-write"));
   // and the same switch is what changed the sentence
   assert.ok(buildAgentPrompt(agent({ files: true }), aTurn("")).includes("read, write and change files"));
   assert.ok(!buildAgentPrompt(agent(), aTurn("")).includes("read, write and change files"));

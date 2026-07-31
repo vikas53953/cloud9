@@ -1,14 +1,23 @@
 // CodexProvider: JSONL transcript parsing and argument building.
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { AgentDef } from "@cloud9/shared";
-import { CodexProvider, codexArgs, parseCodexJsonl } from "./codex.js";
-import { HarnessUnavailableError } from "./provider.js";
+import {
+  CODEX_ISOLATION_PROFILE, CodexProvider, codexAbilityBoundaryProblems, codexArgs,
+  createCodexIsolatedEnvironment, parseCodexJsonl,
+} from "./codex.js";
+import { HarnessAbilityBoundaryError, HarnessUnavailableError, sanitizeForChat } from "./provider.js";
 import { RunOptions, RunResult, UnsafeArgumentError, run } from "./run.js";
 
 const agent = (over: Partial<AgentDef> = {}): AgentDef => ({
   id: "a1", ownerId: "u1", name: "Scout", emoji: "🔭", persona: "You research travel",
-  abilities: { webSearch: true, files: false, schedules: false, background: false },
+  abilities: {
+    webSearch: true, files: true, helpers: true, commands: true,
+    schedules: false, background: false,
+  },
   provider: "codex", createdAt: 0, ...over,
 });
 
@@ -71,20 +80,55 @@ test("turn.failed is surfaced as an error", () => {
   assert.equal(t.text, "");
 });
 
-test("abilities map to the codex sandbox flag", () => {
-  const readOnly = codexArgs(agent(), "C:/data/a1");
-  assert.ok(readOnly.includes("read-only"));
-  assert.ok(!readOnly.includes("workspace-write"));
-  const writable = codexArgs(
-    agent({ abilities: { webSearch: true, files: true, schedules: false, background: false } }),
-    "C:/data/a1",
-  );
+test("a Codex turn is refused when any unavoidable tool was switched off", () => {
+  const unavoidable = ["webSearch", "files", "helpers", "commands"] as const;
+  for (const ability of unavoidable) {
+    const abilities = { ...agent().abilities, [ability]: false };
+    const blocked = agent({ abilities });
+    assert.ok(codexAbilityBoundaryProblems(blocked).some(problem => problem.ability === ability),
+      `${ability} did not gate the Codex turn`);
+    assert.throws(() => codexArgs(blocked, "C:/data/a1"), HarnessAbilityBoundaryError);
+  }
+});
+
+test("an ability refusal is explained plainly and the Codex process never starts", async () => {
+  let ran = false;
+  const provider = new CodexProvider({
+    agentDataDir: () => "C:/data/a1",
+    runner: fakeRunner({ stdout: TRANSCRIPT }, () => { ran = true; }),
+  });
+  const blocked = agent({ abilities: { ...agent().abilities, commands: false } });
+  let refusal: unknown;
+  try {
+    await provider.respond({
+      agent: blocked, context: "", trigger: "hi", triggerAuthor: "V", kind: "chat",
+    });
+  } catch (err) {
+    refusal = err;
+  }
+  assert.ok(refusal instanceof HarnessAbilityBoundaryError);
+  const realError = console.error;
+  let reply = "";
+  console.error = () => { /* expected refusal stays quiet in this test */ };
+  try {
+    reply = sanitizeForChat(refusal, "Codex turn");
+  } finally {
+    console.error = realError;
+  }
+  assert.match(reply, /run programs.*switched off/i);
+  assert.equal(ran, false);
+});
+
+test("an admitted Codex turn still maps the files switch to a writable sandbox", () => {
+  const writable = codexArgs(agent(), "C:/data/a1");
   assert.ok(writable.includes("workspace-write"));
+  assert.deepEqual(writable.slice(writable.indexOf("-p"), writable.indexOf("-p") + 2),
+    ["-p", CODEX_ISOLATION_PROFILE], "the per-turn profile disables owner skills by exact path");
   // note-mandated flags
   for (const flag of ["exec", "--json", "--skip-git-repo-check", "--ephemeral"]) {
-    assert.ok(readOnly.includes(flag), `missing ${flag}`);
+    assert.ok(writable.includes(flag), `missing ${flag}`);
   }
-  assert.ok(readOnly.join(" ").includes("approval_policy=never"));
+  assert.ok(writable.join(" ").includes("approval_policy=never"));
 });
 
 // --- security review 2026-07-29, finding #4 ---
@@ -142,6 +186,52 @@ test("the codex turn never inherits ambient credentials", async () => {
   assert.ok(Object.keys(seenEnv).length > 1, "the ordinary environment is still there");
 });
 
+test("a Codex turn gets clean homes with auth but none of the owner's skills", () => {
+  const ownerCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-owner-codex-"));
+  const ownerProfile = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-owner-profile-"));
+  fs.mkdirSync(path.join(ownerCodexHome, "skills", "owner"), { recursive: true });
+  fs.mkdirSync(path.join(ownerProfile, ".agents", "skills", "shared"), { recursive: true });
+  fs.mkdirSync(path.join(ownerProfile, "linked-skill"), { recursive: true });
+  fs.writeFileSync(path.join(ownerCodexHome, "auth.json"), "{\"tokens\":\"owner login\"}");
+  fs.writeFileSync(path.join(ownerCodexHome, "skills", "owner", "SKILL.md"), "must not load");
+  fs.writeFileSync(path.join(ownerProfile, ".agents", "skills", "shared", "SKILL.md"), "must not load");
+  fs.writeFileSync(path.join(ownerProfile, "linked-skill", "SKILL.md"), "must not load either");
+  fs.symlinkSync(
+    path.join(ownerProfile, "linked-skill"),
+    path.join(ownerProfile, ".agents", "skills", "linked"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+
+  const isolated = createCodexIsolatedEnvironment({
+    baseEnv: { PATH: process.env.PATH, HOME: ownerProfile, USERPROFILE: ownerProfile },
+    ownerCodexHome,
+    ownerUserHome: ownerProfile,
+  });
+  const isolatedRoot = path.dirname(isolated.env.CODEX_HOME!);
+  try {
+    assert.notEqual(isolated.env.CODEX_HOME, ownerCodexHome);
+    assert.notEqual(isolated.env.HOME, ownerProfile);
+    assert.notEqual(isolated.env.USERPROFILE, ownerProfile);
+    assert.equal(fs.readFileSync(path.join(isolated.env.CODEX_HOME!, "auth.json"), "utf8"),
+      "{\"tokens\":\"owner login\"}", "the CLI login survives in the isolated home");
+    assert.equal(fs.existsSync(path.join(isolated.env.CODEX_HOME!, "skills")), false,
+      "$CODEX_HOME/skills is absent");
+    assert.equal(fs.existsSync(path.join(isolated.env.HOME!, ".agents", "skills")), false,
+      "~/.agents/skills is absent");
+    const profile = fs.readFileSync(
+      path.join(isolated.env.CODEX_HOME!, `${CODEX_ISOLATION_PROFILE}.config.toml`), "utf8");
+    assert.match(profile, /enabled = false/);
+    assert.match(profile, /skills\/owner\/SKILL[.]md/);
+    assert.match(profile, /skills\/shared\/SKILL[.]md/);
+    assert.match(profile, /skills\/linked\/SKILL[.]md/, "symlinked owner skills are disabled too");
+  } finally {
+    isolated.dispose();
+    fs.rmSync(ownerCodexHome, { recursive: true, force: true });
+    fs.rmSync(ownerProfile, { recursive: true, force: true });
+  }
+  assert.equal(fs.existsSync(isolatedRoot), false, "the copied login is removed after the turn");
+});
+
 test("provider sends the prompt on stdin and returns the reply", async () => {
   let seenStdin = "";
   const provider = new CodexProvider({
@@ -154,6 +244,9 @@ test("provider sends the prompt on stdin and returns the reply", async () => {
   assert.equal(text, "Found 3 villas in Goa under 8k.");
   assert.ok(seenStdin.includes("Scout"), "prompt goes on stdin, not argv");
   assert.ok(seenStdin.includes("find villas"));
+  assert.ok(!seenStdin.includes("no tools at all beyond the ones listed above"),
+    "Codex's prompt must not claim its undeclarable built-ins are absent");
+  assert.match(seenStdin, /Codex turn only starts when its unavoidable tools are switched on/i);
 });
 
 test("a missing codex CLI is a harness problem, not a crash", async () => {

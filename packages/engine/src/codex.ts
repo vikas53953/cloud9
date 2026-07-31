@@ -1,14 +1,18 @@
 // CodexProvider — runs an agent turn on the locally installed Codex CLI.
 //
-// Same seam as MockProvider/SdkProvider (harness-signin.md decision 2). The app
-// never reads or copies Codex credentials (`~/.codex/auth.json`); it only spawns
-// the CLI, which authenticates itself.
+// Same seam as MockProvider/SdkProvider (harness-signin.md decision 2). Each
+// turn copies only Codex's auth.json into a disposable home so the CLI remains
+// signed in without inheriting the owner's config, rules or two skill roots.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { AgentDef, MODEL_ID_RE, validateAgentInput } from "@cloud9/shared";
 import {
-  buildAgentPrompt, ClaudeProvider, HarnessUnavailableError, RespondInput,
+  buildAgentPrompt, ClaudeProvider, HarnessAbilityBoundaryError, HarnessUnavailableError, RespondInput,
 } from "./provider.js";
 import {
-  CAPABILITIES, codexSandboxFor, codexWebSearchFor, grantedSupply, reachesBeyondOwnFolder,
+  CAPABILITIES, codexSandboxFor, codexUnavoidableCapabilities, codexWebSearchFor,
+  grantedSupply, reachesBeyondOwnFolder,
 } from "./abilities.js";
 import { envWithoutCredentials } from "./env.js";
 import { run, Runner, safeArg } from "./run.js";
@@ -51,6 +55,131 @@ export interface CodexTranscript {
   events: number;
   /** a turn-level failure reported by the CLI */
   error?: string;
+}
+
+export interface CodexAbilityBoundaryProblem {
+  ability: string;
+  label: string;
+  tools: readonly string[];
+}
+
+/**
+ * The Codex tools Cloud9 cannot subtract. An OFF switch gates the whole turn:
+ * this is deliberately stricter than launching a tool the owner denied and
+ * hoping the model obeys a sentence.
+ */
+export function codexAbilityBoundaryProblems(agent: AgentDef): CodexAbilityBoundaryProblem[] {
+  return codexUnavoidableCapabilities()
+    .filter(cap => agent.abilities?.[cap.ability] !== true)
+    .map(cap => ({
+      ability: String(cap.ability), label: cap.label, tools: cap.codexUnavoidableTools ?? [],
+    }));
+}
+
+function enforceCodexAbilityBoundary(agent: AgentDef): void {
+  const problems = codexAbilityBoundaryProblems(agent);
+  if (problems.length === 0) return;
+  throw new HarnessAbilityBoundaryError("Codex", problems.map(problem => problem.label));
+}
+
+export interface CodexIsolatedEnvironment {
+  env: NodeJS.ProcessEnv;
+  dispose: () => void;
+}
+
+export interface CodexIsolatedEnvironmentOptions {
+  baseEnv?: NodeJS.ProcessEnv;
+  apiKey?: string;
+  /** overridden by tests; defaults to the owner's current CODEX_HOME */
+  ownerCodexHome?: string;
+  /** overridden by tests; defaults to the real OS user home */
+  ownerUserHome?: string;
+}
+
+export const CODEX_ISOLATION_PROFILE = "cloud9-isolated";
+
+/**
+ * Give Codex a one-turn home containing only its login. Both skill roots are
+ * absent there. Codex resolves `~/.agents/skills` through the Windows profile
+ * API rather than the child environment, so the one-turn profile also disables
+ * every owner skill by its exact path.
+ */
+export function createCodexIsolatedEnvironment(
+  options: CodexIsolatedEnvironmentOptions = {},
+): CodexIsolatedEnvironment {
+  const baseEnv = options.baseEnv ?? process.env;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-codex-"));
+  const codexHome = path.join(root, "codex");
+  const userHome = path.join(root, "profile");
+  const ownerUserHome = options.ownerUserHome
+    ?? baseEnv.USERPROFILE
+    ?? baseEnv.HOME
+    ?? os.homedir();
+  const ownerCodexHome = options.ownerCodexHome
+    ?? baseEnv.CODEX_HOME
+    ?? path.join(ownerUserHome, ".codex");
+  try {
+    fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(userHome, { recursive: true, mode: 0o700 });
+
+    if (!options.apiKey) {
+      const ownerAuth = path.join(ownerCodexHome, "auth.json");
+      if (fs.existsSync(ownerAuth)) {
+        const isolatedAuth = path.join(codexHome, "auth.json");
+        fs.copyFileSync(ownerAuth, isolatedAuth);
+        try { fs.chmodSync(isolatedAuth, 0o600); } catch { /* Windows ACLs own this */ }
+      }
+    }
+    writeSkillIsolationProfile(codexHome, [
+      path.join(ownerCodexHome, "skills"),
+      path.join(ownerUserHome, ".agents", "skills"),
+    ]);
+
+    const env = envWithoutCredentials(baseEnv, {
+      ...(options.apiKey ? { CODEX_API_KEY: options.apiKey } : {}),
+      CODEX_HOME: codexHome,
+      HOME: userHome,
+      USERPROFILE: userHome,
+    });
+    return {
+      env,
+      dispose: () => fs.rmSync(root, { recursive: true, force: true }),
+    };
+  } catch (err) {
+    fs.rmSync(root, { recursive: true, force: true });
+    throw err;
+  }
+}
+
+function writeSkillIsolationProfile(codexHome: string, roots: string[]): void {
+  const skills = roots.flatMap(skillFilesUnder);
+  const entries = skills.map(file =>
+    `[[skills.config]]\npath = ${JSON.stringify(path.resolve(file).replace(/\\/g, "/"))}\nenabled = false\n`,
+  );
+  fs.writeFileSync(
+    path.join(codexHome, `${CODEX_ISOLATION_PROFILE}.config.toml`),
+    "# Cloud9 one-turn profile: owner skills are deliberately disabled.\n" + entries.join("\n"),
+    { encoding: "utf8", mode: 0o600 },
+  );
+}
+
+function skillFilesUnder(root: string): string[] {
+  if (!fs.existsSync(root)) return [];
+  const found: string[] = [];
+  const visited = new Set<string>();
+  const visit = (dir: string): void => {
+    const real = fs.realpathSync(dir);
+    if (visited.has(real)) return;
+    visited.add(real);
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      const target = entry.isSymbolicLink() ? fs.statSync(full) : entry;
+      if (target.isDirectory()) visit(full);
+      else if (target.isFile() && entry.name.toLowerCase() === "skill.md") found.push(full);
+    }
+  };
+  visit(root);
+  return found;
 }
 
 /**
@@ -254,12 +383,10 @@ function str(v: unknown): string | undefined {
  *  - `--ignore-rules` does not load the owner's or the project's execpolicy
  *    `.rules` files.
  *
- * These two are NOT enough on their own; see CODEX_DISABLED_FEATURES below for
- * the six tools a second pass closed, and `isolation.ts` for what survived
- * everything and therefore has to be said out loud on the screen.
+ * These two are NOT enough on their own; see CODEX_ALWAYS_DISABLED below for
+ * the owner's surfaces a second pass closes.
  *
- * WHAT CANNOT BE CLOSED, re-measured 2026-07-29 on codex-cli 0.146.0 with every
- * switch this file sets:
+ * WHAT THE CLI CANNOT CLOSE, re-measured 2026-07-29 on codex-cli 0.146.0:
  *  - **Codex has no equivalent of Claude's `--tools`.** `codex --help` and
  *    `codex exec --help` were both read at 0.146.0; there is no such flag. The
  *    built-in set cannot be DECLARED, only whittled at.
@@ -279,11 +406,11 @@ function str(v: unknown): string | undefined {
  *    CLAUDE_CONFIG_DIR set for the Claude path. `~/.agents/skills` is not under
  *    CODEX_HOME at all and stayed loaded even then.
  *
- * The honest consequence, which belongs in front of the owner rather than
- * buried here: a Codex agent's ability toggles control its SANDBOX (what it may
- * write) but not its full tool surface. A Claude agent's toggles now control
- * both. That difference is exported as data — see `HARNESS_ISOLATION` — so the
- * screen can stop showing one sentence for two different truths.
+ * Cloud9 therefore does not launch an ability mix the CLI cannot honour.
+ * `enforceCodexAbilityBoundary` refuses the whole turn when web, files, helpers
+ * or commands are off. It is less flexible than Claude's declared set, but it
+ * is a real gate: a denied tool never reaches a running agent. The disposable
+ * homes in `createCodexIsolatedEnvironment` separately close both skill roots.
  */
 export const CODEX_ISOLATION_FLAGS = ["--ignore-user-config", "--ignore-rules"] as const;
 
@@ -330,10 +457,9 @@ export const CODEX_ALWAYS_DISABLED = [
  * switch — but it is derived from the table rather than listed here, so a
  * second one cannot be added to the table and forgotten on the command line.
  *
- * `multi_agent` did NOT remove `collaboration.*` when measured on 0.146.0. It is
- * still driven, because it costs nothing, it is the switch the CLI offers, and
- * a later version that honours it fixes us for free. What it does not do is
- * recorded honestly in `isolation.ts` rather than assumed here.
+ * `multi_agent` did NOT remove `collaboration.*` when measured on 0.146.0, so an
+ * agent with helpers off is refused before this list reaches a command line.
+ * The mapping remains for the day a newer CLI honours it.
  */
 export function codexDisabledFeaturesFor(agent: AgentDef): string[] {
   const off = [...CODEX_ALWAYS_DISABLED] as string[];
@@ -345,8 +471,8 @@ export function codexDisabledFeaturesFor(agent: AgentDef): string[] {
 
 /**
  * Build the `codex exec` argument list for an agent.
- * Abilities map to the sandbox: a files-enabled agent may write inside its own
- * folder, everything else is read-only. Approvals are never interactive.
+ * Abilities first gate admission; an admitted agent may write inside its own
+ * folder. Approvals are never interactive.
  *
  * The agent definition comes from a client, so it is re-validated HERE, at the
  * moment it would become a command line — the relay's check is the first gate,
@@ -365,6 +491,7 @@ export function codexArgs(
 ): string[] {
   const problem = validateAgentInput(agent, { models });
   if (problem) throw new Error(`refusing to run this agent: ${problem}`);
+  enforceCodexAbilityBoundary(agent);
 
   const args = [
     "exec", "--json", "--color", "never", "--skip-git-repo-check",
@@ -372,6 +499,7 @@ export function codexArgs(
     // the sandbox comes from the same table that writes the sentences the agent
     // reads about itself (abilities.ts) — one rule, two faces
     "-s", codexSandboxFor(agent),
+    "-p", CODEX_ISOLATION_PROFILE,
   ];
   if (agent.model) {
     if (!MODEL_ID_RE.test(agent.model)) throw new Error("refusing to run this agent: bad model id");
@@ -424,6 +552,7 @@ export class CodexProvider implements ClaudeProvider {
     // the sandbox root and the working folder cannot drift apart.
     const cwd = workdir ?? this.opts.agentDataDir(agent.id);
     const roots = this.opts.wholeComputerRoots?.(agent.id) ?? [];
+    const args = codexArgs(agent, cwd, this.opts.models?.() ?? [], roots);
     // THE SAME ONE ANSWER the Claude path uses. Codex has no MCP config at all
     // in Cloud9, so `mcpConfigPath` is genuinely never supplied here — and a
     // Codex agent with the `connections` switch on is therefore told, truthfully,
@@ -431,19 +560,23 @@ export class CodexProvider implements ClaudeProvider {
     const prompt = buildAgentPrompt(agent, {
       ...input,
       supply: grantedSupply(agent, { wholeComputerRoots: roots }),
+      harness: "codex",
     });
     const key = this.opts.apiKey?.();
-    const args = codexArgs(agent, cwd, this.opts.models?.() ?? [], roots);
-    const result = await this.runner(this.command, args, {
-      cwd,
-      timeoutMs: this.timeoutMs,
-      stdin: prompt,
-      // Codex's own key only, and nothing else that looks like a secret. This
-      // used to be `undefined`, which handed the CLI the entire ambient
-      // environment — including any ANTHROPIC_* key lying around, an account
-      // that has nothing to do with Codex (finding #9).
-      env: envWithoutCredentials(process.env, key ? { CODEX_API_KEY: key } : {}),
-    });
+    const isolated = createCodexIsolatedEnvironment({ apiKey: key });
+    let result;
+    try {
+      result = await this.runner(this.command, args, {
+        cwd,
+        timeoutMs: this.timeoutMs,
+        stdin: prompt,
+        // The child gets a disposable CODEX_HOME and user home. Only Codex's
+        // login is copied in; both owner skill roots stay outside the process.
+        env: isolated.env,
+      });
+    } finally {
+      isolated.dispose();
+    }
 
     if (result.notFound) {
       throw new HarnessUnavailableError("codex", "the Codex app isn't installed on this machine");

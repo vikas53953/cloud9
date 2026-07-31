@@ -98,6 +98,12 @@ export interface Capability {
   opensCodexWebSearch?: boolean;
   /** the Codex feature flag this switch keeps ON; off means `--disable <name>` */
   codexFeature?: string;
+  /**
+   * Codex built-ins this switch cannot remove. Cloud9 refuses to start a Codex
+   * turn when one of these switches is off: refusing the turn is the only real
+   * gate codex-cli offers when it cannot declare or subtract the tool.
+   */
+  codexUnavoidableTools?: string[];
   /** true if this switch is what widens the agent beyond its own folder */
   widensBeyondOwnFolder?: boolean;
   /** true if this switch is what lets a per-agent MCP config be passed in */
@@ -185,6 +191,7 @@ export const CAPABILITIES: readonly Capability[] = [
     label: "Look things up on the web",
     claudeTools: ["WebSearch", "WebFetch"],
     opensCodexWebSearch: true,
+    codexUnavoidableTools: ["web.run"],
     can: "You CAN search the web and open web pages, so you can check things that are " +
       "live right now — prices, availability, news — rather than guessing from memory.",
     cannot: "You CANNOT search the web or open web pages. Say so plainly if you are asked " +
@@ -195,6 +202,7 @@ export const CAPABILITIES: readonly Capability[] = [
     label: "Keep and change files in its own folder",
     claudeTools: ["Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep"],
     opensCodexWorkspace: true,
+    codexUnavoidableTools: ["functions.exec", "functions.shell_command", "functions.apply_patch"],
     can: "You CAN read, write and change files in your own folder — the folder you are " +
       "working in right now. Anything you write there is still there next time we talk, " +
       "so it is the one place you can keep notes for yourself.",
@@ -211,6 +219,7 @@ export const CAPABILITIES: readonly Capability[] = [
       "ToolSearch", "Workflow", "Monitor", "SendMessage", "ReportFindings", "DesignSync",
     ],
     codexFeature: "multi_agent",
+    codexUnavoidableTools: ["collaboration.spawn_agent", "collaboration.*"],
     can: "You CAN hand parts of a job to helper agents of your own and wait for what they " +
       "find, instead of doing every step yourself in one long answer.",
     cannot: "You CANNOT hand work to helper agents — whatever you do, you do yourself in " +
@@ -269,6 +278,7 @@ export const CAPABILITIES: readonly Capability[] = [
     ability: "commands",
     label: "Run programs on this computer",
     claudeTools: ["Bash", "PowerShell"],
+    codexUnavoidableTools: ["functions.exec", "functions.shell_command"],
     alwaysAsk: true,
     can: "You CAN run programs and commands on this computer, the same way Claude Code and " +
       "Codex do. Because that changes his machine, your owner is asked first — say what " +
@@ -400,6 +410,11 @@ export function codexWebSearchFor(agent: AgentDef): boolean {
   return CAPABILITIES.some(c => c.opensCodexWebSearch && isOn(agent, c.ability));
 }
 
+/** Codex capability rows whose built-ins cannot be removed by codex-cli. */
+export function codexUnavoidableCapabilities(): Capability[] {
+  return CAPABILITIES.filter(c => (c.codexUnavoidableTools?.length ?? 0) > 0);
+}
+
 /** Does this agent's own folder stop being the edge of its world? */
 export function reachesBeyondOwnFolder(agent: AgentDef): boolean {
   return CAPABILITIES.some(c => c.widensBeyondOwnFolder && isOn(agent, c.ability));
@@ -483,7 +498,9 @@ export function describeApprovalNeeds(agent: AgentDef): string[] {
  * used to be said unconditionally is now said by the row that owns it, so the
  * words can never outlive the rule again.
  */
-export function renderCapabilities(agent: AgentDef, granted: Supply = {}): string {
+export function renderCapabilities(
+  agent: AgentDef, granted: Supply = {}, harness: "declared" | "codex" = "declared",
+): string {
   const lines = CAPABILITIES.map(c => `• ${sentenceFor(agent, c, granted)}`);
   const hasSkills = (agent.skills ?? []).length > 0;
   // Only powers this agent REALLY holds this turn. Telling an agent that
@@ -503,9 +520,13 @@ export function renderCapabilities(agent: AgentDef, granted: Supply = {}): strin
         `let through. Never report it as already done.\n`
       : "") +
     `\nTrue for every agent in Cloud9, whatever your switches say:\n` +
-    `• You have no tools at all beyond the ones listed above. Your owner's own ` +
-    `Claude Code and Codex setup — his instructions, his connected accounts, his ` +
-    `shortcuts — is not loaded for you, and you should not act as if it were.\n` +
+    (harness === "codex"
+      ? `• This Codex turn only starts when its unavoidable tools are switched on. ` +
+        `Codex cannot subtract those built-ins, so Cloud9 refuses the whole turn instead ` +
+        `of pretending an off switch removed them.\n`
+      : `• You have no tools at all beyond the ones listed above.\n`) +
+    `• Your owner's own Claude Code and Codex setup — his instructions, his connected ` +
+    `accounts, his shortcuts — is not loaded for you, and you should not act as if it were.\n` +
     `• You do not remember past conversations. What you have is the recent messages ` +
     `below` + (isOn(agent, "files")
       ? `, plus whatever you have written into your own folder.\n`

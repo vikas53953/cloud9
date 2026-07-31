@@ -13,10 +13,14 @@ import { claudeToolsFor } from "./abilities.js";
 import { claudeArgs, CLAUDE_ISOLATION_FLAGS } from "./claude-cli.js";
 import { codexArgs, CODEX_ALWAYS_DISABLED, CODEX_ISOLATION_FLAGS } from "./codex.js";
 import { HARNESS_ISOLATION, isolationFor } from "./isolation.js";
+import { HarnessAbilityBoundaryError } from "./provider.js";
 import { EMPTY_ARG, run, UnsafeArgumentError } from "./run.js";
 
 const ALL_OFF: AgentAbilities = {
   webSearch: false, files: false, schedules: false, background: false,
+};
+const CODEX_ADMITTED: Partial<AgentAbilities> = {
+  webSearch: true, files: true, helpers: true, commands: true,
 };
 
 const agent = (abilities: Partial<AgentAbilities> = {}, over: Partial<AgentDef> = {}): AgentDef => ({
@@ -84,13 +88,13 @@ test("no MCP server, skill, hook or CLAUDE.md of the owner's reaches an agent", 
 });
 
 test("a Codex agent does not load the owner's config or rules either", () => {
-  const args = codexArgs(agent({ files: true }), "C:/data/a1");
+  const args = codexArgs(agent(CODEX_ADMITTED), "C:/data/a1");
   for (const flag of CODEX_ISOLATION_FLAGS) assert.ok(args.includes(flag), `missing ${flag}`);
   assert.ok(args.includes("--ignore-user-config"), "no ~/.codex/config.toml: MCP servers, features");
   assert.ok(args.includes("--ignore-rules"), "no user or project execpolicy rules");
-  // and the sandbox is still driven by the ability, not by his settings
+  // and only an admitted turn reaches the writable sandbox
   assert.ok(args.includes("workspace-write"));
-  assert.ok(codexArgs(agent(), "C:/data/a1").includes("read-only"));
+  assert.throws(() => codexArgs(agent(), "C:/data/a1"), HarnessAbilityBoundaryError);
 });
 
 test("isolation is not something an agent definition can switch off", () => {
@@ -102,19 +106,23 @@ test("isolation is not something an agent definition can switch off", () => {
   for (const abilities of shapes) {
     const claude = claudeArgs(agent(abilities));
     for (const flag of CLAUDE_ISOLATION_FLAGS) assert.ok(claude.includes(flag));
-    const codex = codexArgs(agent(abilities), "C:/data/a1");
-    for (const flag of CODEX_ISOLATION_FLAGS) assert.ok(codex.includes(flag));
+    assert.throws(() => codexArgs(agent(abilities), "C:/data/a1"), HarnessAbilityBoundaryError);
   }
+  const codex = codexArgs(agent(CODEX_ADMITTED), "C:/data/a1");
+  for (const flag of CODEX_ISOLATION_FLAGS) assert.ok(codex.includes(flag));
 });
 
-// This one is a KNOWN LIMIT written down as a test so nobody claims otherwise.
-test("Codex cannot declare its built-in tool set — this is recorded, not fixed", () => {
-  const args = codexArgs(agent({ webSearch: true }), "C:/data/a1");
+test("Codex's missing tool declaration is closed by refusing unsafe ability mixes", () => {
+  const args = codexArgs(agent(CODEX_ADMITTED), "C:/data/a1");
   assert.ok(!args.includes("--tools"),
     "codex-cli 0.146.0 has no --tools; if this ever fails, Codex grew one and we should use it");
-  // Measured 2026-07-29 with both isolation flags on: the model still reported
-  // collaboration.spawn_agent, list_mcp_resources, web.run and image_gen.
-  // A Codex agent's toggles govern its SANDBOX, not its whole tool surface.
+  for (const ability of ["webSearch", "files", "helpers", "commands"] as const) {
+    assert.throws(
+      () => codexArgs(agent({ ...CODEX_ADMITTED, [ability]: false }), "C:/data/a1"),
+      HarnessAbilityBoundaryError,
+      `${ability} off still admitted Codex's unavoidable tool`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -135,7 +143,7 @@ test("Codex cannot declare its built-in tool set — this is recorded, not fixed
 //   — six tools gone, and no skills note.
 
 test("a Codex agent is told to drop the owner's plugins, apps, MCP resources and image tool", () => {
-  const args = codexArgs(agent({ files: true }), "C:/data/a1");
+  const args = codexArgs(agent(CODEX_ADMITTED), "C:/data/a1");
   for (const feature of CODEX_ALWAYS_DISABLED) {
     const at = args.indexOf(feature);
     assert.ok(at > 0, `feature ${feature} is never switched off`);
@@ -147,11 +155,14 @@ test("a Codex agent is told to drop the owner's plugins, apps, MCP resources and
   assert.ok(CODEX_ALWAYS_DISABLED.includes("image_generation"), "image_gen.imagegen");
 });
 
-test("Codex's own web-search switch follows the ability, both ways", () => {
-  const on = codexArgs(agent({ webSearch: true }), "C:/data/a1");
-  const off = codexArgs(agent(), "C:/data/a1");
+test("Codex's web-search switch is on only after the web ability admits the turn", () => {
+  const on = codexArgs(agent(CODEX_ADMITTED), "C:/data/a1");
   assert.ok(on.includes("tools.web_search=true"), "an agent allowed the web gets the CLI switch on");
-  assert.ok(off.includes("tools.web_search=false"), "and one that is not gets it off");
+  assert.throws(
+    () => codexArgs(agent({ ...CODEX_ADMITTED, webSearch: false }), "C:/data/a1"),
+    HarnessAbilityBoundaryError,
+    "the CLI's ineffective false flag must not be mistaken for a boundary",
+  );
 });
 
 // --------------------------------------------------------------------------
@@ -162,13 +173,12 @@ test("the engine can say, per harness, whether the toggles are the boundary", ()
   assert.equal(HARNESS_ISOLATION.claude.togglesAreTheBoundary, true,
     "Claude declares its exact tool set with --tools");
   assert.equal(HARNESS_ISOLATION.codex.togglesAreTheBoundary, false,
-    "codex-cli 0.146.0 has no --tools; collaboration.* and web.run survive every switch");
+    "Codex still cannot declare a tool set even though unsafe mixes are now refused");
   assert.equal(HARNESS_ISOLATION.claude.stillLoaded.length, 0);
-  assert.ok(HARNESS_ISOLATION.codex.stillLoaded.length > 0,
-    "what still leaks is named, tool by tool, not summarised away");
-  for (const leak of HARNESS_ISOLATION.codex.stillLoaded) {
-    assert.ok(leak.name && leak.plainWords && leak.why, "every leak says what it is and why it is still there");
-  }
+  assert.equal(HARNESS_ISOLATION.codex.stillLoaded.length, 3,
+    "the unavoidable built-ins stay named, while the owner-skills leak is gone");
+  assert.ok(!HARNESS_ISOLATION.codex.stillLoaded.some(leak => /skill/i.test(leak.name)),
+    "owner skills are no longer listed because the isolated profile removes them");
   // the two headlines must not be the same words — that is the whole point
   assert.notEqual(HARNESS_ISOLATION.claude.headline, HARNESS_ISOLATION.codex.headline);
   assert.equal(isolationFor("codex"), HARNESS_ISOLATION.codex);

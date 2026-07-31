@@ -38,6 +38,8 @@ export interface TurnBrief {
   supply?: Supply;
   /** true when Cloud9's own tools are really in the agent's hands this turn */
   cloud9Tools?: boolean;
+  /** the harness rendering this prompt; Codex has an admission gate, not a declared tool set */
+  harness?: "claude" | "codex" | "mock";
 }
 
 export interface RespondInput extends TurnBrief {
@@ -80,6 +82,16 @@ export class HarnessUnavailableError extends Error {
   }
 }
 
+/** A harness cannot safely honour an ability mix, so it was not started. */
+export class HarnessAbilityBoundaryError extends Error {
+  constructor(public harness: string, public switches: readonly string[]) {
+    super(`${harness} did not start because ${switches.join(", ")} ` +
+      `${switches.length === 1 ? "is" : "are"} switched off, but this harness cannot remove ` +
+      `the matching built-in tools. Turn those switches on or choose another engine.`);
+    this.name = "HarnessAbilityBoundaryError";
+  }
+}
+
 /**
  * The agent's own instructions could not be written to this computer, so the
  * turn was NOT run.
@@ -114,6 +126,7 @@ export const HARNESS_DISCONNECTED_REPLY =
 export function sanitizeForChat(err: unknown, where: string): string {
   console.error(`[engine] ${where}:`, err);
   if (err instanceof HarnessUnavailableError) return HARNESS_DISCONNECTED_REPLY;
+  if (err instanceof HarnessAbilityBoundaryError) return err.message;
   // carries only the agent's name and its own file names — see the class
   if (err instanceof InstructionsNotSavedError) return err.message;
   return "something went wrong on my side and I couldn't finish that — " +
@@ -194,7 +207,7 @@ export function buildAgentPrompt(agent: AgentDef, turn: TurnBrief): string {
   return (
     `You are "${agent.name}", an agent in the Cloud9 group chat.\n` +
     `Your persona/brief: ${agent.persona}\n` +
-    renderCapabilities(agent, turn.supply ?? {}) +
+    renderCapabilities(agent, turn.supply ?? {}, turn.harness === "codex" ? "codex" : "declared") +
     (turn.cloud9Tools ? renderCloud9Tools() : "") +
     renderSkills(agent) +
     `\n${WHAT_YOU_WERE_ASKED[kind]}\n${turn.trigger.trim()}\n` +
