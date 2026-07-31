@@ -144,3 +144,18 @@ export {
   sweepProduced, describeRefusals, SKIP_FOLDERS, SWEEP_DEFAULTS,
   type ProducedFile, type RefusedFile, type ArtifactSweep, type SweepOptions,
 } from "./artifacts.js";
+// WHAT AN AGENT REMEMBERS BETWEEN CONVERSATIONS, and WHAT ONE AGENT HANDS TO
+// ANOTHER — now that there is a caller (the engine seeds turns from memory and
+// delivers handoffs). The SHAPES themselves live in `@cloud9/shared`; the store,
+// the rules and the builder are here. See docs/plans/agent-memory-handoff.md.
+export {
+  MemoryStore, MEMORY_BUDGET, MEMORY_NOTE_LIMIT, MEMORY_STORE_KEEP,
+  MEMORY_STORE_DEFAULTS, worthRemembering, newMemoryId, retrieveMemory, validateNote,
+  type MemoryBudget, type MemoryKind, type MemoryNote, type RememberInput,
+  type MemoryStoreOptions,
+} from "./agent-memory.js";
+export {
+  buildHandoff, validateHandoff, newHandoffId, HandoffError,
+  HANDOFF_TASK_LIMIT, HANDOFF_NOTE_LIMIT,
+  type AgentHandoff, type ContextPointer, type HandoffInput,
+} from "./agent-handoff.js";

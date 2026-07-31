@@ -27,6 +27,10 @@ import { GitWorkspace, Worktree } from "./worktree.js";
 import { GitHubWriteRequest, GitHubWriteRequestWithoutRepo, runGitHubWrite } from "./githubwrite.js";
 import { buildRunRecord, ProviderTrace, RunFinish, RunKind, RunSeed } from "./runrecord.js";
 import { RunStore } from "./runstore.js";
+import {
+  MemoryStore, MemoryNote, newMemoryId, retrieveMemory, worthRemembering,
+} from "./agent-memory.js";
+import { AgentHandoff, buildHandoff, HandoffError } from "./agent-handoff.js";
 import { isScheduleWhen, Scheduler } from "./scheduler.js";
 import { taskTldr } from "./tldr.js";
 import { sweepPendingTree, writeWholeFile } from "./wholefile.js";
@@ -50,6 +54,8 @@ export interface EngineOptions {
   maxConcurrentTurns?: number;
   /** how many run records to keep per agent before the oldest are deleted */
   keepRunsPerAgent?: number;
+  /** how many memory notes to keep per agent on disk before the oldest are pruned */
+  keepMemoryPerAgent?: number;
   /**
    * How long an agent waits for a mid-run "may I push this?" before giving up.
    * Defaults to the shared ten minutes; tests shorten it. Shortening it can
@@ -114,6 +120,13 @@ export class Engine {
    * so it survives the app closing (FR-AU-003, FR-TL-003).
    */
   runs: RunStore;
+  /**
+   * WHAT EACH AGENT REMEMBERS BETWEEN CONVERSATIONS. Durable, per-agent,
+   * bounded — the same folder-per-agent decision as `runs`. This is the ONE
+   * persistence path for memory (docs/plans/agent-memory-handoff.md §7); the hub
+   * only ferries the notes to the screen and never keeps its own copy.
+   */
+  memory: MemoryStore;
   /** the record this engine wrote most recently — the newest run, in memory */
   lastRun?: RunRecord;
   /** told about every run as it finishes, so a host can forward it to clients */
@@ -182,6 +195,10 @@ export class Engine {
     this.runs = new RunStore({
       agentDataDir: this.agentDataDir,
       ...(opts.keepRunsPerAgent ? { keepPerAgent: opts.keepRunsPerAgent } : {}),
+    });
+    this.memory = new MemoryStore({
+      agentDataDir: this.agentDataDir,
+      ...(opts.keepMemoryPerAgent ? { keepPerAgent: opts.keepMemoryPerAgent } : {}),
     });
     this.approvals = new ApprovalDesk({
       send: frame => this.sendFrame(frame),
@@ -255,6 +272,11 @@ export class Engine {
       }
       case "agentDeleted":
         if (this.state) this.state.agents = this.state.agents.filter(a => a.id !== frame.agentId);
+        // WHAT IT REMEMBERED GOES WITH IT. A deleted agent's notes are about a
+        // colleague that no longer exists; leaving them on disk would keep
+        // seeding turns that will never happen and hold the owner's data past
+        // the moment they said to forget it.
+        this.memory.forget(frame.agentId);
         break;
       case "userJoined":
         this.state?.users.push(frame.user);
@@ -287,6 +309,19 @@ export class Engine {
           if (waiter(frame)) this.searchWaiters.delete(waiter);
         }
         break;
+      // ---- agent memory: the screen wants to see, or clear, an agent's notes ----
+      // The hub has already checked whose agent this is; the engine answers with
+      // the notes off ITS OWN store, which is the one durable copy.
+      case "memoryListRequested":
+        this.reportMemory(frame.agentId);
+        break;
+      case "forgetMemoryRequested":
+        this.forgetMemoryNote(frame.agentId, frame.noteId);
+        break;
+      // ---- a peer handed one of this owner's agents a piece of work ----
+      case "handoffReceived":
+        void this.receiveHandoff(frame.handoff);
+        break;
       default:
         break;
     }
@@ -314,6 +349,12 @@ export class Engine {
     if (!channel) return;
     const history = this.history.get(channel.id) ?? [];
     const channelAgents = this.state.agents.filter(a => channel.memberIds.includes(a.id));
+    // A HANDOFF TYPED IN THE ROOM: "@From !handoff @To <what to do>". Parsed from
+    // the RAW text, because @-mentions are stripped from `bare` and @To is one.
+    // Only the agent named before !handoff hands off; the one named after
+    // receives it through the delivered handoff, not by replying to the command.
+    const handoffCmd = message.authorKind === "human"
+      ? parseHandoffCommand(message.text) : undefined;
 
     if (message.authorKind === "human" && isBrakedReset(history)) {
       // a human spoke — lift any brake status display
@@ -328,7 +369,27 @@ export class Engine {
 
     for (const agent of this.myAgents) {
       if (!shouldReply(agent, message, channel, channelAgents)) continue;
+      // The handoff command is answered by exactly one agent — the sender — and
+      // deliberately silences the receiver's ordinary reply, so a "@To" mention
+      // in the command does not produce both a handoff AND a chat answer.
+      if (handoffCmd) {
+        const me = agent.name.toLowerCase();
+        if (me === handoffCmd.from.toLowerCase()) {
+          this.enqueue(() => this.handOffInRoom(
+            agent, channel.id, handoffCmd.to, handoffCmd.task, message.authorName));
+          continue;
+        }
+        if (me === handoffCmd.to.toLowerCase()) continue;
+      }
       const bare = message.text.replace(/@[\w-]+\s*/g, "");
+      // REMEMBER SOMETHING BETWEEN CONVERSATIONS: "@Agent !remember <text>". The
+      // worth-remembering rule decides whether it lands; a refusal is said out
+      // loud in the agent's own voice rather than swallowed.
+      if (message.authorKind === "human" && /^!remember\s+/i.test(bare)) {
+        const text = bare.replace(/^!remember\s+/i, "").trim();
+        this.enqueue(() => this.rememberFromRoom(agent, channel.id, text));
+        continue;
+      }
       // schedule commands: "@Agent !schedule daily 06:30 do X" / "every 15m do X",
       // "@Agent !schedules", "@Agent !unschedule <id>"
       if (message.authorKind === "human"
@@ -462,6 +523,12 @@ export class Engine {
       const text = await provider.respond({
         agent,
         context: input.context,
+        // WHAT THIS AGENT REMEMBERS, seeded into the turn. `retrieveMemory` has
+        // already spent the memory budget (oldest kept, newest dropped) so this
+        // is a bounded string; an agent that has saved nothing gets "" and the
+        // prompt says nothing about memory. Reading its own store must never be
+        // the reason a turn fails, so it is wrapped.
+        memory: this.rememberedFor(agent.id),
         // THE INSTRUCTION TRAVELS WITH THE TURN, and `buildAgentPrompt` refuses
         // to render without it. This is the line the old `buildAgentPrompt(agent,
         // context)` threw away, which is why a 6:30am check-in was woken up and
@@ -1186,6 +1253,151 @@ export class Engine {
     }
   }
 
+  // ---- agent memory (docs/plans/agent-memory-handoff.md §9.1) ----
+
+  /**
+   * What this agent remembers, budgeted for one turn. Reading its own store
+   * must never be the reason a turn fails, so it is wrapped: a store that
+   * cannot be read seeds nothing rather than throwing.
+   */
+  private rememberedFor(agentId: ID): string {
+    try {
+      return retrieveMemory(this.memory.list(agentId));
+    } catch (err) {
+      console.error(`[engine] could not seed memory for agent ${agentId}:`, err);
+      return "";
+    }
+  }
+
+  /**
+   * Save something an agent should remember, asked for in the room with
+   * "@Agent !remember <text>". The worth-remembering RULE decides whether it
+   * lands, and a refusal is said out loud in the agent's own voice — a refusal
+   * nobody heard is how an agent ends up remembering nothing and nobody knows
+   * why. Public so tests can drive it. Never throws.
+   */
+  async rememberFromRoom(agent: AgentDef, channelId: ID, text: string): Promise<void> {
+    const verdict = worthRemembering(text);
+    if (!verdict.keep) {
+      this.agentSend(agent.id, channelId,
+        `I didn't save that to memory — ${verdict.reason}. Give me a short fact worth ` +
+        `keeping, like "my owner ships on Fridays".`);
+      return;
+    }
+    const note: MemoryNote = {
+      id: newMemoryId(), agentId: agent.id, kind: "fact",
+      text: text.trim(), createdAt: Date.now(), source: "owner",
+    };
+    const saved = this.memory.save(note);
+    if (!saved) {
+      this.agentSend(agent.id, channelId,
+        "I couldn't save that to memory on this computer — check there is room on the " +
+        "disk and try again.");
+      return;
+    }
+    this.agentSend(agent.id, channelId, `📝 Saved to memory — I'll remember: "${note.text}"`);
+    // push the fresh list to any screen that has this agent's file open
+    this.reportMemory(agent.id);
+  }
+
+  /**
+   * Tell the owner's screens what an agent has saved, off THIS computer's own
+   * store — the one durable copy. Only ever for the engine's own agents; the
+   * hub has already checked ownership, and this checks again. Never throws.
+   */
+  reportMemory(agentId: ID): void {
+    try {
+      if (!this.myAgents.some(a => a.id === agentId)) return;
+      const notes = this.memory.list(agentId);
+      this.sendFrame({ type: "memoryChanged", agentId, notes });
+    } catch (err) {
+      console.error(`[engine] could not report memory for agent ${agentId}:`, err);
+    }
+  }
+
+  /** Forget one saved note, then report what is left. Public so tests can drive it. */
+  forgetMemoryNote(agentId: ID, noteId: ID): void {
+    if (!this.myAgents.some(a => a.id === agentId)) return;
+    this.memory.forgetNote(agentId, noteId);
+    this.reportMemory(agentId);
+  }
+
+  // ---- agent-to-agent handoff (docs/plans/agent-memory-handoff.md §9.2) ----
+
+  /**
+   * One agent hands a piece of work to another, asked for in the room with
+   * "@From !handoff @To <task>". The handoff is BUILT here (which validates it)
+   * and only then announced — so the "passed to" line on screen never describes
+   * a handoff that did not check out. Delivery goes through the hub, which
+   * validates again and routes it to the receiver's own engine. Public for
+   * tests. Never throws.
+   */
+  async handOffInRoom(
+    agent: AgentDef, channelId: ID, targetName: string, task: string, _triggerAuthor: string,
+  ): Promise<void> {
+    const wanted = targetName.replace(/^@/, "").toLowerCase();
+    const target = this.state?.agents.find(a => a.name.toLowerCase() === wanted);
+    if (!target) {
+      this.agentSend(agent.id, channelId,
+        `I couldn't find an agent called @${targetName.replace(/^@/, "")} to hand this to.`);
+      return;
+    }
+    let handoff: AgentHandoff;
+    try {
+      handoff = buildHandoff({
+        fromAgentId: agent.id, toAgentId: target.id, task,
+        contextPointer: { kind: "channel", ref: channelId },
+      });
+    } catch (err) {
+      const detail = err instanceof HandoffError ? err.detail : "the handoff wasn't valid";
+      this.agentSend(agent.id, channelId, `I couldn't hand that off — ${detail}.`);
+      return;
+    }
+    // THE LINE ON SCREEN, in plain words, from a real handoff and in the
+    // sender's own voice. The receiver's turn arrives separately, when the hub
+    // delivers the handoff to its engine.
+    this.agentSend(agent.id, channelId, `🤝 Passed to @${target.name} — ${handoff.task}`);
+    this.sendFrame({ type: "sendHandoff", handoff });
+  }
+
+  /**
+   * A peer handed one of this engine's agents a piece of work. Turn it into a
+   * turn for the receiving agent — seeded with the task and pointed at the
+   * context the handoff named. The receiving turn is seeded from the receiver's
+   * OWN memory too (every turn is), so a handoff arrives on top of what the
+   * receiver already remembers. Public for tests. Never throws at its caller.
+   */
+  async receiveHandoff(handoff: AgentHandoff): Promise<void> {
+    const target = this.myAgents.find(a => a.id === handoff.toAgentId);
+    if (!target) return; // not one of this engine's agents to run
+    if (target.lifecycle === "paused" || target.lifecycle === "disabled") return; // FR-AG-007
+    // Today's room handoffs always point at the conversation they happened in,
+    // which is also where the receiver speaks. A pointer with no channel is not
+    // one this path can answer in a room, so it is left alone rather than guessed.
+    const channelId = handoff.contextPointer.kind === "channel"
+      ? handoff.contextPointer.ref : undefined;
+    if (!channelId) return;
+    const fromName = this.state?.agents.find(a => a.id === handoff.fromAgentId)?.name
+      ?? handoff.fromAgentId;
+    this.setStatus(target.id, "working");
+    try {
+      const text = await this.respondAs(target, {
+        context: this.renderContext(channelId),
+        trigger: handoffTrigger(handoff, fromName),
+        triggerAuthor: fromName,
+        kind: "chat",
+        channelId,
+        requesterKind: "agent",
+      });
+      this.agentSend(target.id, channelId, text);
+    } catch (err) {
+      this.agentSend(target.id, channelId,
+        sanitizeForChat(err, `${target.name} could not pick up a handoff`));
+    } finally {
+      this.setStatus(target.id, "idle");
+    }
+  }
+
   agentSend(agentId: ID, channelId: ID, text: string, proactive = false): void {
     this.sendFrame({ type: "agentSend", agentId, channelId, text, proactive });
   }
@@ -1393,5 +1605,33 @@ const SEARCH_WAIT_MS = 4_000;
 
 function isBrakedReset(history: Message[]): boolean {
   return history.length > 0 && history[history.length - 1].authorKind === "human";
+}
+
+/**
+ * Read "@From !handoff @To <what to do>" out of a message, or nothing when it is
+ * not one. From the RAW text, because @-mentions are stripped from `bare` and
+ * both names are ones. The `@` before the target is optional, so both
+ * "!handoff @Terra …" and "!handoff Terra …" are understood.
+ */
+function parseHandoffCommand(text: string): { from: string; to: string; task: string } | undefined {
+  const m = /@([\w-]+)\s+!handoff\s+@?([\w-]+)\s+([\s\S]+)/i.exec(text);
+  if (!m) return undefined;
+  const task = m[3].trim();
+  if (!task) return undefined;
+  return { from: m[1], to: m[2], task };
+}
+
+/**
+ * The instruction the receiving agent wakes up to. It names who handed the work
+ * over, states the task verbatim, and points the receiver at the conversation
+ * for context — the "task + the pointer" the contract asks a handoff to carry.
+ */
+function handoffTrigger(handoff: AgentHandoff, fromName: string): string {
+  const note = handoff.note ? ` They added: ${handoff.note}` : "";
+  return (
+    `@${fromName} has handed this piece of work to you. Here is what they asked you to do: ` +
+    `${handoff.task}. For the context you need, catch up on this conversation — that is where ` +
+    `they pointed you.${note} Pick it up and carry on.`
+  );
 }
 

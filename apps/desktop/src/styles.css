@@ -637,6 +637,18 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 .workrow .callout.run{margin:0 13px 13px;}
 .workrow .runwait,.workrow .runmissing,.workrow .runopen{margin:0 13px 13px;}
 
+/* --- what this agent remembers (agent memory) --- */
+.remembers{display:grid;gap:7px;}
+.memrow{
+  display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;
+  border:1px solid var(--line-soft);border-radius:var(--radius-s);background:var(--surface);
+  padding:10px 13px;
+}
+.memrow .mem-tx{min-width:0;display:grid;gap:2px;}
+.memrow .mem-tx b{font-size:13px;color:var(--ink);overflow-wrap:anywhere;font-weight:500;}
+.memrow .mem-when{font-size:11px;color:var(--ink-3);font-family:var(--mono);}
+.memrow .mem-clear{flex:none;}
+
 /* --- working indicator --- */
 .thinking{display:flex;align-items:center;gap:10px;color:var(--ink-2);font-size:13px;margin-bottom:22px;}
 .bars{display:flex;gap:3px;align-items:flex-end;height:14px;}

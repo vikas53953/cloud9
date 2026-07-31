@@ -23,6 +23,11 @@ import {
   WS_LIMITS,
 } from "@cloud9/shared";
 import os from "node:os";
+// THE SAME VALIDATOR THE BUILDER USES, not a second copy — a handoff arriving
+// over the wire is asked the same question `buildHandoff` asked, by the same
+// rule (docs/plans/agent-memory-handoff.md §9.2). The relay already depends on
+// `@cloud9/engine`, so there is one owner of "is this a real handoff".
+import { validateHandoff } from "@cloud9/engine";
 import { RunRow, Store } from "./store.js";
 
 /**
@@ -1851,6 +1856,51 @@ export class Relay {
         // the same sentence an invented id gets, exactly as attachments do.
         if (!row || !this.canSeeRun(conn.userId, row)) throw new Error("no such run");
         send(conn.ws, { type: "run", record: shareableRun(row.record) });
+        break;
+      }
+      // ---- agent memory: read and clear an agent's saved notes ----
+      //
+      // The hub keeps NO copy of memory — the engine's own store is the one
+      // durable copy (docs/plans/agent-memory-handoff.md §7). The hub only
+      // routes: it checks the agent is the asker's, then asks that owner's
+      // engine to report or forget, and forwards what the engine sends back.
+      case "memoryList": {
+        this.myAgent(conn.userId, frame.agentId); // your agent, or it throws
+        this.toEngines(conn.userId, { type: "memoryListRequested", agentId: frame.agentId });
+        break;
+      }
+      case "forgetMemoryNote": {
+        this.myAgent(conn.userId, frame.agentId);
+        if (!isSafeStoredId(frame.noteId)) throw new Error("no such note");
+        this.toEngines(conn.userId,
+          { type: "forgetMemoryRequested", agentId: frame.agentId, noteId: frame.noteId });
+        break;
+      }
+      // ENGINE-HOST ONLY: the agent's saved notes, read off this computer's own
+      // store. A REPORT, not a permission — the hub checks whose agent it is
+      // from stored state, then hands the notes only to that owner's own screens.
+      case "memoryChanged": {
+        if (conn.client !== "engine") {
+          throw new Error("only the engine reports what an agent remembers");
+        }
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        this.toUser(agent.ownerId, { type: "memory", agentId: agent.id, notes: frame.notes });
+        break;
+      }
+      // ENGINE-HOST ONLY: one of the owner's agents is handing work to another.
+      // The hub validates it with the SAME rule the builder used, checks the
+      // sender owns the from-agent, then delivers it to the receiving agent's
+      // own engine. It runs nothing itself.
+      case "sendHandoff": {
+        if (conn.client !== "engine") {
+          throw new Error("only the engine can hand work between agents");
+        }
+        const problem = validateHandoff(frame.handoff);
+        if (problem) throw new Error(problem);
+        this.myAgent(conn.userId, frame.handoff.fromAgentId); // your agent is the sender
+        const to = this.store.agents().find(a => a.id === frame.handoff.toAgentId);
+        if (!to) throw new Error("no such agent to hand off to");
+        this.toEngines(to.ownerId, { type: "handoffReceived", handoff: frame.handoff });
         break;
       }
       // ---- harness sign-in (docs/plans/harness-signin.md) ----

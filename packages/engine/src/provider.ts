@@ -28,6 +28,13 @@ export type PromptTurnKind = "chat" | "task" | "schedule" | "repo";
 export interface TurnBrief {
   /** rendered conversation, oldest first (see context.ts) */
   context: string;
+  /**
+   * WHAT THIS AGENT REMEMBERS FROM BEFORE THIS CONVERSATION — already budgeted
+   * by `retrieveMemory` (see agent-memory.ts). Absent or empty when the agent
+   * has saved nothing; the prompt then says nothing about memory rather than
+   * printing an empty heading.
+   */
+  memory?: string;
   /** WHAT THIS TURN WAS ASKED TO DO. Never optional, never empty. */
   trigger: string;
   triggerAuthor: string;
@@ -184,6 +191,22 @@ export function renderSkills(agent: AgentDef): string {
 }
 
 /**
+ * What this agent remembers from before this conversation, rendered for the
+ * prompt. It is background, not foreground: it is quoted as the agent's own
+ * saved notes and clearly separated from the live conversation, so the model
+ * cannot mistake an old note for something just said. Empty in, empty out — an
+ * agent that has saved nothing is told nothing rather than shown a bare heading.
+ */
+export function renderMemory(memory: string | undefined): string {
+  if (!memory || !memory.trim()) return "";
+  return (
+    `\nWhat you remember from before this conversation (your own saved notes, ` +
+    `oldest first — treat these as durable background, not as something just said):\n` +
+    `${memory.trim()}\n`
+  );
+}
+
+/**
  * The chat prompt an agent turn becomes. Shared by every provider.
  *
  * `renderCapabilities` is not decoration. Before it existed, an agent was told
@@ -210,6 +233,7 @@ export function buildAgentPrompt(agent: AgentDef, turn: TurnBrief): string {
     renderCapabilities(agent, turn.supply ?? {}, turn.harness === "codex" ? "codex" : "declared") +
     (turn.cloud9Tools ? renderCloud9Tools() : "") +
     renderSkills(agent) +
+    renderMemory(turn.memory) +
     `\n${WHAT_YOU_WERE_ASKED[kind]}\n${turn.trigger.trim()}\n` +
     (turn.workdir
       ? `\nYou are working inside a checkout on this computer, not in your own folder.\n`

@@ -3,6 +3,7 @@ import {
   ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, Artifact, ArtifactVersion,
   Attachment, ATTACHMENT_LIMITS, Channel,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
+  MemoryNote,
   Project, ProjectItem, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, UnreadEntry, User,
   validateAttachment, validateProjectText, validateRepo,
   // Joining a friend's Cloud9 — the address, the address book, the connection
@@ -260,6 +261,17 @@ export interface World {
    * one file arriving is proof of that file, never proof that we know them all.
    */
   channelArtifacts: Record<ID, { asked: boolean; ids: ID[] }>;
+  /**
+   * WHAT EACH AGENT HAS SAVED TO REMEMBER, by agent id.
+   *
+   * `asked` is the same law the run histories and the projects follow: an empty
+   * list nobody has requested is not "this agent remembers nothing", it is "we
+   * have not looked". The memory panel must be able to tell those apart, so it
+   * says "loading" until the engine has answered and only then the honest empty
+   * state. The one durable copy lives in the engine's own store; this is the
+   * hub's answer about it, refreshed whenever a note is saved or cleared.
+   */
+  memory: Record<ID, { asked: boolean; loading: boolean; notes: MemoryNote[] }>;
 }
 
 type Listener = () => void;
@@ -385,6 +397,7 @@ export class RelayClient {
     runs: {}, runLists: {}, runsGone: {},
     projects: { asked: false, list: [] }, projectItems: {},
     artifacts: {}, artifactsGone: {}, channelArtifacts: {},
+    memory: {},
     hubs: [], activeHubId: "self", hubConn: { phase: "idle", line: "" },
   };
   private ws?: WebSocket;
@@ -1095,6 +1108,61 @@ export class RelayClient {
   /** Ask who is in one room. Answered with roles, join dates and who let them in. */
   askMembers(channelId: ID): void {
     this.send({ type: "channelMembers", channelId });
+  }
+
+  /* ---------------- what an agent remembers between conversations ----------------
+   *
+   * ONE OWNER FOR "WHAT THIS AGENT REMEMBERS", and it is the engine's own store
+   * on this computer. This app never invents a note: every note drawn on the
+   * memory panel arrived on a `memory` frame, and clearing one asks the engine
+   * to delete it and report back what is left. The engine has to be running to
+   * answer — its store is not on the hub — so an agent whose engine is offline
+   * shows "loading" rather than a made-up empty state.
+   */
+
+  /** One agent's saved notes, answered or not. Never undefined — an unasked list says so. */
+  memoryFor(agentId: ID): { asked: boolean; loading: boolean; notes: MemoryNote[] } {
+    return this.world.memory[agentId] ?? { asked: false, loading: false, notes: [] };
+  }
+
+  /**
+   * Ask what an agent has saved to remember.
+   *
+   * Asked every time the panel opens, not once: memory grows and shrinks as the
+   * agent works and as the owner clears notes, so a list cached from the last
+   * visit would be an answer to an older question. A refusal and a silence both
+   * settle the panel — it must not spin for ever, and the hub's own sentence is
+   * already on screen through `lastError`.
+   */
+  askMemory(agentId: ID): void {
+    const held = this.memoryFor(agentId);
+    if (held.loading) return;
+    this.world.memory = { ...this.world.memory, [agentId]: { ...held, loading: true } };
+    this.emit();
+    const settled = (): void => {
+      const now = this.memoryFor(agentId);
+      this.world.memory = {
+        ...this.world.memory, [agentId]: { ...now, asked: true, loading: false },
+      };
+      this.emit();
+    };
+    this.ask({ type: "memoryList", agentId }, {
+      answers: f => f.type === "memory" && f.agentId === agentId,
+      // the `memory` frame itself is applied in onFrame (it arrives unasked too,
+      // whenever a note is saved or cleared), so here we only stop the spinner
+      answered: settled,
+      refused: settled,
+      lost: settled,
+    });
+  }
+
+  /**
+   * Clear one saved note. The engine deletes it from its own store and reports
+   * the shrunken list straight back on a `memory` frame — so there is nothing
+   * to apply here, and the panel never shows a note the store no longer holds.
+   */
+  forgetMemoryNote(agentId: ID, noteId: ID): void {
+    this.send({ type: "forgetMemoryNote", agentId, noteId });
   }
 
   /* ---------------- projects: a repository, its pull requests, its issues ----------------
@@ -1849,6 +1917,10 @@ export class RelayClient {
         w.artifactsGone = {};
         w.channelArtifacts = {};
         this.artifactAsked.clear();
+        // Memory belonged to the last connection too, and `asked` goes back to
+        // false with it: this world has not asked anything yet, so a panel says
+        // "loading" rather than the honest empty state it has not earned.
+        w.memory = {};
         for (const entry of frame.state.unread ?? []) w.unread[entry.channelId] = entry;
         break;
       }
@@ -2025,6 +2097,20 @@ export class RelayClient {
       // exhaustiveness check below still holds.
       case "push":        // relay → mobile only
       case "harnessRequest": // relay → engine host only
+      case "memoryListRequested": // relay → engine host only
+      case "forgetMemoryRequested": // relay → engine host only
+      case "handoffReceived":     // relay → the receiving agent's engine only
+        break;
+      case "memory":
+        /* WHAT AN AGENT REMEMBERS. Applied here rather than only by `askMemory`,
+           because a `memory` frame arrives UNASKED as well — the engine pushes
+           it the moment a note is saved with "!remember" or cleared — and an
+           open panel has to become the new list by itself. The store's order is
+           kept as-is (oldest first); the panel decides how to show it. */
+        w.memory = {
+          ...w.memory,
+          [frame.agentId]: { asked: true, loading: false, notes: frame.notes },
+        };
         break;
       case "run":
         // Unasked or asked, new or already held — keyed by the record's OWN id,

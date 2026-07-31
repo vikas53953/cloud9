@@ -2910,6 +2910,50 @@ function RecentWork({ agentId }: { agentId: ID }): React.JSX.Element {
   );
 }
 
+/**
+ * WHAT THIS AGENT REMEMBERS between conversations — its own saved notes, newest
+ * first, each with when it was saved and a way to clear it.
+ *
+ * Every note here is real: the list arrives from the engine's own store on this
+ * computer (see `store.askMemory`), nothing is invented, and the honest empty
+ * state waits for the engine's answer before it says the agent has saved
+ * nothing. Clearing a note asks the engine to delete it and report back, so the
+ * panel never shows one the store no longer holds.
+ */
+function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
+  useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const held = client.memoryFor(agentId);
+  useEffect(() => { client.askMemory(agentId); }, [agentId]);
+  // the store keeps notes oldest-first; the panel shows the newest at the top
+  const notes = [...held.notes].reverse();
+  return (
+    <div className="remembers" data-memory-panel={agentId} data-notes={notes.length}>
+      {!held.asked && <div className="d-empty">Looking up what it remembers…</div>}
+      {held.asked && notes.length === 0 && (
+        <div className="d-empty" data-memory-empty="yes">
+          This agent hasn't saved anything to remember yet.
+        </div>
+      )}
+      {notes.map(n => (
+        <div className="memrow" key={n.id} data-note={n.id}>
+          <span className="mem-tx">
+            <b>{n.text}</b>
+            <span className="mem-when">
+              {dayLabel(n.createdAt)} at {clock(n.createdAt)}
+              {n.source === "owner" ? " · you asked it to remember this"
+                : n.source === "agent" ? " · it chose to remember this"
+                : " · saved by Cloud9"}
+            </span>
+          </span>
+          <button className="btn small ghost mem-clear" data-clear={n.id}
+            title="Forget this note"
+            onClick={() => client.forgetMemoryNote(agentId, n.id)}>Clear</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ChatView({
   channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpenTasks,
   jumpTo, onJumped, onOpenThread, threadRoot, onToggleDetails, detailsOpen,
@@ -7012,6 +7056,23 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                 and what it cost when the app says so. Only you can see this.
               </p>
               <RecentWork agentId={agent!.id} />
+            </section>
+          )}
+
+          {/* WHAT THIS AGENT REMEMBERS. Owner-only, like its work above: the
+              engine on this computer answers this for the owner and nobody else,
+              and the notes are read off its own store — nothing here is
+              invented, and an empty memory says exactly that. */}
+          {!creating && agent!.ownerId === world.me?.id && (
+            <section className="fieldset rememberssec">
+              <div className="sec-head"><h3>What this agent remembers</h3><span className="eyebrow">Memory</span></div>
+              <p className="sec-note">
+                {shownName} keeps a few durable notes between conversations and reads them
+                back at the start of every turn. Tell it to keep one in chat with{" "}
+                <b>@{shownName} !remember …</b> — and to hand a job to another agent, type{" "}
+                <b>@{shownName} !handoff @OtherAgent …</b>. Only you can see these.
+              </p>
+              <RememberedNotes agentId={agent!.id} />
             </section>
           )}
         </div>

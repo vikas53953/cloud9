@@ -265,7 +265,7 @@ function mintJoinTokenOn(port, token) {
 // second hub falls the client back to this computer's own; the owner can mint a
 // cloud9://…#join_ link; and the invite panel says plainly that reaching a friend
 // over the internet needs Tailscale and is not wired tonight.
-const EXPECTED_CHECKS = 461;
+const EXPECTED_CHECKS = 466;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -776,6 +776,72 @@ try {
   await page.click('.editor .topbar >> text=Save');
   await page.waitForTimeout(400);
   await page.click('.rail-btn[data-go="chat"]');
+
+  // ============ agent memory + agent-to-agent handoff ============
+  //
+  // Memory: an agent keeps durable notes between conversations, tells the owner
+  // it kept one, and shows them back on its own file. Handoff: one agent hands
+  // work to another with a plain "passed to @…" line, and the receiver actually
+  // takes the turn. Everything here is real — the notes are read off the
+  // engine's own store on this computer, and the handoff is delivered through
+  // the hub — so a broken feature shows as a failed check, never a fake pass.
+  // Bounded waits record a FAIL rather than crashing the whole suite.
+  const seen = (locator, timeout = 20000) =>
+    locator.first().waitFor({ timeout }).then(() => true).catch(() => false);
+
+  // -- a note saved with "!remember" --
+  await page.click("text=# trip-goa");
+  const memBox = page.locator(".composer textarea");
+  await memBox.fill("@Scout !remember beach villas in Goa are cheapest in the monsoon");
+  await memBox.press("Enter");
+  ok("!remember: the agent saves a note and confirms it in the room",
+    await seen(page.locator('.msg:has-text("Saved to memory")')));
+
+  // -- and that note shows on the agent's own file, newest first --
+  await page.hover('.sidebar .agentrow[data-agent="Scout"]');
+  await page.click('.sidebar .agentrow[data-agent="Scout"] button[title="Edit agent"]');
+  await page.waitForSelector(".editor .rememberssec", { timeout: 15000 });
+  const noteShown = await seen(page.locator('.rememberssec .memrow[data-note] .mem-tx b'), 15000);
+  const noteText = noteShown
+    ? (await page.locator(".rememberssec .memrow .mem-tx b").first().innerText()).trim() : "";
+  ok("the 'What this agent remembers' panel shows the saved note",
+    noteShown && /monsoon/.test(noteText), noteText);
+  await page.screenshot({ path: `${SHOTS}/22-agent-remembers.png` });
+  await page.click(".editor .topbar >> text=Cancel");
+  await page.click('.rail-btn[data-go="chat"]');
+
+  // -- a second agent, and its HONEST empty memory (nothing saved, and it says so) --
+  await page.click('button[title="New agent"]');
+  await page.fill('input[placeholder="Scout"]', "Terra");
+  await page.fill("textarea.persona-input",
+    "You handle deployment notes and villa shortlists, always concrete and brief");
+  await page.click(".editor >> text=Create agent");
+  // Create returns to the crew screen; the chat sidebar (with its agent rows) is
+  // where an agent is edited from, so go there before reaching for Terra's row.
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.waitForSelector('.sidebar .agentrow[data-agent="Terra"]', { timeout: 15000 });
+  await page.hover('.sidebar .agentrow[data-agent="Terra"]');
+  await page.click('.sidebar .agentrow[data-agent="Terra"] button[title="Edit agent"]');
+  await page.waitForSelector(".editor .rememberssec", { timeout: 15000 });
+  const emptyShown = await seen(page.locator('.rememberssec [data-memory-empty="yes"]'), 15000);
+  const emptyText = emptyShown
+    ? (await page.locator('.rememberssec [data-memory-empty="yes"]').innerText()).trim() : "";
+  ok("an agent with nothing saved shows the honest empty state, not a faked note",
+    emptyShown && /hasn't saved anything to remember/.test(emptyText), emptyText);
+  await page.click(".editor .topbar >> text=Cancel");
+  await page.click('.rail-btn[data-go="chat"]');
+
+  // -- handing work from one agent to another --
+  await page.click("text=# trip-goa");
+  const hoBox = page.locator(".composer textarea");
+  await hoBox.fill("@Scout !handoff @Terra shortlist the three cheapest villas");
+  await hoBox.press("Enter");
+  ok("handing off shows a plain 'passed to @Terra' line in the room",
+    await seen(page.locator('.msg:has-text("Passed to @Terra")')));
+  // the receiver really takes the turn — a message authored by Terra appears
+  ok("the receiving agent @Terra actually takes the handed-off turn on screen",
+    await seen(page.locator('.msg.from-agent:has(.who b:text-is("Terra"))')));
+  await page.screenshot({ path: `${SHOTS}/23-agent-handoff.png` });
 
   // invite flow
   await page.click('button[title="Invite a friend"]');

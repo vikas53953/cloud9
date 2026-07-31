@@ -21,8 +21,16 @@
 // are not this file's to touch.
 import fs from "node:fs";
 import path from "node:path";
-import { isSafeStoredId } from "@cloud9/shared";
+import { isSafeStoredId, MemoryKind, MemoryNote } from "@cloud9/shared";
 import { writeWholeFile, isPendingName } from "./wholefile.js";
+
+// THE WIRE SHAPES MOVED, not the rules. `MemoryKind` and `MemoryNote` are shown
+// on a screen the hub serves, so their one definition lives in `@cloud9/shared`
+// — the same move `RunRecord` made. They are re-exported here so `@cloud9/engine`
+// keeps its published surface and every existing importer keeps working; the
+// STORE, the RULE (`worthRemembering`) and the retrieval below are still the
+// engine's and still live here.
+export type { MemoryKind, MemoryNote } from "@cloud9/shared";
 
 // --------------------------------------------------------------- the budget
 
@@ -83,27 +91,9 @@ export const MEMORY_STORE_KEEP = 1_000;
  * text. Today retrieval does not weight — it keeps the oldest within budget
  * — but the kind is recorded now so the wire shape does not change later.
  */
-export type MemoryKind = "fact" | "preference" | "decision" | "outcome" | "correction";
-
-/**
- * One durable note an agent kept about its owner or its work.
- *
- * `id` sorts by time and is a safe file name, the same trick `newRunId` uses.
- * `runId` is present when the note came out of a run — the link back to the
- * evidence — and absent when the owner typed it, or the agent wrote it
- * outside a run.
- */
-export interface MemoryNote {
-  id: string;
-  agentId: string;
-  kind: MemoryKind;
-  text: string;
-  createdAt: number;
-  /** the run that produced this note, if any */
-  runId?: string;
-  /** who wrote it — `agent` for the agent itself, `owner` for the person, `system` for the engine */
-  source: "agent" | "owner" | "system";
-}
+// `MemoryKind` and `MemoryNote` are defined once, in `@cloud9/shared`, and
+// re-exported at the top of this file. The kind is carried so a future
+// retrieval can weight a `decision` over a `fact` without re-reading the text.
 
 /** What an engine hands to `save` when it wants an agent to remember something. */
 export interface RememberInput {
@@ -295,6 +285,22 @@ export class MemoryStore {
   /** Remove one file we are sure carries nothing worth keeping. */
   private discard(target: string): boolean {
     try { fs.rmSync(target); return true; } catch { return false; /* gone, or busy */ }
+  }
+
+  /**
+   * Forget ONE note by id — what the "clear this" button on the memory panel
+   * does. Returns whether a file was removed. It asks the SAME owners of the
+   * safe-path rule that `save` and `list` do (`dirFor`/`fileFor`), so there is
+   * no second, subtly different way to turn an id into a path. An unsafe or
+   * missing id removes nothing and says so by returning false — it never throws,
+   * because clearing a note the owner can see must never cost them an answer.
+   */
+  forgetNote(agentId: string, noteId: string): boolean {
+    const dir = this.dirFor(agentId, false);
+    if (!dir) return false;
+    const target = this.fileFor(dir, noteId);
+    if (!target) return false;
+    return this.discard(target);
   }
 
   /** Delete every note an agent has. Used when an agent is removed. */

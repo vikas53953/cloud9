@@ -1702,6 +1702,23 @@ export type ClientFrame =
   // leaving the user locked out of trying again (finding #10). Owner only, like
   // every other harness frame.
   | { type: "harnessCancel"; harness: HarnessName }
+  // ---- agent memory + handoff (docs/plans/agent-memory-handoff.md) ----
+  /** Any of the owner's clients: what has this agent saved to remember? */
+  | { type: "memoryList"; agentId: ID }
+  /** Any of the owner's clients: forget ONE saved note by id. */
+  | { type: "forgetMemoryNote"; agentId: ID; noteId: ID }
+  /**
+   * ENGINE-HOST ONLY: this agent's saved notes, read off this computer's own
+   * memory store. A REPORT, not a permission — the hub reads whose agent it is
+   * from stored state and hands the notes only to that owner's own screens.
+   */
+  | { type: "memoryChanged"; agentId: ID; notes: MemoryNote[] }
+  /**
+   * ENGINE-HOST ONLY: one of the owner's agents is handing a piece of work to
+   * another. The hub validates it, then delivers it to the receiving agent's
+   * own engine — it never runs anything itself.
+   */
+  | { type: "sendHandoff"; handoff: AgentHandoff }
   // engine-host only: report detected harness status (status strings only, never secrets)
   | { type: "harnessState"; state: HarnessState };
 
@@ -2003,6 +2020,24 @@ export type ServerFrame =
    * person who asked. An engine is told what to look at; it does not choose.
    */
   | { type: "lookAtProject"; projectId: ID; repo: string }
+  // ---- agent memory + handoff (docs/plans/agent-memory-handoff.md) ----
+  /**
+   * What this agent has saved to remember — the answer to `memoryList`, and
+   * pushed again to the owner's screens whenever a note is saved or cleared.
+   * Newest is NOT assumed here; the notes are in the store's own order and the
+   * screen decides how to show them.
+   */
+  | { type: "memory"; agentId: ID; notes: MemoryNote[] }
+  /** relay → THE OWNER'S ENGINE: read this agent's saved notes and report them. */
+  | { type: "memoryListRequested"; agentId: ID }
+  /** relay → THE OWNER'S ENGINE: forget one saved note, then report what is left. */
+  | { type: "forgetMemoryRequested"; agentId: ID; noteId: ID }
+  /**
+   * relay → THE RECEIVING AGENT'S ENGINE: a peer handed you this piece of work.
+   * The engine turns it into a turn for the receiving agent, seeded with the
+   * task and the context pointer.
+   */
+  | { type: "handoffReceived"; handoff: AgentHandoff }
   | { type: "error"; error: string };
 
 // ---------- desktop menu actions ----------
@@ -2359,6 +2394,60 @@ export function artifactRef(artifactId: string, version?: number): string {
 }
 
 export interface ArtifactRef { artifactId: string; version?: number }
+
+// ---------- agent memory + agent-to-agent handoff ----------
+//
+// THE SHAPES LIVE HERE because they travel on the wire, the same reason
+// `RunRecord` moved here: a note read off an agent's own store on this computer
+// is shown on a screen the hub serves, and a handoff built by one agent's
+// engine is delivered to another's. There is ONE definition of each and it is
+// this one; `@cloud9/engine`'s `agent-memory.ts` and `agent-handoff.ts`
+// re-export these so the engine keeps its published surface, and the STORE, the
+// RULES and the BUILDER for them still live in the engine (they are not wire
+// concerns). See docs/plans/agent-memory-handoff.md.
+
+/** The kinds of thing an agent remembers between conversations. */
+export type MemoryKind = "fact" | "preference" | "decision" | "outcome" | "correction";
+
+/**
+ * One durable note an agent kept about its owner or its work. `id` sorts by
+ * time and is safe as a file name; `runId` is present when the note came out of
+ * a run; `source` says who wrote it.
+ */
+export interface MemoryNote {
+  id: string;
+  agentId: ID;
+  kind: MemoryKind;
+  text: string;
+  createdAt: number;
+  /** the run that produced this note, if any */
+  runId?: string;
+  /** `agent` for the agent itself, `owner` for the person, `system` for the engine */
+  source: "agent" | "owner" | "system";
+}
+
+/**
+ * Where the receiving agent should look for the context a handoff needs. A
+ * handoff carries a POINTER, never a copy — so the copies cannot drift.
+ */
+export interface ContextPointer {
+  kind: "memory" | "run" | "channel" | "artifact";
+  ref: string;
+}
+
+/** One agent handing a piece of work to another. Pure data. */
+export interface AgentHandoff {
+  id: string;
+  fromAgentId: ID;
+  toAgentId: ID;
+  task: string;
+  contextPointer: ContextPointer;
+  artifact?: ArtifactRef;
+  branch?: string;
+  note?: string;
+  createdAt: number;
+  runId?: string;
+}
 
 /** Read one reference, or nothing when this is not one. */
 export function parseArtifactRef(text: unknown): ArtifactRef | undefined {

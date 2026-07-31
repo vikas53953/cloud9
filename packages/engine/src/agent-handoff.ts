@@ -22,56 +22,22 @@
 // we will carry", in `worktree.ts`), and an artifact reference with
 // `parseArtifactRef` from `@cloud9/shared`. A second, subtly different rule
 // for any of these is how a hole gets opened, so there isn't one.
-import { isSafeStoredId, ArtifactRef } from "@cloud9/shared";
+import { isSafeStoredId, ArtifactRef, ContextPointer, AgentHandoff } from "@cloud9/shared";
 import { isSafeBranchName } from "./worktree.js";
 
 // --------------------------------------------------------------- the shape
-
-/**
- * Where the receiving agent should look for the context it needs. A handoff
- * does not carry the context itself — that would duplicate it and let the
- * copies drift — it carries a POINTER to the one owner of each kind.
- */
-export interface ContextPointer {
-  /**
-   * `memory` — the sender's own memory store; `ref` is the agent id whose
-   *   memory the receiver should seed from.
-   * `run` — a finished run the receiver should read; `ref` is the run id.
-   * `channel` — a conversation the receiver should catch up on; `ref` is
-   *   the channel id.
-   * `artifact` — a file the receiver should pick up; `ref` is the artifact
-   *   id (and `artifact` below carries the versioned reference too).
-   */
-  kind: "memory" | "run" | "channel" | "artifact";
-  ref: string;
-}
-
-/**
- * One agent handing a piece of work to another. Pure data: the builder
- * produces it, the validator checks it, and the engine (elsewhere) decides
- * what to do with it.
- */
-export interface AgentHandoff {
-  /** a safe id that sorts by time, the same shape as `newRunId`/`newMemoryId` */
-  id: string;
-  /** the agent handing the work off */
-  fromAgentId: string;
-  /** the agent being asked to take it */
-  toAgentId: string;
-  /** what to do, in plain words (≤ HANDOFF_TASK_LIMIT) */
-  task: string;
-  /** where to find the context the receiver needs */
-  contextPointer: ContextPointer;
-  /** an artifact to pick up, if any */
-  artifact?: ArtifactRef;
-  /** a git branch to pick up, if any — checked with `isSafeBranchName` */
-  branch?: string;
-  /** a free-form note from the sender (≤ HANDOFF_NOTE_LIMIT) */
-  note?: string;
-  createdAt: number;
-  /** the run that produced this handoff, if any */
-  runId?: string;
-}
+//
+// `ContextPointer` and `AgentHandoff` are defined once, in `@cloud9/shared`,
+// because a handoff built by one agent's engine is delivered over the wire to
+// another's — the same move `RunRecord` made. They are re-exported here so
+// `@cloud9/engine` keeps its published surface; the BUILDER and the VALIDATOR
+// below are still the engine's and still live here.
+//
+// `ContextPointer.kind`: `memory` — the sender's own memory store, `ref` is the
+//   agent id to seed from; `run` — a finished run, `ref` is the run id;
+//   `channel` — a conversation to catch up on, `ref` is the channel id;
+//   `artifact` — a file to pick up, `ref` is the artifact id.
+export type { ContextPointer, AgentHandoff } from "@cloud9/shared";
 
 // --------------------------------------------------------------- the limits
 
