@@ -1,4 +1,4 @@
-# CURSOR BRIEF          ROUND: 3 (overnight round — SEE CURSOR-BACKLOG.md)          branch: cursor/auto
+# CURSOR BRIEF          ROUND: 4 (last two features, on screen)          branch: cursor/auto
 
 >>> ROUND 3: lanes G/J/M/N are DONE and merged. Open **CURSOR-BACKLOG.md** for
 >>> the current SEVEN new-file lanes (hardening tests, coverage, Codex audit,
