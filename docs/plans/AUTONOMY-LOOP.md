@@ -28,14 +28,14 @@ Definition of Done below is fully checked, then stop and hand Vikas a review pag
 
 ## Definition of DONE (the goal — stop the loop when ALL are true, proved by `qa:app`)
 
-- [ ] **GitHub on screen** — an agent performs a GitHub write; the approval card
+- [x] **GitHub on screen** — an agent performs a GitHub write; the approval card
       shows it in plain words; reads have on-screen views. (Wiring in flight.)
-- [ ] **Join a friend's Cloud9 on screen** — paste/scan a join link, see the hub,
+- [x] **Join a friend's Cloud9 on screen** — paste/scan a join link, see the hub,
       switch to it, fall back to self when it's down. (Modules merged: hubaddress,
       hubbook, hubconnection, joinhub — wiring + screen remain.)
-- [ ] **Notifications visible** — toasts for job-done/approval/mention/publish,
+- [x] **Notifications visible** — toasts for job-done/approval/mention/publish,
       honoring quiet hours. (notify.ts merged — wiring + screen remain.)
-- [ ] **Agent memory + handoff on screen** — an agent recalls across chats and can
+- [x] **Agent memory + handoff on screen** — an agent recalls across chats and can
       hand work to another, visibly. (Modules merged — wiring + screen remain.)
 - [x] **Codex isolation fixed** — a Codex agent inherits nothing it shouldn't
       (audit lane produces the spec; conductor implements).
@@ -82,3 +82,9 @@ Cursor gets work that does NOT touch whatever the in-house agent holds this roun
   leak; honest prompt. Engine-level safety (not a screen feature; proved by the
   isolation test suite, not qa:app). 4/5 features DONE. Only mem-screen (agent
   memory on screen) left — Cursor building it (cursor/mem-screen).
+- 2026-07-31 ~21:45 — AGENT MEMORY + HANDOFF ON SCREEN, installed + walked 16/16.
+  943 tests, 466 browser. !remember/!handoff, "what this agent remembers" panel,
+  "Passed to @Agent" line, memory seeds every turn. ALL 5 DEFINITION-OF-DONE
+  FEATURES ARE NOW ON THE INSTALLED APP. The loop's goal is MET.
+  Deferred as Vikas's policy calls: NL handoff auto-detect, agent auto-remember,
+  cross-engine memory seeding. Tailscale sign-in is the one thing only Vikas can do.
