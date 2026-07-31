@@ -37,7 +37,7 @@ Definition of Done below is fully checked, then stop and hand Vikas a review pag
       honoring quiet hours. (notify.ts merged — wiring + screen remain.)
 - [ ] **Agent memory + handoff on screen** — an agent recalls across chats and can
       hand work to another, visibly. (Modules merged — wiring + screen remain.)
-- [ ] **Codex isolation fixed** — a Codex agent inherits nothing it shouldn't
+- [x] **Codex isolation fixed** — a Codex agent inherits nothing it shouldn't
       (audit lane produces the spec; conductor implements).
 - [ ] Every item re-proved on the INSTALLED app (`npm run qa:app`), installer
       rebuilt, and a review page handed to Vikas with TEST IT steps.
@@ -76,3 +76,9 @@ Cursor gets work that does NOT touch whatever the in-house agent holds this roun
   full-stack, in parallel: LANE MEM (agent memory+handoff on screen, cursor/mem-screen)
   and LANE CODEX (isolation fix per the audit, cursor/codex-fix). Conductor reviews +
   merges + rebuilds + walks each. This ends the sequential in-house bottleneck.
+- 2026-07-31 ~10:45 — CODEX ISOLATION FIXED, merged (a2d5ae6), 859 tests.
+  Fail-closed admission gate (F1-F7): a Codex turn refuses unless its unavoidable
+  web/files/helpers/commands switches are on; disposable CODEX_HOME kills skill
+  leak; honest prompt. Engine-level safety (not a screen feature; proved by the
+  isolation test suite, not qa:app). 4/5 features DONE. Only mem-screen (agent
+  memory on screen) left — Cursor building it (cursor/mem-screen).
