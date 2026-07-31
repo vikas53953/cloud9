@@ -1,12 +1,9 @@
-# CURSOR BRIEF          ROUND: 2 (DONE, under review)          branch: cursor/auto
+# CURSOR BRIEF          ROUND: 3 (overnight round — SEE CURSOR-BACKLOG.md)          branch: cursor/auto
 
->>> GO WIDE NOW: Round 2 is pushed and the conductor is reviewing it.
->>> Vikas wants MAXIMUM parallel building. Open **CURSOR-BACKLOG.md** and
->>> spawn ONE agent per LANE (G, J, M, N) — each on its OWN branch, each on a
->>> DIFFERENT model if you can (GPT-5, Sonnet, Kimi K2, Grok 4.5). LANE G
->>> (GitHub) is the top priority — Vikas named it. The rules in CURSOR-BACKLOG.md
->>> govern those lanes. This file's older per-round tasks are superseded by the
->>> backlog while Vikas is away.
+>>> ROUND 3: lanes G/J/M/N are DONE and merged. Open **CURSOR-BACKLOG.md** for
+>>> the current SEVEN new-file lanes (hardening tests, coverage, Codex audit,
+>>> user guide, Tailscale). Spawn one agent per lane on a top frontier model,
+>>> all parallel, AUTO-RUN mode (Vikas is asleep — never wait for approval).
 
 READ THIS WHOLE FILE FIRST. This is a STANDING brief — the same file is
 reused every round. The `ROUND:` number above tells you which task set is
