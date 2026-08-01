@@ -1150,9 +1150,57 @@ export interface HarnessInfo {
   problem?: string;
 }
 
+/**
+ * Whether this computer has a GitHub sign-in, and who it belongs to.
+ *
+ * NOT A HARNESS. GitHub runs no turns, so it is not a `HarnessName` and it has
+ * no models, no API-key fallback and no provider slot. It rides on
+ * `HarnessState` because that is the ONE thing every client already listens to
+ * for "what is signed in on the computer that runs my agents", and a second
+ * pipe for the same kind of fact is exactly the drift this project keeps
+ * paying for.
+ *
+ * STATUS ONLY, and the rule is stricter here than anywhere else: `gh auth
+ * status` prints a masked token and a scope list, and NEITHER may be copied
+ * into this object. There is no field for them, which is how it stays true.
+ *
+ * `checkedAt` is the honesty field. A card may only say "signed in" as a fact
+ * about NOW if this computer was really asked; 0 means nobody has looked yet,
+ * and the screen must say "checking…" rather than repeating a remembered yes.
+ */
+export interface GitHubAccountInfo {
+  /** the `gh` program is on this computer */
+  installed: boolean;
+  /** `gh auth status` reports an account */
+  signedIn: boolean;
+  /** the login gh reports, e.g. "vikas53953" — a public name, never a secret */
+  login?: string;
+  /** "https" or "ssh" — how gh talks to GitHub */
+  protocol?: string;
+  /** one plain sentence, user-facing */
+  detail: string;
+  /** a sign-in window is open on that computer right now */
+  signingIn?: boolean;
+  /** the last sign-in failure, in plain words */
+  problem?: string;
+  /** when this computer was REALLY asked (ms since epoch). 0 = never */
+  checkedAt: number;
+}
+
+/** What we know before anything has actually been looked at. */
+export function blankGitHubAccount(): GitHubAccountInfo {
+  return { installed: false, signedIn: false, detail: "not checked yet", checkedAt: 0 };
+}
+
 export interface HarnessState {
   claude: HarnessInfo;
   codex: HarnessInfo;
+  /**
+   * The GitHub sign-in on the computer that runs the agents. Optional because
+   * an older engine host will not send it — absent means "this engine never
+   * told us", which the screen says out loud instead of guessing.
+   */
+  github?: GitHubAccountInfo;
   /** a detection round is running right now — the UI disables "Re-check" */
   checking?: boolean;
   /**
@@ -1702,6 +1750,13 @@ export type ClientFrame =
   // leaving the user locked out of trying again (finding #10). Owner only, like
   // every other harness frame.
   | { type: "harnessCancel"; harness: HarnessName }
+  /**
+   * "Let me in to GitHub." Starts GitHub's OWN sign-in on the computer that
+   * runs the agents, in a terminal window the owner can see. It carries no
+   * harness name because GitHub is not a harness, and it carries no credential
+   * of any kind — Cloud9 never holds one. Owner only, like every frame above.
+   */
+  | { type: "githubSignIn" }
   // ---- agent memory + handoff (docs/plans/agent-memory-handoff.md) ----
   /** Any of the owner's clients: what has this agent saved to remember? */
   | { type: "memoryList"; agentId: ID }
@@ -2009,7 +2064,15 @@ export type ServerFrame =
   // harness status broadcast to the owner's clients
   | { type: "harness"; state: HarnessState }
   // relay → engine host: do the harness work (the engine owns the CLIs)
-  | { type: "harnessRequest"; action: "status" | "signIn" | "cancel"; harness?: HarnessName }
+  // "githubSignIn" carries no `harness` — GitHub runs no turns and has no slot
+  // in `HarnessState.claude/codex`. It is on this frame rather than a new one
+  // because the engine host already has exactly one door for "the hub is asking
+  // this computer to check or start a sign-in".
+  | {
+    type: "harnessRequest";
+    action: "status" | "signIn" | "cancel" | "githubSignIn";
+    harness?: HarnessName;
+  }
   /**
    * relay → THE OWNER'S ENGINE HOST ONLY: go and ask GitHub about this
    * repository, then answer with `projectSynced`.

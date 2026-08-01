@@ -278,7 +278,13 @@ function mintJoinTokenOn(port, token) {
 // composer and sends NOTHING; a row that cannot work here (no repository
 // connected) says why on the row and refuses to be picked; and the menu is on
 // the app's one Escape owner rather than answering the key its own way.
-const EXPECTED_CHECKS = 475;
+// 475 → 479 on 2026-08-01: the GitHub card in Settings. His bug was "I am not
+// able to connect my account" against a Cloud9 that was already riding the `gh`
+// sign-in on this computer and saying so nowhere. Four checks: the card is
+// there beside the two AI apps; it shows ONE of the three honest states and
+// says when it really asked; that state offers the way in (or names the
+// account); and no token or scope string reaches the DOM.
+const EXPECTED_CHECKS = 479;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -659,6 +665,90 @@ try {
   const fallbacks = await page.$$eval(".harnesscard .linkbtn", bs => bs.map(b => b.textContent.trim()));
   ok("settings still offers the API-key fallback on both cards",
     fallbacks.filter(b => /API key instead/.test(b)).length === 2, fallbacks.join(" · "));
+
+  /* ================= THE GITHUB CARD =================
+     HIS BUG, IN HIS WORDS: "Cloud9 doesn't give me a connected GitHub account,
+     I am not able to connect my account." Cloud9 rides the `gh` sign-in already
+     on the computer and never holds a token — which is right, and which NO
+     SCREEN SAID. The only mention was one sentence inside the
+     connect-a-repository box. Invisible is the same as not there, so these
+     checks hold the card itself, not the plumbing behind it. */
+  /* Read the WHOLE card in one pass in the page, and never through a locator
+     that assumes it is there. A card that has gone missing must fail its own
+     check and let the other 478 run — an exception here would abort the script
+     and report "stopped early", which hides which thing actually broke. */
+  const ghPresent = await page.locator(".githubcard[data-service='github']").count() === 1;
+  if (ghPresent) {
+    await page.locator(".githubcard").scrollIntoViewIfNeeded();
+    // the answer comes off the engine host over the relay — wait for a real one
+    await page.waitForFunction(() =>
+      document.querySelector(".githubcard")?.dataset.state !== "checking", { timeout: 15000 });
+  }
+  const gh = await page.evaluate(() => {
+    const c = document.querySelector(".githubcard[data-service='github']");
+    if (!c) return null;
+    const tx = s => c.querySelector(s)?.textContent.trim() ?? "";
+    return {
+      inAppsSection: !!document.querySelector("#set-apps .githubcard"),
+      state: c.dataset.state ?? "",
+      text: c.innerText.replace(/\s+/g, " ").trim(),
+      checked: c.querySelector(".checkedline")?.dataset.checked ?? "",
+      checkedLine: tx(".checkedline .ms-tx"),
+      named: tx(".signedinline .signedintext"),
+      command: tx(".ghcommand"),
+      signInButtons: c.querySelectorAll("button.ghsignin").length,
+      copyButtons: c.querySelectorAll("button.ghcopy").length,
+      recheckButtons: c.querySelectorAll(".ghrecheck").length,
+    };
+  });
+  ok("Settings has a GitHub card, beside the Claude and Codex cards",
+    !!gh && gh.inAppsSection, gh ? gh.state : "NO GITHUB CARD ON THE SETTINGS SCREEN");
+
+  /* ONE of three honest states, and it must say WHEN it looked. A card that
+     reads "signed in" with no time on it is telling you about the past in the
+     present tense — the same class of lie as a stale harness dot. */
+  ok("the GitHub card shows one honest state and says when Cloud9 really asked",
+    !!gh && ["not-installed", "not-signed-in", "signed-in"].includes(gh.state) &&
+    gh.checked === "yes" && /asked this computer at/i.test(gh.checkedLine),
+    gh ? `${gh.state} :: ${gh.checkedLine}` : "no card, so nothing was said about anything");
+
+  /* THE WAY IN. Whichever state this machine is in, the card must answer "how
+     do I connect my account?" — a name when it is connected, and a real door
+     when it is not. There is no state in which the answer is nothing. */
+  if (gh?.state === "signed-in") {
+    ok("signed in: the GitHub card names the account and says who keeps the token",
+      /signed in as \S+/i.test(gh.named) &&
+      /never holds your password or token/i.test(gh.text) &&
+      gh.recheckButtons === 1, gh.named);
+  } else if (gh?.state === "not-signed-in") {
+    ok("not signed in: the GitHub card offers a real way in, plus the exact command to copy",
+      gh.signInButtons === 1 &&
+      gh.command === "gh auth login --web --git-protocol https" &&
+      gh.copyButtons === 1 && gh.recheckButtons === 1, gh.text.slice(0, 140));
+  } else {
+    ok("not installed: the GitHub card says where to get it and offers Check again",
+      !!gh && /cli\.github\.com/.test(gh.text) &&
+      gh.recheckButtons === 1 && gh.signInButtons === 0,
+      gh ? gh.text.slice(0, 140) : "there is no card to say anything at all");
+  }
+
+  /* NO SECRET, ANYWHERE ON THE PAGE. `gh auth status` prints a masked token and
+     a scope list right beside the login this card shows, and the frame has no
+     field for either. This walks the WHOLE rendered document, not just the
+     card, so a future line that pastes one in fails here. */
+  const ghLeak = await page.evaluate(() => {
+    const body = document.body.innerText;
+    const html = document.documentElement.innerHTML;
+    const hits = [];
+    for (const re of [/gh[pousr]_[A-Za-z0-9]{6,}/, /token scopes/i, /\bread:org\b/, /\bgist\b/]) {
+      if (re.test(body) || re.test(html)) hits.push(String(re));
+    }
+    return hits;
+  });
+  ok("no GitHub token and no scope list appears anywhere on the screen",
+    ghLeak.length === 0, ghLeak.join(" | "));
+
+  await page.screenshot({ path: `${SHOTS}/github-card.png`, animations: "disabled" });
 
   // ---- his 13: settings has real, changeable things ----
   // selectors updated (Studio reskin): the look is chosen with the approved

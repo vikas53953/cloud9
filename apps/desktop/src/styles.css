@@ -1135,6 +1135,26 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 }
 .problemtext{flex:1;min-width:0;font-size:12.5px;color:var(--madder);}
 
+/* ---- GITHUB CARD ----
+   Same box as the two sign-in cards above it, deliberately: it answers the same
+   question. It is NOT `.harnesscard` because it is not a harness — it has no
+   models, no API-key fallback and no provider slot, and the QA checks that walk
+   the harness cards must not have to special-case it. */
+.githubcard{
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  padding:16px;display:flex;flex-direction:column;gap:9px;box-shadow:var(--shadow);
+}
+.githubcard.isok{border-color:color-mix(in srgb,var(--pine) 45%,transparent);}
+.checkedline{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;color:var(--ink-3);}
+.checkedline[data-checked="yes"] .ms-mark{color:var(--pine);}
+.ghsigninbox{display:flex;flex-direction:column;gap:9px;}
+.ghmanual{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+  border-left:2px solid var(--line);padding-left:12px;}
+.ghmanual-lead{font-size:12.5px;color:var(--ink-2);}
+.ghcommand{font-family:var(--mono);font-size:11.5px;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:var(--radius-xs);padding:4px 7px;
+  overflow-x:auto;max-width:100%;white-space:nowrap;}
+
 /* ---------------- NOTICES, TOAST, BANNER ---------------- */
 .notice{
   font-size:12.5px;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--line-soft);

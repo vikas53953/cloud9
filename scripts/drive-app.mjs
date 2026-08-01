@@ -121,6 +121,12 @@ const EXPECTED_CHECKS = [
      menu at the message box. This asks the INSTALLED app: is the button there,
      does it open, does choosing a row really fill in the command. */
   "the message box offers an Actions menu that fills in the command",
+  /* 2026-08-01, his report: "Cloud9 doesn't give me a connected GitHub
+     account." gh was signed in all along — no screen said so. The fix is a
+     GitHub card in Settings whose facts come from really asking gh. This asks
+     the INSTALLED app: is the card there, does it claim one honest state, and
+     does it say when it actually looked. */
+  "Settings shows the GitHub card with an honest, dated state",
 ];
 
 /* ---------------------------------------------------------------- results */
@@ -955,6 +961,52 @@ async function walk(page) {
     failGroup(PROJECT_GROUP.filter(n => !results.some(r => r.name === n)),
       `the Projects screen did not open (${err.message})`);
     await shot(page, "projects-broken");
+  }
+
+  /* --- 8. settings: the GitHub card ------------------------------------- */
+
+  try {
+    await page.click('.rail .rail-btn[data-go="settings"]');
+    await page.waitForSelector(".githubcard", { timeout: 30000 });
+    await shot(page, "settings-github");
+
+    await check(EXPECTED_CHECKS[18], async () => {
+      const card = page.locator(".githubcard").first();
+      const state = await card.getAttribute("data-state");
+      const HONEST = ["checking", "waiting", "not-installed", "signed-in", "not-signed-in"];
+      if (!HONEST.includes(state ?? "")) {
+        throw new Error(`the GitHub card claims a state the app never defined: "${state}"`);
+      }
+      /* "Checking" is honest for a moment, not for a walk — wait for a verdict. */
+      await until("the card to reach a settled verdict", async () =>
+        !["checking", "waiting"].includes(await card.getAttribute("data-state") ?? ""),
+        { timeout: 30000 });
+      const settled = await card.getAttribute("data-state");
+      const dated = await card.locator('.checkedline[data-checked="yes"]').count();
+      if (settled !== "not-installed" && dated === 0) {
+        throw new Error(`the card says "${settled}" without saying when it actually asked — ` +
+          "the past in the present tense");
+      }
+      if (settled === "signed-in") {
+        const who = (await card.locator(".signedintext").innerText().catch(() => "")).trim();
+        if (!/signed in as .+/i.test(who)) {
+          throw new Error("signed in, but the card does not say as WHO");
+        }
+        return `${who}, and the card says when it asked`;
+      }
+      if (settled === "not-signed-in") {
+        const wayIn = await card.locator("button, code").count();
+        if (wayIn === 0) {
+          throw new Error("not signed in, and the card offers no way in at all");
+        }
+        return "honestly not signed in, with a way in offered";
+      }
+      return `honestly ${settled}`;
+    });
+  } catch (err) {
+    failGroup([EXPECTED_CHECKS[18]].filter(n => !results.some(r => r.name === n)),
+      `the Settings screen did not open (${err.message})`);
+    await shot(page, "settings-broken");
   }
 }
 

@@ -340,6 +340,102 @@ test("harness status is asked for by clients, answered by the engine, broadcast 
   relay.close();
 });
 
+/* --- THE GITHUB ACCOUNT RIDES THE SAME PIPE ---
+ *
+ * "Is this computer signed in to GitHub, and as whom?" is the same shape of
+ * question as the two AI apps, and it travels the same way on purpose: engine →
+ * `harnessState` → hub → `harness` → every screen the owner has open. A second
+ * pipe for the same kind of fact is the drift this repository keeps paying for.
+ *
+ * And the sign-in must reach the ENGINE, because only that process can run
+ * programs on the owner's computer — the desktop cannot run `gh` itself. */
+test("the GitHub account crosses the wire with the harness status, and 'Sign in now' reaches the engine", async () => {
+  const relay = new Relay({ dbPath: tmp("relay-github.db"), ownerToken: "tok-gh", ownerName: "Vikas" });
+  const port = await relay.listen(0);
+  const url = `ws://127.0.0.1:${port}`;
+
+  const desktop = new TestClient(url, "tok-gh");
+  await desktop.wait(f => f.type === "welcome");
+  const host = new TestClient(url, "tok-gh", "engine");
+  await host.wait(f => f.type === "welcome");
+
+  const state = {
+    claude: {
+      name: "claude" as const, installed: true, signedIn: true, authKind: "cli-login" as const,
+      models: ["claude-sonnet-5"], detail: "Signed in",
+    },
+    codex: {
+      name: "codex" as const, installed: true, signedIn: false, authKind: "none" as const,
+      models: [], detail: "installed, but not signed in yet",
+    },
+    github: {
+      installed: true, signedIn: true, login: "vikas53953", protocol: "https",
+      detail: "Signed in to GitHub as vikas53953", checkedAt: Date.now(),
+    },
+    updatedAt: Date.now(),
+  };
+
+  host.send({ type: "harnessState", state });
+  const broadcast = await desktop.wait<Extract<ServerFrame, { type: "harness" }>>(f => f.type === "harness");
+  assert.equal(broadcast.state.github?.signedIn, true);
+  assert.equal(broadcast.state.github?.login, "vikas53953");
+  assert.equal(broadcast.state.github?.protocol, "https");
+  assert.ok((broadcast.state.github?.checkedAt ?? 0) > 0,
+    "a card may only say 'signed in' about a moment somebody really asked");
+  // NOTHING SECRET. gh prints a masked token and a scope list right beside the
+  // login; neither has a field to travel in, and this is where that is proved.
+  const wire = JSON.stringify(broadcast);
+  assert.ok(!/gho_|ghp_|scope/i.test(wire), wire);
+
+  // a later screen gets the same GitHub answer from the cache
+  const second = new TestClient(url, "tok-gh");
+  await second.wait(f => f.type === "welcome");
+  second.send({ type: "harnessStatus" });
+  const cached = await second.wait<Extract<ServerFrame, { type: "harness" }>>(f => f.type === "harness");
+  assert.equal(cached.state.github?.login, "vikas53953");
+
+  // "Sign in now" goes to the engine host and NOWHERE else — it carries no
+  // harness name, because GitHub is not one
+  desktop.send({ type: "githubSignIn" });
+  const asked = await host.wait<Extract<ServerFrame, { type: "harnessRequest" }>>(
+    f => f.type === "harnessRequest" && f.action === "githubSignIn");
+  assert.equal(asked.harness, undefined);
+  assert.ok(!desktop.frames.some(f => f.type === "harnessRequest"), "requests go to the engine only");
+  assert.ok(!second.frames.some(f => f.type === "harnessRequest"));
+
+  desktop.close(); second.close(); host.close(); relay.close();
+});
+
+test("only the owner can start a GitHub sign-in on the owner's computer", async () => {
+  const relay = new Relay({ dbPath: tmp("relay-github2.db"), ownerToken: "tok-gh2", ownerName: "Vikas" });
+  const port = await relay.listen(0);
+  const url = `ws://127.0.0.1:${port}`;
+  const owner = new TestClient(url, "tok-gh2");
+  await owner.wait(f => f.type === "welcome");
+  const host = new TestClient(url, "tok-gh2", "engine");
+  await host.wait(f => f.type === "welcome");
+
+  owner.send({ type: "createInvite" });
+  const inv = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
+  const friend = new TestClient(url, `invite:${inv.code}:Priya`);
+  await friend.wait(f => f.type === "welcome");
+
+  friend.send({ type: "githubSignIn" });
+  const denied = await friend.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(denied.error, /only the owner/);
+  assert.ok(!host.frames.some(f => f.type === "harnessRequest"), "nothing reached the engine host");
+
+  // the owner can — and a second press inside the cooldown is refused rather
+  // than opening a second terminal window on his desk
+  owner.send({ type: "githubSignIn" });
+  await host.wait(f => f.type === "harnessRequest" && f.action === "githubSignIn");
+  owner.send({ type: "githubSignIn" });
+  const busy = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(busy.error, /give the last sign-in/);
+
+  owner.close(); friend.close(); host.close(); relay.close();
+});
+
 // --- harness control is privileged: it starts programs on the owner's computer ---
 test("only the owner, on a non-default token, can drive the harnesses", async () => {
   const relay = new Relay({ dbPath: tmp("relay-harness2.db"), ownerToken: "tok-secret", ownerName: "Vikas" });

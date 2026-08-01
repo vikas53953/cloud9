@@ -20,8 +20,9 @@
 // Secrets law: no credential material passes through this module at all any
 // more. Nothing here is logged but booleans, versions and plain-words detail.
 import {
-  HarnessAuthKind, HarnessInfo, HarnessName, HarnessState,
+  blankGitHubAccount, GitHubAccountInfo, HarnessAuthKind, HarnessInfo, HarnessName, HarnessState,
 } from "@cloud9/shared";
+import { GitHubClient } from "./github.js";
 import {
   claudeModels, detectClaudeModels, detectCodexModels, ModelList,
   readClaudeModelCache, writeClaudeModelCache,
@@ -35,6 +36,8 @@ export interface HarnessOptions {
   /** command names — tests point these at shim scripts */
   claudeCommand?: string;
   codexCommand?: string;
+  /** GitHub's own program. Not a harness — see `detectGitHub` below. */
+  ghCommand?: string;
   /** leash for detection commands (they must never hang the engine) */
   detectTimeoutMs?: number;
   /** `codex debug models` prints a large document, so it gets its own leash */
@@ -170,6 +173,33 @@ export async function detectCodex(
   return info;
 }
 
+/**
+ * Whether this computer has a GitHub sign-in — asked, never assumed.
+ *
+ * NOT A SECOND PARSER. `GitHubClient.account()` is the one place in this whole
+ * repository that reads `gh auth status`, and it stays that way: the repository
+ * look, the agent's push refusal and this settings card all get the same
+ * sentence from the same code. This function only stamps WHEN we asked, which
+ * is the one thing a screen needs that the client cannot know.
+ *
+ * `checkedAt` is set on every answer, including the failures. That is the
+ * point: a card may only claim "signed in" as a fact about now, and a stale yes
+ * left over from ten minutes ago is exactly the lie this field prevents.
+ */
+export async function detectGitHub(
+  runner: Runner, command = "gh", log?: (m: string) => void,
+): Promise<GitHubAccountInfo> {
+  const who = await new GitHubClient({ runner, command, log: log ?? (() => {}) }).account();
+  return {
+    installed: who.installed,
+    signedIn: who.signedIn,
+    ...(who.login ? { login: who.login } : {}),
+    ...(who.protocol ? { protocol: who.protocol } : {}),
+    detail: who.detail,
+    checkedAt: Date.now(),
+  };
+}
+
 function parseJsonish(raw: string): Record<string, unknown> | undefined {
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
@@ -186,10 +216,18 @@ function parseJsonish(raw: string): Record<string, unknown> | undefined {
  * command until it reports success or the cap runs out.
  */
 export class HarnessManager {
-  state: HarnessState = { claude: BLANK("claude"), codex: BLANK("codex"), updatedAt: 0 };
+  state: HarnessState = {
+    claude: BLANK("claude"), codex: BLANK("codex"),
+    github: blankGitHubAccount(), updatedAt: 0,
+  };
   private runner: Runner;
   private visibleRunner: VisibleRunner;
   private commands: Record<HarnessName, string>;
+  private ghCommand: string;
+  /** a GitHub sign-in window is open — a second press must not open another */
+  private githubInFlight = false;
+  /** why the last GitHub sign-in didn't finish, so a refresh doesn't erase it */
+  private githubProblem?: string;
   private inFlight = new Set<HarnessName>();
   /** sign-ins the user has walked away from — the poll loop stops for these */
   private cancelled = new Set<HarnessName>();
@@ -222,6 +260,7 @@ export class HarnessManager {
       claude: opts.claudeCommand ?? "claude",
       codex: opts.codexCommand ?? "codex",
     };
+    this.ghCommand = opts.ghCommand ?? "gh";
   }
 
   /** The hard cap every sign-in flow is held to. Five minutes by default. */
@@ -279,7 +318,7 @@ export class HarnessManager {
 
   private async doRefresh(): Promise<HarnessState> {
     const t = this.opts.detectTimeoutMs ?? 20_000;
-    const [claude, codex] = await Promise.all([
+    const [claude, codex, github] = await Promise.all([
       detectClaude(this.runner, this.commands.claude, t, {
         modelCachePath: this.opts.claudeModelCachePath,
       }),
@@ -287,11 +326,21 @@ export class HarnessManager {
         modelsTimeoutMs: this.opts.modelsTimeoutMs,
         configPath: this.opts.codexConfigPath,
       }),
+      // GitHub goes in the SAME round as the two AI apps, on purpose: one
+      // "Re-check" must answer every question the Settings screen asks, or the
+      // owner is back to pressing buttons and guessing which one is stale.
+      detectGitHub(this.runner, this.ghCommand, m => this.log(m)),
     ]);
     // a sign-in already running must not be erased by a detection round, and
     // neither must the reason the last sign-in failed
     this.state.claude = this.merge(claude);
     this.state.codex = this.merge(codex);
+    this.state.github = {
+      ...github,
+      ...(this.githubInFlight ? { signingIn: true } : {}),
+      // a failure the owner hasn't resolved is more useful than "not signed in"
+      ...(!github.signedIn && this.githubProblem ? { problem: this.githubProblem } : {}),
+    };
     this.state.checking = false;
     // set BEFORE publishing: the listener that forwards this to the hub reads
     // it, and a round that has finished must be forwarded on its own frame
@@ -301,7 +350,10 @@ export class HarnessManager {
       `claude installed=${claude.installed} signedIn=${claude.signedIn} ` +
       `auth=${this.state.claude.authKind} models=${claude.models.length} · ` +
       `codex installed=${codex.installed} signedIn=${codex.signedIn} ` +
-      `auth=${this.state.codex.authKind} models=${codex.models.length}`,
+      `auth=${this.state.codex.authKind} models=${codex.models.length} · ` +
+      // booleans and a public login name only. gh prints a masked token and a
+      // scope list right beside these; neither is read, carried or logged.
+      `github installed=${github.installed} signedIn=${github.signedIn}`,
     );
     // nothing waits on this: detection has already answered, and proving the
     // model list takes about half a minute
@@ -408,6 +460,65 @@ export class HarnessManager {
   }
 
   /**
+   * Start GitHub's OWN sign-in, in a window the owner can see.
+   *
+   * `gh auth login --web --git-protocol https` is INTERACTIVE: it prints a
+   * one-time code, waits for it to be typed into github.com, and only then
+   * finishes. Run with piped output it would sit there forever with nothing to
+   * type into — the exact trap `claude setup-token` fell into in round 1. So it
+   * gets a real terminal window (`runVisibleTerminal`), its output is never
+   * read, and the completion signal is gh's OWN `auth status` under the same
+   * five-minute cap every other flow here is held to. This can never hang.
+   *
+   * NO CREDENTIAL PASSES THROUGH CLOUD9. gh does the whole exchange itself and
+   * puts the result in this computer's vault; nothing in this method sees,
+   * stores or forwards a token, and there is nowhere for one to go.
+   */
+  async signInGitHub(): Promise<HarnessState> {
+    if (this.githubInFlight) {
+      this.log("github: sign-in already running");
+      return this.state;
+    }
+    this.githubInFlight = true;
+    this.githubProblem = undefined;
+    this.state.github = {
+      ...(this.state.github ?? blankGitHubAccount()),
+      signingIn: true, problem: undefined,
+      detail: "a GitHub sign-in window is open on this computer — follow it there",
+    };
+    this.publish();
+    try {
+      const started = await this.visibleRunner(
+        this.ghCommand, ["auth", "login", "--web", "--git-protocol", "https"]);
+      if (started.notFound) throw new Error("gh not found");
+      await this.pollUntilGitHubSignedIn();
+    } catch (err) {
+      this.githubProblem = describeGitHubProblem(err);
+      this.log(`github: sign-in failed — ${String(err).slice(0, 160)}`);
+    } finally {
+      this.githubInFlight = false;
+    }
+    return this.refresh();
+  }
+
+  /** The same shape as `pollUntilSignedIn`, asking gh's own status command. */
+  private async pollUntilGitHubSignedIn(): Promise<void> {
+    const interval = this.opts.pollIntervalMs ?? 5_000;
+    const deadline = Date.now() + this.signInCapMs;
+    while (!this.stopped && Date.now() < deadline) {
+      await this.wait(Math.min(interval, Math.max(0, deadline - Date.now())));
+      if (this.stopped) return;
+      const info = await detectGitHub(this.runner, this.ghCommand, m => this.log(m));
+      if (info.signedIn) {
+        this.log("github: signed in");
+        return;
+      }
+    }
+    if (this.stopped) return;
+    throw new Error("github sign-in was not completed in time");
+  }
+
+  /**
    * The user pressed Cancel. We cannot close the browser window they opened,
    * but we can stop waiting for it: the poll loop ends on its next tick and the
    * card goes back to offering a sign-in instead of sitting on a spinner for
@@ -500,6 +611,18 @@ function describeProblem(err: unknown): string {
     return "sign-in didn't finish in five minutes — try again";
   }
   return "sign-in didn't finish — try again";
+}
+
+/** Plain-words reason a GitHub sign-in didn't finish. Never a stack trace. */
+function describeGitHubProblem(err: unknown): string {
+  const text = String(err);
+  if (/not found/i.test(text)) {
+    return "GitHub's own program isn't installed on this computer";
+  }
+  if (/timed out|not completed in time/i.test(text)) {
+    return "the GitHub sign-in didn't finish in five minutes — try again";
+  }
+  return "the GitHub sign-in didn't finish — try again";
 }
 
 /** Re-exported so callers keep one import for the whole harness story. */

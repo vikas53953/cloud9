@@ -163,7 +163,9 @@ export class Engine {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   onReady?: () => void;
   /** the engine host answers these — it owns the local CLIs */
-  onHarnessRequest?: (action: "status" | "signIn" | "cancel", harness?: HarnessName) => void;
+  onHarnessRequest?: (
+    action: "status" | "signIn" | "cancel" | "githubSignIn", harness?: HarnessName,
+  ) => void;
   /**
    * The real model list for a harness, supplied by the host from live detection.
    * Used at the LAST gate: an agent whose model isn't on its harness's list does

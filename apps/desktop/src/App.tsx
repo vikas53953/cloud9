@@ -7,7 +7,7 @@ import {
   Approval, ARTIFACT_LIMITS, Artifact, artifactRef, ArtifactVersion, Attachment, ATTACHMENT_LIMITS,
   describeArtifactVersion, findArtifactRefs, latestVersion, versionOf,
   Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
-  HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
+  GitHubAccountInfo, HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectItemKind, ProjectItemState,
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
   SearchHit, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
@@ -932,6 +932,13 @@ const MarkClaude = (): React.JSX.Element => (
 const MarkCodex = (): React.JSX.Element => (
   <svg width="18" height="18" viewBox="0 0 24 24" {...stroke} strokeWidth={1.8} aria-hidden="true">
     <path d="m9 9-3.5 3L9 15" /><path d="m15 9 3.5 3L15 15" />
+  </svg>
+);
+/* The GitHub cat, drawn in the same one-weight line as the two marks above so
+   the third card in Settings reads as one of the set, not a pasted-in logo. */
+const MarkGitHub = (): React.JSX.Element => (
+  <svg width="18" height="18" viewBox="0 0 24 24" {...stroke} strokeWidth={1.7} aria-hidden="true">
+    <path d="M9 19.5c-4 1.2-4-2.2-5.5-2.7M14.5 21.5v-3.3c0-1 .1-1.6-.5-2.2 2.6-.3 4.9-1.3 4.9-5.4a4.2 4.2 0 0 0-1.1-2.9 3.9 3.9 0 0 0-.1-2.9s-.9-.3-3 1.1a10.3 10.3 0 0 0-5.4 0C7.2 4.5 6.3 4.8 6.3 4.8a3.9 3.9 0 0 0-.1 2.9 4.2 4.2 0 0 0-1.1 3c0 4 2.3 5 4.9 5.3-.4.4-.5.9-.5 1.5v4" />
   </svg>
 );
 const MarkFolder = (): React.JSX.Element => (
@@ -8228,6 +8235,12 @@ function SettingsScreen(): React.JSX.Element {
                     login stays in Codex — Cloud9 never reads or copies it.</>
                 }
               />
+              {/* GITHUB SITS BESIDE THE TWO AI APPS, not on the Projects
+                  screen. It answers the same question they do — "what is signed
+                  in on the computer that runs my agents?" — and the one place
+                  it used to be mentioned was a single sentence inside the
+                  connect-a-repository box, which nobody finds. */}
+              <GitHubCard info={world.harness?.github} checking={world.harness?.checking} />
               {!desktop()?.isDesktop && (
                 <div className="notice">
                   You're using Cloud9 in a browser. Sign-in buttons work here and run on the
@@ -8486,6 +8499,161 @@ function HarnessCard({
       )}
       {message && <div className="notice">{message}</div>}
       <div className="notice">{disclosure}</div>
+    </div>
+  );
+}
+
+/** GitHub's own sign-in command, spelled once. The card prints it verbatim. */
+const GH_LOGIN_COMMAND = "gh auth login --web --git-protocol https";
+
+/**
+ * THE GITHUB CARD — the screen that did not exist.
+ *
+ * The bug it fixes: Cloud9 rides the GitHub sign-in already on the computer and
+ * never holds a token, which is the right design and was completely invisible.
+ * Nothing anywhere said "you are connected as vikas53953", and nothing offered
+ * a way in when you were not, so the honest answer to "can I connect my GitHub
+ * account?" was "there is no screen for that". Invisible is the same as absent.
+ *
+ * THREE STATES, AND EVERY ONE OF THEM COMES FROM ASKING THE COMPUTER. The
+ * engine host runs `gh auth status` in the same detection round as the two AI
+ * apps and stamps `checkedAt`. Nothing here is inferred, remembered or assumed:
+ * with no `checkedAt` the card says it hasn't looked yet rather than showing a
+ * comforting grey "not signed in".
+ *
+ * IT NEVER HOLDS A SECRET, and it has nothing to hold one in. `gh auth status`
+ * prints a masked token and a scope list; neither is carried on the frame, so
+ * neither can be drawn here.
+ */
+function GitHubCard({ info, checking }: {
+  info?: GitHubAccountInfo; checking?: boolean;
+}): React.JSX.Element {
+  const [copied, setCopied] = useState(false);
+
+  // "we have not looked" and "we looked and found nothing" are different
+  // answers, and only the second one may be printed as a finding
+  const looked = (info?.checkedAt ?? 0) > 0;
+  const installed = looked && (info?.installed ?? false);
+  const signedIn = looked && (info?.signedIn ?? false);
+  const waiting = info?.signingIn ?? false;
+  const problem = info?.problem;
+
+  const state = !looked ? "checking…"
+    : waiting ? "a sign-in window is open on this computer"
+    : !installed ? "not found on this computer"
+    : signedIn ? `signed in as ${info?.login ?? "your GitHub account"}`
+    : problem ? problem
+    : "not signed in";
+
+  const signIn = (): void => { client.send({ type: "githubSignIn" }); };
+  const recheck = (): void => {
+    client.send({ type: "refreshHarness" });
+    client.send({ type: "harnessStatus" });
+  };
+  const copyCommand = (): void => {
+    void navigator.clipboard?.writeText(GH_LOGIN_COMMAND);
+    setCopied(true);
+  };
+
+  return (
+    <div className={`githubcard harnessish ${signedIn ? "isok" : ""}`} data-service="github"
+      data-state={!looked ? "checking" : waiting ? "waiting"
+        : !installed ? "not-installed" : signedIn ? "signed-in" : "not-signed-in"}>
+      <div className="harnesshead">
+        <span className="harnessname"><MarkGitHub /> GitHub</span>
+        <span className={`harnessdot ${waiting ? "warn" : signedIn ? "ok" : installed ? "warn" : "off"}`}></span>
+        <span className="harnessstate">{state}</span>
+      </div>
+
+      <div className="harnessfacts">
+        <span className={installed ? "yes" : "no"}>
+          {installed ? "✓ GitHub's program found" : "✗ GitHub's program not found"}
+        </span>
+        <span className={signedIn ? "yes" : "no"}>{signedIn ? "✓ signed in" : "✗ not signed in"}</span>
+        {signedIn && info?.protocol && <span>connects over {info.protocol}</span>}
+      </div>
+
+      {/* WHEN THIS WAS ACTUALLY ASKED. A card that says "signed in" without
+          saying when it looked is telling you about the past in the present
+          tense. The engine stamps the time; this prints it. */}
+      <div className="checkedline" data-checked={looked ? "yes" : "no"}>
+        <span className="ms-mark" aria-hidden="true">{looked ? "✓" : "·"}</span>
+        <span className="ms-tx">
+          {looked
+            ? `Cloud9 asked this computer at ${new Date(info!.checkedAt).toLocaleTimeString()}.`
+            : "Cloud9 hasn't asked this computer yet."}
+        </span>
+      </div>
+
+      {signedIn && !waiting && (
+        <div className="signedinline" data-state="signed-in">
+          <span className="tick" aria-hidden="true">✓</span>
+          <span className="signedintext">
+            Signed in as {info?.login ?? "your GitHub account"}
+          </span>
+        </div>
+      )}
+
+      {waiting && (
+        <div className="waitingline" data-state="waiting">
+          <span className="spinner" aria-hidden="true" />
+          <span>A GitHub sign-in window is open on this computer — finish it there.</span>
+        </div>
+      )}
+
+      {looked && !signedIn && !waiting && problem && (
+        <div className="problemline" data-state="failed">
+          <span className="problemtext">{plainError(problem) ?? problem}</span>
+          <button className="btn primary ghsignin" disabled={!installed} onClick={signIn}>Try again</button>
+        </div>
+      )}
+
+      {/* THE WAY IN. Only when the computer really has GitHub's program and
+          really is signed out — offering a sign-in button on a computer with no
+          `gh` on it would just fail in a way the owner cannot fix. */}
+      {looked && installed && !signedIn && !waiting && !problem && (
+        <div className="ghsigninbox">
+          <button className="btn primary ghsignin" onClick={signIn}>Sign in now</button>
+          <div className="notice">
+            <b>What happens:</b> a black terminal window opens on this computer and
+            GitHub's own program takes over. It shows you a short code, then opens
+            github.com in your browser. Type the code there and the window finishes
+            by itself. Cloud9 never sees your password.
+          </div>
+        </div>
+      )}
+
+      <div className="harnessbtns">
+        <button className="btn ghostbtn ghrecheck" disabled={checking} onClick={recheck}>
+          {checking ? "Checking…" : "Check again"}
+        </button>
+      </div>
+
+      {looked && !installed && (
+        <div className="notice ghmissing">
+          GitHub's own program isn't on this computer. Get it from{" "}
+          <code>cli.github.com</code> — it's GitHub's, not ours — then press Check again.
+        </div>
+      )}
+
+      {/* The honest fallback, always available: a machine with no terminal to
+          pop (or an owner who would rather do it themselves) can run the exact
+          same command by hand. Same words as the button starts. */}
+      {looked && installed && !signedIn && (
+        <div className="ghmanual">
+          <span className="ghmanual-lead">Rather do it yourself? Run this:</span>
+          <code className="ghcommand">{GH_LOGIN_COMMAND}</code>
+          <button className="btn small ghcopy" onClick={copyCommand}>
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+      )}
+
+      <div className="notice">
+        Cloud9 never holds your password or token — GitHub's own program keeps it
+        in Windows' vault. Your agents borrow that sign-in when they read a
+        repository or open a pull request, and every one of those still asks you first.
+      </div>
     </div>
   );
 }

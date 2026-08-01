@@ -246,8 +246,64 @@ test("no gh on the computer is said in plain words, not as a crash", async () =>
   const { runner } = fakeRunner(() => ({ notFound: true, code: 1 }));
   const gh = new GitHubClient({ runner, log: quiet });
   const who = await gh.account();
+  assert.equal(who.installed, false);
   assert.equal(who.signedIn, false);
   assert.match(who.detail, /isn't installed/);
+});
+
+/* "install GitHub's program" and "sign in" are DIFFERENT INSTRUCTIONS, and one
+ * boolean cannot tell them apart. The Settings card sends the owner to
+ * cli.github.com for the first and offers a button for the second, so getting
+ * these two crossed sends him to download a program he already has. */
+test("gh that is installed but signed out says so — it is not called missing", async () => {
+  const { runner } = fakeRunner(() => ({
+    code: 1, stderr: "You are not logged into any GitHub hosts. Run gh auth login to authenticate.\n",
+  }));
+  const gh = new GitHubClient({ runner, log: quiet });
+  const who = await gh.account();
+  assert.equal(who.installed, true, "gh answered — it IS on this computer, it just has nobody signed in");
+  assert.equal(who.signedIn, false);
+  assert.match(who.detail, /not signed in/);
+});
+
+test("a signed-in answer is marked installed too", async () => {
+  const { runner } = fakeRunner(() => ({
+    stdout: "  ✓ Logged in to github.com account vikas53953 (keyring)\n",
+  }));
+  const who = await new GitHubClient({ runner, log: quiet }).account();
+  assert.equal(who.installed, true);
+  assert.equal(who.signedIn, true);
+});
+
+test("gh's masked token and scope list are never copied into the account object", async () => {
+  // the REAL `gh auth status` output on this machine, verbatim — the only
+  // version of this check worth having is one run against text containing a
+  // secret-shaped thing
+  const { runner } = fakeRunner(() => ({
+    stderr: [
+      "github.com",
+      "  ✓ Logged in to github.com account vikas53953 (keyring)",
+      "  - Active account: true",
+      "  - Git operations protocol: https",
+      "  - Token: gho_************************************",
+      "  - Token scopes: 'gist', 'read:org', 'repo', 'workflow'",
+    ].join("\n"),
+  }));
+  const who = await new GitHubClient({ runner, log: quiet }).account();
+  const json = JSON.stringify(who);
+  assert.ok(!/gho_/.test(json), json);
+  assert.ok(!/scope/i.test(json), json);
+  assert.equal(who.login, "vikas53953", "the public login is the ONLY name that travels");
+});
+
+test("a runner that throws gives an answer, and the answer is not the inside of a program", async () => {
+  const exploding = ((): Promise<RunResult> =>
+    Promise.reject(new Error("C:\\Users\\vikasmit\\hidden — ENOENT spawn gh"))) as never;
+  const who = await new GitHubClient({ runner: exploding, log: quiet }).account();
+  assert.equal(who.signedIn, false);
+  assert.ok(who.detail.length > 0, "silence is not an answer");
+  assert.ok(!/vikasmit|ENOENT|spawn/.test(who.detail),
+    `a crash message reached the screen: ${who.detail}`);
 });
 
 test("the pull request URL is found by its shape, not by being the last line", () => {

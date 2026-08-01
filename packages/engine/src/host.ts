@@ -193,10 +193,16 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
   // Every action is named explicitly. The old `else` branch treated ANY action
   // that carried a harness name as "sign in", so a new action would have
   // silently started a browser sign-in instead of doing its own job.
-  engine.onHarnessRequest = (action: "status" | "signIn" | "cancel", which?: HarnessName) => {
+  engine.onHarnessRequest = (
+    action: "status" | "signIn" | "cancel" | "githubSignIn", which?: HarnessName,
+  ) => {
     if (action === "status") void harness.refresh();
     else if (action === "signIn" && which) void harness.signIn(which);
     else if (action === "cancel" && which) harness.cancelSignIn(which);
+    // GitHub carries no harness name — it is not one. Named explicitly for the
+    // same reason every other action here is: a fall-through `else` once turned
+    // an unknown action into a browser sign-in.
+    else if (action === "githubSignIn") void harness.signInGitHub();
   };
   engine.onReady = () => {
     opts.onReady?.();

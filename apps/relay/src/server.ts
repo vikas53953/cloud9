@@ -154,6 +154,8 @@ export class Relay {
   /** last sign-in request per user, and whether one is still running */
   private signInAt: Record<ID, number> = {};
   private signInFlight: Record<ID, number> = {};
+  /** last GitHub sign-in request per user — its own cooldown, its own key */
+  private githubSignInAt: Record<ID, number> = {};
 
   /**
    * Unspent tickets to fetch one file. IN MEMORY ON PURPOSE, never in the
@@ -1935,6 +1937,29 @@ export class Relay {
         this.toEngines(conn.userId, {
           type: "harnessRequest", action: "signIn", harness: frame.harness,
         });
+        break;
+      }
+      /**
+       * "Let me in to GitHub." Same privilege class as the harness sign-ins —
+       * it makes a program start on the owner's computer — so it goes through
+       * the same gate and gets its own cooldown.
+       *
+       * It does NOT take the shared `signInFlight` lock. That lock is released
+       * by a `harnessState` frame in which neither AI app is signing in, so a
+       * GitHub sign-in holding it would be released the moment the next
+       * detection round landed — a lock that lies is worse than no lock. The
+       * engine host refuses a second GitHub window on its own, which is where
+       * that knowledge actually lives.
+       */
+      case "githubSignIn": {
+        this.assertHarnessAllowed(conn);
+        const now = Date.now();
+        if (now - (this.githubSignInAt[conn.userId] ?? 0) < SIGNIN_COOLDOWN_MS) {
+          throw new Error("give the last sign-in a moment before trying again");
+        }
+        this.githubSignInAt[conn.userId] = now;
+        // only this user's own engine host may be told to sign in
+        this.toEngines(conn.userId, { type: "harnessRequest", action: "githubSignIn" });
         break;
       }
       case "harnessCancel": {

@@ -146,8 +146,18 @@ function jsonFields(fields: readonly string[]): string[] {
   return fields.flatMap(f => ["--json", f]);
 }
 
-/** What `gh auth status` says, in plain words. Never a token, never a scope value. */
+/**
+ * What `gh auth status` says, in plain words. Never a token, never a scope value.
+ *
+ * `installed` and `signedIn` are two different questions and the settings card
+ * needs both: "install GitHub's program" and "sign in" are different
+ * instructions, and one boolean cannot tell them apart. They were one boolean
+ * until 2026-08-01, when the GitHub card in Settings needed to say which of the
+ * two the owner is actually looking at.
+ */
 export interface GitHubAccount {
+  /** the `gh` program answered at all — i.e. it is on this computer */
+  installed: boolean;
   signedIn: boolean;
   /** the login gh reports, e.g. "vikas53953" */
   login?: string;
@@ -255,17 +265,45 @@ export class GitHubClient {
    * lesson `codex login status` taught this project).
    */
   async account(): Promise<GitHubAccount> {
-    const r = await this.runner(this.command, ["auth", "status"], { timeoutMs: 30_000 });
+    let r;
+    try {
+      r = await this.runner(this.command, ["auth", "status"], { timeoutMs: 30_000 });
+    } catch {
+      // IT NEVER THROWS. A settings card prints this straight onto the screen,
+      // and a rejected promise here would take the whole detection round down
+      // with it — both AI apps would lose their status because gh misbehaved.
+      //
+      // AND IT NEVER REPEATS WHAT WAS THROWN. The first draft of this catch
+      // pasted `err.message` into the sentence, and `projectlook.test.ts`
+      // ("never with the inside of a program") failed on it immediately: the
+      // thrown text was a Windows path. A crash message is written for a
+      // programmer, it can carry a path, a command line or worse, and it is
+      // never what the owner needs — the sentence is OURS, always.
+      return {
+        installed: false, signedIn: false,
+        detail: "Cloud9 could not ask the GitHub program on this computer — try again",
+      };
+    }
     if (r.notFound) {
-      return { signedIn: false, detail: "the GitHub command line isn't installed on this computer" };
+      return {
+        installed: false, signedIn: false,
+        detail: "the GitHub command line isn't installed on this computer",
+      };
     }
     const text = `${r.stdout}\n${r.stderr}`;
     if (r.code !== 0) {
-      return { signedIn: false, detail: "you're not signed in to GitHub on this computer" };
+      // gh answered, so it IS here — it just has nobody signed in. Saying
+      // "not installed" for this case would send the owner off to download a
+      // program they already have.
+      return {
+        installed: true, signedIn: false,
+        detail: "you're not signed in to GitHub on this computer",
+      };
     }
     const login = /Logged in to \S+ account (\S+)/i.exec(text)?.[1];
     const protocol = /Git operations protocol:\s*(\S+)/i.exec(text)?.[1];
     return {
+      installed: true,
       signedIn: true,
       ...(login ? { login } : {}),
       ...(protocol ? { protocol } : {}),
