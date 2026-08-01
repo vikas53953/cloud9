@@ -7,6 +7,7 @@ import { AgentDef, AgentSchedule } from "@cloud9/shared";
 import { Engine, SCHEDULE_NOT_SAVED } from "./engine.js";
 import { isScheduleWhen, Scheduler } from "./scheduler.js";
 import { isPendingName, PENDING_MARK } from "./wholefile.js";
+import { plantKilledWriteLitter } from "./litter-for-tests.js";
 
 const sched = (when: string, id = "s1"): AgentSchedule => ({
   id, agentId: "a1", channelId: "c1", when, prompt: "check in", enabled: true,
@@ -80,7 +81,7 @@ test("the schedules file is written whole or not at all", () => {
 test("starting up clears away the litter of a write that was killed", () => {
   const dir = tmpDir();
   fs.writeFileSync(path.join(dir, "schedules.json"), "[]", "utf8");
-  fs.writeFileSync(path.join(dir, `schedules.json${PENDING_MARK}999-1-1`), "x".repeat(5000), "utf8");
+  plantKilledWriteLitter(path.join(dir, "schedules.json"), "x".repeat(5000));
 
   engineIn(dir);
   assert.deepEqual(fs.readdirSync(dir), ["schedules.json"],

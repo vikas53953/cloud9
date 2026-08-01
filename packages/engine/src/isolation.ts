@@ -121,39 +121,40 @@ const CODEX: HarnessIsolation = {
   harness: "codex",
   togglesAreTheBoundary: false,
   ceiling:
-    "Everything Codex can do is available only on an agent whose matching switches " +
-    "are on. Codex cannot remove some built-ins, so Cloud9 refuses the whole turn " +
-    "when web, files, helper agents or commands are switched off.",
+    "Everything Codex can do is available here. Codex cannot remove some of its " +
+    "built-ins, so a Codex agent always has them and Cloud9 shows those switches " +
+    "on and locked rather than offering an off that would not happen.",
   headline:
-    "Codex still cannot remove every built-in tool. Cloud9 now refuses the whole turn " +
-    "when one of their switches is off, instead of pretending the tool disappeared.",
+    "Codex cannot remove every built-in tool. The switches it cannot give up are " +
+    "shown on and locked for a Codex agent, because that is what is true — moving " +
+    "the agent to Claude is what shuts those doors.",
   togglesControl:
-    "whether the turn may start, which folders it may write in, web search, and Cloud9-supplied powers",
+    "which folders it may write in, web search, and Cloud9-supplied powers",
   stillLoaded: [
     {
       name: "collaboration.spawn_agent (and 5 more collaboration tools)",
       plainWords: "Codex always carries helper-agent tools once a turn starts",
-      why: "Codex cannot remove them. Cloud9 now refuses to start the turn unless helper agents " +
-        "are switched on.",
+      why: "Codex cannot remove them, so the helper-agent switch is shown on and locked for a " +
+        "Codex agent instead of pretending an off would remove them.",
     },
     {
       name: "web.run",
       plainWords: "Codex always carries its web tool once a turn starts",
-      why: "Codex cannot remove it. Cloud9 now refuses to start the turn unless web search is " +
-        "switched on.",
+      why: "Codex cannot remove it, so the web switch is shown on and locked for a Codex agent " +
+        "instead of pretending an off would remove it.",
     },
     {
       name: "functions.exec / functions.shell_command / functions.apply_patch",
       plainWords: "Codex always carries command and file tools once a turn starts",
-      why: "Codex cannot remove them. Cloud9 now refuses to start the turn unless both files and " +
-        "run-programs are switched on.",
+      why: "Codex cannot remove them, so the files and run-programs switches are shown on and " +
+        "locked for a Codex agent instead of pretending an off would remove them.",
     },
   ],
   unknowns: [
     "The disposable auth clone preserves today's signed-in turn. Whether a Codex token refresh " +
     "rotates the owner's refresh token, making a later clone stale, has not been measured yet.",
   ],
-  measuredOn: "codex-cli 0.146.0, enforced admission and isolated-home tests 2026-07-31",
+  measuredOn: "codex-cli 0.146.0, locked-on switches and isolated-home tests 2026-08-01",
 };
 
 /** A mock agent runs nothing at all, so there is nothing to leak. */

@@ -64,6 +64,9 @@ export {
 export {
   CAPABILITIES, CLAUDE_BUILTIN_TOOLS, REACH_LEVELS,
   abilitiesForReach, reachOf, grantedCapabilities,
+  // "what this agent can actually do" — the one owner, read by every view
+  effectiveAbilities, withEffectiveAbilities, forcedOnCapabilities,
+  codexUnavoidableCapabilities, FORCED_ON_NOTE,
   claudeToolsFor, deniedClaudeTools, codexSandboxFor, codexWebSearchFor,
   reachesBeyondOwnFolder, allowsConnections,
   alwaysAskAbilities, approvalsFor, needsApprovalToRun, describeApprovalNeeds,

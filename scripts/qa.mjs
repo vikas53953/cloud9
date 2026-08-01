@@ -265,7 +265,20 @@ function mintJoinTokenOn(port, token) {
 // second hub falls the client back to this computer's own; the owner can mint a
 // cloud9://…#join_ link; and the invite panel says plainly that reaching a friend
 // over the internet needs Tailscale and is not wired tonight.
-const EXPECTED_CHECKS = 466;
+// 466 → 467: one check for the switches a Codex agent cannot give up. Every
+// Codex agent saved before the fail-closed rule refused to run for ever, so the
+// app stopped offering an off that would never happen: those switches read on,
+// locked, and say why, on the row, above the ladder and on the honesty card.
+// 467 → 475: eight checks for the ONE WAY IN to every typed command. Everything
+// an agent can be TOLD to do — !issue, !comment, !review, !code, !bg,
+// !remember, !handoff, !schedule/!schedules/!unschedule — already worked and
+// none of it was on the screen, so the owner's report was "GitHub integration is
+// not there". The checks walk the door itself: the control is beside the box; it
+// opens and lists all ten in plain words; picking a row writes the line into the
+// composer and sends NOTHING; a row that cannot work here (no repository
+// connected) says why on the row and refuses to be picked; and the menu is on
+// the app's one Escape owner rather than answering the key its own way.
+const EXPECTED_CHECKS = 475;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -842,6 +855,73 @@ try {
   ok("the receiving agent @Terra actually takes the handed-off turn on screen",
     await seen(page.locator('.msg.from-agent:has(.who b:text-is("Terra"))')));
   await page.screenshot({ path: `${SHOTS}/23-agent-handoff.png` });
+
+  // ============ the actions menu — one way in to every typed command ============
+  //
+  // THE BUG THIS GUARDS. Every one of the commands above — !remember, !handoff,
+  // and the GitHub ones — worked before there was any way to find out they
+  // existed. The owner's report was "GitHub integration is not there", and he
+  // was right: a feature is done when he can SEE it and USE it.
+  //
+  // These checks are on the DOOR, not on the commands (those are checked
+  // above). They walk it the way he would: find the control, open it, read the
+  // list, pick a row, watch the line land in the box he already types in, see a
+  // row that cannot work say so, and press Escape.
+  //
+  // This room is `# trip-goa` and it has Scout AND Terra in it, so "an agent is
+  // here" and "two agents are here" are both true; no repository is connected on
+  // a fresh QA hub, so the GitHub rows are the honest blocked case.
+  await page.click("text=# trip-goa");
+  const acBox = page.locator(".composer textarea").first();
+  await acBox.fill("");
+  ok("a control beside the message box offers the things an agent can be told to do",
+    (await page.locator(".composer .actionsbtn").count()) >= 1);
+
+  await page.click(".composer .actionsbtn");
+  await page.waitForSelector(".composer .actionspop .ap-row", { timeout: 10000 });
+  const rowCount = await page.locator(".composer .actionspop .ap-row").count();
+  const named = await page.evaluate(() =>
+    [...document.querySelectorAll(".composer .actionspop .ap-row")]
+      .map(r => r.dataset.command));
+  ok("opening it lists every typed command the engine understands, each in plain words",
+    rowCount >= 10
+      && ["!issue", "!comment", "!review", "!code", "!bg", "!remember", "!handoff",
+        "!schedule", "!schedules", "!unschedule"].every(c => named.includes(c)),
+    `${rowCount} rows: ${named.join(" ")}`);
+
+  // a row that CAN work here writes its line into the box he already uses
+  await page.click('.composer .actionspop .ap-row[data-command="!remember"]');
+  const filled = await acBox.inputValue();
+  ok("picking a row pre-fills the message box with the command, ready to edit and send",
+    /^@\w+ !remember <.+>$/.test(filled)
+      && (await page.locator(".composer .actionspop").count()) === 0,
+    filled);
+  ok("picking a row does NOT send anything — the line is still sitting in the box, unsent",
+    (await page.locator('.msg p:has-text("!remember <")').count()) === 0);
+  await acBox.fill("");
+
+  // a row that CANNOT work here says so, on the row, and refuses to be picked
+  await page.click(".composer .actionsbtn");
+  await page.waitForSelector('.composer .actionspop .ap-row[data-command="!issue"][data-blocked="yes"]',
+    { timeout: 15000 });
+  const blockedSays = (await page.locator('.composer .actionspop .ap-row[data-command="!issue"] .ap-say')
+    .innerText()).trim();
+  ok("a command that cannot work in this room explains itself in plain words instead of failing later",
+    /repositor/i.test(blockedSays) && /connect/i.test(blockedSays), blockedSays);
+  ok("and that row cannot be picked, so it can never write a line that would come straight back refused",
+    await page.locator('.composer .actionspop .ap-row[data-command="!issue"]').isDisabled()
+      && (await acBox.inputValue()) === "");
+  await page.screenshot({ path: `${SHOTS}/24-actions-menu.png` });
+
+  // Escape closes it — through the ONE owner of Escape, not a handler of its own
+  ok("the actions menu registers with the app's one Escape owner rather than answering the key itself",
+    (await page.evaluate(() => window.cloud9Escape.stacked())) === 1);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
+  ok("Escape closes the actions menu and leaves the box exactly as it was",
+    (await page.locator(".composer .actionspop").count()) === 0
+      && (await page.evaluate(() => window.cloud9Escape.stacked())) === 0
+      && (await acBox.inputValue()) === "");
 
   // invite flow
   await page.click('button[title="Invite a friend"]');
@@ -1891,10 +1971,23 @@ try {
     (await page.locator('.editor .toggle-row[data-ability="files"]').count()) === 1 &&
     (await page.locator(".editor .abilitypick .toggle-row").count()) === CAPABILITIES.length &&
     (await page.locator(".editor .skills").count()) === 1);
+  /* THIS ROLE WAS HIRED ON CODEX (see the app picker above), and Codex cannot
+     give up its web, file, helper-agent and command tools. Every Codex agent
+     Vikas had saved with those switches off refused to run, for good. So the
+     app no longer offers an off that would not happen: those switches read ON
+     and LOCKED, with the reason on the row. Nothing else is switched on for
+     him — "reach files outside its own folder" is still his to give. */
   ok("a hired role starts no more powerful than a hand-written agent plus what its brief asked for",
-    (await page.locator('.editor .toggle-row[data-ability="commands"] input').isChecked()) === false &&
-    (await page.locator('.editor .toggle-row[data-ability="wholeComputer"] input').isChecked()) === false,
+    (await page.locator('.editor .toggle-row[data-ability="wholeComputer"] input').isChecked()) === false &&
+    (await page.locator('.editor .toggle-row[data-ability="connections"] input').isChecked()) === false,
     `reads as ${await page.getAttribute(".editor .reachladder", "data-reach")}`);
+  ok("the switches Codex cannot give up are shown on, locked, and say why — never a false off",
+    (await page.locator('.editor .toggle-row[data-ability="commands"] input').isChecked()) === true &&
+    (await page.locator('.editor .toggle-row[data-ability="commands"] input').isDisabled()) === true &&
+    (await page.locator('.editor .toggle-row[data-ability="helpers"] input').isChecked()) === true &&
+    (await page.locator(".editor .reachforced").count()) === 1 &&
+    (await page.locator('.editor .harnesshonest .hh-forced').count()) === 1,
+    (await page.locator(".editor .reachforced").innerText()).replace(/\s+/g, " ").slice(0, 90));
   const hiredPersona = await page.locator(".editor .persona-input").inputValue();
   ok("the brief really was copied onto the agent, word for word",
     hiredPersona.trim() === brief, `${hiredPersona.length} characters on the agent`);

@@ -115,3 +115,10 @@ Running log of deviations and lessons. One line each, newest last.
   relay needs CLOUD9_DEV=1 while the default owner token is in use, and the dev
   engine host needs CLOUD9_DEMO=1 to keep canned replies. Evidence: build clean,
   64 tests green (57 engine + 7 relay), browser QA 19/19.
+
+## 2026-08-01 — Vikas bug reports (tracked, in progress)
+- BUG-1 (fixing now): Codex agents refuse to start — HarnessAbilityBoundaryError for agents saved before the fail-closed rule. Class fix: editor shows Codex-unremovable switches as locked-on "always on with Codex"; saved agents read the same way; runtime gate stays as backstop.
+- BUG-2 (next): GitHub integration invisible — !issue/!comment/!review are typed-only, no on-screen control. Class fix: visible actions control at the message box covering ALL typed commands (incl. !code).
+- BUG-3 (found by conductor 2026-08-01, fixed): 3 engine tests (litter sweep) failed by luck of PID assignment — they fabricated killed-write litter stamped pid 999 with a fresh timestamp; whenever pid 999 is a live process the sweeper rightly leaves the file. Class fix: one helper (packages/engine/src/litter-for-tests.ts) plants litter backdated past the grace window; all three suites use it. Fail-then-pass proven (3 fail without backdating, 545/545 with).
+- BUG-4 (found by conductor 2026-08-01, fixed): qa:app silently walked YESTERDAY'S installed app — npm run dist builds an installer but nothing installs it, so a walk could "verify" fixes against old software. Class fix: drive-app.mjs now refuses to run when the installed web bundle differs byte-for-byte from release/win-unpacked (guard proven: it refused the stale install, passed after a silent /S install).
+- BUG-1 and BUG-2: DONE, proven on the freshly installed app — 18/18 walk including the two new permanent checks (Codex locks 4 switches on with the reason, and Claude releases them; Actions menu offers 10 commands, blocked rows explain themselves, choosing one fills the composer).

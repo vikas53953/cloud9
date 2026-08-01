@@ -15,7 +15,8 @@ import * as shared from "@cloud9/shared";
 import { AgentAbilities, AgentDef } from "@cloud9/shared";
 import {
   alwaysAskAbilities, approvalsFor, CAPABILITIES, claudeToolsFor, codexSandboxFor,
-  deniedClaudeTools, needsApprovalToRun, renderCapabilities,
+  codexUnavoidableCapabilities, deniedClaudeTools, effectiveAbilities, forcedOnCapabilities,
+  needsApprovalToRun, reachOf, renderCapabilities, withEffectiveAbilities,
 } from "./abilities.js";
 import { claudeArgs, ClaudeCliProvider, traceClaude } from "./claude-cli.js";
 import { codexArgs } from "./codex.js";
@@ -101,6 +102,8 @@ test("no tool can reach a command line that the prompt does not account for", ()
 test("the Codex sandbox stays table-driven after the admission gate", () => {
   assert.equal(codexSandboxFor(agent()), "read-only");
   assert.equal(codexSandboxFor(agent({ files: true })), "workspace-write");
+  // this agent's own app is Claude (no provider = claude), so putting it on the
+  // Codex command line is a contradiction the backstop still stops
   assert.throws(() => codexArgs(agent(), "C:/data/a1"), HarnessAbilityBoundaryError,
     "a read-only fence is not a substitute for removing Codex's built-in tools");
   const admitted = agent({ webSearch: true, files: true, helpers: true, commands: true });
@@ -212,6 +215,64 @@ test("an agent NOT given web search cannot produce a web step, and is told so", 
   const args = claudeArgs(homebody);
   assert.ok(!args.includes("--allowed-tools"), "an agent with no abilities is granted no tools at all");
   assert.ok(!traceClaude(`{"type":"result","result":"done"}`).steps.some(s => s.kind === "web"));
+});
+
+// ---------------------------------------------------------------------------
+// AN AGENT'S APP HAS THE LAST WORD ON ITS SWITCHES — ONE OWNER FOR THAT TOO
+// ---------------------------------------------------------------------------
+//
+// The bug: every Codex agent saved before the fail-closed rule refused to run
+// for ever, because the app was holding switches Codex cannot honour. The fix
+// is not a rescue path per caller — it is that `effectiveAbilities` is the only
+// answer to "what can this agent do", so the command line, the prompt, the
+// ladder, the approvals and the screen cannot give four different ones.
+
+test("a Codex agent's unremovable switches read as ON everywhere at once", () => {
+  const legacy = agent({ webSearch: false, files: false, helpers: false, commands: false },
+    { provider: "codex" });
+
+  const forced = forcedOnCapabilities(legacy);
+  assert.deepEqual(forced.map(c => c.ability), codexUnavoidableCapabilities().map(c => c.ability),
+    "the locked rows ARE the table's own, never a second list");
+
+  const effective = effectiveAbilities(legacy);
+  for (const cap of forced) {
+    assert.equal(effective[cap.ability], true, `${String(cap.ability)} is real on Codex`);
+    // the prompt reads the same answer — no view may contradict another
+    assert.ok(renderCapabilities(legacy).includes(cap.can),
+      `${String(cap.ability)} is on, so the agent must be told it CAN`);
+    assert.ok(!renderCapabilities(legacy).includes(cap.cannot));
+  }
+  // the ladder reads it too: this is no longer "just talk"
+  assert.notEqual(reachOf(legacy), "talk");
+  // and anything that changes the machine still asks him first
+  assert.equal(approvalsFor(legacy).commands, true);
+  assert.deepEqual(withEffectiveAbilities(legacy).abilities, effective);
+  assert.deepEqual(legacy.abilities,
+    { ...ALL_OFF, webSearch: false, files: false, helpers: false, commands: false },
+    "nothing was migrated — his stored switches are untouched");
+});
+
+test("a Claude agent is untouched, so moving one back restores his switches", () => {
+  const stored: AgentAbilities = { ...ALL_OFF, webSearch: true, background: true };
+  const onCodex = agent(stored, { provider: "codex" });
+  const backOnClaude = { ...onCodex, provider: "claude" as const };
+
+  assert.deepEqual(effectiveAbilities(backOnClaude), stored);
+  assert.deepEqual(forcedOnCapabilities(backOnClaude), []);
+  assert.equal(reachOf(backOnClaude), "talk", "web + background alone is his own mixture, as before");
+  assert.deepEqual(
+    claudeToolsFor(backOnClaude),
+    CAPABILITIES.filter(c => stored[c.ability] === true).flatMap(c => [...c.claudeTools]),
+    "and the Codex rule never leaks onto a Claude command line");
+  for (const cap of codexUnavoidableCapabilities()) {
+    if (stored[cap.ability] === true) continue;
+    for (const tool of cap.claudeTools) {
+      assert.ok(!claudeToolsFor(backOnClaude).includes(tool), `${tool} was forced onto Claude`);
+    }
+  }
+  // an agent with no provider at all is a Claude agent (v1 definitions)
+  assert.deepEqual(forcedOnCapabilities(agent(stored)), []);
 });
 
 // ---------------------------------------------------------------------------

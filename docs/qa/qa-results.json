@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-07-31T16:09:07.785Z",
-  "expected": 466,
-  "executed": 466,
+  "ranAt": "2026-08-01T06:01:33.719Z",
+  "expected": 475,
+  "executed": 475,
   "results": [
     {
       "name": "join screen renders",
@@ -176,7 +176,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch 4vtxu :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch yms0j :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -214,9 +214,49 @@
       "detail": ""
     },
     {
+      "name": "a control beside the message box offers the things an agent can be told to do",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "opening it lists every typed command the engine understands, each in plain words",
+      "pass": true,
+      "detail": "10 rows: !issue !review !comment !code !bg !remember !handoff !schedule !schedules !unschedule"
+    },
+    {
+      "name": "picking a row pre-fills the message box with the command, ready to edit and send",
+      "pass": true,
+      "detail": "@Scout !remember <what it should remember>"
+    },
+    {
+      "name": "picking a row does NOT send anything — the line is still sitting in the box, unsent",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a command that cannot work in this room explains itself in plain words instead of failing later",
+      "pass": true,
+      "detail": "No repository is connected yet — open Projects and connect one, and Cloud9 has to be told where that code lives on this computer."
+    },
+    {
+      "name": "and that row cannot be picked, so it can never write a line that would come straight back refused",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the actions menu registers with the app's one Escape owner rather than answering the key itself",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "Escape closes the actions menu and leaves the box exactly as it was",
+      "pass": true,
+      "detail": ""
+    },
+    {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_oGXzRm_IBFb1y9hy9Add7A"
+      "detail": "inv_MNlzRoE3_kYYWz0NimVGQw"
     },
     {
       "name": "friend joins via invite",
@@ -346,7 +386,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 21:35"
+      "detail": "↳ 1 reply · last at 11:28"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -416,7 +456,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 21:35 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 11:28 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -601,7 +641,7 @@
     {
       "name": "and a Codex agent is NOT — the same screen refuses to tell him the same story twice",
       "pass": true,
-      "detail": "Codex still cannot remove every built-in tool. Cloud9 now refuses the "
+      "detail": "Codex cannot remove every built-in tool. The switches it cannot give u"
     },
     {
       "name": "it says instead what those switches DO control on Codex",
@@ -621,7 +661,7 @@
     {
       "name": "the report carries the version and date it was measured on, so a stale claim shows",
       "pass": true,
-      "detail": "Measured on codex-cli 0.146.0, enforced admission and isolated-home tests 2026-07-31."
+      "detail": "Measured on codex-cli 0.146.0, locked-on switches and isolated-home tests 2026-08-01."
     },
     {
       "name": "a hand-written agent's file offers the ladder, the switches, who may use it, and skills",
@@ -742,6 +782,11 @@
       "name": "a hired role starts no more powerful than a hand-written agent plus what its brief asked for",
       "pass": true,
       "detail": "reads as mixture"
+    },
+    {
+      "name": "the switches Codex cannot give up are shown on, locked, and say why — never a false off",
+      "pass": true,
+      "detail": "Codex always brings 4 of these with it.Look things up on the web, Keep and change files in"
     },
     {
       "name": "the brief really was copied onto the agent, word for word",
@@ -1066,7 +1111,7 @@
     {
       "name": "the room panel lists who is in the room, with their role and when they joined",
       "pass": true,
-      "detail": "Runs this room · joined 31 Jul"
+      "detail": "Runs this room · joined 1 Aug"
     },
     {
       "name": "a room's description and one-line topic can be set, and come back from the hub",
@@ -1096,7 +1141,7 @@
     {
       "name": "an open room can be found by somebody who is not in it, with what it's for and how many are in it",
       "pass": true,
-      "detail": "1 person · started 31 Jul"
+      "detail": "1 person · started 1 Aug"
     },
     {
       "name": "browsing offers no members and no messages — finding a room is not permission to read it",
@@ -1116,7 +1161,7 @@
     {
       "name": "letting yourself into an open room is recorded as exactly that — nobody added you",
       "pass": true,
-      "detail": "Member · joined 31 Jul"
+      "detail": "Member · joined 1 Aug"
     },
     {
       "name": "leaving a room takes it out of the sidebar, there and then",
@@ -1161,7 +1206,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_ms94xvwu8y3r9d\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_ms9yor52iav995\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -1201,17 +1246,17 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_ms94vd0nd970b1:1785514004259 a_ms94vnxdywyijc:1785514010798 u_ms94w024no7amc:1785514011348 a_ms94xvwu8y3r9d:1785514011487"
+      "detail": "u_ms9ymit4kmltdn:1785563967328 a_ms9ymmt1hkh09p:1785563973112 u_ms9ymz3uy5j83i:1785563973490 a_ms9yor52iav995:1785563973544"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785514008428 · now 1785514011348"
+      "detail": "first 1785563971028 · now 1785563973490"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
       "pass": true,
-      "detail": "Member · joined 31 Jul"
+      "detail": "Member · joined 1 Aug"
     },
     {
       "name": "a member list naming an agent's owner does not scroll sideways at 1280 in the light look",
@@ -1436,7 +1481,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":20,\"pinned\":0,\"min\":40,\"max\":4087,\"endedAt\":4087}"
+      "detail": "{\"followedToBottom\":0,\"samples\":17,\"pinned\":0,\"min\":40,\"max\":4119,\"endedAt\":4119}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1446,7 +1491,7 @@
     {
       "name": "REPRODUCED: he is a long way from the newest message, exactly as he is after reading back",
       "pass": true,
-      "detail": "{\"fromBottom\":4087,\"scrollTop\":0,\"bottom\":4087,\"newestInSight\":false,\"followed\":{\"n\":6,\"why\":\"resized\",\"recent\":[\"arrived\",\"resized\",\"resized\",\"arrived\",\"resized\",\"resized\"]},\"motion\":\"smooth\"}"
+      "detail": "{\"fromBottom\":4119,\"scrollTop\":0,\"bottom\":4119,\"newestInSight\":false,\"followed\":{\"n\":6,\"why\":\"resized\",\"recent\":[\"arrived\",\"resized\",\"resized\",\"arrived\",\"resized\",\"resized\"]},\"motion\":\"smooth\"}"
     },
     {
       "name": "a message arriving while he has read back does NOT drag him down to it",
@@ -1476,7 +1521,7 @@
     {
       "name": "REPRODUCED: opening the file tray really does move the bottom, with nothing arriving at all",
       "pass": true,
-      "detail": "bottom 4171 → 4325"
+      "detail": "bottom 4203 → 4325"
     },
     {
       "name": "and the view follows the bottom when the bottom is what moved",
@@ -1496,7 +1541,7 @@
     {
       "name": "REPRODUCED: a picture finishing really does push the bottom down after the message landed",
       "pass": true,
-      "detail": "bottom 4358 → 4495"
+      "detail": "bottom 4390 → 4527"
     },
     {
       "name": "and the view follows a row that grew, not only a message that arrived",
@@ -1576,7 +1621,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_ms94vqbrcncfnn\",\"status\":\"completed\",\"runId\":\"r-0ms94vqc2-j5zf\"}"
+      "detail": "{\"id\":\"t_ms9ymox8m604jm\",\"status\":\"completed\",\"runId\":\"r-0ms9ymoxl-5as4\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1746,7 +1791,7 @@
     {
       "name": "C12: a repository GitHub cannot see is told so when he connects it, not left looking like a good one",
       "pass": true,
-      "detail": "nope definitely-not-a-real-owner-xyz987/nope Look at GitHub now Rename Disconnect Looked at GitHub 31 Jul The last look at GitHub did not work GitHub has no repository called definitely-not-a-real-own"
+      "detail": "nope definitely-not-a-real-owner-xyz987/nope Look at GitHub now Rename Disconnect Looked at GitHub 1 Aug The last look at GitHub did not work GitHub has no repository called definitely-not-a-real-owne"
     },
     {
       "name": "connecting a repository puts it on screen, named the way GitHub names it",
@@ -1756,7 +1801,7 @@
     {
       "name": "connecting a repository looks at GitHub there and then, rather than leaving him to find out later",
       "pass": true,
-      "detail": "Cloud9 itself vikas53953/cloud9 Look at GitHub now Rename Disconnect Trunk master Looked at GitHub 31 Jul Pull requests · 0 Issues · 0 No pull requests recorded This is what GitHub"
+      "detail": "Cloud9 itself vikas53953/cloud9 Look at GitHub now Rename Disconnect Trunk master Looked at GitHub 1 Aug Pull requests · 0 Issues · 0 No pull requests recorded This is what GitHub "
     },
     {
       "name": "a connected repository offers a way to ask GitHub, ready and named in plain words",
@@ -1766,7 +1811,7 @@
     {
       "name": "pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
       "pass": true,
-      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms94z97apepvud\",\"repo\":\"vikas53953/cloud9\"}"
+      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_ms9ypuer29e0a9\",\"repo\":\"vikas53953/cloud9\"}"
     },
     {
       "name": "while it is looking the button says so and cannot be pressed again",
@@ -1776,7 +1821,7 @@
     {
       "name": "when the answer lands the button settles and the screen stamps when GitHub was last asked",
       "pass": true,
-      "detail": "Trunk master Looked at GitHub 31 Jul"
+      "detail": "Trunk master Looked at GitHub 1 Aug"
     },
     {
       "name": "the pull requests the engine reported are on screen, in the project's own list",
@@ -1786,7 +1831,7 @@
     {
       "name": "the trunk it must never land on is drawn only now that GitHub actually said what it is",
       "pass": true,
-      "detail": "Trunk master Looked at GitHub 31 Jul"
+      "detail": "Trunk master Looked at GitHub 1 Aug"
     },
     {
       "name": "a pull request that landed and one that was thrown away are told apart in words, not only colour",
@@ -1921,7 +1966,7 @@
     {
       "name": "it says when it runs out — an agent is standing there waiting for the answer",
       "pass": true,
-      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 21:38 EXPIRES in 9 minutes"
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 11:30 EXPIRES in 9 minutes"
     },
     {
       "name": "a request with no job behind it offers no 'see the job' button to press",
@@ -2146,7 +2191,7 @@
     {
       "name": "the card says which agent made it, and how big it is",
       "pass": true,
-      "detail": "made by Scout :: 45 bytes · text · 31 Jul 21:38"
+      "detail": "made by Scout :: 45 bytes · text · 1 Aug 11:30"
     },
     {
       "name": "version 1 is not labelled with a version number nobody needs",
@@ -2156,7 +2201,7 @@
     {
       "name": "the reference itself is not printed beside the card it draws",
       "pass": true,
-      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 31 Jul 21:38 Show it"
+      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 1 Aug 11:30 Show it"
     },
     {
       "name": "the file really comes back, byte for byte, through the attachment ticket path",
@@ -2176,7 +2221,7 @@
     {
       "name": "the history shows the earlier version, who made it and when",
       "pass": true,
-      "detail": "v1 Scout 31 Jul 21:38 45 bytes Show it"
+      "detail": "v1 Scout 1 Aug 11:30 45 bytes Show it"
     },
     {
       "name": "an older version can still be downloaded, and it is the OLD bytes",
@@ -2191,7 +2236,7 @@
     {
       "name": "a file that is not text is a download and is never drawn into the room",
       "pass": true,
-      "detail": "74 bytes · a file to save · 31 Jul 21:38"
+      "detail": "74 bytes · a file to save · 1 Aug 11:30"
     },
     {
       "name": "a reference to a file that is not there says so in plain words, with no jargon",
@@ -2301,7 +2346,7 @@
     {
       "name": "a valid link previews with its honest reach and names the hub, and sees the join link",
       "pass": true,
-      "detail": "127.0.0.1:51331 — only this computer — this is the address the app uses for itself · carries a join link, so y"
+      "detail": "127.0.0.1:61900 — only this computer — this is the address the app uses for itself · carries a join link, so y"
     },
     {
       "name": "adding a friend's Cloud9 actually dials it — the connection says so, and it is the live hub",
@@ -2321,7 +2366,7 @@
     {
       "name": "the owner can mint a join link, and it is a cloud9:// link carrying a join_ token",
       "pass": true,
-      "detail": "cloud9://127.0.0.1:8799#join_UWOH80EiBa-XF0u4-zeE9Q"
+      "detail": "cloud9://127.0.0.1:8799#join_H_VwXNyOet9PTaoT6eNqWA"
     },
     {
       "name": "the panel says plainly that reaching a friend over the internet needs Tailscale, not wired tonight",

@@ -13,6 +13,7 @@ import { Engine } from "./engine.js";
 import { buildAgentPrompt, ClaudeProvider, renderSkills, RespondInput } from "./provider.js";
 import { aTurn } from "./turnfixture.js";
 import { isPendingName } from "./wholefile.js";
+import { plantKilledWriteLitter } from "./litter-for-tests.js";
 
 const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-skills-"));
 
@@ -317,7 +318,7 @@ test("starting up clears half-written instructions out of an agent's skills fold
   const skillsDir = path.join(dir, "agents", "a1", "skills");
   fs.mkdirSync(skillsDir, { recursive: true });
   fs.writeFileSync(path.join(skillsDir, "checklist.md"), "1. check the price", "utf8");
-  fs.writeFileSync(path.join(skillsDir, "checklist.md.tmp-999-1-1"), "1. check the pri", "utf8");
+  plantKilledWriteLitter(path.join(skillsDir, "checklist.md"), "1. check the pri");
 
   const engine = new Engine({ relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: dir });
   assert.deepEqual(fs.readdirSync(skillsDir), ["checklist.md"],

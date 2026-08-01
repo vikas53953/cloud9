@@ -688,6 +688,38 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 }
 .emojipop button{width:26px;height:26px;border-radius:var(--radius-xs);font-size:15px;line-height:1;}
 .emojipop button:hover{background:var(--surface-2);}
+/* The actions menu — the one way in to every typed command. Same popover
+   language as .emojipop and .autocomplete above (sits over the box, one border,
+   the big shadow), widened into a read-down list because every row carries a
+   sentence rather than a glyph. */
+.actionspop{
+  position:absolute;bottom:100%;left:0;margin-bottom:6px;z-index:7;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow-lg);overflow:hidden auto;
+  width:min(430px,calc(100% - 8px));max-height:min(56vh,430px);
+}
+.ap-head{padding:6px 12px;color:var(--ink-3);background:var(--surface-2);border-bottom:1px solid var(--line-soft);}
+.ap-promise{
+  padding:8px 12px;font-size:12px;line-height:1.45;color:var(--ink-2);
+  border-bottom:1px solid var(--line-soft);background:var(--surface-2);
+}
+.ap-row{
+  display:grid;grid-template-columns:1fr auto;gap:2px 10px;width:100%;text-align:left;
+  padding:9px 12px;border-bottom:1px solid var(--line-soft);cursor:pointer;
+  transition:background .15s var(--ease);
+}
+.ap-row:last-child{border-bottom:0;}
+.ap-row:hover:not(:disabled),.ap-row:focus-visible:not(:disabled){background:var(--surface-2);}
+.ap-label{font-family:var(--display);font-size:14px;line-height:1.2;color:var(--ink);}
+.ap-cmd{
+  grid-row:1;grid-column:2;align-self:center;
+  font-family:var(--mono);font-size:10.5px;color:var(--ink-3);white-space:nowrap;
+}
+.ap-say{grid-column:1 / -1;font-size:11.5px;line-height:1.45;color:var(--ink-3);}
+.ap-row.is-blocked{cursor:not-allowed;opacity:.75;}
+.ap-row.is-blocked .ap-label{color:var(--ink-3);}
+.ap-row.is-blocked .ap-say{color:var(--marigold);}
+
 .autocomplete{
   position:absolute;bottom:100%;left:0;margin-bottom:6px;background:var(--surface);
   border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;min-width:260px;

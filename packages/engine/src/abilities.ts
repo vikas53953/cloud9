@@ -364,9 +364,17 @@ export function reachOf(agent: AgentDef): Reach {
   return answer;
 }
 
-/** Is this switch on for this agent? Absent always means off. */
-function isOn(agent: AgentDef, ability: keyof AgentAbilities): boolean {
-  return agent.abilities?.[ability] === true;
+/**
+ * Is this switch on for this agent? Absent always means off — and the agent's
+ * APP has the last word, because a switch its app cannot honour is not a switch.
+ *
+ * EVERY function in this file asks this one, which is what makes
+ * `effectiveAbilities` a single owner rather than a patch applied per call site:
+ * the tools, the sandbox, the prompt sentences, the ladder and the approvals all
+ * come out of the same answer.
+ */
+function isOn(agent: Pick<AgentDef, "provider" | "abilities">, ability: keyof AgentAbilities): boolean {
+  return effectiveAbilities(agent)[ability] === true;
 }
 
 /** The rows this agent has switched on, in table order. */
@@ -413,6 +421,66 @@ export function codexWebSearchFor(agent: AgentDef): boolean {
 /** Codex capability rows whose built-ins cannot be removed by codex-cli. */
 export function codexUnavoidableCapabilities(): Capability[] {
   return CAPABILITIES.filter(c => (c.codexUnavoidableTools?.length ?? 0) > 0);
+}
+
+/**
+ * THE ROWS THIS AGENT'S APP SWITCHES ON WHETHER OR NOT ITS OWNER DID.
+ *
+ * Empty for a Claude agent: `--tools` declares the exact set, so an off switch
+ * really does remove the tool. For a Codex agent it is the rows above, because
+ * codex-cli 0.146.0 has no way to declare or subtract its built-ins.
+ */
+export function forcedOnCapabilities(agent: Pick<AgentDef, "provider">): Capability[] {
+  return (agent.provider ?? "claude") === "codex" ? codexUnavoidableCapabilities() : [];
+}
+
+/** The sentence a locked-on switch carries on a screen. Plain words, no jargon. */
+export const FORCED_ON_NOTE = "Always on with Codex — its program cannot give this up.";
+
+/**
+ * WHAT THIS AGENT CAN ACTUALLY DO — THE ONE OWNER OF THAT QUESTION.
+ *
+ * THE BUG THIS EXISTS TO MAKE IMPOSSIBLE. Every Codex agent saved before the
+ * fail-closed rule landed refused to run: "Codex did not start because Get help
+ * from its own helper agents, Run programs on this computer are switched off,
+ * but this harness cannot remove the matching built-in tools." The app was
+ * happily holding, showing and saving a state the engine would ALWAYS refuse.
+ * The contradiction was never in Codex — it was that the app let those switches
+ * be off for an agent whose app cannot honour an off.
+ *
+ * So the app no longer represents that state at all. An agent running on Codex
+ * HAS the web, file, helper-agent and command tools, so this is what everything
+ * reads: the command line, the sandbox, the prompt, the reach ladder, the
+ * approvals and the screen. Nothing computes its own answer beside it.
+ *
+ * READ TIME, NOT MIGRATION TIME. The stored switches are left exactly as they
+ * were, so moving an agent back to Claude gives him back the switches he set.
+ * Nothing is rewritten in the database to make this true.
+ *
+ * HONEST, NOT CONVENIENT. Showing these as ON is the truthful direction: Codex
+ * genuinely holds those tools at every setting. Showing them OFF was the tick
+ * that was not true.
+ */
+export function effectiveAbilities(
+  agent: Pick<AgentDef, "provider" | "abilities">,
+): AgentAbilities {
+  const stored = { ...(agent.abilities ?? {}) } as AgentAbilities;
+  for (const cap of forcedOnCapabilities(agent)) {
+    (stored as unknown as Record<string, boolean>)[cap.ability] = true;
+  }
+  return stored;
+}
+
+/**
+ * The same agent, with the abilities its app really gives it. For the callers
+ * that must hand a whole definition onward (the Codex command line builder) —
+ * so they read the effective answer once, at the top, instead of remembering to
+ * ask per line.
+ */
+export function withEffectiveAbilities<T extends Pick<AgentDef, "provider" | "abilities">>(
+  agent: T,
+): T {
+  return { ...agent, abilities: effectiveAbilities(agent) };
 }
 
 /** Does this agent's own folder stop being the edge of its world? */
@@ -521,9 +589,10 @@ export function renderCapabilities(
       : "") +
     `\nTrue for every agent in Cloud9, whatever your switches say:\n` +
     (harness === "codex"
-      ? `• This Codex turn only starts when its unavoidable tools are switched on. ` +
-        `Codex cannot subtract those built-ins, so Cloud9 refuses the whole turn instead ` +
-        `of pretending an off switch removed them.\n`
+      ? `• You run on Codex, and Codex cannot give up these built-in tools: ` +
+        `${codexUnavoidableCapabilities().map(c => c.label.toLowerCase()).join("; ")}. ` +
+        `They are yours whatever the switches were set to, and this list says so above ` +
+        `rather than pretending an off switch removed them.\n`
       : `• You have no tools at all beyond the ones listed above.\n`) +
     `• Your owner's own Claude Code and Codex setup — his instructions, his connected ` +
     `accounts, his shortcuts — is not loaded for you, and you should not act as if it were.\n` +

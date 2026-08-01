@@ -35,7 +35,8 @@ import {
    half of the engine that spawns processes, and none of that belongs in a
    browser bundle. These two modules read `@cloud9/shared` and nothing else.) */
 import {
-  abilitiesForReach, CAPABILITIES, describeApprovalNeeds, REACH_LEVELS, Reach,
+  abilitiesForReach, CAPABILITIES, describeApprovalNeeds, effectiveAbilities,
+  forcedOnCapabilities, FORCED_ON_NOTE, REACH_LEVELS, Reach, Capability,
 } from "@cloud9/engine/dist/abilities.js";
 import { isolationFor } from "@cloud9/engine/dist/isolation.js";
 /* THE NOTIFICATION RULES AND THE FOUR EVENTS THAT FEED THEM.
@@ -4545,6 +4546,144 @@ function AddToChannel({ channel }: { channel: Channel }): React.JSX.Element | nu
 
 const QUICK_EMOJI = ["👍", "🙏", "🎉", "🔥", "✅", "❌", "😀", "😅", "🤔", "👀", "🚀", "☁️", "📌", "⏰", "💡", "❤️"];
 
+/* ============== ONE WAY IN FOR EVERY TYPED COMMAND ==============
+ *
+ * THE BUG THIS FIXES. Everything an agent can be TOLD to do — open a GitHub
+ * issue, ask for a review, comment on a pull request, take a coding job, keep a
+ * note, hand work to another agent, set a repeating job — was already built and
+ * already worked. None of it was on the screen. The only way to reach any of it
+ * was to already know the words, so the honest report from the owner was
+ * "GitHub integration is not there". Invisible is the same as absent.
+ *
+ * THE CLASS FIX, not a button per command. There is ONE table below and ONE
+ * control beside the box. A command added to the engine tomorrow is ONE ROW
+ * here — never a new menu, a new popover, or a new send path.
+ *
+ * IT WRITES INTO THE BOX HE ALREADY USES. Picking a row does not send anything
+ * and does not talk to the hub. It puts the line in the composer with the parts
+ * he has to fill in selected, and he reads it, edits it and presses Send like
+ * any other message. A second way to send is a second set of rules about what
+ * gets sent, and that is exactly the kind of split this app keeps out.
+ *
+ * SOURCE OF TRUTH: `packages/engine/src/engine.ts`. The engine's own regular
+ * expressions decide what a command IS — `considerReplies`,
+ * `parseGitHubWriteCommand` and `handleScheduleCommand`. This table cannot be
+ * derived from them without rewriting the engine's parser, and the engine is a
+ * Node package the browser bundle must not import. So the two lists are kept
+ * honest by a TEST instead of by hope:
+ * `apps/desktop/electron/roomcommands.test.cjs` reads both files and fails if
+ * the engine parses a command this menu does not offer, or the other way round.
+ *
+ * WHAT A ROW MAY NOT DO IS PRETEND. A command that cannot work in this room —
+ * no agent in it, only one agent when two are needed, no repository connected —
+ * says so on the row, in plain words, and cannot be picked. Silently offering a
+ * line that will come back with a refusal is the invisibility bug again with
+ * extra steps.
+ */
+
+/** What a command needs before it can do anything in THIS room. */
+type CommandNeed = "agent" | "twoAgents" | "repo";
+
+interface RoomCommand {
+  /** the word the engine parses, exactly — see engine.ts */
+  cmd: string;
+  /** other spellings the engine accepts for the same thing */
+  aliases?: string[];
+  /** what it does, in his words, never the command's */
+  label: string;
+  /** ONE line: what will happen, and who is asked first */
+  say: string;
+  /** the line written into the box; `<…>` marks the part he fills in */
+  line: (who: { first: string; second: string }) => string;
+  needs: CommandNeed[];
+}
+
+/**
+ * EVERY typed command the engine understands, in the order he is likeliest to
+ * want them. Adding one is one row. Removing one from the engine and leaving it
+ * here fails the drift test above.
+ */
+const ROOM_COMMANDS: RoomCommand[] = [
+  {
+    cmd: "!issue",
+    label: "Open a GitHub issue",
+    say: "Writes a new issue on the connected repository. An approval card comes first — nothing leaves this computer until you say yes.",
+    line: w => `@${w.first} !issue <what the issue is about>`,
+    needs: ["agent", "repo"],
+  },
+  {
+    cmd: "!review",
+    label: "Ask for a code review",
+    say: "Asks the people you name to review a pull request. An approval card comes first — nothing leaves this computer until you say yes.",
+    line: w => `@${w.first} !review <pull request number> <github-username>`,
+    needs: ["agent", "repo"],
+  },
+  {
+    cmd: "!comment",
+    label: "Comment on a pull request",
+    say: "Posts your words on a pull request. An approval card comes first — nothing leaves this computer until you say yes.",
+    line: w => `@${w.first} !comment <pull request number> <what to say>`,
+    needs: ["agent", "repo"],
+  },
+  {
+    cmd: "!code",
+    label: "Give a coding job",
+    say: "The agent works on its own copy of the code on this computer. If it wants to push anything to GitHub, an approval card comes first.",
+    line: w => `@${w.first} !code <what to change>`,
+    needs: ["agent", "repo"],
+  },
+  {
+    cmd: "!bg",
+    aliases: ["!task"],
+    label: "Give a job to work on in the background",
+    say: "The agent takes the job away and posts here when it is done. If that agent needs your nod, an approval card comes first.",
+    line: w => `@${w.first} !bg <what to do>`,
+    needs: ["agent"],
+  },
+  {
+    cmd: "!remember",
+    label: "Make this agent remember something",
+    say: "The agent keeps this note between conversations. It stays on this computer.",
+    line: w => `@${w.first} !remember <what it should remember>`,
+    needs: ["agent"],
+  },
+  {
+    cmd: "!handoff",
+    label: "Pass this work to another agent",
+    say: "The first agent hands the job to the second and says so in the room. It stays on this computer.",
+    line: w => `@${w.first} !handoff @${w.second} <what they should do>`,
+    needs: ["agent", "twoAgents"],
+  },
+  {
+    cmd: "!schedule",
+    label: "Set this agent a repeating job",
+    say: "The agent does this again and again at the time you set. If that agent can run programs, an approval card comes first.",
+    line: w => `@${w.first} !schedule daily 09:00 <what to do>`,
+    needs: ["agent"],
+  },
+  {
+    cmd: "!schedules",
+    label: "List this agent's repeating jobs",
+    say: "The agent lists what it is set to do and when. Nothing leaves this computer.",
+    line: w => `@${w.first} !schedules`,
+    needs: ["agent"],
+  },
+  {
+    cmd: "!unschedule",
+    label: "Cancel a repeating job",
+    say: "Stops one repeating job. Use the id the agent showed you when it listed them.",
+    line: w => `@${w.first} !unschedule <the job's id>`,
+    needs: ["agent"],
+  },
+];
+
+/**
+ * The one line under the list. Said once, above every row, because the promise
+ * is the same for all of them: picking a row is not sending anything.
+ */
+const ACTIONS_PROMISE =
+  "Nothing is sent yet. This writes the line into your box — read it, change it, then press Send.";
+
 function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   channel: Channel;
   /** set in a thread panel, and in the conversation's own box when threads are
@@ -4560,6 +4699,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const [text, setText] = useState("");
   const [acIndex, setAcIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   /* A thread's box is a narrow rail and drops the wide affordances. The
      conversation's own box keeps every one of them even while it is answering
      something — it is the same box it always was, only aimed. */
@@ -4639,6 +4779,80 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
     return () => { composerInsert = null; };
   }, [insert, inThreadPanel]);
 
+  /* ---- the actions menu: one way in for every typed command ---- */
+
+  /* THE ONE OWNER OF "ESCAPE CLOSES WHAT IT OPENED" (see `useEscapeCloses`).
+     Registered only while the menu is on screen, so a closed menu adds nothing
+     to the stack and the counts the QA suite takes of it are untouched. */
+  useEscapeCloses(() => setActionsOpen(false), actionsOpen);
+
+  /* WHICH REPOSITORIES ARE CONNECTED, asked the moment the menu opens — the
+     same way the Projects screen asks, and for the same reason: a list cached
+     from an earlier visit would let this menu offer a GitHub command against a
+     repository that has since gone, or refuse one that has since been added. */
+  useEffect(() => {
+    if (actionsOpen) client.askProjects();
+  }, [actionsOpen]);
+
+  /** the agents actually IN this room — an agent elsewhere cannot be told anything here */
+  const roomAgents = useMemo(
+    () => world.agents.filter(a => channel.memberIds.includes(a.id)),
+    [world.agents, channel.memberIds]);
+
+  /**
+   * WHY THIS COMMAND CANNOT BE USED IN THIS ROOM RIGHT NOW — in plain words, or
+   * null when it can. Said on the row rather than discovered after sending: a
+   * line that comes straight back with a refusal is the same dead end as no
+   * button at all.
+   *
+   * The repository answer is the honest one we can actually reach from here.
+   * A Cloud9 project names a repository ON GITHUB; where that code sits on THIS
+   * computer is told to the engine separately (`EngineOptions.repoDir`, and the
+   * gap is written down in engine.ts). So the sentence names both halves rather
+   * than promising that connecting a project is enough.
+   */
+  const blockedBecause = (c: RoomCommand): string | null => {
+    if (c.needs.includes("agent") && roomAgents.length === 0) {
+      return "No agent is in this room yet — add one from the room panel first.";
+    }
+    if (c.needs.includes("twoAgents") && roomAgents.length < 2) {
+      return "This needs two agents in the room — one to hand the work over, one to take it.";
+    }
+    if (c.needs.includes("repo") && world.projects.asked && world.projects.list.length === 0) {
+      return "No repository is connected yet — open Projects and connect one, and Cloud9 has to be told where that code lives on this computer.";
+    }
+    return null;
+  };
+
+  /**
+   * WRITE THE LINE INTO THE BOX HE ALREADY USES — and nothing else.
+   *
+   * It replaces what is in the box on purpose: every one of these commands is
+   * only read when it is the FIRST thing in the message (see the `/^!…/` tests
+   * in engine.ts), so appending it to half a sentence would produce a line that
+   * looks like a command and is treated as ordinary chat. The promise above the
+   * list says so before he picks anything.
+   *
+   * The first `<…>` is left SELECTED, so the next thing he types replaces the
+   * part he was always going to have to fill in.
+   */
+  const prefill = (c: RoomCommand): void => {
+    const first = roomAgents[0]?.name ?? "Agent";
+    const second = roomAgents[1]?.name ?? "OtherAgent";
+    const written = c.line({ first, second });
+    setText(written);
+    setActionsOpen(false);
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      const open = written.indexOf("<");
+      const shut = open >= 0 ? written.indexOf(">", open) : -1;
+      if (open >= 0 && shut > open) ta.setSelectionRange(open, shut + 1);
+      else ta.setSelectionRange(written.length, written.length);
+    });
+  };
+
   /** wrap whatever is selected, the way a formatting button should */
   const wrap = (left: string, right = left) => {
     const ta = taRef.current;
@@ -4680,6 +4894,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
     if (!went) return;
     setText("");
     setEmojiOpen(false);
+    setActionsOpen(false);
     client.clearUploads(channel.id);
     /* THE CURSOR STAYS WHERE HE IS TYPING. Pressing Enter always left it there;
        clicking Send moved the focus onto the button, so the next thing he typed
@@ -4823,6 +5038,16 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               for (const f of Array.from(e.target.files ?? [])) client.attach(channel.id, f);
               e.target.value = "";
             }} />
+          {/* THE ONE WAY IN to everything an agent can be TOLD to do. It is in
+              the thread box as well as the room's own, deliberately breaking the
+              "wide affordances stay out of a thread" rule below: the commands
+              work the same in a thread, and hiding the only door in half the
+              places he types would be the invisibility bug again, smaller. */}
+          <button className="mini actionsbtn" title="Things you can ask an agent to do"
+            aria-expanded={actionsOpen} aria-haspopup="menu"
+            onClick={() => { setActionsOpen(o => !o); setEmojiOpen(false); }}>
+            ＋ Actions
+          </button>
           <button className="mini attach" title={`Attach a file (up to ${ATTACHMENT_LIMITS.perMessage}, ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB each)`}
             onClick={() => fileRef.current?.click()}>📎 Attach</button>
           <button className="mini" title="Call an agent by name" onClick={() => insert("@")}>@ agent</button>
@@ -4856,6 +5081,27 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               {QUICK_EMOJI.map(e => (
                 <button key={e} onClick={() => { insert(e); setEmojiOpen(false); }}>{e}</button>
               ))}
+            </div>
+          )}
+          {/* One list, built from ONE table (`ROOM_COMMANDS`). A row that cannot
+              work here is drawn as it really is — off, with the reason on it. */}
+          {actionsOpen && (
+            <div className="actionspop" role="menu" aria-label="Things you can ask an agent to do">
+              <div className="ap-head tag">Ask an agent to…</div>
+              <div className="ap-promise">{ACTIONS_PROMISE}</div>
+              {ROOM_COMMANDS.map(c => {
+                const why = blockedBecause(c);
+                return (
+                  <button key={c.cmd} className={`ap-row${why ? " is-blocked" : ""}`}
+                    role="menuitem" data-command={c.cmd} data-blocked={why ? "yes" : "no"}
+                    disabled={!!why}
+                    onClick={() => prefill(c)}>
+                    <span className="ap-label">{c.label}</span>
+                    <span className="ap-say">{why ?? c.say}</span>
+                    <span className="ap-cmd">{c.cmd}</span>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -6431,7 +6677,16 @@ function SkillLibraryPanel({ have, agentName, roleId, onClose, onTake }: {
  * is written here. An app we have never measured gets NO sentence at all, because
  * falling back to the comforting one is how this goes wrong.
  */
-function HarnessHonesty({ provider }: { provider: Provider }): React.JSX.Element {
+function HarnessHonesty({ provider, forcedOn }: {
+  provider: Provider;
+  /**
+   * The switches this app keeps on whatever the owner set — handed in from the
+   * editor so this card, the switch list and the ladder are reading ONE answer
+   * (`effectiveAbilities`). A card that worked it out for itself is how two
+   * views of one fact start disagreeing.
+   */
+  forcedOn: Capability[];
+}): React.JSX.Element {
   const iso = isolationFor(provider);
   if (!iso) {
     return (
@@ -6446,6 +6701,14 @@ function HarnessHonesty({ provider }: { provider: Provider }): React.JSX.Element
       data-boundary={iso.togglesAreTheBoundary ? "yes" : "no"}>
       <p className="hh-line" data-field="headline">{iso.headline}</p>
       <p className="hh-line hh-ceiling" data-field="ceiling">{iso.ceiling}</p>
+      {forcedOn.length > 0 && (
+        <p className="hh-line hh-forced" data-field="forced"
+          data-forced={forcedOn.map(c => c.ability).join(",")}>
+          Always on here, and shown on above: {forcedOn.map(c => c.label.toLowerCase()).join(", ")}.
+          Its program keeps those tools whatever you set, so this app never pretends
+          otherwise.
+        </p>
+      )}
       {!iso.togglesAreTheBoundary && (
         <p className="hh-line" data-field="controls">
           What the switches <em>do</em> control: {iso.togglesControl}.
@@ -6683,12 +6946,22 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
      this component). `chosenRung` is null when his switches are a mixture of his
      own, and every part of the drawing below reads that one value — the dot, the
      inked spine, the words. There is no second derivation to disagree with it. */
-  const draft = { ...(agent ?? {}), abilities: ab } as AgentDef;
-  const chosenRung = rungOfExactly(ab);
+  const draft = { ...(agent ?? {}), abilities: ab, provider } as AgentDef;
+  /* WHAT THIS AGENT WOULD REALLY HAVE, from the engine's one owner of that
+     question. `ab` is what gets SAVED — his switches, kept exactly as he set
+     them so moving the agent back to Claude gives them back. `effAb` is what is
+     TRUE once its app is taken into account: Codex cannot give up its web, file,
+     helper-agent and command tools, so for a Codex agent those read as on. Every
+     view below — the ladder, the switch list, the approvals line, the honesty
+     card — reads THIS, so none of them can contradict another. */
+  const forcedOn = forcedOnCapabilities({ provider });
+  const isForcedOn = (ability: string): boolean => forcedOn.some(c => c.ability === ability);
+  const effAb = effectiveAbilities({ provider, abilities: ab });
+  const chosenRung = rungOfExactly(effAb);
   const chosenIndex = chosenRung ? REACH_LEVELS.findIndex(r => r.level === chosenRung) : -1;
   /* What is actually switched on, in the table's own words — the honest answer
      when no rung fits, and the only thing said in that case. */
-  const abilitiesOnNow = CAPABILITIES.filter(c => ab[c.ability] === true);
+  const abilitiesOnNow = CAPABILITIES.filter(c => effAb[c.ability] === true);
   /* The powers that will stop and ask. NOT checkboxes: the switch being on IS
      the ask being on, so rendering them as something he could clear would be
      showing him a control that does nothing. */
@@ -6697,7 +6970,9 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
      after that it is his to open and close, and nothing re-decides it. The same
      one owner answers "is this a mixture", here too. */
   const [showSwitches, setShowSwitches] = useState(
-    () => rungOfExactly(agent?.abilities ?? NEW_AGENT_ABILITIES) === null);
+    () => rungOfExactly(effectiveAbilities({
+      provider: agent?.provider, abilities: agent?.abilities ?? NEW_AGENT_ABILITIES,
+    })) === null);
   const switchesOpen = showSwitches;
   /* The powers that are switched ON and still hand the agent nothing, because
      the thing they need — a folder list, a connected service — has nowhere to
@@ -6860,6 +7135,24 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
               One choice, four rungs. Each rung is everything below it and more — and anything
               that changes this computer or spends money stops and asks you first.
             </p>
+            {/* SOME SWITCHES ARE NOT HIS TO TURN OFF, AND THAT IS SAID FIRST.
+                Codex keeps its web, file, helper-agent and command tools at
+                every setting, so an agent on Codex holds them whatever the
+                switches said. Agents saved before this was known simply refused
+                to run. Now the app shows what is true, says why, and lets him
+                move the agent to Claude if he wants those doors shut. */}
+            {forcedOn.length > 0 && (
+              <div className="notice reachforced" data-forced={forcedOn.map(c => c.ability).join(",")}>
+                <b>{PROVIDER_LABEL[provider]} always brings {forcedOn.length} of these with it.</b>
+                <span>
+                  {forcedOn.map(c => c.label).join(", ")} — {FORCED_ON_NOTE} They are shown
+                  switched on below because they really are on. Only the top rung matches
+                  that, so any other rung reads as your own mixture. Move this agent to
+                  Claude if you want those doors shut.
+                </span>
+              </div>
+            )}
+
             {/* THE MIXTURE, SAID BEFORE THE LADDER AND NOT UNDER IT. A glance at
                 a ladder is the whole point of a ladder, so the one case where no
                 rung is his answer has to be inside that glance — above the rungs,
@@ -6890,7 +7183,9 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                 <button key={rung.level} className="reachrung" data-reach={rung.level}
                   data-within={chosenIndex >= 0 && i <= chosenIndex ? "yes" : "no"}
                   aria-pressed={rung.level === chosenRung}
-                  onClick={() => setAb(abilitiesForReach(rung.level))}>
+                  onClick={() => setAb(effectiveAbilities({
+                    provider, abilities: abilitiesForReach(rung.level),
+                  }))}>
                   <span className="rr-spine" aria-hidden="true"><span className="rr-node" /></span>
                   <span className="rr-tx">
                     <b>{rung.label}</b>
@@ -6914,23 +7209,40 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                 Or pick them one by one
               </button>
               <div className="panelbox" hidden={!switchesOpen}>
-                {CAPABILITIES.map(cap => (
-                  <label className="toggle-row" key={cap.ability} data-ability={cap.ability}>
-                    <span className="tx">
-                      <b>
-                        {cap.label}
-                        {cap.alwaysAsk && <span className="chip is-gold">asks you first</span>}
-                      </b>
-                    </span>
-                    <input className="sw" type="checkbox" aria-label={cap.label}
-                      checked={ab[cap.ability] === true}
-                      onChange={e => setAb({ ...ab, [cap.ability]: e.target.checked })} />
-                  </label>
-                ))}
+                {/* A LOCKED SWITCH IS DRAWN AS ON BECAUSE IT IS ON. The honesty
+                    law here is "never show a tick for something that isn't
+                    true" — and for a Codex agent these tools really are in its
+                    hands, so ON is the truthful face and OFF was the lie. It is
+                    disabled rather than hidden: he can see the power, see that
+                    it is not his to switch off, and read why in one line. */}
+                {CAPABILITIES.map(cap => {
+                  const locked = isForcedOn(cap.ability);
+                  return (
+                    <label className="toggle-row" key={cap.ability} data-ability={cap.ability}
+                      data-locked={locked ? "yes" : "no"}>
+                      <span className="tx">
+                        <b>
+                          {cap.label}
+                          {cap.alwaysAsk && <span className="chip is-gold">asks you first</span>}
+                          {locked && <span className="chip">always on</span>}
+                        </b>
+                        {locked && <span>{FORCED_ON_NOTE}</span>}
+                      </span>
+                      <input className="sw" type="checkbox" aria-label={cap.label}
+                        checked={effAb[cap.ability] === true}
+                        disabled={locked}
+                        title={locked ? FORCED_ON_NOTE : undefined}
+                        onChange={e => setAb({ ...ab, [cap.ability]: e.target.checked })} />
+                    </label>
+                  );
+                })}
               </div>
               {switchesOpen && (
                 <p className="sec-note" style={{ marginTop: 10 }}>
-                  Off means the ability doesn't exist for this agent — not even with permission.
+                  {forcedOn.length > 0
+                    ? "Off means the ability doesn't exist for this agent — except for the "
+                      + "greyed-out ones above, which its app cannot give up."
+                    : "Off means the ability doesn't exist for this agent — not even with permission."}
                 </p>
               )}
             </div>
@@ -6965,7 +7277,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
               </div>
             )}
 
-            <HarnessHonesty provider={provider} />
+            <HarnessHonesty provider={provider} forcedOn={forcedOn} />
           </section>
 
           <section className="fieldset whocanuse">

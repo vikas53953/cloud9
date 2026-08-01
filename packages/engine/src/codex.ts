@@ -12,7 +12,7 @@ import {
 } from "./provider.js";
 import {
   CAPABILITIES, codexSandboxFor, codexUnavoidableCapabilities, codexWebSearchFor,
-  grantedSupply, reachesBeyondOwnFolder,
+  effectiveAbilities, grantedSupply, reachesBeyondOwnFolder, withEffectiveAbilities,
 } from "./abilities.js";
 import { envWithoutCredentials } from "./env.js";
 import { run, Runner, safeArg } from "./run.js";
@@ -64,9 +64,16 @@ export interface CodexAbilityBoundaryProblem {
 }
 
 /**
- * The Codex tools Cloud9 cannot subtract. An OFF switch gates the whole turn:
- * this is deliberately stricter than launching a tool the owner denied and
- * hoping the model obeys a sentence.
+ * The Codex tools Cloud9 cannot subtract, read against the switches EXACTLY AS
+ * GIVEN — no interpretation, on purpose.
+ *
+ * THE BACKSTOP, AND WHY IT IS NOW ALMOST ALWAYS SILENT. Since
+ * `effectiveAbilities()` forces these rows on for any agent whose app is Codex,
+ * nothing the app can build reaches this with them off, and `codexArgs` asks it
+ * about the EFFECTIVE definition. What is left for it to catch is a definition
+ * that came from somewhere else: an agent whose own app is not Codex being put
+ * on the Codex command line, or a caller that skipped the helper. That is a real
+ * contradiction and it still stops the turn.
  */
 export function codexAbilityBoundaryProblems(agent: AgentDef): CodexAbilityBoundaryProblem[] {
   return codexUnavoidableCapabilities()
@@ -463,8 +470,9 @@ export const CODEX_ALWAYS_DISABLED = [
  */
 export function codexDisabledFeaturesFor(agent: AgentDef): string[] {
   const off = [...CODEX_ALWAYS_DISABLED] as string[];
+  const has = effectiveAbilities(agent);
   for (const cap of CAPABILITIES) {
-    if (cap.codexFeature && agent.abilities?.[cap.ability] !== true) off.push(cap.codexFeature);
+    if (cap.codexFeature && has[cap.ability] !== true) off.push(cap.codexFeature);
   }
   return off;
 }
@@ -487,10 +495,16 @@ export function codexDisabledFeaturesFor(agent: AgentDef): string[] {
  * through `RunOptions.cwd`, exactly as the Claude path does it.
  */
 export function codexArgs(
-  agent: AgentDef, cwd: string, models: string[] = [], wholeComputerRoots: string[] = [],
+  rawAgent: AgentDef, cwd: string, models: string[] = [], wholeComputerRoots: string[] = [],
 ): string[] {
-  const problem = validateAgentInput(agent, { models });
+  const problem = validateAgentInput(rawAgent, { models });
   if (problem) throw new Error(`refusing to run this agent: ${problem}`);
+  // WHAT THIS AGENT REALLY HAS, asked once, at the top. A Codex agent holds the
+  // unremovable built-ins whatever its stored switches say, so an agent saved
+  // before that rule existed runs instead of being refused forever. Everything
+  // below reads THIS definition — sandbox, features, web switch — so no line of
+  // this command can be built from a different answer.
+  const agent = withEffectiveAbilities(rawAgent);
   enforceCodexAbilityBoundary(agent);
 
   const args = [

@@ -112,11 +112,18 @@ test("isolation is not something an agent definition can switch off", () => {
   for (const flag of CODEX_ISOLATION_FLAGS) assert.ok(codex.includes(flag));
 });
 
-test("Codex's missing tool declaration is closed by refusing unsafe ability mixes", () => {
+test("Codex's missing tool declaration is closed by never offering an off that isn't one", () => {
   const args = codexArgs(agent(CODEX_ADMITTED), "C:/data/a1");
   assert.ok(!args.includes("--tools"),
     "codex-cli 0.146.0 has no --tools; if this ever fails, Codex grew one and we should use it");
   for (const ability of ["webSearch", "files", "helpers", "commands"] as const) {
+    // On a CODEX agent the switch is not an off at all — the tool is there, so
+    // it reads as on and the turn runs (that is `effectiveAbilities`).
+    const onCodex = agent({ ...CODEX_ADMITTED, [ability]: false }, { provider: "codex" });
+    assert.ok(codexArgs(onCodex, "C:/data/a1").includes("exec"),
+      `${ability} off wrongly refused a Codex agent that has the tool anyway`);
+    // On an agent whose own app is CLAUDE, the same definition on Codex's line
+    // is a real contradiction, and the backstop still stops it.
     assert.throws(
       () => codexArgs(agent({ ...CODEX_ADMITTED, [ability]: false }), "C:/data/a1"),
       HarnessAbilityBoundaryError,
@@ -158,6 +165,11 @@ test("a Codex agent is told to drop the owner's plugins, apps, MCP resources and
 test("Codex's web-search switch is on only after the web ability admits the turn", () => {
   const on = codexArgs(agent(CODEX_ADMITTED), "C:/data/a1");
   assert.ok(on.includes("tools.web_search=true"), "an agent allowed the web gets the CLI switch on");
+  // a Codex agent saved with web off carries web.run anyway, so the switch it
+  // is given matches what it really holds rather than a wish
+  assert.ok(
+    codexArgs(agent({ ...CODEX_ADMITTED, webSearch: false }, { provider: "codex" }), "C:/data/a1")
+      .includes("tools.web_search=true"));
   assert.throws(
     () => codexArgs(agent({ ...CODEX_ADMITTED, webSearch: false }), "C:/data/a1"),
     HarnessAbilityBoundaryError,

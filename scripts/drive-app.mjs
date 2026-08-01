@@ -110,6 +110,17 @@ const EXPECTED_CHECKS = [
      and whether what a skill came from is on the card — the provenance is the
      part he specifically asked for when he asked for research. */
   "the skill library opens from an agent, with its shelves and its sources",
+  /* 2026-08-01, his report: every Codex agent refused to start, because the
+     editor let him keep switches off that Codex's own program cannot honour.
+     The fix locks those switches visibly ON with the reason on the row. This
+     asks the INSTALLED app: put an agent on Codex — do they lock and say why;
+     put it back on Claude — are his own settings back. */
+  "on Codex, the switches Codex cannot give up lock on and say why",
+  /* 2026-08-01, his report: "GitHub integration is not there" — it existed but
+     only as typed commands, with no door on screen. The fix is one Actions
+     menu at the message box. This asks the INSTALLED app: is the button there,
+     does it open, does choosing a row really fill in the command. */
+  "the message box offers an Actions menu that fills in the command",
 ];
 
 /* ---------------------------------------------------------------- results */
@@ -310,6 +321,33 @@ async function shot(page, slug) {
 
 /* ---------------------------------------------------------------- launching */
 
+/**
+ * Refuse to walk yesterday's app.
+ *
+ * 2026-08-01: a full walk "verified" two fresh fixes against an install from
+ * the day before — `npm run dist` builds an installer into release\ but nothing
+ * runs it, so the app this script drives can silently be older than the code
+ * everyone just tested. The walk then reports on software nobody is shipping.
+ * The guard: the web bundle inside the install must be byte-identical to the
+ * one inside release\win-unpacked. No release build around = nothing to compare,
+ * walk whatever is installed (that is an honest ask: "walk what he has").
+ */
+function assertInstallIsCurrent() {
+  const rel = path.join("release", "win-unpacked", "resources", "app", "dist-web", "assets");
+  const inst = path.join(path.dirname(APP_EXE), "resources", "app", "dist-web", "assets");
+  if (!fs.existsSync(rel) || !fs.existsSync(inst)) return;
+  const a = fs.readdirSync(rel).sort();
+  const b = fs.readdirSync(inst).sort();
+  const same = a.length === b.length && a.every((f, i) =>
+    f === b[i] && fs.readFileSync(path.join(rel, f)).equals(fs.readFileSync(path.join(inst, f))));
+  if (!same) {
+    throw new Error(
+      "the INSTALLED app is not the build you just made.\n" +
+      `  installed: ${b.join(", ")}\n  built:     ${a.join(", ")}\n` +
+      `Run the installer first: release\\Cloud9-Setup-0.1.0.exe /S — then drive it again.`);
+  }
+}
+
 let child = null;
 let tempUserData = null;
 
@@ -318,6 +356,7 @@ async function launch() {
     throw new Error(`the installed app is not there: ${APP_EXE}\n` +
       "Install it (npm run dist, then run the installer) before driving it.");
   }
+  assertInstallIsCurrent();
   fs.mkdirSync(SHOTS, { recursive: true });
 
   // Old screenshots must never be mistaken for this run's evidence.
@@ -513,6 +552,7 @@ async function walk(page) {
 
   const EDITOR_GROUP = [
     EXPECTED_CHECKS[4], EXPECTED_CHECKS[5], EXPECTED_CHECKS[6], EXPECTED_CHECKS[15],
+    EXPECTED_CHECKS[16],
   ];
 
   try {
@@ -586,6 +626,33 @@ async function walk(page) {
           "he asked for research, and the source is the research");
       }
       return `${cards} skills on ${shelves} shelves, every one saying where it came from`;
+    });
+
+    await check(EXPECTED_CHECKS[16], async () => {
+      const before = await page.locator('.editor .toggle-row[data-locked="yes"]').count();
+      await page.click('.editor .app-pick[data-app="codex"]');
+      await until("the locked rows to appear",
+        () => page.locator('.editor .toggle-row[data-locked="yes"]').count().then(n => n > 0),
+        { timeout: 15000 });
+      const rows = await page.$$eval('.editor .toggle-row[data-locked="yes"]', rs => rs.map(r => ({
+        ability: r.dataset.ability,
+        chip: !!r.querySelector(".chip"),
+        input: r.querySelector("input.sw"),
+        checked: r.querySelector("input.sw")?.checked === true,
+        disabled: r.querySelector("input.sw")?.disabled === true,
+        why: r.querySelector(".tx > span:not(.chip), .tx span:last-child")?.innerText?.trim() ?? "",
+      })));
+      const wrong = rows.filter(r => !(r.chip && r.checked && r.disabled));
+      if (wrong.length) {
+        throw new Error(`NOT ON SCREEN — ${wrong.length} locked row(s) missing the chip, ` +
+          `the ON state, or the disabled switch: ${wrong.map(r => r.ability).join(", ")}`);
+      }
+      await page.click('.editor .app-pick[data-app="claude"]');
+      await until("the locks to release on Claude",
+        () => page.locator('.editor .toggle-row[data-locked="yes"]').count().then(n => n === 0),
+        { timeout: 15000 });
+      return `${rows.length} switch(es) lock on with Codex (${rows.map(r => r.ability).join(", ")}), ` +
+        `each saying why, and Claude gives them back (started with ${before} locked)`;
     });
   } catch (err) {
     failGroup(EDITOR_GROUP.filter(n => !results.some(r => r.name === n)),
@@ -710,8 +777,57 @@ async function walk(page) {
       if (reply === 0) throw new Error("NOT ON SCREEN — no Reply or thread control on any message");
       return `${reply} reply/thread control(s) on screen`;
     });
+
+    await check(EXPECTED_CHECKS[17], async () => {
+      const openMenu = async () => {
+        const btn = page.locator(".composer .actionsbtn").first();
+        if (await btn.count() === 0) {
+          throw new Error("NOT ON SCREEN — no Actions button beside the message box");
+        }
+        await btn.click();
+        await page.waitForSelector(".actionspop", { timeout: 15000 });
+        return page.$$eval(".actionspop .ap-row", rs => rs.map(r => ({
+          text: r.innerText.replace(/\s+/g, " ").trim(),
+          blocked: r.classList.contains("is-blocked"),
+        })));
+      };
+      let rows = await openMenu();
+      if (rows.length === 0) throw new Error("the Actions menu opened empty");
+      /* The room the walk lands in has no agent, so every row honestly says
+         so. That honesty is real, but "does choosing a row fill the box" still
+         has to be answered — from a direct chat with an agent, where the crew
+         screen's own "Talk to" button leads. */
+      if (rows.every(r => r.blocked)) {
+        await page.keyboard.press("Escape").catch(() => {});
+        await page.click('.rail .rail-btn[data-go="crew"]');
+        const talk = page.locator('button:has-text("Talk to")').first();
+        if (await talk.count() === 0) {
+          throw new Error("every action is blocked in the room, and the crew screen offers " +
+            "no 'Talk to' button to reach an agent directly");
+        }
+        await talk.click();
+        await page.waitForSelector(".composer textarea", { timeout: 15000 });
+        rows = await openMenu();
+      }
+      const usable = await page.locator(".actionspop .ap-row:not(.is-blocked)").first();
+      if (await usable.count() === 0) {
+        throw new Error(`every one of the ${rows.length} actions is blocked even in a direct ` +
+          `chat with an agent — ` + rows.map(r => r.text).join(" | "));
+      }
+      await usable.click();
+      const filled = (await page.inputValue(".composer textarea")).trim();
+      if (!filled.includes("!")) {
+        throw new Error(`choosing an action left the message box without a command: "${filled}"`);
+      }
+      await page.fill(".composer textarea", "");
+      /* Escape must close the menu if it reopened — same one-owner rule as every
+         other overlay; a leftover popover breaks every later step. */
+      await page.keyboard.press("Escape").catch(() => {});
+      return `${rows.length} actions offered (${rows.filter(r => r.blocked).length} honestly blocked); ` +
+        `choosing one filled in: "${filled.slice(0, 60)}"`;
+    });
   } catch (err) {
-    failGroup([EXPECTED_CHECKS[9]].filter(n => !results.some(r => r.name === n)),
+    failGroup([EXPECTED_CHECKS[9], EXPECTED_CHECKS[17]].filter(n => !results.some(r => r.name === n)),
       `the chat screen did not open (${err.message})`);
     await shot(page, "chat-broken");
   }

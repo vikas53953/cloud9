@@ -10,6 +10,7 @@ import {
   createCodexIsolatedEnvironment, parseCodexJsonl,
 } from "./codex.js";
 import { HarnessAbilityBoundaryError, HarnessUnavailableError, sanitizeForChat } from "./provider.js";
+import { codexUnavoidableCapabilities, effectiveAbilities } from "./abilities.js";
 import { RunOptions, RunResult, UnsafeArgumentError, run } from "./run.js";
 
 const agent = (over: Partial<AgentDef> = {}): AgentDef => ({
@@ -80,28 +81,63 @@ test("turn.failed is surfaced as an error", () => {
   assert.equal(t.text, "");
 });
 
-test("a Codex turn is refused when any unavoidable tool was switched off", () => {
+/* ---------------------------------------------------------------------------
+ * THE BUG (2026-08-01). Every Codex agent Vikas had saved before the
+ * fail-closed rule landed refused to run, for good: "Codex did not start
+ * because Get help from its own helper agents, Run programs on this computer
+ * are switched off, but this harness cannot remove the matching built-in
+ * tools." The app was holding a configuration the engine would ALWAYS refuse.
+ *
+ * The class fix is that the app no longer represents that state. An agent whose
+ * app is Codex HAS those tools, so `effectiveAbilities` says so and everything
+ * — command line, prompt, ladder, screen — reads that one answer. Nothing in
+ * the database was rewritten: the switches he stored are still his, and moving
+ * the agent back to Claude gives them back.
+ */
+
+test("a Codex agent saved with the unremovable switches off still runs, with them on", () => {
   const unavoidable = ["webSearch", "files", "helpers", "commands"] as const;
   for (const ability of unavoidable) {
-    const abilities = { ...agent().abilities, [ability]: false };
-    const blocked = agent({ abilities });
-    assert.ok(codexAbilityBoundaryProblems(blocked).some(problem => problem.ability === ability),
-      `${ability} did not gate the Codex turn`);
-    assert.throws(() => codexArgs(blocked, "C:/data/a1"), HarnessAbilityBoundaryError);
+    // exactly the shape of the agents he already had saved
+    const legacy = agent({ abilities: { ...agent().abilities, [ability]: false } });
+
+    assert.equal(effectiveAbilities(legacy)[ability], true,
+      `${ability} is real on Codex however this agent was saved`);
+    assert.equal(legacy.abilities[ability], false,
+      "and what he stored is left exactly as he stored it");
+
+    // the refusal that made these agents useless is gone
+    const args = codexArgs(legacy, "C:/data/a1");
+    assert.ok(args.includes("exec"), `${ability} off still refused the whole turn`);
+    assert.ok(args.includes("workspace-write"),
+      "a Codex agent can write in its own folder — apply_patch is there regardless");
   }
 });
 
-test("an ability refusal is explained plainly and the Codex process never starts", async () => {
+test("the same switches, stored on a Claude agent, are left alone", () => {
+  const claude = agent({ provider: "claude", abilities: { ...agent().abilities, commands: false } });
+  assert.equal(effectiveAbilities(claude).commands, false,
+    "Claude declares its tool set with --tools, so an off switch really does remove the tool");
+  assert.deepEqual(effectiveAbilities(claude), claude.abilities);
+});
+
+test("the boundary error still fires for a definition that bypassed the helper", async () => {
+  // an agent whose OWN app is not Codex, put on the Codex command line: the
+  // switches and the harness genuinely contradict each other, so the turn stops
+  const bypass = agent({ provider: "claude", abilities: { ...agent().abilities, commands: false } });
+  assert.ok(codexAbilityBoundaryProblems(bypass).some(problem => problem.ability === "commands"),
+    "the backstop must still be able to name the contradiction");
+  assert.throws(() => codexArgs(bypass, "C:/data/a1"), HarnessAbilityBoundaryError);
+
   let ran = false;
   const provider = new CodexProvider({
     agentDataDir: () => "C:/data/a1",
     runner: fakeRunner({ stdout: TRANSCRIPT }, () => { ran = true; }),
   });
-  const blocked = agent({ abilities: { ...agent().abilities, commands: false } });
   let refusal: unknown;
   try {
     await provider.respond({
-      agent: blocked, context: "", trigger: "hi", triggerAuthor: "V", kind: "chat",
+      agent: bypass, context: "", trigger: "hi", triggerAuthor: "V", kind: "chat",
     });
   } catch (err) {
     refusal = err;
@@ -116,7 +152,7 @@ test("an ability refusal is explained plainly and the Codex process never starts
     console.error = realError;
   }
   assert.match(reply, /run programs.*switched off/i);
-  assert.equal(ran, false);
+  assert.equal(ran, false, "and the Codex process never started");
 });
 
 test("an admitted Codex turn still maps the files switch to a writable sandbox", () => {
@@ -246,7 +282,11 @@ test("provider sends the prompt on stdin and returns the reply", async () => {
   assert.ok(seenStdin.includes("find villas"));
   assert.ok(!seenStdin.includes("no tools at all beyond the ones listed above"),
     "Codex's prompt must not claim its undeclarable built-ins are absent");
-  assert.match(seenStdin, /Codex turn only starts when its unavoidable tools are switched on/i);
+  assert.match(seenStdin, /Codex cannot give up these built-in tools/i);
+  for (const cap of codexUnavoidableCapabilities()) {
+    assert.ok(seenStdin.includes(cap.can),
+      `${String(cap.ability)} is real on Codex, so the agent must be told it CAN`);
+  }
 });
 
 test("a missing codex CLI is a harness problem, not a crash", async () => {

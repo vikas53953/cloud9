@@ -12,6 +12,7 @@ import {
   IN_FLIGHT_GRACE_MS, PENDING_MARK, RENAME_TRIES, isPendingName, pendingNameFor,
   sweepPending, sweepPendingTree, writeWholeFile,
 } from "./wholefile.js";
+import { plantKilledWriteLitter } from "./litter-for-tests.js";
 
 const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-whole-"));
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -377,11 +378,11 @@ test("the sweep reaches every folder underneath, not just the one it was pointed
   const runs = path.join(root, "agents", "a1", "runs");
   fs.mkdirSync(skills, { recursive: true });
   fs.mkdirSync(runs, { recursive: true });
-  fs.writeFileSync(path.join(root, `schedules.json${PENDING_MARK}999-1-1`), "x", "utf8");
+  plantKilledWriteLitter(path.join(root, "schedules.json"), "x");
   // the one that mattered: an instruction the CLI reads, half written
-  fs.writeFileSync(path.join(skills, `checklist.md${PENDING_MARK}999-1-1`), "step 1: do", "utf8");
+  plantKilledWriteLitter(path.join(skills, "checklist.md"), "step 1: do");
   fs.writeFileSync(path.join(skills, "checklist.md"), "step 1: do this\nstep 2: and this", "utf8");
-  fs.writeFileSync(path.join(runs, `r-1-a.json${PENDING_MARK}999-1-1`), "{", "utf8");
+  plantKilledWriteLitter(path.join(runs, "r-1-a.json"), "{");
 
   assert.equal(sweepPending(root), 1, "the old top-floor sweep only ever saw one of the three");
   assert.equal(sweepPendingTree(root), 2, "the two underneath were left for ever");
