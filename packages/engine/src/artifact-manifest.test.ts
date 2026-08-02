@@ -22,6 +22,9 @@ import { ClaudeProvider, RespondInput } from "./provider.js";
 
 const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-artifact-manifest-"));
 
+const normalizeSource = (source: string): string => source.replace(/\r\n?/g, "\n");
+const readSource = (file: string): string => normalizeSource(fs.readFileSync(file, "utf8"));
+
 const agent = (): AgentDef => ({
   id: "a1", ownerId: "u1", name: "Maker", emoji: "M", persona: "You make files",
   abilities: { webSearch: false, files: true, schedules: false, background: true },
@@ -224,10 +227,40 @@ test("captured frames survive rewrite, replacement, deletion and manifest mutati
   }
 });
 
+test("source normalization gives LF, CRLF and CR identical static parsing", () => {
+  const lf = [
+    "  private publishCaptured(",
+    "    file.bytes.toString(\"base64\");",
+    "  /**",
+    "   * Send one run",
+    "export interface ProducedFile {",
+    "  bytes: Buffer;",
+    "}",
+    "export interface NextType {",
+  ].join("\n") + "\n";
+  const parse = (raw: string) => {
+    const source = normalizeSource(raw);
+    const publishStart = source.indexOf("  private publishCaptured(");
+    const publishEnd = source.indexOf("\n  /**\n   * Send one run", publishStart);
+    const producedStart = source.indexOf("export interface ProducedFile {");
+    const producedEnd = source.indexOf("\n}\n", producedStart);
+    assert.ok(publishStart >= 0 && publishEnd > publishStart);
+    assert.ok(producedStart >= 0 && producedEnd > producedStart);
+    return {
+      publishBody: source.slice(publishStart, publishEnd),
+      producedType: source.slice(producedStart, producedEnd),
+    };
+  };
+  const expected = parse(lf);
+
+  assert.deepEqual(parse(lf.replace(/\n/g, "\r\n")), expected);
+  assert.deepEqual(parse(lf.replace(/\n/g, "\r")), expected);
+});
+
 test("the source has one provider doorway and one produced-file funnel", () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const source = fs.readFileSync(path.resolve(here, "../src/engine.ts"), "utf8");
-  const artifactSource = fs.readFileSync(path.resolve(here, "../src/artifacts.ts"), "utf8");
+  const source = readSource(path.resolve(here, "../src/engine.ts"));
+  const artifactSource = readSource(path.resolve(here, "../src/artifacts.ts"));
   const start = source.indexOf("  async respondAs(");
   const end = source.indexOf("\n  private recordRun(", start);
   assert.ok(start >= 0 && end > start, "the respondAs body is still findable by its method declarations");
@@ -244,7 +277,7 @@ test("the source has one provider doorway and one produced-file funnel", () => {
   const publishStart = source.indexOf("  private publishCaptured(");
   const publishEnd = source.indexOf("\n  /**\n   * Send one run", publishStart);
   assert.ok(publishStart >= 0 && publishEnd > publishStart,
-    "the captured-value publisher is findable by its method declarations");
+    "the captured-value publisher is findable by its source boundaries");
   const publishBody = source.slice(publishStart, publishEnd);
   assert.match(publishBody, /file\.bytes\.toString\("base64"\)/,
     "publish encodes the held Buffer directly");

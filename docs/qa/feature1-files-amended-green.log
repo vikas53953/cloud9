@@ -1,0 +1,522 @@
+PASS - join screen renders
+PASS - owner connects, #general visible
+PASS - agent create offers a provider picker (Claude default) :: claude/codex value=claude
+PASS - agent create offers a model picker with a model already chosen :: claude-fable-5/claude-opus-5/claude-opus-4-8/claude-opus-4-7/claude-opus-4-6/claude-opus-4-5/claude-opus-4-1/claude-opus-4-0/claude-sonnet-5/claude-sonnet-4-6/claude-sonnet-4-5/claude-haiku-4-5/claude-haiku-4-5-20251001 value=claude-sonnet-5
+PASS - models are shown by friendly name, not raw ids :: Fable 5/Opus 5/Opus 4.8/Opus 4.7/Opus 4.6/Opus 4.5/Opus 4.1/Opus 4/Sonnet 5/Sonnet 4.6/Sonnet 4.5/Haiku 4.5/Haiku 4.5 (dated build)
+PASS - agent create has a Skills section with a way to write and to upload one
+PASS - agent created and listed
+PASS - B6: a second agent with a name already taken is refused in plain words, and nothing he typed is lost :: you already have an agent called "Scout" — give this one a different name :: name "scout", 59 characters of personality kept
+PASS - B6b: there is exactly ONE Scout to point at, so an @ mention can only mean one agent :: 1 agents named Scout
+PASS - clicking an agent opens the direct conversation with it
+PASS - the agent's conversation shows the app and the model it runs on :: Claude · Sonnet 5
+PASS - that conversation is found, not created a second time :: 0 then 0 rows named Scout
+PASS - channel created with agent member
+PASS - @mention draws agent reply
+PASS - free chatter: relevant agent chimes in unmentioned
+PASS - background task acks then posts proactive result
+PASS - quick chat (Ctrl/Cmd+K) sends
+PASS - settings shows live Claude + Codex status :: claude: signed in | codex: signed in as ChatGPT account
+PASS - Claude card, signed in: green tick, an account line and a quiet Switch account :: Claude signed in ✓ app found (2.1.220 (Claude Code)) ✓ signed in using the Claude app's own login 13 models available · 
+PASS - Claude card shows exactly one state :: signedIn=true waiting=false failed=false
+PASS - Codex card, signed in: green tick, an account line and a quiet Switch account :: Codex signed in as ChatGPT account ✓ app found (codex-cli 0.144.4) ✓ signed in using the Codex app's own login 7 models 
+PASS - Codex card shows exactly one state :: signedIn=true waiting=false failed=false
+PASS - where the model list came from is printed in the engine's own words, marked proved or not :: claude: 13 models available → [no] the list Cloud9 last proved by running it, not checked just now | codex: 7 models available → (nothing claimed)
+PASS - settings still offers the API-key fallback on both cards :: Switch account · ▸ Use an API key instead · Switch account · ▸ Use an API key instead
+PASS - Settings has a GitHub card, beside the Claude and Codex cards :: signed-in
+PASS - the GitHub card shows one honest state and says when Cloud9 really asked :: signed-in :: Cloud9 asked this computer at 19:28:50.
+PASS - signed in: the GitHub card names the account and says who keeps the token :: Signed in as vikas53953
+PASS - no GitHub token and no scope list appears anywhere on the screen
+PASS - settings can actually change the look (light / dark / match this computer) :: dark then light
+PASS - settings sets which app + model new agents start on :: 13 models
+PASS - settings has notifications on/off and quiet hours that switch on
+PASS - settings tells you where agent files live and offers a Danger zone
+PASS - no credential is stored in the browser
+PASS - an old browser-stored credential is wiped on startup :: [null,null]
+PASS - agent edit offers a provider picker :: claude/codex
+PASS - agent edit offers a model picker with this agent's model selected :: claude-fable-5/claude-opus-5/claude-opus-4-8/claude-opus-4-7/claude-opus-4-6/claude-opus-4-5/claude-opus-4-1/claude-opus-4-0/claude-sonnet-5/claude-sonnet-4-6/claude-sonnet-4-5/claude-haiku-4-5/claude-haiku-4-5-20251001 value=claude-sonnet-5
+PASS - a skill can be written in plain words and saved
+PASS - a saved skill can be edited
+PASS - a skill can be uploaded from a .md file (name from the filename, body as the instructions) :: Flight watch v94vr :: Check the fare every morning and tell me when it d
+PASS - a skill can be deleted
+PASS - skills are saved onto the agent and are still there when you reopen it
+PASS - !remember: the agent saves a note and confirms it in the room
+PASS - the 'What this agent remembers' panel shows the saved note :: beach villas in Goa are cheapest in the monsoon
+PASS - an agent with nothing saved shows the honest empty state, not a faked note :: This agent hasn't saved anything to remember yet.
+PASS - handing off shows a plain 'passed to @Terra' line in the room
+PASS - the receiving agent @Terra actually takes the handed-off turn on screen
+PASS - a control beside the message box offers the things an agent can be told to do
+PASS - opening it lists every typed command the engine understands, each in plain words :: 10 rows: !issue !review !comment !code !bg !remember !handoff !schedule !schedules !unschedule
+PASS - picking a row pre-fills the message box with the command, ready to edit and send :: @Scout !remember <what it should remember>
+PASS - picking a row does NOT send anything — the line is still sitting in the box, unsent
+PASS - a command that cannot work in this room explains itself in plain words instead of failing later :: No repository is connected yet — open Projects and connect one, and Cloud9 has to be told where that code lives on this computer.
+PASS - and that row cannot be picked, so it can never write a line that would come straight back refused
+PASS - the actions menu registers with the app's one Escape owner rather than answering the key itself
+PASS - Escape closes the actions menu and leaves the box exactly as it was
+PASS - invite code generated :: inv_RoePfDaThnlbkSUaKNvs8Q
+PASS - friend joins via invite
+PASS - human-to-human message syncs across clients
+PASS - empty message is not sent
+PASS - the people list shows each person once :: Vikas, Priya
+PASS - clicking a person opens the direct conversation with them
+PASS - clicking that person again reuses the same conversation :: 1 DM row(s)
+PASS - your own row is marked as you, not offered as a chat
+PASS - no sideways scrolling at 1280 in the light look :: {"doc":0,"body":0}
+PASS - no sideways scrolling at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - no sideways scrolling at 1440 in the light look :: {"doc":0,"body":0}
+PASS - no sideways scrolling at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - the create screen shows the model picker and the skills editor together
+PASS - a message renders bold, italic and inline code
+PASS - a message renders lists, code blocks and quotes
+PASS - a bare link becomes a safe link
+PASS - a script tag in a message stays text, and never becomes markup :: script els=0
+PASS - a long conversation opens on its newest page, not the whole thing :: 50 messages on screen
+PASS - older messages load on scroll-up and the reader keeps their place :: the message the reader was on moved 0px
+PASS - the beginning of a conversation is said, once, and only when the hub says so :: 55 of 55 messages loaded
+PASS - a reaction can be added on hover, and says who reacted :: You reacted with 👍
+PASS - clicking your own reaction takes it back and the pill goes
+PASS - your own message can be changed, and says it was changed
+PASS - a deleted message becomes a tombstone in place, never a hole :: 56 rows before, 56 after
+PASS - there is no edit or delete on a message you did not write
+PASS - a message can be replied to in a thread, and the thread opens beside it
+PASS - a reply lands in the thread and the message it answers says how many replies it has :: ↳ 1 reply · last at 19:29
+PASS - the reply count opens the thread, with the message it started and every reply :: 2 messages in the panel
+PASS - with threads on, a reply is kept in its thread and is NOT a row in the conversation :: 57 row(s) in the room
+PASS - the way into a thread is a control that says Reply, not a bare glyph :: ↳ Reply
+PASS - Settings offers the two ways a reply can behave, and says plainly what each one does :: thread: ● Open a thread Like Slack The reply is kept on the message  | inline: ○ Keep it in the conversation The reply is posted straight i
+PASS - threads is what it starts on — the behaviour he is comparing it against
+PASS - choosing “keep it in the conversation” really does put the reply back in the room :: 58 row(s) in the room
+PASS - and it says which message it is answering, instead of just appearing :: ↳ Answering Vikas what should we do about the backlog?
+PASS - no thread pill is offered when threads are off — there is nothing to open
+PASS - with threads off, Reply aims the conversation's own box and opens no thread at all :: ↳ Answering Vikas cut it in half ✕
+PASS - a reply written that way lands in the conversation, under the message it answers
+PASS - switching back to threads takes the replies out of the conversation again :: 57 row(s), 1 reply pill(s)
+PASS - and every reply written either way is in the thread, none of them lost :: 3 messages in the panel
+PASS - search opens from the menu and looks across everything, not one room
+PASS - results are grouped by conversation, with who said it, when, and the words around it :: 1 group(s) :: V Vikas Today · 19:29 what should we do about the backlog?
+PASS - clicking a result goes to that message, in the conversation it was said in
+PASS - the old per-machine read state is deleted on start — the hub owns it now
+PASS - a message you have not seen is counted, and one that asks for you is marked apart :: # general ◆ @1 1
+PASS - reading the conversation clears the marks
+PASS - a mention raises an on-screen toast, in plain words :: Priya mentioned you :: @Vikas notify-mention-alpha please
+PASS - a duplicate does not stack — the same mention subject shows exactly one toast :: toasts for that subject: 1
+PASS - his own action shows nothing — a line he sends never toasts him :: self toasts: 0
+PASS - a job finishing shows a toast with the right words :: A job was cancelled
+PASS - quiet hours silence the toast — nothing pops inside the window :: toasts during quiet: 0
+PASS - the agent editor asks who may use this agent, and starts closed :: owner/allowlist/anyone chosen=owner
+PASS - choosing “me and these people” offers the people to choose
+PASS - the crew card says, in plain words, who may set this agent working :: you and 1 other person can use it
+PASS - the choice is saved on the agent and is there when you open it again :: Only you can use it
+PASS - the agent editor leads with the whole ladder the engine offers, not four checkboxes :: talk → look → work → computer
+PASS - every rung says in his words what it means for his computer :: all match
+PASS - the top rung is offered as a thing he can pick, not hidden behind a warning :: Everything this app can do on this computer
+PASS - every power the engine's table owns has a switch on this screen, in the same order :: 8 rows: webSearch, files, helpers, schedules, background, connections, wholeComputer, commands
+PASS - each switch is named in his words, never with a tool name :: Look things up on the web | Keep and change files in its own folder | Get help from its own helper agents | Check in on a repeating schedule | Work on jobs in the background | Use connected services your owner picked for you
+asks you first | Reach files outside its own folder
+asks you first | Run programs on this computer
+asks you first
+PASS - the powers that change his machine or spend money are marked as asking first :: connections, wholeComputer, commands
+PASS - picking the top rung really hands over every power the engine has :: all on
+PASS - and the ladder then reads as the top rung
+PASS - a power that is on and still grants nothing today admits it, rather than looking broken :: On, but not doing anything yet. Reach files outside its own folder needs you to say which folders, and there i
+PASS - with the top rung on, the screen names exactly the powers that will stop and ask him :: Use connected services your owner picked for you / Reach files outside its own folder / Run programs on this computer
+PASS - and those are stated, never offered as switches he could clear
+PASS - the two approvals that really are his choice stay editable
+PASS - and with nothing switched on, nothing claims to be inert either
+PASS - picking the bottom rung takes every one of them back :: all off
+PASS - and nothing then claims it will ask him about anything
+PASS - TWO ABILITIES ON: no rung claims to be his choice — the dot is off “Just talk” entirely :: {"ladder":"mixture","pressed":[],"inked":[],"banner":"Your own mixture — 2 abilities of 8 switched on. On right now: Look things up on the web, Work on jobs in the background. This is not one of the four rungs, so none of them is picked below. Pick a rung to replace your mixture, or leave it as it is — the switches are what the agent actually gets.","on":2}
+PASS - and the screen says his own mixture, names what is really on, and names NO rung :: Your own mixture — 2 abilities of 8 switched on. On right now: Look things up on the web, Work on jobs in the background. This is not one of the four rungs, so none of th
+PASS - every rung, picked, reads back as exactly itself — and nothing then calls it a mixture :: [{"ladder":"talk","pressed":["talk"],"mixture":0,"on":0},{"ladder":"look","pressed":["look"],"mixture":0,"on":2},{"ladder":"work","pressed":["work"],"mixture":0,"on":5},{"ladder":"computer","pressed":["computer"],"mixture":0,"on":8}]
+PASS - a mix that adds a power without the rungs beneath it is not reported as a rung at all :: reads as mixture
+PASS - and it is described by what is switched on, never by the rung it merely covers :: Your own mixture — 3 abilities of 8 switched on. On right now: Look things up on the web, Keep and change files in its own folder, Run programs on this computer. This is not one of the four rungs, so none of them is picked below. Pick a rung to replace your mixture, or leave it as it is — the switches are what the agent actually gets.
+PASS - switching one power on is enough to make the screen promise he will be asked :: Run programs on this computer
+PASS - the screen says how high these switches GO, not only what they keep out :: Everything Claude Code can do on this computer is available to switch 
+PASS - a Claude agent is told the switches really are the whole boundary
+PASS - and a Codex agent is NOT — the same screen refuses to tell him the same story twice :: Codex cannot remove every built-in tool. The switches it cannot give u
+PASS - it says instead what those switches DO control on Codex
+PASS - everything Codex keeps hold of anyway is named, one line each :: 3 of 3
+PASS - and what we looked at and could not settle is kept apart from it, under its own heading :: 1 unknown(s)
+PASS - the report carries the version and date it was measured on, so a stale claim shows :: Measured on codex-cli 0.146.0, locked-on switches and isolated-home tests 2026-08-01.
+PASS - a hand-written agent's file offers the ladder, the switches, who may use it, and skills :: ["Who they are","Where they run","How far they can go","Who can use this agent?","When to stop and ask","Skills","What they've been doing","What this agent remembers"]
+PASS - an agent whose role nobody knows is not told a role it does not have :: 25 skills, no role claimed
+PASS - the casting room is reachable from where he already goes to add an agent :: Browse the casting room
+PASS - and nothing on screen calls it a hiring hall any more :: Browse the casting room
+PASS - and from the crew screen :: Browse the casting room
+PASS - the software roles he asked for are all in the catalogue :: sw-architect, sw-backend, sw-frontend, sw-qa, sw-security, sw-devops, sw-reviewer, sw-writer
+PASS - every role says what it is for, what to ask it, and which app suits it :: "all complete"
+PASS - the catalogue is grouped by category, so a second category is data and not a redesign
+PASS - every role in the catalogue wears a drawn portrait, and no emoji face is left :: 8 portraits
+PASS - the brief he is hiring is shown in full, in the agent's own words :: 1034 characters
+PASS - the panel says what the hire may touch, and that it stops and asks first
+PASS - a hire answers only its owner, the same default a hand-written agent gets
+PASS - he picks which app runs it, and from his app's real model list :: 13 models offered
+PASS - the panel he hires from wears the face the agent will really be hired with
+PASS - an overlay on screen has put its close on the one Escape owner's stack :: 1 on the stack
+PASS - ESCAPE CLOSES THE CASTING-ROOM BRIEF, the same as it closes the quick-chat palette :: brief closed, stack empty, the casting room still behind it
+PASS - and the quick-chat palette still closes on Escape now that it goes through that owner too
+PASS - a count of one takes the singular word — “1 Category”, never “1 CATEGORIES” :: [{"n":8,"label":"ROLES READY"},{"n":1,"label":"CATEGORY"}]
+PASS - and a count of many still takes the plural, from that same one owner :: [{"n":8,"label":"ROLES READY"},{"n":1,"label":"CATEGORY"}]
+PASS - and no line anywhere on this screen prints a plural word on a count of one :: none
+PASS - hiring opens the new agent's own file, instead of telling him to go and press Edit :: ✓ @Architect is on the floor, and this is their file. Everything below is yours 
+PASS - A HIRED AGENT'S FILE OFFERS EXACTLY WHAT A HAND-WRITTEN ONE'S DOES — nothing less :: 8 sections, 4 rungs, 8 switches, skills editor present
+PASS - and the three he could not find are each on that screen, by name
+PASS - a hired role starts no more powerful than a hand-written agent plus what its brief asked for :: reads as mixture
+PASS - the switches Codex cannot give up are shown on, locked, and say why — never a false off :: Codex always brings 4 of these with it.Look things up on the web, Keep and change files in
+PASS - the brief really was copied onto the agent, word for word :: 1034 characters on the agent
+PASS - the model he picked was saved on the agent too :: gpt-5.6-sol (picked gpt-5.6-sol)
+PASS - the face on the role card is the face the agent now wears — the same drawing
+PASS - the skill library is reachable from the skills section of an agent's own file :: ◆ Take one from the library
+PASS - every skill it ships with is on screen, grouped on the shelves the library itself names :: 25 skills on 5 shelves: Checking work (5), Building it right (4), Finding and fixing (6), Shipping safely (6), Writing it down (4)
+PASS - each one says in plain words when it helps, and names where the procedure came from :: all fifteen carry their own words and their own source
+PASS - the whole procedure can be read before it is taken, word for word :: 1907 characters of “Code review”
+PASS - the library says which of its skills were written for the role he just hired :: 12 of 25 written for sw-architect
+PASS - it says how much room is left BEFORE he picks, not after he is refused :: 0 of 20 taught · room for 20 more
+PASS - nothing in the library shows a rating, a popularity or a count nobody has measured :: 10344 characters read
+PASS - a shelf on the filter bar shows that shelf and nothing else :: Finding and fixing: 6
+PASS - giving a skill to an agent puts it straight into the same list every other skill is in :: 1 of 20 taught · room for 19 more
+PASS - taking one he already has offers to replace it rather than silently making a second :: Already on this agent.
+PASS - and replacing leaves one, not two
+PASS - the skill library is on the one Escape owner's stack while it is open
+PASS - ESCAPE CLOSES THE SKILL LIBRARY, and leaves the agent's file open behind it
+PASS - A SKILL TAKEN FROM THE LIBRARY IS DRAWN AS THE SAME ROW AS ONE HE TYPED — no badge, no lock :: both: iconbtn skill-delete + iconbtn skill-edit
+PASS - its words arrived in full and sit in the ordinary skill editor, not a preview :: 1492 characters, editable
+PASS - every word of it can be changed, exactly like one he wrote himself
+PASS - and it can be deleted by the same bin, with nothing refusing
+PASS - hiring copies the role onto his floor as one of his own agents
+PASS - and it runs on the app he chose, not the one the catalogue suggested :: Codex gpt-5.6-sol 1 skill
+PASS - the crew screen says the hire is his to change :: ✓ @Architect is on the floor. Everything about them — the brief, the app, how far they can
+PASS - a hire is owner-only, exactly like an agent he wrote himself :: Only you can use it
+PASS - and the crew shows the very same picture the casting room showed
+PASS - and every word of it can be changed afterwards — the change survives the hub :: wait.
+
+Always answer in British English.
+PASS - a skill taken from the library is saved on the agent, and comes back as an ordinary skill :: “Prove it before saying done (mine)” survived the hub
+PASS - every agent row on screen carries a presence, and it is one the hub can actually say :: Scout=ready, Terra=ready, Architect=ready
+PASS - the row says the state in words, not only as a colour :: Scout:Ready, Terra:Ready, Architect:Ready
+PASS - and it says WHY, in a plain sentence :: Ready · signed in to Claude | Ready · signed in to Claude | Ready · signed in to Codex
+PASS - the dot and the word can never disagree — they are drawn from the same one field :: Scout:p-ready, Terra:p-ready, Architect:p-ready
+PASS - the conversation header says the same state as the rail, and the reason with it :: Ready — signed in to Claude
+PASS - pausing an agent is shown as paused, with the owner's own doing given as the reason :: Paused — paused by its owner
+PASS - and the crew card's pill says it too, rather than leaving a green dot behind
+PASS - the Off duty filter finds it by that state, not by guessing from the record
+PASS - un-pausing puts it back to ready on screen, without a reload
+PASS - an agent nobody can run reads Offline, with the honest reason — never a green dot :: Offline · switched off by its owner
+PASS - switching it back on is enough — the screen follows the hub, not a reload
+PASS - an agent that will not answer you says so, instead of silently doing nothing :: Scout only answers Vikas, so it hasn't been asked.
+PASS - D3: a second room with a name he already has is refused in plain words, and the box keeps it :: you already have a channel called "trip-goa" — give this one a different name :: kept "trip-goa"
+PASS - D4: a 3,000-character room name is refused, in the same words the agent name uses :: that name is too long (max 64 characters) :: kept 3000 characters
+PASS - D2: six spaces is not a room name — it is refused, and no room called - appears :: that isn't a name — it needs at least one letter or number :: 0 room(s) named -
+PASS - A3: a message too long is refused in plain words AND every character he typed is still there :: that message is too long (max 40000 characters) :: box holds 41000 of 41000
+PASS - the composer offers a way to attach a file
+PASS - a picked file goes up and says it is ready to send :: 362 bytes · ready to send
+PASS - F3: the everyday file names a person really has are accepted, not bounced :: site-plan.png:uptile done | ledger.bin:uptile done | report(1).pdf:uptile done | café-menu.txt:uptile done | photo#3.png:uptile done
+PASS - a file the hub would refuse is refused in the composer, in plain words :: that file name isn't allowed — keep it to 128 characters or fewer, start it with a letter, a number or a picture, leave out / \ : * ? " < > | and .., don't end it with a dot or a space, leave out hidden control characters, and don't name it after a Windows device (CON, NUL, COM1 and friends)
+PASS - F3: the refusal on screen is the sentence the rule generated, word for word :: that file name isn't allowed — keep it to 128 characters or fewer, start it with a letter, a number or a picture, leave out / \ : * ? " < > | and .., don't end it with a dot or a space, leave out hidden control characters, and don't name it after a Windows device (CON, NUL, COM1 and friends)
+  rule says: that file name isn't allowed — keep it to 128 characters or fewer, start it with a letter, a number or a picture, leave out / \ : * ? " < > | and .., don't end it with a dot or a space, leave out hidden control characters, and don't name it after a Windows device (CON, NUL, COM1 and friends)
+PASS - a file can be taken back off the message before it is sent
+PASS - the composer says how much is waiting to be sent, against the ceiling the hub itself holds :: FILES WAITING TO BE SENT 397 bytes of 50 MB Kept for 24 hours — send them or take them off before then. :: held=397 max=50000000
+PASS - the send button says how many files are going with the message :: Send with 2 files
+PASS - a message carries its files, each with its name and its size :: 362 bytes · picture
+PASS - the tray is empty once the files have gone
+PASS - a picture offers to be shown in place and a file offers to be saved
+PASS - the file fetched back off the hub is byte-for-byte the file that was sent :: 200 · sent 362 bytes, got 362
+PASS - the hub decides the type from the name, and tells the browser not to sniff :: image/png · inline; filename="site-plan.png"; filename*=UTF-8''site-plan.png
+PASS - a ticket is spent by the first request — a second one is refused :: status 404
+PASS - a file the hub will not draw comes back as bytes with a download, unchanged :: application/octet-stream · attachment; filename="ledger.bin"; filename*=UTF-8''ledger.bin
+PASS - clicking a picture opens it in place, with the picture really loaded :: {"w":180,"h":120,"src":"blob:"}
+PASS - the screen and the hub really are on different addresses, so the next check means something :: http://127.0.0.1:4282 vs http://127.0.0.1:8908
+PASS - a picture takes the one intended route — fetched, held as a blob, freed on close :: img src begins "blob:"
+PASS - saving a file still hands it to the browser, under its own name :: ledger.bin
+PASS - an opened file is held for this screen, so a second look does not re-ticket
+PASS - opened files are let go when the message leaves the screen
+PASS - the room panel lists who is in the room, with their role and when they joined :: Runs this room · joined 2 Aug
+PASS - a room's description and one-line topic can be set, and come back from the hub
+PASS - the topic is shown beside the room's name, where it is about today
+PASS - a room says at a glance that it is private, in the header and in the sidebar
+PASS - with every room shut, browsing says so — and says why, in the hub's own words :: No open rooms to join. Rooms are private unless someone opens them.
+PASS - opening a room to anyone here is said in the header and on the sidebar row
+PASS - an open room can be found by somebody who is not in it, with what it's for and how many are in it :: 1 person · started 2 Aug
+PASS - browsing offers no members and no messages — finding a room is not permission to read it
+PASS - joining an open room lets you in and hands over what was said in it
+PASS - somebody who does not run the room is told so, instead of being offered a dead button
+PASS - letting yourself into an open room is recorded as exactly that — nobody added you :: Member · joined 2 Aug
+PASS - leaving a room takes it out of the sidebar, there and then
+PASS - an archived room replaces the composer with the hub's own sentence, word for word :: that conversation is archived — nothing new can be said in it
+PASS - an archived room is greyed in the sidebar and marked archived in the header
+PASS - an archived room offers nothing that would put something new in it
+PASS - an archived room still reads all the way down — the words and the files stay
+PASS - reopening an archived room gives it back, exactly as it was
+PASS - a friend can hire an agent of their own
+PASS - the person who runs the room is offered the way to let somebody in
+PASS - an agent whose owner is not in this room is offered greyed, with the reason, before the click :: {"id":"a_msbvb6mma525j3","text":"✨ Bramble — Priya isn't in this room","disabled":true,"why":"Priya isn't in this room"}
+PASS - the picker says whose each agent is, and who admitting it would let in :: ✨ Scout — Your agent, so you can read it
+PASS - once its owner is in the room the agent can be added — and the picker names the person it lets in :: ✨ Bramble — Priya's agent, so Priya can read it
+PASS - an agent in a member list names its OWNER, so reading the list tells you who can see the room :: Priya's agent ◉ PRIYA CAN READ THIS ROOM
+PASS - your own agent is named as yours in the same place, so the two are told apart at a glance :: Your agent
+PASS - the same is said in the rail beside the conversation, not only in the details panel :: Priya's agent ◉ PRIYA CAN READ THIS ROOM
+PASS - everybody in the room is told who an agent belongs to, not only the person who runs it :: Vikas's agent ◉ VIKAS CAN READ THIS ROOM
+PASS - a plain member is not offered the control that lets somebody in — it is not there to click
+PASS - every member row is keyed by the membership itself, so two spells in one room cannot collapse into one :: u_msbv8tnqzujmpk:1785679226602 a_msbv8y2s85wivw:1785679233454 u_msbv9anhatb8r2:1785679233809 a_msbvb6mma525j3:1785679233864
+PASS - coming back into a room is a NEW membership, and the list shows the one she has now :: first 1785679231392 · now 1785679233809
+PASS - somebody let back in comes back as a plain member — power is not restored by the door :: Member · joined 2 Aug
+PASS - a member list naming an agent's owner does not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - a member list naming an agent's owner does not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - a member list naming an agent's owner does not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - a member list naming an agent's owner does not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - somebody who does not run the room is offered no way to change roles or take people out
+PASS - the person who runs the room is offered a way to change what somebody can do here
+PASS - the owner is not offered a way to demote themselves — the hub would refuse it, so it is not there
+PASS - an agent can be taken out of a room but is never offered a role — a role is a job on a screen
+PASS - every role on offer says what picking it would actually do :: owner:Hands this room over. They run it  | admin:Can change the description and top | member:Can read and talk here, and nothin
+PASS - a role changed on screen is changed at the hub, and the room says so
+PASS - being given a job in a room reaches that person's own screen, and brings the controls with it
+PASS - somebody helping run a room is offered nothing at all on the row of the person who runs it
+PASS - and IS offered the one thing an admin may do — taking an ordinary member out — with no role picker
+PASS - taking somebody out says what it costs them before it is done, and that nothing is deleted :: Take Bramble out of #paperwork? It stops answering here, and whoever owns it stops seeing this room. Everything already said stays exactly where it is.
+PASS - taking somebody out reaches the hub and the room list stops showing them
+PASS - the role controls do not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - the role controls do not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - the role controls do not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - the role controls do not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - REPRODUCED: a refusal was provoked with one file on the wire and a second read and queued behind it :: {"onTheWire":1,"queuedBehind":1,"asked":["uploadAttachment"]}
+PASS - REPRODUCED: the refusal really did land while the upload was still unanswered :: 1 held answer(s) released afterwards
+PASS - the unrelated refusal touches NEITHER file — both land and both are ready to send :: BIN survey-scan.bin 9.8 MB · ready to send ✕ BIN deposit-note.bin 26 bytes · ready to send ✕
+PASS - and the refusal is still said on screen, in the hub's own words :: you can only change your own messages
+PASS - the files that survived an unrelated refusal really go out with the message
+PASS - REPRODUCED: the Enter key was pressed while a file was genuinely still on its way up :: {"reproduced":true,"waitingWhenPressed":true,"said":"that file is still going up — give it a moment, or take it off","stillThere":true,"wordsKept":"sending this before the file is up","stillGoingWhenRead":true,"sendWaiting":"file","sendSays":"Waiting for a file…","wentAnyway":0}
+PASS - Enter mid-upload refuses in a sentence instead of throwing the file away in silence :: {"reproduced":true,"waitingWhenPressed":true,"said":"that file is still going up — give it a moment, or take it off","stillThere":true,"wordsKept":"sending this before the file is up","stillGoingWhenRead":true,"sendWaiting":"file","sendSays":"Waiting for a file…","wentAnyway":0}
+PASS - and the send button says it is waiting for the file rather than offering to send without it :: Waiting for a file… (data-waiting=file, still going: true)
+PASS - nothing was lost by waiting — the file goes out with the words that were typed
+PASS - REPRODUCED: the answer to the cleared search really did come back from the hub :: 1 searchResults frame(s)
+PASS - a search called off before its answer arrives stays gone — nothing is brought back to life :: {"answersArrived":1,"searchOnScreen":null,"hitsOnScreen":0}
+PASS - REPRODUCED: the same picture really is drawn in two places at once, and held by both :: 2 places holding it
+PASS - closing the thread does NOT take the picture out of the room behind it :: {"w":180,"h":120,"blob":true,"done":true}
+PASS - and the file is held once now, by the one place still showing it :: 1 holder(s)
+PASS - when the last place showing a file goes, the bytes are let go :: 0 holder(s) left
+PASS - a count that has hit the ceiling is never printed as though it were exact :: {"cap":1000,"at":"999+","over":"999+","under":"12"}
+PASS - an unread count below the ceiling is said exactly, with no plus and no hedging :: {"says":"1","capped":"","label":"1 new"}
+PASS - a message that contains « » is not given a highlight it never earned, and no stray bracket is drawn :: {"mode":"plain","marks":0,"text":"the «gazebo» quote came in under budget"}
+PASS - an ordinary result is still highlighted where the hub really found the word
+PASS - search is on the one Escape owner's stack, whatever holds the focus
+PASS - ESCAPE CLOSES SEARCH even with nothing in the app focused
+PASS - with two overlays open, both are on the stack and neither is guessing
+PASS - Escape closes the newest one and leaves the one underneath exactly where it was
+PASS - and the second press closes that one, leaving nothing on the stack
+PASS - REPRODUCED: the message asked for is several pages further back than what is on screen, so pages must really be walked :: 50 of 161 messages on screen, target already loaded: false
+PASS - walking back to a result never snaps the view to the newest message :: {"followedToBottom":0,"samples":42,"pinned":0,"min":40,"max":4119,"endedAt":4119}
+PASS - and the reader ends up on the message they asked for
+PASS - REPRODUCED: he is a long way from the newest message, exactly as he is after reading back :: {"fromBottom":4119,"scrollTop":0,"bottom":4119,"newestInSight":false,"followed":{"n":6,"why":"resized","recent":["arrived","resized","resized","arrived","resized","resized"]},"motion":"smooth"}
+PASS - a message arriving while he has read back does NOT drag him down to it :: 1 message frame(s); the view stayed at 0 (was 0), and the rule did not fire (6 follows, same as before)
+PASS - SENDING takes the view to what he just said, wherever he had read back to :: {"fromBottom":0,"mineInSight":true}
+PASS - and the rule says so in its own words — a send, not just an arrival :: 2 follow(s) since he pressed Enter: ["sent","arrived"]
+PASS - it moved smoothly, because this machine has not asked for stillness (face 3) :: motion=smooth behaviours=["smooth","smooth"]
+PASS - a computer asking for no movement gets none — and still ends at the newest message :: {"motion":"auto","behaviors":["auto","auto"],"fromBottom":0}
+PASS - REPRODUCED: opening the file tray really does move the bottom, with nothing arriving at all :: bottom 4203 → 4325
+PASS - and the view follows the bottom when the bottom is what moved :: 0px from the bottom, reasons since: ["resized"]
+PASS - the box grows with what is typed into it, and the newest message stays in sight while it does :: 22px empty → 112px for five lines (content 112px), 0px from the bottom
+PASS - clicking Send leaves the cursor in the box, and the box back to one line :: {"cursorInBox":true,"boxHeight":22,"fromBottom":1}
+PASS - REPRODUCED: a picture finishing really does push the bottom down after the message landed :: bottom 4390 → 4527
+PASS - and the view follows a row that grew, not only a message that arrived :: 0px from the bottom, reasons since: ["resized"]
+PASS - a reply typed in a thread brings the thread's own view down to it, through the same one owner :: the thread overflowed by 664px and he was 664px off its bottom; after his reply, 0px (in sight: true)
+PASS - the search box still offers from:, and the offer is true now :: villas in Goa · in:general · from:Priya
+PASS - two different people said the same word, so narrowing by author has something to do :: Vikas / Priya
+PASS - from: narrows to that one person's messages, from the screen :: Priya
+PASS - the hub really does refuse an unreadable database with a sentence written for a person :: Cloud9 could not open its message database at C:\Users\vikasmit\AppData\Local\Temp\cloud9-
+(node:54080) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS - when the hub cannot open its database the screen says its sentence as-is, never a stack trace :: Cloud9 could not open its message database at C:\Users\vikasmit\AppData\Local\Temp\cloud9-
+PASS - the room-details panel does not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - the room-details panel does not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - the room-details panel does not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - the room-details panel does not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - files on a message do not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - files on a message do not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - files on a message do not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - files on a message do not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+[qa] jobs the screen knows about: [{"id":"t_msbvaj2h28myu0","status":"cancelled","runId":null},{"id":"t_msbv91xrd0ct5q","status":"completed","runId":"r-0msbv91y0-9d5k"}]
+[qa] runs held by the screen: []
+PASS - a finished job carries the record of what its agent actually did :: {"id":"t_msbv91xrd0ct5q","status":"completed","runId":"r-0msbv91y0-9d5k"}
+PASS - opening it fetches the real record from the hub and draws it as a finished run :: ok
+PASS - the plain-words line is the hub's own sentence, built from the same numbers as the rows :: Answered straight from what it knew — no tools used, took under a second. :: took=under a second
+PASS - a run the app reported no money for renders NO COST ROW AT ALL — not a zero, not an estimate :: asked-by/ran-on/took
+PASS - and the rows it does carry are the ones the record really holds :: asked-by/ran-on/took
+PASS - the 📦 job result in the conversation carries that job's own record, not a lookalike
+PASS - a run card under a job result in the conversation does not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - a run card under a job result in the conversation does not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - a run card under a job result in the conversation does not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - a run card under a job result in the conversation does not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - a run card in the Tasks in-tray does not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - a run card in the Tasks in-tray does not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - a run card in the Tasks in-tray does not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - a run card in the Tasks in-tray does not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - a run that finishes anywhere this person can see arrives unasked, and is kept by its own id
+PASS - an agent's recent work lists what it did, with the ask and the same plain-words line :: Checked 1 site, read 1 file, ran 1 command, took 41 seconds, cost 76 cents.
+PASS - a run the app DID report money for shows the cost, in the hub's own words :: 76 cents
+PASS - every step is listed in the order it happened, each as its own kind of thing :: 1:web 2:read 3:note 4:command
+PASS - a web step's detail is a real link to the page it read :: https://villas.example/goa
+PASS - a step the app said nothing about gets NO tick and NO cross :: 1 unsaid, 3 marks in all
+PASS - a step the app said failed is marked failed, and only that one
+PASS - a refused tool reads as a boundary that held, not as an error
+PASS - what it thought and what it said are folded away until they are asked for
+PASS - a Codex run shows NO cost row at all — the app reports no money and none is invented :: asked-by/ran-on/took
+PASS - a run that failed says what went wrong, word for word from the record :: the booking site refused the card
+PASS - a record that had steps dropped to keep it small says so
+PASS - a friend is never shown — and never asks for — the history of an agent that isn't theirs
+PASS - a run card with every step showing, in an agent's history does not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - a run card with every step showing, in an agent's history does not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - a run card with every step showing, in an agent's history does not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - a run card with every step showing, in an agent's history does not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - PROJECTS is in the icon rail, beside the four screens he approved :: chat, crew, tasks, files, projects, activity, Quick chat (Ctrl K), settings, Connected to This computer
+PASS - with nothing connected the screen says so, rather than drawing an empty list of nothing :: No repository connected yet A project is a repository — its pull requests and its issues,
+PASS - a name that isn't owner/name is refused in the contract's own sentence, in the form :: that isn't a repository name — use owner/name, like vikas53953/cloud9
+PASS - C12: a repository GitHub cannot see is told so when he connects it, not left looking like a good one :: nope definitely-not-a-real-owner-xyz987/nope Look at GitHub now Rename Disconnect Looked at GitHub 2 Aug WHERE THE CODE LIVES ON THIS COMPUTER No folder linked yet. Until you choose one, an agent aske
+PASS - connecting a repository puts it on screen, named the way GitHub names it :: vikas53953/cloud9
+PASS - connecting a repository looks at GitHub there and then, rather than leaving him to find out later :: Cloud9 itself vikas53953/cloud9 Look at GitHub now Rename Disconnect Trunk master Looked at GitHub 2 Aug WHERE THE CODE LIVES ON THIS COMPUTER No folder linked yet. Until you choos
+PASS - a connected repository offers a way to ask GitHub, ready and named in plain words :: Look at GitHub now Rename Disconnect
+PASS - pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub :: {"type":"lookAtProject","projectId":"pr_msbvclqc9fkoer","repo":"vikas53953/cloud9"}
+PASS - while it is looking the button says so and cannot be pressed again :: Trunk master Looking at GitHub now…
+PASS - when the answer lands the button settles and the screen stamps when GitHub was last asked :: Trunk master Looked at GitHub 2 Aug
+PASS - the pull requests the engine reported are on screen, in the project's own list :: pull-41,pull-39,pull-38
+PASS - the trunk it must never land on is drawn only now that GitHub actually said what it is :: Trunk master Looked at GitHub 2 Aug
+PASS - a pull request that landed and one that was thrown away are told apart in words, not only colour :: {"pull-41":"Open","pull-39":"Merged in","pull-38":"Closed, not merged"}
+PASS - a pull request one of his agents opened carries its branch and that agent's face :: cloud9/architect-1
+→
+master
+PASS - the trunk a branch is aimed at is named from what GitHub said, never guessed as main :: cloud9/architect-1
+→
+master
+PASS - the crew panel says which agent is on which branch in this repository :: YOUR CREW IN THIS REPOSITORY Scout 1 pull request here cloud9/architect-1 → master Open The folder each agent works in s
+PASS - the folder an agent works in is NOT claimed — it never crosses the wire, and the screen says so :: The folder each agent works in stays on this computer and is not reported to Cloud9 yet — the branch above is what travels.
+PASS - opening a pull request shows the facts we hold — its number, its branch and where it is aimed
+PASS - and says the description and the conversation stay on GitHub rather than pretending to hold them
+PASS - the link out is GitHub's own address, opened away from this window :: https://github.com/vikas53953/cloud9/pull/41
+PASS - a branch no held run names is reported as untraced, not linked to a turn we guessed at :: No turn we are holding names cloud9/architect-1. Its history is below.
+PASS - a pull request opens onto the work its agent actually did, from the run records the hub holds :: 7 turns
+PASS - once a turn names the branch, the pull request is traced to the very job that made it :: Scout finished “open a pull request for the Projects screen” Ran 1 command, took 41 second
+PASS - issues are a list of their own, and only issues are in it
+PASS - reading an issue offers GitHub's own address for it, and never a made-up one :: https://github.com/vikas53953/cloud9/issues/12
+PASS - a failed look at GitHub is shown in the hub's own words, not as an empty list reading 'no open work' :: gh could not reach github.com — check the network
+PASS - and a project with a problem is flagged in the list beside it
+PASS - the Projects screen does not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - the Projects screen does not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - the Projects screen does not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - the Projects screen does not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - a project says where its code lives on this computer — a row that exists at all
+PASS - with no folder linked it says so plainly, instead of showing a blank or a guessed path :: WHERE THE CODE LIVES ON THIS COMPUTER No folder linked yet. Until you choose one, an agent asked to work in this project
+PASS - in a window with no folder picker, the button says so rather than doing nothing
+PASS - a folder that is not a whole path is refused in the contract's own sentence, in the row :: say the whole folder, starting from the drive letter — not just its name
+PASS - choosing a folder links it to THIS project, and the folder is drawn back to him :: C:\Users\vikasmit
+PASS - the folder reaches the computer that runs the agents, on the project's own frame :: C:\Users\vikasmit
+PASS - forgetting the folder puts the honest 'nobody has said' state back, not an empty box
+PASS - opening the connect panel asks the computer with the GitHub sign-in — the screen never reaches GitHub
+PASS - the panel lists the repositories the computer really reported, one row each :: 2 rows
+PASS - a private repository is drawn as private — never as a public one
+PASS - the list says when it was really asked for, rather than pretending to be current :: Asked GitHub 2 Aug
+PASS - typing a name is still offered, for a repository that is not his
+PASS - clicking a repository connects it — the same path typing its name goes down
+PASS - a listing that failed shows the reason in the hub's own words, never an empty list reading 'you have none' :: you're not signed in to GitHub on this computer
+PASS - and it points at the way in that still works — typing the name :: You can still connect one by typing its name below. · 1 typed field(s)
+PASS - before disconnecting, the screen promises the repository itself is untouched :: Disconnecting forgets Cloud9's copy of these lists. Your repository is not touched — Cloud9 has no way to delete anything on GitHub.
+PASS - a disconnected project takes its pull requests and its issues off the screen with it
+PASS - a push request draws the sentence the machine wrote, word for word :: push 2 commits to a new branch cloud9/scout-7 on vikas53953/cloud9
+PASS - the smaller line under it is the contract's own detail — how much is going up :: 3 files changed
+PASS - the card names which repository and which branch, in the sentence he judges
+PASS - it says this is something outside this computer, and that nothing has left it yet
+PASS - and which of the three things Cloud9 asks about this is, from the shared table :: PUSH A BRANCH TO GITHUB
+PASS - it says when it runs out — an agent is standing there waiting for the answer :: AGENT Scout · Claude · Sonnet 5 ASKED 19:32 EXPIRES in 9 minutes
+PASS - a request with no job behind it offers no 'see the job' button to press
+PASS - the gold pill counts a mid-run request as something waiting on him :: 1 approval waiting
+PASS - a request that reported no size shows NO size line at all — not a zero :: OPEN A PULL REQUEST ON GITHUB
+open a pull request into master from cloud9/scout-7 on vikas53953/cloud9
+nothing runs until you say so
+PASS - the same request is in the Tasks in-tray, carrying its sentence and its deadline :: Expires in 9 minutes.
+PASS - saying 'not now' answers it, and it stops waiting on him
+PASS - before the deadline the request is answerable, with both buttons on it
+PASS - a request nobody answered says nobody answered — it is not quietly a refusal :: Nobody answered in time — it didn't happen. Ask again and the agent will stop here once more.
+PASS - and it offers no button, because there is nothing left to answer
+PASS - an expired request is not painted as an error — nothing happened, which is the safe outcome :: nothing happened
+PASS - the card stays where it was, so a request that ran out while he was away is FOUND, not vanished
+PASS - a GitHub write asks on the same card, in owner words that say 'wants to' :: wants to open an issue in vikas53953/cloud9
+PASS - the write card names which repository it acts in, in the sentence he judges
+PASS - the write card carries the counted fact underneath — one issue, not a zero :: 1 issue
+PASS - the write card names which shared kind it is (open an issue on GitHub) :: OPEN AN ISSUE ON GITHUB
+PASS - the write card is drawn as a pending request, nothing changed yet
+PASS - open-issue is one of the shared GitHub write kinds, and push is not
+PASS - a request-review write reads with the reviewer count and PR number the machine set :: wants to request 3 reviewers for pull request #31 in vikas53953/cloud9
+PASS - no issue title or comment body from the agent appears anywhere on a write card
+PASS - this section leaves nothing waiting behind it — the in-tray is back the way it was
+PASS - a thread beside the conversation does not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - a thread beside the conversation does not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - a thread beside the conversation does not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - a thread beside the conversation does not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - search results do not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - search results do not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - search results do not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - search results do not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - the reach ladder at full stretch does not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - the reach ladder at full stretch does not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - the reach ladder at full stretch does not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - the reach ladder at full stretch does not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - the casting room's role cards do not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - the casting room's role cards do not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - the casting room's role cards do not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - the casting room's role cards do not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - the casting room and an open brief do not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - the casting room and an open brief do not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - the casting room and an open brief do not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - the casting room and an open brief do not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - a rail showing every agent's state does not scroll sideways at 1280 in the light look :: {"doc":0,"body":0}
+PASS - a rail showing every agent's state does not scroll sideways at 1280 in the dark look :: {"doc":0,"body":0}
+PASS - a rail showing every agent's state does not scroll sideways at 1440 in the light look :: {"doc":0,"body":0}
+PASS - a rail showing every agent's state does not scroll sideways at 1440 in the dark look :: {"doc":0,"body":0}
+PASS - a file an agent made appears in the conversation as a card with its name :: villas.md
+PASS - the card says which agent made it, and how big it is :: made by Scout :: 45 bytes · text · 2 Aug 19:32
+PASS - version 1 is not labelled with a version number nobody needs :: made by Scout
+PASS - the reference itself is not printed beside the card it draws :: here is the write-up MD villas.md made by Scout 45 bytes · text · 2 Aug 19:32 Show it
+PASS - the file really comes back, byte for byte, through the attachment ticket path :: 200 "# Villas in Goa\nThree that fit, with prices.\n"
+PASS - publishing the same name again updates the SAME card, and says so :: made by Terra · version 2 · fixed the numbers
+PASS - the newest version names the agent that made THAT version, not the first one :: made by Terra · version 2 · fixed the numbers
+PASS - the history shows the earlier version, who made it and when :: v1 Scout 2 Aug 19:32 45 bytes Show it
+PASS - an older version can still be downloaded, and it is the OLD bytes :: 200 "# Villas in Goa\nThree that fit, with prices.\n"
+PASS - a text file can be read where it sits, and it is the file's own words :: # Villas in Goa
+Three that fit, with the prices corrected.
+
+PASS - a file that is not text is a download and is never drawn into the room :: 74 bytes · a file to save · 2 Aug 19:32
+PASS - a reference to a file that is not there says so in plain words, with no jargon :: ? That file isn't here It has been taken off this Cloud9, or it is in a conversation you are not in.
+PASS - the room's details list every file agents have made in it :: 4
+PASS - a room where no agent has shared anything says so in plain words, not with a blank :: FILES AGENTS MADE No agent has shared a file here yet. When one does, it appears in the conversation as a card — and aga
+PASS - Files is in the rail and opens as the bounded cross-room workspace
+PASS - Files names the latest maker and the exact turn that made this version :: Scout turn r-qa-rich-1
+PASS - Files opens the immutable earlier version and returns its original bytes :: v1 Scout 2 Aug 19:32 45 bytes Show it # Villas in Goa Three that fit, with prices. :: "# Villas in Goa\nThree that fit, with prices.\n"
+PASS - Files gives access controls to room managers and removes them for a plain member :: member controls=0; admin choices=2
+PASS - restricting a file revokes an already-open member detail and its shown contents :: before="# Villas in Goa\nThree that fit, with the final prices corrected.\n"; after card=0
+PASS - Markdown words inside a file do not become stored artifact links
+PASS - Files names and follows a typed relationship to the distinct exact target bytes :: MADE FROM villa-budget.csv v1 :: "villa,nightly budget\nCasa Sol,8000\n"
+PASS - an editor nobody has typed into is not holding unsaved work
+PASS - the agent editor tells the one owner it is holding unsaved words :: Terra's file
+PASS - clicking a rail icon with unsaved words ASKS, in plain words, instead of throwing them away :: Terra's file still has words in it that have not been saved. If you leave now they are thrown away, and there is no way 
+PASS - keeping editing leaves every word exactly where it was
+PASS - saving does not ask about unsaved work — there is none left to lose
+PASS - choosing to throw the words away really leaves, and really discards them
+PASS - the room details panel tells the SAME owner it is holding unsaved words :: The details of #general
+PASS - changing conversation with unsaved room details asks too — the rail is not a special case
+PASS - the one owner takes the transport's own 'Error:' off a sentence somebody wrote for him :: {"text":"you already have a project called \"Audit Box\""}
+PASS - computer-speak is never shown as the sentence — he gets words he can act on :: {"text":"Something inside Cloud9 went wrong, so that didn't happen — nothing was changed. Try it once more, and if it happens again say what you were doing when it did.","detail":"Cannot read properties of undefined (reading 'id')"}
+PASS - a hub refusal already written in plain English passes through untouched :: {"text":"that's too many files (max 4)"}
+PASS - a database code is not what he is shown either :: {"text":"Something inside Cloud9 went wrong, so that didn't happen — nothing was changed. Try it once more, and if it happens again say what you were doing when it did.","detail":"SQLITE_CORRUPT: database disk image is malformed"}
+PASS - a raw refusal from the hub's catch-all never reaches him with 'Error:' on the front :: no such file
+PASS - nothing anywhere on the screen is wearing the word 'Error:' :: 0 :: that conversation is archived — nothing new can be said in it
+PASS - the same refusal is said ONCE on the screen, where the box he must change is :: you already have a project called "Audit Box" — give this one a different name :: toasts=0
+PASS - the one owner knows exactly one place is saying that sentence :: 1
+PASS - the address book lists this computer's own Cloud9, and it is the live one :: {"count":1,"selfActive":true}
+PASS - a public-internet address is refused before it can be added, in words :: that address is on the open internet — Cloud9 only joins over your private network (Tailsc
+PASS - a valid link previews with its honest reach and names the hub, and sees the join link :: 127.0.0.1:59426 — only this computer — this is the address the app uses for itself · carries a join link, so y
+PASS - adding a friend's Cloud9 actually dials it — the connection says so, and it is the live hub :: Priya's Cloud9
+PASS - a message sent on the friend's hub round-trips — messages really flow over the join
+PASS - killing the friend's hub falls the client back to this computer's own — it is never locked out
+PASS - the owner can mint a join link, and it is a cloud9:// link carrying a join_ token :: cloud9://127.0.0.1:8908#join_iYWfVmyeeiMWg8tgcU5SIA
+PASS - the panel says plainly that reaching a friend over the internet needs Tailscale, not wired tonight :: Reaching a friend on another computer needs Tailscale — a private network you both sign in
+PASS - no console errors
+
+501/501 passed
+qa.mjs: all 501 expected checks executed.

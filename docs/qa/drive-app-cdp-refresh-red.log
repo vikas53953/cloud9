@@ -1,0 +1,16 @@
+Command: narrow static architecture test against scripts/drive-app.mjs
+Expected state: RED before implementation
+
+Exit code: 1
+
+drive-app Files refresh CDP architecture test
+FAIL renderer cleanup handle removed
+FAIL renderer armed flag removed
+FAIL WebSocket send monkey patch removed
+FAIL JSON parse monkey patch removed
+FAIL dedicated CDP session exists
+FAIL Network observer enables before use
+FAIL both WebSocket frame directions observed
+FAIL observer disables and detaches
+FAIL request and response bind to one socket
+RESULT 0/9 passed
