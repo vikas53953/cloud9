@@ -13,6 +13,14 @@ Repo `github.com/vikas53953/cloud9`, branch `master`, start at commit `06eee71`.
 
 ## How to run each feature (the loop that has been working)
 
+0. **Never assume — check or ask.** When something is unclear, the order is:
+   read the code/docs/ledger (most answers are already written down); if it's
+   still open and it's a technical call, run a small experiment and let the
+   result decide; if it's a product call (what Vikas would want on his screen),
+   ask HIM — one question, with your recommendation. Any assumption you do have
+   to make gets said out loud, in the brief, the ledger and SOL-REPORT.md:
+   "assuming X — correct me." Silent assumptions are how every past loop on
+   this project started.
 1. **Scout inline** — read the code that's already there; half of Vikas's wish
    list partly exists (see the map below). Never rebuild what exists.
 2. **Spawn workers** — one agent per independent slice, each with its own files
