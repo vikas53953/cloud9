@@ -1,0 +1,1534 @@
+diff --git a/apps/desktop/src/App.tsx b/apps/desktop/src/App.tsx
+index b0d3b9b..a458e92 100644
+--- a/apps/desktop/src/App.tsx
++++ b/apps/desktop/src/App.tsx
+@@ -4,8 +4,10 @@ import React, {
+ import {
+   AgentAbilities, AgentApprovals, AgentDef, AgentPresence, AgentPresenceState,
+   AgentRespondTo, AgentSkill, AgentSkillFile,
+-  Approval, ARTIFACT_LIMITS, Artifact, artifactRef, ArtifactVersion, Attachment, ATTACHMENT_LIMITS,
+-  describeArtifactVersion, findArtifactRefs, latestVersion, versionOf,
++  Approval, ARTIFACT_LIMITS, Artifact, ArtifactAccess, artifactRef, ArtifactRelationView,
++  ArtifactVersion, ArtifactVersionRef, ArtifactWorkspaceEntry, Attachment, ATTACHMENT_LIMITS,
++  describeArtifactVersion, effectiveArtifactAccess, findArtifactRefs, isArtifactRestricted, latestVersion,
++  normaliseArtifactAccess, validateArtifactAccess, versionOf,
+   Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
+   GitHubAccountInfo, HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
+   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectItemKind, ProjectItemState,
+@@ -899,6 +901,13 @@ const IconTasks = (): React.JSX.Element => (
+     <rect x="4" y="4.5" width="16" height="15" rx="2.4" /><path d="M8 10l2.2 2.2L15.5 7" /><path d="M8 15.5h8" />
+   </svg>
+ );
++/** FILES — three immutable sheets held together as one version chain. */
++const IconFiles = (): React.JSX.Element => (
++  <svg viewBox="0 0 24 24" aria-hidden="true">
++    <path d="M7 4.5h8l3 3v12H7Z" /><path d="M15 4.5v3h3" />
++    <path d="M4 7.5v12h10" /><path d="M10 12h5M10 15h5" />
++  </svg>
++);
+ /**
+  * PROJECTS — a branch leaving the trunk and coming back.
+  *
+@@ -1584,7 +1593,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
+ 
+ /* ================= the workspace shell ================= */
+ 
+-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "projects" | "activity" | "settings";
++type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "files" | "projects" | "activity" | "settings";
+ type ModalName = "invite" | "channel" | "browse" | "friends";
+ 
+ /** Presence line for a rail row — built only from what the app really knows. */
+@@ -1622,6 +1631,14 @@ function respondWords(a: AgentDef, ownerName: string): string {
+   }
+ }
+ 
++/** One owner for the person/agent on the other side of a direct conversation. */
++function channelPeer(channel: Channel, world: World): { name: string; agent?: AgentDef; user?: User } {
++  const id = channel.memberIds.find(memberId => memberId !== world.me?.id);
++  const user = world.users.find(u => u.id === id);
++  const agent = world.agents.find(a => a.id === id);
++  return { name: user?.name ?? agent?.name ?? channel.name, user, agent };
++}
++
+ /** Which rule made this agent stop and ask. Read off the agent, never guessed. */
+ function ruleWords(agent?: AgentDef): string | null {
+   if (!agent?.approvals) return null;
+@@ -1816,6 +1833,7 @@ function Workspace(): React.JSX.Element {
+        search overlay call exactly these. Nothing here is a stand-in. */
+     (window as unknown as { cloud9Wire?: unknown }).cloud9Wire = {
+       outstanding: () => client.outstanding(),
++      questions: () => client.outstandingQuestions(),
+       seen: () => client.framesSeen(),
+       ask: (frame: Parameters<typeof client.send>[0]) => client.send(frame),
+       /* The app's own "say this went wrong" door — the very method a refused
+@@ -1864,6 +1882,17 @@ function Workspace(): React.JSX.Element {
+         versions: a.versions.map(v => ({ version: v.version, agent: v.agentName, size: v.size, text: v.text })),
+       })),
+       inRoom: (channelId: ID) => client.artifactsIn(channelId).list.map(a => a.id),
++      workspace: () => ({
++        asked: client.artifactWorkspace().asked,
++        loading: client.artifactWorkspace().loading,
++        hasMore: client.artifactWorkspace().hasMore,
++        capacity: client.artifactWorkspace().capacity,
++        problem: client.artifactWorkspace().problem ?? null,
++        ids: client.artifactWorkspace().entries.map(a => a.artifactId),
++      }),
++      relations: (artifactId: ID) => client.relationsFor(artifactId),
++      relationsTruncated: (artifactId: ID) => client.relationsTruncated(artifactId),
++      detailProblem: (artifactId: ID) => client.artifactDetailProblem(artifactId) ?? null,
+     };
+     /* QA hook: THE UNSAVED-WORK OWNER ITSELF. Pressing a rail icon proves the
+        behaviour; this proves the MECHANISM — that the surface he is typing into
+@@ -2034,12 +2063,10 @@ function Workspace(): React.JSX.Element {
+     c.kind === "dm" && !c.memberIds.some(id => world.agents.some(a => a.id === id)));
+ 
+   const peerOf = (c: Channel) => {
+-    const id = c.memberIds.find(i => i !== world.me?.id);
+-    const user = world.users.find(u => u.id === id);
+-    const agent = world.agents.find(a => a.id === id);
++    const { name, agent } = channelPeer(c, world);
+     const status = agent ? agentStatusLine(agent, world.agentStatus[agent.id]) : null;
+     return {
+-      name: user?.name ?? agent?.name ?? c.name,
++      name,
+       agent,
+       isAgent: !!agent,
+       sub: status ? status.line : "just the two of you",
+@@ -2074,6 +2101,7 @@ function Workspace(): React.JSX.Element {
+           {railBtn("chat", "Chat", <IconChat />)}
+           {railBtn("crew", "Crew", <IconCrew />)}
+           {railBtn("tasks", "Tasks", <IconTasks />, pendingApprovals)}
++          {railBtn("files", "Files", <IconFiles />)}
+           {/* ADDED beside the four he approved — the Studio navigation is
+               otherwise unchanged. Everything the hub and the engine already
+               hold about his repositories arrives through this one door. */}
+@@ -2136,6 +2164,7 @@ function Workspace(): React.JSX.Element {
+             />
+           )}
+           {screen === "tasks" && <TasksScreen onOpenChannel={id => goChannel(id)} />}
++          {screen === "files" && <FilesScreen onOpenChannel={id => goChannel(id)} />}
+           {screen === "projects" && (
+             <ProjectsScreen onOpenChannel={id => goChannel(id)} />
+           )}
+@@ -3764,8 +3793,8 @@ function ArtifactCard({ artifactId, version, place = "chat" }: {
+   artifactId: ID;
+   /** the exact version a reference asked for; absent means the newest */
+   version?: number;
+-  /** "chat" is the card in a message; "room" is the row in a room's file list */
+-  place?: "chat" | "room";
++  /** chat card, room list card, or the Files workspace detail — one behavior */
++  place?: "chat" | "room" | "workspace";
+ }): React.JSX.Element {
+   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+   const [showHistory, setShowHistory] = useState(false);
+@@ -3775,7 +3804,9 @@ function ArtifactCard({ artifactId, version, place = "chat" }: {
+ 
+   /* Asked once, by id. A newer version arrives here by itself on an `artifact`
+      frame, so there is nothing to poll and nothing to refresh. */
+-  useEffect(() => { client.askArtifact(artifactId); }, [artifactId]);
++  useEffect(() => {
++    if (place !== "workspace") client.askArtifact(artifactId);
++  }, [artifactId, place]);
+ 
+   const artifact = world.artifacts[artifactId];
+   if (!artifact) {
+@@ -3820,7 +3851,8 @@ function ArtifactCard({ artifactId, version, place = "chat" }: {
+   const shown = asked ?? newest;
+   const held = world.files[shown.id];
+   const peekingThis = peeking === shown.version;
+-  const older = artifact.versions.filter(v => v.version !== shown.version);
++  const otherVersions = artifact.versions.filter(v => v.version !== shown.version);
++  const historyLabel = shown.version === newest.version ? "Earlier versions" : "Other retained versions";
+ 
+   const open = (v: ArtifactVersion): void => {
+     if (v.text) { setPeeking(v.version); void client.openArtifact(artifact, v); }
+@@ -3892,16 +3924,16 @@ function ArtifactCard({ artifactId, version, place = "chat" }: {
+ 
+       {/* THE HISTORY. One file with two authors in it is the entire reason this
+           store exists — so who made each version, and when, is on the screen. */}
+-      {older.length > 0 && (
++      {otherVersions.length > 0 && (
+         <>
+           <button className="runmore arthistory" aria-expanded={showHistory}
+-            data-older={older.length} onClick={() => setShowHistory(o => !o)}>
++            data-older={otherVersions.length} onClick={() => setShowHistory(o => !o)}>
+             <span className="tri" aria-hidden="true">{showHistory ? "▾" : "▸"}</span>
+-            Earlier versions<span className="n">{countOf(older.length, "version")}</span>
++            {historyLabel}<span className="n">{countOf(otherVersions.length, "version")}</span>
+           </button>
+           {showHistory && (
+             <ol className="artversions">
+-              {older.map(v => (
++              {otherVersions.map(v => (
+                 <li key={v.id} className="artversion" data-version={v.version}>
+                   <span className="vnum">v{v.version}</span>
+                   <span className="vwho">
+@@ -8665,6 +8697,533 @@ function GitHubCard({ info, checking }: {
+   );
+ }
+ 
++/* ================= FILES · ONE WORKSPACE ACROSS ROOMS ================= */
++
++/** A workspace date always includes the year: a file from last August must not look recent. */
++const FILE_DATE = new Intl.DateTimeFormat([], {
++  day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
++});
++const fileDate = (ts: number): string => FILE_DATE.format(new Date(ts));
++
++const accessOf = (artifact: Artifact): ArtifactAccess => effectiveArtifactAccess(artifact.access);
++
++const sameIds = (a: ID[], b: ID[]): boolean => {
++  const x = [...new Set(a)].sort(), y = [...new Set(b)].sort();
++  return x.length === y.length && x.every((id, i) => id === y[i]);
++};
++
++/** Object identity is not a permission change; sorted meaning is. */
++const accessKey = (access: ArtifactAccess): string => access.kind === "room"
++  ? "room"
++  : `restricted:${[...new Set(access.userIds)].sort().join(",")}`;
++
++function workspaceRoomName(entry: ArtifactWorkspaceEntry, world: World): string {
++  const channel = world.channels.find(c => c.id === entry.channelId);
++  if (!channel || channel.kind !== "dm") return `#${entry.channelName}`;
++  return `Direct · ${channelPeer(channel, world).name}`;
++}
++
++type FileSelection = { artifactId: ID; version?: number };
++
++function CopyFileRef({ value, kind }: { value: string; kind: "newest" | "exact" }): React.JSX.Element {
++  const [copied, setCopied] = useState(false);
++  return (
++    <button className="btn small ghost filerefcopy" data-copy-ref={kind}
++      title={value} onClick={() => {
++        void navigator.clipboard?.writeText(value).then(() => {
++          setCopied(true);
++          window.setTimeout(() => setCopied(false), 1600);
++        });
++      }}>
++      {copied ? "Copied" : kind === "newest" ? "Copy newest reference" : "Copy exact version"}
++    </button>
++  );
++}
++
++function relationLabel(relation: ArtifactRelationView): string {
++  if (relation.kind === "goes-with") return "Goes with";
++  return relation.direction === "incoming" ? "Used to make" : "Made from";
++}
++
++function relationOther(relation: ArtifactRelationView): ArtifactVersionRef | undefined {
++  if (relation.hidden) return undefined;
++  return relation.direction === "incoming" ? relation.from : relation.to;
++}
++
++function FileRelations({ artifactId, loaded, relations, truncated, problem, onRetry, onOpen }: {
++  artifactId: ID;
++  loaded: boolean;
++  relations: ArtifactRelationView[];
++  truncated: boolean;
++  problem?: string;
++  onRetry: () => void;
++  onOpen: (ref: ArtifactVersionRef) => void;
++}): React.JSX.Element {
++  const state = problem ? "error" : loaded ? (relations.length === 0 ? "empty" : "some") : "loading";
++  return (
++    <section className="callout filedetail-sec filerelations" data-relation-artifact={artifactId}
++      data-file-relations={loaded ? relations.length : state}>
++      <span className="eyebrow">How this file connects</span>
++      {problem ? (
++        <div className="relationproblem" data-relations-state="error" role="status">
++          <span>{plainError(problem) ?? problem}</span>
++          <button className="btn small" data-relations-retry onClick={onRetry}>Try again</button>
++        </div>
++      ) : !loaded ? (
++        <p className="filedetail-wait" data-relations-state="loading">Looking for file links…</p>
++      ) : relations.length === 0 ? (
++        <p className="filedetail-empty" data-relations-state="empty">
++          No Made from or Goes with links were declared for the versions kept here.
++        </p>
++      ) : (
++        <>
++          <div className="relationlist" data-relations-state="some">
++            {relations.map((relation, i) => {
++              const other = relationOther(relation);
++              return (
++                <div className="relationrow" key={`${relation.kind}-${relation.direction}-${i}`}
++                  data-relation-kind={relation.kind} data-relation-direction={relation.direction}
++                  data-relation-hidden={relation.hidden ? "yes" : "no"}>
++                  <span className="relationlead">
++                    <span className="relationkind">{relationLabel(relation)}</span>
++                    <span className="relationhere">
++                      this file v{relation.direction === "incoming" ? relation.to.version : relation.from.version}
++                    </span>
++                  </span>
++                  {relation.hidden ? (
++                    <span className="relationhidden">A linked file isn’t available to you.</span>
++                  ) : (
++                    <button className="relationtarget" onClick={() => onOpen(other!)}
++                      data-linked-artifact={other!.artifactId} data-linked-version={other!.version}>
++                      <span className="relationname">{relation.linkedName}</span>
++                      <span className="relationversion">v{other!.version}</span>
++                    </button>
++                  )}
++                </div>
++              );
++            })}
++          </div>
++          {truncated && (
++            <p className="relationtruncated" data-relations-truncated="true">
++              Showing {ARTIFACT_LIMITS.relationDetail} links; more exist.
++            </p>
++          )}
++        </>
++      )}
++    </section>
++  );
++}
++
++function FileAccessEditor({ artifact, channel, world, onDirtyChange }: {
++  artifact: Artifact;
++  channel?: Channel;
++  world: World;
++  onDirtyChange: (draft: { what: string; dirty: boolean }) => void;
++}): React.JSX.Element {
++  const stored = accessOf(artifact);
++  const allRows = channel?.kind === "channel" ? (world.members[channel.id] ?? []) : [];
++  const rows = allRows.filter(m => !m.removedAt);
++  const membershipKey = allRows
++    .map(m => `${m.memberId}:${m.role}:${m.removedAt ?? "here"}`)
++    .sort().join("|");
++  const roster = channel?.memberIds.join(",") ?? "";
++  useEffect(() => {
++    if (channel?.kind === "channel") client.askMembers(channel.id);
++  }, [artifact.id, channel, roster, membershipKey]);
++
++  const myRole = rows.find(m => m.memberId === world.me?.id)?.role;
++  const canEdit = channel?.kind === "channel" && mayAdministerChannel(myRole);
++  const humanRows = rows
++    .map(row => ({ row, user: world.users.find(u => u.id === row.memberId) }))
++    .filter((x): x is { row: ChannelMember; user: User } => !!x.user)
++    .sort((a, b) => ROLE_ORDER.indexOf(a.row.role) - ROLE_ORDER.indexOf(b.row.role)
++      || a.user.name.localeCompare(b.user.name));
++  const managerIds = humanRows.filter(x => mayAdministerChannel(x.row.role)).map(x => x.user.id);
++  const managerKey = managerIds.join(",");
++  const selectedFrom = (access: ArtifactAccess): ID[] => access.kind === "restricted"
++    ? access.userIds.filter(id => !managerIds.includes(id))
++    : [];
++  const storedKey = accessKey(stored);
++  const [mode, setMode] = useState<ArtifactAccess["kind"]>(stored.kind);
++  const [selected, setSelected] = useState<ID[]>(() => selectedFrom(stored));
++  const [saving, setSaving] = useState(false);
++  const [problem, setProblem] = useState<string | null>(null);
++  const [baseline, setBaseline] = useState<{
++    artifactId: ID; storedKey: string; kind: ArtifactAccess["kind"]; selectedIds: ID[];
++  }>(() => ({
++    artifactId: artifact.id, storedKey, kind: stored.kind, selectedIds: selectedFrom(stored),
++  }));
++  const pendingSavedAccess = useRef<string | null>(null);
++
++  /* Managers are required on screen but DERIVED by the relay on every read. Do
++     not store them as selected people: if an admin is demoted tomorrow, a frozen
++     selected row would incorrectly keep their access. */
++  const baselineSelectedIds = baseline.kind === "restricted"
++    ? baseline.selectedIds.filter(id => !managerIds.includes(id)
++      && humanRows.some(x => x.user.id === id))
++    : [];
++  const chosenIds = mode === "restricted"
++    ? [...new Set(selected)].filter(id => !managerIds.includes(id)
++      && humanRows.some(x => x.user.id === id))
++    : [];
++  /* DIRTY IS AGAINST THE BASELINE THE DRAFT CAME FROM — never against a newer
++     server value. Otherwise an external clean update makes the OLD clean draft
++     look dirty and lets it overwrite the update. */
++  const dirty = mode !== baseline.kind
++    || (mode === "restricted"
++      && (baseline.kind !== "restricted" || !sameIds(chosenIds, baselineSelectedIds)));
++  const incomingChanged = baseline.artifactId !== artifact.id || baseline.storedKey !== storedKey;
++
++  /* A pushed version brings a fresh access OBJECT with the same meaning. It must
++     not erase a draft. A semantic incoming change replaces draft+baseline only
++     when that draft is clean; a genuinely dirty draft remains guarded. */
++  useEffect(() => {
++    const fileChanged = baseline.artifactId !== artifact.id;
++    const saveLanded = pendingSavedAccess.current === storedKey;
++    if (!fileChanged && (!incomingChanged || (dirty && !saveLanded))) return;
++    const nextSelected = selectedFrom(stored);
++    setMode(stored.kind);
++    setSelected(nextSelected);
++    setSaving(false);
++    setProblem(null);
++    setBaseline({
++      artifactId: artifact.id, storedKey, kind: stored.kind, selectedIds: nextSelected,
++    });
++    pendingSavedAccess.current = null;
++  }, [artifact.id, storedKey, incomingChanged, dirty, managerKey, baseline.artifactId]);
++
++  const previousManagers = useRef<{ artifactId: ID; ids: ID[] }>({ artifactId: artifact.id, ids: [] });
++  useEffect(() => {
++    const prior = previousManagers.current.artifactId === artifact.id
++      ? previousManagers.current.ids
++      : [];
++    const derived = new Set([...prior, ...managerIds]);
++    setSelected(now => now.filter(id => !derived.has(id)));
++    previousManagers.current = { artifactId: artifact.id, ids: managerIds };
++  }, [artifact.id, managerKey]);
++
++  useEffect(() => {
++    onDirtyChange({
++      what: `Access to ${artifact.name}`,
++      dirty: !!canEdit && dirty && !saving,
++    });
++  }, [artifact.id, artifact.name, canEdit, dirty, saving, onDirtyChange]);
++
++  if (!channel) {
++    return (
++      <section className="callout filedetail-sec fileaccess" data-file-access="unavailable">
++        <span className="eyebrow">Who can read it</span>
++        <p className="filedetail-wait">Looking for the source room…</p>
++      </section>
++    );
++  }
++
++  if (channel.kind === "dm") {
++    return (
++      <section className="callout filedetail-sec fileaccess" data-file-access="inherited" data-access-editor="no">
++        <span className="eyebrow">Who can read it</span>
++        <div className="accesssummary">
++          <b>Inherited from this direct conversation</b>
++          <span>Only the people who can currently read this conversation can read any version of the file.</span>
++        </div>
++        <p className="filedetail-note">Direct conversations have no separate file access editor in this release.</p>
++      </section>
++    );
++  }
++
++  if (rows.length === 0) {
++    return (
++      <section className="callout filedetail-sec fileaccess" data-file-access={stored.kind} data-access-editor="loading">
++        <span className="eyebrow">Who can read every version</span>
++        <p className="filedetail-wait">Looking up the current room members and managers…</p>
++      </section>
++    );
++  }
++
++  const choose = (id: ID, on: boolean): void => {
++    setProblem(null);
++    setSelected(now => on ? [...new Set([...now, id])] : now.filter(x => x !== id));
++  };
++  const save = (): void => {
++    const next = normaliseArtifactAccess(mode === "room"
++      ? { kind: "room" }
++      : { kind: "restricted", userIds: chosenIds });
++    const refusal = validateArtifactAccess(next);
++    if (refusal) { setProblem(refusal); return; }
++    const expected = next.kind === "room" ? next : normaliseArtifactAccess({
++      kind: "restricted", userIds: [...next.userIds, ...managerIds],
++    });
++    pendingSavedAccess.current = accessKey(expected);
++    setSaving(true);
++    setProblem(null);
++    client.setArtifactAccess(artifact.id, next,
++      () => setSaving(false),
++      why => {
++        pendingSavedAccess.current = null;
++        setSaving(false);
++        setProblem(why);
++      });
++  };
++
++  const restrictedCount = stored.kind === "restricted"
++    ? stored.userIds.filter(id => !managerIds.includes(id)).length
++    : 0;
++  return (
++    <section className="callout filedetail-sec fileaccess" data-file-access={stored.kind}
++      data-access-editor={canEdit ? "yes" : "read-only"}
++      data-access-dirty={dirty ? "yes" : "no"}
++      data-access-incoming={incomingChanged ? "changed" : "same"}
++      data-access-baseline={baseline.kind}>
++      <span className="eyebrow">Who can read every version</span>
++      {!canEdit ? (
++        <div className="accesssummary">
++          <b>{stored.kind === "room" ? "Everyone currently in the room" : "Restricted inside the room"}</b>
++          <span>{stored.kind === "room"
++            ? `Everyone who can currently read #${channel.name} can read this file.`
++            : `${countOf(restrictedCount, "selected person", "selected people")} plus all current room managers can read it.`}</span>
++          <span>Only this room’s owner or an admin can change that.</span>
++        </div>
++      ) : (
++        <div className="accesseditor">
++          <div className="accesschoices" role="group" aria-label="File access">
++            <button className="accesschoice" aria-pressed={mode === "room"}
++              data-access-choice="room" onClick={() => { setMode("room"); setProblem(null); }}>
++              <span className="tick" aria-hidden="true">{mode === "room" ? "●" : "○"}</span>
++              <span><b>Everyone currently in the room</b><em>Default. Membership changes apply immediately.</em></span>
++            </button>
++            <button className="accesschoice" aria-pressed={mode === "restricted"}
++              data-access-choice="restricted" onClick={() => { setMode("restricted"); setProblem(null); }}>
++              <span className="tick" aria-hidden="true">{mode === "restricted" ? "●" : "○"}</span>
++              <span><b>Selected people in the room</b><em>Narrows access. It can never add somebody from outside this room.</em></span>
++            </button>
++          </div>
++
++          {mode === "restricted" && (
++            <div className="accesspeople" data-access-members={humanRows.length}>
++              <p className="filedetail-note">Room managers are required and cannot be unchecked.</p>
++              {humanRows.map(({ row, user }) => {
++                const manager = mayAdministerChannel(row.role);
++                const checked = manager || selected.includes(user.id);
++                return (
++                  <label className={`accessperson${manager ? " required" : ""}`} key={user.id}
++                    data-access-user={user.id} data-required={manager ? "yes" : "no"}>
++                    <input type="checkbox" checked={checked} disabled={manager}
++                      onChange={e => choose(user.id, e.target.checked)} />
++                    <span className="accessperson-name">{user.name}</span>
++                    {manager && <span className="chip is-ultra">{row.role} · required</span>}
++                  </label>
++                );
++              })}
++            </div>
++          )}
++
++          <Problem text={problem ?? undefined} className="fileaccess-problem" />
++          <div className="accessactions">
++            <button className="primary small" disabled={!dirty || saving} onClick={save}
++              data-access-save>{saving ? "Saving…" : "Save access"}</button>
++            {dirty && !saving && <span className="hint">Not saved yet</span>}
++          </div>
++        </div>
++      )}
++    </section>
++  );
++}
++
++function FilesScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): React.JSX.Element {
++  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
++  const page = client.artifactWorkspace();
++  const [selected, setSelected] = useState<FileSelection | null>(null);
++  const [accessDraft, setAccessDraft] = useState<{ what: string; dirty: boolean } | null>(null);
++  useUnsavedWork(accessDraft?.what ?? "File access", !!accessDraft?.dirty);
++  const entry = selected ? page.entries.find(a => a.artifactId === selected.artifactId) : undefined;
++  const artifact = selected ? world.artifacts[selected.artifactId] : undefined;
++  const relations = selected ? client.relationsFor(selected.artifactId) : undefined;
++  const relationsTruncated = selected ? client.relationsTruncated(selected.artifactId) : false;
++  const detailProblem = selected ? client.artifactDetailProblem(selected.artifactId) : undefined;
++  const unavailable = selected ? !!world.artifactsGone[selected.artifactId] : false;
++  const noteAccessDraft = useCallback((draft: { what: string; dirty: boolean }) => {
++    setAccessDraft(draft);
++  }, []);
++  const selectFile = useCallback((next: FileSelection) => {
++    attemptLeave(() => {
++      setAccessDraft(null);
++      setSelected(next);
++    });
++  }, []);
++
++  useEffect(() => { client.askArtifactWorkspace(true); }, []);
++  useEffect(() => {
++    if (selected || page.entries.length === 0) return;
++    selectFile({ artifactId: page.entries[0].artifactId });
++  }, [selected, page.entries, selectFile]);
++  useEffect(() => {
++    if (selected && !unavailable && !detailProblem && relations === undefined) {
++      client.askArtifactDetail(selected.artifactId);
++    }
++  }, [selected?.artifactId, artifact?.updatedAt, unavailable, detailProblem, relations === undefined]);
++  const channelId = artifact?.channelId ?? entry?.channelId;
++  const channel = world.channels.find(c => c.id === channelId);
++  const newest = artifact ? latestVersion(artifact) : entry?.latest;
++  const exactVersion = selected?.version ?? newest?.version;
++  const state = page.problem ? "error"
++    : !page.asked && page.loading ? "loading"
++    : page.asked && page.entries.length === 0 && page.hasMore ? "backfill"
++    : page.asked && page.entries.length === 0 ? "empty" : "some";
++  const detailState = !selected ? "none" : unavailable ? "unavailable"
++    : detailProblem ? "error" : (!artifact || relations === undefined) ? "loading" : "here";
++
++  return (
++    <section className="filescreen screen" data-files-screen data-files-state={state}>
++      <header className="topbar files-topbar">
++        <h2>Files</h2>
++        <span className="sub">Across every room you can read · newest change first</span>
++        <div className="grow" />
++        {page.checkedAt && <span className="files-checked">Checked {fileDate(page.checkedAt)}</span>}
++        <button className="btn small ghost files-refresh" disabled={page.loading}
++          onClick={() => client.askArtifactWorkspace(true)}>
++          {page.loading && page.entries.length === 0 ? "Looking…" : "Refresh"}
++        </button>
++      </header>
++
++      <div className="files-body">
++        <aside className="files-index" aria-label="Files you can read">
++          <div className="files-index-head">
++            <span className="eyebrow">Newest changes</span>
++            {page.entries.length > 0 && <span className="chip">{countOf(page.entries.length, "file")}</span>}
++          </div>
++
++          <div className="files-list" data-files-list-state={state}>
++            {!page.asked && page.loading && page.entries.length === 0 && (
++              <div className="files-state" data-files-loading>
++                <span className="spinner" aria-hidden="true" />
++                <b>Looking across your rooms…</b>
++                <span>The hub is checking what you can read now.</span>
++              </div>
++            )}
++            {page.problem && (
++              <div className="files-state is-error" data-files-error>
++                <b>The file list could not be loaded.</b>
++                <span>{plainError(page.problem) ?? page.problem}</span>
++                {page.checkedAt && <span>Last attempt: {fileDate(page.checkedAt)}</span>}
++                <button className="btn small" onClick={() => client.askArtifactWorkspace(true)}>Try again</button>
++              </div>
++            )}
++            {page.asked && !page.problem && page.entries.length === 0 && page.hasMore && (
++              <div className="files-state" data-files-backfill>
++                <span className="files-empty-mark" aria-hidden="true">MORE</span>
++                <b>Older readable files remain.</b>
++                <span>The loaded rows changed. Open the next page to fill this list again.</span>
++              </div>
++            )}
++            {page.asked && !page.problem && page.entries.length === 0 && !page.hasMore && (
++              <div className="files-state" data-files-empty>
++                <span className="files-empty-mark" aria-hidden="true">FILE</span>
++                <b>No agent-made files are available yet.</b>
++                <span>When an agent shares one in a room you can read, it appears here.</span>
++                {page.checkedAt && <span>Checked {fileDate(page.checkedAt)}</span>}
++              </div>
++            )}
++            {page.entries.map(item => {
++              const on = selected?.artifactId === item.artifactId;
++              const restricted = isArtifactRestricted(item.access);
++              return (
++                <button className="file-index-row" key={item.artifactId} aria-current={on}
++                  data-file-row={item.artifactId} data-room={item.channelId}
++                  data-maker={item.latest.agentName} data-turn={item.latest.runId}
++                  data-access={item.access.kind} data-version-count={item.versionCount}
++                  onClick={() => selectFile({ artifactId: item.artifactId })}>
++                  <span className="file-index-glyph" aria-hidden="true">{fileKind(item.name)}</span>
++                  <span className="file-index-copy">
++                    <span className="file-index-name">{item.name}</span>
++                    <span className="file-index-room">{workspaceRoomName(item, world)}</span>
++                    <span className="file-index-maker">
++                      {item.latest.agentName}
++                      {item.latest.runId && <code title={item.latest.runId}>turn {item.latest.runId}</code>}
++                    </span>
++                    <span className="file-index-date">{fileDate(item.updatedAt)}</span>
++                  </span>
++                  <span className="file-index-facts">
++                    <span className="versionstack" title={countOf(item.versionCount, "version")}>
++                      <i /><i />v{item.latest.version}
++                    </span>
++                    <span className={`accessmark ${restricted ? "restricted" : "room"}`}>
++                      {restricted ? "Restricted" : "Room"}
++                    </span>
++                  </span>
++                </button>
++              );
++            })}
++          </div>
++
++          {page.asked && !page.problem && (page.entries.length > 0 || page.hasMore) && (
++            <div className="files-page-foot" data-files-page-state={page.entries.length === 0 ? "backfill" : "rows"}>
++              {page.hasMore ? (
++                <button className="btn small files-more" data-files-more disabled={page.loading}
++                  onClick={() => client.askArtifactWorkspace(false)}>
++                  {page.loading ? "Loading older files…" : "Older files"}
++                </button>
++              ) : <span className="files-end" data-files-end>That is every file you can currently read.</span>}
++            </div>
++          )}
++        </aside>
++
++        <main className="files-detail" data-file-detail={unavailable ? "unavailable" : selected?.artifactId ?? "none"}
++          data-file-detail-state={detailState}>
++          {!selected ? (
++            <div className="files-detail-empty">
++              <span className="files-detail-mark" aria-hidden="true">↗</span>
++              <h3>Choose a file</h3>
++              <p>Its full immutable history, preview, links and room access appear here.</p>
++            </div>
++          ) : unavailable ? (
++            <div className="files-detail-empty files-detail-unavailable" data-file-unavailable>
++              <span className="files-detail-mark" aria-hidden="true">?</span>
++              <h3>That file isn’t available</h3>
++              <p>It has been taken off this Cloud9, or it is in a conversation you cannot read.</p>
++              {page.entries.length > 0 && (
++                <button className="btn small" onClick={() => selectFile({ artifactId: page.entries[0].artifactId })}>
++                  Choose another file
++                </button>
++              )}
++            </div>
++          ) : (
++            <div className="files-detail-inner">
++              <div className="filedetail-head">
++                <div className="filedetail-title">
++                  <span className="eyebrow">{channel ? (channel.kind === "dm" ? "Direct conversation" : `Room · #${channel.name}`) : "Source room"}</span>
++                  <h3>{artifact?.name ?? entry?.name ?? "Looking for that file…"}</h3>
++                  {newest && (
++                    <p>{describeArtifactVersion(newest)} · {fileDate(newest.producedAt)} · {countOf(entry?.versionCount ?? newest.version, "version")}</p>
++                  )}
++                </div>
++                <div className="filedetail-actions">
++                  {channelId && <button className="btn small ghost" data-open-file-room
++                    onClick={() => onOpenChannel(channelId)}>Open room</button>}
++                  {selected && <CopyFileRef kind="newest" value={artifactRef(selected.artifactId)} />}
++                  {selected && exactVersion !== undefined && (
++                    <CopyFileRef kind="exact" value={artifactRef(selected.artifactId, exactVersion)} />
++                  )}
++                </div>
++              </div>
++
++              {(!detailProblem || artifact) && (
++                <ArtifactCard artifactId={selected.artifactId} version={selected.version} place="workspace" />
++              )}
++              <FileRelations artifactId={selected.artifactId}
++                loaded={relations !== undefined} relations={relations ?? []}
++                truncated={relationsTruncated} problem={detailProblem}
++                onRetry={() => client.askArtifactDetail(selected.artifactId)}
++                onOpen={ref => selectFile(ref)} />
++              {artifact && <FileAccessEditor artifact={artifact} channel={channel} world={world}
++                onDirtyChange={noteAccessDraft} />}
++            </div>
++          )}
++        </main>
++      </div>
++    </section>
++  );
++}
++
+ /* ================= 6 · TASKS & APPROVALS ================= */
+ 
+ const STATUS_LABEL: Record<string, string> = {
+diff --git a/apps/desktop/src/store.ts b/apps/desktop/src/store.ts
+index 4514448..1caad8a 100644
+--- a/apps/desktop/src/store.ts
++++ b/apps/desktop/src/store.ts
+@@ -1,11 +1,13 @@
+ // Renderer-side relay client: one WebSocket, one mutable world, subscribers.
+ import {
+-  ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, Artifact, ArtifactVersion,
++  ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, ARTIFACT_LIMITS, Artifact, ArtifactAccess,
++  ArtifactRelationView, ArtifactVersion, ArtifactWorkspaceEntry,
+   Attachment, ATTACHMENT_LIMITS, Channel,
+   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
+   MemoryNote,
+   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
+   UnreadEntry, User,
++  effectiveArtifactAccess, latestVersion,
+   validateAttachment, validateLocalFolder, validateProjectText, validateRepo,
+   // Joining a friend's Cloud9 — the address, the address book, the connection
+   // lifecycle. All three are the shared modules the handoff says to build ON,
+@@ -111,6 +113,27 @@ export interface RunList {
+   entries: RunListEntry[];
+ }
+ 
++/**
++ * One bounded answer to "which files can I read across this Cloud9?"
++ *
++ * `asked` separates a real empty list from a question nobody has asked.
++ * `loading` covers both the first page and an older page. `checkedAt` belongs
++ * to the hub answer (or the refusal), so the screen never labels stale rows as
++ * current without saying when they were last checked.
++ */
++export interface ArtifactWorkspacePage extends Page {
++  entries: ArtifactWorkspaceEntry[];
++  /** How many rows the pages explicitly opened; live pushes may not grow past it. */
++  capacity: number;
++  checkedAt?: number;
++  problem?: string;
++}
++
++const emptyArtifactWorkspace = (loading = false): ArtifactWorkspacePage => ({
++  asked: false, loading, entries: [], hasMore: true,
++  capacity: ARTIFACT_LIMITS.workspaceDefault,
++});
++
+ export interface World {
+   connected: boolean;
+   authFailed: boolean;
+@@ -279,6 +302,17 @@ export interface World {
+    * one file arriving is proof of that file, never proof that we know them all.
+    */
+   channelArtifacts: Record<ID, { asked: boolean; ids: ID[] }>;
++  /**
++   * The bounded, cross-room Files index. Entries are summaries only; opening one
++   * asks for the existing full artifact card and immutable history.
++   */
++  artifactWorkspace: ArtifactWorkspacePage;
++  /** Typed outgoing and permitted incoming links, loaded with artifact detail. */
++  artifactRelations: Record<ID, ArtifactRelationView[]>;
++  /** Present only when the relay says the bounded detail has more safe rows. */
++  artifactRelationsTruncated: Record<ID, true>;
++  /** Transient detail failures are retryable and never become permanent absence. */
++  artifactDetailProblems: Record<ID, string>;
+   /**
+    * WHAT EACH AGENT HAS SAVED TO REMEMBER, by agent id.
+    *
+@@ -305,6 +339,8 @@ type Listener = () => void;
+ interface Asked {
+   /** what was asked — for reading a queue in a debugger, and for the tests */
+   kind: ClientFrame["type"];
++  /** exact correlation when the protocol provides one */
++  requestId?: ID;
+   /** does this frame from the hub answer THIS question? */
+   answers?: (frame: ServerFrame) => boolean;
+   answered?: (frame: ServerFrame) => void;
+@@ -416,6 +452,8 @@ export class RelayClient {
+     projects: { asked: false, list: [] }, projectItems: {},
+     repoChoices: { asked: false, asking: false },
+     artifacts: {}, artifactsGone: {}, channelArtifacts: {},
++    artifactWorkspace: emptyArtifactWorkspace(),
++    artifactRelations: {}, artifactRelationsTruncated: {}, artifactDetailProblems: {},
+     memory: {},
+     hubs: [], activeHubId: "self", hubConn: { phase: "idle", line: "" },
+   };
+@@ -718,12 +756,11 @@ export class RelayClient {
+    *
+    * An `error` frame carries no echo of the question it refuses, so the only
+    * way to know whose refusal it is, is to know what is still outstanding. The
+-   * hub makes that knowable: it reads one frame at a time and finishes
+-   * answering it before it reads the next (`apps/relay/src/server.ts` —
+-   * `handleFrame` is synchronous from top to bottom, and an `error` is only
+-   * ever sent back down the connection whose own frame caused it). So answers
+-   * come back in the order the questions went out, and a refusal belongs to the
+-   * OLDEST question still waiting.
++   * hub makes that knowable for REFUSALS: it reads one frame at a time, and an
++   * `error` is only ever sent back down the connection whose own frame caused it.
++   * A refusal therefore belongs to the OLDEST refusable question still waiting.
++   * Successful answers do not use this shortcut: forwarded work, late responses
++   * and unasked pushes can interleave, so each answer matches only its own row.
+    *
+    * THAT IS ONLY TRUE IF EVERY REFUSABLE QUESTION IS IN HERE. It used to be
+    * uploads and tickets and nothing else, so a refusal that belonged to
+@@ -753,7 +790,12 @@ export class RelayClient {
+     // `hello` is the one frame asked before there is a conversation to have.
+     // Its refusals are about the connection itself and are handled as such.
+     if (frame.type === "hello") return true;
+-    const entry: Asked = { kind: frame.type, ...waiting };
++    const entry: Asked = {
++      kind: frame.type,
++      ...("requestId" in frame && typeof frame.requestId === "string"
++        ? { requestId: frame.requestId } : {}),
++      ...waiting,
++    };
+     this.asked.push(entry);
+     setTimeout(() => {
+       const i = this.asked.indexOf(entry);
+@@ -765,19 +807,19 @@ export class RelayClient {
+   }
+ 
+   /**
+-   * Hand one answer to the question that asked for it.
++   * Hand one answer to the ONE question that recognises it.
+    *
+-   * Everything asked BEFORE the question this answers has been answered too —
+-   * the hub cannot answer a later question first — so those stop waiting here,
+-   * without refusal and without complaint. A frame that answers nothing on the
+-   * list is unasked news (a message, a reaction, somebody joining) and settles
+-   * nothing.
++   * A pushed artifact can arrive between two unrelated questions, and a late
++   * timed-out answer can arrive after its replacement. Removing every earlier
++   * ledger row when one later row matched silently cancelled those unrelated
++   * questions and their lost callbacks. Exact answers remove only their own row;
++   * unasked pushes remove nothing.
+    */
+   private settle(frame: ServerFrame): void {
+     const i = this.asked.findIndex(a => a.answers !== undefined && a.answers(frame));
+     if (i < 0) return;
+-    const settled = this.asked.splice(0, i + 1);
+-    settled[settled.length - 1].answered?.(frame);
++    const [settled] = this.asked.splice(i, 1);
++    settled.answered?.(frame);
+   }
+ 
+   send(frame: ClientFrame): void {
+@@ -844,6 +886,14 @@ export class RelayClient {
+     return this.asked.map(a => a.kind);
+   }
+ 
++  /** Exact ledger rows for deterministic late-answer/push QA. */
++  outstandingQuestions(): Array<{ kind: ClientFrame["type"]; requestId?: ID }> {
++    return this.asked.map(a => ({
++      kind: a.kind,
++      ...(a.requestId ? { requestId: a.requestId } : {}),
++    }));
++  }
++
+   /** how many frames of each kind the hub has sent — evidence that an answer really arrived */
+   private seen: Record<string, number> = {};
+ 
+@@ -1724,13 +1774,128 @@ export class RelayClient {
+    * use, thirty seconds, permission checked twice.
+    */
+ 
++  private requestSequence = 0;
++  private nextRequestId(kind: "workspace" | "artifact"): ID {
++    this.requestSequence++;
++    return `rq_${kind}_${Date.now().toString(36)}_${this.requestSequence.toString(36)}`;
++  }
++
++  /** A newer first-page ask makes any older page still in flight stale. */
++  private artifactWorkspaceEpoch = 0;
++  /** Every privacy invalidation advances this; old detail answers cannot repopulate it. */
++  private artifactRelationGeneration = 0;
++  /** One stale detail frame is discarded as a whole before it can regress metadata. */
++  private discardArtifactDetailFrames = new Set<ID>();
++
++  /** The current bounded cross-room index, answered or not. */
++  artifactWorkspace(): ArtifactWorkspacePage {
++    return this.world.artifactWorkspace;
++  }
++
++  /**
++   * Ask for the newest Files page, or the next page using the hub's cursor.
++   *
++   * Reset clears the previous answer rather than presenting yesterday's rows as
++   * today's while the hub is still being asked. Older pages append by id and
++   * never make the list unbounded: every request uses the shared default limit.
++   */
++  askArtifactWorkspace(reset = false): void {
++    const held = this.world.artifactWorkspace;
++    /* A fresh entry supersedes an older-page request already in flight. Its epoch
++       makes the old answer harmless; refusing the reset here skipped the fresh
++       page entirely and let the stale answer append after re-entry. */
++    if (!reset && held.loading) return;
++    if (!reset && held.asked && !held.hasMore) return;
++    const limit = ARTIFACT_LIMITS.workspaceDefault;
++    const epoch = reset ? ++this.artifactWorkspaceEpoch : this.artifactWorkspaceEpoch;
++    const cursor = reset ? undefined : held.nextBefore;
++    const cursorId = reset ? undefined : held.nextBeforeId;
++    this.world.artifactWorkspace = reset
++      ? emptyArtifactWorkspace(true)
++      : { ...held, loading: true, problem: undefined };
++    this.emit();
++
++    const settleProblem = (problem: string): void => {
++      if (epoch !== this.artifactWorkspaceEpoch) return;
++      this.world.artifactWorkspace = {
++        ...this.world.artifactWorkspace,
++        asked: true, loading: false, checkedAt: Date.now(), problem,
++      };
++      this.emit();
++    };
++    const requestId = this.nextRequestId("workspace");
++    const sent = this.ask({
++      type: "artifactWorkspace", requestId,
++      ...(cursor === undefined ? {} : { before: cursor }),
++      ...(cursorId === undefined ? {} : { beforeId: cursorId }),
++      limit,
++    }, {
++      answers: f => f.type === "artifactWorkspace" && f.requestId === requestId,
++      answered: f => {
++        if (epoch !== this.artifactWorkspaceEpoch || f.type !== "artifactWorkspace"
++          || f.requestId !== requestId) return;
++        const current = this.world.artifactWorkspace;
++        const before = reset ? [] : current.entries;
++        const seen = new Set(f.artifacts.map(a => a.artifactId));
++        const capacity = reset ? limit : current.capacity + limit;
++        const merged = [...before.filter(a => !seen.has(a.artifactId)), ...f.artifacts];
++        this.world.artifactWorkspace = {
++          asked: true, loading: false, capacity,
++          entries: merged.slice(0, capacity),
++          hasMore: f.hasMore || merged.length > capacity,
++          nextBefore: f.nextBefore,
++          nextBeforeId: f.nextBeforeId,
++          checkedAt: Date.now(),
++        };
++      },
++      refused: settleProblem,
++      lost: () => settleProblem("the hub did not answer — try again"),
++    });
++    if (!sent) settleProblem("there's no connection to the hub — try again in a moment");
++  }
++
+   /** One file an agent made, if this screen is holding it. */
+   artifact(artifactId: ID): Artifact | undefined {
+     return this.world.artifacts[artifactId];
+   }
+ 
++  /** undefined = not loaded; [] = loaded and there are no permitted links. */
++  relationsFor(artifactId: ID): ArtifactRelationView[] | undefined {
++    return this.world.artifactRelations[artifactId];
++  }
++
++  relationsTruncated(artifactId: ID): boolean {
++    return !!this.world.artifactRelationsTruncated[artifactId];
++  }
++
++  artifactDetailProblem(artifactId: ID): string | undefined {
++    return this.world.artifactDetailProblems[artifactId];
++  }
++
++  /**
++   * ONE PRIVACY RULE FOR RELATION VIEWS.
++   *
++   * Any artifact publish, permission change or disappearance can change both its
++   * outgoing rows and another file's incoming rows. No cached relation view can
++   * prove it is unaffected, so all of them go. The selected detail asks again;
++   * until it answers, no old target name/id/version remains in the world.
++   */
++  private invalidateArtifactRelations(): void {
++    this.artifactRelationGeneration++;
++    this.world.artifactRelations = {};
++    this.world.artifactRelationsTruncated = {};
++    /* A new artifact fact is also a reason to retry a detail that previously
++       timed out; leaving the old problem would block the required fresh ask. */
++    this.world.artifactDetailProblems = {};
++    this.artifactDetailAsked.clear();
++  }
++
+   /** ids already asked for, so a render cannot ask for the same one twice */
+   private artifactAsked = new Set<ID>();
++  /** ids with a current relation view installed */
++  private artifactDetailAsked = new Set<ID>();
++  /** detail questions already on the wire — invalidating a cache must not duplicate them */
++  private artifactDetailInFlight = new Set<ID>();
+ 
+   /**
+    * Ask for one file an agent made, by id — the card behind a reference.
+@@ -1748,17 +1913,115 @@ export class RelayClient {
+   askArtifact(artifactId: ID): void {
+     if (this.world.artifacts[artifactId] || this.artifactAsked.has(artifactId)) return;
+     this.artifactAsked.add(artifactId);
+-    const gone = (): void => {
+-      this.world.artifactsGone = { ...this.world.artifactsGone, [artifactId]: true };
++    if (!this.requestArtifact(artifactId, false)) this.artifactAsked.delete(artifactId);
++  }
++
++  /**
++   * Ask for full detail even when a summary or pushed artifact is already held.
++   * The workspace needs relation views, and those are intentionally loaded only
++   * when a row opens rather than multiplied across every list row.
++   */
++  askArtifactDetail(artifactId: ID): void {
++    if (this.artifactDetailInFlight.has(artifactId)) return;
++    if (this.artifactDetailAsked.has(artifactId)
++      && Object.prototype.hasOwnProperty.call(this.world.artifactRelations, artifactId)) return;
++    const hadProblem = !!this.world.artifactDetailProblems[artifactId];
++    if (hadProblem) {
++      const { [artifactId]: oldProblem, ...rest } = this.world.artifactDetailProblems;
++      void oldProblem;
++      this.world.artifactDetailProblems = rest;
++    }
++    this.artifactDetailInFlight.add(artifactId);
++    const relationGeneration = this.artifactRelationGeneration;
++    if (!this.requestArtifact(artifactId, true, relationGeneration)) {
++      this.artifactDetailInFlight.delete(artifactId);
++      this.world.artifactDetailProblems = {
++        ...this.world.artifactDetailProblems,
++        [artifactId]: "there's no connection to the hub — try again in a moment",
++      };
++      this.emit();
++    } else if (hadProblem) this.emit();
++  }
++
++  /** One request path; detail upgrades the answer by claiming relation views. */
++  private requestArtifact(artifactId: ID, detail: boolean, relationGeneration?: number): boolean {
++    const gone = (): void => this.forgetArtifact(artifactId);
++    const lost = (): void => {
++      if (!detail) {
++        this.artifactAsked.delete(artifactId);
++        return;
++      }
++      /* A pushed artifact may already have installed a newer safe relation view
++         while this older question was waiting. Its silence cannot overwrite that
++         fresh answer with an error. */
++      this.artifactDetailInFlight.delete(artifactId);
++      if (Object.prototype.hasOwnProperty.call(this.world.artifactRelations, artifactId)) return;
++      /* Silence is not proof of absence. Keep the valid workspace row and make
++         the failure retryable instead of turning it into the non-probing gone state. */
++      this.artifactDetailAsked.delete(artifactId);
++      this.world.artifactDetailProblems = {
++        ...this.world.artifactDetailProblems,
++        [artifactId]: "the hub did not answer — try again",
++      };
+       this.emit();
+     };
+-    this.ask({ type: "artifact", artifactId }, {
+-      answers: f => f.type === "artifact" && f.artifact.id === artifactId,
++    const requestId = this.nextRequestId("artifact");
++    return this.ask({ type: "artifact", artifactId, requestId }, {
++      answers: f => f.type === "artifact" && f.artifact.id === artifactId
++        && f.requestId === requestId,
++      answered: detail ? f => {
++        if (f.type !== "artifact") return;
++        this.artifactDetailInFlight.delete(artifactId);
++        /* onFrame invalidates once for THIS artifact frame before settling it.
++           Anything beyond that one generation means another publish/access/role
++           fact landed after the question was asked, so this projection is stale. */
++        if (relationGeneration === undefined
++          || this.artifactRelationGeneration !== relationGeneration + 1) {
++          this.artifactDetailAsked.delete(artifactId);
++          this.discardArtifactDetailFrames.add(artifactId);
++          return;
++        }
++        /* The relay omits an empty relation array. The fact this was the answer
++           to a DETAIL ask is what makes absence mean "looked, and there are none"
++           rather than "this pushed update did not include relation views". */
++        this.world.artifactRelations = {
++          ...this.world.artifactRelations,
++          [artifactId]: f.relations ?? [],
++        };
++        if (f.relationsTruncated === true) {
++          this.world.artifactRelationsTruncated = {
++            ...this.world.artifactRelationsTruncated, [artifactId]: true,
++          };
++        }
++        const { [artifactId]: oldProblem, ...rest } = this.world.artifactDetailProblems;
++        void oldProblem;
++        this.world.artifactDetailProblems = rest;
++        /* onFrame invalidates before settle; this successful detail answer owns
++           the fresh cache and must mark it held again. */
++        this.artifactDetailAsked.add(artifactId);
++      } : undefined,
+       refused: gone,
+-      lost: gone,
++      lost,
+     });
+   }
+ 
++  /**
++   * Change who may read this whole immutable version chain. The relay is still
++   * the gate; callbacks only keep the editor's Save state honest.
++   */
++  setArtifactAccess(
++    artifactId: ID, access: ArtifactAccess,
++    onDone?: () => void, onRefused?: (why: string) => void,
++  ): void {
++    const sent = this.ask({ type: "setArtifactAccess", artifactId, access }, {
++      answers: f => f.type === "artifact" && f.artifact.id === artifactId,
++      answered: () => onDone?.(),
++      refused: why => onRefused?.(why),
++      lost: () => onRefused?.("the hub did not answer — try again"),
++    });
++    if (!sent) onRefused?.("there's no connection to the hub — try again in a moment");
++  }
++
+   /** Every file agents have made in one conversation, answered or not. */
+   artifactsIn(channelId: ID): { asked: boolean; list: Artifact[] } {
+     const held = this.world.channelArtifacts[channelId] ?? { asked: false, ids: [] };
+@@ -1797,6 +2060,90 @@ export class RelayClient {
+     });
+   }
+ 
++  /** Build the list summary from a full artifact pushed while Files is open. */
++  private workspaceEntryOf(artifact: Artifact): ArtifactWorkspaceEntry | undefined {
++    const latest = latestVersion(artifact);
++    const channel = this.world.channels.find(c => c.id === artifact.channelId);
++    if (!latest || !channel) return undefined;
++    return {
++      artifactId: artifact.id,
++      channelId: artifact.channelId,
++      channelName: channel.name,
++      name: artifact.name,
++      latest,
++      versionCount: latest.version,
++      access: effectiveArtifactAccess(artifact.access),
++      updatedAt: artifact.updatedAt,
++    };
++  }
++
++  /** Pushed versions move their summaries to the front in one list rewrite. */
++  private holdWorkspaceArtifacts(artifacts: Artifact[]): void {
++    const held = this.world.artifactWorkspace;
++    if (!held.asked) return;
++    const incoming = artifacts
++      .map(a => this.workspaceEntryOf(a))
++      .filter((a): a is ArtifactWorkspaceEntry => !!a);
++    if (incoming.length === 0) return;
++    const ids = new Set(incoming.map(a => a.artifactId));
++    const merged = [...incoming, ...held.entries.filter(a => !ids.has(a.artifactId))]
++      .sort((a, b) => b.updatedAt - a.updatedAt || b.artifactId.localeCompare(a.artifactId));
++    const overflow = merged.length > held.capacity;
++    const entries = merged.slice(0, held.capacity);
++    const tail = entries[entries.length - 1];
++    const retryOlder = overflow && held.loading && held.asked;
++    if (retryOlder) this.artifactWorkspaceEpoch++;
++    this.world.artifactWorkspace = {
++      ...held,
++      entries,
++      loading: retryOlder ? false : held.loading,
++      // If a live push displaced the tail, an older row still exists even when
++      // the last requested page had reached the former end. Move the cursor to
++      // the NEW retained tail so the displaced row is the next page, not skipped.
++      hasMore: held.hasMore || overflow,
++      nextBefore: overflow && tail ? tail.updatedAt : held.nextBefore,
++      nextBeforeId: overflow && tail ? tail.artifactId : held.nextBeforeId,
++    };
++    /* The in-flight older ask used the former tail and can never return the row
++       just displaced by this push. Supersede it and ask again from the new tail. */
++    if (retryOlder) this.askArtifactWorkspace(false);
++  }
++
++  /** Inaccessible and nonexistent are the same state on this screen. */
++  private forgetArtifact(artifactId: ID, notify = true): void {
++    this.forgetArtifacts(new Set([artifactId]), notify);
++  }
++
++  /** Remove one or a roomful from every artifact index in one pass. */
++  private forgetArtifacts(ids: Set<ID>, notify = true): void {
++    if (ids.size === 0) return;
++    const w = this.world;
++    this.invalidateArtifactRelations();
++    w.artifacts = Object.fromEntries(
++      Object.entries(w.artifacts).filter(([id]) => !ids.has(id)));
++    w.artifactDetailProblems = Object.fromEntries(
++      Object.entries(w.artifactDetailProblems).filter(([id]) => !ids.has(id)));
++    w.channelArtifacts = Object.fromEntries(
++      Object.entries(w.channelArtifacts).map(([channelId, room]) => [
++        channelId, { ...room, ids: room.ids.filter(id => !ids.has(id)) },
++      ]));
++    w.artifactWorkspace = {
++      ...w.artifactWorkspace,
++      entries: w.artifactWorkspace.entries.filter(a => !ids.has(a.artifactId)),
++    };
++    w.artifactsGone = { ...w.artifactsGone };
++    for (const id of ids) {
++      w.artifactsGone[id] = true;
++      this.artifactAsked.add(id);
++      /* If access is restored later the hub pushes the artifact again. Its detail
++         must be allowed to load anew; a revoked relation cache is not a lifetime
++         answer about that id. */
++      this.artifactDetailAsked.delete(id);
++      this.artifactDetailInFlight.delete(id);
++    }
++    if (notify) this.emit();
++  }
++
+   /**
+    * Put artifacts into the world — the ONE way any of them gets there.
+    *
+@@ -1809,8 +2156,14 @@ export class RelayClient {
+     const w = this.world;
+     const held = w.channelArtifacts[channelId] ?? { asked: false, ids: [] };
+     const artifacts = { ...w.artifacts };
+-    for (const a of list) artifacts[a.id] = a;
++    const detailProblems = { ...w.artifactDetailProblems };
++    for (const a of list) {
++      artifacts[a.id] = a;
++      delete detailProblems[a.id];
++    }
+     w.artifacts = artifacts;
++    w.artifactDetailProblems = detailProblems;
++    this.holdWorkspaceArtifacts(list);
+     // an artifact that turned up is not missing, whatever an older ask decided
+     if (list.some(a => w.artifactsGone[a.id])) {
+       const kept: Record<ID, true> = { ...w.artifactsGone };
+@@ -1927,6 +2280,12 @@ export class RelayClient {
+   private onFrame(frame: ServerFrame): void {
+     const w = this.world;
+     this.seen[frame.type] = (this.seen[frame.type] ?? 0) + 1;
++    /* Relationship views name OTHER files. A change to one artifact can make a
++       cached row on any artifact unsafe, so privacy invalidation happens before
++       the answer callback can install the one freshly-projected detail response. */
++    if (frame.type === "artifact" || frame.type === "artifactUnavailable") {
++      this.invalidateArtifactRelations();
++    }
+     /* Hand this to whatever asked for it, FIRST — a reply is applied by the
+        request that wanted it, and one nobody is waiting for any more is not
+        applied at all. Refusals are the exception and are matched below, where
+@@ -1983,7 +2342,16 @@ export class RelayClient {
+         w.artifacts = {};
+         w.artifactsGone = {};
+         w.channelArtifacts = {};
++        w.artifactWorkspace = emptyArtifactWorkspace();
++        w.artifactRelations = {};
++        w.artifactRelationsTruncated = {};
++        w.artifactDetailProblems = {};
++        this.artifactWorkspaceEpoch++;
++        this.artifactRelationGeneration++;
++        this.discardArtifactDetailFrames.clear();
+         this.artifactAsked.clear();
++        this.artifactDetailAsked.clear();
++        this.artifactDetailInFlight.clear();
+         // Memory belonged to the last connection too, and `asked` goes back to
+         // false with it: this world has not asked anything yet, so a panel says
+         // "loading" rather than the honest empty state it has not earned.
+@@ -2210,6 +2578,15 @@ export class RelayClient {
+         // an answer to one question about one message, and holding it under the
+         // room's id would quietly overwrite the room's real membership.
+         if (frame.at === undefined) {
++          const before = w.members[frame.channelId] ?? [];
++          const membershipKey = (rows: ChannelMember[]): string => rows
++            .map(m => `${m.memberId}:${m.role}:${m.removedAt ?? "here"}`)
++            .sort().join("|");
++          if (membershipKey(before) !== membershipKey(frame.members)) {
++            /* Roles are part of file access: manager inclusion and relation
++               visibility can change while memberIds stays identical. */
++            this.invalidateArtifactRelations();
++          }
+           w.members = { ...w.members, [frame.channelId]: frame.members };
+         }
+         break;
+@@ -2239,6 +2616,12 @@ export class RelayClient {
+         const { [frame.channelId]: goneArtifacts, ...restArtifacts } = w.channelArtifacts;
+         void goneArtifacts;
+         w.channelArtifacts = restArtifacts;
++        const goneArtifactIds = new Set([
++          ...Object.values(w.artifacts).filter(a => a.channelId === frame.channelId).map(a => a.id),
++          ...w.artifactWorkspace.entries
++            .filter(a => a.channelId === frame.channelId).map(a => a.artifactId),
++        ]);
++        this.forgetArtifacts(goneArtifactIds, false);
+         // A room you just left may now be one you could join, so the browser's
+         // list is no longer an answer to anything.
+         w.directory = { asked: false, channels: [] };
+@@ -2329,6 +2712,12 @@ export class RelayClient {
+       /* FILES AGENTS MADE. These three used to be dropped with a comment saying
+          a later round would claim them. It has. */
+       case "artifact":
++        if (this.discardArtifactDetailFrames.delete(frame.artifact.id)) {
++          /* A privacy generation changed after this detail question was sent.
++             Drop the stale artifact AND its relations; the selected detail sees
++             no cache and asks again against the current world. */
++          break;
++        }
+         /* Pushed UNASKED to everyone who can see the conversation the moment a
+            file is published or updated, as well as answering an `artifact` ask.
+            Applied here rather than by whoever asked, for the same reason
+@@ -2336,6 +2725,25 @@ export class RelayClient {
+            put a file in the room, and the card on screen has to become the new
+            version by itself. */
+         this.holdArtifacts(frame.artifact.channelId, [frame.artifact], false);
++        if (frame.relations !== undefined) {
++          w.artifactRelations = {
++            ...w.artifactRelations, [frame.artifact.id]: frame.relations,
++          };
++          if (frame.relationsTruncated === true) {
++            w.artifactRelationsTruncated = {
++              ...w.artifactRelationsTruncated, [frame.artifact.id]: true,
++            };
++          }
++          this.artifactDetailAsked.add(frame.artifact.id);
++        }
++        break;
++      case "artifactUnavailable":
++        // Deliberately the same screen state as an invented id: no probing.
++        // onFrame emits once after the switch; the helper only mutates here.
++        this.forgetArtifact(frame.artifactId, false);
++        break;
++      case "artifactWorkspace":
++        // Applied only by the bounded page request that asked for it.
+         break;
+       case "artifacts":
+         // Applied by `askArtifacts`, which is the only thing that asks. A list
+diff --git a/apps/desktop/src/styles.css b/apps/desktop/src/styles.css
+index a2c30d1..1e0fa1e 100644
+--- a/apps/desktop/src/styles.css
++++ b/apps/desktop/src/styles.css
+@@ -1550,7 +1550,7 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
+   display:grid;grid-template-columns:26px minmax(0,1fr);gap:11px;width:100%;text-align:left;
+   padding:10px 12px;border-radius:var(--radius-s);border:1px solid transparent;
+ }
+-.searchhit:hover{background:var(--surface-2);border-color:var(--line);}
++.searchhit:hover,.file-index-row:hover{background:var(--surface-2);border-color:var(--line);}
+ .hitbody{min-width:0;}
+ .hitwho{display:flex;align-items:baseline;gap:9px;margin-bottom:2px;}
+ .hitwho b{font-family:var(--display);font-size:14px;}
+@@ -2552,3 +2552,208 @@ button.chip{cursor:pointer;}
+ .addfriend .addhubbtn{margin-top:10px;}
+ .invitefriend .joincode{margin:8px 0;word-break:break-all;}
+ .invitefriend .loopbackwarn{margin-top:10px;}
++
++/* ============================================================
++   FILES — one bounded index across every readable room.
++
++   The index is a studio archive drawer, not a second card system:
++   a compact docket opens the existing artifact card on the right.
++   The three-sheet version stamp is the one signature mark, because
++   immutable layers are the defining fact of this screen.
++   ============================================================ */
++.files-topbar{gap:12px;}
++.files-checked{
++  font-family:var(--mono);font-size:10.5px;color:var(--ink-3);white-space:nowrap;
++}
++.files-body{
++  flex:1;min-height:0;display:grid;grid-template-columns:minmax(292px,338px) minmax(0,1fr);
++  overflow:hidden;min-width:0;
++}
++.files-index{
++  min-width:0;min-height:0;display:flex;flex-direction:column;
++  background:var(--bg-2);border-right:1px solid var(--line);overflow:hidden;
++}
++.files-index-head{
++  flex:none;display:flex;align-items:center;gap:9px;padding:17px 16px 11px;min-width:0;
++}
++.files-index-head .eyebrow{flex:1;min-width:0;}
++.files-list{flex:1;min-height:0;overflow-y:auto;padding:0 10px 12px;}
++.files-state{
++  margin:4px 3px;padding:18px 15px;border:1.5px dashed var(--line);border-radius:var(--radius);
++  background:var(--surface-2);color:var(--ink-2);display:flex;flex-direction:column;
++  align-items:flex-start;gap:6px;font-size:12.5px;line-height:1.5;
++}
++.files-state>b{font-family:var(--display);font-size:15px;color:var(--ink);}
++.files-state.is-error{border-color:color-mix(in srgb,var(--madder) 42%,transparent);background:var(--madder-soft);}
++.files-state.is-error>b{color:var(--madder);}
++.files-empty-mark{
++  width:42px;height:42px;display:grid;place-items:center;border-radius:var(--radius-s);
++  background:var(--surface);border:1px solid var(--line);color:var(--ink-3);
++  font-family:var(--mono);font-size:9px;letter-spacing:.08em;
++}
++.file-index-row{
++  width:100%;display:grid;grid-template-columns:38px minmax(0,1fr) auto;gap:10px;
++  align-items:center;text-align:left;padding:10px 9px;margin-bottom:5px;min-width:0;
++  border:1px solid transparent;border-radius:var(--radius-s);color:var(--ink);
++  transition:background .14s var(--ease),border-color .14s var(--ease),transform .12s var(--ease);
++}
++.file-index-row:active{transform:translateY(1px);}
++.file-index-row[aria-current="true"]{
++  background:var(--surface);border-color:var(--line);box-shadow:var(--shadow);
++}
++.file-index-glyph{
++  width:38px;height:38px;display:grid;place-items:center;border-radius:var(--radius-xs);flex:none;
++  background:var(--pine-soft);color:var(--pine);border:1px solid color-mix(in srgb,var(--pine) 25%,transparent);
++  font-family:var(--mono);font-size:9.5px;font-weight:600;letter-spacing:.06em;
++}
++.file-index-copy{min-width:0;display:flex;flex-direction:column;gap:2px;}
++.file-index-name{
++  font-family:var(--display);font-size:14.5px;font-weight:600;line-height:1.2;
++  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
++}
++.file-index-room{font-size:11.5px;color:var(--ultra);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
++.file-index-maker{
++  display:flex;align-items:baseline;gap:6px;min-width:0;color:var(--ink-2);font-size:11.5px;
++  overflow:hidden;white-space:nowrap;
++}
++.file-index-maker code{
++  min-width:0;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:9.5px;color:var(--ink-3);
++}
++.file-index-date{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);white-space:nowrap;}
++.file-index-facts{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none;}
++/* Three slightly offset sheets: a file version is a layer, never an overwritten row. */
++.versionstack{
++  position:relative;z-index:0;min-width:34px;height:25px;display:grid;place-items:center;
++  padding:0 5px 0 7px;border:1px solid var(--line);border-radius:5px;background:var(--surface);
++  font-family:var(--mono);font-size:9.5px;color:var(--pine);font-weight:600;
++}
++.versionstack i{position:absolute;inset:2px -3px -3px 2px;border:1px solid var(--line);border-radius:5px;z-index:-1;}
++.versionstack i:nth-child(2){inset:4px -5px -5px 4px;opacity:.7;}
++.accessmark{
++  font-family:var(--mono);font-size:8.5px;letter-spacing:.07em;text-transform:uppercase;
++  color:var(--ink-3);white-space:nowrap;
++}
++.accessmark.restricted{color:var(--marigold);}
++.files-page-foot{flex:none;padding:10px 13px 14px;border-top:1px solid var(--line-soft);}
++.files-more{width:100%;}
++.files-end{display:block;font-size:11.5px;line-height:1.5;color:var(--ink-3);text-align:center;}
++
++.files-detail{min-width:0;min-height:0;overflow-y:auto;background:var(--bg);}
++.files-detail-inner{width:min(100%,1040px);padding:26px 30px 60px;display:flex;flex-direction:column;gap:16px;}
++.files-detail-empty{
++  min-height:100%;display:grid;place-content:center;justify-items:center;text-align:center;
++  gap:8px;padding:36px;color:var(--ink-2);
++}
++.files-detail-empty h3{font-size:22px;color:var(--ink);}
++.files-detail-empty p{max-width:42ch;font-size:13.5px;}
++.files-detail-mark{
++  width:50px;height:50px;display:grid;place-items:center;border:1px solid var(--line);
++  border-radius:var(--radius);background:var(--surface);color:var(--ink-3);box-shadow:var(--shadow);
++  font-family:var(--mono);font-size:18px;
++}
++.filedetail-head{display:flex;align-items:flex-start;gap:16px;min-width:0;flex-wrap:wrap;}
++.filedetail-title{flex:1;min-width:min(100%,280px);display:flex;flex-direction:column;gap:4px;}
++.filedetail-title h3{font-size:28px;line-height:1.08;overflow-wrap:anywhere;}
++.filedetail-title p{font-size:12px;color:var(--ink-3);font-family:var(--mono);}
++.filedetail-actions{display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap;max-width:100%;}
++.filerefcopy{max-width:100%;}
++/* The detail IS the existing artifact card, enlarged but behaviorally identical. */
++.artcard.place-workspace{padding:14px 15px;border-radius:var(--radius);box-shadow:var(--shadow);}
++.artcard.place-workspace .glyph{width:48px;height:48px;font-size:10px;}
++.artcard.place-workspace .artname{font-size:17px;}
++.artcard.place-workspace .artmain{align-items:flex-start;}
++.artcard.place-workspace .act{padding-top:5px;}
++.filedetail-sec{margin:0;min-width:0;}
++.filedetail-sec>.eyebrow{display:block;margin-bottom:10px;}
++.filedetail-wait,.filedetail-empty,.filedetail-note{font-size:12.5px;line-height:1.55;color:var(--ink-3);}
++.relationlist{display:flex;flex-direction:column;gap:7px;}
++.relationrow{
++  display:grid;grid-template-columns:104px minmax(0,1fr);gap:12px;align-items:center;
++  min-width:0;padding:8px 10px;border:1px solid var(--line-soft);border-radius:var(--radius-s);
++  background:var(--surface-2);
++}
++.relationlead{display:flex;flex-direction:column;gap:1px;min-width:0;}
++.relationkind{font-family:var(--mono);font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);}
++.relationhere{font-family:var(--mono);font-size:9px;color:var(--ink-3);white-space:nowrap;}
++.relationtarget{
++  min-width:0;display:flex;align-items:center;gap:9px;text-align:left;color:var(--ultra);
++  padding:2px 0;border-bottom:1px solid transparent;
++}
++.relationtarget:hover{border-bottom-color:var(--ultra);}
++.relationname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;}
++.relationversion{flex:none;font-family:var(--mono);font-size:10px;color:var(--ink-3);}
++.relationhidden{font-size:12.5px;color:var(--ink-3);font-style:italic;}
++.relationproblem{
++  display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 11px;
++  border:1px solid color-mix(in srgb,var(--marigold) 40%,transparent);
++  border-radius:var(--radius-s);background:var(--marigold-soft);font-size:12.5px;color:var(--ink);
++}
++.relationproblem>span{flex:1;min-width:180px;}
++.relationtruncated{
++  margin:9px 0 0;padding-top:9px;border-top:1px dashed var(--line);
++  font-size:11.5px;line-height:1.5;color:var(--ink-3);
++}
++.files-detail-unavailable .files-detail-mark{
++  color:var(--marigold);background:var(--marigold-soft);
++  border-color:color-mix(in srgb,var(--marigold) 42%,var(--line));
++}
++
++.accesssummary{display:flex;flex-direction:column;gap:4px;font-size:12.5px;line-height:1.55;color:var(--ink-2);}
++.accesssummary b{font-family:var(--display);font-size:15px;color:var(--ink);}
++.accesssummary+.filedetail-note{margin-top:8px;}
++.accesseditor{display:flex;flex-direction:column;gap:12px;}
++.accesschoices{display:grid;grid-template-columns:1fr 1fr;gap:9px;}
++.accesschoice{
++  min-width:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px;text-align:left;
++  padding:11px 12px;border:1px solid var(--line);border-radius:var(--radius-s);background:var(--surface-2);
++}
++.accesschoice:hover{border-color:var(--ink-3);}
++.accesschoice[aria-pressed="true"]{border-color:var(--pine);background:var(--pine-soft);}
++.accesschoice .tick{color:var(--ink-3);font-family:var(--mono);}
++.accesschoice[aria-pressed="true"] .tick{color:var(--pine);}
++.accesschoice>span:last-child{display:flex;flex-direction:column;gap:2px;min-width:0;}
++.accesschoice b{font-size:13px;color:var(--ink);}
++.accesschoice em{font-style:normal;font-size:11.5px;line-height:1.45;color:var(--ink-3);}
++.accesspeople{
++  display:flex;flex-direction:column;gap:6px;padding:11px;border:1px solid var(--line-soft);
++  border-radius:var(--radius-s);background:var(--surface-2);max-height:300px;overflow-y:auto;
++}
++.accessperson{
++  display:flex;align-items:center;gap:9px;min-width:0;padding:7px 9px;border:1px solid var(--line);
++  border-radius:var(--radius-s);background:var(--surface);font-size:12.5px;cursor:pointer;
++}
++.accessperson:has(input:checked){border-color:color-mix(in srgb,var(--pine) 42%,var(--line));background:var(--pine-soft);}
++.accessperson.required{cursor:default;}
++.accessperson input{accent-color:var(--pine);flex:none;}
++.accessperson-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
++.accessperson .chip{font-size:9px;padding:2px 7px;}
++.accessactions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;}
++.fileaccess-problem{margin:0;}
++
++@media (max-width:1120px){
++  .files-body{grid-template-columns:minmax(260px,310px) minmax(0,1fr);}
++  .files-detail-inner{padding-left:22px;padding-right:22px;}
++  .filedetail-actions{justify-content:flex-start;}
++  .accesschoices{grid-template-columns:minmax(0,1fr);}
++}
++@media (max-width:860px){
++  .files-topbar{height:auto;min-height:var(--top-h);padding-top:9px;padding-bottom:9px;flex-wrap:wrap;}
++  .files-topbar .sub{order:3;flex-basis:100%;}
++  .files-checked{display:none;}
++  .files-body{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(190px,38vh) minmax(0,1fr);}
++  .files-index{border-right:0;border-bottom:1px solid var(--line);}
++  .files-index-head{padding-top:11px;padding-bottom:8px;}
++  .files-detail-inner{width:100%;padding:18px 16px 44px;}
++  .filedetail-title h3{font-size:23px;}
++  .relationrow{grid-template-columns:minmax(0,1fr);gap:4px;}
++}
++@media (max-width:560px){
++  .file-index-row{grid-template-columns:34px minmax(0,1fr);}
++  .file-index-glyph{width:34px;height:34px;}
++  .file-index-facts{grid-column:2;flex-direction:row;align-items:center;justify-content:flex-start;}
++  .filedetail-actions{width:100%;justify-content:flex-start;}
++  .filedetail-actions .btn{white-space:normal;text-align:center;}
++  .artcard.place-workspace .artmain{flex-wrap:wrap;}
++  .artcard.place-workspace .act{margin-left:59px;padding-top:0;}
++  .accessperson{flex-wrap:wrap;}
++}

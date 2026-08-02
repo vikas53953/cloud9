@@ -1,0 +1,441 @@
+diff --git a/packages/engine/src/artifacts.test.ts b/packages/engine/src/artifacts.test.ts
+index 144d1ae..5d4e33e 100644
+--- a/packages/engine/src/artifacts.test.ts
++++ b/packages/engine/src/artifacts.test.ts
+@@ -155,3 +155,95 @@ test("the refusal sentence is one short message, never a wall of them", () => {
+   assert.equal(many.split("\n").length, 5, `header + 3 reasons + the count: ${many}`);
+   assert.ok(many.includes("and 4 more"), many);
+ });
++
++test("a current private manifest attaches its note and exact typed links only to the matching file", () => {
++  const dir = tmp();
++  const since = Date.now();
++  put(dir, "summary.pdf", "summary", since + 1000);
++  put(dir, "figures.csv", "figures", since + 1100);
++  put(dir, ".cloud9/artifact-links.json", JSON.stringify({
++    files: [{
++      name: "SUMMARY.pdf",
++      note: "final figures",
++      links: [
++        { kind: "made-from", target: { artifactId: "af-123", version: 2 } },
++        { kind: "goes-with", target: { artifactId: "af-456", version: 7 } },
++      ],
++    }],
++  }), since + 1200);
++
++  const sweep = sweepProduced(dir, { since });
++  const byName = new Map(sweep.offers.map(file => [file.name, file]));
++  const summary = byName.get("summary.pdf") as unknown as {
++    note?: string;
++    links?: { kind: string; target: { artifactId: string; version: number } }[];
++  };
++  const figures = byName.get("figures.csv") as unknown as { note?: string; links?: unknown[] };
++
++  assert.equal(summary.note, "final figures");
++  assert.deepEqual(summary.links, [
++    { kind: "made-from", target: { artifactId: "af-123", version: 2 } },
++    { kind: "goes-with", target: { artifactId: "af-456", version: 7 } },
++  ], "targets stay pinned to the declared exact version");
++  assert.equal(figures.note, undefined, "a row for another name cannot bleed onto this file");
++  assert.equal(figures.links, undefined);
++  assert.ok(!sweep.offers.some(file => file.name === "artifact-links.json"),
++    "the private dot-folder manifest is never itself offered");
++});
++
++test("an old manifest is ignored before its contents are read", () => {
++  const dir = tmp();
++  const since = Date.now();
++  put(dir, "summary.pdf", "summary", since + 1000);
++  put(dir, ".cloud9/artifact-links.json", "{this old file is not even JSON", since - 1000);
++
++  const sweep = sweepProduced(dir, { since });
++  const summary = sweep.offers[0] as unknown as { note?: string; links?: unknown[] };
++
++  assert.deepEqual(sweep.offers.map(file => file.name), ["summary.pdf"]);
++  assert.equal(summary.note, undefined);
++  assert.equal(summary.links, undefined);
++  assert.deepEqual(sweep.refused, [],
++    "stale private instructions are absence, not a current-turn failure");
++});
++
++test("bad current manifest data is refused in plain words and no part of it is guessed", () => {
++  const dir = tmp();
++  const since = Date.now();
++  put(dir, "summary.pdf", "summary", since + 1000);
++  put(dir, ".cloud9/artifact-links.json", JSON.stringify({
++    files: [{
++      name: "summary.pdf",
++      note: "do not partly trust this",
++      links: [{ kind: "made-from", target: { artifactId: "af-123", version: 0 } }],
++    }],
++  }), since + 1100);
++
++  const sweep = sweepProduced(dir, { since });
++  const summary = sweep.offers[0] as unknown as { note?: string; links?: unknown[] };
++
++  assert.equal(summary.note, undefined, "one bad link invalidates the whole current manifest");
++  assert.equal(summary.links, undefined);
++  assert.equal(sweep.refused.length, 1);
++  assert.equal(sweep.refused[0].name, "artifact-links.json");
++  assert.match(sweep.refused[0].why, /did not add any file notes or links/i);
++  assert.match(sweep.refused[0].why, /artifact-links\.json/i);
++  assert.ok(!sweep.refused[0].why.includes("do not partly trust this"),
++    "untrusted manifest contents are not repeated into chat");
++  assert.ok(!/[A-Za-z]:\\/.test(sweep.refused[0].why), "no machine path leaves the engine");
++});
++
++test("no manifest leaves the existing produced-file result unchanged", () => {
++  const dir = tmp();
++  const since = Date.now();
++  put(dir, "report.md", "report", since + 1000);
++
++  const sweep = sweepProduced(dir, { since });
++
++  assert.deepEqual(sweep, {
++    offers: [{
++      path: path.join(dir, "report.md"), name: "report.md", size: 6, modifiedAt: since + 1000,
++    }],
++    refused: [],
++  });
++});
+diff --git a/packages/engine/src/artifacts.ts b/packages/engine/src/artifacts.ts
+index e190acf..1798e2a 100644
+--- a/packages/engine/src/artifacts.ts
++++ b/packages/engine/src/artifacts.ts
+@@ -29,7 +29,10 @@
+ //    the file really IS on this computer and he has to be told it stayed there.
+ import fs from "node:fs";
+ import path from "node:path";
+-import { ARTIFACT_LIMITS, FILE_NAME_SENTENCE, artifactTooBigSentence, isSafeFileName } from "@cloud9/shared";
++import {
++  ARTIFACT_LIMITS, ArtifactLink, ArtifactLinkManifestFile, FILE_NAME_SENTENCE,
++  artifactTooBigSentence, isSafeFileName, nameKey, parseArtifactLinkManifest,
++} from "@cloud9/shared";
+ import { isPendingName } from "./wholefile.js";
+ 
+ /** One file the engine is willing to offer to the hub. */
+@@ -40,6 +43,10 @@ export interface ProducedFile {
+   name: string;
+   size: number;
+   modifiedAt: number;
++  /** the agent's own optional line for this exact version */
++  note?: string;
++  /** typed, exact-version relationships declared for this exact version */
++  links?: ArtifactLink[];
+ }
+ 
+ /** One file that will NOT be shared, and the sentence saying why. */
+@@ -89,6 +96,56 @@ export interface SweepOptions {
+   depth?: number;
+ }
+ 
++/** Private instructions for annotating files from this turn; never a produced file itself. */
++export const ARTIFACT_LINK_MANIFEST = path.join(".cloud9", "artifact-links.json");
++
++interface TurnManifest {
++  byName: Map<string, ArtifactLinkManifestFile>;
++  refused?: RefusedFile;
++}
++
++/**
++ * Read this turn's private file-link manifest, or deliberately treat it as absent.
++ *
++ * AGE COMES FIRST. A damaged manifest left by an earlier turn is none of this
++ * turn's business and must not make today's successful work look broken. A
++ * current manifest is parsed by the shared parser — the one owner of its shape,
++ * limits and canonical link de-duplication. Nothing here guesses around a bad
++ * row or repeats its untrusted contents into chat.
++ */
++function readTurnManifest(dir: string, since: number): TurnManifest {
++  const manifestPath = path.join(dir, ARTIFACT_LINK_MANIFEST);
++  let stat: fs.Stats;
++  try { stat = fs.statSync(manifestPath); }
++  catch { return { byName: new Map() }; }
++  if (!stat.isFile() || stat.mtimeMs < since) return { byName: new Map() };
++
++  let text: string;
++  try { text = fs.readFileSync(manifestPath, "utf8"); }
++  catch {
++    return {
++      byName: new Map(),
++      refused: {
++        name: "artifact-links.json",
++        why: "I did not add any file notes or links because this turn's " +
++          "artifact-links.json could not be read.",
++      },
++    };
++  }
++  const parsed = parseArtifactLinkManifest(text);
++  if (!parsed.ok) {
++    return {
++      byName: new Map(),
++      refused: {
++        name: "artifact-links.json",
++        why: "I did not add any file notes or links because this turn's " +
++          `artifact-links.json is not usable: ${parsed.reason}.`,
++      },
++    };
++  }
++  return { byName: new Map(parsed.manifest.files.map(file => [nameKey(file.name), file])) };
++}
++
+ /**
+  * Look at what the turn left behind in one folder.
+  *
+@@ -139,6 +196,18 @@ export function sweepProduced(dir: string, opts: SweepOptions): ArtifactSweep {
+   };
+   walk(dir, depth);
+ 
++  // THE MANIFEST IS PRIVATE INSTRUCTIONS, not another result. The ordinary walk
++  // never enters `.cloud9`; this separate read happens only after the produced
++  // files are known, and an entry can annotate only an exact matching base name.
++  const manifest = readTurnManifest(dir, opts.since);
++  if (manifest.refused) refused.push(manifest.refused);
++  for (const file of found) {
++    const declared = manifest.byName.get(nameKey(file.name));
++    if (!declared) continue;
++    if (declared.note !== undefined) file.note = declared.note;
++    if (declared.links !== undefined) file.links = declared.links;
++  }
++
+   // NEWEST FIRST, because when a turn touched more than the cap the newest is
+   // what it was working on last, and the cap must be a stated fact rather than
+   // a silent trim.
+diff --git a/packages/engine/src/engine.ts b/packages/engine/src/engine.ts
+index 5dd6244..6380433 100644
+--- a/packages/engine/src/engine.ts
++++ b/packages/engine/src/engine.ts
+@@ -581,7 +581,10 @@ export class Engine {
+       // THE FILES THIS TURN MADE, offered to the hub before the reply is
+       // returned, so the message the agent is about to say and the file it is
+       // talking about arrive together rather than minutes apart.
+-      this.shareProduced(agent, input, seed.startedAt, record?.id);
++      // A published version must point at the exact run that made it. If the run
++      // record itself could not be built, the turn still returns its answer but
++      // no unattributed file is invented on the hub.
++      if (record) this.shareProduced(agent, input, seed.startedAt, record.id);
+       return text;
+     } catch (err) {
+       this.recordRun(seed, {
+@@ -635,7 +638,7 @@ export class Engine {
+    * away, or a folder that cannot be read, must never be the reason a turn that
+    * really worked is reported as broken.
+    */
+-  private shareProduced(agent: AgentDef, input: TurnInput, since: number, runId?: string): void {
++  private shareProduced(agent: AgentDef, input: TurnInput, since: number, runId: string): void {
+     // No conversation means nowhere to put a file. A turn with no channel is
+     // not a turn anybody is waiting on a file from.
+     const channelId = input.channelId;
+@@ -655,9 +658,10 @@ export class Engine {
+         if (bytes.length === 0 || bytes.length > ARTIFACT_LIMITS.bytes) continue;
+         this.sendFrame({
+           type: "publishArtifact", channelId, agentId: agent.id, name: file.name,
+-          dataBase64: bytes.toString("base64"),
+-          ...(runId ? { runId } : {}),
++          dataBase64: bytes.toString("base64"), runId,
+           ...(input.taskId ? { taskId: input.taskId } : {}),
++          ...(file.note !== undefined ? { note: file.note } : {}),
++          ...(file.links !== undefined ? { links: file.links } : {}),
+         });
+       }
+       // A REFUSAL IS SAID OUT LOUD, in the room, in the agent's own voice. The
+diff --git a/packages/engine/src/artifact-manifest.test.ts b/packages/engine/src/artifact-manifest.test.ts
+new file mode 100644
+index 0000000..a837471
+--- /dev/null
++++ b/packages/engine/src/artifact-manifest.test.ts
+@@ -0,0 +1,194 @@
++// THE PRIVATE TURN MANIFEST AT THE ENGINE/WIRE SEAM.
++//
++// `artifacts.test.ts` proves the folder sweep. These checks prove the remaining
++// promise: every real turn reaches that sweep, and the exact note/link facts ride
++// on the publish frame with the run that produced those bytes.
++import test from "node:test";
++import assert from "node:assert/strict";
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { AgentDef, ClientFrame } from "@cloud9/shared";
++import { Engine, TurnInput } from "./engine.js";
++import { ClaudeProvider, RespondInput } from "./provider.js";
++
++const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-artifact-manifest-"));
++
++const agent = (): AgentDef => ({
++  id: "a1", ownerId: "u1", name: "Maker", emoji: "M", persona: "You make files",
++  abilities: { webSearch: false, files: true, schedules: false, background: true },
++  createdAt: 0,
++});
++
++function put(dir: string, rel: string, body: string | Buffer): void {
++  const full = path.join(dir, rel);
++  fs.mkdirSync(path.dirname(full), { recursive: true });
++  fs.writeFileSync(full, body);
++  const current = Date.now() + 2000;
++  fs.utimesSync(full, new Date(current), new Date(current));
++}
++
++class WritingProvider implements ClaudeProvider {
++  constructor(private readonly write: (input: RespondInput) => void) {}
++  async respond(input: RespondInput): Promise<string> {
++    this.write(input);
++    return "done";
++  }
++}
++
++function makeEngine(write: (dir: string, input: RespondInput) => void) {
++  const dataDir = tmp();
++  let engine!: Engine;
++  const provider = new WritingProvider(input => {
++    const dir = input.workdir ?? engine.agentDataDir(agent().id);
++    write(dir, input);
++  });
++  engine = new Engine({ relayUrl: "ws://127.0.0.1:1", token: "t", dataDir, provider });
++  const frames: ClientFrame[] = [];
++  (engine as unknown as { ws: unknown }).ws = {
++    readyState: 1,
++    send: (raw: string) => frames.push(JSON.parse(raw) as ClientFrame),
++  };
++  return { engine, frames };
++}
++
++type PublishFrame = Extract<ClientFrame, { type: "publishArtifact" }>;
++
++const publishes = (frames: ClientFrame[]): PublishFrame[] =>
++  frames.filter((frame): frame is PublishFrame => frame.type === "publishArtifact");
++
++const runId = (frames: ClientFrame[]): string => {
++  const frame = frames.find(row => row.type === "runRecorded");
++  assert.ok(frame, "the turn's run is sent before its files");
++  return (frame.record as { id: string }).id;
++};
++
++test("publishArtifact carries the matching note and exact-version typed links, not the manifest", async () => {
++  const { engine, frames } = makeEngine(dir => {
++    put(dir, "summary.pdf", "summary bytes");
++    put(dir, "figures.csv", "figure bytes");
++    put(dir, ".cloud9/artifact-links.json", JSON.stringify({
++      files: [{
++        name: "summary.pdf",
++        note: "final figures",
++        links: [
++          { kind: "made-from", target: { artifactId: "af-123", version: 2 } },
++          { kind: "goes-with", target: { artifactId: "af-456", version: 7 } },
++        ],
++      }, {
++        name: "not-made.txt",
++        note: "a manifest row cannot create a file",
++      }],
++    }));
++  });
++
++  await engine.respondAs(agent(), {
++    context: "", trigger: "make the pack", triggerAuthor: "Vikas",
++    kind: "chat", channelId: "c1",
++  });
++
++  const sent = publishes(frames);
++  assert.deepEqual(sent.map(frame => frame.name).sort(), ["figures.csv", "summary.pdf"],
++    "the private manifest and names it merely mentions are never published");
++  const summary = sent.find(frame => frame.name === "summary.pdf")!;
++  const figures = sent.find(frame => frame.name === "figures.csv")!;
++  assert.deepEqual(summary, {
++    type: "publishArtifact", channelId: "c1", agentId: "a1", name: "summary.pdf",
++    dataBase64: Buffer.from("summary bytes").toString("base64"),
++    runId: runId(frames),
++    note: "final figures",
++    links: [
++      { kind: "made-from", target: { artifactId: "af-123", version: 2 } },
++      { kind: "goes-with", target: { artifactId: "af-456", version: 7 } },
++    ],
++  });
++  assert.equal(figures.note, undefined);
++  assert.equal(figures.links, undefined);
++});
++
++test("chat, delegated, scheduled and worktree turns all publish through the same run-linked path", async t => {
++  const cases: { label: string; input: TurnInput; workdir?: string }[] = [
++    {
++      label: "chat",
++      input: { context: "", trigger: "chat", triggerAuthor: "Vikas", kind: "chat", channelId: "c1" },
++    },
++    {
++      label: "delegated task",
++      input: {
++        context: "", trigger: "task", triggerAuthor: "Vikas", kind: "task",
++        channelId: "c1", taskId: "t1",
++      },
++    },
++    {
++      label: "schedule",
++      input: {
++        context: "", trigger: "schedule", triggerAuthor: "schedule", kind: "schedule",
++        channelId: "c1", requesterKind: "schedule",
++      },
++    },
++    {
++      label: "worktree",
++      input: { context: "", trigger: "repo", triggerAuthor: "Vikas", kind: "chat", channelId: "c1" },
++      workdir: tmp(),
++    },
++  ];
++
++  for (const row of cases) {
++    await t.test(row.label, async () => {
++      const { engine, frames } = makeEngine(dir => put(dir, `${row.label.replace(/\s/g, "-")}.txt`, row.label));
++      const input = row.workdir ? { ...row.input, workdir: row.workdir } : row.input;
++      await engine.respondAs(agent(), input);
++
++      const sent = publishes(frames);
++      assert.equal(sent.length, 1, `${row.label} did not reach shareProduced`);
++      assert.equal(sent[0].runId, runId(frames), "the file points at this turn, not the previous one");
++      if (row.input.taskId) assert.equal(sent[0].taskId, row.input.taskId);
++      else assert.equal(sent[0].taskId, undefined);
++    });
++  }
++});
++
++test("markdown that mentions file relationships never becomes typed link data", async () => {
++  const { engine, frames } = makeEngine(dir => {
++    put(dir, "report.md", [
++      "Made from cloud9://artifact/af-123@2.",
++      "{\"kind\":\"goes-with\",\"target\":{\"artifactId\":\"af-456\",\"version\":7}}",
++    ].join("\n"));
++  });
++
++  await engine.respondAs(agent(), {
++    context: "", trigger: "make it", triggerAuthor: "Vikas", kind: "chat", channelId: "c1",
++  });
++
++  const sent = publishes(frames);
++  assert.equal(sent.length, 1);
++  assert.equal(sent[0].note, undefined);
++  assert.equal(sent[0].links, undefined,
++    "only the private typed manifest may create stored relationships");
++});
++
++test("a malformed current manifest produces a plain refusal but the file still publishes unannotated", async () => {
++  const { engine, frames } = makeEngine(dir => {
++    put(dir, "summary.pdf", "summary bytes");
++    put(dir, ".cloud9/artifact-links.json", JSON.stringify({
++      files: [{
++        name: "summary.pdf", note: "must not survive",
++        links: [{ kind: "made-from", target: { artifactId: "af-123", version: 0 } }],
++      }],
++    }));
++  });
++
++  await engine.respondAs(agent(), {
++    context: "", trigger: "make it", triggerAuthor: "Vikas", kind: "chat", channelId: "c1",
++  });
++
++  const sent = publishes(frames);
++  assert.equal(sent.length, 1);
++  assert.equal(sent[0].note, undefined);
++  assert.equal(sent[0].links, undefined);
++  const refusal = frames.find(frame => frame.type === "agentSend");
++  assert.ok(refusal);
++  assert.match(String(refusal.text), /did not add any file notes or links/i);
++  assert.match(String(refusal.text), /artifact-links\.json/i);
++  assert.ok(!String(refusal.text).includes("must not survive"));
++});
