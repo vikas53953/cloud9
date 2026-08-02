@@ -98,6 +98,23 @@ widths are untested. Vikas's own step, whenever he chooses: the Tailscale
 browser sign-in (`docs/plans/tailscale-steps.md`) that makes friends-over-
 internet real.
 
+## Context economy (a Sol session already died of a full context window — 2026-08-02)
+
+Your model holds less conversation than this plan assumes. Structure around it:
+
+- **One session per feature.** When a feature is committed, pushed and reported,
+  END the session; a fresh one starts the next feature from SOL-REPORT.md.
+- **The conductor reads summaries, not files.** Never pull whole large files
+  (App.tsx is ~9,000 lines) into your own context — send an agent to read and
+  return only the relevant symbols/line numbers. Delegate reading the same way
+  you delegate writing.
+- **Write, don't remember.** Long outputs (logs, test results, plans) go to
+  files under `docs/qa/` or the ledger, and you keep only the verdict line.
+- **Resume-proof every hour of work**: push to `sol/<feature>` as you go, keep
+  SOL-REPORT.md current, so a dead session costs minutes, not a feature. The
+  first death lost nothing ONLY because the reviewing conductor parked the tree
+  by hand — do not rely on that again.
+
 ## Where to commit, and the hand-back (so the reviewing session picks up cold)
 
 - **Everything lands on `master` of `github.com/vikas53953/cloud9`, pushed to
