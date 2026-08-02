@@ -21,7 +21,9 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
-  ARTIFACT_LIMITS, ATTACHMENT_TICKET, ServerFrame, artifactRef, findArtifactRefs, latestVersion,
+  ARTIFACT_LIMITS, ATTACHMENT_TICKET, ArtifactLink, RunRecord, ServerFrame,
+  StoredArtifactVersion,
+  artifactRef, findArtifactRefs, latestVersion, nameKey,
 } from "@cloud9/shared";
 import { Relay } from "./server.js";
 import { TestClient, tmp } from "./testclient.js";
@@ -65,7 +67,7 @@ async function guestOf(url: string, owner: TestClient, name: string) {
 async function publish(
   engine: TestClient, watcher: TestClient,
   input: { channelId: string; agentId: string; name: string; body: string | Buffer;
-           runId?: string; taskId?: string; note?: string },
+           runId?: string; taskId?: string; note?: string; links?: ArtifactLink[] },
 ) {
   watcher.frames.length = 0;
   const bytes = Buffer.isBuffer(input.body) ? input.body : Buffer.from(input.body);
@@ -75,11 +77,12 @@ async function publish(
     ...(input.runId ? { runId: input.runId } : {}),
     ...(input.taskId ? { taskId: input.taskId } : {}),
     ...(input.note ? { note: input.note } : {}),
+    ...(input.links ? { links: input.links } : {}),
   });
   // waits for the artifact frame OR the refusal, so a broken publish fails with
   // the hub's own sentence rather than with "timeout waiting for frame"
   const answer = await watcher.wait<ServerFrame>(
-    f => f.type === "artifact" || f.type === "error");
+    f => (f.type === "artifact" && nameKey(f.artifact.name) === nameKey(input.name)) || f.type === "error");
   if (answer.type === "error") throw new Error(`the hub refused the publish: ${answer.error}`);
   return answer as Extract<ServerFrame, { type: "artifact" }>;
 }
@@ -98,6 +101,13 @@ async function refuses(client: TestClient, frame: Parameters<TestClient["send"]>
 test("a file an agent made lands in the room, with the agent and the run on it", async () => {
   const { relay, owner, engine, general, me } = await stand("art-happy.db");
   const agent = await makeAgent(owner, "Scribe");
+  const run = {
+    id: "r-abc-0001", kind: "chat", agentId: agent.id, agentName: agent.name,
+    provider: "claude", requestedBy: "Vikas", requestedByKind: "human",
+    ask: "write the villas file", channelId: general.id,
+    startedAt: 1, finishedAt: 2, durationMs: 1, outcome: "ok", steps: [],
+  } as unknown as RunRecord;
+  relay.store.saveRun({ record: run, agentId: agent.id, ownerId: me.id, channelId: general.id });
 
   const frame = await publish(engine, owner, {
     channelId: general.id, agentId: agent.id, name: "villas.md",
@@ -134,6 +144,45 @@ test("a file an agent made lands in the room, with the agent and the run on it",
   // BREAK: send the frame only to the engine that published it and this fails on
   // the very first wait — which was the old world, where the file existed and
   // nobody could see it. Watched.
+});
+
+test("run attribution is kept only for the same stored agent in the same stored room", async () => {
+  const { relay, owner, engine, general, me } = await stand("art-run-attribution.db");
+  const agent = await makeAgent(owner, "Scribe");
+  const otherAgent = await makeAgent(owner, "Other");
+  owner.send({ type: "createChannel", name: "ops", memberIds: [], kind: "channel" });
+  const ops = (await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.name === "ops")).channel;
+  const record = (id: string, agentId: string, channelId: string) => ({
+    id, kind: "chat", agentId, agentName: agentId === agent.id ? agent.name : otherAgent.name,
+    provider: "claude", requestedBy: "Vikas", requestedByKind: "human", ask: "make it",
+    channelId, startedAt: 1, finishedAt: 2, durationMs: 1, outcome: "ok", steps: [],
+  }) as unknown as RunRecord;
+  relay.store.saveRun({
+    record: record("r-valid", agent.id, general.id), agentId: agent.id, ownerId: me.id, channelId: general.id,
+  });
+  relay.store.saveRun({
+    record: record("r-wrong-room", agent.id, ops.id), agentId: agent.id, ownerId: me.id, channelId: ops.id,
+  });
+  relay.store.saveRun({
+    record: record("r-wrong-agent", otherAgent.id, general.id),
+    agentId: otherAgent.id, ownerId: me.id, channelId: general.id,
+  });
+
+  const valid = await publish(engine, owner,
+    { channelId: general.id, agentId: agent.id, name: "valid.md", body: "ok", runId: "r-valid" });
+  const wrongRoom = await publish(engine, owner,
+    { channelId: general.id, agentId: agent.id, name: "wrong-room.md", body: "no", runId: "r-wrong-room" });
+  const wrongAgent = await publish(engine, owner,
+    { channelId: general.id, agentId: agent.id, name: "wrong-agent.md", body: "no", runId: "r-wrong-agent" });
+
+  assert.equal(latestVersion(valid.artifact)!.runId, "r-valid");
+  assert.equal(latestVersion(wrongRoom.artifact)!.runId, undefined,
+    "a real run from another room is not attributed to these bytes");
+  assert.equal(latestVersion(wrongAgent.artifact)!.runId, undefined,
+    "a real run from another agent is not attributed to these bytes");
+
+  owner.close(); engine.close(); relay.close();
 });
 
 test("the same name again is a NEW VERSION, and the old one is still there", async () => {
@@ -194,6 +243,118 @@ test("the conversation's list holds every artifact, most recently changed first"
 // ---------------------------------------------------------------------------
 // Getting the bytes back — the SAME ticket a person's attachment uses
 // ---------------------------------------------------------------------------
+
+test("artifact request ids echo only on direct answers, never unsolicited pushes", async () => {
+  const { relay, owner, engine, general } = await stand("art-request-id.db");
+  const agent = await makeAgent(owner, "Scribe");
+  const pushed = await publish(engine, owner,
+    { channelId: general.id, agentId: agent.id, name: "request.md", body: "one" });
+  assert.equal(Object.prototype.hasOwnProperty.call(pushed, "requestId"), false,
+    "a publish push is unsolicited and must not settle a direct request");
+
+  owner.frames.length = 0;
+  owner.send({ type: "artifact", artifactId: pushed.artifact.id });
+  const oldArtifact = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === pushed.artifact.id);
+  assert.equal(Object.prototype.hasOwnProperty.call(oldArtifact, "requestId"), false,
+    "old clients that send no id still receive the ordinary answer");
+
+  owner.frames.length = 0;
+  owner.send({ type: "artifact", artifactId: pushed.artifact.id, requestId: "req_artifact_1" });
+  const directArtifact = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.requestId === "req_artifact_1");
+  assert.equal(directArtifact.requestId, "req_artifact_1");
+
+  owner.frames.length = 0;
+  owner.send({ type: "artifactWorkspace" });
+  const oldWorkspace = await owner.wait<Extract<ServerFrame, { type: "artifactWorkspace" }>>(
+    f => f.type === "artifactWorkspace");
+  assert.equal(Object.prototype.hasOwnProperty.call(oldWorkspace, "requestId"), false);
+
+  owner.frames.length = 0;
+  owner.send({ type: "artifactWorkspace", requestId: "req_workspace_1" });
+  const directWorkspace = await owner.wait<Extract<ServerFrame, { type: "artifactWorkspace" }>>(
+    f => f.type === "artifactWorkspace" && f.requestId === "req_workspace_1");
+  assert.equal(directWorkspace.requestId, "req_workspace_1");
+
+  owner.frames.length = 0;
+  owner.send({
+    type: "setArtifactAccess", artifactId: pushed.artifact.id,
+    access: { kind: "restricted", userIds: [] },
+  });
+  const oldAccess = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === pushed.artifact.id);
+  assert.equal(Object.prototype.hasOwnProperty.call(oldAccess, "requestId"), false,
+    "old no-id access mutations still receive one ordinary success frame");
+
+  owner.frames.length = 0;
+  engine.frames.length = 0;
+  owner.send({
+    type: "setArtifactAccess", artifactId: pushed.artifact.id,
+    access: { kind: "room" }, requestId: "req_access_1",
+  });
+  const directAccess = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.requestId === "req_access_1");
+  assert.equal(directAccess.requestId, "req_access_1", "the requesting socket gets the exact id");
+  const otherConnectionPush = await engine.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === pushed.artifact.id);
+  assert.equal(Object.prototype.hasOwnProperty.call(otherConnectionPush, "requestId"), false,
+    "the same access change reaches another connection only as an unsolicited no-id push");
+  assert.equal(owner.frames.filter(f => f.type === "artifact"
+    && (f as Extract<ServerFrame, { type: "artifact" }>).artifact.id === pushed.artifact.id).length, 1,
+  "the requesting socket is omitted from the separate push and cannot settle twice");
+
+  owner.frames.length = 0;
+  owner.send({ type: "artifact", artifactId: "af_missing", requestId: "req_artifact_error" });
+  const artifactError = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error" && f.requestId === "req_artifact_error");
+  assert.equal(artifactError.requestId, "req_artifact_error");
+
+  owner.frames.length = 0;
+  owner.send({
+    type: "setArtifactAccess", artifactId: "af_missing", access: { kind: "room" },
+    requestId: "req_access_error",
+  });
+  const accessError = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error" && f.requestId === "req_access_error");
+  assert.equal(accessError.requestId, "req_access_error");
+
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const realWorkspace = relay.store.artifactWorkspace.bind(relay.store);
+  (relay.store as any).artifactWorkspace = () => { throw new Error("workspace refused for test"); };
+  owner.frames.length = 0;
+  owner.send({ type: "artifactWorkspace", requestId: "req_workspace_error" });
+  const workspaceError = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error" && f.requestId === "req_workspace_error");
+  assert.equal(workspaceError.requestId, "req_workspace_error");
+  (relay.store as any).artifactWorkspace = realWorkspace;
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  owner.frames.length = 0;
+  owner.send({
+    type: "send", channelId: "ch_missing", text: "ordinary refusal",
+    requestId: "req_send_error",
+  });
+  const sendError = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error" && f.requestId === "req_send_error");
+  assert.equal(sendError.requestId, "req_send_error",
+    "an ordinary fire-and-forget frame receives its exact id on refusal");
+
+  owner.frames.length = 0;
+  owner.send({ type: "send", channelId: "ch_missing", text: "old ordinary refusal" });
+  const oldSendError = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error");
+  assert.equal(Object.prototype.hasOwnProperty.call(oldSendError, "requestId"), false,
+    "old ordinary frames remain valid and their refusal invents no id");
+
+  owner.frames.length = 0;
+  owner.send({ type: "artifact", artifactId: "af_missing" });
+  const oldError = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.equal(Object.prototype.hasOwnProperty.call(oldError, "requestId"), false,
+    "old no-id refusals and general errors never invent a correlation id");
+
+  owner.close(); engine.close(); relay.close();
+});
 
 test("a member of the room gets the bytes, once, and an old version stays itself", async () => {
   const { relay, http, owner, engine, general } = await stand("art-download.db");
@@ -346,6 +507,13 @@ test("a ticket dies with the membership it was minted under", async () => {
 
   const made = await publish(engine, guest,
     { channelId: general.id, agentId: agent.id, name: "shared.md", body: "everyone in here may read this" });
+  guest.frames.length = 0;
+  owner.send({
+    type: "setArtifactAccess", artifactId: made.artifact.id,
+    access: { kind: "restricted", userIds: [me.id] },
+  });
+  await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === made.artifact.id);
 
   guest.frames.length = 0;
   guest.send({ type: "artifactTicket", artifactId: made.artifact.id });
@@ -353,8 +521,14 @@ test("a ticket dies with the membership it was minted under", async () => {
     f => f.type === "artifactTicket");
 
   // THE GATE IS ASKED AGAIN WHEN THE TICKET IS SPENT, not only when it is minted
+  owner.frames.length = 0;
   owner.send({ type: "removeMember", channelId: general.id, memberId: me.id });
   await guest.wait(f => f.type === "channelLeft");
+  const refreshed = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === made.artifact.id
+      && f.artifact.access?.kind === "restricted" && f.artifact.access.userIds.length === 1);
+  assert.deepEqual(refreshed.artifact.access, { kind: "restricted", userIds: [relay.ownerId] },
+    "member removal refreshes effective access summaries for remaining readers");
   assert.equal((await fetch(http + t.url)).status, 404,
     "being taken out of the room inside those thirty seconds stops the download");
 
@@ -362,6 +536,343 @@ test("a ticket dies with the membership it was minted under", async () => {
   // BREAK: drop the `channelFor` call inside `serveAttachment` and this fails —
   // a ticket becomes a thirty-second licence that outlives the permission.
   // Watched.
+});
+
+test("Files filters permission before the page limit and paginates across rooms", async () => {
+  const { relay, url, owner, engine, general } = await stand("art-workspace.db");
+  const agent = await makeAgent(owner, "Scribe");
+  const { guest, me } = await guestOf(url, owner, "Priya");
+
+  owner.send({ type: "createChannel", name: "ops", memberIds: [me.id], kind: "channel" });
+  const ops = (await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.name === "ops")).channel;
+
+  const generalFile = await publish(engine, owner,
+    { channelId: general.id, agentId: agent.id, name: "general.md", body: "general" });
+  const visibleOps = await publish(engine, owner,
+    { channelId: ops.id, agentId: agent.id, name: "visible.md", body: "visible" });
+  const hiddenOps = await publish(engine, owner,
+    { channelId: ops.id, agentId: agent.id, name: "hidden.md", body: "hidden" });
+
+  guest.frames.length = 0;
+  owner.send({
+    type: "setArtifactAccess", artifactId: hiddenOps.artifact.id,
+    access: { kind: "restricted", userIds: [] },
+  });
+  await guest.wait<Extract<ServerFrame, { type: "artifactUnavailable" }>>(
+    f => f.type === "artifactUnavailable" && f.artifactId === hiddenOps.artifact.id);
+
+  guest.frames.length = 0;
+  guest.send({ type: "artifactWorkspace", limit: 1 });
+  const first = await guest.wait<Extract<ServerFrame, { type: "artifactWorkspace" }>>(
+    f => f.type === "artifactWorkspace");
+  assert.deepEqual(first.artifacts.map(a => a.artifactId), [visibleOps.artifact.id],
+    "the newer hidden row is filtered in SQL before LIMIT, so the allowed row behind it fills the page");
+  assert.equal(first.artifacts[0].channelName, "ops");
+  assert.equal(first.artifacts[0].latest.version, 1);
+  assert.equal(first.artifacts[0].versionCount, 1);
+  assert.equal(first.hasMore, true);
+  assert.ok(first.nextBefore !== undefined && first.nextBeforeId);
+
+  guest.frames.length = 0;
+  guest.send({
+    type: "artifactWorkspace", limit: 1,
+    before: first.nextBefore, beforeId: first.nextBeforeId,
+  });
+  const second = await guest.wait<Extract<ServerFrame, { type: "artifactWorkspace" }>>(
+    f => f.type === "artifactWorkspace");
+  assert.deepEqual(second.artifacts.map(a => a.artifactId), [generalFile.artifact.id]);
+  assert.equal(second.hasMore, false);
+
+  guest.frames.length = 0;
+  guest.send({ type: "artifacts", channelId: ops.id });
+  const room = await guest.wait<Extract<ServerFrame, { type: "artifacts" }>>(f => f.type === "artifacts");
+  assert.deepEqual(room.artifacts.map(a => a.id), [visibleOps.artifact.id],
+    "the older room-scoped list follows the same non-probing permission filter");
+
+  guest.close(); owner.close(); engine.close(); relay.close();
+});
+
+test("room managers control whole-chain access, and revocation kills cached detail and tickets", async () => {
+  const { relay, url, http, owner, engine, general } = await stand("art-access.db");
+  const agent = await makeAgent(owner, "Scribe");
+  const { guest, me } = await guestOf(url, owner, "Priya");
+  const made = await publish(engine, guest,
+    { channelId: general.id, agentId: agent.id, name: "budget.md", body: "room default" });
+
+  await refuses(guest, {
+    type: "setArtifactAccess", artifactId: made.artifact.id,
+    access: { kind: "restricted", userIds: [me.id] },
+  }, "don't run this conversation");
+  await refuses(owner, {
+    type: "setArtifactAccess", artifactId: made.artifact.id,
+    access: undefined,
+  } as unknown as Parameters<TestClient["send"]>[0], "say whether this file uses room or restricted access");
+
+  guest.frames.length = 0;
+  guest.send({ type: "artifactTicket", artifactId: made.artifact.id });
+  const ticket = await guest.wait<Extract<ServerFrame, { type: "artifactTicket" }>>(
+    f => f.type === "artifactTicket");
+
+  owner.send({
+    type: "setArtifactAccess", artifactId: made.artifact.id,
+    access: { kind: "restricted", userIds: [] },
+  });
+  await guest.wait<Extract<ServerFrame, { type: "artifactUnavailable" }>>(
+    f => f.type === "artifactUnavailable" && f.artifactId === made.artifact.id);
+  assert.equal((await fetch(http + ticket.url)).status, 404,
+    "redemption re-checks the file rule, not only the room membership used at mint");
+  await refuses(guest, { type: "artifact", artifactId: made.artifact.id }, "no such file");
+  await refuses(guest, { type: "artifactTicket", artifactId: made.artifact.id }, "no such file");
+
+  owner.send({ type: "setMemberRole", channelId: general.id, memberId: me.id, role: "admin" });
+  await guest.wait(f => f.type === "channel"
+    && (relay.store.memberRole(general.id, me.id) === "admin"));
+  guest.frames.length = 0;
+  guest.send({ type: "artifact", artifactId: made.artifact.id });
+  const asManager = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(f => f.type === "artifact");
+  assert.deepEqual(asManager.artifact.access, { kind: "restricted", userIds: [relay.ownerId, me.id] },
+    "all current owners/admins are added even when the stored selected list is empty");
+
+  guest.frames.length = 0;
+  owner.frames.length = 0;
+  owner.send({ type: "setMemberRole", channelId: general.id, memberId: me.id, role: "member" });
+  await guest.wait<Extract<ServerFrame, { type: "artifactUnavailable" }>>(
+    f => f.type === "artifactUnavailable" && f.artifactId === made.artifact.id);
+  const remainingReader = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === made.artifact.id
+      && f.artifact.access?.kind === "restricted"
+      && f.artifact.access.userIds.length === 1);
+  assert.deepEqual(remainingReader.artifact.access, { kind: "restricted", userIds: [relay.ownerId] },
+    "role changes refresh effective access summaries for every remaining reader");
+  owner.send({ type: "setMemberRole", channelId: general.id, memberId: me.id, role: "admin" });
+  await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === made.artifact.id);
+
+  guest.frames.length = 0;
+  guest.send({
+    type: "setArtifactAccess", artifactId: made.artifact.id, access: { kind: "room" },
+  });
+  await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === made.artifact.id);
+
+  owner.send({ type: "createChannel", name: "dm-priya", memberIds: [me.id], kind: "dm" });
+  const dm = (await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.kind === "dm")).channel;
+  const direct = await publish(engine, owner,
+    { channelId: dm.id, agentId: agent.id, name: "direct.md", body: "inherited only" });
+  await refuses(owner, {
+    type: "setArtifactAccess", artifactId: direct.artifact.id,
+    access: { kind: "restricted", userIds: [relay.ownerId] },
+  }, "always inherit");
+
+  guest.close(); owner.close(); engine.close(); relay.close();
+});
+
+test("typed links pin exact same-room versions and hide inaccessible targets without probing", async () => {
+  const { relay, url, owner, engine, general } = await stand("art-links.db");
+  const agent = await makeAgent(owner, "Scribe");
+  const { guest } = await guestOf(url, owner, "Priya");
+  await refuses(engine, {
+    type: "publishArtifact", channelId: general.id, agentId: agent.id,
+    name: "bad-shape.md", dataBase64: Buffer.from("bad").toString("base64"), links: "guess",
+  } as unknown as Parameters<TestClient["send"]>[0], "file links must be a list");
+  assert.equal(relay.store.artifactRowByName(general.id, "bad-shape.md"), undefined);
+  await refuses(engine, {
+    type: "publishArtifact", channelId: general.id, agentId: agent.id,
+    name: "missing-target.md", dataBase64: Buffer.from("bad").toString("base64"),
+    links: [{ kind: "made-from", target: { artifactId: "af_missing", version: 1 } }],
+  }, "not available in this conversation");
+  assert.equal(relay.store.artifactRowByName(general.id, "missing-target.md"), undefined,
+    "a valid-shaped link to a missing exact target stores no identity row");
+  assert.equal((relay.store.db.prepare(
+    "SELECT COUNT(*) n FROM artifact_versions",
+  ).get() as { n: number }).n, 0, "no immutable version row was inserted either");
+  assert.deepEqual(
+    fs.existsSync(relay.store.artifactsDir) ? fs.readdirSync(relay.store.artifactsDir) : [],
+    [],
+    "target validation happens before byte staging: no staged, pending or final artifact litter exists",
+  );
+
+  const targetOne = await publish(engine, owner,
+    { channelId: general.id, agentId: agent.id, name: "figures.csv", body: "one" });
+  guest.frames.length = 0;
+  const source = await publish(engine, owner, {
+    channelId: general.id, agentId: agent.id, name: "summary.pdf", body: "summary",
+    links: [{ kind: "made-from", target: { artifactId: targetOne.artifact.id, version: 1 } }],
+  });
+  const incomingPushed = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === targetOne.artifact.id
+      && !!f.relations?.some(r => r.direction === "incoming" && r.from.artifactId === source.artifact.id));
+  assert.equal(incomingPushed.relationsTruncated, undefined,
+    "a complete relation list never sends a false truncation flag");
+  await publish(engine, owner,
+    { channelId: general.id, agentId: agent.id, name: "figures.csv", body: "two" });
+
+  guest.frames.length = 0;
+  guest.send({ type: "artifact", artifactId: source.artifact.id });
+  const sourceDetail = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === source.artifact.id);
+  assert.equal(Object.prototype.hasOwnProperty.call(sourceDetail.artifact.versions[0], "links"), false,
+    "raw exact targets never ride inside a public artifact version");
+  assert.deepEqual(sourceDetail.relations, [{
+    kind: "made-from", direction: "outgoing",
+    from: { artifactId: source.artifact.id, version: 1 },
+    to: { artifactId: targetOne.artifact.id, version: 1 },
+    linkedName: "figures.csv", hidden: false,
+  }], "the link stays on target version 1 after version 2 exists");
+
+  guest.frames.length = 0;
+  guest.send({ type: "artifacts", channelId: general.id });
+  const roomList = await guest.wait<Extract<ServerFrame, { type: "artifacts" }>>(f => f.type === "artifacts");
+  const sourceInList = roomList.artifacts.find(a => a.id === source.artifact.id)!;
+  assert.equal(Object.prototype.hasOwnProperty.call(sourceInList.versions[0], "links"), false);
+  guest.frames.length = 0;
+  guest.send({ type: "artifactTicket", artifactId: source.artifact.id });
+  const sourceTicket = await guest.wait<Extract<ServerFrame, { type: "artifactTicket" }>>(
+    f => f.type === "artifactTicket" && f.artifactId === source.artifact.id);
+  assert.equal(Object.prototype.hasOwnProperty.call(sourceTicket.artifact.versions[0], "links"), false,
+    "detail, list and ticket frames all project storage links out");
+
+  guest.frames.length = 0;
+  guest.send({ type: "artifact", artifactId: targetOne.artifact.id });
+  const targetDetail = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === targetOne.artifact.id);
+  assert.ok(targetDetail.relations?.some(r =>
+    r.direction === "incoming"
+    && r.from.artifactId === source.artifact.id
+    && r.to?.version === 1), "the exact target shows its permitted incoming source");
+
+  guest.frames.length = 0;
+  owner.send({
+    type: "setArtifactAccess", artifactId: source.artifact.id,
+    access: { kind: "restricted", userIds: [] },
+  });
+  await guest.wait<Extract<ServerFrame, { type: "artifactUnavailable" }>>(
+    f => f.type === "artifactUnavailable" && f.artifactId === source.artifact.id);
+  const incomingCleared = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === targetOne.artifact.id
+      && Array.isArray(f.relations) && f.relations.length === 0);
+  assert.deepEqual(incomingCleared.relations, [],
+    "hiding a source pushes an explicit empty incoming list to its cached target");
+
+  // A later version of the still-hidden source changes nothing Priya may see:
+  // source stays absent and target's permitted incoming list stays empty. A
+  // request-id barrier proves no unsolicited artifact timing frame preceded it.
+  guest.frames.length = 0;
+  await publish(engine, owner, {
+    channelId: general.id, agentId: agent.id, name: "summary.pdf", body: "hidden revision",
+  });
+  guest.send({ type: "artifactWorkspace", requestId: "barrier_hidden_source" });
+  await guest.wait<Extract<ServerFrame, { type: "artifactWorkspace" }>>(
+    f => f.type === "artifactWorkspace" && f.requestId === "barrier_hidden_source");
+  assert.deepEqual(guest.frames.filter(f => f.type === "artifact"), [],
+    "an invisible restricted-source event sends zero artifact frame or timing hint to Priya");
+
+  guest.frames.length = 0;
+  owner.send({
+    type: "setArtifactAccess", artifactId: source.artifact.id, access: { kind: "room" },
+  });
+  await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === source.artifact.id);
+  await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === targetOne.artifact.id
+      && !!f.relations?.some(r => r.direction === "incoming" && r.from.artifactId === source.artifact.id));
+
+  guest.frames.length = 0;
+  owner.send({
+    type: "setArtifactAccess", artifactId: targetOne.artifact.id,
+    access: { kind: "restricted", userIds: [] },
+  });
+  await guest.wait(f => f.type === "artifactUnavailable"
+    && (f as Extract<ServerFrame, { type: "artifactUnavailable" }>).artifactId === targetOne.artifact.id);
+  const hidden = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === source.artifact.id
+      && !!f.relations?.some(r => r.direction === "outgoing" && r.hidden));
+  assert.deepEqual(hidden.relations, [{
+    kind: "made-from", direction: "outgoing",
+    from: { artifactId: source.artifact.id, version: 1 }, hidden: true,
+  }], "a hidden target carries no name and no exact reference");
+  await refuses(guest, { type: "artifact", artifactId: targetOne.artifact.id }, "no such file");
+
+  // Retention removes target v1 while newer target bytes remain. The link stays
+  // pinned and becomes unavailable; it must never slide forward to v2/v21.
+  for (let v = 3; v <= ARTIFACT_LIMITS.versions; v++) {
+    await publish(engine, owner,
+      { channelId: general.id, agentId: agent.id, name: "figures.csv", body: `version ${v}` });
+  }
+  owner.frames.length = 0;
+  await publish(engine, owner, {
+    channelId: general.id, agentId: agent.id, name: "figures.csv",
+    body: `version ${ARTIFACT_LIMITS.versions + 1}`,
+  });
+  const pruned = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === source.artifact.id
+      && !!f.relations?.some(r => r.direction === "outgoing" && r.hidden));
+  assert.deepEqual(pruned.relations, [{
+    kind: "made-from", direction: "outgoing",
+    from: { artifactId: source.artifact.id, version: 1 }, hidden: true,
+  }], "a pruned exact target is unavailable, not replaced by the newest retained target");
+
+  owner.send({ type: "createChannel", name: "other", memberIds: [], kind: "channel" });
+  const other = (await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.name === "other")).channel;
+  const elsewhere = await publish(engine, owner,
+    { channelId: other.id, agentId: agent.id, name: "elsewhere.md", body: "elsewhere" });
+  await refuses(engine, {
+    type: "publishArtifact", channelId: general.id, agentId: agent.id,
+    name: "bad-link.md", dataBase64: Buffer.from("bad").toString("base64"),
+    links: [{ kind: "goes-with", target: { artifactId: elsewhere.artifact.id, version: 1 } }],
+  }, "not available in this conversation");
+  assert.equal(relay.store.artifactRowByName(general.id, "bad-link.md"), undefined,
+    "a refused cross-room link stores neither identity nor bytes");
+
+  guest.close(); owner.close(); engine.close(); relay.close();
+});
+
+test("artifact detail caps relation projection and says honestly when more exist", async () => {
+  const { relay, url, owner, engine, general } = await stand("art-relations-cap.db");
+  const agent = await makeAgent(owner, "Scribe");
+  const { guest } = await guestOf(url, owner, "Priya");
+  const target = await publish(engine, owner,
+    { channelId: general.id, agentId: agent.id, name: "target.md", body: "target" });
+
+  const insertArtifact = relay.store.db.prepare(
+    "INSERT INTO artifacts(id,channelId,name,nameKey,createdAt,updatedAt,nextVersion) VALUES(?,?,?,?,?,?,?)",
+  );
+  const insertVersion = relay.store.db.prepare(
+    "INSERT INTO artifact_versions(id,artifactId,channelId,agentId,version,producedAt,json) " +
+    "VALUES(?,?,?,?,?,?,?)",
+  );
+  const insertLink = relay.store.db.prepare(
+    "INSERT INTO artifact_links(sourceArtifactId,sourceVersion,channelId,kind,targetArtifactId,targetVersion) " +
+    "VALUES(?,?,?,?,?,?)",
+  );
+  for (let i = 0; i <= ARTIFACT_LIMITS.relationDetail; i++) {
+    const artifactId = `af_rel_${i}`;
+    const versionId = `av_rel_${i}`;
+    const name = `source-${i}.md`;
+    const version: StoredArtifactVersion = {
+      id: versionId, version: 1, size: 1, sha256: "a".repeat(64), text: true,
+      storedAs: `${versionId}-${name}`, agentId: agent.id, agentName: agent.name,
+      ownerId: relay.ownerId, producedAt: i + 1,
+      links: [{ kind: "made-from", target: { artifactId: target.artifact.id, version: 1 } }],
+    };
+    insertArtifact.run(artifactId, general.id, name, name.toLowerCase(), i + 1, i + 1, 2);
+    insertVersion.run(versionId, artifactId, general.id, agent.id, 1, i + 1, JSON.stringify(version));
+    insertLink.run(artifactId, 1, general.id, "made-from", target.artifact.id, 1);
+  }
+
+  guest.frames.length = 0;
+  guest.send({ type: "artifact", artifactId: target.artifact.id });
+  const detail = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
+    f => f.type === "artifact" && f.artifact.id === target.artifact.id
+      && f.relationsTruncated === true);
+  assert.equal(detail.relations!.length, ARTIFACT_LIMITS.relationDetail);
+  assert.equal(detail.relationsTruncated, true,
+    "true means a real permitted 101st relation exists beyond the shared cap");
+
+  guest.close(); owner.close(); engine.close(); relay.close();
 });
 
 // ---------------------------------------------------------------------------

@@ -12,14 +12,35 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
+import WebSocket from "ws";
 import {
-  ATTACHMENT_LIMITS, Channel, Message, RUN_RETENTION, RunRecord, ServerFrame,
+  ATTACHMENT_LIMITS, ArtifactVersion, Channel, ClientFrame, Message, RUN_RETENTION, RunRecord, ServerFrame,
+  StoredArtifactVersion,
   WS_LIMITS, knownMachineNames, redactForSharing, setMachineNames, shareableRun,
 } from "@cloud9/shared";
 import { Relay } from "./server.js";
-import { activityHash, SCHEMA_VERSION, Store, StoreOpenError } from "./store.js";
+import {
+  activityHash, ARTIFACT_STAGE_GRACE_MS, SCHEMA_VERSION, Store, StoreOpenError,
+} from "./store.js";
 import { TestClient, tmp } from "./testclient.js";
+
+function firstRawAnswer(url: string, frame: ClientFrame | string): Promise<ServerFrame> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    const timer = setTimeout(() => { ws.close(); reject(new Error("timeout waiting for raw answer")); }, 5_000);
+    ws.on("open", () => ws.send(typeof frame === "string" ? frame : JSON.stringify(frame)));
+    ws.on("message", raw => {
+      clearTimeout(timer);
+      const answer = JSON.parse(String(raw)) as ServerFrame;
+      ws.close();
+      resolve(answer);
+    });
+    ws.on("error", error => { clearTimeout(timer); reject(error); });
+  });
+}
 
 // ---------------------------------------------------------------------------
 // #2 — redaction is not defeated by its own URL protection
@@ -75,6 +96,166 @@ test("a run record shared with a room carries no secret out of a URL", () => {
   }
 });
 
+test("pre-auth valid JSON without an own string type is refused without crashing the relay", () => {
+  const script = String.raw`
+    import assert from "node:assert/strict";
+    import WebSocket from "ws";
+    const { Relay } = await import(process.env.CLOUD9_RELAY_MODULE);
+    const realJsonParse = JSON.parse.bind(JSON);
+    JSON.parse = text => {
+      if (text === "inherited-type") {
+        return Object.assign(Object.create({ type: "hello" }), {
+          token: "tok-owner", client: "desktop", requestId: "req_inherited_type",
+        });
+      }
+      if (text === "inherited-request-id") {
+        return Object.assign(Object.create({ requestId: "req_inherited_request" }), { type: 17 });
+      }
+      return realJsonParse(text);
+    };
+    const relay = new Relay({ dbPath: process.env.CLOUD9_TEST_DB, ownerToken: "tok-owner" });
+    const port = await relay.listen(0);
+    const ws = new WebSocket("ws://127.0.0.1:" + port);
+    await new Promise((resolve, reject) => {
+      ws.once("open", resolve);
+      ws.once("error", reject);
+    });
+    const answer = raw => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timeout after " + raw)), 2_000);
+      ws.once("message", data => {
+        clearTimeout(timer);
+        resolve(JSON.parse(String(data)));
+      });
+      ws.send(raw);
+    });
+    const cases = [
+      ["null", undefined],
+      ["42", undefined],
+      ['"text"', undefined],
+      ["[]", undefined],
+      ["{}", undefined],
+      ["inherited-type", "req_inherited_type"],
+      ["inherited-request-id", undefined],
+      ['{"__proto__":{"type":"hello"},"requestId":"req_proto_payload"}', "req_proto_payload"],
+      ['{"type":17,"requestId":"req_non_string_type"}', "req_non_string_type"],
+      ['{"type":17,"requestId":17}', undefined],
+      ['{"type":17,"requestId":[]}', undefined],
+      ['{"type":17,"requestId":"bad..id"}', undefined],
+      [JSON.stringify({ type: 17, requestId: "x".repeat(65) }), undefined],
+    ];
+    for (const [raw, requestId] of cases) {
+      const frame = await answer(raw);
+      assert.equal(frame.type, "error");
+      assert.equal(frame.error, "not authenticated");
+      if (requestId === undefined) assert.equal(Object.hasOwn(frame, "requestId"), false);
+      else assert.equal(frame.requestId, requestId);
+    }
+    const welcome = await answer(JSON.stringify({
+      type: "hello", token: "tok-owner", client: "desktop",
+    }));
+    assert.equal(welcome.type, "welcome", "the same process and socket remain usable");
+    ws.close();
+    relay.close();
+  `;
+  const child = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    timeout: 15_000,
+    env: {
+      ...process.env,
+      CLOUD9_RELAY_MODULE: new URL("./server.js", import.meta.url).href,
+      CLOUD9_TEST_DB: tmp("hd-preauth-shapes-child.db"),
+    },
+  });
+  assert.equal(child.status, 0,
+    `malformed pre-auth JSON must not escape the socket callback\nstdout:\n${child.stdout}\nstderr:\n${child.stderr}`);
+});
+
+test("pre-auth invalid hello, invite and join refusals echo their exact request ids", async () => {
+  const relay = new Relay({ dbPath: tmp("hd-preauth-request-id.db"), ownerToken: "tok-owner" });
+  const port = await relay.listen(0);
+  const url = `ws://127.0.0.1:${port}`;
+
+  const hello = await firstRawAnswer(url, {
+    type: "hello", token: "wrong-token", client: "desktop", requestId: "req_bad_hello",
+  });
+  assert.deepEqual(hello, { type: "error", error: "bad token", requestId: "req_bad_hello" });
+
+  const invite = await firstRawAnswer(url, {
+    type: "hello", token: "invite:not-real:Priya", client: "desktop", requestId: "req_bad_invite",
+  });
+  assert.deepEqual(invite, {
+    type: "error", error: "that invite code isn't valid", requestId: "req_bad_invite",
+  });
+
+  const join = await firstRawAnswer(url, {
+    type: "joinWithToken", token: "join_not-a-real-code", displayName: "Priya",
+    requestId: "req_bad_join",
+  });
+  assert.equal(join.type, "error");
+  assert.equal(join.requestId, "req_bad_join");
+  assert.match(join.error, /isn't valid|ask for a new one/i,
+    "request correlation must not change the join refusal or reveal token details");
+
+  relay.close();
+});
+
+test("a reused invite refusal echoes the exact pre-auth request id", async () => {
+  const relay = new Relay({ dbPath: tmp("hd-preauth-reused-invite.db"), ownerToken: "tok-owner" });
+  const port = await relay.listen(0);
+  const url = `ws://127.0.0.1:${port}`;
+  const owner = new TestClient(url, "tok-owner");
+  await owner.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
+  owner.send({ type: "createInvite" });
+  const invitation = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
+  const token = `invite:${invitation.code}:Priya`;
+  const firstGuest = new TestClient(url, token);
+  await firstGuest.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
+
+  const reused = await firstRawAnswer(url, {
+    type: "hello", token, client: "desktop", requestId: "req_reused_invite",
+  });
+  assert.deepEqual(reused, {
+    type: "error",
+    error: "that invite has already been used — ask for a new one",
+    requestId: "req_reused_invite",
+  });
+
+  firstGuest.close();
+  owner.close();
+  relay.close();
+});
+
+test("pre-auth old no-id refusals stay no-id and unparsed input invents no error", async () => {
+  const relay = new Relay({ dbPath: tmp("hd-preauth-no-request-id.db"), ownerToken: "tok-owner" });
+  const port = await relay.listen(0);
+  const url = `ws://127.0.0.1:${port}`;
+
+  const old = await firstRawAnswer(url, { type: "hello", token: "wrong-token", client: "desktop" });
+  assert.deepEqual(old, { type: "error", error: "bad token" },
+    "the old frame gets the same refusal and no invented request id");
+
+  const ws = new WebSocket(url);
+  const frames: ServerFrame[] = [];
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => { ws.close(); reject(new Error("timeout waiting for welcome")); }, 5_000);
+    ws.on("open", () => {
+      ws.send("this is not a frame");
+      ws.send(JSON.stringify({ type: "hello", token: "tok-owner", client: "desktop" }));
+    });
+    ws.on("message", raw => {
+      const frame = JSON.parse(String(raw)) as ServerFrame;
+      frames.push(frame);
+      if (frame.type === "welcome") { clearTimeout(timer); resolve(); }
+    });
+    ws.on("error", error => { clearTimeout(timer); reject(error); });
+  });
+  assert.equal(frames.some(frame => frame.type === "error"), false,
+    "input that never parsed into a frame has no request id to echo and invents no error");
+  ws.close();
+  relay.close();
+});
+
 // ---------------------------------------------------------------------------
 // #5 / #6 — the walk forward is transactional, resumable and diagnosable
 // ---------------------------------------------------------------------------
@@ -118,6 +299,318 @@ test("#13 the migration asks who the owner is instead of guessing from row order
   assert.equal(store.memberRole("ch_old", "u_guest"), "member",
     "and a guest is not handed a room because his token happened to be written first");
   store.db.close();
+});
+
+test("the v5 → v6 artifact migration preserves old rows and gives them room access", () => {
+  const dbPath = tmp("hd-artifact-v6.db");
+  const first = new Store(dbPath, { ownerToken: "tok-owner" });
+  const row = first.claimArtifactVersion({ channelId: "ch_old", name: "report.md", at: 10 });
+  const version: ArtifactVersion = {
+    id: "av_old", version: 1, size: 3, sha256: "a".repeat(64), text: true,
+    storedAs: "av_old-report.md", agentId: "a1", agentName: "Scribe", ownerId: "u1",
+    producedAt: 10,
+  };
+  first.saveArtifactVersion(row.id, "ch_old", version);
+  first.db.close();
+
+  // Put the file back in the exact schema-5 shape: old rows, no access/link
+  // tables and no immutable pair index.
+  const old = new DatabaseSync(dbPath);
+  old.exec(`
+    DROP INDEX av_art_version;
+    DROP TABLE artifact_links;
+    DROP TABLE artifact_access_users;
+    DROP TABLE artifact_access;
+    UPDATE meta SET value='5' WHERE key='schemaVersion';
+  `);
+  old.close();
+
+  const migrated = new Store(dbPath, { ownerToken: "tok-owner" });
+  assert.equal(migrated.schemaVersion(), SCHEMA_VERSION);
+  assert.deepEqual(migrated.artifactVersionsOf(row.id), [version],
+    "the immutable old row is copied nowhere, renumbered nowhere and left unchanged");
+  assert.deepEqual(migrated.artifactAccess(row.id), { kind: "room" },
+    "absence is the safe compatibility default for every existing chain");
+  assert.throws(
+    () => migrated.saveArtifactVersion(row.id, "ch_old", { ...version, id: "av_duplicate" }),
+    /UNIQUE|constraint/i,
+    "the new pair rule is active after the migration",
+  );
+  migrated.db.close();
+});
+
+test("the v5 → v6 duplicate-version migration rolls back and leaves every old row untouched", () => {
+  const dbPath = tmp("hd-artifact-v6-duplicate.db");
+  const first = new Store(dbPath, { ownerToken: "tok-owner" });
+  const row = first.claimArtifactVersion({ channelId: "ch_old", name: "report.md", at: 10 });
+  const version: ArtifactVersion = {
+    id: "av_old", version: 1, size: 3, sha256: "a".repeat(64), text: true,
+    storedAs: "av_old-report.md", agentId: "a1", agentName: "Scribe", ownerId: "u1",
+    producedAt: 10,
+  };
+  first.saveArtifactVersion(row.id, "ch_old", version);
+  first.db.close();
+
+  const old = new DatabaseSync(dbPath);
+  old.exec(`
+    DROP INDEX av_art_version;
+    DROP TABLE artifact_links;
+    DROP TABLE artifact_access_users;
+    DROP TABLE artifact_access;
+    UPDATE meta SET value='5' WHERE key='schemaVersion';
+  `);
+  old.prepare(
+    "INSERT INTO artifact_versions(id,artifactId,channelId,agentId,version,producedAt,json) " +
+    "VALUES(?,?,?,?,?,?,?)",
+  ).run("av_duplicate", row.id, "ch_old", "a1", 1, 11, JSON.stringify({ ...version, id: "av_duplicate" }));
+  old.close();
+
+  assert.throws(() => new Store(dbPath, { ownerToken: "tok-owner" }), (e: unknown) => {
+    assert.ok(e instanceof StoreOpenError);
+    assert.ok((e as Error).message.includes("immutable versions cannot be guessed at"));
+    return true;
+  });
+  const check = new DatabaseSync(dbPath);
+  assert.equal((check.prepare("SELECT value FROM meta WHERE key='schemaVersion'").get() as { value: string }).value, "5");
+  assert.equal((check.prepare(
+    "SELECT COUNT(*) n FROM artifact_versions WHERE artifactId=? AND version=1",
+  ).get(row.id) as { n: number }).n, 2, "neither duplicate legacy row was deleted or renumbered");
+  check.close();
+});
+
+test("startup cleanup cannot delete another live hub's staged publish", () => {
+  const dbPath = tmp("hd-artifact-two-hubs.db");
+  const publisher = new Store(dbPath, { ownerToken: "tok-owner" });
+  const full: StoredArtifactVersion = {
+    id: "av_live", version: 1, size: 5, sha256: "a".repeat(64), text: true,
+    storedAs: "av_live-report.md", agentId: "a1", agentName: "Scribe", ownerId: "u1",
+    producedAt: 10,
+  };
+  const { version: _number, ...pending } = full;
+  const stage = publisher.writeArtifactBytes(full.id, "report.md", Buffer.from("alive"));
+  pending.storedAs = stage.storedAs;
+
+  // This exact interleaving used to delete the final bytes: hub A wrote them,
+  // hub B started and swept them as orphaned, then hub A inserted the row.
+  const starter = new Store(dbPath, { ownerToken: "tok-owner" });
+  assert.equal(fs.existsSync(path.join(publisher.artifactsDir, stage.stagedAs)), true,
+    "startup ignores a publish-only stage another live process may own");
+  starter.db.close();
+
+  const artifact = publisher.appendArtifactVersion({
+    channelId: "ch1", name: "report.md", at: 10, version: pending, stage,
+  });
+  assert.ok(publisher.artifactVersionNumber(artifact.id, 1), "the immutable row committed");
+  assert.equal(fs.existsSync(path.join(publisher.artifactsDir, stage.storedAs)), true,
+    "and the exact bytes still exist after the deterministic two-hub interleaving");
+  publisher.db.close();
+});
+
+test("artifact directory flush is after rename, before commit, and failure rolls everything back", () => {
+  const dbPath = tmp("hd-artifact-dir-flush.db");
+  const store = new Store(dbPath, { ownerToken: "tok-owner" });
+  const make = (id: string, at: number) => {
+    const full: StoredArtifactVersion = {
+      id, version: 1, size: 5, sha256: "a".repeat(64), text: true,
+      storedAs: `${id}-report.md`, agentId: "a1", agentName: "Scribe", ownerId: "u1",
+      producedAt: at,
+    };
+    const { version: _number, ...row } = full;
+    const stage = store.writeArtifactBytes(id, "report.md", Buffer.from("alive"));
+    row.storedAs = stage.storedAs;
+    return { row, stage };
+  };
+
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const writable = store as any;
+  const realFlush = writable.flushArtifactDirectory.bind(store);
+  let sawFlush = false;
+  const first = make("av_flush_1", 10);
+  writable.flushArtifactDirectory = () => {
+    assert.equal(fs.existsSync(path.join(store.artifactsDir, first.stage.storedAs)), true,
+      "rename to the final name happened before directory flush");
+    const outside = new DatabaseSync(dbPath);
+    const visible = (outside.prepare(
+      "SELECT COUNT(*) n FROM artifact_versions WHERE id=?",
+    ).get(first.row.id) as { n: number }).n;
+    outside.close();
+    assert.equal(visible, 0, "another connection cannot see the row yet: flush is before COMMIT");
+    sawFlush = true;
+    realFlush();
+  };
+  const artifact = store.appendArtifactVersion({
+    channelId: "ch1", name: "report.md", at: 10, version: first.row, stage: first.stage,
+  });
+  assert.equal(sawFlush, true);
+  assert.ok(store.artifactVersionNumber(artifact.id, 1), "the row commits after the flush returns");
+
+  const before = store.artifactRow(artifact.id)!;
+  const second = make("av_flush_2", 20);
+  writable.flushArtifactDirectory = () => { throw new Error("directory flush failed"); };
+  assert.throws(() => store.appendArtifactVersion({
+    channelId: "ch1", name: "report.md", at: 20, version: second.row, stage: second.stage,
+  }), /directory flush failed/);
+  writable.flushArtifactDirectory = realFlush;
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  const after = store.artifactRow(artifact.id)!;
+  assert.equal(after.nextVersion, before.nextVersion, "flush failure rolls back the version counter");
+  assert.equal(after.updatedAt, before.updatedAt, "flush failure rolls back the list timestamp");
+  assert.equal(store.artifactVersionNumber(artifact.id, 2), undefined, "no version row committed");
+  assert.equal(fs.existsSync(path.join(store.artifactsDir, second.stage.storedAs)), false,
+    "promoted final bytes are compensated after rollback");
+  assert.equal(fs.existsSync(path.join(store.artifactsDir, second.stage.stagedAs)), false,
+    "no stage litter remains either");
+  store.db.close();
+});
+
+test("startup reclaims a publish stage whose owning process is gone", () => {
+  const dbPath = tmp("hd-artifact-abandoned-stage.db");
+  const first = new Store(dbPath, { ownerToken: "tok-owner" });
+  fs.mkdirSync(first.artifactsDir, { recursive: true });
+  const abandoned =
+    `.publishing-v2-99999999-boot_${"a".repeat(22)}-stage_${"b".repeat(22)}-av_dead-report.md`;
+  fs.writeFileSync(path.join(first.artifactsDir, abandoned), "never committed");
+  first.db.close();
+
+  const reopened = new Store(dbPath, { ownerToken: "tok-owner" });
+  assert.equal(fs.existsSync(path.join(reopened.artifactsDir, abandoned)), false,
+    "a dead process can never finish its stage, so restart cleanup owns it");
+  reopened.db.close();
+});
+
+test("a recent v2 stage with this pid but another startup nonce is reclaimed", () => {
+  const dbPath = tmp("hd-artifact-reused-pid-recent.db");
+  const first = new Store(dbPath, { ownerToken: "tok-owner" });
+  fs.mkdirSync(first.artifactsDir, { recursive: true });
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const currentNonce = (first as any).artifactStageNonce as string;
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+  const differentNonce = currentNonce === `boot_${"c".repeat(22)}`
+    ? `boot_${"d".repeat(22)}` : `boot_${"c".repeat(22)}`;
+  const reused =
+    `.publishing-v2-${process.pid}-${differentNonce}-stage_${"e".repeat(22)}-av_recent-report.md`;
+  const file = path.join(first.artifactsDir, reused);
+  fs.writeFileSync(file, "older startup, reused pid");
+  first.db.close();
+
+  const reopened = new Store(dbPath, { ownerToken: "tok-owner" });
+  assert.equal(fs.existsSync(file), false,
+    "this pid is not enough: a different startup nonce belongs to an abandoned run");
+  reopened.db.close();
+});
+
+test("an old v2 stage from this pid and this startup nonce is still reclaimed", () => {
+  const dbPath = tmp("hd-artifact-current-owner-old.db");
+  const store = new Store(dbPath, { ownerToken: "tok-owner" });
+  fs.mkdirSync(store.artifactsDir, { recursive: true });
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const currentNonce = (store as any).artifactStageNonce as string;
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+  const name =
+    `.publishing-v2-${process.pid}-${currentNonce}-stage_${"j".repeat(22)}-av_old-current-report.md`;
+  const file = path.join(store.artifactsDir, name);
+  fs.writeFileSync(file, "this process abandoned it past the grace window");
+  const old = new Date(Date.now() - ARTIFACT_STAGE_GRACE_MS - 1_000);
+  fs.utimesSync(file, old, old);
+
+  store.sweepArtifactOrphans();
+
+  assert.equal(fs.existsSync(file), false,
+    "matching pid and nonce protect only a recent in-flight write, never old litter");
+  store.db.close();
+});
+
+test("another live pid keeps only its recent v2 stage; an old one is reclaimed", () => {
+  const dbPath = tmp("hd-artifact-other-live-pid.db");
+  const store = new Store(dbPath, { ownerToken: "tok-owner" });
+  fs.mkdirSync(store.artifactsDir, { recursive: true });
+  const otherPid = process.pid + 100_000;
+  const recentName =
+    `.publishing-v2-${otherPid}-boot_${"f".repeat(22)}-stage_${"g".repeat(22)}-av_recent-report.md`;
+  const oldName =
+    `.publishing-v2-${otherPid}-boot_${"h".repeat(22)}-stage_${"i".repeat(22)}-av_old-report.md`;
+  const recentFile = path.join(store.artifactsDir, recentName);
+  const oldFile = path.join(store.artifactsDir, oldName);
+  fs.writeFileSync(recentFile, "another live process is still publishing");
+  fs.writeFileSync(oldFile, "the live pid has outlived this abandoned stage");
+  const old = new Date(Date.now() - ARTIFACT_STAGE_GRACE_MS - 1_000);
+  fs.utimesSync(oldFile, old, old);
+
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const writable = store as any;
+  const realAlive = writable.artifactStageProcessAlive.bind(store);
+  writable.artifactStageProcessAlive = (pid: number) => pid === otherPid;
+  try {
+    store.sweepArtifactOrphans();
+  } finally {
+    writable.artifactStageProcessAlive = realAlive;
+  }
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  assert.equal(fs.existsSync(recentFile), true,
+    "another live process keeps its recent stage under the established recent-plus-live rule");
+  assert.equal(fs.existsSync(oldFile), false,
+    "age always wins: even a live pid cannot protect an old stage");
+  store.db.close();
+});
+
+test("numeric legacy stages use age only: recent is kept, old is reclaimed", () => {
+  const dbPath = tmp("hd-artifact-numeric-legacy.db");
+  const first = new Store(dbPath, { ownerToken: "tok-owner" });
+  fs.mkdirSync(first.artifactsDir, { recursive: true });
+  const legacy = `.publishing-${process.pid}-legacy-stage-report.md`;
+  const file = path.join(first.artifactsDir, legacy);
+  fs.writeFileSync(file, "legacy numeric name");
+  first.db.close();
+
+  const recentOpen = new Store(dbPath, { ownerToken: "tok-owner" });
+  assert.equal(fs.existsSync(file), true,
+    "numeric legacy names are not guessed to be current pid ownership, but recent age is protected");
+  recentOpen.db.close();
+
+  const old = new Date(Date.now() - ARTIFACT_STAGE_GRACE_MS - 1_000);
+  fs.utimesSync(file, old, old);
+  const oldOpen = new Store(dbPath, { ownerToken: "tok-owner" });
+  assert.equal(fs.existsSync(file), false, "old legacy litter is eventually reclaimed");
+  oldOpen.db.close();
+});
+
+test("malformed publishing names are handled as legacy and never guessed from text", () => {
+  const dbPath = tmp("hd-artifact-malformed-stage.db");
+  const first = new Store(dbPath, { ownerToken: "tok-owner" });
+  fs.mkdirSync(first.artifactsDir, { recursive: true });
+  const malformed = `.publishing-v2-${process.pid}-not-a-valid-v2-stage`;
+  const file = path.join(first.artifactsDir, malformed);
+  fs.writeFileSync(file, "unknown stage");
+  first.db.close();
+
+  const recentOpen = new Store(dbPath, { ownerToken: "tok-owner" });
+  assert.equal(fs.existsSync(file), true, "recent malformed names are preserved safely");
+  recentOpen.db.close();
+  const old = new Date(Date.now() - ARTIFACT_STAGE_GRACE_MS - 1_000);
+  fs.utimesSync(file, old, old);
+  const oldOpen = new Store(dbPath, { ownerToken: "tok-owner" });
+  assert.equal(fs.existsSync(file), false, "old malformed names are reclaimed by age only");
+  oldOpen.db.close();
+});
+
+test("valid JSON with an invalid version shape is recorded and cannot crash orphan cleanup", () => {
+  const dbPath = tmp("hd-artifact-malformed.db");
+  const first = new Store(dbPath, { ownerToken: "tok-owner" });
+  fs.mkdirSync(first.artifactsDir, { recursive: true });
+  fs.writeFileSync(path.join(first.artifactsDir, "unknown-final.bin"), "keep until understood");
+  first.db.prepare(
+    "INSERT INTO artifact_versions(id,artifactId,channelId,agentId,version,producedAt,json) " +
+    "VALUES(?,?,?,?,?,?,?)",
+  ).run("av_bad", "af_bad", "ch1", "a1", 1, 1, "{}");
+  first.db.close();
+
+  const reopened = new Store(dbPath, { ownerToken: "tok-owner" });
+  assert.ok(reopened.problems.some(p => p.includes("av_bad") && p.includes("invalid stored shape")));
+  assert.equal(fs.existsSync(path.join(reopened.artifactsDir, "unknown-final.bin")), true,
+    "one unknown pointer makes cleanup preserve unknown bytes rather than guess");
+  reopened.db.close();
 });
 
 test("#6 an interrupted migration step leaves the version where it was, and re-runs", () => {

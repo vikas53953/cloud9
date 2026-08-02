@@ -13,7 +13,7 @@ import { approvalsFor, needsApprovalToRun } from "./abilities.js";
 import { Cloud9SearchAnswer } from "./cloud9tools.js";
 import { ConversationBudget, CONVERSATION_BUDGET, renderConversation } from "./context.js";
 import { OpenTurn, ToolBridge } from "./toolbridge.js";
-import { describeRefusals, sweepProduced } from "./artifacts.js";
+import { ArtifactSweep, describeRefusals, sweepProduced } from "./artifacts.js";
 import { ApprovalDesk, ApprovalOutcome } from "./approvaldesk.js";
 import { GitHubClient, GitHubOptions } from "./github.js";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
@@ -581,7 +581,10 @@ export class Engine {
       // THE FILES THIS TURN MADE, offered to the hub before the reply is
       // returned, so the message the agent is about to say and the file it is
       // talking about arrive together rather than minutes apart.
-      this.shareProduced(agent, input, seed.startedAt, record?.id);
+      // A published version must point at the exact run that made it. If the run
+      // record itself could not be built, the turn still returns its answer but
+      // no unattributed file is invented on the hub.
+      if (record) this.shareProduced(agent, input, seed.startedAt, record.id);
       return text;
     } catch (err) {
       this.recordRun(seed, {
@@ -635,7 +638,7 @@ export class Engine {
    * away, or a folder that cannot be read, must never be the reason a turn that
    * really worked is reported as broken.
    */
-  private shareProduced(agent: AgentDef, input: TurnInput, since: number, runId?: string): void {
+  private shareProduced(agent: AgentDef, input: TurnInput, since: number, runId: string): void {
     // No conversation means nowhere to put a file. A turn with no channel is
     // not a turn anybody is waiting on a file from.
     const channelId = input.channelId;
@@ -643,31 +646,40 @@ export class Engine {
     try {
       const dir = input.workdir ?? this.agentDataDir(agent.id);
       const sweep = sweepProduced(dir, { since });
-      for (const file of sweep.offers) {
-        let bytes: Buffer;
-        try { bytes = fs.readFileSync(file.path); }
-        catch (err) {
-          console.error(`[engine] could not read a file ${agent.name} made:`, err);
-          continue;
-        }
-        // A file that changed between the sweep and the read is not a file we
-        // agreed to share — the cap is checked against the BYTES WE HOLD.
-        if (bytes.length === 0 || bytes.length > ARTIFACT_LIMITS.bytes) continue;
-        this.sendFrame({
-          type: "publishArtifact", channelId, agentId: agent.id, name: file.name,
-          dataBase64: bytes.toString("base64"),
-          ...(runId ? { runId } : {}),
-          ...(input.taskId ? { taskId: input.taskId } : {}),
-        });
-      }
-      // A REFUSAL IS SAID OUT LOUD, in the room, in the agent's own voice. The
-      // file really is on this computer; silence here is the "the file's on
-      // disk" complaint all over again, with the app doing the hiding.
-      const said = describeRefusals(sweep.refused);
-      if (said) this.agentSend(agent.id, channelId, said);
+      this.publishCaptured(agent, input, runId, sweep);
     } catch (err) {
       console.error(`[engine] could not share the files ${agent.name} made:`, err);
     }
+  }
+
+  /**
+   * Publish already-captured values. ZERO filesystem operations belong here.
+   *
+   * A ProducedFile has no path to reopen: its Buffer is the exact value the
+   * capture phase accepted, and note/links/run attribution attach to that value.
+   * Public for no caller; tests reach it only to prove source paths may be changed
+   * or deleted after capture without changing the frame.
+   */
+  private publishCaptured(
+    agent: AgentDef, input: TurnInput, runId: string, sweep: ArtifactSweep,
+  ): void {
+    const channelId = input.channelId;
+    if (!channelId) return;
+    for (const file of sweep.offers) {
+      if (file.bytes.length === 0 || file.bytes.length > ARTIFACT_LIMITS.bytes) continue;
+      this.sendFrame({
+        type: "publishArtifact", channelId, agentId: agent.id, name: file.name,
+        dataBase64: file.bytes.toString("base64"), runId,
+        ...(input.taskId ? { taskId: input.taskId } : {}),
+        ...(file.note !== undefined ? { note: file.note } : {}),
+        ...(file.links !== undefined ? { links: file.links } : {}),
+      });
+    }
+    // A REFUSAL IS SAID OUT LOUD, in the room, in the agent's own voice. The
+    // file really is on this computer; silence here is the "the file's on disk"
+    // complaint all over again, with the app doing the hiding.
+    const said = describeRefusals(sweep.refused);
+    if (said) this.agentSend(agent.id, channelId, said);
   }
 
   /**

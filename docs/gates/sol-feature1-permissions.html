@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cloud9 · who can open a shared file?</title>
+<style>
+:root{
+  --display:Constantia,"Iowan Old Style",Charter,Georgia,serif;
+  --body:Corbel,"Avenir Next","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono",Consolas,ui-monospace,monospace;
+  --bg:#E3E6DD;--surface:#F7F8F3;--surface2:#EFF1EA;--line:#C9CFC0;
+  --ink:#151F1B;--muted:#59665F;--quiet:#79857D;--pine:#125347;--pineSoft:#D3E4DC;
+  --gold:#B77A0C;--goldSoft:#F6E6C4;--blue:#2B3CA0;--blueSoft:#DCE0F6;
+  --shadow:0 1px 2px rgba(21,31,27,.06),0 18px 42px -28px rgba(21,31,27,.55);
+}
+@media(prefers-color-scheme:dark){:root{--bg:#0F1512;--surface:#171F1B;--surface2:#1E2723;--line:#2C3833;--ink:#ECEFE5;--muted:#A3B0A8;--quiet:#74827A;--pine:#4FC7A6;--pineSoft:#16332C;--gold:#EFB447;--goldSoft:#3A2C10;--blue:#96A6FF;--blueSoft:#1D2352;--shadow:0 18px 48px -26px #000}}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--body);min-height:100vh}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.045;background-image:radial-gradient(circle at 1px 1px,currentColor .45px,transparent 0);background-size:3px 3px}
+main{width:min(1040px,calc(100% - 32px));margin:0 auto;padding:42px 0 90px}.eyebrow{font:11px/1.2 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--quiet)}
+h1,h2,h3{font-family:var(--display);font-weight:600;letter-spacing:-.018em}h1{font-size:clamp(34px,5vw,58px);line-height:1.02;margin:14px 0 16px;max-width:14ch}p{margin:0}.lede{font-size:18px;color:var(--muted);max-width:65ch}
+.truth{margin:28px 0 24px;padding:18px 20px;border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:var(--shadow);display:grid;grid-template-columns:auto 1fr;gap:14px}.truth .mark{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;background:var(--pineSoft);color:var(--pine);font:700 20px var(--display)}.truth b{display:block;font-family:var(--display);font-size:18px;margin-bottom:3px}.truth span{color:var(--muted)}
+.options{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:22px}.option{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:var(--shadow)}.option.recommended{border:2px solid var(--pine);padding:23px}.tag{display:inline-flex;padding:4px 9px;border-radius:99px;font:10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;background:var(--surface2);color:var(--muted);border:1px solid var(--line)}.recommended .tag{background:var(--pineSoft);color:var(--pine);border-color:transparent}.option h2{font-size:25px;margin:14px 0 8px}.option .summary{color:var(--muted);min-height:72px}.sample{margin:20px 0;padding:16px;border-radius:12px;background:var(--surface2);border:1px solid var(--line)}.sample .cap{font:10px var(--mono);letter-spacing:.13em;text-transform:uppercase;color:var(--quiet)}.sample strong{display:block;margin:7px 0 2px;font-size:16px}.sample small{color:var(--muted)}ul{padding-left:20px;margin:17px 0 0}li{margin:7px 0}.yes{color:var(--pine)}.cost{color:var(--gold)}
+.question{margin-top:20px;background:var(--ink);color:var(--surface);border-radius:16px;padding:24px;box-shadow:var(--shadow)}@media(prefers-color-scheme:dark){.question{background:var(--pine);color:#08120F}}.question h2{font-size:26px;margin:7px 0}.question p{opacity:.82}.answer{display:inline-block;margin-top:15px;padding:9px 13px;border-radius:9px;background:var(--goldSoft);color:#392506;font-weight:700}.foot{margin-top:18px;color:var(--quiet);font-size:13px}.score{display:flex;align-items:center;gap:10px;margin-top:25px;color:var(--muted)}.score b{font:700 18px var(--mono);color:var(--pine)}
+@media(max-width:760px){main{padding-top:25px}.options{grid-template-columns:1fr}.option .summary{min-height:0}.truth{grid-template-columns:1fr}.truth .mark{width:38px;height:38px}}
+</style>
+</head>
+<body>
+<main>
+  <header data-fb="Feature 1 decision — framing">
+    <div class="eyebrow">Cloud9 · feature 1 · one decision</div>
+    <h1>Who can open a file your agents share?</h1>
+    <p class="lede">The room always stays the outer wall. The choice is whether a room manager may make one file more private inside that room.</p>
+  </header>
+
+  <section class="truth" data-fb="Security boundary — room always wins">
+    <div class="mark">#</div>
+    <div><b>The room is always the boundary</b><span>A file link never lets someone into a room. Leaving the room removes access immediately, including an old download link.</span></div>
+  </section>
+
+  <div class="options">
+    <section class="option recommended" data-fb="Recommended — room default plus selected people">
+      <span class="tag">Recommended</span>
+      <h2>Room by default, narrower when needed</h2>
+      <p class="summary">Everyone in the room can open a new file. A room manager may restrict one file to selected people who are already in that room.</p>
+      <div class="sample">
+        <span class="cap">Who can open this?</span>
+        <strong>Only Vikas, Priya and room managers</strong>
+        <small>No one outside #finance can ever be added.</small>
+      </div>
+      <ul>
+        <li class="yes">Useful for budgets, drafts and private review inside a working room.</li>
+        <li class="yes">Old files remain room-visible automatically.</li>
+        <li class="cost">Adds a real permission control and more security checks.</li>
+      </ul>
+    </section>
+
+    <section class="option" data-fb="Alternative — room only">
+      <span class="tag">Simpler</span>
+      <h2>Always follow the room</h2>
+      <p class="summary">Every file is visible to everyone currently in its room. To change the audience, people must move the work to another room.</p>
+      <div class="sample">
+        <span class="cap">Who can open this?</span>
+        <strong>Everyone in #finance</strong>
+        <small>This cannot be narrowed for one file.</small>
+      </div>
+      <ul>
+        <li class="yes">Very easy to understand and secure.</li>
+        <li class="yes">No new permission editor.</li>
+        <li class="cost">A sensitive file forces a new room even when the rest of the conversation belongs together.</li>
+      </ul>
+    </section>
+  </div>
+
+  <section class="question" data-fb="Decision — permission model">
+    <div class="eyebrow">Your call</div>
+    <h2>Should room managers be able to restrict one file to selected people already in that room?</h2>
+    <p>I recommend yes. The default remains simple; the extra control appears only in the selected file’s details.</p>
+    <span class="answer">Recommended answer: Yes — room default + selected people</span>
+  </section>
+
+  <div class="score" data-fb="Decision completeness"><span>Decision completeness</span><b>9/10</b><span>— this answer closes the only screen-level gap before implementation.</span></div>
+  <p class="foot">Honest limit: this page cannot send your marks back into Claude. Use “Copy my feedback” and paste once.</p>
+</main>
+<script>
+/* ============================================================
+   Vikas review kit — feedback layer for every HTML review page.
+   Paste this <script> at the end of any artifact I hand him.
+
+   What it gives him:
+     - click any section marked data-fb="<label>" to attach a note
+     - thumbs up / down per section
+     - a floating panel listing everything he has said
+     - ONE button that copies it all as plain text to paste back
+
+   Why it exists: published artifacts cannot send data back into a
+   Claude session (no such capability). This turns "read a wall and
+   retype your thoughts" into "click, type, copy once".
+
+   Usage:
+     1. mark reviewable blocks:  <section data-fb="Option A — Slack True">
+     2. include this script once, at the end of the page.
+   ============================================================ */
+(function () {
+  "use strict";
+  var STORE = "vikas-fb-" + (document.title || location.pathname);
+  var notes = {};
+  try { notes = JSON.parse(localStorage.getItem(STORE) || "{}"); } catch (e) { notes = {}; }
+
+  function save() { try { localStorage.setItem(STORE, JSON.stringify(notes)); } catch (e) {} }
+
+  var css = document.createElement("style");
+  css.textContent = [
+    ':root{--fb-ink:#16232e;--fb-bg:#fff;--fb-line:#d8e0e8;--fb-accent:#2c7fc4;',
+    '--fb-yes:#1e7d4f;--fb-yes-bg:#e3f3ea;--fb-no:#b03535;--fb-no-bg:#fbe7e7;--fb-muted:#5a6b7a;}',
+    '@media (prefers-color-scheme:dark){:root{--fb-ink:#e6edf3;--fb-bg:#18232e;--fb-line:#2f3d4a;',
+    '--fb-accent:#5aa5dd;--fb-yes:#5cc78f;--fb-yes-bg:#14372a;--fb-no:#e07a7a;--fb-no-bg:#3d1d1d;--fb-muted:#93a4b3;}}',
+    '[data-fb]{position:relative;}',
+    '[data-fb].fb-has{outline:2px solid var(--fb-accent);outline-offset:3px;border-radius:8px;}',
+    '.fb-tools{position:absolute;top:.4rem;right:.4rem;display:flex;gap:.25rem;opacity:.45;',
+    'transition:opacity .15s;z-index:5;}',
+    '[data-fb]:hover .fb-tools,[data-fb]:focus-within .fb-tools{opacity:1;}',
+    '@media (prefers-reduced-motion:reduce){.fb-tools{transition:none;}}',
+    '.fb-tools button{font:600 .78rem/1 system-ui,sans-serif;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);border-radius:99px;padding:.3rem .6rem;cursor:pointer;}',
+    '.fb-tools button:hover{border-color:var(--fb-accent);color:var(--fb-accent);}',
+    '.fb-tools button.on-yes{background:var(--fb-yes-bg);color:var(--fb-yes);border-color:var(--fb-yes);}',
+    '.fb-tools button.on-no{background:var(--fb-no-bg);color:var(--fb-no);border-color:var(--fb-no);}',
+    '.fb-note{margin-top:.6rem;width:100%;box-sizing:border-box;font:.92rem/1.5 system-ui,sans-serif;',
+    'color:var(--fb-ink);background:var(--fb-bg);border:1px dashed var(--fb-line);border-radius:8px;',
+    'padding:.55rem .7rem;resize:vertical;min-height:2.6rem;}',
+    '.fb-note:focus{outline:2px solid var(--fb-accent);outline-offset:1px;border-style:solid;}',
+    '.fb-bar{position:fixed;right:1rem;bottom:1rem;z-index:9999;display:flex;flex-direction:column;',
+    'align-items:flex-end;gap:.5rem;font:14px/1.5 system-ui,sans-serif;}',
+    '.fb-bar button{cursor:pointer;border-radius:99px;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);padding:.55rem 1rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.14);}',
+    '.fb-bar .fb-copy{background:var(--fb-accent);color:#fff;border-color:transparent;}',
+    '.fb-panel{background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;',
+    'padding:.9rem 1rem;max-width:min(380px,90vw);max-height:50vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.2);display:none;}',
+    '.fb-panel.open{display:block;}',
+    '.fb-panel h4{margin:0 0 .5rem;font-size:.95rem;}',
+    '.fb-panel li{margin-bottom:.5rem;font-size:.88rem;}',
+    '.fb-panel .lbl{font-weight:600;}',
+    '.fb-empty{color:var(--fb-muted);font-size:.88rem;margin:0;}',
+    '@media print{.fb-bar,.fb-tools{display:none;}}'
+  ].join("");
+  document.head.appendChild(css);
+
+  var bar = document.createElement("div");
+  bar.className = "fb-bar";
+  var panel = document.createElement("div");
+  panel.className = "fb-panel";
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  var copy = document.createElement("button");
+  copy.type = "button"; copy.className = "fb-copy"; copy.textContent = "📋 Copy my feedback";
+  bar.appendChild(panel); bar.appendChild(toggle); bar.appendChild(copy);
+  document.body.appendChild(bar);
+
+  var blocks = [].slice.call(document.querySelectorAll("[data-fb]"));
+  if (!blocks.length) {
+    var solo = document.createElement("div");
+    solo.setAttribute("data-fb", document.title || "this page");
+    solo.setAttribute("data-fb-solo", "");
+    solo.style.cssText = "position:fixed;left:1rem;bottom:1rem;z-index:9998;width:min(320px,80vw);" +
+      "background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;" +
+      "padding:2.2rem .8rem .8rem;box-shadow:0 8px 30px rgba(0,0,0,.2);font:14px/1.5 system-ui,sans-serif;";
+    var cap = document.createElement("div");
+    cap.textContent = "Notes on this page";
+    cap.style.cssText = "font-weight:600;font-size:.85rem;margin-bottom:.3rem;";
+    solo.appendChild(cap);
+    document.body.appendChild(solo);
+    blocks = [solo];
+  }
+  blocks.forEach(function (el) {
+    var key = el.getAttribute("data-fb");
+    if (!notes[key]) notes[key] = { verdict: "", text: "" };
+    var tools = document.createElement("div");
+    tools.className = "fb-tools";
+    var yes = document.createElement("button");
+    yes.type = "button"; yes.textContent = "👍 like"; yes.title = "I like this";
+    var no = document.createElement("button");
+    no.type = "button"; no.textContent = "👎 no"; no.title = "Not this";
+    var add = document.createElement("button");
+    add.type = "button"; add.textContent = "💬 note"; add.title = "Write a note";
+    tools.appendChild(yes); tools.appendChild(no); tools.appendChild(add);
+    el.appendChild(tools);
+    var note = document.createElement("textarea");
+    note.className = "fb-note";
+    note.placeholder = "Your note on “" + key + "”…";
+    note.value = notes[key].text || "";
+    var solo = el.hasAttribute("data-fb-solo");
+    note.style.display = notes[key].text || solo ? "block" : "none";
+    el.appendChild(note);
+    function paint() {
+      yes.className = notes[key].verdict === "yes" ? "on-yes" : "";
+      no.className = notes[key].verdict === "no" ? "on-no" : "";
+      el.classList.toggle("fb-has", !!(notes[key].verdict || notes[key].text));
+      render();
+    }
+    yes.addEventListener("click", function () { notes[key].verdict = notes[key].verdict === "yes" ? "" : "yes"; save(); paint(); });
+    no.addEventListener("click", function () { notes[key].verdict = notes[key].verdict === "no" ? "" : "no"; save(); paint(); });
+    add.addEventListener("click", function () { note.style.display = "block"; note.focus(); });
+    note.addEventListener("input", function () { notes[key].text = note.value.trim(); save(); paint(); });
+    paint();
+  });
+  function collected() { return Object.keys(notes).filter(function (k) { return notes[k].verdict || notes[k].text; }).map(function (k) { return { key:k,v:notes[k].verdict,t:notes[k].text }; }); }
+  function asText() { var items=collected(); if(!items.length)return ""; var out=["FEEDBACK ON: "+(document.title||"this page"),""]; items.forEach(function(i){var mark=i.v==="yes"?"LIKE":i.v==="no"?"NO":"NOTE";out.push("- ["+mark+"] "+i.key+(i.t?" — "+i.t:""));});return out.join("\n"); }
+  function render(){var items=collected();toggle.textContent=items.length?"🗒 "+items.length+" marked":"🗒 no marks yet";if(!items.length){panel.innerHTML='<p class="fb-empty">Hover any section, then use 👍 / 👎 / 💬.</p>';return;}var html="<h4>What you've said</h4><ul>";items.forEach(function(i){var mark=i.v==="yes"?"👍":i.v==="no"?"👎":"💬";html+='<li>'+mark+' <span class="lbl">'+escapeHtml(i.key)+"</span>"+(i.t?" — "+escapeHtml(i.t):"")+"</li>";});panel.innerHTML=html+"</ul>";}
+  function escapeHtml(s){return String(s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
+  toggle.addEventListener("click",function(){panel.classList.toggle("open");});
+  copy.addEventListener("click",function(){var text=asText();if(!text){copy.textContent="nothing marked yet";setTimeout(function(){copy.textContent="📋 Copy my feedback";},1600);return;}var done=function(){copy.textContent="✅ copied — paste it to Claude";setTimeout(function(){copy.textContent="📋 Copy my feedback";},2600);};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done,fallback);}else{fallback();}function fallback(){var ta=document.createElement("textarea");ta.value=text;document.body.appendChild(ta);ta.select();try{document.execCommand("copy");done();}catch(e){window.prompt("Copy this:",text);}document.body.removeChild(ta);}});
+  render();
+})();
+</script>
+</body>
+</html>

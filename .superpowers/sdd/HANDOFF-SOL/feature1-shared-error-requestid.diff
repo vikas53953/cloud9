@@ -1,0 +1,1032 @@
+diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
+index 8e0ab07..a2eeb78 100644
+--- a/packages/shared/src/index.ts
++++ b/packages/shared/src/index.ts
+@@ -1172,7 +1172,9 @@ export type ActivityKind =
+   // his item 7: connecting a repository to Cloud9 is an action on this Cloud9,
+   // so it belongs in the trail like every other one. Nothing here touches
+   // GitHub — these three lines are about OUR copy.
+-  | "project_connected" | "project_updated" | "project_forgotten";
++  | "project_connected" | "project_updated" | "project_forgotten"
++  // narrowing or restoring who may read a file changes a permission wall
++  | "artifact_access_changed";
+ 
+ /**
+  * One line of the trail.
+@@ -1481,6 +1483,50 @@ export interface Attachment {
+ // history rather than two files with the same name. Attribution is therefore
+ // PER VERSION, never on the artifact itself.
+ 
++/**
++ * Who may read one artifact's whole version chain.
++ *
++ * ABSENT MEANS `room`. Every artifact stored before Files permissions existed
++ * remains readable by everyone who can currently read its source room. A
++ * restricted file names the selected HUMAN room members; the relay adds all
++ * current room owners/admins when it answers the permission question. This
++ * object may narrow room access and can never broaden it.
++ */
++export type ArtifactAccess =
++  | { kind: "room" }
++  | { kind: "restricted"; userIds: ID[] };
++
++/** The only two stored relationships between exact artifact versions. */
++export type ArtifactLinkKind = "made-from" | "goes-with";
++
++/** One immutable set of artifact bytes, named without any "newest" shortcut. */
++export interface ArtifactVersionRef {
++  artifactId: ID;
++  version: number;
++}
++
++/** A relationship declared when the publishing version was made. */
++export interface ArtifactLink {
++  kind: ArtifactLinkKind;
++  target: ArtifactVersionRef;
++}
++
++/** One file row in the private `.cloud9/artifact-links.json` turn manifest. */
++export interface ArtifactLinkManifestFile {
++  name: string;
++  note?: string;
++  links?: ArtifactLink[];
++}
++
++/** The whole private turn manifest. It is read by the engine and never shared. */
++export interface ArtifactLinkManifest {
++  files: ArtifactLinkManifestFile[];
++}
++
++export type ArtifactLinkManifestResult =
++  | { ok: true; manifest: ArtifactLinkManifest }
++  | { ok: false; reason: string };
++
+ /** One stored version of a shared artifact — one set of bytes, forever. */
+ export interface ArtifactVersion {
+   /** "av-…" — the reference to THESE bytes, which never change */
+@@ -1513,9 +1559,24 @@ export interface ArtifactVersion {
+   taskId?: ID;
+   /** the agent's own one line about what changed. Absent means it said nothing. */
+   note?: string;
++  /**
++   * Raw stored links are deliberately impossible on a public version. The
++   * optional-never field makes `StoredArtifactVersion` non-assignable here, so
++   * a relay cannot accidentally put its storage object straight on the wire.
++   */
++  links?: never;
+   producedAt: number;
+ }
+ 
++/**
++ * The relay's durable version row. This is NOT a wire view: its raw exact
++ * targets can include files the eventual reader is not allowed to know exist.
++ * Always pass it through `artifactVersionForPublic` before building a frame.
++ */
++export type StoredArtifactVersion = Omit<ArtifactVersion, "links"> & {
++  links?: ArtifactLink[];
++};
++
+ /**
+  * A file an agent made, with every version of it the hub still holds.
+  *
+@@ -1531,12 +1592,76 @@ export interface Artifact {
+   name: string;
+   /** newest first, capped at `ARTIFACT_LIMITS.versions`, never empty */
+   versions: ArtifactVersion[];
++  /** absent means room-visible, preserving every artifact stored before this field */
++  access?: ArtifactAccess;
+   /** when version 1 landed */
+   createdAt: number;
+   /** when the newest version landed */
+   updatedAt: number;
+ }
+ 
++/** Durable artifact shape inside the relay; never send it without projection. */
++export type StoredArtifact = Omit<Artifact, "versions"> & {
++  versions: StoredArtifactVersion[];
++};
++
++/** Strip raw targets by construction before one version enters any public view. */
++export function artifactVersionForPublic(stored: StoredArtifactVersion): ArtifactVersion {
++  const { links: _privateLinks, ...visible } = stored;
++  void _privateLinks;
++  return visible;
++}
++
++/** Strip raw targets from every retained version before an artifact enters a frame. */
++export function artifactForPublic(stored: StoredArtifact): Artifact {
++  return { ...stored, versions: stored.versions.map(artifactVersionForPublic) };
++}
++
++/**
++ * One bounded row in Files, across every room the asker may currently read.
++ * `latest` is the one version needed to draw maker, turn and date without
++ * carrying every retained version in every list row.
++ */
++export interface ArtifactWorkspaceEntry {
++  artifactId: ID;
++  channelId: ID;
++  channelName: string;
++  name: string;
++  latest: ArtifactVersion;
++  /** total published version number, not merely the retained rows on this page */
++  versionCount: number;
++  /** always explicit on a workspace row; legacy absence has already become room */
++  access: ArtifactAccess;
++  updatedAt: number;
++}
++
++/**
++ * A link as the detail screen may safely draw it.
++ *
++ * A hidden outgoing target carries neither its exact reference nor its name;
++ * the screen can only say that a linked file is unavailable. Incoming links
++ * are included only when the source is permitted, so they are never hidden.
++ */
++export type ArtifactRelationView =
++  | {
++      kind: ArtifactLinkKind;
++      direction: "outgoing";
++      from: ArtifactVersionRef;
++      hidden: true;
++      /** impossible on a hidden placeholder: no id, version or name may leak */
++      to?: never;
++      linkedName?: never;
++    }
++  | {
++      kind: ArtifactLinkKind;
++      direction: "outgoing" | "incoming";
++      from: ArtifactVersionRef;
++      hidden: false;
++      /** required together on every visible relationship */
++      to: ArtifactVersionRef;
++      linkedName: string;
++    };
++
+ 
+ /**
+  * Everyone who currently has this one emoji on a message.
+@@ -1719,11 +1844,17 @@ export type ClientFrame =
+       runId?: string; taskId?: ID;
+       /** the agent's own line about what changed */
+       note?: string;
++      /** checked typed links from this turn's private manifest */
++      links?: ArtifactLink[];
+     }
+   /** Every artifact in one conversation, newest change first. */
+   | { type: "artifacts"; channelId: ID }
++  /** One bounded page across every readable room, newest change first. */
++  | { type: "artifactWorkspace"; before?: number; beforeId?: ID; limit?: number; requestId?: ID }
+   /** One artifact and its whole version history, by id. */
+-  | { type: "artifact"; artifactId: ID }
++  | { type: "artifact"; artifactId: ID; requestId?: ID }
++  /** Owner/admin only: narrow this whole chain, or restore room access. */
++  | { type: "setArtifactAccess"; artifactId: ID; access: ArtifactAccess; requestId?: ID }
+   /**
+    * Ask for permission to fetch one artifact version's bytes.
+    *
+@@ -2144,9 +2275,27 @@ export type ServerFrame =
+    * conversation, because a file an agent made is the conversation's, not the
+    * producer's. Also the answer to `artifact`.
+    */
+-  | { type: "artifact"; artifact: Artifact }
++  | {
++      type: "artifact"; artifact: Artifact; relations?: ArtifactRelationView[];
++      /**
++       * Echoed on direct `artifact` reads and successful `setArtifactAccess`
++       * mutations. Unsolicited publish/update pushes omit it.
++       */
++      requestId?: ID;
++      /** true only when more valid relation rows exist beyond the shared cap */
++      relationsTruncated?: true;
++    }
+   /** Answers `artifacts`. Newest change first. */
+   | { type: "artifacts"; channelId: ID; artifacts: Artifact[] }
++  /** Answers `artifactWorkspace`, with a stable updatedAt/id cursor. */
++  | {
++      type: "artifactWorkspace"; artifacts: ArtifactWorkspaceEntry[]; hasMore: boolean;
++      nextBefore?: number; nextBeforeId?: ID;
++      /** echoed only when this is the direct answer to an artifactWorkspace request */
++      requestId?: ID;
++    }
++  /** Permission changed or room membership vanished: discard every cached view. */
++  | { type: "artifactUnavailable"; artifactId: ID }
+   /**
+    * Permission to fetch ONE version of one artifact, ONCE, for a few seconds.
+    * `url` is relative to the hub's own address and is the SAME endpoint an
+@@ -2269,7 +2418,12 @@ export type ServerFrame =
+    * task and the context pointer.
+    */
+   | { type: "handoffReceived"; handoff: AgentHandoff }
+-  | { type: "error"; error: string };
++  | {
++      type: "error";
++      error: string;
++      /** direct refusals echo a request id when one was sent; general errors omit it */
++      requestId?: ID;
++    };
+ 
+ // ---------- desktop menu actions ----------
+ //
+@@ -2541,8 +2695,22 @@ export const ARTIFACT_LIMITS = {
+   publishesPerMinute: 30,
+   /** the agent's own note about a version */
+   note: 300,
+-  /** most artifacts one `artifacts` answer carries */
++  /** most artifacts one room-scoped `artifacts` answer carries */
+   listPage: 100,
++  /** most rows one cross-room Files page may carry */
++  workspacePage: 100,
++  /** Files page size when the client does not ask */
++  workspaceDefault: 50,
++  /** most selected human ids one restricted artifact accepts */
++  accessUsers: 200,
++  /** most permitted/hidden relationship rows one artifact detail may return */
++  relationDetail: 100,
++  /** most typed relationships one publishing version accepts */
++  linksPerVersion: 20,
++  /** most produced-file rows one turn manifest accepts */
++  manifestFiles: 10,
++  /** biggest private link manifest the engine will parse */
++  manifestBytes: 64 * 1024,
+ } as const;
+ 
+ /**
+@@ -2572,13 +2740,202 @@ export function validateArtifact(name: unknown, size: number): string | null {
+   return null;
+ }
+ 
+-/** The newest version. The one owner of "which end of the list is new". */
+-export function latestVersion(artifact: Artifact): ArtifactVersion | undefined {
++/** Legacy absence is room access — one owner for that compatibility promise. */
++export function effectiveArtifactAccess(access?: ArtifactAccess): ArtifactAccess {
++  return access ?? { kind: "room" };
++}
++
++/** May a Files row say this artifact is restricted? */
++export function isArtifactRestricted(access?: ArtifactAccess): boolean {
++  return effectiveArtifactAccess(access).kind === "restricted";
++}
++
++/** Canonical stored access: explicit room, or first-seen selected ids once each. */
++export function normaliseArtifactAccess(access?: ArtifactAccess): ArtifactAccess {
++  const effective = effectiveArtifactAccess(access);
++  return effective.kind === "room"
++    ? { kind: "room" }
++    : { kind: "restricted", userIds: [...new Set(effective.userIds)] };
++}
++
++/** Check stored access. Legacy absence is accepted here and only here. */
++export function validateArtifactAccess(value: unknown): string | null {
++  return validateArtifactAccessValue(value, true);
++}
++
++/** Check a permission MUTATION. It must explicitly say room or restricted. */
++export function validateArtifactAccessMutation(value: unknown): string | null {
++  return validateArtifactAccessValue(value, false);
++}
++
++function validateArtifactAccessValue(value: unknown, allowLegacyAbsence: boolean): string | null {
++  if (value === undefined) {
++    return allowLegacyAbsence ? null : "say whether this file uses room or restricted access";
++  }
++  if (!isObjectWithOwn(value, ["kind", "userIds"], ["kind"])) {
++    return "that isn't a file access setting";
++  }
++  if (value.kind === "room") {
++    return Object.prototype.hasOwnProperty.call(value, "userIds")
++      ? "room access does not need a list of people"
++      : null;
++  }
++  if (value.kind !== "restricted") return "file access is room or restricted";
++  if (!hasOwn(value, "userIds") || !Array.isArray(value.userIds)) {
++    return "restricted file access needs a list of people";
++  }
++  if (value.userIds.length > ARTIFACT_LIMITS.accessUsers) {
++    return `that's too many people for one file (max ${ARTIFACT_LIMITS.accessUsers})`;
++  }
++  for (const id of value.userIds) {
++    if (!isSafeStoredId(id)) return "that file access list contains someone Cloud9 doesn't know";
++  }
++  return null;
++}
++
++/** Check one exact artifact-version target. There is deliberately no newest form. */
++export function validateArtifactVersionRef(value: unknown): string | null {
++  if (!isObjectWithOwn(value, ["artifactId", "version"], ["artifactId", "version"])) {
++    return "that isn't an exact file version";
++  }
++  if (!isSafeStoredId(value.artifactId)) return "that linked file id isn't usable";
++  if (typeof value.version !== "number" || !Number.isSafeInteger(value.version) || value.version < 1) {
++    return "that linked file version isn't a positive whole number";
++  }
++  return null;
++}
++
++/** Check one typed link before it is attached to immutable version data. */
++export function validateArtifactLink(value: unknown): string | null {
++  if (!isObjectWithOwn(value, ["kind", "target"], ["kind", "target"])) {
++    return "that isn't a file link";
++  }
++  if (value.kind !== "made-from" && value.kind !== "goes-with") {
++    return "a file link is made-from or goes-with";
++  }
++  return validateArtifactVersionRef(value.target);
++}
++
++/**
++ * Check a WHOLE link list. Both direct `publishArtifact.links` and manifest rows
++ * call this, so the 20-link ceiling cannot be bypassed by choosing another path.
++ */
++export function validateArtifactLinks(value: unknown): string | null {
++  if (!Array.isArray(value)) return "file links must be a list";
++  if (value.length > ARTIFACT_LIMITS.linksPerVersion) {
++    return `that file version has too many links (max ${ARTIFACT_LIMITS.linksPerVersion})`;
++  }
++  for (const item of value) {
++    const problem = validateArtifactLink(item);
++    if (problem) return problem;
++  }
++  return null;
++}
++
++/** First occurrence wins; kind plus exact target is the whole identity. */
++export function normaliseArtifactLinks(links: readonly ArtifactLink[]): ArtifactLink[] {
++  const seen = new Set<string>();
++  const out: ArtifactLink[] = [];
++  for (const item of links) {
++    const key = `${item.kind}\u0000${item.target.artifactId}\u0000${item.target.version}`;
++    if (seen.has(key)) continue;
++    seen.add(key);
++    out.push({ kind: item.kind, target: { ...item.target } });
++  }
++  return out;
++}
++
++/** The same object rule used by the JSON parser and by callers holding parsed data. */
++export function validateArtifactLinkManifest(value: unknown): string | null {
++  if (!isObjectWithOwn(value, ["files"], ["files"]) || !Array.isArray(value.files)) {
++    return "that file-link manifest needs a files list";
++  }
++  if (value.files.length > ARTIFACT_LIMITS.manifestFiles) {
++    return `that file-link manifest has too many files (max ${ARTIFACT_LIMITS.manifestFiles})`;
++  }
++  const names = new Set<string>();
++  for (const raw of value.files) {
++    if (!isObjectWithOwn(raw, ["name", "note", "links"], ["name"])) {
++      return "each file-link manifest row needs a file name";
++    }
++    if (!isSafeFileName(raw.name)) return FILE_NAME_SENTENCE;
++    const key = nameKey(raw.name);
++    if (names.has(key)) return `the file-link manifest names "${raw.name}" more than once`;
++    names.add(key);
++    if (raw.note !== undefined) {
++      if (typeof raw.note !== "string") return `the note for "${raw.name}" must be words`;
++      if (raw.note.length > ARTIFACT_LIMITS.note) {
++        return `the note for "${raw.name}" is too long (max ${ARTIFACT_LIMITS.note} characters)`;
++      }
++    }
++    if (raw.links !== undefined) {
++      const problem = validateArtifactLinks(raw.links);
++      if (problem) return `${raw.name}: ${problem}`;
++    }
++  }
++  return null;
++}
++
++/** Parse the private turn manifest, refusing bad current data rather than guessing. */
++export function parseArtifactLinkManifest(text: unknown): ArtifactLinkManifestResult {
++  if (typeof text !== "string") {
++    return { ok: false, reason: "that file-link manifest is not text" };
++  }
++  const bytes = new TextEncoder().encode(text).length;
++  if (bytes > ARTIFACT_LIMITS.manifestBytes) {
++    return {
++      ok: false,
++      reason: `that file-link manifest is too big (max ${ARTIFACT_LIMITS.manifestBytes} bytes)`,
++    };
++  }
++  let parsed: unknown;
++  try { parsed = JSON.parse(text); }
++  catch { return { ok: false, reason: "that file-link manifest is not valid JSON" }; }
++  const reason = validateArtifactLinkManifest(parsed);
++  if (reason) return { ok: false, reason };
++
++  const manifest = parsed as ArtifactLinkManifest;
++  return {
++    ok: true,
++    manifest: {
++      files: manifest.files.map(file => ({
++        name: file.name,
++        ...(file.note === undefined ? {} : { note: file.note }),
++        ...(file.links === undefined ? {} : { links: normaliseArtifactLinks(file.links) }),
++      })),
++    },
++  };
++}
++
++/** Strict own keys keep direct objects in lockstep with parsed JSON objects. */
++function isObjectWithOwn(
++  value: unknown,
++  allowed: readonly string[],
++  required: readonly string[],
++): value is Record<string, unknown> {
++  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
++  const keys = Object.keys(value);
++  const noInheritedFields = allowed.every(key => !(key in value) || hasOwn(value, key));
++  return keys.every(key => allowed.includes(key))
++    && required.every(key => hasOwn(value, key))
++    && noInheritedFields;
++}
++
++function hasOwn(value: object, key: string): boolean {
++  return Object.prototype.hasOwnProperty.call(value, key);
++}
++
++/** The newest version. Works on either storage or already-public views. */
++export function latestVersion<T extends ArtifactVersion | StoredArtifactVersion>(
++  artifact: { versions: T[] },
++): T | undefined {
+   return artifact.versions[0];
+ }
+ 
+-/** One version by number, or nothing. */
+-export function versionOf(artifact: Artifact, version: number): ArtifactVersion | undefined {
++/** One version by number, or nothing, preserving storage/public type. */
++export function versionOf<T extends ArtifactVersion | StoredArtifactVersion>(
++  artifact: { versions: T[] }, version: number,
++): T | undefined {
+   return artifact.versions.find(v => v.version === version);
+ }
+ 
+diff --git a/packages/shared/src/artifact-workspace.test.ts b/packages/shared/src/artifact-workspace.test.ts
+new file mode 100644
+index 0000000..d234587
+--- /dev/null
++++ b/packages/shared/src/artifact-workspace.test.ts
+@@ -0,0 +1,565 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import {
++  ARTIFACT_LIMITS,
++  Artifact,
++  ArtifactAccess,
++  ArtifactLink,
++  ArtifactRelationView,
++  ArtifactVersion,
++  ArtifactWorkspaceEntry,
++  ClientFrame,
++  ServerFrame,
++  StoredArtifact,
++  StoredArtifactVersion,
++  artifactForPublic,
++  artifactVersionForPublic,
++  effectiveArtifactAccess,
++  isArtifactRestricted,
++  normaliseArtifactAccess,
++  normaliseArtifactLinks,
++  parseArtifactLinkManifest,
++  validateArtifactAccess,
++  validateArtifactAccessMutation,
++  validateArtifactLink,
++  validateArtifactLinkManifest,
++  validateArtifactLinks,
++  validateArtifactVersionRef,
++} from "./index.js";
++
++const target = (artifactId = "af_1", version = 1) => ({ artifactId, version });
++const link = (kind: ArtifactLink["kind"] = "made-from", artifactId = "af_1", version = 1): ArtifactLink => ({
++  kind,
++  target: target(artifactId, version),
++});
++const publicVersion = (over: Partial<ArtifactVersion> = {}): ArtifactVersion => ({
++  id: "av_1",
++  version: 1,
++  size: 10,
++  sha256: "a".repeat(64),
++  text: true,
++  storedAs: "av_1-summary.pdf",
++  agentId: "ag_1",
++  agentName: "Scribe",
++  ownerId: "u_1",
++  producedAt: 1_000,
++  ...over,
++});
++
++test("legacy artifacts with no access field keep room access, but mutations must be explicit", () => {
++  assert.deepEqual(effectiveArtifactAccess(undefined), { kind: "room" });
++  assert.equal(isArtifactRestricted(undefined), false);
++  assert.equal(validateArtifactAccess(undefined), null, "stored legacy absence remains valid");
++  assert.ok(validateArtifactAccessMutation(undefined), "a mutation may not use legacy absence");
++
++  const room: ArtifactAccess = { kind: "room" };
++  const restricted: ArtifactAccess = { kind: "restricted", userIds: ["u_1"] };
++  assert.deepEqual(effectiveArtifactAccess(room), room);
++  assert.equal(isArtifactRestricted(room), false);
++  assert.equal(isArtifactRestricted(restricted), true);
++  assert.equal(validateArtifactAccessMutation(room), null);
++  assert.equal(validateArtifactAccessMutation(restricted), null);
++});
++
++test("artifact access rejects invalid shapes, inherited fields and raw overflow", () => {
++  for (const bad of [
++    null,
++    "room",
++    {},
++    { kind: "everyone" },
++    { kind: "room", userIds: [] },
++    { kind: "restricted" },
++    { kind: "restricted", userIds: "u_1" },
++    { kind: "restricted", userIds: [1] },
++    { kind: "restricted", userIds: ["../u_1"] },
++    { kind: "restricted", userIds: [], extra: true },
++    Object.create({ kind: "room" }),
++    Object.assign(Object.create({ userIds: ["u_1"] }), { kind: "restricted" }),
++  ]) {
++    assert.ok(validateArtifactAccess(bad), `should reject ${JSON.stringify(bad)}`);
++  }
++  assert.ok(validateArtifactAccess({
++    kind: "restricted",
++    userIds: Array.from({ length: ARTIFACT_LIMITS.accessUsers + 1 }, (_, i) => `u_${i}`),
++  }), "the cap applies before dedupe so a hostile raw list is still bounded");
++});
++
++test("restricted access accepts exactly 200 users and deduplicates canonically", () => {
++  const boundary: ArtifactAccess = {
++    kind: "restricted",
++    userIds: Array.from({ length: ARTIFACT_LIMITS.accessUsers }, (_, i) => `u_${i}`),
++  };
++  assert.equal(validateArtifactAccessMutation(boundary), null);
++
++  const input: ArtifactAccess = { kind: "restricted", userIds: ["u_2", "u_1", "u_2", "u_1"] };
++  assert.equal(validateArtifactAccess(input), null);
++  assert.deepEqual(normaliseArtifactAccess(input), {
++    kind: "restricted",
++    userIds: ["u_2", "u_1"],
++  });
++  assert.deepEqual(normaliseArtifactAccess(undefined), { kind: "room" });
++});
++
++test("typed links accept only the two kinds and exact positive own-property versions", () => {
++  assert.equal(validateArtifactVersionRef(target()), null);
++  assert.equal(validateArtifactLink(link()), null);
++  assert.equal(validateArtifactLink(link("goes-with", "af_2", 9)), null);
++
++  for (const bad of [
++    null,
++    {},
++    { artifactId: "../escape", version: 1 },
++    { artifactId: "af_1" },
++    { artifactId: "af_1", version: 0 },
++    { artifactId: "af_1", version: 1.5 },
++    { artifactId: "af_1", version: 1, newest: true },
++    Object.create({ artifactId: "af_1", version: 1 }),
++    Object.assign(Object.create({ version: 1 }), { artifactId: "af_1" }),
++  ]) {
++    assert.ok(validateArtifactVersionRef(bad), `should reject ref ${JSON.stringify(bad)}`);
++  }
++  for (const bad of [
++    null,
++    {},
++    { kind: "derived-from", target: target() },
++    { kind: "made-from" },
++    { kind: "goes-with", target: target(), markdown: "guess" },
++    Object.create({ kind: "made-from", target: target() }),
++    Object.assign(Object.create({ target: target() }), { kind: "made-from" }),
++  ]) {
++    assert.ok(validateArtifactLink(bad), `should reject link ${JSON.stringify(bad)}`);
++  }
++});
++
++test("the whole-list link validator covers direct publish and manifest input", () => {
++  const boundary = Array.from(
++    { length: ARTIFACT_LIMITS.linksPerVersion },
++    (_, i) => link(i % 2 ? "goes-with" : "made-from", `af_${i}`, i + 1),
++  );
++  assert.equal(validateArtifactLinks(boundary), null, "exactly 20 direct links are accepted");
++  assert.ok(validateArtifactLinks([...boundary, link("made-from", "af_over", 1)]));
++  assert.ok(validateArtifactLinks("made-from"));
++
++  assert.equal(validateArtifactLinkManifest({ files: [{ name: "summary.pdf", links: boundary }] }), null);
++  assert.ok(validateArtifactLinkManifest({
++    files: [{ name: "summary.pdf", links: [...boundary, link("made-from", "af_over", 1)] }],
++  }));
++});
++
++test("links dedupe by kind plus exact target without changing order", () => {
++  const links = [
++    link("made-from", "af_1", 2),
++    link("made-from", "af_1", 2),
++    link("goes-with", "af_1", 2),
++    link("made-from", "af_1", 3),
++    link("goes-with", "af_1", 2),
++  ];
++  assert.deepEqual(normaliseArtifactLinks(links), [
++    link("made-from", "af_1", 2),
++    link("goes-with", "af_1", 2),
++    link("made-from", "af_1", 3),
++  ]);
++});
++
++test("manifest object rules cover own properties, names, notes, duplicates and invalid types", () => {
++  assert.equal(validateArtifactLinkManifest({
++    files: [{
++      name: "summary.pdf",
++      note: "final figures",
++      links: [link("made-from", "af_123", 2)],
++    }],
++  }), null);
++
++  for (const bad of [
++    null,
++    [],
++    {},
++    { files: "summary.pdf" },
++    { files: [null] },
++    { files: [{ name: "../summary.pdf" }] },
++    { files: [{ name: "summary.pdf", note: 2 }] },
++    { files: [{ name: "summary.pdf", note: "x".repeat(ARTIFACT_LIMITS.note + 1) }] },
++    { files: [{ name: "summary.pdf", links: "made-from" }] },
++    { files: [{ name: "summary.pdf", extra: true }] },
++    { files: [{ name: "Summary.pdf" }, { name: "summary.pdf" }] },
++    { files: [], extra: true },
++    Object.create({ files: [] }),
++    { files: [Object.create({ name: "summary.pdf" })] },
++    { files: [Object.assign(Object.create({ links: [link()] }), { name: "summary.pdf" })] },
++  ]) {
++    assert.ok(validateArtifactLinkManifest(bad), `should reject manifest ${JSON.stringify(bad)}`);
++  }
++});
++
++test("manifest accepts exactly 10 files and refuses the eleventh", () => {
++  const boundary = {
++    files: Array.from({ length: ARTIFACT_LIMITS.manifestFiles }, (_, i) => ({ name: `file-${i}.txt` })),
++  };
++  assert.equal(validateArtifactLinkManifest(boundary), null);
++  assert.ok(validateArtifactLinkManifest({
++    files: [...boundary.files, { name: "file-over.txt" }],
++  }));
++});
++
++test("the JSON parser and object validator apply the same manifest rule", () => {
++  const object = {
++    files: [{
++      name: "summary.pdf",
++      note: "final figures",
++      links: [
++        link("made-from", "af_123", 2),
++        link("made-from", "af_123", 2),
++        link("goes-with", "af_456", 4),
++      ],
++    }],
++  };
++  const parsed = parseArtifactLinkManifest(JSON.stringify(object));
++  assert.equal(parsed.ok, true);
++  if (parsed.ok) {
++    assert.deepEqual(parsed.manifest.files[0].links, [
++      link("made-from", "af_123", 2),
++      link("goes-with", "af_456", 4),
++    ], "valid parsed data is canonical before the engine matches it to files");
++  }
++
++  const invalid = { files: [{ name: "summary.pdf", links: [{ kind: "guess", target: target() }] }] };
++  const objectReason = validateArtifactLinkManifest(invalid);
++  const parserResult = parseArtifactLinkManifest(JSON.stringify(invalid));
++  assert.ok(objectReason);
++  assert.deepEqual(parserResult, { ok: false, reason: objectReason });
++  assert.equal(parseArtifactLinkManifest("not json").ok, false);
++  assert.equal(parseArtifactLinkManifest(42).ok, false);
++});
++
++test("manifest parsing accepts exactly 65,536 UTF-8 bytes and refuses one more", () => {
++  const json = '{"files":[]}';
++  const exact = `${" ".repeat(ARTIFACT_LIMITS.manifestBytes - Buffer.byteLength(json))}${json}`;
++  assert.equal(Buffer.byteLength(exact), ARTIFACT_LIMITS.manifestBytes);
++  assert.equal(parseArtifactLinkManifest(exact).ok, true);
++
++  const over = ` ${exact}`;
++  assert.equal(Buffer.byteLength(over), ARTIFACT_LIMITS.manifestBytes + 1);
++  assert.deepEqual(parseArtifactLinkManifest(over), {
++    ok: false,
++    reason: `that file-link manifest is too big (max ${ARTIFACT_LIMITS.manifestBytes} bytes)`,
++  });
++});
++
++test("stored raw links require an explicit public projection before any wire view", () => {
++  const storedVersion: StoredArtifactVersion = {
++    ...publicVersion(),
++    links: [link("made-from", "af_hidden", 7)],
++  };
++  // @ts-expect-error A stored version with raw links is not a public ArtifactVersion.
++  const forbiddenPublicVersion: ArtifactVersion = storedVersion;
++  void forbiddenPublicVersion;
++
++  const visibleVersion = artifactVersionForPublic(storedVersion);
++  assert.equal("links" in visibleVersion, false);
++  assert.deepEqual(visibleVersion, publicVersion());
++
++  const storedArtifact: StoredArtifact = {
++    id: "af_1",
++    channelId: "ch_1",
++    name: "summary.pdf",
++    versions: [storedVersion],
++    access: { kind: "room" },
++    createdAt: 1,
++    updatedAt: 2,
++  };
++  const forbiddenFrame: Extract<ServerFrame, { type: "artifact" }> = {
++    type: "artifact",
++    // @ts-expect-error A storage artifact cannot be placed directly in a public frame.
++    artifact: storedArtifact,
++  };
++  const forbiddenWorkspace: ArtifactWorkspaceEntry = {
++    artifactId: "af_1",
++    channelId: "ch_1",
++    channelName: "General",
++    name: "summary.pdf",
++    // @ts-expect-error A storage version cannot be used as a public workspace latest row.
++    latest: storedVersion,
++    versionCount: 1,
++    access: { kind: "room" },
++    updatedAt: 2,
++  };
++  void forbiddenFrame;
++  void forbiddenWorkspace;
++
++  const visibleArtifact = artifactForPublic(storedArtifact);
++  assert.equal("links" in visibleArtifact.versions[0], false);
++});
++
++test("relation views encode only visible links or hidden outgoing placeholders", () => {
++  const hidden: ArtifactRelationView = {
++    kind: "made-from",
++    direction: "outgoing",
++    from: target("af_1", 3),
++    hidden: true,
++  };
++  const outgoing: ArtifactRelationView = {
++    kind: "made-from",
++    direction: "outgoing",
++    from: target("af_1", 3),
++    to: target("af_2", 4),
++    linkedName: "source.csv",
++    hidden: false,
++  };
++  const incoming: ArtifactRelationView = {
++    kind: "goes-with",
++    direction: "incoming",
++    from: target("af_3", 2),
++    to: target("af_1", 3),
++    linkedName: "companion.pdf",
++    hidden: false,
++  };
++  assert.deepEqual(hidden, {
++    kind: "made-from", direction: "outgoing", from: target("af_1", 3), hidden: true,
++  });
++  assert.equal(outgoing.linkedName, "source.csv");
++  assert.equal(incoming.direction, "incoming");
++
++  // @ts-expect-error Hidden targets must expose no target reference or name.
++  const hiddenLeak: ArtifactRelationView = {
++    kind: "made-from", direction: "outgoing", from: target(), hidden: true,
++    to: target("af_hidden", 9), linkedName: "secret.pdf",
++  };
++  // @ts-expect-error Visible relations require both the exact target and its name.
++  const visibleWithoutTarget: ArtifactRelationView = {
++    kind: "made-from", direction: "outgoing", from: target(), hidden: false,
++  };
++  // @ts-expect-error Hidden incoming relations are not supported.
++  const hiddenIncoming: ArtifactRelationView = {
++    kind: "goes-with", direction: "incoming", from: target(), hidden: true,
++  };
++  void hiddenLeak;
++  void visibleWithoutTarget;
++  void hiddenIncoming;
++});
++
++test("effective client/server/workspace contracts pin compatibility and pagination", () => {
++  const legacyArtifact: Artifact = {
++    id: "af_1",
++    channelId: "ch_1",
++    name: "summary.pdf",
++    versions: [publicVersion()],
++    createdAt: 1,
++    updatedAt: 2,
++  };
++  const workspaceRow: ArtifactWorkspaceEntry = {
++    artifactId: legacyArtifact.id,
++    channelId: legacyArtifact.channelId,
++    channelName: "General",
++    name: legacyArtifact.name,
++    latest: legacyArtifact.versions[0],
++    versionCount: 1,
++    access: effectiveArtifactAccess(legacyArtifact.access),
++    updatedAt: legacyArtifact.updatedAt,
++  };
++  const pageRequest: Extract<ClientFrame, { type: "artifactWorkspace" }> = {
++    type: "artifactWorkspace",
++    before: 2,
++    beforeId: "af_1",
++    limit: ARTIFACT_LIMITS.workspaceDefault,
++  };
++  const mutation: Extract<ClientFrame, { type: "setArtifactAccess" }> = {
++    type: "setArtifactAccess",
++    artifactId: "af_1",
++    access: { kind: "room" },
++  };
++  const publish: Extract<ClientFrame, { type: "publishArtifact" }> = {
++    type: "publishArtifact",
++    channelId: "ch_1",
++    agentId: "ag_1",
++    name: "summary.pdf",
++    dataBase64: "YQ==",
++    links: [link()],
++  };
++  const pageResponse: Extract<ServerFrame, { type: "artifactWorkspace" }> = {
++    type: "artifactWorkspace",
++    artifacts: [workspaceRow],
++    hasMore: true,
++    nextBefore: 2,
++    nextBeforeId: "af_1",
++  };
++  const detailWithoutRelations: Extract<ServerFrame, { type: "artifact" }> = {
++    type: "artifact",
++    artifact: legacyArtifact,
++  };
++  const detailWithHidden: Extract<ServerFrame, { type: "artifact" }> = {
++    type: "artifact",
++    artifact: legacyArtifact,
++    relations: [{
++      kind: "made-from",
++      direction: "outgoing",
++      from: target("af_1", 1),
++      hidden: true,
++    }],
++  };
++
++  assert.equal(pageRequest.limit, 50);
++  assert.equal(mutation.access.kind, "room");
++  assert.equal(publish.links?.length, 1);
++  assert.equal(pageResponse.hasMore, true);
++  assert.equal(pageResponse.nextBeforeId, "af_1");
++  assert.equal(detailWithoutRelations.relations, undefined);
++  assert.equal(detailWithHidden.relations?.[0].hidden, true);
++  assert.equal(workspaceRow.access.kind, "room");
++});
++
++test("error frames keep old compatibility and may echo a refused request id", () => {
++  const oldError: Extract<ServerFrame, { type: "error" }> = {
++    type: "error",
++    error: "no such file",
++  };
++  const directRefusal: Extract<ServerFrame, { type: "error" }> = {
++    type: "error",
++    error: "no such file",
++    requestId: "req_artifact_1",
++  };
++
++  assert.equal(oldError.requestId, undefined);
++  assert.equal(directRefusal.requestId, "req_artifact_1");
++});
++
++test("artifact access mutation request ids are optional and direct success can echo them", () => {
++  const artifact: Artifact = {
++    id: "af_1",
++    channelId: "ch_1",
++    name: "summary.pdf",
++    versions: [publicVersion()],
++    access: { kind: "room" },
++    createdAt: 1,
++    updatedAt: 2,
++  };
++  const oldMutation: Extract<ClientFrame, { type: "setArtifactAccess" }> = {
++    type: "setArtifactAccess",
++    artifactId: "af_1",
++    access: { kind: "room" },
++  };
++  const mutation: Extract<ClientFrame, { type: "setArtifactAccess" }> = {
++    type: "setArtifactAccess",
++    artifactId: "af_1",
++    access: { kind: "restricted", userIds: ["u_1"] },
++    requestId: "req_access_1",
++  };
++  const directSuccess: Extract<ServerFrame, { type: "artifact" }> = {
++    type: "artifact",
++    artifact,
++    requestId: mutation.requestId,
++  };
++
++  assert.equal(oldMutation.requestId, undefined);
++  assert.equal(mutation.requestId, "req_access_1");
++  assert.equal(directSuccess.requestId, mutation.requestId);
++});
++
++test("artifact request ids round-trip while old requests and unsolicited pushes stay valid", () => {
++  const artifact: Artifact = {
++    id: "af_1",
++    channelId: "ch_1",
++    name: "summary.pdf",
++    versions: [publicVersion()],
++    createdAt: 1,
++    updatedAt: 2,
++  };
++  const row: ArtifactWorkspaceEntry = {
++    artifactId: "af_1",
++    channelId: "ch_1",
++    channelName: "General",
++    name: "summary.pdf",
++    latest: artifact.versions[0],
++    versionCount: 1,
++    access: { kind: "room" },
++    updatedAt: 2,
++  };
++  const oldWorkspaceRequest: Extract<ClientFrame, { type: "artifactWorkspace" }> = {
++    type: "artifactWorkspace",
++  };
++  const oldArtifactRequest: Extract<ClientFrame, { type: "artifact" }> = {
++    type: "artifact",
++    artifactId: "af_1",
++  };
++  const workspaceRequest: Extract<ClientFrame, { type: "artifactWorkspace" }> = {
++    type: "artifactWorkspace",
++    requestId: "req_workspace_1",
++  };
++  const artifactRequest: Extract<ClientFrame, { type: "artifact" }> = {
++    type: "artifact",
++    artifactId: "af_1",
++    requestId: "req_artifact_1",
++  };
++  const workspaceAnswer: Extract<ServerFrame, { type: "artifactWorkspace" }> = {
++    type: "artifactWorkspace",
++    requestId: workspaceRequest.requestId,
++    artifacts: [row],
++    hasMore: false,
++  };
++  const artifactAnswer: Extract<ServerFrame, { type: "artifact" }> = {
++    type: "artifact",
++    requestId: artifactRequest.requestId,
++    artifact,
++  };
++  const unsolicitedPush: Extract<ServerFrame, { type: "artifact" }> = {
++    type: "artifact",
++    artifact,
++  };
++
++  assert.equal(oldWorkspaceRequest.requestId, undefined);
++  assert.equal(oldArtifactRequest.requestId, undefined);
++  assert.equal(workspaceAnswer.requestId, "req_workspace_1");
++  assert.equal(artifactAnswer.requestId, "req_artifact_1");
++  assert.equal(unsolicitedPush.requestId, undefined);
++});
++
++test("artifact detail expresses exactly 100 relations and only signals real truncation", () => {
++  const artifact: Artifact = {
++    id: "af_1",
++    channelId: "ch_1",
++    name: "summary.pdf",
++    versions: [publicVersion()],
++    createdAt: 1,
++    updatedAt: 2,
++  };
++  const relations: ArtifactRelationView[] = Array.from(
++    { length: ARTIFACT_LIMITS.relationDetail },
++    (_, i) => ({
++      kind: "made-from" as const,
++      direction: "outgoing" as const,
++      from: target("af_1", i + 1),
++      hidden: true as const,
++    }),
++  );
++  const complete: Extract<ServerFrame, { type: "artifact" }> = {
++    type: "artifact",
++    artifact,
++    relations,
++  };
++  const truncated: Extract<ServerFrame, { type: "artifact" }> = {
++    type: "artifact",
++    artifact,
++    relations,
++    relationsTruncated: true,
++  };
++  const legacy: Extract<ServerFrame, { type: "artifact" }> = { type: "artifact", artifact };
++  const falsePlaceholder: Extract<ServerFrame, { type: "artifact" }> = {
++    type: "artifact",
++    artifact,
++    // @ts-expect-error Absence means complete; false is not a wire state.
++    relationsTruncated: false,
++  };
++  void falsePlaceholder;
++
++  assert.equal(relations.length, 100);
++  assert.equal(complete.relations?.length, ARTIFACT_LIMITS.relationDetail);
++  assert.equal("relationsTruncated" in complete, false);
++  assert.equal(truncated.relationsTruncated, true);
++  assert.equal(legacy.relations, undefined);
++  assert.equal(legacy.relationsTruncated, undefined);
++});
++
++test("workspace pagination values are bounded and have an honest default", () => {
++  assert.equal(ARTIFACT_LIMITS.workspacePage, 100);
++  assert.equal(ARTIFACT_LIMITS.workspaceDefault, 50);
++  assert.ok(ARTIFACT_LIMITS.workspaceDefault <= ARTIFACT_LIMITS.workspacePage);
++});

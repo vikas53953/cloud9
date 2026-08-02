@@ -4,13 +4,15 @@ import React, {
 import {
   AgentAbilities, AgentApprovals, AgentDef, AgentPresence, AgentPresenceState,
   AgentRespondTo, AgentSkill, AgentSkillFile,
-  Approval, ARTIFACT_LIMITS, Artifact, artifactRef, ArtifactVersion, Attachment, ATTACHMENT_LIMITS,
-  describeArtifactVersion, findArtifactRefs, latestVersion, versionOf,
+  Approval, ARTIFACT_LIMITS, Artifact, ArtifactAccess, artifactRef, ArtifactRelationView,
+  ArtifactVersion, ArtifactVersionRef, ArtifactWorkspaceEntry, Attachment, ATTACHMENT_LIMITS,
+  describeArtifactVersion, effectiveArtifactAccess, findArtifactRefs, isArtifactRestricted, latestVersion,
+  normaliseArtifactAccess, validateArtifactAccess, versionOf,
   Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
   GitHubAccountInfo, HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectItemKind, ProjectItemState,
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
-  SearchHit, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
+  SearchHit, ServerFrame, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
   validateMessageText, validateName,
   /* THE SKILL LIBRARY — the same two lists the relay and the engine can read.
      The screen owns NO copy of a shelf or a skill: the filter bar, the group
@@ -899,6 +901,13 @@ const IconTasks = (): React.JSX.Element => (
     <rect x="4" y="4.5" width="16" height="15" rx="2.4" /><path d="M8 10l2.2 2.2L15.5 7" /><path d="M8 15.5h8" />
   </svg>
 );
+/** FILES — three immutable sheets held together as one version chain. */
+const IconFiles = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M7 4.5h8l3 3v12H7Z" /><path d="M15 4.5v3h3" />
+    <path d="M4 7.5v12h10" /><path d="M10 12h5M10 15h5" />
+  </svg>
+);
 /**
  * PROJECTS — a branch leaving the trunk and coming back.
  *
@@ -1584,7 +1593,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "projects" | "activity" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "files" | "projects" | "activity" | "settings";
 type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -1620,6 +1629,14 @@ function respondWords(a: AgentDef, ownerName: string): string {
     }
     default: return `Only ${ownerName} can use it`;
   }
+}
+
+/** One owner for the person/agent on the other side of a direct conversation. */
+function channelPeer(channel: Channel, world: World): { name: string; agent?: AgentDef; user?: User } {
+  const id = channel.memberIds.find(memberId => memberId !== world.me?.id);
+  const user = world.users.find(u => u.id === id);
+  const agent = world.agents.find(a => a.id === id);
+  return { name: user?.name ?? agent?.name ?? channel.name, user, agent };
 }
 
 /** Which rule made this agent stop and ask. Read off the agent, never guessed. */
@@ -1816,8 +1833,16 @@ function Workspace(): React.JSX.Element {
        search overlay call exactly these. Nothing here is a stand-in. */
     (window as unknown as { cloud9Wire?: unknown }).cloud9Wire = {
       outstanding: () => client.outstanding(),
+      questions: () => client.outstandingQuestions(),
       seen: () => client.framesSeen(),
+      /* Returns the exact id assigned at the real send boundary, including for a
+         fire-and-forget frame that deliberately creates no ledger row. */
       ask: (frame: Parameters<typeof client.send>[0]) => client.send(frame),
+      lastError: () => client.world.lastError ? { ...client.world.lastError } : null,
+      /* Deterministic request-ledger seam. It feeds a typed hub frame through the
+         same dispatcher as the live socket, so QA can interleave an older pending
+         lifecycle, a refused later fire-and-forget send and exact replies. */
+      receive: (frame: ServerFrame) => client.receiveForQa(frame),
       /* The app's own "say this went wrong" door — the very method a refused
          button calls. The hub's catch-all is another agent's to fix; this is how
          a check proves the SCREEN is safe whether or not it was, by handing the
@@ -1864,6 +1889,20 @@ function Workspace(): React.JSX.Element {
         versions: a.versions.map(v => ({ version: v.version, agent: v.agentName, size: v.size, text: v.text })),
       })),
       inRoom: (channelId: ID) => client.artifactsIn(channelId).list.map(a => a.id),
+      workspace: () => ({
+        asked: client.artifactWorkspace().asked,
+        loading: client.artifactWorkspace().loading,
+        hasMore: client.artifactWorkspace().hasMore,
+        capacity: client.artifactWorkspace().capacity,
+        problem: client.artifactWorkspace().problem ?? null,
+        ids: client.artifactWorkspace().entries.map(a => a.artifactId),
+      }),
+      detail: (artifactId: ID) => client.artifact(artifactId) ?? null,
+      relations: (artifactId: ID) => client.relationsFor(artifactId),
+      relationsTruncated: (artifactId: ID) => client.relationsTruncated(artifactId),
+      detailProblem: (artifactId: ID) => client.artifactDetailProblem(artifactId) ?? null,
+      setAccess: (artifactId: ID, access: ArtifactAccess) => client.setArtifactAccess(artifactId, access),
+      accessSave: () => client.artifactAccessSaveState() ?? null,
     };
     /* QA hook: THE UNSAVED-WORK OWNER ITSELF. Pressing a rail icon proves the
        behaviour; this proves the MECHANISM — that the surface he is typing into
@@ -2034,12 +2073,10 @@ function Workspace(): React.JSX.Element {
     c.kind === "dm" && !c.memberIds.some(id => world.agents.some(a => a.id === id)));
 
   const peerOf = (c: Channel) => {
-    const id = c.memberIds.find(i => i !== world.me?.id);
-    const user = world.users.find(u => u.id === id);
-    const agent = world.agents.find(a => a.id === id);
+    const { name, agent } = channelPeer(c, world);
     const status = agent ? agentStatusLine(agent, world.agentStatus[agent.id]) : null;
     return {
-      name: user?.name ?? agent?.name ?? c.name,
+      name,
       agent,
       isAgent: !!agent,
       sub: status ? status.line : "just the two of you",
@@ -2074,6 +2111,7 @@ function Workspace(): React.JSX.Element {
           {railBtn("chat", "Chat", <IconChat />)}
           {railBtn("crew", "Crew", <IconCrew />)}
           {railBtn("tasks", "Tasks", <IconTasks />, pendingApprovals)}
+          {railBtn("files", "Files", <IconFiles />)}
           {/* ADDED beside the four he approved — the Studio navigation is
               otherwise unchanged. Everything the hub and the engine already
               hold about his repositories arrives through this one door. */}
@@ -2136,6 +2174,7 @@ function Workspace(): React.JSX.Element {
             />
           )}
           {screen === "tasks" && <TasksScreen onOpenChannel={id => goChannel(id)} />}
+          {screen === "files" && <FilesScreen onOpenChannel={id => goChannel(id)} />}
           {screen === "projects" && (
             <ProjectsScreen onOpenChannel={id => goChannel(id)} />
           )}
@@ -3764,8 +3803,8 @@ function ArtifactCard({ artifactId, version, place = "chat" }: {
   artifactId: ID;
   /** the exact version a reference asked for; absent means the newest */
   version?: number;
-  /** "chat" is the card in a message; "room" is the row in a room's file list */
-  place?: "chat" | "room";
+  /** chat card, room list card, or the Files workspace detail — one behavior */
+  place?: "chat" | "room" | "workspace";
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [showHistory, setShowHistory] = useState(false);
@@ -3775,7 +3814,9 @@ function ArtifactCard({ artifactId, version, place = "chat" }: {
 
   /* Asked once, by id. A newer version arrives here by itself on an `artifact`
      frame, so there is nothing to poll and nothing to refresh. */
-  useEffect(() => { client.askArtifact(artifactId); }, [artifactId]);
+  useEffect(() => {
+    if (place !== "workspace") client.askArtifact(artifactId);
+  }, [artifactId, place]);
 
   const artifact = world.artifacts[artifactId];
   if (!artifact) {
@@ -3820,7 +3861,8 @@ function ArtifactCard({ artifactId, version, place = "chat" }: {
   const shown = asked ?? newest;
   const held = world.files[shown.id];
   const peekingThis = peeking === shown.version;
-  const older = artifact.versions.filter(v => v.version !== shown.version);
+  const otherVersions = artifact.versions.filter(v => v.version !== shown.version);
+  const historyLabel = shown.version === newest.version ? "Earlier versions" : "Other retained versions";
 
   const open = (v: ArtifactVersion): void => {
     if (v.text) { setPeeking(v.version); void client.openArtifact(artifact, v); }
@@ -3892,16 +3934,16 @@ function ArtifactCard({ artifactId, version, place = "chat" }: {
 
       {/* THE HISTORY. One file with two authors in it is the entire reason this
           store exists — so who made each version, and when, is on the screen. */}
-      {older.length > 0 && (
+      {otherVersions.length > 0 && (
         <>
           <button className="runmore arthistory" aria-expanded={showHistory}
-            data-older={older.length} onClick={() => setShowHistory(o => !o)}>
+            data-older={otherVersions.length} onClick={() => setShowHistory(o => !o)}>
             <span className="tri" aria-hidden="true">{showHistory ? "▾" : "▸"}</span>
-            Earlier versions<span className="n">{countOf(older.length, "version")}</span>
+            {historyLabel}<span className="n">{countOf(otherVersions.length, "version")}</span>
           </button>
           {showHistory && (
             <ol className="artversions">
-              {older.map(v => (
+              {otherVersions.map(v => (
                 <li key={v.id} className="artversion" data-version={v.version}>
                   <span className="vnum">v{v.version}</span>
                   <span className="vwho">
@@ -8662,6 +8704,534 @@ function GitHubCard({ info, checking }: {
         repository or open a pull request, and every one of those still asks you first.
       </div>
     </div>
+  );
+}
+
+/* ================= FILES · ONE WORKSPACE ACROSS ROOMS ================= */
+
+/** A workspace date always includes the year: a file from last August must not look recent. */
+const FILE_DATE = new Intl.DateTimeFormat([], {
+  day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+});
+const fileDate = (ts: number): string => FILE_DATE.format(new Date(ts));
+
+const accessOf = (artifact: Artifact): ArtifactAccess => effectiveArtifactAccess(artifact.access);
+
+const sameIds = (a: ID[], b: ID[]): boolean => {
+  const x = [...new Set(a)].sort(), y = [...new Set(b)].sort();
+  return x.length === y.length && x.every((id, i) => id === y[i]);
+};
+
+/** Object identity is not a permission change; sorted meaning is. */
+const accessKey = (access: ArtifactAccess): string => access.kind === "room"
+  ? "room"
+  : `restricted:${[...new Set(access.userIds)].sort().join(",")}`;
+
+function workspaceRoomName(entry: ArtifactWorkspaceEntry, world: World): string {
+  const channel = world.channels.find(c => c.id === entry.channelId);
+  if (!channel || channel.kind !== "dm") return `#${entry.channelName}`;
+  return `Direct · ${channelPeer(channel, world).name}`;
+}
+
+type FileSelection = { artifactId: ID; version?: number };
+
+function CopyFileRef({ value, kind }: { value: string; kind: "newest" | "exact" }): React.JSX.Element {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button className="btn small ghost filerefcopy" data-copy-ref={kind}
+      title={value} onClick={() => {
+        void navigator.clipboard?.writeText(value).then(() => {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1600);
+        });
+      }}>
+      {copied ? "Copied" : kind === "newest" ? "Copy newest reference" : "Copy exact version"}
+    </button>
+  );
+}
+
+function relationLabel(relation: ArtifactRelationView): string {
+  if (relation.kind === "goes-with") return "Goes with";
+  return relation.direction === "incoming" ? "Used to make" : "Made from";
+}
+
+function relationOther(relation: ArtifactRelationView): ArtifactVersionRef | undefined {
+  if (relation.hidden) return undefined;
+  return relation.direction === "incoming" ? relation.from : relation.to;
+}
+
+function FileRelations({ artifactId, loaded, relations, truncated, problem, onRetry, onOpen }: {
+  artifactId: ID;
+  loaded: boolean;
+  relations: ArtifactRelationView[];
+  truncated: boolean;
+  problem?: string;
+  onRetry: () => void;
+  onOpen: (ref: ArtifactVersionRef) => void;
+}): React.JSX.Element {
+  const state = problem ? "error" : loaded ? (relations.length === 0 ? "empty" : "some") : "loading";
+  return (
+    <section className="callout filedetail-sec filerelations" data-relation-artifact={artifactId}
+      data-file-relations={loaded ? relations.length : state}>
+      <span className="eyebrow">How this file connects</span>
+      {problem ? (
+        <div className="relationproblem" data-relations-state="error" role="status">
+          <span>{plainError(problem) ?? problem}</span>
+          <button className="btn small" data-relations-retry onClick={onRetry}>Try again</button>
+        </div>
+      ) : !loaded ? (
+        <p className="filedetail-wait" data-relations-state="loading">Looking for file links…</p>
+      ) : relations.length === 0 ? (
+        <p className="filedetail-empty" data-relations-state="empty">
+          No Made from or Goes with links were declared for the versions kept here.
+        </p>
+      ) : (
+        <>
+          <div className="relationlist" data-relations-state="some">
+            {relations.map((relation, i) => {
+              const other = relationOther(relation);
+              return (
+                <div className="relationrow" key={`${relation.kind}-${relation.direction}-${i}`}
+                  data-relation-kind={relation.kind} data-relation-direction={relation.direction}
+                  data-relation-hidden={relation.hidden ? "yes" : "no"}>
+                  <span className="relationlead">
+                    <span className="relationkind">{relationLabel(relation)}</span>
+                    <span className="relationhere">
+                      this file v{relation.direction === "incoming" ? relation.to.version : relation.from.version}
+                    </span>
+                  </span>
+                  {relation.hidden ? (
+                    <span className="relationhidden">A linked file isn’t available to you.</span>
+                  ) : (
+                    <button className="relationtarget" onClick={() => onOpen(other!)}
+                      data-linked-artifact={other!.artifactId} data-linked-version={other!.version}>
+                      <span className="relationname">{relation.linkedName}</span>
+                      <span className="relationversion">v{other!.version}</span>
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {truncated && (
+            <p className="relationtruncated" data-relations-truncated="true">
+              Showing {ARTIFACT_LIMITS.relationDetail} links; more exist.
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function FileAccessEditor({ artifact, channel, world, onDirtyChange }: {
+  artifact: Artifact;
+  channel?: Channel;
+  world: World;
+  onDirtyChange: (draft: { what: string; dirty: boolean }) => void;
+}): React.JSX.Element {
+  const stored = accessOf(artifact);
+  const allRows = channel?.kind === "channel" ? (world.members[channel.id] ?? []) : [];
+  const rows = allRows.filter(m => !m.removedAt);
+  const membershipKey = allRows
+    .map(m => `${m.memberId}:${m.role}:${m.removedAt ?? "here"}`)
+    .sort().join("|");
+  const roster = channel?.memberIds.join(",") ?? "";
+  useEffect(() => {
+    if (channel?.kind === "channel") client.askMembers(channel.id);
+  }, [artifact.id, channel, roster, membershipKey]);
+
+  const myRole = rows.find(m => m.memberId === world.me?.id)?.role;
+  const canEdit = channel?.kind === "channel" && mayAdministerChannel(myRole);
+  const humanRows = rows
+    .map(row => ({ row, user: world.users.find(u => u.id === row.memberId) }))
+    .filter((x): x is { row: ChannelMember; user: User } => !!x.user)
+    .sort((a, b) => ROLE_ORDER.indexOf(a.row.role) - ROLE_ORDER.indexOf(b.row.role)
+      || a.user.name.localeCompare(b.user.name));
+  const managerIds = humanRows.filter(x => mayAdministerChannel(x.row.role)).map(x => x.user.id);
+  const managerKey = managerIds.join(",");
+  const selectedFrom = (access: ArtifactAccess): ID[] => access.kind === "restricted"
+    ? access.userIds.filter(id => !managerIds.includes(id))
+    : [];
+  const storedKey = accessKey(stored);
+  const [mode, setMode] = useState<ArtifactAccess["kind"]>(stored.kind);
+  const [selected, setSelected] = useState<ID[]>(() => selectedFrom(stored));
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [baseline, setBaseline] = useState<{
+    artifactId: ID; storedKey: string; kind: ArtifactAccess["kind"]; selectedIds: ID[];
+  }>(() => ({
+    artifactId: artifact.id, storedKey, kind: stored.kind, selectedIds: selectedFrom(stored),
+  }));
+  const pendingSavedAccess = useRef<string | null>(null);
+
+  /* Managers are required on screen but DERIVED by the relay on every read. Do
+     not store them as selected people: if an admin is demoted tomorrow, a frozen
+     selected row would incorrectly keep their access. */
+  const baselineSelectedIds = baseline.kind === "restricted"
+    ? baseline.selectedIds.filter(id => !managerIds.includes(id)
+      && humanRows.some(x => x.user.id === id))
+    : [];
+  const chosenIds = mode === "restricted"
+    ? [...new Set(selected)].filter(id => !managerIds.includes(id)
+      && humanRows.some(x => x.user.id === id))
+    : [];
+  /* DIRTY IS AGAINST THE BASELINE THE DRAFT CAME FROM — never against a newer
+     server value. Otherwise an external clean update makes the OLD clean draft
+     look dirty and lets it overwrite the update. */
+  const dirty = mode !== baseline.kind
+    || (mode === "restricted"
+      && (baseline.kind !== "restricted" || !sameIds(chosenIds, baselineSelectedIds)));
+  const incomingChanged = baseline.artifactId !== artifact.id || baseline.storedKey !== storedKey;
+
+  /* A pushed version brings a fresh access OBJECT with the same meaning. It must
+     not erase a draft. A semantic incoming change replaces draft+baseline only
+     when that draft is clean; a genuinely dirty draft remains guarded. */
+  useEffect(() => {
+    const fileChanged = baseline.artifactId !== artifact.id;
+    const saveLanded = pendingSavedAccess.current === storedKey;
+    if (!fileChanged && (!incomingChanged || (dirty && !saveLanded))) return;
+    const nextSelected = selectedFrom(stored);
+    setMode(stored.kind);
+    setSelected(nextSelected);
+    setSaving(false);
+    setProblem(null);
+    setBaseline({
+      artifactId: artifact.id, storedKey, kind: stored.kind, selectedIds: nextSelected,
+    });
+    pendingSavedAccess.current = null;
+  }, [artifact.id, storedKey, incomingChanged, dirty, managerKey, baseline.artifactId]);
+
+  const previousManagers = useRef<{ artifactId: ID; ids: ID[] }>({ artifactId: artifact.id, ids: [] });
+  useEffect(() => {
+    const prior = previousManagers.current.artifactId === artifact.id
+      ? previousManagers.current.ids
+      : [];
+    const derived = new Set([...prior, ...managerIds]);
+    setSelected(now => now.filter(id => !derived.has(id)));
+    previousManagers.current = { artifactId: artifact.id, ids: managerIds };
+  }, [artifact.id, managerKey]);
+
+  useEffect(() => {
+    onDirtyChange({
+      what: `Access to ${artifact.name}`,
+      dirty: !!canEdit && dirty && !saving,
+    });
+  }, [artifact.id, artifact.name, canEdit, dirty, saving, onDirtyChange]);
+
+  if (!channel) {
+    return (
+      <section className="callout filedetail-sec fileaccess" data-file-access="unavailable">
+        <span className="eyebrow">Who can read it</span>
+        <p className="filedetail-wait">Looking for the source room…</p>
+      </section>
+    );
+  }
+
+  if (channel.kind === "dm") {
+    return (
+      <section className="callout filedetail-sec fileaccess" data-file-access="inherited" data-access-editor="no">
+        <span className="eyebrow">Who can read it</span>
+        <div className="accesssummary">
+          <b>Inherited from this direct conversation</b>
+          <span>Only the people who can currently read this conversation can read any version of the file.</span>
+        </div>
+        <p className="filedetail-note">Direct conversations have no separate file access editor in this release.</p>
+      </section>
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <section className="callout filedetail-sec fileaccess" data-file-access={stored.kind} data-access-editor="loading">
+        <span className="eyebrow">Who can read every version</span>
+        <p className="filedetail-wait">Looking up the current room members and managers…</p>
+      </section>
+    );
+  }
+
+  const choose = (id: ID, on: boolean): void => {
+    setProblem(null);
+    setSelected(now => on ? [...new Set([...now, id])] : now.filter(x => x !== id));
+  };
+  const save = (): void => {
+    const next = normaliseArtifactAccess(mode === "room"
+      ? { kind: "room" }
+      : { kind: "restricted", userIds: chosenIds });
+    const refusal = validateArtifactAccess(next);
+    if (refusal) { setProblem(refusal); return; }
+    const expected = next.kind === "room" ? next : normaliseArtifactAccess({
+      kind: "restricted", userIds: [...next.userIds, ...managerIds],
+    });
+    pendingSavedAccess.current = accessKey(expected);
+    setSaving(true);
+    setProblem(null);
+    client.setArtifactAccess(artifact.id, next,
+      () => setSaving(false),
+      why => {
+        pendingSavedAccess.current = null;
+        setSaving(false);
+        setProblem(why);
+      });
+  };
+
+  const restrictedCount = stored.kind === "restricted"
+    ? stored.userIds.filter(id => !managerIds.includes(id)).length
+    : 0;
+  return (
+    <section className="callout filedetail-sec fileaccess" data-file-access={stored.kind}
+      data-access-editor={canEdit ? "yes" : "read-only"}
+      data-access-dirty={dirty ? "yes" : "no"}
+      data-access-incoming={incomingChanged ? "changed" : "same"}
+      data-access-saving={saving ? "yes" : "no"}
+      data-access-baseline={baseline.kind}>
+      <span className="eyebrow">Who can read every version</span>
+      {!canEdit ? (
+        <div className="accesssummary">
+          <b>{stored.kind === "room" ? "Everyone currently in the room" : "Restricted inside the room"}</b>
+          <span>{stored.kind === "room"
+            ? `Everyone who can currently read #${channel.name} can read this file.`
+            : `${countOf(restrictedCount, "selected person", "selected people")} plus all current room managers can read it.`}</span>
+          <span>Only this room’s owner or an admin can change that.</span>
+        </div>
+      ) : (
+        <div className="accesseditor">
+          <div className="accesschoices" role="group" aria-label="File access">
+            <button className="accesschoice" aria-pressed={mode === "room"}
+              data-access-choice="room" onClick={() => { setMode("room"); setProblem(null); }}>
+              <span className="tick" aria-hidden="true">{mode === "room" ? "●" : "○"}</span>
+              <span><b>Everyone currently in the room</b><em>Default. Membership changes apply immediately.</em></span>
+            </button>
+            <button className="accesschoice" aria-pressed={mode === "restricted"}
+              data-access-choice="restricted" onClick={() => { setMode("restricted"); setProblem(null); }}>
+              <span className="tick" aria-hidden="true">{mode === "restricted" ? "●" : "○"}</span>
+              <span><b>Selected people in the room</b><em>Narrows access. It can never add somebody from outside this room.</em></span>
+            </button>
+          </div>
+
+          {mode === "restricted" && (
+            <div className="accesspeople" data-access-members={humanRows.length}>
+              <p className="filedetail-note">Room managers are required and cannot be unchecked.</p>
+              {humanRows.map(({ row, user }) => {
+                const manager = mayAdministerChannel(row.role);
+                const checked = manager || selected.includes(user.id);
+                return (
+                  <label className={`accessperson${manager ? " required" : ""}`} key={user.id}
+                    data-access-user={user.id} data-required={manager ? "yes" : "no"}>
+                    <input type="checkbox" checked={checked} disabled={manager}
+                      onChange={e => choose(user.id, e.target.checked)} />
+                    <span className="accessperson-name">{user.name}</span>
+                    {manager && <span className="chip is-ultra">{row.role} · required</span>}
+                  </label>
+                );
+              })}
+            </div>
+          )}
+
+          <Problem text={problem ?? undefined} className="fileaccess-problem" />
+          <div className="accessactions">
+            <button className="primary small" disabled={!dirty || saving} onClick={save}
+              data-access-save>{saving ? "Saving…" : "Save access"}</button>
+            {dirty && !saving && <span className="hint">Not saved yet</span>}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FilesScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const page = client.artifactWorkspace();
+  const [selected, setSelected] = useState<FileSelection | null>(null);
+  const [accessDraft, setAccessDraft] = useState<{ what: string; dirty: boolean } | null>(null);
+  useUnsavedWork(accessDraft?.what ?? "File access", !!accessDraft?.dirty);
+  const entry = selected ? page.entries.find(a => a.artifactId === selected.artifactId) : undefined;
+  const artifact = selected ? world.artifacts[selected.artifactId] : undefined;
+  const relations = selected ? client.relationsFor(selected.artifactId) : undefined;
+  const relationsTruncated = selected ? client.relationsTruncated(selected.artifactId) : false;
+  const detailProblem = selected ? client.artifactDetailProblem(selected.artifactId) : undefined;
+  const unavailable = selected ? !!world.artifactsGone[selected.artifactId] : false;
+  const noteAccessDraft = useCallback((draft: { what: string; dirty: boolean }) => {
+    setAccessDraft(draft);
+  }, []);
+  const selectFile = useCallback((next: FileSelection) => {
+    attemptLeave(() => {
+      setAccessDraft(null);
+      setSelected(next);
+    });
+  }, []);
+
+  useEffect(() => { client.askArtifactWorkspace(true); }, []);
+  useEffect(() => {
+    if (selected || page.entries.length === 0) return;
+    selectFile({ artifactId: page.entries[0].artifactId });
+  }, [selected, page.entries, selectFile]);
+  useEffect(() => {
+    if (selected && !unavailable && !detailProblem && relations === undefined) {
+      client.askArtifactDetail(selected.artifactId);
+    }
+  }, [selected?.artifactId, artifact?.updatedAt, unavailable, detailProblem, relations === undefined]);
+  const channelId = artifact?.channelId ?? entry?.channelId;
+  const channel = world.channels.find(c => c.id === channelId);
+  const newest = artifact ? latestVersion(artifact) : entry?.latest;
+  const exactVersion = selected?.version ?? newest?.version;
+  const state = page.problem ? "error"
+    : !page.asked && page.loading ? "loading"
+    : page.asked && page.entries.length === 0 && page.hasMore ? "backfill"
+    : page.asked && page.entries.length === 0 ? "empty" : "some";
+  const detailState = !selected ? "none" : unavailable ? "unavailable"
+    : detailProblem ? "error" : (!artifact || relations === undefined) ? "loading" : "here";
+
+  return (
+    <section className="filescreen screen" data-files-screen data-files-state={state}>
+      <header className="topbar files-topbar">
+        <h2>Files</h2>
+        <span className="sub">Across every room you can read · newest change first</span>
+        <div className="grow" />
+        {page.checkedAt && <span className="files-checked">Checked {fileDate(page.checkedAt)}</span>}
+        <button className="btn small ghost files-refresh" disabled={page.loading}
+          onClick={() => client.askArtifactWorkspace(true)}>
+          {page.loading && page.entries.length === 0 ? "Looking…" : "Refresh"}
+        </button>
+      </header>
+
+      <div className="files-body">
+        <aside className="files-index" aria-label="Files you can read">
+          <div className="files-index-head">
+            <span className="eyebrow">Newest changes</span>
+            {page.entries.length > 0 && <span className="chip">{countOf(page.entries.length, "file")}</span>}
+          </div>
+
+          <div className="files-list" data-files-list-state={state}>
+            {!page.asked && page.loading && page.entries.length === 0 && (
+              <div className="files-state" data-files-loading>
+                <span className="spinner" aria-hidden="true" />
+                <b>Looking across your rooms…</b>
+                <span>The hub is checking what you can read now.</span>
+              </div>
+            )}
+            {page.problem && (
+              <div className="files-state is-error" data-files-error>
+                <b>The file list could not be loaded.</b>
+                <span>{plainError(page.problem) ?? page.problem}</span>
+                {page.checkedAt && <span>Last attempt: {fileDate(page.checkedAt)}</span>}
+                <button className="btn small" onClick={() => client.askArtifactWorkspace(true)}>Try again</button>
+              </div>
+            )}
+            {page.asked && !page.problem && page.entries.length === 0 && page.hasMore && (
+              <div className="files-state" data-files-backfill>
+                <span className="files-empty-mark" aria-hidden="true">MORE</span>
+                <b>Older readable files remain.</b>
+                <span>The loaded rows changed. Open the next page to fill this list again.</span>
+              </div>
+            )}
+            {page.asked && !page.problem && page.entries.length === 0 && !page.hasMore && (
+              <div className="files-state" data-files-empty>
+                <span className="files-empty-mark" aria-hidden="true">FILE</span>
+                <b>No agent-made files are available yet.</b>
+                <span>When an agent shares one in a room you can read, it appears here.</span>
+                {page.checkedAt && <span>Checked {fileDate(page.checkedAt)}</span>}
+              </div>
+            )}
+            {page.entries.map(item => {
+              const on = selected?.artifactId === item.artifactId;
+              const restricted = isArtifactRestricted(item.access);
+              return (
+                <button className="file-index-row" key={item.artifactId} aria-current={on}
+                  data-file-row={item.artifactId} data-room={item.channelId}
+                  data-maker={item.latest.agentName} data-turn={item.latest.runId}
+                  data-access={item.access.kind} data-version-count={item.versionCount}
+                  onClick={() => selectFile({ artifactId: item.artifactId })}>
+                  <span className="file-index-glyph" aria-hidden="true">{fileKind(item.name)}</span>
+                  <span className="file-index-copy">
+                    <span className="file-index-name">{item.name}</span>
+                    <span className="file-index-room">{workspaceRoomName(item, world)}</span>
+                    <span className="file-index-maker">
+                      {item.latest.agentName}
+                      {item.latest.runId && <code title={item.latest.runId}>turn {item.latest.runId}</code>}
+                    </span>
+                    <span className="file-index-date">{fileDate(item.updatedAt)}</span>
+                  </span>
+                  <span className="file-index-facts">
+                    <span className="versionstack" title={countOf(item.versionCount, "version")}>
+                      <i /><i />v{item.latest.version}
+                    </span>
+                    <span className={`accessmark ${restricted ? "restricted" : "room"}`}>
+                      {restricted ? "Restricted" : "Room"}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {page.asked && !page.problem && (page.entries.length > 0 || page.hasMore) && (
+            <div className="files-page-foot" data-files-page-state={page.entries.length === 0 ? "backfill" : "rows"}>
+              {page.hasMore ? (
+                <button className="btn small files-more" data-files-more disabled={page.loading}
+                  onClick={() => client.askArtifactWorkspace(false)}>
+                  {page.loading ? "Loading older files…" : "Older files"}
+                </button>
+              ) : <span className="files-end" data-files-end>That is every file you can currently read.</span>}
+            </div>
+          )}
+        </aside>
+
+        <main className="files-detail" data-file-detail={unavailable ? "unavailable" : selected?.artifactId ?? "none"}
+          data-file-detail-state={detailState}>
+          {!selected ? (
+            <div className="files-detail-empty">
+              <span className="files-detail-mark" aria-hidden="true">↗</span>
+              <h3>Choose a file</h3>
+              <p>Its full immutable history, preview, links and room access appear here.</p>
+            </div>
+          ) : unavailable ? (
+            <div className="files-detail-empty files-detail-unavailable" data-file-unavailable>
+              <span className="files-detail-mark" aria-hidden="true">?</span>
+              <h3>That file isn’t available</h3>
+              <p>It has been taken off this Cloud9, or it is in a conversation you cannot read.</p>
+              {page.entries.length > 0 && (
+                <button className="btn small" onClick={() => selectFile({ artifactId: page.entries[0].artifactId })}>
+                  Choose another file
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="files-detail-inner">
+              <div className="filedetail-head">
+                <div className="filedetail-title">
+                  <span className="eyebrow">{channel ? (channel.kind === "dm" ? "Direct conversation" : `Room · #${channel.name}`) : "Source room"}</span>
+                  <h3>{artifact?.name ?? entry?.name ?? "Looking for that file…"}</h3>
+                  {newest && (
+                    <p>{describeArtifactVersion(newest)} · {fileDate(newest.producedAt)} · {countOf(entry?.versionCount ?? newest.version, "version")}</p>
+                  )}
+                </div>
+                <div className="filedetail-actions">
+                  {channelId && <button className="btn small ghost" data-open-file-room
+                    onClick={() => onOpenChannel(channelId)}>Open room</button>}
+                  {selected && <CopyFileRef kind="newest" value={artifactRef(selected.artifactId)} />}
+                  {selected && exactVersion !== undefined && (
+                    <CopyFileRef kind="exact" value={artifactRef(selected.artifactId, exactVersion)} />
+                  )}
+                </div>
+              </div>
+
+              {(!detailProblem || artifact) && (
+                <ArtifactCard artifactId={selected.artifactId} version={selected.version} place="workspace" />
+              )}
+              <FileRelations artifactId={selected.artifactId}
+                loaded={relations !== undefined} relations={relations ?? []}
+                truncated={relationsTruncated} problem={detailProblem}
+                onRetry={() => client.askArtifactDetail(selected.artifactId)}
+                onOpen={ref => selectFile(ref)} />
+              {artifact && <FileAccessEditor artifact={artifact} channel={channel} world={world}
+                onDirtyChange={noteAccessDraft} />}
+            </div>
+          )}
+        </main>
+      </div>
+    </section>
   );
 }
 

@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import {
-  ArtifactVersion, Attachment, Channel, Message, RUN_RETENTION, RunRecord,
+  StoredArtifactVersion, Attachment, Channel, Message, RUN_RETENTION, RunRecord,
 } from "@cloud9/shared";
 import { Store } from "./store.js";
 import { tmp } from "./testclient.js";
@@ -167,34 +167,39 @@ test("unread: read state cannot be pushed backwards by a stale replay", () => {
 // 3. Retention pruning boundaries: artifact versions and runs.
 // ===========================================================================
 
-function version(over: Partial<ArtifactVersion> & Pick<ArtifactVersion, "id" | "version">): ArtifactVersion {
+function version(over: Partial<StoredArtifactVersion> & Pick<StoredArtifactVersion, "id" | "version">): StoredArtifactVersion {
   return {
-    size: 1, sha256: "x".repeat(64), text: true, storedAs: `${over.id}-log.md`,
+    size: 1, sha256: "a".repeat(64), text: true, storedAs: `${over.id}-log.md`,
     agentId: "a1", agentName: "Scribe", ownerId: "u1", producedAt: over.version,
     ...over,
   };
 }
 
+function appendVersion(
+  store: Store, input: { id: string; name?: string; at: number; links?: StoredArtifactVersion["links"] },
+) {
+  const name = input.name ?? "log.md";
+  const full = version({ id: input.id, version: 999, producedAt: input.at, links: input.links });
+  const { version: _number, ...row } = full;
+  const stage = store.writeArtifactBytes(row.id, name, Buffer.from(`bytes ${input.id}`));
+  row.storedAs = stage.storedAs;
+  return store.appendArtifactVersion({ channelId: "ch1", name, at: input.at, version: row, stage });
+}
+
 test("pruneArtifactVersions: exactly at the cap prunes nothing; one past it prunes exactly the oldest", () => {
   const store = fresh("cov-prune-artifacts.db");
-  const row = store.claimArtifactVersion({ channelId: "ch1", name: "log.md", at: 1 });
   const keep = 5;
-  for (let v = 1; v <= keep; v++) {
-    const ver = version({ id: `av${v}`, version: v });
-    store.saveArtifactVersion(row.id, "ch1", ver);
-    store.writeArtifactBytes(ver.id, "log.md", Buffer.from(`pass ${v}`));
-  }
+  let artifact = appendVersion(store, { id: "av1", at: 1 });
+  for (let v = 2; v <= keep; v++) artifact = appendVersion(store, { id: `av${v}`, at: v });
 
-  assert.equal(store.pruneArtifactVersions(row.id, keep), 0, "exactly `keep` versions must not lose one");
-  assert.equal(store.artifactVersionsOf(row.id).length, keep);
+  assert.equal(store.pruneArtifactVersions(artifact.id, keep), 0, "exactly `keep` versions must not lose one");
+  assert.equal(store.artifactVersionsOf(artifact.id).length, keep);
 
   // one more arrives, pushing the count to keep+1
-  const ver6 = version({ id: "av6", version: 6 });
-  store.saveArtifactVersion(row.id, "ch1", ver6);
-  store.writeArtifactBytes(ver6.id, "log.md", Buffer.from("pass 6"));
+  artifact = appendVersion(store, { id: "av6", at: 6 });
 
-  assert.equal(store.pruneArtifactVersions(row.id, keep), 1, "one over the cap must prune exactly one");
-  const left = store.artifactVersionsOf(row.id).map(v => v.version).sort((a, b) => a - b);
+  assert.equal(store.pruneArtifactVersions(artifact.id, keep), 1, "one over the cap must prune exactly one");
+  const left = store.artifactVersionsOf(artifact.id).map(v => v.version).sort((a, b) => a - b);
   assert.deepEqual(left, [2, 3, 4, 5, 6], "the OLDEST goes, the newest is never touched");
   assert.equal(fs.existsSync(path.join(store.artifactsDir, "av1-log.md")), false,
     "the pruned row's bytes must go with it");
@@ -203,18 +208,233 @@ test("pruneArtifactVersions: exactly at the cap prunes nothing; one past it prun
 
 test("pruneArtifactVersions: a cap of zero still keeps the newest — an artifact can never have none", () => {
   const store = fresh("cov-prune-zero.db");
-  const row = store.claimArtifactVersion({ channelId: "ch1", name: "log.md", at: 1 });
-  for (let v = 1; v <= 3; v++) {
-    const ver = version({ id: `av${v}`, version: v });
-    store.saveArtifactVersion(row.id, "ch1", ver);
-    store.writeArtifactBytes(ver.id, "log.md", Buffer.from(`pass ${v}`));
-  }
+  let artifact = appendVersion(store, { id: "av1", at: 1 });
+  artifact = appendVersion(store, { id: "av2", at: 2 });
+  artifact = appendVersion(store, { id: "av3", at: 3 });
 
-  const doomed = store.pruneArtifactVersions(row.id, 0);
+  const doomed = store.pruneArtifactVersions(artifact.id, 0);
   assert.equal(doomed, 2, "asking to keep zero still keeps one — the newest");
-  const left = store.artifactVersionsOf(row.id);
+  const left = store.artifactVersionsOf(artifact.id);
   assert.equal(left.length, 1);
   assert.equal(left[0].version, 3, "the survivor is the newest, however low the cap");
+});
+
+test("artifact versions: one artifact/version pair is immutable and cannot be replaced", () => {
+  const store = fresh("cov-artifact-immutable.db");
+  const row = store.claimArtifactVersion({ channelId: "ch1", name: "log.md", at: 1 });
+  const first = version({ id: "av-first", version: 1, note: "the original" });
+  const replacement = version({ id: "av-replacement", version: 1, note: "rewritten" });
+
+  store.saveArtifactVersion(row.id, "ch1", first);
+  assert.throws(
+    () => store.saveArtifactVersion(row.id, "ch1", replacement),
+    /UNIQUE|constraint/i,
+    "a second row claiming version 1 must be refused, never stored beside or over the first",
+  );
+  assert.deepEqual(store.artifactVersionsOf(row.id), [first],
+    "the first immutable row remains byte-for-byte the stored truth");
+});
+
+test("artifact workspace fills pages past malformed rows and keeps a valid cursor", () => {
+  const store = fresh("cov-artifact-workspace-malformed.db");
+  store.db.prepare("INSERT INTO users(id,name) VALUES(?,?)").run("u1", "Vikas");
+  store.createChannel({ id: "ch1", name: "ops", kind: "channel", memberIds: ["u1"], createdAt: 1 });
+  const older = appendVersion(store, { id: "av-old", name: "older.md", at: 1 });
+  const newer = appendVersion(store, { id: "av-new", name: "newer.md", at: 2 });
+  store.db.prepare(
+    "INSERT INTO artifacts(id,channelId,name,nameKey,createdAt,updatedAt,nextVersion) VALUES(?,?,?,?,?,?,?)",
+  ).run("af_bad", "ch1", "bad.md", "bad.md", 3, 3, 2);
+  store.db.prepare(
+    "INSERT INTO artifact_versions(id,artifactId,channelId,agentId,version,producedAt,json) " +
+    "VALUES(?,?,?,?,?,?,?)",
+  ).run("av_bad", "af_bad", "ch1", "a1", 1, 3, "{}");
+
+  const first = store.artifactWorkspace("u1", [store.channel("ch1")!], {}, 1);
+  assert.deepEqual(first.items.map(a => a.artifactId), [newer.id],
+    "the malformed newest row does not leave a short first page");
+  assert.equal(first.hasMore, true);
+  assert.equal(first.nextBefore, 2);
+  assert.equal(first.nextBeforeId, newer.id);
+
+  const second = store.artifactWorkspace("u1", [store.channel("ch1")!], {
+    before: first.nextBefore, beforeId: first.nextBeforeId,
+  }, 1);
+  assert.deepEqual(second.items.map(a => a.artifactId), [older.id]);
+  assert.equal(second.hasMore, false,
+    "hasMore describes valid projected rows, not the malformed row SQL scanned");
+});
+
+test("artifact append refuses and preserves a foreign current-format stage", () => {
+  const store = fresh("cov-artifact-append-foreign-stage.db");
+  fs.mkdirSync(store.artifactsDir, { recursive: true });
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const currentNonce = (store as any).artifactStageNonce as string;
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+  const foreignNonce = currentNonce === `boot_${"k".repeat(22)}`
+    ? `boot_${"l".repeat(22)}` : `boot_${"k".repeat(22)}`;
+  const storedAs = "av-foreign-report.md";
+  const stagedAs =
+    `.publishing-v2-${process.pid}-${foreignNonce}-stage_${"m".repeat(22)}-${storedAs}`;
+  const stagedPath = path.join(store.artifactsDir, stagedAs);
+  const finalPath = path.join(store.artifactsDir, storedAs);
+  fs.writeFileSync(stagedPath, "bytes owned by another process lifetime");
+  const full = version({ id: "av-foreign", version: 1, storedAs, producedAt: 10 });
+  const { version: _number, ...pending } = full;
+
+  assert.throws(() => store.appendArtifactVersion({
+    channelId: "ch1", name: "report.md", at: 10, version: pending, stage: { stagedAs, storedAs },
+  }), /staged bytes do not belong to this append/i);
+
+  assert.equal(store.artifactRowByName("ch1", "report.md"), undefined,
+    "refusal creates no artifact identity row");
+  assert.equal((store.db.prepare(
+    "SELECT COUNT(*) n FROM artifact_versions WHERE id=?",
+  ).get(full.id) as { n: number }).n, 0, "refusal creates no immutable version row");
+  assert.equal(fs.existsSync(finalPath), false, "foreign bytes are never promoted");
+  assert.equal(fs.existsSync(stagedPath), true,
+    "compensation must not delete a stage owned by another process lifetime");
+  store.db.close();
+});
+
+test("artifact append independently refuses a foreign pid even with this startup nonce", () => {
+  const store = fresh("cov-artifact-append-foreign-pid.db");
+  fs.mkdirSync(store.artifactsDir, { recursive: true });
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const currentNonce = (store as any).artifactStageNonce as string;
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+  const storedAs = "av-foreign-pid-report.md";
+  const stagedAs =
+    `.publishing-v2-${process.pid + 100_000}-${currentNonce}-stage_${"n".repeat(22)}-${storedAs}`;
+  const stagedPath = path.join(store.artifactsDir, stagedAs);
+  fs.writeFileSync(stagedPath, "bytes owned by another pid");
+  const full = version({ id: "av-foreign-pid", version: 1, storedAs, producedAt: 11 });
+  const { version: _number, ...pending } = full;
+
+  assert.throws(() => store.appendArtifactVersion({
+    channelId: "ch1", name: "report.md", at: 11, version: pending, stage: { stagedAs, storedAs },
+  }), /staged bytes do not belong to this append/i);
+
+  assert.equal(store.artifactRowByName("ch1", "report.md"), undefined);
+  assert.equal((store.db.prepare(
+    "SELECT COUNT(*) n FROM artifact_versions WHERE id=?",
+  ).get(full.id) as { n: number }).n, 0);
+  assert.equal(fs.existsSync(path.join(store.artifactsDir, storedAs)), false);
+  assert.equal(fs.existsSync(stagedPath), true,
+    "matching nonce is insufficient: a foreign pid's stage remains untouched");
+  store.db.close();
+});
+
+test("artifact append binds the parsed stage filename to the exact final name", () => {
+  const store = fresh("cov-artifact-append-stage-final-name.db");
+  const expectedStoredAs = "av-bound-report.md";
+  const original = store.writeArtifactBytes("av-bound", "report.md", Buffer.from("bound bytes"));
+  const wrongStagedAs = original.stagedAs.replace(
+    new RegExp(`${expectedStoredAs.replace(".", "\\.")}$`), "av-other-report.md",
+  );
+  const wrongStagedPath = path.join(store.artifactsDir, wrongStagedAs);
+  fs.renameSync(path.join(store.artifactsDir, original.stagedAs), wrongStagedPath);
+  const full = version({ id: "av-bound", version: 1, storedAs: expectedStoredAs, producedAt: 12 });
+  const { version: _number, ...pending } = full;
+
+  assert.throws(() => store.appendArtifactVersion({
+    channelId: "ch1", name: "report.md", at: 12, version: pending,
+    stage: { stagedAs: wrongStagedAs, storedAs: expectedStoredAs },
+  }), /staged bytes do not belong to this append/i);
+
+  assert.equal(store.artifactRowByName("ch1", "report.md"), undefined);
+  assert.equal((store.db.prepare(
+    "SELECT COUNT(*) n FROM artifact_versions WHERE id=?",
+  ).get(full.id) as { n: number }).n, 0);
+  assert.equal(fs.existsSync(path.join(store.artifactsDir, expectedStoredAs)), false);
+  assert.equal(fs.existsSync(wrongStagedPath), true,
+    "a current-lifetime stage with the wrong encoded final name belongs to another append");
+  store.db.close();
+});
+
+test("artifact append cannot redirect an owned stage object to another final target", () => {
+  const store = fresh("cov-artifact-append-stage-target.db");
+  const stage = store.writeArtifactBytes("av-target", "report.md", Buffer.from("target bytes"));
+  const wrongStoredAs = "av-other-report.md";
+  const full = version({ id: "av-target", version: 1, storedAs: wrongStoredAs, producedAt: 13 });
+  const { version: _number, ...pending } = full;
+
+  assert.throws(() => store.appendArtifactVersion({
+    channelId: "ch1", name: "report.md", at: 13, version: pending,
+    stage: { stagedAs: stage.stagedAs, storedAs: wrongStoredAs },
+  }), /staged bytes do not belong to this append/i);
+
+  assert.equal(store.artifactRowByName("ch1", "report.md"), undefined);
+  assert.equal((store.db.prepare(
+    "SELECT COUNT(*) n FROM artifact_versions WHERE id=?",
+  ).get(full.id) as { n: number }).n, 0);
+  assert.equal(fs.existsSync(path.join(store.artifactsDir, stage.storedAs)), false);
+  assert.equal(fs.existsSync(path.join(store.artifactsDir, wrongStoredAs)), false);
+  assert.equal(fs.existsSync(path.join(store.artifactsDir, stage.stagedAs)), true,
+    "the encoded stage remains for the append it was actually minted for");
+  store.db.close();
+});
+
+test("artifact append cannot rebind an owned stage to another version or name", () => {
+  const store = fresh("cov-artifact-append-stage-binding.db");
+  const attempts = [
+    { stagedId: "av-stage-id", versionId: "av-other-id", stagedName: "report.md", appendName: "report.md" },
+    { stagedId: "av-stage-name", versionId: "av-stage-name", stagedName: "right.md", appendName: "wrong.md" },
+  ];
+  for (const [index, attempt] of attempts.entries()) {
+    const stage = store.writeArtifactBytes(
+      attempt.stagedId, attempt.stagedName, Buffer.from(`owned stage ${index}`),
+    );
+    const full = version({
+      id: attempt.versionId, version: 1, storedAs: stage.storedAs, producedAt: 20 + index,
+    });
+    const { version: _number, ...pending } = full;
+    assert.throws(() => store.appendArtifactVersion({
+      channelId: "ch1", name: attempt.appendName, at: 20 + index, version: pending, stage,
+    }), /staged bytes do not belong to this append/i);
+    assert.equal(store.artifactRowByName("ch1", attempt.appendName), undefined);
+    assert.equal(fs.existsSync(path.join(store.artifactsDir, stage.storedAs)), false,
+      "a mismatched stage is not promoted under the wrong final identity");
+    assert.equal(fs.existsSync(path.join(store.artifactsDir, stage.stagedAs)), true,
+      "a stage that belongs to a different append is preserved for its real owner");
+  }
+  store.db.close();
+});
+
+test("artifact append: a post-mutation DB refusal rolls back metadata and promoted bytes", () => {
+  const store = fresh("cov-artifact-append-atomic.db");
+  const target = appendVersion(store, { id: "av-target", name: "target.md", at: 1 });
+  const artifact = appendVersion(store, { id: "av-first", at: 10 });
+  const before = store.artifactRow(artifact.id)!;
+  assert.equal(before.nextVersion, 2);
+
+  // Both targets are valid, so validation passes. The transaction updates the
+  // artifact, promotes bytes, inserts the version and inserts the first link;
+  // only the duplicate link's PRIMARY KEY fails afterwards.
+  const duplicate = {
+    kind: "made-from" as const,
+    target: { artifactId: target.id, version: 1 },
+  };
+  const badFull = version({
+    id: "av-bad", version: 99, producedAt: 20, links: [duplicate, duplicate],
+  });
+  const { version: _badNumber, ...bad } = badFull;
+  const stage = store.writeArtifactBytes(bad.id, "log.md", Buffer.from("two"));
+  bad.storedAs = stage.storedAs;
+  assert.throws(
+    () => store.appendArtifactVersion({
+      channelId: "ch1", name: "log.md", at: 20, version: bad, stage,
+    }),
+    /UNIQUE|constraint/i,
+  );
+
+  const after = store.artifactRow(artifact.id)!;
+  assert.equal(after.nextVersion, before.nextVersion, "a refused append consumes no version number");
+  assert.equal(after.updatedAt, before.updatedAt, "the list date does not claim a change that never landed");
+  assert.deepEqual(store.artifactVersionsOf(artifact.id).map(v => v.id), ["av-first"]);
+  assert.equal(fs.existsSync(path.join(store.artifactsDir, "av-bad-log.md")), false,
+    "bytes promoted inside the failed transaction are compensated after rollback");
+  assert.equal(fs.existsSync(path.join(store.artifactsDir, stage.stagedAs)), false,
+    "the publish-only stage is gone too");
 });
 
 function run(id: string, startedAt: number, taskId?: string): { record: RunRecord; agentId: string; ownerId: string; taskId?: string } {
@@ -299,6 +519,27 @@ test("role transitions: a role is never inherited across a leave and a rejoin", 
   assert.equal(spells[0].removedAt !== undefined, true);
   assert.equal(spells[1].role, "member");
   assert.equal(spells[1].removedAt, undefined);
+});
+
+test("restricted file selection ends with membership and does not resurrect on rejoin", () => {
+  const store = fresh("cov-artifact-access-rejoin.db");
+  store.db.prepare("INSERT INTO users(id,name) VALUES(?,?)").run("u2", "Priya");
+  store.createChannel({ id: "ch1", name: "ops", kind: "channel", memberIds: ["u2"], createdAt: 1 });
+  const artifact = appendVersion(store, { id: "av1", at: 10 });
+  store.setArtifactAccess(artifact.id, { kind: "restricted", userIds: ["u2"] });
+  assert.equal(store.artifactAccessAllows(artifact.id, "u2"), true);
+
+  store.removeChannelMember("ch1", "u2");
+  assert.throws(
+    () => store.setArtifactAccess(artifact.id, { kind: "restricted", userIds: ["u2"] }),
+    /current people/,
+    "the transactional writer re-checks active human membership before replacing the old rule",
+  );
+  store.addChannelMember("ch1", "u2", { at: 20 });
+  assert.deepEqual(store.storedArtifactAccess(artifact.id), { kind: "restricted", userIds: [] },
+    "the old selected id was cleared with the old membership spell");
+  assert.equal(store.artifactAccessAllows(artifact.id, "u2"), false,
+    "rejoining the room is not permission to regain a previously selected file");
 });
 
 test("role transitions: setMemberRole cannot reach a row that already left", () => {

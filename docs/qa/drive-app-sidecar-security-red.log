@@ -1,0 +1,16 @@
+Source: .superpowers/sdd/HANDOFF-SOL/member-sidecar-security-review.md
+Date: 2026-08-02
+Verdict: CHANGES_NEEDED
+Exit meaning: RED
+
+HIGH ancestor junction escape
+- Only dist-web descendants were checked; a resources/app ancestor junction could redirect outside the installed app.
+
+HIGH fingerprint/live-disk TOCTOU
+- Approval fingerprinted paths, then HTTP requests reopened mutable disk files and could serve mixed bytes.
+
+MEDIUM durable identity gap
+- The joined member was not proved across an actual browser/context close and relaunch.
+
+MEDIUM forced termination gap
+- A timed-out browser close had no owned-process kill and OS exit verification.

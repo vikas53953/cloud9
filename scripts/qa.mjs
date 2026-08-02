@@ -102,7 +102,7 @@ const { ui: UI, relayPort: RELAY_PORT } = qaTarget();
  * Closing this socket is safe: the real engine host stays connected, so the hub
  * still has an engine for this owner and nobody's agents go offline.
  */
-function publishAsEngine({ channelId, agentId, name, data, note, runId }) {
+function publishAsEngine({ channelId, agentId, name, data, note, runId, links }) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${RELAY_PORT}`);
     let over = false;
@@ -125,6 +125,7 @@ function publishAsEngine({ channelId, agentId, name, data, note, runId }) {
           type: "publishArtifact", channelId, agentId, name,
           dataBase64: Buffer.from(data).toString("base64"),
           ...(note ? { note } : {}), ...(runId ? { runId } : {}),
+          ...(links ? { links } : {}),
         }));
       } else if (frame.type === "artifact" && frame.artifact.name === name) {
         clearTimeout(timer);
@@ -300,7 +301,13 @@ function mintJoinTokenOn(port, token) {
 //    fallback; clicking a row connects it down the same path as typing; and a
 //    listing that failed shows the reason instead of an empty list that would
 //    read "you have no repositories".
-const EXPECTED_CHECKS = 494;
+// 494 → 501 on 2026-08-02: seven permanent checks for the Files workspace.
+// They open the rail door, hold latest-maker + exact-turn attribution, open the
+// retained history, prove room-default access and manager-only editing from two
+// signed-in screens, save a real restriction with managers still required, follow
+// a typed exact-version relationship, and prove markdown words alone create no
+// stored relationship.
+const EXPECTED_CHECKS = 501;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -3214,7 +3221,9 @@ try {
     null, { timeout: 40000 });
   const overlapped = await page.evaluate(messageId => {
     const wire = window.cloud9Wire;
-    // provoke a refusal that has nothing to do with either file
+    // Provoke a refusal that has nothing to do with either file. editMessage is
+    // fire-and-forget now, so it must reach the hub WITHOUT stealing a lifecycle
+    // ledger row from the upload that is genuinely awaiting an answer.
     wire.ask({ type: "editMessage", messageId, text: "changing words that are not mine" });
     return {
       onTheWire: wire.outstanding().filter(k => k === "uploadAttachment").length,
@@ -3224,7 +3233,7 @@ try {
   }, notMine);
   ok("REPRODUCED: a refusal was provoked with one file on the wire and a second read and queued behind it",
     overlapped.onTheWire === 1 && overlapped.queuedBehind === 1 &&
-    overlapped.asked.includes("uploadAttachment") && overlapped.asked.includes("editMessage"),
+    overlapped.asked.includes("uploadAttachment") && !overlapped.asked.includes("editMessage"),
     JSON.stringify(overlapped));
 
   /* The refusal must ARRIVE while the two are still overlapped — that is the
@@ -5254,6 +5263,7 @@ try {
 
   const REPORT_V1 = "# Villas in Goa\nThree that fit, with prices.\n";
   const REPORT_V2 = "# Villas in Goa\nThree that fit, with the prices corrected.\n";
+  const REPORT_V3 = "# Villas in Goa\nThree that fit, with the final prices corrected.\n";
   const v1 = await publishAsEngine({
     channelId: generalId, agentId: artAgent.id, name: "villas.md", data: REPORT_V1,
   });
@@ -5357,6 +5367,27 @@ try {
   const pic = await publishAsEngine({
     channelId: generalId, agentId: artAgent.id, name: "chart.png", data: shot,
   });
+  /* A DISTINCT source file makes target identity testable. A self-link lets code
+     that ignores target.artifactId accidentally pass as long as it keeps v1. */
+  const LINK_TARGET = "villa,nightly budget\nCasa Sol,8000\n";
+  const linkTarget = await publishAsEngine({
+    channelId: generalId, agentId: artAgent.id, name: "villa-budget.csv", data: LINK_TARGET,
+  });
+  /* A markdown file may SAY it came from something. That sentence is not a typed
+     relationship and must never be guessed into one by the Files screen. */
+  const markdownOnly = await publishAsEngine({
+    channelId: generalId, agentId: artAgent.id, name: "markdown-only.md",
+    data: `[budget source](${artifactRef(linkTarget.id, 1)})\n`,
+  });
+  /* The third revision carries the typed relationship and names a real Scout turn
+     the run-card round above already recorded and rendered. The first two stay
+     untouched so their existing chat-card history proof remains independent. */
+  const v3 = await publishAsEngine({
+    channelId: generalId, agentId: artAgent.id, name: "villas.md", data: REPORT_V3,
+    note: "linked the final revision", runId: rich.id,
+    links: [{ kind: "made-from", target: { artifactId: linkTarget.id, version: 1 } }],
+  });
+  if (v3.id !== artId) throw new Error("the linked revision created a second villas file");
   await artBox.fill(`and the chart ${artifactRef(pic.id)}`);
   await artBox.press("Enter");
   await page.waitForSelector(`.msg .artcard[data-artifact="${pic.id}"]`, { timeout: 20000 });
@@ -5411,6 +5442,164 @@ try {
       await page.locator('.roomfiles [data-files-state="empty"]').innerText()),
     (await page.locator(".roomfiles").innerText()).replace(/\s+/g, " ").slice(0, 120));
   await page.click(".roompanel .roomclose");
+
+  /* ================= FILES — ONE WORKSPACE ACROSS READABLE ROOMS ===========
+   * These seven checks are the permanent screen proof for feature 1. They reuse
+   * the real retained file above: its first two versions prove a handoff between
+   * agents; its latest revision names a real turn and links exactly back to v1.
+   */
+  const filesDoor = page.locator('.rail-btn[data-go="files"]');
+  await filesDoor.click();
+  await page.waitForSelector('[data-files-screen][data-files-state="some"]', { timeout: 20000 });
+  ok("Files is in the rail and opens as the bounded cross-room workspace",
+    (await filesDoor.count()) === 1
+    && (await page.locator('[data-files-screen] .files-index[aria-label="Files you can read"]').count()) === 1
+    && (await page.locator('[data-files-screen] h2').innerText()).trim() === "Files");
+
+  const villasRow = page.locator(`.file-index-row[data-file-row="${artId}"]`);
+  await villasRow.click();
+  await page.waitForSelector(`.files-detail[data-file-detail="${artId}"][data-file-detail-state="here"]`,
+    { timeout: 20000 });
+  const latestTurnWords = (await villasRow.locator(".file-index-maker").innerText()).replace(/\s+/g, " ").trim();
+  ok("Files names the latest maker and the exact turn that made this version",
+    (await villasRow.getAttribute("data-maker")) === artAgent.name
+    && (await villasRow.getAttribute("data-turn")) === rich.id
+    && latestTurnWords.includes(artAgent.name)
+    && latestTurnWords.includes(rich.id), latestTurnWords);
+
+  const workspaceCard = page.locator(`.files-detail .artcard[data-artifact="${artId}"]`);
+  await workspaceCard.locator(".arthistory").click();
+  await page.waitForSelector(`.files-detail .artcard[data-artifact="${artId}"] .artversion[data-version="1"]`,
+    { timeout: 15000 });
+  const workspaceOld = workspaceCard.locator('.artversion[data-version="1"]');
+  await workspaceOld.locator(".artopen-old").click();
+  await page.waitForSelector(`.files-detail .artcard[data-artifact="${artId}"] .artversion[data-version="1"] .artpeek pre`,
+    { timeout: 15000 });
+  const oldWords = await workspaceOld.locator(".artpeek pre").innerText();
+  ok("Files opens the immutable earlier version and returns its original bytes",
+    (await workspaceCard.getAttribute("data-versions")) === "3"
+    && (await workspaceOld.locator(".vwho b").innerText()).trim() === artAgent.name
+    && /\d/.test(await workspaceOld.locator(".vwhen").innerText())
+    && oldWords === REPORT_V1 && oldWords !== REPORT_V3,
+    `${(await workspaceOld.innerText()).replace(/\s+/g, " ").trim()} :: ${JSON.stringify(oldWords)}`);
+
+  const ownerAccess = page.locator(`.files-detail[data-file-detail="${artId}"] .fileaccess`);
+  await page.waitForSelector(`.files-detail[data-file-detail="${artId}"] .fileaccess[data-access-editor="yes"]`,
+    { timeout: 20000 });
+  await fpage.click('.rail-btn[data-go="files"]');
+  await fpage.waitForSelector(`.file-index-row[data-file-row="${artId}"]`, { timeout: 20000 });
+  await fpage.click(`.file-index-row[data-file-row="${artId}"]`);
+  await fpage.waitForSelector(`.files-detail[data-file-detail="${artId}"] .fileaccess[data-access-editor="read-only"]`,
+    { timeout: 20000 });
+  const memberAccess = fpage.locator(`.files-detail[data-file-detail="${artId}"] .fileaccess`);
+  const memberControlsAbsent = (await memberAccess.locator(".accesschoice").count()) === 0
+    && (await memberAccess.locator("[data-access-save]").count()) === 0;
+
+  /* Keep the member's actual file contents OPEN while their role and then access
+     change. A row disappearing from the left is not revocation if the detail and
+     bytes already on the right remain readable. */
+  const memberCard = fpage.locator(`.files-detail .artcard[data-artifact="${artId}"]`);
+  await memberCard.locator(".artopen").click();
+  await fpage.waitForSelector(`.files-detail .artcard[data-artifact="${artId}"] .artpeek pre`,
+    { timeout: 15000 });
+  const memberPreviewBefore = await memberCard.locator(".artpeek pre").innerText();
+
+  /* Change Priya's role through the room's real manager UI, then return to the
+     same Files detail. This proves the rule from both sides: a member gets no
+     controls; an admin gets the real choices and Save button, not merely copy. */
+  const setPriyaRoleInGeneral = async role => {
+    await page.locator("[data-open-file-room]").click();
+    await page.waitForSelector(".composer textarea", { timeout: 20000 });
+    await page.click(".chathead .roomdetailsbtn");
+    await page.waitForSelector('.roommembers .memberrow[data-member="Priya"]', { timeout: 20000 });
+    const row = page.locator('.roommembers .memberrow[data-member="Priya"]');
+    await row.locator(".memberopen").click();
+    await page.waitForSelector('.memberask[data-manage="Priya"]', { timeout: 15000 });
+    await page.click(`.memberask[data-manage="Priya"] .roleopt[data-setrole="${role}"]`);
+    await waitFor(page, wanted => document.querySelector(
+      '.roommembers .memberrow[data-member="Priya"] .rolename')?.dataset.role === wanted,
+    role, { timeout: 20000, what: `Priya to become ${role} in #general` });
+    await page.click(".roompanel .roomclose");
+    await page.click('.rail-btn[data-go="files"]');
+    await page.waitForSelector(`.file-index-row[data-file-row="${artId}"]`, { timeout: 20000 });
+    await page.click(`.file-index-row[data-file-row="${artId}"]`);
+    await page.waitForSelector(`.files-detail[data-file-detail="${artId}"][data-file-detail-state="here"]`,
+      { timeout: 20000 });
+  };
+
+  await setPriyaRoleInGeneral("admin");
+  await fpage.waitForSelector(`.files-detail[data-file-detail="${artId}"] .fileaccess[data-access-editor="yes"]`,
+    { timeout: 20000 });
+  const adminAccess = fpage.locator(`.files-detail[data-file-detail="${artId}"] .fileaccess`);
+  const adminControlsAvailable = (await adminAccess.locator(".accesschoice").count()) === 2
+    && (await adminAccess.locator("[data-access-save]").count()) === 1;
+
+  await setPriyaRoleInGeneral("member");
+  await fpage.waitForSelector(`.files-detail[data-file-detail="${artId}"] .fileaccess[data-access-editor="read-only"]`,
+    { timeout: 20000 });
+  ok("Files gives access controls to room managers and removes them for a plain member",
+    (await ownerAccess.getAttribute("data-file-access")) === "room"
+    && (await ownerAccess.locator('[data-access-choice="room"]').getAttribute("aria-pressed")) === "true"
+    && /Everyone currently in the room/i.test(await ownerAccess.innerText())
+    && memberControlsAbsent && adminControlsAvailable
+    && (await fpage.locator(`.files-detail[data-file-detail="${artId}"] .fileaccess .accesschoice`).count()) === 0,
+    `member controls=${memberControlsAbsent ? 0 : "present"}; admin choices=${adminControlsAvailable ? 2 : "missing"}`);
+
+  await ownerAccess.locator('[data-access-choice="restricted"]').click();
+  const requiredManager = ownerAccess.locator('.accessperson[data-required="yes"] input:disabled').first();
+  await ownerAccess.locator("[data-access-save]").click();
+  await page.waitForSelector(`.file-index-row[data-file-row="${artId}"][data-access="restricted"]`,
+    { timeout: 20000 });
+  await fpage.waitForSelector(".files-detail [data-file-unavailable]", { timeout: 20000 });
+  await waitFor(fpage, id => !document.querySelector(`.file-index-row[data-file-row="${id}"]`), artId,
+    { timeout: 20000, what: "the restricted file to leave a non-manager's Files list" });
+  const memberDetailAfter = await fpage.evaluate(id => window.cloud9Artifacts.detail(id), artId);
+  ok("restricting a file revokes an already-open member detail and its shown contents",
+    memberPreviewBefore === REPORT_V3
+    && (await ownerAccess.getAttribute("data-file-access")) === "restricted"
+    && (await requiredManager.count()) >= 1
+    && /managers are required/i.test(await ownerAccess.innerText())
+    && (await fpage.locator(`.file-index-row[data-file-row="${artId}"]`).count()) === 0
+    && (await fpage.locator(`.artcard[data-artifact="${artId}"]`).count()) === 0
+    && (await fpage.locator(".files-detail .artpeek pre").count()) === 0
+    && memberDetailAfter === null,
+    `before=${JSON.stringify(memberPreviewBefore)}; after card=${await fpage.locator(`.artcard[data-artifact="${artId}"]`).count()}`);
+
+  const markdownRow = page.locator(`.file-index-row[data-file-row="${markdownOnly.id}"]`);
+  await markdownRow.click();
+  await page.waitForSelector(`.files-detail[data-file-detail="${markdownOnly.id}"] [data-relations-state="empty"]`,
+    { timeout: 20000 });
+  const markdownCard = page.locator(`.files-detail .artcard[data-artifact="${markdownOnly.id}"]`);
+  await markdownCard.locator(".artopen").click();
+  await page.waitForSelector(`.files-detail .artcard[data-artifact="${markdownOnly.id}"] .artpeek pre`,
+    { timeout: 15000 });
+  ok("Markdown words inside a file do not become stored artifact links",
+    (await page.locator(`.files-detail[data-file-detail="${markdownOnly.id}"] .relationrow`).count()) === 0
+    && (await markdownCard.locator(".artpeek pre").innerText()).includes("cloud9://artifact/"));
+
+  await villasRow.click();
+  await page.waitForSelector(`.files-detail[data-file-detail="${artId}"] .relationtarget[data-linked-artifact="${linkTarget.id}"][data-linked-version="1"]`,
+    { timeout: 20000 });
+  const relationRow = page.locator(`.files-detail[data-file-detail="${artId}"] .relationrow[data-relation-kind="made-from"]`).first();
+  const typedLink = relationRow.locator(`.relationtarget[data-linked-artifact="${linkTarget.id}"][data-linked-version="1"]`);
+  const typedKind = (await relationRow.locator(".relationkind").innerText()).trim();
+  const typedName = (await typedLink.locator(".relationname").innerText()).trim();
+  const typedWords = (await typedLink.innerText()).replace(/\s+/g, " ").trim();
+  await typedLink.click();
+  await page.waitForSelector(`.files-detail[data-file-detail="${linkTarget.id}"] .artcard[data-artifact="${linkTarget.id}"][data-version="1"]`,
+    { timeout: 15000 });
+  const targetCard = page.locator(`.files-detail .artcard[data-artifact="${linkTarget.id}"]`);
+  await targetCard.locator(".artopen").click();
+  await page.waitForSelector(`.files-detail .artcard[data-artifact="${linkTarget.id}"] .artpeek pre`,
+    { timeout: 15000 });
+  const targetWords = await targetCard.locator(".artpeek pre").innerText();
+  ok("Files names and follows a typed relationship to the distinct exact target bytes",
+    typedKind.toLowerCase() === "made from" && typedName === "villa-budget.csv" && /v1/i.test(typedWords)
+    && (await page.locator(`.files-detail[data-file-detail="${linkTarget.id}"] .filerelations a.mdlink`).count()) === 0
+    && (await targetCard.getAttribute("data-version")) === "1"
+    && targetWords === LINK_TARGET,
+    `${typedKind} ${typedWords} :: ${JSON.stringify(targetWords)}`);
+  await page.screenshot({ path: `${SHOTS}/files-workspace.png`, fullPage: true });
 
   /* ================= WHAT HE TYPED IS NEVER THROWN AWAY IN SILENCE =========
    *

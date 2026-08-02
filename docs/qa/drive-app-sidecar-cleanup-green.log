@@ -1,0 +1,12 @@
+Command: node scripts/drive-app.mjs --sidecar-cleanup-simulation
+Date: 2026-08-02
+Exit code: 0
+
+drive-app sidecar cleanup simulation
+PASS a timed-out page close did not prevent context/browser/server/temp cleanup attempts
+PASS cleanup failure stayed fatal and later Files checks did not run
+PASS a failed setup cleanup owner stayed registered and retry-cleaned remaining resources
+PASS an ancestor resources/app/dist-web junction was refused
+PASS post-approval disk mutation could not change immutable served snapshot bytes
+PASS history fallback required an actual document navigation contract
+PASS browser close timeout forced the owned Chromium process down and verified root close/OS exit

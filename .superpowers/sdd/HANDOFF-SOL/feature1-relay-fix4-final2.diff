@@ -1,0 +1,2705 @@
+diff --git a/apps/relay/src/artifactstore.test.ts b/apps/relay/src/artifactstore.test.ts
+index 2f19cdc..b7aaaa8 100644
+--- a/apps/relay/src/artifactstore.test.ts
++++ b/apps/relay/src/artifactstore.test.ts
+@@ -21,7 +21,9 @@ import { createHash } from "node:crypto";
+ import fs from "node:fs";
+ import path from "node:path";
+ import {
+-  ARTIFACT_LIMITS, ATTACHMENT_TICKET, ServerFrame, artifactRef, findArtifactRefs, latestVersion,
++  ARTIFACT_LIMITS, ATTACHMENT_TICKET, ArtifactLink, RunRecord, ServerFrame,
++  StoredArtifactVersion,
++  artifactRef, findArtifactRefs, latestVersion, nameKey,
+ } from "@cloud9/shared";
+ import { Relay } from "./server.js";
+ import { TestClient, tmp } from "./testclient.js";
+@@ -65,7 +67,7 @@ async function guestOf(url: string, owner: TestClient, name: string) {
+ async function publish(
+   engine: TestClient, watcher: TestClient,
+   input: { channelId: string; agentId: string; name: string; body: string | Buffer;
+-           runId?: string; taskId?: string; note?: string },
++           runId?: string; taskId?: string; note?: string; links?: ArtifactLink[] },
+ ) {
+   watcher.frames.length = 0;
+   const bytes = Buffer.isBuffer(input.body) ? input.body : Buffer.from(input.body);
+@@ -75,11 +77,12 @@ async function publish(
+     ...(input.runId ? { runId: input.runId } : {}),
+     ...(input.taskId ? { taskId: input.taskId } : {}),
+     ...(input.note ? { note: input.note } : {}),
++    ...(input.links ? { links: input.links } : {}),
+   });
+   // waits for the artifact frame OR the refusal, so a broken publish fails with
+   // the hub's own sentence rather than with "timeout waiting for frame"
+   const answer = await watcher.wait<ServerFrame>(
+-    f => f.type === "artifact" || f.type === "error");
++    f => (f.type === "artifact" && nameKey(f.artifact.name) === nameKey(input.name)) || f.type === "error");
+   if (answer.type === "error") throw new Error(`the hub refused the publish: ${answer.error}`);
+   return answer as Extract<ServerFrame, { type: "artifact" }>;
+ }
+@@ -98,6 +101,13 @@ async function refuses(client: TestClient, frame: Parameters<TestClient["send"]>
+ test("a file an agent made lands in the room, with the agent and the run on it", async () => {
+   const { relay, owner, engine, general, me } = await stand("art-happy.db");
+   const agent = await makeAgent(owner, "Scribe");
++  const run = {
++    id: "r-abc-0001", kind: "chat", agentId: agent.id, agentName: agent.name,
++    provider: "claude", requestedBy: "Vikas", requestedByKind: "human",
++    ask: "write the villas file", channelId: general.id,
++    startedAt: 1, finishedAt: 2, durationMs: 1, outcome: "ok", steps: [],
++  } as unknown as RunRecord;
++  relay.store.saveRun({ record: run, agentId: agent.id, ownerId: me.id, channelId: general.id });
+ 
+   const frame = await publish(engine, owner, {
+     channelId: general.id, agentId: agent.id, name: "villas.md",
+@@ -136,6 +146,45 @@ test("a file an agent made lands in the room, with the agent and the run on it",
+   // nobody could see it. Watched.
+ });
+ 
++test("run attribution is kept only for the same stored agent in the same stored room", async () => {
++  const { relay, owner, engine, general, me } = await stand("art-run-attribution.db");
++  const agent = await makeAgent(owner, "Scribe");
++  const otherAgent = await makeAgent(owner, "Other");
++  owner.send({ type: "createChannel", name: "ops", memberIds: [], kind: "channel" });
++  const ops = (await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
++    f => f.type === "channel" && f.channel.name === "ops")).channel;
++  const record = (id: string, agentId: string, channelId: string) => ({
++    id, kind: "chat", agentId, agentName: agentId === agent.id ? agent.name : otherAgent.name,
++    provider: "claude", requestedBy: "Vikas", requestedByKind: "human", ask: "make it",
++    channelId, startedAt: 1, finishedAt: 2, durationMs: 1, outcome: "ok", steps: [],
++  }) as unknown as RunRecord;
++  relay.store.saveRun({
++    record: record("r-valid", agent.id, general.id), agentId: agent.id, ownerId: me.id, channelId: general.id,
++  });
++  relay.store.saveRun({
++    record: record("r-wrong-room", agent.id, ops.id), agentId: agent.id, ownerId: me.id, channelId: ops.id,
++  });
++  relay.store.saveRun({
++    record: record("r-wrong-agent", otherAgent.id, general.id),
++    agentId: otherAgent.id, ownerId: me.id, channelId: general.id,
++  });
++
++  const valid = await publish(engine, owner,
++    { channelId: general.id, agentId: agent.id, name: "valid.md", body: "ok", runId: "r-valid" });
++  const wrongRoom = await publish(engine, owner,
++    { channelId: general.id, agentId: agent.id, name: "wrong-room.md", body: "no", runId: "r-wrong-room" });
++  const wrongAgent = await publish(engine, owner,
++    { channelId: general.id, agentId: agent.id, name: "wrong-agent.md", body: "no", runId: "r-wrong-agent" });
++
++  assert.equal(latestVersion(valid.artifact)!.runId, "r-valid");
++  assert.equal(latestVersion(wrongRoom.artifact)!.runId, undefined,
++    "a real run from another room is not attributed to these bytes");
++  assert.equal(latestVersion(wrongAgent.artifact)!.runId, undefined,
++    "a real run from another agent is not attributed to these bytes");
++
++  owner.close(); engine.close(); relay.close();
++});
++
+ test("the same name again is a NEW VERSION, and the old one is still there", async () => {
+   const { relay, owner, engine, general } = await stand("art-versions.db");
+   const agent = await makeAgent(owner, "Scribe");
+@@ -195,6 +244,118 @@ test("the conversation's list holds every artifact, most recently changed first"
+ // Getting the bytes back — the SAME ticket a person's attachment uses
+ // ---------------------------------------------------------------------------
+ 
++test("artifact request ids echo only on direct answers, never unsolicited pushes", async () => {
++  const { relay, owner, engine, general } = await stand("art-request-id.db");
++  const agent = await makeAgent(owner, "Scribe");
++  const pushed = await publish(engine, owner,
++    { channelId: general.id, agentId: agent.id, name: "request.md", body: "one" });
++  assert.equal(Object.prototype.hasOwnProperty.call(pushed, "requestId"), false,
++    "a publish push is unsolicited and must not settle a direct request");
++
++  owner.frames.length = 0;
++  owner.send({ type: "artifact", artifactId: pushed.artifact.id });
++  const oldArtifact = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === pushed.artifact.id);
++  assert.equal(Object.prototype.hasOwnProperty.call(oldArtifact, "requestId"), false,
++    "old clients that send no id still receive the ordinary answer");
++
++  owner.frames.length = 0;
++  owner.send({ type: "artifact", artifactId: pushed.artifact.id, requestId: "req_artifact_1" });
++  const directArtifact = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.requestId === "req_artifact_1");
++  assert.equal(directArtifact.requestId, "req_artifact_1");
++
++  owner.frames.length = 0;
++  owner.send({ type: "artifactWorkspace" });
++  const oldWorkspace = await owner.wait<Extract<ServerFrame, { type: "artifactWorkspace" }>>(
++    f => f.type === "artifactWorkspace");
++  assert.equal(Object.prototype.hasOwnProperty.call(oldWorkspace, "requestId"), false);
++
++  owner.frames.length = 0;
++  owner.send({ type: "artifactWorkspace", requestId: "req_workspace_1" });
++  const directWorkspace = await owner.wait<Extract<ServerFrame, { type: "artifactWorkspace" }>>(
++    f => f.type === "artifactWorkspace" && f.requestId === "req_workspace_1");
++  assert.equal(directWorkspace.requestId, "req_workspace_1");
++
++  owner.frames.length = 0;
++  owner.send({
++    type: "setArtifactAccess", artifactId: pushed.artifact.id,
++    access: { kind: "restricted", userIds: [] },
++  });
++  const oldAccess = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === pushed.artifact.id);
++  assert.equal(Object.prototype.hasOwnProperty.call(oldAccess, "requestId"), false,
++    "old no-id access mutations still receive one ordinary success frame");
++
++  owner.frames.length = 0;
++  engine.frames.length = 0;
++  owner.send({
++    type: "setArtifactAccess", artifactId: pushed.artifact.id,
++    access: { kind: "room" }, requestId: "req_access_1",
++  });
++  const directAccess = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.requestId === "req_access_1");
++  assert.equal(directAccess.requestId, "req_access_1", "the requesting socket gets the exact id");
++  const otherConnectionPush = await engine.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === pushed.artifact.id);
++  assert.equal(Object.prototype.hasOwnProperty.call(otherConnectionPush, "requestId"), false,
++    "the same access change reaches another connection only as an unsolicited no-id push");
++  assert.equal(owner.frames.filter(f => f.type === "artifact"
++    && (f as Extract<ServerFrame, { type: "artifact" }>).artifact.id === pushed.artifact.id).length, 1,
++  "the requesting socket is omitted from the separate push and cannot settle twice");
++
++  owner.frames.length = 0;
++  owner.send({ type: "artifact", artifactId: "af_missing", requestId: "req_artifact_error" });
++  const artifactError = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
++    f => f.type === "error" && f.requestId === "req_artifact_error");
++  assert.equal(artifactError.requestId, "req_artifact_error");
++
++  owner.frames.length = 0;
++  owner.send({
++    type: "setArtifactAccess", artifactId: "af_missing", access: { kind: "room" },
++    requestId: "req_access_error",
++  });
++  const accessError = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
++    f => f.type === "error" && f.requestId === "req_access_error");
++  assert.equal(accessError.requestId, "req_access_error");
++
++  /* eslint-disable @typescript-eslint/no-explicit-any */
++  const realWorkspace = relay.store.artifactWorkspace.bind(relay.store);
++  (relay.store as any).artifactWorkspace = () => { throw new Error("workspace refused for test"); };
++  owner.frames.length = 0;
++  owner.send({ type: "artifactWorkspace", requestId: "req_workspace_error" });
++  const workspaceError = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
++    f => f.type === "error" && f.requestId === "req_workspace_error");
++  assert.equal(workspaceError.requestId, "req_workspace_error");
++  (relay.store as any).artifactWorkspace = realWorkspace;
++  /* eslint-enable @typescript-eslint/no-explicit-any */
++
++  owner.frames.length = 0;
++  owner.send({
++    type: "send", channelId: "ch_missing", text: "ordinary refusal",
++    requestId: "req_send_error",
++  });
++  const sendError = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
++    f => f.type === "error" && f.requestId === "req_send_error");
++  assert.equal(sendError.requestId, "req_send_error",
++    "an ordinary fire-and-forget frame receives its exact id on refusal");
++
++  owner.frames.length = 0;
++  owner.send({ type: "send", channelId: "ch_missing", text: "old ordinary refusal" });
++  const oldSendError = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
++    f => f.type === "error");
++  assert.equal(Object.prototype.hasOwnProperty.call(oldSendError, "requestId"), false,
++    "old ordinary frames remain valid and their refusal invents no id");
++
++  owner.frames.length = 0;
++  owner.send({ type: "artifact", artifactId: "af_missing" });
++  const oldError = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
++  assert.equal(Object.prototype.hasOwnProperty.call(oldError, "requestId"), false,
++    "old no-id refusals and general errors never invent a correlation id");
++
++  owner.close(); engine.close(); relay.close();
++});
++
+ test("a member of the room gets the bytes, once, and an old version stays itself", async () => {
+   const { relay, http, owner, engine, general } = await stand("art-download.db");
+   const agent = await makeAgent(owner, "Scribe");
+@@ -346,6 +507,13 @@ test("a ticket dies with the membership it was minted under", async () => {
+ 
+   const made = await publish(engine, guest,
+     { channelId: general.id, agentId: agent.id, name: "shared.md", body: "everyone in here may read this" });
++  guest.frames.length = 0;
++  owner.send({
++    type: "setArtifactAccess", artifactId: made.artifact.id,
++    access: { kind: "restricted", userIds: [me.id] },
++  });
++  await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === made.artifact.id);
+ 
+   guest.frames.length = 0;
+   guest.send({ type: "artifactTicket", artifactId: made.artifact.id });
+@@ -353,8 +521,14 @@ test("a ticket dies with the membership it was minted under", async () => {
+     f => f.type === "artifactTicket");
+ 
+   // THE GATE IS ASKED AGAIN WHEN THE TICKET IS SPENT, not only when it is minted
++  owner.frames.length = 0;
+   owner.send({ type: "removeMember", channelId: general.id, memberId: me.id });
+   await guest.wait(f => f.type === "channelLeft");
++  const refreshed = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === made.artifact.id
++      && f.artifact.access?.kind === "restricted" && f.artifact.access.userIds.length === 1);
++  assert.deepEqual(refreshed.artifact.access, { kind: "restricted", userIds: [relay.ownerId] },
++    "member removal refreshes effective access summaries for remaining readers");
+   assert.equal((await fetch(http + t.url)).status, 404,
+     "being taken out of the room inside those thirty seconds stops the download");
+ 
+@@ -364,6 +538,343 @@ test("a ticket dies with the membership it was minted under", async () => {
+   // Watched.
+ });
+ 
++test("Files filters permission before the page limit and paginates across rooms", async () => {
++  const { relay, url, owner, engine, general } = await stand("art-workspace.db");
++  const agent = await makeAgent(owner, "Scribe");
++  const { guest, me } = await guestOf(url, owner, "Priya");
++
++  owner.send({ type: "createChannel", name: "ops", memberIds: [me.id], kind: "channel" });
++  const ops = (await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
++    f => f.type === "channel" && f.channel.name === "ops")).channel;
++
++  const generalFile = await publish(engine, owner,
++    { channelId: general.id, agentId: agent.id, name: "general.md", body: "general" });
++  const visibleOps = await publish(engine, owner,
++    { channelId: ops.id, agentId: agent.id, name: "visible.md", body: "visible" });
++  const hiddenOps = await publish(engine, owner,
++    { channelId: ops.id, agentId: agent.id, name: "hidden.md", body: "hidden" });
++
++  guest.frames.length = 0;
++  owner.send({
++    type: "setArtifactAccess", artifactId: hiddenOps.artifact.id,
++    access: { kind: "restricted", userIds: [] },
++  });
++  await guest.wait<Extract<ServerFrame, { type: "artifactUnavailable" }>>(
++    f => f.type === "artifactUnavailable" && f.artifactId === hiddenOps.artifact.id);
++
++  guest.frames.length = 0;
++  guest.send({ type: "artifactWorkspace", limit: 1 });
++  const first = await guest.wait<Extract<ServerFrame, { type: "artifactWorkspace" }>>(
++    f => f.type === "artifactWorkspace");
++  assert.deepEqual(first.artifacts.map(a => a.artifactId), [visibleOps.artifact.id],
++    "the newer hidden row is filtered in SQL before LIMIT, so the allowed row behind it fills the page");
++  assert.equal(first.artifacts[0].channelName, "ops");
++  assert.equal(first.artifacts[0].latest.version, 1);
++  assert.equal(first.artifacts[0].versionCount, 1);
++  assert.equal(first.hasMore, true);
++  assert.ok(first.nextBefore !== undefined && first.nextBeforeId);
++
++  guest.frames.length = 0;
++  guest.send({
++    type: "artifactWorkspace", limit: 1,
++    before: first.nextBefore, beforeId: first.nextBeforeId,
++  });
++  const second = await guest.wait<Extract<ServerFrame, { type: "artifactWorkspace" }>>(
++    f => f.type === "artifactWorkspace");
++  assert.deepEqual(second.artifacts.map(a => a.artifactId), [generalFile.artifact.id]);
++  assert.equal(second.hasMore, false);
++
++  guest.frames.length = 0;
++  guest.send({ type: "artifacts", channelId: ops.id });
++  const room = await guest.wait<Extract<ServerFrame, { type: "artifacts" }>>(f => f.type === "artifacts");
++  assert.deepEqual(room.artifacts.map(a => a.id), [visibleOps.artifact.id],
++    "the older room-scoped list follows the same non-probing permission filter");
++
++  guest.close(); owner.close(); engine.close(); relay.close();
++});
++
++test("room managers control whole-chain access, and revocation kills cached detail and tickets", async () => {
++  const { relay, url, http, owner, engine, general } = await stand("art-access.db");
++  const agent = await makeAgent(owner, "Scribe");
++  const { guest, me } = await guestOf(url, owner, "Priya");
++  const made = await publish(engine, guest,
++    { channelId: general.id, agentId: agent.id, name: "budget.md", body: "room default" });
++
++  await refuses(guest, {
++    type: "setArtifactAccess", artifactId: made.artifact.id,
++    access: { kind: "restricted", userIds: [me.id] },
++  }, "don't run this conversation");
++  await refuses(owner, {
++    type: "setArtifactAccess", artifactId: made.artifact.id,
++    access: undefined,
++  } as unknown as Parameters<TestClient["send"]>[0], "say whether this file uses room or restricted access");
++
++  guest.frames.length = 0;
++  guest.send({ type: "artifactTicket", artifactId: made.artifact.id });
++  const ticket = await guest.wait<Extract<ServerFrame, { type: "artifactTicket" }>>(
++    f => f.type === "artifactTicket");
++
++  owner.send({
++    type: "setArtifactAccess", artifactId: made.artifact.id,
++    access: { kind: "restricted", userIds: [] },
++  });
++  await guest.wait<Extract<ServerFrame, { type: "artifactUnavailable" }>>(
++    f => f.type === "artifactUnavailable" && f.artifactId === made.artifact.id);
++  assert.equal((await fetch(http + ticket.url)).status, 404,
++    "redemption re-checks the file rule, not only the room membership used at mint");
++  await refuses(guest, { type: "artifact", artifactId: made.artifact.id }, "no such file");
++  await refuses(guest, { type: "artifactTicket", artifactId: made.artifact.id }, "no such file");
++
++  owner.send({ type: "setMemberRole", channelId: general.id, memberId: me.id, role: "admin" });
++  await guest.wait(f => f.type === "channel"
++    && (relay.store.memberRole(general.id, me.id) === "admin"));
++  guest.frames.length = 0;
++  guest.send({ type: "artifact", artifactId: made.artifact.id });
++  const asManager = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(f => f.type === "artifact");
++  assert.deepEqual(asManager.artifact.access, { kind: "restricted", userIds: [relay.ownerId, me.id] },
++    "all current owners/admins are added even when the stored selected list is empty");
++
++  guest.frames.length = 0;
++  owner.frames.length = 0;
++  owner.send({ type: "setMemberRole", channelId: general.id, memberId: me.id, role: "member" });
++  await guest.wait<Extract<ServerFrame, { type: "artifactUnavailable" }>>(
++    f => f.type === "artifactUnavailable" && f.artifactId === made.artifact.id);
++  const remainingReader = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === made.artifact.id
++      && f.artifact.access?.kind === "restricted"
++      && f.artifact.access.userIds.length === 1);
++  assert.deepEqual(remainingReader.artifact.access, { kind: "restricted", userIds: [relay.ownerId] },
++    "role changes refresh effective access summaries for every remaining reader");
++  owner.send({ type: "setMemberRole", channelId: general.id, memberId: me.id, role: "admin" });
++  await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === made.artifact.id);
++
++  guest.frames.length = 0;
++  guest.send({
++    type: "setArtifactAccess", artifactId: made.artifact.id, access: { kind: "room" },
++  });
++  await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === made.artifact.id);
++
++  owner.send({ type: "createChannel", name: "dm-priya", memberIds: [me.id], kind: "dm" });
++  const dm = (await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
++    f => f.type === "channel" && f.channel.kind === "dm")).channel;
++  const direct = await publish(engine, owner,
++    { channelId: dm.id, agentId: agent.id, name: "direct.md", body: "inherited only" });
++  await refuses(owner, {
++    type: "setArtifactAccess", artifactId: direct.artifact.id,
++    access: { kind: "restricted", userIds: [relay.ownerId] },
++  }, "always inherit");
++
++  guest.close(); owner.close(); engine.close(); relay.close();
++});
++
++test("typed links pin exact same-room versions and hide inaccessible targets without probing", async () => {
++  const { relay, url, owner, engine, general } = await stand("art-links.db");
++  const agent = await makeAgent(owner, "Scribe");
++  const { guest } = await guestOf(url, owner, "Priya");
++  await refuses(engine, {
++    type: "publishArtifact", channelId: general.id, agentId: agent.id,
++    name: "bad-shape.md", dataBase64: Buffer.from("bad").toString("base64"), links: "guess",
++  } as unknown as Parameters<TestClient["send"]>[0], "file links must be a list");
++  assert.equal(relay.store.artifactRowByName(general.id, "bad-shape.md"), undefined);
++  await refuses(engine, {
++    type: "publishArtifact", channelId: general.id, agentId: agent.id,
++    name: "missing-target.md", dataBase64: Buffer.from("bad").toString("base64"),
++    links: [{ kind: "made-from", target: { artifactId: "af_missing", version: 1 } }],
++  }, "not available in this conversation");
++  assert.equal(relay.store.artifactRowByName(general.id, "missing-target.md"), undefined,
++    "a valid-shaped link to a missing exact target stores no identity row");
++  assert.equal((relay.store.db.prepare(
++    "SELECT COUNT(*) n FROM artifact_versions",
++  ).get() as { n: number }).n, 0, "no immutable version row was inserted either");
++  assert.deepEqual(
++    fs.existsSync(relay.store.artifactsDir) ? fs.readdirSync(relay.store.artifactsDir) : [],
++    [],
++    "target validation happens before byte staging: no staged, pending or final artifact litter exists",
++  );
++
++  const targetOne = await publish(engine, owner,
++    { channelId: general.id, agentId: agent.id, name: "figures.csv", body: "one" });
++  guest.frames.length = 0;
++  const source = await publish(engine, owner, {
++    channelId: general.id, agentId: agent.id, name: "summary.pdf", body: "summary",
++    links: [{ kind: "made-from", target: { artifactId: targetOne.artifact.id, version: 1 } }],
++  });
++  const incomingPushed = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === targetOne.artifact.id
++      && !!f.relations?.some(r => r.direction === "incoming" && r.from.artifactId === source.artifact.id));
++  assert.equal(incomingPushed.relationsTruncated, undefined,
++    "a complete relation list never sends a false truncation flag");
++  await publish(engine, owner,
++    { channelId: general.id, agentId: agent.id, name: "figures.csv", body: "two" });
++
++  guest.frames.length = 0;
++  guest.send({ type: "artifact", artifactId: source.artifact.id });
++  const sourceDetail = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === source.artifact.id);
++  assert.equal(Object.prototype.hasOwnProperty.call(sourceDetail.artifact.versions[0], "links"), false,
++    "raw exact targets never ride inside a public artifact version");
++  assert.deepEqual(sourceDetail.relations, [{
++    kind: "made-from", direction: "outgoing",
++    from: { artifactId: source.artifact.id, version: 1 },
++    to: { artifactId: targetOne.artifact.id, version: 1 },
++    linkedName: "figures.csv", hidden: false,
++  }], "the link stays on target version 1 after version 2 exists");
++
++  guest.frames.length = 0;
++  guest.send({ type: "artifacts", channelId: general.id });
++  const roomList = await guest.wait<Extract<ServerFrame, { type: "artifacts" }>>(f => f.type === "artifacts");
++  const sourceInList = roomList.artifacts.find(a => a.id === source.artifact.id)!;
++  assert.equal(Object.prototype.hasOwnProperty.call(sourceInList.versions[0], "links"), false);
++  guest.frames.length = 0;
++  guest.send({ type: "artifactTicket", artifactId: source.artifact.id });
++  const sourceTicket = await guest.wait<Extract<ServerFrame, { type: "artifactTicket" }>>(
++    f => f.type === "artifactTicket" && f.artifactId === source.artifact.id);
++  assert.equal(Object.prototype.hasOwnProperty.call(sourceTicket.artifact.versions[0], "links"), false,
++    "detail, list and ticket frames all project storage links out");
++
++  guest.frames.length = 0;
++  guest.send({ type: "artifact", artifactId: targetOne.artifact.id });
++  const targetDetail = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === targetOne.artifact.id);
++  assert.ok(targetDetail.relations?.some(r =>
++    r.direction === "incoming"
++    && r.from.artifactId === source.artifact.id
++    && r.to?.version === 1), "the exact target shows its permitted incoming source");
++
++  guest.frames.length = 0;
++  owner.send({
++    type: "setArtifactAccess", artifactId: source.artifact.id,
++    access: { kind: "restricted", userIds: [] },
++  });
++  await guest.wait<Extract<ServerFrame, { type: "artifactUnavailable" }>>(
++    f => f.type === "artifactUnavailable" && f.artifactId === source.artifact.id);
++  const incomingCleared = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === targetOne.artifact.id
++      && Array.isArray(f.relations) && f.relations.length === 0);
++  assert.deepEqual(incomingCleared.relations, [],
++    "hiding a source pushes an explicit empty incoming list to its cached target");
++
++  // A later version of the still-hidden source changes nothing Priya may see:
++  // source stays absent and target's permitted incoming list stays empty. A
++  // request-id barrier proves no unsolicited artifact timing frame preceded it.
++  guest.frames.length = 0;
++  await publish(engine, owner, {
++    channelId: general.id, agentId: agent.id, name: "summary.pdf", body: "hidden revision",
++  });
++  guest.send({ type: "artifactWorkspace", requestId: "barrier_hidden_source" });
++  await guest.wait<Extract<ServerFrame, { type: "artifactWorkspace" }>>(
++    f => f.type === "artifactWorkspace" && f.requestId === "barrier_hidden_source");
++  assert.deepEqual(guest.frames.filter(f => f.type === "artifact"), [],
++    "an invisible restricted-source event sends zero artifact frame or timing hint to Priya");
++
++  guest.frames.length = 0;
++  owner.send({
++    type: "setArtifactAccess", artifactId: source.artifact.id, access: { kind: "room" },
++  });
++  await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === source.artifact.id);
++  await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === targetOne.artifact.id
++      && !!f.relations?.some(r => r.direction === "incoming" && r.from.artifactId === source.artifact.id));
++
++  guest.frames.length = 0;
++  owner.send({
++    type: "setArtifactAccess", artifactId: targetOne.artifact.id,
++    access: { kind: "restricted", userIds: [] },
++  });
++  await guest.wait(f => f.type === "artifactUnavailable"
++    && (f as Extract<ServerFrame, { type: "artifactUnavailable" }>).artifactId === targetOne.artifact.id);
++  const hidden = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === source.artifact.id
++      && !!f.relations?.some(r => r.direction === "outgoing" && r.hidden));
++  assert.deepEqual(hidden.relations, [{
++    kind: "made-from", direction: "outgoing",
++    from: { artifactId: source.artifact.id, version: 1 }, hidden: true,
++  }], "a hidden target carries no name and no exact reference");
++  await refuses(guest, { type: "artifact", artifactId: targetOne.artifact.id }, "no such file");
++
++  // Retention removes target v1 while newer target bytes remain. The link stays
++  // pinned and becomes unavailable; it must never slide forward to v2/v21.
++  for (let v = 3; v <= ARTIFACT_LIMITS.versions; v++) {
++    await publish(engine, owner,
++      { channelId: general.id, agentId: agent.id, name: "figures.csv", body: `version ${v}` });
++  }
++  owner.frames.length = 0;
++  await publish(engine, owner, {
++    channelId: general.id, agentId: agent.id, name: "figures.csv",
++    body: `version ${ARTIFACT_LIMITS.versions + 1}`,
++  });
++  const pruned = await owner.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === source.artifact.id
++      && !!f.relations?.some(r => r.direction === "outgoing" && r.hidden));
++  assert.deepEqual(pruned.relations, [{
++    kind: "made-from", direction: "outgoing",
++    from: { artifactId: source.artifact.id, version: 1 }, hidden: true,
++  }], "a pruned exact target is unavailable, not replaced by the newest retained target");
++
++  owner.send({ type: "createChannel", name: "other", memberIds: [], kind: "channel" });
++  const other = (await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
++    f => f.type === "channel" && f.channel.name === "other")).channel;
++  const elsewhere = await publish(engine, owner,
++    { channelId: other.id, agentId: agent.id, name: "elsewhere.md", body: "elsewhere" });
++  await refuses(engine, {
++    type: "publishArtifact", channelId: general.id, agentId: agent.id,
++    name: "bad-link.md", dataBase64: Buffer.from("bad").toString("base64"),
++    links: [{ kind: "goes-with", target: { artifactId: elsewhere.artifact.id, version: 1 } }],
++  }, "not available in this conversation");
++  assert.equal(relay.store.artifactRowByName(general.id, "bad-link.md"), undefined,
++    "a refused cross-room link stores neither identity nor bytes");
++
++  guest.close(); owner.close(); engine.close(); relay.close();
++});
++
++test("artifact detail caps relation projection and says honestly when more exist", async () => {
++  const { relay, url, owner, engine, general } = await stand("art-relations-cap.db");
++  const agent = await makeAgent(owner, "Scribe");
++  const { guest } = await guestOf(url, owner, "Priya");
++  const target = await publish(engine, owner,
++    { channelId: general.id, agentId: agent.id, name: "target.md", body: "target" });
++
++  const insertArtifact = relay.store.db.prepare(
++    "INSERT INTO artifacts(id,channelId,name,nameKey,createdAt,updatedAt,nextVersion) VALUES(?,?,?,?,?,?,?)",
++  );
++  const insertVersion = relay.store.db.prepare(
++    "INSERT INTO artifact_versions(id,artifactId,channelId,agentId,version,producedAt,json) " +
++    "VALUES(?,?,?,?,?,?,?)",
++  );
++  const insertLink = relay.store.db.prepare(
++    "INSERT INTO artifact_links(sourceArtifactId,sourceVersion,channelId,kind,targetArtifactId,targetVersion) " +
++    "VALUES(?,?,?,?,?,?)",
++  );
++  for (let i = 0; i <= ARTIFACT_LIMITS.relationDetail; i++) {
++    const artifactId = `af_rel_${i}`;
++    const versionId = `av_rel_${i}`;
++    const name = `source-${i}.md`;
++    const version: StoredArtifactVersion = {
++      id: versionId, version: 1, size: 1, sha256: "a".repeat(64), text: true,
++      storedAs: `${versionId}-${name}`, agentId: agent.id, agentName: agent.name,
++      ownerId: relay.ownerId, producedAt: i + 1,
++      links: [{ kind: "made-from", target: { artifactId: target.artifact.id, version: 1 } }],
++    };
++    insertArtifact.run(artifactId, general.id, name, name.toLowerCase(), i + 1, i + 1, 2);
++    insertVersion.run(versionId, artifactId, general.id, agent.id, 1, i + 1, JSON.stringify(version));
++    insertLink.run(artifactId, 1, general.id, "made-from", target.artifact.id, 1);
++  }
++
++  guest.frames.length = 0;
++  guest.send({ type: "artifact", artifactId: target.artifact.id });
++  const detail = await guest.wait<Extract<ServerFrame, { type: "artifact" }>>(
++    f => f.type === "artifact" && f.artifact.id === target.artifact.id
++      && f.relationsTruncated === true);
++  assert.equal(detail.relations!.length, ARTIFACT_LIMITS.relationDetail);
++  assert.equal(detail.relationsTruncated, true,
++    "true means a real permitted 101st relation exists beyond the shared cap");
++
++  guest.close(); owner.close(); engine.close(); relay.close();
++});
++
+ // ---------------------------------------------------------------------------
+ // Honest limits
+ // ---------------------------------------------------------------------------
+diff --git a/apps/relay/src/hardening.test.ts b/apps/relay/src/hardening.test.ts
+index 1a69f81..c3e6c98 100644
+--- a/apps/relay/src/hardening.test.ts
++++ b/apps/relay/src/hardening.test.ts
+@@ -12,15 +12,35 @@
+ import test from "node:test";
+ import assert from "node:assert/strict";
+ import fs from "node:fs";
++import path from "node:path";
+ import { DatabaseSync } from "node:sqlite";
++import WebSocket from "ws";
+ import {
+-  ATTACHMENT_LIMITS, Channel, Message, RUN_RETENTION, RunRecord, ServerFrame,
++  ATTACHMENT_LIMITS, ArtifactVersion, Channel, ClientFrame, Message, RUN_RETENTION, RunRecord, ServerFrame,
++  StoredArtifactVersion,
+   WS_LIMITS, knownMachineNames, redactForSharing, setMachineNames, shareableRun,
+ } from "@cloud9/shared";
+ import { Relay } from "./server.js";
+-import { activityHash, SCHEMA_VERSION, Store, StoreOpenError } from "./store.js";
++import {
++  activityHash, ARTIFACT_STAGE_GRACE_MS, SCHEMA_VERSION, Store, StoreOpenError,
++} from "./store.js";
+ import { TestClient, tmp } from "./testclient.js";
+ 
++function firstRawAnswer(url: string, frame: ClientFrame | string): Promise<ServerFrame> {
++  return new Promise((resolve, reject) => {
++    const ws = new WebSocket(url);
++    const timer = setTimeout(() => { ws.close(); reject(new Error("timeout waiting for raw answer")); }, 5_000);
++    ws.on("open", () => ws.send(typeof frame === "string" ? frame : JSON.stringify(frame)));
++    ws.on("message", raw => {
++      clearTimeout(timer);
++      const answer = JSON.parse(String(raw)) as ServerFrame;
++      ws.close();
++      resolve(answer);
++    });
++    ws.on("error", error => { clearTimeout(timer); reject(error); });
++  });
++}
++
+ // ---------------------------------------------------------------------------
+ // #2 — redaction is not defeated by its own URL protection
+ // ---------------------------------------------------------------------------
+@@ -75,6 +95,65 @@ test("a run record shared with a room carries no secret out of a URL", () => {
+   }
+ });
+ 
++test("pre-auth invalid hello, invite and join refusals echo their exact request ids", async () => {
++  const relay = new Relay({ dbPath: tmp("hd-preauth-request-id.db"), ownerToken: "tok-owner" });
++  const port = await relay.listen(0);
++  const url = `ws://127.0.0.1:${port}`;
++
++  const hello = await firstRawAnswer(url, {
++    type: "hello", token: "wrong-token", client: "desktop", requestId: "req_bad_hello",
++  });
++  assert.deepEqual(hello, { type: "error", error: "bad token", requestId: "req_bad_hello" });
++
++  const invite = await firstRawAnswer(url, {
++    type: "hello", token: "invite:not-real:Priya", client: "desktop", requestId: "req_bad_invite",
++  });
++  assert.deepEqual(invite, {
++    type: "error", error: "that invite code isn't valid", requestId: "req_bad_invite",
++  });
++
++  const join = await firstRawAnswer(url, {
++    type: "joinWithToken", token: "join_not-a-real-code", displayName: "Priya",
++    requestId: "req_bad_join",
++  });
++  assert.equal(join.type, "error");
++  assert.equal(join.requestId, "req_bad_join");
++  assert.match(join.error, /isn't valid|ask for a new one/i,
++    "request correlation must not change the join refusal or reveal token details");
++
++  relay.close();
++});
++
++test("pre-auth old no-id refusals stay no-id and unparsed input invents no error", async () => {
++  const relay = new Relay({ dbPath: tmp("hd-preauth-no-request-id.db"), ownerToken: "tok-owner" });
++  const port = await relay.listen(0);
++  const url = `ws://127.0.0.1:${port}`;
++
++  const old = await firstRawAnswer(url, { type: "hello", token: "wrong-token", client: "desktop" });
++  assert.deepEqual(old, { type: "error", error: "bad token" },
++    "the old frame gets the same refusal and no invented request id");
++
++  const ws = new WebSocket(url);
++  const frames: ServerFrame[] = [];
++  await new Promise<void>((resolve, reject) => {
++    const timer = setTimeout(() => { ws.close(); reject(new Error("timeout waiting for welcome")); }, 5_000);
++    ws.on("open", () => {
++      ws.send("this is not a frame");
++      ws.send(JSON.stringify({ type: "hello", token: "tok-owner", client: "desktop" }));
++    });
++    ws.on("message", raw => {
++      const frame = JSON.parse(String(raw)) as ServerFrame;
++      frames.push(frame);
++      if (frame.type === "welcome") { clearTimeout(timer); resolve(); }
++    });
++    ws.on("error", error => { clearTimeout(timer); reject(error); });
++  });
++  assert.equal(frames.some(frame => frame.type === "error"), false,
++    "input that never parsed into a frame has no request id to echo and invents no error");
++  ws.close();
++  relay.close();
++});
++
+ // ---------------------------------------------------------------------------
+ // #5 / #6 — the walk forward is transactional, resumable and diagnosable
+ // ---------------------------------------------------------------------------
+@@ -120,6 +199,297 @@ test("#13 the migration asks who the owner is instead of guessing from row order
+   store.db.close();
+ });
+ 
++test("the v5 → v6 artifact migration preserves old rows and gives them room access", () => {
++  const dbPath = tmp("hd-artifact-v6.db");
++  const first = new Store(dbPath, { ownerToken: "tok-owner" });
++  const row = first.claimArtifactVersion({ channelId: "ch_old", name: "report.md", at: 10 });
++  const version: ArtifactVersion = {
++    id: "av_old", version: 1, size: 3, sha256: "a".repeat(64), text: true,
++    storedAs: "av_old-report.md", agentId: "a1", agentName: "Scribe", ownerId: "u1",
++    producedAt: 10,
++  };
++  first.saveArtifactVersion(row.id, "ch_old", version);
++  first.db.close();
++
++  // Put the file back in the exact schema-5 shape: old rows, no access/link
++  // tables and no immutable pair index.
++  const old = new DatabaseSync(dbPath);
++  old.exec(`
++    DROP INDEX av_art_version;
++    DROP TABLE artifact_links;
++    DROP TABLE artifact_access_users;
++    DROP TABLE artifact_access;
++    UPDATE meta SET value='5' WHERE key='schemaVersion';
++  `);
++  old.close();
++
++  const migrated = new Store(dbPath, { ownerToken: "tok-owner" });
++  assert.equal(migrated.schemaVersion(), SCHEMA_VERSION);
++  assert.deepEqual(migrated.artifactVersionsOf(row.id), [version],
++    "the immutable old row is copied nowhere, renumbered nowhere and left unchanged");
++  assert.deepEqual(migrated.artifactAccess(row.id), { kind: "room" },
++    "absence is the safe compatibility default for every existing chain");
++  assert.throws(
++    () => migrated.saveArtifactVersion(row.id, "ch_old", { ...version, id: "av_duplicate" }),
++    /UNIQUE|constraint/i,
++    "the new pair rule is active after the migration",
++  );
++  migrated.db.close();
++});
++
++test("the v5 → v6 duplicate-version migration rolls back and leaves every old row untouched", () => {
++  const dbPath = tmp("hd-artifact-v6-duplicate.db");
++  const first = new Store(dbPath, { ownerToken: "tok-owner" });
++  const row = first.claimArtifactVersion({ channelId: "ch_old", name: "report.md", at: 10 });
++  const version: ArtifactVersion = {
++    id: "av_old", version: 1, size: 3, sha256: "a".repeat(64), text: true,
++    storedAs: "av_old-report.md", agentId: "a1", agentName: "Scribe", ownerId: "u1",
++    producedAt: 10,
++  };
++  first.saveArtifactVersion(row.id, "ch_old", version);
++  first.db.close();
++
++  const old = new DatabaseSync(dbPath);
++  old.exec(`
++    DROP INDEX av_art_version;
++    DROP TABLE artifact_links;
++    DROP TABLE artifact_access_users;
++    DROP TABLE artifact_access;
++    UPDATE meta SET value='5' WHERE key='schemaVersion';
++  `);
++  old.prepare(
++    "INSERT INTO artifact_versions(id,artifactId,channelId,agentId,version,producedAt,json) " +
++    "VALUES(?,?,?,?,?,?,?)",
++  ).run("av_duplicate", row.id, "ch_old", "a1", 1, 11, JSON.stringify({ ...version, id: "av_duplicate" }));
++  old.close();
++
++  assert.throws(() => new Store(dbPath, { ownerToken: "tok-owner" }), (e: unknown) => {
++    assert.ok(e instanceof StoreOpenError);
++    assert.ok((e as Error).message.includes("immutable versions cannot be guessed at"));
++    return true;
++  });
++  const check = new DatabaseSync(dbPath);
++  assert.equal((check.prepare("SELECT value FROM meta WHERE key='schemaVersion'").get() as { value: string }).value, "5");
++  assert.equal((check.prepare(
++    "SELECT COUNT(*) n FROM artifact_versions WHERE artifactId=? AND version=1",
++  ).get(row.id) as { n: number }).n, 2, "neither duplicate legacy row was deleted or renumbered");
++  check.close();
++});
++
++test("startup cleanup cannot delete another live hub's staged publish", () => {
++  const dbPath = tmp("hd-artifact-two-hubs.db");
++  const publisher = new Store(dbPath, { ownerToken: "tok-owner" });
++  const full: StoredArtifactVersion = {
++    id: "av_live", version: 1, size: 5, sha256: "a".repeat(64), text: true,
++    storedAs: "av_live-report.md", agentId: "a1", agentName: "Scribe", ownerId: "u1",
++    producedAt: 10,
++  };
++  const { version: _number, ...pending } = full;
++  const stage = publisher.writeArtifactBytes(full.id, "report.md", Buffer.from("alive"));
++  pending.storedAs = stage.storedAs;
++
++  // This exact interleaving used to delete the final bytes: hub A wrote them,
++  // hub B started and swept them as orphaned, then hub A inserted the row.
++  const starter = new Store(dbPath, { ownerToken: "tok-owner" });
++  assert.equal(fs.existsSync(path.join(publisher.artifactsDir, stage.stagedAs)), true,
++    "startup ignores a publish-only stage another live process may own");
++  starter.db.close();
++
++  const artifact = publisher.appendArtifactVersion({
++    channelId: "ch1", name: "report.md", at: 10, version: pending, stage,
++  });
++  assert.ok(publisher.artifactVersionNumber(artifact.id, 1), "the immutable row committed");
++  assert.equal(fs.existsSync(path.join(publisher.artifactsDir, stage.storedAs)), true,
++    "and the exact bytes still exist after the deterministic two-hub interleaving");
++  publisher.db.close();
++});
++
++test("artifact directory flush is after rename, before commit, and failure rolls everything back", () => {
++  const dbPath = tmp("hd-artifact-dir-flush.db");
++  const store = new Store(dbPath, { ownerToken: "tok-owner" });
++  const make = (id: string, at: number) => {
++    const full: StoredArtifactVersion = {
++      id, version: 1, size: 5, sha256: "a".repeat(64), text: true,
++      storedAs: `${id}-report.md`, agentId: "a1", agentName: "Scribe", ownerId: "u1",
++      producedAt: at,
++    };
++    const { version: _number, ...row } = full;
++    const stage = store.writeArtifactBytes(id, "report.md", Buffer.from("alive"));
++    row.storedAs = stage.storedAs;
++    return { row, stage };
++  };
++
++  /* eslint-disable @typescript-eslint/no-explicit-any */
++  const writable = store as any;
++  const realFlush = writable.flushArtifactDirectory.bind(store);
++  let sawFlush = false;
++  const first = make("av_flush_1", 10);
++  writable.flushArtifactDirectory = () => {
++    assert.equal(fs.existsSync(path.join(store.artifactsDir, first.stage.storedAs)), true,
++      "rename to the final name happened before directory flush");
++    const outside = new DatabaseSync(dbPath);
++    const visible = (outside.prepare(
++      "SELECT COUNT(*) n FROM artifact_versions WHERE id=?",
++    ).get(first.row.id) as { n: number }).n;
++    outside.close();
++    assert.equal(visible, 0, "another connection cannot see the row yet: flush is before COMMIT");
++    sawFlush = true;
++    realFlush();
++  };
++  const artifact = store.appendArtifactVersion({
++    channelId: "ch1", name: "report.md", at: 10, version: first.row, stage: first.stage,
++  });
++  assert.equal(sawFlush, true);
++  assert.ok(store.artifactVersionNumber(artifact.id, 1), "the row commits after the flush returns");
++
++  const before = store.artifactRow(artifact.id)!;
++  const second = make("av_flush_2", 20);
++  writable.flushArtifactDirectory = () => { throw new Error("directory flush failed"); };
++  assert.throws(() => store.appendArtifactVersion({
++    channelId: "ch1", name: "report.md", at: 20, version: second.row, stage: second.stage,
++  }), /directory flush failed/);
++  writable.flushArtifactDirectory = realFlush;
++  /* eslint-enable @typescript-eslint/no-explicit-any */
++
++  const after = store.artifactRow(artifact.id)!;
++  assert.equal(after.nextVersion, before.nextVersion, "flush failure rolls back the version counter");
++  assert.equal(after.updatedAt, before.updatedAt, "flush failure rolls back the list timestamp");
++  assert.equal(store.artifactVersionNumber(artifact.id, 2), undefined, "no version row committed");
++  assert.equal(fs.existsSync(path.join(store.artifactsDir, second.stage.storedAs)), false,
++    "promoted final bytes are compensated after rollback");
++  assert.equal(fs.existsSync(path.join(store.artifactsDir, second.stage.stagedAs)), false,
++    "no stage litter remains either");
++  store.db.close();
++});
++
++test("startup reclaims a publish stage whose owning process is gone", () => {
++  const dbPath = tmp("hd-artifact-abandoned-stage.db");
++  const first = new Store(dbPath, { ownerToken: "tok-owner" });
++  fs.mkdirSync(first.artifactsDir, { recursive: true });
++  const abandoned =
++    `.publishing-v2-99999999-boot_${"a".repeat(22)}-stage_${"b".repeat(22)}-av_dead-report.md`;
++  fs.writeFileSync(path.join(first.artifactsDir, abandoned), "never committed");
++  first.db.close();
++
++  const reopened = new Store(dbPath, { ownerToken: "tok-owner" });
++  assert.equal(fs.existsSync(path.join(reopened.artifactsDir, abandoned)), false,
++    "a dead process can never finish its stage, so restart cleanup owns it");
++  reopened.db.close();
++});
++
++test("a recent v2 stage with this pid but another startup nonce is reclaimed", () => {
++  const dbPath = tmp("hd-artifact-reused-pid-recent.db");
++  const first = new Store(dbPath, { ownerToken: "tok-owner" });
++  fs.mkdirSync(first.artifactsDir, { recursive: true });
++  /* eslint-disable @typescript-eslint/no-explicit-any */
++  const currentNonce = (first as any).artifactStageNonce as string;
++  /* eslint-enable @typescript-eslint/no-explicit-any */
++  const differentNonce = currentNonce === `boot_${"c".repeat(22)}`
++    ? `boot_${"d".repeat(22)}` : `boot_${"c".repeat(22)}`;
++  const reused =
++    `.publishing-v2-${process.pid}-${differentNonce}-stage_${"e".repeat(22)}-av_recent-report.md`;
++  const file = path.join(first.artifactsDir, reused);
++  fs.writeFileSync(file, "older startup, reused pid");
++  first.db.close();
++
++  const reopened = new Store(dbPath, { ownerToken: "tok-owner" });
++  assert.equal(fs.existsSync(file), false,
++    "this pid is not enough: a different startup nonce belongs to an abandoned run");
++  reopened.db.close();
++});
++
++test("another live pid keeps only its recent v2 stage; an old one is reclaimed", () => {
++  const dbPath = tmp("hd-artifact-other-live-pid.db");
++  const store = new Store(dbPath, { ownerToken: "tok-owner" });
++  fs.mkdirSync(store.artifactsDir, { recursive: true });
++  const otherPid = process.pid + 100_000;
++  const recentName =
++    `.publishing-v2-${otherPid}-boot_${"f".repeat(22)}-stage_${"g".repeat(22)}-av_recent-report.md`;
++  const oldName =
++    `.publishing-v2-${otherPid}-boot_${"h".repeat(22)}-stage_${"i".repeat(22)}-av_old-report.md`;
++  const recentFile = path.join(store.artifactsDir, recentName);
++  const oldFile = path.join(store.artifactsDir, oldName);
++  fs.writeFileSync(recentFile, "another live process is still publishing");
++  fs.writeFileSync(oldFile, "the live pid has outlived this abandoned stage");
++  const old = new Date(Date.now() - ARTIFACT_STAGE_GRACE_MS - 1_000);
++  fs.utimesSync(oldFile, old, old);
++
++  /* eslint-disable @typescript-eslint/no-explicit-any */
++  const writable = store as any;
++  const realAlive = writable.artifactStageProcessAlive.bind(store);
++  writable.artifactStageProcessAlive = (pid: number) => pid === otherPid;
++  try {
++    store.sweepArtifactOrphans();
++  } finally {
++    writable.artifactStageProcessAlive = realAlive;
++  }
++  /* eslint-enable @typescript-eslint/no-explicit-any */
++
++  assert.equal(fs.existsSync(recentFile), true,
++    "another live process keeps its recent stage under the established recent-plus-live rule");
++  assert.equal(fs.existsSync(oldFile), false,
++    "age always wins: even a live pid cannot protect an old stage");
++  store.db.close();
++});
++
++test("numeric legacy stages use age only: recent is kept, old is reclaimed", () => {
++  const dbPath = tmp("hd-artifact-numeric-legacy.db");
++  const first = new Store(dbPath, { ownerToken: "tok-owner" });
++  fs.mkdirSync(first.artifactsDir, { recursive: true });
++  const legacy = `.publishing-${process.pid}-legacy-stage-report.md`;
++  const file = path.join(first.artifactsDir, legacy);
++  fs.writeFileSync(file, "legacy numeric name");
++  first.db.close();
++
++  const recentOpen = new Store(dbPath, { ownerToken: "tok-owner" });
++  assert.equal(fs.existsSync(file), true,
++    "numeric legacy names are not guessed to be current pid ownership, but recent age is protected");
++  recentOpen.db.close();
++
++  const old = new Date(Date.now() - ARTIFACT_STAGE_GRACE_MS - 1_000);
++  fs.utimesSync(file, old, old);
++  const oldOpen = new Store(dbPath, { ownerToken: "tok-owner" });
++  assert.equal(fs.existsSync(file), false, "old legacy litter is eventually reclaimed");
++  oldOpen.db.close();
++});
++
++test("malformed publishing names are handled as legacy and never guessed from text", () => {
++  const dbPath = tmp("hd-artifact-malformed-stage.db");
++  const first = new Store(dbPath, { ownerToken: "tok-owner" });
++  fs.mkdirSync(first.artifactsDir, { recursive: true });
++  const malformed = `.publishing-v2-${process.pid}-not-a-valid-v2-stage`;
++  const file = path.join(first.artifactsDir, malformed);
++  fs.writeFileSync(file, "unknown stage");
++  first.db.close();
++
++  const recentOpen = new Store(dbPath, { ownerToken: "tok-owner" });
++  assert.equal(fs.existsSync(file), true, "recent malformed names are preserved safely");
++  recentOpen.db.close();
++  const old = new Date(Date.now() - ARTIFACT_STAGE_GRACE_MS - 1_000);
++  fs.utimesSync(file, old, old);
++  const oldOpen = new Store(dbPath, { ownerToken: "tok-owner" });
++  assert.equal(fs.existsSync(file), false, "old malformed names are reclaimed by age only");
++  oldOpen.db.close();
++});
++
++test("valid JSON with an invalid version shape is recorded and cannot crash orphan cleanup", () => {
++  const dbPath = tmp("hd-artifact-malformed.db");
++  const first = new Store(dbPath, { ownerToken: "tok-owner" });
++  fs.mkdirSync(first.artifactsDir, { recursive: true });
++  fs.writeFileSync(path.join(first.artifactsDir, "unknown-final.bin"), "keep until understood");
++  first.db.prepare(
++    "INSERT INTO artifact_versions(id,artifactId,channelId,agentId,version,producedAt,json) " +
++    "VALUES(?,?,?,?,?,?,?)",
++  ).run("av_bad", "af_bad", "ch1", "a1", 1, 1, "{}");
++  first.db.close();
++
++  const reopened = new Store(dbPath, { ownerToken: "tok-owner" });
++  assert.ok(reopened.problems.some(p => p.includes("av_bad") && p.includes("invalid stored shape")));
++  assert.equal(fs.existsSync(path.join(reopened.artifactsDir, "unknown-final.bin")), true,
++    "one unknown pointer makes cleanup preserve unknown bytes rather than guess");
++  reopened.db.close();
++});
++
+ test("#6 an interrupted migration step leaves the version where it was, and re-runs", () => {
+   const dbPath = tmp("hd-atomic.db");
+   oldDatabase(dbPath);
+diff --git a/apps/relay/src/server.ts b/apps/relay/src/server.ts
+index 8f8f521..99c744c 100644
+--- a/apps/relay/src/server.ts
++++ b/apps/relay/src/server.ts
+@@ -6,7 +6,9 @@ import http from "node:http";
+ import path from "node:path";
+ import { WebSocketServer, WebSocket } from "ws";
+ import {
+-  AgentDef, AgentPresenceState, AgentStatus, Approval, Artifact, ArtifactVersion, Attachment,
++  AgentDef, AgentPresenceState, AgentStatus, Approval,
++  ArtifactLink, ArtifactRelationView, Attachment,
++  StoredArtifact, StoredArtifactVersion, artifactForPublic,
+   Channel, ChannelMember,
+   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
+   MESSAGE_LIMITS, ARTIFACT_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
+@@ -15,7 +17,9 @@ import {
+   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
+   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
+   contentDisposition, downloadContentType, fitRunRecord, isBranchName, isSafeFileName,
+-  isSafeStoredId, latestVersion, looksLikeText, versionOf, validateArtifact,
++  isSafeStoredId, latestVersion, looksLikeText, normaliseArtifactAccess,
++  normaliseArtifactLinks, validateArtifactAccessMutation, validateArtifactLinks,
++  versionOf, validateArtifact,
+   mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
+   setMachineNames, shareableRun,
+   extractMentions, nameKey, newId, validateAgentInput, validateAttachment, validateChannelText,
+@@ -57,7 +61,7 @@ import {
+  */
+ type TicketTarget =
+   | { kind: "attachment"; id: ID }
+-  | { kind: "artifact"; id: ID };
++  | { kind: "artifact"; id: ID; artifactId: ID };
+ 
+ interface Conn {
+   ws: WebSocket;
+@@ -65,6 +69,13 @@ interface Conn {
+   client: "desktop" | "mobile" | "engine";
+ }
+ 
++type ArtifactFrame = Extract<ServerFrame, { type: "artifact" }>;
++interface ArtifactProjection {
++  frame: ArtifactFrame;
++  fingerprint: string;
++}
++type ArtifactProjectionSnapshot = Map<ID, Map<ID, ArtifactProjection | null>>;
++
+ export interface RelayOptions {
+   port?: number;
+   dbPath?: string;
+@@ -253,13 +264,14 @@ export class Relay {
+           conn = this.handleJoinWithToken(ws, frame);
+           return;
+         }
+-        if (!conn) { send(ws, { type: "error", error: "not authenticated" }); return; }
++        if (!conn) { sendFrameError(ws, "not authenticated", frame); return; }
+         this.handleFrame(conn, frame);
+       } catch (err) {
+         // ONE OWNER FOR "NO" (refusal.ts). This used to be `String(err)`, which
+         // put the word "Error:" in front of every hand-written refusal and would
+-        // have shown a raw `TypeError` under a form in his app.
+-        send(ws, { type: "error", error: refusalText(err, `frame "${frame.type}"`) });
++        // have shown a raw `TypeError` under a form in his app. `sendFrameError`
++        // also owns safe request correlation before and after authentication.
++        sendFrameError(ws, refusalText(err, `frame "${frame.type}"`), frame);
+       }
+     });
+     ws.on("close", () => {
+@@ -310,12 +322,13 @@ export class Relay {
+       const redeemed = this.store.redeemInvite(code, name || "Friend");
+       if (!redeemed) {
+         const known = this.store.invite(code);
+-        send(ws, {
+-          type: "error",
+-          error: known
++        sendFrameError(
++          ws,
++          known
+             ? "that invite has already been used — ask for a new one"
+             : "that invite code isn't valid",
+-        });
++          frame,
++        );
+         ws.close();
+         return undefined;
+       }
+@@ -332,7 +345,7 @@ export class Relay {
+       }
+       this.broadcast({ type: "userJoined", user });
+     }
+-    if (!user) { send(ws, { type: "error", error: "bad token" }); ws.close(); return undefined; }
++    if (!user) { sendFrameError(ws, "bad token", frame); ws.close(); return undefined; }
+     const conn: Conn = { ws, userId: user.id, client: frame.client };
+     this.conns.add(conn);
+     send(ws, { type: "welcome", state: this.worldFor(user.id) });
+@@ -365,13 +378,13 @@ export class Relay {
+   ): Conn | undefined {
+     const bind = resolveJoinBind(this.bind === LOOPBACK ? undefined : this.bind);
+     if (!bind.ok) {
+-      send(ws, { type: "error", error: bind.reason });
++      sendFrameError(ws, bind.reason, frame);
+       ws.close();
+       return undefined;
+     }
+     const check = checkJoinToken(this.store, frame.token);
+     if (!check.ok) {
+-      send(ws, { type: "error", error: check.reason });
++      sendFrameError(ws, check.reason, frame);
+       ws.close();
+       return undefined;
+     }
+@@ -871,14 +884,157 @@ export class Relay {
+    * "no such file" is the answer for an artifact in somebody else's room as well
+    * as for an invented id, so an id cannot be probed.
+    */
+-  private artifactFor(userId: ID, artifactId: ID): Artifact {
++  private artifactFor(userId: ID, artifactId: ID): StoredArtifact {
+     const artifact = this.store.artifact(artifactId);
+     if (!artifact) throw new Error("no such file");
+-    try { this.channelFor(userId, artifact.channelId); }
+-    catch { throw new Error("no such file"); }
++    try {
++      this.channelFor(userId, artifact.channelId);
++      if (!this.store.artifactAccessAllows(artifact.id, userId)) throw new Error("hidden");
++    } catch { throw new Error("no such file"); }
+     return artifact;
+   }
+ 
++  /**
++   * Typed links as this person may safely draw them.
++   *
++   * Outgoing links stay visible when their exact target is gone or hidden, but
++   * carry no target id and no name — only `hidden:true`, which becomes the plain
++   * "A linked file isn't available" sentence. Incoming links are omitted unless
++   * their source exact version and chain are both readable, so a hidden source
++   * cannot be probed by opening its target.
++   */
++  private artifactRelations(
++    userId: ID, artifact: StoredArtifact,
++  ): { relations: ArtifactRelationView[]; truncated: boolean } {
++    const page = this.store.artifactRelationsForDetail(
++      artifact.id, userId, ARTIFACT_LIMITS.relationDetail,
++    );
++    const out: ArtifactRelationView[] = [];
++    const cache = new Map<ID, StoredArtifact | null>();
++    const readable = (artifactId: ID): StoredArtifact | undefined => {
++      if (cache.has(artifactId)) return cache.get(artifactId) ?? undefined;
++      try {
++        const found = this.artifactFor(userId, artifactId);
++        cache.set(artifactId, found);
++        return found;
++      } catch {
++        cache.set(artifactId, null);
++        return undefined;
++      }
++    };
++
++    for (const link of page.items) {
++      const from = { artifactId: link.sourceArtifactId, version: link.sourceVersion };
++      if (link.direction === "outgoing") {
++        const exact = this.store.artifactVersionNumber(link.targetArtifactId, link.targetVersion);
++        const target = exact ? readable(link.targetArtifactId) : undefined;
++        if (!exact || !target) {
++          out.push({ kind: link.kind, direction: "outgoing", from, hidden: true });
++        } else {
++          out.push({
++            kind: link.kind, direction: "outgoing", from,
++            to: { artifactId: link.targetArtifactId, version: link.targetVersion },
++            linkedName: target.name, hidden: false,
++          });
++        }
++        continue;
++      }
++
++      // The store query already filtered hidden/unretained incoming sources.
++      // Re-check through the ordinary gate before naming it on the wire.
++      const source = readable(link.sourceArtifactId);
++      if (!source) continue;
++      out.push({
++        kind: link.kind, direction: "incoming", from,
++        to: { artifactId: link.targetArtifactId, version: link.targetVersion },
++        linkedName: source.name, hidden: false,
++      });
++    }
++    return { relations: out, truncated: page.truncated };
++  }
++
++  private artifactFrame(
++    userId: ID, artifactId: ID, requestId?: ID,
++  ): Extract<ServerFrame, { type: "artifact" }> {
++    const stored = this.artifactFor(userId, artifactId);
++    const { relations, truncated } = this.artifactRelations(userId, stored);
++    return {
++      type: "artifact", artifact: artifactForPublic(stored), relations,
++      ...(requestId !== undefined ? { requestId } : {}),
++      ...(truncated ? { relationsTruncated: true as const } : {}),
++    };
++  }
++
++  /** One viewer's complete public value, or null when the chain is invisible. */
++  private artifactProjection(userId: ID, artifactId: ID): ArtifactProjection | null {
++    try {
++      const frame = this.artifactFrame(userId, artifactId);
++      return { frame, fingerprint: JSON.stringify(frame) };
++    } catch { return null; }
++  }
++
++  /**
++   * Capture every current room viewer, including null for restricted chains.
++   * Null is essential: null→null means an invisible event and MUST emit nothing.
++   */
++  private snapshotArtifactProjections(artifactIds: Iterable<ID>): ArtifactProjectionSnapshot {
++    const snapshot: ArtifactProjectionSnapshot = new Map();
++    for (const artifactId of new Set(artifactIds)) {
++      const row = this.store.artifactRow(artifactId);
++      const channel = row ? this.store.channel(row.channelId) : undefined;
++      if (!row || !channel) continue;
++      const byUser = new Map<ID, ArtifactProjection | null>();
++      for (const userId of this.audienceFor(channel)) {
++        byUser.set(userId, this.artifactProjection(userId, artifactId));
++      }
++      snapshot.set(artifactId, byUser);
++    }
++    return snapshot;
++  }
++
++  /**
++   * THE ONE OWNER OF UNSOLICITED ARTIFACT PUSHES.
++   *
++   * Compare complete public values before and after. Equal fingerprints send
++   * nothing — no unchanged frame and no timing hint. A visible change sends the
++   * fresh frame (including explicit empty relations); visible→hidden sends one
++   * unavailable frame; hidden→hidden is silent.
++   */
++  private pushArtifactProjectionDiff(
++    before: ArtifactProjectionSnapshot, artifactIds: Iterable<ID>, omit?: Conn,
++  ): void {
++    const ids = new Set<ID>([...before.keys(), ...artifactIds]);
++    const after = this.snapshotArtifactProjections(ids);
++    for (const artifactId of ids) {
++      const beforeUsers = before.get(artifactId) ?? new Map<ID, ArtifactProjection | null>();
++      const afterUsers = after.get(artifactId) ?? new Map<ID, ArtifactProjection | null>();
++      const users = new Set<ID>([...beforeUsers.keys(), ...afterUsers.keys()]);
++      for (const userId of users) {
++        const was = beforeUsers.get(userId) ?? null;
++        const now = afterUsers.get(userId) ?? null;
++        if (was?.fingerprint === now?.fingerprint) continue;
++        const frame: ServerFrame | undefined = now
++          ? now.frame
++          : was ? { type: "artifactUnavailable", artifactId } : undefined;
++        if (!frame) continue;
++        for (const target of this.conns) {
++          if (target.userId === userId && target !== omit) send(target.ws, frame);
++        }
++      }
++    }
++  }
++
++  private artifactIdsInChannel(channelId: ID): ID[] {
++    return this.store.artifactsIn(channelId, ARTIFACT_LIMITS.perChannel).map(a => a.id);
++  }
++
++  /** A run may be named on a version only when agent and source room both match. */
++  private runOf(agentId: ID, channelId: ID, runId: unknown): RunRow | undefined {
++    if (typeof runId !== "string" || !isSafeStoredId(runId)) return undefined;
++    const run = this.store.run(runId);
++    return run && run.agentId === agentId && run.channelId === channelId ? run : undefined;
++  }
++
+   /**
+    * The job this claim is really about, or nothing.
+    *
+@@ -955,7 +1111,9 @@ export class Relay {
+    * Nothing here trusts the ticket for permission — it returns the channel, and
+    * the caller asks `channelFor` about it, now, on stored state.
+    */
+-  private ticketFile(target: TicketTarget): { channelId: ID; name: string; storedAs: string; dir: string } | undefined {
++  private ticketFile(target: TicketTarget): {
++    channelId: ID; name: string; storedAs: string; dir: string; artifactId?: ID;
++  } | undefined {
+     if (target.kind === "attachment") {
+       const row = this.store.attachment(target.id);
+       if (!row) return undefined;
+@@ -972,7 +1130,7 @@ export class Relay {
+     const artifact = this.store.artifactRow(row.artifactId);
+     if (!artifact) return undefined;
+     return {
+-      channelId: row.channelId, name: artifact.name,
++      channelId: row.channelId, name: artifact.name, artifactId: target.artifactId,
+       storedAs: row.version.storedAs, dir: this.store.artifactsDir,
+     };
+   }
+@@ -1004,8 +1162,13 @@ export class Relay {
+ 
+     const file = this.ticketFile(held.target);
+     if (!file) { nope(); return; }
+-    // THE SAME GATE, ASKED AGAIN, NOW. Not a copy of it — the function itself.
+-    try { this.channelFor(held.userId, file.channelId); } catch { nope(); return; }
++    // THE SAME GATE, ASKED AGAIN, NOW. Artifact tickets re-check both current
++    // room membership AND the chain's narrower permission; attachment tickets
++    // keep the room gate they have always used.
++    try {
++      if (file.artifactId) this.artifactFor(held.userId, file.artifactId);
++      else this.channelFor(held.userId, file.channelId);
++    } catch { nope(); return; }
+ 
+     // The name was checked by `isSafeFileName` before it was stored. It is
+     // checked again on the way out, because a row could have been written by an
+@@ -1224,6 +1387,8 @@ export class Relay {
+         const ch = this.adminChannel(conn.userId, frame.channelId);
+         if (ch.archivedAt) throw new Error("that conversation is archived — nobody new can be added to it");
+ 
++        const artifactIds = this.artifactIdsInChannel(ch.id);
++        const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
+         const live = new Set(this.store.channel(ch.id)!.memberIds);
+         for (const memberId of new Set(frame.memberIds)) {
+           // AN AGENT CARRIES ITS OWNER IN WITH IT — the same rule creating a
+@@ -1232,6 +1397,7 @@ export class Relay {
+           this.store.addChannelMember(ch.id, memberId, { role: "member", invitedBy: conn.userId });
+           live.add(memberId);
+         }
++        this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
+         this.audit(conn, "member_added", ch.id, `added ${frame.memberIds.length} member(s) to ${ch.name}`);
+         this.broadcastChannel(this.store.channel(ch.id)!);
+         break;
+@@ -1299,7 +1465,10 @@ export class Relay {
+         const listed = this.browsableChannels(conn.userId).some(c => c.id === frame.channelId);
+         if (!listed) throw new Error("no such channel");
+         const ch = this.store.channel(frame.channelId)!;
++        const artifactIds = this.artifactIdsInChannel(ch.id);
++        const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
+         this.store.addChannelMember(ch.id, conn.userId, { role: "member" });
++        this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
+         this.audit(conn, "member_added", ch.id, `joined ${ch.name}`);
+         // everyone in the room, including the new arrival, learns the new
+         // member list; the newcomer then asks for scrollback the ordinary way
+@@ -1310,9 +1479,12 @@ export class Relay {
+         const ch = this.channelFor(conn.userId, frame.channelId);
+         if (ch.kind === "dm") throw new Error("you can't leave a direct conversation");
+         if (!this.store.memberRole(ch.id, conn.userId)) throw new Error("you're not in that conversation");
++        const artifactIds = this.artifactIdsInChannel(ch.id);
++        const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
+         this.store.removeChannelMember(ch.id, conn.userId, conn.userId);
+         this.audit(conn, "member_removed", ch.id, `left ${ch.name}`);
+         this.tellLeft(conn.userId, ch.id);
++        this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
+         this.broadcastChannel(this.store.channel(ch.id)!);
+         break;
+       }
+@@ -1324,11 +1496,14 @@ export class Relay {
+         if (role === "owner" && this.store.memberRole(ch.id, conn.userId) !== "owner") {
+           throw new Error("only the person who runs this conversation can do that");
+         }
++        const artifactIds = this.artifactIdsInChannel(ch.id);
++        const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
+         this.store.removeChannelMember(ch.id, frame.memberId, conn.userId);
+         this.audit(conn, "member_removed", ch.id, `removed someone from ${ch.name}`);
+         // an agent's place in a room belongs to its owner's screen
+         const agent = this.store.agents().find(a => a.id === frame.memberId);
+         this.tellLeft(agent ? agent.ownerId : frame.memberId, ch.id);
++        this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
+         this.broadcastChannel(this.store.channel(ch.id)!);
+         break;
+       }
+@@ -1345,7 +1520,10 @@ export class Relay {
+         if (frame.memberId === conn.userId && frame.role !== "owner") {
+           throw new Error("give this conversation to someone else before standing down");
+         }
++        const artifactIds = this.artifactIdsInChannel(ch.id);
++        const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
+         this.store.setMemberRole(ch.id, frame.memberId, frame.role as ChannelRole);
++        this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
+         this.audit(conn, "member_role_changed", ch.id, `changed a role in ${ch.name}`);
+         this.broadcastChannel(this.store.channel(ch.id)!);
+         break;
+@@ -1462,12 +1640,21 @@ export class Relay {
+         const target = this.store.user(frame.userId);
+         if (!target) throw new Error("no such person");
+         const theirAgents = this.store.agents().filter(a => a.ownerId === target.id);
++        const affectedArtifacts = this.store.channels()
++          .filter(ch => ch.memberIds.includes(target.id))
++          .map(ch => {
++            const ids = this.artifactIdsInChannel(ch.id);
++            return { ids, before: this.snapshotArtifactProjections(ids) };
++          });
+         this.store.removeUser(target.id);
+         this.audit(conn, "agent_deleted", target.id, `removed ${target.name} from this Cloud9`);
+         for (const a of theirAgents) {
+           delete this.agentStatus[a.id];
+           this.broadcast({ type: "agentDeleted", agentId: a.id });
+         }
++        for (const affected of affectedArtifacts) {
++          this.pushArtifactProjectionDiff(affected.before, affected.ids);
++        }
+         for (const c of this.store.channels()) this.broadcastChannel(c);
+         this.broadcast({ type: "userRemoved", userId: target.id });
+         // and close whatever they still have open — their tokens are gone
+@@ -2242,92 +2429,155 @@ export class Relay {
+       }
+       // ---- files an AGENT made (docs/plans/artifact-store-handoff.md) ----
+       case "publishArtifact": {
+-        // ENGINE ONLY, the same law as `runRecorded` and `agentSend`: a desktop
+-        // client able to send this could put a file into a conversation wearing
+-        // an agent's name, and the whole value of the store is that the
+-        // attribution on a version is TRUE.
++        // ENGINE ONLY: a screen cannot put bytes into a room wearing an agent's
++        // name. Agent and room are both read from stored state.
+         if (conn.client !== "engine") {
+           throw new Error("only your own agent engine can share a file an agent made");
+         }
+-        const agent = this.myAgent(conn.userId, frame.agentId); // never from the frame
++        const agent = this.myAgent(conn.userId, frame.agentId);
+         const channel = this.writableChannel(conn.userId, frame.channelId);
+         let bytes: Buffer;
+         try { bytes = Buffer.from(String(frame.dataBase64 ?? ""), "base64"); }
+         catch { throw new Error("that file didn't arrive properly"); }
+-        // ONE OWNER for the name rule and the size rule — `validateArtifact`
+-        // reaches `isSafeFileName` and `ARTIFACT_LIMITS`, and the sentence a
+-        // refused file gets is written there, in plain words, beside the number.
+         const bad = validateArtifact(frame.name, bytes.length);
+         if (bad) throw new Error(bad);
+         if (this.store.artifactPublishesSince(agent.id, Date.now() - 60_000)
+           >= ARTIFACT_LIMITS.publishesPerMinute) {
+           throw new Error(
+             `${agent.name} is sharing files faster than anyone can read them — ` +
+-            `it has to wait a minute`);
++            "it has to wait a minute");
++        }
++
++        let links: ArtifactLink[] = [];
++        if (frame.links !== undefined) {
++          const linksBad = validateArtifactLinks(frame.links);
++          if (linksBad) throw new Error(linksBad);
++          links = normaliseArtifactLinks(frame.links);
+         }
+-        // The per-conversation ceiling is asked about a NEW name only: a new
+-        // version of a file that is already here adds no row to count, and
+-        // refusing an update because the room is full would leave the newest
+-        // version of his report permanently unreachable.
++        // Shape came from shared's validator; stored state proves every target is
++        // the exact retained version, in this same source room, and readable to
++        // the publisher. Missing and hidden get the same refusal.
++        for (const link of links) {
++          let target: StoredArtifact;
++          try { target = this.artifactFor(conn.userId, link.target.artifactId); }
++          catch { throw new Error("a linked file version is not available in this conversation"); }
++          if (target.channelId !== channel.id || !versionOf(target, link.target.version)) {
++            throw new Error("a linked file version is not available in this conversation");
++          }
++        }
++
+         const already = this.store.artifactRowByName(channel.id, frame.name);
++        if (already) this.artifactFor(conn.userId, already.id);
+         if (!already && this.store.artifactCountIn(channel.id) >= ARTIFACT_LIMITS.perChannel) {
+           throw new Error(
+             `this conversation already holds ${ARTIFACT_LIMITS.perChannel} shared files — ` +
+-            `the oldest have to be cleared before another can be added`);
++            "the oldest have to be cleared before another can be added");
+         }
++
++        const beforeRelations = already
++          ? this.store.artifactRelationNeighbors(already.id)
++          : [];
++        const beforeArtifactIds = [
++          ...(already ? [already.id] : []),
++          ...beforeRelations,
++          ...links.map(link => link.target.artifactId),
++        ];
++        const beforeArtifacts = this.snapshotArtifactProjections(beforeArtifactIds);
+         const now = Date.now();
+-        const row = this.store.claimArtifactVersion({ channelId: channel.id, name: frame.name, at: now });
+-        const version = row.nextVersion - 1;
+         const versionId = newId("av");
+-        // Bytes FIRST, and this throws if they did not land — a row that
+-        // promises a version whose file is not there is the truncated-PDF class.
+-        const storedAs = this.store.writeArtifactBytes(versionId, frame.name, bytes);
+-        const stored: ArtifactVersion = {
+-          id: versionId, version, size: bytes.length,
+-          // COMPUTED HERE, from the bytes: the sha and "is it text" are facts
+-          // about what was stored, never claims from the producer.
++        // Bytes land under a publish-only stage. The append transaction promotes
++        // them while owning the same DB lock startup cleanup needs.
++        const stage = this.store.writeArtifactBytes(versionId, frame.name, bytes);
++        const run = this.runOf(agent.id, channel.id, frame.runId);
++        const stored: Omit<StoredArtifactVersion, "version"> = {
++          id: versionId, size: bytes.length,
+           sha256: createHash("sha256").update(bytes).digest("hex"),
+-          text: looksLikeText(bytes),
+-          storedAs,
++          text: looksLikeText(bytes), storedAs: stage.storedAs,
+           agentId: agent.id, agentName: agent.name, ownerId: agent.ownerId,
+-          ...(typeof frame.runId === "string" && isSafeStoredId(frame.runId)
+-            ? { runId: frame.runId } : {}),
++          ...(run ? { runId: run.record.id } : {}),
+           ...(this.taskOf(agent.id, frame.taskId) ? { taskId: frame.taskId as ID } : {}),
+           ...(typeof frame.note === "string" && frame.note.trim()
+             ? { note: frame.note.trim().slice(0, ARTIFACT_LIMITS.note) } : {}),
++          ...(links.length > 0 ? { links } : {}),
+           producedAt: now,
+         };
+-        this.store.saveArtifactVersion(row.id, channel.id, stored);
+-        this.store.pruneArtifactVersions(row.id, ARTIFACT_LIMITS.versions);
+-        const artifact = this.store.artifact(row.id)!;
++        let artifact = this.store.appendArtifactVersion({
++          channelId: channel.id, name: frame.name, at: now, version: stored, stage,
++        });
++        const afterAppendRelations = this.store.artifactRelationNeighbors(artifact.id);
++        this.store.pruneArtifactVersions(artifact.id, ARTIFACT_LIMITS.versions);
++        artifact = this.store.artifact(artifact.id)!;
++        const version = latestVersion(artifact)!.version;
+         this.store.logActivity({
+           actorKind: "agent", actorId: agent.id, actorName: agent.name,
+           kind: "message", refId: artifact.id,
+           detail: `shared ${artifact.name} (version ${version}) in channel ${channel.id}`,
+         });
+-        // EVERYONE IN THE ROOM, not just the owner: a file an agent made is the
+-        // conversation's, which is the entire point of the store.
+-        this.toChannel(channel, { type: "artifact", artifact });
++        this.pushArtifactProjectionDiff(beforeArtifacts, [
++          artifact.id, ...beforeRelations, ...afterAppendRelations,
++        ]);
+         break;
+       }
+       case "artifacts": {
+         const channel = this.channelFor(conn.userId, frame.channelId);
+         send(conn.ws, {
+           type: "artifacts", channelId: channel.id,
+-          artifacts: this.store.artifactsIn(channel.id, ARTIFACT_LIMITS.listPage),
++          artifacts: this.store.artifactsInFor(conn.userId, channel.id, ARTIFACT_LIMITS.listPage)
++            .map(artifactForPublic),
++        });
++        break;
++      }
++      case "artifactWorkspace": {
++        const page = this.store.artifactWorkspace(
++          conn.userId,
++          this.visibleChannels(conn.userId),
++          { before: frame.before, beforeId: frame.beforeId },
++          frame.limit ?? ARTIFACT_LIMITS.workspaceDefault,
++        );
++        send(conn.ws, {
++          type: "artifactWorkspace", artifacts: page.items, hasMore: page.hasMore,
++          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
++          ...(page.nextBefore !== undefined ? { nextBefore: page.nextBefore } : {}),
++          ...(page.nextBeforeId !== undefined ? { nextBeforeId: page.nextBeforeId } : {}),
+         });
+         break;
+       }
+       case "artifact": {
+-        send(conn.ws, { type: "artifact", artifact: this.artifactFor(conn.userId, frame.artifactId) });
++        send(conn.ws, this.artifactFrame(conn.userId, frame.artifactId, frame.requestId));
++        break;
++      }
++      case "setArtifactAccess": {
++        const artifact = this.artifactFor(conn.userId, frame.artifactId);
++        const visible = this.channelFor(conn.userId, artifact.channelId);
++        if (visible.kind === "dm") {
++          throw new Error("files in a direct conversation always inherit that conversation's access");
++        }
++        const channel = this.adminChannel(conn.userId, artifact.channelId);
++        const badAccess = validateArtifactAccessMutation(frame.access);
++        if (badAccess) throw new Error(badAccess);
++        const access = normaliseArtifactAccess(frame.access);
++        if (access.kind === "restricted") {
++          for (const userId of access.userIds) {
++            if (!this.store.user(userId) || !channel.memberIds.includes(userId)) {
++              throw new Error("file access can only include current people in this conversation");
++            }
++          }
++        }
++
++        const relatedArtifacts = this.store.artifactRelationNeighbors(artifact.id);
++        const affectedArtifacts = [artifact.id, ...relatedArtifacts];
++        const beforeArtifacts = this.snapshotArtifactProjections(affectedArtifacts);
++        this.store.setArtifactAccess(artifact.id, access);
++        // One direct success receipt for this socket. Other machines and related
++        // caches travel through the no-request-id projection diff below.
++        send(conn.ws, this.artifactFrame(conn.userId, artifact.id, frame.requestId));
++        this.pushArtifactProjectionDiff(beforeArtifacts, affectedArtifacts, conn);
+         break;
+       }
+       case "artifactTicket": {
+         const artifact = this.artifactFor(conn.userId, frame.artifactId);
+-        // Absent version means the newest, which is what a card drawn from a
+-        // reference in a message asks for. A named version that is no longer
+-        // here (pruned) is NOT quietly answered with the newest one — that would
+-        // hand him different bytes than the ones he asked for and say nothing.
++        // Absent version means the newest. A named version that retention has
++        // removed is never swapped for a newer set of bytes.
+         const wanted = frame.version === undefined
+           ? latestVersion(artifact)
+           : versionOf(artifact, frame.version);
+@@ -2338,10 +2588,11 @@ export class Relay {
+               `the newest is version ${latestVersion(artifact)!.version}`);
+         }
+         const { ticket, expiresAt } = this.mintTicket(
+-          conn.userId, { kind: "artifact", id: wanted.id });
++          conn.userId, { kind: "artifact", id: wanted.id, artifactId: artifact.id });
+         send(conn.ws, {
+           type: "artifactTicket", artifactId: artifact.id, version: wanted.version,
+-          ticket, url: ATTACHMENT_TICKET.path + ticket, expiresAt, artifact,
++          ticket, url: ATTACHMENT_TICKET.path + ticket, expiresAt,
++          artifact: artifactForPublic(artifact),
+         });
+         break;
+       }
+@@ -2882,6 +3133,18 @@ export function attachmentCors(req: http.IncomingMessage): Record<string, string
+   };
+ }
+ 
++/**
++ * One request-correlation rule for every direct refusal, including frames that
++ * fail before authentication. No parsed frame means no request id can be echoed.
++ */
++function sendFrameError(ws: WebSocket, error: string, frame?: ClientFrame): void {
++  const requestId = frame && isSafeStoredId(frame.requestId) ? frame.requestId : undefined;
++  send(ws, {
++    type: "error", error,
++    ...(requestId !== undefined ? { requestId } : {}),
++  });
++}
++
+ function send(ws: WebSocket, frame: ServerFrame): void {
+   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
+ }
+diff --git a/apps/relay/src/store.coverage.test.ts b/apps/relay/src/store.coverage.test.ts
+index ff6a4f4..ab58445 100644
+--- a/apps/relay/src/store.coverage.test.ts
++++ b/apps/relay/src/store.coverage.test.ts
+@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
+ import fs from "node:fs";
+ import path from "node:path";
+ import {
+-  ArtifactVersion, Attachment, Channel, Message, RUN_RETENTION, RunRecord,
++  StoredArtifactVersion, Attachment, Channel, Message, RUN_RETENTION, RunRecord,
+ } from "@cloud9/shared";
+ import { Store } from "./store.js";
+ import { tmp } from "./testclient.js";
+@@ -167,34 +167,39 @@ test("unread: read state cannot be pushed backwards by a stale replay", () => {
+ // 3. Retention pruning boundaries: artifact versions and runs.
+ // ===========================================================================
+ 
+-function version(over: Partial<ArtifactVersion> & Pick<ArtifactVersion, "id" | "version">): ArtifactVersion {
++function version(over: Partial<StoredArtifactVersion> & Pick<StoredArtifactVersion, "id" | "version">): StoredArtifactVersion {
+   return {
+-    size: 1, sha256: "x".repeat(64), text: true, storedAs: `${over.id}-log.md`,
++    size: 1, sha256: "a".repeat(64), text: true, storedAs: `${over.id}-log.md`,
+     agentId: "a1", agentName: "Scribe", ownerId: "u1", producedAt: over.version,
+     ...over,
+   };
+ }
+ 
++function appendVersion(
++  store: Store, input: { id: string; name?: string; at: number; links?: StoredArtifactVersion["links"] },
++) {
++  const name = input.name ?? "log.md";
++  const full = version({ id: input.id, version: 999, producedAt: input.at, links: input.links });
++  const { version: _number, ...row } = full;
++  const stage = store.writeArtifactBytes(row.id, name, Buffer.from(`bytes ${input.id}`));
++  row.storedAs = stage.storedAs;
++  return store.appendArtifactVersion({ channelId: "ch1", name, at: input.at, version: row, stage });
++}
++
+ test("pruneArtifactVersions: exactly at the cap prunes nothing; one past it prunes exactly the oldest", () => {
+   const store = fresh("cov-prune-artifacts.db");
+-  const row = store.claimArtifactVersion({ channelId: "ch1", name: "log.md", at: 1 });
+   const keep = 5;
+-  for (let v = 1; v <= keep; v++) {
+-    const ver = version({ id: `av${v}`, version: v });
+-    store.saveArtifactVersion(row.id, "ch1", ver);
+-    store.writeArtifactBytes(ver.id, "log.md", Buffer.from(`pass ${v}`));
+-  }
++  let artifact = appendVersion(store, { id: "av1", at: 1 });
++  for (let v = 2; v <= keep; v++) artifact = appendVersion(store, { id: `av${v}`, at: v });
+ 
+-  assert.equal(store.pruneArtifactVersions(row.id, keep), 0, "exactly `keep` versions must not lose one");
+-  assert.equal(store.artifactVersionsOf(row.id).length, keep);
++  assert.equal(store.pruneArtifactVersions(artifact.id, keep), 0, "exactly `keep` versions must not lose one");
++  assert.equal(store.artifactVersionsOf(artifact.id).length, keep);
+ 
+   // one more arrives, pushing the count to keep+1
+-  const ver6 = version({ id: "av6", version: 6 });
+-  store.saveArtifactVersion(row.id, "ch1", ver6);
+-  store.writeArtifactBytes(ver6.id, "log.md", Buffer.from("pass 6"));
++  artifact = appendVersion(store, { id: "av6", at: 6 });
+ 
+-  assert.equal(store.pruneArtifactVersions(row.id, keep), 1, "one over the cap must prune exactly one");
+-  const left = store.artifactVersionsOf(row.id).map(v => v.version).sort((a, b) => a - b);
++  assert.equal(store.pruneArtifactVersions(artifact.id, keep), 1, "one over the cap must prune exactly one");
++  const left = store.artifactVersionsOf(artifact.id).map(v => v.version).sort((a, b) => a - b);
+   assert.deepEqual(left, [2, 3, 4, 5, 6], "the OLDEST goes, the newest is never touched");
+   assert.equal(fs.existsSync(path.join(store.artifactsDir, "av1-log.md")), false,
+     "the pruned row's bytes must go with it");
+@@ -203,20 +208,99 @@ test("pruneArtifactVersions: exactly at the cap prunes nothing; one past it prun
+ 
+ test("pruneArtifactVersions: a cap of zero still keeps the newest — an artifact can never have none", () => {
+   const store = fresh("cov-prune-zero.db");
+-  const row = store.claimArtifactVersion({ channelId: "ch1", name: "log.md", at: 1 });
+-  for (let v = 1; v <= 3; v++) {
+-    const ver = version({ id: `av${v}`, version: v });
+-    store.saveArtifactVersion(row.id, "ch1", ver);
+-    store.writeArtifactBytes(ver.id, "log.md", Buffer.from(`pass ${v}`));
+-  }
++  let artifact = appendVersion(store, { id: "av1", at: 1 });
++  artifact = appendVersion(store, { id: "av2", at: 2 });
++  artifact = appendVersion(store, { id: "av3", at: 3 });
+ 
+-  const doomed = store.pruneArtifactVersions(row.id, 0);
++  const doomed = store.pruneArtifactVersions(artifact.id, 0);
+   assert.equal(doomed, 2, "asking to keep zero still keeps one — the newest");
+-  const left = store.artifactVersionsOf(row.id);
++  const left = store.artifactVersionsOf(artifact.id);
+   assert.equal(left.length, 1);
+   assert.equal(left[0].version, 3, "the survivor is the newest, however low the cap");
+ });
+ 
++test("artifact versions: one artifact/version pair is immutable and cannot be replaced", () => {
++  const store = fresh("cov-artifact-immutable.db");
++  const row = store.claimArtifactVersion({ channelId: "ch1", name: "log.md", at: 1 });
++  const first = version({ id: "av-first", version: 1, note: "the original" });
++  const replacement = version({ id: "av-replacement", version: 1, note: "rewritten" });
++
++  store.saveArtifactVersion(row.id, "ch1", first);
++  assert.throws(
++    () => store.saveArtifactVersion(row.id, "ch1", replacement),
++    /UNIQUE|constraint/i,
++    "a second row claiming version 1 must be refused, never stored beside or over the first",
++  );
++  assert.deepEqual(store.artifactVersionsOf(row.id), [first],
++    "the first immutable row remains byte-for-byte the stored truth");
++});
++
++test("artifact workspace fills pages past malformed rows and keeps a valid cursor", () => {
++  const store = fresh("cov-artifact-workspace-malformed.db");
++  store.db.prepare("INSERT INTO users(id,name) VALUES(?,?)").run("u1", "Vikas");
++  store.createChannel({ id: "ch1", name: "ops", kind: "channel", memberIds: ["u1"], createdAt: 1 });
++  const older = appendVersion(store, { id: "av-old", name: "older.md", at: 1 });
++  const newer = appendVersion(store, { id: "av-new", name: "newer.md", at: 2 });
++  store.db.prepare(
++    "INSERT INTO artifacts(id,channelId,name,nameKey,createdAt,updatedAt,nextVersion) VALUES(?,?,?,?,?,?,?)",
++  ).run("af_bad", "ch1", "bad.md", "bad.md", 3, 3, 2);
++  store.db.prepare(
++    "INSERT INTO artifact_versions(id,artifactId,channelId,agentId,version,producedAt,json) " +
++    "VALUES(?,?,?,?,?,?,?)",
++  ).run("av_bad", "af_bad", "ch1", "a1", 1, 3, "{}");
++
++  const first = store.artifactWorkspace("u1", [store.channel("ch1")!], {}, 1);
++  assert.deepEqual(first.items.map(a => a.artifactId), [newer.id],
++    "the malformed newest row does not leave a short first page");
++  assert.equal(first.hasMore, true);
++  assert.equal(first.nextBefore, 2);
++  assert.equal(first.nextBeforeId, newer.id);
++
++  const second = store.artifactWorkspace("u1", [store.channel("ch1")!], {
++    before: first.nextBefore, beforeId: first.nextBeforeId,
++  }, 1);
++  assert.deepEqual(second.items.map(a => a.artifactId), [older.id]);
++  assert.equal(second.hasMore, false,
++    "hasMore describes valid projected rows, not the malformed row SQL scanned");
++});
++
++test("artifact append: a post-mutation DB refusal rolls back metadata and promoted bytes", () => {
++  const store = fresh("cov-artifact-append-atomic.db");
++  const target = appendVersion(store, { id: "av-target", name: "target.md", at: 1 });
++  const artifact = appendVersion(store, { id: "av-first", at: 10 });
++  const before = store.artifactRow(artifact.id)!;
++  assert.equal(before.nextVersion, 2);
++
++  // Both targets are valid, so validation passes. The transaction updates the
++  // artifact, promotes bytes, inserts the version and inserts the first link;
++  // only the duplicate link's PRIMARY KEY fails afterwards.
++  const duplicate = {
++    kind: "made-from" as const,
++    target: { artifactId: target.id, version: 1 },
++  };
++  const badFull = version({
++    id: "av-bad", version: 99, producedAt: 20, links: [duplicate, duplicate],
++  });
++  const { version: _badNumber, ...bad } = badFull;
++  const stage = store.writeArtifactBytes(bad.id, "log.md", Buffer.from("two"));
++  bad.storedAs = stage.storedAs;
++  assert.throws(
++    () => store.appendArtifactVersion({
++      channelId: "ch1", name: "log.md", at: 20, version: bad, stage,
++    }),
++    /UNIQUE|constraint/i,
++  );
++
++  const after = store.artifactRow(artifact.id)!;
++  assert.equal(after.nextVersion, before.nextVersion, "a refused append consumes no version number");
++  assert.equal(after.updatedAt, before.updatedAt, "the list date does not claim a change that never landed");
++  assert.deepEqual(store.artifactVersionsOf(artifact.id).map(v => v.id), ["av-first"]);
++  assert.equal(fs.existsSync(path.join(store.artifactsDir, "av-bad-log.md")), false,
++    "bytes promoted inside the failed transaction are compensated after rollback");
++  assert.equal(fs.existsSync(path.join(store.artifactsDir, stage.stagedAs)), false,
++    "the publish-only stage is gone too");
++});
++
+ function run(id: string, startedAt: number, taskId?: string): { record: RunRecord; agentId: string; ownerId: string; taskId?: string } {
+   return {
+     record: {
+@@ -301,6 +385,27 @@ test("role transitions: a role is never inherited across a leave and a rejoin",
+   assert.equal(spells[1].removedAt, undefined);
+ });
+ 
++test("restricted file selection ends with membership and does not resurrect on rejoin", () => {
++  const store = fresh("cov-artifact-access-rejoin.db");
++  store.db.prepare("INSERT INTO users(id,name) VALUES(?,?)").run("u2", "Priya");
++  store.createChannel({ id: "ch1", name: "ops", kind: "channel", memberIds: ["u2"], createdAt: 1 });
++  const artifact = appendVersion(store, { id: "av1", at: 10 });
++  store.setArtifactAccess(artifact.id, { kind: "restricted", userIds: ["u2"] });
++  assert.equal(store.artifactAccessAllows(artifact.id, "u2"), true);
++
++  store.removeChannelMember("ch1", "u2");
++  assert.throws(
++    () => store.setArtifactAccess(artifact.id, { kind: "restricted", userIds: ["u2"] }),
++    /current people/,
++    "the transactional writer re-checks active human membership before replacing the old rule",
++  );
++  store.addChannelMember("ch1", "u2", { at: 20 });
++  assert.deepEqual(store.storedArtifactAccess(artifact.id), { kind: "restricted", userIds: [] },
++    "the old selected id was cleared with the old membership spell");
++  assert.equal(store.artifactAccessAllows(artifact.id, "u2"), false,
++    "rejoining the room is not permission to regain a previously selected file");
++});
++
+ test("role transitions: setMemberRole cannot reach a row that already left", () => {
+   const store = fresh("cov-role-dead-row.db");
+   store.createChannel({ id: "ch1", name: "ops", kind: "channel", memberIds: [], createdAt: 1 });
+diff --git a/apps/relay/src/store.ts b/apps/relay/src/store.ts
+index aa5fb0d..67d8649 100644
+--- a/apps/relay/src/store.ts
++++ b/apps/relay/src/store.ts
+@@ -4,10 +4,13 @@ import fs from "node:fs";
+ import path from "node:path";
+ import { DatabaseSync } from "node:sqlite";
+ import {
+-  ActivityRecord, AgentDef, Approval, Artifact, ArtifactVersion, Attachment, Channel, ChannelMember,
++  ActivityRecord, AgentDef, Approval, ArtifactAccess, ArtifactLink,
++  ArtifactWorkspaceEntry, Attachment, Channel, ChannelMember,
++  StoredArtifact, StoredArtifactVersion, artifactVersionForPublic,
+   ChannelRole, ID, Message,
+-  MessageReaction, MESSAGE_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
+-  RunRecord, RUN_RETENTION, Task, User, nameKey, newId,
++  MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
++  RunRecord, RUN_RETENTION, Task, User, isSafeStoredId, nameKey, newId,
++  validateArtifactLinks,
+ } from "@cloud9/shared";
+ // THE ONE OWNER of "write a file this app will later believe" — write next
+ // door, flush it down to the disk, rename it into place. It lives in the engine
+@@ -18,6 +21,9 @@ import { sweepPending, writeWholeFile } from "@cloud9/engine";
+ import { secureId, secureToken } from "./secureid.js";
+ import { JoinHubStore, JoinTokenRow } from "./joinhub.js";
+ 
++/** One identity for every Store opened during this process lifetime. */
++const ARTIFACT_STAGE_NONCE = secureId("boot");
++
+ /**
+  * One page of scrollback, and whether there is more behind it.
+  *
+@@ -103,6 +109,26 @@ export interface ArtifactRow {
+   nextVersion: number;
+ }
+ 
++/** One database link row. This is persistence shape, not a second wire type. */
++export interface ArtifactLinkRow {
++  sourceArtifactId: ID;
++  sourceVersion: number;
++  channelId: ID;
++  kind: ArtifactLink["kind"];
++  targetArtifactId: ID;
++  targetVersion: number;
++}
++
++export interface ArtifactRelationRow extends ArtifactLinkRow {
++  direction: "outgoing" | "incoming";
++}
++
++/** Bytes staged under a publish-only name until their DB transaction owns them. */
++export interface ArtifactByteStage {
++  stagedAs: string;
++  storedAs: string;
++}
++
+ interface RawRun {
+   id: string; agentId: string; ownerId: string;
+   channelId: string | null; taskId: string | null; startedAt: number; json: string;
+@@ -201,6 +227,8 @@ export class Store implements JoinHubStore {
+   readonly problems: string[] = [];
+ 
+   private readonly ownerToken?: string;
++  /** Distinguishes this process lifetime from an older process that reused its pid. */
++  private readonly artifactStageNonce = ARTIFACT_STAGE_NONCE;
+ 
+   constructor(dbPath: string, opts: StoreOptions = {}) {
+     this.ownerToken = opts.ownerToken;
+@@ -409,6 +437,7 @@ export class Store implements JoinHubStore {
+       CREATE INDEX IF NOT EXISTS proj_item_updated ON project_items(projectId, updatedAt);
+     `);
+       this.migrate();
++      this.sweepArtifactOrphans();
+       this.initSearch();
+     } catch (e) {
+       // A migration that threw has already been rolled back by `step()`, so the
+@@ -629,6 +658,13 @@ export class Store implements JoinHubStore {
+     // v4 → v5: a membership row per SPELL in the room, not per person.
+     this.step(5, () => this.rekeyChannelMembers());
+ 
++    // v5 → v6: the Files workspace. Existing artifacts inherit their room's
++    // access because no access row is written for them. The unique version rule
++    // is added inside the migration transaction, after first proving the old
++    // data already satisfies it; a migration must never silently pick one of two
++    // immutable rows and throw the other away.
++    this.step(6, () => this.addArtifactWorkspaceSchema());
++
+     // The one thing that still says a person can only be in a room once at a
+     // time, now that the primary key no longer does. It lives here, below the
+     // step that reshapes the table, for the same reason act_seq does.
+@@ -652,6 +688,61 @@ export class Store implements JoinHubStore {
+     });
+   }
+ 
++  /**
++   * v5 → v6. Add the Files workspace's access and exact-version link rows,
++   * plus the database rule that makes an artifact version immutable.
++   *
++   * NO LEGACY ROW IS REWRITTEN. Existing artifacts have no `artifact_access`
++   * row, which means "inherit the room". A duplicate version in an old file is
++   * reported instead of guessed at: renumbering one would change a stable exact
++   * reference, and deleting one would destroy retained bytes.
++   */
++  private addArtifactWorkspaceSchema(): void {
++    const duplicate = this.db.prepare(
++      "SELECT artifactId,version,COUNT(*) n FROM artifact_versions " +
++      "GROUP BY artifactId,version HAVING COUNT(*) > 1 LIMIT 1",
++    ).get() as { artifactId: string; version: number; n: number } | undefined;
++    if (duplicate) {
++      throw new Error(
++        `shared file ${duplicate.artifactId} has ${duplicate.n} rows claiming version ${duplicate.version}; ` +
++        "Cloud9 left them untouched because immutable versions cannot be guessed at",
++      );
++    }
++    this.db.exec(`
++      CREATE UNIQUE INDEX IF NOT EXISTS av_art_version
++        ON artifact_versions(artifactId, version);
++
++      -- No row means room-default access. A row exists only when the room's
++      -- owner/admin narrowed the whole chain to selected current people; an
++      -- empty selected list is valid because current room managers are always
++      -- included at read time.
++      CREATE TABLE IF NOT EXISTS artifact_access(
++        artifactId TEXT PRIMARY KEY,
++        kind TEXT NOT NULL CHECK(kind IN ('room','restricted'))
++      );
++      CREATE TABLE IF NOT EXISTS artifact_access_users(
++        artifactId TEXT NOT NULL, userId TEXT NOT NULL, position INTEGER NOT NULL,
++        PRIMARY KEY (artifactId, userId)
++      );
++      CREATE INDEX IF NOT EXISTS aau_user ON artifact_access_users(userId, artifactId);
++
++      -- Links belong to the exact source version and name an exact target
++      -- version. No foreign key is used for the target: retention may remove
++      -- those bytes, and the link must then stay pinned and say unavailable,
++      -- never slide forward to a newer target.
++      CREATE TABLE IF NOT EXISTS artifact_links(
++        sourceArtifactId TEXT NOT NULL, sourceVersion INTEGER NOT NULL,
++        channelId TEXT NOT NULL,
++        kind TEXT NOT NULL CHECK(kind IN ('made-from','goes-with')),
++        targetArtifactId TEXT NOT NULL, targetVersion INTEGER NOT NULL,
++        PRIMARY KEY (sourceArtifactId, sourceVersion, kind, targetArtifactId, targetVersion)
++      );
++      CREATE INDEX IF NOT EXISTS al_target
++        ON artifact_links(targetArtifactId, targetVersion, sourceArtifactId, sourceVersion);
++    `);
++    this.addColumn("artifact_access_users", "position", "INTEGER NOT NULL DEFAULT 0");
++  }
++
+   /**
+    * v4 → v5. Re-key `channel_members` on (channelId, memberId, joinedAt).
+    *
+@@ -1088,12 +1179,24 @@ export class Store implements JoinHubStore {
+     this.db.prepare("UPDATE channels SET json=? WHERE id=?").run(JSON.stringify(ch), channelId);
+   }
+ 
+-  /** Take someone out — softly, so the record still knows they were here. */
++  /**
++   * Take someone out — softly, so the room record still knows they were here.
++   * Any explicit restricted-file selections in this room end with that spell;
++   * rejoining later must not silently resurrect old file access, for the same
++   * reason an old admin role is not inherited across a rejoin.
++   */
+   removeChannelMember(channelId: ID, memberId: ID, by?: ID): void {
+-    this.db.prepare(
+-      "UPDATE channel_members SET removedAt=?, removedBy=? WHERE channelId=? AND memberId=? AND removedAt IS NULL",
+-    ).run(Date.now(), by ?? null, channelId, memberId);
+-    this.mirrorMemberIds(channelId);
++    this.tx(() => {
++      this.db.prepare(
++        "UPDATE channel_members SET removedAt=?, removedBy=? " +
++        "WHERE channelId=? AND memberId=? AND removedAt IS NULL",
++      ).run(Date.now(), by ?? null, channelId, memberId);
++      this.db.prepare(
++        "DELETE FROM artifact_access_users WHERE userId=? " +
++        "AND artifactId IN (SELECT id FROM artifacts WHERE channelId=?)",
++      ).run(memberId, channelId);
++      this.mirrorMemberIds(channelId);
++    });
+   }
+ 
+   setMemberRole(channelId: ID, memberId: ID, role: ChannelRole): void {
+@@ -1508,26 +1611,177 @@ export class Store implements JoinHubStore {
+   // re-derived — the agent's worktree is long gone — so a failed write is a
+   // refusal, never a row.
+ 
+-  /** Put one version's bytes on disk. Throws when they did not land. */
+-  writeArtifactBytes(versionId: ID, safeName: string, bytes: Buffer): string {
++  /**
++   * Stage one version's bytes under a name no database row will ever reference.
++   * The append transaction promotes this name to `storedAs` while holding the
++   * same SQLite write lock startup cleanup takes. A second live hub therefore
++   * sees either a publish-only stage (which it must ignore) or a final file plus
++   * its committed row — never a final orphan that is merely between writes.
++   */
++  writeArtifactBytes(versionId: ID, safeName: string, bytes: Buffer): ArtifactByteStage {
+     fs.mkdirSync(this.artifactsDir, { recursive: true });
+     const storedAs = `${versionId}-${path.basename(safeName)}`;
++    const stagedAs =
++      `.publishing-v2-${process.pid}-${this.artifactStageNonce}-${secureId("stage")}-${storedAs}`;
+     let why = "";
+-    const ok = writeWholeFile(path.join(this.artifactsDir, storedAs), bytes, m => { why = m; });
++    const ok = writeWholeFile(path.join(this.artifactsDir, stagedAs), bytes, m => { why = m; });
+     if (!ok) {
+       console.error(`[hub] could not store an artifact: ${why}`);
+       throw new Error(
+         "that file could not be saved on this computer — check there is free disk space " +
+         "and try again");
+     }
+-    return storedAs;
++    return { stagedAs, storedAs };
+   }
+ 
+-  /** Remove one version's bytes. Missing is not an error. */
++  /** Remove one final version's bytes. Missing is not an error. */
+   removeArtifactBytes(storedAs: string): void {
+     try { fs.rmSync(path.join(this.artifactsDir, path.basename(storedAs))); } catch { /* already gone */ }
+   }
+ 
++  private removeArtifactStage(stagedAs: string): void {
++    try { fs.rmSync(path.join(this.artifactsDir, path.basename(stagedAs))); } catch { /* already gone */ }
++  }
++
++  /**
++   * One owner for stage-name meaning. Only the exact v2 shape carries a pid and
++   * startup nonce; numeric names from older/unknown protocols are legacy and are
++   * NEVER treated as process ownership claims.
++   */
++  private parseArtifactStageName(stagedAs: string):
++    | { kind: "current"; pid: number; nonce: string }
++    | { kind: "legacy" }
++    | undefined {
++    if (!stagedAs.startsWith(".publishing-")) return undefined;
++    const match =
++      /^\.publishing-v2-(\d+)-(boot_[A-Za-z0-9_-]{22})-stage_[A-Za-z0-9_-]{22}-.+/.exec(stagedAs);
++    if (!match) return { kind: "legacy" };
++    const pid = Number(match[1]);
++    return Number.isSafeInteger(pid) && pid >= 1
++      ? { kind: "current", pid, nonce: match[2] }
++      : { kind: "legacy" };
++  }
++
++  private artifactStageProcessAlive(pid: number): boolean {
++    if (pid === process.pid) return true;
++    try {
++      process.kill(pid, 0);
++      return true;
++    } catch (e) {
++      // EPERM means a real process exists but this account may not signal it.
++      return (e as NodeJS.ErrnoException).code === "EPERM";
++    }
++  }
++
++  /**
++   * Make the stage→final directory entry durable before SQLite may commit the
++   * row that promises it. Windows does not support opening directories and its
++   * rename durability contract does not require this call; POSIX failures are
++   * real publish failures and are allowed to roll the transaction back.
++   */
++  private flushArtifactDirectory(): void {
++    if (process.platform === "win32") return;
++    const fd = fs.openSync(this.artifactsDir, "r");
++    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
++  }
++
++  /**
++   * Parse and validate the durable shape before any field becomes a path or a
++   * public projection. Valid JSON such as `{}` is still an unreadable version,
++   * and follows the store's existing rule: record the problem, skip the row,
++   * keep the rest of the database open.
++   */
++  private storedArtifactVersion(json: string, rowId: ID): StoredArtifactVersion | undefined {
++    const value = this.safeParse<unknown>(json, "a version of a shared file", rowId);
++    if (!value || typeof value !== "object" || Array.isArray(value)) {
++      this.note(`a version of a shared file ${rowId} has an invalid stored shape — it was skipped`);
++      return undefined;
++    }
++    const v = value as Record<string, unknown>;
++    const linksOkay = v.links === undefined || validateArtifactLinks(v.links) === null;
++    const storedAs = v.storedAs;
++    const okay = isSafeStoredId(v.id)
++      && typeof v.version === "number" && Number.isSafeInteger(v.version) && v.version >= 1
++      && typeof v.size === "number" && Number.isFinite(v.size) && v.size >= 0
++      && typeof v.sha256 === "string" && v.sha256.length === 64
++      && typeof v.text === "boolean"
++      && typeof storedAs === "string" && storedAs.length > 0 && path.basename(storedAs) === storedAs
++      && isSafeStoredId(v.agentId)
++      && typeof v.agentName === "string"
++      && isSafeStoredId(v.ownerId)
++      && typeof v.producedAt === "number" && Number.isFinite(v.producedAt)
++      && linksOkay;
++    if (!okay) {
++      this.note(`a version of a shared file ${rowId} has an invalid stored shape — it was skipped`);
++      return undefined;
++    }
++    return value as StoredArtifactVersion;
++  }
++
++  /**
++   * Remove complete final artifact files no valid version row points at.
++   *
++   * Cleanup owns the SQLite write lock while it compares rows and names. A stage
++   * is protected only when its parsed ownership and age say its publisher can
++   * still finish; abandoned stages are reclaimed. If one stored row is unreadable,
++   * cleanup deletes nothing — an unknown pointer is not permission to delete bytes.
++   */
++  sweepArtifactOrphans(): number {
++    if (!fs.existsSync(this.artifactsDir)) return 0;
++    try {
++      return this.tx(() => {
++        const rows = this.db.prepare("SELECT id,json FROM artifact_versions").all() as
++          { id: string; json: string }[];
++        const keep = new Set<string>();
++        for (const r of rows) {
++          const v = this.storedArtifactVersion(r.json, r.id);
++          if (!v) return 0;
++          keep.add(v.storedAs);
++        }
++        let removed = 0;
++        const now = Date.now();
++        for (const entry of fs.readdirSync(this.artifactsDir, { withFileTypes: true })) {
++          if (!entry.isFile() || keep.has(entry.name)) continue;
++          const fullPath = path.join(this.artifactsDir, entry.name);
++          const stage = this.parseArtifactStageName(entry.name);
++          if (stage) {
++            let recent: boolean;
++            try { recent = now - fs.statSync(fullPath).mtimeMs < ARTIFACT_STAGE_GRACE_MS; }
++            catch { continue; }
++            if (stage.kind === "current") {
++              if (stage.pid === process.pid) {
++                // A reused pid names this process too. Only this process lifetime's
++                // nonce proves the recent stage can still be completed here.
++                if (recent && stage.nonce === this.artifactStageNonce) continue;
++              } else {
++                // Another process keeps the established protection: both recent
++                // age and a live pid. Its nonce is not ours to interpret.
++                if (recent && this.artifactStageProcessAlive(stage.pid)) continue;
++              }
++            } else if (recent) {
++              // Legacy/unknown names make no pid claim at all. Age is their only
++              // safe in-flight signal, including names that happen to start with
++              // digits from an older protocol.
++              continue;
++            }
++            // Current dead/old stage, or old legacy stage: interrupted publish.
++          }
++          try {
++            fs.rmSync(fullPath);
++            removed += 1;
++          } catch { /* another cleanup won the race */ }
++        }
++        return removed;
++      });
++    } catch (e) {
++      if (String((e as Error)?.message ?? e).includes("SQLITE_BUSY")) {
++        this.note("artifact cleanup skipped because another live hub is publishing");
++        return 0;
++      }
++      throw e;
++    }
++  }
++
+   /**
+    * The identity row for one name in one conversation, or nothing.
+    *
+@@ -1549,6 +1803,85 @@ export class Store implements JoinHubStore {
+     ).get(id) as ArtifactRow | undefined;
+   }
+ 
++  /** The selected people stored for this chain. Missing is the legacy-safe room default. */
++  storedArtifactAccess(artifactId: ID): ArtifactAccess {
++    const row = this.db.prepare("SELECT kind FROM artifact_access WHERE artifactId=?")
++      .get(artifactId) as { kind: string } | undefined;
++    if (!row || row.kind !== "restricted") return { kind: "room" };
++    const userIds = (this.db.prepare(
++      "SELECT userId FROM artifact_access_users WHERE artifactId=? ORDER BY position ASC, userId ASC",
++    ).all(artifactId) as { userId: string }[]).map(r => r.userId);
++    return { kind: "restricted", userIds };
++  }
++
++  /**
++   * The access shape handed to a screen: selected current people PLUS every
++   * current human owner/admin of the source room. Managers are derived on every
++   * read, never frozen into the stored allowlist, so a role change takes effect
++   * immediately.
++   */
++  artifactAccess(artifactId: ID): ArtifactAccess {
++    const access = this.storedArtifactAccess(artifactId);
++    if (access.kind === "room") return access;
++    const artifact = this.artifactRow(artifactId);
++    if (!artifact) return access;
++    const selected = (this.db.prepare(
++      "SELECT aau.userId FROM artifact_access_users aau " +
++      "JOIN channel_members cm ON cm.channelId=? AND cm.memberId=aau.userId AND cm.removedAt IS NULL " +
++      "JOIN users u ON u.id=aau.userId WHERE aau.artifactId=? " +
++      "ORDER BY aau.position ASC, aau.userId ASC",
++    ).all(artifact.channelId, artifactId) as { userId: string }[]).map(r => r.userId);
++    const managers = (this.db.prepare(
++      "SELECT cm.memberId FROM channel_members cm JOIN users u ON u.id=cm.memberId " +
++      "WHERE cm.channelId=? AND cm.removedAt IS NULL AND cm.role IN ('owner','admin') " +
++      "ORDER BY cm.joinedAt ASC, cm.memberId ASC",
++    ).all(artifact.channelId) as { memberId: string }[]).map(r => r.memberId);
++    return { kind: "restricted", userIds: [...new Set([...selected, ...managers])] };
++  }
++
++  /**
++   * Replace the whole-chain access rule as one write. Selected ids are checked
++   * again INSIDE the transaction against current human membership; a server-side
++   * pre-check is only a friendly early refusal and can never authorize the write.
++   */
++  setArtifactAccess(artifactId: ID, access: ArtifactAccess): void {
++    this.tx(() => {
++      const artifact = this.artifactRow(artifactId);
++      if (!artifact) throw new Error("no such file");
++      if (access.kind === "restricted") {
++        const activeHuman = this.db.prepare(
++          "SELECT 1 FROM channel_members cm JOIN users u ON u.id=cm.memberId " +
++          "WHERE cm.channelId=? AND cm.memberId=? AND cm.removedAt IS NULL",
++        );
++        for (const userId of access.userIds) {
++          if (!activeHuman.get(artifact.channelId, userId)) {
++            throw new Error("file access can only include current people in this conversation");
++          }
++        }
++      }
++      this.db.prepare("DELETE FROM artifact_access_users WHERE artifactId=?").run(artifactId);
++      this.db.prepare("DELETE FROM artifact_access WHERE artifactId=?").run(artifactId);
++      if (access.kind === "room") return;
++      this.db.prepare("INSERT INTO artifact_access(artifactId,kind) VALUES(?,'restricted')")
++        .run(artifactId);
++      const insert = this.db.prepare(
++        "INSERT INTO artifact_access_users(artifactId,userId,position) VALUES(?,?,?)",
++      );
++      access.userIds.forEach((userId, position) => insert.run(artifactId, userId, position));
++    });
++  }
++
++  /** Room visibility has already passed; this is the optional narrower gate. */
++  artifactAccessAllows(artifactId: ID, userId: ID): boolean {
++    const access = this.storedArtifactAccess(artifactId);
++    if (access.kind === "room") return true;
++    const artifact = this.artifactRow(artifactId);
++    if (!artifact || !this.user(userId)) return false;
++    const role = this.memberRole(artifact.channelId, userId);
++    if (!role) return false; // selected means a CURRENT human room member
++    return role === "owner" || role === "admin" || access.userIds.includes(userId);
++  }
++
+   /**
+    * Take the next version number for this artifact, making the identity row if
+    * this is the first version.
+@@ -1578,10 +1911,106 @@ export class Store implements JoinHubStore {
+     return row;
+   }
+ 
+-  /** Store one version's row. The bytes are already on disk. */
+-  saveArtifactVersion(artifactId: ID, channelId: ID, v: ArtifactVersion): void {
++  /**
++   * Append identity metadata, one immutable version and its exact links in one
++   * database transaction. The caller has already written the uniquely-named
++   * bytes; any refusal removes them before it escapes, so a bad link, duplicate
++   * id or failed insert cannot leave either a false `updatedAt` or orphan bytes.
++   */
++  appendArtifactVersion(input: {
++    channelId: ID;
++    name: string;
++    at: number;
++    version: Omit<StoredArtifactVersion, "version">;
++    stage: ArtifactByteStage;
++  }): StoredArtifact {
++    let artifactId: ID | undefined;
++    let promoted = false;
++    try {
++      artifactId = this.tx(() => {
++        if (input.stage.storedAs !== input.version.storedAs
++          || path.basename(input.stage.stagedAs) !== input.stage.stagedAs
++          || this.parseArtifactStageName(input.stage.stagedAs)?.kind !== "current") {
++          throw new Error("that file's staged bytes do not match its version row");
++        }
++        const existing = this.artifactRowByName(input.channelId, input.name);
++        const id = existing?.id ?? newId("af");
++        const versionNumber = existing?.nextVersion ?? 1;
++        const stored: StoredArtifactVersion = { ...input.version, version: versionNumber };
++        if (!existing && this.artifactCountIn(input.channelId) >= ARTIFACT_LIMITS.perChannel) {
++          throw new Error(
++            `this conversation already holds ${ARTIFACT_LIMITS.perChannel} shared files — ` +
++            "the oldest have to be cleared before another can be added",
++          );
++        }
++
++        // Storage repeats the server's same-room/exact-version check. A wire
++        // validator can prove shape; only stored state can prove the target.
++        const targetExists = this.db.prepare(
++          "SELECT 1 FROM artifact_versions av JOIN artifacts a ON a.id=av.artifactId " +
++          "WHERE av.artifactId=? AND av.version=? AND a.channelId=?",
++        );
++        for (const link of stored.links ?? []) {
++          if (!targetExists.get(link.target.artifactId, link.target.version, input.channelId)) {
++            throw new Error("a linked file version is not available in this conversation");
++          }
++        }
++
++        if (existing) {
++          this.db.prepare("UPDATE artifacts SET nextVersion=?, updatedAt=? WHERE id=?")
++            .run(versionNumber + 1, input.at, existing.id);
++        } else {
++          this.db.prepare(
++            "INSERT INTO artifacts(id,channelId,name,nameKey,createdAt,updatedAt,nextVersion) " +
++            "VALUES(?,?,?,?,?,?,?)",
++          ).run(id, input.channelId, input.name, nameKey(input.name), input.at, input.at, 2);
++        }
++
++        const stagedPath = path.join(this.artifactsDir, input.stage.stagedAs);
++        const finalPath = path.join(this.artifactsDir, input.stage.storedAs);
++        if (fs.existsSync(finalPath)) {
++          throw new Error("that immutable file version already has bytes");
++        }
++        fs.renameSync(stagedPath, finalPath);
++        promoted = true;
++
++        // Plain INSERT plus both unique rules. Nothing here can replace a row.
++        this.saveArtifactVersion(id, input.channelId, stored);
++        const insertLink = this.db.prepare(
++          "INSERT INTO artifact_links" +
++          "(sourceArtifactId,sourceVersion,channelId,kind,targetArtifactId,targetVersion) " +
++          "VALUES(?,?,?,?,?,?)",
++        );
++        for (const link of stored.links ?? []) {
++          insertLink.run(
++            id, versionNumber, input.channelId, link.kind,
++            link.target.artifactId, link.target.version,
++          );
++        }
++        // The file name is durable before COMMIT can make its row durable.
++        this.flushArtifactDirectory();
++        return id;
++      });
++    } catch (e) {
++      if (promoted) this.removeArtifactBytes(input.stage.storedAs);
++      else this.removeArtifactStage(input.stage.stagedAs);
++      throw e;
++    }
++    return this.artifact(artifactId)!;
++  }
++
++  /**
++   * Store one immutable version row. The bytes are already on disk.
++   *
++   * Plain INSERT is the rule. `OR REPLACE` is a delete followed by an insert,
++   * which lets a repeated id overwrite old provenance; without the
++   * `(artifactId,version)` unique index, a different id can also sit beside the
++   * old row claiming the same version number. Both are edits wearing append's
++   * clothes, so the database refuses both.
++   */
++  saveArtifactVersion(artifactId: ID, channelId: ID, v: StoredArtifactVersion): void {
+     this.db.prepare(
+-      "INSERT OR REPLACE INTO artifact_versions" +
++      "INSERT INTO artifact_versions" +
+       "(id,artifactId,channelId,agentId,version,producedAt,json) VALUES(?,?,?,?,?,?,?)",
+     ).run(v.id, artifactId, channelId, v.agentId, v.version, v.producedAt, JSON.stringify(v));
+   }
+@@ -1599,15 +2028,20 @@ export class Store implements JoinHubStore {
+     ).all(artifactId) as { id: string; json: string }[];
+     const doomed = rows.slice(Math.max(1, keep));
+     for (const r of doomed) {
+-      const v = this.safeParse<ArtifactVersion>(r.json, "a version of a shared file", r.id);
++      const v = this.storedArtifactVersion(r.json, r.id);
+       if (v?.storedAs) this.removeArtifactBytes(v.storedAs);
++      if (v) {
++        this.db.prepare(
++          "DELETE FROM artifact_links WHERE sourceArtifactId=? AND sourceVersion=?",
++        ).run(artifactId, v.version);
++      }
+       this.db.prepare("DELETE FROM artifact_versions WHERE id=?").run(r.id);
+     }
+     return doomed.length;
+   }
+ 
+   /** One artifact and its versions, newest first — the wire shape, assembled. */
+-  artifact(id: ID): Artifact | undefined {
++  artifact(id: ID): StoredArtifact | undefined {
+     const row = this.artifactRow(id);
+     if (!row) return undefined;
+     const versions = this.artifactVersionsOf(id);
+@@ -1615,19 +2049,22 @@ export class Store implements JoinHubStore {
+     // so it is not something this hands out. It can only happen to a database
+     // edited by hand, and saying nothing is better than saying half a file.
+     if (versions.length === 0) return undefined;
++    const access = this.artifactAccess(row.id);
+     return {
+       id: row.id, channelId: row.channelId, name: row.name,
+-      versions, createdAt: row.createdAt, updatedAt: row.updatedAt,
++      versions,
++      ...(access.kind === "restricted" ? { access } : {}),
++      createdAt: row.createdAt, updatedAt: row.updatedAt,
+     };
+   }
+ 
+-  artifactVersionsOf(artifactId: ID): ArtifactVersion[] {
++  artifactVersionsOf(artifactId: ID): StoredArtifactVersion[] {
+     const rows = this.db.prepare(
+       "SELECT id,json FROM artifact_versions WHERE artifactId=? ORDER BY version DESC",
+     ).all(artifactId) as { id: string; json: string }[];
+-    const out: ArtifactVersion[] = [];
++    const out: StoredArtifactVersion[] = [];
+     for (const r of rows) {
+-      const v = this.safeParse<ArtifactVersion>(r.json, "a version of a shared file", r.id);
++      const v = this.storedArtifactVersion(r.json, r.id);
+       if (v) out.push(v);
+     }
+     return out;
+@@ -1640,22 +2077,246 @@ export class Store implements JoinHubStore {
+    * version, and the permission question is about the CHANNEL, which is read
+    * from the artifact's own row and never from the ticket.
+    */
+-  artifactVersion(versionId: ID): { version: ArtifactVersion; artifactId: ID; channelId: ID } | undefined {
++  artifactVersion(versionId: ID): { version: StoredArtifactVersion; artifactId: ID; channelId: ID } | undefined {
+     const row = this.db.prepare(
+       "SELECT artifactId,channelId,json FROM artifact_versions WHERE id=?",
+     ).get(versionId) as { artifactId: string; channelId: string; json: string } | undefined;
+     if (!row) return undefined;
+-    const version = this.safeParse<ArtifactVersion>(row.json, "a version of a shared file", versionId);
++    const version = this.storedArtifactVersion(row.json, versionId);
+     if (!version) return undefined;
+     return { version, artifactId: row.artifactId, channelId: row.channelId };
+   }
+ 
++  /** One exact retained version by stable artifact id plus immutable number. */
++  artifactVersionNumber(
++    artifactId: ID, version: number,
++  ): { version: StoredArtifactVersion; artifactId: ID; channelId: ID } | undefined {
++    const row = this.db.prepare(
++      "SELECT id,artifactId,channelId,json FROM artifact_versions WHERE artifactId=? AND version=?",
++    ).get(artifactId, version) as
++      { id: string; artifactId: string; channelId: string; json: string } | undefined;
++    if (!row) return undefined;
++    const parsed = this.storedArtifactVersion(row.json, row.id);
++    return parsed ? { version: parsed, artifactId: row.artifactId, channelId: row.channelId } : undefined;
++  }
++
++  /** Typed links declared by one exact publishing version. */
++  artifactLinksFrom(sourceArtifactId: ID, sourceVersion: number): ArtifactLink[] {
++    return (this.db.prepare(
++      "SELECT kind,targetArtifactId,targetVersion FROM artifact_links " +
++      "WHERE sourceArtifactId=? AND sourceVersion=? " +
++      "ORDER BY rowid ASC",
++    ).all(sourceArtifactId, sourceVersion) as
++      { kind: ArtifactLink["kind"]; targetArtifactId: string; targetVersion: number }[])
++      .map(r => ({
++        kind: r.kind,
++        target: { artifactId: r.targetArtifactId, version: r.targetVersion },
++      }));
++  }
++
++  /** Every retained source version that points at this exact target version. */
++  artifactLinksTo(targetArtifactId: ID, targetVersion: number): ArtifactLinkRow[] {
++    return this.db.prepare(
++      "SELECT sourceArtifactId,sourceVersion,channelId,kind,targetArtifactId,targetVersion " +
++      "FROM artifact_links WHERE targetArtifactId=? AND targetVersion=? ORDER BY rowid ASC",
++    ).all(targetArtifactId, targetVersion) as unknown as ArtifactLinkRow[];
++  }
++
++  /**
++   * One deterministic, permission-aware, bounded relation-detail query.
++   *
++   * Outgoing rows always qualify: an unavailable target becomes one hidden
++   * placeholder. Incoming rows qualify only when their exact source version is
++   * retained and this user may read that source chain. Therefore every returned
++   * DB row becomes exactly one public relation, and `truncated` means there is a
++   * real 101st public row — never merely a hidden incoming row projection drops.
++   */
++  artifactRelationsForDetail(
++    artifactId: ID, userId: ID, limit: number = ARTIFACT_LIMITS.relationDetail,
++  ): { items: ArtifactRelationRow[]; truncated: boolean } {
++    const size = Math.max(1, Math.min(Math.floor(limit), ARTIFACT_LIMITS.relationDetail));
++    const rows = this.db.prepare(`
++      SELECT l.sourceArtifactId,l.sourceVersion,l.channelId,l.kind,
++             l.targetArtifactId,l.targetVersion,'outgoing' AS direction,0 AS directionOrder
++      FROM artifact_links l
++      JOIN artifact_versions sv
++        ON sv.artifactId=l.sourceArtifactId AND sv.version=l.sourceVersion
++      WHERE l.sourceArtifactId=?
++      UNION ALL
++      SELECT l.sourceArtifactId,l.sourceVersion,l.channelId,l.kind,
++             l.targetArtifactId,l.targetVersion,'incoming' AS direction,1 AS directionOrder
++      FROM artifact_links l
++      JOIN artifact_versions sv
++        ON sv.artifactId=l.sourceArtifactId AND sv.version=l.sourceVersion
++      JOIN artifact_versions tv
++        ON tv.artifactId=l.targetArtifactId AND tv.version=l.targetVersion
++      JOIN artifacts source ON source.id=l.sourceArtifactId
++      WHERE l.targetArtifactId=? AND (
++        NOT EXISTS (
++          SELECT 1 FROM artifact_access aa
++          WHERE aa.artifactId=source.id AND aa.kind='restricted'
++        )
++        OR EXISTS (
++          SELECT 1 FROM artifact_access_users aau
++          JOIN channel_members cm
++            ON cm.channelId=source.channelId AND cm.memberId=aau.userId AND cm.removedAt IS NULL
++          JOIN users u ON u.id=aau.userId
++          WHERE aau.artifactId=source.id AND aau.userId=?
++        )
++        OR EXISTS (
++          SELECT 1 FROM channel_members cm JOIN users u ON u.id=cm.memberId
++          WHERE cm.channelId=source.channelId AND cm.memberId=? AND cm.removedAt IS NULL
++            AND cm.role IN ('owner','admin')
++        )
++      )
++      ORDER BY directionOrder ASC,sourceVersion DESC,targetVersion DESC,kind ASC,
++               sourceArtifactId ASC,targetArtifactId ASC
++      LIMIT ?
++    `).all(artifactId, artifactId, userId, userId, size + 1) as unknown as ArtifactRelationRow[];
++    return { items: rows.slice(0, size), truncated: rows.length > size };
++  }
++
++  /** Every chain whose cached relation view can change when this chain changes. */
++  artifactRelationNeighbors(artifactId: ID): ID[] {
++    const rows = this.db.prepare(`
++      SELECT targetArtifactId AS artifactId FROM artifact_links WHERE sourceArtifactId=?
++      UNION
++      SELECT sourceArtifactId AS artifactId FROM artifact_links WHERE targetArtifactId=?
++      ORDER BY artifactId ASC
++    `).all(artifactId, artifactId) as { artifactId: string }[];
++    return rows.map(r => r.artifactId);
++  }
++
++  /**
++   * The permission-filtered identity rows behind both Files and a room's old
++   * artifact list. Every visibility condition is in SQL BEFORE LIMIT; filtering
++   * a cut page in JavaScript would make an allowed older file disappear behind
++   * a page of restricted ones and falsely say there is no more.
++   */
++  private visibleArtifactRows(
++    userId: ID,
++    channelIds: ID[],
++    cursor: { before?: number; beforeId?: ID },
++    limit: number,
++  ): Page<ArtifactRow> {
++    if (channelIds.length === 0) return { items: [], hasMore: false };
++    const size = Number.isFinite(limit)
++      ? Math.max(1, Math.min(Math.floor(limit), ARTIFACT_LIMITS.workspacePage))
++      : ARTIFACT_LIMITS.workspaceDefault;
++    const slots = channelIds.map(() => "?").join(",");
++    const beforeSql = cursor.before === undefined
++      ? ""
++      : " AND (a.updatedAt < ? OR (a.updatedAt = ? AND a.id < ?))";
++    const beforeArgs = cursor.before === undefined
++      ? []
++      : [cursor.before, cursor.before, cursor.beforeId ?? AFTER_EVERY_ID];
++    const rows = this.db.prepare(
++      `SELECT a.id,a.channelId,a.name,a.nameKey,a.createdAt,a.updatedAt,a.nextVersion
++       FROM artifacts a
++       WHERE a.channelId IN (${slots})
++         AND EXISTS (SELECT 1 FROM artifact_versions av WHERE av.artifactId=a.id)
++         AND (
++           NOT EXISTS (
++             SELECT 1 FROM artifact_access aa
++             WHERE aa.artifactId=a.id AND aa.kind='restricted'
++           )
++           OR EXISTS (
++             SELECT 1 FROM artifact_access_users aau
++             JOIN channel_members cm
++               ON cm.channelId=a.channelId AND cm.memberId=aau.userId AND cm.removedAt IS NULL
++             JOIN users u ON u.id=aau.userId
++             WHERE aau.artifactId=a.id AND aau.userId=?
++           )
++           OR EXISTS (
++             SELECT 1 FROM channel_members cm JOIN users u ON u.id=cm.memberId
++             WHERE cm.channelId=a.channelId AND cm.memberId=? AND cm.removedAt IS NULL
++               AND cm.role IN ('owner','admin')
++           )
++         )${beforeSql}
++       ORDER BY a.updatedAt DESC, a.id DESC LIMIT ?`,
++    ).all(...channelIds, userId, userId, ...beforeArgs, size + 1) as unknown as ArtifactRow[];
++    const hasMore = rows.length > size;
++    const items = hasMore ? rows.slice(0, size) : rows;
++    const oldest = items[items.length - 1];
++    return {
++      items,
++      hasMore,
++      nextBefore: hasMore && oldest ? oldest.updatedAt : undefined,
++      nextBeforeId: hasMore && oldest ? oldest.id : undefined,
++    };
++  }
++
++  /**
++   * One bounded Files page across every currently readable room.
++   *
++   * The SQL permission filter still runs before every LIMIT. Projection validity
++   * is the second gate: unreadable JSON rows are skipped and older SQL pages are
++   * scanned until this page is full or valid data is genuinely exhausted. The
++   * returned cursor is the last RETURNED row, never a malformed row scanned past
++   * it, so the next request neither skips nor duplicates a valid artifact.
++   */
++  artifactWorkspace(
++    userId: ID,
++    channels: Channel[],
++    cursor: { before?: number; beforeId?: ID } = {},
++    limit: number = ARTIFACT_LIMITS.workspaceDefault,
++  ): Page<ArtifactWorkspaceEntry> {
++    const wanted = Number.isFinite(limit)
++      ? Math.max(1, Math.min(Math.floor(limit), ARTIFACT_LIMITS.workspacePage))
++      : ARTIFACT_LIMITS.workspaceDefault;
++    const channelNames = new Map(channels.map(ch => [ch.id, ch.name]));
++    const channelIds = channels.map(ch => ch.id);
++    const candidates: ArtifactWorkspaceEntry[] = [];
++    let scanCursor = { ...cursor };
++
++    while (candidates.length <= wanted) {
++      const rows = this.visibleArtifactRows(
++        userId, channelIds, scanCursor, ARTIFACT_LIMITS.workspacePage,
++      );
++      for (const row of rows.items) {
++        const latest = this.artifactVersionsOf(row.id)[0];
++        const channelName = channelNames.get(row.channelId);
++        if (!latest || channelName === undefined) continue;
++        candidates.push({
++          artifactId: row.id,
++          channelId: row.channelId,
++          channelName,
++          name: row.name,
++          latest: artifactVersionForPublic(latest),
++          versionCount: row.nextVersion - 1,
++          access: this.artifactAccess(row.id),
++          updatedAt: row.updatedAt,
++        });
++        if (candidates.length > wanted) break;
++      }
++      if (candidates.length > wanted || !rows.hasMore) break;
++      scanCursor = { before: rows.nextBefore, beforeId: rows.nextBeforeId };
++    }
++
++    const hasMore = candidates.length > wanted;
++    const items = hasMore ? candidates.slice(0, wanted) : candidates;
++    const oldest = items[items.length - 1];
++    return {
++      items,
++      hasMore,
++      nextBefore: hasMore && oldest ? oldest.updatedAt : undefined,
++      nextBeforeId: hasMore && oldest ? oldest.artifactId : undefined,
++    };
++  }
++
++  /** Every permitted artifact in one conversation, most recently changed first. */
++  artifactsInFor(userId: ID, channelId: ID, limit: number): StoredArtifact[] {
++    return this.visibleArtifactRows(userId, [channelId], {}, limit).items
++      .map(row => this.artifact(row.id))
++      .filter((artifact): artifact is StoredArtifact => artifact !== undefined);
++  }
++
+   /** Every artifact in one conversation, the most recently changed first. */
+-  artifactsIn(channelId: ID, limit: number): Artifact[] {
++  artifactsIn(channelId: ID, limit: number): StoredArtifact[] {
+     const rows = this.db.prepare(
+       "SELECT id FROM artifacts WHERE channelId=? ORDER BY updatedAt DESC, id DESC LIMIT ?",
+     ).all(channelId, Math.max(1, Math.floor(limit))) as { id: string }[];
+-    const out: Artifact[] = [];
++    const out: StoredArtifact[] = [];
+     for (const r of rows) {
+       const a = this.artifact(r.id);
+       if (a) out.push(a);
+@@ -1979,6 +2640,8 @@ export class Store implements JoinHubStore {
+  * message" and "before this exact message" can share one query.
+  */
+ const AFTER_EVERY_ID = "\uffff";
++/** Same wide in-flight margin as wholefile pending writes. */
++export const ARTIFACT_STAGE_GRACE_MS = 60_000;
+ 
+ /**
+  * The shape this build expects. Bumped whenever the tables change, and read by
+@@ -1988,8 +2651,9 @@ const AFTER_EVERY_ID = "\uffff";
+  * 4 = run records — what an agent actually did, turn by turn.
+  * 5 = a membership row per spell in a room, so a rejoin cannot overwrite a
+  *     first arrival.
++ * 6 = artifact chain access, exact-version links, and immutable version keys.
+  */
+-export const SCHEMA_VERSION = 5;
++export const SCHEMA_VERSION = 6;
+ 
+ /**
+  * The fingerprint of one line of the trail.

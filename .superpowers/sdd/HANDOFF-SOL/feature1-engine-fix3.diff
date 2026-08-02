@@ -1,0 +1,1050 @@
+diff --git a/packages/engine/src/artifacts.test.ts b/packages/engine/src/artifacts.test.ts
+index 144d1ae..982edbf 100644
+--- a/packages/engine/src/artifacts.test.ts
++++ b/packages/engine/src/artifacts.test.ts
+@@ -36,7 +36,7 @@ test("a file the turn wrote is offered; one that was already there is not", () =
+     "only what this turn touched — otherwise every hello re-shares the whole folder");
+   assert.equal(sweep.offers[0].size, "# what I found".length);
+   assert.equal(sweep.refused.length, 0);
+-  // BREAK: drop the `stat.mtimeMs < opts.since` line and this test fails with
++  // BREAK: drop the current-turn modified-time guard and this test fails with
+   // old-notes.md offered as well. Watched.
+ });
+ 
+@@ -155,3 +155,219 @@ test("the refusal sentence is one short message, never a wall of them", () => {
+   assert.equal(many.split("\n").length, 5, `header + 3 reasons + the count: ${many}`);
+   assert.ok(many.includes("and 4 more"), many);
+ });
++
++test("a current private manifest attaches its note and exact typed links only to the matching file", () => {
++  const dir = tmp();
++  const since = Date.now();
++  put(dir, "summary.pdf", "summary", since + 1000);
++  put(dir, "figures.csv", "figures", since + 1100);
++  put(dir, ".cloud9/artifact-links.json", JSON.stringify({
++    files: [{
++      name: "SUMMARY.pdf",
++      note: "final figures",
++      links: [
++        { kind: "made-from", target: { artifactId: "af-123", version: 2 } },
++        { kind: "goes-with", target: { artifactId: "af-456", version: 7 } },
++      ],
++    }],
++  }), since + 1200);
++
++  const sweep = sweepProduced(dir, { since });
++  const byName = new Map(sweep.offers.map(file => [file.name, file]));
++  const summary = byName.get("summary.pdf") as unknown as {
++    note?: string;
++    links?: { kind: string; target: { artifactId: string; version: number } }[];
++  };
++  const figures = byName.get("figures.csv") as unknown as { note?: string; links?: unknown[] };
++
++  assert.equal(summary.note, "final figures");
++  assert.deepEqual(summary.links, [
++    { kind: "made-from", target: { artifactId: "af-123", version: 2 } },
++    { kind: "goes-with", target: { artifactId: "af-456", version: 7 } },
++  ], "targets stay pinned to the declared exact version");
++  assert.equal(figures.note, undefined, "a row for another name cannot bleed onto this file");
++  assert.equal(figures.links, undefined);
++  assert.ok(!sweep.offers.some(file => file.name === "artifact-links.json"),
++    "the private dot-folder manifest is never itself offered");
++});
++
++test("an old manifest is ignored before its contents are read", () => {
++  const dir = tmp();
++  const since = Date.now();
++  put(dir, "summary.pdf", "summary", since + 1000);
++  put(dir, ".cloud9/artifact-links.json", "{this old file is not even JSON", since - 1000);
++
++  const sweep = sweepProduced(dir, { since });
++  const summary = sweep.offers[0] as unknown as { note?: string; links?: unknown[] };
++
++  assert.deepEqual(sweep.offers.map(file => file.name), ["summary.pdf"]);
++  assert.equal(summary.note, undefined);
++  assert.equal(summary.links, undefined);
++  assert.deepEqual(sweep.refused, [],
++    "stale private instructions are absence, not a current-turn failure");
++});
++
++test("bad current manifest data is refused in plain words and no part of it is guessed", () => {
++  const dir = tmp();
++  const since = Date.now();
++  put(dir, "summary.pdf", "summary", since + 1000);
++  put(dir, ".cloud9/artifact-links.json", JSON.stringify({
++    files: [{
++      name: "summary.pdf",
++      note: "do not partly trust this",
++      links: [{ kind: "made-from", target: { artifactId: "af-123", version: 0 } }],
++    }],
++  }), since + 1100);
++
++  const sweep = sweepProduced(dir, { since });
++  const summary = sweep.offers[0] as unknown as { note?: string; links?: unknown[] };
++
++  assert.equal(summary.note, undefined, "one bad link invalidates the whole current manifest");
++  assert.equal(summary.links, undefined);
++  assert.equal(sweep.refused.length, 1);
++  assert.equal(sweep.refused[0].name, "artifact-links.json");
++  assert.match(sweep.refused[0].why, /did not add any file notes or links/i);
++  assert.match(sweep.refused[0].why, /artifact-links\.json/i);
++  assert.ok(!sweep.refused[0].why.includes("do not partly trust this"),
++    "untrusted manifest contents are not repeated into chat");
++  assert.ok(!/[A-Za-z]:\\/.test(sweep.refused[0].why), "no machine path leaves the engine");
++});
++
++test("the private manifest read is bounded at the shared byte limit", () => {
++  const since = Date.now();
++  const row = JSON.stringify({ files: [{ name: "report.md", note: "at the limit" }] });
++
++  const exactDir = tmp();
++  put(exactDir, "report.md", "report", since + 1000);
++  put(exactDir, ".cloud9/artifact-links.json",
++    row + " ".repeat(ARTIFACT_LIMITS.manifestBytes - Buffer.byteLength(row)), since + 1100);
++  const exact = sweepProduced(exactDir, { since });
++  assert.equal((exact.offers[0] as unknown as { note?: string }).note, "at the limit");
++  assert.deepEqual(exact.refused, []);
++
++  const overDir = tmp();
++  put(overDir, "report.md", "report", since + 1000);
++  put(overDir, ".cloud9/artifact-links.json",
++    row + " ".repeat(ARTIFACT_LIMITS.manifestBytes + 1 - Buffer.byteLength(row)), since + 1100);
++  const over = sweepProduced(overDir, { since });
++  assert.equal((over.offers[0] as unknown as { note?: string }).note, undefined);
++  assert.equal(over.refused.length, 1);
++  assert.match(over.refused[0].why, /not valid/i);
++  assert.ok(!over.refused[0].why.includes("at the limit"), "private contents stay private");
++});
++
++test("an ambiguous normalised name leaves every colliding file unannotated and says why once", () => {
++  const dir = tmp();
++  const since = Date.now();
++  put(dir, "a b.txt", "one", since + 1000);
++  put(dir, "a  b.txt", "two", since + 1100);
++  put(dir, ".cloud9/artifact-links.json", JSON.stringify({
++    files: [{ name: "A B.txt", note: "must not choose one by luck" }],
++  }), since + 1200);
++
++  const sweep = sweepProduced(dir, { since });
++  const offers = sweep.offers as unknown as { name: string; note?: string; links?: unknown[] }[];
++
++  assert.deepEqual(offers.map(file => file.name).sort(), ["a  b.txt", "a b.txt"]);
++  assert.ok(offers.every(file => file.note === undefined && file.links === undefined),
++    "one manifest row cannot annotate two different files");
++  assert.equal(sweep.refused.length, 1, "one ambiguous key produces one refusal sentence");
++  assert.match(sweep.refused[0].why, /more than one file/i);
++  assert.match(sweep.refused[0].why, /rename/i);
++  assert.ok(!/[A-Za-z]:\\/.test(sweep.refused[0].why), "no machine path leaves the engine");
++});
++
++test("no manifest leaves annotations absent from the existing produced-file result", () => {
++  const dir = tmp();
++  const since = Date.now();
++  put(dir, "report.md", "report", since + 1000);
++
++  const sweep = sweepProduced(dir, { since });
++  const report = sweep.offers[0] as unknown as { note?: string; links?: unknown[] };
++
++  assert.deepEqual(sweep.offers.map(file => file.name), ["report.md"]);
++  assert.equal(report.note, undefined);
++  assert.equal(report.links, undefined);
++  assert.deepEqual(sweep.refused, []);
++});
++
++test("an offer is a pathless captured value whose bytes survive source mutation", () => {
++  const dir = tmp();
++  const since = Date.now();
++  const full = put(dir, "captured.txt", "before!", since + 1000);
++
++  const offer = sweepProduced(dir, { since }).offers[0] as unknown as {
++    bytes?: Buffer; path?: string; state?: unknown; size: number;
++  };
++  fs.writeFileSync(full, "after!!");
++  fs.utimesSync(full, new Date(since + 1000), new Date(since + 1000));
++
++  assert.equal(offer.bytes?.toString("utf8"), "before!",
++    "the offer owns the exact bytes captured before the rewrite");
++  assert.equal(offer.size, offer.bytes?.length, "size derives from the captured value");
++  assert.equal(offer.path, undefined, "nothing publishable may reopen a source path");
++  assert.equal(offer.state, undefined, "publish-time metadata recipes are gone");
++});
++
++test("three failed captures backfill to ten successes and leave two true cap extras", () => {
++  const dir = tmp();
++  const since = Date.now();
++  for (let i = 0; i < 15; i++) put(dir, `file-${i}.txt`, `${i}`, since + 1000 + i);
++  const fail = new Set(["file-14.txt", "file-13.txt", "file-12.txt"]);
++  const attempted: string[] = [];
++
++  const sweep = sweepProduced(dir, {
++    since,
++    capture: candidate => {
++      attempted.push(candidate.name);
++      return fail.has(candidate.name) ? undefined : Buffer.from(`captured:${candidate.name}`);
++    },
++  });
++
++  assert.equal(sweep.offers.length, 10, "failed captures do not consume offer slots");
++  assert.deepEqual(attempted, [
++    "file-14.txt", "file-13.txt", "file-12.txt",
++    "file-11.txt", "file-10.txt", "file-9.txt", "file-8.txt", "file-7.txt",
++    "file-6.txt", "file-5.txt", "file-4.txt", "file-3.txt", "file-2.txt",
++  ], "older candidates are attempted only until ten successful values exist");
++  assert.equal(sweep.refused.filter(row => /changed or could not be read/.test(row.why)).length, 3);
++  assert.equal(sweep.refused.filter(row => /only the newest 10/.test(row.why)).length, 2);
++  assert.deepEqual(sweep.offers.map(file => file.name), [
++    "file-11.txt", "file-10.txt", "file-9.txt", "file-8.txt", "file-7.txt",
++    "file-6.txt", "file-5.txt", "file-4.txt", "file-3.txt", "file-2.txt",
++  ]);
++});
++
++test("exact 10 MB is captured, over-limit is refused before capture, and accepted bytes are bounded", () => {
++  const since = Date.now();
++  const exactDir = tmp();
++  put(exactDir, "exact.bin", Buffer.alloc(ARTIFACT_LIMITS.bytes, 7), since + 1000);
++  const exact = sweepProduced(exactDir, { since });
++  assert.equal(exact.offers.length, 1);
++  assert.equal(exact.offers[0].bytes.length, ARTIFACT_LIMITS.bytes);
++  assert.equal(exact.offers[0].size, exact.offers[0].bytes.length);
++
++  const overDir = tmp();
++  const overPath = path.join(overDir, "over.bin");
++  const fd = fs.openSync(overPath, "w");
++  try { fs.ftruncateSync(fd, ARTIFACT_LIMITS.bytes + 1); } finally { fs.closeSync(fd); }
++  fs.utimesSync(overPath, new Date(since + 1000), new Date(since + 1000));
++  let captureCalls = 0;
++  const over = sweepProduced(overDir, {
++    since,
++    capture: () => { captureCalls++; return Buffer.from("must not run"); },
++  });
++  assert.equal(captureCalls, 0, "an over-limit file is rejected from stat, never fully read");
++  assert.equal(over.offers.length, 0);
++  assert.equal(over.refused.length, 1);
++
++  assert.equal(SWEEP_DEFAULTS.maxFiles * ARTIFACT_LIMITS.bytes, 100_000_000,
++    "production can retain at most ten 10 MB captured values per turn");
++  const boundedDir = tmp();
++  for (let i = 0; i < 5; i++) put(boundedDir, `tiny-${i}.txt`, "x", since + 1000 + i);
++  const bounded = sweepProduced(boundedDir, {
++    since, maxFiles: 2, maxBytes: 4, capture: () => Buffer.alloc(4),
++  });
++  assert.equal(bounded.offers.reduce((sum, file) => sum + file.bytes.length, 0), 8,
++    "the same bound holds under lower injected limits");
++});
+diff --git a/packages/engine/src/artifacts.ts b/packages/engine/src/artifacts.ts
+index e190acf..be0d5ed 100644
+--- a/packages/engine/src/artifacts.ts
++++ b/packages/engine/src/artifacts.ts
+@@ -29,19 +29,50 @@
+ //    the file really IS on this computer and he has to be told it stayed there.
+ import fs from "node:fs";
+ import path from "node:path";
+-import { ARTIFACT_LIMITS, FILE_NAME_SENTENCE, artifactTooBigSentence, isSafeFileName } from "@cloud9/shared";
++import {
++  ARTIFACT_LIMITS, ArtifactLink, ArtifactLinkManifestFile, FILE_NAME_SENTENCE,
++  artifactTooBigSentence, isSafeFileName, nameKey, parseArtifactLinkManifest,
++} from "@cloud9/shared";
+ import { isPendingName } from "./wholefile.js";
+ 
+-/** One file the engine is willing to offer to the hub. */
++/**
++ * One captured value the engine is willing to offer to the hub.
++ *
++ * Deliberately NO path and NO source-file state. Once this object exists, these
++ * exact bytes are the produced value; publishing it cannot consult the mutable
++ * filesystem again.
++ */
+ export interface ProducedFile {
+-  /** the full path on THIS machine — never leaves the engine */
+-  path: string;
+   /** the shared name: the base name, which is what other people see */
+   name: string;
++  /** engine-owned snapshot, captured once before this became an offer */
++  bytes: Buffer;
++  /** always derived from `bytes.length` */
+   size: number;
+   modifiedAt: number;
++  /** the agent's own optional line for this exact version */
++  note?: string;
++  /** typed, exact-version relationships declared for this exact version */
++  links?: ArtifactLink[];
++}
++
++interface ScanFileState {
++  dev: bigint;
++  ino: bigint;
++  size: bigint;
++  mtimeNs: bigint;
++  ctimeNs: bigint;
++}
++
++interface ScanCandidate {
++  path: string;
++  name: string;
++  modifiedAt: number;
++  state: ScanFileState;
+ }
+ 
++type CaptureCandidate = (candidate: ScanCandidate, maxBytes: number) => Buffer | undefined;
++
+ /** One file that will NOT be shared, and the sentence saying why. */
+ export interface RefusedFile {
+   name: string;
+@@ -87,6 +118,121 @@ export interface SweepOptions {
+   since: number;
+   maxFiles?: number;
+   depth?: number;
++  /** test seam; production always uses the shared artifact byte limit */
++  maxBytes?: number;
++  /** deterministic capture-failure seam; production uses the descriptor reader below */
++  capture?: CaptureCandidate;
++}
++
++/** Private instructions for annotating files from this turn; never a produced file itself. */
++export const ARTIFACT_LINK_MANIFEST = path.join(".cloud9", "artifact-links.json");
++
++interface TurnManifest {
++  byName: Map<string, ArtifactLinkManifestFile>;
++  refused?: RefusedFile;
++}
++
++/**
++ * Read this turn's private file-link manifest, or deliberately treat it as absent.
++ *
++ * AGE COMES FIRST. A damaged manifest left by an earlier turn is none of this
++ * turn's business and must not make today's successful work look broken. A
++ * current manifest is parsed by the shared parser — the one owner of its shape,
++ * limits and canonical link de-duplication. Nothing here guesses around a bad
++ * row or repeats its untrusted contents into chat.
++ */
++function readTurnManifest(dir: string, since: number): TurnManifest {
++  const manifestPath = path.join(dir, ARTIFACT_LINK_MANIFEST);
++  let stat: fs.BigIntStats;
++  try { stat = fs.statSync(manifestPath, { bigint: true }); }
++  catch { return { byName: new Map() }; }
++  const modifiedAt = Number(stat.mtimeNs) / 1_000_000;
++  if (!stat.isFile() || modifiedAt < since) return { byName: new Map() };
++
++  // Never read more than the shared parser can accept plus one byte. The extra
++  // byte is enough for that parser to own the "too big" decision without first
++  // loading an arbitrarily large private file into the engine process.
++  const bytes = readSnapshot(
++    manifestPath, scanState(stat), ARTIFACT_LIMITS.manifestBytes + 1, true);
++  if (!bytes) return { byName: new Map(), refused: badManifestRefusal() };
++  let text = bytes.toString("utf8");
++  if (stat.size > BigInt(ARTIFACT_LIMITS.manifestBytes)) {
++    const encoded = Buffer.byteLength(text, "utf8");
++    if (encoded <= ARTIFACT_LIMITS.manifestBytes) {
++      text += "x".repeat(ARTIFACT_LIMITS.manifestBytes + 1 - encoded);
++    }
++  }
++  const parsed = parseArtifactLinkManifest(text);
++  if (!parsed.ok) return { byName: new Map(), refused: badManifestRefusal() };
++  return { byName: new Map(parsed.manifest.files.map(file => [nameKey(file.name), file])) };
++}
++
++/** One deliberately generic room-visible sentence: private manifest contents stay private. */
++function badManifestRefusal(): RefusedFile {
++  return {
++    name: "artifact-links.json",
++    why: "I did not add any file notes or links because this turn's artifact-links.json " +
++      "is not valid; fix or remove that private file and try again.",
++  };
++}
++
++function scanState(stat: fs.BigIntStats): ScanFileState {
++  return {
++    dev: stat.dev, ino: stat.ino, size: stat.size,
++    mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs,
++  };
++}
++
++function isSameScanState(expected: ScanFileState, actual: fs.BigIntStats): boolean {
++  return expected.dev === actual.dev
++    && expected.ino === actual.ino
++    && expected.size === actual.size
++    && expected.mtimeNs === actual.mtimeNs
++    && expected.ctimeNs === actual.ctimeNs;
++}
++
++/**
++ * Capture one coherent source snapshot into a new Buffer.
++ *
++ * Every filesystem check is part of capture. The returned Buffer is the value;
++ * nothing is allowed to reopen this path later. `allowPrefix` is only for the
++ * private manifest, where limit+1 bytes are enough to prove an oversize refusal.
++ */
++function readSnapshot(
++  filePath: string, state: ScanFileState, maxBytes: number, allowPrefix = false,
++): Buffer | undefined {
++  let fd: number | undefined;
++  try {
++    fd = fs.openSync(filePath, "r");
++    const before = fs.fstatSync(fd, { bigint: true });
++    if (!isSameScanState(state, before)) return undefined;
++    if (!allowPrefix && before.size > BigInt(maxBytes)) return undefined;
++    const wanted = allowPrefix
++      ? Math.min(Number(before.size), maxBytes)
++      : Number(before.size);
++    const bytes = Buffer.alloc(wanted);
++    let read = 0;
++    while (read < wanted) {
++      const n = fs.readSync(fd, bytes, read, wanted - read, read);
++      if (n === 0) return undefined;
++      read += n;
++    }
++    const after = fs.fstatSync(fd, { bigint: true });
++    if (!isSameScanState(state, after)) return undefined;
++    const stillAtPath = fs.statSync(filePath, { bigint: true });
++    if (!isSameScanState(state, stillAtPath)) return undefined;
++    return bytes;
++  } catch {
++    return undefined;
++  } finally {
++    if (fd !== undefined) {
++      try { fs.closeSync(fd); } catch { /* best effort: capture is already over */ }
++    }
++  }
++}
++
++function captureCandidate(candidate: ScanCandidate, maxBytes: number): Buffer | undefined {
++  return readSnapshot(candidate.path, candidate.state, maxBytes);
+ }
+ 
+ /**
+@@ -99,7 +245,8 @@ export interface SweepOptions {
+ export function sweepProduced(dir: string, opts: SweepOptions): ArtifactSweep {
+   const maxFiles = opts.maxFiles ?? SWEEP_DEFAULTS.maxFiles;
+   const depth = opts.depth ?? SWEEP_DEFAULTS.depth;
+-  const found: ProducedFile[] = [];
++  const maxBytes = opts.maxBytes ?? ARTIFACT_LIMITS.bytes;
++  const found: ScanCandidate[] = [];
+   const refused: RefusedFile[] = [];
+   let scanned = 0;
+ 
+@@ -122,29 +269,89 @@ export function sweepProduced(dir: string, opts: SweepOptions): ArtifactSweep {
+       if (isPendingName(entry.name)) continue;
+       // dot-files are configuration and state, not the thing he asked for
+       if (entry.name.startsWith(".")) continue;
+-      let stat: fs.Stats;
+-      try { stat = fs.statSync(full); } catch { continue; }
+-      if (stat.mtimeMs < opts.since) continue; // older than this turn
+-      if (stat.size === 0) continue;           // an empty file is not a result
++      let stat: fs.BigIntStats;
++      try { stat = fs.statSync(full, { bigint: true }); } catch { continue; }
++      const modifiedAt = Number(stat.mtimeNs) / 1_000_000;
++      const size = Number(stat.size);
++      if (modifiedAt < opts.since) continue; // older than this turn
++      if (stat.size === 0n) continue;        // an empty file is not a result
+       if (!isSafeFileName(entry.name)) {
+         refused.push({ name: entry.name, why: FILE_NAME_SENTENCE });
+         continue;
+       }
+-      if (stat.size > ARTIFACT_LIMITS.bytes) {
+-        refused.push({ name: entry.name, why: artifactTooBigSentence(entry.name, stat.size) });
++      if (stat.size > BigInt(maxBytes)) {
++        refused.push({
++          name: entry.name,
++          why: maxBytes === ARTIFACT_LIMITS.bytes
++            ? artifactTooBigSentence(entry.name, size)
++            : `"${entry.name}" is too big for this capture limit and stayed on this computer.`,
++        });
+         continue;
+       }
+-      found.push({ path: full, name: entry.name, size: stat.size, modifiedAt: stat.mtimeMs });
++      found.push({ path: full, name: entry.name, modifiedAt, state: scanState(stat) });
+     }
+   };
+   walk(dir, depth);
+ 
+-  // NEWEST FIRST, because when a turn touched more than the cap the newest is
+-  // what it was working on last, and the cap must be a stated fact rather than
+-  // a silent trim.
++  // THE MANIFEST IS PRIVATE INSTRUCTIONS, not another result. The ordinary walk
++  // never enters `.cloud9`; this separate read happens only after the produced
++  // files are known, and an entry can annotate only an exact matching base name.
++  const manifest = readTurnManifest(dir, opts.since);
++  if (manifest.refused) refused.push(manifest.refused);
++  const candidatesByName = new Map<string, ScanCandidate[]>();
++  for (const candidate of found) {
++    const key = nameKey(candidate.name);
++    const matches = candidatesByName.get(key) ?? [];
++    matches.push(candidate);
++    candidatesByName.set(key, matches);
++  }
++  const annotationsByName = new Map<string, ArtifactLinkManifestFile>();
++  for (const [key, declared] of manifest.byName) {
++    const matches = candidatesByName.get(key) ?? [];
++    if (matches.length > 1) {
++      refused.push({
++        name: declared.name,
++        why: `I did not add the note or links for "${declared.name}" because more than one ` +
++          "file made this turn has that name after spacing and letter case are normalised; " +
++          "rename one of them and try again.",
++      });
++      continue;
++    }
++    if (matches.length === 1) annotationsByName.set(key, declared);
++  }
++
++  // NEWEST FIRST. The cap counts SUCCESSFUL captures, not paths we happened to
++  // try: a changing/unreadable new file leaves its slot for the next valid one.
+   found.sort((a, b) => b.modifiedAt - a.modifiedAt || a.name.localeCompare(b.name));
+-  const offers = found.slice(0, maxFiles);
+-  for (const extra of found.slice(maxFiles)) {
++  const offers: ProducedFile[] = [];
++  const capture = opts.capture ?? captureCandidate;
++  let next = 0;
++  while (next < found.length && offers.length < maxFiles) {
++    const candidate = found[next++];
++    const captured = capture(candidate, maxBytes);
++    if (!captured || captured.length === 0 || captured.length > maxBytes) {
++      refused.push({
++        name: candidate.name,
++        why: `"${candidate.name}" changed or could not be read while I was capturing it, so ` +
++          "it stayed on this computer; let it finish and try again.",
++      });
++      continue;
++    }
++    // Production capture already allocated this Buffer. An injected test capture
++    // is copied so the offer still owns its value rather than the injector's.
++    const bytes = opts.capture ? Buffer.from(captured) : captured;
++    const declared = annotationsByName.get(nameKey(candidate.name));
++    offers.push({
++      name: candidate.name,
++      bytes,
++      size: bytes.length,
++      modifiedAt: candidate.modifiedAt,
++      ...(declared?.note !== undefined ? { note: declared.note } : {}),
++      ...(declared?.links !== undefined ? { links: declared.links } : {}),
++    });
++  }
++  // Only candidates AFTER enough successful captures are true cap extras.
++  for (const extra of found.slice(next)) {
+     refused.push({
+       name: extra.name,
+       why: `that turn changed ${found.length} files, and only the newest ${maxFiles} are ` +
+diff --git a/packages/engine/src/engine.ts b/packages/engine/src/engine.ts
+index 5dd6244..2edd67e 100644
+--- a/packages/engine/src/engine.ts
++++ b/packages/engine/src/engine.ts
+@@ -13,7 +13,7 @@ import { approvalsFor, needsApprovalToRun } from "./abilities.js";
+ import { Cloud9SearchAnswer } from "./cloud9tools.js";
+ import { ConversationBudget, CONVERSATION_BUDGET, renderConversation } from "./context.js";
+ import { OpenTurn, ToolBridge } from "./toolbridge.js";
+-import { describeRefusals, sweepProduced } from "./artifacts.js";
++import { ArtifactSweep, describeRefusals, sweepProduced } from "./artifacts.js";
+ import { ApprovalDesk, ApprovalOutcome } from "./approvaldesk.js";
+ import { GitHubClient, GitHubOptions } from "./github.js";
+ import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
+@@ -581,7 +581,10 @@ export class Engine {
+       // THE FILES THIS TURN MADE, offered to the hub before the reply is
+       // returned, so the message the agent is about to say and the file it is
+       // talking about arrive together rather than minutes apart.
+-      this.shareProduced(agent, input, seed.startedAt, record?.id);
++      // A published version must point at the exact run that made it. If the run
++      // record itself could not be built, the turn still returns its answer but
++      // no unattributed file is invented on the hub.
++      if (record) this.shareProduced(agent, input, seed.startedAt, record.id);
+       return text;
+     } catch (err) {
+       this.recordRun(seed, {
+@@ -635,7 +638,7 @@ export class Engine {
+    * away, or a folder that cannot be read, must never be the reason a turn that
+    * really worked is reported as broken.
+    */
+-  private shareProduced(agent: AgentDef, input: TurnInput, since: number, runId?: string): void {
++  private shareProduced(agent: AgentDef, input: TurnInput, since: number, runId: string): void {
+     // No conversation means nowhere to put a file. A turn with no channel is
+     // not a turn anybody is waiting on a file from.
+     const channelId = input.channelId;
+@@ -643,33 +646,42 @@ export class Engine {
+     try {
+       const dir = input.workdir ?? this.agentDataDir(agent.id);
+       const sweep = sweepProduced(dir, { since });
+-      for (const file of sweep.offers) {
+-        let bytes: Buffer;
+-        try { bytes = fs.readFileSync(file.path); }
+-        catch (err) {
+-          console.error(`[engine] could not read a file ${agent.name} made:`, err);
+-          continue;
+-        }
+-        // A file that changed between the sweep and the read is not a file we
+-        // agreed to share — the cap is checked against the BYTES WE HOLD.
+-        if (bytes.length === 0 || bytes.length > ARTIFACT_LIMITS.bytes) continue;
+-        this.sendFrame({
+-          type: "publishArtifact", channelId, agentId: agent.id, name: file.name,
+-          dataBase64: bytes.toString("base64"),
+-          ...(runId ? { runId } : {}),
+-          ...(input.taskId ? { taskId: input.taskId } : {}),
+-        });
+-      }
+-      // A REFUSAL IS SAID OUT LOUD, in the room, in the agent's own voice. The
+-      // file really is on this computer; silence here is the "the file's on
+-      // disk" complaint all over again, with the app doing the hiding.
+-      const said = describeRefusals(sweep.refused);
+-      if (said) this.agentSend(agent.id, channelId, said);
++      this.publishCaptured(agent, input, runId, sweep);
+     } catch (err) {
+       console.error(`[engine] could not share the files ${agent.name} made:`, err);
+     }
+   }
+ 
++  /**
++   * Publish already-captured values. ZERO filesystem operations belong here.
++   *
++   * A ProducedFile has no path to reopen: its Buffer is the exact value the
++   * capture phase accepted, and note/links/run attribution attach to that value.
++   * Public for no caller; tests reach it only to prove source paths may be changed
++   * or deleted after capture without changing the frame.
++   */
++  private publishCaptured(
++    agent: AgentDef, input: TurnInput, runId: string, sweep: ArtifactSweep,
++  ): void {
++    const channelId = input.channelId;
++    if (!channelId) return;
++    for (const file of sweep.offers) {
++      if (file.bytes.length === 0 || file.bytes.length > ARTIFACT_LIMITS.bytes) continue;
++      this.sendFrame({
++        type: "publishArtifact", channelId, agentId: agent.id, name: file.name,
++        dataBase64: file.bytes.toString("base64"), runId,
++        ...(input.taskId ? { taskId: input.taskId } : {}),
++        ...(file.note !== undefined ? { note: file.note } : {}),
++        ...(file.links !== undefined ? { links: file.links } : {}),
++      });
++    }
++    // A REFUSAL IS SAID OUT LOUD, in the room, in the agent's own voice. The
++    // file really is on this computer; silence here is the "the file's on disk"
++    // complaint all over again, with the app doing the hiding.
++    const said = describeRefusals(sweep.refused);
++    if (said) this.agentSend(agent.id, channelId, said);
++  }
++
+   /**
+    * Send one run to the hub, so it can reach the screens.
+    *
+diff --git a/packages/engine/src/artifact-manifest.test.ts b/packages/engine/src/artifact-manifest.test.ts
+new file mode 100644
+index 0000000..795ed41
+--- /dev/null
++++ b/packages/engine/src/artifact-manifest.test.ts
+@@ -0,0 +1,419 @@
++// THE PRIVATE TURN MANIFEST AT THE ENGINE/WIRE SEAM.
++//
++// `artifacts.test.ts` proves the folder sweep. These checks prove the remaining
++// promise: every real turn reaches that sweep, and the exact note/link facts ride
++// on the publish frame with the run that produced those bytes.
++import test from "node:test";
++import assert from "node:assert/strict";
++import { execFileSync } from "node:child_process";
++import { once } from "node:events";
++import fs from "node:fs";
++import { AddressInfo } from "node:net";
++import os from "node:os";
++import path from "node:path";
++import { fileURLToPath } from "node:url";
++import { WebSocketServer } from "ws";
++import {
++  AgentDef, AgentSchedule, ClientFrame, Message, Task, WorldState,
++} from "@cloud9/shared";
++import { ArtifactSweep, sweepProduced } from "./artifacts.js";
++import { Engine, TurnInput } from "./engine.js";
++import { ClaudeProvider, RespondInput } from "./provider.js";
++
++const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-artifact-manifest-"));
++
++const agent = (): AgentDef => ({
++  id: "a1", ownerId: "u1", name: "Maker", emoji: "M", persona: "You make files",
++  abilities: { webSearch: false, files: true, schedules: false, background: true },
++  createdAt: 0,
++});
++
++function put(dir: string, rel: string, body: string | Buffer, at?: number): void {
++  const full = path.join(dir, rel);
++  fs.mkdirSync(path.dirname(full), { recursive: true });
++  fs.writeFileSync(full, body);
++  const current = at ?? Date.now() + 2000;
++  fs.utimesSync(full, new Date(current), new Date(current));
++}
++
++class WritingProvider implements ClaudeProvider {
++  calls: RespondInput[] = [];
++  constructor(private readonly write: (input: RespondInput) => void) {}
++  async respond(input: RespondInput): Promise<string> {
++    this.calls.push(input);
++    this.write(input);
++    return "done";
++  }
++}
++
++function makeEngine(write: (dir: string, input: RespondInput) => void) {
++  const dataDir = tmp();
++  let engine!: Engine;
++  const provider = new WritingProvider(input => {
++    const dir = input.workdir ?? engine.agentDataDir(agent().id);
++    write(dir, input);
++  });
++  engine = new Engine({
++    relayUrl: "ws://127.0.0.1:1", token: "t", dataDir, provider,
++    github: {
++      runner: async () => ({
++        code: 1, stdout: "", stderr: "not connected", timedOut: false, notFound: true,
++      }),
++    },
++  });
++  const frames: ClientFrame[] = [];
++  (engine as unknown as { ws: unknown }).ws = {
++    readyState: 1,
++    send: (raw: string) => frames.push(JSON.parse(raw) as ClientFrame),
++  };
++  return { engine, frames, provider };
++}
++
++type PublishFrame = Extract<ClientFrame, { type: "publishArtifact" }>;
++
++const publishes = (frames: ClientFrame[]): PublishFrame[] =>
++  frames.filter((frame): frame is PublishFrame => frame.type === "publishArtifact");
++
++const runId = (frames: ClientFrame[]): string => {
++  const frame = frames.find(row => row.type === "runRecorded");
++  assert.ok(frame, "the turn's run is sent before its files");
++  return (frame.record as { id: string }).id;
++};
++
++const trigger: Message = {
++  id: "m1", channelId: "c1", authorId: "u1", authorName: "Vikas",
++  authorKind: "human", text: "make the file", ts: Date.now(),
++};
++
++function entryWorld(): WorldState {
++  const a = agent();
++  return {
++    me: { id: "u1", name: "Vikas" },
++    users: [{ id: "u1", name: "Vikas" }],
++    agents: [a],
++    channels: [{
++      id: "c1", name: "work", kind: "channel", memberIds: ["u1", a.id], createdAt: 0,
++    }],
++    messages: [], agentStatus: {}, tasks: [], approvals: [],
++  } as unknown as WorldState;
++}
++
++function installState(engine: Engine): void {
++  engine.state = entryWorld();
++}
++
++async function waitForPublish(frames: ClientFrame[]): Promise<void> {
++  const deadline = Date.now() + 3000;
++  while (publishes(frames).length === 0 && Date.now() < deadline) {
++    await new Promise(resolve => setTimeout(resolve, 5));
++  }
++  assert.equal(publishes(frames).length, 1, "the entry path reached exactly one publish funnel");
++}
++
++function oneRunLinkedPublish(frames: ClientFrame[]): PublishFrame {
++  const sent = publishes(frames);
++  assert.equal(sent.length, 1, "the entry path published exactly one produced file");
++  assert.equal(frames.filter(frame => frame.type === "runRecorded").length, 1,
++    "the entry path made exactly one run record");
++  assert.equal(sent[0].runId, runId(frames), "the publish points at this exact run");
++  return sent[0];
++}
++
++function initialiseRepository(): string {
++  const dir = tmp();
++  execFileSync("git", ["init", "-b", "master"], { cwd: dir, stdio: "ignore" });
++  execFileSync("git", ["config", "user.name", "Cloud9 Test"], { cwd: dir, stdio: "ignore" });
++  execFileSync("git", ["config", "user.email", "cloud9-test@example.invalid"],
++    { cwd: dir, stdio: "ignore" });
++  fs.writeFileSync(path.join(dir, "README.md"), "seed\n");
++  execFileSync("git", ["add", "README.md"], { cwd: dir, stdio: "ignore" });
++  execFileSync("git", ["commit", "-m", "seed"], { cwd: dir, stdio: "ignore" });
++  return dir;
++}
++
++test("publishArtifact carries the matching note and exact-version typed links, not the manifest", async () => {
++  const { engine, frames } = makeEngine(dir => {
++    put(dir, "summary.pdf", "summary bytes");
++    put(dir, "figures.csv", "figure bytes");
++    put(dir, ".cloud9/artifact-links.json", JSON.stringify({
++      files: [{
++        name: "summary.pdf",
++        note: "final figures",
++        links: [
++          { kind: "made-from", target: { artifactId: "af-123", version: 2 } },
++          { kind: "goes-with", target: { artifactId: "af-456", version: 7 } },
++        ],
++      }, {
++        name: "not-made.txt",
++        note: "a manifest row cannot create a file",
++      }],
++    }));
++  });
++
++  await engine.respondAs(agent(), {
++    context: "", trigger: "make the pack", triggerAuthor: "Vikas",
++    kind: "chat", channelId: "c1",
++  });
++
++  const sent = publishes(frames);
++  assert.deepEqual(sent.map(frame => frame.name).sort(), ["figures.csv", "summary.pdf"],
++    "the private manifest and names it merely mentions are never published");
++  const summary = sent.find(frame => frame.name === "summary.pdf")!;
++  const figures = sent.find(frame => frame.name === "figures.csv")!;
++  assert.deepEqual(summary, {
++    type: "publishArtifact", channelId: "c1", agentId: "a1", name: "summary.pdf",
++    dataBase64: Buffer.from("summary bytes").toString("base64"),
++    runId: runId(frames),
++    note: "final figures",
++    links: [
++      { kind: "made-from", target: { artifactId: "af-123", version: 2 } },
++      { kind: "goes-with", target: { artifactId: "af-456", version: 7 } },
++    ],
++  });
++  assert.equal(figures.note, undefined);
++  assert.equal(figures.links, undefined);
++});
++
++test("captured frames survive rewrite, replacement, deletion and manifest mutation", () => {
++  const dir = tmp();
++  const since = Date.now();
++  const rewritePath = path.join(dir, "rewrite.txt");
++  const replacePath = path.join(dir, "replace.txt");
++  const deletePath = path.join(dir, "delete.txt");
++  put(dir, "rewrite.txt", "old-one", since + 1000);
++  put(dir, "replace.txt", "old-two", since + 1100);
++  put(dir, "delete.txt", "old-three", since + 1200);
++  put(dir, ".cloud9/artifact-links.json", JSON.stringify({
++    files: [{
++      name: "rewrite.txt", note: "captured note",
++      links: [{ kind: "made-from", target: { artifactId: "af-source", version: 4 } }],
++    }],
++  }), since + 1300);
++  const captured = sweepProduced(dir, { since });
++
++  fs.writeFileSync(rewritePath, "new-one"); // same size
++  fs.utimesSync(rewritePath, new Date(since + 1000), new Date(since + 1000));
++  fs.rmSync(replacePath);
++  fs.writeFileSync(replacePath, "new-two");
++  fs.rmSync(deletePath);
++  fs.writeFileSync(path.join(dir, ".cloud9/artifact-links.json"), JSON.stringify({
++    files: [{ name: "rewrite.txt", note: "mutated note", links: [] }],
++  }));
++
++  const { engine, frames } = makeEngine(() => { /* this test publishes a pre-captured sweep */ });
++  const input: TurnInput = {
++    context: "", trigger: "snapshot", triggerAuthor: "Vikas",
++    kind: "task", channelId: "c1", taskId: "t-snapshot",
++  };
++  (engine as unknown as {
++    publishCaptured: (a: AgentDef, i: TurnInput, runId: string, sweep: ArtifactSweep) => void;
++  }).publishCaptured(agent(), input, "r-snapshot", captured);
++
++  const sent = publishes(frames);
++  assert.equal(sent.length, 3);
++  const byName = new Map(sent.map(frame => [frame.name, frame]));
++  assert.equal(Buffer.from(byName.get("rewrite.txt")!.dataBase64, "base64").toString(), "old-one");
++  assert.equal(Buffer.from(byName.get("replace.txt")!.dataBase64, "base64").toString(), "old-two");
++  assert.equal(Buffer.from(byName.get("delete.txt")!.dataBase64, "base64").toString(), "old-three");
++  assert.equal(byName.get("rewrite.txt")!.note, "captured note");
++  assert.deepEqual(byName.get("rewrite.txt")!.links,
++    [{ kind: "made-from", target: { artifactId: "af-source", version: 4 } }]);
++  for (const frame of sent) {
++    assert.equal(frame.runId, "r-snapshot");
++    assert.equal(frame.taskId, "t-snapshot");
++  }
++});
++
++test("the source has one provider doorway and one produced-file funnel", () => {
++  const here = path.dirname(fileURLToPath(import.meta.url));
++  const source = fs.readFileSync(path.resolve(here, "../src/engine.ts"), "utf8");
++  const artifactSource = fs.readFileSync(path.resolve(here, "../src/artifacts.ts"), "utf8");
++  const start = source.indexOf("  async respondAs(");
++  const end = source.indexOf("\n  private recordRun(", start);
++  assert.ok(start >= 0 && end > start, "the respondAs body is still findable by its method declarations");
++  const respondAsBody = source.slice(start, end);
++
++  assert.equal([...source.matchAll(/\bprovider\.respond\(/g)].length, 1,
++    "a new provider entry point must not bypass respondAs");
++  assert.equal([...source.matchAll(/this\.shareProduced\(/g)].length, 1,
++    "a new publish path must not bypass the one post-turn funnel");
++  assert.match(respondAsBody, /provider\.respond\(/,
++    "respondAs owns the only call into a provider");
++  assert.match(respondAsBody, /this\.shareProduced\(/,
++    "the same respondAs body owns produced-file sharing for chat, task, schedule and repository turns");
++  const publishStart = source.indexOf("  private publishCaptured(");
++  const publishEnd = source.indexOf("\n  /**\n   * Send one run", publishStart);
++  assert.ok(publishStart >= 0 && publishEnd > publishStart,
++    "the captured-value publisher is findable by its method declarations");
++  const publishBody = source.slice(publishStart, publishEnd);
++  assert.match(publishBody, /file\.bytes\.toString\("base64"\)/,
++    "publish encodes the held Buffer directly");
++  assert.doesNotMatch(publishBody, /\b(fs\.|path\.|open|stat|readFile|readProduced|sha|hash)/,
++    "nothing after capture may reopen, restat, reread or rehash a source path");
++  const producedStart = artifactSource.indexOf("export interface ProducedFile {");
++  const producedEnd = artifactSource.indexOf("\n}\n", producedStart);
++  const producedType = artifactSource.slice(producedStart, producedEnd);
++  assert.match(producedType, /bytes: Buffer/);
++  assert.doesNotMatch(producedType, /\b(path|state):/,
++    "a publishable value has no source recipe left to consult");
++  assert.doesNotMatch(artifactSource, /readFileSync\(manifestPath/,
++    "a private manifest must not be loaded whole before its byte limit is known");
++  assert.match(artifactSource, /ARTIFACT_LIMITS\.manifestBytes \+ 1/,
++    "the manifest reader is bounded by the shared limit plus one refusal byte");
++});
++
++test("real chat, task, schedule and repository entries each reach one run-linked publish", async t => {
++  await t.test("chat entry", async () => {
++    const { engine, frames, provider } = makeEngine(dir => put(dir, "chat.txt", "chat"));
++    installState(engine);
++
++    await engine.takeTurn(agent(), "c1", trigger);
++
++    const publish = oneRunLinkedPublish(frames);
++    assert.equal(publish.name, "chat.txt");
++    assert.equal(publish.taskId, undefined);
++    assert.equal(provider.calls.length, 1);
++    assert.equal(provider.calls[0].kind, "chat");
++    assert.equal(provider.calls[0].workdir, undefined,
++      "ordinary chat stays in the agent's own folder");
++  });
++
++  await t.test("delegated task through the public relay connection", async () => {
++    const task: Task = {
++      id: "t1", title: "make the task file", requesterId: "u1", requesterName: "Vikas",
++      agentId: "a1", channelId: "c1", status: "not_started", createdAt: 1, updatedAt: 1,
++    };
++    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
++    await once(server, "listening");
++    const port = (server.address() as AddressInfo).port;
++    const dataDir = tmp();
++    let engine!: Engine;
++    const provider = new WritingProvider(input => {
++      put(input.workdir ?? engine.agentDataDir("a1"), "task.txt", "task");
++    });
++    engine = new Engine({
++      relayUrl: `ws://127.0.0.1:${port}`, token: "t", dataDir, provider,
++    });
++    const frames: ClientFrame[] = [];
++    server.on("connection", socket => {
++      let admitted = false;
++      socket.on("message", raw => {
++        const frame = JSON.parse(String(raw)) as ClientFrame;
++        frames.push(frame);
++        if (!admitted && frame.type === "hello") {
++          admitted = true;
++          socket.send(JSON.stringify({ type: "welcome", state: entryWorld() }));
++          socket.send(JSON.stringify({ type: "task", task }));
++        }
++      });
++    });
++
++    try {
++      engine.connect();
++      await waitForPublish(frames);
++
++      const publish = oneRunLinkedPublish(frames);
++      assert.equal(publish.name, "task.txt");
++      assert.equal(publish.taskId, task.id, "the delegated job id reaches the published version");
++      assert.equal(provider.calls.length, 1);
++      assert.equal(provider.calls[0].kind, "task");
++      const recorded = frames.find(frame => frame.type === "runRecorded");
++      assert.ok(recorded && recorded.type === "runRecorded");
++      assert.equal(recorded.record.taskId, task.id,
++        "the relay task frame carries its id into the run and published version");
++    } finally {
++      engine.stop();
++      await new Promise<void>(resolve => server.close(() => resolve()));
++    }
++  });
++
++  await t.test("scheduled tick", async () => {
++    const { engine, frames, provider } = makeEngine(dir => put(dir, "schedule.txt", "schedule"));
++    installState(engine);
++    const schedule: AgentSchedule = {
++      id: "s1", agentId: "a1", channelId: "c1",
++      when: "every 1m", prompt: "make the scheduled file", enabled: true,
++    };
++    engine.schedules = [schedule];
++
++    engine.scheduler.tick(new Date(Date.now() + 120_000));
++    await waitForPublish(frames);
++
++    const publish = oneRunLinkedPublish(frames);
++    assert.equal(publish.name, "schedule.txt");
++    assert.equal(publish.taskId, undefined);
++    assert.equal(provider.calls.length, 1);
++    assert.equal(provider.calls[0].kind, "schedule");
++    assert.equal(provider.calls[0].workdir, undefined);
++  });
++
++  await t.test("repository worktree entry", async () => {
++    const repoDir = initialiseRepository();
++    const { engine, frames, provider } = makeEngine((dir, input) => {
++      assert.equal(dir, input.workdir, "the provider writes in the worktree it was handed");
++      put(dir, "repo-result.txt", "repository result");
++    });
++    installState(engine);
++
++    const result = await engine.workInRepository(agent(), {
++      channelId: "c1", ask: "make the repository file", triggerAuthor: "Vikas", repoDir,
++    });
++
++    assert.ok(result, "the public repository entry completed");
++    const publish = oneRunLinkedPublish(frames);
++    assert.equal(publish.name, "repo-result.txt",
++      "sharing swept the worktree, not the agent's ordinary folder");
++    assert.equal(publish.taskId, undefined);
++    assert.equal(provider.calls.length, 1);
++    assert.equal(provider.calls[0].workdir, result!.path,
++      "the repository entry propagated its exact worktree into the turn");
++    assert.equal(fs.existsSync(path.join(result!.path, "repo-result.txt")), true);
++  });
++});
++
++test("markdown that mentions file relationships never becomes typed link data", async () => {
++  const { engine, frames } = makeEngine(dir => {
++    put(dir, "report.md", [
++      "Made from cloud9://artifact/af-123@2.",
++      "{\"kind\":\"goes-with\",\"target\":{\"artifactId\":\"af-456\",\"version\":7}}",
++    ].join("\n"));
++  });
++
++  await engine.respondAs(agent(), {
++    context: "", trigger: "make it", triggerAuthor: "Vikas", kind: "chat", channelId: "c1",
++  });
++
++  const sent = publishes(frames);
++  assert.equal(sent.length, 1);
++  assert.equal(sent[0].note, undefined);
++  assert.equal(sent[0].links, undefined,
++    "only the private typed manifest may create stored relationships");
++});
++
++test("a malformed current manifest produces a plain refusal but the file still publishes unannotated", async () => {
++  const { engine, frames } = makeEngine(dir => {
++    put(dir, "summary.pdf", "summary bytes");
++    put(dir, ".cloud9/artifact-links.json", JSON.stringify({
++      files: [{
++        name: "private-roadmap.txt", note: "must not survive",
++        links: "not a list",
++      }],
++    }));
++  });
++
++  await engine.respondAs(agent(), {
++    context: "", trigger: "make it", triggerAuthor: "Vikas", kind: "chat", channelId: "c1",
++  });
++
++  const sent = publishes(frames);
++  assert.equal(sent.length, 1);
++  assert.equal(sent[0].note, undefined);
++  assert.equal(sent[0].links, undefined);
++  const refusal = frames.find(frame => frame.type === "agentSend");
++  assert.ok(refusal);
++  assert.match(String(refusal.text), /did not add any file notes or links/i);
++  assert.match(String(refusal.text), /artifact-links\.json/i);
++  assert.ok(!String(refusal.text).includes("must not survive"));
++  assert.ok(!String(refusal.text).includes("private-roadmap.txt"),
++    "a room-visible refusal cannot repeat a private manifest file name");
++});

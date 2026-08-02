@@ -1,0 +1,13 @@
+Command: node -e (inspect fresh installed-app log for the required RED signature)
+Source: docs/qa/sol-feature1-final2-qa-app.log
+Date: 2026-08-02
+Exit code: 1
+
+drive-app installed sidecar RED
+FAIL 24/28: CDP-attached Electron rejects browser.newContext before member Files checks
+
+Load-bearing source evidence:
+- installed owner attached to file:///.../resources/app/dist-web/index.html?relay=...
+- 24 checks passed before the member fixture
+- browser.newContext failed with Protocol error (Target.createBrowserContext)
+- all four remaining Files claims were red/unknown

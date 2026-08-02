@@ -1,11 +1,13 @@
 // Renderer-side relay client: one WebSocket, one mutable world, subscribers.
 import {
-  ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, Artifact, ArtifactVersion,
+  ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, ARTIFACT_LIMITS, Artifact, ArtifactAccess,
+  ArtifactRelationView, ArtifactVersion, ArtifactWorkspaceEntry,
   Attachment, ATTACHMENT_LIMITS, Channel,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   MemoryNote,
   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
   UnreadEntry, User,
+  effectiveArtifactAccess, latestVersion,
   validateAttachment, validateLocalFolder, validateProjectText, validateRepo,
   // Joining a friend's Cloud9 — the address, the address book, the connection
   // lifecycle. All three are the shared modules the handoff says to build ON,
@@ -109,6 +111,36 @@ export interface RunList {
   asked: boolean;
   loading: boolean;
   entries: RunListEntry[];
+}
+
+/**
+ * One bounded answer to "which files can I read across this Cloud9?"
+ *
+ * `asked` separates a real empty list from a question nobody has asked.
+ * `loading` covers both the first page and an older page. `checkedAt` belongs
+ * to the hub answer (or the refusal), so the screen never labels stale rows as
+ * current without saying when they were last checked.
+ */
+export interface ArtifactWorkspacePage extends Page {
+  entries: ArtifactWorkspaceEntry[];
+  /** How many rows the pages explicitly opened; live pushes may not grow past it. */
+  capacity: number;
+  checkedAt?: number;
+  problem?: string;
+}
+
+const emptyArtifactWorkspace = (loading = false): ArtifactWorkspacePage => ({
+  asked: false, loading, entries: [], hasMore: true,
+  capacity: ARTIFACT_LIMITS.workspaceDefault,
+});
+
+export interface ArtifactAccessSaveState {
+  artifactId: ID;
+  requestId: ID;
+  state: "pending" | "succeeded" | "refused" | "lost";
+  /** uncorrelated same-file pushes observed while the save stayed pending */
+  pushesWhilePending: number;
+  problem?: string;
 }
 
 export interface World {
@@ -280,6 +312,17 @@ export interface World {
    */
   channelArtifacts: Record<ID, { asked: boolean; ids: ID[] }>;
   /**
+   * The bounded, cross-room Files index. Entries are summaries only; opening one
+   * asks for the existing full artifact card and immutable history.
+   */
+  artifactWorkspace: ArtifactWorkspacePage;
+  /** Typed outgoing and permitted incoming links, loaded with artifact detail. */
+  artifactRelations: Record<ID, ArtifactRelationView[]>;
+  /** Present only when the relay says the bounded detail has more safe rows. */
+  artifactRelationsTruncated: Record<ID, true>;
+  /** Transient detail failures are retryable and never become permanent absence. */
+  artifactDetailProblems: Record<ID, string>;
+  /**
    * WHAT EACH AGENT HAS SAVED TO REMEMBER, by agent id.
    *
    * `asked` is the same law the run histories and the projects follow: an empty
@@ -305,6 +348,8 @@ type Listener = () => void;
 interface Asked {
   /** what was asked — for reading a queue in a debugger, and for the tests */
   kind: ClientFrame["type"];
+  /** exact identity assigned at the one desktop send boundary */
+  requestId: ID;
   /** does this frame from the hub answer THIS question? */
   answers?: (frame: ServerFrame) => boolean;
   answered?: (frame: ServerFrame) => void;
@@ -416,6 +461,8 @@ export class RelayClient {
     projects: { asked: false, list: [] }, projectItems: {},
     repoChoices: { asked: false, asking: false },
     artifacts: {}, artifactsGone: {}, channelArtifacts: {},
+    artifactWorkspace: emptyArtifactWorkspace(),
+    artifactRelations: {}, artifactRelationsTruncated: {}, artifactDetailProblems: {},
     memory: {},
     hubs: [], activeHubId: "self", hubConn: { phase: "idle", line: "" },
   };
@@ -716,44 +763,52 @@ export class RelayClient {
   /**
    * WHAT WE ASKED, IN THE ORDER WE ASKED IT.
    *
-   * An `error` frame carries no echo of the question it refuses, so the only
-   * way to know whose refusal it is, is to know what is still outstanding. The
-   * hub makes that knowable: it reads one frame at a time and finishes
-   * answering it before it reads the next (`apps/relay/src/server.ts` —
-   * `handleFrame` is synchronous from top to bottom, and an `error` is only
-   * ever sent back down the connection whose own frame caused it). So answers
-   * come back in the order the questions went out, and a refusal belongs to the
-   * OLDEST question still waiting.
+   * Only sends with an answer/refusal/lost lifecycle belong here. A fire-and-
+   * forget frame has nothing to settle, so recording it would create a fake
+   * queue row. It still carries an id on the wire, which lets a direct refusal
+   * be shown generally without borrowing an older request's lifecycle.
    *
-   * THAT IS ONLY TRUE IF EVERY REFUSABLE QUESTION IS IN HERE. It used to be
-   * uploads and tickets and nothing else, so a refusal that belonged to
-   * something else in the app — editing a message you did not write — was
-   * pinned on the one upload in the air: the upload flipped to failed with a
-   * sentence about someone else's message, and a file that had reached the hub
-   * perfectly well could never be attached to anything. The list is complete
-   * now, and stays complete, because `send` is the only door out of this app
-   * and `send` is this.
+   * Every modern row carries the exact id assigned at the send boundary. A
+   * direct refusal can therefore remove only its own refusal-capable row. A
+   * legacy refusal with no id is general information only: this runtime cannot
+   * create a legacy no-id row, so there is nothing safe for it to settle.
    *
-   * The same list is what stops a LATE answer being applied to a question
-   * nobody is asking any more: an answer is handed to the request that asked
-   * for it, and if that request has been called off the answer goes nowhere.
+   * The same list stops a LATE answer being applied to a question nobody is
+   * asking any more: an answer is handed to the request that asked for it, and
+   * if that request has been called off the answer goes nowhere.
    */
   private asked: Asked[] = [];
 
+  /** Give every outgoing frame one identity without changing its caller's object. */
+  private identify(frame: ClientFrame): ClientFrame & { requestId: ID } {
+    const requestId = typeof frame.requestId === "string" && frame.requestId.length > 0
+      ? frame.requestId : this.nextRequestId(frame.type);
+    return { ...frame, requestId };
+  }
+
   /**
-   * Ask the hub something and remember that we asked.
+   * The one desktop send boundary.
    *
-   * Returns whether it actually went. A frame written to a socket that is not
-   * open was never asked, so it must never be waited on.
+   * Returns the exact id put on the wire, or undefined when nothing was sent.
+   * Lifecycle callers put that same id in the ledger; fire-and-forget callers
+   * receive the id but create no row.
    */
-  private ask(frame: ClientFrame, waiting: Omit<Asked, "kind"> = {}): boolean {
+  private transmit(frame: ClientFrame, waiting: Omit<Asked, "kind" | "requestId"> = {}): ID | undefined {
     const ws = this.ws;
-    if (ws?.readyState !== WebSocket.OPEN) return false;
-    ws.send(JSON.stringify(frame));
+    if (ws?.readyState !== WebSocket.OPEN) return undefined;
+    const outgoing = this.identify(frame);
+    ws.send(JSON.stringify(outgoing));
     // `hello` is the one frame asked before there is a conversation to have.
     // Its refusals are about the connection itself and are handled as such.
-    if (frame.type === "hello") return true;
-    const entry: Asked = { kind: frame.type, ...waiting };
+    if (outgoing.type === "hello") return outgoing.requestId;
+    const hasLifecycle = waiting.answers !== undefined || waiting.answered !== undefined
+      || waiting.refused !== undefined || waiting.lost !== undefined;
+    if (!hasLifecycle) return outgoing.requestId;
+    const entry: Asked = {
+      kind: outgoing.type,
+      requestId: outgoing.requestId,
+      ...waiting,
+    };
     this.asked.push(entry);
     setTimeout(() => {
       const i = this.asked.indexOf(entry);
@@ -761,27 +816,43 @@ export class RelayClient {
       this.asked.splice(i, 1);
       entry.lost?.();
     }, ANSWER_WINDOW_MS);
-    return true;
+    return outgoing.requestId;
+  }
+
+  /** Ask the hub something and remember its lifecycle only when it was sent. */
+  private ask(frame: ClientFrame, waiting: Omit<Asked, "kind" | "requestId"> = {}): boolean {
+    return this.transmit(frame, waiting) !== undefined;
   }
 
   /**
-   * Hand one answer to the question that asked for it.
+   * Hand one answer to the ONE question that recognises it.
    *
-   * Everything asked BEFORE the question this answers has been answered too —
-   * the hub cannot answer a later question first — so those stop waiting here,
-   * without refusal and without complaint. A frame that answers nothing on the
-   * list is unasked news (a message, a reaction, somebody joining) and settles
-   * nothing.
+   * A pushed artifact can arrive between two unrelated questions, and a late
+   * timed-out answer can arrive after its replacement. Removing every earlier
+   * ledger row when one later row matched silently cancelled those unrelated
+   * questions and their lost callbacks. Exact answers remove only their own row;
+   * unasked pushes remove nothing.
    */
   private settle(frame: ServerFrame): void {
     const i = this.asked.findIndex(a => a.answers !== undefined && a.answers(frame));
     if (i < 0) return;
-    const settled = this.asked.splice(0, i + 1);
-    settled[settled.length - 1].answered?.(frame);
+    const [settled] = this.asked.splice(i, 1);
+    settled.answered?.(frame);
   }
 
-  send(frame: ClientFrame): void {
-    this.ask(frame);
+  /** Route one exact refusal without consuming any unrelated question. */
+  private settleRefusal(frame: Extract<ServerFrame, { type: "error" }>): void {
+    if (frame.requestId === undefined) return;
+    const i = this.asked.findIndex(a =>
+      a.requestId === frame.requestId && a.refused !== undefined);
+    if (i < 0) return;
+    const [settled] = this.asked.splice(i, 1);
+    settled.refused?.(frame.error);
+  }
+
+  /** Fire-and-forget still returns the exact id put on the wire for deterministic QA. */
+  send(frame: ClientFrame): ID | undefined {
+    return this.transmit(frame);
   }
 
   /**
@@ -842,6 +913,24 @@ export class RelayClient {
    */
   outstanding(): string[] {
     return this.asked.map(a => a.kind);
+  }
+
+  /** Exact modern ledger rows for deterministic late-answer/push/refusal QA. */
+  outstandingQuestions(): Array<{ kind: ClientFrame["type"]; requestId: ID; refusable: boolean }> {
+    return this.asked.map(a => ({
+      kind: a.kind,
+      requestId: a.requestId,
+      refusable: a.refused !== undefined,
+    }));
+  }
+
+  /**
+   * Feed one typed hub frame through the real dispatcher for deterministic QA.
+   * The browser hook uses this to interleave exact/no-id refusals and successes;
+   * production traffic still enters through the WebSocket's onmessage handler.
+   */
+  receiveForQa(frame: ServerFrame): void {
+    this.onFrame(frame);
   }
 
   /** how many frames of each kind the hub has sent — evidence that an answer really arrived */
@@ -1724,13 +1813,134 @@ export class RelayClient {
    * use, thirty seconds, permission checked twice.
    */
 
+  private requestSequence = 0;
+  private accessSave?: ArtifactAccessSaveState;
+
+  artifactAccessSaveState(): ArtifactAccessSaveState | undefined {
+    return this.accessSave ? { ...this.accessSave } : undefined;
+  }
+
+  private nextRequestId(kind: ClientFrame["type"] | "workspace" | "access"): ID {
+    this.requestSequence++;
+    return `rq_${kind}_${Date.now().toString(36)}_${this.requestSequence.toString(36)}`;
+  }
+
+  /** A newer first-page ask makes any older page still in flight stale. */
+  private artifactWorkspaceEpoch = 0;
+  /** Every privacy invalidation advances this; old detail answers cannot repopulate it. */
+  private artifactRelationGeneration = 0;
+  /** One stale detail frame is discarded as a whole before it can regress metadata. */
+  private discardArtifactDetailFrames = new Set<ID>();
+
+  /** The current bounded cross-room index, answered or not. */
+  artifactWorkspace(): ArtifactWorkspacePage {
+    return this.world.artifactWorkspace;
+  }
+
+  /**
+   * Ask for the newest Files page, or the next page using the hub's cursor.
+   *
+   * Reset clears the previous answer rather than presenting yesterday's rows as
+   * today's while the hub is still being asked. Older pages append by id and
+   * never make the list unbounded: every request uses the shared default limit.
+   */
+  askArtifactWorkspace(reset = false): void {
+    const held = this.world.artifactWorkspace;
+    /* A fresh entry supersedes an older-page request already in flight. Its epoch
+       makes the old answer harmless; refusing the reset here skipped the fresh
+       page entirely and let the stale answer append after re-entry. */
+    if (!reset && held.loading) return;
+    if (!reset && held.asked && !held.hasMore) return;
+    const limit = ARTIFACT_LIMITS.workspaceDefault;
+    const epoch = reset ? ++this.artifactWorkspaceEpoch : this.artifactWorkspaceEpoch;
+    const cursor = reset ? undefined : held.nextBefore;
+    const cursorId = reset ? undefined : held.nextBeforeId;
+    this.world.artifactWorkspace = reset
+      ? emptyArtifactWorkspace(true)
+      : { ...held, loading: true, problem: undefined };
+    this.emit();
+
+    const settleProblem = (problem: string): void => {
+      if (epoch !== this.artifactWorkspaceEpoch) return;
+      this.world.artifactWorkspace = {
+        ...this.world.artifactWorkspace,
+        asked: true, loading: false, checkedAt: Date.now(), problem,
+      };
+      this.emit();
+    };
+    const requestId = this.nextRequestId("workspace");
+    const sent = this.ask({
+      type: "artifactWorkspace", requestId,
+      ...(cursor === undefined ? {} : { before: cursor }),
+      ...(cursorId === undefined ? {} : { beforeId: cursorId }),
+      limit,
+    }, {
+      answers: f => f.type === "artifactWorkspace" && f.requestId === requestId,
+      answered: f => {
+        if (epoch !== this.artifactWorkspaceEpoch || f.type !== "artifactWorkspace"
+          || f.requestId !== requestId) return;
+        const current = this.world.artifactWorkspace;
+        const before = reset ? [] : current.entries;
+        const seen = new Set(f.artifacts.map(a => a.artifactId));
+        const capacity = reset ? limit : current.capacity + limit;
+        const merged = [...before.filter(a => !seen.has(a.artifactId)), ...f.artifacts];
+        this.world.artifactWorkspace = {
+          asked: true, loading: false, capacity,
+          entries: merged.slice(0, capacity),
+          hasMore: f.hasMore || merged.length > capacity,
+          nextBefore: f.nextBefore,
+          nextBeforeId: f.nextBeforeId,
+          checkedAt: Date.now(),
+        };
+      },
+      refused: settleProblem,
+      lost: () => settleProblem("the hub did not answer — try again"),
+    });
+    if (!sent) settleProblem("there's no connection to the hub — try again in a moment");
+  }
+
   /** One file an agent made, if this screen is holding it. */
   artifact(artifactId: ID): Artifact | undefined {
     return this.world.artifacts[artifactId];
   }
 
+  /** undefined = not loaded; [] = loaded and there are no permitted links. */
+  relationsFor(artifactId: ID): ArtifactRelationView[] | undefined {
+    return this.world.artifactRelations[artifactId];
+  }
+
+  relationsTruncated(artifactId: ID): boolean {
+    return !!this.world.artifactRelationsTruncated[artifactId];
+  }
+
+  artifactDetailProblem(artifactId: ID): string | undefined {
+    return this.world.artifactDetailProblems[artifactId];
+  }
+
+  /**
+   * ONE PRIVACY RULE FOR RELATION VIEWS.
+   *
+   * Any artifact publish, permission change or disappearance can change both its
+   * outgoing rows and another file's incoming rows. No cached relation view can
+   * prove it is unaffected, so all of them go. The selected detail asks again;
+   * until it answers, no old target name/id/version remains in the world.
+   */
+  private invalidateArtifactRelations(): void {
+    this.artifactRelationGeneration++;
+    this.world.artifactRelations = {};
+    this.world.artifactRelationsTruncated = {};
+    /* A new artifact fact is also a reason to retry a detail that previously
+       timed out; leaving the old problem would block the required fresh ask. */
+    this.world.artifactDetailProblems = {};
+    this.artifactDetailAsked.clear();
+  }
+
   /** ids already asked for, so a render cannot ask for the same one twice */
   private artifactAsked = new Set<ID>();
+  /** ids with a current relation view installed */
+  private artifactDetailAsked = new Set<ID>();
+  /** detail questions already on the wire — invalidating a cache must not duplicate them */
+  private artifactDetailInFlight = new Set<ID>();
 
   /**
    * Ask for one file an agent made, by id — the card behind a reference.
@@ -1748,15 +1958,142 @@ export class RelayClient {
   askArtifact(artifactId: ID): void {
     if (this.world.artifacts[artifactId] || this.artifactAsked.has(artifactId)) return;
     this.artifactAsked.add(artifactId);
-    const gone = (): void => {
-      this.world.artifactsGone = { ...this.world.artifactsGone, [artifactId]: true };
+    if (!this.requestArtifact(artifactId, false)) this.artifactAsked.delete(artifactId);
+  }
+
+  /**
+   * Ask for full detail even when a summary or pushed artifact is already held.
+   * The workspace needs relation views, and those are intentionally loaded only
+   * when a row opens rather than multiplied across every list row.
+   */
+  askArtifactDetail(artifactId: ID): void {
+    if (this.artifactDetailInFlight.has(artifactId)) return;
+    if (this.artifactDetailAsked.has(artifactId)
+      && Object.prototype.hasOwnProperty.call(this.world.artifactRelations, artifactId)) return;
+    const hadProblem = !!this.world.artifactDetailProblems[artifactId];
+    if (hadProblem) {
+      const { [artifactId]: oldProblem, ...rest } = this.world.artifactDetailProblems;
+      void oldProblem;
+      this.world.artifactDetailProblems = rest;
+    }
+    this.artifactDetailInFlight.add(artifactId);
+    const relationGeneration = this.artifactRelationGeneration;
+    if (!this.requestArtifact(artifactId, true, relationGeneration)) {
+      this.artifactDetailInFlight.delete(artifactId);
+      this.world.artifactDetailProblems = {
+        ...this.world.artifactDetailProblems,
+        [artifactId]: "there's no connection to the hub — try again in a moment",
+      };
+      this.emit();
+    } else if (hadProblem) this.emit();
+  }
+
+  /** One request path; detail upgrades the answer by claiming relation views. */
+  private requestArtifact(artifactId: ID, detail: boolean, relationGeneration?: number): boolean {
+    const gone = (): void => this.forgetArtifact(artifactId);
+    const lost = (): void => {
+      if (!detail) {
+        this.artifactAsked.delete(artifactId);
+        return;
+      }
+      /* A pushed artifact may already have installed a newer safe relation view
+         while this older question was waiting. Its silence cannot overwrite that
+         fresh answer with an error. */
+      this.artifactDetailInFlight.delete(artifactId);
+      if (Object.prototype.hasOwnProperty.call(this.world.artifactRelations, artifactId)) return;
+      /* Silence is not proof of absence. Keep the valid workspace row and make
+         the failure retryable instead of turning it into the non-probing gone state. */
+      this.artifactDetailAsked.delete(artifactId);
+      this.world.artifactDetailProblems = {
+        ...this.world.artifactDetailProblems,
+        [artifactId]: "the hub did not answer — try again",
+      };
       this.emit();
     };
-    this.ask({ type: "artifact", artifactId }, {
-      answers: f => f.type === "artifact" && f.artifact.id === artifactId,
+    const requestId = this.nextRequestId("artifact");
+    return this.ask({ type: "artifact", artifactId, requestId }, {
+      answers: f => f.type === "artifact" && f.artifact.id === artifactId
+        && f.requestId === requestId,
+      answered: detail ? f => {
+        if (f.type !== "artifact") return;
+        this.artifactDetailInFlight.delete(artifactId);
+        /* onFrame invalidates once for THIS artifact frame before settling it.
+           Anything beyond that one generation means another publish/access/role
+           fact landed after the question was asked, so this projection is stale. */
+        if (relationGeneration === undefined
+          || this.artifactRelationGeneration !== relationGeneration + 1) {
+          this.artifactDetailAsked.delete(artifactId);
+          this.discardArtifactDetailFrames.add(artifactId);
+          return;
+        }
+        /* The relay omits an empty relation array. The fact this was the answer
+           to a DETAIL ask is what makes absence mean "looked, and there are none"
+           rather than "this pushed update did not include relation views". */
+        this.world.artifactRelations = {
+          ...this.world.artifactRelations,
+          [artifactId]: f.relations ?? [],
+        };
+        if (f.relationsTruncated === true) {
+          this.world.artifactRelationsTruncated = {
+            ...this.world.artifactRelationsTruncated, [artifactId]: true,
+          };
+        }
+        const { [artifactId]: oldProblem, ...rest } = this.world.artifactDetailProblems;
+        void oldProblem;
+        this.world.artifactDetailProblems = rest;
+        /* onFrame invalidates before settle; this successful detail answer owns
+           the fresh cache and must mark it held again. */
+        this.artifactDetailAsked.add(artifactId);
+      } : undefined,
       refused: gone,
-      lost: gone,
+      lost,
     });
+  }
+
+  /**
+   * Change who may read this whole immutable version chain. The relay is still
+   * the gate; callbacks only keep the editor's Save state honest.
+   */
+  setArtifactAccess(
+    artifactId: ID, access: ArtifactAccess,
+    onDone?: () => void, onRefused?: (why: string) => void,
+  ): void {
+    const requestId = this.nextRequestId("access");
+    this.accessSave = {
+      artifactId, requestId, state: "pending", pushesWhilePending: 0,
+    };
+    const sent = this.ask({ type: "setArtifactAccess", artifactId, access, requestId }, {
+      /* Same-file publish/role pushes deliberately omit requestId. They may
+         refresh caches but can never complete this save or steal its refusal. */
+      answers: f => f.type === "artifact" && f.artifact.id === artifactId
+        && f.requestId === requestId,
+      answered: () => {
+        if (this.accessSave?.requestId === requestId) {
+          this.accessSave = { ...this.accessSave, state: "succeeded" };
+        }
+        onDone?.();
+      },
+      refused: why => {
+        if (this.accessSave?.requestId === requestId) {
+          this.accessSave = { ...this.accessSave, state: "refused", problem: why };
+        }
+        onRefused?.(why);
+      },
+      lost: () => {
+        const why = "the hub did not answer — try again";
+        if (this.accessSave?.requestId === requestId) {
+          this.accessSave = { ...this.accessSave, state: "lost", problem: why };
+        }
+        onRefused?.(why);
+        this.emit();
+      },
+    });
+    if (!sent) {
+      const why = "there's no connection to the hub — try again in a moment";
+      this.accessSave = { ...this.accessSave, state: "lost", problem: why };
+      onRefused?.(why);
+      this.emit();
+    }
   }
 
   /** Every file agents have made in one conversation, answered or not. */
@@ -1797,6 +2134,90 @@ export class RelayClient {
     });
   }
 
+  /** Build the list summary from a full artifact pushed while Files is open. */
+  private workspaceEntryOf(artifact: Artifact): ArtifactWorkspaceEntry | undefined {
+    const latest = latestVersion(artifact);
+    const channel = this.world.channels.find(c => c.id === artifact.channelId);
+    if (!latest || !channel) return undefined;
+    return {
+      artifactId: artifact.id,
+      channelId: artifact.channelId,
+      channelName: channel.name,
+      name: artifact.name,
+      latest,
+      versionCount: latest.version,
+      access: effectiveArtifactAccess(artifact.access),
+      updatedAt: artifact.updatedAt,
+    };
+  }
+
+  /** Pushed versions move their summaries to the front in one list rewrite. */
+  private holdWorkspaceArtifacts(artifacts: Artifact[]): void {
+    const held = this.world.artifactWorkspace;
+    if (!held.asked) return;
+    const incoming = artifacts
+      .map(a => this.workspaceEntryOf(a))
+      .filter((a): a is ArtifactWorkspaceEntry => !!a);
+    if (incoming.length === 0) return;
+    const ids = new Set(incoming.map(a => a.artifactId));
+    const merged = [...incoming, ...held.entries.filter(a => !ids.has(a.artifactId))]
+      .sort((a, b) => b.updatedAt - a.updatedAt || b.artifactId.localeCompare(a.artifactId));
+    const overflow = merged.length > held.capacity;
+    const entries = merged.slice(0, held.capacity);
+    const tail = entries[entries.length - 1];
+    const retryOlder = overflow && held.loading && held.asked;
+    if (retryOlder) this.artifactWorkspaceEpoch++;
+    this.world.artifactWorkspace = {
+      ...held,
+      entries,
+      loading: retryOlder ? false : held.loading,
+      // If a live push displaced the tail, an older row still exists even when
+      // the last requested page had reached the former end. Move the cursor to
+      // the NEW retained tail so the displaced row is the next page, not skipped.
+      hasMore: held.hasMore || overflow,
+      nextBefore: overflow && tail ? tail.updatedAt : held.nextBefore,
+      nextBeforeId: overflow && tail ? tail.artifactId : held.nextBeforeId,
+    };
+    /* The in-flight older ask used the former tail and can never return the row
+       just displaced by this push. Supersede it and ask again from the new tail. */
+    if (retryOlder) this.askArtifactWorkspace(false);
+  }
+
+  /** Inaccessible and nonexistent are the same state on this screen. */
+  private forgetArtifact(artifactId: ID, notify = true): void {
+    this.forgetArtifacts(new Set([artifactId]), notify);
+  }
+
+  /** Remove one or a roomful from every artifact index in one pass. */
+  private forgetArtifacts(ids: Set<ID>, notify = true): void {
+    if (ids.size === 0) return;
+    const w = this.world;
+    this.invalidateArtifactRelations();
+    w.artifacts = Object.fromEntries(
+      Object.entries(w.artifacts).filter(([id]) => !ids.has(id)));
+    w.artifactDetailProblems = Object.fromEntries(
+      Object.entries(w.artifactDetailProblems).filter(([id]) => !ids.has(id)));
+    w.channelArtifacts = Object.fromEntries(
+      Object.entries(w.channelArtifacts).map(([channelId, room]) => [
+        channelId, { ...room, ids: room.ids.filter(id => !ids.has(id)) },
+      ]));
+    w.artifactWorkspace = {
+      ...w.artifactWorkspace,
+      entries: w.artifactWorkspace.entries.filter(a => !ids.has(a.artifactId)),
+    };
+    w.artifactsGone = { ...w.artifactsGone };
+    for (const id of ids) {
+      w.artifactsGone[id] = true;
+      this.artifactAsked.add(id);
+      /* If access is restored later the hub pushes the artifact again. Its detail
+         must be allowed to load anew; a revoked relation cache is not a lifetime
+         answer about that id. */
+      this.artifactDetailAsked.delete(id);
+      this.artifactDetailInFlight.delete(id);
+    }
+    if (notify) this.emit();
+  }
+
   /**
    * Put artifacts into the world — the ONE way any of them gets there.
    *
@@ -1809,8 +2230,14 @@ export class RelayClient {
     const w = this.world;
     const held = w.channelArtifacts[channelId] ?? { asked: false, ids: [] };
     const artifacts = { ...w.artifacts };
-    for (const a of list) artifacts[a.id] = a;
+    const detailProblems = { ...w.artifactDetailProblems };
+    for (const a of list) {
+      artifacts[a.id] = a;
+      delete detailProblems[a.id];
+    }
     w.artifacts = artifacts;
+    w.artifactDetailProblems = detailProblems;
+    this.holdWorkspaceArtifacts(list);
     // an artifact that turned up is not missing, whatever an older ask decided
     if (list.some(a => w.artifactsGone[a.id])) {
       const kept: Record<ID, true> = { ...w.artifactsGone };
@@ -1927,6 +2354,20 @@ export class RelayClient {
   private onFrame(frame: ServerFrame): void {
     const w = this.world;
     this.seen[frame.type] = (this.seen[frame.type] ?? 0) + 1;
+    if (frame.type === "artifact" && frame.requestId === undefined
+      && this.accessSave?.state === "pending"
+      && this.accessSave.artifactId === frame.artifact.id) {
+      this.accessSave = {
+        ...this.accessSave,
+        pushesWhilePending: this.accessSave.pushesWhilePending + 1,
+      };
+    }
+    /* Relationship views name OTHER files. A change to one artifact can make a
+       cached row on any artifact unsafe, so privacy invalidation happens before
+       the answer callback can install the one freshly-projected detail response. */
+    if (frame.type === "artifact" || frame.type === "artifactUnavailable") {
+      this.invalidateArtifactRelations();
+    }
     /* Hand this to whatever asked for it, FIRST — a reply is applied by the
        request that wanted it, and one nobody is waiting for any more is not
        applied at all. Refusals are the exception and are matched below, where
@@ -1983,7 +2424,17 @@ export class RelayClient {
         w.artifacts = {};
         w.artifactsGone = {};
         w.channelArtifacts = {};
+        w.artifactWorkspace = emptyArtifactWorkspace();
+        w.artifactRelations = {};
+        w.artifactRelationsTruncated = {};
+        w.artifactDetailProblems = {};
+        this.artifactWorkspaceEpoch++;
+        this.artifactRelationGeneration++;
+        this.accessSave = undefined;
+        this.discardArtifactDetailFrames.clear();
         this.artifactAsked.clear();
+        this.artifactDetailAsked.clear();
+        this.artifactDetailInFlight.clear();
         // Memory belonged to the last connection too, and `asked` goes back to
         // false with it: this world has not asked anything yet, so a panel says
         // "loading" rather than the honest empty state it has not earned.
@@ -2139,13 +2590,10 @@ export class RelayClient {
       }
       case "error": {
         w.lastError = { text: frame.error, ts: Date.now() };
-        /* WHOSE REFUSAL IS THIS? The oldest question still waiting, and only
-           that one — see `asked`. Everything asked before it has already been
-           answered, and everything asked after it has not been read yet. An
-           unrelated refusal therefore cannot reach an upload, a ticket or a
-           disclosure that had nothing to do with it. The toast above still says
-           the hub's own sentence, whoever the refusal turns out to belong to. */
-        this.asked.shift()?.refused?.(frame.error);
+        /* A direct refusal names its exact refusal-capable request. A legacy
+           no-id refusal is shown here generally but cannot settle a modern row.
+           Unrelated rows stay alive, including their timeout nets. */
+        this.settleRefusal(frame);
         // WHOSE hub refused matters. On THIS computer's own hub, a refusal
         // before we were let in is a failed sign-in — back to the welcome
         // screen, where the reason is visible. On a FRIEND'S hub it must never
@@ -2210,6 +2658,15 @@ export class RelayClient {
         // an answer to one question about one message, and holding it under the
         // room's id would quietly overwrite the room's real membership.
         if (frame.at === undefined) {
+          const before = w.members[frame.channelId] ?? [];
+          const membershipKey = (rows: ChannelMember[]): string => rows
+            .map(m => `${m.memberId}:${m.role}:${m.removedAt ?? "here"}`)
+            .sort().join("|");
+          if (membershipKey(before) !== membershipKey(frame.members)) {
+            /* Roles are part of file access: manager inclusion and relation
+               visibility can change while memberIds stays identical. */
+            this.invalidateArtifactRelations();
+          }
           w.members = { ...w.members, [frame.channelId]: frame.members };
         }
         break;
@@ -2239,6 +2696,12 @@ export class RelayClient {
         const { [frame.channelId]: goneArtifacts, ...restArtifacts } = w.channelArtifacts;
         void goneArtifacts;
         w.channelArtifacts = restArtifacts;
+        const goneArtifactIds = new Set([
+          ...Object.values(w.artifacts).filter(a => a.channelId === frame.channelId).map(a => a.id),
+          ...w.artifactWorkspace.entries
+            .filter(a => a.channelId === frame.channelId).map(a => a.artifactId),
+        ]);
+        this.forgetArtifacts(goneArtifactIds, false);
         // A room you just left may now be one you could join, so the browser's
         // list is no longer an answer to anything.
         w.directory = { asked: false, channels: [] };
@@ -2329,6 +2792,12 @@ export class RelayClient {
       /* FILES AGENTS MADE. These three used to be dropped with a comment saying
          a later round would claim them. It has. */
       case "artifact":
+        if (this.discardArtifactDetailFrames.delete(frame.artifact.id)) {
+          /* A privacy generation changed after this detail question was sent.
+             Drop the stale artifact AND its relations; the selected detail sees
+             no cache and asks again against the current world. */
+          break;
+        }
         /* Pushed UNASKED to everyone who can see the conversation the moment a
            file is published or updated, as well as answering an `artifact` ask.
            Applied here rather than by whoever asked, for the same reason
@@ -2336,6 +2805,25 @@ export class RelayClient {
            put a file in the room, and the card on screen has to become the new
            version by itself. */
         this.holdArtifacts(frame.artifact.channelId, [frame.artifact], false);
+        if (frame.relations !== undefined) {
+          w.artifactRelations = {
+            ...w.artifactRelations, [frame.artifact.id]: frame.relations,
+          };
+          if (frame.relationsTruncated === true) {
+            w.artifactRelationsTruncated = {
+              ...w.artifactRelationsTruncated, [frame.artifact.id]: true,
+            };
+          }
+          this.artifactDetailAsked.add(frame.artifact.id);
+        }
+        break;
+      case "artifactUnavailable":
+        // Deliberately the same screen state as an invented id: no probing.
+        // onFrame emits once after the switch; the helper only mutates here.
+        this.forgetArtifact(frame.artifactId, false);
+        break;
+      case "artifactWorkspace":
+        // Applied only by the bounded page request that asked for it.
         break;
       case "artifacts":
         // Applied by `askArtifacts`, which is the only thing that asks. A list
