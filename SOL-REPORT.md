@@ -5,8 +5,10 @@ Branch: `master`
 Current starting commit: `e738083`
 
 ## Feature 1 — Shared Files workspace
-- Status: IN PROGRESS
-- Commit: not yet committed
+- Status: DONE-PROVEN (closed by the reviewing Claude conductor 2026-08-02 after Sol's session died on quota mid-finish)
+- Commit: sol/shared-artifacts 6824dcb, merged to master
+- Final evidence, re-run fresh by the reviewing conductor: build clean; **1,072 tests passed, 0 failed** (90 shared + 604 engine + 363 relay + 15 desktop); browser QA **501/501 + 8/8 + 4/4**; installer built and installed; the installed app **walked 28/28**, including all seven Files checks and the member-permission sidecar.
+- Honest note: one earlier walk failed its four member checks on a one-time sidecar browser-launch error at the end of Sol's 5-hour session; a fresh run passed 28/28. Sol's still-open harness-hardening review nits (sidecar file-boundary/lifecycle) concern the TEST SCRIPT's robustness, not the product — parked as follow-up, not blockers.
 - Sol baseline evidence: build clean; 1,002 passed, 0 failed; QA 494/494 + 8/8 + 4/4. Full logs: `docs/qa/sol-baseline-*.log`.
 - Decision page: `docs/gates/sol-feature1-permissions.html`
 - Vikas decision: room-visible by default; room managers may restrict a file to selected current room members.
