@@ -4,10 +4,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
-  ActivityRecord, AgentDef, Approval, Artifact, ArtifactVersion, Attachment, Channel, ChannelMember,
+  ActivityRecord, AgentDef, Approval, ArtifactAccess, ArtifactLink,
+  ArtifactWorkspaceEntry, Attachment, Channel, ChannelMember,
+  StoredArtifact, StoredArtifactVersion, artifactVersionForPublic,
   ChannelRole, ID, Message,
-  MessageReaction, MESSAGE_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
-  RunRecord, RUN_RETENTION, Task, User, nameKey, newId,
+  MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
+  RunRecord, RUN_RETENTION, Task, User, isSafeStoredId, nameKey, newId,
+  validateArtifactLinks,
 } from "@cloud9/shared";
 // THE ONE OWNER of "write a file this app will later believe" — write next
 // door, flush it down to the disk, rename it into place. It lives in the engine
@@ -17,6 +20,9 @@ import {
 import { sweepPending, writeWholeFile } from "@cloud9/engine";
 import { secureId, secureToken } from "./secureid.js";
 import { JoinHubStore, JoinTokenRow } from "./joinhub.js";
+
+/** One identity for every Store opened during this process lifetime. */
+const ARTIFACT_STAGE_NONCE = secureId("boot");
 
 /**
  * One page of scrollback, and whether there is more behind it.
@@ -101,6 +107,26 @@ export interface ArtifactRow {
   updatedAt: number;
   /** the number the NEXT version will get. Only ever goes up. */
   nextVersion: number;
+}
+
+/** One database link row. This is persistence shape, not a second wire type. */
+export interface ArtifactLinkRow {
+  sourceArtifactId: ID;
+  sourceVersion: number;
+  channelId: ID;
+  kind: ArtifactLink["kind"];
+  targetArtifactId: ID;
+  targetVersion: number;
+}
+
+export interface ArtifactRelationRow extends ArtifactLinkRow {
+  direction: "outgoing" | "incoming";
+}
+
+/** Bytes staged under a publish-only name until their DB transaction owns them. */
+export interface ArtifactByteStage {
+  stagedAs: string;
+  storedAs: string;
 }
 
 interface RawRun {
@@ -201,6 +227,8 @@ export class Store implements JoinHubStore {
   readonly problems: string[] = [];
 
   private readonly ownerToken?: string;
+  /** Distinguishes this process lifetime from an older process that reused its pid. */
+  private readonly artifactStageNonce = ARTIFACT_STAGE_NONCE;
 
   constructor(dbPath: string, opts: StoreOptions = {}) {
     this.ownerToken = opts.ownerToken;
@@ -409,6 +437,7 @@ export class Store implements JoinHubStore {
       CREATE INDEX IF NOT EXISTS proj_item_updated ON project_items(projectId, updatedAt);
     `);
       this.migrate();
+      this.sweepArtifactOrphans();
       this.initSearch();
     } catch (e) {
       // A migration that threw has already been rolled back by `step()`, so the
@@ -629,6 +658,13 @@ export class Store implements JoinHubStore {
     // v4 → v5: a membership row per SPELL in the room, not per person.
     this.step(5, () => this.rekeyChannelMembers());
 
+    // v5 → v6: the Files workspace. Existing artifacts inherit their room's
+    // access because no access row is written for them. The unique version rule
+    // is added inside the migration transaction, after first proving the old
+    // data already satisfies it; a migration must never silently pick one of two
+    // immutable rows and throw the other away.
+    this.step(6, () => this.addArtifactWorkspaceSchema());
+
     // The one thing that still says a person can only be in a room once at a
     // time, now that the primary key no longer does. It lives here, below the
     // step that reshapes the table, for the same reason act_seq does.
@@ -650,6 +686,61 @@ export class Store implements JoinHubStore {
       work();
       this.setSchemaVersion(to);
     });
+  }
+
+  /**
+   * v5 → v6. Add the Files workspace's access and exact-version link rows,
+   * plus the database rule that makes an artifact version immutable.
+   *
+   * NO LEGACY ROW IS REWRITTEN. Existing artifacts have no `artifact_access`
+   * row, which means "inherit the room". A duplicate version in an old file is
+   * reported instead of guessed at: renumbering one would change a stable exact
+   * reference, and deleting one would destroy retained bytes.
+   */
+  private addArtifactWorkspaceSchema(): void {
+    const duplicate = this.db.prepare(
+      "SELECT artifactId,version,COUNT(*) n FROM artifact_versions " +
+      "GROUP BY artifactId,version HAVING COUNT(*) > 1 LIMIT 1",
+    ).get() as { artifactId: string; version: number; n: number } | undefined;
+    if (duplicate) {
+      throw new Error(
+        `shared file ${duplicate.artifactId} has ${duplicate.n} rows claiming version ${duplicate.version}; ` +
+        "Cloud9 left them untouched because immutable versions cannot be guessed at",
+      );
+    }
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS av_art_version
+        ON artifact_versions(artifactId, version);
+
+      -- No row means room-default access. A row exists only when the room's
+      -- owner/admin narrowed the whole chain to selected current people; an
+      -- empty selected list is valid because current room managers are always
+      -- included at read time.
+      CREATE TABLE IF NOT EXISTS artifact_access(
+        artifactId TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN ('room','restricted'))
+      );
+      CREATE TABLE IF NOT EXISTS artifact_access_users(
+        artifactId TEXT NOT NULL, userId TEXT NOT NULL, position INTEGER NOT NULL,
+        PRIMARY KEY (artifactId, userId)
+      );
+      CREATE INDEX IF NOT EXISTS aau_user ON artifact_access_users(userId, artifactId);
+
+      -- Links belong to the exact source version and name an exact target
+      -- version. No foreign key is used for the target: retention may remove
+      -- those bytes, and the link must then stay pinned and say unavailable,
+      -- never slide forward to a newer target.
+      CREATE TABLE IF NOT EXISTS artifact_links(
+        sourceArtifactId TEXT NOT NULL, sourceVersion INTEGER NOT NULL,
+        channelId TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('made-from','goes-with')),
+        targetArtifactId TEXT NOT NULL, targetVersion INTEGER NOT NULL,
+        PRIMARY KEY (sourceArtifactId, sourceVersion, kind, targetArtifactId, targetVersion)
+      );
+      CREATE INDEX IF NOT EXISTS al_target
+        ON artifact_links(targetArtifactId, targetVersion, sourceArtifactId, sourceVersion);
+    `);
+    this.addColumn("artifact_access_users", "position", "INTEGER NOT NULL DEFAULT 0");
   }
 
   /**
@@ -1088,12 +1179,24 @@ export class Store implements JoinHubStore {
     this.db.prepare("UPDATE channels SET json=? WHERE id=?").run(JSON.stringify(ch), channelId);
   }
 
-  /** Take someone out — softly, so the record still knows they were here. */
+  /**
+   * Take someone out — softly, so the room record still knows they were here.
+   * Any explicit restricted-file selections in this room end with that spell;
+   * rejoining later must not silently resurrect old file access, for the same
+   * reason an old admin role is not inherited across a rejoin.
+   */
   removeChannelMember(channelId: ID, memberId: ID, by?: ID): void {
-    this.db.prepare(
-      "UPDATE channel_members SET removedAt=?, removedBy=? WHERE channelId=? AND memberId=? AND removedAt IS NULL",
-    ).run(Date.now(), by ?? null, channelId, memberId);
-    this.mirrorMemberIds(channelId);
+    this.tx(() => {
+      this.db.prepare(
+        "UPDATE channel_members SET removedAt=?, removedBy=? " +
+        "WHERE channelId=? AND memberId=? AND removedAt IS NULL",
+      ).run(Date.now(), by ?? null, channelId, memberId);
+      this.db.prepare(
+        "DELETE FROM artifact_access_users WHERE userId=? " +
+        "AND artifactId IN (SELECT id FROM artifacts WHERE channelId=?)",
+      ).run(memberId, channelId);
+      this.mirrorMemberIds(channelId);
+    });
   }
 
   setMemberRole(channelId: ID, memberId: ID, role: ChannelRole): void {
@@ -1508,24 +1611,175 @@ export class Store implements JoinHubStore {
   // re-derived — the agent's worktree is long gone — so a failed write is a
   // refusal, never a row.
 
-  /** Put one version's bytes on disk. Throws when they did not land. */
-  writeArtifactBytes(versionId: ID, safeName: string, bytes: Buffer): string {
+  /**
+   * Stage one version's bytes under a name no database row will ever reference.
+   * The append transaction promotes this name to `storedAs` while holding the
+   * same SQLite write lock startup cleanup takes. A second live hub therefore
+   * sees either a publish-only stage (which it must ignore) or a final file plus
+   * its committed row — never a final orphan that is merely between writes.
+   */
+  writeArtifactBytes(versionId: ID, safeName: string, bytes: Buffer): ArtifactByteStage {
     fs.mkdirSync(this.artifactsDir, { recursive: true });
     const storedAs = `${versionId}-${path.basename(safeName)}`;
+    const stagedAs =
+      `.publishing-v2-${process.pid}-${this.artifactStageNonce}-${secureId("stage")}-${storedAs}`;
     let why = "";
-    const ok = writeWholeFile(path.join(this.artifactsDir, storedAs), bytes, m => { why = m; });
+    const ok = writeWholeFile(path.join(this.artifactsDir, stagedAs), bytes, m => { why = m; });
     if (!ok) {
       console.error(`[hub] could not store an artifact: ${why}`);
       throw new Error(
         "that file could not be saved on this computer — check there is free disk space " +
         "and try again");
     }
-    return storedAs;
+    return { stagedAs, storedAs };
   }
 
-  /** Remove one version's bytes. Missing is not an error. */
+  /** Remove one final version's bytes. Missing is not an error. */
   removeArtifactBytes(storedAs: string): void {
     try { fs.rmSync(path.join(this.artifactsDir, path.basename(storedAs))); } catch { /* already gone */ }
+  }
+
+  private removeArtifactStage(stagedAs: string): void {
+    try { fs.rmSync(path.join(this.artifactsDir, path.basename(stagedAs))); } catch { /* already gone */ }
+  }
+
+  /**
+   * One owner for stage-name meaning. Only the exact v2 shape carries a pid and
+   * startup nonce; numeric names from older/unknown protocols are legacy and are
+   * NEVER treated as process ownership claims.
+   */
+  private parseArtifactStageName(stagedAs: string):
+    | { kind: "current"; pid: number; nonce: string; finalName: string }
+    | { kind: "legacy" }
+    | undefined {
+    if (!stagedAs.startsWith(".publishing-")) return undefined;
+    const match =
+      /^\.publishing-v2-(\d+)-(boot_[A-Za-z0-9_-]{22})-stage_[A-Za-z0-9_-]{22}-(.+)$/.exec(stagedAs);
+    if (!match) return { kind: "legacy" };
+    const pid = Number(match[1]);
+    return Number.isSafeInteger(pid) && pid >= 1
+      ? { kind: "current", pid, nonce: match[2], finalName: match[3] }
+      : { kind: "legacy" };
+  }
+
+  private artifactStageProcessAlive(pid: number): boolean {
+    if (pid === process.pid) return true;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      // EPERM means a real process exists but this account may not signal it.
+      return (e as NodeJS.ErrnoException).code === "EPERM";
+    }
+  }
+
+  /**
+   * Make the stage→final directory entry durable before SQLite may commit the
+   * row that promises it. Windows does not support opening directories and its
+   * rename durability contract does not require this call; POSIX failures are
+   * real publish failures and are allowed to roll the transaction back.
+   */
+  private flushArtifactDirectory(): void {
+    if (process.platform === "win32") return;
+    const fd = fs.openSync(this.artifactsDir, "r");
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  }
+
+  /**
+   * Parse and validate the durable shape before any field becomes a path or a
+   * public projection. Valid JSON such as `{}` is still an unreadable version,
+   * and follows the store's existing rule: record the problem, skip the row,
+   * keep the rest of the database open.
+   */
+  private storedArtifactVersion(json: string, rowId: ID): StoredArtifactVersion | undefined {
+    const value = this.safeParse<unknown>(json, "a version of a shared file", rowId);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      this.note(`a version of a shared file ${rowId} has an invalid stored shape — it was skipped`);
+      return undefined;
+    }
+    const v = value as Record<string, unknown>;
+    const linksOkay = v.links === undefined || validateArtifactLinks(v.links) === null;
+    const storedAs = v.storedAs;
+    const okay = isSafeStoredId(v.id)
+      && typeof v.version === "number" && Number.isSafeInteger(v.version) && v.version >= 1
+      && typeof v.size === "number" && Number.isFinite(v.size) && v.size >= 0
+      && typeof v.sha256 === "string" && v.sha256.length === 64
+      && typeof v.text === "boolean"
+      && typeof storedAs === "string" && storedAs.length > 0 && path.basename(storedAs) === storedAs
+      && isSafeStoredId(v.agentId)
+      && typeof v.agentName === "string"
+      && isSafeStoredId(v.ownerId)
+      && typeof v.producedAt === "number" && Number.isFinite(v.producedAt)
+      && linksOkay;
+    if (!okay) {
+      this.note(`a version of a shared file ${rowId} has an invalid stored shape — it was skipped`);
+      return undefined;
+    }
+    return value as StoredArtifactVersion;
+  }
+
+  /**
+   * Remove complete final artifact files no valid version row points at.
+   *
+   * Cleanup owns the SQLite write lock while it compares rows and names. A stage
+   * is protected only when its parsed ownership and age say its publisher can
+   * still finish; abandoned stages are reclaimed. If one stored row is unreadable,
+   * cleanup deletes nothing — an unknown pointer is not permission to delete bytes.
+   */
+  sweepArtifactOrphans(): number {
+    if (!fs.existsSync(this.artifactsDir)) return 0;
+    try {
+      return this.tx(() => {
+        const rows = this.db.prepare("SELECT id,json FROM artifact_versions").all() as
+          { id: string; json: string }[];
+        const keep = new Set<string>();
+        for (const r of rows) {
+          const v = this.storedArtifactVersion(r.json, r.id);
+          if (!v) return 0;
+          keep.add(v.storedAs);
+        }
+        let removed = 0;
+        const now = Date.now();
+        for (const entry of fs.readdirSync(this.artifactsDir, { withFileTypes: true })) {
+          if (!entry.isFile() || keep.has(entry.name)) continue;
+          const fullPath = path.join(this.artifactsDir, entry.name);
+          const stage = this.parseArtifactStageName(entry.name);
+          if (stage) {
+            let recent: boolean;
+            try { recent = now - fs.statSync(fullPath).mtimeMs < ARTIFACT_STAGE_GRACE_MS; }
+            catch { continue; }
+            if (stage.kind === "current") {
+              if (stage.pid === process.pid) {
+                // A reused pid names this process too. Only this process lifetime's
+                // nonce proves the recent stage can still be completed here.
+                if (recent && stage.nonce === this.artifactStageNonce) continue;
+              } else {
+                // Another process keeps the established protection: both recent
+                // age and a live pid. Its nonce is not ours to interpret.
+                if (recent && this.artifactStageProcessAlive(stage.pid)) continue;
+              }
+            } else if (recent) {
+              // Legacy/unknown names make no pid claim at all. Age is their only
+              // safe in-flight signal, including names that happen to start with
+              // digits from an older protocol.
+              continue;
+            }
+            // Current dead/old stage, or old legacy stage: interrupted publish.
+          }
+          try {
+            fs.rmSync(fullPath);
+            removed += 1;
+          } catch { /* another cleanup won the race */ }
+        }
+        return removed;
+      });
+    } catch (e) {
+      if (String((e as Error)?.message ?? e).includes("SQLITE_BUSY")) {
+        this.note("artifact cleanup skipped because another live hub is publishing");
+        return 0;
+      }
+      throw e;
+    }
   }
 
   /**
@@ -1547,6 +1801,85 @@ export class Store implements JoinHubStore {
     return this.db.prepare(
       "SELECT id,channelId,name,nameKey,createdAt,updatedAt,nextVersion FROM artifacts WHERE id=?",
     ).get(id) as ArtifactRow | undefined;
+  }
+
+  /** The selected people stored for this chain. Missing is the legacy-safe room default. */
+  storedArtifactAccess(artifactId: ID): ArtifactAccess {
+    const row = this.db.prepare("SELECT kind FROM artifact_access WHERE artifactId=?")
+      .get(artifactId) as { kind: string } | undefined;
+    if (!row || row.kind !== "restricted") return { kind: "room" };
+    const userIds = (this.db.prepare(
+      "SELECT userId FROM artifact_access_users WHERE artifactId=? ORDER BY position ASC, userId ASC",
+    ).all(artifactId) as { userId: string }[]).map(r => r.userId);
+    return { kind: "restricted", userIds };
+  }
+
+  /**
+   * The access shape handed to a screen: selected current people PLUS every
+   * current human owner/admin of the source room. Managers are derived on every
+   * read, never frozen into the stored allowlist, so a role change takes effect
+   * immediately.
+   */
+  artifactAccess(artifactId: ID): ArtifactAccess {
+    const access = this.storedArtifactAccess(artifactId);
+    if (access.kind === "room") return access;
+    const artifact = this.artifactRow(artifactId);
+    if (!artifact) return access;
+    const selected = (this.db.prepare(
+      "SELECT aau.userId FROM artifact_access_users aau " +
+      "JOIN channel_members cm ON cm.channelId=? AND cm.memberId=aau.userId AND cm.removedAt IS NULL " +
+      "JOIN users u ON u.id=aau.userId WHERE aau.artifactId=? " +
+      "ORDER BY aau.position ASC, aau.userId ASC",
+    ).all(artifact.channelId, artifactId) as { userId: string }[]).map(r => r.userId);
+    const managers = (this.db.prepare(
+      "SELECT cm.memberId FROM channel_members cm JOIN users u ON u.id=cm.memberId " +
+      "WHERE cm.channelId=? AND cm.removedAt IS NULL AND cm.role IN ('owner','admin') " +
+      "ORDER BY cm.joinedAt ASC, cm.memberId ASC",
+    ).all(artifact.channelId) as { memberId: string }[]).map(r => r.memberId);
+    return { kind: "restricted", userIds: [...new Set([...selected, ...managers])] };
+  }
+
+  /**
+   * Replace the whole-chain access rule as one write. Selected ids are checked
+   * again INSIDE the transaction against current human membership; a server-side
+   * pre-check is only a friendly early refusal and can never authorize the write.
+   */
+  setArtifactAccess(artifactId: ID, access: ArtifactAccess): void {
+    this.tx(() => {
+      const artifact = this.artifactRow(artifactId);
+      if (!artifact) throw new Error("no such file");
+      if (access.kind === "restricted") {
+        const activeHuman = this.db.prepare(
+          "SELECT 1 FROM channel_members cm JOIN users u ON u.id=cm.memberId " +
+          "WHERE cm.channelId=? AND cm.memberId=? AND cm.removedAt IS NULL",
+        );
+        for (const userId of access.userIds) {
+          if (!activeHuman.get(artifact.channelId, userId)) {
+            throw new Error("file access can only include current people in this conversation");
+          }
+        }
+      }
+      this.db.prepare("DELETE FROM artifact_access_users WHERE artifactId=?").run(artifactId);
+      this.db.prepare("DELETE FROM artifact_access WHERE artifactId=?").run(artifactId);
+      if (access.kind === "room") return;
+      this.db.prepare("INSERT INTO artifact_access(artifactId,kind) VALUES(?,'restricted')")
+        .run(artifactId);
+      const insert = this.db.prepare(
+        "INSERT INTO artifact_access_users(artifactId,userId,position) VALUES(?,?,?)",
+      );
+      access.userIds.forEach((userId, position) => insert.run(artifactId, userId, position));
+    });
+  }
+
+  /** Room visibility has already passed; this is the optional narrower gate. */
+  artifactAccessAllows(artifactId: ID, userId: ID): boolean {
+    const access = this.storedArtifactAccess(artifactId);
+    if (access.kind === "room") return true;
+    const artifact = this.artifactRow(artifactId);
+    if (!artifact || !this.user(userId)) return false;
+    const role = this.memberRole(artifact.channelId, userId);
+    if (!role) return false; // selected means a CURRENT human room member
+    return role === "owner" || role === "admin" || access.userIds.includes(userId);
   }
 
   /**
@@ -1578,10 +1911,118 @@ export class Store implements JoinHubStore {
     return row;
   }
 
-  /** Store one version's row. The bytes are already on disk. */
-  saveArtifactVersion(artifactId: ID, channelId: ID, v: ArtifactVersion): void {
+  /**
+   * Append identity metadata, one immutable version and its exact links in one
+   * database transaction. The caller has already written the uniquely-named
+   * bytes; any refusal removes them before it escapes, so a bad link, duplicate
+   * id or failed insert cannot leave either a false `updatedAt` or orphan bytes.
+   */
+  appendArtifactVersion(input: {
+    channelId: ID;
+    name: string;
+    at: number;
+    version: Omit<StoredArtifactVersion, "version">;
+    stage: ArtifactByteStage;
+  }): StoredArtifact {
+    // Compensation may delete only a stage proved to belong to THIS exact append.
+    // A syntactically-current stage from another pid/startup, or an owned stage
+    // minted for another version/name, is somebody else's in-flight work and is
+    // refused before the compensation scope begins so it remains untouched.
+    const expectedStoredAs = `${input.version.id}-${path.basename(input.name)}`;
+    const parsedStage = this.parseArtifactStageName(input.stage.stagedAs);
+    if (path.basename(input.stage.stagedAs) !== input.stage.stagedAs
+      || path.basename(input.stage.storedAs) !== input.stage.storedAs
+      || input.stage.storedAs !== expectedStoredAs
+      || input.version.storedAs !== expectedStoredAs
+      || parsedStage?.kind !== "current"
+      || parsedStage.pid !== process.pid
+      || parsedStage.nonce !== this.artifactStageNonce
+      || parsedStage.finalName !== expectedStoredAs) {
+      throw new Error("that file's staged bytes do not belong to this append");
+    }
+
+    let artifactId: ID | undefined;
+    let promoted = false;
+    try {
+      artifactId = this.tx(() => {
+        const existing = this.artifactRowByName(input.channelId, input.name);
+        const id = existing?.id ?? newId("af");
+        const versionNumber = existing?.nextVersion ?? 1;
+        const stored: StoredArtifactVersion = { ...input.version, version: versionNumber };
+        if (!existing && this.artifactCountIn(input.channelId) >= ARTIFACT_LIMITS.perChannel) {
+          throw new Error(
+            `this conversation already holds ${ARTIFACT_LIMITS.perChannel} shared files — ` +
+            "the oldest have to be cleared before another can be added",
+          );
+        }
+
+        // Storage repeats the server's same-room/exact-version check. A wire
+        // validator can prove shape; only stored state can prove the target.
+        const targetExists = this.db.prepare(
+          "SELECT 1 FROM artifact_versions av JOIN artifacts a ON a.id=av.artifactId " +
+          "WHERE av.artifactId=? AND av.version=? AND a.channelId=?",
+        );
+        for (const link of stored.links ?? []) {
+          if (!targetExists.get(link.target.artifactId, link.target.version, input.channelId)) {
+            throw new Error("a linked file version is not available in this conversation");
+          }
+        }
+
+        if (existing) {
+          this.db.prepare("UPDATE artifacts SET nextVersion=?, updatedAt=? WHERE id=?")
+            .run(versionNumber + 1, input.at, existing.id);
+        } else {
+          this.db.prepare(
+            "INSERT INTO artifacts(id,channelId,name,nameKey,createdAt,updatedAt,nextVersion) " +
+            "VALUES(?,?,?,?,?,?,?)",
+          ).run(id, input.channelId, input.name, nameKey(input.name), input.at, input.at, 2);
+        }
+
+        const stagedPath = path.join(this.artifactsDir, input.stage.stagedAs);
+        const finalPath = path.join(this.artifactsDir, input.stage.storedAs);
+        if (fs.existsSync(finalPath)) {
+          throw new Error("that immutable file version already has bytes");
+        }
+        fs.renameSync(stagedPath, finalPath);
+        promoted = true;
+
+        // Plain INSERT plus both unique rules. Nothing here can replace a row.
+        this.saveArtifactVersion(id, input.channelId, stored);
+        const insertLink = this.db.prepare(
+          "INSERT INTO artifact_links" +
+          "(sourceArtifactId,sourceVersion,channelId,kind,targetArtifactId,targetVersion) " +
+          "VALUES(?,?,?,?,?,?)",
+        );
+        for (const link of stored.links ?? []) {
+          insertLink.run(
+            id, versionNumber, input.channelId, link.kind,
+            link.target.artifactId, link.target.version,
+          );
+        }
+        // The file name is durable before COMMIT can make its row durable.
+        this.flushArtifactDirectory();
+        return id;
+      });
+    } catch (e) {
+      if (promoted) this.removeArtifactBytes(input.stage.storedAs);
+      else this.removeArtifactStage(input.stage.stagedAs);
+      throw e;
+    }
+    return this.artifact(artifactId)!;
+  }
+
+  /**
+   * Store one immutable version row. The bytes are already on disk.
+   *
+   * Plain INSERT is the rule. `OR REPLACE` is a delete followed by an insert,
+   * which lets a repeated id overwrite old provenance; without the
+   * `(artifactId,version)` unique index, a different id can also sit beside the
+   * old row claiming the same version number. Both are edits wearing append's
+   * clothes, so the database refuses both.
+   */
+  saveArtifactVersion(artifactId: ID, channelId: ID, v: StoredArtifactVersion): void {
     this.db.prepare(
-      "INSERT OR REPLACE INTO artifact_versions" +
+      "INSERT INTO artifact_versions" +
       "(id,artifactId,channelId,agentId,version,producedAt,json) VALUES(?,?,?,?,?,?,?)",
     ).run(v.id, artifactId, channelId, v.agentId, v.version, v.producedAt, JSON.stringify(v));
   }
@@ -1599,15 +2040,20 @@ export class Store implements JoinHubStore {
     ).all(artifactId) as { id: string; json: string }[];
     const doomed = rows.slice(Math.max(1, keep));
     for (const r of doomed) {
-      const v = this.safeParse<ArtifactVersion>(r.json, "a version of a shared file", r.id);
+      const v = this.storedArtifactVersion(r.json, r.id);
       if (v?.storedAs) this.removeArtifactBytes(v.storedAs);
+      if (v) {
+        this.db.prepare(
+          "DELETE FROM artifact_links WHERE sourceArtifactId=? AND sourceVersion=?",
+        ).run(artifactId, v.version);
+      }
       this.db.prepare("DELETE FROM artifact_versions WHERE id=?").run(r.id);
     }
     return doomed.length;
   }
 
   /** One artifact and its versions, newest first — the wire shape, assembled. */
-  artifact(id: ID): Artifact | undefined {
+  artifact(id: ID): StoredArtifact | undefined {
     const row = this.artifactRow(id);
     if (!row) return undefined;
     const versions = this.artifactVersionsOf(id);
@@ -1615,19 +2061,22 @@ export class Store implements JoinHubStore {
     // so it is not something this hands out. It can only happen to a database
     // edited by hand, and saying nothing is better than saying half a file.
     if (versions.length === 0) return undefined;
+    const access = this.artifactAccess(row.id);
     return {
       id: row.id, channelId: row.channelId, name: row.name,
-      versions, createdAt: row.createdAt, updatedAt: row.updatedAt,
+      versions,
+      ...(access.kind === "restricted" ? { access } : {}),
+      createdAt: row.createdAt, updatedAt: row.updatedAt,
     };
   }
 
-  artifactVersionsOf(artifactId: ID): ArtifactVersion[] {
+  artifactVersionsOf(artifactId: ID): StoredArtifactVersion[] {
     const rows = this.db.prepare(
       "SELECT id,json FROM artifact_versions WHERE artifactId=? ORDER BY version DESC",
     ).all(artifactId) as { id: string; json: string }[];
-    const out: ArtifactVersion[] = [];
+    const out: StoredArtifactVersion[] = [];
     for (const r of rows) {
-      const v = this.safeParse<ArtifactVersion>(r.json, "a version of a shared file", r.id);
+      const v = this.storedArtifactVersion(r.json, r.id);
       if (v) out.push(v);
     }
     return out;
@@ -1640,22 +2089,246 @@ export class Store implements JoinHubStore {
    * version, and the permission question is about the CHANNEL, which is read
    * from the artifact's own row and never from the ticket.
    */
-  artifactVersion(versionId: ID): { version: ArtifactVersion; artifactId: ID; channelId: ID } | undefined {
+  artifactVersion(versionId: ID): { version: StoredArtifactVersion; artifactId: ID; channelId: ID } | undefined {
     const row = this.db.prepare(
       "SELECT artifactId,channelId,json FROM artifact_versions WHERE id=?",
     ).get(versionId) as { artifactId: string; channelId: string; json: string } | undefined;
     if (!row) return undefined;
-    const version = this.safeParse<ArtifactVersion>(row.json, "a version of a shared file", versionId);
+    const version = this.storedArtifactVersion(row.json, versionId);
     if (!version) return undefined;
     return { version, artifactId: row.artifactId, channelId: row.channelId };
   }
 
+  /** One exact retained version by stable artifact id plus immutable number. */
+  artifactVersionNumber(
+    artifactId: ID, version: number,
+  ): { version: StoredArtifactVersion; artifactId: ID; channelId: ID } | undefined {
+    const row = this.db.prepare(
+      "SELECT id,artifactId,channelId,json FROM artifact_versions WHERE artifactId=? AND version=?",
+    ).get(artifactId, version) as
+      { id: string; artifactId: string; channelId: string; json: string } | undefined;
+    if (!row) return undefined;
+    const parsed = this.storedArtifactVersion(row.json, row.id);
+    return parsed ? { version: parsed, artifactId: row.artifactId, channelId: row.channelId } : undefined;
+  }
+
+  /** Typed links declared by one exact publishing version. */
+  artifactLinksFrom(sourceArtifactId: ID, sourceVersion: number): ArtifactLink[] {
+    return (this.db.prepare(
+      "SELECT kind,targetArtifactId,targetVersion FROM artifact_links " +
+      "WHERE sourceArtifactId=? AND sourceVersion=? " +
+      "ORDER BY rowid ASC",
+    ).all(sourceArtifactId, sourceVersion) as
+      { kind: ArtifactLink["kind"]; targetArtifactId: string; targetVersion: number }[])
+      .map(r => ({
+        kind: r.kind,
+        target: { artifactId: r.targetArtifactId, version: r.targetVersion },
+      }));
+  }
+
+  /** Every retained source version that points at this exact target version. */
+  artifactLinksTo(targetArtifactId: ID, targetVersion: number): ArtifactLinkRow[] {
+    return this.db.prepare(
+      "SELECT sourceArtifactId,sourceVersion,channelId,kind,targetArtifactId,targetVersion " +
+      "FROM artifact_links WHERE targetArtifactId=? AND targetVersion=? ORDER BY rowid ASC",
+    ).all(targetArtifactId, targetVersion) as unknown as ArtifactLinkRow[];
+  }
+
+  /**
+   * One deterministic, permission-aware, bounded relation-detail query.
+   *
+   * Outgoing rows always qualify: an unavailable target becomes one hidden
+   * placeholder. Incoming rows qualify only when their exact source version is
+   * retained and this user may read that source chain. Therefore every returned
+   * DB row becomes exactly one public relation, and `truncated` means there is a
+   * real 101st public row — never merely a hidden incoming row projection drops.
+   */
+  artifactRelationsForDetail(
+    artifactId: ID, userId: ID, limit: number = ARTIFACT_LIMITS.relationDetail,
+  ): { items: ArtifactRelationRow[]; truncated: boolean } {
+    const size = Math.max(1, Math.min(Math.floor(limit), ARTIFACT_LIMITS.relationDetail));
+    const rows = this.db.prepare(`
+      SELECT l.sourceArtifactId,l.sourceVersion,l.channelId,l.kind,
+             l.targetArtifactId,l.targetVersion,'outgoing' AS direction,0 AS directionOrder
+      FROM artifact_links l
+      JOIN artifact_versions sv
+        ON sv.artifactId=l.sourceArtifactId AND sv.version=l.sourceVersion
+      WHERE l.sourceArtifactId=?
+      UNION ALL
+      SELECT l.sourceArtifactId,l.sourceVersion,l.channelId,l.kind,
+             l.targetArtifactId,l.targetVersion,'incoming' AS direction,1 AS directionOrder
+      FROM artifact_links l
+      JOIN artifact_versions sv
+        ON sv.artifactId=l.sourceArtifactId AND sv.version=l.sourceVersion
+      JOIN artifact_versions tv
+        ON tv.artifactId=l.targetArtifactId AND tv.version=l.targetVersion
+      JOIN artifacts source ON source.id=l.sourceArtifactId
+      WHERE l.targetArtifactId=? AND (
+        NOT EXISTS (
+          SELECT 1 FROM artifact_access aa
+          WHERE aa.artifactId=source.id AND aa.kind='restricted'
+        )
+        OR EXISTS (
+          SELECT 1 FROM artifact_access_users aau
+          JOIN channel_members cm
+            ON cm.channelId=source.channelId AND cm.memberId=aau.userId AND cm.removedAt IS NULL
+          JOIN users u ON u.id=aau.userId
+          WHERE aau.artifactId=source.id AND aau.userId=?
+        )
+        OR EXISTS (
+          SELECT 1 FROM channel_members cm JOIN users u ON u.id=cm.memberId
+          WHERE cm.channelId=source.channelId AND cm.memberId=? AND cm.removedAt IS NULL
+            AND cm.role IN ('owner','admin')
+        )
+      )
+      ORDER BY directionOrder ASC,sourceVersion DESC,targetVersion DESC,kind ASC,
+               sourceArtifactId ASC,targetArtifactId ASC
+      LIMIT ?
+    `).all(artifactId, artifactId, userId, userId, size + 1) as unknown as ArtifactRelationRow[];
+    return { items: rows.slice(0, size), truncated: rows.length > size };
+  }
+
+  /** Every chain whose cached relation view can change when this chain changes. */
+  artifactRelationNeighbors(artifactId: ID): ID[] {
+    const rows = this.db.prepare(`
+      SELECT targetArtifactId AS artifactId FROM artifact_links WHERE sourceArtifactId=?
+      UNION
+      SELECT sourceArtifactId AS artifactId FROM artifact_links WHERE targetArtifactId=?
+      ORDER BY artifactId ASC
+    `).all(artifactId, artifactId) as { artifactId: string }[];
+    return rows.map(r => r.artifactId);
+  }
+
+  /**
+   * The permission-filtered identity rows behind both Files and a room's old
+   * artifact list. Every visibility condition is in SQL BEFORE LIMIT; filtering
+   * a cut page in JavaScript would make an allowed older file disappear behind
+   * a page of restricted ones and falsely say there is no more.
+   */
+  private visibleArtifactRows(
+    userId: ID,
+    channelIds: ID[],
+    cursor: { before?: number; beforeId?: ID },
+    limit: number,
+  ): Page<ArtifactRow> {
+    if (channelIds.length === 0) return { items: [], hasMore: false };
+    const size = Number.isFinite(limit)
+      ? Math.max(1, Math.min(Math.floor(limit), ARTIFACT_LIMITS.workspacePage))
+      : ARTIFACT_LIMITS.workspaceDefault;
+    const slots = channelIds.map(() => "?").join(",");
+    const beforeSql = cursor.before === undefined
+      ? ""
+      : " AND (a.updatedAt < ? OR (a.updatedAt = ? AND a.id < ?))";
+    const beforeArgs = cursor.before === undefined
+      ? []
+      : [cursor.before, cursor.before, cursor.beforeId ?? AFTER_EVERY_ID];
+    const rows = this.db.prepare(
+      `SELECT a.id,a.channelId,a.name,a.nameKey,a.createdAt,a.updatedAt,a.nextVersion
+       FROM artifacts a
+       WHERE a.channelId IN (${slots})
+         AND EXISTS (SELECT 1 FROM artifact_versions av WHERE av.artifactId=a.id)
+         AND (
+           NOT EXISTS (
+             SELECT 1 FROM artifact_access aa
+             WHERE aa.artifactId=a.id AND aa.kind='restricted'
+           )
+           OR EXISTS (
+             SELECT 1 FROM artifact_access_users aau
+             JOIN channel_members cm
+               ON cm.channelId=a.channelId AND cm.memberId=aau.userId AND cm.removedAt IS NULL
+             JOIN users u ON u.id=aau.userId
+             WHERE aau.artifactId=a.id AND aau.userId=?
+           )
+           OR EXISTS (
+             SELECT 1 FROM channel_members cm JOIN users u ON u.id=cm.memberId
+             WHERE cm.channelId=a.channelId AND cm.memberId=? AND cm.removedAt IS NULL
+               AND cm.role IN ('owner','admin')
+           )
+         )${beforeSql}
+       ORDER BY a.updatedAt DESC, a.id DESC LIMIT ?`,
+    ).all(...channelIds, userId, userId, ...beforeArgs, size + 1) as unknown as ArtifactRow[];
+    const hasMore = rows.length > size;
+    const items = hasMore ? rows.slice(0, size) : rows;
+    const oldest = items[items.length - 1];
+    return {
+      items,
+      hasMore,
+      nextBefore: hasMore && oldest ? oldest.updatedAt : undefined,
+      nextBeforeId: hasMore && oldest ? oldest.id : undefined,
+    };
+  }
+
+  /**
+   * One bounded Files page across every currently readable room.
+   *
+   * The SQL permission filter still runs before every LIMIT. Projection validity
+   * is the second gate: unreadable JSON rows are skipped and older SQL pages are
+   * scanned until this page is full or valid data is genuinely exhausted. The
+   * returned cursor is the last RETURNED row, never a malformed row scanned past
+   * it, so the next request neither skips nor duplicates a valid artifact.
+   */
+  artifactWorkspace(
+    userId: ID,
+    channels: Channel[],
+    cursor: { before?: number; beforeId?: ID } = {},
+    limit: number = ARTIFACT_LIMITS.workspaceDefault,
+  ): Page<ArtifactWorkspaceEntry> {
+    const wanted = Number.isFinite(limit)
+      ? Math.max(1, Math.min(Math.floor(limit), ARTIFACT_LIMITS.workspacePage))
+      : ARTIFACT_LIMITS.workspaceDefault;
+    const channelNames = new Map(channels.map(ch => [ch.id, ch.name]));
+    const channelIds = channels.map(ch => ch.id);
+    const candidates: ArtifactWorkspaceEntry[] = [];
+    let scanCursor = { ...cursor };
+
+    while (candidates.length <= wanted) {
+      const rows = this.visibleArtifactRows(
+        userId, channelIds, scanCursor, ARTIFACT_LIMITS.workspacePage,
+      );
+      for (const row of rows.items) {
+        const latest = this.artifactVersionsOf(row.id)[0];
+        const channelName = channelNames.get(row.channelId);
+        if (!latest || channelName === undefined) continue;
+        candidates.push({
+          artifactId: row.id,
+          channelId: row.channelId,
+          channelName,
+          name: row.name,
+          latest: artifactVersionForPublic(latest),
+          versionCount: row.nextVersion - 1,
+          access: this.artifactAccess(row.id),
+          updatedAt: row.updatedAt,
+        });
+        if (candidates.length > wanted) break;
+      }
+      if (candidates.length > wanted || !rows.hasMore) break;
+      scanCursor = { before: rows.nextBefore, beforeId: rows.nextBeforeId };
+    }
+
+    const hasMore = candidates.length > wanted;
+    const items = hasMore ? candidates.slice(0, wanted) : candidates;
+    const oldest = items[items.length - 1];
+    return {
+      items,
+      hasMore,
+      nextBefore: hasMore && oldest ? oldest.updatedAt : undefined,
+      nextBeforeId: hasMore && oldest ? oldest.artifactId : undefined,
+    };
+  }
+
+  /** Every permitted artifact in one conversation, most recently changed first. */
+  artifactsInFor(userId: ID, channelId: ID, limit: number): StoredArtifact[] {
+    return this.visibleArtifactRows(userId, [channelId], {}, limit).items
+      .map(row => this.artifact(row.id))
+      .filter((artifact): artifact is StoredArtifact => artifact !== undefined);
+  }
+
   /** Every artifact in one conversation, the most recently changed first. */
-  artifactsIn(channelId: ID, limit: number): Artifact[] {
+  artifactsIn(channelId: ID, limit: number): StoredArtifact[] {
     const rows = this.db.prepare(
       "SELECT id FROM artifacts WHERE channelId=? ORDER BY updatedAt DESC, id DESC LIMIT ?",
     ).all(channelId, Math.max(1, Math.floor(limit))) as { id: string }[];
-    const out: Artifact[] = [];
+    const out: StoredArtifact[] = [];
     for (const r of rows) {
       const a = this.artifact(r.id);
       if (a) out.push(a);
@@ -1979,6 +2652,8 @@ export class Store implements JoinHubStore {
  * message" and "before this exact message" can share one query.
  */
 const AFTER_EVERY_ID = "\uffff";
+/** Same wide in-flight margin as wholefile pending writes. */
+export const ARTIFACT_STAGE_GRACE_MS = 60_000;
 
 /**
  * The shape this build expects. Bumped whenever the tables change, and read by
@@ -1988,8 +2663,9 @@ const AFTER_EVERY_ID = "\uffff";
  * 4 = run records — what an agent actually did, turn by turn.
  * 5 = a membership row per spell in a room, so a rejoin cannot overwrite a
  *     first arrival.
+ * 6 = artifact chain access, exact-version links, and immutable version keys.
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /**
  * The fingerprint of one line of the trail.

@@ -1172,7 +1172,9 @@ export type ActivityKind =
   // his item 7: connecting a repository to Cloud9 is an action on this Cloud9,
   // so it belongs in the trail like every other one. Nothing here touches
   // GitHub — these three lines are about OUR copy.
-  | "project_connected" | "project_updated" | "project_forgotten";
+  | "project_connected" | "project_updated" | "project_forgotten"
+  // narrowing or restoring who may read a file changes a permission wall
+  | "artifact_access_changed";
 
 /**
  * One line of the trail.
@@ -1481,6 +1483,50 @@ export interface Attachment {
 // history rather than two files with the same name. Attribution is therefore
 // PER VERSION, never on the artifact itself.
 
+/**
+ * Who may read one artifact's whole version chain.
+ *
+ * ABSENT MEANS `room`. Every artifact stored before Files permissions existed
+ * remains readable by everyone who can currently read its source room. A
+ * restricted file names the selected HUMAN room members; the relay adds all
+ * current room owners/admins when it answers the permission question. This
+ * object may narrow room access and can never broaden it.
+ */
+export type ArtifactAccess =
+  | { kind: "room" }
+  | { kind: "restricted"; userIds: ID[] };
+
+/** The only two stored relationships between exact artifact versions. */
+export type ArtifactLinkKind = "made-from" | "goes-with";
+
+/** One immutable set of artifact bytes, named without any "newest" shortcut. */
+export interface ArtifactVersionRef {
+  artifactId: ID;
+  version: number;
+}
+
+/** A relationship declared when the publishing version was made. */
+export interface ArtifactLink {
+  kind: ArtifactLinkKind;
+  target: ArtifactVersionRef;
+}
+
+/** One file row in the private `.cloud9/artifact-links.json` turn manifest. */
+export interface ArtifactLinkManifestFile {
+  name: string;
+  note?: string;
+  links?: ArtifactLink[];
+}
+
+/** The whole private turn manifest. It is read by the engine and never shared. */
+export interface ArtifactLinkManifest {
+  files: ArtifactLinkManifestFile[];
+}
+
+export type ArtifactLinkManifestResult =
+  | { ok: true; manifest: ArtifactLinkManifest }
+  | { ok: false; reason: string };
+
 /** One stored version of a shared artifact — one set of bytes, forever. */
 export interface ArtifactVersion {
   /** "av-…" — the reference to THESE bytes, which never change */
@@ -1513,8 +1559,23 @@ export interface ArtifactVersion {
   taskId?: ID;
   /** the agent's own one line about what changed. Absent means it said nothing. */
   note?: string;
+  /**
+   * Raw stored links are deliberately impossible on a public version. The
+   * optional-never field makes `StoredArtifactVersion` non-assignable here, so
+   * a relay cannot accidentally put its storage object straight on the wire.
+   */
+  links?: never;
   producedAt: number;
 }
+
+/**
+ * The relay's durable version row. This is NOT a wire view: its raw exact
+ * targets can include files the eventual reader is not allowed to know exist.
+ * Always pass it through `artifactVersionForPublic` before building a frame.
+ */
+export type StoredArtifactVersion = Omit<ArtifactVersion, "links"> & {
+  links?: ArtifactLink[];
+};
 
 /**
  * A file an agent made, with every version of it the hub still holds.
@@ -1531,11 +1592,75 @@ export interface Artifact {
   name: string;
   /** newest first, capped at `ARTIFACT_LIMITS.versions`, never empty */
   versions: ArtifactVersion[];
+  /** absent means room-visible, preserving every artifact stored before this field */
+  access?: ArtifactAccess;
   /** when version 1 landed */
   createdAt: number;
   /** when the newest version landed */
   updatedAt: number;
 }
+
+/** Durable artifact shape inside the relay; never send it without projection. */
+export type StoredArtifact = Omit<Artifact, "versions"> & {
+  versions: StoredArtifactVersion[];
+};
+
+/** Strip raw targets by construction before one version enters any public view. */
+export function artifactVersionForPublic(stored: StoredArtifactVersion): ArtifactVersion {
+  const { links: _privateLinks, ...visible } = stored;
+  void _privateLinks;
+  return visible;
+}
+
+/** Strip raw targets from every retained version before an artifact enters a frame. */
+export function artifactForPublic(stored: StoredArtifact): Artifact {
+  return { ...stored, versions: stored.versions.map(artifactVersionForPublic) };
+}
+
+/**
+ * One bounded row in Files, across every room the asker may currently read.
+ * `latest` is the one version needed to draw maker, turn and date without
+ * carrying every retained version in every list row.
+ */
+export interface ArtifactWorkspaceEntry {
+  artifactId: ID;
+  channelId: ID;
+  channelName: string;
+  name: string;
+  latest: ArtifactVersion;
+  /** total published version number, not merely the retained rows on this page */
+  versionCount: number;
+  /** always explicit on a workspace row; legacy absence has already become room */
+  access: ArtifactAccess;
+  updatedAt: number;
+}
+
+/**
+ * A link as the detail screen may safely draw it.
+ *
+ * A hidden outgoing target carries neither its exact reference nor its name;
+ * the screen can only say that a linked file is unavailable. Incoming links
+ * are included only when the source is permitted, so they are never hidden.
+ */
+export type ArtifactRelationView =
+  | {
+      kind: ArtifactLinkKind;
+      direction: "outgoing";
+      from: ArtifactVersionRef;
+      hidden: true;
+      /** impossible on a hidden placeholder: no id, version or name may leak */
+      to?: never;
+      linkedName?: never;
+    }
+  | {
+      kind: ArtifactLinkKind;
+      direction: "outgoing" | "incoming";
+      from: ArtifactVersionRef;
+      hidden: false;
+      /** required together on every visible relationship */
+      to: ArtifactVersionRef;
+      linkedName: string;
+    };
 
 
 /**
@@ -1622,7 +1747,10 @@ export interface UnreadEntry {
 
 // ---------- WebSocket frames ----------
 
-export type ClientFrame =
+/** Add one optional request-correlation field to every member of a union. */
+export type WithRequestId<T> = T extends unknown ? T & { requestId?: ID } : never;
+
+type ClientFrameBase =
   | { type: "hello"; token: string; client: "desktop" | "mobile" | "engine" }
   | { type: "send"; channelId: ID; text: string; tempId?: string; replyTo?: ID; attachmentIds?: ID[] }
   | { type: "createChannel"; name: string; memberIds: ID[]; kind?: ChannelKind }
@@ -1719,11 +1847,17 @@ export type ClientFrame =
       runId?: string; taskId?: ID;
       /** the agent's own line about what changed */
       note?: string;
+      /** checked typed links from this turn's private manifest */
+      links?: ArtifactLink[];
     }
   /** Every artifact in one conversation, newest change first. */
   | { type: "artifacts"; channelId: ID }
+  /** One bounded page across every readable room, newest change first. */
+  | { type: "artifactWorkspace"; before?: number; beforeId?: ID; limit?: number }
   /** One artifact and its whole version history, by id. */
   | { type: "artifact"; artifactId: ID }
+  /** Owner/admin only: narrow this whole chain, or restore room access. */
+  | { type: "setArtifactAccess"; artifactId: ID; access: ArtifactAccess }
   /**
    * Ask for permission to fetch one artifact version's bytes.
    *
@@ -1914,6 +2048,9 @@ export type ClientFrame =
   | { type: "sendHandoff"; handoff: AgentHandoff }
   // engine-host only: report detected harness status (status strings only, never secrets)
   | { type: "harnessState"; state: HarnessState };
+
+/** Every client request may opt into direct-answer/refusal correlation. */
+export type ClientFrame = WithRequestId<ClientFrameBase>;
 
 export type AgentStatus = "idle" | "working" | "braked";
 
@@ -2144,9 +2281,27 @@ export type ServerFrame =
    * conversation, because a file an agent made is the conversation's, not the
    * producer's. Also the answer to `artifact`.
    */
-  | { type: "artifact"; artifact: Artifact }
+  | {
+      type: "artifact"; artifact: Artifact; relations?: ArtifactRelationView[];
+      /**
+       * Echoed on direct `artifact` reads and successful `setArtifactAccess`
+       * mutations. Unsolicited publish/update pushes omit it.
+       */
+      requestId?: ID;
+      /** true only when more valid relation rows exist beyond the shared cap */
+      relationsTruncated?: true;
+    }
   /** Answers `artifacts`. Newest change first. */
   | { type: "artifacts"; channelId: ID; artifacts: Artifact[] }
+  /** Answers `artifactWorkspace`, with a stable updatedAt/id cursor. */
+  | {
+      type: "artifactWorkspace"; artifacts: ArtifactWorkspaceEntry[]; hasMore: boolean;
+      nextBefore?: number; nextBeforeId?: ID;
+      /** echoed only when this is the direct answer to an artifactWorkspace request */
+      requestId?: ID;
+    }
+  /** Permission changed or room membership vanished: discard every cached view. */
+  | { type: "artifactUnavailable"; artifactId: ID }
   /**
    * Permission to fetch ONE version of one artifact, ONCE, for a few seconds.
    * `url` is relative to the hub's own address and is the SAME endpoint an
@@ -2269,7 +2424,12 @@ export type ServerFrame =
    * task and the context pointer.
    */
   | { type: "handoffReceived"; handoff: AgentHandoff }
-  | { type: "error"; error: string };
+  | {
+      type: "error";
+      error: string;
+      /** any client frame's direct refusal may echo its request id; general errors omit it */
+      requestId?: ID;
+    };
 
 // ---------- desktop menu actions ----------
 //
@@ -2541,8 +2701,22 @@ export const ARTIFACT_LIMITS = {
   publishesPerMinute: 30,
   /** the agent's own note about a version */
   note: 300,
-  /** most artifacts one `artifacts` answer carries */
+  /** most artifacts one room-scoped `artifacts` answer carries */
   listPage: 100,
+  /** most rows one cross-room Files page may carry */
+  workspacePage: 100,
+  /** Files page size when the client does not ask */
+  workspaceDefault: 50,
+  /** most selected human ids one restricted artifact accepts */
+  accessUsers: 200,
+  /** most permitted/hidden relationship rows one artifact detail may return */
+  relationDetail: 100,
+  /** most typed relationships one publishing version accepts */
+  linksPerVersion: 20,
+  /** most produced-file rows one turn manifest accepts */
+  manifestFiles: 10,
+  /** biggest private link manifest the engine will parse */
+  manifestBytes: 64 * 1024,
 } as const;
 
 /**
@@ -2572,13 +2746,202 @@ export function validateArtifact(name: unknown, size: number): string | null {
   return null;
 }
 
-/** The newest version. The one owner of "which end of the list is new". */
-export function latestVersion(artifact: Artifact): ArtifactVersion | undefined {
+/** Legacy absence is room access — one owner for that compatibility promise. */
+export function effectiveArtifactAccess(access?: ArtifactAccess): ArtifactAccess {
+  return access ?? { kind: "room" };
+}
+
+/** May a Files row say this artifact is restricted? */
+export function isArtifactRestricted(access?: ArtifactAccess): boolean {
+  return effectiveArtifactAccess(access).kind === "restricted";
+}
+
+/** Canonical stored access: explicit room, or first-seen selected ids once each. */
+export function normaliseArtifactAccess(access?: ArtifactAccess): ArtifactAccess {
+  const effective = effectiveArtifactAccess(access);
+  return effective.kind === "room"
+    ? { kind: "room" }
+    : { kind: "restricted", userIds: [...new Set(effective.userIds)] };
+}
+
+/** Check stored access. Legacy absence is accepted here and only here. */
+export function validateArtifactAccess(value: unknown): string | null {
+  return validateArtifactAccessValue(value, true);
+}
+
+/** Check a permission MUTATION. It must explicitly say room or restricted. */
+export function validateArtifactAccessMutation(value: unknown): string | null {
+  return validateArtifactAccessValue(value, false);
+}
+
+function validateArtifactAccessValue(value: unknown, allowLegacyAbsence: boolean): string | null {
+  if (value === undefined) {
+    return allowLegacyAbsence ? null : "say whether this file uses room or restricted access";
+  }
+  if (!isObjectWithOwn(value, ["kind", "userIds"], ["kind"])) {
+    return "that isn't a file access setting";
+  }
+  if (value.kind === "room") {
+    return Object.prototype.hasOwnProperty.call(value, "userIds")
+      ? "room access does not need a list of people"
+      : null;
+  }
+  if (value.kind !== "restricted") return "file access is room or restricted";
+  if (!hasOwn(value, "userIds") || !Array.isArray(value.userIds)) {
+    return "restricted file access needs a list of people";
+  }
+  if (value.userIds.length > ARTIFACT_LIMITS.accessUsers) {
+    return `that's too many people for one file (max ${ARTIFACT_LIMITS.accessUsers})`;
+  }
+  for (const id of value.userIds) {
+    if (!isSafeStoredId(id)) return "that file access list contains someone Cloud9 doesn't know";
+  }
+  return null;
+}
+
+/** Check one exact artifact-version target. There is deliberately no newest form. */
+export function validateArtifactVersionRef(value: unknown): string | null {
+  if (!isObjectWithOwn(value, ["artifactId", "version"], ["artifactId", "version"])) {
+    return "that isn't an exact file version";
+  }
+  if (!isSafeStoredId(value.artifactId)) return "that linked file id isn't usable";
+  if (typeof value.version !== "number" || !Number.isSafeInteger(value.version) || value.version < 1) {
+    return "that linked file version isn't a positive whole number";
+  }
+  return null;
+}
+
+/** Check one typed link before it is attached to immutable version data. */
+export function validateArtifactLink(value: unknown): string | null {
+  if (!isObjectWithOwn(value, ["kind", "target"], ["kind", "target"])) {
+    return "that isn't a file link";
+  }
+  if (value.kind !== "made-from" && value.kind !== "goes-with") {
+    return "a file link is made-from or goes-with";
+  }
+  return validateArtifactVersionRef(value.target);
+}
+
+/**
+ * Check a WHOLE link list. Both direct `publishArtifact.links` and manifest rows
+ * call this, so the 20-link ceiling cannot be bypassed by choosing another path.
+ */
+export function validateArtifactLinks(value: unknown): string | null {
+  if (!Array.isArray(value)) return "file links must be a list";
+  if (value.length > ARTIFACT_LIMITS.linksPerVersion) {
+    return `that file version has too many links (max ${ARTIFACT_LIMITS.linksPerVersion})`;
+  }
+  for (const item of value) {
+    const problem = validateArtifactLink(item);
+    if (problem) return problem;
+  }
+  return null;
+}
+
+/** First occurrence wins; kind plus exact target is the whole identity. */
+export function normaliseArtifactLinks(links: readonly ArtifactLink[]): ArtifactLink[] {
+  const seen = new Set<string>();
+  const out: ArtifactLink[] = [];
+  for (const item of links) {
+    const key = `${item.kind}\u0000${item.target.artifactId}\u0000${item.target.version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ kind: item.kind, target: { ...item.target } });
+  }
+  return out;
+}
+
+/** The same object rule used by the JSON parser and by callers holding parsed data. */
+export function validateArtifactLinkManifest(value: unknown): string | null {
+  if (!isObjectWithOwn(value, ["files"], ["files"]) || !Array.isArray(value.files)) {
+    return "that file-link manifest needs a files list";
+  }
+  if (value.files.length > ARTIFACT_LIMITS.manifestFiles) {
+    return `that file-link manifest has too many files (max ${ARTIFACT_LIMITS.manifestFiles})`;
+  }
+  const names = new Set<string>();
+  for (const raw of value.files) {
+    if (!isObjectWithOwn(raw, ["name", "note", "links"], ["name"])) {
+      return "each file-link manifest row needs a file name";
+    }
+    if (!isSafeFileName(raw.name)) return FILE_NAME_SENTENCE;
+    const key = nameKey(raw.name);
+    if (names.has(key)) return `the file-link manifest names "${raw.name}" more than once`;
+    names.add(key);
+    if (raw.note !== undefined) {
+      if (typeof raw.note !== "string") return `the note for "${raw.name}" must be words`;
+      if (raw.note.length > ARTIFACT_LIMITS.note) {
+        return `the note for "${raw.name}" is too long (max ${ARTIFACT_LIMITS.note} characters)`;
+      }
+    }
+    if (raw.links !== undefined) {
+      const problem = validateArtifactLinks(raw.links);
+      if (problem) return `${raw.name}: ${problem}`;
+    }
+  }
+  return null;
+}
+
+/** Parse the private turn manifest, refusing bad current data rather than guessing. */
+export function parseArtifactLinkManifest(text: unknown): ArtifactLinkManifestResult {
+  if (typeof text !== "string") {
+    return { ok: false, reason: "that file-link manifest is not text" };
+  }
+  const bytes = new TextEncoder().encode(text).length;
+  if (bytes > ARTIFACT_LIMITS.manifestBytes) {
+    return {
+      ok: false,
+      reason: `that file-link manifest is too big (max ${ARTIFACT_LIMITS.manifestBytes} bytes)`,
+    };
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); }
+  catch { return { ok: false, reason: "that file-link manifest is not valid JSON" }; }
+  const reason = validateArtifactLinkManifest(parsed);
+  if (reason) return { ok: false, reason };
+
+  const manifest = parsed as ArtifactLinkManifest;
+  return {
+    ok: true,
+    manifest: {
+      files: manifest.files.map(file => ({
+        name: file.name,
+        ...(file.note === undefined ? {} : { note: file.note }),
+        ...(file.links === undefined ? {} : { links: normaliseArtifactLinks(file.links) }),
+      })),
+    },
+  };
+}
+
+/** Strict own keys keep direct objects in lockstep with parsed JSON objects. */
+function isObjectWithOwn(
+  value: unknown,
+  allowed: readonly string[],
+  required: readonly string[],
+): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  const noInheritedFields = allowed.every(key => !(key in value) || hasOwn(value, key));
+  return keys.every(key => allowed.includes(key))
+    && required.every(key => hasOwn(value, key))
+    && noInheritedFields;
+}
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+/** The newest version. Works on either storage or already-public views. */
+export function latestVersion<T extends ArtifactVersion | StoredArtifactVersion>(
+  artifact: { versions: T[] },
+): T | undefined {
   return artifact.versions[0];
 }
 
-/** One version by number, or nothing. */
-export function versionOf(artifact: Artifact, version: number): ArtifactVersion | undefined {
+/** One version by number, or nothing, preserving storage/public type. */
+export function versionOf<T extends ArtifactVersion | StoredArtifactVersion>(
+  artifact: { versions: T[] }, version: number,
+): T | undefined {
   return artifact.versions.find(v => v.version === version);
 }
 

@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-08-02T07:37:06.013Z",
+  "ranAt": "2026-08-02T08:42:14.723Z",
   "expected": 494,
   "executed": 494,
   "results": [
@@ -91,12 +91,12 @@
     {
       "name": "settings shows live Claude + Codex status",
       "pass": true,
-      "detail": "claude: signed in as vikas53953@gmail.com | codex: signed in as ChatGPT account"
+      "detail": "claude: signed in | codex: signed in as ChatGPT account"
     },
     {
       "name": "Claude card, signed in: green tick, an account line and a quiet Switch account",
       "pass": true,
-      "detail": "Claude signed in as vikas53953@gmail.com ✓ app found (2.1.220 (Claude Code)) ✓ signed in using the Claude app's own logi"
+      "detail": "Claude signed in ✓ app found (2.1.220 (Claude Code)) ✓ signed in using the Claude app's own login 13 models available · "
     },
     {
       "name": "Claude card shows exactly one state",
@@ -131,7 +131,7 @@
     {
       "name": "the GitHub card shows one honest state and says when Cloud9 really asked",
       "pass": true,
-      "detail": "signed-in :: Cloud9 asked this computer at 13:03:35."
+      "detail": "signed-in :: Cloud9 asked this computer at 14:08:36."
     },
     {
       "name": "signed in: the GitHub card names the account and says who keeps the token",
@@ -196,7 +196,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch hhntm :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch jt9fk :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -276,7 +276,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_26TyJ7ppB_XLqsCUzhZfKA"
+      "detail": "inv_akNlZUF4J9mVgeaQzuQQxg"
     },
     {
       "name": "friend joins via invite",
@@ -406,7 +406,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 13:04"
+      "detail": "↳ 1 reply · last at 14:08"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -476,7 +476,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 13:03 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 14:08 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -1226,7 +1226,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_msbhjg5pw3t7h8\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_msbjv3mgy7ktg0\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -1266,12 +1266,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_msbhhhz2an389k:1785656099544 a_msbhhji3e9iv8j:1785656104414 u_msbhhrnrbhw51n:1785656104833 a_msbhjg5pw3t7h8:1785656104946"
+      "detail": "u_msbjt0y7tp0xtq:1785660001883 a_msbjt3bg6ybz90:1785660007330 u_msbjtdaclkaw6q:1785660007837 a_msbjv3mgy7ktg0:1785660007978"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785656102729 · now 1785656104833"
+      "detail": "first 1785660005106 · now 1785660007837"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -1501,7 +1501,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":21,\"pinned\":0,\"min\":40,\"max\":4119,\"endedAt\":4119}"
+      "detail": "{\"followedToBottom\":0,\"samples\":23,\"pinned\":0,\"min\":40,\"max\":4119,\"endedAt\":4119}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1511,17 +1511,17 @@
     {
       "name": "REPRODUCED: he is a long way from the newest message, exactly as he is after reading back",
       "pass": true,
-      "detail": "{\"fromBottom\":4119,\"scrollTop\":0,\"bottom\":4119,\"newestInSight\":false,\"followed\":{\"n\":6,\"why\":\"resized\",\"recent\":[\"arrived\",\"resized\",\"resized\",\"arrived\",\"resized\",\"resized\"]},\"motion\":\"smooth\"}"
+      "detail": "{\"fromBottom\":4119,\"scrollTop\":0,\"bottom\":4119,\"newestInSight\":false,\"followed\":{\"n\":5,\"why\":\"resized\",\"recent\":[\"arrived\",\"resized\",\"arrived\",\"resized\",\"resized\"]},\"motion\":\"smooth\"}"
     },
     {
       "name": "a message arriving while he has read back does NOT drag him down to it",
       "pass": true,
-      "detail": "1 message frame(s); the view stayed at 0 (was 0), and the rule did not fire (6 follows, same as before)"
+      "detail": "1 message frame(s); the view stayed at 0 (was 0), and the rule did not fire (5 follows, same as before)"
     },
     {
       "name": "SENDING takes the view to what he just said, wherever he had read back to",
       "pass": true,
-      "detail": "{\"fromBottom\":2,\"mineInSight\":true}"
+      "detail": "{\"fromBottom\":0,\"mineInSight\":true}"
     },
     {
       "name": "and the rule says so in its own words — a send, not just an arrival",
@@ -1556,7 +1556,7 @@
     {
       "name": "clicking Send leaves the cursor in the box, and the box back to one line",
       "pass": true,
-      "detail": "{\"cursorInBox\":true,\"boxHeight\":22,\"fromBottom\":0}"
+      "detail": "{\"cursorInBox\":true,\"boxHeight\":22,\"fromBottom\":1}"
     },
     {
       "name": "REPRODUCED: a picture finishing really does push the bottom down after the message landed",
@@ -1641,7 +1641,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_msbhhlbe5zip3g\",\"status\":\"completed\",\"runId\":\"r-0msbhhlbr-zgxu\"}"
+      "detail": "{\"id\":\"t_msbjt65w7z1bpb\",\"status\":\"completed\",\"runId\":\"r-0msbjt665-c4rp\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1831,7 +1831,7 @@
     {
       "name": "pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
       "pass": true,
-      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_msbhke9w8ywp19\",\"repo\":\"vikas53953/cloud9\"}"
+      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_msbjw56m33s89h\",\"repo\":\"vikas53953/cloud9\"}"
     },
     {
       "name": "while it is looking the button says so and cannot be pressed again",
@@ -2061,7 +2061,7 @@
     {
       "name": "it says when it runs out — an agent is standing there waiting for the answer",
       "pass": true,
-      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 13:06 EXPIRES in 9 minutes"
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 14:11 EXPIRES in 9 minutes"
     },
     {
       "name": "a request with no job behind it offers no 'see the job' button to press",
@@ -2286,7 +2286,7 @@
     {
       "name": "the card says which agent made it, and how big it is",
       "pass": true,
-      "detail": "made by Scout :: 45 bytes · text · 2 Aug 13:06"
+      "detail": "made by Scout :: 45 bytes · text · 2 Aug 14:11"
     },
     {
       "name": "version 1 is not labelled with a version number nobody needs",
@@ -2296,7 +2296,7 @@
     {
       "name": "the reference itself is not printed beside the card it draws",
       "pass": true,
-      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 2 Aug 13:06 Show it"
+      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 2 Aug 14:11 Show it"
     },
     {
       "name": "the file really comes back, byte for byte, through the attachment ticket path",
@@ -2316,7 +2316,7 @@
     {
       "name": "the history shows the earlier version, who made it and when",
       "pass": true,
-      "detail": "v1 Scout 2 Aug 13:06 45 bytes Show it"
+      "detail": "v1 Scout 2 Aug 14:11 45 bytes Show it"
     },
     {
       "name": "an older version can still be downloaded, and it is the OLD bytes",
@@ -2331,7 +2331,7 @@
     {
       "name": "a file that is not text is a download and is never drawn into the room",
       "pass": true,
-      "detail": "74 bytes · a file to save · 2 Aug 13:06"
+      "detail": "74 bytes · a file to save · 2 Aug 14:11"
     },
     {
       "name": "a reference to a file that is not there says so in plain words, with no jargon",
@@ -2441,7 +2441,7 @@
     {
       "name": "a valid link previews with its honest reach and names the hub, and sees the join link",
       "pass": true,
-      "detail": "127.0.0.1:51492 — only this computer — this is the address the app uses for itself · carries a join link, so y"
+      "detail": "127.0.0.1:51136 — only this computer — this is the address the app uses for itself · carries a join link, so y"
     },
     {
       "name": "adding a friend's Cloud9 actually dials it — the connection says so, and it is the live hub",
@@ -2461,7 +2461,7 @@
     {
       "name": "the owner can mint a join link, and it is a cloud9:// link carrying a join_ token",
       "pass": true,
-      "detail": "cloud9://127.0.0.1:8799#join_Ye-tK1kSIZX22j3Lb0Y6mg"
+      "detail": "cloud9://127.0.0.1:8799#join_jwY96xTs4JfpI9FdG7_wEA"
     },
     {
       "name": "the panel says plainly that reaching a friend over the internet needs Tailscale, not wired tonight",

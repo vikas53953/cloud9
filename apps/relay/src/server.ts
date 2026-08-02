@@ -6,7 +6,9 @@ import http from "node:http";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import {
-  AgentDef, AgentPresenceState, AgentStatus, Approval, Artifact, ArtifactVersion, Attachment,
+  AgentDef, AgentPresenceState, AgentStatus, Approval,
+  ArtifactLink, ArtifactRelationView, Attachment,
+  StoredArtifact, StoredArtifactVersion, artifactForPublic,
   Channel, ChannelMember,
   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
   MESSAGE_LIMITS, ARTIFACT_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
@@ -15,7 +17,9 @@ import {
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
   contentDisposition, downloadContentType, fitRunRecord, isBranchName, isSafeFileName,
-  isSafeStoredId, latestVersion, looksLikeText, versionOf, validateArtifact,
+  isSafeStoredId, latestVersion, looksLikeText, normaliseArtifactAccess,
+  normaliseArtifactLinks, validateArtifactAccessMutation, validateArtifactLinks,
+  versionOf, validateArtifact,
   mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
   setMachineNames, shareableRun,
   extractMentions, nameKey, newId, validateAgentInput, validateAttachment, validateChannelText,
@@ -57,13 +61,20 @@ import {
  */
 type TicketTarget =
   | { kind: "attachment"; id: ID }
-  | { kind: "artifact"; id: ID };
+  | { kind: "artifact"; id: ID; artifactId: ID };
 
 interface Conn {
   ws: WebSocket;
   userId: ID;
   client: "desktop" | "mobile" | "engine";
 }
+
+type ArtifactFrame = Extract<ServerFrame, { type: "artifact" }>;
+interface ArtifactProjection {
+  frame: ArtifactFrame;
+  fingerprint: string;
+}
+type ArtifactProjectionSnapshot = Map<ID, Map<ID, ArtifactProjection | null>>;
 
 export interface RelayOptions {
   port?: number;
@@ -239,8 +250,16 @@ export class Relay {
   private onConnection(ws: WebSocket): void {
     let conn: Conn | undefined;
     ws.on("message", raw => {
-      let frame: ClientFrame;
-      try { frame = JSON.parse(String(raw)); } catch { return; }
+      let parsed: unknown;
+      try { parsed = JSON.parse(String(raw)); } catch { return; }
+      // JSON.parse returning a value does not make it a frame. Validate the
+      // envelope before ANY `.type` access, including the refusal context below:
+      // `null` used to throw once here and then throw again in the catch itself.
+      if (!hasOwnStringType(parsed)) {
+        sendFrameError(ws, "not authenticated", parsed);
+        return;
+      }
+      const frame = parsed as ClientFrame;
       try {
         if (frame.type === "hello") {
           conn = this.handleHello(ws, frame);
@@ -253,13 +272,14 @@ export class Relay {
           conn = this.handleJoinWithToken(ws, frame);
           return;
         }
-        if (!conn) { send(ws, { type: "error", error: "not authenticated" }); return; }
+        if (!conn) { sendFrameError(ws, "not authenticated", frame); return; }
         this.handleFrame(conn, frame);
       } catch (err) {
         // ONE OWNER FOR "NO" (refusal.ts). This used to be `String(err)`, which
         // put the word "Error:" in front of every hand-written refusal and would
-        // have shown a raw `TypeError` under a form in his app.
-        send(ws, { type: "error", error: refusalText(err, `frame "${frame.type}"`) });
+        // have shown a raw `TypeError` under a form in his app. `sendFrameError`
+        // also owns safe request correlation before and after authentication.
+        sendFrameError(ws, refusalText(err, `frame "${frame.type}"`), frame);
       }
     });
     ws.on("close", () => {
@@ -310,12 +330,13 @@ export class Relay {
       const redeemed = this.store.redeemInvite(code, name || "Friend");
       if (!redeemed) {
         const known = this.store.invite(code);
-        send(ws, {
-          type: "error",
-          error: known
+        sendFrameError(
+          ws,
+          known
             ? "that invite has already been used — ask for a new one"
             : "that invite code isn't valid",
-        });
+          frame,
+        );
         ws.close();
         return undefined;
       }
@@ -332,7 +353,7 @@ export class Relay {
       }
       this.broadcast({ type: "userJoined", user });
     }
-    if (!user) { send(ws, { type: "error", error: "bad token" }); ws.close(); return undefined; }
+    if (!user) { sendFrameError(ws, "bad token", frame); ws.close(); return undefined; }
     const conn: Conn = { ws, userId: user.id, client: frame.client };
     this.conns.add(conn);
     send(ws, { type: "welcome", state: this.worldFor(user.id) });
@@ -365,13 +386,13 @@ export class Relay {
   ): Conn | undefined {
     const bind = resolveJoinBind(this.bind === LOOPBACK ? undefined : this.bind);
     if (!bind.ok) {
-      send(ws, { type: "error", error: bind.reason });
+      sendFrameError(ws, bind.reason, frame);
       ws.close();
       return undefined;
     }
     const check = checkJoinToken(this.store, frame.token);
     if (!check.ok) {
-      send(ws, { type: "error", error: check.reason });
+      sendFrameError(ws, check.reason, frame);
       ws.close();
       return undefined;
     }
@@ -871,12 +892,155 @@ export class Relay {
    * "no such file" is the answer for an artifact in somebody else's room as well
    * as for an invented id, so an id cannot be probed.
    */
-  private artifactFor(userId: ID, artifactId: ID): Artifact {
+  private artifactFor(userId: ID, artifactId: ID): StoredArtifact {
     const artifact = this.store.artifact(artifactId);
     if (!artifact) throw new Error("no such file");
-    try { this.channelFor(userId, artifact.channelId); }
-    catch { throw new Error("no such file"); }
+    try {
+      this.channelFor(userId, artifact.channelId);
+      if (!this.store.artifactAccessAllows(artifact.id, userId)) throw new Error("hidden");
+    } catch { throw new Error("no such file"); }
     return artifact;
+  }
+
+  /**
+   * Typed links as this person may safely draw them.
+   *
+   * Outgoing links stay visible when their exact target is gone or hidden, but
+   * carry no target id and no name — only `hidden:true`, which becomes the plain
+   * "A linked file isn't available" sentence. Incoming links are omitted unless
+   * their source exact version and chain are both readable, so a hidden source
+   * cannot be probed by opening its target.
+   */
+  private artifactRelations(
+    userId: ID, artifact: StoredArtifact,
+  ): { relations: ArtifactRelationView[]; truncated: boolean } {
+    const page = this.store.artifactRelationsForDetail(
+      artifact.id, userId, ARTIFACT_LIMITS.relationDetail,
+    );
+    const out: ArtifactRelationView[] = [];
+    const cache = new Map<ID, StoredArtifact | null>();
+    const readable = (artifactId: ID): StoredArtifact | undefined => {
+      if (cache.has(artifactId)) return cache.get(artifactId) ?? undefined;
+      try {
+        const found = this.artifactFor(userId, artifactId);
+        cache.set(artifactId, found);
+        return found;
+      } catch {
+        cache.set(artifactId, null);
+        return undefined;
+      }
+    };
+
+    for (const link of page.items) {
+      const from = { artifactId: link.sourceArtifactId, version: link.sourceVersion };
+      if (link.direction === "outgoing") {
+        const exact = this.store.artifactVersionNumber(link.targetArtifactId, link.targetVersion);
+        const target = exact ? readable(link.targetArtifactId) : undefined;
+        if (!exact || !target) {
+          out.push({ kind: link.kind, direction: "outgoing", from, hidden: true });
+        } else {
+          out.push({
+            kind: link.kind, direction: "outgoing", from,
+            to: { artifactId: link.targetArtifactId, version: link.targetVersion },
+            linkedName: target.name, hidden: false,
+          });
+        }
+        continue;
+      }
+
+      // The store query already filtered hidden/unretained incoming sources.
+      // Re-check through the ordinary gate before naming it on the wire.
+      const source = readable(link.sourceArtifactId);
+      if (!source) continue;
+      out.push({
+        kind: link.kind, direction: "incoming", from,
+        to: { artifactId: link.targetArtifactId, version: link.targetVersion },
+        linkedName: source.name, hidden: false,
+      });
+    }
+    return { relations: out, truncated: page.truncated };
+  }
+
+  private artifactFrame(
+    userId: ID, artifactId: ID, requestId?: ID,
+  ): Extract<ServerFrame, { type: "artifact" }> {
+    const stored = this.artifactFor(userId, artifactId);
+    const { relations, truncated } = this.artifactRelations(userId, stored);
+    return {
+      type: "artifact", artifact: artifactForPublic(stored), relations,
+      ...(requestId !== undefined ? { requestId } : {}),
+      ...(truncated ? { relationsTruncated: true as const } : {}),
+    };
+  }
+
+  /** One viewer's complete public value, or null when the chain is invisible. */
+  private artifactProjection(userId: ID, artifactId: ID): ArtifactProjection | null {
+    try {
+      const frame = this.artifactFrame(userId, artifactId);
+      return { frame, fingerprint: JSON.stringify(frame) };
+    } catch { return null; }
+  }
+
+  /**
+   * Capture every current room viewer, including null for restricted chains.
+   * Null is essential: null→null means an invisible event and MUST emit nothing.
+   */
+  private snapshotArtifactProjections(artifactIds: Iterable<ID>): ArtifactProjectionSnapshot {
+    const snapshot: ArtifactProjectionSnapshot = new Map();
+    for (const artifactId of new Set(artifactIds)) {
+      const row = this.store.artifactRow(artifactId);
+      const channel = row ? this.store.channel(row.channelId) : undefined;
+      if (!row || !channel) continue;
+      const byUser = new Map<ID, ArtifactProjection | null>();
+      for (const userId of this.audienceFor(channel)) {
+        byUser.set(userId, this.artifactProjection(userId, artifactId));
+      }
+      snapshot.set(artifactId, byUser);
+    }
+    return snapshot;
+  }
+
+  /**
+   * THE ONE OWNER OF UNSOLICITED ARTIFACT PUSHES.
+   *
+   * Compare complete public values before and after. Equal fingerprints send
+   * nothing — no unchanged frame and no timing hint. A visible change sends the
+   * fresh frame (including explicit empty relations); visible→hidden sends one
+   * unavailable frame; hidden→hidden is silent.
+   */
+  private pushArtifactProjectionDiff(
+    before: ArtifactProjectionSnapshot, artifactIds: Iterable<ID>, omit?: Conn,
+  ): void {
+    const ids = new Set<ID>([...before.keys(), ...artifactIds]);
+    const after = this.snapshotArtifactProjections(ids);
+    for (const artifactId of ids) {
+      const beforeUsers = before.get(artifactId) ?? new Map<ID, ArtifactProjection | null>();
+      const afterUsers = after.get(artifactId) ?? new Map<ID, ArtifactProjection | null>();
+      const users = new Set<ID>([...beforeUsers.keys(), ...afterUsers.keys()]);
+      for (const userId of users) {
+        const was = beforeUsers.get(userId) ?? null;
+        const now = afterUsers.get(userId) ?? null;
+        if (was?.fingerprint === now?.fingerprint) continue;
+        const frame: ServerFrame | undefined = now
+          ? now.frame
+          : was ? { type: "artifactUnavailable", artifactId } : undefined;
+        if (!frame) continue;
+        for (const target of this.conns) {
+          if (target.userId === userId && target !== omit) send(target.ws, frame);
+        }
+      }
+    }
+  }
+
+  private artifactIdsInChannel(channelId: ID): ID[] {
+    return this.store.artifactsIn(channelId, ARTIFACT_LIMITS.perChannel).map(a => a.id);
+  }
+
+  /** A run may be named on a version only when agent and source room both match. */
+  private runOf(agentId: ID, channelId: ID, runId: unknown): RunRow | undefined {
+    if (typeof runId !== "string" || !isSafeStoredId(runId)) return undefined;
+    const run = this.store.run(runId);
+    return run && run.agentId === agentId && run.channelId === channelId ? run : undefined;
   }
 
   /**
@@ -955,7 +1119,9 @@ export class Relay {
    * Nothing here trusts the ticket for permission — it returns the channel, and
    * the caller asks `channelFor` about it, now, on stored state.
    */
-  private ticketFile(target: TicketTarget): { channelId: ID; name: string; storedAs: string; dir: string } | undefined {
+  private ticketFile(target: TicketTarget): {
+    channelId: ID; name: string; storedAs: string; dir: string; artifactId?: ID;
+  } | undefined {
     if (target.kind === "attachment") {
       const row = this.store.attachment(target.id);
       if (!row) return undefined;
@@ -972,7 +1138,7 @@ export class Relay {
     const artifact = this.store.artifactRow(row.artifactId);
     if (!artifact) return undefined;
     return {
-      channelId: row.channelId, name: artifact.name,
+      channelId: row.channelId, name: artifact.name, artifactId: target.artifactId,
       storedAs: row.version.storedAs, dir: this.store.artifactsDir,
     };
   }
@@ -1004,8 +1170,13 @@ export class Relay {
 
     const file = this.ticketFile(held.target);
     if (!file) { nope(); return; }
-    // THE SAME GATE, ASKED AGAIN, NOW. Not a copy of it — the function itself.
-    try { this.channelFor(held.userId, file.channelId); } catch { nope(); return; }
+    // THE SAME GATE, ASKED AGAIN, NOW. Artifact tickets re-check both current
+    // room membership AND the chain's narrower permission; attachment tickets
+    // keep the room gate they have always used.
+    try {
+      if (file.artifactId) this.artifactFor(held.userId, file.artifactId);
+      else this.channelFor(held.userId, file.channelId);
+    } catch { nope(); return; }
 
     // The name was checked by `isSafeFileName` before it was stored. It is
     // checked again on the way out, because a row could have been written by an
@@ -1224,6 +1395,8 @@ export class Relay {
         const ch = this.adminChannel(conn.userId, frame.channelId);
         if (ch.archivedAt) throw new Error("that conversation is archived — nobody new can be added to it");
 
+        const artifactIds = this.artifactIdsInChannel(ch.id);
+        const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         const live = new Set(this.store.channel(ch.id)!.memberIds);
         for (const memberId of new Set(frame.memberIds)) {
           // AN AGENT CARRIES ITS OWNER IN WITH IT — the same rule creating a
@@ -1232,6 +1405,7 @@ export class Relay {
           this.store.addChannelMember(ch.id, memberId, { role: "member", invitedBy: conn.userId });
           live.add(memberId);
         }
+        this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.audit(conn, "member_added", ch.id, `added ${frame.memberIds.length} member(s) to ${ch.name}`);
         this.broadcastChannel(this.store.channel(ch.id)!);
         break;
@@ -1299,7 +1473,10 @@ export class Relay {
         const listed = this.browsableChannels(conn.userId).some(c => c.id === frame.channelId);
         if (!listed) throw new Error("no such channel");
         const ch = this.store.channel(frame.channelId)!;
+        const artifactIds = this.artifactIdsInChannel(ch.id);
+        const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         this.store.addChannelMember(ch.id, conn.userId, { role: "member" });
+        this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.audit(conn, "member_added", ch.id, `joined ${ch.name}`);
         // everyone in the room, including the new arrival, learns the new
         // member list; the newcomer then asks for scrollback the ordinary way
@@ -1310,9 +1487,12 @@ export class Relay {
         const ch = this.channelFor(conn.userId, frame.channelId);
         if (ch.kind === "dm") throw new Error("you can't leave a direct conversation");
         if (!this.store.memberRole(ch.id, conn.userId)) throw new Error("you're not in that conversation");
+        const artifactIds = this.artifactIdsInChannel(ch.id);
+        const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         this.store.removeChannelMember(ch.id, conn.userId, conn.userId);
         this.audit(conn, "member_removed", ch.id, `left ${ch.name}`);
         this.tellLeft(conn.userId, ch.id);
+        this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.broadcastChannel(this.store.channel(ch.id)!);
         break;
       }
@@ -1324,11 +1504,14 @@ export class Relay {
         if (role === "owner" && this.store.memberRole(ch.id, conn.userId) !== "owner") {
           throw new Error("only the person who runs this conversation can do that");
         }
+        const artifactIds = this.artifactIdsInChannel(ch.id);
+        const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         this.store.removeChannelMember(ch.id, frame.memberId, conn.userId);
         this.audit(conn, "member_removed", ch.id, `removed someone from ${ch.name}`);
         // an agent's place in a room belongs to its owner's screen
         const agent = this.store.agents().find(a => a.id === frame.memberId);
         this.tellLeft(agent ? agent.ownerId : frame.memberId, ch.id);
+        this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.broadcastChannel(this.store.channel(ch.id)!);
         break;
       }
@@ -1345,7 +1528,10 @@ export class Relay {
         if (frame.memberId === conn.userId && frame.role !== "owner") {
           throw new Error("give this conversation to someone else before standing down");
         }
+        const artifactIds = this.artifactIdsInChannel(ch.id);
+        const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         this.store.setMemberRole(ch.id, frame.memberId, frame.role as ChannelRole);
+        this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.audit(conn, "member_role_changed", ch.id, `changed a role in ${ch.name}`);
         this.broadcastChannel(this.store.channel(ch.id)!);
         break;
@@ -1462,11 +1648,20 @@ export class Relay {
         const target = this.store.user(frame.userId);
         if (!target) throw new Error("no such person");
         const theirAgents = this.store.agents().filter(a => a.ownerId === target.id);
+        const affectedArtifacts = this.store.channels()
+          .filter(ch => ch.memberIds.includes(target.id))
+          .map(ch => {
+            const ids = this.artifactIdsInChannel(ch.id);
+            return { ids, before: this.snapshotArtifactProjections(ids) };
+          });
         this.store.removeUser(target.id);
         this.audit(conn, "agent_deleted", target.id, `removed ${target.name} from this Cloud9`);
         for (const a of theirAgents) {
           delete this.agentStatus[a.id];
           this.broadcast({ type: "agentDeleted", agentId: a.id });
+        }
+        for (const affected of affectedArtifacts) {
+          this.pushArtifactProjectionDiff(affected.before, affected.ids);
         }
         for (const c of this.store.channels()) this.broadcastChannel(c);
         this.broadcast({ type: "userRemoved", userId: target.id });
@@ -2242,92 +2437,155 @@ export class Relay {
       }
       // ---- files an AGENT made (docs/plans/artifact-store-handoff.md) ----
       case "publishArtifact": {
-        // ENGINE ONLY, the same law as `runRecorded` and `agentSend`: a desktop
-        // client able to send this could put a file into a conversation wearing
-        // an agent's name, and the whole value of the store is that the
-        // attribution on a version is TRUE.
+        // ENGINE ONLY: a screen cannot put bytes into a room wearing an agent's
+        // name. Agent and room are both read from stored state.
         if (conn.client !== "engine") {
           throw new Error("only your own agent engine can share a file an agent made");
         }
-        const agent = this.myAgent(conn.userId, frame.agentId); // never from the frame
+        const agent = this.myAgent(conn.userId, frame.agentId);
         const channel = this.writableChannel(conn.userId, frame.channelId);
         let bytes: Buffer;
         try { bytes = Buffer.from(String(frame.dataBase64 ?? ""), "base64"); }
         catch { throw new Error("that file didn't arrive properly"); }
-        // ONE OWNER for the name rule and the size rule — `validateArtifact`
-        // reaches `isSafeFileName` and `ARTIFACT_LIMITS`, and the sentence a
-        // refused file gets is written there, in plain words, beside the number.
         const bad = validateArtifact(frame.name, bytes.length);
         if (bad) throw new Error(bad);
         if (this.store.artifactPublishesSince(agent.id, Date.now() - 60_000)
           >= ARTIFACT_LIMITS.publishesPerMinute) {
           throw new Error(
             `${agent.name} is sharing files faster than anyone can read them — ` +
-            `it has to wait a minute`);
+            "it has to wait a minute");
         }
-        // The per-conversation ceiling is asked about a NEW name only: a new
-        // version of a file that is already here adds no row to count, and
-        // refusing an update because the room is full would leave the newest
-        // version of his report permanently unreachable.
+
+        let links: ArtifactLink[] = [];
+        if (frame.links !== undefined) {
+          const linksBad = validateArtifactLinks(frame.links);
+          if (linksBad) throw new Error(linksBad);
+          links = normaliseArtifactLinks(frame.links);
+        }
+        // Shape came from shared's validator; stored state proves every target is
+        // the exact retained version, in this same source room, and readable to
+        // the publisher. Missing and hidden get the same refusal.
+        for (const link of links) {
+          let target: StoredArtifact;
+          try { target = this.artifactFor(conn.userId, link.target.artifactId); }
+          catch { throw new Error("a linked file version is not available in this conversation"); }
+          if (target.channelId !== channel.id || !versionOf(target, link.target.version)) {
+            throw new Error("a linked file version is not available in this conversation");
+          }
+        }
+
         const already = this.store.artifactRowByName(channel.id, frame.name);
+        if (already) this.artifactFor(conn.userId, already.id);
         if (!already && this.store.artifactCountIn(channel.id) >= ARTIFACT_LIMITS.perChannel) {
           throw new Error(
             `this conversation already holds ${ARTIFACT_LIMITS.perChannel} shared files — ` +
-            `the oldest have to be cleared before another can be added`);
+            "the oldest have to be cleared before another can be added");
         }
+
+        const beforeRelations = already
+          ? this.store.artifactRelationNeighbors(already.id)
+          : [];
+        const beforeArtifactIds = [
+          ...(already ? [already.id] : []),
+          ...beforeRelations,
+          ...links.map(link => link.target.artifactId),
+        ];
+        const beforeArtifacts = this.snapshotArtifactProjections(beforeArtifactIds);
         const now = Date.now();
-        const row = this.store.claimArtifactVersion({ channelId: channel.id, name: frame.name, at: now });
-        const version = row.nextVersion - 1;
         const versionId = newId("av");
-        // Bytes FIRST, and this throws if they did not land — a row that
-        // promises a version whose file is not there is the truncated-PDF class.
-        const storedAs = this.store.writeArtifactBytes(versionId, frame.name, bytes);
-        const stored: ArtifactVersion = {
-          id: versionId, version, size: bytes.length,
-          // COMPUTED HERE, from the bytes: the sha and "is it text" are facts
-          // about what was stored, never claims from the producer.
+        // Bytes land under a publish-only stage. The append transaction promotes
+        // them while owning the same DB lock startup cleanup needs.
+        const stage = this.store.writeArtifactBytes(versionId, frame.name, bytes);
+        const run = this.runOf(agent.id, channel.id, frame.runId);
+        const stored: Omit<StoredArtifactVersion, "version"> = {
+          id: versionId, size: bytes.length,
           sha256: createHash("sha256").update(bytes).digest("hex"),
-          text: looksLikeText(bytes),
-          storedAs,
+          text: looksLikeText(bytes), storedAs: stage.storedAs,
           agentId: agent.id, agentName: agent.name, ownerId: agent.ownerId,
-          ...(typeof frame.runId === "string" && isSafeStoredId(frame.runId)
-            ? { runId: frame.runId } : {}),
+          ...(run ? { runId: run.record.id } : {}),
           ...(this.taskOf(agent.id, frame.taskId) ? { taskId: frame.taskId as ID } : {}),
           ...(typeof frame.note === "string" && frame.note.trim()
             ? { note: frame.note.trim().slice(0, ARTIFACT_LIMITS.note) } : {}),
+          ...(links.length > 0 ? { links } : {}),
           producedAt: now,
         };
-        this.store.saveArtifactVersion(row.id, channel.id, stored);
-        this.store.pruneArtifactVersions(row.id, ARTIFACT_LIMITS.versions);
-        const artifact = this.store.artifact(row.id)!;
+        let artifact = this.store.appendArtifactVersion({
+          channelId: channel.id, name: frame.name, at: now, version: stored, stage,
+        });
+        const afterAppendRelations = this.store.artifactRelationNeighbors(artifact.id);
+        this.store.pruneArtifactVersions(artifact.id, ARTIFACT_LIMITS.versions);
+        artifact = this.store.artifact(artifact.id)!;
+        const version = latestVersion(artifact)!.version;
         this.store.logActivity({
           actorKind: "agent", actorId: agent.id, actorName: agent.name,
           kind: "message", refId: artifact.id,
           detail: `shared ${artifact.name} (version ${version}) in channel ${channel.id}`,
         });
-        // EVERYONE IN THE ROOM, not just the owner: a file an agent made is the
-        // conversation's, which is the entire point of the store.
-        this.toChannel(channel, { type: "artifact", artifact });
+        this.pushArtifactProjectionDiff(beforeArtifacts, [
+          artifact.id, ...beforeRelations, ...afterAppendRelations,
+        ]);
         break;
       }
       case "artifacts": {
         const channel = this.channelFor(conn.userId, frame.channelId);
         send(conn.ws, {
           type: "artifacts", channelId: channel.id,
-          artifacts: this.store.artifactsIn(channel.id, ARTIFACT_LIMITS.listPage),
+          artifacts: this.store.artifactsInFor(conn.userId, channel.id, ARTIFACT_LIMITS.listPage)
+            .map(artifactForPublic),
+        });
+        break;
+      }
+      case "artifactWorkspace": {
+        const page = this.store.artifactWorkspace(
+          conn.userId,
+          this.visibleChannels(conn.userId),
+          { before: frame.before, beforeId: frame.beforeId },
+          frame.limit ?? ARTIFACT_LIMITS.workspaceDefault,
+        );
+        send(conn.ws, {
+          type: "artifactWorkspace", artifacts: page.items, hasMore: page.hasMore,
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+          ...(page.nextBefore !== undefined ? { nextBefore: page.nextBefore } : {}),
+          ...(page.nextBeforeId !== undefined ? { nextBeforeId: page.nextBeforeId } : {}),
         });
         break;
       }
       case "artifact": {
-        send(conn.ws, { type: "artifact", artifact: this.artifactFor(conn.userId, frame.artifactId) });
+        send(conn.ws, this.artifactFrame(conn.userId, frame.artifactId, frame.requestId));
+        break;
+      }
+      case "setArtifactAccess": {
+        const artifact = this.artifactFor(conn.userId, frame.artifactId);
+        const visible = this.channelFor(conn.userId, artifact.channelId);
+        if (visible.kind === "dm") {
+          throw new Error("files in a direct conversation always inherit that conversation's access");
+        }
+        const channel = this.adminChannel(conn.userId, artifact.channelId);
+        const badAccess = validateArtifactAccessMutation(frame.access);
+        if (badAccess) throw new Error(badAccess);
+        const access = normaliseArtifactAccess(frame.access);
+        if (access.kind === "restricted") {
+          for (const userId of access.userIds) {
+            if (!this.store.user(userId) || !channel.memberIds.includes(userId)) {
+              throw new Error("file access can only include current people in this conversation");
+            }
+          }
+        }
+
+        const relatedArtifacts = this.store.artifactRelationNeighbors(artifact.id);
+        const affectedArtifacts = [artifact.id, ...relatedArtifacts];
+        const beforeArtifacts = this.snapshotArtifactProjections(affectedArtifacts);
+        this.store.setArtifactAccess(artifact.id, access);
+        // One direct success receipt for this socket. Other machines and related
+        // caches travel through the no-request-id projection diff below.
+        send(conn.ws, this.artifactFrame(conn.userId, artifact.id, frame.requestId));
+        this.pushArtifactProjectionDiff(beforeArtifacts, affectedArtifacts, conn);
         break;
       }
       case "artifactTicket": {
         const artifact = this.artifactFor(conn.userId, frame.artifactId);
-        // Absent version means the newest, which is what a card drawn from a
-        // reference in a message asks for. A named version that is no longer
-        // here (pruned) is NOT quietly answered with the newest one — that would
-        // hand him different bytes than the ones he asked for and say nothing.
+        // Absent version means the newest. A named version that retention has
+        // removed is never swapped for a newer set of bytes.
         const wanted = frame.version === undefined
           ? latestVersion(artifact)
           : versionOf(artifact, frame.version);
@@ -2338,10 +2596,11 @@ export class Relay {
               `the newest is version ${latestVersion(artifact)!.version}`);
         }
         const { ticket, expiresAt } = this.mintTicket(
-          conn.userId, { kind: "artifact", id: wanted.id });
+          conn.userId, { kind: "artifact", id: wanted.id, artifactId: artifact.id });
         send(conn.ws, {
           type: "artifactTicket", artifactId: artifact.id, version: wanted.version,
-          ticket, url: ATTACHMENT_TICKET.path + ticket, expiresAt, artifact,
+          ticket, url: ATTACHMENT_TICKET.path + ticket, expiresAt,
+          artifact: artifactForPublic(artifact),
         });
         break;
       }
@@ -2880,6 +3139,35 @@ export function attachmentCors(req: http.IncomingMessage): Record<string, string
     // braces of `cache-control: no-store`.
     "vary": "Origin",
   };
+}
+
+/** A parsed JSON value is only a frame envelope when `type` is its own string field. */
+function hasOwnStringType(value: unknown): value is Record<string, unknown> & { type: string } {
+  return value !== null
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.prototype.hasOwnProperty.call(value, "type")
+    && typeof (value as Record<string, unknown>).type === "string";
+}
+
+/** Read correlation only from a validated own field; prototypes and primitives carry none. */
+function safeFrameRequestId(value: unknown): ID | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)
+    || !Object.prototype.hasOwnProperty.call(value, "requestId")) return undefined;
+  const requestId = (value as Record<string, unknown>).requestId;
+  return typeof requestId === "string" && isSafeStoredId(requestId) ? requestId : undefined;
+}
+
+/**
+ * One request-correlation rule for every direct refusal, including frames that
+ * fail before authentication. No safely inspected field means no id is echoed.
+ */
+function sendFrameError(ws: WebSocket, error: string, frame?: unknown): void {
+  const requestId = safeFrameRequestId(frame);
+  send(ws, {
+    type: "error", error,
+    ...(requestId !== undefined ? { requestId } : {}),
+  });
 }
 
 function send(ws: WebSocket, frame: ServerFrame): void {

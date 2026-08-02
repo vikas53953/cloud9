@@ -83,3 +83,17 @@ answers) security fixes.
 
 Open questions: none. Subscription-auth verdict: third-party claude.ai login NOT permitted; shipping API-key + setup-token options (see implementation-notes).
 Deviations: see implementation-notes.md
+
+## Sol feature queue — active 2026-08-02
+
+Current owner: Sol. Active plan: `HANDOFF-SOL.md`. Vikas authorised fully autonomous execution through the queue; product defaults are chosen and recorded as “I chose X — Vikas may overrule,” never left silent.
+
+| Feature | Status | Evidence / artifact |
+|---|---|---|
+| 1. Shared Files workspace | IN PROGRESS | `docs/plans/sol-feature1-brief.md`; decision page `docs/gates/sol-feature1-permissions.html`; status in `SOL-REPORT.md` |
+| 2. GitHub round 2 | WAITING FOR FEEDBACK; skip if none | `SOL-REPORT.md` |
+| 3. Search everywhere | NOT STARTED | `HANDOFF-SOL.md` |
+| 4. Turn coordination | NOT STARTED | `HANDOFF-SOL.md` |
+| 5. Notifications, integrations, mobile groundwork | NOT STARTED | `HANDOFF-SOL.md` |
+
+Fresh baseline at `e738083`: build clean; 1,002 passed, 0 failed; QA 494/494 + 8/8 + 4/4. Full logs: `docs/qa/sol-baseline-*.log`.
