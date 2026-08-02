@@ -98,6 +98,32 @@ widths are untested. Vikas's own step, whenever he chooses: the Tailscale
 browser sign-in (`docs/plans/tailscale-steps.md`) that makes friends-over-
 internet real.
 
+## Cost caps (feature 1 consumed a whole weekly quota — 2026-08-03; these are law)
+
+Feature 1's spend went to unbounded review loops, gold-plated test tooling and
+oversized scope. The quality was real; the price was not necessary. Caps:
+
+1. **Two review rounds per slice, hard cap.** Round 1 returns the complete
+   findings list. Round 2 verifies fixes ONLY — anything NEW found in round 2
+   is logged as a follow-up in the ledger, not fixed now, unless it is a
+   genuine security or data-loss Critical. There is no round 3.
+2. **One reviewer per slice, judging a scoped diff package** — never the repo.
+3. **Test tooling gets one build + one RED/GREEN proof, then stops.** No
+   security reviews of test scripts, no probe redesign loops. If harness code
+   fights back twice, log it as follow-up and move on — the product's own
+   suites are the safety net.
+4. **Slice features to shippable-in-one-session value.** Feature 3 = "one
+   search box that finds things across chat and files" FIRST; filters,
+   ranking and polish are a later slice. When in doubt, ship the smaller
+   visible thing and iterate.
+5. **Cheap agents for mechanical work, one premium agent only where the
+   design is genuinely hard.** Diagnosis pairs (two parallel diagnosers) are
+   reserved for a bug that has already survived two fix attempts.
+6. **Budget check every ~10 agent runs**: if the feature has consumed what
+   feels like a quarter of a weekly quota and is not near its evidence chain,
+   STOP, park on the branch, write SOL-REPORT.md, and end the session small
+   rather than big.
+
 ## Context economy (a Sol session already died of a full context window — 2026-08-02)
 
 Your model holds less conversation than this plan assumes. Structure around it:
