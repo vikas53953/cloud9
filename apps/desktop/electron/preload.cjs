@@ -30,6 +30,15 @@ contextBridge.exposeInMainWorld("cloud9", {
   openAgentFolder: () => ipcRenderer.invoke("cloud9:openAgentFolder"),
 
   /**
+   * Ask the OWNER which folder a project's code is in, using the operating
+   * system's own picker. The renderer never touches the filesystem: it gets
+   * back `{ ok: true, path }` for the one folder the owner chose,
+   * `{ ok: false, cancelled: true }` when they closed it, or
+   * `{ ok: false, error }` with a sentence it may print.
+   */
+  chooseFolder: current => ipcRenderer.invoke("cloud9:chooseFolder", current),
+
+  /**
    * The computer-wide quick-chat hotkey. OFF by default, because a global
    * shortcut takes that key away from every other program on the machine.
    * `get` → { enabled, key, defaultKey, active }, `set(enabled, key)` → same,

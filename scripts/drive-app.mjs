@@ -127,6 +127,15 @@ const EXPECTED_CHECKS = [
      the INSTALLED app: is the card there, does it claim one honest state, and
      does it say when it actually looked. */
   "Settings shows the GitHub card with an honest, dated state",
+  /* 2026-08-02, his ask: connecting a project should show HIS repositories to
+     click, like Slack or Buzz — not make him type owner/name from memory.
+     This asks the INSTALLED app, against real gh: does the panel really list
+     them, dated, and does clicking one connect it. */
+  "the connect panel lists his own repositories, and clicking one connects it",
+  /* Same ask, the deeper half: a project can name the folder on this computer
+     where its code lives, so agents can really work on it. The honest empty
+     state matters as much as the linked one. */
+  "a project shows where its code lives on this computer, or honestly says nowhere yet",
 ];
 
 /* ---------------------------------------------------------------- results */
@@ -848,7 +857,7 @@ async function walk(page) {
    */
   const PROJECT_GROUP = [
     EXPECTED_CHECKS[10], EXPECTED_CHECKS[11], EXPECTED_CHECKS[12], EXPECTED_CHECKS[13],
-    EXPECTED_CHECKS[14],
+    EXPECTED_CHECKS[14], EXPECTED_CHECKS[19], EXPECTED_CHECKS[20],
   ];
   const DRIVE_REPO = "vikas53953/cloud9";
 
@@ -865,6 +874,45 @@ async function walk(page) {
       return "Projects opens with a way in";
     });
 
+    /* His repositories, really listed, and click-to-connect — asked BEFORE the
+       typed-field check so the picker is what actually connects on a fresh run,
+       with typing kept as the proven fallback. */
+    await check(EXPECTED_CHECKS[19], async () => {
+      if (await page.locator(".connectproj").count() === 0) {
+        await page.click(".projects .topbar [data-connect]");
+      }
+      await page.waitForSelector(".connectproj .repopick", { timeout: 20000 });
+      const pick = page.locator(".connectproj .repopick");
+      await until("the repository list to settle", async () => {
+        const s = await pick.getAttribute("data-repolist");
+        return s !== "asking" && s !== "unasked";
+      }, { timeout: 90000 });
+      const state = await pick.getAttribute("data-repolist");
+      if (state === "problem") {
+        const why = await pick.locator(".problemtext").innerText().catch(() => "(no reason shown)");
+        throw new Error(`the panel could not ask GitHub: ${why}`);
+      }
+      if (state === "none") {
+        throw new Error("GitHub answered 'no repositories' — on this machine that is false, " +
+          "the signed-in account owns dozens");
+      }
+      const rows = await pick.locator(".repochoice").count();
+      const dated = await pick.locator("[data-repolist-when]").count();
+      if (dated === 0) {
+        throw new Error(`${rows} repositories listed without saying when GitHub was asked — ` +
+          "the past in the present tense");
+      }
+      if (!OPTS.fresh) return `${rows} repositories listed, dated — not clicked, this is your real data`;
+      const mine = pick.locator(`.repochoice[data-repo-choice="${DRIVE_REPO}"]`);
+      if (await mine.count() === 0) {
+        return `${rows} repositories listed, dated — ${DRIVE_REPO} not among them, ` +
+          "the typed fallback (next check) connects it instead";
+      }
+      await mine.click();
+      await page.waitForSelector(`.proj-list .side-item[data-repo="${DRIVE_REPO}"]`, { timeout: 30000 });
+      return `${rows} repositories listed, dated, and clicking ${DRIVE_REPO} connected it`;
+    });
+
     await check(EXPECTED_CHECKS[11], async () => {
       const already = await page.locator(`.proj-list .side-item[data-repo="${DRIVE_REPO}"]`).count();
       if (already === 0) {
@@ -876,7 +924,9 @@ async function walk(page) {
           }
           return `already connected: ${have.join(", ")}`;
         }
-        await page.click(".projects .topbar [data-connect]");
+        if (await page.locator(".connectproj").count() === 0) {
+          await page.click(".projects .topbar [data-connect]");
+        }
         await page.waitForSelector(".connectproj #f-repo", { timeout: 20000 });
         await page.fill(".connectproj #f-repo", DRIVE_REPO);
         await page.click('.connectproj button:has-text("Connect")');
@@ -901,6 +951,29 @@ async function walk(page) {
           `All that is offered: ${seen.tabs.join(" / ") || "(nothing)"}`);
       }
       return `${seen.repo} · ${seen.tabs.join(" / ")}`;
+    });
+
+    await check(EXPECTED_CHECKS[20], async () => {
+      const row = page.locator(".projdetail .pd-folder");
+      if (await row.count() === 0) {
+        throw new Error("NOT ON SCREEN — nothing on the project says where its code lives " +
+          "on this computer, so an agent can never be told");
+      }
+      const state = await row.getAttribute("data-folder-state");
+      if (state === "linked") {
+        const where = (await row.locator(".folderpath").innerText().catch(() => "")).trim();
+        if (!where) throw new Error('the row claims "linked" but shows no folder');
+        return `linked to ${where}`;
+      }
+      if (state !== "none") {
+        throw new Error(`the folder row claims a state the app never defined: "${state}"`);
+      }
+      const wayIn = await row.locator("[data-folder-choose], #f-folder").count();
+      if (wayIn === 0) {
+        throw new Error("says the code lives nowhere yet, but offers no way to choose a folder — " +
+          "a state he can never leave");
+      }
+      return "honestly says nowhere yet, with a Choose-folder way in";
     });
 
     /* ABSENT MEANS ABSENT — rule 8, on the one screen most tempted to break it.

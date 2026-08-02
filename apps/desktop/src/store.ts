@@ -4,8 +4,9 @@ import {
   Attachment, ATTACHMENT_LIMITS, Channel,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   MemoryNote,
-  Project, ProjectItem, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, UnreadEntry, User,
-  validateAttachment, validateProjectText, validateRepo,
+  Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
+  UnreadEntry, User,
+  validateAttachment, validateLocalFolder, validateProjectText, validateRepo,
   // Joining a friend's Cloud9 — the address, the address book, the connection
   // lifecycle. All three are the shared modules the handoff says to build ON,
   // never reimplement (docs/plans/join-hub-handoff.md).
@@ -229,6 +230,23 @@ export interface World {
    */
   projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
   /**
+   * THE REPOSITORIES HIS OWN GITHUB SIGN-IN CAN SEE — the picker's list.
+   *
+   * Four states, and they are four different sentences on screen, never one:
+   * nobody has asked (`asked: false`), we are asking (`asking`), GitHub
+   * answered (`repos`, possibly empty — he really has none), and we could not
+   * ask (`problem`). An empty list and a failed ask must never look alike:
+   * "you have no repositories" is a claim, and we only make it when GitHub
+   * really said so.
+   *
+   * `fetchedAt` is the hub's stamp, so the list can say WHEN it is from. A list
+   * with no time on it is a list pretending to be current.
+   */
+  repoChoices: {
+    asked: boolean; asking: boolean;
+    repos?: RepoChoice[]; problem?: string; fetchedAt?: number;
+  };
+  /**
    * FILES AGENTS MADE, by artifact id.
    *
    * Keyed by the artifact's own id and nothing else, for the same reason runs
@@ -396,6 +414,7 @@ export class RelayClient {
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
     projects: { asked: false, list: [] }, projectItems: {},
+    repoChoices: { asked: false, asking: false },
     artifacts: {}, artifactsGone: {}, channelArtifacts: {},
     memory: {},
     hubs: [], activeHubId: "self", hubConn: { phase: "idle", line: "" },
@@ -1268,6 +1287,54 @@ export class RelayClient {
       onRefused)) return;
     const sent = this.ask({ type: "connectProject", repo, ...extra }, {
       answers: f => f.type === "project",
+      refused: why => onRefused?.(why),
+      lost: () => onRefused?.("the hub did not answer — is it still running?"),
+    });
+    if (!sent) onRefused?.("not connected to the hub yet");
+  }
+
+  /**
+   * ASK FOR HIS OWN REPOSITORIES — the picker's one way in.
+   *
+   * This app still never reaches GitHub. It asks the hub, the hub asks the copy
+   * of Cloud9 on the computer that holds the GitHub sign-in, and `gh repo list`
+   * runs there. Everything comes back on the `repositories` frame, so there is
+   * nothing to apply here beyond saying we are asking.
+   *
+   * A refusal or a silence both leave `asking` false and `asked` true: we asked
+   * and got nothing, which the panel says in words — the typed field below it
+   * keeps working either way, which is the whole point of keeping it.
+   */
+  askRepositories(): void {
+    this.world.repoChoices = { ...this.world.repoChoices, asked: true, asking: true };
+    const settle = (problem: string): void => {
+      this.world.repoChoices = { asked: true, asking: false, problem };
+      this.emit();
+    };
+    const sent = this.ask({ type: "listRepositories" }, {
+      answers: f => f.type === "repositories",
+      // applied in `apply`, because a `repositories` frame reaches every window
+      // this person has open, not only the one that asked
+      answered: () => { /* see apply() */ },
+      refused: why => settle(why),
+      lost: () => settle("the hub did not answer — is it still running?"),
+    });
+    if (!sent) settle("not connected to the hub yet");
+    else this.emit();
+  }
+
+  /**
+   * SAY WHERE THIS PROJECT'S CODE LIVES on this computer. `""` unlinks it.
+   *
+   * The path is checked HERE as well as at the hub — the same function, so
+   * there is one rule — because the answer he needs is in the panel he is
+   * looking at, not only in the toast above it.
+   */
+  setProjectFolder(projectId: ID, folder: string, onRefused?: (why: string) => void): void {
+    const path = folder.trim();
+    if (path && this.refused(validateLocalFolder(path), onRefused)) return;
+    const sent = this.ask({ type: "setProjectFolder", projectId, path }, {
+      answers: f => f.type === "project" && f.project.id === projectId,
       refused: why => onRefused?.(why),
       lost: () => onRefused?.("the hub did not answer — is it still running?"),
     });
@@ -2234,6 +2301,30 @@ export class RelayClient {
       // has the GitHub sign-in, not to a window. What comes back arrives as an
       // ordinary `project` and `projectItems` frame, handled above.
       case "lookAtProject":
+        break;
+      // ENGINE-ONLY ORDER, dropped for the same reason: "list the repositories
+      // this sign-in can see" is addressed to the computer with the GitHub
+      // sign-in. The answer arrives as `repositories`, below.
+      case "listRepositoriesRequested":
+        break;
+      /* HIS REPOSITORIES, as the computer with the sign-in really found them.
+         Applied here rather than by whoever asked, because it reaches every
+         window this person has open. `repos` absent with a `problem` is "we
+         could not ask"; `repos: []` is GitHub really saying he has none — and
+         those are two different sentences on screen. */
+      case "repositories":
+        /* THE RECEIPT AND THE ANSWER ARE THE SAME FRAME TYPE, told apart by
+           `asking`. The receipt says the hub has passed the question on; the
+           old rows are cleared with it, because a list from the last time we
+           asked is not an answer to this time. */
+        w.repoChoices = frame.asking
+          ? { asked: true, asking: true }
+          : {
+            asked: true, asking: false,
+            ...(frame.repos ? { repos: frame.repos } : {}),
+            ...(frame.problem ? { problem: frame.problem } : {}),
+            fetchedAt: frame.fetchedAt,
+          };
         break;
       /* FILES AGENTS MADE. These three used to be dropped with a comment saying
          a later round would claim them. It has. */

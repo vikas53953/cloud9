@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-08-01T07:24:54.693Z",
-  "expected": 479,
-  "executed": 479,
+  "ranAt": "2026-08-02T07:37:06.013Z",
+  "expected": 494,
+  "executed": 494,
   "results": [
     {
       "name": "join screen renders",
@@ -131,7 +131,7 @@
     {
       "name": "the GitHub card shows one honest state and says when Cloud9 really asked",
       "pass": true,
-      "detail": "signed-in :: Cloud9 asked this computer at 12:51:33."
+      "detail": "signed-in :: Cloud9 asked this computer at 13:03:35."
     },
     {
       "name": "signed in: the GitHub card names the account and says who keeps the token",
@@ -196,7 +196,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch 1mbh6 :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch hhntm :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -276,7 +276,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_yPBdkL5BMmSFtH4d_MGRMQ"
+      "detail": "inv_26TyJ7ppB_XLqsCUzhZfKA"
     },
     {
       "name": "friend joins via invite",
@@ -406,7 +406,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 12:51"
+      "detail": "↳ 1 reply · last at 13:04"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -476,7 +476,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 12:51 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 13:03 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -1131,7 +1131,7 @@
     {
       "name": "the room panel lists who is in the room, with their role and when they joined",
       "pass": true,
-      "detail": "Runs this room · joined 1 Aug"
+      "detail": "Runs this room · joined 2 Aug"
     },
     {
       "name": "a room's description and one-line topic can be set, and come back from the hub",
@@ -1161,7 +1161,7 @@
     {
       "name": "an open room can be found by somebody who is not in it, with what it's for and how many are in it",
       "pass": true,
-      "detail": "1 person · started 1 Aug"
+      "detail": "1 person · started 2 Aug"
     },
     {
       "name": "browsing offers no members and no messages — finding a room is not permission to read it",
@@ -1181,7 +1181,7 @@
     {
       "name": "letting yourself into an open room is recorded as exactly that — nobody added you",
       "pass": true,
-      "detail": "Member · joined 1 Aug"
+      "detail": "Member · joined 2 Aug"
     },
     {
       "name": "leaving a room takes it out of the sidebar, there and then",
@@ -1226,7 +1226,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_msa1o574e7r6yv\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_msbhjg5pw3t7h8\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -1266,17 +1266,17 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_msa1m418u37fpj:1785568978267 a_msa1m7b5pn4srb:1785568983488 u_msa1mewjywz7xu:1785568983927 a_msa1o574e7r6yv:1785568983970"
+      "detail": "u_msbhhhz2an389k:1785656099544 a_msbhhji3e9iv8j:1785656104414 u_msbhhrnrbhw51n:1785656104833 a_msbhjg5pw3t7h8:1785656104946"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785568981678 · now 1785568983927"
+      "detail": "first 1785656102729 · now 1785656104833"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
       "pass": true,
-      "detail": "Member · joined 1 Aug"
+      "detail": "Member · joined 2 Aug"
     },
     {
       "name": "a member list naming an agent's owner does not scroll sideways at 1280 in the light look",
@@ -1521,7 +1521,7 @@
     {
       "name": "SENDING takes the view to what he just said, wherever he had read back to",
       "pass": true,
-      "detail": "{\"fromBottom\":1,\"mineInSight\":true}"
+      "detail": "{\"fromBottom\":2,\"mineInSight\":true}"
     },
     {
       "name": "and the rule says so in its own words — a send, not just an arrival",
@@ -1641,7 +1641,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_msa1m96rw9v146\",\"status\":\"completed\",\"runId\":\"r-0msa1m96z-mq69\"}"
+      "detail": "{\"id\":\"t_msbhhlbe5zip3g\",\"status\":\"completed\",\"runId\":\"r-0msbhhlbr-zgxu\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1811,7 +1811,7 @@
     {
       "name": "C12: a repository GitHub cannot see is told so when he connects it, not left looking like a good one",
       "pass": true,
-      "detail": "nope definitely-not-a-real-owner-xyz987/nope Look at GitHub now Rename Disconnect Looked at GitHub 1 Aug The last look at GitHub did not work GitHub has no repository called definitely-not-a-real-owne"
+      "detail": "nope definitely-not-a-real-owner-xyz987/nope Look at GitHub now Rename Disconnect Looked at GitHub 2 Aug WHERE THE CODE LIVES ON THIS COMPUTER No folder linked yet. Until you choose one, an agent aske"
     },
     {
       "name": "connecting a repository puts it on screen, named the way GitHub names it",
@@ -1821,7 +1821,7 @@
     {
       "name": "connecting a repository looks at GitHub there and then, rather than leaving him to find out later",
       "pass": true,
-      "detail": "Cloud9 itself vikas53953/cloud9 Look at GitHub now Rename Disconnect Trunk master Looked at GitHub 1 Aug Pull requests · 0 Issues · 0 No pull requests recorded This is what GitHub "
+      "detail": "Cloud9 itself vikas53953/cloud9 Look at GitHub now Rename Disconnect Trunk master Looked at GitHub 2 Aug WHERE THE CODE LIVES ON THIS COMPUTER No folder linked yet. Until you choos"
     },
     {
       "name": "a connected repository offers a way to ask GitHub, ready and named in plain words",
@@ -1831,7 +1831,7 @@
     {
       "name": "pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
       "pass": true,
-      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_msa1p15xuoqp2l\",\"repo\":\"vikas53953/cloud9\"}"
+      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_msbhke9w8ywp19\",\"repo\":\"vikas53953/cloud9\"}"
     },
     {
       "name": "while it is looking the button says so and cannot be pressed again",
@@ -1841,7 +1841,7 @@
     {
       "name": "when the answer lands the button settles and the screen stamps when GitHub was last asked",
       "pass": true,
-      "detail": "Trunk master Looked at GitHub 1 Aug"
+      "detail": "Trunk master Looked at GitHub 2 Aug"
     },
     {
       "name": "the pull requests the engine reported are on screen, in the project's own list",
@@ -1851,7 +1851,7 @@
     {
       "name": "the trunk it must never land on is drawn only now that GitHub actually said what it is",
       "pass": true,
-      "detail": "Trunk master Looked at GitHub 1 Aug"
+      "detail": "Trunk master Looked at GitHub 2 Aug"
     },
     {
       "name": "a pull request that landed and one that was thrown away are told apart in words, not only colour",
@@ -1949,6 +1949,81 @@
       "detail": "{\"doc\":0,\"body\":0}"
     },
     {
+      "name": "a project says where its code lives on this computer — a row that exists at all",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "with no folder linked it says so plainly, instead of showing a blank or a guessed path",
+      "pass": true,
+      "detail": "WHERE THE CODE LIVES ON THIS COMPUTER No folder linked yet. Until you choose one, an agent asked to work in this project"
+    },
+    {
+      "name": "in a window with no folder picker, the button says so rather than doing nothing",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a folder that is not a whole path is refused in the contract's own sentence, in the row",
+      "pass": true,
+      "detail": "say the whole folder, starting from the drive letter — not just its name"
+    },
+    {
+      "name": "choosing a folder links it to THIS project, and the folder is drawn back to him",
+      "pass": true,
+      "detail": "C:\\Users\\vikasmit\\cloud9"
+    },
+    {
+      "name": "the folder reaches the computer that runs the agents, on the project's own frame",
+      "pass": true,
+      "detail": "C:\\Users\\vikasmit\\cloud9"
+    },
+    {
+      "name": "forgetting the folder puts the honest 'nobody has said' state back, not an empty box",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "opening the connect panel asks the computer with the GitHub sign-in — the screen never reaches GitHub",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the panel lists the repositories the computer really reported, one row each",
+      "pass": true,
+      "detail": "2 rows"
+    },
+    {
+      "name": "a private repository is drawn as private — never as a public one",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the list says when it was really asked for, rather than pretending to be current",
+      "pass": true,
+      "detail": "Asked GitHub 2 Aug"
+    },
+    {
+      "name": "typing a name is still offered, for a repository that is not his",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "clicking a repository connects it — the same path typing its name goes down",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a listing that failed shows the reason in the hub's own words, never an empty list reading 'you have none'",
+      "pass": true,
+      "detail": "you're not signed in to GitHub on this computer"
+    },
+    {
+      "name": "and it points at the way in that still works — typing the name",
+      "pass": true,
+      "detail": "You can still connect one by typing its name below. · 1 typed field(s)"
+    },
+    {
       "name": "before disconnecting, the screen promises the repository itself is untouched",
       "pass": true,
       "detail": "Disconnecting forgets Cloud9's copy of these lists. Your repository is not touched — Cloud9 has no way to delete anything on GitHub."
@@ -1986,7 +2061,7 @@
     {
       "name": "it says when it runs out — an agent is standing there waiting for the answer",
       "pass": true,
-      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 12:53 EXPIRES in 9 minutes"
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 13:06 EXPIRES in 9 minutes"
     },
     {
       "name": "a request with no job behind it offers no 'see the job' button to press",
@@ -2211,7 +2286,7 @@
     {
       "name": "the card says which agent made it, and how big it is",
       "pass": true,
-      "detail": "made by Scout :: 45 bytes · text · 1 Aug 12:54"
+      "detail": "made by Scout :: 45 bytes · text · 2 Aug 13:06"
     },
     {
       "name": "version 1 is not labelled with a version number nobody needs",
@@ -2221,7 +2296,7 @@
     {
       "name": "the reference itself is not printed beside the card it draws",
       "pass": true,
-      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 1 Aug 12:54 Show it"
+      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 2 Aug 13:06 Show it"
     },
     {
       "name": "the file really comes back, byte for byte, through the attachment ticket path",
@@ -2241,7 +2316,7 @@
     {
       "name": "the history shows the earlier version, who made it and when",
       "pass": true,
-      "detail": "v1 Scout 1 Aug 12:54 45 bytes Show it"
+      "detail": "v1 Scout 2 Aug 13:06 45 bytes Show it"
     },
     {
       "name": "an older version can still be downloaded, and it is the OLD bytes",
@@ -2256,7 +2331,7 @@
     {
       "name": "a file that is not text is a download and is never drawn into the room",
       "pass": true,
-      "detail": "74 bytes · a file to save · 1 Aug 12:54"
+      "detail": "74 bytes · a file to save · 2 Aug 13:06"
     },
     {
       "name": "a reference to a file that is not there says so in plain words, with no jargon",
@@ -2366,7 +2441,7 @@
     {
       "name": "a valid link previews with its honest reach and names the hub, and sees the join link",
       "pass": true,
-      "detail": "127.0.0.1:49266 — only this computer — this is the address the app uses for itself · carries a join link, so y"
+      "detail": "127.0.0.1:51492 — only this computer — this is the address the app uses for itself · carries a join link, so y"
     },
     {
       "name": "adding a friend's Cloud9 actually dials it — the connection says so, and it is the live hub",
@@ -2386,7 +2461,7 @@
     {
       "name": "the owner can mint a join link, and it is a cloud9:// link carrying a join_ token",
       "pass": true,
-      "detail": "cloud9://127.0.0.1:8799#join_JomO-wSIj8ykpbkLxTlkWw"
+      "detail": "cloud9://127.0.0.1:8799#join_Ye-tK1kSIZX22j3Lb0Y6mg"
     },
     {
       "name": "the panel says plainly that reaching a friend over the internet needs Tailscale, not wired tonight",

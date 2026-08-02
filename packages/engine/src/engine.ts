@@ -6,7 +6,7 @@ import path from "node:path";
 import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, ARTIFACT_LIMITS, Channel, ClientFrame, HarnessName, HarnessState, ID,
-  Message, RunRecord, ServerFrame, Task, WorkReaction, WorldState, isSafeFileName,
+  Message, Project, RunRecord, ServerFrame, Task, WorkReaction, WorldState, isSafeFileName,
   mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
@@ -154,6 +154,15 @@ export class Engine {
    * turn ends.
    */
   tools = new ToolBridge();
+  /**
+   * THE PROJECTS THIS OWNER HAS CONNECTED, as the hub last told us.
+   *
+   * Kept only so `repoDirFor` can answer "where does the code for THIS
+   * conversation live on this computer". It is a COPY of the hub's truth and
+   * never a permission: nothing here decides what an agent may do, only which
+   * folder it would work in if it were allowed to.
+   */
+  projects = new Map<ID, Project>();
   /** whoever is waiting on a `searchResults` frame right now */
   private searchWaiters = new Set<(f: Extract<ServerFrame, { type: "searchResults" }>) => boolean>();
   private turnsInFlight = 0;
@@ -248,6 +257,12 @@ export class Engine {
         for (const t of frame.state.tasks) this.tasks.set(t.id, t);
         this.scheduler.start();
         for (const t of frame.state.tasks) this.maybeRunTask(t);
+        /* WHERE THE OWNER'S CODE LIVES, asked for the moment we connect.
+           The welcome does not carry projects, and `repoDirFor` cannot wait
+           until one happens to change — an agent asked to work in code the
+           second after the app opens would otherwise be told nobody has said
+           where the code is, which would be false. */
+        this.sendFrame({ type: "projects" });
         this.onReady?.();
         break;
       case "task":
@@ -293,6 +308,26 @@ export class Engine {
          does not choose. Read only, so there is nothing to approve. */
       case "lookAtProject":
         void this.lookAtProject(frame.projectId, frame.repo);
+        break;
+      /* THE HUB ASKED US WHICH REPOSITORIES THIS SIGN-IN CAN SEE (the picker).
+         Same split as the look: the hub cannot reach GitHub, this machine can.
+         Read only, so there is nothing to approve. */
+      case "listRepositoriesRequested":
+        void this.listRepositories();
+        break;
+      /* WHICH PROJECTS EXIST, AND WHERE THEIR CODE IS.
+         The hub sends these to every one of the owner's connections, this one
+         included. We keep them for ONE reason — `repoDirFor` — and they are a
+         copy of the hub's truth, never a permission. */
+      case "project":
+        this.projects.set(frame.project.id, frame.project);
+        break;
+      case "projects":
+        this.projects.clear();
+        for (const p of frame.projects) this.projects.set(p.id, p);
+        break;
+      case "projectForgotten":
+        this.projects.delete(frame.projectId);
         break;
       // ---- the mid-run approval round trip (his item 6) ----
       // The receipt tells us WHICH card belongs to which waiting agent; the
@@ -1086,15 +1121,18 @@ export class Engine {
   async workInRepository(agent: AgentDef, input: {
     channelId: ID; ask: string; triggerAuthor: string; taskId?: ID; repoDir?: string;
   }): Promise<RepoTurnResult | undefined> {
-    const repoDir = input.repoDir ?? this.opts.repoDir;
+    /* WHERE THE CODE IS — asked of the one function that answers it, per
+       CONVERSATION, so two projects on one computer are two folders. An
+       explicit `input.repoDir` (tests, a caller that already knows) still wins;
+       everything else goes through `repoDirFor`. */
+    let repoDir = input.repoDir;
     if (!repoDir) {
-      // ABSENT MEANS ABSENT. Nobody has told this computer where the code is,
-      // and a folder we invented would be the worst possible guess.
-      this.agentSend(agent.id, input.channelId,
-        "Nobody has told Cloud9 where this project's code lives on this computer yet, " +
-        "so I have no repository to work in. Once it does, I can work on my own branch " +
-        "and ask before anything goes to GitHub.");
-      return undefined;
+      const found = this.repoDirFor(input.channelId);
+      if ("problem" in found) {
+        this.agentSend(agent.id, input.channelId, found.problem);
+        return undefined;
+      }
+      repoDir = found.dir;
     }
     this.setStatus(agent.id, "working");
     try {
@@ -1163,6 +1201,85 @@ export class Engine {
     }
   }
 
+  /**
+   * Ask GitHub which repositories this computer's sign-in can see, and tell the
+   * hub. THE ANSWER ALWAYS GOES BACK, exactly like a look: a failure reports
+   * `problem` and NO list, so the picker prints why instead of an empty list
+   * that reads "you have no repositories".
+   */
+  async listRepositories(): Promise<void> {
+    try {
+      const found = await this.readOnlyGitHub().listRepositories();
+      this.sendFrame({ type: "repositoriesFound", ...found });
+    } catch (err) {
+      console.error("[engine] could not list repositories:", err);
+      this.sendFrame({
+        type: "repositoriesFound",
+        problem: "Cloud9 could not ask GitHub for your repositories. Try again in a moment.",
+      });
+    }
+  }
+
+  /* ------------------------------------------------------------------
+     WHERE THIS PROJECT'S CODE LIVES ON THIS COMPUTER — the ONE owner.
+     ------------------------------------------------------------------ */
+
+  /**
+   * The folder an agent should work in for one conversation, or the plain-words
+   * reason there isn't one.
+   *
+   * ONE FUNCTION, ASKED BY EVERYTHING that needs a repository directory —
+   * `workInRepository` (`!code`) and `workGitHubWriteInRoom` (`!issue`,
+   * `!comment`, `!review`). Before this closed (approval-handoff.md §8) each of
+   * them read `EngineOptions.repoDir`, a single folder chosen once at launch by
+   * whoever started the engine, and NOTHING on screen could set it — so an
+   * owner with two projects had one folder for both, or none at all.
+   *
+   * The order, and why:
+   *  1. A PROJECT LINKED TO THIS CONVERSATION that has a folder. The owner said
+   *     this, from the screen, for this project. It beats everything.
+   *  2. `EngineOptions.repoDir` — the launch-time fallback, kept deliberately so
+   *     nothing that worked yesterday stops working today.
+   *  3. Nothing. The existing sentence, unchanged.
+   *
+   * A FOLDER THAT IS GONE IS NOT SILENTLY SKIPPED. If the owner linked a folder
+   * and it is no longer on this computer, that is said out loud — falling
+   * through to the launch-time folder would quietly work in the WRONG
+   * repository, which is worse than not working at all.
+   */
+  repoDirFor(channelId?: ID): { dir: string } | { problem: string } {
+    const linked = channelId
+      ? [...this.projects.values()].find(p => p.channelId === channelId && p.localPath)
+      : undefined;
+    if (linked?.localPath) {
+      if (!isFolderOnDisk(linked.localPath)) {
+        return {
+          problem: `The folder Cloud9 has for ${linked.name} (${linked.localPath}) is not on this ` +
+            "computer any more, so there is nothing to work in. Open Projects and choose the folder " +
+            "again — I have not touched any other folder.",
+        };
+      }
+      return { dir: linked.localPath };
+    }
+    const launch = this.opts.repoDir;
+    if (launch) {
+      if (!isFolderOnDisk(launch)) {
+        return {
+          problem: "The folder this copy of Cloud9 was started with is not on this computer any " +
+            "more, so there is nothing to work in. Open Projects and choose the folder for this project.",
+        };
+      }
+      return { dir: launch };
+    }
+    // ABSENT MEANS ABSENT. Nobody has told this computer where the code is, and
+    // a folder we invented would be the worst possible guess.
+    return {
+      problem: "Nobody has told Cloud9 where this project's code lives on this computer yet, " +
+        "so I have no repository to work in. Open Projects, pick this repository and choose the " +
+        "folder its code is in — then I can work on my own branch and ask before anything goes to GitHub.",
+    };
+  }
+
   /** A GitHub client that can only READ — no approver, so every gate refuses. */
   private readOnlyGitHub(): GitHubClient {
     return new GitHubClient(this.opts.github ?? {});
@@ -1209,13 +1326,14 @@ export class Engine {
   async workGitHubWriteInRoom(
     agent: AgentDef, channelId: ID, partial: GitHubWriteRequestWithoutRepo,
   ): Promise<void> {
-    const repoDir = this.opts.repoDir;
-    if (!repoDir) {
-      this.agentSend(agent.id, channelId,
-        "Nobody has told Cloud9 where this project's code lives on this computer yet, " +
-        "so I have no repository to act on. Once it does, I can ask before anything goes to GitHub.");
+    // the SAME question, asked of the same function — a second answer here is
+    // how `!code` and `!issue` would end up working in different folders
+    const found = this.repoDirFor(channelId);
+    if ("problem" in found) {
+      this.agentSend(agent.id, channelId, found.problem);
       return;
     }
+    const repoDir = found.dir;
     this.setStatus(agent.id, "working");
     try {
       // WHAT IS THIS REPOSITORY CALLED — a read, so no card. A repository gh
@@ -1571,6 +1689,23 @@ export class Engine {
  * rather than a second copy of it here. A `when` this file accepted and the
  * scheduler did not would be a schedule that exists and never happens.
  */
+/**
+ * IS THIS FOLDER REALLY ON THIS COMPUTER, RIGHT NOW?
+ *
+ * Asked every time, never remembered: a folder that was there when the owner
+ * chose it can be renamed, moved onto a drive that is unplugged, or deleted,
+ * and a stale yes means an agent works in the wrong place or falls over with
+ * git's own error instead of a sentence. A file that is not a folder is a no,
+ * for the same reason.
+ */
+function isFolderOnDisk(folder: string): boolean {
+  try {
+    return fs.statSync(folder).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function scheduleProblem(row: unknown): string | null {
   if (!row || typeof row !== "object") return "that isn't a schedule";
   const s = row as Partial<AgentSchedule>;

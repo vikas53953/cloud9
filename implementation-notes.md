@@ -127,3 +127,8 @@ Running log of deviations and lessons. One line each, newest last.
 
 - BUG-5: DONE — GitHub card live in Settings, proven on installed app ("Signed in as vikas53953", dated). Walk now 19 checks. Evidence: 962 tests 0 fail, 479/479+8/8+4/4 QA (green twice consecutively), 19/19 installed walk.
 - NOTE (2026-08-01): one qa.mjs run in the middle failed once and did not reproduce in two follow-up full runs; my pipeline (grep/tail) discarded which check it was — conductor error, cannot name the flake. If qa.mjs fails again, save the FULL output before anything else.
+
+- FEATURE-6 (his ask 2026-08-02, building now): Buzz/Slack-style GitHub: (a) rename gear "Setup"->"Settings"; (b) connect panel lists YOUR repositories from gh to click-connect (typed owner/name stays as fallback); (c) close the repoDir gap - a project links to a folder on this computer so agents really work on it (approval-handoff.md section 8).
+
+- FEATURE-6: DONE, proven on installed app 21/21 — gear renamed Settings; picker listed his 46 real repositories and click-connected cloud9; project folder row with honest none-state + Choose folder (native dialog); engine resolves repo dir per project (repoDirFor), launch-time repoDir kept as fallback. Evidence: 1002 tests 0 fail, 494/494+8/8+4/4.
+- FLAKE ROOT-CAUSED AND FIXED: the intermittent qa.mjs failure (seen 3x since 2026-08-01) was the look-at-GitHub "settles" check SAMPLING at the instant items render while the button settles a frame later. Check now waits bounded for the settled state. If qa flakes again it is a NEW problem.

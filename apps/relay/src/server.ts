@@ -10,6 +10,7 @@ import {
   Channel, ChannelMember,
   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
   MESSAGE_LIMITS, ARTIFACT_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
+  RepoChoice, REPO_LIST_LIMITS, validateRepoChoice, validateLocalFolder,
   RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
@@ -1734,6 +1735,84 @@ export class Relay {
         this.store.saveProject(project);
         this.audit(conn, "project_updated", project.id, `updated ${project.repo}`);
         this.toUser(conn.userId, { type: "project", project: this.viewProject(project) });
+        break;
+      }
+      /* "THE CODE FOR THIS PROJECT IS IN THIS FOLDER."
+         THE OWNER, FROM A WINDOW — never an agent. An engine connection is
+         refused here rather than anywhere else, because this is the one place
+         the folder can be set: an agent able to point Cloud9 at a folder could
+         point `!code` at any folder on the machine, and the owner saying where
+         their own code is is the whole safety of the worktree design.
+         `""` clears it — the same absent-vs-empty rule as every other field. */
+      case "setProjectFolder": {
+        if (conn.client === "engine") {
+          throw new Error("only you can say where your code lives — an agent cannot");
+        }
+        const project = this.myProject(conn.userId, frame.projectId);
+        const said = typeof frame.path === "string" ? frame.path.trim() : "";
+        if (said) {
+          const bad = validateLocalFolder(said);
+          if (bad) throw new Error(bad);
+          project.localPath = said;
+        } else {
+          delete project.localPath;
+        }
+        this.store.saveProject(project);
+        this.audit(conn, "project_updated", project.id,
+          said ? `linked ${project.repo} to a folder on this computer` : `unlinked ${project.repo}`);
+        // EVERY connection of this owner's, the ENGINE included — that is how
+        // the copy of Cloud9 that runs the agents finds out where to work.
+        this.toUser(conn.userId, { type: "project", project: this.viewProject(project) });
+        break;
+      }
+      /* "SHOW ME MY REPOSITORIES." The hub cannot ask GitHub, so it asks the
+         owner's own engine — the same split as `syncProject`. With no engine
+         running there is nothing to ask, and that is ANSWERED in words rather
+         than thrown: the picker must say why instead of showing an empty list
+         that reads like "you have no repositories". */
+      case "listRepositories": {
+        if (!this.hasEngine(conn.userId)) {
+          send(conn.ws, {
+            type: "repositories", fetchedAt: Date.now(),
+            problem: "Cloud9 isn't running on the computer your GitHub sign-in is on, so nothing could ask GitHub for your repositories. Open Cloud9 there, or type the repository below.",
+          });
+          break;
+        }
+        this.toEngines(conn.userId, { type: "listRepositoriesRequested" });
+        // AND ANSWER THE ASKER NOW, with a receipt. Every other frame this hub
+        // reads is answered before it reads the next one, and the screen counts
+        // on that to know whose refusal a later `error` is. This one is handed
+        // to the engine, so without a receipt it would sit in that queue and
+        // catch somebody else's refusal — which is exactly what it did.
+        send(conn.ws, { type: "repositories", asking: true, fetchedAt: Date.now() });
+        break;
+      }
+      case "repositoriesFound": {
+        if (conn.client !== "engine") throw new Error("only the engine asks GitHub");
+        let repos: RepoChoice[] | undefined;
+        if (frame.repos !== undefined) {
+          if (!Array.isArray(frame.repos)) throw new Error("that isn't a list of repositories");
+          if (frame.repos.length > REPO_LIST_LIMITS.rows) {
+            throw new Error("that's more repositories than Cloud9 will hold");
+          }
+          for (const row of frame.repos) {
+            const bad = validateRepoChoice(row);
+            if (bad) throw new Error(bad);
+          }
+          repos = frame.repos;
+        }
+        const problem = frame.problem === undefined
+          ? undefined
+          : String(frame.problem).slice(0, REPO_LIST_LIMITS.problem).trim();
+        this.toUser(conn.userId, {
+          type: "repositories",
+          ...(repos ? { repos } : {}),
+          ...(problem ? { problem } : {}),
+          // WHEN IT WAS REALLY ASKED IS DECIDED HERE, exactly like `syncedAt`:
+          // an engine could report any clock it liked, and the screen says
+          // "fetched at" out loud.
+          fetchedAt: Date.now(),
+        });
         break;
       }
       case "forgetProject": {

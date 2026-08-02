@@ -705,6 +705,20 @@ export interface Project {
   /** what went wrong the last time it looked, in plain words. Absent = fine. */
   problem?: string;
   /**
+   * WHERE THIS PROJECT'S CODE LIVES ON THE OWNER'S COMPUTER.
+   *
+   * A local fact, not a secret: it is a folder on the machine that already runs
+   * the agents, so it may travel on a frame exactly as `repo` does. What it may
+   * NOT do is arrive from an agent — `setProjectFolder` is refused from an
+   * engine connection, so only the owner, from the screen, can ever say where
+   * their code is. An agent that could point Cloud9 at a folder could point it
+   * at any folder on the machine.
+   *
+   * Absent means nobody has said, and the engine says so in words rather than
+   * inventing a folder (approval-handoff.md §8).
+   */
+  localPath?: string;
+  /**
    * TRUE WHILE SOMEBODY IS ACTUALLY LOOKING RIGHT NOW.
    *
    * Not stored — the hub adds it on the way out, because "a look is under way"
@@ -778,7 +792,103 @@ export const PROJECT_LIMITS = {
   lookMs: 90_000,
   /** how many pull requests, and how many issues, one look asks GitHub for */
   lookItems: 100,
+  /** the longest folder path a project may be linked to */
+  path: 400,
 } as const;
+
+/**
+ * IS THIS A FOLDER ON THIS COMPUTER, said the whole way from the drive?
+ *
+ * THE ONE OWNER of that question — the screen, the hub and the engine all ask
+ * this and nothing else, so "where does this project's code live" cannot mean
+ * three different things in three programs.
+ *
+ * A WHOLE PATH ONLY, deliberately. A relative folder means nothing without
+ * knowing what it is relative TO, and the answer would differ between the
+ * window, the hub and the engine — three programs quietly disagreeing about
+ * which folder an agent is about to work in is exactly the accident this
+ * refuses. Windows drives (`C:\…`), Windows shares (`\\box\share`) and
+ * POSIX (`/home/…`) are all whole paths; `code/cloud9` and `..\thing` are not.
+ *
+ * It does NOT ask whether the folder exists. Existence is a fact about a
+ * moment, and only the computer the code is on can answer it — the engine
+ * checks it every time it is about to work there, and says "that folder is
+ * gone" rather than using it.
+ */
+export function validateLocalFolder(folder: unknown): string | null {
+  if (typeof folder !== "string" || folder.trim().length === 0) {
+    return "say which folder on this computer the code is in";
+  }
+  const said = folder.trim();
+  if (said.length > PROJECT_LIMITS.path) {
+    return `that folder path is too long (max ${PROJECT_LIMITS.path} characters)`;
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(said)) return "that isn't a folder on this computer";
+  if (said.includes("..")) return "that isn't a folder on this computer";
+  const whole = /^[A-Za-z]:[\\/]/.test(said) || /^\\\\[^\\/]/.test(said) || said.startsWith("/");
+  if (!whole) {
+    /* NO EXAMPLE PATH IN THIS SENTENCE, deliberately, and it cost a failing
+       test to learn: the hub REFUSES to print any refusal containing a disk
+       path (`refusal.ts` — nothing shown to a person may carry a path off this
+       machine), so a helpful-looking "for example C:\Users\you\…" turned the
+       whole sentence into "something went wrong inside Cloud9". The example
+       lives in the box's own placeholder on screen, where it is not a refusal. */
+    return "say the whole folder, starting from the drive letter — not just its name";
+  }
+  return null;
+}
+
+// ---------- the repositories his GitHub sign-in can actually see ----------
+//
+// HIS ASK, 2026-08-01: connecting a project made him TYPE `owner/name`, the way
+// nothing else he uses does. Slack and Buzz show you YOUR things and you click
+// one. So the engine asks `gh repo list` on his own machine and these are the
+// rows that come back — a CACHE OF SOMEBODY ELSE'S TRUTH, exactly like a
+// project item, and never the basis of any permission decision.
+
+/** One repository the sign-in on the owner's computer can see. */
+export interface RepoChoice {
+  /** "vikas53953/cloud9" — the same shape `REPO_RE` allows, and checked */
+  nameWithOwner: string;
+  /** GitHub's own one-liner, when the repository has one */
+  description?: string;
+  /** so a private repository is never drawn as a public one */
+  visibility?: "public" | "private" | "internal";
+  /** when GitHub says it last changed (ms since epoch) */
+  updatedAt?: number;
+}
+
+export const REPO_LIST_LIMITS = {
+  /** most rows one list may carry — the same number gh is asked for */
+  rows: 100,
+  description: 200,
+  /** the plain-words reason a listing did not work */
+  problem: 200,
+} as const;
+
+/**
+ * Check one row of that list. It came off `gh` through somebody's network, so
+ * it is untrusted input exactly like a project item — same law, same answer.
+ */
+export function validateRepoChoice(row: unknown): string | null {
+  if (!row || typeof row !== "object") return "that isn't a repository";
+  const r = row as Partial<RepoChoice>;
+  const bad = validateRepo(r.nameWithOwner);
+  if (bad) return bad;
+  if (r.description !== undefined) {
+    if (typeof r.description !== "string") return "a description is words";
+    if (r.description.length > REPO_LIST_LIMITS.description) return "that description is too long";
+  }
+  if (r.visibility !== undefined
+    && r.visibility !== "public" && r.visibility !== "private" && r.visibility !== "internal") {
+    return "that isn't a visibility we know";
+  }
+  if (r.updatedAt !== undefined && (typeof r.updatedAt !== "number" || !Number.isFinite(r.updatedAt))) {
+    return "that changed-at time isn't a number";
+  }
+  return null;
+}
 
 /**
  * The shape of "owner/name", and nothing else.
@@ -1686,6 +1796,34 @@ export type ClientFrame =
   /** Rename it, describe it, or point it at a conversation. Absent = leave alone. */
   | { type: "updateProject"; projectId: ID; name?: string; description?: string; channelId?: ID }
   /**
+   * "THE CODE FOR THIS PROJECT IS IN THIS FOLDER ON MY COMPUTER."
+   *
+   * THE OWNER ONLY, AND FROM THE SCREEN ONLY. The hub refuses this frame from an
+   * ENGINE connection — an agent that could set the folder could point Cloud9's
+   * `!code` at any folder on the machine, and the whole point of the worktree
+   * design is that the owner says where their code is. `""` clears it.
+   *
+   * It closes `approval-handoff.md` §8: before this, `EngineOptions.repoDir` was
+   * set once at launch and nothing on screen could say where a project lives.
+   */
+  | { type: "setProjectFolder"; projectId: ID; path: string }
+  /**
+   * "SHOW ME MY REPOSITORIES." Read-only, and the hub cannot answer it itself —
+   * it asks the OWNER'S OWN engine, which runs `gh repo list` with the sign-in
+   * already on that computer, exactly like `syncProject` does for one
+   * repository. Nothing on GitHub changes, so nothing is approved.
+   */
+  | { type: "listRepositories" }
+  /**
+   * ENGINE-HOST ONLY: I asked `gh` which repositories this sign-in can see.
+   *
+   * A REPORT, NOT A PERMISSION — being able to name a repository has never been
+   * permission to connect it, and connecting still goes through
+   * `connectProject`. `problem` is how the engine says it could not ask, so the
+   * screen prints why instead of an empty list that reads "you have none".
+   */
+  | { type: "repositoriesFound"; repos?: RepoChoice[]; problem?: string }
+  /**
    * Disconnect it. THE REPOSITORY IS NOT TOUCHED — this forgets our copy of the
    * lists and nothing else. Deleting somebody's code is not a thing this hub
    * will ever be able to do.
@@ -2083,6 +2221,36 @@ export type ServerFrame =
    * person who asked. An engine is told what to look at; it does not choose.
    */
   | { type: "lookAtProject"; projectId: ID; repo: string }
+  /**
+   * ENGINE-HOST ONLY: "list the repositories this computer's sign-in can see".
+   *
+   * The hub cannot reach GitHub and never will. It forwards the owner's
+   * `listRepositories` to the owner's own engine, which runs `gh repo list`
+   * there. A window drops this frame — it is addressed to the copy of Cloud9
+   * that holds the GitHub sign-in, not to a screen.
+   */
+  | { type: "listRepositoriesRequested" }
+  /**
+   * The repositories the owner's computer really found — or why it could not
+   * look. `fetchedAt` is stamped by the HUB when the engine answered, for the
+   * same reason `syncedAt` is: a list may only claim to be from now if somebody
+   * really asked now, and an engine could report any clock it liked.
+   */
+  /**
+   * `asking: true` is the hub's RECEIPT — "I have asked the computer that holds
+   * your GitHub sign-in; nothing has come back yet". The real answer follows on
+   * a second frame of the same type.
+   *
+   * IT IS NOT DECORATION, and it cost a QA failure to learn why. An `error`
+   * frame carries no echo of the question it refuses, so the screen pins one on
+   * the OLDEST question still waiting — which is only sound because the hub
+   * answers every question in the order it was asked. `listRepositories` is the
+   * first frame the hub CANNOT answer itself (it forwards to the engine), so
+   * without this receipt it sat in that queue and swallowed the next refusal:
+   * a duplicate project name was reported as "we could not list your
+   * repositories", and the box he had to change said nothing at all.
+   */
+  | { type: "repositories"; repos?: RepoChoice[]; problem?: string; fetchedAt: number; asking?: boolean }
   // ---- agent memory + handoff (docs/plans/agent-memory-handoff.md) ----
   /**
    * What this agent has saved to remember — the answer to `memoryList`, and

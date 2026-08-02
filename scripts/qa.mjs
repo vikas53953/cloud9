@@ -23,7 +23,8 @@ import {
 import {
   ATTACHMENT_LIMITS, describeRemoteAction, detailRemoteAction, FILE_NAME_SENTENCE, humanMoney,
   isGitHubWriteKind,
-  MESSAGE_LIMITS, NAME_LIMITS, REMOTE_ACTIONS, summarizeRun, validateName, validateRepo,
+  MESSAGE_LIMITS, NAME_LIMITS, REMOTE_ACTIONS, summarizeRun, validateLocalFolder, validateName,
+  validateRepo,
   // THE SKILL LIBRARY, from the package the screen reads. Every count and every
   // sentence below is DERIVED from these two lists, never typed here — so a
   // sixteenth skill or a sixth shelf moves this suite with it instead of
@@ -284,7 +285,22 @@ function mintJoinTokenOn(port, token) {
 // there beside the two AI apps; it shows ONE of the three honest states and
 // says when it really asked; that state offers the way in (or names the
 // account); and no token or scope string reaches the DOM.
-const EXPECTED_CHECKS = 479;
+// 479 → 494 on 2026-08-02, in two pieces, both on the Projects screen:
+//  • SEVEN for "where the code lives on this computer" (approval-handoff §8 —
+//    the gap that made every `!code` answer "nobody has told Cloud9 where this
+//    project's code lives"). The row exists; with nothing linked it SAYS so
+//    rather than showing a blank; a window with no OS folder picker says which
+//    and takes the typed folder instead; a half-path is refused in the shared
+//    rule's own sentence; a chosen folder is drawn back and REACHES THE ENGINE
+//    on the project's own frame; and forgetting it restores the honest state.
+//  • EIGHT for the repository picker (his ask: show me MY things, let me
+//    click). Opening the panel asks the computer that holds the GitHub sign-in;
+//    the rows it reported are drawn; a private repository is drawn as private;
+//    the list says WHEN it was asked for; the typed field survives as the
+//    fallback; clicking a row connects it down the same path as typing; and a
+//    listing that failed shows the reason instead of an empty list that would
+//    read "you have no repositories".
+const EXPECTED_CHECKS = 494;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -4529,11 +4545,20 @@ try {
   /* ABSENT MEANS ABSENT, AND SO DOES PRESENT. Once the engine has answered, the
      screen stops saying "looking", stops saying "nobody has looked", and stamps
      when it was — from the hub's own `syncedAt`, never from the moment the
-     button was pressed. */
+     button was pressed.
+
+     WAIT, DON'T SAMPLE. The items and the settled button arrive on separate
+     frames; sampling at the instant pull-41 renders read the button as still
+     busy one run in three-hundred and failed a truth that was a frame away
+     (the 2026-08-01/02 intermittent). "Settles" means eventually-and-bounded,
+     so the check now waits for the settled state and fails only if it never
+     comes. */
+  const settled = await Promise.all([
+    page.waitForSelector('.pd-facts [data-look-state="looked"]', { timeout: 15000 }),
+    page.waitForSelector('.pd-btns button[data-look="ready"]', { timeout: 15000 }),
+  ]).then(() => true).catch(() => false);
   ok("when the answer lands the button settles and the screen stamps when GitHub was last asked",
-    (await page.locator('.pd-facts [data-look-state="looked"]').count()) === 1 &&
-    (await page.locator('.pd-btns button[data-look="ready"]').count()) === 1 &&
-    (await page.locator(".pd-never").count()) === 0,
+    settled && (await page.locator(".pd-never").count()) === 0,
     (await page.locator(".pd-facts").innerText()).replace(/\s+/g, " "));
 
   ok("the pull requests the engine reported are on screen, in the project's own list",
@@ -4652,6 +4677,7 @@ try {
   ok("and a project with a problem is flagged in the list beside it",
     (await page.locator(`.proj-list .side-item[data-project="${projectId}"] .cnt.hot`).count()) === 1);
 
+
   /* ---- the whole screen, in both looks, at both widths ---- */
   await page.click('.pd-tabs .seg button[data-tab="pull"]');
   await page.waitForSelector('.projitem[data-item="pull-41"]', { timeout: 15000 });
@@ -4671,6 +4697,161 @@ try {
   }
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+
+  /* ==========================================================================
+     WHERE THE CODE LIVES ON THIS COMPUTER (docs/plans/approval-handoff.md §8)
+
+     THE HOLE THIS CLOSES. A project named a repository on GitHub and NOTHING on
+     screen could say where its code was on this machine, so `!code` answered
+     "nobody has told Cloud9 where this project's code lives" for every project,
+     for ever. The folder now lives on the project, and the copy of Cloud9 that
+     runs the agents is told about it on the ordinary `project` frame.
+
+     THE PICKER ITSELF IS THE OPERATING SYSTEM'S. A browser has no
+     `window.cloud9`, so "Choose folder" here takes the typed route instead and
+     SAYS it is doing that — which is the same frame by another door, and is why
+     this suite can drive it at all. The native dialog is Electron's own and is
+     not something a page could open.
+     ====================================================================== */
+
+  ok("a project says where its code lives on this computer — a row that exists at all",
+    (await page.locator(".projdetail .pd-folder").count()) === 1);
+  ok("with no folder linked it says so plainly, instead of showing a blank or a guessed path",
+    (await page.getAttribute(".pd-folder", "data-folder-state")) === "none" &&
+    /No folder linked yet/i.test(await page.locator(".pd-folder").innerText()) &&
+    /says so rather than guessing/i.test(
+      (await page.locator(".pd-folder").innerText()).replace(/\s+/g, " ")),
+    (await page.locator(".pd-folder").innerText()).replace(/\s+/g, " ").slice(0, 120));
+
+  await page.click(".pd-folder [data-folder-choose]");
+  await page.waitForSelector("#f-folder", { timeout: 15000 });
+  ok("in a window with no folder picker, the button says so rather than doing nothing",
+    /cannot open the computer's folder picker/i.test(await page.locator(".pd-folder").innerText()));
+
+  /* A HALF-PATH IS REFUSED IN THE RULE'S OWN SENTENCE — the same function the
+     hub checks with, so the screen and the hub can never disagree about what a
+     folder is. */
+  await page.fill("#f-folder", "code/cloud9");
+  await page.click(".pd-folder [data-folder-save]");
+  await page.waitForSelector(".pd-folder .problemline", { timeout: 15000 });
+  ok("a folder that is not a whole path is refused in the contract's own sentence, in the row",
+    (await page.locator(".pd-folder .problemline").innerText()).trim()
+      === validateLocalFolder("code/cloud9"),
+    (await page.locator(".pd-folder .problemline").innerText()).trim());
+
+  const CODE_FOLDER = process.cwd();
+  /* Everything the hub has said to this computer SO FAR is cleared, so the
+     check below can only pass on a frame the folder itself caused. */
+  engineFrames.length = 0;
+  await page.fill("#f-folder", CODE_FOLDER);
+  await page.click(".pd-folder [data-folder-save]");
+  await waitFor(page, () => document.querySelector(".pd-folder")?.dataset.folderState === "linked",
+    undefined, { what: "the project to show the folder it was given" });
+  ok("choosing a folder links it to THIS project, and the folder is drawn back to him",
+    (await page.getAttribute(".pd-folder", "data-folder")) === CODE_FOLDER &&
+    (await page.locator(".pd-folder .folderpath").innerText()).trim() === CODE_FOLDER,
+    (await page.locator(".pd-folder .folderpath").innerText()).trim());
+
+  /* AND THE COMPUTER THAT RUNS THE AGENTS IS TOLD. This is the whole point:
+     the folder has to reach the engine, or `!code` still has nowhere to work. */
+  const folderTold = await engineGot(
+    f => f.type === "project" && f.project.id === projectId && f.project.localPath === CODE_FOLDER,
+    "the folder to reach the copy of Cloud9 that runs the agents");
+  ok("the folder reaches the computer that runs the agents, on the project's own frame",
+    !!folderTold, folderTold ? folderTold.project.localPath : "never arrived");
+
+  await page.click(".pd-folder [data-folder-clear]");
+  await waitFor(page, () => document.querySelector(".pd-folder")?.dataset.folderState === "none",
+    undefined, { what: "the folder to be forgotten" });
+  ok("forgetting the folder puts the honest 'nobody has said' state back, not an empty box",
+    /No folder linked yet/i.test(await page.locator(".pd-folder").innerText()) &&
+    (await page.locator(".pd-folder .folderpath").count()) === 0);
+
+  // put it back, so the screenshots below show the real thing
+  await page.click(".pd-folder [data-folder-choose]");
+  await page.waitForSelector("#f-folder", { timeout: 15000 });
+  await page.fill("#f-folder", CODE_FOLDER);
+  await page.click(".pd-folder [data-folder-save]");
+  await waitFor(page, () => document.querySelector(".pd-folder")?.dataset.folderState === "linked",
+    undefined, { what: "the folder to be linked again" });
+
+  /* ==========================================================================
+     THE REPOSITORY PICKER — "show me MY repositories" (his ask, 2026-08-01)
+
+     Connecting made him TYPE `owner/name` from memory. Now the panel asks the
+     computer that holds his GitHub sign-in and he clicks a row.
+
+     HOW THE gh ANSWER IS FAKED, and why in this order. Exactly the way this
+     suite already fakes a look at GitHub: a SECOND connection to the hub says
+     `hello` as an ENGINE and sends the real `repositoriesFound` frame, which
+     the hub validates and forwards like any other. Nothing is written onto the
+     screen. The QA stack also runs a REAL engine host, which answers the same
+     question off the real `gh` — so every fake is sent only AFTER the panel has
+     left its "asking" state, i.e. after that real answer has already landed.
+     Sending first would let the real answer overwrite the fake a second later.
+     ====================================================================== */
+
+  await page.click(".projects .topbar [data-connect]");
+  await page.waitForSelector(".connectproj .repopick", { timeout: 15000 });
+  const pickerAsked = await engineGot(f => f.type === "listRepositoriesRequested",
+    "the hub to ask this computer which repositories it can see");
+  ok("opening the connect panel asks the computer with the GitHub sign-in — the screen never reaches GitHub",
+    !!pickerAsked);
+  await waitFor(page, () => document.querySelector(".repopick")?.dataset.repolist !== "asking",
+    undefined, { what: "the repository list to settle" });
+
+  const QA_REPOS = [
+    {
+      nameWithOwner: "qa-owner/qa-repo", description: "The one the QA engine says he owns",
+      visibility: "private", updatedAt: Date.now() - 86_400_000,
+    },
+    { nameWithOwner: "qa-owner/second-one", visibility: "public", updatedAt: Date.now() - 3_600_000 },
+  ];
+  engineWs.send(JSON.stringify({ type: "repositoriesFound", repos: QA_REPOS }));
+  await page.waitForSelector('.repochoice[data-repo-choice="qa-owner/qa-repo"]', { timeout: 20000 });
+  ok("the panel lists the repositories the computer really reported, one row each",
+    (await page.locator(".repopick .repochoice").count()) === QA_REPOS.length &&
+    (await page.locator('.repochoice[data-repo-choice="qa-owner/second-one"]').count()) === 1,
+    `${await page.locator(".repopick .repochoice").count()} rows`);
+  ok("a private repository is drawn as private — never as a public one",
+    /Private/.test(await page.locator('.repochoice[data-repo-choice="qa-owner/qa-repo"]').innerText()) &&
+    /Public/.test(await page.locator('.repochoice[data-repo-choice="qa-owner/second-one"]').innerText()));
+  ok("the list says when it was really asked for, rather than pretending to be current",
+    (await page.locator(".repopick [data-repolist-when]").count()) === 1 &&
+    /Asked GitHub/i.test(await page.locator(".repopick [data-repolist-when]").innerText()),
+    (await page.locator(".repopick [data-repolist-when]").innerText()).trim());
+  ok("typing a name is still offered, for a repository that is not his",
+    (await page.locator(".connectproj #f-repo").count()) === 1);
+
+  await page.click('.repochoice[data-repo-choice="qa-owner/qa-repo"]');
+  await page.waitForSelector('.proj-list .side-item[data-repo="qa-owner/qa-repo"]', { timeout: 20000 });
+  ok("clicking a repository connects it — the same path typing its name goes down",
+    (await page.locator('.proj-list .side-item[data-repo="qa-owner/qa-repo"]').count()) === 1);
+
+  /* ---- and when gh could not be asked, the reason is shown, never an empty list ---- */
+  await page.click(".projects .topbar [data-connect]");
+  await page.waitForSelector(".connectproj .repopick", { timeout: 15000 });
+  await waitFor(page, () => document.querySelector(".repopick")?.dataset.repolist !== "asking",
+    undefined, { what: "the repository list to settle before the failure is sent" });
+  const NO_LIST = "you're not signed in to GitHub on this computer";
+  engineWs.send(JSON.stringify({ type: "repositoriesFound", problem: NO_LIST }));
+  await waitFor(page, () => document.querySelector(".repopick")?.dataset.repolist === "problem",
+    undefined, { what: "the failed repository listing to be shown as a problem" });
+  ok("a listing that failed shows the reason in the hub's own words, never an empty list reading 'you have none'",
+    (await page.locator(".repopick .problemtext").innerText()).trim() === NO_LIST &&
+    (await page.locator(".repopick .repochoice").count()) === 0,
+    (await page.locator(".repopick .problemtext").innerText()).trim());
+  const fallbackSaid = (await page.locator(".repopick .rp-fallback").innerText()).trim();
+  const typedFieldsLeft = await page.locator(".connectproj #f-repo").count();
+  ok("and it points at the way in that still works — typing the name",
+    /typ(e|ing)/i.test(fallbackSaid) && typedFieldsLeft === 1,
+    `${fallbackSaid} · ${typedFieldsLeft} typed field(s)`);
+  await page.screenshot({ path: `${SHOTS}/projects-picker.png` });
+  await page.click(".projects .topbar [data-connect]"); // close the panel again
+
+  /* back to the repository the rest of this section is about */
+  await page.click(`.proj-list .side-item[data-repo="${REPO}"]`);
+  await page.waitForSelector(`.projdetail[data-repo="${REPO}"]`, { timeout: 15000 });
 
   /* ---- disconnecting forgets OUR copy, and says so before it does ---- */
   await page.click('.pd-btns button:has-text("Disconnect")');

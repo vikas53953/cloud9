@@ -2218,6 +2218,55 @@ button.chip{cursor:pointer;}
 .pd-never span{color:var(--ink-3);max-width:74ch;}
 .pd-note{font-size:12px;color:var(--ink-3);line-height:1.55;margin-top:10px;max-width:70ch;}
 
+/* ---- the repository picker: HIS repositories, clickable (2026-08-01) ---- */
+.repopick{
+  border:1px solid var(--line);border-radius:var(--radius-s);background:var(--surface-2);
+  padding:12px 13px;margin-bottom:14px;
+}
+.rp-head{display:flex;align-items:center;gap:10px;margin-bottom:9px;}
+.rp-head .grow{flex:1;}
+.rp-when{font-size:11.5px;color:var(--ink-3);}
+.rp-list{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto;}
+.repochoice{
+  display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center;
+  width:100%;text-align:left;cursor:pointer;min-width:0;
+  border:1px solid var(--line);border-radius:var(--radius-s);background:var(--surface);
+  padding:9px 11px;font:inherit;color:inherit;
+}
+.repochoice:hover:not(:disabled){border-color:var(--ultra);background:var(--surface-3,var(--surface));}
+.repochoice:disabled{opacity:.55;cursor:default;}
+.rc-tx{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.rc-tx b{font-size:13px;}
+.rc-sub{
+  font-size:11.5px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.rc-when{font-size:11.5px;color:var(--ink-3);white-space:nowrap;}
+/* "we could not ask" is a PROBLEM and never an empty list */
+.rp-problem{
+  display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:var(--radius-s);
+  font-size:12.5px;line-height:1.6;background:var(--madder-soft);
+  border:1px solid color-mix(in srgb,var(--madder) 40%,transparent);
+}
+.rp-problem b{color:var(--madder);font-family:var(--display);font-size:13px;}
+.rp-problem span{color:var(--ink-2);}
+.rp-fallback{color:var(--ink-3);}
+.rp-none{font-size:12.5px;color:var(--ink-3);line-height:1.6;max-width:70ch;}
+
+/* ---- where this project's code lives on this computer (approval-handoff §8) ---- */
+.pd-folder{
+  display:flex;flex-direction:column;gap:8px;align-items:flex-start;
+  border:1px dashed var(--line);border-radius:var(--radius-s);background:var(--surface-2);
+  padding:12px 14px;margin-bottom:18px;
+}
+.pd-folder .folderpath{
+  font-size:12.5px;word-break:break-all;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--radius-s);padding:5px 8px;
+}
+.pd-nofolder{font-size:12.5px;color:var(--ink-3);line-height:1.6;max-width:74ch;}
+.pd-folder .cp-row{width:100%;}
+.pd-folder .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.pd-folder .hint{font-size:11.5px;color:var(--ink-3);max-width:60ch;}
+
 /* ---- the crew standing on this repository's branches ---- */
 .pd-crew{margin-bottom:24px;}
 .pd-crew>.eyebrow{display:block;margin-bottom:10px;}

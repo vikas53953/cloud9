@@ -610,6 +610,38 @@ ipcMain.handle("cloud9:openAgentFolder", async () => {
   return problem ? { ok: false, error: problem } : { ok: true };
 });
 
+/* ---------- picking the folder a project's code lives in ----------
+ *
+ * THE RENDERER NEVER TOUCHES THE FILESYSTEM. It cannot list a folder, cannot
+ * read one and cannot check whether one exists — it asks here, the OS draws its
+ * own picker, and the ONLY thing that crosses back is the one folder the owner
+ * themselves chose. Nothing here can be driven from a page: `showOpenDialog`
+ * always draws a real window, so there is no silent path from a script to a
+ * path on this machine.
+ *
+ * `{ ok: false, cancelled: true }` is a normal answer, not an error — closing
+ * the picker means "not now", and the screen must not report a failure for it.
+ */
+ipcMain.handle("cloud9:chooseFolder", async (_ev, current) => {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+  const options = {
+    title: "Where does this project's code live?",
+    properties: ["openDirectory"],
+    ...(typeof current === "string" && current ? { defaultPath: current } : {}),
+  };
+  try {
+    const picked = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
+    if (picked.canceled || picked.filePaths.length === 0) return { ok: false, cancelled: true };
+    return { ok: true, path: picked.filePaths[0] };
+  } catch (err) {
+    // never the inside of a program: the screen prints this word for word
+    console.error("[cloud9] the folder picker failed:", err);
+    return { ok: false, error: "This computer could not open the folder picker." };
+  }
+});
+
 /* ---------- the computer-wide hotkey, as a setting ---------- */
 
 function quickChatHotkeyStatus(applied) {

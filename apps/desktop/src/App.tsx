@@ -2083,7 +2083,7 @@ function Workspace(): React.JSX.Element {
           <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
             <IconBolt />Ctrl K
           </button>
-          {railBtn("settings", "Setup", <IconGear />)}
+          {railBtn("settings", "Settings", <IconGear />)}
           {/* Which Cloud9 am I on, and a door to join a friend's. The active
               hub's name rides on the button so it is glanceable, and the
               connection sentence is its tooltip — both from `hubConn`, never a
@@ -6024,7 +6024,7 @@ function HireModal({ template, onClose, onHired }: {
           </div>
           <p className="sec-note">
             {template.whyThatApp} {fallback
-              ? "This is the list Cloud9 ships with — sign the app in under Setup for its own."
+              ? "This is the list Cloud9 ships with — sign the app in under Settings for its own."
               : ""}
           </p>
         </div>
@@ -7125,7 +7125,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
             </div>
             <p className="sec-note" style={{ marginTop: 8 }}>
               {fallback
-                ? "This is the list Cloud9 ships with. Once the app is signed in under Setup, its own list is used."
+                ? "This is the list Cloud9 ships with. Once the app is signed in under Settings, its own list is used."
                 : `${countOf(ids.length, "model")} offered by your ${PROVIDER_LABEL[provider]} app.`}
             </p>
             {!creating && !agent!.model && (
@@ -7819,7 +7819,7 @@ function InviteFriendLink({ joinToken }: {
       {loopbackOnly && (
         <div className="notice loopbackwarn">
           Right now this link points at <b>this computer only</b> — a friend on another computer can't
-          reach it yet. To let them in, put your private-network (Tailscale) address in Setup and make a
+          reach it yet. To let them in, put your private-network (Tailscale) address in Settings and make a
           fresh link. That step is yours; it isn't wired up tonight.
         </div>
       )}
@@ -7980,6 +7980,13 @@ interface DesktopBridge {
   credentialStatus?: () => Promise<CredentialStatus>;
   openAgentFolder?: () => Promise<IpcResult>;
   agentFolder?: () => Promise<string>;
+  /**
+   * Ask the OWNER, through the operating system's own picker, which folder a
+   * project's code is in. The window never touches the filesystem itself.
+   * `cancelled` is a normal answer and is not a failure.
+   */
+  chooseFolder?: (current?: string) => Promise<
+    { ok: boolean; path?: string; cancelled?: boolean; error?: string }>;
   /** Which address this computer's hub answers on, so a friend can reach it. */
   hubNetwork?: () => Promise<{
     address: string; loopbackOnly: boolean;
@@ -8050,7 +8057,7 @@ function SettingsScreen(): React.JSX.Element {
   return (
     <div className="settings settingspanel">
       <header className="topbar">
-        <h2>Setup</h2>
+        <h2>Settings</h2>
         <span className="sub">How Cloud9 behaves on this computer</span>
         <div className="grow" />
         <span className="eyebrow">Saved as you change it</span>
@@ -8952,12 +8959,35 @@ function TracedRun({ agentId, branch }: { agentId: ID; branch: string }): React.
   );
 }
 
-/** Connect a repository — the only form on this screen that changes anything. */
+/**
+ * Connect a repository — the only form on this screen that changes anything.
+ *
+ * HIS ASK, 2026-08-01: every app he uses shows him HIS things and lets him
+ * click one; this made him type `owner/name` from memory. So the panel opens by
+ * asking the computer that holds his GitHub sign-in which repositories it can
+ * see, and each one is a row he clicks.
+ *
+ * THE TYPED FIELD STAYS, and it is not a leftover: somebody else's repository
+ * he has been given access to may not be in `gh repo list` at all, and a
+ * signed-out computer has no list to show. Both routes go through ONE
+ * `connect()` below — the picker is a way of filling that field in, never a
+ * second way of connecting.
+ *
+ * NOTHING HERE PRETENDS. A list we could not fetch is never drawn as "you have
+ * no repositories": the reason is printed in the hub's own words, the typed
+ * field keeps working, and the list says when it was really asked for.
+ */
 function ConnectProject({ onConnected }: { onConnected: (repo: string) => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [repo, setRepo] = useState("");
   const [name, setName] = useState("");
   const [refusal, setRefusal] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const choices = world.repoChoices;
+
+  /* Asked every time the panel opens, never cached: a repository made this
+     morning would otherwise be missing from a list held since yesterday. */
+  useEffect(() => { client.askRepositories(); }, []);
 
   /* THE THIRD SURFACE ON THE SAME OWNER. A half-typed repository name is unsaved
      work like any other, and leaving Projects used to lose it without a word. */
@@ -8966,29 +8996,111 @@ function ConnectProject({ onConnected }: { onConnected: (repo: string) => void }
     "The repository you are connecting",
     (!!repo.trim() || !!name.trim()) && !settled.current);
 
-  const submit = (): void => {
-    /* THE CHECK LIVES IN THE STORE, not here (`connectProject` → `refused`), so
-       every box in the app gives the same answer to "it was refused — what
-       happens to what he typed": say why, in the HUB'S OWN words, right where
-       he is looking, and change nothing else. */
+  /**
+   * ONE CONNECT PATH, whether he clicked a row or typed a name.
+   *
+   * THE CHECK LIVES IN THE STORE, not here (`connectProject` → `refused`), so
+   * every box in the app gives the same answer to "it was refused — what
+   * happens to what he typed": say why, in the HUB'S OWN words, right where he
+   * is looking, and change nothing else.
+   */
+  const connect = (which: string, called?: string): void => {
     setRefusal(null);
     setSending(true);
     let stopped = false;
-    client.connectProject(repo.trim(), name.trim() ? { name: name.trim() } : {}, why => {
+    client.connectProject(which, called?.trim() ? { name: called.trim() } : {}, why => {
       stopped = true;
       setSending(false);
       setRefusal(why);
     });
     /* only leave the form when it was actually accepted */
-    if (!stopped) { settled.current = true; onConnected(repo.trim()); }
+    if (!stopped) { settled.current = true; onConnected(which); }
   };
+
+  const submit = (): void => connect(repo.trim(), name);
 
   return (
     <div className="connectproj panelbox">
       <span className="eyebrow">Connect a repository</span>
       <p className="hint">
-        Name it the way GitHub does — <code>owner/name</code>. It runs through the
-        GitHub sign-in already on this computer; Cloud9 never asks for a token.
+        These are the repositories the GitHub sign-in on this computer can see. Click one
+        to connect it — Cloud9 never asks for a token.
+      </p>
+
+      {/* HIS OWN REPOSITORIES, really asked for. Four states, four sentences —
+          and "we could not ask" never wears the clothes of "you have none". */}
+      <div className="repopick" data-repolist={
+        choices.asking ? "asking"
+          : choices.problem ? "problem"
+            : choices.repos ? (choices.repos.length > 0 ? "list" : "none")
+              : "unasked"}>
+        <div className="rp-head">
+          <span className="eyebrow">Your repositories</span>
+          <div className="grow" />
+          {choices.fetchedAt !== undefined && !choices.asking && (
+            <span className="rp-when" data-repolist-when
+              title={new Date(choices.fetchedAt).toLocaleString()}>
+              Asked GitHub {dayStamp(choices.fetchedAt)}
+            </span>
+          )}
+          <button className="btn small" data-repolist-again disabled={choices.asking}
+            onClick={() => client.askRepositories()}>
+            {choices.asking ? "Asking…" : "Ask again"}
+          </button>
+        </div>
+
+        {choices.asking && (
+          <div className="runwait">Asking the GitHub sign-in on this computer…</div>
+        )}
+
+        {/* WHY there is no list, in the hub's own words — never an empty list
+            reading like "you have no repositories". The typed field below still
+            works, and this says so. */}
+        {!choices.asking && choices.problem && (
+          <div className="rp-problem" role="status">
+            <b>Cloud9 could not ask GitHub for your repositories</b>
+            <span className="problemtext">{plainError(choices.problem)}</span>
+            <span className="rp-fallback">You can still connect one by typing its name below.</span>
+          </div>
+        )}
+
+        {!choices.asking && !choices.problem && choices.repos?.length === 0 && (
+          <div className="rp-none">
+            GitHub answered, and this sign-in can see no repositories of its own. If the one
+            you want belongs to somebody else, type its name below.
+          </div>
+        )}
+
+        {!choices.asking && (choices.repos?.length ?? 0) > 0 && (
+          <div className="rp-list">
+            {choices.repos?.map(choice => (
+              <button className="repochoice" key={choice.nameWithOwner}
+                data-repo-choice={choice.nameWithOwner} disabled={sending}
+                onClick={() => connect(choice.nameWithOwner)}>
+                <span className="rc-tx">
+                  <b>{choice.nameWithOwner}</b>
+                  {choice.description && <span className="rc-sub">{choice.description}</span>}
+                </span>
+                {/* drawn only when GitHub said — a repository whose visibility
+                    we were not told is not labelled as public */}
+                {choice.visibility && (
+                  <span className={`chip ${choice.visibility === "public" ? "" : "is-gold"}`}>
+                    {choice.visibility === "public" ? "Public"
+                      : choice.visibility === "private" ? "Private" : "Internal"}
+                  </span>
+                )}
+                {choice.updatedAt !== undefined && (
+                  <span className="rc-when">Changed {dayStamp(choice.updatedAt)}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <p className="hint">
+        Not in the list — somebody else's repository? Name it the way GitHub does,
+        as <code>owner/name</code>.
       </p>
       <div className="cp-row">
         <input className="input" id="f-repo" placeholder="vikas53953/cloud9" value={repo}
@@ -9001,6 +9113,103 @@ function ConnectProject({ onConnected }: { onConnected: (repo: string) => void }
         <button className="btn primary" disabled={sending} onClick={submit}>Connect</button>
       </div>
       <Problem text={refusal ?? undefined} />
+    </div>
+  );
+}
+
+/**
+ * WHERE THIS PROJECT'S CODE LIVES ON THIS COMPUTER — and honestly when it does
+ * not live anywhere yet.
+ *
+ * This closes `docs/plans/approval-handoff.md` §8. A project named a repository
+ * on GitHub and nothing on screen could say where its code was on the machine,
+ * so `!code` in a room answered "nobody has told Cloud9 where this project's
+ * code lives" for every project, for ever.
+ *
+ * THE WINDOW NEVER TOUCHES THE FILESYSTEM. "Choose folder" asks the desktop
+ * shell to draw the operating system's own picker (`dialog.showOpenDialog`),
+ * and the only thing that comes back is the one folder the owner picked. In a
+ * plain browser — dev, QA — there is no picker at all, so it says so and offers
+ * to take the folder typed, which is the same frame by another route.
+ */
+function ProjectFolder({ project }: { project: Project }): React.JSX.Element {
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const [typing, setTyping] = useState(false);
+  const [draft, setDraft] = useState(project.localPath ?? "");
+  useEffect(() => {
+    setDraft(project.localPath ?? "");
+    setTyping(false);
+    setRefusal(null);
+  }, [project.id, project.localPath]);
+
+  const save = (folder: string): void => {
+    setRefusal(null);
+    client.setProjectFolder(project.id, folder, why => setRefusal(why));
+  };
+
+  const pick = async (): Promise<void> => {
+    setRefusal(null);
+    const picker = desktop()?.chooseFolder;
+    if (!picker) {
+      // NOT A DEAD BUTTON, and not a lie either: this window has no picker, so
+      // it says which and takes the folder typed instead.
+      setTyping(true);
+      return;
+    }
+    const picked: { ok: boolean; path?: string; cancelled?: boolean; error?: string } =
+      await picker(project.localPath).catch(() => ({
+        ok: false, error: "This computer could not open the folder picker.",
+      }));
+    if (picked.ok && picked.path) { save(picked.path); return; }
+    // closing the picker means "not now" — nothing changes and nothing is said
+    if (picked.cancelled) return;
+    if (picked.error) setRefusal(picked.error);
+  };
+
+  return (
+    <div className="pd-folder" data-folder={project.localPath ?? ""}
+      data-folder-state={project.localPath ? "linked" : "none"}>
+      <span className="eyebrow">Where the code lives on this computer</span>
+      {project.localPath
+        ? <code className="folderpath">{project.localPath}</code>
+        : (
+          <span className="pd-nofolder">
+            No folder linked yet. Until you choose one, an agent asked to work in this
+            project's code says so rather than guessing a folder.
+          </span>
+        )}
+
+      {typing && (
+        <div className="cp-row">
+          <input className="input" id="f-folder" autoFocus value={draft}
+            placeholder="C:\Users\you\code\cloud9"
+            autoComplete="off" spellCheck={false}
+            onChange={e => { setDraft(e.target.value); setRefusal(null); }}
+            onKeyDown={e => { if (e.key === "Enter") save(draft); }} />
+          <button className="btn primary small" data-folder-save
+            onClick={() => save(draft)}>Save the folder</button>
+          <button className="btn small" onClick={() => setTyping(false)}>Cancel</button>
+        </div>
+      )}
+
+      <div className="actions">
+        <button className="btn small" data-folder-choose onClick={() => void pick()}>
+          {project.localPath ? "Choose a different folder" : "Choose folder"}
+        </button>
+        {project.localPath && (
+          <button className="btn small" data-folder-clear onClick={() => save("")}>
+            Forget this folder
+          </button>
+        )}
+        {typing && !desktop()?.chooseFolder && (
+          <span className="hint">
+            This window cannot open the computer's folder picker, so type the whole
+            folder — starting from the drive.
+          </span>
+        )}
+      </div>
+
+      <Problem text={refusal ?? undefined} attrs={{ "data-folder-refusal": "" }} />
     </div>
   );
 }
@@ -9207,6 +9416,11 @@ function ProjectDetail({ project, onOpenChannel }: {
       </div>
 
       {project.description && <p className="pd-desc">{project.description}</p>}
+
+      {/* The folder on THIS computer — the other half of a project. The name
+          above says which repository it is on GitHub; this says where its code
+          is here, which is what an agent asked to work in code actually needs. */}
+      <ProjectFolder project={project} />
 
       {/* The hub's refusal, where the button he pressed is — not only in the
           toast that floats above every screen. Its own words, never a

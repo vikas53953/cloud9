@@ -33,8 +33,9 @@
 // on the commit subject via `--fill`, and the body goes in on standard input
 // via `--body-file -`.
 import {
-  PROJECT_LIMITS, ProjectItem, REMOTE_ACTIONS, RemoteAction, RemoteActionFacts,
-  describeRemoteAction, isBranchName, validateProjectItem, validateRepo,
+  PROJECT_LIMITS, ProjectItem, REMOTE_ACTIONS, REPO_LIST_LIMITS, RemoteAction, RemoteActionFacts,
+  RepoChoice, describeRemoteAction, isBranchName, validateProjectItem, validateRepo,
+  validateRepoChoice,
 } from "@cloud9/shared";
 import { run, Runner } from "./run.js";
 import { GitError, Worktree } from "./worktree.js";
@@ -113,6 +114,19 @@ export interface RepositoryLook {
 }
 
 /**
+ * What one ASK FOR THE OWNER'S REPOSITORIES found — or why it found nothing.
+ *
+ * Same shape and same law as `RepositoryLook`: `repos` absent means we never
+ * got a list, `repos: []` means GitHub really answered with none. A screen that
+ * cannot tell those apart tells the owner they have no repositories when in
+ * fact nobody could ask.
+ */
+export interface RepositoryList {
+  repos?: RepoChoice[];
+  problem?: string;
+}
+
+/**
  * EVERY `gh` COMMAND THIS FILE'S READ PATH IS ALLOWED TO RUN.
  *
  * A list, not a habit. "Reading a repository can never change it" is a promise
@@ -122,6 +136,11 @@ export interface RepositoryLook {
  */
 const READ_ONLY_GH: ReadonlySet<string> = new Set([
   "repo view", "pr list", "issue list", "auth status",
+  // "which repositories can this sign-in see" — added 2026-08-01 for the
+  // repository picker. `gh repo list` prints; it cannot create, rename or
+  // delete anything, and `repo create`/`repo delete` are still not on this list
+  // and so are still unreachable from any read path.
+  "repo list",
 ]);
 
 /** The columns we ask GitHub for, ONE PER FLAG. */
@@ -131,6 +150,8 @@ const PULL_FIELDS = [
 const ISSUE_FIELDS = [
   "number", "title", "url", "state", "author", "createdAt", "updatedAt",
 ] as const;
+/** what the repository PICKER needs, and nothing more (verified against gh 2.92.0) */
+const REPO_FIELDS = ["nameWithOwner", "description", "visibility", "updatedAt"] as const;
 
 /**
  * `--json a --json b`, never `--json a,b`.
@@ -312,6 +333,46 @@ export class GitHubClient {
   }
 
   /**
+   * WHICH REPOSITORIES THIS COMPUTER'S SIGN-IN CAN SEE — the picker's one
+   * source of truth, and it lives here beside `account()` because it asks the
+   * same program the same way and fails in the same words.
+   *
+   * READ ONLY, AND ENFORCED by `readOnly` against `READ_ONLY_GH`. Being handed
+   * a list is not permission to do anything with it: connecting still goes
+   * through `connectProject` at the hub, which checks ownership as it always
+   * did.
+   *
+   * IT NEVER THROWS AND NEVER RETURNS AN EMPTY LIST FOR A FAILURE. "You have no
+   * repositories" and "we could not ask" are opposite facts and the screen says
+   * which — `repos` absent with a `problem` is "we could not ask"; `repos: []`
+   * is GitHub really answering with none.
+   *
+   * VERIFIED BY RUNNING gh 2.92.0 ON THIS MACHINE, 2026-08-01 — not remembered:
+   * `gh repo list --json nameWithOwner --json description --json visibility
+   * --json updatedAt --limit 3` printed exactly those four columns. The flag is
+   * REPEATED, never `--json a,b`: run.ts refuses a comma, which is the trap
+   * `--json number,url` fell into for a day.
+   */
+  async listRepositories(): Promise<RepositoryList> {
+    try {
+      // the same first question a look asks, and for the same reason: "not
+      // signed in" and "you have no repositories" must never read the same.
+      const who = await this.account();
+      if (!who.signedIn) {
+        return { problem: `${who.detail} — sign in to GitHub on this computer, then look again.` };
+      }
+      const listed = await this.readOnly([
+        "repo", "list", "--limit", String(REPO_LIST_LIMITS.rows), ...jsonFields(REPO_FIELDS),
+      ]);
+      if ("problem" in listed) return listed;
+      return readRepoChoices(listed.stdout);
+    } catch (err) {
+      this.log(`could not list repositories: ${err instanceof Error ? err.message : String(err)}`);
+      return { problem: "Cloud9 could not ask GitHub for your repositories. Try again in a moment." };
+    }
+  }
+
+  /**
    * Send the agent's branch to GitHub.
    *
    * `-u` sets the upstream so the branch has somewhere to belong; the branch
@@ -462,7 +523,7 @@ export class GitHubClient {
    * "reading a repository never writes to it" is a property of this method and
    * not of everyone remembering.
    */
-  private async readOnly(args: string[], repo: string): Promise<{ stdout: string } | { problem: string }> {
+  private async readOnly(args: string[], repo?: string): Promise<{ stdout: string } | { problem: string }> {
     const verb = `${args[0]} ${args[1]}`;
     if (!READ_ONLY_GH.has(verb)) {
       // not a sentence for the owner — this is a programming mistake, and it is
@@ -489,12 +550,19 @@ export class GitHubClient {
  * down, GitHub rate limiting us. A stack trace or a raw `gh` line is never the
  * answer — the screen prints this verbatim.
  */
-export function whyGitHubSaidNo(text: string, repo: string): string {
+export function whyGitHubSaidNo(text: string, repo?: string): string {
   const said = String(text ?? "");
   if (/rate limit|secondary rate|abuse detection|429/i.test(said)) {
     return "GitHub is asking us to slow down for a while (it calls this a rate limit). Try again in a few minutes.";
   }
   if (/could not resolve to a (repository|user)|404|not found|does not exist/i.test(said)) {
+    // NO REPOSITORY WAS NAMED — this is the picker asking for the whole list,
+    // and a sentence with an empty name in it ("no repository called ") reads
+    // like a bug. The question that failed is a different question, so it gets
+    // its own answer rather than a hole in somebody else's.
+    if (!repo) {
+      return "GitHub did not recognise this computer's sign-in. Sign in to GitHub again, then look once more.";
+    }
     return `GitHub has no repository called ${repo} that this computer's sign-in can see. Check the name — and if it is private, the GitHub account signed in here needs to be given access.`;
   }
   if (/gh auth login|not logged (in)?to|authentication|bad credentials|401|403/i.test(said)) {
@@ -539,6 +607,46 @@ export function readItems(
     if (item && !validateProjectItem({ ...item, projectId: "check" })) items.push(item);
   }
   return { items };
+}
+
+/**
+ * Turn what `gh repo list --json …` printed into rows the picker can draw.
+ *
+ * SAME LAW AS `readItems`, for the same reason: it arrived from outside, so
+ * every row goes through the HUB'S OWN `validateRepoChoice` before it is kept,
+ * and a row that does not pass is dropped rather than repaired — one unusable
+ * repository must never cost the owner the whole list.
+ *
+ * gh SHOUTS visibility (`PUBLIC`, `PRIVATE`), and a repository with no
+ * description prints `""` — which is not a description and is left off, so the
+ * screen draws nothing rather than an empty line.
+ */
+export function readRepoChoices(stdout: string): RepositoryList {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout.trim() || "[]");
+  } catch {
+    return { problem: "GitHub's answer could not be read. Try looking again." };
+  }
+  if (!Array.isArray(raw)) return { problem: "GitHub's answer could not be read. Try looking again." };
+  const repos: RepoChoice[] = [];
+  for (const row of raw as Array<Record<string, unknown>>) {
+    if (!row || typeof row !== "object") continue;
+    const nameWithOwner = typeof row.nameWithOwner === "string" ? row.nameWithOwner : "";
+    const description = typeof row.description === "string" ? row.description.trim() : "";
+    const said = String(row.visibility ?? "").toLowerCase();
+    const visibility = said === "public" || said === "private" || said === "internal" ? said : undefined;
+    const updatedAt = when(row.updatedAt);
+    const choice: RepoChoice = {
+      nameWithOwner,
+      ...(description ? { description: description.slice(0, REPO_LIST_LIMITS.description) } : {}),
+      ...(visibility ? { visibility } : {}),
+      ...(updatedAt !== undefined ? { updatedAt } : {}),
+    };
+    if (!validateRepoChoice(choice)) repos.push(choice);
+    if (repos.length >= REPO_LIST_LIMITS.rows) break;
+  }
+  return { repos };
 }
 
 function readItem(
