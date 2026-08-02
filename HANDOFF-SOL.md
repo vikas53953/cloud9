@@ -90,5 +90,29 @@ widths are untested. Vikas's own step, whenever he chooses: the Tailscale
 browser sign-in (`docs/plans/tailscale-steps.md`) that makes friends-over-
 internet real.
 
-Write your progress into the ledger as you go, keep every report page published,
-and leave the tree the way you'd want to find it: green, installed, walked.
+## Where to commit, and the hand-back (so the reviewing session picks up cold)
+
+- **Everything lands on `master` of `github.com/vikas53953/cloud9`, pushed to
+  `origin` immediately.** One commit per completed feature (plus small fix
+  commits as needed) — never one giant commit at the end, never work sitting
+  unpushed on this machine. Worker agents never commit; only you do, after
+  re-running the evidence yourself.
+- If a feature is interrupted half-done, park it on a branch named
+  `sol/<feature>` and push it — never leave loose uncommitted work, and say in
+  the ledger that it is UNVERIFIED.
+- **Append to `implementation-notes.md` in the same commit** as each feature:
+  what was built, the exact counts you ran, and anything you found or deviated
+  on. That file is how the next session knows what to believe.
+- **Write `SOL-REPORT.md` at the repo root and keep it current** — one section
+  per feature: status (DONE-PROVEN / UNVERIFIED / NOT STARTED), the commit
+  hash, the evidence counts from YOUR runs, the report-page URL you gave Vikas,
+  and open questions. This is the first file the reviewing Claude session reads.
+- **Leave the machine consistent at every stop**: working tree clean, the
+  installed app rebuilt and reinstalled to match your last commit
+  (`npm run dist` then `release\Cloud9-Setup-0.1.0.exe /S`), and the walk
+  (`npm run qa:app`) green against it. A commit whose evidence chain did not
+  finish is marked UNVERIFIED in both the ledger and SOL-REPORT.md — never
+  claimed as done.
+- The previous conductor will review your work by re-running the whole evidence
+  chain and reading SOL-REPORT.md + `git log 92af155..`. Write for that reader:
+  plain words, real counts, no claims you didn't watch happen.
