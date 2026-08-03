@@ -571,9 +571,6 @@ export class RelayClient {
    */
   connect(token: string): void {
     this.selfHello = token;
-    // a person-initiated attempt earns its own one automatic fall-back
-    this.recovering = false;
-    this.issued = undefined;
     const sw = switchTo(this.book, "self");
     if (sw.ok) this.book = sw.book;
     this.saveBook();
@@ -584,7 +581,11 @@ export class RelayClient {
   private connectActive(): void {
     const hub = activeHub(this.book);
     this.conn = initialConn(hub.id, hub.isSelf);
-    // a fresh attempt starts clean: last attempt's refusal belonged to it
+    // a fresh attempt starts clean: last attempt's refusal belonged to it, and
+    // so did any credential the last hub minted for it — an unproven one is
+    // never carried into a different attempt
+    this.issued = undefined;
+    this.recovering = false;
     this.world.authFailed = false;
     this.world.lastError = undefined;
     // questions asked of the last connection will never be answered by this one
