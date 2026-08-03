@@ -34,6 +34,7 @@ import {
 import { AgentHandoff, buildHandoff, HandoffError } from "./agent-handoff.js";
 import { isScheduleWhen, Scheduler } from "./scheduler.js";
 import { taskTldr } from "./tldr.js";
+import { roomLineForThreadJob, threadOf } from "./threads.js";
 import { sweepPendingTree, writeWholeFile } from "./wholefile.js";
 
 export interface EngineOptions {
@@ -93,6 +94,15 @@ export interface TurnInput {
   taskId?: ID;
   requesterKind?: "human" | "agent" | "schedule";
   /**
+   * THE THREAD THIS TURN IS ANSWERING IN, or absent for the main room.
+   *
+   * It rides on the turn rather than on each message the turn happens to send,
+   * so everything one turn says — the answer, the honest failure sentence, a
+   * refused file — lands in the same place. `threads.ts` owns the rule that
+   * fills it in.
+   */
+  replyTo?: ID;
+  /**
    * Where the turn happens. Absent — every ordinary turn — means the agent's
    * own folder. Set only for a turn working inside its own git worktree.
    */
@@ -142,6 +152,12 @@ export class Engine {
    */
   private pendingAsks: PendingAsk[] = [];
   private askMessageFor = new Map<ID, ID>();
+  /**
+   * And WHERE each job was asked for: the thread it belongs to, for the jobs
+   * that were asked for inside one. A job asked for in the room is simply not
+   * in here, which is how the room case stays exactly as it was.
+   */
+  private askThreadFor = new Map<ID, ID>();
   /**
    * AGENTS STANDING AT THE GATE. One per thing an agent has asked to do that
    * would leave this computer, waiting on his answer without holding anything
@@ -390,6 +406,10 @@ export class Engine {
     if (!channel) return;
     const history = this.history.get(channel.id) ?? [];
     const channelAgents = this.state.agents.filter(a => channel.memberIds.includes(a.id));
+    // WHERE EVERY ANSWER TO THIS MESSAGE BELONGS — read once, here, and handed
+    // to whichever path takes the turn. Undefined means the main room, which is
+    // every message not said inside a thread: nothing changes there.
+    const thread = threadOf(message);
     // A HANDOFF TYPED IN THE ROOM: "@From !handoff @To <what to do>". Parsed from
     // the RAW text, because @-mentions are stripped from `bare` and @To is one.
     // Only the agent named before !handoff hands off; the one named after
@@ -417,7 +437,7 @@ export class Engine {
         const me = agent.name.toLowerCase();
         if (me === handoffCmd.from.toLowerCase()) {
           this.enqueue(() => this.handOffInRoom(
-            agent, channel.id, handoffCmd.to, handoffCmd.task, message.authorName));
+            agent, channel.id, handoffCmd.to, handoffCmd.task, message.authorName, thread));
           continue;
         }
         if (me === handoffCmd.to.toLowerCase()) continue;
@@ -428,13 +448,13 @@ export class Engine {
       // loud in the agent's own voice rather than swallowed.
       if (message.authorKind === "human" && /^!remember\s+/i.test(bare)) {
         const text = bare.replace(/^!remember\s+/i, "").trim();
-        this.enqueue(() => this.rememberFromRoom(agent, channel.id, text));
+        this.enqueue(() => this.rememberFromRoom(agent, channel.id, text, thread));
         continue;
       }
       // schedule commands: "@Agent !schedule daily 06:30 do X" / "every 15m do X",
       // "@Agent !schedules", "@Agent !unschedule <id>"
       if (message.authorKind === "human"
-        && this.handleScheduleCommand(agent, channel.id, bare, message.authorId)) continue;
+        && this.handleScheduleCommand(agent, channel.id, bare, message.authorId, thread)) continue;
       // delegated work: "!bg <task>" or "!task <task>" → tracked Task (spec FR-TS-002)
       const bg = message.authorKind === "human" && /^!(bg|task)\s+/i.test(bare);
       if (bg) {
@@ -456,13 +476,18 @@ export class Engine {
         // that the ask landed, before anything slow starts. The rest of the
         // ticks follow the job, so the message it was asked in has to be
         // remembered until the hub gives that job an id.
+        // the ask remembers WHERE it was made as well as which message it was:
+        // a job asked for inside a thread reports back into that thread, and
+        // the task the hub mints carries no thread of its own to tell us
         this.pendingAsks = rememberAsk(this.pendingAsks, {
           agentId: agent.id, channelId: channel.id, title, messageId: message.id, at: Date.now(),
+          ...(thread ? { replyTo: thread } : {}),
         });
         this.reactAs(agent.id, message.id, "picked");
         this.agentSend(agent.id, channel.id, needsApproval
           ? `I can do that — waiting for my owner's approval first. 🔒 (see Tasks panel)`
-          : `On it — I'll work on this in the background and post here when done. ⏳`);
+          : `On it — I'll work on this in the background and post here when done. ⏳`,
+          { ...(thread ? { replyTo: thread } : {}) });
         continue;
       }
       // WORK IN THE CODE: "!code <what to do>". The agent gets its own git
@@ -475,6 +500,7 @@ export class Engine {
         this.enqueue(async () => {
           await this.workInRepository(agent, {
             channelId: channel.id, ask: what, triggerAuthor: message.authorName,
+            ...(thread ? { replyTo: thread } : {}),
           });
         });
         continue;
@@ -487,7 +513,7 @@ export class Engine {
       if (message.authorKind === "human") {
         const write = this.parseGitHubWriteCommand(bare);
         if (write) {
-          this.enqueue(() => this.workGitHubWriteInRoom(agent, channel.id, write));
+          this.enqueue(() => this.workGitHubWriteInRoom(agent, channel.id, write, thread));
           continue;
         }
       }
@@ -683,7 +709,12 @@ export class Engine {
     // file really is on this computer; silence here is the "the file's on disk"
     // complaint all over again, with the app doing the hiding.
     const said = describeRefusals(sweep.refused);
-    if (said) this.agentSend(agent.id, channelId, said);
+    // said where the turn is speaking — in the thread when the turn was asked
+    // for in one, so a refusal cannot land away from the question it belongs to
+    if (said) {
+      this.agentSend(agent.id, channelId, said,
+        { ...(input.replyTo ? { replyTo: input.replyTo } : {}) });
+    }
   }
 
   /**
@@ -761,9 +792,17 @@ export class Engine {
     return failed;
   }
 
-  /** Run one chat turn for an agent on its own harness. Public so tests can drive it. */
+  /**
+   * Run one chat turn for an agent on its own harness. Public so tests can drive it.
+   *
+   * ASKED IN A THREAD, ANSWERED IN THAT THREAD (his complaint). The thread is
+   * read ONCE, here, from the message being answered, and then carried by the
+   * turn — the answer, the honest failure sentence and anything `respondAs`
+   * says afterwards all inherit it.
+   */
   async takeTurn(agent: AgentDef, channelId: ID, trigger: Message): Promise<void> {
     this.setStatus(agent.id, "working");
+    const replyTo = threadOf(trigger);
     try {
       const text = await this.respondAs(agent, {
         context: this.renderContext(channelId),
@@ -772,10 +811,13 @@ export class Engine {
         kind: "chat",
         channelId,
         requesterKind: trigger.authorKind === "agent" ? "agent" : "human",
+        ...(replyTo ? { replyTo } : {}),
       });
-      this.agentSend(agent.id, channelId, text);
+      this.agentSend(agent.id, channelId, text, { ...(replyTo ? { replyTo } : {}) });
     } catch (err) {
-      this.agentSend(agent.id, channelId, sanitizeForChat(err, `${agent.name} could not take a turn`));
+      this.agentSend(agent.id, channelId,
+        sanitizeForChat(err, `${agent.name} could not take a turn`),
+        { ...(replyTo ? { replyTo } : {}) });
     } finally {
       this.setStatus(agent.id, "idle");
     }
@@ -790,9 +832,10 @@ export class Engine {
     // the hub has now given this job an id, so the message it was asked in can
     // be tied to it and wear the rest of its ticks
     if (!this.askMessageFor.has(task.id)) {
-      const { messageId, rest } = takeAsk(this.pendingAsks, task);
+      const { messageId, replyTo, rest } = takeAsk(this.pendingAsks, task);
       this.pendingAsks = rest;
       if (messageId) this.askMessageFor.set(task.id, messageId);
+      if (replyTo) this.askThreadFor.set(task.id, replyTo);
     }
     if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") return; // FR-AG-007
     // Last gate on "who may make this agent act". The relay checks the same
@@ -809,6 +852,13 @@ export class Engine {
   }
 
   private async runTask(agent: AgentDef, task: Task): Promise<void> {
+    // A JOB REPORTS BACK WHERE IT WAS ASKED FOR. If the "@Scout !bg …" was typed
+    // inside a thread, everything this job says goes in that thread — and the
+    // finished result also gets one short line in the room (`reportFinished`).
+    // A job made from the Tasks panel, or asked for in the room, has no thread
+    // here and behaves exactly as before.
+    const thread = this.askThreadFor.get(task.id);
+    const inThread = thread ? { replyTo: thread } : {};
     this.setStatus(agent.id, "working");
     this.markWork(task, "picked", false);
     this.markWork(task, "working");
@@ -837,7 +887,7 @@ export class Engine {
           });
           this.markWork(task, "working", false);
           this.markWork(task, "failed");
-          this.agentSend(agent.id, task.channelId, SCHEDULE_NOT_SAVED);
+          this.agentSend(agent.id, task.channelId, SCHEDULE_NOT_SAVED, inThread);
           return;
         }
         this.sendFrame({
@@ -849,7 +899,8 @@ export class Engine {
         });
         this.markWork(task, "working", false);
         this.markWork(task, "done");
-        this.agentSend(agent.id, task.channelId, `⏰ Approved & scheduled: ${s.when} — "${s.prompt}" (id ${s.id})`);
+        this.agentSend(agent.id, task.channelId,
+          `⏰ Approved & scheduled: ${s.when} — "${s.prompt}" (id ${s.id})`, inThread);
         return;
       }
       // WORK IN THE CODE, AS A JOB — "!code <what to do>" asked for in the
@@ -868,6 +919,7 @@ export class Engine {
         const result = await this.workInRepository(agent, {
           channelId: task.channelId, ask: code[1].trim(),
           triggerAuthor: task.requesterName, taskId: task.id,
+          ...inThread,
         });
         // FR-TS-005: stopped while we worked, so the result is discarded
         if (this.tasks.get(task.id)?.status === "cancelled") {
@@ -912,6 +964,7 @@ export class Engine {
         kind: "task",
         channelId: task.channelId,
         taskId: task.id,
+        ...inThread,
       });
       // FR-TS-005: if cancelled while we worked, discard the result
       if (this.tasks.get(task.id)?.status === "cancelled") {
@@ -925,7 +978,8 @@ export class Engine {
       });
       this.markWork(task, "working", false);
       this.markWork(task, "done");
-      this.agentSend(agent.id, task.channelId, `📦 Task done:\n${text}`, true);
+      this.reportFinished(agent.id, task.channelId, thread,
+        `📦 Task done:\n${text}`, roomLineForThreadJob(task.title));
     } catch (err) {
       const said = sanitizeForChat(err, `task "${task.title}" failed`);
       this.sendFrame({
@@ -934,10 +988,14 @@ export class Engine {
       });
       this.markWork(task, "working", false);
       this.markWork(task, "failed");
-      this.agentSend(agent.id, task.channelId, said);
+      // a job that fell over is still a finished job: the reason goes where it
+      // was asked for, and the room hears that it ended
+      this.reportFinished(agent.id, task.channelId, thread, said,
+        roomLineForThreadJob(task.title, "failed"), false);
     } finally {
       this.setStatus(agent.id, "idle");
       this.askMessageFor.delete(task.id);
+      this.askThreadFor.delete(task.id);
     }
   }
 
@@ -1099,6 +1157,9 @@ export class Engine {
 
   private async backgroundTask(agent: AgentDef, channelId: ID, trigger: Message): Promise<void> {
     this.setStatus(agent.id, "working");
+    // same law as `runTask`: asked in a thread → answered in that thread, with
+    // one short line in the room when it is done
+    const thread = threadOf(trigger);
     try {
       const text = await this.respondAs(agent, {
         context: this.renderContext(channelId),
@@ -1106,13 +1167,23 @@ export class Engine {
         triggerAuthor: trigger.authorName,
         kind: "task",
         channelId,
+        ...(thread ? { replyTo: thread } : {}),
       });
-      this.agentSend(agent.id, channelId, `📦 Background task done:\n${text}`, true);
+      this.reportFinished(agent.id, channelId, thread, `📦 Background task done:\n${text}`,
+        roomLineForThreadJob(trigger.text.replace(/^!bg\s+/i, "")));
     } finally {
       this.setStatus(agent.id, "idle");
     }
   }
 
+  /**
+   * A standing order comes round. THIS ONE STAYS IN THE ROOM, on purpose: at the
+   * moment it fires there is no message it is answering, so there is no thread
+   * it belongs inside — and a 6:30am check-in dropped into a thread from weeks
+   * ago is a line nobody would ever see. The command that CREATED the schedule
+   * was answered where it was typed (`handleScheduleCommand`); the schedule
+   * itself is proactive, and proactive means the room.
+   */
   private async fireSchedule(s: AgentSchedule): Promise<void> {
     const agent = this.myAgents.find(a => a.id === s.agentId);
     if (!agent) return;
@@ -1127,7 +1198,7 @@ export class Engine {
         channelId: s.channelId,
         requesterKind: "schedule",
       });
-      this.agentSend(agent.id, s.channelId, `⏰ ${text}`, true);
+      this.agentSend(agent.id, s.channelId, `⏰ ${text}`, { proactive: true });
     } catch (err) {
       this.agentSend(agent.id, s.channelId, sanitizeForChat(err, `scheduled check-in ${s.id} failed`));
     } finally {
@@ -1301,7 +1372,10 @@ export class Engine {
    */
   async workInRepository(agent: AgentDef, input: {
     channelId: ID; ask: string; triggerAuthor: string; taskId?: ID; repoDir?: string;
+    /** the thread this piece of work was asked for in, if it was asked for in one */
+    replyTo?: ID;
   }): Promise<RepoTurnResult | undefined> {
+    const inThread = input.replyTo ? { replyTo: input.replyTo } : {};
     /* WHERE THE CODE IS — asked of the one function that answers it, per
        CONVERSATION, so two projects on one computer are two folders. An
        explicit `input.repoDir` (tests, a caller that already knows) still wins;
@@ -1310,7 +1384,7 @@ export class Engine {
     if (!repoDir) {
       const found = this.repoDirFor(input.channelId);
       if ("problem" in found) {
-        this.agentSend(agent.id, input.channelId, found.problem);
+        this.agentSend(agent.id, input.channelId, found.problem, inThread);
         return undefined;
       }
       repoDir = found.dir;
@@ -1329,6 +1403,7 @@ export class Engine {
           kind: input.taskId ? "task" : "chat",
           channelId: input.channelId,
           ...(input.taskId ? { taskId: input.taskId } : {}),
+          ...inThread,
           workdir,
         }),
         github: () => this.githubFor(agent, {
@@ -1339,11 +1414,14 @@ export class Engine {
       // what it wrote, then what really happened to it. The second half is
       // never the agent's account of itself — it is built from git's.
       const said = result.reply ? `${result.reply}\n\n` : "";
-      this.agentSend(agent.id, input.channelId, `${said}${describeRepoTurn(result)}`);
+      // work in the code is the long-running kind: the account of it goes where
+      // it was asked for, and the room gets the one short line
+      this.reportFinished(agent.id, input.channelId, input.replyTo,
+        `${said}${describeRepoTurn(result)}`, roomLineForThreadJob(input.ask), false);
       return result;
     } catch (err) {
       this.agentSend(agent.id, input.channelId,
-        sanitizeForChat(err, `${agent.name} could not work in the repository`));
+        sanitizeForChat(err, `${agent.name} could not work in the repository`), inThread);
       return undefined;
     } finally {
       this.setStatus(agent.id, "idle");
@@ -1505,13 +1583,15 @@ export class Engine {
    * `gh` command. A no, an expiry or a dropped hub runs nothing and says which.
    */
   async workGitHubWriteInRoom(
-    agent: AgentDef, channelId: ID, partial: GitHubWriteRequestWithoutRepo,
+    agent: AgentDef, channelId: ID, partial: GitHubWriteRequestWithoutRepo, replyTo?: ID,
   ): Promise<void> {
+    // asked in a thread → every one of the four answers below lands in it
+    const inThread = replyTo ? { replyTo } : {};
     // the SAME question, asked of the same function — a second answer here is
     // how `!code` and `!issue` would end up working in different folders
     const found = this.repoDirFor(channelId);
     if ("problem" in found) {
-      this.agentSend(agent.id, channelId, found.problem);
+      this.agentSend(agent.id, channelId, found.problem, inThread);
       return;
     }
     const repoDir = found.dir;
@@ -1523,7 +1603,8 @@ export class Engine {
       if (!repo) {
         this.agentSend(agent.id, channelId,
           "I could not work out which GitHub repository this folder belongs to, so I have " +
-          "not asked to do anything. Check that this project is a GitHub checkout signed in with gh.");
+          "not asked to do anything. Check that this project is a GitHub checkout signed in with gh.",
+          inThread);
         return;
       }
       const request = { ...partial, repo } as GitHubWriteRequest;
@@ -1537,18 +1618,20 @@ export class Engine {
       });
       if (!outcome.ran) {
         this.agentSend(agent.id, channelId,
-          `I asked to ${outcome.description}, and ${outcome.reason}. Nothing left this computer.`);
+          `I asked to ${outcome.description}, and ${outcome.reason}. Nothing left this computer.`,
+          inThread);
         return;
       }
       if (outcome.problem) {
         this.agentSend(agent.id, channelId,
-          `You approved it, but GitHub would not take it: ${outcome.problem}`);
+          `You approved it, but GitHub would not take it: ${outcome.problem}`, inThread);
         return;
       }
-      this.agentSend(agent.id, channelId, `Approved — done. I went ahead to ${outcome.description}.`);
+      this.agentSend(agent.id, channelId,
+        `Approved — done. I went ahead to ${outcome.description}.`, inThread);
     } catch (err) {
       this.agentSend(agent.id, channelId,
-        sanitizeForChat(err, `${agent.name} could not do that on GitHub`));
+        sanitizeForChat(err, `${agent.name} could not do that on GitHub`), inThread);
     } finally {
       this.setStatus(agent.id, "idle");
     }
@@ -1577,12 +1660,15 @@ export class Engine {
    * nobody heard is how an agent ends up remembering nothing and nobody knows
    * why. Public so tests can drive it. Never throws.
    */
-  async rememberFromRoom(agent: AgentDef, channelId: ID, text: string): Promise<void> {
+  async rememberFromRoom(
+    agent: AgentDef, channelId: ID, text: string, replyTo?: ID,
+  ): Promise<void> {
+    const inThread = replyTo ? { replyTo } : {}; // asked in a thread, answered in it
     const verdict = worthRemembering(text);
     if (!verdict.keep) {
       this.agentSend(agent.id, channelId,
         `I didn't save that to memory — ${verdict.reason}. Give me a short fact worth ` +
-        `keeping, like "my owner ships on Fridays".`);
+        `keeping, like "my owner ships on Fridays".`, inThread);
       return;
     }
     const note: MemoryNote = {
@@ -1593,10 +1679,11 @@ export class Engine {
     if (!saved) {
       this.agentSend(agent.id, channelId,
         "I couldn't save that to memory on this computer — check there is room on the " +
-        "disk and try again.");
+        "disk and try again.", inThread);
       return;
     }
-    this.agentSend(agent.id, channelId, `📝 Saved to memory — I'll remember: "${note.text}"`);
+    this.agentSend(agent.id, channelId,
+      `📝 Saved to memory — I'll remember: "${note.text}"`, inThread);
     // push the fresh list to any screen that has this agent's file open
     this.reportMemory(agent.id);
   }
@@ -1635,12 +1722,15 @@ export class Engine {
    */
   async handOffInRoom(
     agent: AgentDef, channelId: ID, targetName: string, task: string, _triggerAuthor: string,
+    replyTo?: ID,
   ): Promise<void> {
+    const inThread = replyTo ? { replyTo } : {}; // the pass-over is said where it was asked
     const wanted = targetName.replace(/^@/, "").toLowerCase();
     const target = this.state?.agents.find(a => a.name.toLowerCase() === wanted);
     if (!target) {
       this.agentSend(agent.id, channelId,
-        `I couldn't find an agent called @${targetName.replace(/^@/, "")} to hand this to.`);
+        `I couldn't find an agent called @${targetName.replace(/^@/, "")} to hand this to.`,
+        inThread);
       return;
     }
     let handoff: AgentHandoff;
@@ -1651,13 +1741,13 @@ export class Engine {
       });
     } catch (err) {
       const detail = err instanceof HandoffError ? err.detail : "the handoff wasn't valid";
-      this.agentSend(agent.id, channelId, `I couldn't hand that off — ${detail}.`);
+      this.agentSend(agent.id, channelId, `I couldn't hand that off — ${detail}.`, inThread);
       return;
     }
     // THE LINE ON SCREEN, in plain words, from a real handoff and in the
     // sender's own voice. The receiver's turn arrives separately, when the hub
     // delivers the handoff to its engine.
-    this.agentSend(agent.id, channelId, `🤝 Passed to @${target.name} — ${handoff.task}`);
+    this.agentSend(agent.id, channelId, `🤝 Passed to @${target.name} — ${handoff.task}`, inThread);
     this.sendFrame({ type: "sendHandoff", handoff });
   }
 
@@ -1675,6 +1765,11 @@ export class Engine {
     // Today's room handoffs always point at the conversation they happened in,
     // which is also where the receiver speaks. A pointer with no channel is not
     // one this path can answer in a room, so it is left alone rather than guessed.
+    //
+    // AND IT IS A ROOM ANSWER, not a thread one: a handoff carries a channel
+    // pointer and nothing finer, so the receiving engine has no thread to speak
+    // into. Guessing one would put the answer under a message this agent never
+    // saw. Widening `contextPointer` to name a thread is the follow-up.
     const channelId = handoff.contextPointer.kind === "channel"
       ? handoff.contextPointer.ref : undefined;
     if (!channelId) return;
@@ -1699,8 +1794,42 @@ export class Engine {
     }
   }
 
-  agentSend(agentId: ID, channelId: ID, text: string, proactive = false): void {
-    this.sendFrame({ type: "agentSend", agentId, channelId, text, proactive });
+  /**
+   * The ONE place this engine says something in a room.
+   *
+   * `replyTo` is the thread it belongs in — see `threads.ts` for the rule and
+   * why the hub, not this file, owns the one-level part of it. Absent means the
+   * main room, which is right for everything nobody asked for inside a thread:
+   * proactive lines, presence notes, a schedule firing, and anything the engine
+   * says about itself rather than in answer to a message. Those paths pass no
+   * `replyTo` on purpose — that is the one comment, not thirty.
+   */
+  agentSend(
+    agentId: ID, channelId: ID, text: string,
+    opts: { proactive?: boolean; replyTo?: ID } = {},
+  ): void {
+    this.sendFrame({
+      type: "agentSend", agentId, channelId, text, proactive: opts.proactive ?? false,
+      ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
+    });
+  }
+
+  /**
+   * A LONG JOB HAS FINISHED — say it where it was asked, and keep the room
+   * informed.
+   *
+   * Started inside a thread: the detail goes in the thread and the room gets
+   * ONE short line (the recorded decision — `docs/plans/feature-gap.md:300`).
+   * Started in the room: nothing changes at all, because the detail is already
+   * in the room and a second line would just be noise.
+   */
+  private reportFinished(
+    agentId: ID, channelId: ID, thread: ID | undefined,
+    detail: string, roomLine: string, proactive = true,
+  ): void {
+    this.agentSend(agentId, channelId, detail,
+      { proactive, ...(thread ? { replyTo: thread } : {}) });
+    if (thread) this.agentSend(agentId, channelId, roomLine, { proactive });
   }
 
   private setStatus(agentId: ID, status: "idle" | "working" | "braked"): void {
@@ -1713,8 +1842,17 @@ export class Engine {
     }
   }
 
-  /** returns true when the message was a schedule command (handled, no LLM turn) */
-  handleScheduleCommand(agent: AgentDef, channelId: ID, text: string, requesterId?: ID): boolean {
+  /**
+   * returns true when the message was a schedule command (handled, no LLM turn)
+   *
+   * Every answer here is an answer to a message somebody typed, so it goes where
+   * they typed it — including inside a thread. The schedule itself firing later
+   * is a different thing and stays in the room (see `fireSchedule`).
+   */
+  handleScheduleCommand(
+    agent: AgentDef, channelId: ID, text: string, requesterId?: ID, replyTo?: ID,
+  ): boolean {
+    const inThread = replyTo ? { replyTo } : {};
     const t = text.trim();
     const create = /^!schedule\s+(daily \d{1,2}:\d{2}|every \d+m)\s*:?\s+(.+)$/i.exec(t);
     // same one owner. A schedule for an agent that can run programs is a
@@ -1727,7 +1865,7 @@ export class Engine {
         requesterId,
         needsApproval: true, action: `Create schedule (${create[1]}): ${create[2]}`,
       });
-      this.agentSend(agent.id, channelId, `Schedule request sent for approval. 🔒`);
+      this.agentSend(agent.id, channelId, `Schedule request sent for approval. 🔒`, inThread);
       return true;
     }
     if (create) {
@@ -1740,25 +1878,27 @@ export class Engine {
       // the schedule ran until the app closed and was then gone without a word.
       // A failure he can see is better than one he cannot.
       if (!this.saveSchedule(s)) {
-        this.agentSend(agent.id, channelId, SCHEDULE_NOT_SAVED);
+        this.agentSend(agent.id, channelId, SCHEDULE_NOT_SAVED, inThread);
         return true;
       }
       this.agentSend(agent.id, channelId,
-        `⏰ Scheduled! I'll do this ${s.when}: "${s.prompt}" (id ${s.id} — "@${agent.name} !unschedule ${s.id}" to cancel)`);
+        `⏰ Scheduled! I'll do this ${s.when}: "${s.prompt}" (id ${s.id} — "@${agent.name} !unschedule ${s.id}" to cancel)`,
+        inThread);
       return true;
     }
     if (/^!schedules$/i.test(t)) {
       const mine = this.schedules.filter(s => s.agentId === agent.id);
       this.agentSend(agent.id, channelId, mine.length
         ? `My schedules:\n${mine.map(s => `• ${s.id}: ${s.when} — ${s.prompt}`).join("\n")}`
-        : "I have no schedules yet. Try: `!schedule daily 06:30 post a morning check-in`");
+        : "I have no schedules yet. Try: `!schedule daily 06:30 post a morning check-in`",
+        inThread);
       return true;
     }
     const remove = /^!unschedule\s+(\S+)$/i.exec(t);
     if (remove) {
       const existed = this.schedules.some(s => s.id === remove[1] && s.agentId === agent.id);
       if (!existed) {
-        this.agentSend(agent.id, channelId, `I don't have a schedule ${remove[1]}.`);
+        this.agentSend(agent.id, channelId, `I don't have a schedule ${remove[1]}.`, inThread);
         return true;
       }
       // same rule the other way round: a cancellation that did not reach the
@@ -1766,12 +1906,14 @@ export class Engine {
       this.agentSend(agent.id, channelId, this.deleteSchedule(remove[1])
         ? `Cancelled ${remove[1]} ✅`
         : `⚠️ I could NOT cancel ${remove[1]} — the change could not be saved on this computer, ` +
-          `so it is still set. Check there is room on the disk and try again.`);
+          `so it is still set. Check there is room on the disk and try again.`,
+        inThread);
       return true;
     }
     if (/^!schedule\b/i.test(t)) {
       this.agentSend(agent.id, channelId,
-        'Schedule format: `!schedule daily HH:MM <what to do>` or `!schedule every Nm <what to do>`');
+        'Schedule format: `!schedule daily HH:MM <what to do>` or `!schedule every Nm <what to do>`',
+        inThread);
       return true;
     }
     return false;

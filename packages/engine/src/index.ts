@@ -108,6 +108,9 @@ export {
   WORK_REACTIONS, workEmoji, rememberAsk, takeAsk, PENDING_ASK_LIMIT,
   type WorkReaction, type PendingAsk,
 } from "./reactions.js";
+// WHERE AN AGENT'S ANSWER BELONGS — the thread it was asked in, or the room.
+// One rule for every kind of turn; the one-level part stays the hub's.
+export { threadOf, roomLineForThreadJob } from "./threads.js";
 // Parallel git worktrees — one workspace per agent, so several can work one
 // repository at once without colliding (his items 6 and 7).
 export {

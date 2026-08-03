@@ -33,6 +33,7 @@ const KINDS: readonly NotifyKind[] = [
   "approval_asked",
   "mention",
   "artifact_published",
+  "thread_reply",
 ];
 const NUMBER_BOUNDARIES = [
   0,

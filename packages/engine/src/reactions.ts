@@ -38,6 +38,12 @@ export interface PendingAsk {
   title: string;
   /** the message to put the ticks on */
   messageId: ID;
+  /**
+   * The thread the job was asked for in, if it was asked for inside one — so
+   * the job can report back where it was asked rather than in the main room
+   * (see `threads.ts`). Absent for a job asked for in the room itself.
+   */
+  replyTo?: ID;
   at: number;
 }
 
@@ -66,11 +72,11 @@ export function rememberAsk(list: readonly PendingAsk[], ask: PendingAsk): Pendi
 export function takeAsk(
   list: readonly PendingAsk[],
   task: { agentId: ID; channelId: ID; title: string },
-): { messageId?: ID; rest: PendingAsk[] } {
+): { messageId?: ID; replyTo?: ID; rest: PendingAsk[] } {
   const i = list.findIndex(a =>
     a.agentId === task.agentId && a.channelId === task.channelId && a.title === task.title);
   if (i < 0) return { rest: [...list] };
   const rest = [...list];
   const [found] = rest.splice(i, 1);
-  return { messageId: found.messageId, rest };
+  return { messageId: found.messageId, ...(found.replyTo ? { replyTo: found.replyTo } : {}), rest };
 }
