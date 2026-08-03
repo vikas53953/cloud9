@@ -316,7 +316,17 @@ function mintJoinTokenOn(port, token) {
 // really said in; and the security one — a plain member searching everywhere is
 // not shown the file that was restricted from them, not its name, not its
 // words, and not the fact that it exists.
-const EXPECTED_CHECKS = 508;
+// 508 → 512 on 2026-08-03: four permanent checks for "a job that is stuck or
+// fell over looks nothing like one that is working" (feature 4, slice B). A job
+// that failed prints the state in plain words AND the reason the engine really
+// recorded, on the card, with no path and no argv in it; a stuck job reads
+// "Stuck — waiting on something" and is listed apart from the ones genuinely
+// running, never in among them; a job that recorded no reason SAYS it recorded
+// none rather than borrowing a sentence; and the agent's own presence line
+// carries the same one fact, so a row can no longer read "Ready" while its job
+// is stuck. The jobs are real hub jobs; the final states are written with the
+// hub's own `updateTask` because the engine cannot yet report "blocked".
+const EXPECTED_CHECKS = 512;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -6083,6 +6093,143 @@ try {
   await page.screenshot({ path: `${SHOTS}/join-a-friend.png` });
   try { hubB.relay.close(); } catch { /* already closed */ }
   try { fs.rmSync(hubB.dir, { recursive: true, force: true }); } catch { /* best effort */ }
+
+  /* ================= A JOB THAT IS STUCK OR FELL OVER (feature 4, slice B) =================
+   *
+   * HIS BUG: a job that is stuck and a job that is working looked the same, and
+   * a job that fell over never said why on the screen he reads.
+   *
+   * WHAT IS REAL HERE AND WHAT IS SEEDED, said plainly: the JOB is real — it is
+   * created through the app's own frame, minted and stored by the hub, run by
+   * the engine on this computer, and broadcast back like any other. The STATE is
+   * seeded: the engine does not yet report "blocked" at all, and a demo run does
+   * not fail on demand, so the final state and its reason are written onto the
+   * stored job with the hub's own `updateTask` — the very frame the engine uses
+   * (`engine.ts` failed path), through the very gate that only lets an owner
+   * write onto their own agent's job. Nothing is faked in the browser and no
+   * screen state is injected: everything below is the screen reading the hub.
+   *
+   * The job is only touched once the engine has finished with it (a job still
+   * `not_started` or `working` is one the engine is about to overwrite), so
+   * there is no race with the demo run. */
+  await page.keyboard.press("Escape");
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# general");
+  await page.waitForSelector(".composer textarea", { timeout: 15000 });
+  const world4 = await page.evaluate(() => ({
+    channels: window.cloud9Wire.channels(),
+    agents: window.cloud9Wire.agents(),
+    me: window.cloud9Wire.me(),
+  }));
+  const genId4 = world4.channels.find(c => c.name === "general").id;
+  const mine4 = world4.agents.filter(a => a.ownerId === world4.me);
+  const stuckAgent = mine4.find(a => a.name === "Scout") ?? mine4[0];
+  const failAgent = mine4.find(a => a.id !== stuckAgent.id) ?? stuckAgent;
+
+  /** Hand the hub a real job and then the state the engine cannot yet reach. */
+  const seedJob = async ({ agentId, title, status, error, summary }) => {
+    const before = await page.evaluate(() => window.cloud9Runs.jobs().map(j => j.id));
+    await page.evaluate(([a, c, t]) =>
+      window.cloud9Wire.ask({ type: "createTask", agentId: a, channelId: c, title: t }),
+    [agentId, genId4, title]);
+    let id;
+    try {
+      const found = await page.waitForFunction(known => {
+        const fresh = window.cloud9Runs.jobs().find(j => !known.includes(j.id));
+        // only once the engine has let go of it: still queued or running means
+        // it is about to be written over by the run's own result
+        return fresh && fresh.status !== "not_started" && fresh.status !== "working"
+          ? fresh.id : null;
+      }, before, { timeout: 120000, polling: 250 });
+      id = await found.jsonValue();
+    } catch {
+      throw new Error(`the hub never settled the job "${title}" — nothing to write a state onto`);
+    }
+    await page.evaluate(([i, s, e, sm]) => window.cloud9Wire.ask({
+      type: "updateTask", taskId: i, status: s,
+      // "" is the hub's own "clear it": a job with nothing to say keeps nothing
+      error: e ?? "", summary: sm ?? "", result: "",
+    }), [id, status, error ?? null, summary ?? null]);
+    await waitFor(page, ([i, s]) => window.cloud9Runs.jobs().find(j => j.id === i)?.status === s,
+      [id, status], { timeout: 30000, what: `the stored job to read back as ${status}` });
+    return id;
+  };
+
+  const STUCK_WHY = "waiting on the Architect to answer the question about the budget";
+  const FAILED_WHY = "the model was not signed in on this computer";
+  const stuckJob = await seedJob({
+    agentId: stuckAgent.id, title: "shortlist the villas the Architect picked",
+    status: "blocked", error: STUCK_WHY,
+  });
+  const failedJob = await seedJob({
+    agentId: failAgent.id, title: "book the two nights in Anjuna",
+    status: "failed", error: FAILED_WHY,
+  });
+  const silentJob = await seedJob({
+    agentId: failAgent.id, title: "email the shortlist to Priya",
+    status: "failed",   // nothing recorded: no error, no summary
+  });
+
+  await page.click('.rail-btn[data-go="tasks"]');
+  await page.waitForSelector(`.taskrow[data-task="${failedJob}"]`, { timeout: 30000 });
+  const failedCard = (await page.locator(`.taskrow[data-task="${failedJob}"]`).innerText())
+    .replace(/\s+/g, " ").trim();
+  ok("a job that fell over says so in plain words AND says why, on the card itself",
+    /Failed/.test(failedCard) && failedCard.includes(FAILED_WHY)
+      && (await page.locator(`.taskrow[data-task="${failedJob}"] .trouble[data-trouble="failed"]`)
+        .count()) === 1
+      // never a path, never an argv — the reason is words, and only words
+      && !/[A-Za-z]:\\|--[a-z]/.test(failedCard),
+    failedCard.slice(0, 160));
+
+  /* STUCK IS NOT RUNNING — the whole bug. The card must carry the stuck words,
+     and it must sit under the stuck heading rather than in among the ones that
+     are genuinely moving. */
+  const stuckPlace = await page.evaluate(id => {
+    const main = document.querySelector(".tasks-main");
+    const kids = [...main.children];
+    const card = main.querySelector(`.taskrow[data-task="${id}"]`);
+    const stuckHead = kids.findIndex(k => k.classList.contains("stucklabel"));
+    const runHead = kids.findIndex(k =>
+      k.classList.contains("eyebrow") && /^Running ·/.test(k.textContent.trim()));
+    return {
+      words: card ? card.innerText.replace(/\s+/g, " ").trim() : "",
+      at: kids.indexOf(card), stuckHead, runHead,
+    };
+  }, stuckJob);
+  ok("a stuck job reads as stuck rather than working, and is not listed in with the running ones",
+    /Stuck — waiting on something/.test(stuckPlace.words)
+      && stuckPlace.words.includes(STUCK_WHY)
+      && !/\bworking\b/i.test(stuckPlace.words)
+      && stuckPlace.stuckHead >= 0 && stuckPlace.at > stuckPlace.stuckHead
+      && (stuckPlace.runHead < 0 || stuckPlace.at < stuckPlace.runHead),
+    JSON.stringify(stuckPlace).slice(0, 200));
+
+  /* NOTHING INVENTED. A job that fell over before it had anything to say has no
+     reason, and the screen says exactly that rather than borrowing another
+     job's sentence or writing a comforting one. */
+  const silentCard = (await page.locator(`.taskrow[data-task="${silentJob}"]`).innerText())
+    .replace(/\s+/g, " ").trim();
+  ok("a job with no recorded reason says so honestly, and invents nothing",
+    /Failed/.test(silentCard) && /no reason was recorded/.test(silentCard)
+      && !silentCard.includes(FAILED_WHY) && !silentCard.includes(STUCK_WHY),
+    silentCard.slice(0, 160));
+  await page.screenshot({ path: `${SHOTS}/jobs-stuck-and-failed.png` });
+
+  /* AND THE PRESENCE ROW — the same one fact, from the same one owner. An agent
+     whose job is stuck used to read "Ready · …" on every row in the app. */
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.waitForSelector(`.agentrow[data-agent="${stuckAgent.name}"]`, { timeout: 20000 });
+  const presenceRow = await page.evaluate(name => {
+    const row = document.querySelector(`.agentrow[data-agent="${name}"]`);
+    return { trouble: row.dataset.trouble ?? "", words: row.innerText.replace(/\s+/g, " ").trim() };
+  }, stuckAgent.name);
+  ok("an agent whose job is stuck says so on its presence line, instead of reading as fine",
+    presenceRow.trouble === "blocked"
+      && /Stuck — waiting on something/.test(presenceRow.words)
+      && presenceRow.words.includes(STUCK_WHY)
+      && !/\bReady\b/.test(presenceRow.words),
+    JSON.stringify(presenceRow).slice(0, 200));
 
   await owner.close();
   await friendCtx.close();
