@@ -1734,6 +1734,52 @@ export interface SearchHit {
   snippet: string;
 }
 
+/**
+ * WHAT A SEARCH-EVERYWHERE ROW IS, as one closed list.
+ *
+ * These four are the only things Cloud9 can find, and the word is the same on
+ * the wire and on the screen so nobody has to keep two vocabularies in their
+ * head. `message` and `reply` are the SAME stored thing — a reply is a message
+ * with a parent — but they are different rows to a person reading results, so
+ * they are different kinds here and the hub decides which from the parent, not
+ * from anything a client sends.
+ */
+export type SearchKind = "message" | "reply" | "file" | "fileVersion";
+
+/**
+ * One row of "search everywhere", carrying enough to draw it AND to open it.
+ *
+ * THE OPENING IDS ARE THE POINT. A result that says "found in Notes.md" and
+ * cannot say which version said it is a result that makes a person hunt, so
+ * every kind carries the exact identifiers its own screen needs: a message id
+ * for chat, the thread parent as well for a reply, and an artifact id plus the
+ * exact version id/number for a file version. Nothing here is a path, a token,
+ * or a stored file name — those are the hub's business and never a client's.
+ */
+export interface EverywhereHit {
+  kind: SearchKind;
+  /** the matching words in context, with `«` `»` around each hit */
+  snippet: string;
+  channelId: ID;
+  channelName: string;
+  /** who wrote the message or whose agent made the file */
+  whoName: string;
+  whoId: ID;
+  /** written, or produced, at */
+  when: number;
+  /** `message` and `reply` only */
+  messageId?: ID;
+  /** `reply` only — the message that started the thread */
+  threadParentId?: ID;
+  /** `file` and `fileVersion` */
+  artifactId?: ID;
+  /** the artifact's shared name, on both file kinds */
+  name?: string;
+  /** `fileVersion` only — the exact bytes that matched */
+  versionId?: ID;
+  versionNumber?: number;
+}
+
 /** Where one person has read up to in one conversation, and what is left. */
 export interface UnreadEntry {
   channelId: ID;
@@ -1805,6 +1851,17 @@ type ClientFrameBase =
   | { type: "history"; channelId: ID; before?: number; beforeId?: ID; limit?: number }
   /** Find words across every conversation the asker can see. */
   | { type: "search"; query: string; channelId?: ID; authorId?: ID; limit?: number }
+  /**
+   * Find words in EVERYTHING the asker may already read — chat, thread replies,
+   * shared file names, and the words inside every readable text version the hub
+   * still holds, older versions included.
+   *
+   * `kind` narrows to one sort of row and can never widen the scope: which
+   * rooms and which files are readable is decided by the hub from stored
+   * membership and stored file permissions, never from this frame. Answered
+   * with `searchEverywhereResults`, correlated by the universal `requestId`.
+   */
+  | { type: "searchEverywhere"; query: string; kind?: SearchKind; limit?: number }
   /** Put an emoji on a message, or take yours off. Saying it twice changes nothing. */
   | { type: "react"; messageId: ID; emoji: string; on?: boolean }
   /** Change the words of a message you wrote. */
@@ -2255,6 +2312,16 @@ export type ServerFrame =
       nextBefore?: number; nextBeforeId?: ID;
     }
   | { type: "searchResults"; query: string; results: SearchHit[]; hasMore: boolean }
+  /**
+   * Answers `searchEverywhere`. An empty `results` with `hasMore: false` is the
+   * honest "nothing here matched" — it is never a silence and never an error.
+   */
+  | {
+      type: "searchEverywhereResults"; query: string; kind?: SearchKind;
+      results: EverywhereHit[]; hasMore: boolean;
+      /** echoed straight back from the request that asked */
+      requestId?: ID;
+    }
   /** The full, current list of who reacted with this emoji. Empty means nobody does. */
   | { type: "reaction"; channelId: ID; messageId: ID; emoji: string; userIds: ID[] }
   /** A message changed — edited, deleted, or given its first attachment. */
@@ -2618,6 +2685,16 @@ export const MESSAGE_LIMITS = {
   queryMax: 200,
   /** results per search page */
   searchPage: 50,
+  /**
+   * HOW MUCH OF ONE FILE VERSION GOES INTO THE SEARCH INDEX.
+   *
+   * The bytes stay on disk whole; this bounds only what is copied into the
+   * index. Without a cap, one agent publishing a 10 MB log would put 10 MB of
+   * text into the same SQLite file the whole hub writes through, and every
+   * later version of it again. 256 KB is far past any document somebody
+   * actually reads, and a file bigger than that is still findable by its name.
+   */
+  indexTextBytes: 256 * 1024,
 } as const;
 
 /**

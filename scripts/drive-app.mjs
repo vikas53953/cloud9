@@ -153,6 +153,11 @@ const EXPECTED_CHECKS = [
   "Files can save a restriction while keeping room managers required",
   "a typed file link is shown as a control and follows the exact version",
   "markdown words inside a file do not become stored file links",
+  /* Feature 3: one box that finds words anywhere he may already look. The walk
+     asks the INSTALLED app the two things a person would: does it find a
+     message he really typed AND a file an agent really made, and does clicking
+     the message land him on that message in the room it was said in. */
+  "search everywhere finds a seeded message and file, and the message result lands in its room",
 ];
 
 /* ---------------------------------------------------------------- results */
@@ -2170,6 +2175,10 @@ async function walk(page) {
   const FILES_GROUP = [
     EXPECTED_CHECKS[21], EXPECTED_CHECKS[22], EXPECTED_CHECKS[23], EXPECTED_CHECKS[24],
     EXPECTED_CHECKS[25], EXPECTED_CHECKS[26], EXPECTED_CHECKS[27],
+    /* Search rides with this group because it is proved against the very file
+       this group publishes — one seeded world, one failure story if the
+       engine socket or the fresh-data guard stops it before either can run. */
+    EXPECTED_CHECKS[28],
   ];
   let installedEngine = null;
   let memberSidecar = null;
@@ -2511,6 +2520,62 @@ async function walk(page) {
       return `${words}; target v2 was fetched first, then the link opened/fetched ${exactByteCount} exact v1 bytes`;
     });
     await shot(page, "files-workspace");
+
+    /* ---- SEARCH EVERYWHERE, in the installed app ---- */
+    await check(EXPECTED_CHECKS[28], async () => {
+      /* A rare word, stamped, so a hit can only be THIS run's message. */
+      const seededWord = `wobbegong${stamp}`;
+      await page.click('.rail .rail-btn[data-go="chat"]');
+      await page.waitForSelector(".composer textarea", { timeout: 30000 });
+      await page.fill(".composer textarea", `the ${seededWord} sighting was near the reef`);
+      await page.press(".composer textarea", "Enter");
+      await page.waitForSelector(`.msgs .msg:has-text("${seededWord}")`, { timeout: 30000 });
+      const messageId = await page.locator(`.msgs .msg:has-text("${seededWord}")`)
+        .last().getAttribute("data-msg");
+      /* WHICH conversation, by its NAME — never by the whole header's text.
+         The header also carries the agent's live presence, so a harness that
+         compared the rendered words failed the moment the agent went from
+         "Ready" to "Working" between the two reads: two identical rooms, one
+         string that changed underneath. A check that fails on a truth nobody
+         broke is worse than no check. */
+      const roomWords = (await page.locator(".thread .topbar .ch-title").innerText())
+        .replace(/\s+/g, " ").trim();
+
+      const open = async words => {
+        await page.evaluate(() => window.cloud9Menu.run("search"));
+        await page.waitForSelector('.searchpanel .searchscopes[data-search-scope="everywhere"]',
+          { timeout: 20000 });
+        await page.fill(".search-input", words);
+      };
+
+      await open(seededWord);
+      await page.waitForSelector(
+        `.everyhit[data-every-kind="message"][data-every-hit="${messageId}"]`, { timeout: 30000 });
+
+      /* The same one box, the file this group really published. */
+      await page.fill(".search-input", "drivecheck-files.md");
+      await page.waitForSelector(`.everyhit[data-every-kind="file"][data-every-hit="${v1.id}"]`,
+        { timeout: 30000 });
+      const fileWords = (await page.locator(
+        `.everyhit[data-every-kind="file"][data-every-hit="${v1.id}"]`).innerText())
+        .replace(/\s+/g, " ").trim();
+
+      await open(seededWord);
+      const hit = page.locator(`.everyhit[data-every-kind="message"][data-every-hit="${messageId}"]`);
+      await hit.waitFor({ timeout: 30000 });
+      await hit.click();
+      await page.waitForSelector(`.msgs .msg[data-msg="${messageId}"].litup`, { timeout: 30000 });
+      const landedIn = (await page.locator(".thread .topbar .ch-title").innerText())
+        .replace(/\s+/g, " ").trim();
+      if ((await page.locator(".searchpanel").count()) !== 0) {
+        throw new Error("following a result left the search panel open on top of the room");
+      }
+      if (landedIn !== roomWords) {
+        throw new Error(`the message result landed in "${landedIn}", not the room it was said in ("${roomWords}")`);
+      }
+      await shot(page, "search-everywhere");
+      return `found the message and "${fileWords.slice(0, 40)}", and landed on it in ${landedIn.slice(0, 40)}`;
+    });
   } catch (err) {
     failGroup(FILES_GROUP.filter(n => !results.some(r => r.name === n)),
       `the Files walk could not finish (${err.message})`);

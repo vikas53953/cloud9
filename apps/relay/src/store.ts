@@ -7,7 +7,7 @@ import {
   ActivityRecord, AgentDef, Approval, ArtifactAccess, ArtifactLink,
   ArtifactWorkspaceEntry, Attachment, Channel, ChannelMember,
   StoredArtifact, StoredArtifactVersion, artifactVersionForPublic,
-  ChannelRole, ID, Message,
+  ChannelRole, EverywhereHit, ID, Message, SearchKind,
   MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
   RunRecord, RUN_RETENTION, Task, User, isSafeStoredId, nameKey, newId,
   validateArtifactLinks,
@@ -511,13 +511,44 @@ export class Store implements JoinHubStore {
   /** True when this database has a working FTS5 index. */
   searchIndexed = false;
 
+  /**
+   * ONE INDEX, NOT ONE PER THING FINDABLE.
+   *
+   * `search_docs` replaces the old `messages_fts`. It is the same SQLite FTS5,
+   * in the same file and the same transactions — what changed is that a row no
+   * longer has to be a message. A second virtual table for files would have
+   * been a second index scheme: two backfills to keep complete, two rebuild
+   * guards, two chances for one of them to be quietly wrong, and two places to
+   * remember the permission rule. There is one.
+   *
+   * A row is (text, kind, channelId, docId, parentId, ts):
+   *
+   *   kind `message`      docId = message id,  parentId = its `replyTo` or ''
+   *   kind `file`         docId = artifact id, parentId = the SAME artifact id
+   *   kind `fileVersion`  docId = version id,  parentId = its artifact id
+   *
+   * `parentId` is deliberately the artifact id on BOTH file kinds, so the file
+   * permission check is one clause keyed on one column rather than a CASE that
+   * has to be right in four subqueries. On a message it carries the thread
+   * parent, which is both what tells a reply from a root and the id a client
+   * needs to open the thread.
+   *
+   * `ts` is stored as text because every FTS5 column is; it is CAST back for
+   * ordering. Sorting the string would put "9" after "10".
+   */
   private initSearch(): void {
     try {
       this.db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-          text, messageId UNINDEXED, channelId UNINDEXED
+        CREATE VIRTUAL TABLE IF NOT EXISTS search_docs USING fts5(
+          text, kind UNINDEXED, channelId UNINDEXED,
+          docId UNINDEXED, parentId UNINDEXED, ts UNINDEXED
         );
       `);
+      // The old message-only index is derived data, so it is dropped rather
+      // than migrated: the completeness guard below rebuilds every row from the
+      // messages, artifacts and versions that are the actual truth. Leaving it
+      // would be a second index nobody writes to and somebody later reads.
+      this.db.exec("DROP TABLE IF EXISTS messages_fts;");
       this.searchIndexed = true;
     } catch {
       // An old SQLite without FTS5 must not stop the hub from starting; search
@@ -545,39 +576,128 @@ export class Store implements JoinHubStore {
    */
   private backfillSearch(): void {
     if (!this.searchIndexed) return;
-    const want = (this.db.prepare(
-      "SELECT COUNT(*) n FROM messages WHERE json_extract(json,'$.deletedAt') IS NULL",
-    ).get() as { n: number }).n;
-    const have = (this.db.prepare("SELECT COUNT(*) n FROM messages_fts").get() as { n: number }).n;
-    if (have === want) return;
+    if (this.searchIndexComplete()) return;
     this.tx(() => {
-      this.db.exec("DELETE FROM messages_fts");
-      const rows = this.db.prepare("SELECT id,channelId,json FROM messages").all() as
+      this.db.exec("DELETE FROM search_docs");
+      const messages = this.db.prepare("SELECT id,channelId,json FROM messages").all() as
         { id: string; channelId: string; json: string }[];
-      for (const r of rows) {
+      for (const r of messages) {
         const m = this.safeParse<Message>(r.json, "a message", r.id);
         if (!m || m.deletedAt) continue;
         this.indexMessage(m);
       }
+      const artifacts = this.db.prepare(
+        "SELECT id,channelId,name,updatedAt FROM artifacts a " +
+        "WHERE EXISTS (SELECT 1 FROM artifact_versions av WHERE av.artifactId=a.id)",
+      ).all() as { id: string; channelId: string; name: string; updatedAt: number }[];
+      for (const a of artifacts) {
+        this.indexArtifactName(a.id, a.channelId, a.name, a.updatedAt);
+      }
+      const versions = this.db.prepare(
+        "SELECT id,artifactId,channelId,json FROM artifact_versions",
+      ).all() as { id: string; artifactId: string; channelId: string; json: string }[];
+      for (const r of versions) {
+        const v = this.storedArtifactVersion(r.json, r.id);
+        if (!v || !v.text) continue;
+        this.indexArtifactVersion(r.artifactId, r.channelId, v);
+      }
     });
   }
 
-  /** True when every message that should be findable is in the index. */
+  /**
+   * True when everything that should be findable is in the index.
+   *
+   * The three counts are the three kinds of document, and they are counted from
+   * the tables that actually own the truth. A file version that says it is text
+   * is counted whether or not its bytes could be read: `indexArtifactVersion`
+   * writes an empty document for unreadable bytes precisely so that this count
+   * can stay the guard instead of an interrupted rebuild every single start.
+   */
   searchIndexComplete(): boolean {
     if (!this.searchIndexed) return false;
-    const want = (this.db.prepare(
-      "SELECT COUNT(*) n FROM messages WHERE json_extract(json,'$.deletedAt') IS NULL",
-    ).get() as { n: number }).n;
-    const have = (this.db.prepare("SELECT COUNT(*) n FROM messages_fts").get() as { n: number }).n;
+    const want = (this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM messages WHERE json_extract(json,'$.deletedAt') IS NULL)
+      + (SELECT COUNT(*) FROM artifacts a
+           WHERE EXISTS (SELECT 1 FROM artifact_versions av WHERE av.artifactId=a.id))
+      + (SELECT COUNT(*) FROM artifact_versions WHERE json_extract(json,'$.text')=1)
+      AS n
+    `).get() as { n: number }).n;
+    const have = (this.db.prepare("SELECT COUNT(*) n FROM search_docs").get() as { n: number }).n;
     return have === want;
+  }
+
+  /** Take one document out of the index, whatever kind it was. */
+  private unindexDoc(docId: ID): void {
+    if (!this.searchIndexed) return;
+    this.db.prepare("DELETE FROM search_docs WHERE docId=?").run(docId);
   }
 
   private indexMessage(m: Message): void {
     if (!this.searchIndexed) return;
-    this.db.prepare("DELETE FROM messages_fts WHERE messageId=?").run(m.id);
+    this.unindexDoc(m.id);
     if (m.deletedAt) return;
-    this.db.prepare("INSERT INTO messages_fts(text,messageId,channelId) VALUES(?,?,?)")
-      .run(m.text, m.id, m.channelId);
+    this.db.prepare(
+      "INSERT INTO search_docs(text,kind,channelId,docId,parentId,ts) VALUES(?,?,?,?,?,?)",
+    ).run(m.text, "message", m.channelId, m.id, m.replyTo ?? "", String(m.ts));
+  }
+
+  /**
+   * The file's shared NAME, as its own document.
+   *
+   * One per artifact identity, not one per version: the name is a property of
+   * the chain, and a row per version would show the same file five times to
+   * somebody who searched for its name.
+   */
+  indexArtifactName(artifactId: ID, channelId: ID, name: string, updatedAt: number): void {
+    if (!this.searchIndexed) return;
+    this.unindexDoc(artifactId);
+    this.db.prepare(
+      "INSERT INTO search_docs(text,kind,channelId,docId,parentId,ts) VALUES(?,?,?,?,?,?)",
+    ).run(name, "file", channelId, artifactId, artifactId, String(updatedAt));
+  }
+
+  /**
+   * The WORDS INSIDE one retained version, when the hub could read them as text.
+   *
+   * Older retained versions are indexed exactly like the newest one — that is
+   * the whole point of keeping them. Bytes that cannot be read right now still
+   * get a document, an empty one, so the completeness count above stays true
+   * and one unreadable file cannot make the hub rebuild its index forever.
+   */
+  indexArtifactVersion(artifactId: ID, channelId: ID, v: StoredArtifactVersion): void {
+    if (!this.searchIndexed) return;
+    this.unindexDoc(v.id);
+    if (!v.text) return;
+    this.db.prepare(
+      "INSERT INTO search_docs(text,kind,channelId,docId,parentId,ts) VALUES(?,?,?,?,?,?)",
+    ).run(
+      this.artifactTextForIndex(v.storedAs), "fileVersion", channelId,
+      v.id, artifactId, String(v.producedAt),
+    );
+  }
+
+  /**
+   * Read at most `indexTextBytes` of one stored version, as text.
+   *
+   * Nothing here is ever logged or returned to a caller: a failure is an empty
+   * document, because the alternative — a path or an errno on its way to a
+   * screen or a log line — tells somebody where the hub keeps its files.
+   */
+  private artifactTextForIndex(storedAs: string): string {
+    try {
+      const full = path.join(this.artifactsDir, path.basename(storedAs));
+      const fd = fs.openSync(full, "r");
+      try {
+        const buf = Buffer.alloc(MESSAGE_LIMITS.indexTextBytes);
+        const read = fs.readSync(fd, buf, 0, buf.length, 0);
+        return buf.subarray(0, read).toString("utf8");
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return "";
+    }
   }
 
   /**
@@ -1356,11 +1476,11 @@ export class Store implements JoinHubStore {
 
     let hits: { json: string; snippet: string }[];
     if (this.searchIndexed) {
-      const match = terms.map(t => `"${t}"`).join(" ") + "*";
+      const match = ftsMatch(terms);
       hits = this.db.prepare(
-        `SELECT m.json AS json, snippet(messages_fts, 0, '«', '»', '…', 12) AS snippet
-         FROM messages_fts f JOIN messages m ON m.id = f.messageId
-         WHERE messages_fts MATCH ? AND f.channelId IN (${slots})${aliveSql}${authorSql}
+        `SELECT m.json AS json, snippet(search_docs, 0, '«', '»', '…', 12) AS snippet
+         FROM search_docs f JOIN messages m ON m.id = f.docId
+         WHERE search_docs MATCH ? AND f.kind='message' AND f.channelId IN (${slots})${aliveSql}${authorSql}
          ORDER BY m.ts DESC LIMIT ?`,
       ).all(match, ...ids, ...authorArgs, size + 1) as { json: string; snippet: string }[];
     } else {
@@ -1389,6 +1509,213 @@ export class Store implements JoinHubStore {
       if (!x.snippet) x.snippet = plainSnippet(x.message.text, terms);
     }
     return { items, hasMore };
+  }
+
+  /**
+   * SEARCH EVERYTHING THIS PERSON MAY ALREADY READ.
+   *
+   * Two gates, both in SQL, both before `LIMIT`, and this is the whole security
+   * of the feature:
+   *
+   *   1. THE ROOM. `channels` is passed in, exactly as `search` and
+   *      `recentMessages` demand it, and is never derived here. A search that
+   *      could choose its own scope is one forgotten argument from reading the
+   *      whole house.
+   *   2. THE FILE. A restricted file is invisible unless this person is on its
+   *      selected list or currently manages the room — the SAME rule, in the
+   *      same shape, as `visibleArtifactRows` behind the Files screen. Being in
+   *      the room is not enough, and neither is the snippet being short: an
+   *      excluded row never reaches the result set, so it cannot leak a name, a
+   *      word of content, or even the fact that the file exists.
+   *
+   * FILTERING AFTER `LIMIT` WOULD BE A BUG, not a smaller version of this. The
+   * database would choose fifty rows, JavaScript would drop the forbidden ones,
+   * and a person with one visible file among fifty restricted ones would be
+   * told there were no results — while every one of those fifty had already
+   * been read out of the index.
+   */
+  searchEverywhere(
+    userId: ID,
+    channels: Channel[],
+    query: string,
+    opts: { kind?: SearchKind; limit?: number } = {},
+  ): Page<EverywhereHit> {
+    const size = Math.max(1, Math.min(opts.limit ?? MESSAGE_LIMITS.searchPage, MESSAGE_LIMITS.page));
+    const ids = channels.map(c => c.id);
+    if (ids.length === 0) return { items: [], hasMore: false };
+    const terms = searchTerms(query);
+    if (terms.length === 0) return { items: [], hasMore: false };
+    const slots = ids.map(() => "?").join(",");
+
+    // The file gate, written once and used by both the indexed and the
+    // fallback query so the two can never drift into different permissions.
+    // `artifactId` names the column each query keys it on.
+    const fileGate = (artifactId: string, channelId: string) => `(
+      NOT EXISTS (
+        SELECT 1 FROM artifact_access aa
+        WHERE aa.artifactId=${artifactId} AND aa.kind='restricted'
+      )
+      OR EXISTS (
+        SELECT 1 FROM artifact_access_users aau
+        JOIN channel_members cm
+          ON cm.channelId=${channelId} AND cm.memberId=aau.userId AND cm.removedAt IS NULL
+        JOIN users u ON u.id=aau.userId
+        WHERE aau.artifactId=${artifactId} AND aau.userId=?
+      )
+      OR EXISTS (
+        SELECT 1 FROM channel_members cm JOIN users u ON u.id=cm.memberId
+        WHERE cm.channelId=${channelId} AND cm.memberId=? AND cm.removedAt IS NULL
+          AND cm.role IN ('owner','admin')
+      )
+    )`;
+
+    type Row = {
+      kind: string; docId: string; parentId: string; channelId: string;
+      ts: number; snippet: string;
+    };
+    let rows: Row[];
+
+    if (this.searchIndexed) {
+      // A reply is a message with a parent, so the two wire kinds are one index
+      // kind narrowed by that parent — decided here, never sent by a client.
+      const kindSql = opts.kind === "message" ? " AND f.kind='message' AND f.parentId=''"
+        : opts.kind === "reply" ? " AND f.kind='message' AND f.parentId<>''"
+        : opts.kind === "file" ? " AND f.kind='file'"
+        : opts.kind === "fileVersion" ? " AND f.kind='fileVersion'"
+        : "";
+      rows = this.db.prepare(
+        `SELECT f.kind AS kind, f.docId AS docId, f.parentId AS parentId,
+                f.channelId AS channelId, CAST(f.ts AS INTEGER) AS ts,
+                snippet(search_docs, 0, '«', '»', '…', 12) AS snippet
+         FROM search_docs f
+         WHERE search_docs MATCH ? AND f.channelId IN (${slots})${kindSql}
+           AND (
+             (f.kind='message' AND EXISTS (
+                SELECT 1 FROM messages m
+                WHERE m.id=f.docId AND json_extract(m.json,'$.deletedAt') IS NULL))
+             OR (f.kind='file' AND EXISTS (SELECT 1 FROM artifacts a WHERE a.id=f.docId)
+                 AND ${fileGate("f.parentId", "f.channelId")})
+             OR (f.kind='fileVersion'
+                 AND EXISTS (SELECT 1 FROM artifact_versions av WHERE av.id=f.docId)
+                 AND ${fileGate("f.parentId", "f.channelId")})
+           )
+         ORDER BY CAST(f.ts AS INTEGER) DESC, f.docId DESC
+         LIMIT ?`,
+      ).all(
+        ftsMatch(terms), ...ids, userId, userId, userId, userId, size + 1,
+      ) as unknown as Row[];
+    } else {
+      // NO FTS5 ON THIS SQLITE. Messages and file names are still scannable,
+      // because their words are in columns; the words INSIDE a file version are
+      // not, because the only place they were ever collected is the index this
+      // machine cannot build. Saying so plainly beats a second index scheme
+      // maintained for a machine nobody has.
+      const like = (expr: string) =>
+        terms.map(() => `instr(lower(${expr}), lower(?)) > 0`).join(" AND ");
+      const wantMessages = opts.kind === undefined || opts.kind === "message" || opts.kind === "reply";
+      const wantFiles = opts.kind === undefined || opts.kind === "file";
+      const parts: string[] = [];
+      const args: unknown[] = [];
+      if (wantMessages) {
+        const parentSql = opts.kind === "message" ? " AND coalesce(json_extract(m.json,'$.replyTo'),'')=''"
+          : opts.kind === "reply" ? " AND coalesce(json_extract(m.json,'$.replyTo'),'')<>''"
+          : "";
+        parts.push(
+          `SELECT 'message' AS kind, m.id AS docId,
+                  coalesce(json_extract(m.json,'$.replyTo'),'') AS parentId,
+                  m.channelId AS channelId, m.ts AS ts, '' AS snippet
+           FROM messages m
+           WHERE m.channelId IN (${slots})
+             AND ${like("coalesce(json_extract(m.json,'$.text'),'')")}
+             AND json_extract(m.json,'$.deletedAt') IS NULL${parentSql}`,
+        );
+        args.push(...ids, ...terms);
+      }
+      if (wantFiles) {
+        parts.push(
+          `SELECT 'file' AS kind, a.id AS docId, a.id AS parentId,
+                  a.channelId AS channelId, a.updatedAt AS ts, '' AS snippet
+           FROM artifacts a
+           WHERE a.channelId IN (${slots}) AND ${like("a.name")}
+             AND EXISTS (SELECT 1 FROM artifact_versions av WHERE av.artifactId=a.id)
+             AND ${fileGate("a.id", "a.channelId")}`,
+        );
+        args.push(...ids, ...terms, userId, userId);
+      }
+      if (parts.length === 0) return { items: [], hasMore: false };
+      rows = this.db.prepare(
+        `${parts.join(" UNION ALL ")} ORDER BY ts DESC, docId DESC LIMIT ?`,
+      ).all(...args as never[], size + 1) as unknown as Row[];
+    }
+
+    const hasMore = rows.length > size;
+    const page = hasMore ? rows.slice(0, size) : rows;
+    const names = new Map(channels.map(c => [c.id, c.name]));
+    const items: EverywhereHit[] = [];
+    for (const r of page) {
+      const hit = this.everywhereHit(r, names.get(r.channelId), terms);
+      if (hit) items.push(hit);
+    }
+    return { items, hasMore };
+  }
+
+  /**
+   * Turn one index row into the row a person reads — or into nothing.
+   *
+   * Every field is read from stored state HERE, after the permission gate, so
+   * nothing a client sent decides what a result says. A row whose subject has
+   * vanished between the query and this line is dropped rather than drawn half
+   * empty; it is one result, and a hit that opens nothing is worse than a hit
+   * that was never shown.
+   */
+  private everywhereHit(
+    row: { kind: string; docId: string; parentId: string; channelId: string; ts: number; snippet: string },
+    channelName: string | undefined,
+    terms: string[],
+  ): EverywhereHit | undefined {
+    if (channelName === undefined) return undefined;
+    const base = { channelId: row.channelId, channelName, when: row.ts };
+    if (row.kind === "message") {
+      const m = this.message(row.docId);
+      if (!m || m.deletedAt) return undefined;
+      return {
+        ...base,
+        kind: m.replyTo ? "reply" : "message",
+        snippet: row.snippet || plainSnippet(m.text, terms),
+        whoName: m.authorName, whoId: m.authorId, when: m.ts,
+        messageId: m.id,
+        ...(m.replyTo ? { threadParentId: m.replyTo } : {}),
+      };
+    }
+    if (row.kind === "file") {
+      const artifact = this.artifactRow(row.docId);
+      const newest = this.artifactVersionsOf(row.docId)[0];
+      if (!artifact || !newest) return undefined;
+      return {
+        ...base,
+        kind: "file",
+        snippet: row.snippet || plainSnippet(artifact.name, terms),
+        whoName: newest.agentName, whoId: newest.agentId,
+        when: artifact.updatedAt,
+        artifactId: artifact.id, name: artifact.name,
+      };
+    }
+    if (row.kind === "fileVersion") {
+      const found = this.artifactVersion(row.docId);
+      const artifact = this.artifactRow(row.parentId);
+      if (!found || !artifact) return undefined;
+      const version = found.version;
+      return {
+        ...base,
+        kind: "fileVersion",
+        snippet: row.snippet,
+        whoName: version.agentName, whoId: version.agentId,
+        when: version.producedAt,
+        artifactId: artifact.id, name: artifact.name,
+        versionId: version.id, versionNumber: version.version,
+      };
+    }
+    return undefined;
   }
 
   /** Every reply hanging off one message, oldest first. */
@@ -1988,6 +2315,12 @@ export class Store implements JoinHubStore {
 
         // Plain INSERT plus both unique rules. Nothing here can replace a row.
         this.saveArtifactVersion(id, input.channelId, stored);
+        // Findable in the SAME transaction that made it real. Indexing after
+        // the commit would leave a window where a file exists and cannot be
+        // found, and a crash inside that window would leave it unfindable
+        // until the next restart noticed the count was short.
+        this.indexArtifactName(id, input.channelId, input.name, input.at);
+        this.indexArtifactVersion(id, input.channelId, stored);
         const insertLink = this.db.prepare(
           "INSERT INTO artifact_links" +
           "(sourceArtifactId,sourceVersion,channelId,kind,targetArtifactId,targetVersion) " +
@@ -2048,6 +2381,9 @@ export class Store implements JoinHubStore {
         ).run(artifactId, v.version);
       }
       this.db.prepare("DELETE FROM artifact_versions WHERE id=?").run(r.id);
+      // The bytes are gone, so the words must go with them. A retained search
+      // document pointing at pruned bytes is a hit that opens nothing.
+      this.unindexDoc(r.id);
     }
     return doomed.length;
   }
@@ -2713,6 +3049,20 @@ export function searchTerms(query: string): string[] {
     .split(/[^\p{L}\p{N}_]+/u)
     .filter(w => w.length > 0)
     .slice(0, 10);
+}
+
+/**
+ * The ONE place a MATCH string is built, for every search there is.
+ *
+ * `searchTerms` above has already thrown away everything that is not a letter
+ * or a digit, so no operator can survive into here; this function exists so
+ * that the second half of the rule — quote every word, prefix-match the last —
+ * also has exactly one owner. Two searches building their own MATCH strings is
+ * how one of them eventually forgets the quotes and hands a person's typing to
+ * FTS5 as syntax.
+ */
+export function ftsMatch(terms: string[]): string {
+  return terms.map(t => `"${t}"`).join(" ") + "*";
 }
 
 /** A snippet for the no-FTS5 fallback: the words in their surroundings. */
