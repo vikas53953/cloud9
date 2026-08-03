@@ -1129,6 +1129,96 @@ function presenceTitle(p: AgentPresenceState | undefined): string {
   return p ? `${PRESENCE_WORDS[p.presence]} — ${p.reason}` : NOT_YET_LOOKED;
 }
 
+/* ================= A JOB IN TROUBLE, IN THE WORDS HE READS =================
+ *
+ * HIS BUG: a job that is stuck or that fell over looked exactly like one that
+ * is working. The state was stored and the reason was stored, and neither of
+ * them said anything on the screen he actually looks at.
+ *
+ * ONE OWNER. Everything on any screen that says "this job is in trouble" — the
+ * job card, the room's job list, the agent's presence line — asks these three
+ * functions. Nothing works the answer out a second time, so two panels can
+ * never disagree about whether an agent is fine.
+ *
+ * AND NO INVENTED REASON. The reason is whatever the engine really recorded
+ * (`error`, else the agent's own `summary`). A job that fell over before it had
+ * anything to say has neither, and then the screen SAYS it has neither — a made
+ * up sentence there reads exactly like a real one, which is worse than silence.
+ */
+const NO_REASON_RECORDED = "no reason was recorded";
+
+type TroubleKind = "failed" | "blocked" | "cancelled";
+
+/** The state word itself, in plain language — never the stored code word. */
+const TROUBLE_WORD: Record<TroubleKind, string> = {
+  failed: "Failed",
+  blocked: "Stuck — waiting on something",
+  cancelled: "Stopped",
+};
+
+interface TaskTrouble { kind: TroubleKind; word: string; reason: string }
+
+/** Is this job in trouble, and what does it say? `null` for every other state. */
+function taskTrouble(t: Task): TaskTrouble | null {
+  if (t.status !== "failed" && t.status !== "blocked" && t.status !== "cancelled") return null;
+  const kind: TroubleKind = t.status;
+  const said = (t.error ?? t.summary ?? "").trim();
+  return { kind, word: TROUBLE_WORD[kind], reason: said || NO_REASON_RECORDED };
+}
+
+/**
+ * THE JOB THIS AGENT IS IN TROUBLE ON, if there is one.
+ *
+ * Derived from the stored jobs and nothing else — there is no second status
+ * system beside the hub's presence. A job still stuck beats an older one that
+ * fell over, because the stuck one is the one that is still not moving; and a
+ * job somebody deliberately stopped is not trouble, so it is not counted here.
+ */
+function agentTrouble(world: World, agentId: ID): { task: Task; trouble: TaskTrouble } | null {
+  const mine = world.tasks.filter(t => t.agentId === agentId);
+  const newest = (list: Task[]): Task | undefined =>
+    [...list].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  const stuck = newest(mine.filter(t => t.status === "blocked"));
+  const hit = stuck ?? (newest(mine)?.status === "failed" ? newest(mine) : undefined);
+  const trouble = hit ? taskTrouble(hit) : null;
+  return hit && trouble ? { task: hit, trouble } : null;
+}
+
+/**
+ * WHAT A PRESENCE ROW SAYS. The hub's own word and reason — unless the agent's
+ * job is stuck or fell over, and then that, said on the line that already
+ * exists rather than on a second badge nobody would think to read.
+ */
+function presenceSays(world: World, agentId: ID, pres: AgentPresenceState | undefined): {
+  word: string; reason: string; trouble: TroubleKind | null; title: string;
+} {
+  const bad = agentTrouble(world, agentId);
+  if (bad) {
+    const reason = `${bad.task.title} — ${bad.trouble.reason}`;
+    return {
+      word: bad.trouble.word, reason, trouble: bad.trouble.kind,
+      title: `${bad.trouble.word} — ${reason}`,
+    };
+  }
+  return {
+    word: pres ? PRESENCE_WORDS[pres.presence] : "Not looked yet",
+    reason: pres ? pres.reason : "",
+    trouble: null,
+    title: presenceTitle(pres),
+  };
+}
+
+/** The one plain-words line a job in trouble prints: the state, then why. */
+function TroubleLine({ task }: { task: Task }): React.JSX.Element | null {
+  const tr = taskTrouble(task);
+  if (!tr) return null;
+  return (
+    <div className={`taskresult trouble is-${tr.kind}`} data-trouble={tr.kind}>
+      <b>{tr.word}</b>{tr.reason}
+    </div>
+  );
+}
+
 /**
  * @param presence pass it and the dot tells the truth about availability, with
  * `undefined` drawn as "we have not looked". Leave it off entirely and the face
@@ -1474,6 +1564,15 @@ export function App(): React.JSX.Element {
 
   useEffect(() => { if (world.authFailed) setJoined(false); }, [world.authFailed]);
 
+  /* A LIVE SESSION IS A LIVE SESSION, however we got here. The sign-in box hands
+     this flag over when the person types their way in, but a refused attempt can
+     also drop back onto the credential that still worked (store.ts
+     `recoverPreviousCredential`) — and without this the app would leave someone
+     staring at a sign-in box while they were already back inside. */
+  useEffect(() => {
+    if (world.connected && world.me && !world.authFailed) setJoined(true);
+  }, [world.connected, world.me?.id, world.authFailed]);
+
   /**
    * Ask what the Claude/Codex apps really offer as soon as we are let in.
    * Owner-only: these frames are owner-gated in the relay, so a guest asking
@@ -1523,7 +1622,12 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
   const go = () => {
     const t = mode === "owner" ? token : `invite:${invite.trim()}:${name.trim() || "Friend"}`;
-    client.setToken(mode === "owner" ? token : ""); // invite issues a durable token via relay
+    /* NOTHING IS WRITTEN HERE. This used to blank the stored credential first
+       ("an invite issues a durable one via the relay") — so a spent, mistyped
+       or expired code destroyed the sign-in the person already had, and an
+       invited friend, who has no owner key, was locked out of their own Cloud9
+       for good. The store adopts a credential only once the hub answers
+       `welcome`; see `adoptCredential` in store.ts, the one owner. */
     setTrying(true);
     client.connect(t);
   };
@@ -1571,6 +1675,10 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
               </>
             )}
             <Problem text={world.lastError?.text} tone="notice" className="joinerror" />
+            {/* No "you are still signed in" line here on purpose: when a refused
+                code DOES have a working credential behind it, the app is back
+                inside before this screen can be read, so the sentence belongs
+                where the person actually ends up — the toast. */}
             <div className="notice">Your chats stay on your crew's own machine. Nothing goes to a big platform.</div>
           </div>
           <div className="foot">
@@ -2310,7 +2418,12 @@ function Toast(): React.JSX.Element | null {
   return (
     <div className="toast" role="status">
       <span className="toast-mark" aria-hidden="true">!</span>
-      <span className="toast-text">{said.text}</span>
+      {/* A refused sign-in that cost the person NOTHING has to say so. Without
+          the second half, "that invite has already been used" reads like being
+          thrown out of your own Cloud9 — which is exactly what it used to be. */}
+      <span className="toast-text" data-kept-signed-in={err.keptSignedIn ? "yes" : undefined}>
+        {said.text}{err.keptSignedIn ? " You are still signed in as before." : ""}
+      </span>
       <ComputerWords detail={said.detail} />
       <button className="toast-x" aria-label="Dismiss" onClick={() => setDismissed(err.ts)}>✕</button>
     </div>
@@ -2611,19 +2724,21 @@ function ChatScreen({
                  its reason, so he never has to open a conversation to find out
                  that nothing there is going to answer him. */
               const pres = presenceOf(world, a.id);
+              const says = presenceSays(world, a.id, pres);
               return (
                 <div key={a.id} className="side-item agentrow agent-row" data-agent={a.name}
                   data-presence={pres?.presence ?? "unknown"}
+                  data-trouble={says.trouble ?? ""}
                   aria-current={dm && active?.id === dm.id ? "true" : "false"} title={a.persona}>
                   <button className="agentmain" onClick={() => onOpenDm(a.id, a.name)}
-                    title={`${presenceTitle(pres)}
+                    title={`${says.title}
 Open your chat with ${a.name}`}>
                     <AgentFace name={a.name} size={22} presence={pres} hasPresence />
                     <span className="txt agent-name">
                       <span className="an-name">{a.name}</span>
-                      <span className="an-state">
-                        <b>{pres ? PRESENCE_WORDS[pres.presence] : "Not looked yet"}</b>
-                        {pres && <> · {pres.reason}</>}
+                      <span className={`an-state${says.trouble ? " introuble" : ""}`}>
+                        <b>{says.word}</b>
+                        {says.reason && <> · {says.reason}</>}
                       </span>
                     </span>
                     <UnreadMarks n={unread} />
@@ -3348,6 +3463,9 @@ function ChatView({
   /* The same fact as the sidebar row, from the same one place, so the rail and
      the conversation can never disagree about whether anyone is home. */
   const dmPresence = peerAgent ? presenceOf(world, peerAgent.id) : undefined;
+  /* …and the same one owner decides whether what it should say instead is that
+     this agent's job is stuck or fell over. */
+  const dmSays = peerAgent ? presenceSays(world, peerAgent.id, dmPresence) : undefined;
 
   return (
     <div className="thread">
@@ -3367,10 +3485,11 @@ function ChatView({
           </div>
           <div className="grow" />
           {peerAgent && (
-            <span className="presencehere" data-presence={dmPresence?.presence ?? "unknown"}>
+            <span className="presencehere" data-presence={dmPresence?.presence ?? "unknown"}
+              data-trouble={dmSays?.trouble ?? ""}>
               <span className={`pdot p-${dmPresence?.presence ?? "unknown"}`} aria-hidden="true" />
-              <b>{dmPresence ? PRESENCE_WORDS[dmPresence.presence] : "Not looked yet"}</b>
-              <span className="ph-why">{dmPresence ? dmPresence.reason : NOT_YET_LOOKED}</span>
+              <b>{dmSays!.word}</b>
+              <span className="ph-why">{dmSays!.reason || NOT_YET_LOOKED}</span>
             </span>
           )}
           {peerAgent && (
@@ -5677,8 +5796,14 @@ function ChannelRail({ channel, onEditAgent, onOpenDm }: {
   const people = onePerPerson(
     channel.memberIds.map(id => world.users.find(u => u.id === id)).filter(Boolean) as User[]);
   const tasks = world.tasks.filter(t => t.channelId === channel.id);
-  const running = tasks.filter(t => ["working", "not_started", "waiting_approval", "waiting_user", "blocked"].includes(t.status));
-  const shownJobs = running.length > 0 ? running : tasks.slice(0, 4);
+  /* STUCK IS NOT RUNNING. A blocked job used to be counted in with the ones
+     genuinely moving and printed under "Running now", which is the whole bug:
+     the job that most needs him read as the one that needed him least. It is
+     listed FIRST, and the heading says so. */
+  const live = tasks.filter(t => ["working", "not_started", "waiting_approval", "waiting_user"].includes(t.status));
+  const stuck = tasks.filter(t => t.status === "blocked");
+  const openJobs = [...stuck, ...live];
+  const shownJobs = openJobs.length > 0 ? openJobs : tasks.slice(0, 4);
 
   return (
     <aside className="aside" aria-label="Channel details">
@@ -5688,19 +5813,20 @@ function ChannelRail({ channel, onEditAgent, onOpenDm }: {
           <div className="d-empty">Nobody in this room yet. Use “Add agent” above to bring someone in.</div>}
         {agents.map(a => {
           const pres = presenceOf(world, a.id);
+          const says = presenceSays(world, a.id, pres);
           const provider = (a.provider ?? "claude") as Provider;
           return (
             <div className="mini-agent" key={a.id} data-agent={a.name}
-              data-presence={pres?.presence ?? "unknown"}>
+              data-presence={pres?.presence ?? "unknown"} data-trouble={says.trouble ?? ""}>
               <AgentFace name={a.name} size={36} presence={pres} hasPresence />
               <span style={{ minWidth: 0 }}>
                 <span className="nm">{a.name}</span>
                 <span className="rl two-lines" title={a.persona}>
                   {PROVIDER_LABEL[provider]} · {roleOf(a.persona)}
                 </span>
-                <span className="an-state" title={presenceTitle(pres)}>
-                  <b>{pres ? PRESENCE_WORDS[pres.presence] : "Not looked yet"}</b>
-                  {pres && <> · {pres.reason}</>}
+                <span className={`an-state${says.trouble ? " introuble" : ""}`} title={says.title}>
+                  <b>{says.word}</b>
+                  {says.reason && <> · {says.reason}</>}
                 </span>
                 {/* who is in this room BECAUSE this agent is */}
                 <AgentOwnerTag agent={a} />
@@ -5732,16 +5858,22 @@ function ChannelRail({ channel, onEditAgent, onOpenDm }: {
       </div>
 
       <div className="aside-sec">
-        <span className="eyebrow">{running.length > 0 ? "Running now" : "Jobs from this channel"}</span>
+        <span className="eyebrow">
+          {stuck.length > 0
+            ? `Stuck — needs a look · ${stuck.length}`
+            : live.length > 0 ? "Running now" : "Jobs from this channel"}
+        </span>
         {shownJobs.length === 0 && (
           <div className="d-empty">Nothing handed over yet. Ask an agent with <code>@name !bg</code>.</div>
         )}
         {shownJobs.map(t => {
           const agent = world.agents.find(a => a.id === t.agentId);
+          const tr = taskTrouble(t);
           return (
-            <div className="job" key={t.id}>
+            <div className="job" key={t.id} data-trouble={tr?.kind ?? ""}>
               <b>{t.title}</b>
-              {agent?.name ?? "An agent"} · {STATUS_LABEL[t.status] ?? t.status} · started {clock(t.createdAt)}
+              {agent?.name ?? "An agent"} · {tr ? tr.word : STATUS_LABEL[t.status] ?? t.status} · started {clock(t.createdAt)}
+              {tr && <span className="jobwhy">{tr.reason}</span>}
             </div>
           );
         })}
@@ -5873,17 +6005,22 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
             const waiting = waitingOn(a.id);
             const pres = presenceOf(world, a.id);
             const busy = pres?.presence === "working";
+            const says = presenceSays(world, a.id, pres);
             /* Waiting on him beats everything, because it is the only one he can
-               do something about. Otherwise the hub's own word, never ours. */
+               do something about. Then a job that is stuck or fell over — the
+               same one owner every other presence line asks. Otherwise the hub's
+               own word, never ours. */
             const flag = waiting
               ? <span className="chip is-gold"><span className="dot wait" />Waiting on you</span>
-              : <span className={`chip presencepill p-${pres?.presence ?? "unknown"}`}>
-                <span className={`pdot p-${pres?.presence ?? "unknown"}`} />
-                {pres ? PRESENCE_WORDS[pres.presence] : "Not looked yet"}
-              </span>;
+              : says.trouble
+                ? <span className={`chip presencepill introuble is-${says.trouble}`}>{says.word}</span>
+                : <span className={`chip presencepill p-${pres?.presence ?? "unknown"}`}>
+                  <span className={`pdot p-${pres?.presence ?? "unknown"}`} />
+                  {pres ? PRESENCE_WORDS[pres.presence] : "Not looked yet"}
+                </span>;
             return (
               <article className="cast" key={a.id} data-crew={a.name}
-                data-presence={pres?.presence ?? "unknown"}>
+                data-presence={pres?.presence ?? "unknown"} data-trouble={says.trouble ?? ""}>
                 <div className="plate">
                   <Portrait identity={a.name} fill working={busy} />
                   <span className="no">No. {String(i + 1).padStart(2, "0")}</span>
@@ -5913,8 +6050,8 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
                     <span>
                       {waiting
                         ? "Waiting on your word before it carries on"
-                        : pres
-                          ? `${PRESENCE_WORDS[pres.presence]} — ${pres.reason}`
+                        : says.trouble || pres
+                          ? says.reason ? `${says.word} — ${says.reason}` : says.word
                           : NOT_YET_LOOKED}
                     </span>
                   </div>
@@ -9586,10 +9723,14 @@ function FilesScreen({ onOpenChannel, openAt, onOpened }: {
 
 /* ================= 6 · TASKS & APPROVALS ================= */
 
+/* The state word he reads. "blocked", "failed" and "cancelled" are the stored
+   code words; the three he would have to guess at are said by `TROUBLE_WORD`,
+   the one owner of how trouble is worded, so a chip and a reason line can never
+   call the same job two different things. */
 const STATUS_LABEL: Record<string, string> = {
   not_started: "queued", working: "working", waiting_user: "waiting for you",
-  waiting_approval: "needs your go-ahead", blocked: "blocked",
-  completed: "done", failed: "failed", cancelled: "cancelled",
+  waiting_approval: "needs your go-ahead", blocked: TROUBLE_WORD.blocked,
+  completed: "done", failed: TROUBLE_WORD.failed, cancelled: TROUBLE_WORD.cancelled,
 };
 
 const RUNNING_STATES = ["not_started", "working", "waiting_approval", "waiting_user", "blocked"];
@@ -9622,7 +9763,12 @@ function TasksScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): Re
     if (filter === "failed") return t.status === "failed" || t.status === "cancelled";
     return true;
   });
-  const running = shown.filter(t => RUNNING_STATES.includes(t.status));
+  /* A STUCK JOB IS NOT A RUNNING JOB. It used to be printed under "Running"
+     with everything genuinely moving, which is how a job waiting on something
+     could sit there for an hour looking healthy. It gets its own group, above
+     the ones that are actually running, because it is the one he can unblock. */
+  const stuck = shown.filter(t => t.status === "blocked");
+  const running = shown.filter(t => RUNNING_STATES.includes(t.status) && t.status !== "blocked");
   const finished = shown.filter(t => !RUNNING_STATES.includes(t.status));
 
   const taskCard = (t: Task) => {
@@ -9632,7 +9778,7 @@ function TasksScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): Re
     const cancellable = RUNNING_STATES.includes(t.status);
     const provider = agent ? PROVIDER_LABEL[(agent.provider ?? "claude") as Provider] : null;
     return (
-      <div key={t.id} className="taskrow">
+      <div key={t.id} className="taskrow" data-task={t.id} data-status={t.status}>
         <span className="taskportrait">
           {agent
             ? <AgentFace name={agent.name} size={40} lamp={t.status === "working" ? "run" : "live"} />
@@ -9650,9 +9796,11 @@ function TasksScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): Re
               {STATUS_LABEL[t.status] ?? t.status}
             </span>
           </div>
-          {t.error && (t.status === "failed" || t.status === "cancelled") && (
-            <div className="taskresult"><b>What went wrong</b>{t.error}</div>
-          )}
+          {/* WHY IT IS NOT MOVING, on the card, never behind a click. The one
+              owner writes both halves — the state in plain words and the reason
+              the engine really recorded, or the honest fact that it recorded
+              none. */}
+          <TroubleLine task={t} />
           {t.result && (
             <div className="taskresult"><b>Result</b>{t.result.slice(0, 240)}</div>
           )}
@@ -9697,8 +9845,20 @@ function TasksScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): Re
             <EmptyTray title="Nothing handed over yet"
               line={<>Ask an agent with <code>@Agent !bg your job</code> and the result lands here.</>} />
           )}
+          {/* There ARE jobs, just none of this kind — said plainly, because an
+              empty panel on its own reads as "nothing ever happened". */}
+          {world.tasks.length > 0 && shown.length === 0 && (
+            <EmptyTray title="No jobs of that kind"
+              line={<>Nothing here is {filter === "running" ? "running or stuck" : filter === "done" ? "finished" : "failed or stopped"} right now. Pick “All” to see every job.</>} />
+          )}
+          {stuck.length > 0 && (
+            <span className="eyebrow stucklabel" style={{ display: "block", marginBottom: 12 }}>
+              Stuck — waiting on something · {stuck.length}
+            </span>
+          )}
+          {stuck.map(taskCard)}
           {running.length > 0 && (
-            <span className="eyebrow" style={{ display: "block", marginBottom: 12 }}>Running · {running.length}</span>
+            <span className="eyebrow" style={{ display: "block", margin: stuck.length > 0 ? "26px 0 12px" : "0 0 12px" }}>Running · {running.length}</span>
           )}
           {running.map(taskCard)}
           {finished.length > 0 && (

@@ -207,8 +207,15 @@ export interface World {
   activity: ActivityRecord[];
   /** status of the local Claude/Codex apps — booleans and labels, never secrets */
   harness?: HarnessState;
-  /** the last thing the relay refused, so a failed save is never silent */
-  lastError?: { text: string; ts: number };
+  /**
+   * The last thing the relay refused, so a failed save is never silent.
+   *
+   * `keptSignedIn` is set when the refusal was a SIGN-IN attempt that failed
+   * while a credential that already worked was left untouched — the screen then
+   * says so, because "that invite has already been used" on its own reads like
+   * you have just been thrown out of your own Cloud9.
+   */
+  lastError?: { text: string; ts: number; keptSignedIn?: boolean };
   /**
    * The last channel the relay handed us. Asking for a direct conversation is
    * answered with one of these — whether it made a new one or found the old
@@ -512,8 +519,21 @@ export class RelayClient {
   private retryTimer?: ReturnType<typeof setTimeout>;
   /** The url the live socket is on — so file downloads follow the active hub. */
   private currentUrl: string = RELAY_URL;
-  /** The token to say `hello` with for THIS computer's own hub, this session. */
+  /**
+   * The credential this session is TRYING on this computer's own hub.
+   *
+   * Unproven until the hub answers `welcome`. It is deliberately NOT the stored
+   * credential: a newly typed owner key or a pasted invite has to be the thing
+   * we say `hello` with, and the stored one has to survive it failing.
+   */
   private selfHello = "";
+  /**
+   * A durable credential the hub minted for THIS attempt, held until `welcome`
+   * proves the attempt actually worked. Never written to storage from here.
+   */
+  private issued?: string;
+  /** One automatic fall-back per refused attempt — never a loop of them. */
+  private recovering = false;
 
   constructor() {
     this.syncHubWorld();
@@ -561,7 +581,11 @@ export class RelayClient {
   private connectActive(): void {
     const hub = activeHub(this.book);
     this.conn = initialConn(hub.id, hub.isSelf);
-    // a fresh attempt starts clean: last attempt's refusal belonged to it
+    // a fresh attempt starts clean: last attempt's refusal belonged to it, and
+    // so did any credential the last hub minted for it — an unproven one is
+    // never carried into a different attempt
+    this.issued = undefined;
+    this.recovering = false;
     this.world.authFailed = false;
     this.world.lastError = undefined;
     // questions asked of the last connection will never be answered by this one
@@ -646,7 +670,11 @@ export class RelayClient {
   private helloForActive(): void {
     const hub = activeHub(this.book);
     if (hub.isSelf) {
-      const t = this.token() || this.selfHello;
+      // What the person is TRYING wins over what is stored. It used to be the
+      // other way round, which is why the join screen had to wipe the stored
+      // credential before an attempt could even be heard — and a spent invite
+      // then left nothing to go back to. Nothing is written until `welcome`.
+      const t = this.selfHello || this.token();
       if (!t) { this.world.authFailed = true; this.emit(); return; }
       this.send({ type: "hello", token: t, client: "desktop" });
       return;
@@ -674,8 +702,74 @@ export class RelayClient {
   token(): string {
     return localStorage.getItem("cloud9.token") ?? "";
   }
-  setToken(token: string): void {
+  /** Private on purpose — see `adoptCredential`, the only caller. */
+  private setToken(token: string): void {
     localStorage.setItem("cloud9.token", token);
+  }
+
+  /* ================= ADOPTING A SESSION — THE ONE OWNER =================
+   *
+   * NEVER DESTROY A WORKING CREDENTIAL BEFORE ITS REPLACEMENT IS PROVED.
+   *
+   * The join screen used to write storage itself, BEFORE the attempt: pasting
+   * an invite blanked `cloud9.token` and only then asked the hub about the
+   * code. A spent, mistyped or expired invite therefore cost the person the
+   * sign-in they already had — recoverable for Vikas, who has the owner key,
+   * and permanent for an invited friend, who has nothing else.
+   *
+   * So there is one owner now, and it runs at exactly one moment: `welcome`,
+   * the frame that means the hub has actually let us in. Everything that can
+   * fail — a refused code, a mistyped key, a hub that will not answer —
+   * happens BEFORE this point and therefore cannot touch storage at all.
+   */
+
+  /** An invite code is a one-shot claim to be checked, never a credential to keep. */
+  private static isClaim(t: string): boolean {
+    return t.startsWith("invite:");
+  }
+
+  /**
+   * The session is real: file the credential that got us in.
+   *
+   * A hub-issued durable token (the `token` frame, which always arrives just
+   * before `welcome`) beats whatever we arrived with, because that is the thing
+   * that will work next time. Called from the `welcome` case and nowhere else.
+   */
+  private adoptCredential(): void {
+    const hub = activeHub(this.book);
+    const arrivedWith = RelayClient.isClaim(this.selfHello) ? "" : this.selfHello;
+    const proven = this.issued ?? (hub.isSelf ? arrivedWith : "");
+    this.issued = undefined;
+    this.recovering = false;
+    if (!proven) return;
+    if (hub.isSelf) {
+      this.setToken(proven);
+      // A retry of THIS session must re-send the durable token, never the
+      // one-shot code that has now been spent.
+      this.selfHello = proven;
+    } else {
+      this.setHubToken(hub.id, proven);
+      this.clearPendingJoin(hub.id);
+    }
+  }
+
+  /**
+   * A refused sign-in must not cost you the one you already had.
+   *
+   * If what was just refused is NOT what is in storage — a spent invite typed
+   * over a working session, a mistyped owner key — then the stored credential
+   * was never tested and is still good, so we go straight back in on it and the
+   * screen says what happened. Returns true when that fall-back is under way.
+   */
+  private recoverPreviousCredential(refusal: string): boolean {
+    const kept = this.token();
+    if (!kept || kept === this.selfHello || this.recovering) return false;
+    const say = { text: refusal, ts: Date.now(), keptSignedIn: true };
+    this.connect(kept);        // clears the last attempt's state and dials again
+    this.recovering = true;    // ...one fall-back only, so a dead key cannot spin
+    this.world.lastError = say; // ...and the reason survives the fresh attempt
+    this.emit();
+    return true;
   }
 
   /* ---- per-hub credentials (a friend's durable token, and a pending join) ----
@@ -2470,6 +2564,9 @@ export class RelayClient {
       case "welcome": {
         w.connected = true;
         w.authFailed = false;
+        // The hub has let us in — and only now is the credential that got us
+        // here allowed anywhere near storage. One owner, one moment.
+        this.adoptCredential();
         w.me = frame.state.me;
         w.users = frame.state.users;
         w.agents = frame.state.agents;
@@ -2535,14 +2632,13 @@ export class RelayClient {
         for (const entry of frame.state.unread ?? []) w.unread[entry.channelId] = entry;
         break;
       }
-      case "token": {
-        // A durable token is filed against the hub that issued it: this
-        // computer's own key never gets overwritten by a friend hub's token.
-        const hub = activeHub(this.book);
-        if (hub.isSelf) this.setToken(frame.token);
-        else { this.setHubToken(hub.id, frame.token); this.clearPendingJoin(hub.id); }
+      case "token":
+        // HELD, NOT WRITTEN. The hub has minted a credential for this attempt,
+        // but the attempt is not a session until `welcome` arrives — and until
+        // then the credential that was already working stays exactly as it is.
+        // `adoptCredential` files it, against the hub that issued it.
+        this.issued = frame.token;
         break;
-      }
       case "joinToken":
         // A minted "invite a friend" link. The code alone opens the door, so it
         // is held only long enough for the screen to wrap it into a link and is
@@ -2694,8 +2790,13 @@ export class RelayClient {
         // the friend's own words, so a bad or spent join link is explained
         // rather than dead-ending on an empty workspace.
         if (!w.me) {
-          if (activeHub(this.book).isSelf) w.authFailed = true;
-          else this.friendJoinFailed(frame.error);
+          if (activeHub(this.book).isSelf) {
+            // A refused attempt that had a working credential behind it goes
+            // back in on that one instead of dumping the person on a sign-in
+            // box with nothing left to type. Only when there is genuinely
+            // nothing to fall back to is this a failed sign-in.
+            if (!this.recoverPreviousCredential(frame.error)) w.authFailed = true;
+          } else this.friendJoinFailed(frame.error);
         } else if (frame.error === "bad token") {
           w.authFailed = true;
         }

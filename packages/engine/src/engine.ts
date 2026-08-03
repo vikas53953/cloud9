@@ -6,7 +6,8 @@ import path from "node:path";
 import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, ARTIFACT_LIMITS, Channel, ClientFrame, HarnessName, HarnessState, ID,
-  Message, Project, RunRecord, ServerFrame, Task, WorkReaction, WorldState, isSafeFileName,
+  Message, Project, RemoteActionFacts, RunRecord, ServerFrame, Task, TaskStatus, WorkReaction,
+  WorldState, describeRemoteAction, isSafeFileName,
   mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
@@ -214,6 +215,9 @@ export class Engine {
     this.approvals = new ApprovalDesk({
       send: frame => this.sendFrame(frame),
       ...(opts.approvalWaitMs ? { waitMs: opts.approvalWaitMs } : {}),
+      // THE ONE PLACE A JOB IS REALLY STUCK. See `jobIsStuck` below.
+      onWaitStart: w => this.jobIsStuck(w.taskId, w.facts),
+      onWaitEnd: e => this.jobIsMovingAgain(e.taskId),
     });
     this.schedules = this.loadSchedules();
     this.scheduler = new Scheduler(
@@ -809,6 +813,11 @@ export class Engine {
     this.markWork(task, "picked", false);
     this.markWork(task, "working");
     this.sendFrame({ type: "updateTask", taskId: task.id, status: "working" });
+    // OUR OWN COPY KNOWS TOO, without waiting for the hub to say it back. The
+    // stuck/unstuck pair below asks "is this job of ours still running?", and a
+    // job that has genuinely started must answer yes from the moment it starts —
+    // not from whenever the echo happens to land.
+    this.noteStatus(task.id, "working");
     try {
       // schedule-creation tasks (approved via the task machine)
       const sched = /^!schedule (daily \d{1,2}:\d{2}|every \d+m):\s*(.+)$/i.exec(task.title);
@@ -841,6 +850,59 @@ export class Engine {
         this.markWork(task, "working", false);
         this.markWork(task, "done");
         this.agentSend(agent.id, task.channelId, `⏰ Approved & scheduled: ${s.when} — "${s.prompt}" (id ${s.id})`);
+        return;
+      }
+      // WORK IN THE CODE, AS A JOB — "!code <what to do>" asked for in the
+      // background ("@Scout !bg !code fix the build") or made from the Tasks
+      // panel. The SAME function the room uses, so there is one order of events
+      // and one set of laws: its own worktree, everything local until the agent
+      // itself asks, and the only thing that leaves this computer behind the
+      // approval card. Without this line the words "!code" arrived at the CLI as
+      // prose and the job talked about the work instead of doing it.
+      //
+      // The thing that is new is that A JOB IS WATCHING. The task id travels
+      // with the ask, so while the card sits unanswered the job says on his
+      // screen that it is stuck and on whom — see `jobIsStuck`.
+      const code = /^!code\s+([\s\S]+)$/i.exec(task.title.trim());
+      if (code) {
+        const result = await this.workInRepository(agent, {
+          channelId: task.channelId, ask: code[1].trim(),
+          triggerAuthor: task.requesterName, taskId: task.id,
+        });
+        // FR-TS-005: stopped while we worked, so the result is discarded
+        if (this.tasks.get(task.id)?.status === "cancelled") {
+          this.markRunCancelled(task.id);
+          this.markWork(task, "working", false);
+          return;
+        }
+        if (!result || result.outcome === "failed") {
+          // `problem` is already safe to show (repowork.ts writes it); the
+          // fallback is for the turn that never started, which has already said
+          // why in the room.
+          const problem = result?.problem
+            ?? "I could not work in the code for this project — the reason is in the conversation.";
+          this.sendFrame({
+            type: "updateTask", taskId: task.id, status: "failed",
+            error: redactForSharing(problem, 300),
+            ...this.summaryFor(undefined),
+          });
+          this.markWork(task, "working", false);
+          this.markWork(task, "failed");
+          return;
+        }
+        // DONE — including when the publish was refused. The agent did the work,
+        // asked, and was told no BY HIM; calling his own "no" a failure would
+        // read on screen as the app breaking. The sentence says exactly what
+        // happened and what did not leave this computer, and it is built by
+        // `describeRepoTurn` from git's account, never from the agent's — and it
+        // never names a folder.
+        this.sendFrame({
+          type: "updateTask", taskId: task.id, status: "completed",
+          result: describeRepoTurn(result).slice(0, 2000),
+          ...this.summaryFor(result.reply),
+        });
+        this.markWork(task, "working", false);
+        this.markWork(task, "done");
         return;
       }
       const text = await this.respondAs(agent, {
@@ -901,6 +963,113 @@ export class Engine {
       console.error("[engine] could not summarise a finished job:", err);
       return {};
     }
+  }
+
+  // ---- STUCK: the one state a job can be in that is nobody's fault ----
+  //
+  // "Stuck — waiting on something" has been on his screen since the jobs list
+  // was drawn, and until now the engine never produced it: every job was
+  // working, done, failed or stopped. A state the product can SHOW but never
+  // REACH is a promise the app does not keep, so either it becomes true or it
+  // comes off the screen. This makes it true, for the one case where it really
+  // is: THE JOB HAS ASKED HIM SOMETHING AND IS STANDING THERE WAITING.
+  //
+  // Why only that case, and why nothing else here:
+  //  * A JOB WAITING ON AN APPROVAL CARD is genuinely not working. Its turn has
+  //    stopped, mid-run, at the one thing it may not do alone, and it will not
+  //    move again until a person answers or the ten minutes run out. Nothing is
+  //    wrong with it and nothing is going to change without him. That is the
+  //    definition of stuck, and it is the state he most needs to see, because he
+  //    is the thing it is stuck on.
+  //  * A HANDOFF THAT WAS NEVER PICKED UP is not this. A handoff carries no job
+  //    (`handOffInRoom`): it is a message to another agent, and the sender's own
+  //    task, if it had one, is finished the moment it is passed on. There is
+  //    nothing waiting to un-stick, so calling anything blocked there would be
+  //    inventing a state, not reporting one.
+  //  * A MISSING OR SIGNED-OUT CLI is not this either. `HarnessUnavailableError`
+  //    ends the turn: `runTask` catches it and the job is FAILED, with the
+  //    reason the harness gave. It is dead, not waiting — and a dead job painted
+  //    as "waiting on something" is the more dishonest of the two, because it
+  //    tells him to expect it to carry on.
+  //
+  // AND IT ALWAYS CLEARS. `onWaitEnd` fires on every way out of the desk — yes,
+  // no, ten minutes, hub gone — so the job goes back to working and the ordinary
+  // completed/failed ending follows from the turn itself. A stuck state with no
+  // way out would be worse than no stuck state at all.
+
+  /** Jobs standing at the approval gate: how many asks deep, and did we say so. */
+  private stuckJobs = new Map<ID, { asks: number; said: boolean }>();
+
+  /**
+   * A JOB HAS ASKED HIM SOMETHING AND CANNOT MOVE UNTIL HE ANSWERS.
+   *
+   * The sentence is built from the SAME counted facts the card is written from
+   * (`describeRemoteAction`, shared's — one owner for the words), never from
+   * anything the agent said, and it goes through `redactForSharing` like every
+   * other free-text field this process puts on the wire: a path, an argument
+   * list or an environment value can never ride out on a status line.
+   */
+  private jobIsStuck(taskId: ID, facts: RemoteActionFacts): void {
+    const seen = this.stuckJobs.get(taskId) ?? { asks: 0, said: false };
+    seen.asks += 1;
+    this.stuckJobs.set(taskId, seen);
+    if (seen.asks > 1) return;           // already standing there; one card at a time
+    if (!this.runningTask(taskId)) return;
+    seen.said = true;
+    this.sendFrame({
+      type: "updateTask", taskId, status: "blocked",
+      // the field the screen already reads for a job in trouble
+      error: redactForSharing(`Waiting for you to approve: ${describeRemoteAction(facts)}.`, 300),
+    });
+    this.noteStatus(taskId, "blocked");
+  }
+
+  /**
+   * HE ANSWERED, OR NOBODY DID. Either way the turn has been told and is doing
+   * something again — writing the pull request, or writing the sentence that
+   * says it did not happen — so the job is working, and the honest ending
+   * arrives from `runTask` the ordinary way.
+   */
+  private jobIsMovingAgain(taskId: ID): void {
+    const seen = this.stuckJobs.get(taskId);
+    if (!seen) return;
+    seen.asks -= 1;
+    if (seen.asks > 0) return;           // another card is still open on this job
+    this.stuckJobs.delete(taskId);
+    if (!seen.said) return;              // we never said it was stuck; say nothing now
+    if (!this.runningTask(taskId)) return;
+    // "" is "clear it", not "leave it alone" — the wait is over, so the reason
+    // for it must not be left sitting on the job like a failure.
+    this.sendFrame({ type: "updateTask", taskId, status: "working", error: "" });
+    this.noteStatus(taskId, "working");
+  }
+
+  /**
+   * Keep our copy of a job in step with what we just told the hub.
+   *
+   * It is a COPY and never a permission: nothing is decided from it. The hub
+   * remains the one owner of a job's real state and will say it back; this only
+   * stops the engine from being briefly wrong about work it is doing itself.
+   */
+  private noteStatus(taskId: ID, status: TaskStatus): void {
+    const task = this.tasks.get(taskId);
+    // a job somebody stopped stays stopped — the same rule the hub enforces
+    if (!task || task.status === "cancelled") return;
+    // A NEW OBJECT, never a scribble on the caller's. The job arrived from
+    // somebody else's hands (the hub's frame, a test's fixture) and writing on
+    // it would change what THEY hold — which is how one test's job turned up
+    // half-run in the next one.
+    this.tasks.set(taskId, { ...task, status });
+  }
+
+  /**
+   * Is this a job of ours that is still running? A job that was stopped, or has
+   * already finished, must never be dragged back onto the board — the hub
+   * refuses that for `cancelled` and we do not ask it to.
+   */
+  private runningTask(taskId: ID): boolean {
+    const status: TaskStatus | undefined = this.tasks.get(taskId)?.status;
+    return status === "working" || status === "blocked";
   }
 
   /**

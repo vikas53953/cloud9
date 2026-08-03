@@ -3,7 +3,7 @@
 // silently draining a subscription: >=25 consecutive agent messages with no
 // human, or >=60 agent messages in an hour per channel, pauses agents there
 // until a human speaks.
-import { AgentDef, Channel, mayDriveAgent, Message } from "@cloud9/shared";
+import { AgentDef, Channel, ID, mayDriveAgent, Message } from "@cloud9/shared";
 
 export interface BrakeConfig {
   maxConsecutiveAgent: number; // default 25
@@ -30,7 +30,9 @@ export function isBraked(history: Message[], cfg: BrakeConfig = DEFAULT_BRAKE): 
  *  - never to itself
  *  - never for someone who is not allowed to drive this agent
  *  - always in a DM it belongs to (when someone allowed spoke)
- *  - always when @mentioned
+ *  - when @mentioned AND it is the one agent that owns this turn: a message
+ *    naming several agents is answered by the FIRST one named, the rest stay
+ *    quiet (see `mentionOwner`)
  *  - free chatter: for un-mentioned human messages, the single most relevant
  *    agent in the channel chimes in (keyword overlap with persona); agent
  *    messages only draw replies via mention — that plus the brake keeps
@@ -67,7 +69,12 @@ export function shouldReply(
   // permission its owner does not have (FR-AA-003).
   if (message.authorKind === "human" && !mayDriveAgent(message.authorId, agent)) return false;
   if (channel.kind === "dm") return true;
-  if (message.mentions?.includes(agent.id)) return true;
+  // ONE OWNER PER ANSWER (feature 4, slice A). Being named is no longer enough:
+  // when a message names several agents, exactly one of them takes the turn —
+  // see `mentionOwner` for the rule and why it needs no coordination.
+  if (message.mentions?.includes(agent.id)) {
+    return mentionOwner(message, channel, [agent, ...channelAgents]) === agent.id;
+  }
   if (message.authorKind === "agent") return false; // agent→agent needs a mention
   if (message.mentions && message.mentions.length > 0) return false; // directed elsewhere
   // free chatter: best-matching agent replies
@@ -76,6 +83,89 @@ export function shouldReply(
     .map(a => ({ id: a.id, score: relevance(a, message.text) }));
   const best = scores.sort((x, y) => y.score - x.score)[0];
   return !!best && best.id === agent.id && best.score > 0;
+}
+
+/**
+ * WHO OWNS A MESSAGE THAT NAMES SEVERAL AGENTS — the rule: FIRST MENTIONED WINS.
+ *
+ * "@Scout @Architect look at this" is answered by Scout, and Architect stays
+ * quiet. Before this, every named agent answered: three mentions meant three
+ * separate turns, three subscriptions spent, and three half-answers to read.
+ *
+ * Why first-mentioned rather than best-matching:
+ *  - A PERSON CAN PREDICT IT. The order you type the names in is the order you
+ *    meant them in; the first name is who you were talking to. Relevance
+ *    scoring would make the same sentence go to a different agent tomorrow.
+ *  - IT NEEDS NO COORDINATION. Each person's agents run on that person's own
+ *    computer, and an engine only ever sees its OWN agents act. If the choice
+ *    depended on anything an engine holds privately, two engines could both
+ *    decide "mine wins" and both answer. This rule reads only facts every
+ *    engine already has identical copies of, broadcast by the hub: the message
+ *    text, the message's `mentions` list, and the channel's agent roster
+ *    (`worldFor` in the relay sends `store.agents()` — the WHOLE roster — to
+ *    everyone). So both engines compute the same winner, separately, with no
+ *    message passing between them.
+ *
+ * A paused or switched-off agent cannot own a turn — it would swallow the
+ * question in silence — so the next agent named takes it instead.
+ *
+ * Ties (a name that isn't literally in the text, e.g. mentions supplied by a
+ * caller rather than typed) fall back to the order of the `mentions` list and
+ * then to agent id: both are the same everywhere, so a tie still resolves the
+ * same way on every machine.
+ *
+ * Returns the id of the agent that owns the turn, or undefined when nobody
+ * named is able to take it.
+ */
+export function mentionOwner(
+  message: Message,
+  channel: Channel,
+  channelAgents: AgentDef[],
+): ID | undefined {
+  const mentioned = message.mentions ?? [];
+  if (mentioned.length === 0) return undefined;
+  const seen = new Set<ID>();
+  const candidates = channelAgents.filter(a => {
+    if (seen.has(a.id)) return false;
+    seen.add(a.id);
+    return mentioned.includes(a.id)
+      && channel.memberIds.includes(a.id)
+      && a.lifecycle !== "paused" && a.lifecycle !== "disabled";
+  });
+  if (candidates.length === 0) return undefined;
+  const ranked = candidates
+    .map(a => ({
+      id: a.id,
+      pos: mentionPosition(message.text, a.name),
+      order: mentioned.indexOf(a.id),
+    }))
+    .sort((x, y) => x.pos - y.pos || x.order - y.order || (x.id < y.id ? -1 : 1));
+  return ranked[0].id;
+}
+
+/**
+ * The agents that were named but are staying quiet because someone else owns
+ * the turn. Nothing in the engine acts on this yet — it is what the room needs
+ * to say "…and Architect was asked too" without re-deriving the rule on screen.
+ */
+export function passedOverByMention(
+  message: Message,
+  channel: Channel,
+  channelAgents: AgentDef[],
+): ID[] {
+  const owner = mentionOwner(message, channel, channelAgents);
+  if (!owner) return [];
+  const mentioned = message.mentions ?? [];
+  return channelAgents
+    .filter(a => a.id !== owner && mentioned.includes(a.id) && channel.memberIds.includes(a.id))
+    .map(a => a.id);
+}
+
+/** Where "@Name" appears in the text; Infinity when it was never typed. */
+function mentionPosition(text: string, name: string): number {
+  const re = new RegExp(`@${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i");
+  const at = text.search(re);
+  return at < 0 ? Infinity : at;
 }
 
 function relevance(agent: AgentDef, text: string): number {

@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-08-02T21:27:58.160Z",
-  "expected": 508,
-  "executed": 508,
+  "ranAt": "2026-08-03T11:10:02.835Z",
+  "expected": 520,
+  "executed": 520,
   "results": [
     {
       "name": "join screen renders",
@@ -131,7 +131,7 @@
     {
       "name": "the GitHub card shows one honest state and says when Cloud9 really asked",
       "pass": true,
-      "detail": "signed-in :: Cloud9 asked this computer at 02:53:48."
+      "detail": "signed-in :: Cloud9 asked this computer at 16:35:23."
     },
     {
       "name": "signed in: the GitHub card names the account and says who keeps the token",
@@ -196,7 +196,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch b5bt7 :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch 4hxyw :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -276,7 +276,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_U24kievHg6zEIe_Vxn3LSw"
+      "detail": "inv_ImmSGP_lUj-onH43ip5gKA"
     },
     {
       "name": "friend joins via invite",
@@ -289,6 +289,46 @@
       "detail": ""
     },
     {
+      "name": "a successful join stores the durable credential the hub issued, never the invite code",
+      "pass": true,
+      "detail": "47 chars"
+    },
+    {
+      "name": "a spent invite leaves the credential that was already working exactly as it was",
+      "pass": true,
+      "detail": "stored \"tok_TwvDkEacQ0AgdKftYlCYr3Lk5Lx9uOxsmFK4gIS5tUA\""
+    },
+    {
+      "name": "a refused code drops the person back into their own Cloud9 rather than a dead sign-in box",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and it says what happened in plain words, including that nothing was lost",
+      "pass": true,
+      "detail": "That invite has already been used — ask Vikas for a new one. You are still signed in as before."
+    },
+    {
+      "name": "a bad code with nothing to fall back to says so and does not pretend you are signed in",
+      "pass": true,
+      "detail": "That invite code isn't valid. Check it for typos, or ask Vikas for a new one."
+    },
+    {
+      "name": "a join that works replaces the old credential with the one the hub just issued",
+      "pass": true,
+      "detail": "47 chars"
+    },
+    {
+      "name": "and a reload comes straight back in on it, with no sign-in box",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the one startup path that wipes credentials still leaves the session credential alone",
+      "pass": true,
+      "detail": ""
+    },
+    {
       "name": "empty message is not sent",
       "pass": true,
       "detail": ""
@@ -296,7 +336,7 @@
     {
       "name": "the people list shows each person once",
       "pass": true,
-      "detail": "Vikas, Priya"
+      "detail": "Vikas, Priya, Ravi"
     },
     {
       "name": "clicking a person opens the direct conversation with them",
@@ -406,7 +446,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 02:54"
+      "detail": "↳ 1 reply · last at 16:36"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -476,7 +516,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 02:54 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 16:36 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -1226,7 +1266,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_mscb7ehn8fs3wj\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_msd4ksfp5kyli6\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -1266,12 +1306,12 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_mscb50o3wnjzsm:1785705923181 a_mscb55mx79ymfd:1785705930953 u_mscb5gbrzvyd8j:1785705931414 a_mscb7ehn8fs3wj:1785705931495"
+      "detail": "u_msd4hpj9vg7a8i:1785755257550 a_msd4hrjsh2rpto:1785755264366 u_msd4i57ttjbbl1:1785755264865 a_msd4ksfp5kyli6:1785755264993"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785705928949 · now 1785705931414"
+      "detail": "first 1785755262434 · now 1785755264865"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
@@ -1501,7 +1541,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":32,\"pinned\":0,\"min\":40,\"max\":4119,\"endedAt\":4119}"
+      "detail": "{\"followedToBottom\":0,\"samples\":34,\"pinned\":0,\"min\":40,\"max\":4119,\"endedAt\":4119}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1641,7 +1681,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_mscb58du1b70hp\",\"status\":\"completed\",\"runId\":\"r-0mscb58e9-kskg\"}"
+      "detail": "{\"id\":\"t_msd4hthesrkifu\",\"status\":\"completed\",\"runId\":\"r-0msd4hthp-6hfy\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1831,7 +1871,7 @@
     {
       "name": "pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
       "pass": true,
-      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_mscb8wxxbhl2as\",\"repo\":\"vikas53953/cloud9\"}"
+      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_msd4m1kytssmyh\",\"repo\":\"vikas53953/cloud9\"}"
     },
     {
       "name": "while it is looking the button says so and cannot be pressed again",
@@ -2061,7 +2101,7 @@
     {
       "name": "it says when it runs out — an agent is standing there waiting for the answer",
       "pass": true,
-      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 02:57 EXPIRES in 9 minutes"
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 16:39 EXPIRES in 9 minutes"
     },
     {
       "name": "a request with no job behind it offers no 'see the job' button to press",
@@ -2286,7 +2326,7 @@
     {
       "name": "the card says which agent made it, and how big it is",
       "pass": true,
-      "detail": "made by Scout :: 45 bytes · text · 3 Aug 02:57"
+      "detail": "made by Scout :: 45 bytes · text · 3 Aug 16:39"
     },
     {
       "name": "version 1 is not labelled with a version number nobody needs",
@@ -2296,7 +2336,7 @@
     {
       "name": "the reference itself is not printed beside the card it draws",
       "pass": true,
-      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 3 Aug 02:57 Show it"
+      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 3 Aug 16:39 Show it"
     },
     {
       "name": "the file really comes back, byte for byte, through the attachment ticket path",
@@ -2316,7 +2356,7 @@
     {
       "name": "the history shows the earlier version, who made it and when",
       "pass": true,
-      "detail": "v1 Scout 3 Aug 02:57 45 bytes Show it"
+      "detail": "v1 Scout 3 Aug 16:39 45 bytes Show it"
     },
     {
       "name": "an older version can still be downloaded, and it is the OLD bytes",
@@ -2331,7 +2371,7 @@
     {
       "name": "a file that is not text is a download and is never drawn into the room",
       "pass": true,
-      "detail": "74 bytes · a file to save · 3 Aug 02:57"
+      "detail": "74 bytes · a file to save · 3 Aug 16:39"
     },
     {
       "name": "a reference to a file that is not there says so in plain words, with no jargon",
@@ -2361,7 +2401,7 @@
     {
       "name": "Files opens the immutable earlier version and returns its original bytes",
       "pass": true,
-      "detail": "v1 Scout 3 Aug 02:57 45 bytes Show it # Villas in Goa Three that fit, with prices. :: \"# Villas in Goa\\nThree that fit, with prices.\\n\""
+      "detail": "v1 Scout 3 Aug 16:39 45 bytes Show it # Villas in Goa Three that fit, with prices. :: \"# Villas in Goa\\nThree that fit, with prices.\\n\""
     },
     {
       "name": "Files gives access controls to room managers and removes them for a plain member",
@@ -2391,27 +2431,27 @@
     {
       "name": "search everywhere finds a message, labelled in plain words with its room, who and when",
       "pass": true,
-      "detail": "Vikas general · Today · 02:57 the wobbegong sighting was near the reef"
+      "detail": "Vikas general · Today · 16:39 the wobbegong sighting was near the reef"
     },
     {
       "name": "a reply written in a thread is found and called a reply in a thread, not a message",
       "pass": true,
-      "detail": "Vikas general · Today · 02:57 the quokkatrail guide confirmed it"
+      "detail": "Vikas general · Today · 16:39 the quokkatrail guide confirmed it"
     },
     {
       "name": "the shared name of a file an agent made is findable from the same one box",
       "pass": true,
-      "detail": "Scout nudibranch-log.md general · Today · 02:57 nudibranch-log.md"
+      "detail": "Scout nudibranch-log.md general · Today · 16:39 nudibranch-log.md"
     },
     {
       "name": "words only an OLD version of a file ever had are found, and open that file's kept history there",
       "pass": true,
-      "detail": "Scout nudibranch-log.md v1 general · Today · 02:57 # Reef log The kelpwarden buoy drifted overnight."
+      "detail": "Scout nudibranch-log.md v1 general · Today · 16:39 # Reef log The kelpwarden buoy drifted overnight."
     },
     {
       "name": "clicking a message result goes to that message, in the room it was really said in",
       "pass": true,
-      "detail": "# general 2 people · 0 agents ◆ Private Add someone… ✨ Terra"
+      "detail": "# general 3 people · 0 agents ◆ Private Add someone… ✨ Terra"
     },
     {
       "name": "a plain member searching everywhere is not shown a restricted file, its name, or its words",
@@ -2511,7 +2551,7 @@
     {
       "name": "a valid link previews with its honest reach and names the hub, and sees the join link",
       "pass": true,
-      "detail": "127.0.0.1:57858 — only this computer — this is the address the app uses for itself · carries a join link, so y"
+      "detail": "127.0.0.1:63408 — only this computer — this is the address the app uses for itself · carries a join link, so y"
     },
     {
       "name": "adding a friend's Cloud9 actually dials it — the connection says so, and it is the live hub",
@@ -2531,12 +2571,32 @@
     {
       "name": "the owner can mint a join link, and it is a cloud9:// link carrying a join_ token",
       "pass": true,
-      "detail": "cloud9://127.0.0.1:8799#join_mP06wNkYFqYlgAcImZNCcw"
+      "detail": "cloud9://127.0.0.1:8799#join_6UH4C5igrQOi7JIoa7FArw"
     },
     {
       "name": "the panel says plainly that reaching a friend over the internet needs Tailscale, not wired tonight",
       "pass": true,
       "detail": "Reaching a friend on another computer needs Tailscale — a private network you both sign in"
+    },
+    {
+      "name": "a job that fell over says so in plain words AND says why, on the card itself",
+      "pass": true,
+      "detail": "book the two nights in Anjuna Architect · Codex · gpt-5.6-sol · Started 16:39 by Vikas FAILED Failed the model was not signed in on this computer Architect fini"
+    },
+    {
+      "name": "a stuck job reads as stuck rather than working, and is not listed in with the running ones",
+      "pass": true,
+      "detail": "{\"words\":\"shortlist the villas the Architect picked Scout · Claude · Sonnet 5 · Started 16:39 by Vikas STUCK — WAITING ON SOMETHING Stuck — waiting on something waiting on the Architect to answer the "
+    },
+    {
+      "name": "a job with no recorded reason says so honestly, and invents nothing",
+      "pass": true,
+      "detail": "email the shortlist to Priya Architect · Codex · gpt-5.6-sol · Started 16:40 by Vikas FAILED Failed no reason was recorded Architect finished “Background task: "
+    },
+    {
+      "name": "an agent whose job is stuck says so on its presence line, instead of reading as fine",
+      "pass": true,
+      "detail": "{\"trouble\":\"blocked\",\"words\":\"Scout Stuck — waiting on something · shortlist the villas the Architect picked — waiting on the Architect to answer the question about the budget 1 ✎\"}"
     },
     {
       "name": "no console errors",

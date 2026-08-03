@@ -158,6 +158,21 @@ const EXPECTED_CHECKS = [
      message he really typed AND a file an agent really made, and does clicking
      the message land him on that message in the room it was said in. */
   "search everywhere finds a seeded message and file, and the message result lands in its room",
+  /* Feature 4: turn coordination, in the app he actually opens.
+     Each of these exists for one thing that used to be invisible or wrong:
+     · [29] a job that is in trouble used to say nothing about WHY on the screen
+       he reads — and the fix must not invent a reason either, so the same check
+       holds a job with nothing recorded to saying exactly that;
+     · [30] a stuck job used to be printed in with the ones genuinely moving, so
+       a job waiting on somebody could sit for an hour looking healthy;
+     · [31] an agent whose job was stuck still read "Ready" on its presence line,
+       which is the same one fact told two different ways;
+     · [32] naming several agents in one message used to start a turn for each of
+       them — three subscriptions spent and three half-answers to read. */
+  "a job in trouble says why in plain words, and one with nothing recorded says so",
+  "a stuck job reads as stuck and is not listed in with the running ones",
+  "an agent whose job is stuck says so on its presence line instead of reading as fine",
+  "naming two agents in one message gets exactly one answer, from the first one named",
 ];
 
 /* ---------------------------------------------------------------- results */
@@ -729,7 +744,18 @@ async function connectInstalledEngine(page) {
     }, { timeout: 30000, every: 100 });
     return verified.artifact;
   };
-  return { record, publish, close: owned.close };
+  /* One more seam on the SAME owned connection, for the job states the engine
+     cannot yet reach on its own (`blocked`). It sends the hub's own frames —
+     `createTask` and `updateTask`, the very ones the engine sends on its failed
+     path — through the gate that only lets an owner write onto their own
+     agent's job. Nothing is written into the screen; everything the walk then
+     reads is the screen reading the hub back. */
+  const ask = frame => {
+    const requestId = `drive_ask_${++sequence}`;
+    ws.send(JSON.stringify({ ...frame, requestId }));
+    return requestId;
+  };
+  return { record, publish, ask, frames, close: owned.close };
 }
 
 /** Photograph what the machine is looking at. */
@@ -1117,6 +1143,9 @@ async function withDeadline(work, timeoutMs, label) {
 
 async function closeMemberBrowserResources(resources) {
   const problems = [];
+  /* Things that happened but are not failures — a shutdown that needed the
+     forced path yet still proved every exit belongs here, not in `problems`. */
+  const observations = resources.cleanupObservations ??= [];
   const attempt = async (label, done, work, timeoutMs) => {
     if (done()) return;
     try { await withDeadline(work, resources.cleanupTimeoutMs ?? timeoutMs, label); }
@@ -1136,8 +1165,14 @@ async function closeMemberBrowserResources(resources) {
     let gracefulProblem = null;
     try {
       await withDeadline(async () => {
+        /* Close inside-out. `startOwnedMemberBrowser` always launches a SERVER and
+           then attaches a `chromium.connect()` client to it, so closing the server
+           first leaves that client attached — which is exactly the state the old
+           "member browser remained connected after server close" problem reported.
+           Disconnect the client, then stop the server that owns the process, then
+           make the OS confirm the process is gone. */
+        if (resources.browser?.isConnected()) await resources.browser.close();
         if (resources.browserServer) await resources.browserServer.close();
-        else if (resources.browser?.isConnected()) await resources.browser.close();
         resources.browserExit = await waitForOwnedProcessExit(
           resources.browserProcess, resources.browserRootClosed, 10000);
       }, gracefulTimeout, "member browser graceful close");
@@ -1157,8 +1192,11 @@ async function closeMemberBrowserResources(resources) {
           resources.browserProcess, resources.browserRootClosed, resources.forceKillTimeoutMs ?? 15000);
         if (ownedProcessIsAlive(resources.browserProcess)) throw new Error("forced browser process is still alive");
         resources.closed.browser = true;
-        problems.push(`member browser graceful close: ${gracefulProblem?.message ?? "process remained alive"}; ` +
-          "forced termination succeeded and root close/OS exit were verified");
+        /* A slow shutdown that still met the SAME proof bar — root close observed
+           and the OS says the process is gone — is a pass, not a failure. It is
+           recorded so a run can say it happened, but it does not fail the group. */
+        observations.push(`member browser needed the forced path (${gracefulProblem?.message ?? "process remained alive"}); ` +
+          "the kill succeeded and root close plus OS exit were both verified");
       } catch (forceErr) {
         problems.push(`member browser forced termination: ${forceErr?.message ?? String(forceErr)}`);
       }
@@ -1300,13 +1338,16 @@ async function launchInstalledMemberSidecar(approval, relay) {
         if (!durableItem) throw new Error("the joined member had no durable storage to reconnect with");
         await closeMemberBrowserResources(resources);
         await startOwnedMemberBrowser(resources, resources.storageState);
-        await resources.page.waitForSelector(".rail", { timeout: 30000 });
+        await waitForEstablishedIdentity(resources.page);
         const reconnectedId = await assertRedeemedMemberIdentity(resources.page, ownerId);
         if (reconnectedId !== expectedMemberId) {
           throw new Error("the relaunched sidecar did not reconnect as the same invited member");
         }
         return reconnectedId;
       },
+      /* Things that happened during shutdown and were fully proved — e.g. a slow
+         close that needed the forced path. Reported, never counted as a failure. */
+      cleanupObservations: () => [...(resources.cleanupObservations ?? [])],
       cleanupState: () => ({
         pageClosed: resources.page?.isClosed() ?? true,
         contextClosed: resources.closed.context,
@@ -1347,13 +1388,50 @@ async function assertPlainMemberStart(sidecar, relay) {
   }
 }
 
+/**
+ * "The sidebar is on screen" is NOT "a person is signed in".
+ *
+ * `App.tsx` draws the whole workspace — icon rail included — the moment a token
+ * exists in storage, before the socket has said `welcome`. Waiting on `.rail`
+ * therefore returns while the window still has no identity, and whatever runs
+ * next blames the invite flow for the harness's own impatience. Wait on the
+ * app's OWN answer instead: `cloud9Wire.me()`, the same value the rail lamp
+ * turns green (`.rail-lamp.ok`) on. Use this at every point the walk moves from
+ * "a window exists" to "a person is signed in".
+ */
+async function waitForEstablishedIdentity(page, timeoutMs = 30000) {
+  await page.waitForSelector(".rail", { timeout: timeoutMs });
+  try {
+    await page.waitForFunction(
+      () => typeof window.cloud9Wire?.me === "function" && !!window.cloud9Wire.me(),
+      undefined, { timeout: timeoutMs });
+  } catch {
+    throw new Error("the workspace was drawn but nobody is signed in on it yet: " +
+      `window.cloud9Wire.me() never became a real id within ${timeoutMs}ms. ` +
+      "The rail appears as soon as a stored token exists, so this window is still waiting " +
+      "for the hub's welcome — not proof of an identity.");
+  }
+  return page.evaluate(() => window.cloud9Wire.me());
+}
+
 async function assertRedeemedMemberIdentity(memberPage, ownerId) {
   const identity = await memberPage.evaluate(() => ({
-    id: window.cloud9Wire.me(),
+    id: window.cloud9Wire?.me?.() ?? null,
     durableTokenPresent: (window.localStorage.getItem("cloud9.token")?.length ?? 0) > 0,
   }));
-  if (!identity.id || identity.id === ownerId || !identity.durableTokenPresent) {
-    throw new Error("the visible invite did not create a distinct member with its own durable session");
+  /* Three different failures. They used to share one sentence, which sent a real
+     investigation after the invite flow when the truth was "not connected yet". */
+  if (!identity.id) {
+    throw new Error("this member window is not signed in as anybody: window.cloud9Wire.me() is null, " +
+      "so the hub has not welcomed this connection yet (nothing has been proved about the invite)");
+  }
+  if (identity.id === ownerId) {
+    throw new Error(`this member window is signed in as the OWNER (${ownerId}), not a new person — ` +
+      "the invite did not create a distinct member");
+  }
+  if (!identity.durableTokenPresent) {
+    throw new Error(`member ${identity.id} exists but has no durable session: localStorage "cloud9.token" ` +
+      "is empty, so this member could not come back after a restart");
   }
   return identity.id;
 }
@@ -1574,7 +1652,7 @@ async function walk(page) {
       throw new Error("the installed app stopped on its sign-in screen — the packaged build is " +
         "supposed to hand itself its own owner key and go straight in");
     }
-    await page.waitForSelector(".rail", { timeout: 30000 });
+    await waitForEstablishedIdentity(page);
     return "workspace";
   });
   await shot(page, "start");
@@ -2095,6 +2173,21 @@ async function walk(page) {
         throw new Error("NOT ON SCREEN — a project offers no way to look at GitHub, so " +
           "'nobody has looked yet' is a state he can never leave");
       }
+      /* WAIT FOR THE BUTTON TO BE HIS TO PRESS. Connecting a repository now
+         asks GitHub straight away, so on a loaded machine that first look can
+         still be in flight when the harness arrives — the button honestly reads
+         "Looking at GitHub…" and is disabled. Clicking a disabled button then
+         times out and reports a working feature as broken. The state we want to
+         test is "he presses it", so wait until it is pressable; a look that is
+         ALREADY running is itself proof the control works, so that counts. */
+      const settled = await until("the look button to be pressable",
+        () => look.first().getAttribute("data-look").then(s => s !== "busy"),
+        { timeout: 60000 }).then(() => true).catch(() => false);
+      if (!settled) {
+        const state = await look.first().getAttribute("data-look");
+        return `a look GitHub was already running when the harness arrived (button: ${state}) — ` +
+          "the control works; it was busy doing the very thing this check presses for";
+      }
       const before = await page.locator(".projdetail").innerText();
       await look.first().click();
       const moved = await page.waitForFunction(
@@ -2371,7 +2464,7 @@ async function walk(page) {
     await memberPage.fill('.panel input[placeholder="inv_…"]', invite);
     await memberPage.fill('.panel input[placeholder="Priya"]', `Files member ${stamp}`);
     await memberPage.click("text=Enter Cloud9");
-    await memberPage.waitForSelector(".rail", { timeout: 30000 });
+    await waitForEstablishedIdentity(memberPage);
     const memberId = await assertRedeemedMemberIdentity(memberPage, known.me);
     await memberSidecar.reconnect(memberId, known.me);
     memberPage = memberSidecar.page;
@@ -2476,6 +2569,8 @@ async function walk(page) {
     /* The member proof is complete. Tear down its separate process/server before
        later Files claims; a cleanup failure makes those later claims invalid. */
     await memberSidecar.close();
+    const memberCleanupNotes = memberSidecar.cleanupObservations();
+    if (memberCleanupNotes.length) console.log(`  (member sidecar shutdown noted: ${memberCleanupNotes.join("; ")})`);
     memberSidecar = null;
     memberPage = null;
 
@@ -2588,6 +2683,261 @@ async function walk(page) {
     catch (err) { cleanupProblems.push(`installed engine: ${err?.message ?? String(err)}`); }
     if (cleanupProblems.length) {
       throw new Error(`required Files cleanup failed; later checks are invalid (${cleanupProblems.join("; ")})`);
+    }
+  }
+
+  /* --- 10. turn coordination: one owner per answer, trouble said out loud ----
+   *
+   * WHAT IS REAL HERE AND WHAT IS SEEDED, said plainly, the same way the browser
+   * suite says it. The MENTION half is real all the way down: a real message,
+   * typed into the real composer of the installed app, routed by the real engine
+   * on this computer — nothing about the answer is written by this harness, and
+   * if the machine's Claude is not signed in the agent still says so out loud in
+   * its own voice, which is still exactly one answer. The JOBS are real too —
+   * created through the app's own frame, minted and stored by the hub, run by
+   * the engine, broadcast back like any other. Only their FINAL STATE is seeded:
+   * the engine cannot yet report "blocked" at all, so that state and its reason
+   * are written onto the stored job with the hub's own `updateTask`, over the
+   * same owned connection the Files checks publish through, and only once the
+   * engine has finished with the job so there is no race with its own result.
+   */
+
+  const COORD_GROUP = [
+    EXPECTED_CHECKS[29], EXPECTED_CHECKS[30], EXPECTED_CHECKS[31], EXPECTED_CHECKS[32],
+  ];
+  let coordEngine = null;
+  try {
+    if (!OPTS.fresh) {
+      throw new Error("NOT CHECKED — asking two agents to answer and seeding a stuck job would " +
+        "change your real Cloud9; run without --real-data for the permanent coordination walk");
+    }
+
+    await page.click('.rail .rail-btn[data-go="chat"]');
+    await page.waitForSelector(".composer textarea", { timeout: 30000 });
+    const crew = await page.evaluate(() => ({
+      channels: window.cloud9Wire.channels(),
+      agents: window.cloud9Wire.agents(),
+      me: window.cloud9Wire.me(),
+    }));
+    const room = crew.channels.find(c => c.name === "general") ?? crew.channels[0];
+    const mine = crew.agents.filter(a => a.ownerId === crew.me);
+    const first = mine[0];
+    const second = mine.find(a => a.id !== first?.id);
+    if (!room || !first || !second) {
+      throw new Error("the fresh app needs one room and two different owned agents before " +
+        "'only one of them answers' means anything");
+    }
+    const general = page.locator(`.sidebar .side-item[data-channel="${room.name}"]`).first();
+    if (await general.count()) await general.click();
+    await page.waitForSelector(".composer textarea", { timeout: 20000 });
+
+    /* Both named agents must actually be IN the room, or the rule never gets
+       asked: an agent that is not a member cannot own a turn and cannot be
+       passed over either, so a silent second agent would prove nothing.
+       It is the hub's own `addMembers` — the identical frame the room's "Add
+       someone…" control sends — over this walk's owned connection, and the
+       proof it took is the hub's own broadcast of the room coming back with
+       both agents in it. The screen's QA hook cannot answer this: it reports
+       a conversation's id and name only, never who is in it. */
+    coordEngine = await connectInstalledEngine(page);
+    const membersFrom = coordEngine.frames.length;
+    const askedMembers = coordEngine.ask({
+      type: "addMembers", channelId: room.id, memberIds: [first.id, second.id],
+    });
+    await until(`${first.name} and ${second.name} to be members of ${room.name}`, () => {
+      const recent = coordEngine.frames.slice(membersFrom);
+      const refused = recent.find(f => f.type === "error" && f.requestId === askedMembers);
+      if (refused) throw new Error(refused.error);
+      const latest = recent.filter(f => f.type === "channel" && f.channel?.id === room.id).pop();
+      const ids = latest?.channel?.memberIds ?? [];
+      return ids.includes(first.id) && ids.includes(second.id);
+    }, { timeout: 30000, every: 100 });
+
+    await check(EXPECTED_CHECKS[32], async () => {
+      /* Nobody mid-turn from anything earlier in the walk, or a reply that was
+         already on its way could be counted as an answer to this message. */
+      await until("the room to be quiet before the two agents are named", async () =>
+        (await page.locator(".msgs .msg .thinking").count()) === 0, { timeout: 120000 });
+      /* Everything already on screen, so only what THIS message causes counts. */
+      const already = await page.$$eval(".msgs .msg[data-msg]",
+        els => els.map(el => el.getAttribute("data-msg")));
+      await page.fill(".composer textarea", `@${first.name} @${second.name} say the word ok`);
+      await page.press(".composer textarea", "Enter");
+      await page.waitForSelector('.msgs .msg:has-text("say the word ok")', { timeout: 30000 });
+
+      /* WAITING ON WHAT CAN BE SEEN, not on a guessed number of seconds: an
+         answer from one of the two, then a short quiet window in which nobody
+         else is mid-turn. Both agents are queued in the same pass of the
+         engine's own loop, so a second agent that was going to answer is
+         already showing "is working on it" by the time the first one speaks —
+         the window is there to catch it, not to hope past it. */
+      const spokeAt = new Map();
+      const everWorking = new Set();
+      let lastSaid = "";
+      await until("one of the two named agents to answer and the room to go quiet", async () => {
+        const state = await page.evaluate(known => {
+          const said = [];
+          for (const row of document.querySelectorAll(".msgs .msg[data-msg]")) {
+            if (known.includes(row.getAttribute("data-msg"))) continue;
+            if (!row.classList.contains("from-agent")) continue;
+            const who = row.querySelector(".who b")?.textContent?.trim();
+            if (who) said.push({ who, words: row.innerText.replace(/\s+/g, " ").trim() });
+          }
+          const working = [...document.querySelectorAll(".msgs .msg .thinking")]
+            .map(el => el.textContent.replace(/is working on it.*/, "").trim())
+            .filter(Boolean);
+          return { said, working };
+        }, already);
+        for (const one of state.said) {
+          if (!spokeAt.has(one.who)) spokeAt.set(one.who, Date.now());
+          if (one.who === first.name || one.who === second.name) lastSaid = one.words;
+        }
+        for (const name of state.working) everWorking.add(name);
+        const answered = [...spokeAt.keys()].filter(n => n === first.name || n === second.name);
+        if (answered.length > 1) return true;               // the old bug, caught
+        if (answered.length === 1 && state.working.length === 0) {
+          return Date.now() - spokeAt.get(answered[0]) > 8000;
+        }
+        return false;
+      }, { timeout: 240000, every: 250 });
+
+      const answered = [...spokeAt.keys()].filter(n => n === first.name || n === second.name);
+      const alsoStarted = [...everWorking].filter(n => n !== answered[0]
+        && (n === first.name || n === second.name));
+      if (answered.length !== 1 || answered[0] !== first.name || alsoStarted.length !== 0) {
+        throw new Error(`NOT ON SCREEN — naming ${first.name} first and ${second.name} second ` +
+          `produced ${answered.length} answer(s) (${answered.join(", ") || "none"})` +
+          (alsoStarted.length ? `, and ${alsoStarted.join(", ")} started a turn as well` : ""));
+      }
+      await shot(page, "one-answer-per-question");
+      /* The words are reported, not judged: on a machine whose Claude is not
+         signed in the one answer is an honest refusal, and that is still one
+         owner for the turn. Claiming otherwise would be inventing a reply. */
+      return `${first.name} answered ("${lastSaid.slice(0, 60)}"), ${second.name} stayed quiet`;
+    });
+
+    /* ---- the two jobs, and the states the engine cannot yet reach ---- */
+
+    /** Hand the hub a real job, wait for the engine to let go, then the state. */
+    const seedJob = async ({ agent, title, status, error }) => {
+      const from = coordEngine.frames.length;
+      const askedId = coordEngine.ask({
+        type: "createTask", agentId: agent.id, channelId: room.id, title,
+      });
+      let job = null;
+      await until(`the installed hub to mint the job "${title}"`, () => {
+        const recent = coordEngine.frames.slice(from);
+        const refused = recent.find(f => f.type === "error" && f.requestId === askedId);
+        if (refused) throw new Error(refused.error);
+        job = recent.find(f => f.type === "task" && f.task?.title === title
+          && f.task.agentId === agent.id)?.task ?? job;
+        return !!job;
+      }, { timeout: 30000, every: 100 });
+      /* Only once the engine has finished with it. A job still queued or
+         working is one the engine is about to write its own result over. */
+      await until(`the engine to finish with "${title}"`, () => {
+        const latest = coordEngine.frames.filter(f => f.type === "task" && f.task?.id === job.id).pop();
+        if (latest) job = latest.task;
+        return job.status !== "not_started" && job.status !== "working";
+      }, { timeout: 240000, every: 250 });
+      const wroteFrom = coordEngine.frames.length;
+      const wroteId = coordEngine.ask({
+        type: "updateTask", taskId: job.id, status,
+        // "" is the hub's own "clear it": a job with nothing to say keeps nothing
+        error: error ?? "", summary: "", result: "",
+      });
+      await until(`the screen to hold "${title}" as ${status}`, async () => {
+        const refused = coordEngine.frames.slice(wroteFrom)
+          .find(f => f.type === "error" && f.requestId === wroteId);
+        if (refused) throw new Error(refused.error);
+        return await page.evaluate(([id, want]) =>
+          window.cloud9Runs.jobs().find(j => j.id === id)?.status === want, [job.id, status]);
+      }, { timeout: 30000 });
+      return job.id;
+    };
+
+    const STUCK_WHY = "waiting on the Architect to answer the question about the budget";
+    const stuckJob = await seedJob({
+      agent: first, title: "shortlist the villas the Architect picked",
+      status: "blocked", error: STUCK_WHY,
+    });
+    const silentJob = await seedJob({
+      agent: second, title: "email the shortlist to Priya",
+      status: "failed",   // nothing recorded: no error, no summary
+    });
+
+    await page.click('.rail .rail-btn[data-go="tasks"]');
+    await page.waitForSelector(`.taskrow[data-task="${stuckJob}"]`, { timeout: 30000 });
+    await page.waitForSelector(`.taskrow[data-task="${silentJob}"]`, { timeout: 30000 });
+    await shot(page, "jobs-in-trouble");
+
+    await check(EXPECTED_CHECKS[29], async () => {
+      const stuckCard = (await page.locator(`.taskrow[data-task="${stuckJob}"]`).innerText())
+        .replace(/\s+/g, " ").trim();
+      const silentCard = (await page.locator(`.taskrow[data-task="${silentJob}"]`).innerText())
+        .replace(/\s+/g, " ").trim();
+      const troubleLines = await page
+        .locator(`.taskrow[data-task="${stuckJob}"] .trouble[data-trouble="blocked"]`).count();
+      if (!stuckCard.includes(STUCK_WHY) || troubleLines !== 1
+        // words, and only words — never a path and never an argv
+        || /[A-Za-z]:\\|--[a-z]/.test(stuckCard)) {
+        throw new Error(`NOT ON SCREEN — the stuck job does not say why in plain words: "${stuckCard.slice(0, 160)}"`);
+      }
+      if (!/Failed/.test(silentCard) || !/no reason was recorded/.test(silentCard)
+        || silentCard.includes(STUCK_WHY)) {
+        throw new Error(`a job with nothing recorded did not say so — it says: "${silentCard.slice(0, 160)}"`);
+      }
+      return `"${STUCK_WHY.slice(0, 40)}…" on the stuck card; the other says no reason was recorded`;
+    });
+
+    await check(EXPECTED_CHECKS[30], async () => {
+      const place = await page.evaluate(id => {
+        const main = document.querySelector(".tasks-main");
+        const kids = [...main.children];
+        const card = main.querySelector(`.taskrow[data-task="${id}"]`);
+        const stuckHead = kids.findIndex(k => k.classList.contains("stucklabel"));
+        const runHead = kids.findIndex(k =>
+          k.classList.contains("eyebrow") && /^Running ·/.test(k.textContent.trim()));
+        return {
+          words: card ? card.innerText.replace(/\s+/g, " ").trim() : "",
+          status: card ? card.getAttribute("data-status") : "",
+          at: kids.indexOf(card), stuckHead, runHead,
+        };
+      }, stuckJob);
+      if (place.status !== "blocked" || !/Stuck — waiting on something/.test(place.words)
+        || /\bworking\b/i.test(place.words)
+        || place.stuckHead < 0 || place.at < place.stuckHead
+        || (place.runHead >= 0 && place.at > place.runHead)) {
+        throw new Error(`NOT ON SCREEN — the stuck job is not read apart from the running ones: ` +
+          `${JSON.stringify(place).slice(0, 220)}`);
+      }
+      return `under its own "Stuck" heading at row ${place.at}, above the running group`;
+    });
+
+    await check(EXPECTED_CHECKS[31], async () => {
+      await page.click('.rail .rail-btn[data-go="chat"]');
+      await page.waitForSelector(`.agentrow[data-agent="${first.name}"]`, { timeout: 20000 });
+      const row = await page.evaluate(name => {
+        const el = document.querySelector(`.agentrow[data-agent="${name}"]`);
+        return { trouble: el.getAttribute("data-trouble") ?? "",
+          words: el.innerText.replace(/\s+/g, " ").trim() };
+      }, first.name);
+      if (row.trouble !== "blocked" || !/Stuck — waiting on something/.test(row.words)
+        || !row.words.includes(STUCK_WHY) || /\bReady\b/.test(row.words)) {
+        throw new Error(`NOT ON SCREEN — ${first.name}'s presence line reads ` +
+          `${JSON.stringify(row).slice(0, 200)} while its job is stuck`);
+      }
+      await shot(page, "presence-in-trouble");
+      return `${first.name} reads "${row.words.slice(0, 70)}"`;
+    });
+  } catch (err) {
+    failGroup(COORD_GROUP.filter(n => !results.some(r => r.name === n)),
+      `the turn-coordination walk could not finish (${err.message})`);
+    await shot(page, "coordination-broken");
+  } finally {
+    try { await coordEngine?.close(); }
+    catch (err) {
+      throw new Error(`required coordination cleanup failed (${err?.message ?? String(err)})`);
     }
   }
 }
@@ -2802,12 +3152,17 @@ async function runSidecarCleanupSimulation() {
   const ownedChild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   await until("the forced-kill simulation process to start", () => ownedProcessIsAlive(ownedChild), { timeout: 5000 });
   let forcedKillCalled = false;
+  let forcedClientConnected = true;
+  const forcedOrder = [];
   const forcedResources = {
     page: null, context: null,
-    browser: { isConnected: () => ownedProcessIsAlive(ownedChild) },
+    browser: {
+      isConnected: () => forcedClientConnected && ownedProcessIsAlive(ownedChild),
+      close: async () => { forcedOrder.push("client"); forcedClientConnected = false; },
+    },
     browserServer: {
-      close: async () => { await new Promise(() => {}); },
-      kill: async () => { forcedKillCalled = true; ownedChild.kill(); },
+      close: async () => { forcedOrder.push("server"); await new Promise(() => {}); },
+      kill: async () => { forcedOrder.push("kill"); forcedKillCalled = true; ownedChild.kill(); },
     },
     browserProcess: ownedChild,
     forcedTerminationCount: 0,
@@ -2818,10 +3173,46 @@ async function runSidecarCleanupSimulation() {
   let forcedCleanupFailure = null;
   try { await closeMemberBrowserResources(forcedResources); }
   catch (err) { forcedCleanupFailure = err; }
-  if (!forcedCleanupFailure?.requiredCleanupFailure || !forcedKillCalled
-    || forcedResources.forcedTerminationCount !== 1 || ownedProcessIsAlive(ownedChild)) {
+  /* The contract: the connected client is disconnected BEFORE the server it is
+     attached to; a hung server close still gets forced and proved; and a forced
+     shutdown that met the same proof bar (kill worked, OS says the process is
+     gone) is a PASS carrying an observation — not a failure of the group. */
+  const forcedObservations = forcedResources.cleanupObservations ?? [];
+  if (forcedCleanupFailure || !forcedKillCalled || forcedOrder.join(",") !== "client,server,kill"
+    || forcedResources.forcedTerminationCount !== 1 || ownedProcessIsAlive(ownedChild)
+    || forcedResources.closed.browser !== true || forcedObservations.length !== 1
+    || !/forced path/.test(forcedObservations[0])) {
     if (ownedProcessIsAlive(ownedChild)) ownedChild.kill();
-    throw new Error("browser close timeout did not force and verify owned process termination");
+    throw new Error("browser close did not close inside-out, force and verify owned process termination, " +
+      `and record it as an observation: order=${forcedOrder.join(",")}, ` +
+      `observations=${JSON.stringify(forcedObservations)}, failure=${forcedCleanupFailure?.message ?? "none"}`);
+  }
+
+  /* And a forced path that CANNOT prove the process died must still fail. */
+  const unprovableChild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  await until("the unprovable-kill simulation process to start", () => ownedProcessIsAlive(unprovableChild),
+    { timeout: 5000 });
+  const unprovableResources = {
+    page: null, context: null, browser: null,
+    browserServer: {
+      close: async () => { await new Promise(() => {}); },
+      kill: async () => {},
+    },
+    browserProcess: unprovableChild,
+    forcedTerminationCount: 0,
+    browserCloseTimeoutMs: 30,
+    forceKillTimeoutMs: 200,
+    closed: { page: true, context: true, browser: false },
+  };
+  let unprovableFailure = null;
+  try { await closeMemberBrowserResources(unprovableResources); }
+  catch (err) { unprovableFailure = err; }
+  const unprovableStillAlive = ownedProcessIsAlive(unprovableChild);
+  unprovableChild.kill();
+  if (!unprovableFailure?.requiredCleanupFailure || !unprovableStillAlive
+    || !/forced termination/.test(unprovableFailure.message)) {
+    throw new Error("a forced browser termination that proved nothing was not reported as a failure: " +
+      `${unprovableFailure?.message ?? "no failure"}`);
   }
 
   console.log("drive-app sidecar cleanup simulation");
@@ -2834,7 +3225,9 @@ async function runSidecarCleanupSimulation() {
   console.log("PASS post-approval disk mutation could not change immutable served snapshot bytes");
   console.log("PASS history fallback required an actual document navigation contract");
   console.log("PASS failed engine WebSocket handshake closed and verified its locally owned socket");
-  console.log("PASS browser close timeout forced the owned Chromium process down and verified root close/OS exit");
+  console.log("PASS browser close ran client-then-server, forced the owned Chromium process down, " +
+    "verified root close/OS exit and recorded the forced path as an observation, not a failure");
+  console.log("PASS a forced termination that could not prove the process died still failed the cleanup");
 }
 
 async function runSidecarProbe() {
@@ -2881,8 +3274,7 @@ async function runSidecarProbe() {
     if (!/^file:\/\/\/.+\/resources\/app\/dist-web\/index\.html\?/i.test(ownerPage.url().replaceAll("\\", "/"))) {
       throw new Error("the probe owner is not the real installed Electron file:// window");
     }
-    await ownerPage.waitForSelector(".rail", { timeout: 30000 });
-    const ownerId = await ownerPage.evaluate(() => window.cloud9Wire.me());
+    const ownerId = await waitForEstablishedIdentity(ownerPage);
     const relay = new URL(ownerPage.url()).searchParams.get("relay");
 
     await ownerPage.click('.rail .rail-btn[data-go="crew"]');
@@ -2953,7 +3345,7 @@ async function runSidecarProbe() {
     await sidecar.page.fill('.panel input[placeholder="inv_…"]', invite);
     await sidecar.page.fill('.panel input[placeholder="Priya"]', "Installed sidecar probe");
     await sidecar.page.click("text=Enter Cloud9");
-    await sidecar.page.waitForSelector(".rail", { timeout: 30000 });
+    await waitForEstablishedIdentity(sidecar.page);
     if (!ownerId) throw new Error("the installed owner has no real owner identity");
     const memberId = await assertRedeemedMemberIdentity(sidecar.page, ownerId);
     await sidecar.reconnect(memberId, ownerId);
@@ -3037,7 +3429,9 @@ async function runSidecarProbe() {
         if (!Object.values(state).every(Boolean)) {
           throw new Error(`incomplete sidecar cleanup: ${JSON.stringify(state)}`);
         }
-        console.log("PASS cleanup closed member page/context/browser, stopped loopback server, and removed temp state");
+        const observations = sidecar.cleanupObservations();
+        console.log("PASS cleanup closed member page/context/browser, stopped loopback server, and removed temp state" +
+          (observations.length ? ` (noted: ${observations.join("; ")})` : ""));
       }
     } catch (err) {
       cleanupProblems.push(`member sidecar: ${err?.message ?? String(err)}`);

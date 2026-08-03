@@ -2153,6 +2153,27 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   border-color:color-mix(in srgb,var(--marigold) 40%,transparent);background:var(--marigold-soft);}
 .cast .nowpresence span{-webkit-line-clamp:3;}
 
+/* ---- a job that is stuck or fell over, wherever it is said ----
+   One look for all of it: madder when it failed, marigold when it is waiting on
+   something. The reason is allowed to WRAP — a truncated reason is a reason he
+   still has to go and look for. */
+.an-state.introuble{white-space:normal;overflow:visible;}
+.mini-agent .an-state.introuble{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;}
+[data-trouble="failed"] .an-state b,.presencehere[data-trouble="failed"] b{color:var(--madder);}
+[data-trouble="blocked"] .an-state b,.presencehere[data-trouble="blocked"] b{color:var(--marigold);}
+.chip.presencepill.introuble.is-failed{color:var(--madder);
+  border-color:color-mix(in srgb,var(--madder) 40%,transparent);}
+.chip.presencepill.introuble.is-blocked{color:var(--marigold);
+  border-color:color-mix(in srgb,var(--marigold) 40%,transparent);background:var(--marigold-soft);}
+.taskresult.trouble.is-failed{border-color:color-mix(in srgb,var(--madder) 35%,transparent);}
+.taskresult.trouble.is-failed b{color:var(--madder);}
+.taskresult.trouble.is-blocked{border-color:color-mix(in srgb,var(--marigold) 40%,transparent);}
+.taskresult.trouble.is-blocked b{color:var(--marigold);}
+.job .jobwhy{display:block;margin-top:4px;color:var(--ink-2);}
+.job[data-trouble="failed"]{border-color:color-mix(in srgb,var(--madder) 35%,transparent);}
+.job[data-trouble="blocked"]{border-color:color-mix(in srgb,var(--marigold) 40%,transparent);}
+.eyebrow.stucklabel{color:var(--marigold);}
+
 /* a switch that is on and still grants nothing says so, rather than looking broken */
 .inertswitch{display:flex;flex-direction:column;gap:6px;margin-top:14px;}
 .inertswitch>b{font-size:13px;}
