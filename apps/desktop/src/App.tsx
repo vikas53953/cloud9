@@ -1564,6 +1564,15 @@ export function App(): React.JSX.Element {
 
   useEffect(() => { if (world.authFailed) setJoined(false); }, [world.authFailed]);
 
+  /* A LIVE SESSION IS A LIVE SESSION, however we got here. The sign-in box hands
+     this flag over when the person types their way in, but a refused attempt can
+     also drop back onto the credential that still worked (store.ts
+     `recoverPreviousCredential`) — and without this the app would leave someone
+     staring at a sign-in box while they were already back inside. */
+  useEffect(() => {
+    if (world.connected && world.me && !world.authFailed) setJoined(true);
+  }, [world.connected, world.me?.id, world.authFailed]);
+
   /**
    * Ask what the Claude/Codex apps really offer as soon as we are let in.
    * Owner-only: these frames are owner-gated in the relay, so a guest asking
@@ -1613,7 +1622,12 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
   const go = () => {
     const t = mode === "owner" ? token : `invite:${invite.trim()}:${name.trim() || "Friend"}`;
-    client.setToken(mode === "owner" ? token : ""); // invite issues a durable token via relay
+    /* NOTHING IS WRITTEN HERE. This used to blank the stored credential first
+       ("an invite issues a durable one via the relay") — so a spent, mistyped
+       or expired code destroyed the sign-in the person already had, and an
+       invited friend, who has no owner key, was locked out of their own Cloud9
+       for good. The store adopts a credential only once the hub answers
+       `welcome`; see `adoptCredential` in store.ts, the one owner. */
     setTrying(true);
     client.connect(t);
   };
@@ -1661,6 +1675,10 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
               </>
             )}
             <Problem text={world.lastError?.text} tone="notice" className="joinerror" />
+            {/* No "you are still signed in" line here on purpose: when a refused
+                code DOES have a working credential behind it, the app is back
+                inside before this screen can be read, so the sentence belongs
+                where the person actually ends up — the toast. */}
             <div className="notice">Your chats stay on your crew's own machine. Nothing goes to a big platform.</div>
           </div>
           <div className="foot">
@@ -2400,7 +2418,12 @@ function Toast(): React.JSX.Element | null {
   return (
     <div className="toast" role="status">
       <span className="toast-mark" aria-hidden="true">!</span>
-      <span className="toast-text">{said.text}</span>
+      {/* A refused sign-in that cost the person NOTHING has to say so. Without
+          the second half, "that invite has already been used" reads like being
+          thrown out of your own Cloud9 — which is exactly what it used to be. */}
+      <span className="toast-text" data-kept-signed-in={err.keptSignedIn ? "yes" : undefined}>
+        {said.text}{err.keptSignedIn ? " You are still signed in as before." : ""}
+      </span>
       <ComputerWords detail={said.detail} />
       <button className="toast-x" aria-label="Dismiss" onClick={() => setDismissed(err.ts)}>✕</button>
     </div>

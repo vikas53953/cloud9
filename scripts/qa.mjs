@@ -326,7 +326,18 @@ function mintJoinTokenOn(port, token) {
 // carries the same one fact, so a row can no longer read "Ready" while its job
 // is stuck. The jobs are real hub jobs; the final states are written with the
 // hub's own `updateTask` because the engine cannot yet report "blocked".
-const EXPECTED_CHECKS = 512;
+// 512 → 520 on 2026-08-03: eight permanent checks for "a refused sign-in must
+// never cost you the one you already had". The join screen used to blank the
+// stored credential BEFORE asking the hub about the code, so a spent, mistyped
+// or expired invite destroyed a working sign-in — permanently for an invited
+// friend, who has no owner key to dig back out with. These hold the class rule
+// shut: a successful join stores the hub's durable token and never the code; a
+// spent code typed over a working credential leaves it byte-for-byte intact,
+// puts the person back inside on it, and says so in plain words; a bad code
+// with nothing behind it refuses honestly and invents no credential; a join
+// that WORKS still replaces a stale one, and a reload comes back in on it; and
+// the one startup path that wipes credentials still spares the session one.
+const EXPECTED_CHECKS = 520;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -1087,6 +1098,132 @@ try {
   await page.waitForSelector(".msg p:has-text('Priya here')", { timeout: 30000 });
   ok("human-to-human message syncs across clients", true);
   await page.screenshot({ path: `${SHOTS}/09-owner-sees-friend.png` });
+
+  /* ===== A REFUSED SIGN-IN MUST NEVER COST YOU THE ONE YOU ALREADY HAD =====
+   *
+   * The bug this locks shut: the join screen wrote `cloud9.token` BEFORE the
+   * hub was asked anything — pasting an invite blanked it outright. So a spent,
+   * mistyped or expired code destroyed the sign-in the person already had.
+   * Vikas could dig himself out with the owner key; an invited friend, who has
+   * nothing else, was locked out of their own Cloud9 permanently.
+   *
+   * The class rule, and what these checks hold shut: a credential is written
+   * only once the hub has answered `welcome` (store.ts `adoptCredential`, the
+   * one owner). Everything that can fail happens before that and therefore
+   * cannot touch storage at all.
+   *
+   * Each case runs in its OWN browser context, so a check can never pass because
+   * of something a previous one left behind.
+   */
+  const storedToken = ctx => ctx.evaluate(() => localStorage.getItem("cloud9.token"));
+
+  // 1 · A SUCCESSFUL join adopted a real, durable credential — not the code.
+  const priyaToken = await storedToken(fpage);
+  ok("a successful join stores the durable credential the hub issued, never the invite code",
+    !!priyaToken && priyaToken.length > 0 && priyaToken !== code
+      && !priyaToken.startsWith("invite:"),
+    `${priyaToken ? priyaToken.length : 0} chars`);
+
+  // 2 · THE REPORTED BUG. A working credential, a sign-in box on screen, and a
+  // code that has already been spent typed into it. The credential must survive
+  // untouched, the person must land back inside on it, and the screen must say
+  // so in plain words.
+  const spentCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const spent = await spentCtx.newPage();
+  await spent.goto(UI);
+  await spent.waitForSelector("text=Welcome to Cloud9");
+  // the credential that already works, exactly as a member's machine holds it
+  await spent.evaluate(t => localStorage.setItem("cloud9.token", t), priyaToken);
+  await spent.click("text=I have an invite");
+  await spent.fill('.panel input[placeholder="inv_…"]', code); // already redeemed above
+  await spent.fill('.panel input[placeholder="Priya"]', "Priya");
+  await spent.click("text=Enter Cloud9");
+  // The app is back inside on the credential that still works — the whole point.
+  // (Nothing is asserted on the sign-in screen here: the fall-back is faster than
+  // that screen can be read, which is exactly the behaviour we want.)
+  // Caught, not awaited bare: when this breaks, the run must still SAY which of
+  // these three promises broke rather than dying on a timeout with no verdict.
+  let backInside = true;
+  try {
+    await spent.waitForSelector(".sidebar >> text=# general", { timeout: 30000 });
+  } catch { backInside = false; }
+  ok("a spent invite leaves the credential that was already working exactly as it was",
+    (await storedToken(spent)) === priyaToken,
+    `stored ${JSON.stringify(await storedToken(spent))}`);
+  ok("a refused code drops the person back into their own Cloud9 rather than a dead sign-in box",
+    backInside && (await spent.locator(".join").count()) === 0
+      && (await spent.locator(".sidebar .person-row").count()) > 0);
+  let keptSays = "";
+  try {
+    keptSays = (await spent.locator('.toast-text[data-kept-signed-in="yes"]')
+      .innerText({ timeout: 15000 })).trim();
+  } catch { keptSays = "(nothing said)"; }
+  ok("and it says what happened in plain words, including that nothing was lost",
+    /already been used/i.test(keptSays) && /still signed in as before/i.test(keptSays)
+      && !/^Error:/.test(keptSays), keptSays);
+  await spent.screenshot({ path: `${SHOTS}/07b-spent-invite-keeps-you-signed-in.png` });
+  await spentCtx.close();
+
+  // 3 · Nothing to fall back to: the refusal is honest and NOTHING is invented.
+  const noneCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const none = await noneCtx.newPage();
+  await none.goto(UI);
+  await none.waitForSelector("text=Welcome to Cloud9");
+  await none.click("text=I have an invite");
+  await none.fill('.panel input[placeholder="inv_…"]', "inv_not_a_real_code");
+  await none.fill('.panel input[placeholder="Priya"]', "Nobody");
+  await none.click("text=Enter Cloud9");
+  await none.waitForSelector(".join .joinerror .problemtext", { timeout: 20000 });
+  ok("a bad code with nothing to fall back to says so and does not pretend you are signed in",
+    (await storedToken(none)) === null
+      && (await none.locator(".join .keptsignedin").count()) === 0
+      && (await none.locator(".sidebar").count()) === 0,
+    (await none.locator(".join .joinerror .problemtext").innerText()).trim());
+  await noneCtx.close();
+
+  // 4 · A join that WORKS does replace what was there — the rule is "prove it
+  // first", not "never change it". A stale credential is typed over by a good one.
+  await page.click('button[title="Invite a friend"]');
+  // wait for a code that is NOT the one already spent, so this case cannot
+  // quietly retest case 2 against a stale panel
+  await page.waitForFunction(
+    spentCode => {
+      const t = document.querySelector(".code")?.textContent?.trim();
+      return !!t && t.startsWith("inv_") && t !== spentCode;
+    },
+    code,
+    { timeout: 20000 },
+  );
+  const code2 = (await page.textContent(".code")).trim();
+  await page.click('.overlay .foot button:has-text("Done")');
+  const swapCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const swap = await swapCtx.newPage();
+  await swap.goto(UI);
+  await swap.waitForSelector("text=Welcome to Cloud9");
+  await swap.evaluate(() => localStorage.setItem("cloud9.token", "stale-key-that-no-longer-works"));
+  await swap.click("text=I have an invite");
+  await swap.fill('.panel input[placeholder="inv_…"]', code2);
+  await swap.fill('.panel input[placeholder="Priya"]', "Ravi");
+  await swap.click("text=Enter Cloud9");
+  await swap.waitForSelector(".sidebar >> text=# general", { timeout: 30000 });
+  const swapped = await storedToken(swap);
+  ok("a join that works replaces the old credential with the one the hub just issued",
+    !!swapped && swapped !== "stale-key-that-no-longer-works" && swapped !== code2
+      && !swapped.startsWith("invite:"), `${swapped ? swapped.length : 0} chars`);
+  // and a reload comes straight back in on it — the credential is genuinely good
+  await swap.reload();
+  await swap.waitForSelector(".sidebar >> text=# general", { timeout: 30000 });
+  ok("and a reload comes straight back in on it, with no sign-in box",
+    (await storedToken(swap)) === swapped
+      && (await swap.locator(".join").count()) === 0);
+  await swapCtx.close();
+
+  // 5 · A DELIBERATE destroy is still allowed to destroy. The app ships no
+  // sign-out button, so the only credential-wiping path there is runs at startup
+  // — and it is named-key by design, so the session credential survives it while
+  // the old v1 secrets do not. (The wipe itself is checked further up.)
+  ok("the one startup path that wipes credentials still leaves the session credential alone",
+    (await storedToken(fpage)) === priyaToken);
 
   // empty-input edge: Enter on empty composer sends nothing
   const before = await page.locator(".msg").count();
