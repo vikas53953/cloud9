@@ -2844,3 +2844,22 @@ button.chip{cursor:pointer;}
   .artcard.place-workspace .act{margin-left:59px;padding-top:0;}
   .accessperson{flex-wrap:wrap;}
 }
+
+/* ---- SEMANTIC RECEIPTS: a machine signal, never a human reaction ----
+   Deliberately NOT a .reactpill. No border, no background, no count, no
+   press: it is a small greyed mark that pulses while a turn is live and
+   fades when the turn ends. If these two ever start to look alike, the
+   feature is broken — a person must be able to tell at a glance that
+   nobody decided anything. */
+.receipts{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px;align-items:center;}
+.receipt{
+  font-size:11.5px;line-height:1.4;opacity:.55;filter:grayscale(.35);
+  cursor:default;user-select:none;
+}
+.receipt.reading,.receipt.thinking{animation:receipt-breathe 1.9s ease-in-out infinite;}
+.receipt.verdict{opacity:.7;filter:none;animation:receipt-fade 8s linear forwards;}
+@keyframes receipt-breathe{0%,100%{opacity:.35;}50%{opacity:.75;}}
+@keyframes receipt-fade{0%,70%{opacity:.7;}100%{opacity:0;}}
+@media (prefers-reduced-motion: reduce){
+  .receipt.reading,.receipt.thinking,.receipt.verdict{animation:none;}
+}

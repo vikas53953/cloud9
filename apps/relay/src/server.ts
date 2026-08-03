@@ -16,6 +16,7 @@ import {
   RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
+  isReceiptStage, isReceiptVerdict,
   contentDisposition, downloadContentType, fitRunRecord, isBranchName, isSafeFileName,
   isSafeStoredId, latestVersion, looksLikeText, normaliseArtifactAccess,
   normaliseArtifactLinks, validateArtifactAccessMutation, validateArtifactLinks,
@@ -2382,6 +2383,52 @@ export class Relay {
         // person's reaction takes — same table, same gates, same frame out.
         const agent = this.myAgent(conn.userId, frame.agentId);
         this.setReaction(conn, frame.messageId, agent.id, frame.emoji, frame.on);
+        break;
+      }
+      case "agentReceipt": {
+        // A SEMANTIC RECEIPT (his §2) — "reading" / "thinking" / one committed
+        // verdict, forwarded live to the room and then forgotten.
+        //
+        // IT DELIBERATELY DOES NOT TOUCH `this.store`. Not a message, not a
+        // reaction, not an activity row: nothing here is written, so nothing
+        // here can be searched, re-read after a reload, or counted as unread.
+        // A machine saying "I am reading this" is not something anyone should
+        // have to catch up on, and storing it would fill his history with the
+        // clutter §2 exists to replace.
+        //
+        // Every gate an agent's reaction passes, it passes too, and by the same
+        // functions: `myAgent` proves the engine owns the agent from STORED
+        // state, `messageFor` proves the message exists and this account can
+        // see the room it is in, and `audienceFor` (via `toChannel`) decides
+        // who hears it. One owner for visibility, reused — a broadcast with a
+        // second rule about who may see it is a leak waiting to be written.
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        const message = this.messageFor(conn.userId, frame.messageId);
+        // the frame's own channel must be the message's real one. A receipt is
+        // drawn on a message, so a mismatched channel is not a routing hint, it
+        // is a signal aimed at a room it does not belong to.
+        if (message.channelId !== frame.channelId) throw new Error("no such message");
+        if (!isReceiptStage(frame.stage)) throw new Error("that isn't a receipt");
+        // `verdict` is required for a verdict and refused for anything else —
+        // checked here rather than trusted, so no client can send a committed
+        // answer with nothing in it or a "reading" that carries a ✅.
+        if (frame.stage === "verdict") {
+          if (!isReceiptVerdict(frame.verdict)) throw new Error("that isn't a verdict");
+        } else if (frame.verdict !== undefined) {
+          throw new Error("only a committed receipt carries a verdict");
+        }
+        const ch = this.store.channel(message.channelId)!;
+        // `at` is OURS. An engine could report any clock it liked, and a screen
+        // decides when a signal is stale from this number.
+        this.toChannel(ch, {
+          type: "receipt",
+          receipt: {
+            channelId: ch.id, messageId: message.id, agentId: agent.id,
+            stage: frame.stage,
+            ...(frame.verdict ? { verdict: frame.verdict } : {}),
+            at: Date.now(),
+          },
+        });
         break;
       }
       case "editMessage": {

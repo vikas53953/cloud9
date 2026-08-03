@@ -10,6 +10,7 @@ import {
   createCodexIsolatedEnvironment, parseCodexJsonl,
 } from "./codex.js";
 import { HarnessAbilityBoundaryError, HarnessUnavailableError, sanitizeForChat } from "./provider.js";
+import { TurnTimedOutError } from "./timebudget.js";
 import { codexUnavoidableCapabilities, effectiveAbilities } from "./abilities.js";
 import { RunOptions, RunResult, UnsafeArgumentError, run } from "./run.js";
 
@@ -319,6 +320,7 @@ test("a timeout is reported in plain words", async () => {
   });
   await assert.rejects(
     () => provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" }),
-    /longer than 120s/,
+    // minutes, not seconds, and it names the clock — see timebudget.ts
+    (err: unknown) => err instanceof TurnTimedOutError && /2 minutes/.test(err.message),
   );
 });

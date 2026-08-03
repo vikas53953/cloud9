@@ -8,6 +8,7 @@ import {
 } from "./claude-cli.js";
 import { CLAUDE_BUILTIN_TOOLS, deniedClaudeTools } from "./abilities.js";
 import { HarnessUnavailableError } from "./provider.js";
+import { TurnTimedOutError } from "./timebudget.js";
 import { EMPTY_ARG, RunOptions, RunResult, UnsafeArgumentError } from "./run.js";
 
 const CLAUDE_MODELS = ["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5-20251001"];
@@ -162,9 +163,14 @@ test("a turn that blows the leash is stopped and explained in plain words", asyn
   const { runner } = fakeRunner({ timedOut: true, code: null, stdout: "" });
   await assert.rejects(
     () => new ClaudeCliProvider({
-      agentDataDir: () => process.cwd(), runner, timeoutMs: 1_000, models: () => CLAUDE_MODELS,
+      agentDataDir: () => process.cwd(), runner, timeoutMs: 60_000, models: () => CLAUDE_MODELS,
     }).respond({ agent: agent(), context: "", trigger: "h", triggerAuthor: "V", kind: "chat" }),
-    /longer than 1s/,
+    // it says a CLOCK ran out, and how long it was given — see timebudget.ts.
+    // The old sentence ("took longer than 60s") named seconds and a harness and
+    // was then thrown away by `sanitizeForChat` before anybody read it.
+    (err: unknown) => err instanceof TurnTimedOutError
+      && /too long for a chat reply/.test(err.message)
+      && /1 minute/.test(err.message),
   );
 });
 

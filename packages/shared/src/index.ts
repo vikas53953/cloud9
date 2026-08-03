@@ -1,5 +1,11 @@
 // Cloud9 shared protocol — types used by relay, engine, desktop and mobile.
 
+// Type-only, so it is erased at compile time and the two files are not really
+// circular: `receipts.ts` imports nothing but `ID` back, also type-only. The
+// frames below need these names in local scope; the `export … from` at the
+// bottom of this file publishes them but does NOT bind them here.
+import type { AgentReceipt, ReceiptStage, ReceiptVerdict } from "./receipts.js";
+
 export type ID = string;
 
 export interface User {
@@ -2012,6 +2018,22 @@ type ClientFrameBase =
    */
   | { type: "agentReact"; agentId: ID; messageId: ID; emoji: string; on?: boolean }
   | { type: "agentStatus"; agentId: ID; status: AgentStatus }
+  /**
+   * ENGINE-HOST ONLY: a SEMANTIC RECEIPT — "this agent is reading your message
+   * / thinking / has committed to this answer" (his §2).
+   *
+   * A BROADCAST, NOT A REQUEST. Nothing comes back and nothing is stored: the
+   * hub checks who may see the room, forwards it as `receipt`, and forgets it.
+   * It is deliberately NOT `agentReact`: that one ends in the reactions table
+   * and is a person-shaped, permanent fact. This one is a live signal that may
+   * honestly vanish on reload.
+   *
+   * Authorised exactly as `agentSend` and `agentReact` are — ownership is read
+   * from stored state, so an engine can never signal as an agent it does not
+   * own. `verdict` is required when `stage` is `verdict` and refused otherwise;
+   * the hub enforces that rather than trusting the frame's shape.
+   */
+  | { type: "agentReceipt"; agentId: ID; channelId: ID; messageId: ID; stage: ReceiptStage; verdict?: ReceiptVerdict }
   // v2 — tasks / approvals / activity
   // `requesterId` says WHO ASKED for this work. The engine host relays a task on
   // behalf of whoever typed "!bg …", so without it the relay would credit the
@@ -2391,6 +2413,16 @@ export type ServerFrame =
     }
   /** The full, current list of who reacted with this emoji. Empty means nobody does. */
   | { type: "reaction"; channelId: ID; messageId: ID; emoji: string; userIds: ID[] }
+  /**
+   * A SEMANTIC RECEIPT, live, to everyone who can see the conversation.
+   *
+   * EPHEMERAL BY DESIGN. It is not in `WorldState`, it is not in history, it is
+   * not in search, and it does not count as unread — a machine saying "I am
+   * reading this" is not a thing anybody should have to catch up on. A client
+   * that reconnects has simply missed it, and that is the honest outcome; the
+   * screen says so rather than pretending the silence means anything.
+   */
+  | { type: "receipt"; receipt: AgentReceipt }
   /** A message changed — edited, deleted, or given its first attachment. */
   | { type: "messageUpdated"; message: Message }
   | { type: "thread"; parentId: ID; messages: Message[] }
@@ -4283,3 +4315,14 @@ export {
   initialConn, backoffMs, reduceConn, connInWords,
   type ConnPhase, type ConnState, type ConnEffect, type ConnEvent,
 } from "./hubconnection.js";
+
+// ---------------------------------------------------------------------------
+// SEMANTIC RECEIPTS (his §2) — the live 👀 / 💭 / verdict signals. Their own
+// file because they are a VOCABULARY plus one honest limit (they are never
+// stored), and because the frames above must not be read as "another kind of
+// reaction". Re-exported here so all three programs import one package.
+export {
+  RECEIPT_EMOJI, RECEIPT_WORDS, RECEIPT_STALE_MS, RECEIPT_VERDICT_LINGER_MS,
+  isReceiptStage, isReceiptVerdict,
+  type AgentReceipt, type ReceiptStage, type ReceiptVerdict,
+} from "./receipts.js";

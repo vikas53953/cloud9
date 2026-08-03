@@ -24,8 +24,11 @@ import {
   // joining a friend's Cloud9 — the address book type and the reach words
   KnownHub, reachInWords,
 } from "@cloud9/shared";
-import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, World } from "./store.js";
+import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
+// The live 👀 / 💭 / verdict signals — ephemeral, and drawn so they can never
+// be mistaken for a person's reaction. All of it is in that one file.
+import { AgentReceipts } from "./receipts.js";
 import {
   abilitiesOn, abilityWords, MARKET_CATEGORIES, MARKET_TEMPLATES, MarketTemplate,
 } from "./market.js";
@@ -70,6 +73,30 @@ import {
 } from "@cloud9/engine/dist/notify-feed.js";
 
 const isQuickWindow = location.hash === "#quick";
+
+/* ================= HOW OFTEN THE CHAT REDRAWS — the QA hook =================
+ *
+ * "The chat is not smooth" is a claim about work done per keystroke, and the
+ * only honest way to hold it is to COUNT. These two integers per component are
+ * what a QA walk (or the console) reads to say "one message arriving redrew N
+ * bubbles" — before a change and after it — instead of guessing from the feel.
+ *
+ * Deliberately kept, not a leftover: it costs one integer add per render, it is
+ * the only instrument that can catch this regressing again, and a page that
+ * cannot be measured is a page that quietly gets slower. Nothing on screen
+ * reads it; nothing decides anything from it.
+ */
+const renderCounts: Record<string, number> = Object.create(null) as Record<string, number>;
+function countRender(name: string): void {
+  renderCounts[name] = (renderCounts[name] ?? 0) + 1;
+}
+if (typeof window !== "undefined") {
+  (window as unknown as { __cloud9Renders?: unknown }).__cloud9Renders = {
+    counts: renderCounts,
+    read: (): Record<string, number> => ({ ...renderCounts }),
+    reset: (): void => { for (const k of Object.keys(renderCounts)) delete renderCounts[k]; },
+  };
+}
 
 /* ============================================================
    CONTRACT SHAPES (docs/plans/feedback-round-1.md)
@@ -1129,7 +1156,10 @@ const PRESENCE_WORDS: Record<AgentPresence, string> = {
 };
 
 /** What the hub said about this agent, or undefined for "nobody has said". */
-function presenceOf(world: World, agentId: ID): AgentPresenceState | undefined {
+/* Takes only the part of the world it reads (`Pick<World, …>`), so a screen
+   holding a selected SLICE can ask it too — see `useWorld` in store.ts. A full
+   world still satisfies it, so every older call site is unchanged. */
+function presenceOf(world: Pick<World, "presence">, agentId: ID): AgentPresenceState | undefined {
   return world.presence[agentId];
 }
 
@@ -1185,7 +1215,7 @@ function taskTrouble(t: Task): TaskTrouble | null {
  * fell over, because the stuck one is the one that is still not moving; and a
  * job somebody deliberately stopped is not trouble, so it is not counted here.
  */
-function agentTrouble(world: World, agentId: ID): { task: Task; trouble: TaskTrouble } | null {
+function agentTrouble(world: Pick<World, "tasks">, agentId: ID): { task: Task; trouble: TaskTrouble } | null {
   const mine = world.tasks.filter(t => t.agentId === agentId);
   const newest = (list: Task[]): Task | undefined =>
     [...list].sort((a, b) => b.updatedAt - a.updatedAt)[0];
@@ -1200,7 +1230,7 @@ function agentTrouble(world: World, agentId: ID): { task: Task; trouble: TaskTro
  * job is stuck or fell over, and then that, said on the line that already
  * exists rather than on a second badge nobody would think to read.
  */
-function presenceSays(world: World, agentId: ID, pres: AgentPresenceState | undefined): {
+function presenceSays(world: Pick<World, "tasks">, agentId: ID, pres: AgentPresenceState | undefined): {
   word: string; reason: string; trouble: TroubleKind | null; title: string;
 } {
   const bad = agentTrouble(world, agentId);
@@ -1431,6 +1461,10 @@ function isDarkNow(): boolean {
  * One row per person. The relay can hand back the same person more than once
  * (his 15); the app shows each of them exactly once, everywhere.
  */
+/** One shared empty list, so "this room has no messages" keeps ONE identity —
+    a fresh `[]` per call would defeat every "has this changed?" check. */
+const NO_MESSAGES: Message[] = [];
+
 function onePerPerson(users: User[]): User[] {
   const byId = new Map<ID, User>();
   for (const u of users) if (!byId.has(u.id)) byId.set(u.id, u);
@@ -1784,6 +1818,7 @@ function ruleWords(agent?: AgentDef): string | null {
 }
 
 function Workspace(): React.JSX.Element {
+  countRender("Workspace");
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const p = usePrefs();
   const [screen, setScreen] = useState<ScreenName>("chat");
@@ -1879,7 +1914,7 @@ function Workspace(): React.JSX.Element {
   }, [closeSearch]);
   // One owner for "how many are waiting" — see `useMyApprovals`. A request past
   // its deadline is not waiting on him, whatever the database still says.
-  const pendingApprovals = useMyApprovals(world).waiting.length;
+  const pendingApprovals = useMyApprovals(world.approvals, world.me?.id).waiting.length;
 
   /* ---- EVERY WAY OUT OF A SCREEN GOES THROUGH ONE DOOR ----
    *
@@ -2254,10 +2289,33 @@ function Workspace(): React.JSX.Element {
    * and takes whichever is BIGGER: the relay's number covers messages this
    * client never loaded, and the local one covers messages that arrived since
    * the relay last counted. Neither alone is right on its own. */
+  /**
+   * ONE ROOM'S COUNT, WORKED OUT ONCE PER ROOM.
+   *
+   * This walks a room's whole message list, and the sidebar calls it for every
+   * channel, every agent and every direct conversation on EVERY redraw — so a
+   * presence tick used to re-scan every room in the Cloud9. The answer can only
+   * change when one of five things changes (that room's messages, its read
+   * marker, who I am, my agents, or the replies setting), so the answer is kept
+   * per room against exactly those five and re-worked only when one moves.
+   *
+   * The cache lives in a ref rather than in the memo, deliberately: `messages`
+   * is a new object whenever ANY room gets a message, so a memo keyed on it
+   * would throw away all the other rooms' answers for a message in one of them.
+   */
+  const unreadCache = useRef(new Map<ID, {
+    msgs: unknown; entry: unknown; me: unknown; agents: unknown; replies: string; value: Unread;
+  }>());
   const unreadFor = useCallback((c: Channel): Unread => {
     const entry = world.unread[c.id];
     const seen = entry?.lastReadTs ?? 0;
-    const msgs = world.messages[c.id] ?? [];
+    const msgs = world.messages[c.id] ?? NO_MESSAGES;
+    const held = unreadCache.current.get(c.id);
+    if (held && Object.is(held.msgs, msgs) && Object.is(held.entry, entry)
+      && Object.is(held.me, world.me) && Object.is(held.agents, world.agents)
+      && held.replies === p.replies) {
+      return held.value;
+    }
     const mine = world.me?.id;
     const myAgentIds = world.agents.filter(a => a.ownerId === mine).map(a => a.id);
     const fresh = msgs.filter(m => m.ts > seen && m.authorId !== mine);
@@ -2286,7 +2344,7 @@ function Workspace(): React.JSX.Element {
     const threading = p.replies !== "inline";
     const accounted = threading && fresh.length >= (entry?.unread ?? 0);
     const inThreads = accounted ? fresh.filter(m => !!m.replyTo).length : 0;
-    return {
+    const value: Unread = {
       unread,
       mentions: Math.max(fresh.filter(mentionsMe).length, entry?.mentions ?? 0),
       inThreads,
@@ -2294,6 +2352,10 @@ function Workspace(): React.JSX.Element {
          hunting, and the only one worth changing the row's words for. */
       onlyThreads: accounted && inThreads > 0 && inThreads === fresh.length,
     };
+    unreadCache.current.set(c.id, {
+      msgs, entry, me: world.me, agents: world.agents, replies: p.replies, value,
+    });
+    return value;
   }, [world.unread, world.messages, world.me, world.agents, p.replies]);
 
   /* Reading a conversation marks it read — on the account, so the phone finds
@@ -2905,7 +2967,16 @@ function ChatScreen({
    */
   openThreadFor: { id: ID; at: number } | null; onThreadOpened: () => void;
 }): React.JSX.Element {
-  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  countRender("ChatScreen");
+  /* The rail reads four things and nothing else. Taking the whole world here
+     meant every message in every room, every file that landed and every search
+     answer redrew the whole floor list. */
+  const world = useWorld(w => ({
+    channels: w.channels,
+    presence: w.presence,
+    tasks: w.tasks,
+    me: w.me,
+  }));
   const isDm = active?.kind === "dm";
   /** the message whose thread is open on the right, if any */
   const [threadRoot, setThreadRoot] = useState<ID | null>(null);
@@ -3144,6 +3215,38 @@ interface Row {
  * Walk back for the human message that put this agent to work. Stops at the
  * agent's own previous post — that ask was already answered.
  */
+/**
+ * THE JOB EACH "📦 Task done" MESSAGE IS THE RESULT OF — for a whole list.
+ *
+ * A message carries no job id, so the only honest link is the RESULT ITSELF:
+ * the hub stores a finished job's result, and the agent posts exactly that text
+ * under the 📦 line. Matching on the words is exact, not a guess about timing —
+ * and if two jobs somehow match, or none does, no card is drawn at all. A run
+ * card under the wrong job would be worse than no run card.
+ *
+ * (A very long result is stored clipped at 2,000 characters, so that one case
+ * matches on the stored prefix — still exact about which job it was.)
+ *
+ * It is done for the LIST rather than inside each bubble because it was the
+ * last thing making a bubble read the store: `tasks` changes every time any
+ * agent moves, and that redrew every message on screen for a card almost none
+ * of them have.
+ */
+function doneRunIdsFor(messages: Message[], tasks: Task[]): Map<ID, string> {
+  const map = new Map<ID, string>();
+  for (const m of messages) {
+    if (m.authorKind !== "agent" || m.deletedAt) continue;
+    const head = /^📦 (?:Background t|T)ask done:\n/.exec(m.text);
+    if (!head) continue;
+    const body = m.text.slice(head[0].length);
+    const hits = tasks.filter(t =>
+      t.channelId === m.channelId && t.agentId === m.authorId && t.runId && t.result
+      && (t.result === body || (t.result.length === 2000 && body.startsWith(t.result))));
+    if (hits.length === 1 && hits[0].runId) map.set(m.id, hits[0].runId);
+  }
+  return map;
+}
+
 function findAsk(messages: Message[], i: number, agent: Message): Message | undefined {
   const at = new RegExp(`@${agent.authorName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
   for (let j = i - 1; j >= 0 && j >= i - 15; j--) {
@@ -3509,8 +3612,25 @@ function ChatView({
   onOpenThread?: (rootId: ID) => void; threadRoot: ID | null;
   onToggleDetails: () => void; detailsOpen: boolean;
 }): React.JSX.Element {
-  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const all = world.messages[channel.id] ?? [];
+  countRender("ChatView");
+  /* WHAT THIS SCREEN ACTUALLY READS — nothing else can redraw it.
+     It used to take the whole world, so a message in ANOTHER room, an artifact
+     landing, a project answer or a search result all redrew the conversation
+     and (before the row below was memoised) every bubble in it. `messages` and
+     `page` are narrowed to THIS channel for the same reason. */
+  const world = useWorld(w => ({
+    messages: w.messages[channel.id],
+    page: w.pages[channel.id],
+    prepended: w.prepended,
+    users: w.users,
+    agents: w.agents,
+    me: w.me,
+    agentStatus: w.agentStatus,
+    presence: w.presence,
+    tasks: w.tasks,
+    approvals: w.approvals,
+  }));
+  const all = useMemo(() => world.messages ?? [], [world.messages]);
   const threading = !!onOpenThread;
   /** the message this conversation's own box is answering, in inline mode */
   const [replyingTo, setReplyingTo] = useState<ID | null>(null);
@@ -3534,7 +3654,7 @@ function ChatView({
     if (!threadRoot) return;
     setOpenedThreads(s => (s.has(threadRoot) ? s : new Set([...s, threadRoot])));
   }, [threadRoot]);
-  const page = world.pages[channel.id] ?? { hasMore: true, loading: false, asked: false };
+  const page = world.page ?? { hasMore: true, loading: false, asked: false };
   /** the message a search result sent us to, lit up for a moment */
   const [litUp, setLitUp] = useState<ID | null>(null);
 
@@ -3563,12 +3683,17 @@ function ChatView({
    * With his setting on "keep it in the conversation" nothing is hidden at
    * all, and no thread is ever opened.
    */
-  const shown = (threading && !needle)
+  /* Memoised on the four things that can change the answer, so an unrelated
+     redraw (a job update, a presence tick) does not re-filter the whole
+     conversation. The dependency list is the honest one: drop `litUp` or
+     `jumpTo` from it and a search jump would land on a message the list had
+     decided not to show. */
+  const shown = useMemo(() => ((threading && !needle)
     ? all.filter(m => !m.replyTo || m.id === jumpTo?.id || m.id === litUp)
-    : all;
-  const messages = needle
+    : all), [threading, needle, all, jumpTo?.id, litUp]);
+  const messages = useMemo(() => (needle
     ? all.filter(m => m.text.toLowerCase().includes(needle) || m.authorName.toLowerCase().includes(needle))
-    : shown;
+    : shown), [needle, all, shown]);
 
   /* ---- scrollback ----
    *
@@ -3716,32 +3841,69 @@ function ChatView({
   }, [jumpTo, messages.length, page.loading, page.hasMore, channel.id, askForOlder, onJumped,
     atBottom]);
 
-  const people = onePerPerson(
-    channel.memberIds.map(id => world.users.find(u => u.id === id)).filter(Boolean) as User[]);
-  const agents = channel.memberIds.map(id => world.agents.find(a => a.id === id)).filter(Boolean) as AgentDef[];
+  const people = useMemo(() => onePerPerson(
+    channel.memberIds.map(id => world.users.find(u => u.id === id)).filter(Boolean) as User[]),
+    [channel.memberIds, world.users]);
+  const agents = useMemo(() =>
+    channel.memberIds.map(id => world.agents.find(a => a.id === id)).filter(Boolean) as AgentDef[],
+    [channel.memberIds, world.agents]);
 
   const isDm = channel.kind === "dm";
   const peerUser = people.find(u => u.id !== world.me?.id);
   const peerAgent = world.agents.find(a => channel.memberIds.includes(a.id));
   const peerName = isDm ? peerUser?.name ?? peerAgent?.name ?? channel.name : null;
 
-  let markedUnread = false;
-  const rows: Row[] = messages.map((m, i) => {
-    const prev = messages[i - 1];
-    const dayStart = i === 0 || !sameDay(prev.ts, m.ts);
-    /* A continuation row means "the same person, still talking". A reply that
-       belongs to a thread is not that — it is an answer to something further
-       up — so it always keeps its own head and its "said in a thread" line. */
-    const cont = !dayStart && !!prev && prev.authorKind === "human" && m.authorKind === "human"
-      && prev.authorId === m.authorId && m.ts - prev.ts < 5 * 60 * 1000
-      && !m.replyTo && !prev.replyTo;
-    const ask = m.authorKind === "agent" && !m.proactive ? findAsk(messages, i, m) : undefined;
-    const firstUnread = !markedUnread && openedAt > 0 && m.ts > openedAt && m.authorId !== world.me?.id;
-    if (firstUnread) markedUnread = true;
-    return { m, cont, dayStart, firstUnread, ask };
-  });
+  const rows: Row[] = useMemo(() => {
+    let markedUnread = false;
+    return messages.map((m, i) => {
+      const prev = messages[i - 1];
+      const dayStart = i === 0 || !sameDay(prev.ts, m.ts);
+      /* A continuation row means "the same person, still talking". A reply that
+         belongs to a thread is not that — it is an answer to something further
+         up — so it always keeps its own head and its "said in a thread" line. */
+      const cont = !dayStart && !!prev && prev.authorKind === "human" && m.authorKind === "human"
+        && prev.authorId === m.authorId && m.ts - prev.ts < 5 * 60 * 1000
+        && !m.replyTo && !prev.replyTo;
+      const ask = m.authorKind === "agent" && !m.proactive ? findAsk(messages, i, m) : undefined;
+      const firstUnread = !markedUnread && openedAt > 0 && m.ts > openedAt && m.authorId !== world.me?.id;
+      if (firstUnread) markedUnread = true;
+      return { m, cont, dayStart, firstUnread, ask };
+    });
+  }, [messages, openedAt, world.me?.id]);
 
-  const working = agents.filter(a => world.agentStatus[a.id] === "working");
+  /* ---- the three things every bubble needs, worked out ONCE for the list ----
+   *
+   * Each of these used to be worked out inside every bubble, off the whole
+   * world, which is what made a bubble subscribe to the world in the first
+   * place. They are here now, memoised, and handed down as values that stay
+   * the same object between renders — which is the only reason `React.memo` on
+   * the row does anything at all. */
+
+  /** the message a reply is answering, looked up in the WHOLE conversation */
+  const byId = useMemo(() => {
+    const map = new Map<ID, Message>();
+    for (const m of all) map.set(m.id, m);
+    return map;
+  }, [all]);
+
+  /** who wrote it, when an agent did */
+  const agentOf = useMemo(() => {
+    const map = new Map<ID, AgentDef>();
+    for (const a of world.agents) map.set(a.id, a);
+    return map;
+  }, [world.agents]);
+
+  /** the finished job behind a "📦 Task done" message — see `doneRunIdsFor` */
+  const doneRunIds = useMemo(
+    () => doneRunIdsFor(messages, world.tasks), [messages, world.tasks]);
+
+  /* Held still between renders, or every bubble redraws on every frame — see
+     the contract on `MessageRow`. */
+  const onInlineReply = useCallback((id: ID) => setReplyingTo(id), []);
+
+  const working = useMemo(
+    () => agents.filter(a => world.agentStatus[a.id] === "working"),
+    [agents, world.agentStatus]);
 
   /**
    * The approvals that belong in THIS conversation.
@@ -3757,7 +3919,8 @@ function ChatView({
    * vanished: "he never saw it" is the outcome this card exists to make
    * visible. It is not counted below — nothing is waiting on him any more.
    */
-  const { mine: myApprovalsAll, waiting: waitingAll } = useMyApprovals(world);
+  const { mine: myApprovalsAll, waiting: waitingAll } =
+    useMyApprovals(world.approvals, world.me?.id);
   const inThisRoom = (ap: Approval): boolean => {
     if (ap.channelId) return ap.channelId === channel.id;
     const task = world.tasks.find(t => t.id === ap.taskId);
@@ -3894,14 +4057,18 @@ function ChatView({
             {r.firstUnread && (
               <div className="newline" role="separator"><span className="rule" /><span className="tag">New</span></div>
             )}
-            <MessageRow row={r} agent={world.agents.find(a => a.id === r.m.authorId)}
+            <MessageRow m={r.m} cont={r.cont} ask={r.ask}
+              me={world.me} agents={world.agents} users={world.users}
+              answered={r.m.replyTo ? byId.get(r.m.replyTo) : undefined}
+              doneRunId={doneRunIds.get(r.m.id)}
+              agent={agentOf.get(r.m.authorId)}
               working={world.agentStatus[r.m.authorId] === "working"}
               /* Reading an archived room still works all the way down: the
                  replies are still there to open, only writing is refused. */
               onOpenThread={onOpenThread}
               /* Inline mode: the reply button arms THIS conversation's box
                  instead of opening a panel that the setting says cannot exist. */
-              onInlineReply={threading ? undefined : (id: ID) => setReplyingTo(id)}
+              onInlineReply={threading ? undefined : onInlineReply}
               onGoToMessage={goToMessage}
               archived={!!channel.archivedAt}
               inOpenThread={threadRoot === r.m.id || threadRoot === r.m.replyTo}
@@ -4039,8 +4206,12 @@ function actionHeadline(approval: Approval): string {
  * `mine` is everything of his the screen is holding; `waiting` is the subset
  * that can still be answered. Everything that counts, counts this.
  */
-function useMyApprovals(world: World): { mine: Approval[]; waiting: Approval[]; now: number } {
-  const mine = world.approvals.filter(a => a.ownerId === world.me?.id);
+/* Takes the two facts it reads rather than the whole world, so a screen that
+   has selected only a slice of the world can still ask it. */
+function useMyApprovals(
+  approvals: Approval[], meId: ID | undefined,
+): { mine: Approval[]; waiting: Approval[]; now: number } {
+  const mine = approvals.filter(a => a.ownerId === meId);
   const ticking = mine.some(a => a.status === "pending" && !!a.expiresAt);
   const now = useCountdown(ticking);
   return { mine, waiting: mine.filter(a => a.status === "pending" && !approvalIsDead(a, now)), now };
@@ -4654,11 +4825,44 @@ function RoomFiles({ channel }: { channel: Channel }): React.JSX.Element {
   );
 }
 
-function MessageRow({
-  row, agent, working, onOpenThread, onInlineReply, onGoToMessage,
+/**
+ * ONE BUBBLE — and it reads NOTHING from the store.
+ *
+ * It used to subscribe to the whole world, which is why one arriving message
+ * redrew every bubble on screen (151 of them with 150 loaded), and why an
+ * agent's status tick — a fact no bubble draws — redrew them all as well.
+ *
+ * Everything it needs is now handed down by the one parent that already
+ * computed it for the whole list, and the row is `React.memo`'d, so a redraw
+ * happens only when one of THESE values really changed. Which makes the props
+ * a contract worth keeping: each one must be a value the parent holds STILL
+ * between renders (a message object out of the store, a boolean, a string) —
+ * hand it a fresh object or a fresh arrow function per render and every bubble
+ * is back to redrawing on every frame, silently.
+ */
+const MessageRow = React.memo(function MessageRow({
+  m, cont, ask, me, agents, users, answered, doneRunId,
+  agent, working, onOpenThread, onInlineReply, onGoToMessage,
   inOpenThread, litUp, variant, archived, newSince, threadSeen,
 }: {
-  row: Row; agent?: AgentDef; working?: boolean;
+  /** the message itself, straight out of the store — never a copy */
+  m: Message;
+  /** the same person, still talking: drawn without a fresh head */
+  cont?: boolean;
+  /** what this agent answer was asked by, for the run strip */
+  ask?: Message;
+  /** who is reading — for "is this mine", and which reactions are mine */
+  me?: User;
+  agents: AgentDef[];
+  users: User[];
+  /**
+   * The message this one answers, already looked up by the parent out of the
+   * WHOLE conversation (a thread reply's parent is often not on screen).
+   */
+  answered?: Message;
+  /** the finished job behind a "📦 Task done" message, matched by the parent */
+  doneRunId?: string;
+  agent?: AgentDef; working?: boolean;
   /** the read marker this conversation was opened on — 0/absent means "unknown,
    *  so claim nothing". Only used to say whether a thread has moved since. */
   newSince?: number;
@@ -4677,8 +4881,7 @@ function MessageRow({
   /** an archived room is readable and nothing more — no reacting, no editing */
   archived?: boolean;
 }): React.JSX.Element {
-  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const { m, cont, ask } = row;
+  countRender("MessageRow");
   const isAgent = m.authorKind === "agent";
   const [copied, setCopied] = useState(false);
   const [pickEmoji, setPickEmoji] = useState(false);
@@ -4702,14 +4905,14 @@ function MessageRow({
    * its owner's words, spent on the owner's account. The relay refuses either
    * way; this only decides whether to draw a button, never what is allowed.
    */
-  const mine = !!world.me && (isAgent
-    ? world.agents.find(a => a.id === m.authorId)?.ownerId === world.me.id
-    : m.authorId === world.me.id);
+  const mine = !!me && (isAgent
+    ? agents.find(a => a.id === m.authorId)?.ownerId === me.id
+    : m.authorId === me.id);
 
   const nameFor = (id: ID): string =>
-    id === world.me?.id ? "You"
-      : world.users.find(u => u.id === id)?.name
-      ?? world.agents.find(a => a.id === id)?.name
+    id === me?.id ? "You"
+      : users.find(u => u.id === id)?.name
+      ?? agents.find(a => a.id === id)?.name
       ?? "Someone";
 
   const react = (emoji: string, on: boolean) => {
@@ -4733,16 +4936,16 @@ function MessageRow({
    * plainly why nothing happened.
    */
   const refusedMentions = useMemo(() => {
-    if (isAgent || deleted || !world.me) return [];
-    const named = world.agents.filter(a =>
+    if (isAgent || deleted || !me) return [];
+    const named = agents.filter(a =>
       new RegExp(`@${a.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i").test(m.text));
     return named
       .filter(a => !(m.mentions ?? []).includes(a.id) && !mayDriveAgent(m.authorId, a))
       .map(a => ({
         agent: a,
-        owner: world.users.find(u => u.id === a.ownerId)?.name ?? "its owner",
+        owner: users.find(u => u.id === a.ownerId)?.name ?? "its owner",
       }));
-  }, [m.text, m.mentions, m.authorId, world.agents, world.users, isAgent, deleted, world.me]);
+  }, [m.text, m.mentions, m.authorId, agents, users, isAgent, deleted, me]);
 
   /* Rendered under EVERY shape of a message. A second message from the same
      person a minute later is drawn as a continuation row, and a hint that
@@ -4754,34 +4957,11 @@ function MessageRow({
     </div>
   ));
 
-  /**
-   * The job this "📦 Task done" message is the result of — or nothing.
-   *
-   * A message carries no job id, so the only honest link is the RESULT ITSELF:
-   * the hub stores a finished job's result, and the agent posts exactly that
-   * text under the 📦 line. Matching on the words is exact, not a guess about
-   * timing — and if two jobs somehow match, or none does, no card is drawn at
-   * all. A run card under the wrong job would be worse than no run card.
-   *
-   * (A very long result is stored clipped at 2,000 characters, so that one case
-   * matches on the stored prefix — still exact about which job it was.)
-   */
-  const doneRunId = useMemo(() => {
-    if (!isAgent || deleted) return undefined;
-    const head = /^📦 (?:Background t|T)ask done:\n/.exec(m.text);
-    if (!head) return undefined;
-    const body = m.text.slice(head[0].length);
-    const hits = world.tasks.filter(t =>
-      t.channelId === m.channelId && t.agentId === m.authorId && t.runId && t.result
-      && (t.result === body || (t.result.length === 2000 && body.startsWith(t.result))));
-    return hits.length === 1 ? hits[0].runId : undefined;
-  }, [m.text, m.channelId, m.authorId, world.tasks, isAgent, deleted]);
-
   const reactions = (m.reactions ?? []).filter(r => r.userIds.length > 0);
   const reactionRow = (!deleted && reactions.length > 0) && (
     <div className="reactions">
       {reactions.map(r => {
-        const isMine = !!world.me && r.userIds.includes(world.me.id);
+        const isMine = !!me && r.userIds.includes(me.id);
         return (
           <button key={r.emoji} className={`reactpill${isMine ? " on" : ""}`}
             data-emoji={r.emoji} aria-pressed={isMine} disabled={archived}
@@ -4807,11 +4987,6 @@ function MessageRow({
    * it is answering, or "keep it in the conversation" is just an unreadable
    * pile. So it quotes the message above it and walks there when clicked.
    */
-  const answered = useMemo(() => {
-    if (inThread || deleted || !m.replyTo) return undefined;
-    return (world.messages[m.channelId] ?? []).find(x => x.id === m.replyTo);
-  }, [m.replyTo, m.channelId, world.messages, inThread, deleted]);
-
   const answeringLine = (!inThread && m.replyTo && !deleted) && (
     onOpenThread
       ? (
@@ -4933,8 +5108,8 @@ function MessageRow({
       {pickEmoji && (
         <div className="reactpop" role="menu">
           {REACT_EMOJI.map(e => {
-            const isMine = !!world.me
-              && (m.reactions ?? []).some(r => r.emoji === e && r.userIds.includes(world.me!.id));
+            const isMine = !!me
+              && (m.reactions ?? []).some(r => r.emoji === e && r.userIds.includes(me.id));
             return (
               <button key={e} aria-pressed={isMine} onClick={() => react(e, !isMine)}>{e}</button>
             );
@@ -4984,6 +5159,7 @@ function MessageRow({
           {!deleted && m.editedAt && <span className="editedmark">edited</span>}
           {refusedNotes}
           {reactionRow}
+          {!deleted && <AgentReceipts messageId={m.id} agents={agents} />}
           {threadLine}
         </div>
         {actions}
@@ -5063,12 +5239,13 @@ function MessageRow({
           <MessageFiles attachments={m.attachments} />}
         {refusedNotes}
         {reactionRow}
+        {!deleted && <AgentReceipts messageId={m.id} agents={agents} />}
         {threadLine}
       </div>
       {actions}
     </article>
   );
-}
+});
 
 /* ---- one thread, in the right-hand rail ---- */
 
@@ -5083,7 +5260,18 @@ function ThreadPanel({ channel, rootId, onClose }: {
   const root = messages[0];
   const replies = messages.slice(1);
 
-  const rowFor = (m: Message): Row => ({ m, cont: false, dayStart: false, firstUnread: false });
+  /* One lookup for the panel instead of one per reply — the same reason the
+     conversation's own list builds these maps once (see `agentOf` there). */
+  const agentOf = useMemo(() => {
+    const map = new Map<ID, AgentDef>();
+    for (const a of world.agents) map.set(a.id, a);
+    return map;
+  }, [world.agents]);
+  /* A "📦 Task done" reply shows its run card inside a thread too — the same
+     match the conversation makes, made here, so moving the work out of the
+     bubble did not quietly take the card away from this panel. */
+  const doneRunIds = useMemo(
+    () => doneRunIdsFor(messages, world.tasks), [messages, world.tasks]);
 
   /* THE SAME OWNER AS THE ROOM'S OWN LIST, not a second answer to the same
      question. A thread is a conversation too: a reply typed here, and a reply
@@ -5107,8 +5295,10 @@ function ThreadPanel({ channel, rootId, onClose }: {
       <div className="threadbody" ref={bodyRef} onScroll={noteScrolled}>
         {!root && <div className="d-empty">Fetching this thread…</div>}
         {root && (
-          <MessageRow row={rowFor(root)} variant="thread" archived={!!channel.archivedAt}
-            agent={world.agents.find(a => a.id === root.authorId)} />
+          <MessageRow m={root} variant="thread" archived={!!channel.archivedAt}
+            me={world.me} agents={world.agents} users={world.users}
+            doneRunId={doneRunIds.get(root.id)}
+            agent={agentOf.get(root.authorId)} />
         )}
         {root && (
           <div className="threadcount">
@@ -5118,8 +5308,10 @@ function ThreadPanel({ channel, rootId, onClose }: {
           </div>
         )}
         {replies.map(m => (
-          <MessageRow key={m.id} row={rowFor(m)} variant="thread" archived={!!channel.archivedAt}
-            agent={world.agents.find(a => a.id === m.authorId)}
+          <MessageRow key={m.id} m={m} variant="thread" archived={!!channel.archivedAt}
+            me={world.me} agents={world.agents} users={world.users}
+            doneRunId={doneRunIds.get(m.id)}
+            agent={agentOf.get(m.authorId)}
             working={world.agentStatus[m.authorId] === "working"} />
         ))}
       </div>
@@ -10328,7 +10520,8 @@ function TasksScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): Re
      the badge on the rail can never disagree about what is still waiting. A
      request past its deadline moves to the second list even before the hub's
      own timer has caught up with it. */
-  const { mine: mineAll, waiting: mineWaiting, now: apNow } = useMyApprovals(world);
+  const { mine: mineAll, waiting: mineWaiting, now: apNow } =
+    useMyApprovals(world.approvals, world.me?.id);
   const mineExpired = mineAll.filter(a =>
     (a.status === "expired" || a.status === "pending") && approvalIsDead(a, apNow));
 

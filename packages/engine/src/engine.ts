@@ -6,7 +6,8 @@ import path from "node:path";
 import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, ARTIFACT_LIMITS, Channel, ClientFrame, HarnessName, HarnessState, ID,
-  Message, Project, RemoteActionFacts, RunRecord, ServerFrame, Task, TaskStatus, WorkReaction,
+  Message, Project, ReceiptStage, ReceiptVerdict, RemoteActionFacts, RunRecord, ServerFrame,
+  Task, TaskStatus, WorkReaction,
   WorldState, describeRemoteAction, isSafeFileName,
   mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
 } from "@cloud9/shared";
@@ -23,6 +24,7 @@ import {
   redactForSharing, sanitizeForChat,
 } from "./provider.js";
 import { PendingAsk, rememberAsk, takeAsk, workEmoji } from "./reactions.js";
+import { TurnFacts, turnVerdict } from "./receipts.js";
 import { describeRepoTurn, repoTurn, RepoTurnResult } from "./repowork.js";
 import { GitWorkspace, Worktree } from "./worktree.js";
 import { GitHubWriteRequest, GitHubWriteRequestWithoutRepo, runGitHubWrite } from "./githubwrite.js";
@@ -107,6 +109,17 @@ export interface TurnInput {
    * own folder. Set only for a turn working inside its own git worktree.
    */
   workdir?: string;
+  /**
+   * THE MESSAGE THAT TRIGGERED THIS TURN — the one the semantic receipts
+   * (👀 / 💭 / a verdict) are drawn on.
+   *
+   * ABSENT IS A REAL ANSWER AND MUST STAY CHEAP: a scheduled check-in and any
+   * other proactive turn is answering nobody, so there is no message to signal
+   * on and NO RECEIPTS ARE SENT AT ALL. Inventing one (the last message in the
+   * room, say) would put "Scout is reading this" on something Scout was never
+   * asked about.
+   */
+  triggerMessageId?: ID;
 }
 
 export class Engine {
@@ -570,6 +583,11 @@ export class Engine {
       startedAt: Date.now(),
     };
     let trace: ProviderTrace | undefined;
+    // 👀 — THE SILENCE ENDS HERE. Sent before a single gate is checked, because
+    // "we have your message" is true from this line onwards and is exactly the
+    // thing his §2 says a person should never have to wait for. A turn that is
+    // about to be refused still read the message.
+    this.sendReceipt(agent.id, input, "reading");
     try {
       // last-gate validation: this agent definition arrived from a client, and
       // its model is checked against the harness's REAL list, not just its shape
@@ -587,6 +605,11 @@ export class Engine {
       if (missingSkillFiles.length > 0) {
         throw new InstructionsNotSavedError(agent.name, missingSkillFiles);
       }
+      // 💭 — the CLI is about to actually run. Sent HERE and not at the top of
+      // the turn so it means what it says: the checks above (a bad model, a
+      // missing harness, instructions that would not save) all fail without
+      // ever claiming the agent was thinking about the answer.
+      this.sendReceipt(agent.id, input, "thinking");
       const text = await provider.respond({
         agent,
         context: input.context,
@@ -608,6 +631,14 @@ export class Engine {
         onTrace: t => { trace = t; },
       });
       const record = this.recordRun(seed, { finishedAt: Date.now(), outcome: "ok", trace, reply: text });
+      // THE ONE COMMITTED TICK, derived from what really happened — never from
+      // asking the model to describe its own answer. `turnVerdict` may decline,
+      // and a declined verdict sends nothing rather than a cheerful default.
+      this.sendVerdict(agent.id, input, {
+        outcome: "ok", reply: text,
+        ...(trace?.steps ? { steps: trace.steps } : {}),
+        ...(trace?.error ? { error: trace.error } : {}),
+      });
       // THE FILES THIS TURN MADE, offered to the hub before the reply is
       // returned, so the message the agent is about to say and the file it is
       // talking about arrive together rather than minutes apart.
@@ -623,8 +654,53 @@ export class Engine {
         // environment — the same rule sanitizeForChat enforces for chat
         error: redactForSharing(err instanceof Error ? err.message : String(err)),
       });
+      // ⚠️ — it did not go through. The tick says the STATE; the honest
+      // sentence the caller posts says the words.
+      this.sendVerdict(agent.id, input, {
+        outcome: "failed", ...(trace?.steps ? { steps: trace.steps } : {}),
+        error: err instanceof Error ? err.message : String(err),
+      });
       throw err;
     }
+  }
+
+  /**
+   * SEND ONE SEMANTIC RECEIPT — 👀 / 💭 — for the message that triggered this
+   * turn (his §2).
+   *
+   * NOTHING HAPPENS WITHOUT A TRIGGERING MESSAGE. A scheduled check-in, a
+   * proactive line, a handoff with no message behind it: `triggerMessageId` is
+   * absent, and this returns having sent nothing. That is the rule, in one
+   * place, so a new kind of turn cannot accidentally signal on somebody else's
+   * message.
+   *
+   * Never throws. A live signal is never worth a turn — the same law as
+   * `reactAs`.
+   */
+  private sendReceipt(
+    agentId: ID, input: TurnInput, stage: ReceiptStage, verdict?: ReceiptVerdict,
+  ): void {
+    const messageId = input.triggerMessageId;
+    const channelId = input.channelId;
+    if (!messageId || !channelId) return;
+    try {
+      this.sendFrame({
+        type: "agentReceipt", agentId, channelId, messageId, stage,
+        ...(verdict ? { verdict } : {}),
+      });
+    } catch (err) {
+      console.error("[engine] could not send a receipt:", err);
+    }
+  }
+
+  /**
+   * Ask the rules what this turn honestly earned, then send it — or send
+   * nothing, which is a real answer (`turnVerdict` returns undefined).
+   */
+  private sendVerdict(agentId: ID, input: TurnInput, facts: TurnFacts): void {
+    const verdict = turnVerdict(facts);
+    if (!verdict) return;
+    this.sendReceipt(agentId, input, "verdict", verdict);
   }
 
   /**
@@ -811,6 +887,8 @@ export class Engine {
         kind: "chat",
         channelId,
         requesterKind: trigger.authorKind === "agent" ? "agent" : "human",
+        // the message the 👀 / 💭 / verdict are drawn on — the one being answered
+        triggerMessageId: trigger.id,
         ...(replyTo ? { replyTo } : {}),
       });
       this.agentSend(agent.id, channelId, text, { ...(replyTo ? { replyTo } : {}) });
@@ -964,6 +1042,12 @@ export class Engine {
         kind: "task",
         channelId: task.channelId,
         taskId: task.id,
+        // the SAME message the work ticks land on (`askMessageFor`), so a job's
+        // receipts and its 👀/⚙️ reactions can never end up on two different
+        // messages. A job made from the Tasks panel has no asking message and
+        // therefore gets no receipts — the same rule `markWork` follows.
+        ...(this.askMessageFor.get(task.id)
+          ? { triggerMessageId: this.askMessageFor.get(task.id)! } : {}),
         ...inThread,
       });
       // FR-TS-005: if cancelled while we worked, discard the result
@@ -1167,6 +1251,7 @@ export class Engine {
         triggerAuthor: trigger.authorName,
         kind: "task",
         channelId,
+        triggerMessageId: trigger.id,
         ...(thread ? { replyTo: thread } : {}),
       });
       this.reportFinished(agent.id, channelId, thread, `📦 Background task done:\n${text}`,

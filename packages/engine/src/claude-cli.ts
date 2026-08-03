@@ -15,8 +15,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentDef, MODEL_ID_RE, validateAgentInput } from "@cloud9/shared";
 import {
-  buildAgentPrompt, ClaudeProvider, HarnessUnavailableError, RespondInput,
+  buildAgentPrompt, ClaudeProvider, HarnessUnavailableError, promptTurnKind, RespondInput,
 } from "./provider.js";
+import { TurnTimedOutError, turnTimeBudgetMs } from "./timebudget.js";
 import {
   claudeToolsFor, deniedClaudeTools, grantedSupply, Supply,
 } from "./abilities.js";
@@ -33,7 +34,15 @@ export interface ClaudeCliProviderOptions {
   agentDataDir: (agentId: string) => string;
   /** command name — overridden by tests with a shim */
   command?: string;
-  /** wall-clock leash */
+  /**
+   * FORCE ONE wall-clock leash for every turn, whatever kind of work it is.
+   *
+   * It used to be the only leash there was, defaulting to 3 minutes, which is
+   * why a background job was killed like a late chat message. It is now an
+   * OVERRIDE and nothing sets it in the app: leave it out and each turn gets the
+   * budget for its own kind of work (`timebudget.ts`). Tests set it to pin a
+   * number; the host does not.
+   */
   timeoutMs?: number;
   /** the models this harness offers; a turn is refused for anything else */
   models?: () => string[];
@@ -431,16 +440,31 @@ export function claudeSupply(agent: AgentDef, extras: ClaudeArgExtras = {}): Sup
 export class ClaudeCliProvider implements ClaudeProvider {
   private runner: Runner;
   private command: string;
-  private timeoutMs: number;
+  /** set only when a caller pinned one leash for every kind — normally undefined */
+  private fixedTimeoutMs: number | undefined;
 
   constructor(private opts: ClaudeCliProviderOptions) {
     this.runner = opts.runner ?? run;
     this.command = opts.command ?? "claude";
-    this.timeoutMs = opts.timeoutMs ?? 180_000;
+    this.fixedTimeoutMs = opts.timeoutMs;
+  }
+
+  /**
+   * HOW LONG THIS TURN GETS. Per turn, not per provider — the provider is built
+   * once at sign-in (`host.ts`) and then answers chat messages, background jobs
+   * and repository work through the same object, so a constructor is the one
+   * place this decision could NOT be made correctly.
+   *
+   * `promptTurnKind` is the same answer the prompt is built from, so the clock
+   * and the sentence the agent reads about its turn cannot drift apart.
+   */
+  private budgetFor(input: RespondInput): number {
+    return this.fixedTimeoutMs ?? turnTimeBudgetMs(promptTurnKind(input));
   }
 
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir, onTrace } = input;
+    const timeoutMs = this.budgetFor(input);
     // its own git worktree when it is working in a repository (`repowork.ts`),
     // its own folder otherwise. One line, and it is the only way a turn can
     // happen anywhere but the agent's folder.
@@ -470,7 +494,7 @@ export class ClaudeCliProvider implements ClaudeProvider {
     try {
       result = await this.runner(this.command, args, {
         cwd,
-        timeoutMs: this.timeoutMs,
+        timeoutMs,
         stdin: prompt,
         // no credential variables: the local app's own login pays for this turn
         env: envWithoutCredentials(),
@@ -488,8 +512,12 @@ export class ClaudeCliProvider implements ClaudeProvider {
     if (result.notFound) {
       throw new HarnessUnavailableError("claude", "the Claude app isn't installed on this machine");
     }
+    // THE LEASH FIRED. `run()` has already killed the whole process tree by the
+    // time this returns (see `killTree`), so nothing is still running — and the
+    // error carries the budget so the person is told a CLOCK ran out, in
+    // minutes, rather than reading "something went wrong on my side".
     if (result.timedOut) {
-      throw new Error(`Claude took longer than ${Math.round(this.timeoutMs / 1000)}s, so I stopped it`);
+      throw new TurnTimedOutError("claude", promptTurnKind(input), timeoutMs);
     }
     // Only the CLI's OWN complaint counts. Scanning the reply text would let a
     // model that merely *talks about* logging in fake a signed-out harness.
