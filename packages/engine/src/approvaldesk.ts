@@ -28,6 +28,7 @@ import {
   describeRemoteAction, mustAskBeforeActing,
 } from "@cloud9/shared";
 
+
 /** What came back, and why. `reason` is written for a person, not a log. */
 export interface ApprovalOutcome {
   approved: boolean;
@@ -43,12 +44,34 @@ export interface ApprovalDeskOptions {
   /** how many agents may be waiting at once — a leash, not a policy */
   maxWaiting?: number;
   log?: (message: string) => void;
+  /**
+   * A JOB HAS STOPPED MOVING AND IS STANDING HERE.
+   *
+   * Called ONCE, when a wait that belongs to a delegated job really begins —
+   * after the card has gone on the wire, so the moment reported is the moment
+   * the owner could first have answered. Only for waits that carry a `taskId`:
+   * a wait with no job behind it stops nothing anyone is watching, and the
+   * refusals above (an action nobody can be asked about, too many already
+   * waiting) never wait at all, so they never fire this.
+   *
+   * The desk does not know what a task is and does not touch one — it reports.
+   * `engine.ts` owns what that means on screen.
+   */
+  onWaitStart?: (wait: { taskId: ID; facts: RemoteActionFacts }) => void;
+  /**
+   * THE WAIT IS OVER — yes, no, expired, or the hub went away. Always fires if
+   * `onWaitStart` fired, exactly once, so nothing can be left standing at the
+   * gate for ever on a screen. `outcome` says which of the four it was.
+   */
+  onWaitEnd?: (end: { taskId: ID; outcome: ApprovalOutcome }) => void;
 }
 
 interface Waiting {
   askId: string;
   approvalId?: ID;
   action: RemoteAction;
+  /** the delegated job this wait belongs to, when there is one */
+  taskId?: ID;
   settle: (outcome: ApprovalOutcome) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -113,7 +136,10 @@ export class ApprovalDesk {
       }, this.waitMs);
       // a waiting approval must never be the reason this process stays alive
       timer.unref?.();
-      this.waiting.push({ askId, action: facts.action, settle: resolve, timer });
+      this.waiting.push({
+        askId, action: facts.action, settle: resolve, timer,
+        ...(input.taskId ? { taskId: input.taskId } : {}),
+      });
       this.opts.send({
         type: "askApproval", askId,
         agentId: agent.id, channelId: input.channelId,
@@ -121,6 +147,11 @@ export class ApprovalDesk {
         facts,
       });
       this.log(`asked: ${describeRemoteAction(facts)}`);
+      // AFTER the card is on the wire, so "stuck since" is never earlier than
+      // the moment he could have answered. Told, not obeyed: a listener that
+      // throws must not take the wait down with it, because the wait is the
+      // thing that actually protects GitHub.
+      if (input.taskId) this.tell(() => this.opts.onWaitStart?.({ taskId: input.taskId!, facts }));
     });
   }
 
@@ -172,7 +203,16 @@ export class ApprovalDesk {
     if (!w) return;
     clearTimeout(w.timer);
     this.log(`${w.action}: ${outcome.reason}`);
+    // THE JOB IS MOVING AGAIN — whatever the answer was. Said before the
+    // promise settles so the screen is never behind the work: the turn carries
+    // on the instant it is told, and it is no longer stuck the instant before.
+    if (w.taskId) this.tell(() => this.opts.onWaitEnd?.({ taskId: w.taskId!, outcome }));
     w.settle(outcome);
+  }
+
+  /** A listener is told; it never gets to decide. */
+  private tell(what: () => void): void {
+    try { what(); } catch (err) { this.log(`a waiting listener threw: ${String(err)}`); }
   }
 }
 
