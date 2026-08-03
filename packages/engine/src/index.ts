@@ -89,7 +89,9 @@ export {
   run, runVisibleTerminal, shellQuote, safeArg, killTree, EMPTY_ARG, UnsafeArgumentError,
   type RunResult, type RunOptions, type Runner, type VisibleRunner,
 } from "./run.js";
-export { isBraked, shouldReply, DEFAULT_BRAKE, type BrakeConfig } from "./chatter.js";
+export {
+  isBraked, shouldReply, mentionOwner, passedOverByMention, DEFAULT_BRAKE, type BrakeConfig,
+} from "./chatter.js";
 // The short TLDR an agent writes about its own finished job (his item 3).
 export { taskTldr, headlineOf, TLDR_HEADLINE_MAX } from "./tldr.js";
 // The four work emoji and the bookkeeping that puts them on the right message
