@@ -414,6 +414,23 @@ export interface AgentDef {
   respondTo?: AgentRespondTo;
   /** user ids allowed to drive it, only read when respondTo is "allowlist" */
   respondToAllowlist?: ID[];
+  /**
+   * THE CONNECTIONS FILE THE OWNER CHOSE FOR THIS AGENT — the whole path to a
+   * config file on this computer, the kind the maker of a tool hands you.
+   *
+   * It is stored the same way a project's `localPath` is, and under the same
+   * honesty rules: absent means nobody has chosen one (never `""`), it is never
+   * checked for existence HERE (existence is a fact about a moment, so the
+   * computer that is about to use it checks it and says "that file is gone"
+   * rather than using it), and it may only ever be set by the owner from a
+   * window — an agent that could point Cloud9 at a file could point it at any
+   * file on the machine.
+   *
+   * It grants nothing on its own: the `connections` switch decides whether it
+   * is passed at all (`grantedSupply` in @cloud9/engine), and the owner is
+   * ALWAYS asked before the agent acts through it (`ALWAYS_ASK_ABILITIES`).
+   */
+  connectionsFile?: string;
   createdAt: number;
 }
 
@@ -826,8 +843,7 @@ export function validateLocalFolder(folder: unknown): string | null {
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(said)) return "that isn't a folder on this computer";
   if (said.includes("..")) return "that isn't a folder on this computer";
-  const whole = /^[A-Za-z]:[\\/]/.test(said) || /^\\\\[^\\/]/.test(said) || said.startsWith("/");
-  if (!whole) {
+  if (!isWholePath(said)) {
     /* NO EXAMPLE PATH IN THIS SENTENCE, deliberately, and it cost a failing
        test to learn: the hub REFUSES to print any refusal containing a disk
        path (`refusal.ts` — nothing shown to a person may carry a path off this
@@ -835,6 +851,57 @@ export function validateLocalFolder(folder: unknown): string | null {
        whole sentence into "something went wrong inside Cloud9". The example
        lives in the box's own placeholder on screen, where it is not a refusal. */
     return "say the whole folder, starting from the drive letter — not just its name";
+  }
+  return null;
+}
+
+/**
+ * IS THIS A PATH SAID THE WHOLE WAY FROM THE DRIVE?
+ *
+ * The one owner of that shape, asked by every "which place on this computer"
+ * rule there is — a project's folder, and an agent's connections file. A
+ * relative path means nothing without knowing what it is relative TO, and the
+ * window, the hub and the engine would each answer that differently.
+ *
+ * Windows drives (`C:\…`), Windows shares (`\\box\share`) and POSIX (`/home/…`)
+ * are whole; `code/cloud9` and `..\thing` are not.
+ */
+export function isWholePath(said: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(said) || /^\\\\[^\\/]/.test(said) || said.startsWith("/");
+}
+
+/** The longest connections-file path an agent may carry. */
+export const CONNECTIONS_FILE_LIMIT = 400;
+
+/**
+ * IS THIS A FILE ON THIS COMPUTER, said the whole way from the drive?
+ *
+ * Same law as `validateLocalFolder`, one rung down: this is the config file the
+ * maker of a tool gives the owner, chosen per agent. It does NOT ask whether the
+ * file exists — existence is a fact about a moment, and only the computer that
+ * is about to hand it to a harness can answer it. That check lives in
+ * `connectionsFileFor` in @cloud9/engine, which reports "that file is gone"
+ * instead of quietly using it.
+ *
+ * Blank means nobody has chosen one, which is a real and honest answer, so it is
+ * NOT refused here — `connectionsFileFor` reads blank and absent identically.
+ */
+export function validateConnectionsFile(file: unknown): string | null {
+  if (typeof file !== "string") return "that isn't a file on this computer";
+  const said = file.trim();
+  if (said.length === 0) return null; // nobody has chosen one — an honest answer
+  if (said.length > CONNECTIONS_FILE_LIMIT) {
+    return `that file path is too long (max ${CONNECTIONS_FILE_LIMIT} characters)`;
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(said)) return "that isn't a file on this computer";
+  if (said.includes("..")) return "that isn't a file on this computer";
+  if (!isWholePath(said)) {
+    /* No example path in this sentence, for the same reason the folder rule
+       above has none: the hub refuses to print any refusal carrying a disk path
+       (`refusal.ts`), so a helpful example turns the whole sentence into
+       "something went wrong inside Cloud9". */
+    return "say the whole file, starting from the drive letter — not just its name";
   }
   return null;
 }
@@ -3277,6 +3344,8 @@ export interface AgentInput {
   skills?: unknown;
   respondTo?: unknown;
   respondToAllowlist?: unknown;
+  /** the whole path to the connections file the owner chose for this agent */
+  connectionsFile?: unknown;
 }
 
 /** How many people one agent may be opened up to. */
@@ -3329,7 +3398,70 @@ export function validateAgentInput(agent: AgentInput, rules: AgentInputRules = {
   }
   const openness = validateRespondTo(agent.respondTo, agent.respondToAllowlist);
   if (openness) return openness;
+  // The connections file ends up as `--mcp-config <path>` on a command line, so
+  // it is checked at the same gate as everything else that does — first at the
+  // hub, again in the engine, neither trusting the other.
+  if (agent.connectionsFile !== undefined) {
+    const badFile = validateConnectionsFile(agent.connectionsFile);
+    if (badFile) return badFile;
+  }
   return validateSkills(agent.skills);
+}
+
+/**
+ * THE SENTENCE FOR A SAVE THAT ARRIVED IN PIECES. It says what happened and
+ * what to do, and it names no fields — the person did not choose a field name,
+ * a program did.
+ */
+export const AGENT_INCOMPLETE_REFUSAL =
+  "that didn't arrive as a whole agent, so nothing was changed — open the agent again "
+  + "and save it from there";
+
+/**
+ * IS THIS A WHOLE AGENT? The gate every agent write goes through, asked about
+ * the record that is ABOUT TO BE STORED rather than about the frame that
+ * arrived.
+ *
+ * WHY IT EXISTS, and it is not the same question `validateAgentInput` answers.
+ * That function judges the fields that ARE there — an over-long personality, a
+ * model id with a `&&` in it — and every one of its fields is optional, because
+ * the engine also asks it about agents that were saved before half of them
+ * existed. So `{ id, name, ownerId }` passed it cleanly, and the hub wrote that
+ * three-field stub over a complete agent. The job description, the emoji and
+ * the abilities were gone from the database, and the next screen to draw the
+ * agent ran `persona.trim()` on nothing and went white.
+ *
+ * THE RULE, and it is the whole point: what is stored is always a complete
+ * agent. A write that would not produce one is refused in words, and nothing
+ * is written.
+ *
+ * WHAT "COMPLETE" MEANS HERE. The three fields a screen draws without asking
+ * first — `name`, `emoji`, `persona` — must be there. `abilities` must be a set
+ * of on/off switches IF it is there: it is deliberately not required, because
+ * agents saved before abilities existed are in his database right now and
+ * refusing them would make his own data uneditable for ever. The hub keeps
+ * those switches alive a different way — silence about them means "leave them
+ * as they are", never "delete them".
+ */
+export function validateAgentDefinition(agent: unknown, rules: AgentInputRules = {}): string | null {
+  if (!agent || typeof agent !== "object" || Array.isArray(agent)) return AGENT_INCOMPLETE_REFUSAL;
+  const whole = agent as Partial<AgentDef>;
+  if (typeof whole.name !== "string"
+    || typeof whole.emoji !== "string"
+    || typeof whole.persona !== "string") {
+    return AGENT_INCOMPLETE_REFUSAL;
+  }
+  if (whole.abilities !== undefined) {
+    if (typeof whole.abilities !== "object" || whole.abilities === null
+      || Array.isArray(whole.abilities)) {
+      return AGENT_INCOMPLETE_REFUSAL;
+    }
+    for (const on of Object.values(whole.abilities)) {
+      if (typeof on !== "boolean") return AGENT_INCOMPLETE_REFUSAL;
+    }
+  }
+  // the field-by-field rules, unchanged — one owner for each of them
+  return validateAgentInput(whole as AgentInput, rules);
 }
 
 /** Check the "who may drive me" setting before it is stored. */

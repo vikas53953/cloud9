@@ -22,7 +22,7 @@ import {
   versionOf, validateArtifact,
   mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
   setMachineNames, shareableRun,
-  extractMentions, nameKey, newId, validateAgentInput, validateAttachment, validateChannelText,
+  extractMentions, nameKey, newId, validateAgentDefinition, validateAttachment, validateChannelText,
   validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji,
   validateName, validateRepo, validateRunRecord, validateTaskSummary,
   WS_LIMITS,
@@ -579,6 +579,20 @@ export class Relay {
     const agent = this.store.agents().find(a => a.id === agentId);
     if (!agent || agent.ownerId !== userId) throw new Error("not your agent");
     return agent;
+  }
+
+  /**
+   * ONLY THE OWNER, FROM A WINDOW, MAY POINT AN AGENT AT A FILE.
+   *
+   * The same law as `setProjectFolder`, applied to the connections file for the
+   * same reason: an agent able to name a file on this computer could name any
+   * file on this computer, and the whole safety of the `connections` switch is
+   * that the person who owns the machine chose what is behind it.
+   */
+  private refuseAgentFileFromEngine(conn: Conn, connectionsFile: unknown): void {
+    if (conn.client === "engine" && typeof connectionsFile === "string" && connectionsFile.trim()) {
+      throw new Error("only you can choose an agent's connections file — an agent cannot");
+    }
   }
 
   /**
@@ -1551,13 +1565,16 @@ export class Relay {
         break;
       }
       case "createAgent": {
-        // first gate on untrusted input: some of these fields end up on a
-        // command line in the engine host (the engine re-checks too)
-        const bad = validateAgentInput(frame.agent, this.agentRules(conn, frame.agent.provider));
-        if (bad) throw new Error(bad);
+        this.refuseAgentFileFromEngine(conn, frame.agent.connectionsFile);
         const agent: AgentDef = {
           ...frame.agent, id: newId("a"), ownerId: conn.userId, createdAt: Date.now(),
         };
+        // first gate on untrusted input: some of these fields end up on a
+        // command line in the engine host (the engine re-checks too). It is
+        // asked about the RECORD, not the frame — see `updateAgent` below for
+        // why that distinction is the whole fix.
+        const bad = validateAgentDefinition(agent, this.agentRules(conn, frame.agent.provider));
+        if (bad) throw new Error(bad);
         this.store.saveAgent(agent);
         this.audit(conn, "agent_created", agent.id, `created agent ${agent.name}`);
         this.broadcast({ type: "agent", agent });
@@ -1568,6 +1585,7 @@ export class Relay {
       }
       case "updateAgent": {
         const existing = this.myAgent(conn.userId, frame.agent.id);
+        this.refuseAgentFileFromEngine(conn, frame.agent.connectionsFile);
         // AN AGENT KEEPING ITS OWN NAME IS NOT A DUPLICATE, and this is the
         // line that protects his EXISTING data. Two agents already called
         // `Scout` are in his database right now; asked the uniqueness question
@@ -1577,17 +1595,36 @@ export class Relay {
         // not be refused for a clash that was already there.
         const renaming = typeof frame.agent.name === "string"
           && nameKey(frame.agent.name) !== nameKey(existing.name);
-        const bad = validateAgentInput(frame.agent, renaming
+        // WHAT WOULD BE STORED IS WHAT IS JUDGED. This used to check the frame
+        // and then store something else, and that gap is where an agent could
+        // be destroyed: `{ id, name, ownerId }` — a stale screen, a half-built
+        // client — passed the field-by-field checks, because every one of those
+        // fields is optional, and the stub was then written straight over a
+        // complete agent. Its job, its emoji and its abilities were gone, and
+        // the next screen to draw it went white on `persona.trim()`.
+        //
+        // So the record is BUILT first and asked about second, and it is asked
+        // "are you a whole agent" rather than "is what you mention alright".
+        // Nothing is written until that answer is yes.
+        const saved: AgentDef = {
+          ...frame.agent,
+          // these three are facts the hub owns, never things a client restates
+          id: existing.id,
+          ownerId: existing.ownerId,
+          createdAt: existing.createdAt,
+          // An edit that never mentions a skill's files must not delete them
+          // (M3). One rule, here, for every client — see `keepSkillFiles`.
+          skills: keepSkillFiles(existing.skills, frame.agent.skills),
+          // …and the same sentence-vs-silence rule for the abilities. There is
+          // no "no abilities" state for a person to choose, so an edit that
+          // never mentions them means "leave them alone" — it can never be a
+          // request to strip an agent of what it may do.
+          abilities: frame.agent.abilities ?? existing.abilities,
+        };
+        const bad = validateAgentDefinition(saved, renaming
           ? this.agentRules(conn, frame.agent.provider, frame.agent.id)
           : { ...this.agentRules(conn, frame.agent.provider), takenNames: undefined });
         if (bad) throw new Error(bad);
-        // An edit that never mentions a skill's files must not delete them
-        // (M3). One rule, here, for every client — see `keepSkillFiles`.
-        const saved: AgentDef = {
-          ...frame.agent,
-          ownerId: existing.ownerId,
-          skills: keepSkillFiles(existing.skills, frame.agent.skills),
-        };
         this.store.saveAgent(saved);
         this.audit(conn, "agent_updated", frame.agent.id, `updated agent ${frame.agent.name}`);
         // broadcast what was STORED, not what was sent — otherwise every other

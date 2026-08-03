@@ -73,6 +73,14 @@ export {
   renderCapabilities, grantedSupply,
   type Capability, type Reach, type ReachLevel, type Supply,
 } from "./abilities.js";
+// THE ONE OWNER of "does this agent really have connected services?" — read by
+// the engine host when it builds the command line AND by the agent editor when
+// it writes the sentence, so a screen can never promise a connection the command
+// line will not carry.
+export {
+  connectionsFileFor, mcpConfigPathFor, connectionsWords,
+  type ConnectionsFile, type FileOnDisk,
+} from "./connections.js";
 export {
   HarnessManager, detectClaude, detectCodex, type HarnessOptions,
 } from "./harness.js";

@@ -1859,6 +1859,20 @@ export class Engine {
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   };
+
+  /**
+   * ONE OF THIS COMPUTER'S AGENTS, AS THE HUB LAST DESCRIBED IT.
+   *
+   * The launcher's way in: a provider is handed an agent id and sometimes has to
+   * ask what the OWNER chose for that agent — which connections file, for
+   * instance. It reads the live state rather than a copy taken when the provider
+   * was built, so a setting changed in the window takes effect on the very next
+   * turn (the same rule `wholeComputerRoots` and `mcpConfigPath` are documented
+   * with in `claude-cli.ts`). Undefined means this engine has never been told
+   * about that agent — which is a real answer, not an error.
+   */
+  agentById = (agentId: string): AgentDef | undefined =>
+    this.state?.agents.find(a => a.id === agentId);
 }
 
 /**

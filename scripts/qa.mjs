@@ -337,7 +337,33 @@ function mintJoinTokenOn(port, token) {
 // with nothing behind it refuses honestly and invents no credential; a join
 // that WORKS still replaces a stale one, and a reload comes back in on it; and
 // the one startup path that wipes credentials still spares the session one.
-const EXPECTED_CHECKS = 520;
+// 520 → 529 on 2026-08-03: nine permanent checks for feature 5, in two groups.
+//  • FOUR for A ROOM HE HAS TURNED DOWN, plus one for the door it comes
+//    through. They exist because notifications were all-or-nothing, so one busy
+//    room was the reason to switch every notification off. The control has to
+//    SAY what muting really does (everything except somebody naming him), the
+//    room's own row has to show it so a quiet room is never a mystery, real
+//    news in a muted room must be silenced (proved on the app's own delivery
+//    record, not on a toast that may have timed out), a real mention must still
+//    get through it, and unmuting must give the news back. The fifth holds
+//    DELIVERY HONESTY: this browser has no operating-system door at all, so
+//    every notification must still arrive in the app, be recorded, and — where
+//    the OS was the right home — be recorded as a fallback with its reason.
+//    Nothing dropped in silence is the one outcome that is not allowed.
+//  • THREE for THE CONNECTIONS FILE, because "Use connected services" was a
+//    switch that was on, allowed, approved and handed the agent nothing. On
+//    with no file chosen must say the agent HAS none; the way in must be
+//    offered and a window with no file picker must say which window can rather
+//    than pretend; and off with nothing remembered must say nothing at all.
+//    The other two states — a file that is really there ("In use") and one that
+//    has really vanished ("That file is gone") — cannot be reached from a
+//    browser at all: the path is chosen through the operating system's own file
+//    picker and only the computer running the agent may look at the disk. They
+//    are held in drive-app.mjs against the installed app instead.
+//    ONE EXISTING check changed rather than being added: the inert-switch check
+//    no longer expects a `connections` row, because that switch now has
+//    somewhere to point and is no longer inert.
+const EXPECTED_CHECKS = 529;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -1898,12 +1924,52 @@ try {
      nowhere to choose either yet. A switch that is ON and hands the agent
      nothing must say so, or it reads as broken and every other switch is
      doubted with it. */
+  /* ONE inert row now, not two. "Use connected services" left this list on
+     2026-08-03: it is no longer a switch with nowhere to point — the block
+     checked immediately below is where the file is chosen, so the switch either
+     has one or says it has none. The whole-computer row is still true and still
+     checked here; the connections row is checked as its own honest states. */
   ok("a power that is on and still grants nothing today admits it, rather than looking broken",
     (await page.locator(".editor .inertswitch").count()) === 1 &&
     (await page.locator('.editor .inertswitch [data-inert-row="wholeComputer"]').count()) === 1 &&
-    (await page.locator('.editor .inertswitch [data-inert-row="connections"]').count()) === 1,
+    (await page.locator('.editor .inertswitch [data-inert-row="connections"]').count()) === 0,
     (await page.locator(".editor .inertswitch").innerText()).replace(/\s+/g, " ").slice(0, 110));
   await page.screenshot({ path: `${SHOTS}/reach-top.png` });
+
+  /* ======= THE CONNECTIONS FILE, UNDER THE SWITCH THAT ALLOWS IT ============
+   *
+   * Feature 5, part B. "Use connected services" has been wired at the command
+   * line since 2026-07-30 and no screen ever chose a file, so the switch was on,
+   * allowed, approved — and handing the agent nothing. `connectionsFileFor`
+   * (packages/engine/src/connections.ts) is now the ONE answer to "what does
+   * this agent really have", and this block is that answer on screen.
+   *
+   * Two of its four states can be driven from a browser and are held here: the
+   * switch ON with nothing chosen ("none"), and the switch OFF with nothing
+   * remembered (silence, because there is nothing honest to say). "ready" and
+   * "gone" both need the desktop shell to look at the disk, so they are NOT
+   * claimed here — see the remembered-file check at the end of this file for
+   * what a window with no shell says instead, and drive-app.mjs for the app.
+   */
+  const connWords = (await page.locator(".editor .connfile").innerText()).replace(/\s+/g, " ");
+  ok("with connected services switched on and no file chosen, the screen says the agent HAS none",
+    (await page.locator('.editor .connfile[data-conn-state="none"]').count()) === 1 &&
+    /no connections/i.test(connWords) && !/In use/i.test(connWords) &&
+    /never will|not using your own connected accounts/i.test(connWords) &&
+    (await page.locator(".editor .connfile [data-conn-path]").count()) === 0,
+    connWords.slice(0, 130));
+  /* The way in is offered — and a window that cannot open the computer's own
+     file picker says WHICH window can, rather than a dead button or a pretend
+     one. (The QA browser has no desktop shell, which is exactly this case.) */
+  await page.click(".editor .connfile [data-conn-choose]");
+  await page.waitForSelector(".editor .connfile [data-conn-refusal]", { timeout: 10000 });
+  const connRefusal = (await page.locator(".editor .connfile [data-conn-refusal]").innerText())
+    .replace(/\s+/g, " ").trim();
+  ok("choosing is offered, and a window with no file picker says which one can instead of pretending",
+    /installed Cloud9 app/i.test(connRefusal) && !/^Error:/i.test(connRefusal) &&
+    (await page.locator('.editor .connfile[data-conn-state="none"]').count()) === 1,
+    connRefusal.slice(0, 120));
+  await page.screenshot({ path: `${SHOTS}/connections-none.png` });
 
   // ---- what will ask first, and that it is NOT something he can clear ----
   const asksList = () => page.$$eval(".editor .willask li", ls => ls.map(l => l.dataset.ask));
@@ -1924,6 +1990,11 @@ try {
   const atBottom = await abilityRows();
   ok("and with nothing switched on, nothing claims to be inert either",
     (await page.locator(".editor .inertswitch").count()) === 0);
+  /* The fourth honest state is SILENCE: connected services off and no file ever
+     chosen means there is nothing true to say, so the block says nothing rather
+     than a reassuring sentence about a switch he has not touched. */
+  ok("with connected services off and no file remembered, the connections block says nothing at all",
+    (await page.locator(".editor .connfile").count()) === 0);
   ok("picking the bottom rung takes every one of them back",
     atBottom.every(r => !r.on),
     atBottom.filter(r => r.on).map(r => r.ability).join(", ") || "all off");
@@ -6367,6 +6438,141 @@ try {
       && presenceRow.words.includes(STUCK_WHY)
       && !/\bReady\b/.test(presenceRow.words),
     JSON.stringify(presenceRow).slice(0, 200));
+
+  /* ================= FEATURE 5 · A ROOM HE HAS TURNED DOWN =================
+   *
+   * Notifications used to be all-or-nothing, so the one busy room was the reason
+   * to switch every notification off. Muting is per room now, and the rule is one
+   * line: a muted room silences everything EXCEPT somebody mentioning him by
+   * name. It is written into `decideNotification` (packages/shared/src/notify.ts)
+   * as one more reason inside the ONE gate — never a second gate — so it can only
+   * ever silence, never make something louder.
+   *
+   * Nothing below is stubbed: the mute is set with his own button in the room's
+   * details panel, the news is a real hub job reaching a real terminal state, and
+   * the mention is a real line typed by the friend in the same room.
+   */
+  const notifyOn = () => page.locator('input.sw[aria-label="Tell me about new messages"]');
+  const openRoom5 = async () => {
+    await page.click('.rail-btn[data-go="chat"]');
+    await page.click(".sidebar >> text=# general");
+    await page.waitForSelector(".composer textarea", { timeout: 15000 });
+  };
+  await page.click('.rail-btn[data-go="settings"]');
+  await page.waitForSelector("#set-notify", { timeout: 15000 });
+  if (!(await notifyOn().isChecked())) await notifyOn().click();
+  await openRoom5();
+  if ((await page.locator(".roommute").count()) === 0) await page.click(".chathead .roomdetailsbtn");
+  await page.waitForSelector(".roommute", { timeout: 15000 });
+
+  const muteSaysBefore = (await page.locator(".roommute").innerText()).replace(/\s+/g, " ").trim();
+  await page.click(".roommute .roommute-btn");
+  await page.waitForSelector('.roommute[data-muted="yes"]', { timeout: 10000 });
+  const muteSaysAfter = (await page.locator(".roommute").innerText()).replace(/\s+/g, " ").trim();
+  /* WHAT THE CONTROL SAYS IT DOES. A mute that does not say what still gets
+     through is a switch he has to test on himself to trust. */
+  ok("the mute control says in plain words what muting a room really does",
+    /On\. This room can interrupt you/.test(muteSaysBefore) &&
+    /Muted\./.test(muteSaysAfter) &&
+    /except somebody mentioning you by name/i.test(muteSaysAfter) &&
+    /Unmute this room/.test(muteSaysAfter) &&
+    (await page.locator(".roommute .roommute-btn").getAttribute("aria-pressed")) === "true",
+    `${muteSaysBefore.slice(0, 60)} → ${muteSaysAfter.slice(0, 90)}`);
+  /* AND ON THE ROW, so a room that stopped interrupting him is never just a room
+     that went quiet for no reason he can see. One list, read by both. */
+  ok("the room's own row shows it is muted, and the one stored list agrees",
+    (await page.locator('.side-item[data-channel="general"] .mutedmark[data-muted="yes"]').count()) === 1 &&
+    (await page.evaluate(() => window.cloud9Notify.muted())).includes(genId4),
+    JSON.stringify(await page.evaluate(() => window.cloud9Notify.muted())));
+  await page.screenshot({ path: `${SHOTS}/notify-room-muted.png` });
+
+  /* SILENCED: a real job of his, in the muted room, reaching a real terminal
+     state. `delivered()` is the app's own record of every notification that got
+     through a door — an empty answer for this job is the proof, and it cannot be
+     confused with a toast that simply timed out on screen. */
+  const mutedJob = await seedJob({
+    agentId: stuckAgent.id, title: "tidy the villa shortlist (muted room)",
+    status: "failed", error: "nothing to tidy",
+  });
+  await page.waitForTimeout(2500);
+  const mutedDelivered = await page.evaluate(id => window.cloud9Notify.delivered()
+    .filter(d => d.id === `job_finished:${id}`), mutedJob);
+  ok("news from a muted room does not interrupt him — nothing is delivered and nothing pops",
+    mutedDelivered.length === 0 &&
+    (await page.locator(`.notify-toast[data-subject="${mutedJob}"]`).count()) === 0,
+    `deliveries for that job: ${mutedDelivered.length}`);
+
+  /* THE ONE EXCEPTION, and the reason the rule is worth having: somebody asking
+     him a question by name is not the noise he muted the room for. */
+  await fpage.click("text=# general");
+  await fpage.fill(".composer textarea", "@Vikas muted-room-mention-should-arrive");
+  await fpage.press(".composer textarea", "Enter");
+  await waitFor(page, () => [...document.querySelectorAll('.notify-toast[data-kind="mention"] .notify-text')]
+    .some(t => /muted-room-mention-should-arrive/.test(t.textContent ?? "")),
+  undefined, { timeout: 30000, what: "the mention to get through the muted room" });
+  ok("somebody mentioning him by name still gets through a room he has muted", true,
+    (await page.locator('.notify-toast[data-kind="mention"] .notify-text').last().innerText()).trim());
+  await page.screenshot({ path: `${SHOTS}/notify-muted-mention.png` });
+
+  /* AND BACK UP AGAIN — muting is a thing he can undo, and the same news that
+     was silenced a minute ago interrupts him again. */
+  if ((await page.locator(".roommute").count()) === 0) await page.click(".chathead .roomdetailsbtn");
+  await page.click(".roommute .roommute-btn");
+  await page.waitForSelector('.roommute[data-muted="no"]', { timeout: 10000 });
+  const unmutedJob = await seedJob({
+    agentId: stuckAgent.id, title: "tidy the villa shortlist (room turned back up)",
+    status: "failed", error: "nothing to tidy",
+  });
+  await waitFor(page, id => window.cloud9Notify.delivered().some(d => d.id === `job_finished:${id}`),
+    unmutedJob, { timeout: 30000, what: "the unmuted room's news to be delivered" });
+  ok("turning the room back up lets its news interrupt him again, and the row's mark goes",
+    (await page.locator('.side-item[data-channel="general"] .mutedmark').count()) === 0 &&
+    (await page.evaluate(() => window.cloud9Notify.muted())).length === 0,
+    `still muted: ${JSON.stringify(await page.evaluate(() => window.cloud9Notify.muted()))}`);
+
+  /* ================= WHICH DOOR IT CAME THROUGH — AND NEVER NONE ============
+   *
+   * `chooseDelivery` decides the door, never whether he is interrupted. This
+   * browser has no desktop shell, so there IS no operating-system door: every
+   * notification must still arrive as the app's own toast, be recorded, and — when
+   * the OS was the right home — be recorded as a FALLBACK with the reason. A
+   * notification that goes nowhere in silence is the one outcome that is not
+   * allowed, so every raised one is checked against the record.
+   */
+  const doors = await page.evaluate(() => ({
+    door: window.cloud9Notify.door(),
+    delivered: window.cloud9Notify.delivered(),
+    unfocused: window.cloud9Notify.choose({ windowFocused: false, osSupported: false }),
+    focused: window.cloud9Notify.choose({ windowFocused: true, osSupported: false }),
+    refused: window.cloud9Notify.choose({ windowFocused: false, osSupported: true, osPermitted: false }),
+  }));
+  const honestReasons = ["window_focused", "window_not_focused", "os_unsupported", "os_refused"];
+  ok("with no operating-system door here, every notification still arrives in the app and is recorded, never dropped",
+    doors.door.bridge === false &&
+    doors.delivered.length >= 2 &&
+    doors.delivered.every(d => d.via === "in_app_toast" && honestReasons.includes(d.reason)) &&
+    doors.unfocused.via === "in_app_toast" && doors.unfocused.fellBack === true &&
+    doors.unfocused.reason === "os_unsupported" &&
+    doors.refused.fellBack === true && doors.refused.reason === "os_refused" &&
+    doors.focused.fellBack === false && doors.focused.reason === "window_focused",
+    `${doors.delivered.length} delivered, bridge=${doors.door.bridge}, ` +
+    `unfocused → ${doors.unfocused.via}/${doors.unfocused.reason}/fellBack=${doors.unfocused.fellBack}`);
+
+  /* WHAT THIS SUITE CANNOT DRIVE, said out loud rather than faked.
+   *
+   * The other two connections states — a file that is really there ("In use")
+   * and one that has really vanished ("That file is gone") — both need the
+   * DESKTOP SHELL: the path can only be chosen through the operating system's
+   * own file picker, and only the computer that runs the agent may look at the
+   * disk to answer "is it still there?". A browser has neither. They are held in
+   * `scripts/drive-app.mjs` (the installed app must claim exactly one of the four
+   * honest states) and by the engine's own tests over `connectionsFileFor`.
+   *
+   * The one attempt to short-cut it — writing a stored path straight onto the
+   * agent with `updateAgent` from the browser — was taken back out: the QA seam
+   * hands back only an agent's id, name and owner, so that frame saved a partial
+   * agent and the next screen to read it fell over. See implementation-notes.md.
+   */
 
   await owner.close();
   await friendCtx.close();

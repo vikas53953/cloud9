@@ -1526,6 +1526,18 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   background:var(--ultra);color:var(--on-pine);border-radius:99px;padding:1px 6px;font-weight:600;
 }
 
+/* --- a room he has turned down --- */
+.mutedmark{
+  flex:none;font-size:11px;line-height:1;opacity:.62;margin-left:2px;
+}
+.roommute-state{margin:0 0 8px;font-size:13px;color:var(--ink-2);line-height:1.5;}
+.roommute[data-muted="yes"] .roommute-state{color:var(--ink);}
+.roommute-note{
+  margin:0 0 10px;font-size:12.5px;line-height:1.5;color:var(--ink-2);
+  padding:7px 10px;border-radius:var(--radius-s);background:var(--surface-2);
+  border:1px solid var(--line-soft);
+}
+
 /* --- search across everything you can see --- */
 .searchpanel{width:min(760px,94vw);max-height:78vh;display:flex;flex-direction:column;}
 .searchbar{
@@ -2179,6 +2191,19 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .inertswitch>b{font-size:13px;}
 .inertswitch ul{margin:0;padding:0 0 0 17px;display:flex;flex-direction:column;gap:5px;}
 .inertswitch li{font-size:12.5px;line-height:1.55;}
+
+/* which connections file one agent uses — and honestly when it has none.
+   The border colour IS the state: gone is a warning, in use is settled. */
+.connfile{display:flex;flex-direction:column;gap:7px;margin-top:14px;align-items:flex-start;}
+.connfile>b{font-size:13px;}
+.connfile>span{font-size:12.5px;line-height:1.6;color:var(--ink-2);max-width:74ch;}
+.connfile .folderpath{
+  font-size:12px;padding:5px 9px;border-radius:7px;word-break:break-all;
+  background:color-mix(in srgb,var(--ink-1) 6%,transparent);
+}
+.connfile .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.connfile[data-conn-state="gone"]{border-color:color-mix(in srgb,var(--madder) 40%,transparent);}
+.connfile[data-conn-state="ready"]{border-color:color-mix(in srgb,var(--sage,var(--ink-3)) 35%,transparent);}
 
 /* ============================================================
    PROJECTS — a repository, its branches, its pull requests
