@@ -52,16 +52,21 @@ export const DEFAULT_NOTIFY_PREFS: NotifyPrefs = {
 };
 
 /**
- * The four events that raise a notification. Nothing else.
+ * The five events that raise a notification. Nothing else.
  * (Ordinary chat lines are NOT in this set — the legacy desktop
  * "new message" toast is outside this contract; the conductor may
  * retire it later.)
+ *
+ * `thread_reply` is the fifth and the narrowest: a thread is a side
+ * conversation, and a side conversation is only news to the people already
+ * in it. See `threadReplyEvent` at the foot of this file for who that is.
  */
 export type NotifyKind =
   | "job_finished"
   | "approval_asked"
   | "mention"
-  | "artifact_published";
+  | "artifact_published"
+  | "thread_reply";
 
 /** One thing that happened and might deserve a toast. */
 export interface NotifyEvent {
@@ -227,6 +232,15 @@ export function decideNotification(
   if (event.actorId && event.actorId === event.recipientId) {
     return { raise: false, reason: "self", key };
   }
+  /* A MUTED ROOM SILENCES A THREAD REPLY TOO — deliberately.
+     Turning a room down is a statement about the whole room, and a thread is
+     part of that room, not an exception to it. Only a DIRECT mention pierces
+     mute, because somebody asking him by name is the one thing he did not mute
+     the room to avoid. If thread replies pierced it as well, muting a busy room
+     would still deliver most of its traffic — the setting would be wording
+     rather than behaviour. (He can still see the thread on his own terms: the
+     room row says the new activity is inside a thread — see `unreadFor` on the
+     desktop screen — so muting hides the interruption, never the news.) */
   if (event.kind !== "mention" && isRoomMuted(prefs, event.channelId)) {
     return { raise: false, reason: "room_muted", key };
   }
@@ -245,7 +259,7 @@ export function decideNotification(
 }
 
 /**
- * True when this kind is one of the four that may raise.
+ * True when this kind is one of the five that may raise.
  * Useful for callers that map hub frames → events and want a
  * single allow-list check.
  */
@@ -254,7 +268,8 @@ export function isNotifyKind(k: string): k is NotifyKind {
     k === "job_finished" ||
     k === "approval_asked" ||
     k === "mention" ||
-    k === "artifact_published"
+    k === "artifact_published" ||
+    k === "thread_reply"
   );
 }
 
@@ -349,6 +364,13 @@ export function chooseDelivery(ctx: DeliveryContext): DeliveryChoice {
  * notification's subject is a VERSION id, and Files opens by artifact id — so
  * pointing it at Files would be a guess. The room shows the file's own card,
  * which is a real place the thing actually is.
+ *
+ * `thread_reply` lands on the REPLY, the same way a mention does, and for the
+ * same reason: the subject IS a message. There is no `go: "thread"` answer here
+ * because this module does not know which message the reply hangs off — the
+ * screen does (`replyTo`), and it already has one owner for "open the thread
+ * this message is in", the one a search result uses. Pointing at the message is
+ * the whole truth this file holds; the screen unrolls the thread around it.
  */
 export type NotifyTarget =
   | { go: "message"; channelId: string; messageId: string }
@@ -357,9 +379,151 @@ export type NotifyTarget =
 
 export function notifyTarget(n: Pick<Cloud9Notification, "kind" | "channelId" | "subjectId">):
   NotifyTarget | null {
-  if (n.kind === "mention") {
+  if (n.kind === "mention" || n.kind === "thread_reply") {
     return n.channelId ? { go: "message", channelId: n.channelId, messageId: n.subjectId } : null;
   }
   if (n.kind === "job_finished" || n.kind === "approval_asked") return { go: "tasks" };
   return n.channelId ? { go: "room", channelId: n.channelId } : null;
+}
+
+/* ============================================================
+   A REPLY IN A THREAD YOU ARE IN
+   ============================================================
+
+   The complaint this answers: a thread is a side conversation, and nothing
+   ever told him one had moved. The room badge said "1 new", the conversation
+   showed nothing new (the reply lives off-scroll, on the message it answers),
+   and he had to hunt for it.
+
+   WHO IS TOLD, in one sentence: the people already in the thread — whoever
+   wrote the message it hangs off, and whoever has already replied in it.
+   Nobody else. A thread you have nothing to do with is exactly the noise the
+   room's own scroll was already too full of; turning it into a pop-up would be
+   the same mistake with a louder voice.
+
+   WHY THE RULE LIVES HERE and not with the other four builders (which are in
+   `packages/engine/src/notify-feed.ts`): those four map a domain OBJECT —
+   Task, Approval, Message, ArtifactVersion — onto words, so they belong with
+   the engine's types. This one is a RULE about who counts as being in a
+   conversation, and rules are this file's job. It therefore takes plain
+   strings, never a `Message`, so it stays free of every domain type and is
+   testable on its own. The engine may re-export it; it must not re-decide it.
+*/
+
+/** Longest body a thread-reply toast carries. Matches `NOTIFY_BODY_MAX` in
+ *  `packages/engine/src/notify-feed.ts` — the engine cannot be imported from
+ *  here (this package is the one it depends on), so the number is repeated on
+ *  purpose and the two are meant to stay the same. */
+export const THREAD_REPLY_BODY_MAX = 140;
+
+function shortBody(text: string, max = THREAD_REPLY_BODY_MAX): string {
+  const t = text.trim();
+  return t.length <= max ? t : t.slice(0, max - 1).trimEnd() + "…";
+}
+
+/** Who is looking, and which agents count as "one of theirs". */
+export interface ThreadViewer {
+  /** the person this decision is being made for */
+  id: string;
+  /** ids of the agents this person owns — their agent being in a thread puts
+   *  them in it too, the same way a mention of their agent is a mention of them */
+  agentIds?: readonly string[];
+}
+
+/**
+ * ONE REPLY, AND THE THREAD AS IT STOOD WHEN IT LANDED.
+ *
+ * `threadAuthorIds` is the honest half of this shape. It must hold the authors
+ * of the root and of the replies that were ALREADY there — never the ones that
+ * came after. Passing the thread as it stands *today* would mean that the
+ * moment he replies to a thread, every older reply in it suddenly becomes news
+ * he was "in the thread" for, and he would be handed a burst of toasts about
+ * messages he has just finished reading. The caller therefore filters by time;
+ * this module cannot, because it is handed ids, not timestamps.
+ */
+export interface ThreadReplyFacts {
+  /** the reply itself — the de-dupe subject, so each reply raises at most once */
+  replyId: string;
+  /** the room the thread lives in — the mute list is read against this */
+  channelId: string;
+  /** who wrote the reply */
+  authorId: string;
+  /** their display name, for the toast's first line */
+  authorName: string;
+  /** what the reply says (trimmed here to one toast-sized line) */
+  text: string;
+  /** when the reply landed, ms since epoch */
+  at: number;
+  /** the message the thread hangs off */
+  rootId: string;
+  /** who wrote that message — starting a thread puts you in it */
+  rootAuthorId: string;
+  /** authors of the replies that were already in the thread. See above. */
+  threadAuthorIds?: readonly string[];
+  /** ids this reply @s, if any — a mention is a louder event than this one */
+  mentions?: readonly string[];
+}
+
+/** Is this viewer (or one of their agents) one of `ids`? */
+function isOneOfMine(ids: readonly string[], viewer: ThreadViewer): boolean {
+  const mine = viewer.agentIds ?? [];
+  return ids.some(id => id === viewer.id || mine.includes(id));
+}
+
+/**
+ * IS THIS VIEWER IN THIS THREAD? — started it, or has replied in it.
+ *
+ * Exported because the screen wants the same answer for a quieter purpose than
+ * a toast (which threads to mark as having moved), and two answers to "am I in
+ * this thread" is exactly how quiet hours drifted before.
+ */
+export function isThreadParticipant(
+  facts: Pick<ThreadReplyFacts, "rootAuthorId" | "threadAuthorIds">,
+  viewer: ThreadViewer,
+): boolean {
+  return isOneOfMine([facts.rootAuthorId, ...(facts.threadAuthorIds ?? [])], viewer);
+}
+
+/**
+ * A reply in a thread this person is in → a `thread_reply` event. `null` when
+ * it is not their news at all.
+ *
+ * Four ways it is not their news, and each is decided from the FACT, never from
+ * the clock or the settings (those are `decideNotification`'s job):
+ *
+ *  1. they wrote it themselves — your own reply is not news;
+ *  2. they are not in the thread — a side conversation between other people is
+ *     the noise this whole feature exists to keep out of his way;
+ *  3. the reply @s them — then it is a `mention`, which is louder, pierces a
+ *     muted room, and would otherwise arrive as a SECOND toast about the same
+ *     message. One message, one interruption;
+ *  4. it is not a reply at all (`rootId` empty) — there is no thread.
+ *
+ * Everything else — the master switch, muting, quiet hours, de-dupe — is
+ * `decideNotification`'s, unchanged and un-bypassed.
+ */
+export function threadReplyEvent(
+  facts: ThreadReplyFacts, viewer: ThreadViewer,
+): NotifyEvent | null {
+  if (!facts.rootId || !facts.replyId) return null;
+  if (facts.authorId === viewer.id) return null;
+  if (!isThreadParticipant(facts, viewer)) return null;
+  if (isOneOfMine(facts.mentions ?? [], viewer)) return null;
+
+  const mine = facts.rootAuthorId === viewer.id
+    || (viewer.agentIds ?? []).includes(facts.rootAuthorId);
+  return {
+    kind: "thread_reply",
+    subjectId: facts.replyId,
+    channelId: facts.channelId,
+    actorId: facts.authorId,
+    recipientId: viewer.id,
+    title: mine
+      ? `${facts.authorName} replied in your thread`
+      : `${facts.authorName} replied in a thread you are in`,
+    // A reply of nothing but spaces is still a reply that happened; the toast
+    // says so rather than showing him a blank line.
+    body: shortBody(facts.text).trim() || "(no message)",
+    at: facts.at,
+  };
 }

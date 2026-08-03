@@ -49,17 +49,20 @@ import { isolationFor } from "@cloud9/engine/dist/isolation.js";
 import {
   connectionsFileFor, connectionsWords, type ConnectionsFile,
 } from "@cloud9/engine/dist/connections.js";
-/* THE NOTIFICATION RULES AND THE FOUR EVENTS THAT FEED THEM.
+/* THE NOTIFICATION RULES AND THE FIVE EVENTS THAT FEED THEM.
    `decideNotification` is the ONE gate (quiet hours, de-dupe, self-suppression,
    the master switch) — the same one the phone will read. The `notify-feed`
    builders are the ONE place a hub fact (a finished job, a pending approval, a
    mention, a published file) becomes the plain-words event that gate reads.
-   The screen never re-decides any of that; it draws what the gate raises.
+   The fifth, `threadReplyEvent`, lives in shared rather than the engine because
+   it is a RULE about who is in a conversation, not a mapping of a hub object —
+   see the block comment above it. The screen never re-decides any of that; it
+   draws what the gate raises.
    Imported by path for the same reason the two lines above are: these are the
    halves of shared/engine the browser is allowed to see. */
 import {
   chooseDelivery, decideNotification, dedupeKey, isNotifyKind, isRoomMuted, notifyTarget,
-  withRoomMuted,
+  threadReplyEvent, withRoomMuted,
   type Cloud9Notification, type DeliveryChoice, type NotifyEvent, type NotifyTarget,
 } from "@cloud9/shared/dist/notify.js";
 import {
@@ -1972,8 +1975,19 @@ function Workspace(): React.JSX.Element {
     if (!target) return;
     if (target.go === "tasks") { goScreen("tasks"); return; }
     goChannel(target.channelId);
-    if (target.go === "message") setJumpTo({ id: target.messageId, at: Date.now() });
-  }, [goScreen, goChannel]);
+    if (target.go === "message") {
+      setJumpTo({ id: target.messageId, at: Date.now() });
+      /* A REPLY IS ONLY HALF A PLACE. `notifyTarget` points at the message,
+         because a message id is all a notification carries. A reply's real home
+         is the thread it is in, and this screen already has ONE owner for
+         unrolling that — the same errand a search result on a reply uses. So
+         the thread is asked for too, from the reply's own `replyTo`. With
+         threads turned off there is no panel to open and the jump alone is the
+         whole answer; `openThreadFor` already knows that. */
+      const reply = (world.messages[target.channelId] ?? []).find(m => m.id === target.messageId);
+      if (reply?.replyTo) setOpenThreadFor({ id: reply.replyTo, at: Date.now() });
+    }
+  }, [goScreen, goChannel, world.messages]);
 
   useEffect(() => {
     const bridge = desktop();
@@ -2240,7 +2254,7 @@ function Workspace(): React.JSX.Element {
    * and takes whichever is BIGGER: the relay's number covers messages this
    * client never loaded, and the local one covers messages that arrived since
    * the relay last counted. Neither alone is right on its own. */
-  const unreadFor = useCallback((c: Channel): { unread: number; mentions: number } => {
+  const unreadFor = useCallback((c: Channel): Unread => {
     const entry = world.unread[c.id];
     const seen = entry?.lastReadTs ?? 0;
     const msgs = world.messages[c.id] ?? [];
@@ -2249,11 +2263,38 @@ function Workspace(): React.JSX.Element {
     const fresh = msgs.filter(m => m.ts > seen && m.authorId !== mine);
     const mentionsMe = (m: Message) =>
       (m.mentions ?? []).some(id => id === mine || myAgentIds.includes(id));
+    const unread = Math.max(fresh.length, entry?.unread ?? 0);
+
+    /* ---- WHAT'S NEW IS INSIDE A THREAD ----
+     *
+     * The complaint: with replies kept in threads, "1 new" sends him into a
+     * room whose scroll shows nothing new — the reply is off-scroll, hanging on
+     * the message it answers — and he has to hunt for it.
+     *
+     * A reply is a message with `replyTo`, and this client already holds both
+     * the messages and the read marker, so the room row can say WHERE the new
+     * thing is without the hub learning a new field.
+     *
+     * Two honesty guards, because a half-truth on a badge is worse than silence:
+     *  - only when his setting actually hides replies from the scroll
+     *    ("keep it in the conversation" hides nothing, so there is nothing to
+     *    explain);
+     *  - only when the messages on hand ACCOUNT for the whole count. The hub's
+     *    number covers messages this client never loaded, and we cannot know
+     *    what those are. When it is bigger, this says nothing rather than
+     *    claiming the new thing is in a thread on a guess. */
+    const threading = p.replies !== "inline";
+    const accounted = threading && fresh.length >= (entry?.unread ?? 0);
+    const inThreads = accounted ? fresh.filter(m => !!m.replyTo).length : 0;
     return {
-      unread: Math.max(fresh.length, entry?.unread ?? 0),
+      unread,
       mentions: Math.max(fresh.filter(mentionsMe).length, entry?.mentions ?? 0),
+      inThreads,
+      /* "everything new here is in a thread" — the case that used to send him
+         hunting, and the only one worth changing the row's words for. */
+      onlyThreads: accounted && inThreads > 0 && inThreads === fresh.length,
     };
-  }, [world.unread, world.messages, world.me, world.agents]);
+  }, [world.unread, world.messages, world.me, world.agents, p.replies]);
 
   /* Reading a conversation marks it read — on the account, so the phone finds
      out too. Debounced, because a burst of arriving messages is one read. */
@@ -2287,7 +2328,7 @@ function Workspace(): React.JSX.Element {
     if (!client.page(active.id).asked) client.loadOlder(active.id);
   }, [active?.id, world.connected]);
 
-  /* ---- notifications ---- The four events that interrupt him are drawn by
+  /* ---- notifications ---- The five events that interrupt him are drawn by
      `<NotifyToasts />` (mounted once at the top of the app), each fed through
      the one `decideNotification` gate. The old effect here fired a raw
      `new Notification(...)` for EVERY new message — a second, half-right rules
@@ -2608,6 +2649,11 @@ function NotifyToasts(): React.JSX.Element | null {
       choose: chooseDelivery,
       target: notifyTarget,
       muted: () => [...(prefs.get().mutedChannelIds ?? [])],
+      /* The thread rule itself, so a check can ask "would a bystander be told?"
+         without staging four people in a room — the same shape as `choose` and
+         `target` above. It is the SAME function the effect below calls; there is
+         no second copy for the suite to agree with. */
+      threadRule: threadReplyEvent,
     };
     return () => { delete (window as unknown as { cloud9Notify?: unknown }).cloud9Notify; };
   }, []);
@@ -2624,10 +2670,48 @@ function NotifyToasts(): React.JSX.Element | null {
     /* Every candidate the world currently holds. The builders return null for
        anything that is not this person's news, so the list is already his. */
     const events: NotifyEvent[] = [];
-    for (const list of Object.values(world.messages)) {
-      for (const m of list) {
+    for (const [channelId, list] of Object.entries(world.messages)) {
+      /* THE THREAD AS IT STOOD WHEN EACH REPLY LANDED.
+       *
+       * `threadReplyEvent` asks who was already in the thread, and it means
+       * ALREADY — the authors of the root and of the replies BEFORE this one.
+       * Handing it the thread as it stands today would mean that the moment he
+       * replies to an old thread, every earlier reply in it becomes news he was
+       * "in the thread" for, and he would be handed a burst of toasts about
+       * messages he has just read. So this walks the list once, oldest first,
+       * and remembers who had spoken in each thread up to that point.
+       *
+       * Only messages this client has loaded are considered. A reply that
+       * arrived in a room he has never opened raises nothing — the room's own
+       * unread mark is what tells him about that, and inventing a toast for a
+       * message we do not hold would be a guess. */
+      const byId = new Map(list.map(m => [m.id, m]));
+      const spokenSoFar = new Map<ID, string[]>();
+      const ordered = [...list].sort((a, b) => a.ts - b.ts);
+      for (const m of ordered) {
         const e = mentionEvent(m, viewer);
         if (e) events.push(e);
+
+        if (!m.replyTo || m.deletedAt) continue;
+        const root = byId.get(m.replyTo);
+        const before = spokenSoFar.get(m.replyTo) ?? [];
+        /* Recorded whether or not it raises: being in the thread is about
+           having spoken in it, not about having been notified. */
+        spokenSoFar.set(m.replyTo, [...before, m.authorId]);
+        if (!root || root.deletedAt) continue;
+        const t = threadReplyEvent({
+          replyId: m.id,
+          channelId: m.channelId || channelId,
+          authorId: m.authorId,
+          authorName: m.authorName,
+          text: m.text,
+          at: m.ts,
+          rootId: root.id,
+          rootAuthorId: root.authorId,
+          threadAuthorIds: before,
+          mentions: m.mentions ?? [],
+        }, viewer);
+        if (t) events.push(t);
       }
     }
     for (const t of world.tasks) {
@@ -2687,6 +2771,7 @@ const NOTIFY_ICON: Record<NotifyEvent["kind"], string> = {
   approval_asked: "?",
   mention: "@",
   artifact_published: "⇪",
+  thread_reply: "↳",
 };
 
 function NotifyToast(
@@ -2721,7 +2806,14 @@ interface Peer {
  * subset drawn the same way: "someone said something" and "someone asked me
  * something" are different news and are shown differently.
  */
-interface Unread { unread: number; mentions: number }
+interface Unread {
+  unread: number;
+  mentions: number;
+  /** how many of those are replies living inside a thread, not in the scroll */
+  inThreads: number;
+  /** true when EVERYTHING new here is inside a thread — the hunt case */
+  onlyThreads: boolean;
+}
 
 /**
  * The unread marks on a rail row — nothing at all when there is nothing new.
@@ -2744,10 +2836,31 @@ function UnreadMarks({ n }: { n: Unread }): React.JSX.Element | null {
           title={say(n.mentions, "that ask for you")}
           aria-label={say(n.mentions, "mentioning you")}>@{unreadLabel(n.mentions)}</span>
       )}
+      {/* WHERE the new thing is, when it is somewhere the scroll will not show
+          it. A thread reply is not in the conversation — it hangs on the
+          message it answers — so a bare "1 new" sent him into a room that
+          looked unchanged. This says "↳ 1" beside the count, or replaces the
+          count's words entirely when EVERYTHING new is in a thread. It never
+          adds to the total; it only says where the total is. */}
+      {n.inThreads > 0 && (
+        <span className="cnt inthread" data-inthread={n.inThreads}
+          data-only-threads={n.onlyThreads ? "yes" : undefined}
+          title={n.onlyThreads
+            ? `${say(n.inThreads, "new")} — all of it inside a thread. Open the message it answers.`
+            : `${say(n.inThreads, "of them")} inside a thread`}
+          aria-label={`${say(n.inThreads, "new")} inside a thread`}>
+          <span aria-hidden="true">↳</span>{unreadLabel(n.inThreads)}
+        </span>
+      )}
       {n.unread > 0 && (
         <span className="cnt hot" data-capped={capped(n.unread) || undefined}
-          title={say(n.unread, "new")}
-          aria-label={say(n.unread, "new")}>{unreadLabel(n.unread)}</span>
+          data-in-threads={n.inThreads > 0 ? n.inThreads : undefined}
+          title={n.onlyThreads
+            ? `${say(n.unread, "new")}, inside a thread rather than in the conversation`
+            : say(n.unread, "new")}
+          aria-label={n.onlyThreads
+            ? `${say(n.unread, "new")}, inside a thread`
+            : say(n.unread, "new")}>{unreadLabel(n.unread)}</span>
       )}
     </>
   );
@@ -2894,7 +3007,9 @@ function ChatScreen({
               <RailEmpty text="Nobody hired yet." action="Browse the casting room" onAction={onBrowseMarket} />}
             {agents.map(a => {
               const dm = agentDmFor(a);
-              const unread = dm ? unreadFor(dm) : { unread: 0, mentions: 0 };
+              const unread = dm
+                ? unreadFor(dm)
+                : { unread: 0, mentions: 0, inThreads: 0, onlyThreads: false };
               /* WHETHER IT CAN BE USED, ON THE ROW ITSELF — the hub's answer and
                  its reason, so he never has to open a conversation to find out
                  that nothing there is going to answer him. */
@@ -3404,6 +3519,21 @@ function ChatView({
   const streamRef = useRef<HTMLDivElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
   const [openedAt] = useState(lastRead);
+  /**
+   * THE THREADS HE HAS ALREADY LOOKED AT, this visit.
+   *
+   * A thread whose "N replies" line says New must stop saying it once he has
+   * opened it — otherwise the mark is on for as long as he stays in the room
+   * and means nothing. Opening one is the only thing that puts it in here, and
+   * changing conversation empties it, because "already looked at" is about this
+   * room, this visit.
+   */
+  const [openedThreads, setOpenedThreads] = useState<ReadonlySet<ID>>(() => new Set<ID>());
+  useEffect(() => { setOpenedThreads(new Set<ID>()); }, [channel.id]);
+  useEffect(() => {
+    if (!threadRoot) return;
+    setOpenedThreads(s => (s.has(threadRoot) ? s : new Set([...s, threadRoot])));
+  }, [threadRoot]);
   const page = world.pages[channel.id] ?? { hasMore: true, loading: false, asked: false };
   /** the message a search result sent us to, lit up for a moment */
   const [litUp, setLitUp] = useState<ID | null>(null);
@@ -3775,6 +3905,12 @@ function ChatView({
               onGoToMessage={goToMessage}
               archived={!!channel.archivedAt}
               inOpenThread={threadRoot === r.m.id || threadRoot === r.m.replyTo}
+              /* WHICH THREADS HAVE MOVED, and which he has already looked at.
+                 The same read marker the "New" separator above uses, so the
+                 conversation and its threads answer "new since when" the same
+                 way rather than each keeping its own idea of it. */
+              newSince={openedAt}
+              threadSeen={openedThreads.has(r.m.id)}
               litUp={litUp === r.m.id} />
           </React.Fragment>
         ))}
@@ -4520,9 +4656,14 @@ function RoomFiles({ channel }: { channel: Channel }): React.JSX.Element {
 
 function MessageRow({
   row, agent, working, onOpenThread, onInlineReply, onGoToMessage,
-  inOpenThread, litUp, variant, archived,
+  inOpenThread, litUp, variant, archived, newSince, threadSeen,
 }: {
   row: Row; agent?: AgentDef; working?: boolean;
+  /** the read marker this conversation was opened on — 0/absent means "unknown,
+   *  so claim nothing". Only used to say whether a thread has moved since. */
+  newSince?: number;
+  /** he has already opened this message's thread in this visit */
+  threadSeen?: boolean;
   /** threads are on: replying opens one, and the reply count opens it again */
   onOpenThread?: (rootId: ID) => void;
   /** threads are off: replying arms the conversation's own box instead */
@@ -4695,11 +4836,38 @@ function MessageRow({
   );
 
   const replyCount = m.replyCount ?? 0;
+  /**
+   * HAS THIS THREAD MOVED SINCE HE LAST READ THIS ROOM?
+   *
+   * The room row can say "something new is in a thread"; this is the other half
+   * — WHICH thread — so he is not left opening every reply count in the room to
+   * find the one that changed. Both halves are computed from what this client
+   * already holds: the root's cached `lastReplyAt` against the read marker the
+   * conversation was opened on. No new hub field.
+   *
+   * It stands down the moment he opens the thread (`threadSeen`), because at
+   * that point he HAS seen it and a mark that will not go away is a mark he
+   * learns to ignore.
+   *
+   * Honest limit, worth knowing before believing this mark: reading the room
+   * marks everything in it read, replies included, so the mark lasts the VISIT.
+   * A thread that moved while he was away and that he never opened is new again
+   * next time only until the room is marked read. Making it survive that would
+   * need a per-thread read marker on the hub, which is the hub's to own — see
+   * the report; this deliberately stops at what the client can know.
+   */
+  const threadMoved = !inThread && !deleted && replyCount > 0
+    && !threadSeen && !!newSince && (m.lastReplyAt ?? 0) > newSince;
   const threadLine = (!inThread && !deleted && replyCount > 0 && onOpenThread) && (
-    <button className="threadline" data-replies={replyCount}
+    <button className={`threadline${threadMoved ? " has-new" : ""}`} data-replies={replyCount}
+      data-thread-new={threadMoved ? "yes" : undefined}
+      title={threadMoved
+        ? "This thread has moved since you last read this conversation"
+        : "Open this thread"}
       onClick={() => onOpenThread(m.id)}>
       <span className="arrow" aria-hidden="true">↳</span>
       {countOf(replyCount, "reply", "replies")}
+      {threadMoved && <span className="newtag">New</span>}
       {m.lastReplyAt ? <span className="ago">· last at {clock(m.lastReplyAt)}</span> : null}
     </button>
   );
@@ -5545,16 +5713,20 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
           <button className="mini attach" title={`Attach a file (up to ${ATTACHMENT_LIMITS.perMessage}, ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB each)`}
             onClick={() => fileRef.current?.click()}>📎 Attach</button>
           <button className="mini" title="Call an agent by name" onClick={() => insert("@")}>@ agent</button>
-          {/* A thread is a narrow column and a reply is a sentence, so the
-              wide affordances stay in the room's own box rather than being
-              squeezed into a rail they do not fit. */}
-          {!inThreadPanel && <>
-            <button className="mini" title="Hand this over as background work"
-              onClick={() => insert("!bg ")}>Delegate as a job</button>
-            <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
-            <button className="mini ital" title="Italic" onClick={() => wrap("_")}>I</button>
-            <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
-          </>}
+          {/* THE SAME BOX, NARROWER — not a lesser one.
+              These four used to be dropped in the thread rail on the grounds
+              that "a thread is a narrow column and a reply is a sentence". That
+              was the panel deciding what he is allowed to say in it: a thread is
+              where the actual work gets discussed, so writing code in one, or
+              handing the job over from inside it, are exactly the things he
+              wants there — and the rail's tool row already wraps, so nothing is
+              squeezed. The delegate button carries the shorter word here for the
+              same reason: the label, not the ability, is what the width limits. */}
+          <button className="mini" title="Hand this over as background work"
+            onClick={() => insert("!bg ")}>{inThreadPanel ? "Delegate" : "Delegate as a job"}</button>
+          <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
+          <button className="mini ital" title="Italic" onClick={() => wrap("_")}>I</button>
+          <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
           <button className="mini" title="Emoji" aria-expanded={emojiOpen}
             onClick={() => setEmojiOpen(o => !o)}>🙂</button>
           <div className="grow" />
@@ -8984,6 +9156,18 @@ function SettingsScreen(): React.JSX.Element {
                 </button>
               ))}
             </div>
+            {/* SAID WHERE THE SETTING IS, because this is the half of "threads"
+                that is invisible: a reply kept on its message is not in the
+                conversation, so the app has to say out loud how you find out it
+                happened. Both halves are true whichever choice is picked — the
+                mute list still silences the pop-up, and the room row still says
+                where the new thing is. */}
+            <p className="sec-note">
+              You are told when a thread you started — or have replied in — moves,
+              and the conversation's row says when what is new is inside a thread
+              rather than in the conversation itself. A room you have turned down
+              stays quiet either way; only somebody naming you gets through that.
+            </p>
           </section>
 
           <section id="set-agents" className="setsect">

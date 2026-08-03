@@ -1492,6 +1492,14 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .threadline:hover{border-color:var(--ultra);background:var(--ultra-soft);}
 .threadline .arrow{font-family:var(--mono);}
 .threadline .ago{color:var(--ink-3);font-family:var(--mono);font-size:10.5px;}
+/* A THREAD THAT MOVED since he last read this conversation. It is the same
+   pill, lit — not a second control — so the reply count stays one thing that
+   is sometimes new, rather than two things he has to tell apart. */
+.threadline.has-new{border-color:var(--ultra);background:var(--ultra-soft);font-weight:600;}
+.threadline .newtag{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  background:var(--ultra);color:var(--on-pine);border-radius:99px;padding:1px 6px;
+}
 .inthreadmark{
   display:inline-block;margin-bottom:5px;font-family:var(--mono);font-size:10.5px;
   letter-spacing:.05em;color:var(--ultra);
@@ -1520,6 +1528,17 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   border:1px solid color-mix(in srgb,var(--marigold) 40%,transparent);
   background:var(--marigold-soft);color:var(--ink);font-size:12.5px;
 }
+
+/* --- new activity that is INSIDE a thread says so on the row ---
+   Quieter than the unread count beside it on purpose: it does not add to the
+   total, it says where the total is. When everything new is in a thread it is
+   drawn solid, because that is the case where the conversation itself will look
+   unchanged when he opens it. */
+.side-item .cnt.inthread{
+  font-family:var(--mono);font-size:10px;color:var(--ultra);flex:none;
+  border:1px solid var(--ultra);border-radius:99px;padding:0 5px;
+}
+.side-item .cnt.inthread[data-only-threads]{background:var(--ultra);color:var(--on-pine);}
 
 /* --- unread that asks for you is its own mark --- */
 .side-item .cnt.at{

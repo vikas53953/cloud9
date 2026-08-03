@@ -1,7 +1,7 @@
 {
-  "ranAt": "2026-08-03T12:57:18.273Z",
-  "expected": 529,
-  "executed": 529,
+  "ranAt": "2026-08-03T19:34:15.762Z",
+  "expected": 542,
+  "executed": 542,
   "results": [
     {
       "name": "join screen renders",
@@ -131,7 +131,7 @@
     {
       "name": "the GitHub card shows one honest state and says when Cloud9 really asked",
       "pass": true,
-      "detail": "signed-in :: Cloud9 asked this computer at 18:21:55."
+      "detail": "signed-in :: Cloud9 asked this computer at 00:59:59."
     },
     {
       "name": "signed in: the GitHub card names the account and says who keeps the token",
@@ -196,7 +196,7 @@
     {
       "name": "a skill can be uploaded from a .md file (name from the filename, body as the instructions)",
       "pass": true,
-      "detail": "Flight watch 8awn7 :: Check the fare every morning and tell me when it d"
+      "detail": "Flight watch miu8e :: Check the fare every morning and tell me when it d"
     },
     {
       "name": "a skill can be deleted",
@@ -276,7 +276,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_QLatnF09VCpBZTynvBcvdw"
+      "detail": "inv_nsrfM3MQcgHql2-z2V8ESg"
     },
     {
       "name": "friend joins via invite",
@@ -296,7 +296,7 @@
     {
       "name": "a spent invite leaves the credential that was already working exactly as it was",
       "pass": true,
-      "detail": "stored \"tok_l3c2DK3-opit_KuSBNI_G9eVu-gpxpA3TmEyHrw2o1Q\""
+      "detail": "stored \"tok_0Srajt0-pfS7P_fcwC-hS_-rsMi4GxE-hpOncNTBfhA\""
     },
     {
       "name": "a refused code drops the person back into their own Cloud9 rather than a dead sign-in box",
@@ -446,7 +446,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 18:22"
+      "detail": "↳ 1 reply · last at 01:00"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -509,6 +509,26 @@
       "detail": "3 messages in the panel"
     },
     {
+      "name": "a reply to a reply lands on the ROOT thread — one level deep, never a thread inside a thread",
+      "pass": true,
+      "detail": "4 in the panel, root says 3 replies"
+    },
+    {
+      "name": "the thread's box offers the same tools as the room's — bold, italic, code and Delegate among them",
+      "pass": true,
+      "detail": "room: Things you can ask an agent to do / Attach a file (up to 10, 10 MB each) / Call an agent by name / Hand this over as background work / Bold / Italic / Code / Emoji :: thread: Things you can ask an agent to do / Attach a file (up to 10, 10 MB each) / Call an agent by name / Hand this over as background work / Bold / Italic / Code / Emoji"
+    },
+    {
+      "name": "an agent asked inside a thread answers INSIDE that thread, and its answer is not a row in the conversation",
+      "pass": true,
+      "detail": "1 agent answer(s) in the thread, 0 of them also in the room"
+    },
+    {
+      "name": "the same question asked in the conversation is answered in the conversation, never swept into a thread",
+      "pass": true,
+      "detail": "the thread still says 2 replies (was 2)"
+    },
+    {
       "name": "search opens from the menu and looks across everything, not one room",
       "pass": true,
       "detail": ""
@@ -516,7 +536,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 18:22 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 01:00 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -539,6 +559,41 @@
       "detail": ""
     },
     {
+      "name": "when the only new thing is inside a thread the row says ↳1, and its words say that is where it is",
+      "pass": true,
+      "detail": "{\"inThread\":\"1\",\"only\":\"yes\",\"arrowWords\":\"↳1\",\"arrowSays\":\"1 new — all of it inside a thread. Open the message it answers.\",\"countSays\":\"1 new, inside a thread rather than in the conversation\"}"
+    },
+    {
+      "name": "the message the thread hangs off says New on its replies line, so he is not left opening every thread",
+      "pass": true,
+      "detail": "↳ 1 reply NEW · last at 01:00"
+    },
+    {
+      "name": "reading the room takes the ↳ mark away with the rest — a mark that will not go is one he learns to ignore",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "opening that thread takes the New off its replies line — he has seen it now",
+      "pass": true,
+      "detail": "↳ 1 reply · last at 01:00"
+    },
+    {
+      "name": "somebody in a thread is told when it moves — whether he started it, replied in it, or his agent is in it",
+      "pass": true,
+      "detail": "Priya replied in your thread :: Priya replied in a thread you are in"
+    },
+    {
+      "name": "a bystander is never told about a side conversation they are not in, and nor is he told about his own reply",
+      "pass": true,
+      "detail": "bystander=null own=null"
+    },
+    {
+      "name": "a reply that also mentions him by name does not fire twice — one message, one interruption",
+      "pass": true,
+      "detail": "null"
+    },
+    {
       "name": "a mention raises an on-screen toast, in plain words",
       "pass": true,
       "detail": "Priya mentioned you :: @Vikas notify-mention-alpha please"
@@ -557,6 +612,11 @@
       "name": "a job finishing shows a toast with the right words",
       "pass": true,
       "detail": "A job was cancelled"
+    },
+    {
+      "name": "a real reply in a thread he started interrupts him, and says whose thread it was",
+      "pass": true,
+      "detail": "Priya replied in your thread :: notify-thread-reply-alpha, one more thing"
     },
     {
       "name": "quiet hours silence the toast — nothing pops inside the window",
@@ -1186,7 +1246,7 @@
     {
       "name": "the room panel lists who is in the room, with their role and when they joined",
       "pass": true,
-      "detail": "Runs this room · joined 3 Aug"
+      "detail": "Runs this room · joined 4 Aug"
     },
     {
       "name": "a room's description and one-line topic can be set, and come back from the hub",
@@ -1216,7 +1276,7 @@
     {
       "name": "an open room can be found by somebody who is not in it, with what it's for and how many are in it",
       "pass": true,
-      "detail": "1 person · started 3 Aug"
+      "detail": "1 person · started 4 Aug"
     },
     {
       "name": "browsing offers no members and no messages — finding a room is not permission to read it",
@@ -1236,7 +1296,7 @@
     {
       "name": "letting yourself into an open room is recorded as exactly that — nobody added you",
       "pass": true,
-      "detail": "Member · joined 3 Aug"
+      "detail": "Member · joined 4 Aug"
     },
     {
       "name": "leaving a room takes it out of the sidebar, there and then",
@@ -1281,7 +1341,7 @@
     {
       "name": "an agent whose owner is not in this room is offered greyed, with the reason, before the click",
       "pass": true,
-      "detail": "{\"id\":\"a_msd8dny5rh237x\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
+      "detail": "{\"id\":\"a_msdml6vjhhrb0h\",\"text\":\"✨ Bramble — Priya isn't in this room\",\"disabled\":true,\"why\":\"Priya isn't in this room\"}"
     },
     {
       "name": "the picker says whose each agent is, and who admitting it would let in",
@@ -1321,17 +1381,17 @@
     {
       "name": "every member row is keyed by the membership itself, so two spells in one room cannot collapse into one",
       "pass": true,
-      "detail": "u_msd8akz5rq7xv8:1785761643914 a_msd8apn69xzn2g:1785761650422 u_msd8baejs92lx1:1785761650865 a_msd8dny5rh237x:1785761650932"
+      "detail": "u_msdmimbtpip13r:1785785510468 a_msdmip6hpf1wyf:1785785516311 u_msdmj0qxc8n2jo:1785785516782 a_msdml6vjhhrb0h:1785785516855"
     },
     {
       "name": "coming back into a room is a NEW membership, and the list shows the one she has now",
       "pass": true,
-      "detail": "first 1785761648139 · now 1785761650865"
+      "detail": "first 1785785514002 · now 1785785516782"
     },
     {
       "name": "somebody let back in comes back as a plain member — power is not restored by the door",
       "pass": true,
-      "detail": "Member · joined 3 Aug"
+      "detail": "Member · joined 4 Aug"
     },
     {
       "name": "a member list naming an agent's owner does not scroll sideways at 1280 in the light look",
@@ -1556,7 +1616,7 @@
     {
       "name": "walking back to a result never snaps the view to the newest message",
       "pass": true,
-      "detail": "{\"followedToBottom\":0,\"samples\":42,\"pinned\":0,\"min\":40,\"max\":4119,\"endedAt\":4119}"
+      "detail": "{\"followedToBottom\":0,\"samples\":38,\"pinned\":0,\"min\":40,\"max\":4119,\"endedAt\":4119}"
     },
     {
       "name": "and the reader ends up on the message they asked for",
@@ -1626,7 +1686,7 @@
     {
       "name": "a reply typed in a thread brings the thread's own view down to it, through the same one owner",
       "pass": true,
-      "detail": "the thread overflowed by 664px and he was 664px off its bottom; after his reply, 0px (in sight: true)"
+      "detail": "the thread overflowed by 694px and he was 694px off its bottom; after his reply, 0px (in sight: true)"
     },
     {
       "name": "the search box still offers from:, and the offer is true now",
@@ -1696,7 +1756,7 @@
     {
       "name": "a finished job carries the record of what its agent actually did",
       "pass": true,
-      "detail": "{\"id\":\"t_msd8asqhjocfil\",\"status\":\"completed\",\"runId\":\"r-0msd8asqr-kjfz\"}"
+      "detail": "{\"id\":\"t_msdmirmxqh60tc\",\"status\":\"completed\",\"runId\":\"r-0msdmirnn-b6h3\"}"
     },
     {
       "name": "opening it fetches the real record from the hub and draws it as a finished run",
@@ -1866,7 +1926,7 @@
     {
       "name": "C12: a repository GitHub cannot see is told so when he connects it, not left looking like a good one",
       "pass": true,
-      "detail": "nope definitely-not-a-real-owner-xyz987/nope Look at GitHub now Rename Disconnect Looked at GitHub 3 Aug WHERE THE CODE LIVES ON THIS COMPUTER No folder linked yet. Until you choose one, an agent aske"
+      "detail": "nope definitely-not-a-real-owner-xyz987/nope Look at GitHub now Rename Disconnect Looked at GitHub 4 Aug WHERE THE CODE LIVES ON THIS COMPUTER No folder linked yet. Until you choose one, an agent aske"
     },
     {
       "name": "connecting a repository puts it on screen, named the way GitHub names it",
@@ -1876,7 +1936,7 @@
     {
       "name": "connecting a repository looks at GitHub there and then, rather than leaving him to find out later",
       "pass": true,
-      "detail": "Cloud9 itself vikas53953/cloud9 Look at GitHub now Rename Disconnect Trunk master Looked at GitHub 3 Aug WHERE THE CODE LIVES ON THIS COMPUTER No folder linked yet. Until you choos"
+      "detail": "Cloud9 itself vikas53953/cloud9 Look at GitHub now Rename Disconnect Trunk master Looked at GitHub 4 Aug WHERE THE CODE LIVES ON THIS COMPUTER No folder linked yet. Until you choos"
     },
     {
       "name": "a connected repository offers a way to ask GitHub, ready and named in plain words",
@@ -1886,7 +1946,7 @@
     {
       "name": "pressing it asks the copy of Cloud9 on this computer to run gh — the screen never reaches GitHub",
       "pass": true,
-      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_msd8f8sggwltz5\",\"repo\":\"vikas53953/cloud9\"}"
+      "detail": "{\"type\":\"lookAtProject\",\"projectId\":\"pr_msdmmd27abgvuz\",\"repo\":\"vikas53953/cloud9\"}"
     },
     {
       "name": "while it is looking the button says so and cannot be pressed again",
@@ -1896,7 +1956,7 @@
     {
       "name": "when the answer lands the button settles and the screen stamps when GitHub was last asked",
       "pass": true,
-      "detail": "Trunk master Looked at GitHub 3 Aug"
+      "detail": "Trunk master Looked at GitHub 4 Aug"
     },
     {
       "name": "the pull requests the engine reported are on screen, in the project's own list",
@@ -1906,7 +1966,7 @@
     {
       "name": "the trunk it must never land on is drawn only now that GitHub actually said what it is",
       "pass": true,
-      "detail": "Trunk master Looked at GitHub 3 Aug"
+      "detail": "Trunk master Looked at GitHub 4 Aug"
     },
     {
       "name": "a pull request that landed and one that was thrown away are told apart in words, not only colour",
@@ -1956,7 +2016,7 @@
     {
       "name": "a pull request opens onto the work its agent actually did, from the run records the hub holds",
       "pass": true,
-      "detail": "7 turns"
+      "detail": "9 turns"
     },
     {
       "name": "once a turn names the branch, the pull request is traced to the very job that made it",
@@ -2056,7 +2116,7 @@
     {
       "name": "the list says when it was really asked for, rather than pretending to be current",
       "pass": true,
-      "detail": "Asked GitHub 3 Aug"
+      "detail": "Asked GitHub 4 Aug"
     },
     {
       "name": "typing a name is still offered, for a repository that is not his",
@@ -2116,7 +2176,7 @@
     {
       "name": "it says when it runs out — an agent is standing there waiting for the answer",
       "pass": true,
-      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 18:25 EXPIRES in 9 minutes"
+      "detail": "AGENT Scout · Claude · Sonnet 5 ASKED 01:03 EXPIRES in 9 minutes"
     },
     {
       "name": "a request with no job behind it offers no 'see the job' button to press",
@@ -2341,7 +2401,7 @@
     {
       "name": "the card says which agent made it, and how big it is",
       "pass": true,
-      "detail": "made by Scout :: 45 bytes · text · 3 Aug 18:26"
+      "detail": "made by Scout :: 45 bytes · text · 4 Aug 01:03"
     },
     {
       "name": "version 1 is not labelled with a version number nobody needs",
@@ -2351,7 +2411,7 @@
     {
       "name": "the reference itself is not printed beside the card it draws",
       "pass": true,
-      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 3 Aug 18:26 Show it"
+      "detail": "here is the write-up MD villas.md made by Scout 45 bytes · text · 4 Aug 01:03 Show it"
     },
     {
       "name": "the file really comes back, byte for byte, through the attachment ticket path",
@@ -2371,7 +2431,7 @@
     {
       "name": "the history shows the earlier version, who made it and when",
       "pass": true,
-      "detail": "v1 Scout 3 Aug 18:26 45 bytes Show it"
+      "detail": "v1 Scout 4 Aug 01:03 45 bytes Show it"
     },
     {
       "name": "an older version can still be downloaded, and it is the OLD bytes",
@@ -2386,7 +2446,7 @@
     {
       "name": "a file that is not text is a download and is never drawn into the room",
       "pass": true,
-      "detail": "74 bytes · a file to save · 3 Aug 18:26"
+      "detail": "74 bytes · a file to save · 4 Aug 01:03"
     },
     {
       "name": "a reference to a file that is not there says so in plain words, with no jargon",
@@ -2416,7 +2476,7 @@
     {
       "name": "Files opens the immutable earlier version and returns its original bytes",
       "pass": true,
-      "detail": "v1 Scout 3 Aug 18:26 45 bytes Show it # Villas in Goa Three that fit, with prices. :: \"# Villas in Goa\\nThree that fit, with prices.\\n\""
+      "detail": "v1 Scout 4 Aug 01:03 45 bytes Show it # Villas in Goa Three that fit, with prices. :: \"# Villas in Goa\\nThree that fit, with prices.\\n\""
     },
     {
       "name": "Files gives access controls to room managers and removes them for a plain member",
@@ -2446,22 +2506,22 @@
     {
       "name": "search everywhere finds a message, labelled in plain words with its room, who and when",
       "pass": true,
-      "detail": "Vikas general · Today · 18:26 the wobbegong sighting was near the reef"
+      "detail": "Vikas general · Today · 01:03 the wobbegong sighting was near the reef"
     },
     {
       "name": "a reply written in a thread is found and called a reply in a thread, not a message",
       "pass": true,
-      "detail": "Vikas general · Today · 18:26 the quokkatrail guide confirmed it"
+      "detail": "Vikas general · Today · 01:03 the quokkatrail guide confirmed it"
     },
     {
       "name": "the shared name of a file an agent made is findable from the same one box",
       "pass": true,
-      "detail": "Scout nudibranch-log.md general · Today · 18:26 nudibranch-log.md"
+      "detail": "Scout nudibranch-log.md general · Today · 01:03 nudibranch-log.md"
     },
     {
       "name": "words only an OLD version of a file ever had are found, and open that file's kept history there",
       "pass": true,
-      "detail": "Scout nudibranch-log.md v1 general · Today · 18:26 # Reef log The kelpwarden buoy drifted overnight."
+      "detail": "Scout nudibranch-log.md v1 general · Today · 01:03 # Reef log The kelpwarden buoy drifted overnight."
     },
     {
       "name": "clicking a message result goes to that message, in the room it was really said in",
@@ -2566,7 +2626,7 @@
     {
       "name": "a valid link previews with its honest reach and names the hub, and sees the join link",
       "pass": true,
-      "detail": "127.0.0.1:60315 — only this computer — this is the address the app uses for itself · carries a join link, so y"
+      "detail": "127.0.0.1:59561 — only this computer — this is the address the app uses for itself · carries a join link, so y"
     },
     {
       "name": "adding a friend's Cloud9 actually dials it — the connection says so, and it is the live hub",
@@ -2586,7 +2646,7 @@
     {
       "name": "the owner can mint a join link, and it is a cloud9:// link carrying a join_ token",
       "pass": true,
-      "detail": "cloud9://127.0.0.1:8799#join_dSUrFp3qGk6VmnGMgJ-NHg"
+      "detail": "cloud9://127.0.0.1:8799#join_DDbWrlgBC_sUM7meNW4JHQ"
     },
     {
       "name": "the panel says plainly that reaching a friend over the internet needs Tailscale, not wired tonight",
@@ -2596,22 +2656,22 @@
     {
       "name": "a job that fell over says so in plain words AND says why, on the card itself",
       "pass": true,
-      "detail": "book the two nights in Anjuna Architect · Codex · gpt-5.6-sol · Started 18:27 by Vikas FAILED Failed the model was not signed in on this computer Architect fini"
+      "detail": "book the two nights in Anjuna Architect · Codex · gpt-5.6-sol · Started 01:04 by Vikas FAILED Failed the model was not signed in on this computer Architect fini"
     },
     {
       "name": "a stuck job reads as stuck rather than working, and is not listed in with the running ones",
       "pass": true,
-      "detail": "{\"words\":\"shortlist the villas the Architect picked Scout · Claude · Sonnet 5 · Started 18:26 by Vikas STUCK — WAITING ON SOMETHING Stuck — waiting on something waiting on the Architect to answer the "
+      "detail": "{\"words\":\"shortlist the villas the Architect picked Scout · Claude · Sonnet 5 · Started 01:04 by Vikas STUCK — WAITING ON SOMETHING Stuck — waiting on something waiting on the Architect to answer the "
     },
     {
       "name": "a job with no recorded reason says so honestly, and invents nothing",
       "pass": true,
-      "detail": "email the shortlist to Priya Architect · Codex · gpt-5.6-sol · Started 18:27 by Vikas FAILED Failed no reason was recorded Architect finished “Background task: "
+      "detail": "email the shortlist to Priya Architect · Codex · gpt-5.6-sol · Started 01:04 by Vikas FAILED Failed no reason was recorded Architect finished “Background task: "
     },
     {
       "name": "an agent whose job is stuck says so on its presence line, instead of reading as fine",
       "pass": true,
-      "detail": "{\"trouble\":\"blocked\",\"words\":\"Scout Stuck — waiting on something · shortlist the villas the Architect picked — waiting on the Architect to answer the question about the budget ✎\"}"
+      "detail": "{\"trouble\":\"blocked\",\"words\":\"Scout Stuck — waiting on something · shortlist the villas the Architect picked — waiting on the Architect to answer the question about the budget 1 ✎\"}"
     },
     {
       "name": "the mute control says in plain words what muting a room really does",
@@ -2621,12 +2681,17 @@
     {
       "name": "the room's own row shows it is muted, and the one stored list agrees",
       "pass": true,
-      "detail": "[\"ch_msd8akzcepwh2u\"]"
+      "detail": "[\"ch_msdmimbyznw23x\"]"
     },
     {
       "name": "news from a muted room does not interrupt him — nothing is delivered and nothing pops",
       "pass": true,
       "detail": "deliveries for that job: 0"
+    },
+    {
+      "name": "a reply in a thread in a muted room stays silent too — a thread is part of the room, not an exception to it",
+      "pass": true,
+      "detail": "deliveries for that reply: 0"
     },
     {
       "name": "somebody mentioning him by name still gets through a room he has muted",
