@@ -187,6 +187,16 @@ const EXPECTED_CHECKS = [
      this harness can do honestly, so it asserts what is observable on screen
      and says so rather than pretending to have proved the shell. */
   "the agent editor shows the connections file in an honest state, and a room offers the mute control",
+  /* Threads, in the app he double-clicks. His complaint was that an agent
+     "does not have a conversation inside the threads" — every answer, including
+     an answer to a question asked INSIDE a thread, came back into the room and
+     broke the thread in half. The browser suite holds both halves of that; this
+     asks the INSTALLED app the one that matters, with a real engine turn on this
+     computer: ask an agent inside a thread, and the answer must be in that
+     thread and NOT a row in the conversation. Proved by message id, so an agent
+     chiming in about something else in the room cannot be mistaken for the
+     answer leaking out. */
+  "an agent asked inside a thread answers inside that thread, not in the conversation",
 ];
 
 /* ---------------------------------------------------------------- results */
@@ -2718,6 +2728,7 @@ async function walk(page) {
 
   const COORD_GROUP = [
     EXPECTED_CHECKS[29], EXPECTED_CHECKS[30], EXPECTED_CHECKS[31], EXPECTED_CHECKS[32],
+    EXPECTED_CHECKS[34],
   ];
   let coordEngine = null;
   try {
@@ -2828,6 +2839,66 @@ async function walk(page) {
          signed in the one answer is an honest refusal, and that is still one
          owner for the turn. Claiming otherwise would be inventing a reply. */
       return `${first.name} answered ("${lastSaid.slice(0, 60)}"), ${second.name} stayed quiet`;
+    });
+
+    /* ---- where an agent's answer lands: the thread, or the room ---------- */
+    await check(EXPECTED_CHECKS[34], async () => {
+      /* Nobody mid-turn from the check above, or an answer already on its way
+         to the ROOM could still be arriving while this one is being judged. */
+      await until("the room to be quiet before the thread question is asked", async () =>
+        (await page.locator(".msgs .msg .thinking").count()) === 0, { timeout: 240000 });
+
+      await page.fill(".composer textarea", "drivecheck-thread-root: where are we on the shortlist?");
+      await page.press(".composer textarea", "Enter");
+      const root = page.locator('.msgs .msg:has-text("drivecheck-thread-root")').last();
+      await root.waitFor({ timeout: 30000 });
+      const rootId = await root.getAttribute("data-msg");
+      await root.hover();
+      const replyBtn = root.locator(".ma.reply");
+      if (await replyBtn.count() === 0) {
+        throw new Error("NOT ON SCREEN — no Reply control on the message, so no thread to ask inside");
+      }
+      await replyBtn.click();
+      if (await page.locator(".threadpanel").count() === 0) {
+        await page.waitForSelector(".threadpanel", { timeout: 20000 }).catch(() => {
+          throw new Error("NOT ON SCREEN — Reply opened no thread panel, so the question " +
+            "cannot be asked inside a thread at all");
+        });
+      }
+      await page.waitForSelector(".threadcomposer textarea", { timeout: 20000 });
+
+      /* THE REAL TURN. Typed into the real thread box of the installed app and
+         routed by the real engine on this computer — nothing about the answer
+         is written here. If this machine's Claude is not signed in, the agent
+         still says so in its own voice, and that refusal is still an answer
+         that must land in the thread rather than in the room. */
+      await page.fill(".threadcomposer textarea",
+        `@${first.name} in one short line, which villa has the best kitchen?`);
+      await page.press(".threadcomposer textarea", "Enter");
+      await until(`${first.name} to answer inside the thread it was asked in`, async () =>
+        (await page.locator(".threadpanel .msg.from-agent").count()) >= 1,
+      { timeout: 240000, every: 250 });
+
+      /* BY ID, NEVER BY WORDS: the answer's own `data-msg` is looked for in the
+         conversation behind the panel. Free chatter in this room really does
+         put other agent lines in the scroll, and a check that matched on text
+         would blame the feature for one of those. */
+      const answerIds = await page.evaluate(() =>
+        [...document.querySelectorAll(".threadpanel .msg[data-msg]")]
+          .filter(m => m.classList.contains("from-agent")).map(m => m.dataset.msg));
+      const alsoInRoom = await page.evaluate(ids =>
+        ids.filter(i => !!document.querySelector(`.msgs .msg[data-msg="${i}"]`)), answerIds);
+      const replies = await page.locator(`.msgs .msg[data-msg="${rootId}"] .threadline`)
+        .getAttribute("data-replies").catch(() => null);
+      if (answerIds.length === 0 || alsoInRoom.length !== 0) {
+        throw new Error(`NOT ON SCREEN — ${answerIds.length} answer(s) in the thread and ` +
+          `${alsoInRoom.length} of them also posted into the conversation`);
+      }
+      await shot(page, "thread-agent-answer");
+      const close = page.locator(".threadpanel .threadclose");
+      if (await close.count()) await close.click();
+      return `${first.name} answered inside the thread (${answerIds.length} agent line(s), ` +
+        `the root now says ${replies ?? "?"} replies) and nothing of it went to the room`;
     });
 
     /* ---- the two jobs, and the states the engine cannot yet reach ---- */

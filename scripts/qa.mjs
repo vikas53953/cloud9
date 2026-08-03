@@ -363,7 +363,40 @@ function mintJoinTokenOn(port, token) {
 //    ONE EXISTING check changed rather than being added: the inert-switch check
 //    no longer expects a `connections` row, because that switch now has
 //    somewhere to point and is no longer inert.
-const EXPECTED_CHECKS = 529;
+// 529 → 542 on 2026-08-04: thirteen permanent checks for THREADS, in six groups.
+// His complaint, in his words: "an agent does not have a conversation inside the
+// threads. they do discuss within channels only." Everything the app already
+// checked was about what HE can do in a thread; nothing held where the AGENT's
+// answer lands, which was the whole bug.
+//  • TWO for THE HEADLINE BEHAVIOUR, both real turns of a real engine, nothing
+//    seeded: a question typed into the real thread box is answered INSIDE that
+//    thread (proved by message id, so an unrelated agent chiming in about
+//    something else in the room can never be mistaken for the answer leaking
+//    out), and the same question asked in the room is still answered in the
+//    room. The second is not a formality — a rule that swept every answer into
+//    a thread would pass the first and break the app.
+//  • ONE for ONE LEVEL, NEVER NESTED. The hub re-parents a reply to a reply onto
+//    the root (`resolveReplyTo`), and `packages/engine/src/threads.ts` RELIES on
+//    that — it passes a stored `replyTo` straight back, trusting it is already a
+//    root. Driven through the app's own send frame aimed deliberately at a
+//    reply, which the composer itself cannot do.
+//  • TWO for ↳N, the hunt he reported: "1 new" used to send him into a room
+//    whose scroll showed nothing new. The row must say ↳1 and say in words that
+//    the new thing is inside a thread, and the mark must GO when the room is
+//    read. A real reply from a real second person, in a room he never opened.
+//  • TWO for WHICH THREAD: the message it hangs off says New on its replies
+//    line, and stands down the moment that thread is opened.
+//  • FIVE for WHO IS TOLD. Three ask the rule itself through
+//    `window.cloud9Notify.threadRule` — the SAME function the screen calls —
+//    because staging four people in a room to prove four lines is how a suite
+//    ends up agreeing with a copy of the rule instead of the rule. The other two
+//    are real all the way down: a real reply raises a real toast, and the same
+//    journey in a room he really muted raises nothing. Both halves are needed —
+//    the silence alone could mean thread replies never notify at all.
+//  • ONE for THE SAME BOX, NARROWER: the thread's tool row must be the SAME row
+//    as the conversation's, not a named list of four, so a tool added to the
+//    room tomorrow and quietly withheld from the thread fails here.
+const EXPECTED_CHECKS = 542;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -1624,7 +1657,125 @@ try {
     (await page.locator(".threadpanel .msg").count()) === 3,
     `${await page.locator(".threadpanel .msg").count()} messages in the panel`);
   await page.screenshot({ path: `${SHOTS}/thread-panel.png` });
+
+  /* ================= ONE LEVEL DEEP, NEVER A THREAD INSIDE A THREAD =========
+   *
+   * The rule is the HUB's (`resolveReplyTo`, apps/relay/src/server.ts:789): a
+   * reply whose parent is itself a reply is re-parented onto the ROOT, so a
+   * thread can never grow a second level. `packages/engine/src/threads.ts` leans
+   * on that guarantee — it passes a stored `replyTo` straight back and relies on
+   * it already being a root — so if the hub ever stopped normalising, the engine
+   * would start answering into a thread that does not exist.
+   *
+   * Nothing here is faked: the message goes through the app's OWN send frame
+   * (`cloud9Wire.ask`, the same door the composer uses) deliberately aimed at a
+   * REPLY, which the composer itself cannot do. The proof is where the hub filed
+   * it: the open panel is fed by `world.threads[root]`, which is filled from the
+   * `replyTo` the HUB sent back — so a message that shows up in the root's panel
+   * is a message the hub parented onto the root, and the reply count on the root
+   * agrees. It must also stay out of the conversation, like any other reply. */
+  const threadIds = await page.evaluate(() =>
+    [...document.querySelectorAll(".threadpanel .msg[data-msg]")].map(m => m.dataset.msg));
+  const backlogId = (await page.evaluate(() => window.cloud9Wire.channels()))
+    .find(c => c.name === "backlog").id;
+  const NESTED = "reply-to-a-reply-still-belongs-to-the-root";
+  await page.evaluate(([c, parent, text]) =>
+    window.cloud9Wire.ask({ type: "send", channelId: c, text, replyTo: parent }),
+  [backlogId, threadIds[1], NESTED]);
+  await page.waitForSelector(`.threadpanel .msg:has-text("${NESTED}")`, { timeout: 20000 });
+  const nestedRows = await rowsInRoom();
+  const nestedReplies = await page.locator(`.msgs .msg[data-msg="${threadIds[0]}"] .threadline`)
+    .getAttribute("data-replies");
+  ok("a reply to a reply lands on the ROOT thread — one level deep, never a thread inside a thread",
+    (await page.locator(".threadpanel .msg").count()) === 4 &&
+    nestedReplies === "3" &&
+    !nestedRows.some(t => t.includes(NESTED)),
+    `${await page.locator(".threadpanel .msg").count()} in the panel, root says ${nestedReplies} replies`);
+
+  /* ================= THE SAME BOX, NARROWER — NOT A LESSER ONE =============
+   *
+   * The thread rail used to drop bold, italic, code and Delegate on the grounds
+   * that "a thread is a narrow column and a reply is a sentence" — which is the
+   * panel deciding what he is allowed to SAY in it, and a thread is exactly
+   * where the work gets discussed. Both boxes are the same component, so the
+   * honest check is not "are these four buttons there" but "is the tool row the
+   * SAME row" — that way a tool added to the room tomorrow and quietly withheld
+   * from the thread fails here, instead of passing a list of four names. The
+   * four he asked for are named as well, so the check still says out loud what
+   * the complaint was about. */
+  const toolsOf = sel => page.$$eval(`${sel} .tools button.mini`, bs => bs.map(b => b.title));
+  const roomTools = await toolsOf(".thread .composer");
+  const threadTools = await toolsOf(".threadcomposer");
+  const NAMED_TOOLS = ["Bold", "Italic", "Code", "Hand this over as background work"];
+  ok("the thread's box offers the same tools as the room's — bold, italic, code and Delegate among them",
+    roomTools.length > 0 &&
+    threadTools.length === roomTools.length &&
+    roomTools.every(t => threadTools.includes(t)) &&
+    NAMED_TOOLS.every(t => threadTools.includes(t)),
+    `room: ${roomTools.join(" / ")} :: thread: ${threadTools.join(" / ")}`);
+  await page.screenshot({ path: `${SHOTS}/thread-composer-tools.png` });
   await page.click(".threadpanel .threadclose");
+  await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
+
+  /* ================= HIS COMPLAINT, END TO END, WITH A REAL AGENT ==========
+   *
+   * In his words: "an agent does not have a conversation inside the threads.
+   * they do discuss within channels only." Everything above proves what HE can
+   * do in a thread; this is the half he actually complained about — where the
+   * AGENT's answer lands. Nothing is seeded: a real question is typed into the
+   * real thread box, a real engine turn happens, and the answer is read where it
+   * landed.
+   *
+   * The proof is by message ID, not by words. The agent's answer in the panel is
+   * looked up in the conversation by the very same `data-msg`, so an unrelated
+   * agent chiming in about something else in the room — which this room's free
+   * chatter really does — can never be mistaken for the answer leaking out. */
+  await page.click(".sidebar >> text=# trip-goa");
+  await page.waitForSelector(".composer textarea", { timeout: 20000 });
+  const goaBox = page.locator(".thread .composer textarea");
+  await goaBox.fill("thread-turn-root: the villa shortlist");
+  await goaBox.press("Enter");
+  const turnRoot = page.locator('.msgs .msg:has-text("thread-turn-root")').last();
+  await turnRoot.waitFor({ timeout: 20000 });
+  const turnRootId = await turnRoot.getAttribute("data-msg");
+  await turnRoot.hover();
+  await turnRoot.locator(".ma.reply").click();
+  await page.waitForSelector(".threadpanel", { timeout: 15000 });
+  await page.fill(".threadcomposer textarea",
+    "@Scout in one short line, which villa has the best kitchen?");
+  await page.press(".threadcomposer textarea", "Enter");
+  await waitFor(page, () => [...document.querySelectorAll(".threadpanel .msg[data-msg]")]
+    .some(m => m.classList.contains("from-agent")),
+  undefined, { what: "the agent to answer inside the thread it was asked in" });
+  const answerIds = await page.evaluate(() =>
+    [...document.querySelectorAll(".threadpanel .msg[data-msg]")]
+      .filter(m => m.classList.contains("from-agent")).map(m => m.dataset.msg));
+  const leakedIntoRoom = await page.evaluate(ids =>
+    ids.filter(i => !!document.querySelector(`.msgs .msg[data-msg="${i}"]`)), answerIds);
+  ok("an agent asked inside a thread answers INSIDE that thread, and its answer is not a row in the conversation",
+    answerIds.length >= 1 && leakedIntoRoom.length === 0,
+    `${answerIds.length} agent answer(s) in the thread, ${leakedIntoRoom.length} of them also in the room`);
+  await page.screenshot({ path: `${SHOTS}/thread-agent-answer.png` });
+
+  /* AND THE ORDINARY CASE, UNCHANGED — asked in the room, answered in the room.
+     Half of "it goes in the thread" is worthless without this: a rule that sent
+     every answer into a thread would pass the check above and break the app. */
+  await page.click(".threadpanel .threadclose");
+  await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
+  const roomRepliesBefore = await page.locator(`.msgs .msg[data-msg="${turnRootId}"] .threadline`)
+    .getAttribute("data-replies");
+  const roomKnown = await page.evaluate(() =>
+    [...document.querySelectorAll(".msgs .msg[data-msg]")].map(m => m.dataset.msg));
+  await goaBox.fill("@Scout in one short line, what time should we check in?");
+  await goaBox.press("Enter");
+  await waitFor(page, known => [...document.querySelectorAll(".msgs .msg[data-msg]")]
+    .some(m => !known.includes(m.dataset.msg) && m.classList.contains("from-agent")),
+  roomKnown, { what: "the agent to answer in the conversation it was asked in" });
+  const roomRepliesAfter = await page.locator(`.msgs .msg[data-msg="${turnRootId}"] .threadline`)
+    .getAttribute("data-replies");
+  ok("the same question asked in the conversation is answered in the conversation, never swept into a thread",
+    roomRepliesAfter === roomRepliesBefore,
+    `the thread still says ${roomRepliesAfter} replies (was ${roomRepliesBefore})`);
 
   // ---------- search across everything ----------
   await page.evaluate(() => window.cloud9Menu.run("search"));
@@ -1678,6 +1829,129 @@ try {
     document.querySelectorAll('.side-item[data-channel="general"] .cnt').length === 0,
   undefined, { timeout: 20000, what: "the unread marks to clear once the room is read" });
   ok("reading the conversation clears the marks", true);
+
+  /* ================= WHEN THE ONLY NEW THING IS INSIDE A THREAD ============
+   *
+   * The hunt: with replies kept in threads, "1 new" sent him into a room whose
+   * scroll showed nothing new — the reply was hanging off a message further up.
+   * Two halves answer it, and both are checked here against a REAL reply typed
+   * by a REAL second person into the real thread box:
+   *   · the room's row says ↳1 and its words say where the new thing is;
+   *   · the message it hangs off says "New" on its replies line, until opened.
+   * The room is left un-opened while Priya writes, so the reply is genuinely
+   * unread rather than a mark this suite arranged. */
+  await page.fill(".composer textarea", "thread-unread-root: where do we stand on the villas?");
+  await page.press(".composer textarea", "Enter");
+  const unreadRoot = page.locator('.msgs .msg:has-text("thread-unread-root")').last();
+  await unreadRoot.waitFor({ timeout: 20000 });
+  const unreadRootId = await unreadRoot.getAttribute("data-msg");
+  /* Out of the room, so everything Priya writes next is really unread. */
+  await page.click(".sidebar >> text=# backlog");
+  await page.waitForTimeout(800);
+
+  await fpage.click("text=# general");
+  await fpage.waitForSelector(`.msgs .msg[data-msg="${unreadRootId}"]`, { timeout: 20000 });
+  const priyaRoot = fpage.locator(`.msgs .msg[data-msg="${unreadRootId}"]`);
+  await priyaRoot.hover();
+  await priyaRoot.locator(".ma.reply").click();
+  await fpage.waitForSelector(".threadpanel", { timeout: 15000 });
+  await fpage.fill(".threadcomposer textarea", "thread-only-unread: still waiting on the architect");
+  await fpage.press(".threadcomposer textarea", "Enter");
+  await fpage.waitForSelector('.threadpanel .msg:has-text("thread-only-unread")', { timeout: 20000 });
+  await fpage.click(".threadpanel .threadclose");
+
+  await page.waitForSelector('.side-item[data-channel="general"] .cnt.inthread', { timeout: 30000 });
+  const threadMark = await page.evaluate(() => {
+    const row = document.querySelector('.side-item[data-channel="general"]');
+    const arrow = row.querySelector(".cnt.inthread");
+    const count = row.querySelector(".cnt.hot");
+    return {
+      inThread: arrow?.dataset.inthread ?? "",
+      only: arrow?.dataset.onlyThreads ?? "",
+      arrowWords: (arrow?.textContent ?? "").trim(),
+      arrowSays: arrow?.title ?? "",
+      countSays: count?.title ?? "",
+    };
+  });
+  ok("when the only new thing is inside a thread the row says ↳1, and its words say that is where it is",
+    threadMark.inThread === "1" && threadMark.only === "yes" &&
+    threadMark.arrowWords === "↳1" &&
+    /inside a thread/i.test(threadMark.arrowSays) &&
+    /inside a thread/i.test(threadMark.countSays),
+    JSON.stringify(threadMark));
+  await page.screenshot({ path: `${SHOTS}/thread-unread-mark.png` });
+
+  /* THE OTHER HALF — WHICH thread. Read before the room's own marks are allowed
+     to clear, because the "New" on the replies line is worked out from the read
+     marker the conversation was OPENED on, not from the one it ends up with. */
+  await page.click(".sidebar >> text=# general");
+  const movedLine = page.locator(`.msgs .msg[data-msg="${unreadRootId}"] .threadline`);
+  await movedLine.waitFor({ timeout: 20000 });
+  const movedWords = (await movedLine.innerText()).replace(/\s+/g, " ").trim();
+  ok("the message the thread hangs off says New on its replies line, so he is not left opening every thread",
+    (await movedLine.getAttribute("data-thread-new")) === "yes" &&
+    ((await movedLine.getAttribute("class")) ?? "").includes("has-new") &&
+    /\bnew\b/i.test(movedWords),   // the tag is drawn "New" and set in capitals by the stylesheet
+    movedWords);
+  await page.screenshot({ path: `${SHOTS}/thread-line-new.png` });
+
+  await waitFor(page, () =>
+    document.querySelectorAll('.side-item[data-channel="general"] .cnt').length === 0,
+  undefined, { timeout: 25000, what: "the ↳ mark to go once the room is read" });
+  ok("reading the room takes the ↳ mark away with the rest — a mark that will not go is one he learns to ignore",
+    (await page.locator('.side-item[data-channel="general"] .cnt.inthread').count()) === 0);
+
+  await movedLine.click();
+  await page.waitForSelector(".threadpanel", { timeout: 15000 });
+  await waitFor(page, id => {
+    const l = document.querySelector(`.msgs .msg[data-msg="${id}"] .threadline`);
+    return !!l && !l.classList.contains("has-new");
+  }, unreadRootId, { timeout: 20000, what: "the New to stand down once the thread is opened" });
+  ok("opening that thread takes the New off its replies line — he has seen it now",
+    (await movedLine.getAttribute("data-thread-new")) === null &&
+    !/\bnew\b/i.test((await movedLine.innerText()).replace(/\s+/g, " ")),
+    (await movedLine.innerText()).replace(/\s+/g, " ").trim());
+  await page.click(".threadpanel .threadclose");
+  await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
+
+  /* ================= WHO IS TOLD ABOUT A REPLY IN A THREAD =================
+   *
+   * `threadReplyEvent` is the rule, and `window.cloud9Notify.threadRule` IS that
+   * function — the same one the screen calls, not a copy this suite could agree
+   * with while the app did something else. Asking it directly is how four
+   * people's worth of staging is avoided for a rule that is four lines; the
+   * REAL end-to-end halves are below (a real reply from Priya raises a real
+   * toast) and at the foot of this file (the same reply in a MUTED room raises
+   * nothing). Between them the rule and its wiring are both held. */
+  const threadRule = await page.evaluate(() => {
+    const base = {
+      replyId: "m_reply", channelId: "c_room", authorId: "u_priya", authorName: "Priya",
+      text: "still waiting on the architect", at: Date.now(),
+      rootId: "m_root", rootAuthorId: "u_me", threadAuthorIds: [], mentions: [],
+    };
+    const me = { id: "u_me", agentIds: ["a_scout"] };
+    const rule = window.cloud9Notify.threadRule;
+    return {
+      started: rule(base, me),
+      replied: rule({ ...base, rootAuthorId: "u_sam", threadAuthorIds: ["u_dev", "u_me"] }, me),
+      myAgentIsInIt: rule({ ...base, rootAuthorId: "a_scout" }, me),
+      bystander: rule({ ...base, rootAuthorId: "u_sam", threadAuthorIds: ["u_dev"] }, me),
+      hisOwnReply: rule({ ...base, authorId: "u_me" }, me),
+      alsoMentionsHim: rule({ ...base, mentions: ["u_me"] }, me),
+    };
+  });
+  const isReply = e => !!e && e.kind === "thread_reply" && e.subjectId === "m_reply";
+  ok("somebody in a thread is told when it moves — whether he started it, replied in it, or his agent is in it",
+    isReply(threadRule.started) && isReply(threadRule.replied) && isReply(threadRule.myAgentIsInIt) &&
+    /your thread/.test(threadRule.started.title) &&
+    /thread you are in/.test(threadRule.replied.title),
+    `${threadRule.started.title} :: ${threadRule.replied.title}`);
+  ok("a bystander is never told about a side conversation they are not in, and nor is he told about his own reply",
+    threadRule.bystander === null && threadRule.hisOwnReply === null,
+    `bystander=${JSON.stringify(threadRule.bystander)} own=${JSON.stringify(threadRule.hisOwnReply)}`);
+  ok("a reply that also mentions him by name does not fire twice — one message, one interruption",
+    threadRule.alsoMentionsHim === null,
+    JSON.stringify(threadRule.alsoMentionsHim));
 
   // ---------- NOTIFICATIONS: the four events that interrupt him ----------
   //
@@ -1776,7 +2050,41 @@ try {
     await page.waitForSelector('.sidebar .agentrow[data-agent="Ping"]', { state: "detached", timeout: 15000 });
     await backToGeneral();
 
-    // --- 5. QUIET HOURS silence a toast: a window that covers right now ---
+    /* --- 5. a REPLY IN HIS THREAD reaches him — the real wiring, not the rule.
+     *
+     * The rule itself is held above against `cloud9Notify.threadRule`. This is
+     * the other question: does a real reply, typed by a real second person into
+     * the real thread box, actually travel the whole way — hub, client, the one
+     * `decideNotification` gate — and interrupt him. Without this, the muted
+     * check at the foot of this file could pass because thread replies never
+     * notify at all, which is silence for the wrong reason. */
+    await page.fill(".composer textarea", "notify-thread-root: the shortlist as it stands");
+    await page.press(".composer textarea", "Enter");
+    const notifyRoot = page.locator('.msgs .msg:has-text("notify-thread-root")').last();
+    await notifyRoot.waitFor({ timeout: 20000 });
+    const notifyRootId = await notifyRoot.getAttribute("data-msg");
+    await fpage.click("text=# general");
+    await fpage.waitForSelector(`.msgs .msg[data-msg="${notifyRootId}"]`, { timeout: 20000 });
+    const priyaNotifyRoot = fpage.locator(`.msgs .msg[data-msg="${notifyRootId}"]`);
+    await priyaNotifyRoot.hover();
+    await priyaNotifyRoot.locator(".ma.reply").click();
+    await fpage.waitForSelector(".threadpanel", { timeout: 15000 });
+    await fpage.fill(".threadcomposer textarea", "notify-thread-reply-alpha, one more thing");
+    await fpage.press(".threadcomposer textarea", "Enter");
+    await fpage.waitForSelector('.threadpanel .msg:has-text("notify-thread-reply-alpha")',
+      { timeout: 20000 });
+    await fpage.click(".threadpanel .threadclose");
+    await page.waitForSelector('.notify-toast[data-kind="thread_reply"]', { timeout: 30000 });
+    const tTitle = (await page.locator('.notify-toast[data-kind="thread_reply"] .notify-title')
+      .first().innerText()).trim();
+    const tText = (await page.locator('.notify-toast[data-kind="thread_reply"] .notify-text')
+      .first().innerText()).trim();
+    ok("a real reply in a thread he started interrupts him, and says whose thread it was",
+      /replied in your thread/i.test(tTitle) && /notify-thread-reply-alpha/.test(tText),
+      `${tTitle} :: ${tText}`);
+    await page.screenshot({ path: `${SHOTS}/notify-thread-reply.png` });
+
+    // --- 6. QUIET HOURS silence a toast: a window that covers right now ---
     const pad = n => String(n).padStart(2, "0");
     const hhmm = total => { const m = ((total % 1440) + 1440) % 1440; return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`; };
     const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
@@ -6501,6 +6809,55 @@ try {
     mutedDelivered.length === 0 &&
     (await page.locator(`.notify-toast[data-subject="${mutedJob}"]`).count()) === 0,
     `deliveries for that job: ${mutedDelivered.length}`);
+
+  /* AND A THREAD IS PART OF THE ROOM, NOT AN EXCEPTION TO IT.
+   *
+   * `decideNotification` silences every kind except a direct mention in a muted
+   * room, thread replies included — deliberately, because if they pierced it,
+   * muting a busy room would still deliver most of its traffic and the setting
+   * would be wording rather than behaviour.
+   *
+   * Nothing is stubbed: a real reply, typed by Priya into the real thread box,
+   * in a room he really muted with his own button. The proof is `delivered()`
+   * — the app's own record of everything that got through a door — being empty
+   * for THAT reply, which cannot be confused with a toast that timed out on
+   * screen. And it is silence for the right reason: the identical journey
+   * raised a real toast in the notify section above, in an unmuted room.
+   * (He is not left blind either — the room's row still says the new thing is
+   * inside a thread; muting hides the interruption, never the news.) */
+  await page.fill(".composer textarea", "muted-thread-root: the last of the paperwork");
+  await page.press(".composer textarea", "Enter");
+  const mutedRoot = page.locator('.msgs .msg:has-text("muted-thread-root")').last();
+  await mutedRoot.waitFor({ timeout: 20000 });
+  const mutedRootId = await mutedRoot.getAttribute("data-msg");
+  await fpage.click("text=# general");
+  await fpage.waitForSelector(`.msgs .msg[data-msg="${mutedRootId}"]`, { timeout: 25000 });
+  const priyaMutedRoot = fpage.locator(`.msgs .msg[data-msg="${mutedRootId}"]`);
+  await priyaMutedRoot.hover();
+  await priyaMutedRoot.locator(".ma.reply").click();
+  await fpage.waitForSelector(".threadpanel", { timeout: 15000 });
+  await fpage.fill(".threadcomposer textarea", "muted-thread-reply-should-be-silent");
+  await fpage.press(".threadcomposer textarea", "Enter");
+  await fpage.waitForSelector('.threadpanel .msg:has-text("muted-thread-reply-should-be-silent")',
+    { timeout: 20000 });
+  const mutedReplyId = await fpage.locator(
+    '.threadpanel .msg:has-text("muted-thread-reply-should-be-silent")').last().getAttribute("data-msg");
+  await fpage.click(".threadpanel .threadclose");
+  /* Wait until HIS screen has really got the reply, so the only possible reason
+     for silence is the mute and not a message his client never received. The
+     reply is not a row in the room by design, so the honest proof it arrived is
+     the root's own reply count moving on his screen. */
+  await waitFor(page, id => {
+    const line = document.querySelector(`.msgs .msg[data-msg="${id}"] .threadline`);
+    return !!line && Number(line.dataset.replies ?? 0) >= 1;
+  }, mutedRootId, { timeout: 30000, what: "his screen to receive the reply written in the muted room" });
+  await page.waitForTimeout(2500);
+  const mutedThreadDelivered = await page.evaluate(id => window.cloud9Notify.delivered()
+    .filter(d => d.id === `thread_reply:${id}`), mutedReplyId);
+  ok("a reply in a thread in a muted room stays silent too — a thread is part of the room, not an exception to it",
+    mutedThreadDelivered.length === 0 &&
+    (await page.locator(`.notify-toast[data-subject="${mutedReplyId}"]`).count()) === 0,
+    `deliveries for that reply: ${mutedThreadDelivered.length}`);
 
   /* THE ONE EXCEPTION, and the reason the rule is worth having: somebody asking
      him a question by name is not the noise he muted the room for. */
