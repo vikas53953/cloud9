@@ -663,8 +663,8 @@ test("#5 an interrupted search backfill is finished, not left silently short", (
 
   // Exactly the state the reviewer produced: 8 of 30 indexed, no error anywhere.
   const db = new DatabaseSync(dbPath);
-  db.exec("DELETE FROM messages_fts WHERE messageId NOT IN (SELECT id FROM messages LIMIT 8)");
-  const short = (db.prepare("SELECT COUNT(*) n FROM messages_fts").get() as { n: number }).n;
+  db.exec("DELETE FROM search_docs WHERE docId NOT IN (SELECT id FROM messages LIMIT 8)");
+  const short = (db.prepare("SELECT COUNT(*) n FROM search_docs").get() as { n: number }).n;
   db.close();
   assert.equal(short, 8, "the fixture is a half-built index");
 

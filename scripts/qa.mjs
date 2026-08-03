@@ -307,7 +307,16 @@ function mintJoinTokenOn(port, token) {
 // signed-in screens, save a real restriction with managers still required, follow
 // a typed exact-version relationship, and prove markdown words alone create no
 // stored relationship.
-const EXPECTED_CHECKS = 501;
+// 501 → 508 on 2026-08-03: seven permanent checks for "search everywhere".
+// The panel opens on EVERYTHING and asks the hub nothing until there are words
+// to ask about; a real message, a real reply written in a real thread, and a
+// real file's shared name are each found and each labelled in plain words; the
+// words only an EARLIER version of that file ever had are found and open its
+// kept history at that version; a message result lands in the room it was
+// really said in; and the security one — a plain member searching everywhere is
+// not shown the file that was restricted from them, not its name, not its
+// words, and not the fact that it exists.
+const EXPECTED_CHECKS = 508;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -1447,6 +1456,10 @@ try {
   // ---------- search across everything ----------
   await page.evaluate(() => window.cloud9Menu.run("search"));
   await page.waitForSelector(".searchpanel", { timeout: 10000 });
+  /* The panel now opens on EVERYTHING (feature 3). These older checks are about
+     the message-only question — the one door that understands `in:` and
+     `from:` — so they walk to it the way a person would, by clicking it. */
+  await page.click('.scopepill[data-scope="messages"]');
   ok("search opens from the menu and looks across everything, not one room", true);
   await page.fill(".search-input", "backlog");
   await page.waitForSelector(".searchhit", { timeout: 20000 });
@@ -3449,6 +3462,10 @@ try {
   await page.waitForSelector('.msg p:has-text("quote came in under budget")', { timeout: 25000 });
   await page.evaluate(() => window.cloud9Menu.run("search"));
   await page.waitForSelector(".searchpanel", { timeout: 10000 });
+  /* The panel now opens on EVERYTHING (feature 3). These older checks are about
+     the message-only question — the one door that understands `in:` and
+     `from:` — so they walk to it the way a person would, by clicking it. */
+  await page.click('.scopepill[data-scope="messages"]');
   await page.fill(".search-input", "gazebo");
   await page.waitForSelector(".searchhit", { timeout: 25000 });
   await page.waitForTimeout(400);
@@ -3596,6 +3613,10 @@ try {
   });
   await page.evaluate(() => window.cloud9Menu.run("search"));
   await page.waitForSelector(".searchpanel", { timeout: 10000 });
+  /* The panel now opens on EVERYTHING (feature 3). These older checks are about
+     the message-only question — the one door that understands `in:` and
+     `from:` — so they walk to it the way a person would, by clicking it. */
+  await page.click('.scopepill[data-scope="messages"]');
   await page.fill(".search-input", "marker");
   await waitFor(page, () => document.querySelectorAll(".searchhit").length >= 1,
     undefined, { timeout: 25000, what: "the one marker message to be found" });
@@ -3986,6 +4007,10 @@ try {
 
   await page.evaluate(() => window.cloud9Menu.run("search"));
   await page.waitForSelector(".searchpanel", { timeout: 10000 });
+  /* The panel now opens on EVERYTHING (feature 3). These older checks are about
+     the message-only question — the one door that understands `in:` and
+     `from:` — so they walk to it the way a person would, by clicking it. */
+  await page.click('.scopepill[data-scope="messages"]');
   const searchPlaceholder = await page.getAttribute(".search-input", "placeholder");
   ok("the search box still offers from:, and the offer is true now",
     /from:Priya/.test(searchPlaceholder ?? ""), searchPlaceholder ?? "");
@@ -5130,6 +5155,10 @@ try {
   }
   await page.evaluate(() => window.cloud9Menu.run("search"));
   await page.waitForSelector(".searchpanel", { timeout: 10000 });
+  /* The panel now opens on EVERYTHING (feature 3). These older checks are about
+     the message-only question — the one door that understands `in:` and
+     `from:` — so they walk to it the way a person would, by clicking it. */
+  await page.click('.scopepill[data-scope="messages"]');
   await page.fill(".search-input", "backlog");
   await page.waitForSelector(".searchhit", { timeout: 20000 });
   for (const [width, height] of [[1280, 800], [1440, 900]]) {
@@ -5600,6 +5629,189 @@ try {
     && targetWords === LINK_TARGET,
     `${typedKind} ${typedWords} :: ${JSON.stringify(targetWords)}`);
   await page.screenshot({ path: `${SHOTS}/files-workspace.png`, fullPage: true });
+
+  /* ================= SEARCH EVERYWHERE (feature 3) ========================
+   *
+   * Seven permanent checks. Everything they look for is REAL: a message typed
+   * into the composer, a reply written in a real thread, a file published
+   * through the engine socket the way every file must be, and a second version
+   * of that file so the first one becomes genuinely old. Nothing is stubbed,
+   * because the whole claim of the feature is that words the hub really stored
+   * — including words only an EARLIER version ever had — can be found again.
+   *
+   * The last one is the security check and it is the reason this feature could
+   * be dangerous: the plain member's search must not surface the file that was
+   * restricted above, and it is checked on that member's own signed-in screen
+   * rather than by reading the hub's mind.
+   *
+   * Rare words on purpose. "wobbegong", "quokkatrail", "nudibranch" and
+   * "kelpwarden" appear nowhere else in this suite, so a hit is a hit and not
+   * some other row that happened to share a common word.
+   */
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# general");
+  await page.waitForSelector(".composer textarea", { timeout: 15000 });
+  const evBox = page.locator(".composer textarea");
+  await evBox.fill("the wobbegong sighting was near the reef");
+  await evBox.press("Enter");
+  await page.waitForSelector('.msgs .msg:has-text("wobbegong sighting")', { timeout: 25000 });
+  const evMessageId = await page.locator('.msgs .msg:has-text("wobbegong sighting")')
+    .last().getAttribute("data-msg");
+
+  const evRoot = page.locator('.msgs .msg:has-text("wobbegong sighting")').last();
+  await evRoot.hover();
+  await evRoot.locator(".ma.reply").click();
+  await page.waitForSelector(".threadpanel", { timeout: 15000 });
+  await page.fill(".threadcomposer textarea", "the quokkatrail guide confirmed it");
+  await page.press(".threadcomposer textarea", "Enter");
+  await page.waitForSelector('.threadpanel .msg:has-text("quokkatrail guide")', { timeout: 25000 });
+  const evReplyId = await page.locator('.threadpanel .msg:has-text("quokkatrail guide")')
+    .last().getAttribute("data-msg");
+  await page.click(".threadpanel .threadclose");
+  await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
+
+  /* Two versions of one file. The word in the first is gone from the second,
+     so finding it can only mean the hub kept and indexed the OLD bytes. */
+  const EV_LOG_V1 = "# Reef log\nThe kelpwarden buoy drifted overnight.\n";
+  const EV_LOG_V2 = "# Reef log\nThe buoy was recovered at dawn.\n";
+  const evLog1 = await publishAsEngine({
+    channelId: generalId, agentId: artAgent.id, name: "nudibranch-log.md", data: EV_LOG_V1,
+  });
+  await publishAsEngine({
+    channelId: generalId, agentId: artAgent.id, name: "nudibranch-log.md", data: EV_LOG_V2,
+  });
+  const evLogId = evLog1.id;
+
+  const openEverywhere = async (p, words) => {
+    await p.evaluate(() => window.cloud9Menu.run("search"));
+    await p.waitForSelector('.searchpanel .searchscopes[data-search-scope="everywhere"]',
+      { timeout: 10000 });
+    await p.fill(".search-input", words);
+  };
+
+  // --- 1 · the honest empty state, and nothing asked for ---
+  await page.evaluate(() => window.cloud9Menu.run("search"));
+  await page.waitForSelector(".searchpanel", { timeout: 10000 });
+  const evAsksBefore = await page.evaluate(
+    () => window.cloud9Wire.seen().searchEverywhereResults ?? 0);
+  await page.fill(".search-input", "w");     // one letter is not a question
+  await page.waitForTimeout(700);            // longer than the debounce
+  const evEmptyWords = (await page.locator("[data-every-empty]").innerText()).replace(/\s+/g, " ");
+  ok("search opens on everything, explains what it looks through, and asks the hub nothing yet",
+    (await page.getAttribute(".searchscopes", "data-search-scope")) === "everywhere"
+    && (await page.getAttribute(".searchbody", "data-every-body")) === "waiting"
+    && /reply in a thread/i.test(evEmptyWords) && /older versions/i.test(evEmptyWords)
+    && (await page.evaluate(() => window.cloud9Wire.everywhere())) === null
+    && (await page.evaluate(() => window.cloud9Wire.seen().searchEverywhereResults ?? 0))
+       === evAsksBefore,
+    `${evEmptyWords.slice(0, 90)} :: asked ${await page.evaluate(() => window.cloud9Wire.seen().searchEverywhereResults ?? 0)} v ${evAsksBefore}`);
+
+  /* The kind headings are compared in lower case on purpose: `.eyebrow` is
+     drawn UPPERCASE by the stylesheet, so the words are what is being checked
+     here and the styling is not. Checking "MESSAGE" would make a check about
+     the words fail the day the heading stops shouting. */
+  // --- 2 · a message ---
+  await page.fill(".search-input", "wobbegong");
+  await page.waitForSelector('.everyhit[data-every-kind="message"]', { timeout: 25000 });
+  const evMsgHit = page.locator(`.everyhit[data-every-kind="message"][data-every-hit="${evMessageId}"]`);
+  const evMsgWords = (await evMsgHit.innerText()).replace(/\s+/g, " ").trim();
+  ok("search everywhere finds a message, labelled in plain words with its room, who and when",
+    (await evMsgHit.count()) === 1
+    && (await page.locator('.everygroup[data-every-group="message"] .eyebrow').innerText()).trim().toLowerCase() === "message"
+    && (await evMsgHit.locator(".hitwho b").count()) === 1
+    && /general/.test(evMsgWords)
+    && (await evMsgHit.locator(".snippet mark").count()) >= 1,
+    evMsgWords.slice(0, 100));
+
+  // --- 3 · a reply, said to be a reply ---
+  await page.fill(".search-input", "quokkatrail");
+  await page.waitForSelector('.everyhit[data-every-kind="reply"]', { timeout: 25000 });
+  const evReplyHit = page.locator(`.everyhit[data-every-kind="reply"][data-every-hit="${evReplyId}"]`);
+  ok("a reply written in a thread is found and called a reply in a thread, not a message",
+    (await evReplyHit.count()) === 1
+    && (await page.locator('.everygroup[data-every-group="reply"] .eyebrow').innerText()).trim().toLowerCase()
+       === "reply in a thread"
+    && (await page.locator('.everyhit[data-every-kind="message"]').count()) === 0,
+    (await evReplyHit.innerText()).replace(/\s+/g, " ").slice(0, 100));
+
+  // --- 4 · a file, by its name ---
+  await page.fill(".search-input", "nudibranch");
+  await page.waitForSelector(`.everyhit[data-every-kind="file"][data-every-hit="${evLogId}"]`,
+    { timeout: 25000 });
+  ok("the shared name of a file an agent made is findable from the same one box",
+    (await page.locator('.everygroup[data-every-group="file"] .eyebrow').innerText()).trim().toLowerCase() === "file"
+    && (await page.locator(`.everyhit[data-every-kind="file"][data-every-hit="${evLogId}"]`)
+      .innerText()).includes("nudibranch-log.md"),
+    (await page.locator(`.everyhit[data-every-kind="file"][data-every-hit="${evLogId}"]`)
+      .innerText()).replace(/\s+/g, " ").slice(0, 100));
+
+  // --- 5 · words that ONLY an old version ever had, and the way to them ---
+  await page.fill(".search-input", "kelpwarden");
+  await page.waitForSelector('.everyhit[data-every-kind="fileVersion"]', { timeout: 25000 });
+  const evOldHit = page.locator(
+    `.everyhit[data-every-kind="fileVersion"][data-every-hit="${evLogId}"][data-every-version="1"]`);
+  const evOldWords = (await evOldHit.innerText()).replace(/\s+/g, " ").trim();
+  /* Read the heading BEFORE following the result: the click is what closes the
+     panel, so anything asked of it afterwards is asking a screen that has
+     rightly gone. */
+  const evOldHeading = (await page.locator('.everygroup[data-every-group="fileVersion"] .eyebrow')
+    .innerText()).trim().toLowerCase();
+  await evOldHit.click();
+  await page.waitForSelector(
+    `.files-detail[data-file-detail="${evLogId}"] .artcard[data-artifact="${evLogId}"][data-version="1"]`,
+    { timeout: 25000 });
+  const evOldVersionRow = page.locator(
+    `.files-detail .artcard[data-artifact="${evLogId}"] .artversion[data-version="2"]`);
+  ok("words only an OLD version of a file ever had are found, and open that file's kept history there",
+    evOldHeading === "old version of a file"
+    && /v1/.test(evOldWords)
+    && (await page.locator(".searchpanel").count()) === 0
+    && (await page.locator(`.files-detail[data-file-detail="${evLogId}"]`).count()) === 1
+    && (await evOldVersionRow.count()) === 1,
+    evOldWords.slice(0, 100));
+  await page.screenshot({ path: `${SHOTS}/search-everywhere.png`, fullPage: true });
+
+  // --- 6 · clicking a message result lands in the room it was said in ---
+  await openEverywhere(page, "wobbegong");
+  await page.waitForSelector(
+    `.everyhit[data-every-kind="message"][data-every-hit="${evMessageId}"]`, { timeout: 25000 });
+  await page.click(`.everyhit[data-every-kind="message"][data-every-hit="${evMessageId}"]`);
+  await page.waitForSelector(`.msgs .msg[data-msg="${evMessageId}"].litup`, { timeout: 25000 });
+  ok("clicking a message result goes to that message, in the room it was really said in",
+    (await page.locator(".searchpanel").count()) === 0
+    && (await page.locator(`.msgs .msg[data-msg="${evMessageId}"]`).count()) === 1
+    && /general/.test(await page.locator(".thread .topbar").innerText()),
+    (await page.locator(".thread .topbar").innerText()).replace(/\s+/g, " ").slice(0, 60));
+
+  // --- 7 · THE SECURITY ONE: a plain member cannot find a restricted file ---
+  await openEverywhere(page, "villas.md");
+  await page.waitForSelector(`.everyhit[data-every-kind="file"][data-every-hit="${artId}"]`,
+    { timeout: 25000 });
+  await openEverywhere(fpage, "villas.md");
+  await waitFor(fpage, () => {
+    const body = document.querySelector(".searchbody");
+    return body && body.getAttribute("data-every-body") !== "running"
+      && body.getAttribute("data-every-body") !== "waiting";
+  }, undefined, { timeout: 25000, what: "the member's search everywhere to be answered" });
+  const memberHits = await fpage.$$eval(".everyhit", rows => rows.map(r => ({
+    id: `${r.getAttribute("data-every-kind")}:${r.getAttribute("data-every-hit")}`,
+    words: (r.textContent ?? "").replace(/\s+/g, " ").trim(),
+  })));
+  /* The words he typed are echoed back in the honest "nothing you can see says
+     …" line, and that is HIS sentence, not the hub's — so the leak is looked
+     for in the RESULT ROWS, which are the only thing the hub decided. */
+  ok("a plain member searching everywhere is not shown a restricted file, its name, or its words",
+    (await page.locator(`.everyhit[data-every-kind="file"][data-every-hit="${artId}"]`).count()) === 1
+    && !memberHits.some(h => h.id.endsWith(`:${artId}`))
+    && !memberHits.some(h => /villas\.md/i.test(h.words))
+    && (await fpage.locator(`.everyhit[data-every-kind="fileVersion"][data-every-hit="${artId}"]`).count()) === 0
+    && (await fpage.getAttribute(".searchbody", "data-every-body")) === "nothing",
+    `owner sees it; member rows: ${memberHits.map(h => h.id).join(", ") || "none"}`);
+  await fpage.evaluate(() => window.cloud9Escape && null);
+  await fpage.keyboard.press("Escape");
+  await fpage.waitForSelector(".searchpanel", { state: "detached", timeout: 10000 });
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".searchpanel", { state: "detached", timeout: 10000 });
 
   /* ================= WHAT HE TYPED IS NEVER THROWN AWAY IN SILENCE =========
    *

@@ -33,7 +33,7 @@ import os from "node:os";
 // rule (docs/plans/agent-memory-handoff.md §9.2). The relay already depends on
 // `@cloud9/engine`, so there is one owner of "is this a real handoff".
 import { validateHandoff } from "@cloud9/engine";
-import { RunRow, Store } from "./store.js";
+import { RunRow, Store, searchTerms } from "./store.js";
 
 /**
  * The hub runs on somebody's own computer, so its own home folder and account
@@ -45,7 +45,7 @@ try {
   setMachineNames([os.homedir(), os.userInfo().username, os.hostname()]);
 } catch { /* best effort — a locked-down machine still gets the path rules */ }
 import { secureId } from "./secureid.js";
-import { refusalText } from "./refusal.js";
+import { Refusal, refusalText } from "./refusal.js";
 import {
   mintJoinToken, checkJoinToken, redeemJoinToken, resolveJoinBind,
   revokeJoinToken as retireJoinToken, JOIN_TOKEN_TTL_MS,
@@ -2305,6 +2305,30 @@ export class Relay {
           });
         send(conn.ws, {
           type: "searchResults", query: frame.query ?? "", results, hasMore: page.hasMore,
+        });
+        break;
+      }
+      case "searchEverywhere": {
+        // THE SCOPE IS COMPUTED HERE, from stored membership, exactly as
+        // `search` and `welcome` compute it. Nothing in this frame can widen
+        // it: `kind` narrows which sort of row comes back and that is all it
+        // does. The narrower file-permission rule is applied inside the store,
+        // in SQL, before any limit — see `Store.searchEverywhere`.
+        const query = typeof frame.query === "string" ? frame.query : "";
+        if (searchTerms(query).length === 0) {
+          // An empty or punctuation-only query is refused in words, not
+          // answered with every message in the house and not met with silence.
+          throw new Refusal("type at least one word to search for");
+        }
+        const page = this.store.searchEverywhere(
+          conn.userId, this.visibleChannels(conn.userId), query,
+          { kind: frame.kind, limit: frame.limit },
+        );
+        send(conn.ws, {
+          type: "searchEverywhereResults", query,
+          ...(frame.kind !== undefined ? { kind: frame.kind } : {}),
+          results: page.items, hasMore: page.hasMore,
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
         });
         break;
       }

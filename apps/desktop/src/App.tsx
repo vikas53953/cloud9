@@ -12,6 +12,7 @@ import {
   GitHubAccountInfo, HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectItemKind, ProjectItemState,
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
+  EverywhereHit, SearchKind,
   SearchHit, ServerFrame, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
   validateMessageText, validateName,
   /* THE SKILL LIBRARY — the same two lists the relay and the engine can read.
@@ -1676,6 +1677,17 @@ function Workspace(): React.JSX.Element {
   const [searchOpen, setSearchOpen] = useState(false);
   /** a message the app is on its way to, from a search result */
   const [jumpTo, setJumpTo] = useState<{ id: ID; at: number } | null>(null);
+  /** a thread a search result wants unrolled once the room is on screen */
+  const [openThreadFor, setOpenThreadFor] = useState<{ id: ID; at: number } | null>(null);
+  /** a file — and, for an old-version hit, the exact version — Files must open */
+  const [fileOpenAt, setFileOpenAt] =
+    useState<{ artifactId: ID; version?: number; at: number } | null>(null);
+  /* ...and the one owner that puts it back down again. A request like this is
+     an ERRAND, not a setting: `jumpTo` and `openThreadFor` are both handed back
+     the moment the screen has done as it was asked, and this is the same. Left
+     standing, it made every later visit to Files re-open the last search hit —
+     the newest-first list the screen is for became unreachable. */
+  const clearFileOpen = useCallback(() => setFileOpenAt(null), []);
 
   const active = world.channels.find(c => c.id === activeId) ?? world.channels[0];
   const owner = isOwner(world.me);
@@ -1683,6 +1695,55 @@ function Workspace(): React.JSX.Element {
     client.send({ type: "createInvite" });
     setModal("invite");
   }, []);
+
+  /* ---- ONE DOOR OUT OF SEARCH ----
+   *
+   * Closing the panel and following a result are the same act as far as the two
+   * searches behind it are concerned: both are called off, so neither can be
+   * revived by an answer still on its way (see `clearSearch`/`clearEverywhere`).
+   * Every exit below goes through this, which is why there is nowhere left for
+   * one of the two to be forgotten. */
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    client.clearSearch();
+    client.clearEverywhere();
+  }, []);
+
+  /**
+   * FOLLOW ONE "SEARCH EVERYWHERE" RESULT TO THE THING ITSELF.
+   *
+   * Each kind has one owner already and this calls it — the room jump the room
+   * search uses (`jumpTo`), the thread the reply lives in, and the Files
+   * workspace with the exact artifact (and, for an old-version hit, the exact
+   * version) chosen. Nothing here draws anything; it only points the screens
+   * that already know how.
+   */
+  const openEverywhereHit = useCallback((hit: EverywhereHit) => {
+    const now = Date.now();
+    if ((hit.kind === "message" || hit.kind === "reply") && hit.messageId) {
+      setScreen("chat");
+      setActiveId(hit.channelId);
+      setJumpTo({ id: hit.messageId, at: now });
+      /* A reply is only readable in its thread, so the thread its parent
+         started is opened too. The parent is the hub's answer, never guessed
+         from the reply — see `EverywhereHit.threadParentId`. */
+      if (hit.kind === "reply" && hit.threadParentId) {
+        setOpenThreadFor({ id: hit.threadParentId, at: now });
+      }
+      closeSearch();
+      return;
+    }
+    if (hit.artifactId) {
+      setFileOpenAt({
+        artifactId: hit.artifactId,
+        ...(hit.kind === "fileVersion" && hit.versionNumber !== undefined
+          ? { version: hit.versionNumber } : {}),
+        at: now,
+      });
+      setScreen("files");
+      closeSearch();
+    }
+  }, [closeSearch]);
   // One owner for "how many are waiting" — see `useMyApprovals`. A request past
   // its deadline is not waiting on him, whatever the database still says.
   const pendingApprovals = useMyApprovals(world).waiting.length;
@@ -1851,6 +1912,11 @@ function Workspace(): React.JSX.Element {
       search: (q: string) => client.search(q),
       clearSearch: () => client.clearSearch(),
       searching: () => client.world.search ?? null,
+      /* The same seam for "search everywhere": the overlay's own methods,
+         unwrapped, so a check can prove that a search called off cannot be
+         brought back by its own late answer. */
+      everywhere: () => client.world.everywhere ?? null,
+      clearEverywhere: () => client.clearEverywhere(),
       /* The conversations this screen knows, by name. The suite needs an id to
          seed a conversation long enough to prove the scroll rules against; the
          alternative was typing a hundred and sixty messages one key at a time. */
@@ -2147,6 +2213,7 @@ function Workspace(): React.JSX.Element {
               findOpen={findOpen} onCloseFind={() => setFindOpen(false)}
               onOpenTasks={() => goScreen("tasks")}
               jumpTo={jumpTo} onJumped={() => setJumpTo(null)}
+              openThreadFor={openThreadFor} onThreadOpened={() => setOpenThreadFor(null)}
             />
           )}
           {screen === "crew" && (
@@ -2174,7 +2241,10 @@ function Workspace(): React.JSX.Element {
             />
           )}
           {screen === "tasks" && <TasksScreen onOpenChannel={id => goChannel(id)} />}
-          {screen === "files" && <FilesScreen onOpenChannel={id => goChannel(id)} />}
+          {screen === "files" && (
+            <FilesScreen onOpenChannel={id => goChannel(id)} openAt={fileOpenAt}
+              onOpened={clearFileOpen} />
+          )}
           {screen === "projects" && (
             <ProjectsScreen onOpenChannel={id => goChannel(id)} />
           )}
@@ -2185,14 +2255,14 @@ function Workspace(): React.JSX.Element {
 
       {searchOpen && (
         <SearchOverlay
-          onClose={() => { setSearchOpen(false); client.clearSearch(); }}
+          onClose={closeSearch}
           onGo={(channelId, messageId) => {
             setScreen("chat");
             setActiveId(channelId);
             setJumpTo({ id: messageId, at: Date.now() });
-            setSearchOpen(false);
-            client.clearSearch();
+            closeSearch();
           }}
+          onOpenHit={openEverywhereHit}
         />
       )}
       {/* The one question about unsaved words, for every screen in the app. */}
@@ -2417,7 +2487,7 @@ function ChatScreen({
   active, setActiveId, channels, humanDms, agents, people, unreadFor, peerOf, owner,
   onNewChannel, onBrowseRooms, onNewAgent, onBrowseMarket, onInvite, onEditAgent, onOpenDm,
   lastRead, findOpen, onCloseFind,
-  onOpenTasks, jumpTo, onJumped,
+  onOpenTasks, jumpTo, onJumped, openThreadFor, onThreadOpened,
 }: {
   active?: Channel; setActiveId: (id: ID) => void;
   channels: Channel[]; humanDms: Channel[]; agents: AgentDefPlus[]; people: User[];
@@ -2427,6 +2497,13 @@ function ChatScreen({
   onEditAgent: (a: AgentDef) => void; onOpenDm: (id: ID, name: string) => void;
   lastRead: number; findOpen: boolean; onCloseFind: () => void; onOpenTasks: () => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
+  /**
+   * The message that STARTED a thread another screen wants opened — a reply
+   * found by "search everywhere" is only findable in its own thread, so landing
+   * in the room with the thread shut would hide the very row that was found.
+   * `at` is the moment it was asked for, so the same thread twice still opens.
+   */
+  openThreadFor: { id: ID; at: number } | null; onThreadOpened: () => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const isDm = active?.kind === "dm";
@@ -2451,6 +2528,19 @@ function ChatScreen({
     setDetailsOpen(false);
     client.send({ type: "thread", messageId: rootId });
   }, []);
+
+  /* A reply found by search. Declared AFTER the "a thread belongs to the
+     conversation it was opened from" effect above, so when both fire in the
+     same render — search moved the room AND asked for a thread — the reset
+     runs first and this one wins, which is the order a person expects.
+     Threads turned off ("keep it in the conversation") means there is no
+     thread to open: the jump to the reply itself is the whole answer, and this
+     says so by doing nothing rather than by opening a panel the setting forbids. */
+  useEffect(() => {
+    if (!openThreadFor) return;
+    if (threading) openThread(openThreadFor.id);
+    onThreadOpened();
+  }, [openThreadFor?.at, openThreadFor?.id, threading, openThread, onThreadOpened]);
 
   const toggleDetails = useCallback(() => {
     setDetailsOpen(o => !o);
@@ -3799,15 +3889,24 @@ const PEEK_CHARS = 4000;
  * ABSENT MEANS ABSENT throughout: no note draws no note, version 1 draws no
  * "v1", no run draws no button.
  */
-function ArtifactCard({ artifactId, version, place = "chat" }: {
+function ArtifactCard({ artifactId, version, place = "chat", historyOpen = false }: {
   artifactId: ID;
   /** the exact version a reference asked for; absent means the newest */
   version?: number;
   /** chat card, room list card, or the Files workspace detail — one behavior */
   place?: "chat" | "room" | "workspace";
+  /**
+   * Start with the retained history already unrolled.
+   *
+   * Only "search everywhere" asks for this, and only when the words it found
+   * were inside an OLD version: landing on the card with the list rolled up
+   * would put the reader one unexplained click away from the very row they
+   * searched for. Every other caller leaves it shut, which is the default.
+   */
+  historyOpen?: boolean;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const [showHistory, setShowHistory] = useState(false);
+  const [showHistory, setShowHistory] = useState(historyOpen);
   const [showRun, setShowRun] = useState(false);
   /** which version's bytes are being looked at — a number, never a boolean */
   const [peeking, setPeeking] = useState<number | null>(null);
@@ -7541,14 +7640,60 @@ function splitOnMarks(text: string): string[] {
   return parts;
 }
 
-function SearchOverlay({ onClose, onGo }: {
+/**
+ * THE FIVE DOORS OF ONE SEARCH — and there is only one search panel.
+ *
+ * `everywhere` is the whole net and it is what opens by default, because the
+ * question a person actually has is "where did I see that", not "was it a
+ * message or a file". The three narrow doors are the hub's own `kind`, in the
+ * hub's own words, so nobody keeps two vocabularies.
+ *
+ * `messages` is the older message-only question, kept because it is the ONLY
+ * one that understands `in:` and `from:` — a room and a person are filters the
+ * wide search deliberately does not take. It is a different question with a
+ * different answer shape, so it has its own renderer below and the two never
+ * run at once.
+ */
+type SearchScope = "everywhere" | "messages" | "reply" | "file" | "fileVersion";
+
+const SEARCH_SCOPES: { id: SearchScope; label: string }[] = [
+  { id: "everywhere", label: "Everything" },
+  { id: "messages", label: "Messages" },
+  { id: "reply", label: "Replies in threads" },
+  { id: "file", label: "Files" },
+  { id: "fileVersion", label: "Old versions" },
+];
+
+/** The hub's four kinds, said the way a person would say them. */
+const KIND_WORDS: Record<SearchKind, string> = {
+  message: "Message",
+  reply: "Reply in a thread",
+  file: "File",
+  fileVersion: "Old version of a file",
+};
+
+/** The `kind` a scope narrows to — `everywhere` narrows to nothing, on purpose. */
+function kindOfScope(scope: SearchScope): SearchKind | undefined {
+  return scope === "everywhere" || scope === "messages" ? undefined : scope;
+}
+
+/** One row's identity — a version is a different row from the file it belongs to. */
+function everywhereKey(hit: EverywhereHit): string {
+  return `${hit.kind}:${hit.messageId ?? hit.artifactId ?? "?"}:${hit.versionId ?? ""}`;
+}
+
+function SearchOverlay({ onClose, onGo, onOpenHit }: {
   onClose: () => void;
   onGo: (channelId: ID, messageId: ID) => void;
+  /** follow one wide-search result to the thing itself — see `openEverywhereHit` */
+  onOpenHit: (hit: EverywhereHit) => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [q, setQ] = useState("");
+  const [scope, setScope] = useState<SearchScope>("everywhere");
   const boxRef = useRef<HTMLInputElement>(null);
   const state = world.search;
+  const wide = world.everywhere;
 
   useEffect(() => { boxRef.current?.focus(); }, []);
   /* Was an `onKeyDown` on the panel, which meant Escape worked only while the
@@ -7580,14 +7725,61 @@ function SearchOverlay({ onClose, onGo }: {
     return { words: words.trim(), channelId, authorId };
   }, [q, world.channels, world.users, world.agents]);
 
+  /* THE WIDE SEARCH TAKES THE WORDS AS TYPED. `in:` and `from:` are the
+     message-only question's own grammar, and pretending to honour them here
+     would mean searching every room for the literal word "in:general". */
+  const wideWords = q.trim();
+
+  /* ONE QUESTION AT A TIME. Changing door calls BOTH searches off rather than
+     leaving an answer sitting under the new heading, which is exactly how a
+     stale list gets read as an answer to a question nobody asked.
+     Calling off only the OTHER one was not enough: every scope but "messages"
+     is the same wide search asked a narrower way, so stepping from "everything"
+     to "files" left the whole wide answer — messages, replies and all — sitting
+     under the Files heading until the narrower answer landed. The pill said
+     files; the list said everything. Both go, every time. */
+  useEffect(() => {
+    client.clearSearch();
+    client.clearEverywhere();
+  }, [scope]);
+
   // debounced, so typing a word is one search and not six
   useEffect(() => {
+    if (scope !== "messages") return;
     if (parsed.words.length < 2) { client.clearSearch(); return; }
     const t = setTimeout(() => {
       client.search(parsed.words, { channelId: parsed.channelId, authorId: parsed.authorId });
     }, 200);
     return () => clearTimeout(t);
-  }, [parsed.words, parsed.channelId, parsed.authorId]);
+  }, [scope, parsed.words, parsed.channelId, parsed.authorId]);
+
+  /* The same debounce for the wide search — and the same rule about an empty
+     box: under two letters NOTHING is asked. A request per keystroke would put
+     the hub's "type at least one word" on screen while he was still typing it. */
+  useEffect(() => {
+    if (scope === "messages") return;
+    if (wideWords.length < 2) { client.clearEverywhere(); return; }
+    const kind = kindOfScope(scope);
+    const t = setTimeout(() => client.searchEverywhere(wideWords, kind), 200);
+    return () => clearTimeout(t);
+  }, [scope, wideWords]);
+
+  /** Wide results in the hub's order, gathered under the kind each one is. */
+  const wideGroups = useMemo(() => {
+    const out = new Map<SearchKind, EverywhereHit[]>();
+    for (const hit of wide?.results ?? []) {
+      const held = out.get(hit.kind);
+      if (held) held.push(hit);
+      else out.set(hit.kind, [hit]);
+    }
+    return [...out.entries()];
+  }, [wide?.results]);
+
+  const wideTotal = wide?.results.length ?? 0;
+  /* "Nothing found" is only sayable about an answer that ARRIVED, and only
+     about the words that answer belongs to. Anything else is a guess printed
+     while the hub is still thinking. */
+  const wideAnswered = !!wide && !wide.running && wide.answered === wideWords;
 
   /** Results grouped by the conversation they were said in, newest group first. */
   const groups = useMemo(() => {
@@ -7610,15 +7802,114 @@ function SearchOverlay({ onClose, onGo }: {
           Search everything you can see
           <span className="eyebrow">Esc to close</span>
         </div>
+        {/* THE FIVE DOORS, on the one panel. Which one is open is the only
+            piece of state that decides what is asked and what is drawn, so the
+            heading, the box and the list can never disagree about it. */}
+        <div className="searchscopes" role="group" aria-label="What to search"
+          data-search-scope={scope}>
+          {SEARCH_SCOPES.map(s => (
+            <button key={s.id} className="chip scopepill" data-scope={s.id}
+              aria-pressed={scope === s.id} onClick={() => setScope(s.id)}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+
         <div className="searchbar">
           <span className="find-mark" aria-hidden="true">⌕</span>
           <input ref={boxRef} className="search-input" type="text" value={q}
             aria-label="Search every conversation"
-            placeholder="villas in Goa · in:general · from:Priya"
+            placeholder={scope === "messages"
+              ? "villas in Goa · in:general · from:Priya"
+              : "villas in Goa"}
             onChange={e => setQ(e.target.value)} />
-          {state?.running && <span className="eyebrow">Looking…</span>}
+          {(scope === "messages" ? state?.running : wide?.running) &&
+            <span className="eyebrow" data-search-running>Looking…</span>}
         </div>
 
+        {scope !== "messages" ? (
+          <div className="searchbody" data-every-body={
+            wideWords.length < 2 ? "waiting"
+              : wide?.problem ? "refused"
+              : wide?.running ? "running"
+              : wideAnswered && wideTotal === 0 ? "nothing"
+              : wideAnswered ? "some" : "running"}>
+            {wideWords.length < 2 && (
+              <div className="searchhint" data-every-empty>
+                <p>
+                  Type at least two letters. Cloud9 looks through every message,
+                  every reply in a thread, every shared file name and the words
+                  inside every version of those files you are allowed to read —
+                  older versions included.
+                </p>
+                <p className="sec-note">
+                  Nothing is asked for until you type, so an empty box searches nothing.
+                  Rooms you are not in and files you have not been given are never looked at.
+                  Use <b>Messages</b> above when you want <code>in:general</code> or{" "}
+                  <code>from:Priya</code>.
+                </p>
+              </div>
+            )}
+            {/* The hub's own sentence, word for word. Re-spelling a refusal is
+                how two different reasons end up reading the same. */}
+            {wideWords.length >= 2 && wide?.problem && (
+              <div className="searchhint" data-every-refused>
+                <p>{wide.problem}</p>
+              </div>
+            )}
+            {wideWords.length >= 2 && !wide?.problem && wide?.running && wideTotal === 0 && (
+              <div className="searchhint" data-every-running>
+                <p>Looking everywhere you can see…</p>
+              </div>
+            )}
+            {wideWords.length >= 2 && !wide?.problem && wideAnswered && wideTotal === 0 && (
+              <div className="searchhint" data-every-nothing>
+                <p>Nothing you can see says “{wide.answered}”.</p>
+                <p className="sec-note">
+                  Try one word on its own, or a different door above.
+                </p>
+              </div>
+            )}
+            {wideGroups.map(([kind, hits]) => (
+              <section className="searchgroup everygroup" key={kind} data-every-group={kind}>
+                <div className="searchgrouphead">
+                  <span className="eyebrow">{KIND_WORDS[kind]}</span>
+                  <span className="chip">{hits.length}</span>
+                </div>
+                {hits.map(hit => (
+                  <button className="everyhit" key={everywhereKey(hit)}
+                    data-every-kind={hit.kind}
+                    data-every-hit={hit.messageId ?? hit.artifactId ?? ""}
+                    data-every-room={hit.channelId}
+                    {...(hit.versionNumber !== undefined
+                      ? { "data-every-version": String(hit.versionNumber) } : {})}
+                    onClick={() => onOpenHit(hit)}>
+                    <span className="hitbody">
+                      <span className="hitwho">
+                        <b>{hit.whoName}</b>
+                        {hit.name && <span className="everyname">{hit.name}</span>}
+                        {hit.kind === "fileVersion" && hit.versionNumber !== undefined &&
+                          <span className="chip everyv">v{hit.versionNumber}</span>}
+                        <span className="t">
+                          {hit.channelName} · {dayLabel(hit.when)} · {clock(hit.when)}
+                        </span>
+                      </span>
+                      <Snippet text={hit.snippet} />
+                    </span>
+                  </button>
+                ))}
+              </section>
+            ))}
+            {/* HONEST, AND NOT A PAGE BUTTON. There is no second page to ask
+                for, so the line says what to do instead of offering a control
+                that does not exist. */}
+            {wide?.hasMore && wideTotal > 0 && (
+              <p className="sec-note searchmore" data-every-more>
+                Showing the first {wideTotal}. More exist — narrow your words.
+              </p>
+            )}
+          </div>
+        ) : (
         <div className="searchbody">
           {parsed.words.length < 2 && (
             <div className="searchhint">
@@ -7675,6 +7966,7 @@ function SearchOverlay({ onClose, onGo }: {
             </p>
           )}
         </div>
+        )}
       </div>
     </div>
   );
@@ -9040,10 +9332,39 @@ function FileAccessEditor({ artifact, channel, world, onDirtyChange }: {
   );
 }
 
-function FilesScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): React.JSX.Element {
+function FilesScreen({ onOpenChannel, openAt, onOpened }: {
+  onOpenChannel: (id: ID) => void;
+  /**
+   * A file (and, for an old-version hit, the exact version) another screen has
+   * sent this one to. `at` is the moment the request was made, so asking for
+   * the SAME file twice still moves the screen — a bare id would compare equal
+   * and the second click would do nothing.
+   *
+   * Selecting is still `selectFile`, the one owner: it goes through the unsaved
+   * -work guard, so arriving from search cannot throw away a half-edited access
+   * list the way a direct `setSelected` would.
+   */
+  openAt?: { artifactId: ID; version?: number; at: number } | null;
+  /**
+   * "Done — you can put that errand down." Called once the file asked for has
+   * actually been chosen, which is why it is handed to `selectFile` rather than
+   * fired beside it: the choice can wait behind the unsaved-work question, and
+   * an errand reported finished before it was done would clear itself while a
+   * dialog was still up, leaving the screen on the newest file instead.
+   */
+  onOpened?: () => void;
+}): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const page = client.artifactWorkspace();
   const [selected, setSelected] = useState<FileSelection | null>(null);
+  /**
+   * What a search actually SENT this screen to, remembered here because the
+   * request itself is handed back the moment it is carried out (`onOpened`).
+   * The card below is built from this and not from the prop: the prop is an
+   * errand, gone as soon as it is done, and reading a finished errand at render
+   * time is what would collapse the version history a search had just unrolled.
+   */
+  const [arrivedAt, setArrivedAt] = useState<FileSelection | null>(null);
   const [accessDraft, setAccessDraft] = useState<{ what: string; dirty: boolean } | null>(null);
   useUnsavedWork(accessDraft?.what ?? "File access", !!accessDraft?.dirty);
   const entry = selected ? page.entries.find(a => a.artifactId === selected.artifactId) : undefined;
@@ -9055,18 +9376,37 @@ function FilesScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): Re
   const noteAccessDraft = useCallback((draft: { what: string; dirty: boolean }) => {
     setAccessDraft(draft);
   }, []);
-  const selectFile = useCallback((next: FileSelection) => {
+  const selectFile = useCallback((next: FileSelection, andThen?: () => void) => {
     attemptLeave(() => {
       setAccessDraft(null);
       setSelected(next);
+      andThen?.();
     });
   }, []);
 
   useEffect(() => { client.askArtifactWorkspace(true); }, []);
+  /* A file search sent us here. It runs BEFORE the "choose the first one"
+     effect below is able to matter, because it sets `selected` — and that
+     effect deliberately does nothing once anything is selected. */
   useEffect(() => {
-    if (selected || page.entries.length === 0) return;
+    if (!openAt) return;
+    const asked: FileSelection = {
+      artifactId: openAt.artifactId,
+      ...(openAt.version !== undefined ? { version: openAt.version } : {}),
+    };
+    selectFile(asked, () => { setArrivedAt(asked); onOpened?.(); });
+  }, [openAt?.at, openAt?.artifactId, openAt?.version, selectFile, onOpened]);
+  /* "Nothing chosen yet? Show the newest." — and `openAt` is what tells it that
+     something HAS been chosen even though `selected` in this closure is still
+     the value from the render that mounted the screen. Without that word here,
+     arriving from a search for words inside version 1 landed on the newest
+     version instead: this effect ran a beat later with a stale `null` and
+     re-chose the top row, quietly dropping the exact version that was asked
+     for. It is the same fact, read at two different moments. */
+  useEffect(() => {
+    if (selected || openAt || page.entries.length === 0) return;
     selectFile({ artifactId: page.entries[0].artifactId });
-  }, [selected, page.entries, selectFile]);
+  }, [selected, openAt, page.entries, selectFile]);
   useEffect(() => {
     if (selected && !unavailable && !detailProblem && relations === undefined) {
       client.askArtifactDetail(selected.artifactId);
@@ -9218,7 +9558,16 @@ function FilesScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): Re
               </div>
 
               {(!detailProblem || artifact) && (
-                <ArtifactCard artifactId={selected.artifactId} version={selected.version} place="workspace" />
+                /* Keyed by WHICH EXACT THING is being shown, so choosing a
+                   different file — or a different retained version of one —
+                   builds a fresh card rather than handing the new file the old
+                   card's open/peeked state. It is also what lets a search for
+                   words inside an old version arrive with the history already
+                   unrolled on a screen that was already showing something else. */
+                <ArtifactCard key={`${selected.artifactId}:${selected.version ?? "newest"}`}
+                  artifactId={selected.artifactId} version={selected.version} place="workspace"
+                  historyOpen={arrivedAt?.artifactId === selected.artifactId
+                    && arrivedAt?.version !== undefined} />
               )}
               <FileRelations artifactId={selected.artifactId}
                 loaded={relations !== undefined} relations={relations ?? []}

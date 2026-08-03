@@ -5,6 +5,7 @@ import {
   Attachment, ATTACHMENT_LIMITS, Channel,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   MemoryNote,
+  EverywhereHit, SearchKind,
   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
   UnreadEntry, User,
   effectiveArtifactAccess, latestVersion,
@@ -57,6 +58,32 @@ export interface SearchState {
   hasMore: boolean;
   /** the query the results on screen actually belong to */
   answered: string;
+}
+
+/**
+ * THE ONE "SEARCH EVERYWHERE" ON SCREEN — chat, thread replies, file names and
+ * the words inside every readable version, older ones included.
+ *
+ * It is a SEPARATE piece of state from `search` on purpose. `search` is the
+ * message-only question that also takes `in:`/`from:`, and the two answers have
+ * different shapes; merging them would mean one of the two renderers guessing
+ * which sort of row it had. One question, one state, one renderer.
+ *
+ * `answered` is the query the rows on screen really belong to — without it a
+ * result list read as an answer to whatever is in the box RIGHT NOW, which is
+ * how "nothing found" got printed under a query still being typed. `problem`
+ * holds the hub's own refusal sentence, shown as-is and never re-spelled here.
+ */
+export interface EverywhereState {
+  query: string;
+  kind?: SearchKind;
+  running: boolean;
+  results: EverywhereHit[];
+  hasMore: boolean;
+  /** the query the rows on screen actually belong to; "" until one lands */
+  answered: string;
+  /** the hub's refusal, in the hub's own words */
+  problem?: string;
 }
 
 /**
@@ -199,6 +226,8 @@ export interface World {
   unread: Record<ID, UnreadEntry>;
   /** the one search running or last answered */
   search?: SearchState;
+  /** the one "search everywhere" running or last answered */
+  everywhere?: EverywhereState;
   /**
    * Bumped every time a page of OLDER messages was put on the front of a
    * conversation. The message list watches this to keep the reader's place:
@@ -1045,6 +1074,70 @@ export class RelayClient {
   clearSearch(): void {
     this.searchEpoch++;
     this.world.search = undefined;
+    this.emit();
+  }
+
+  /** Which "search everywhere" this screen is waiting for — see `searchEpoch`. */
+  private everywhereEpoch = 0;
+
+  /**
+   * Ask the hub for words in EVERYTHING this person may already read.
+   *
+   * Correlated by the UNIVERSAL requestId at the one desktop send boundary
+   * (`identify`/`transmit`), the same way the workspace page and the artifact
+   * detail are — the id is minted here, put on the frame, and the answer is
+   * recognised by that exact id and nothing else. A second question asked while
+   * the first is still out therefore cannot be settled by the first's answer,
+   * and the epoch on top of it means an answer to a question the reader has
+   * since called off is dropped rather than drawn.
+   *
+   * `kind` narrows what comes back. It can never widen the scope — which rooms
+   * and which files are readable is the hub's decision from stored membership
+   * and stored file permissions, and this frame cannot argue with it.
+   */
+  searchEverywhere(query: string, kind?: SearchKind): void {
+    const epoch = ++this.everywhereEpoch;
+    const previous = this.world.everywhere;
+    /* THE QUESTION IS THE WORDS *AND* THE KIND. Rows already on screen may be
+       kept while the next answer is on its way, but only when they answer the
+       SAME question — and the same words asked about a NARROWER kind are a
+       different question, so the wider answer is not an answer to it. Judging
+       by the words alone left the whole wide list under a narrowed heading. */
+    const sameQuestion = !!previous && previous.answered === query && previous.kind === kind;
+    this.world.everywhere = {
+      query, kind, running: true,
+      results: sameQuestion ? previous.results : [],
+      hasMore: sameQuestion ? previous.hasMore : false,
+      answered: sameQuestion ? previous.answered : "",
+    };
+    this.emit();
+    const stale = (): boolean => this.everywhereEpoch !== epoch;
+    const stopRunning = (why?: string): void => {
+      if (stale() || !this.world.everywhere) return;
+      this.world.everywhere = { ...this.world.everywhere, running: false, ...(why ? { problem: why } : {}) };
+      this.emit();
+    };
+    const requestId = this.nextRequestId("searchEverywhere");
+    this.ask({ type: "searchEverywhere", query, ...(kind ? { kind } : {}), limit: 40, requestId }, {
+      answers: f => f.type === "searchEverywhereResults" && f.requestId === requestId,
+      answered: f => {
+        if (stale() || f.type !== "searchEverywhereResults") return;
+        this.world.everywhere = {
+          query, kind, running: false, answered: f.query,
+          results: f.results, hasMore: f.hasMore,
+        };
+      },
+      /* The hub's own sentence, kept and shown where he is looking. A refused
+         search that only spun forever is what made "type at least one word"
+         invisible — it went to a toast beside a box that never stopped. */
+      refused: why => stopRunning(why),
+      lost: () => stopRunning("The hub did not answer that search."),
+    });
+  }
+
+  clearEverywhere(): void {
+    this.everywhereEpoch++;
+    this.world.everywhere = undefined;
     this.emit();
   }
 
@@ -2836,6 +2929,15 @@ export class RelayClient {
            only ever drawn from a message reference learns its whole history
            from the first download without a second question. */
         this.holdArtifacts(frame.artifact.channelId, [frame.artifact], false);
+        break;
+      case "searchEverywhereResults":
+        /* Applied by the search that asked for it (see `searchEverywhere`),
+           recognised by its exact requestId, and by nothing else. An answer to
+           a search the reader has already closed — or to an older question its
+           replacement has overtaken — has nobody to give it to, so it is
+           dropped here. This is the same rule `searchResults` follows, and it
+           is the rule because the alternative once brought a closed search back
+           onto the screen with clickable hits. */
         break;
       default: {
         /**
