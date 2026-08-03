@@ -125,7 +125,13 @@ oversized scope. The quality was real; the price was not necessary. Caps:
    happened 2026-08-03; nothing was lost only because the worker noticed).
    Put this in every worker prompt: *no git state commands; if you need a
    clean-tree comparison, ask the conductor.* The conductor owns git.
-7. **Budget check every ~10 agent runs**: if the feature has consumed what
+7. **Only the conductor runs build/dist/install while workers are live.**
+   `qa:app` compares the current repo build against the packaged and installed
+   app, so one worker running `npm run build` blocks the walk for everyone and
+   looks exactly like a harness failure (2026-08-03). Workers may run targeted
+   `npm test -w <pkg>`; the full chain belongs to the conductor, after workers
+   have stopped.
+8. **Budget check every ~10 agent runs**: if the feature has consumed what
    feels like a quarter of a weekly quota and is not near its evidence chain,
    STOP, park on the branch, write SOL-REPORT.md, and end the session small
    rather than big.
