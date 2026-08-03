@@ -38,6 +38,24 @@ contextBridge.exposeInMainWorld("cloud9", {
    */
   chooseFolder: current => ipcRenderer.invoke("cloud9:chooseFolder", current),
 
+  /* ---------- ONE AGENT'S CONNECTIONS FILE (feature 5, slice 2) ----------
+   * Its own block, and it borrows nothing from the lines around it.
+   *
+   * "Connections" are extra tools an agent can reach that Cloud9 did not write;
+   * whoever makes the tool hands you a small config file, and the owner picks
+   * that file for ONE agent. The window never touches the filesystem: it asks
+   * for the OS's own file picker, and it may ask whether the one path it was
+   * given back is still there.
+   *
+   * `chooseConnectionsFile` → `{ ok: true, path }`, `{ ok: false, cancelled: true }`
+   * when the picker was closed, or `{ ok: false, error }` with a sentence to print.
+   * `connectionsFileHere` → `{ here, checkedAt }` — a yes/no and when it was asked.
+   * Nothing inside the file ever crosses this bridge.
+   */
+  chooseConnectionsFile: current =>
+    ipcRenderer.invoke("cloud9:chooseConnectionsFile", current),
+  connectionsFileHere: file => ipcRenderer.invoke("cloud9:connectionsFileHere", file),
+
   /**
    * The computer-wide quick-chat hotkey. OFF by default, because a global
    * shortcut takes that key away from every other program on the machine.
@@ -57,6 +75,36 @@ contextBridge.exposeInMainWorld("cloud9", {
    */
   hubNetwork: () => ipcRenderer.invoke("cloud9:hubNetwork"),
   setHubNetwork: address => ipcRenderer.invoke("cloud9:setHubNetwork", address),
+
+  /**
+   * WINDOWS' OWN NOTIFICATIONS — the door that reaches him when Cloud9 is
+   * minimised. The window has already decided (shared `decideNotification`,
+   * then `chooseDelivery`) that this news is worth an interruption and that the
+   * operating system is the right door; this only carries it across.
+   *
+   * `osNotify` answers `{ ok: true }`, or `{ ok: false, supported, error }` with
+   * a sentence the screen may print — it never throws away the news in silence.
+   * Only plain words cross: a title, a body, and the ids needed to land on the
+   * thing when it is clicked.
+   */
+  notificationsSupported: () => ipcRenderer.invoke("cloud9:notifySupported"),
+  osNotify: note => ipcRenderer.invoke("cloud9:osNotify", {
+    id: note?.id, kind: note?.kind, title: note?.title, body: note?.body,
+    channelId: note?.channelId, subjectId: note?.subjectId,
+  }),
+  /**
+   * He clicked one. The callback is handed the note's own ids only — never the
+   * raw IPC event, so the page cannot reach back through it. Returns an
+   * unsubscribe function, the same shape as `onMenu` below.
+   */
+  onNotificationClick: handler => {
+    if (typeof handler !== "function") return () => {};
+    const listener = (_event, note) => {
+      if (note && typeof note === "object") handler(note);
+    };
+    ipcRenderer.on("cloud9:notificationClicked", listener);
+    return () => ipcRenderer.removeListener("cloud9:notificationClicked", listener);
+  },
 
   /**
    * Menu bar → app screen. The callback is handed the action name only

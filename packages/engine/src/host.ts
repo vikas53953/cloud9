@@ -8,9 +8,11 @@
 // Credentials are PER HARNESS. A Claude key and a Codex key are different
 // accounts on different services; they are stored, injected and cleared
 // separately, and a Codex key must never reach an ANTHROPIC_* variable.
+import fs from "node:fs";
 import path from "node:path";
 import { HarnessName, HarnessState } from "@cloud9/shared";
 import { ClaudeCliProvider } from "./claude-cli.js";
+import { mcpConfigPathFor } from "./connections.js";
 import { CodexProvider } from "./codex.js";
 import { Engine } from "./engine.js";
 import { HarnessManager, HarnessOptions } from "./harness.js";
@@ -46,6 +48,22 @@ export interface EngineHost {
   /** set or clear one harness's credential at runtime (sign-in, or settings) */
   useCredential(harness: HarnessName, kind: "apiKey" | "oauthToken", value: string): void;
   stop(): void;
+}
+
+/**
+ * IS THIS FILE REALLY ON THIS COMPUTER, RIGHT NOW?
+ *
+ * Asked every turn, never remembered — the twin of `isFolderOnDisk` in
+ * `engine.ts`, and for the same reason: a file the owner chose last month can be
+ * moved, renamed or deleted, and a stale yes would put a path on a command line
+ * that is not there any more. A folder is a no: `--mcp-config` wants a file.
+ */
+function isFileOnDisk(file: string): boolean {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export function startEngineHost(opts: EngineHostOptions): EngineHost {
@@ -110,13 +128,25 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
         command: opts.harness?.claudeCommand,
         models: () => modelsFor("claude"),
         // CLOUD9'S OWN DOORWAY — search, scoped to the conversation the turn is
-        // in. It is passed; `wholeComputerRoots` and `mcpConfigPath` are still
-        // NOT, because nothing on any screen chooses a folder or an MCP file
-        // yet. That is deliberate and it is now honest: the prompt is derived
-        // from what is passed here, so an agent on the top rung is told those
-        // two are switched on with nothing behind them rather than being told
-        // it can use them (docs/qa/gap-audit.md §3, Integrations).
+        // in.
         cloud9Tools: engine.openToolTurn,
+        // THE CONNECTIONS FILE THE OWNER CHOSE FOR THIS AGENT — the one and only
+        // place a stored path becomes a real `--mcp-config` on a command line.
+        //
+        // It is asked FRESH per turn (that is what this being a function buys),
+        // and it goes through `connectionsFileFor`, which is the same answer the
+        // agent editor draws on screen. So there is one decision, read twice: a
+        // file the screen calls gone can never arrive here, and a file the screen
+        // calls in use is exactly what the harness is handed.
+        //
+        // The switch still has the last word after this — `grantedSupply` in
+        // `abilities.ts` drops the path for an agent without `connections`, and
+        // the prompt is built from what survives that. `wholeComputerRoots` is
+        // still NOT supplied: nothing on any screen chooses folders yet, and an
+        // agent on the top rung is told that switch is on with nothing behind it
+        // rather than being told it can use it (docs/qa/gap-audit.md §3).
+        mcpConfigPath: (agentId: string) =>
+          mcpConfigPathFor(engine.agentById(agentId), isFileOnDisk),
       });
     } else {
       engine.provider = undefined; // agents will say "my engine isn't connected"

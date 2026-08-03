@@ -173,6 +173,20 @@ const EXPECTED_CHECKS = [
   "a stuck job reads as stuck and is not listed in with the running ones",
   "an agent whose job is stuck says so on its presence line instead of reading as fine",
   "naming two agents in one message gets exactly one answer, from the first one named",
+  /* Feature 5, in the app he double-clicks. Two things that only exist as
+     SCREEN in this release, so a preview passing proves nothing about them:
+     · the agent editor's connections block — the switch "Use connected
+       services" used to be on, allowed, approved and hand the agent nothing;
+       the block must now be there and claim exactly one of its four honest
+       states (none / that file is gone / in use / cannot check), never a
+       reassuring blank;
+     · the room details panel's mute control, with its own words about what
+       muting really does — the whole point of feature 5's first half.
+     The walk does NOT open the operating system's file picker and does NOT
+     raise a real Windows notification: driving a native dialog is not something
+     this harness can do honestly, so it asserts what is observable on screen
+     and says so rather than pretending to have proved the shell. */
+  "the agent editor shows the connections file in an honest state, and a room offers the mute control",
 ];
 
 /* ---------------------------------------------------------------- results */
@@ -2939,6 +2953,95 @@ async function walk(page) {
     catch (err) {
       throw new Error(`required coordination cleanup failed (${err?.message ?? String(err)})`);
     }
+  }
+
+  /* --- 9. feature 5: the connections file, and turning one room down -------
+   *
+   * Both halves are SCREEN, and both are the kind of thing a preview can pass
+   * while the installed app shows nothing. Nothing here is saved and nothing is
+   * switched on for real: the connections switch is moved in the editor's draft
+   * only and the editor is left without saving, and the mute control is READ
+   * rather than pressed — so this walk is safe against his real Cloud9 too.
+   *
+   * WHAT THIS CHECK DOES NOT PROVE, said plainly: it never opens Windows' own
+   * file picker and never raises a real Windows notification. A native dialog is
+   * not something this harness can drive honestly, so "a file that is really
+   * there" and "a file that has really gone" are not claimed here — only that
+   * the block is present and claiming exactly one of its four honest states.
+   */
+  try {
+    await page.click('.rail .rail-btn[data-go="chat"]');
+    await page.waitForSelector(".composer textarea", { timeout: 30000 });
+
+    await check(EXPECTED_CHECKS[33], async () => {
+      // --- the room's own mute control, in the details panel ---
+      const firstRoom = page.locator(".sidebar .side-item[data-channel]").first();
+      if (await firstRoom.count() === 0) throw new Error("no room in the rail to open the details of");
+      await firstRoom.click();
+      await page.waitForSelector(".composer textarea", { timeout: 20000 });
+      if (await page.locator(".roommute").count() === 0) {
+        const opener = page.locator(".chathead .roomdetailsbtn");
+        if (await opener.count() === 0) {
+          throw new Error("NOT ON SCREEN — no way into the room details panel, so no mute control");
+        }
+        await opener.first().click();
+      }
+      await page.waitForSelector(".roommute", { timeout: 20000 })
+        .catch(() => { throw new Error("NOT ON SCREEN — the room details panel offers no mute control"); });
+      const muteWords = (await page.locator(".roommute").innerText()).replace(/\s+/g, " ").trim();
+      const muteState = await page.getAttribute(".roommute", "data-muted");
+      const muteBtn = (await page.locator(".roommute .roommute-btn").innerText()).trim();
+      if (!/^(yes|no)$/.test(muteState ?? "")
+        || !/(Mute|Unmute) this (room|conversation)/.test(muteBtn)
+        || !/interrupt you/.test(muteWords)) {
+        throw new Error("the mute control is on screen but does not say what it does: " +
+          `state=${muteState} button="${muteBtn}" words="${muteWords.slice(0, 120)}"`);
+      }
+      await shot(page, "room-mute-installed");
+
+      // --- the connections file block, in the agent editor ---
+      await page.click('.rail .rail-btn[data-go="crew"]');
+      await page.waitForSelector(".crew-bar", { timeout: 30000 });
+      await page.click('.cast[data-crew] button:has-text("Edit")');
+      await page.waitForSelector(".editor .reachladder", { timeout: 30000 });
+      if ((await page.getAttribute(".editor .abilitypick", "data-open")) !== "yes") {
+        await page.click(".editor .abilityshow");
+      }
+      await page.waitForSelector('.editor .abilitypick[data-open="yes"]', { timeout: 15000 });
+      const connSwitch = page.locator('.editor .toggle-row[data-ability="connections"] input');
+      if (await connSwitch.count() === 0) {
+        throw new Error("NOT ON SCREEN — the editor has no 'use connected services' switch at all");
+      }
+      if (!(await connSwitch.isChecked())) await connSwitch.check();
+      await page.waitForSelector(".editor .connfile", { timeout: 20000 })
+        .catch(() => { throw new Error("NOT ON SCREEN — connected services is switched ON and " +
+          "nothing on the editor says which file the agent uses, or that it has none"); });
+      const connState = await page.getAttribute(".editor .connfile", "data-conn-state");
+      const connWords = (await page.locator(".editor .connfile").innerText()).replace(/\s+/g, " ").trim();
+      const HONEST = {
+        none: /no connections file chosen yet/i,
+        gone: /that file is gone/i,
+        ready: /in use/i,
+        unchecked: /cannot check that file/i,
+      };
+      if (!HONEST[connState] || !HONEST[connState].test(connWords)) {
+        throw new Error(`the connections block claims state "${connState}" and says ` +
+          `"${connWords.slice(0, 120)}" — those are not the same answer`);
+      }
+      if (await page.locator(".editor .connfile [data-conn-choose]").count() === 0) {
+        throw new Error("the connections block offers no way to choose a file");
+      }
+      await shot(page, "connections-installed");
+      // leave without saving — his agent is not changed by being looked at
+      const leave = page.locator('.editor >> text=← Crew');
+      if (await leave.count()) await leave.first().click();
+      return `room mute reads "${muteBtn}" (muted=${muteState}); connections block is honestly ` +
+        `"${connState}" — the file picker and a real Windows notification are NOT driven here`;
+    });
+  } catch (err) {
+    failGroup([EXPECTED_CHECKS[33]].filter(n => !results.some(r => r.name === n)),
+      `the feature 5 screens could not be reached (${err.message})`);
+    await shot(page, "feature5-broken");
   }
 }
 

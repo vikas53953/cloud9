@@ -1,7 +1,7 @@
 // Cloud9 desktop shell: hosts the renderer, the global ⌘K quick-chat window,
 // and the agent engine (so agents run while the app is open — Stage-1 decision 5).
 const {
-  app, BrowserWindow, Menu, dialog, globalShortcut, ipcMain, safeStorage, shell,
+  app, BrowserWindow, Menu, dialog, globalShortcut, ipcMain, Notification, safeStorage, shell,
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
@@ -639,6 +639,150 @@ ipcMain.handle("cloud9:chooseFolder", async (_ev, current) => {
     // never the inside of a program: the screen prints this word for word
     console.error("[cloud9] the folder picker failed:", err);
     return { ok: false, error: "This computer could not open the folder picker." };
+  }
+});
+
+/* ---------- ONE AGENT'S CONNECTIONS FILE (feature 5, slice 2) ----------
+ *
+ * A SEPARATE BLOCK ON PURPOSE, and it touches nothing else in this file.
+ *
+ * "Connections" are extra tools an agent can reach that Cloud9 did not write —
+ * whoever makes the tool hands you a small config file, and the owner picks that
+ * file for ONE agent. Two handlers, and between them they are the only way a
+ * path or a disk fact crosses into the window:
+ *
+ *   chooseConnectionsFile — the operating system's own picker, exactly the shape
+ *     `cloud9:chooseFolder` above uses (`{ ok, path }` / `{ ok: false, cancelled }`
+ *     / `{ ok: false, error }`). `openFile`, not `openDirectory` — `--mcp-config`
+ *     wants a file.
+ *   connectionsFileHere — "is the file you chose still on this computer?", asked
+ *     fresh, answered yes/no with the time it was asked. It reads NOTHING out of
+ *     the file and never returns anything but a boolean and a clock reading, so
+ *     it cannot become a way to read the disk from a page. A path that is not a
+ *     whole path, or one carrying `..`, is answered "no" without touching the
+ *     filesystem at all.
+ *
+ * THE RENDERER STILL NEVER TOUCHES THE FILESYSTEM. It cannot list, read or walk
+ * anything; it can ask about the one path it was already given back.
+ */
+function wholePathOnThisComputer(value) {
+  if (typeof value !== "string") return null;
+  const said = value.trim();
+  if (!said || said.length > 400 || said.includes("..")) return null;
+  for (let i = 0; i < said.length; i++) {
+    // a control character is never part of a path anyone chose
+    const code = said.charCodeAt(i);
+    if (code < 32 || code === 127) return null;
+  }
+  const whole = /^[A-Za-z]:[\\/]/.test(said) || /^\\\\[^\\/]/.test(said) || said.startsWith("/");
+  return whole ? said : null;
+}
+
+ipcMain.handle("cloud9:chooseConnectionsFile", async (_ev, current) => {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+  const options = {
+    title: "Which connections file should this agent use?",
+    properties: ["openFile"],
+    filters: [
+      { name: "Connections file", extensions: ["json"] },
+      { name: "Any file", extensions: ["*"] },
+    ],
+    ...(wholePathOnThisComputer(current) ? { defaultPath: current.trim() } : {}),
+  };
+  try {
+    const picked = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
+    if (picked.canceled || picked.filePaths.length === 0) return { ok: false, cancelled: true };
+    return { ok: true, path: picked.filePaths[0] };
+  } catch (err) {
+    console.error("[cloud9] the file picker failed:", err);
+    return { ok: false, error: "This computer could not open the file picker." };
+  }
+});
+
+ipcMain.handle("cloud9:connectionsFileHere", (_ev, file) => {
+  const checkedAt = Date.now();
+  const said = wholePathOnThisComputer(file);
+  if (!said) return { here: false, checkedAt };
+  try {
+    return { here: fs.statSync(said).isFile(), checkedAt };
+  } catch {
+    // gone, unreadable, on a drive that is unplugged — all the same answer
+    return { here: false, checkedAt };
+  }
+});
+
+/* ---------- Windows' own notifications ----------
+ *
+ * WHY THIS EXISTS. Everything Cloud9 had to say lived inside its own window, so
+ * the moment it was minimised nothing reached him at all — not a finished job,
+ * not an agent waiting for a yes, not a mention. Only the main process can ask
+ * Windows to show one, so the window asks here.
+ *
+ * WHAT THIS IS NOT. It is NOT a second opinion about whether to interrupt him.
+ * `decideNotification` (packages/shared/src/notify.ts) already said yes before
+ * anything reached this file, and `chooseDelivery` in the same file already
+ * decided the OS was the right door. This only carries it out, and says plainly
+ * when it could not — the window then falls back to its own toast rather than
+ * letting the news disappear.
+ */
+
+/** Can this computer show one at all? Asked once per call — it is cheap. */
+function osNotificationsSupported() {
+  try { return Notification.isSupported(); } catch { return false; }
+}
+
+ipcMain.handle("cloud9:notifySupported", () => osNotificationsSupported());
+
+ipcMain.handle("cloud9:osNotify", (_ev, note) => {
+  const title = typeof note?.title === "string" ? note.title : "";
+  const body = typeof note?.body === "string" ? note.body : "";
+  if (!title && !body) return { ok: false, supported: true, error: "there was nothing to show" };
+  if (!osNotificationsSupported()) {
+    return {
+      ok: false,
+      supported: false,
+      error: "this computer does not show notifications for programs",
+    };
+  }
+  try {
+    const shown = new Notification({
+      title: title || "Cloud9",
+      body,
+      icon: appIconPath(),
+      // Windows groups by app, and the app is already named by APP_ID above.
+      silent: false,
+    });
+    /* Clicking it is a request to be taken to the thing itself. The shell only
+       brings the window back and hands the note over — WHERE to land is the
+       screen's own rule (`notifyTarget`), decided by the same navigation owners
+       a search result uses. */
+    shown.on("click", () => {
+      const win = mainWin && !mainWin.isDestroyed() ? mainWin : null;
+      if (win) {
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+        win.webContents.send("cloud9:notificationClicked", {
+          id: note?.id ?? null,
+          kind: note?.kind ?? null,
+          channelId: note?.channelId ?? null,
+          subjectId: note?.subjectId ?? null,
+        });
+      }
+    });
+    shown.show();
+    return { ok: true, supported: true };
+  } catch (err) {
+    // Never the inside of a program: the window records this sentence and shows
+    // its own toast instead, so the news still lands somewhere.
+    console.error("[cloud9] Windows refused a notification:", err);
+    return {
+      ok: false,
+      supported: true,
+      error: "this computer would not show the notification",
+    };
   }
 });
 

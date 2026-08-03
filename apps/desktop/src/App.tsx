@@ -42,6 +42,13 @@ import {
   forcedOnCapabilities, FORCED_ON_NOTE, REACH_LEVELS, Reach, Capability,
 } from "@cloud9/engine/dist/abilities.js";
 import { isolationFor } from "@cloud9/engine/dist/isolation.js";
+/* THE ONE OWNER of "does this agent really have connected services?" — the same
+   function the engine host asks when it builds the command line, so the sentence
+   on this screen and the flag on that line are one decision. Imported by path
+   for the same reason the two lines above are; it reads `@cloud9/shared` only. */
+import {
+  connectionsFileFor, connectionsWords, type ConnectionsFile,
+} from "@cloud9/engine/dist/connections.js";
 /* THE NOTIFICATION RULES AND THE FOUR EVENTS THAT FEED THEM.
    `decideNotification` is the ONE gate (quiet hours, de-dupe, self-suppression,
    the master switch) — the same one the phone will read. The `notify-feed`
@@ -51,8 +58,9 @@ import { isolationFor } from "@cloud9/engine/dist/isolation.js";
    Imported by path for the same reason the two lines above are: these are the
    halves of shared/engine the browser is allowed to see. */
 import {
-  decideNotification, dedupeKey,
-  type Cloud9Notification, type NotifyEvent,
+  chooseDelivery, decideNotification, dedupeKey, isNotifyKind, isRoomMuted, notifyTarget,
+  withRoomMuted,
+  type Cloud9Notification, type DeliveryChoice, type NotifyEvent, type NotifyTarget,
 } from "@cloud9/shared/dist/notify.js";
 import {
   approvalEvent, artifactEvent, jobFinishedEvent, mentionEvent, type NotifyViewer,
@@ -1368,6 +1376,13 @@ export interface Prefs {
    * against. Absent (an install from before this setting) also means "thread".
    */
   replies: "thread" | "inline";
+  /**
+   * ROOMS HE HAS TURNED DOWN — the same field the shared notification gate
+   * reads (`NotifyPrefs.mutedChannelIds`), so muting is not a second rule kept
+   * on this screen. Empty means nothing is muted, which is how every install
+   * from before this setting behaves.
+   */
+  mutedChannelIds: string[];
 }
 
 const prefs = makeStore<Prefs>("cloud9.prefs", {
@@ -1381,6 +1396,7 @@ const prefs = makeStore<Prefs>("cloud9.prefs", {
   compact: false,
   collapsed: {},
   replies: "thread",
+  mutedChannelIds: [],
 });
 
 const usePrefs = (): Prefs => useSyncExternalStore(prefs.subscribe, prefs.get);
@@ -1597,7 +1613,13 @@ export function App(): React.JSX.Element {
     : isQuickWindow ? <QuickChat standalone />
     : <Workspace />;
 
-  return <>{screen}{!onJoinScreen && <Toast />}{!onJoinScreen && <NotifyToasts />}</>;
+  /* ONE WINDOW RAISES NOTIFICATIONS, and it is the main one. The quick-chat
+     popup runs this same app, so leaving it mounted there meant two windows
+     both deciding — and, now that one of the doors is Windows' own, the same
+     news arriving twice. The popup is a transient box that closes the moment it
+     loses focus; the main window is where his news belongs. */
+  const raisesNotifications = !onJoinScreen && !isQuickWindow;
+  return <>{screen}{!onJoinScreen && <Toast />}{raisesNotifications && <NotifyToasts />}</>;
 }
 
 /* ================= 1 · WELCOME / JOIN ================= */
@@ -1929,6 +1951,42 @@ function Workspace(): React.JSX.Element {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  /* ---- clicking a Windows notification lands on the thing it is about ----
+   *
+   * WHERE it lands is `notifyTarget`'s rule (packages/shared/src/notify.ts); HOW
+   * it gets there is the navigation owners this screen already has — the very
+   * ones a "search everywhere" result uses (`goChannel` + `jumpTo`, `goScreen`).
+   * Nothing new navigates; a notification is just another way to ask.
+   */
+  const openNotification = useCallback((note: {
+    kind?: string | null; channelId?: string | null; subjectId?: string | null;
+  }) => {
+    const kind = typeof note?.kind === "string" && isNotifyKind(note.kind) ? note.kind : null;
+    if (!kind) return;
+    const target: NotifyTarget | null = notifyTarget({
+      kind,
+      channelId: note.channelId ?? undefined,
+      subjectId: note.subjectId ?? "",
+    });
+    if (!target) return;
+    if (target.go === "tasks") { goScreen("tasks"); return; }
+    goChannel(target.channelId);
+    if (target.go === "message") setJumpTo({ id: target.messageId, at: Date.now() });
+  }, [goScreen, goChannel]);
+
+  useEffect(() => {
+    const bridge = desktop();
+    const off = bridge?.onNotificationClick?.(openNotification);
+    /* QA hook, same shape as `cloud9Menu`: the suite follows a notification the
+       way Windows does, through the app's own handler, so a click that lands
+       nowhere fails a check instead of being noticed months later. */
+    (window as unknown as { cloud9NotifyOpen?: unknown }).cloud9NotifyOpen = openNotification;
+    return () => {
+      if (typeof off === "function") off();
+      delete (window as unknown as { cloud9NotifyOpen?: unknown }).cloud9NotifyOpen;
+    };
+  }, [openNotification]);
 
   /* ---- the app menu ----
    * Typed `Record<MenuAction, …>` against the ONE list in @cloud9/shared that
@@ -2458,6 +2516,102 @@ function NotifyToasts(): React.JSX.Element | null {
   const [live, setLive] = useState<Cloud9Notification[]>([]);
   const meId = world.me?.id;
 
+  /* ---- WHICH DOOR, once the gate has said yes ----
+   *
+   * What the app knows about the OS door right now. `supported` is asked of the
+   * shell once; `permitted` starts true and is only ever turned OFF by a real
+   * refusal — a machine that says no once is not asked to say no every time.
+   * Neither of these can raise or silence anything: `decideNotification` above
+   * already decided that. They only choose the door. */
+  const osDoor = useRef({ supported: false, permitted: true });
+  /* Every delivery, with the reason it went where it went. A notification that
+     could not reach the operating system is RECORDED and shown as an in-app
+     toast instead — "it went nowhere" is never an outcome here. */
+  const deliveries = useRef<
+    { id: string; via: string; reason: string; fellBack: boolean; error?: string; at: number }[]>([]);
+
+  useEffect(() => {
+    const bridge = desktop();
+    if (!bridge?.osNotify) return; // a browser has no OS door — toasts, as today
+    let alive = true;
+    const ask = bridge.notificationsSupported?.() ?? Promise.resolve(true);
+    ask.then(
+      ok => { if (alive) osDoor.current.supported = ok === true; },
+      () => { if (alive) osDoor.current.supported = false; },
+    );
+    return () => { alive = false; };
+  }, []);
+
+  const record = useCallback((
+    note: Cloud9Notification, choice: DeliveryChoice, error?: string,
+  ): void => {
+    deliveries.current.push({
+      id: note.id, via: choice.via, reason: choice.reason, fellBack: choice.fellBack,
+      ...(error ? { error } : {}), at: Date.now(),
+    });
+    if (deliveries.current.length > 200) deliveries.current.splice(0, deliveries.current.length - 200);
+    if (choice.fellBack) {
+      console.warn(
+        `[cloud9] this computer would not show a notification (${choice.reason}) — ` +
+        `showing it inside Cloud9 instead${error ? `: ${error}` : ""}`);
+    }
+  }, []);
+
+  const showToast = useCallback((note: Cloud9Notification): void => {
+    setLive(cur => (cur.some(n => n.id === note.id) ? cur : [...cur, note]));
+  }, []);
+
+  /**
+   * Deliver ONE notification the gate has already raised.
+   *
+   * `chooseDelivery` (packages/shared/src/notify.ts) is the rule; this is the
+   * errand. When the OS was the chosen door and refuses, the in-app toast
+   * stands in and the refusal is recorded — never dropped.
+   */
+  const deliver = useCallback((note: Cloud9Notification): void => {
+    const bridge = desktop();
+    const choice = chooseDelivery({
+      windowFocused: typeof document !== "undefined" && document.hasFocus(),
+      osSupported: !!bridge?.osNotify && osDoor.current.supported,
+      osPermitted: osDoor.current.permitted,
+    });
+    if (choice.via === "in_app_toast" || !bridge?.osNotify) {
+      record(note, choice);
+      showToast(note);
+      return;
+    }
+    record(note, choice);
+    const refused = (error?: string, unsupported?: boolean): void => {
+      if (unsupported) osDoor.current.supported = false;
+      else osDoor.current.permitted = false;
+      const fallback: DeliveryChoice = {
+        via: "in_app_toast",
+        reason: unsupported ? "os_unsupported" : "os_refused",
+        fellBack: true,
+      };
+      record(note, fallback, error);
+      showToast(note);
+    };
+    bridge.osNotify(note).then(
+      res => { if (!res?.ok) refused(res?.error, res?.supported === false); },
+      err => refused(String(err instanceof Error ? err.message : err)),
+    );
+  }, [record, showToast]);
+
+  /* QA hook, the same shape as the others: what the delivery rule DID, so a
+     check can prove "unfocused went to Windows" and "a refusal still reached
+     him" rather than photograph a corner of the screen. */
+  useEffect(() => {
+    (window as unknown as { cloud9Notify?: unknown }).cloud9Notify = {
+      delivered: () => deliveries.current.map(d => ({ ...d })),
+      door: () => ({ ...osDoor.current, bridge: !!desktop()?.osNotify }),
+      choose: chooseDelivery,
+      target: notifyTarget,
+      muted: () => [...(prefs.get().mutedChannelIds ?? [])],
+    };
+    return () => { delete (window as unknown as { cloud9Notify?: unknown }).cloud9Notify; };
+  }, []);
+
   useEffect(() => {
     if (!meId) return;
     const viewer: NotifyViewer = {
@@ -2509,8 +2663,11 @@ function NotifyToasts(): React.JSX.Element | null {
       seen.current.add(d.key);
       if (d.raise) fresh.push(d.notification);
     }
-    if (fresh.length) setLive(cur => [...cur, ...fresh]);
-  }, [world.messages, world.tasks, world.approvals, world.artifacts, world.agents, meId, p]);
+    /* The gate has spoken; each raised one now goes through its door — the
+       operating system when he is not looking at Cloud9, this window's own
+       toast when he is (and when the OS will not take it). */
+    for (const note of fresh) deliver(note);
+  }, [world.messages, world.tasks, world.approvals, world.artifacts, world.agents, meId, p, deliver]);
 
   const dismiss = useCallback((id: string) => {
     setLive(cur => cur.filter(n => n.id !== id));
@@ -2593,6 +2750,23 @@ function UnreadMarks({ n }: { n: Unread }): React.JSX.Element | null {
           aria-label={say(n.unread, "new")}>{unreadLabel(n.unread)}</span>
       )}
     </>
+  );
+}
+
+/**
+ * A ROOM HE HAS TURNED DOWN, said on the row itself.
+ *
+ * Without this, a muted room is simply a room that stopped interrupting him and
+ * there is nothing anywhere to say why. It reads the same one list the shared
+ * gate reads, so it can never disagree with the room's own panel.
+ */
+function MutedMark({ channelId }: { channelId?: ID }): React.JSX.Element | null {
+  const p = usePrefs();
+  if (!channelId || !isRoomMuted(p, channelId)) return null;
+  return (
+    <span className="mutedmark" data-muted="yes"
+      title="Muted — only somebody mentioning you by name gets through"
+      aria-label="Muted">🔕</span>
   );
 }
 
@@ -2698,6 +2872,7 @@ function ChatScreen({
                     {/* Open, shut or retired, on every row — a room anyone can
                         walk into must not look like one you were put in. */}
                     <RoomVisibility channel={c} size="mark" />
+                    <MutedMark channelId={c.id} />
                     <UnreadMarks n={unread} />
                   </button>
                 );
@@ -2741,6 +2916,7 @@ Open your chat with ${a.name}`}>
                         {says.reason && <> · {says.reason}</>}
                       </span>
                     </span>
+                    <MutedMark channelId={dm?.id} />
                     <UnreadMarks n={unread} />
                   </button>
                   {a.ownerId === world.me?.id &&
@@ -2758,6 +2934,7 @@ Open your chat with ${a.name}`}>
                   onClick={() => setActiveId(c.id)}>
                   <PersonFace name={pr.name} size={22} />
                   <span className="txt agent-name">{pr.name}</span>
+                  <MutedMark channelId={c.id} />
                   <UnreadMarks n={unread} />
                 </button>
               );
@@ -4251,6 +4428,56 @@ const withoutArtifactRefs = (text: string): string =>
     .trim();
 
 /**
+ * TURNING ONE ROOM DOWN — the per-room half of notifications.
+ *
+ * Cloud9's notification settings used to be all-or-nothing for the whole app,
+ * so the one busy room was the reason to switch every notification off. This
+ * mutes a single conversation, and it lives in that conversation's own details
+ * panel because that is where a person looks for "this room" — Settings keeps
+ * the switches that are true everywhere (the master switch and quiet hours).
+ *
+ * IT IS NOT A SECOND GATE. The mute list is a prefs field the shared
+ * `decideNotification` reads (`isRoomMuted`, packages/shared/src/notify.ts);
+ * this panel only writes it, through `withRoomMuted`, so a room can never end
+ * up in the list twice and this screen never re-decides anything.
+ *
+ * What it says on screen is the whole truth: muting silences this room EXCEPT
+ * somebody mentioning him by name, and if notifications are off everywhere it
+ * says that too rather than implying this switch is doing anything.
+ */
+function RoomMute({ channel, isRoom }: { channel: Channel; isRoom: boolean }): React.JSX.Element {
+  const p = usePrefs();
+  const muted = isRoomMuted(p, channel.id);
+  const what = isRoom ? "room" : "conversation";
+  const toggle = (): void => {
+    prefs.set({
+      mutedChannelIds: withRoomMuted(prefs.get(), channel.id, !muted).mutedChannelIds,
+    });
+  };
+  return (
+    <div className="aside-sec roommute" data-muted={muted ? "yes" : "no"}>
+      <span className="eyebrow">Notifications</span>
+      <p className="roommute-state">
+        {muted
+          ? `Muted. Nothing from this ${what} interrupts you — except somebody mentioning you by name.`
+          : `On. This ${what} can interrupt you, as your notification settings allow.`}
+      </p>
+      {!p.notify && (
+        /* Honesty first: with the master switch off, this button changes nothing
+           he would ever see. Saying so beats a switch that looks like it works. */
+        <p className="roommute-note">
+          Notifications are switched off everywhere in Settings, so nothing from any {what}
+          {" "}interrupts you at the moment.
+        </p>
+      )}
+      <button className="btn small roommute-btn" aria-pressed={muted} onClick={toggle}>
+        {muted ? `Unmute this ${what}` : `Mute this ${what}`}
+      </button>
+    </div>
+  );
+}
+
+/**
  * EVERY FILE AGENTS HAVE MADE IN ONE CONVERSATION.
  *
  * The card in a message is how he meets a file; this is how he finds one again
@@ -5581,6 +5808,11 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
             </button>
           )}
         </div>
+
+        {/* TURNING THIS ONE ROOM DOWN. It lives here, with the room's own
+            details, because that is where a person looks for "this room" —
+            Settings owns the switches that are true everywhere. */}
+        <RoomMute channel={channel} isRoom={isRoom} />
 
         {/* WHAT THE AGENTS IN HERE HAVE MADE. A file is the room's, not the
             agent's — which is why it is listed with the room's own details. */}
@@ -7084,6 +7316,119 @@ function rungOfExactly(ab: AgentAbilities): Reach | null {
   return found?.level ?? null;
 }
 
+/**
+ * WHICH CONNECTIONS FILE THIS ONE AGENT USES — and honestly when it has none.
+ *
+ * PLAIN WORDS FIRST. "Connections" are extra tools an agent can reach that
+ * Cloud9 did not write — a calendar, a ticket system, a company search box.
+ * Whoever makes the tool hands you a small config file. You pick that file here,
+ * for this agent only, and no other agent ever sees it. Your own connected
+ * accounts are never used, at any setting.
+ *
+ * THIS WINDOW NEVER TOUCHES THE FILESYSTEM. Choosing asks the desktop shell to
+ * draw the operating system's own file picker, and the only thing that comes
+ * back is the one file chosen. "Is it still there?" is the same kind of
+ * question, asked the same way, and the answer is a yes/no and a clock reading —
+ * nothing inside the file is ever read here.
+ *
+ * FOUR HONEST ANSWERS AND NO FIFTH. The switch on with no file chosen says so.
+ * A file that has vanished says so and is NOT used. A file that is there says
+ * so, and says when it was checked. A window with no shell to ask (dev, QA in a
+ * browser) says it cannot check rather than pretending either way. All four come
+ * from `connectionsFileFor` — the SAME function the engine host calls when it
+ * builds the command line, so this screen cannot promise a connection that the
+ * command line will not carry.
+ */
+function ConnectionsFilePick({ agentName, agentDraft, file, onChoose }: {
+  agentName: string;
+  /** the agent as the switches stand right now, unsaved edits included */
+  agentDraft: AgentDef;
+  file: string;
+  onChoose: (path: string) => void;
+}): React.JSX.Element | null {
+  const [here, setHere] = useState<{ here: boolean; checkedAt: number } | null>(null);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const said = file.trim();
+
+  /* ASKED FRESH, NEVER REMEMBERED — a file that was there when he chose it can
+     be moved, renamed or sit on a drive that is unplugged. The engine asks the
+     same question again at the top of every turn; this is the screen's copy of
+     the question, not a cached answer to it. */
+  useEffect(() => {
+    setHere(null);
+    if (!said) return;
+    const ask = desktop()?.connectionsFileHere;
+    if (!ask) return; // no shell to ask — the "cannot check" wording below
+    let alive = true;
+    void ask(said)
+      .then(answer => { if (alive) setHere(answer); })
+      .catch(() => { if (alive) setHere(null); });
+    return () => { alive = false; };
+  }, [said]);
+
+  const checked = here !== null;
+  const state: ConnectionsFile = connectionsFileFor(
+    { ...agentDraft, connectionsFile: said }, () => here?.here === true);
+  // A file is stored and this window cannot say whether it is still there. That
+  // is its own answer — reporting "gone" would be a guess, and reporting "in
+  // use" would be the lie this whole feature exists to prevent.
+  const shown = said && !checked && state.state !== "off" ? "unchecked" : state.state;
+  const words = connectionsWords(state, agentName);
+
+  // Switched off and nothing remembered: there is nothing honest to say here.
+  if (shown === "off" && !state.path) return null;
+
+  const pick = async (): Promise<void> => {
+    setRefusal(null);
+    const picker = desktop()?.chooseConnectionsFile;
+    if (!picker) {
+      setRefusal("This window cannot open the computer's file picker, so the file has to "
+        + "be chosen in the installed Cloud9 app.");
+      return;
+    }
+    const picked = await picker(said || undefined).catch(() => ({
+      ok: false, error: "This computer could not open the file picker.",
+    } as { ok: boolean; path?: string; cancelled?: boolean; error?: string }));
+    if (picked.ok && picked.path) { onChoose(picked.path); return; }
+    if (picked.cancelled) return; // closing the picker means "not now"
+    if (picked.error) setRefusal(picked.error);
+  };
+
+  return (
+    <div className="notice connfile" data-conn-state={shown} data-conn-file={said}>
+      <b>
+        {shown === "unchecked"
+          ? "This window cannot check that file."
+          : words.headline}
+      </b>
+      <span>
+        {shown === "unchecked"
+          ? `The file is remembered for ${agentName}, but only the computer that runs it can `
+            + "say whether it is still there. It checks every turn, and will not use a file "
+            + "that has gone."
+          : words.detail}
+      </span>
+      {said && <code className="folderpath" data-conn-path>{said}</code>}
+      {shown === "ready" && here && (
+        <span className="eyebrow" data-conn-checked={String(here.checkedAt)}>
+          Checked {fileDate(here.checkedAt)}
+        </span>
+      )}
+      <div className="actions">
+        <button className="btn small" data-conn-choose onClick={() => void pick()}>
+          {said ? "Choose a different file" : "Choose the connections file"}
+        </button>
+        {said && (
+          <button className="btn small" data-conn-clear onClick={() => { setRefusal(null); onChoose(""); }}>
+            Forget this file
+          </button>
+        )}
+      </div>
+      <Problem text={refusal ?? undefined} attrs={{ "data-conn-refusal": "" }} />
+    </div>
+  );
+}
+
 /* ================= 5 · CREATE / EDIT AN AGENT ================= */
 
 function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
@@ -7125,6 +7470,10 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
      before this setting existed must never be more open than one made after. */
   const [respondTo, setRespondTo] = useState<AgentRespondTo>(agent?.respondTo ?? "owner");
   const [allowlist, setAllowlist] = useState<ID[]>(agent?.respondToAllowlist ?? []);
+  /* THE CONNECTIONS FILE THIS AGENT USES — the config the maker of a tool hands
+     you, chosen for this one agent. Blank means none has been chosen, which is
+     the honest default and never the same as "" stored on the agent. */
+  const [connFile, setConnFile] = useState<string>(agent?.connectionsFile ?? "");
 
   const { ids, fallback, preferred } = useModels(provider);
   // an agent must never end up without a model
@@ -7152,6 +7501,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
     || provider !== ((agent?.provider ?? p.defaultProvider ?? "claude") as Provider)
     || JSON.stringify(skills) !== JSON.stringify(Array.isArray(agent?.skills) ? agent!.skills! : [])
     || respondTo !== (agent?.respondTo ?? "owner")
+    || connFile.trim() !== (agent?.connectionsFile ?? "").trim()
     || JSON.stringify(allowlist) !== JSON.stringify(agent?.respondToAllowlist ?? []);
   /* THE MODEL IS DELIBERATELY NOT IN THAT LIST. An agent saved before a model
      list changed has one picked FOR it on the way in (see the effect above), so
@@ -7189,6 +7539,10 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
             abilities: ab, approvals: ap, provider,
             model: model || MODEL_DEFAULT[provider],
             skills, respondTo, respondToAllowlist: respondTo === "allowlist" ? allowlist : [],
+            /* Absent means absent — a blank box is not `""` on the agent, it is
+               no connections file at all (the same rule the project folder
+               follows). `undefined` never reaches the wire. */
+            ...(connFile.trim() ? { connectionsFile: connFile.trim() } : {}),
           },
         }, setRefusal);
       if (!went) return;
@@ -7200,6 +7554,12 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
           approvals: ap, provider, lifecycle: life,
           model: model || MODEL_DEFAULT[provider],
           skills, respondTo, respondToAllowlist: respondTo === "allowlist" ? allowlist : [],
+          /* Said explicitly rather than left to the spread above, because
+             FORGETTING the file has to travel too. `undefined` is dropped on the
+             way onto the wire, so the agent comes back with no connections file
+             at all — never with `""`, which would be a second way of saying
+             "none" for anything downstream to disagree about. */
+          connectionsFile: connFile.trim() || undefined,
         },
       });
     }
@@ -7260,10 +7620,14 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
     })) === null);
   const switchesOpen = showSwitches;
   /* The powers that are switched ON and still hand the agent nothing, because
-     the thing they need — a folder list, a connected service — has nowhere to
-     be chosen yet (`capability-handoff.md` §4.4). Named here so the screen can
-     admit it instead of leaving him with a switch that looks broken. */
-  const inertSwitches = (["wholeComputer", "connections"] as const)
+     the thing they need — a folder list — has nowhere to be chosen yet
+     (`capability-handoff.md` §4.4). Named here so the screen can admit it
+     instead of leaving him with a switch that looks broken.
+     `connections` LEFT THIS LIST on 2026-08-03: there is now somewhere to
+     choose its file, so it is no longer inert-by-design. Whether it is inert
+     TODAY is a question about this agent, answered below by `connState` — the
+     same answer the engine reads when it builds the command line. */
+  const inertSwitches = (["wholeComputer"] as const)
     .filter(key => ab[key] === true);
 
   const toggle = (
@@ -7532,6 +7896,15 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
               )}
             </div>
 
+            {/* THE ONE SWITCH THAT NOW HAS SOMEWHERE TO POINT. "Use connected
+                services" is allowed by the switch and DELIVERED by a file — so
+                the file is chosen right here, under the switch that allows it,
+                and the block says plainly what this agent really has. It reads
+                the same function the engine host reads, so it cannot promise
+                something the command line will not carry. */}
+            <ConnectionsFilePick agentName={shownName} agentDraft={draft}
+              file={connFile} onChoose={setConnFile} />
+
             {/* A SWITCH THAT IS ON AND STILL GRANTS NOTHING MUST SAY SO.
                 Two of these powers need something the app cannot yet ask him
                 for — which folders, and which service. The engine reads both
@@ -7549,13 +7922,6 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                       <b>Reach files outside its own folder</b> needs you to say which folders,
                       and there is nowhere yet to choose them. Until there is, {shownName} gets
                       nothing beyond its own folder.
-                    </li>
-                  )}
-                  {inertSwitches.includes("connections") && (
-                    <li data-inert-row="connections">
-                      <b>Use connected services</b> needs a service picked for {shownName}{" "}
-                      specifically, and there is nowhere yet to pick one. Your own connected
-                      accounts are never used, at any setting.
                     </li>
                   )}
                 </ul>
@@ -8458,6 +8824,31 @@ interface DesktopBridge {
    */
   chooseFolder?: (current?: string) => Promise<
     { ok: boolean; path?: string; cancelled?: boolean; error?: string }>;
+  /**
+   * Ask the OWNER, through the operating system's own picker, which connections
+   * file one agent should use — the config the maker of a tool hands you. Same
+   * shape and same law as `chooseFolder`: the window never touches the
+   * filesystem, and `cancelled` is a normal answer.
+   */
+  chooseConnectionsFile?: (current?: string) => Promise<
+    { ok: boolean; path?: string; cancelled?: boolean; error?: string }>;
+  /**
+   * "Is the file I was given still on this computer?" — a yes/no and the moment
+   * it was asked, and nothing else. Nothing inside the file ever comes back.
+   */
+  connectionsFileHere?: (file: string) => Promise<{ here: boolean; checkedAt: number }>;
+  /**
+   * WINDOWS' OWN NOTIFICATION — the door that reaches him with Cloud9 minimised.
+   * Absent in a browser (dev), which is exactly the `osSupported: false` case
+   * `chooseDelivery` falls back to the in-app toast for.
+   */
+  notificationsSupported?: () => Promise<boolean>;
+  osNotify?: (note: Cloud9Notification) => Promise<
+    { ok: boolean; supported?: boolean; error?: string }>;
+  /** He clicked one — the note's ids come back, and the app lands on the thing. */
+  onNotificationClick?: (
+    handler: (note: { kind?: string | null; channelId?: string | null; subjectId?: string | null }) => void,
+  ) => (() => void) | void;
   /** Which address this computer's hub answers on, so a friend can reach it. */
   hubNetwork?: () => Promise<{
     address: string; loopbackOnly: boolean;

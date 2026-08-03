@@ -95,7 +95,8 @@ function assertSafeDecision(decision: NotifyDecision, event: NotifyEvent): void 
   if (decision.raise) {
     assertSafeNotification(decision.notification, event);
   } else {
-    assert.ok(["notifications_off", "quiet_hours", "duplicate", "self"].includes(decision.reason));
+    assert.ok(["notifications_off", "quiet_hours", "duplicate", "self", "room_muted"]
+      .includes(decision.reason));
   }
 }
 
@@ -200,6 +201,8 @@ test("decisions stay plain and deterministic for hostile prefs and seen keys", (
     { notify: true, quietOn: true, quietFrom: "", quietTo: HUGE },
     { notify: true, quietOn: true, quietFrom: "\u202e22:00", quietTo: "08:00" },
     { notify: true, quietOn: true, quietFrom: "NaN", quietTo: "Infinity" },
+    // a mute list full of junk must still only ever silence, never throw
+    { ...DEFAULT_NOTIFY_PREFS, notify: true, mutedChannelIds: [HUGE, "‮ch-1", "__proto__"] },
   ];
   const dates = [new Date(0), new Date(-1), new Date(NaN), new Date(Infinity)];
 
