@@ -119,7 +119,13 @@ oversized scope. The quality was real; the price was not necessary. Caps:
 5. **Cheap agents for mechanical work, one premium agent only where the
    design is genuinely hard.** Diagnosis pairs (two parallel diagnosers) are
    reserved for a bug that has already survived two fix attempts.
-6. **Budget check every ~10 agent runs**: if the feature has consumed what
+6. **Git state is global — workers never touch it.** Agents get their own
+   FILES, but `git stash` / `checkout` / `reset` / `clean` affect the whole
+   tree and will sweep up another live worker's uncommitted work (this
+   happened 2026-08-03; nothing was lost only because the worker noticed).
+   Put this in every worker prompt: *no git state commands; if you need a
+   clean-tree comparison, ask the conductor.* The conductor owns git.
+7. **Budget check every ~10 agent runs**: if the feature has consumed what
    feels like a quarter of a weekly quota and is not near its evidence chain,
    STOP, park on the branch, write SOL-REPORT.md, and end the session small
    rather than big.
