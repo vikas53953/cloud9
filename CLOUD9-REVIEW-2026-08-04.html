@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cloud9 review — 4 Aug 2026</title>
+<style>
+  :root{
+    --ink:#16232e; --bg:#f6f8fa; --card:#fff; --line:#dde4ea; --muted:#5a6b7a;
+    --crit:#b0202a; --crit-bg:#fdecec; --high:#c25708; --high-bg:#fdf0e4;
+    --med:#8a6d0b; --med-bg:#fbf5df; --low:#41607a; --low-bg:#eaf1f7;
+    --good:#1e7d4f; --good-bg:#e6f4ec;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--ink:#e6edf3;--bg:#111a22;--card:#18232e;--line:#2f3d4a;--muted:#93a4b3;
+      --crit:#ff8f8f;--crit-bg:#3a1618;--high:#ffb375;--high-bg:#3a2716;
+      --med:#e5cf7a;--med-bg:#332d14;--low:#9dc4e0;--low-bg:#16283a;
+      --good:#5cc78f;--good-bg:#12331f;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;padding:2rem 1rem 8rem}
+  .wrap{max-width:980px;margin:0 auto}
+  header{margin-bottom:2rem}
+  h1{font-size:2rem;margin:0 0 .3rem}
+  .sub{color:var(--muted);margin:0}
+  h2{font-size:1.3rem;margin:2.5rem 0 .8rem;padding-bottom:.4rem;border-bottom:2px solid var(--line)}
+  section{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:1.1rem 1.2rem;margin-bottom:1rem}
+  .scoreboard{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.8rem;margin-bottom:1.5rem}
+  .tile{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:.9rem 1rem;text-align:center}
+  .tile .n{font-size:2rem;font-weight:700;line-height:1.1;display:block}
+  .tile .l{font-size:.82rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .t-crit .n{color:var(--crit)} .t-high .n{color:var(--high)}
+  .t-med .n{color:var(--med)} .t-low .n{color:var(--low)} .t-good .n{color:var(--good)}
+  .badge{display:inline-block;font-size:.72rem;font-weight:700;letter-spacing:.05em;
+    text-transform:uppercase;padding:.2rem .55rem;border-radius:99px;margin-bottom:.5rem}
+  .b-crit{background:var(--crit-bg);color:var(--crit)}
+  .b-high{background:var(--high-bg);color:var(--high)}
+  .b-med{background:var(--med-bg);color:var(--med)}
+  .b-low{background:var(--low-bg);color:var(--low)}
+  .b-good{background:var(--good-bg);color:var(--good)}
+  section h3{margin:.2rem 0 .5rem;font-size:1.08rem}
+  p{margin:.5rem 0}
+  .what{font-weight:600}
+  .why{color:var(--muted)}
+  code{background:var(--low-bg);color:var(--ink);padding:.1rem .35rem;border-radius:5px;
+    font:0.86em ui-monospace,Consolas,monospace;word-break:break-word}
+  .where{font:0.82rem ui-monospace,Consolas,monospace;color:var(--muted);margin-top:.6rem;display:block}
+  ul{margin:.5rem 0;padding-left:1.2rem}
+  li{margin:.3rem 0}
+  .lead{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--good);
+    border-radius:12px;padding:1.1rem 1.2rem;margin-bottom:1.5rem}
+  .fixorder{counter-reset:step}
+  .fixorder li{margin:.6rem 0}
+  .note{color:var(--muted);font-size:.9rem}
+  section[data-fb]{padding-right:1.2rem;padding-top:2.4rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Cloud9 — outside review</h1>
+  <p class="sub">4 August 2026 · read of <code>C:\Users\vikasmit\cloud9</code> · three independent reviewers (hub, agent engine, desktop app)</p>
+</header>
+
+<div class="lead" data-fb="The headline verdict">
+  <p><strong>The short version:</strong> this is a serious, well-built app, not a demo. The parts that are hard to get right — permission checks in SQL before the row limit, one-use download tickets, crash-safe database migrations, a chat renderer that cannot produce raw HTML — are done properly and the reasoning is written down next to the code.</p>
+  <p><strong>Where it hurts:</strong> the same rules are enforced beautifully in one place and quietly skipped in another. Three of those gaps are serious enough that I would not put this on a shared or public network today. Every one of them is a small fix — the design is right, a handful of paths just walk around it.</p>
+</div>
+
+<div class="scoreboard">
+  <div class="tile t-crit"><span class="n">3</span><span class="l">Critical</span></div>
+  <div class="tile t-high"><span class="n">9</span><span class="l">High</span></div>
+  <div class="tile t-med"><span class="n">17</span><span class="l">Medium</span></div>
+  <div class="tile t-low"><span class="n">10</span><span class="l">Low / polish</span></div>
+  <div class="tile t-good"><span class="n">10</span><span class="l">Real strengths</span></div>
+</div>
+
+<h2>The three that matter most</h2>
+
+<section data-fb="C1 — anyone's web page can take over the hub">
+  <span class="badge b-crit">Critical 1</span>
+  <h3>Any web page you open can take over the hub</h3>
+  <p class="what">The hub accepts WebSocket connections from anywhere with no origin check, and falls back to a password that is printed in your source code: <code>dev-owner-token</code>.</p>
+  <p class="why">Browsers do not apply the same-origin rule to WebSockets. So while <code>Start Cloud9.cmd</code> is running, any website you visit in any browser can quietly connect to <code>ws://127.0.0.1:8787</code>, say hello with that token, and become the owner — read every channel, mint invites, and (because dev mode is on) start processes on your machine.</p>
+  <p>The packaged installer is safe: it generates a random 32-byte token and turns dev mode off. This is the workbench path only — but that is the path you use every day.</p>
+  <p><strong>Fix:</strong> refuse to start when the token is the default and dev mode is off, and add a <code>verifyClient</code> that rejects any upgrade carrying a browser <code>Origin</code> header. A real client sends none.</p>
+  <span class="where">apps/relay/src/server.ts:183, 221 · Start Cloud9.cmd:32</span>
+</section>
+
+<section data-fb="C2 — owner token sits in plaintext in localStorage">
+  <span class="badge b-crit">Critical 2</span>
+  <h3>The owner key is encrypted at rest, then copied to a plaintext file</h3>
+  <p class="what">The main process stores the hub token with Windows encryption and <code>0o600</code> permissions — then the preload copies the decrypted value into the browser's Local Storage, which is a plain, unencrypted file under <code>%APPDATA%\Cloud9</code>.</p>
+  <p class="why">That token is not a chat cookie. Owner rights let you create an agent, and an agent gets spawned with <code>--add-dir &lt;any folder&gt;</code>. Token equals read/write anywhere and run anything, as you. Any junk process running as your user — a bad npm install script, an infostealer — already scrapes those Local Storage files by default.</p>
+  <p>Your own code knows this rule: <code>purgeLegacySecrets</code> exists precisely because v1 kept the Claude key in localStorage, and the comment says that was wrong. The session token was then explicitly exempted from the purge.</p>
+  <p><strong>Fix (the class, not the case):</strong> the renderer should never hold the value. Keep the token in the main process and expose a <code>hello()</code> call over the bridge; let main own reconnection.</p>
+  <span class="where">apps/desktop/electron/preload.cjs:11-14 · apps/desktop/src/store.ts:708-714, 785-801</span>
+</section>
+
+<section data-fb="C3 — two agent turns can cross conversations">
+  <span class="badge b-crit">Critical 3</span>
+  <h3>Two agent turns at once can read each other's channel history</h3>
+  <p class="what">Each agent turn writes its private access ticket to a file with a fixed name — <code>.cloud9-mcp.json</code> — and two turns per agent are allowed to run at the same time.</p>
+  <p class="why">Agent "Scout" is in #general and #ops. Two messages land a second apart. Turn A writes its ticket; turn B overwrites it milliseconds later. Turn A's tool process starts after the overwrite, picks up B's ticket, and every history search turn A runs is answered with <strong>#ops</strong> content — which A then quotes into #general as fact. The channel re-check downstream does not catch it, because the ticket honestly says #ops. Also, whichever turn ends first deletes the file out from under the other.</p>
+  <p><strong>Fix:</strong> put the turn's random id in the filename. The random value already exists in scope — it is a one-line change. The general rule worth writing down: <em>any per-turn file gets the turn's id in its name.</em></p>
+  <span class="where">packages/engine/src/claude-cli.ts:565-574, 477-482, 518-520</span>
+</section>
+
+<h2>The pattern behind most of the findings</h2>
+
+<section data-fb="Theme — one owner per rule, then a bypass">
+  <span class="badge b-high">Theme</span>
+  <h3>Every rule has a proper owner — and one or two paths that walk around it</h3>
+  <p>This is worth fixing as a category rather than one bug at a time, because the same shape appears in all three parts of the app:</p>
+  <ul>
+    <li><strong>Secrets get stripped before spawning</strong> — by one shared function, with a name list <em>and</em> a shape regex. But <code>CLOUD9_CRED</code> matches neither (<code>CRED</code> ≠ <code>CREDENTIAL</code>), so on any machine started that way, your Anthropic key is handed to every child process — including Codex agents, which are a different account and which the code explicitly promises will never see it. One-line fix, biggest payoff on the list.</li>
+    <li><strong>The SDK provider skips the stripper entirely</strong> and inherits your whole shell environment. If <code>CLAUDE_CODE_OAUTH_TOKEN</code> is exported on the box, the turn silently bills that account instead of the key you saved — and an inherited <code>ANTHROPIC_BASE_URL</code> would send your key to someone else's proxy.</li>
+    <li><strong>Every hub request passes a permission gate</strong> — about forty of them do. <code>activity</code> passes none, so any invited friend can read the whole audit ledger: private channel names, approval sentences with private repo and branch names, every run summary. <code>tasks</code> and full agent definitions are broadcast to everyone too — including absolute paths on your disk like <code>C:\Users\vikasmit\keys\mcp.json</code>.</li>
+  </ul>
+  <p><strong>Class-level fix:</strong> make the switch statement default-deny with a <code>default:</code> that returns an error, and add one test that asserts every frame type has a gate. Same for spawning: no path builds an environment except through the stripper.</p>
+  <span class="where">packages/shared/src/index.ts:3985 · packages/engine/src/provider.ts:388 · apps/relay/src/server.ts:493, 1911</span>
+</section>
+
+<h2>Other high-severity items</h2>
+
+<section data-fb="H — desktop app opens remote pages inside itself">
+  <span class="badge b-high">High</span>
+  <h3>A link in a chat message opens a real web page inside the app</h3>
+  <p>There is no <code>setWindowOpenHandler</code> and no <code>will-navigate</code> guard, and there is no Content-Security-Policy anywhere. Every chat link renders as <code>target="_blank"</code>, so Electron's default opens a child window that inherits the preload bridge. An agent that summarises a poisoned web page and emits a link gives that page access to <code>setApiKey</code>, <code>setHubNetwork</code> and the folder picker.</p>
+  <p><strong>Fix:</strong> deny the window and hand the URL to the OS browser via <code>shell.openExternal</code>; block navigation away from the app's own origin; add a CSP with <code>connect-src</code> limited to the local hub. The CSP is also the second wall behind Critical 2 — right now there is only one wall.</p>
+  <span class="where">apps/desktop/electron/main.cjs:435-458 · apps/desktop/index.html</span>
+</section>
+
+<section data-fb="H — build chain downloads unverified code">
+  <span class="badge b-high">High</span>
+  <h3>The build downloads and runs a signing toolchain with no integrity check</h3>
+  <p><code>prepare-packaging.mjs</code> fetches an archive over the network, unpacks it, and electron-builder then executes it during <code>npm run dist</code> — with no checksum and no signature. electron-builder's own downloader verifies a hash; this script exists to bypass that path and dropped the check with it. Worse, the failure is swallowed with "carrying on", so a tampered or partial download does not even stop the build. A hijacked DNS or an intercepting proxy silently backdoors your installer.</p>
+  <p><strong>Fix:</strong> pin the asset's SHA-512 and verify before executing. Three lines.</p>
+  <span class="where">scripts/prepare-packaging.mjs:48-56</span>
+</section>
+
+<section data-fb="H — installed app is easy to tamper with">
+  <span class="badge b-high">High</span>
+  <h3>The installed app can be edited by anything running as you</h3>
+  <p><code>asar: false</code> plus a per-user install means the app ships as loose, editable files in a folder your account can write. The <code>files</code> list also ships the test files — including <code>testkit.cjs</code>, a fake <code>safeStorage</code> that does not encrypt — right next to the real <code>main.cjs</code>. Any user-level malware appends four lines and gets permanent execution inside the process that holds your decrypted tokens. There is no code signing on the Windows target either.</p>
+  <p><strong>Fix:</strong> turn asar on, exclude <code>*.test.cjs</code> and <code>testkit.cjs</code> from the package, and sign the build.</p>
+  <span class="where">apps/desktop/package.json:15-21, 33-36</span>
+</section>
+
+<section data-fb="H — one bad message kills the agent host">
+  <span class="badge b-high">High</span>
+  <h3>One malformed message kills the whole agent host</h3>
+  <p>The socket handler is <code>JSON.parse(String(raw))</code> with no try/catch, and there is no <code>uncaughtException</code> handler anywhere in the repo. A truncated frame ends the process. Every running turn dies with it — and the cleanup blocks never run, so the MCP ticket file and a copy of your Codex OAuth token are left behind on disk. Every other send path in that same file is carefully wrapped; the socket entry point is not.</p>
+  <span class="where">packages/engine/src/engine.ts:264</span>
+</section>
+
+<section data-fb="H — stale sockets make agents look alive">
+  <span class="badge b-high">High</span>
+  <h3>A second hello on one socket makes agents look alive forever</h3>
+  <p>Each hello adds a brand-new connection object without removing the old one; close only removes the last. An engine with retry logic that says hello twice leaves a ghost behind, so the hub believes an engine is connected forever. Downstream: presence shows agents ready when nothing can run them, "Cloud9 isn't running on that computer" never appears, and project look-ups hang until timeout. One line: remove the old connection before adding the new one.</p>
+  <span class="where">apps/relay/src/server.ts:254-286, 359-360</span>
+</section>
+
+<section data-fb="H — expired approvals can still be approved">
+  <span class="badge b-high">High</span>
+  <h3>Once you pass 1000 approvals, expired ones become answerable again</h3>
+  <p>The approvals query has no <code>ORDER BY</code> and applies its limit in JavaScript after reading the whole table. The expiry sweep only sees an arbitrary 1000 rows. An approval that ran out ten days ago but sits outside that window is still marked pending — and gets accepted. That breaks your own stated law that silence must never read as a yes.</p>
+  <span class="where">apps/relay/src/server.ts:3117-3129 · apps/relay/src/store.ts:2755-2758</span>
+</section>
+
+<h2>Medium — correctness and speed</h2>
+
+<section data-fb="M — correctness bugs worth queueing">
+  <span class="badge b-med">Medium</span>
+  <h3>Things that will produce wrong answers, quietly</h3>
+  <ul>
+    <li><strong>Search results can go to the wrong agent.</strong> Waiting searches are matched on the query text alone. Two agents searching "deploy" at the same time resolve each other's results; the channel filter then strips everything, and the tool confidently reports "Nothing in this conversation matches that — <em>that is a real answer</em>." A confident false negative in the one feature built to stop agents saying "I don't remember." Correlate on an id you mint, not on the user's words.</li>
+    <li><strong>Job summaries can be borrowed from another job.</strong> The comment says the run is checked against the task before use; the code does not check. Two background jobs run by default, so this is reachable.</li>
+    <li><strong>Files can be published into the wrong channel.</strong> Two turns for one agent share a working folder, and produced files are collected by timestamp, not by owner. A file made for #ops gets posted in #general.</li>
+    <li><strong>Demo mode only fakes the model.</strong> Everything else stays real: <code>!code</code> creates real git worktrees and branches, <code>!issue</code> reaches the real <code>gh</code> CLI. Your QA script defaults to demo mode, so a QA sweep on a machine with a project connected can create real branches.</li>
+    <li><strong>Your Codex OAuth token is copied into %TEMP% every turn</strong>, cleaned up only on a clean exit. No sweep at startup, and the <code>chmod 0600</code> does nothing on Windows. After a few crashes there are live tokens lying around.</li>
+    <li><strong>Task status and approval decisions are not checked at runtime.</strong> Send <code>decision: "maybe"</code> and the card becomes permanently unanswerable while the job is silently cancelled. The neighbouring handlers do validate — these two drifted.</li>
+  </ul>
+</section>
+
+<section data-fb="M — speed and smoothness">
+  <span class="badge b-med">Medium</span>
+  <h3>What will make chat feel slow at real sizes</h3>
+  <ul>
+    <li><strong>Channel lookup runs a query per channel</strong>, and it sits on the path of every send, history, react, mark-read and search. With 150 channels and 20 files in a room, one "add member" can fire tens of thousands of database calls on the single thread that serves everyone else.</li>
+    <li><strong>Unread counts parse every unread message on connect.</strong> Someone returning after three months blocks the whole hub while it parses tens of thousands of rows. The exact count is the right product call — it just belongs in SQL, not a JavaScript loop.</li>
+    <li><strong>The UI redraws everything on every frame.</strong> You built the selector layer that fixes this and then used it in 2 of 24 places; the other 22 subscribe to the entire world, so a presence tick re-renders every screen.</li>
+    <li><strong>Notification toasts rescan all loaded messages on every change</strong>, sorting each channel every time, and the "already seen" set never shrinks.</li>
+    <li><strong>No message virtualization</strong> — every loaded message is a live DOM node, so scroll-back grows the page without limit.</li>
+  </ul>
+</section>
+
+<h2>Polish and product gaps</h2>
+
+<section data-fb="L — daily-use gaps vs Slack">
+  <span class="badge b-low">Low</span>
+  <h3>Against a Slack-like bar</h3>
+  <p>Threads, search-everywhere, unread and mention counts, quiet hours, muting and OS notifications are all genuinely there and thoughtfully done. What is missing:</p>
+  <ul>
+    <li><strong>Drafts vanish when you switch channels.</strong> The composer's text lives in local state that unmounts on navigation. This is the most likely daily complaint on the list.</li>
+    <li><strong>No typing indicator between people.</strong> Agent presence is richly modelled; person-to-person is not.</li>
+    <li><strong>No permalink to a message</strong> and no jump-to-date.</li>
+    <li><strong>The sign-in box is pre-filled with <code>dev-owner-token</code></strong> — a value that is guaranteed to fail in a packaged build, shown on the one screen a real user reaches.</li>
+    <li><strong>The hub will bind to any address you type</strong>, including hotel wifi, over unencrypted <code>ws://</code>. Both layers block only wildcards. Allow loopback and the Tailscale range; require a flag for anything else.</li>
+    <li><strong>The mobile app is a prototype</strong> with a hardcoded LAN IP, a cleartext socket, an unguarded parse that silently freezes it, and it is not in the workspace list — so no test or typecheck ever touches it. Label it dead or remove it.</li>
+  </ul>
+</section>
+
+<section data-fb="L — the 12,000-line file and no linter">
+  <span class="badge b-low">Low</span>
+  <h3>Two structural things making the rest worse</h3>
+  <p><strong><code>App.tsx</code> is 12,177 lines</strong> — 156 functions, 145 pieces of state, in one module. The comments are excellent and are clearly why it grew, but it is past what a reviewer can hold, and it is the direct reason two of the medium findings drifted. It is also large enough that plain text search tools treat it as a binary file and silently find nothing. Suggested split with no behaviour change: icons, notifications, settings, agents, chat.</p>
+  <p><strong>There is no ESLint in the repo at all</strong> — no config, no lint script. The React hooks rule alone would have caught the settings screen bug where an effect reads a value it never re-runs on, leaving "Connected apps" permanently stale if you open Settings while reconnecting.</p>
+</section>
+
+<h2>What is genuinely good</h2>
+
+<section data-fb="Strengths — keep doing this">
+  <span class="badge b-good">Strengths</span>
+  <h3>These are above the bar for this kind of app</h3>
+  <ul>
+    <li><strong>Download tickets.</strong> One-use, 30 seconds, memory only, permission re-checked at redeem against current state, ticket deleted before any check can fail, content type computed from an allowlist rather than trusting the uploader. The CORS decision is both correct and correctly explained — most codebases get that one wrong.</li>
+    <li><strong>Permission filtering happens in SQL, before the row limit.</strong> This is the single most commonly botched thing in permissioned search, and the helper is defined once so the two query paths cannot drift.</li>
+    <li><strong>Database migrations run their work and their version bump in one transaction</strong>, so a crash cannot leave shape and version disagreeing. The search index self-heals on an interrupted backfill instead of staying silently short.</li>
+    <li><strong>The agent tool doorway is a real boundary.</strong> The search tool has no parameter that can name a channel, extra arguments are refused rather than ignored, and a fresh random ticket is minted per turn on loopback only.</li>
+    <li><strong>The command runner refuses instead of escaping.</strong> Strict allowlist, throws rather than repairs, untrusted text goes on stdin, and it kills the whole process tree. The most carefully reasoned module in the repo.</li>
+    <li><strong>The chat renderer cannot produce HTML</strong> — only React elements — so there is no escaping step a future edit can forget. The link checker rejects control characters before matching the scheme, so <code>java\nscript:</code> fails.</li>
+    <li><strong>Credentials in the main process are handled correctly</strong>: OS encryption with an explicit refusal path instead of a silent plaintext fallback, and a migration that deletes the old plaintext copy only after the encrypted write is confirmed. Logs record lengths, never values.</li>
+    <li><strong>Durability is proven, not asserted</strong> — the whole-file write has one owner, and the test kills a real process mid-write.</li>
+  </ul>
+</section>
+
+<h2>Where the tests are, and where they are not</h2>
+
+<section data-fb="Tests — the gaps map onto the findings">
+  <span class="badge b-med">Coverage</span>
+  <h3>~470 tests, and they are good — but they are pointed away from the risk</h3>
+  <p>Every finding above has a matching hole. That is not a coincidence; it is the diagnosis.</p>
+  <ul>
+    <li>Both existing tests for the audit ledger send the request <strong>from the owner's socket</strong> — nothing asserts a guest is refused.</li>
+    <li>Nothing asserts what a <strong>guest</strong> receives on connect; no test anywhere mentions the fields that leak your disk paths.</li>
+    <li>No test ever runs <strong>two turns for the same agent at once</strong> — which is why three separate findings coexist there.</li>
+    <li>The secret-stripping tests only check the credential names that are already handled, which is exactly why <code>CLOUD9_CRED</code> slipped through. The SDK provider has no test at all.</li>
+    <li>The approval-expiry test uses a near-empty table — precisely the case that passes.</li>
+    <li><code>packages/shared</code> has <strong>no test file of its own</strong> for its 4,495-line core, which holds the redaction rules, filename safety, and the "must ask before acting" logic. It is covered only indirectly, so deleting an unrelated relay test silently removes coverage of a safety rule.</li>
+    <li>Three <code>.test.ts.new</code> files sit beside the real tests and never run.</li>
+  </ul>
+</section>
+
+<h2>If I were fixing it, in this order</h2>
+
+<section data-fb="The fix order">
+  <span class="badge b-good">Plan</span>
+  <h3>Cheapest-first, worst-first</h3>
+  <ol class="fixorder">
+    <li><strong>Add <code>CLOUD9_CRED</code> to the credential list.</strong> One line, stops your Anthropic key being handed to every child process including a different vendor's agent.</li>
+    <li><strong>Wrap the socket message handler</strong> and add a process-level crash handler. One block, stops a stray frame taking down every running turn and stranding secrets on disk.</li>
+    <li><strong>Put the turn id in the MCP config filename.</strong> One line, closes the cross-channel history leak.</li>
+    <li><strong>Refuse the default owner token, and check the origin on upgrade.</strong> Closes the browser-takeover path on the workbench.</li>
+    <li><strong>Move the hub token out of the renderer</strong>, and add the window-open handler plus a CSP. These three together are what turn "a bug" into "not exploitable".</li>
+    <li><strong>Pin the hash on the packaging download</strong>, turn on asar, drop the test files from the package.</li>
+    <li><strong>Gate <code>activity</code>, narrow <code>tasks</code>, strip disk paths from agent definitions</strong> — then add the default-deny case and the one test that says every request type has a gate.</li>
+    <li><strong>Then the speed work</strong> (channel lookup, unread counts, the selector layer) and the product gaps (drafts first).</li>
+  </ol>
+  <p class="note">Steps 1–3 are about ten minutes of typing and remove the two nastiest failure modes. Steps 4–6 are the difference between "safe on my laptop" and "safe on a network".</p>
+</section>
+
+<section data-fb="Anything I got wrong or missed">
+  <span class="badge b-low">Over to you</span>
+  <h3>Push back here</h3>
+  <p>This was a read of the code only — I did not run the app, so nothing above is confirmed against a live session. If any of it is already handled somewhere I did not look, or a path is unreachable for a reason the code does not say, mark it 👎 and tell me where.</p>
+</section>
+
+</div>
+<script>
+/* ============================================================
+   Vikas review kit — feedback layer for every HTML review page.
+   Paste this <script> at the end of any artifact I hand him.
+
+   What it gives him:
+     - click any section marked data-fb="<label>" to attach a note
+     - thumbs up / down per section
+     - a floating panel listing everything he has said
+     - ONE button that copies it all as plain text to paste back
+
+   Why it exists: published artifacts cannot send data back into a
+   Claude session (no such capability). This turns "read a wall and
+   retype your thoughts" into "click, type, copy once".
+
+   Usage:
+     1. mark reviewable blocks:  <section data-fb="Option A — Slack True">
+     2. include this script once, at the end of the page.
+   ============================================================ */
+(function () {
+  "use strict";
+  var STORE = "vikas-fb-" + (document.title || location.pathname);
+  var notes = {};
+  try { notes = JSON.parse(localStorage.getItem(STORE) || "{}"); } catch (e) { notes = {}; }
+
+  function save() { try { localStorage.setItem(STORE, JSON.stringify(notes)); } catch (e) {} }
+
+  var css = document.createElement("style");
+  css.textContent = [
+    ':root{--fb-ink:#16232e;--fb-bg:#fff;--fb-line:#d8e0e8;--fb-accent:#2c7fc4;',
+    '--fb-yes:#1e7d4f;--fb-yes-bg:#e3f3ea;--fb-no:#b03535;--fb-no-bg:#fbe7e7;--fb-muted:#5a6b7a;}',
+    '@media (prefers-color-scheme:dark){:root{--fb-ink:#e6edf3;--fb-bg:#18232e;--fb-line:#2f3d4a;',
+    '--fb-accent:#5aa5dd;--fb-yes:#5cc78f;--fb-yes-bg:#14372a;--fb-no:#e07a7a;--fb-no-bg:#3d1d1d;--fb-muted:#93a4b3;}}',
+    '[data-fb]{position:relative;}',
+    '[data-fb].fb-has{outline:2px solid var(--fb-accent);outline-offset:3px;border-radius:8px;}',
+    '.fb-tools{position:absolute;top:.4rem;right:.4rem;display:flex;gap:.25rem;opacity:.45;',
+    'transition:opacity .15s;z-index:5;}',
+    '[data-fb]:hover .fb-tools,[data-fb]:focus-within .fb-tools{opacity:1;}',
+    '@media (prefers-reduced-motion:reduce){.fb-tools{transition:none;}}',
+    '.fb-tools button{font:600 .78rem/1 system-ui,sans-serif;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);border-radius:99px;padding:.3rem .6rem;cursor:pointer;}',
+    '.fb-tools button:hover{border-color:var(--fb-accent);color:var(--fb-accent);}',
+    '.fb-tools button.on-yes{background:var(--fb-yes-bg);color:var(--fb-yes);border-color:var(--fb-yes);}',
+    '.fb-tools button.on-no{background:var(--fb-no-bg);color:var(--fb-no);border-color:var(--fb-no);}',
+    '.fb-note{margin-top:.6rem;width:100%;box-sizing:border-box;font:.92rem/1.5 system-ui,sans-serif;',
+    'color:var(--fb-ink);background:var(--fb-bg);border:1px dashed var(--fb-line);border-radius:8px;',
+    'padding:.55rem .7rem;resize:vertical;min-height:2.6rem;}',
+    '.fb-note:focus{outline:2px solid var(--fb-accent);outline-offset:1px;border-style:solid;}',
+    '.fb-bar{position:fixed;right:1rem;bottom:1rem;z-index:9999;display:flex;flex-direction:column;',
+    'align-items:flex-end;gap:.5rem;font:14px/1.5 system-ui,sans-serif;}',
+    '.fb-bar button{cursor:pointer;border-radius:99px;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);padding:.55rem 1rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.14);}',
+    '.fb-bar .fb-copy{background:var(--fb-accent);color:#fff;border-color:transparent;}',
+    '.fb-panel{background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;',
+    'padding:.9rem 1rem;max-width:min(380px,90vw);max-height:50vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.2);display:none;}',
+    '.fb-panel.open{display:block;}',
+    '.fb-panel h4{margin:0 0 .5rem;font-size:.95rem;}',
+    '.fb-panel li{margin-bottom:.5rem;font-size:.88rem;}',
+    '.fb-panel .lbl{font-weight:600;}',
+    '.fb-empty{color:var(--fb-muted);font-size:.88rem;margin:0;}',
+    '@media print{.fb-bar,.fb-tools{display:none;}}'
+  ].join("");
+  document.head.appendChild(css);
+
+  // The floating bar is built FIRST: per-section wiring calls render(), which
+  // needs these to exist. (Building it after the loop threw on the first
+  // section and left every later section without its buttons.)
+  var bar = document.createElement("div");
+  bar.className = "fb-bar";
+  var panel = document.createElement("div");
+  panel.className = "fb-panel";
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  var copy = document.createElement("button");
+  copy.type = "button"; copy.className = "fb-copy"; copy.textContent = "📋 Copy my feedback";
+  bar.appendChild(panel); bar.appendChild(toggle); bar.appendChild(copy);
+  document.body.appendChild(bar);
+
+  var blocks = [].slice.call(document.querySelectorAll("[data-fb]"));
+
+  // Standalone mode: a page with no marked-up blocks (e.g. a full-screen
+  // prototype we did not author) still gets a working note box, so the layer
+  // can be injected into ANY page rather than only pages we wrote.
+  if (!blocks.length) {
+    var solo = document.createElement("div");
+    solo.setAttribute("data-fb", document.title || "this page");
+    solo.setAttribute("data-fb-solo", "");
+    solo.style.cssText = "position:fixed;left:1rem;bottom:1rem;z-index:9998;width:min(320px,80vw);" +
+      "background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;" +
+      "padding:2.2rem .8rem .8rem;box-shadow:0 8px 30px rgba(0,0,0,.2);font:14px/1.5 system-ui,sans-serif;";
+    var cap = document.createElement("div");
+    cap.textContent = "Notes on this page";
+    cap.style.cssText = "font-weight:600;font-size:.85rem;margin-bottom:.3rem;";
+    solo.appendChild(cap);
+    document.body.appendChild(solo);
+    blocks = [solo];
+  }
+  blocks.forEach(function (el) {
+    var key = el.getAttribute("data-fb");
+    if (!notes[key]) notes[key] = { verdict: "", text: "" };
+
+    var tools = document.createElement("div");
+    tools.className = "fb-tools";
+    var yes = document.createElement("button");
+    yes.type = "button"; yes.textContent = "👍 like"; yes.title = "I like this";
+    var no = document.createElement("button");
+    no.type = "button"; no.textContent = "👎 no"; no.title = "Not this";
+    var add = document.createElement("button");
+    add.type = "button"; add.textContent = "💬 note"; add.title = "Write a note";
+    tools.appendChild(yes); tools.appendChild(no); tools.appendChild(add);
+    el.appendChild(tools);
+
+    var note = document.createElement("textarea");
+    note.className = "fb-note";
+    note.placeholder = "Your note on “" + key + "”…";
+    note.value = notes[key].text || "";
+    // in standalone mode the box is the whole point — always show it
+    var solo = el.hasAttribute("data-fb-solo");
+    note.style.display = notes[key].text || solo ? "block" : "none";
+    el.appendChild(note);
+
+    function paint() {
+      yes.className = notes[key].verdict === "yes" ? "on-yes" : "";
+      no.className = notes[key].verdict === "no" ? "on-no" : "";
+      el.classList.toggle("fb-has", !!(notes[key].verdict || notes[key].text));
+      render();
+    }
+    yes.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "yes" ? "" : "yes"; save(); paint();
+    });
+    no.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "no" ? "" : "no"; save(); paint();
+    });
+    add.addEventListener("click", function () {
+      note.style.display = "block"; note.focus();
+    });
+    note.addEventListener("input", function () {
+      notes[key].text = note.value.trim(); save(); paint();
+    });
+    paint();
+  });
+
+  function collected() {
+    return Object.keys(notes)
+      .filter(function (k) { return notes[k].verdict || notes[k].text; })
+      .map(function (k) { return { key: k, v: notes[k].verdict, t: notes[k].text }; });
+  }
+
+  function asText() {
+    var items = collected();
+    if (!items.length) return "";
+    var out = ["FEEDBACK ON: " + (document.title || "this page"), ""];
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "LIKE" : i.v === "no" ? "NO" : "NOTE";
+      out.push("- [" + mark + "] " + i.key + (i.t ? " — " + i.t : ""));
+    });
+    return out.join("\n");
+  }
+
+  function render() {
+    var items = collected();
+    toggle.textContent = items.length ? "🗒 " + items.length + " marked" : "🗒 no marks yet";
+    if (!items.length) { panel.innerHTML = '<p class="fb-empty">Hover any section, then use 👍 / 👎 / 💬.</p>'; return; }
+    var html = "<h4>What you've said</h4><ul>";
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "👍" : i.v === "no" ? "👎" : "💬";
+      html += '<li>' + mark + ' <span class="lbl">' + escapeHtml(i.key) + "</span>" +
+        (i.t ? " — " + escapeHtml(i.t) : "") + "</li>";
+    });
+    panel.innerHTML = html + "</ul>";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  toggle.addEventListener("click", function () { panel.classList.toggle("open"); });
+  copy.addEventListener("click", function () {
+    var text = asText();
+    if (!text) { copy.textContent = "nothing marked yet"; setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 1600); return; }
+    var done = function () {
+      copy.textContent = "✅ copied — paste it to Claude";
+      setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 2600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { window.prompt("Copy this:", text); }
+      document.body.removeChild(ta);
+    }
+  });
+
+  render();
+})();
+
+</script>
+</body>
+</html>
+

@@ -115,11 +115,159 @@ export async function waitFor(page, check, arg, { timeout = AGENT_REPLY_TIMEOUT_
   }
 }
 
-/** Wait until an agent has answered in the open conversation, mentioning `contains`. */
-export async function waitForAgentReply(page, contains, opts = {}) {
-  await waitFor(page, needle => [...document.querySelectorAll(".msg")]
-    .some(m => m.querySelector(".badge") && m.textContent.toLowerCase().includes(needle.toLowerCase())),
-  contains, { ...opts, what: `an agent reply mentioning "${contains}"` });
+/**
+ * WHERE AN AGENT'S ANSWER LIVES NOW — the ONE place every QA script asks.
+ *
+ * WHAT CHANGED (2026-08-04, deliberate and owner-requested). An agent's answer
+ * hangs off the message it answers: `threadOf()` in the engine returns
+ * `trigger.replyTo ?? trigger.id`, so a question typed in the CHANNEL becomes
+ * its own thread root and the answer is a reply under it. The hub keeps threads
+ * one level deep (`resolveReplyTo` re-parents onto the root), and the desktop's
+ * default `Prefs.replies = "thread"` HIDES replies from the main scroll. So an
+ * agent's answer to a question is no longer a row in `.msgs` at all: the room
+ * shows his question with an "N replies" line under it, and the words are in the
+ * thread panel.
+ *
+ * THE THREE THINGS THAT STILL REACH THE ROOM ON THEIR OWN, because there is no
+ * message for them to answer: a schedule firing, a received handoff, and a
+ * proactive line (including the one-line "🧵 Finished in the thread: …" a long
+ * job posts back when it ends). Those are the `inRoom: true` cases.
+ *
+ * Every wait on an agent's answer in every QA script goes through here, so the
+ * next time this rule moves there is exactly one place to move it — the reason
+ * the old `waitForAgentReply` had to be replaced rather than patched at 15 call
+ * sites, each of which had quietly grown its own idea of where to look.
+ *
+ * IT CANNOT PASS ON SILENCE. Every step is a bounded wait on something that has
+ * to appear: the question in the room, then the reply line ON that question,
+ * then the thread panel showing that question, then an agent-authored row in
+ * the panel carrying the words. Nothing here is satisfied by an absence, and a
+ * step that never happens throws with a sentence naming what was waited for.
+ *
+ * Options:
+ *   under   — the question the answer hangs off: a message id, or `{ text }` to
+ *             find the last row in the conversation carrying those words.
+ *             Required unless `inRoom`.
+ *   text    — words the answer must carry (case-insensitive). "" means any.
+ *   author  — the agent's name as the row prints it, when WHO answered is the
+ *             point of the check.
+ *   inRoom  — true for the paths that are still channel-level (see above).
+ *   close   — shut the thread panel again afterwards (default true), so a check
+ *             never leaves the screen in a state the next one did not ask for.
+ *
+ * Returns the facts, and judges only "did it arrive": `{ where, rootId,
+ * answerIds, replies, alsoInRoom }`. `alsoInRoom` is the answer's own message
+ * id looked for in the conversation behind the panel — the caller decides what
+ * a leak means, because for one check (the headline one) it IS the check.
+ */
+export async function waitForAgentAnswer(page, opts = {}) {
+  const {
+    under, text = "", author = "", inRoom = false,
+    timeout = AGENT_REPLY_TIMEOUT_MS, close = true, what,
+  } = opts;
+  const needle = { text: text.toLowerCase(), author };
+
+  /* ONE matcher, asked twice — once to wait and once to report. Two spellings of
+     "an agent answered" is how a suite ends up waiting for one thing and then
+     reporting a different one. `[data-msg]` is part of it on purpose: an
+     approval card is also a `.msg.from-agent` and it is nobody's answer. */
+  const MATCH = ([sel, n]) =>
+    [...document.querySelectorAll(`${sel} .msg.from-agent[data-msg]`)]
+      .filter(m => (m.innerText ?? "").toLowerCase().includes(n.text))
+      .filter(m => !n.author
+        || (m.querySelector(".who b")?.textContent ?? "").trim() === n.author)
+      .map(m => m.dataset.msg);
+  const answersIn = scope => page.evaluate(MATCH, [scope, needle]);
+
+  const said = [text && `mentioning "${text}"`, author && `from ${author}`]
+    .filter(Boolean).join(" ");
+
+  /* The wait and the report ask the SAME matcher, so this polls from here rather
+     than handing `waitForFunction` a second copy of the query. It is still a
+     bounded wait that throws in the same words `waitFor` uses — silence can
+     never come back as a pass. */
+  const untilAnswered = async (scope, why) => {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      if ((await answersIn(scope)).length > 0) return;
+      if (Date.now() >= deadline) {
+        throw new Error(`gave up after ${Math.round(timeout / 1000)}s waiting for ${why}`);
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+  };
+
+  if (inRoom) {
+    /* Still a room message, and that is the whole point of this branch — a
+       schedule, a received handoff or a proactive line has no question to hang
+       off. If one of these ever starts landing in a thread it fails HERE, which
+       is the failure we want: the rule would have changed. */
+    await untilAnswered(".msgs",
+      what ?? `an agent line in the conversation ${said || "to arrive"}`);
+    const answerIds = await answersIn(".msgs");
+    return { where: "room", rootId: null, answerIds, replies: null, alsoInRoom: answerIds };
+  }
+
+  if (!under) throw new Error("waitForAgentAnswer needs `under` (the question the answer hangs off)");
+
+  // ---- 1. the question itself, in the conversation ----
+  /* A QUESTION IS SOMETHING A PERSON TYPED, so agent-authored rows are skipped
+     when finding it by words. That is not tidiness — it is a trap this walked
+     into on its first run: a long job's own room line QUOTES the ask it
+     finished ("🧵 Finished in the thread: compare 14 villas…"), sits BELOW the
+     ask, and matches the same words. Taking the last match handed back the
+     agent's line, which of course has no thread of its own, and the check then
+     waited ninety seconds for a reply line that could never appear and blamed
+     the feature. Pass the message id directly when the question really is an
+     agent's. */
+  let rootId = typeof under === "string" ? under : null;
+  if (!rootId) {
+    const words = under.text;
+    await waitFor(page, w => [...document.querySelectorAll(".msgs .msg[data-msg]")]
+      .filter(m => !m.classList.contains("from-agent"))
+      .some(m => (m.innerText ?? "").includes(w)),
+    words, { timeout: 30000, what: `the question "${words}" to appear in the conversation` });
+    rootId = await page.evaluate(w => [...document.querySelectorAll(".msgs .msg[data-msg]")]
+      .filter(m => !m.classList.contains("from-agent"))
+      .filter(m => (m.innerText ?? "").includes(w)).map(m => m.dataset.msg).pop(), words);
+  }
+
+  // ---- 2. the room says the question has been answered ----
+  await waitFor(page, id => {
+    const line = document.querySelector(`.msgs .msg[data-msg="${id}"] .threadline`);
+    return !!line && Number(line.dataset.replies ?? 0) >= 1;
+  }, rootId, { timeout,
+    /* Its OWN sentence, never the caller's — this step and the one below both
+       used to borrow `what`, so a failure could not say WHICH of them gave up:
+       "the answer never came" and "the room never even said there was one" are
+       two different bugs. */
+    what: `the question to grow a replies line under it in the conversation${said ? ` (${said})` : ""}` });
+
+  // ---- 3. open that thread ----
+  const alreadyOpen = await page.locator(`.threadpanel .msg[data-msg="${rootId}"]`).count();
+  if (!alreadyOpen) {
+    await page.click(`.msgs .msg[data-msg="${rootId}"] .threadline`);
+    await page.waitForSelector(".threadpanel", { timeout: 20000 });
+    await waitFor(page, id => !!document.querySelector(`.threadpanel .msg[data-msg="${id}"]`),
+      rootId, { timeout: 20000, what: "the thread panel to show the question it hangs off" });
+  }
+
+  // ---- 4. the answer, in that thread ----
+  await untilAnswered(".threadpanel",
+    what ?? `an agent answer inside the thread under the question ${said}`);
+
+  const answerIds = await answersIn(".threadpanel");
+  const alsoInRoom = await page.evaluate(ids =>
+    ids.filter(i => !!document.querySelector(`.msgs .msg[data-msg="${i}"]`)), answerIds);
+  const replies = Number(await page.getAttribute(
+    `.msgs .msg[data-msg="${rootId}"] .threadline`, "data-replies"));
+
+  if (close && await page.locator(".threadpanel .threadclose").count()) {
+    await page.click(".threadpanel .threadclose");
+    await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 })
+      .catch(() => { /* another check may have opened one of its own */ });
+  }
+  return { where: "thread", rootId, answerIds, replies, alsoInRoom };
 }
 
 /**

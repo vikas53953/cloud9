@@ -1,7 +1,9 @@
 // Browser QA for v2: tasks, approvals, activity (spec FR-TS / FR-AP / FR-AU).
 import { chromium } from "playwright";
 import fs from "node:fs";
-import { assertHarnessIsHonest, qaTarget, reportAndExit, signInAsOwner } from "./qa-target.mjs";
+import {
+  assertHarnessIsHonest, qaTarget, reportAndExit, signInAsOwner, waitForAgentAnswer,
+} from "./qa-target.mjs";
 
 const SHOTS = new URL("../docs/qa", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 fs.mkdirSync(SHOTS, { recursive: true });
@@ -53,9 +55,20 @@ try {
   const box = page.locator(".composer textarea");
   await box.fill("@Guard !bg research the sensitive topic");
   await box.press("Enter");
-  // a cold engine takes 15-25s to say its first word; 8s could never survive it
-  await page.waitForSelector(".msg p:has-text('approval')", { timeout: 90000 });
-  ok("agent announces it is waiting for approval", true);
+  /* WHERE THE ANSWER IS NOW. Since 2026-08-04 an agent answers in a thread
+     hanging off the message it answers, so "I'm waiting for my owner's approval"
+     is a reply under his ask, not a row in the scroll — see the long note on
+     `waitForAgentAnswer` in qa-target.mjs. The wait bound is that helper's, which
+     is sized for a cold engine (15-25s to say its first word on this machine).
+     This is the only place this script waits on an agent's words, so it is the
+     only place that had to move. */
+  const approvalSaid = await waitForAgentAnswer(page, {
+    under: { text: "research the sensitive topic" }, text: "approval",
+    what: "the agent to say it is waiting for approval, in the thread under the ask",
+  });
+  ok("agent announces it is waiting for approval, in a thread under the message that asked",
+    approvalSaid.answerIds.length >= 1 && approvalSaid.replies >= 1,
+    `${approvalSaid.answerIds.length} line(s) in the thread, the ask says ${approvalSaid.replies} reply/replies`);
 
   // tasks rail button shows the badge + pending approval
   // (selector updated in the Studio reskin: Tasks is a rail button with a count
@@ -83,8 +96,17 @@ try {
   await page.screenshot({ path: `${SHOTS}/12-task-completed.png` });
   ok("approved task runs to completed with result", true);
   await page.click('.rail-btn[data-go="chat"]');
-  await page.waitForSelector(".msg.proactive .selfstart", { timeout: 30000 });
-  ok("completion posts a proactive message in the channel", true);
+  /* STILL A ROOM MESSAGE, and deliberately. The job's DETAIL goes back into the
+     thread it was asked for in, and the conversation gets one short proactive
+     line saying it ended and where to look ("🧵 Finished in the thread: …") —
+     `reportFinished` in packages/engine/src/engine.ts. So the room is never
+     blind to work that happened, and this check is scoped to `.msgs` so a line
+     drawn inside an open thread panel could never stand in for it. */
+  await page.waitForSelector(".msgs .msg.proactive .selfstart", { timeout: 30000 });
+  const roomLine = (await page.locator(".msgs .msg.proactive").last().innerText())
+    .replace(/\s+/g, " ").trim();
+  ok("a finished job posts one short line back to the channel, unasked, saying it ended and where the detail is",
+    /in the thread/i.test(roomLine), roomLine.slice(0, 100));
 
   // activity trail
   await page.click('.rail-btn[data-go="activity"]');

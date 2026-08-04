@@ -23,6 +23,8 @@ import {
 // Semantic receipts live in their own tiny ephemeral store, on purpose — see
 // the header of that file. This is the only line of this module that knows.
 import { noteReceipt } from "./receipts.js";
+// …and so do live steps, for the same reasons, in their own file.
+import { noteLiveSteps } from "./livesteps.js";
 
 /**
  * Pull a join token (`join_…`) off the end of a pasted link, however it was
@@ -2759,6 +2761,14 @@ export class RelayClient {
            lasting. It goes to its own small store in `receipts.tsx`, which
            throws it away on a timer and on reload. See that file's header. */
         noteReceipt(frame.receipt);
+        break;
+      case "liveSteps":
+        /* WHAT AN AGENT IS DOING RIGHT NOW. Same law as `receipt` above, same
+           reason: ephemeral, stored nowhere, kept out of `w` entirely. The
+           STORED record still arrives as `runRecorded` when the turn ends and
+           is what survives — this only fills the silence in between. Its own
+           small store in `livesteps.ts`. */
+        noteLiveSteps(frame.live);
         break;
       case "messageUpdated":
         this.replaceMessage(frame.message);

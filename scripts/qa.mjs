@@ -6,7 +6,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import {
   assertHarnessIsHonest, qaOwnerToken, qaTarget, reportAndExit, signInAsOwner, waitFor,
-  waitForAgentReply,
+  waitForAgentAnswer,
 } from "./qa-target.mjs";
 // The screen shows `summarizeRun`'s sentence VERBATIM, so the check that it did
 // has to be able to say the sentence itself. Imported from the same package the
@@ -396,7 +396,92 @@ function mintJoinTokenOn(port, token) {
 //  • ONE for THE SAME BOX, NARROWER: the thread's tool row must be the SAME row
 //    as the conversation's, not a named list of four, so a tool added to the
 //    room tomorrow and quietly withheld from the thread fails here.
-const EXPECTED_CHECKS = 542;
+// 542 → 561 on 2026-08-04: nineteen permanent checks for the chat experience,
+// in four groups. Every one of them exists because a thing he reported was true
+// and nothing in this suite would have caught it coming back.
+//  • SIX for READING BACK MUST NOT COST HIM THE NEXT MESSAGE (his: "the chat
+//    window doesn't auto-scroll to the newest message on Enter"). The checks
+//    that already held "a send takes the view down" passed all through the bug,
+//    because they never read back FAR ENOUGH to ask the hub for an older page —
+//    and asking is what set the scroll anchor that was only ever released by a
+//    page that really added messages. A page that adds nothing (there is nothing
+//    older) released nothing, the anchor was held for the rest of that room's
+//    life, and his own message coming back after Enter was pulled straight back
+//    to the row he had been reading. So the walk is the bug's own shape: a new
+//    conversation of sixty messages, read all the way to the start, and only
+//    then a message typed. The other five are the pill that the same rule now
+//    raises instead of yanking him: a message from somebody else does not move
+//    him and is counted; his own is never counted; clicking it takes him to the
+//    newest and clears it; and walking down there himself clears it too. The
+//    empty slot the pill lives in is held to always being there, because a slot
+//    that came and went would move the bottom the follow rule watches.
+//  • SEVEN for THE BOX BEING CALM UNTIL HE IS WRITING (his §3.2: affordances
+//    appear on intent). The line that is easy to cross by accident is held by
+//    two questions asked of the same row — is it IN the box (always) and is it
+//    SHOWING (only while he is writing) — because a tool removed from the DOM
+//    when idle is the invisibility bug again in a tidier coat. The ＋ door and
+//    Send are held to being on screen in BOTH states for the same reason. The
+//    `@ agent` button really did go, so its check is not "is it gone" on its own
+//    — which breaking both roads would satisfy — but "it is gone AND typing @
+//    still opens the very list it opened". The `/` road is held to being the
+//    SAME list as the ＋ (by comparing the row counts, so a second drifting
+//    command table fails here), to narrowing as he types, to writing the line in
+//    without sending it, and to refusing a row that cannot work here in the same
+//    sentence the list itself uses. The last one is the two ways a file usually
+//    arrives — dropped on the box, or pasted into it.
+//  • FOUR for SEMANTIC RECEIPTS (his §2). A live 👀 → 💭 → one committed tick,
+//    held to being ONE moving signal rather than a growing pile; held to being
+//    unmistakable from a person's reaction (a greyed span with no count and a
+//    tooltip that says it is a live signal that is not saved, beside a real
+//    person's button with a count on the same message at the same moment); and
+//    held to being genuinely EPHEMERAL by a reload, with the person's reaction
+//    going through the same reload so "everything vanished" cannot pass as
+//    "receipts vanished". The three signals are REAL `agentReceipt` frames over
+//    the owner's own socket — the hub's every gate runs, it really broadcasts,
+//    the real handler routes and the real component draws. Only the ENGINE's
+//    decision about when to send each one is stood in for; catching a live turn
+//    mid-👀 would be a race, not a check.
+//  • TWO for SMOOTHNESS AS A NUMBER, read off the app's own render counter. One
+//    incoming message used to redraw 151 bubbles and now redraws one; an
+//    unrelated presence tick used to redraw 151 and now redraws none. These are
+//    the checks that stop the optimisation quietly rotting.
+//  • THREE for ENTER FROM A LONG WAY BACK (`# farback`), which exist for one
+//    bug and name it: pressing Enter started a smooth scroll, and the rule that
+//    started it knew its own animation by a 700ms clock (`FOLLOW_SETTLES_MS`)
+//    started once and treated as how long a follow LASTS. A smooth scroll's
+//    length grows with the distance — about 745ms for 2,000px, about 1,520ms
+//    for 13,000px — so from far back the clock ran out mid-animation, the app
+//    read the rest of its own scroll as the reader moving, and both the arrival
+//    rule and the resize watcher switched off. The view landed on a target
+//    worked out before his row existed, short by exactly that row's height.
+//    Every OTHER room in this suite is about 2,000px tall, which is a follow
+//    inside the clock — which is why they were all green while he was looking
+//    at the bug. So these three build a room that is genuinely tall (260 long
+//    messages, four pages read back, parked 10,000px+ off the bottom), hold his
+//    echo open so it lands mid-scroll, and read the rule's own trail: with the
+//    bug the reasons since Enter are exactly ["sent","resized"], and the word
+//    that says the fix is alive is "arrived".
+//  • 2026-08-04, THE THREADING ROUND (+8, 564 → 572). An agent's answer now goes
+//    into a thread hanging off the message it answers, in the channel as well as
+//    inside a thread (`threadOf` in packages/engine/src/threads.ts). Every wait
+//    on an agent's answer moved to the one helper, `waitForAgentAnswer` in
+//    qa-target.mjs — that part changed where checks LOOK without changing how
+//    many there are. These eight are genuinely new ground:
+//      +1 HIS ASK, pinned: a question in the CHANNEL leaves no agent row in the
+//         conversation, and the answer is in a thread under his own message.
+//         The check that stood here asserted the OPPOSITE in its own name, so it
+//         was rewritten rather than kept — it would have gone green on the bug.
+//      +4 THE LAST INERT SWITCH, closed. "Reach files outside its own folder"
+//         used to be on, allowed, approved and grant nothing, and the old check
+//         DEMANDED that inert row. It now asserts no inert row is left anywhere,
+//         plus the three things the folder block put in its place: the honest
+//         "none" state, the choose/forget controls, and the refusal a window
+//         with no desktop shell must give. The fourth is its silence twin at the
+//         bottom rung — switch off, nothing remembered, nothing claimed.
+//      +3 LIVE STEPS, the new preview: they stream onto the message that asked,
+//         a step reported twice merges into one, the block says out loud it is
+//         not the record, and `done` really ends it.
+const EXPECTED_CHECKS = 572;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -653,7 +738,13 @@ try {
   await page.click("text=# trip-goa");
   ok("channel created with agent member", true);
 
-  // @mention reply
+  /* ---- @mention: the answer hangs off the question, in a thread ----
+   * WHAT CHANGED (2026-08-04): an agent's answer goes into a thread on the
+   * message it answers, in the channel as well as inside a thread — see
+   * `threadOf()` in packages/engine/src/threads.ts and the long note on
+   * `waitForAgentAnswer`. So "the agent replied" is no longer "there is a row in
+   * the scroll": his question carries "1 reply" and the words are in the panel.
+   * Every wait on an agent's answer in this file goes through the one helper. */
   const box = page.locator(".composer textarea");
   await box.fill("@Scout find beach villas in Goa under 8k");
   await box.press("Enter");
@@ -663,28 +754,47 @@ try {
   // the suite died here and blamed the feature. The wait is now on the thing we
   // actually need (an agent message carrying the answer), with a bound that
   // fits a cold engine. Later replies are fast because this one warmed it up.
-  await waitForAgentReply(page, "villas");
-  ok("@mention draws agent reply", true);
+  const villaAnswer = await waitForAgentAnswer(page, {
+    under: { text: "find beach villas in Goa under 8k" }, text: "villas",
+  });
+  ok("@mention in the conversation is answered in a thread under the question, and the question says it has a reply",
+    villaAnswer.answerIds.length >= 1 && villaAnswer.replies >= 1,
+    `${villaAnswer.answerIds.length} agent answer(s) in the thread, the question says ${villaAnswer.replies} reply/replies`);
   await page.screenshot({ path: `${SHOTS}/03-chat-reply.png` });
 
-  // free chatter (no mention, relevant)
+  // free chatter (no mention, relevant) — and it lands in the same place
   await box.fill("should we also look at flights and hotels?");
   await box.press("Enter");
-  await waitFor(page, () =>
-    [...document.querySelectorAll(".msg p")].filter(p => p.textContent.includes("flights")).length >= 2,
-  undefined, { what: "an unmentioned agent to chime in about flights" });
-  ok("free chatter: relevant agent chimes in unmentioned", true);
+  const chatterAnswer = await waitForAgentAnswer(page, {
+    under: { text: "should we also look at flights and hotels?" }, text: "flights",
+    what: "an unmentioned agent to chime in about flights, in the thread under it",
+  });
+  ok("free chatter: a relevant agent chimes in unmentioned, in a thread under what it is answering",
+    chatterAnswer.answerIds.length >= 1, `${chatterAnswer.replies} reply/replies on the question`);
 
   // background task
   await box.fill("@Scout !bg compare 14 villas and shortlist 3");
   await box.press("Enter");
-  await waitFor(page, () => [...document.querySelectorAll(".msg p")]
-    .some(p => p.textContent.includes("background")),
-  undefined, { what: "the agent's acknowledgement of the background job" });
-  // the "started on its own" marker in the run strip (was .proactive-tag)
-  await waitFor(page, () => !!document.querySelector(".msg.proactive .selfstart"),
-    undefined, { what: "the finished background job to post itself back" });
-  ok("background task acks then posts proactive result", true);
+  const bgAck = await waitForAgentAnswer(page, {
+    under: { text: "compare 14 villas and shortlist 3" }, text: "background",
+    what: "the agent's acknowledgement of the background job, in the thread under the ask",
+  });
+  /* AND THE ROOM IS NOT LEFT BLIND. A long job's detail belongs where it was
+     asked for, and `reportFinished` posts ONE short proactive line back into the
+     conversation saying it ended and where to look ("🧵 Finished in the
+     thread: …"). That line is a room message on purpose — nobody asked it for
+     anything — so it is still checked in `.msgs`, and the "started on its own"
+     marker is what proves nobody asked. */
+  await waitFor(page, () => [...document.querySelectorAll(".msgs .msg.proactive")]
+    .some(m => m.querySelector(".selfstart") && /in the thread/i.test(m.innerText ?? "")),
+  undefined, { what: "the finished background job to post its one-line report back to the room" });
+  const bgRoomLine = await page.evaluate(() =>
+    [...document.querySelectorAll(".msgs .msg.proactive")]
+      .filter(m => m.querySelector(".selfstart"))
+      .map(m => (m.innerText ?? "").replace(/\s+/g, " ").trim()).pop() ?? "");
+  ok("a background job acknowledges in the thread, does its work there, and posts ONE short line back to the room saying where to look",
+    bgAck.answerIds.length >= 1 && /in the thread/i.test(bgRoomLine),
+    `${bgAck.answerIds.length} line(s) in the thread :: room says "${bgRoomLine.slice(0, 90)}"`);
   await page.screenshot({ path: `${SHOTS}/04-background-task.png` });
 
   // quick chat
@@ -1009,8 +1119,16 @@ try {
   const memBox = page.locator(".composer textarea");
   await memBox.fill("@Scout !remember beach villas in Goa are cheapest in the monsoon");
   await memBox.press("Enter");
-  ok("!remember: the agent saves a note and confirms it in the room",
-    await seen(page.locator('.msg:has-text("Saved to memory")')));
+  /* The confirmation answers the ask, so it hangs off the ask — the same rule as
+     any other answer (`threadOf`). It used to be a row in the room; the check
+     now says where it really is rather than looking where it used to be. */
+  const memSaid = await waitForAgentAnswer(page, {
+    under: { text: "!remember beach villas in Goa are cheapest in the monsoon" },
+    text: "Saved to memory", timeout: 30000,
+    what: "the agent's 'Saved to memory' line, in the thread under the ask",
+  }).catch(err => ({ answerIds: [], failed: String(err.message ?? err) }));
+  ok("!remember: the agent saves a note and confirms it in a thread under the ask",
+    memSaid.answerIds.length >= 1, memSaid.failed ?? "");
 
   // -- and that note shows on the agent's own file, newest first --
   await page.hover('.sidebar .agentrow[data-agent="Scout"]');
@@ -1051,11 +1169,25 @@ try {
   const hoBox = page.locator(".composer textarea");
   await hoBox.fill("@Scout !handoff @Terra shortlist the three cheapest villas");
   await hoBox.press("Enter");
-  ok("handing off shows a plain 'passed to @Terra' line in the room",
-    await seen(page.locator('.msg:has-text("Passed to @Terra")')));
-  // the receiver really takes the turn — a message authored by Terra appears
-  ok("the receiving agent @Terra actually takes the handed-off turn on screen",
-    await seen(page.locator('.msg.from-agent:has(.who b:text-is("Terra"))')));
+  /* TWO DIFFERENT PLACES, AND THAT IS THE POINT.
+   *  · The "passed to @Terra" line ANSWERS the command, so it hangs off it in a
+   *    thread, like every other answer.
+   *  · Terra's own turn arrives from a HANDOFF, which carries a channel pointer
+   *    and nothing finer (`receiveHandoff`) — there is no message for it to
+   *    answer, so it is a room line and must stay one. Guessing a thread there
+   *    would file it under a message Terra never saw. */
+  const passedLine = await waitForAgentAnswer(page, {
+    under: { text: "!handoff @Terra shortlist the three cheapest villas" },
+    text: "Passed to @Terra", timeout: 30000,
+    what: "the 'Passed to @Terra' line, in the thread under the command",
+  }).catch(err => ({ answerIds: [], failed: String(err.message ?? err) }));
+  ok("handing off shows a plain 'passed to @Terra' line in a thread under the command",
+    passedLine.answerIds.length >= 1, passedLine.failed ?? "");
+  const terraTook = await waitForAgentAnswer(page, {
+    inRoom: true, author: "Terra", timeout: 30000,
+  }).catch(err => ({ answerIds: [], failed: String(err.message ?? err) }));
+  ok("the receiving agent @Terra takes the handed-off turn in the conversation — a handoff names a room and nothing finer, so it has no thread to answer in",
+    terraTook.answerIds.length >= 1, terraTook.failed ?? "");
   await page.screenshot({ path: `${SHOTS}/23-agent-handoff.png` });
 
   // ============ the actions menu — one way in to every typed command ============
@@ -1757,25 +1889,463 @@ try {
     `${answerIds.length} agent answer(s) in the thread, ${leakedIntoRoom.length} of them also in the room`);
   await page.screenshot({ path: `${SHOTS}/thread-agent-answer.png` });
 
-  /* AND THE ORDINARY CASE, UNCHANGED — asked in the room, answered in the room.
-     Half of "it goes in the thread" is worthless without this: a rule that sent
-     every answer into a thread would pass the check above and break the app. */
+  /* ============ THE OTHER HALF, AND IT IS THE ONE HE ASKED FOR =============
+   *
+   * HIS ASK, 2026-08-04: an agent's answer goes into a thread hanging off the
+   * message it answers — IN THE CHANNEL as well as inside a thread. So the
+   * ordinary case is no longer "asked in the room, answered in the room": the
+   * question typed in the channel becomes its own thread root
+   * (`threadOf(trigger) = trigger.replyTo ?? trigger.id`), the answer is a reply
+   * under it, and with his default setting a reply is NOT a row in the scroll.
+   *
+   * This check used to assert the opposite, in those words, and a check whose
+   * name states the reverse of the behaviour is worse than no check: it would
+   * have gone green on the very bug it was renamed to catch. So it now pins the
+   * headline behaviour, and pins all four halves of it at once:
+   *   · the channel gains NO new agent row;
+   *   · his own question gains a replies line;
+   *   · the answer really is in that thread, with words in it;
+   *   · and it is under HIS question, not swept into some other thread — the
+   *     thread opened above must not have moved.
+   *
+   * Proved by message id, never by words: this room has free chatter in it, so
+   * matching on text would eventually blame the feature for an unrelated line.
+   */
   await page.click(".threadpanel .threadclose");
   await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
-  const roomRepliesBefore = await page.locator(`.msgs .msg[data-msg="${turnRootId}"] .threadline`)
+  const otherThreadBefore = await page.locator(`.msgs .msg[data-msg="${turnRootId}"] .threadline`)
     .getAttribute("data-replies");
-  const roomKnown = await page.evaluate(() =>
-    [...document.querySelectorAll(".msgs .msg[data-msg]")].map(m => m.dataset.msg));
-  await goaBox.fill("@Scout in one short line, what time should we check in?");
+  const roomAgentRowsBefore = await page.evaluate(() =>
+    [...document.querySelectorAll(".msgs .msg.from-agent[data-msg]")].map(m => m.dataset.msg));
+  const CHANNEL_ASK = "channel-ask-root: in one short line, what time should we check in?";
+  await goaBox.fill(`@Scout ${CHANNEL_ASK}`);
   await goaBox.press("Enter");
-  await waitFor(page, known => [...document.querySelectorAll(".msgs .msg[data-msg]")]
-    .some(m => !known.includes(m.dataset.msg) && m.classList.contains("from-agent")),
-  roomKnown, { what: "the agent to answer in the conversation it was asked in" });
-  const roomRepliesAfter = await page.locator(`.msgs .msg[data-msg="${turnRootId}"] .threadline`)
+  const channelAsk = await waitForAgentAnswer(page, {
+    under: { text: "channel-ask-root" }, text: "check in",
+    close: false,
+    what: "the agent's answer to a CHANNEL question — a thread under his message, not a row in the scroll",
+  });
+  /* Read while the panel is open, so "the answer is not in the room" is asked of
+     the exact ids that are in the panel — the leak test the helper hands back. */
+  const newRoomAgentRows = await page.evaluate(known =>
+    [...document.querySelectorAll(".msgs .msg.from-agent[data-msg]")]
+      .map(m => m.dataset.msg).filter(id => !known.includes(id)), roomAgentRowsBefore);
+  await page.screenshot({ path: `${SHOTS}/channel-ask-answered-in-thread.png` });
+  await page.click(".threadpanel .threadclose");
+  await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
+  const otherThreadAfter = await page.locator(`.msgs .msg[data-msg="${turnRootId}"] .threadline`)
     .getAttribute("data-replies");
-  ok("the same question asked in the conversation is answered in the conversation, never swept into a thread",
-    roomRepliesAfter === roomRepliesBefore,
-    `the thread still says ${roomRepliesAfter} replies (was ${roomRepliesBefore})`);
+  ok("HIS ASK: a question asked in the CHANNEL leaves no agent row in the conversation — the answer is in a thread under his own message, and the message says so",
+    channelAsk.answerIds.length >= 1 && channelAsk.alsoInRoom.length === 0 &&
+    channelAsk.replies >= 1 && newRoomAgentRows.length === 0,
+    `${channelAsk.answerIds.length} answer(s) in the thread, ${channelAsk.alsoInRoom.length} of them in the room, ` +
+    `his message says ${channelAsk.replies} reply/replies, ${newRoomAgentRows.length} new agent row(s) in the scroll`);
+  ok("and it went under HIS question, not into whatever thread happened to be open before it",
+    otherThreadAfter === otherThreadBefore && channelAsk.rootId !== turnRootId,
+    `the earlier thread still says ${otherThreadAfter} replies (was ${otherThreadBefore})`);
+
+  /* ================= THE BOX IS CALM UNTIL HE IS WRITING ====================
+   *
+   * His §3.2: "affordances appear on intent, not permanently". The message box
+   * carried nine controls at all times, so the two that matter — the one door
+   * into everything an agent can be told to do, and Send — were two of nine
+   * rather than the two.
+   *
+   * THE LINE THIS HOLDS, and it is the one that is easy to cross by accident:
+   * what recedes must still be THERE. A tool removed from the DOM when the box
+   * is idle is a tool that cannot be found, cannot be tabbed to, and cannot be
+   * clicked from a script — which is the invisibility bug again wearing a
+   * tidier coat. So the check asks two different questions of the same row: is
+   * it in the box (always), and is it showing (only while he is writing).
+   *
+   * `armed` is the app's own word for "he is writing" — focused, or holding
+   * text, or holding files, or with a menu open — written once beside the box
+   * and published as `data-writing`. Reading the attribute rather than
+   * measuring pixels means a check can never disagree with the rule that drew
+   * it.
+   */
+  await page.click(".sidebar >> text=# trip-goa");
+  await page.waitForSelector(".thread .composer textarea", { timeout: 20000 });
+  const cbox = page.locator(".thread .composer textarea");
+  await cbox.fill("");
+  await page.evaluate(() => document.activeElement?.blur?.());
+  await waitFor(page, () =>
+    document.querySelector(".thread .composer .composer-box")?.dataset.writing === "no",
+  undefined, { timeout: 10000, what: "the box to go calm with nothing being written" });
+  /* Everything the two readings below are made of, taken the same way both
+     times so "calm" and "writing" are honestly comparable. `showing` is the
+     COMPUTED answer, not a class name — a stylesheet that stopped hiding the
+     row would otherwise pass a check that only read markup. */
+  const composerNow = () => page.evaluate(() => {
+    const box = document.querySelector(".thread .composer .composer-box");
+    /* Judged on whether the control really takes up space on the screen, not on
+       a class name and not on the wrapper's own `display` — the row is hidden
+       with `display:none` and shown with `display:contents`, and a wrapper that
+       generates no box of its own is exactly what `contents` means. So the
+       BUTTONS are asked, which is what he actually sees. */
+    const showing = el => !!el && el.getClientRects().length > 0;
+    const receding = [...box.querySelectorAll(".toolset button.mini")];
+    return {
+      writing: box.dataset.writing,
+      recedingInBox: receding.map(b => b.title),
+      recedingShowing: receding.length > 0 && receding.every(showing),
+      actionsShowing: showing(box.querySelector(".actionsbtn")),
+      sendShowing: showing(box.querySelector(".sendbtn")),
+      /* The button whose whole job was to type one character. It went; the
+         `@` road it opened did not. */
+      atAgentButtons: [...box.querySelectorAll("button")]
+        .filter(b => /@\s*agent/i.test((b.textContent ?? "").trim())).length,
+    };
+  });
+  const calmBox = await composerNow();
+  await cbox.click();
+  await waitFor(page, () =>
+    document.querySelector(".thread .composer .composer-box")?.dataset.writing === "yes",
+  undefined, { timeout: 10000, what: "the box to arm when he clicks into it" });
+  const armedBox = await composerNow();
+  ok("the message box is calm when nothing is being written, and shows its tools the moment he is — and they never left the box",
+    calmBox.writing === "no" && calmBox.recedingShowing === false &&
+    calmBox.recedingInBox.length >= 5 &&
+    armedBox.writing === "yes" && armedBox.recedingShowing === true &&
+    armedBox.recedingInBox.length === calmBox.recedingInBox.length,
+    `calm: ${calmBox.recedingInBox.length} tools in the box, showing=${calmBox.recedingShowing}; ` +
+    `writing: ${armedBox.recedingInBox.length} in the box, showing=${armedBox.recedingShowing}`);
+  ok("the ＋ Actions door and Send are on screen in BOTH states — invisible is the same as absent",
+    calmBox.actionsShowing === true && calmBox.sendShowing === true &&
+    armedBox.actionsShowing === true && armedBox.sendShowing === true,
+    `calm: ＋=${calmBox.actionsShowing} Send=${calmBox.sendShowing}; ` +
+    `writing: ＋=${armedBox.actionsShowing} Send=${armedBox.sendShowing}`);
+  await page.screenshot({ path: `${SHOTS}/composer-calm-and-armed.png` });
+
+  /* ---- the one control that was really taken away, and the road it left ----
+     "@ agent" was a button that typed an `@`. The list it opened is opened by
+     typing the character itself, and always was — so the check is not "is the
+     button gone" on its own, which any regression could satisfy by breaking
+     both. It is: the button is gone AND the list still opens, with the same
+     people and agents in it. */
+  await cbox.fill("@");
+  await waitFor(page, () =>
+    document.querySelector(".thread .composer .autocomplete[data-mentions-open]") !== null,
+  undefined, { timeout: 10000, what: "typing @ to open the list of people and agents" });
+  const mentions = await page.evaluate(() => {
+    const ac = document.querySelector(".thread .composer .autocomplete");
+    return {
+      open: ac.dataset.mentionsOpen,
+      n: Number(ac.dataset.mentions),
+      names: [...ac.querySelectorAll(".opt .opt-label")].map(o => o.textContent.trim()),
+    };
+  });
+  await cbox.fill("");
+  ok("the `@ agent` button is gone, and typing @ still opens the very list it used to open",
+    calmBox.atAgentButtons === 0 && armedBox.atAgentButtons === 0 &&
+    mentions.open === "yes" && mentions.n >= 2 &&
+    mentions.names.some(n => /Scout/.test(n)),
+    `${mentions.n} offered: ${mentions.names.join(" / ")}`);
+
+  /* ================= `/` IS THE SAME LIST, NOT A SECOND ONE ================
+   *
+   * Two doors, one room. The ＋ list is already held above (it opens, it lists
+   * every command the engine understands, a row fills the box, a blocked row
+   * says why). These hold the TYPED road to the same rows — and hold it to
+   * being the same rows, by comparing the count `/` alone offers with the
+   * count the ＋ offers. A second, drifting command list is exactly the failure
+   * `ROOM_COMMANDS` exists to prevent.
+   */
+  await page.click(".thread .composer .actionsbtn");
+  await page.waitForSelector('.thread .composer .actionspop[data-open-by="button"]', { timeout: 10000 });
+  const byButton = Number(await page.getAttribute(".thread .composer .actionspop", "data-rows"));
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".thread .composer .actionspop", { state: "detached", timeout: 10000 });
+  await cbox.fill("/");
+  await waitFor(page, () =>
+    document.querySelector('.thread .composer .actionspop[data-open-by="slash"]') !== null,
+  undefined, { timeout: 10000, what: "a typed slash to open the same list" });
+  const bySlash = Number(await page.getAttribute(".thread .composer .actionspop", "data-rows"));
+  await cbox.fill("/rem");
+  await waitFor(page, () => {
+    const pop = document.querySelector('.thread .composer .actionspop[data-open-by="slash"]');
+    return pop && Number(pop.dataset.rows) === 1;
+  }, undefined, { timeout: 10000, what: "the list to narrow to the one command he is typing" });
+  const narrowedTo = await page.$$eval(".thread .composer .actionspop .ap-row",
+    rs => rs.map(r => r.dataset.command));
+  const slashClass = await page.getAttribute(".thread .composer .actionspop", "class");
+  await cbox.press("Enter");
+  const slashFilled = await cbox.inputValue();
+  ok("typing / opens the SAME list the ＋ opens, narrows it as he types, and Enter writes the command into the box",
+    bySlash === byButton && bySlash >= 10 &&
+    narrowedTo.length === 1 && narrowedTo[0] === "!remember" &&
+    /slashpop/.test(slashClass ?? "") &&
+    /^@\w+ !remember <.+>$/.test(slashFilled),
+    `＋ offered ${byButton}, / offered ${bySlash}, "/rem" narrowed to ${narrowedTo.join("/")}, ` +
+    `Enter wrote: ${slashFilled}`);
+  ok("and it sent nothing — the line is still sitting in the box, exactly as the ＋ road promises",
+    (await page.locator('.msgs .msg p:has-text("!remember <")').count()) === 0 &&
+    (await page.locator(".thread .composer .actionspop").count()) === 0);
+
+  /* A row that cannot work here refuses on the TYPED road too, in the same
+     sentence. Without this, `/` would be a way round the promise the ＋ list
+     makes — a line written into the box that comes straight back refused. */
+  await page.evaluate(() => window.cloud9Wire.notify(""));
+  await cbox.fill("/issue");
+  await waitFor(page, () => {
+    const row = document.querySelector('.thread .composer .actionspop .ap-row[data-command="!issue"]');
+    return !!row && row.dataset.blocked === "yes";
+  }, undefined, { timeout: 10000, what: "the blocked row to be drawn as blocked on the typed road" });
+  const slashBlockedSays = (await page.locator(
+    '.thread .composer .actionspop .ap-row[data-command="!issue"] .ap-say').innerText()).trim();
+  await cbox.press("Enter");
+  await page.waitForTimeout(300);
+  const refusedOnTyping = await page.evaluate(() => window.cloud9Wire.lastError()?.text ?? "");
+  ok("a command that cannot work here still says why on the typed road, and refuses to be written in",
+    /repositor/i.test(slashBlockedSays) && /connect/i.test(slashBlockedSays) &&
+    refusedOnTyping === slashBlockedSays &&
+    (await cbox.inputValue()) === "/issue",
+    `the row says "${slashBlockedSays}"; pressing Enter said "${refusedOnTyping}"`);
+  await page.screenshot({ path: `${SHOTS}/composer-slash-list.png` });
+  await cbox.fill("");
+  await page.keyboard.press("Escape").catch(() => {});
+
+  /* ---- a file arrives the way a file usually arrives ----
+     The paperclip is already held elsewhere (the upload tray, the ceiling, the
+     hub's refusal). These are the two roads that were added when the wide
+     "Attach" label became an icon: a paste carrying files, and a drop on the
+     box. Both go through `attachFiles`, the one owner — so the proof is that a
+     real file really lands in the tray, and that the box says out loud it is a
+     drop target while something is over it. */
+  const dropped = await page.evaluateHandle(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(["dropped onto the box"], "dropped-note.txt", { type: "text/plain" }));
+    return dt;
+  });
+  await page.dispatchEvent(".thread .composer", "dragover", { dataTransfer: dropped });
+  const sayingDrop = await page.getAttribute(".thread .composer", "data-dragover");
+  await page.dispatchEvent(".thread .composer", "drop", { dataTransfer: dropped });
+  await page.waitForSelector('.thread .composer .uptile[data-upload="dropped-note.txt"]', { timeout: 25000 });
+  const afterDrop = await page.getAttribute(".thread .composer", "data-dragover");
+  /* Built and dispatched inside the page rather than handed in from here: a
+     `paste` is a `ClipboardEvent`, and the only way to be sure the handler sees
+     real files on it is to make the event where the DataTransfer lives. It is
+     still the real event, on the real box, reaching the app's own handler. */
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(["pasted onto the box"], "pasted-note.txt", { type: "text/plain" }));
+    const ev = new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt });
+    if (!ev.clipboardData || ev.clipboardData.files.length === 0) {
+      Object.defineProperty(ev, "clipboardData", { value: dt });
+    }
+    document.querySelector(".thread .composer textarea").dispatchEvent(ev);
+  });
+  await page.waitForSelector('.thread .composer .uptile[data-upload="pasted-note.txt"]', { timeout: 25000 });
+  ok("a file dropped on the box, or pasted into it, is put on the message exactly as the paperclip's is",
+    sayingDrop === "yes" && afterDrop === "no" &&
+    (await page.locator('.thread .composer .uptile[data-upload="dropped-note.txt"]').count()) === 1 &&
+    (await page.locator('.thread .composer .uptile[data-upload="pasted-note.txt"]').count()) === 1,
+    `the box said dragover=${sayingDrop} while it was over, ${afterDrop} once it landed`);
+  await page.screenshot({ path: `${SHOTS}/composer-drop-and-paste.png` });
+  /* Taken back off again: the rest of the suite is entitled to an empty box. */
+  await page.waitForSelector('.thread .composer .uptile[data-upload="dropped-note.txt"].done',
+    { timeout: 40000 }).catch(() => {});
+  while (await page.locator(".thread .composer .uptile .upx").count() > 0) {
+    await page.locator(".thread .composer .uptile .upx").first().click();
+    await page.waitForTimeout(150);
+  }
+  await waitFor(page, () => document.querySelectorAll(".thread .composer .uptile").length === 0,
+    undefined, { timeout: 15000, what: "the dropped and pasted files to be taken back off the message" });
+
+  /* ================= SEMANTIC RECEIPTS — A LIVE SIGNAL, NEVER A RECORD =====
+   *
+   * His §2: when a message is sent, the agent's state should appear on it —
+   * 👀 reading, 💭 thinking, then ONE tick saying how it was understood.
+   *
+   * WHAT IS REAL HERE AND WHAT IS SEEDED, said out loud rather than implied.
+   * The three signals are sent as REAL `agentReceipt` frames over the owner's
+   * own socket, so the hub's every gate really runs (it proves this account
+   * owns the agent, that the message exists and is visible to it, that the
+   * frame's channel is the message's real channel, and that a verdict carries a
+   * verdict and nothing else does), it really broadcasts them, the client's
+   * real frame handler really routes them, and the real component draws them.
+   * The one thing standing in is the ENGINE's decision about WHEN to send each
+   * one and which verdict it earned — `turnVerdict` is pinned by the engine's
+   * own tests, and driving a live turn to catch a 👀 that is replaced by a 💭
+   * a moment later would be a race, not a check.
+   *
+   * The message they hang off carries no `@`, so no agent is asked anything and
+   * no subscription is spent on drawing three emoji.
+   */
+  const scoutForReceipt = (await page.evaluate(() => window.cloud9Wire.agents()))
+    .find(a => a.name === "Scout");
+  const goaId = (await page.evaluate(() => window.cloud9Wire.channels()))
+    .find(c => c.name === "trip-goa").id;
+  await cbox.fill("receipt-carrier: the villa shortlist, for the record");
+  await cbox.press("Enter");
+  const carrier = page.locator('.msgs .msg:has-text("receipt-carrier")').last();
+  await carrier.waitFor({ timeout: 25000 });
+  const carrierId = await carrier.getAttribute("data-msg");
+  const signalsOn = id => page.evaluate(msg => {
+    const row = document.querySelector(`.msgs .msg[data-msg="${msg}"]`);
+    return [...(row?.querySelectorAll(".receipt") ?? [])].map(r => ({
+      tag: r.tagName,
+      stage: r.dataset.stage,
+      verdict: r.dataset.verdict ?? null,
+      emoji: r.textContent.trim(),
+      title: r.title,
+      hasCount: !!r.querySelector(".n"),
+    }));
+  }, id);
+  const sendSignal = (stage, verdict) => page.evaluate(([agentId, channelId, messageId, s, v]) =>
+    window.cloud9Wire.ask({
+      type: "agentReceipt", agentId, channelId, messageId, stage: s,
+      ...(v ? { verdict: v } : {}),
+    }), [scoutForReceipt.id, goaId, carrierId, stage, verdict ?? null]);
+
+  await sendSignal("reading");
+  await waitFor(page, id => document.querySelector(
+    `.msgs .msg[data-msg="${id}"] .receipt[data-stage="reading"]`) !== null,
+  carrierId, { timeout: 20000, what: "👀 to appear the moment the agent picks the message up" });
+  const reading = await signalsOn(carrierId);
+  await sendSignal("thinking");
+  await waitFor(page, id => document.querySelector(
+    `.msgs .msg[data-msg="${id}"] .receipt[data-stage="thinking"]`) !== null,
+  carrierId, { timeout: 20000, what: "💭 to replace 👀 while the agent's program runs" });
+  const thinking = await signalsOn(carrierId);
+  await sendSignal("verdict", "investigating");
+  await waitFor(page, id => document.querySelector(
+    `.msgs .msg[data-msg="${id}"] .receipt[data-stage="verdict"]`) !== null,
+  carrierId, { timeout: 20000, what: "the one committed tick when the agent has answered" });
+  const verdict = await signalsOn(carrierId);
+  ok("an agent picking a message up shows 👀, then 💭, then exactly ONE committed tick — one moving signal, never a growing pile",
+    reading.length === 1 && reading[0].emoji === "👀" &&
+    thinking.length === 1 && thinking[0].emoji === "💭" &&
+    verdict.length === 1 && verdict[0].emoji === "🔍" && verdict[0].verdict === "investigating",
+    `${reading.map(r => r.emoji).join("")} → ${thinking.map(r => r.emoji).join("")} → ` +
+    `${verdict.map(r => r.emoji).join("")} (${verdict.length} row(s) on the message)`);
+  await page.screenshot({ path: `${SHOTS}/receipt-live-signal.png` });
+
+  /* ---- and a person who reacts is a completely different thing on screen ----
+     The failure this exists to stop is somebody reading a machine's "I am
+     looking at this" as a colleague's decision. A reaction is a BUTTON with a
+     count that you can press; a receipt is a greyed SPAN with neither, and it
+     says on itself where it came from and that it is not kept. Both are on the
+     same message at the same moment, so this is a comparison and not two
+     separate readings. */
+  await carrier.hover();
+  await carrier.locator(".ma.react").click();
+  await page.click('.reactpop button:has-text("👍")');
+  await page.waitForSelector(`.msgs .msg[data-msg="${carrierId}"] .reactpill[data-emoji="👍"]`,
+    { timeout: 20000 });
+  const sideBySide = await page.evaluate(id => {
+    const row = document.querySelector(`.msgs .msg[data-msg="${id}"]`);
+    const receipt = row.querySelector(".receipt");
+    const react = row.querySelector('.reactpill[data-emoji="👍"]');
+    return {
+      receiptTag: receipt?.tagName ?? "(none)",
+      receiptCount: receipt?.querySelector(".n")?.textContent ?? null,
+      receiptTitle: receipt?.title ?? "",
+      reactionTag: react?.tagName ?? "(none)",
+      reactionCount: react?.querySelector(".n")?.textContent?.trim() ?? null,
+    };
+  }, carrierId);
+  ok("a receipt can never be read as somebody's reaction — a greyed span with no count that says it is a live signal, beside a person's button with one",
+    sideBySide.receiptTag === "SPAN" && sideBySide.receiptCount === null &&
+    /not a person's reaction/i.test(sideBySide.receiptTitle) &&
+    /isn't saved/i.test(sideBySide.receiptTitle) &&
+    sideBySide.reactionTag === "BUTTON" && sideBySide.reactionCount === "1",
+    `receipt: <${sideBySide.receiptTag}> no count, "${sideBySide.receiptTitle}" :: ` +
+    `reaction: <${sideBySide.reactionTag}> count ${sideBySide.reactionCount}`);
+  await page.screenshot({ path: `${SHOTS}/receipt-vs-reaction.png` });
+
+  /* ================= WHAT IT IS DOING, WHILE IT IS DOING IT ================
+   *
+   * NEW 2026-08-04. Sitting in a CLI you watch each tool call land; Cloud9 used
+   * to show "X is working on it" for two minutes and then the whole story at
+   * once. Live steps are the other half — a preview, drawn on the message that
+   * ASKED, by the very same `RunSteps` renderer the stored record uses.
+   *
+   * Driven the same way the receipts above are, and for the same reason: the
+   * frames go through this window's OWN socket, so the hub's every gate really
+   * runs (ownership, the message exists and is visible, the frame's channel is
+   * the message's channel, the step shape and its limits, the redaction on the
+   * way out), it really broadcasts, the real handler routes and the real
+   * component draws. Only the ENGINE's decision about WHEN to send a batch is
+   * stood in for — catching a live turn mid-step would be a race, not a check.
+   *
+   * TWO THINGS ARE WORTH PINNING and nothing else:
+   *  · a batch that repeats a `seq` is the SAME step with more filled in (a
+   *    command is announced when it starts and gets its outcome when it ends),
+   *    so it must MERGE — appending would show him one command twice;
+   *  · `done` really ends the preview, so the screen hands back to the stored
+   *    record instead of a list that spins for a turn that is over.
+   */
+  const sendSteps = (steps, done) => page.evaluate(([agentId, channelId, messageId, s, d]) =>
+    window.cloud9Wire.ask({
+      type: "agentSteps", agentId, channelId, messageId,
+      ...(s ? { steps: s } : {}), ...(d ? { done: true } : {}),
+    }), [scoutForReceipt.id, goaId, carrierId, steps, done ?? null]);
+
+  await sendSteps([{ seq: 1, kind: "command", label: "Ran a command" }]);
+  await waitFor(page, id => !!document.querySelector(
+    `.msgs .msg[data-msg="${id}"] .livework[data-msg="${id}"] .runstep[data-seq="1"]`),
+  carrierId, { timeout: 20000, what: "the first live step to appear on the message that asked" });
+  await sendSteps([
+    { seq: 1, kind: "command", label: "Ran a command", ok: true },
+    { seq: 2, kind: "read", label: "Read a file" },
+  ]);
+  await waitFor(page, id => !!document.querySelector(
+    `.msgs .msg[data-msg="${id}"] .runstep[data-seq="2"]`),
+  carrierId, { timeout: 20000, what: "the second live step to arrive" });
+  const live = await page.evaluate(id => {
+    const block = document.querySelector(`.msgs .msg[data-msg="${id}"] .livework[data-msg="${id}"]`);
+    const turn = block?.querySelector(".liveturn");
+    return {
+      blocks: document.querySelectorAll(`.msgs .msg[data-msg="${id}"] .livework`).length,
+      agent: turn?.dataset.agent ?? "",
+      said: turn?.dataset.liveSteps ?? "",
+      steps: [...(block?.querySelectorAll(".runstep") ?? [])]
+        .map(s => `${s.dataset.seq}:${s.dataset.kind}:${s.dataset.ok}`),
+      says: (block?.innerText ?? "").replace(/\s+/g, " ").trim(),
+    };
+  }, carrierId);
+  ok("live steps stream onto the message that asked, and a step reported twice is ONE step with its outcome filled in — never the same command listed again",
+    live.blocks === 1 && live.agent === scoutForReceipt.id && live.said === "2" &&
+    live.steps.join(" ") === "1:command:true 2:read:unsaid",
+    `${live.said} step(s) claimed, drawn: ${live.steps.join(" / ")}`);
+  ok("and it says out loud that this is live and not the record, so nobody reads a preview as the answer",
+    /working/i.test(live.says) && /full record appears when it finishes/i.test(live.says),
+    live.says.slice(0, 110));
+  await page.screenshot({ path: `${SHOTS}/live-steps.png` });
+
+  await sendSteps(undefined, true);
+  await waitFor(page, id => !document.querySelector(`.msgs .msg[data-msg="${id}"] .livework`),
+    carrierId, { timeout: 20000, what: "the live preview to end when the turn says it is over" });
+  ok("when the turn ends the preview ends with it — the screen hands back to the stored record instead of a list that spins forever",
+    (await page.locator(`.msgs .msg[data-msg="${carrierId}"] .livework`).count()) === 0);
+
+  /* ---- the honest half of "ephemeral": it really is gone ----
+     Nothing about a receipt is written down — not on the hub, not in the
+     world, not in history and not in search. The only way to prove that from
+     the outside is to throw the screen away and build it again from what was
+     really stored. The person's reaction goes through the same reload in the
+     same breath, so "everything vanished" cannot pass as "receipts vanished". */
+  await page.reload();
+  await page.waitForSelector(".sidebar >> text=# trip-goa", { timeout: 30000 });
+  await page.click(".sidebar >> text=# trip-goa");
+  await page.waitForSelector(`.msgs .msg[data-msg="${carrierId}"]`, { timeout: 30000 });
+  await page.waitForTimeout(600);
+  const afterReload = await signalsOn(carrierId);
+  ok("a reload leaves no trace of a receipt — nothing was ever stored, and the screen does not pretend otherwise",
+    afterReload.length === 0 &&
+    (await page.locator(`.msgs .msg[data-msg="${carrierId}"] .receipts`).count()) === 0,
+    `${afterReload.length} receipt(s) survived the reload`);
+  const survived = page.locator(`.msgs .msg[data-msg="${carrierId}"] .reactpill[data-emoji="👍"]`);
+  ok("and the person's reaction on that very message DID survive it, because that one really is a fact somebody stated",
+    (await survived.count()) === 1 &&
+    (await survived.locator(".n").innerText()).trim() === "1",
+    `${await survived.count()} reaction pill(s) came back from the hub`);
+  /* Taken back off, so the rest of the suite meets the message it expects. */
+  await survived.click();
+  await waitFor(page, id => document.querySelectorAll(
+    `.msgs .msg[data-msg="${id}"] .reactpill`).length === 0,
+  carrierId, { timeout: 15000, what: "the reaction to be taken back off the carrier message" });
 
   // ---------- search across everything ----------
   await page.evaluate(() => window.cloud9Menu.run("search"));
@@ -2074,11 +2644,16 @@ try {
     await fpage.waitForSelector('.threadpanel .msg:has-text("notify-thread-reply-alpha")',
       { timeout: 20000 });
     await fpage.click(".threadpanel .threadclose");
-    await page.waitForSelector('.notify-toast[data-kind="thread_reply"]', { timeout: 30000 });
-    const tTitle = (await page.locator('.notify-toast[data-kind="thread_reply"] .notify-title')
-      .first().innerText()).trim();
-    const tText = (await page.locator('.notify-toast[data-kind="thread_reply"] .notify-text')
-      .first().innerText()).trim();
+    /* THE TOAST FOR THIS REPLY, not "the first thread toast on screen". Since
+       2026-08-04 an agent's answer is a thread reply too, so an agent answering
+       one of his messages raises a thread toast of its own — and `.first()`
+       would eventually read that one and judge this check by it. Named by the
+       words this reply carries. */
+    const tToast = page.locator('.notify-toast[data-kind="thread_reply"]',
+      { hasText: "notify-thread-reply-alpha" }).first();
+    await tToast.waitFor({ timeout: 30000 });
+    const tTitle = (await tToast.locator(".notify-title").innerText()).trim();
+    const tText = (await tToast.locator(".notify-text").innerText()).trim();
     ok("a real reply in a thread he started interrupts him, and says whose thread it was",
       /replied in your thread/i.test(tTitle) && /notify-thread-reply-alpha/.test(tText),
       `${tTitle} :: ${tText}`);
@@ -2232,17 +2807,59 @@ try {
      nowhere to choose either yet. A switch that is ON and hands the agent
      nothing must say so, or it reads as broken and every other switch is
      doubted with it. */
-  /* ONE inert row now, not two. "Use connected services" left this list on
-     2026-08-03: it is no longer a switch with nowhere to point — the block
-     checked immediately below is where the file is chosen, so the switch either
-     has one or says it has none. The whole-computer row is still true and still
-     checked here; the connections row is checked as its own honest states. */
-  ok("a power that is on and still grants nothing today admits it, rather than looking broken",
-    (await page.locator(".editor .inertswitch").count()) === 1 &&
-    (await page.locator('.editor .inertswitch [data-inert-row="wholeComputer"]').count()) === 1 &&
-    (await page.locator('.editor .inertswitch [data-inert-row="connections"]').count()) === 0,
-    (await page.locator(".editor .inertswitch").innerText()).replace(/\s+/g, " ").slice(0, 110));
+  /* NO INERT ROWS LEFT AT ALL — and that is the fix, not a missing check.
+     "Use connected services" left this list on 2026-08-03 and "Reach files
+     outside its own folder" left it on 2026-08-04: both now have somewhere on
+     screen to point, so neither is a switch that grants nothing. The notice is
+     kept in the app for the next capability that needs it, so what is asserted
+     is that it DRAWS NOTHING today — and, right below, that each of the two
+     former inert rows really does have its own block instead. A check that
+     still demanded an inert row would be demanding the bug back. */
+  ok("no switch is on and granting nothing any more — the 'not doing anything yet' notice draws nothing at all",
+    (await page.locator(".editor .inertswitch").count()) === 0 &&
+    (await page.locator("[data-inert-row]").count()) === 0,
+    `${await page.locator(".editor .inertswitch").count()} notice(s), ` +
+    `${await page.locator("[data-inert-row]").count()} inert row(s)`);
   await page.screenshot({ path: `${SHOTS}/reach-top.png` });
+
+  /* ======= THE FOLDERS, UNDER THE SWITCH THAT ALLOWS THEM ==================
+   *
+   * The other half of the line above: "Reach files outside its own folder" was
+   * allowed by a switch and DELIVERED by a list of folders, and no screen ever
+   * chose one. `wholeComputerRootsFor` (packages/engine/src/wholecomputer.ts) is
+   * the ONE answer to "what does this agent really reach", and this block is
+   * that answer on screen — the same function the engine host reads to build a
+   * command line, so the screen cannot promise reach the CLI will not carry.
+   *
+   * Two of its states can be driven from a browser and are held here: the switch
+   * ON with no folder chosen ("none"), and the refusal a window with no desktop
+   * shell must give when asked to open the computer's folder picker. "ready",
+   * "partly" and "gone" all need the shell to look at the disk and are NOT
+   * claimed here — drive-app.mjs walks the installed app for those.
+   */
+  const rootWords = (await page.locator(".editor .wholecomputer").innerText()).replace(/\s+/g, " ");
+  ok("with reach outside its own folder switched on and no folder chosen, the screen says the agent HAS none",
+    (await page.locator('.editor .wholecomputer[data-roots-state="none"]').count()) === 1 &&
+    (await page.locator(".editor .wholecomputer").getAttribute("data-roots-count")) === "0" &&
+    /no folders chosen/i.test(rootWords) && !/In use/i.test(rootWords) &&
+    (await page.locator(".editor .wholecomputer [data-roots-list]").count()) === 0 &&
+    (await page.locator(".editor .wholecomputer li[data-root]").count()) === 0,
+    rootWords.slice(0, 130));
+  ok("and it offers the way to choose one, with nothing to forget while there is nothing chosen",
+    (await page.locator(".editor .wholecomputer [data-roots-choose]").count()) === 1 &&
+    (await page.locator(".editor .wholecomputer [data-roots-clear]").count()) === 0,
+    (await page.locator(".editor .wholecomputer [data-roots-choose]").innerText()).trim());
+  await page.click(".editor .wholecomputer [data-roots-choose]");
+  await page.waitForSelector(".editor .wholecomputer [data-roots-refusal]", { timeout: 10000 });
+  const rootRefusal = (await page.locator(".editor .wholecomputer [data-roots-refusal]").innerText())
+    .replace(/\s+/g, " ").trim();
+  ok("a window with no folder picker says which one can choose folders instead of pretending, and claims nothing new about reach",
+    /installed Cloud9 app/i.test(rootRefusal) && !/^Error:/i.test(rootRefusal) &&
+    (await page.locator('.editor .wholecomputer[data-roots-state="none"]').count()) === 1 &&
+    (await page.locator(".editor .wholecomputer li[data-root][data-root-missing]").count()) === 0,
+    rootRefusal.slice(0, 120));
+  await page.locator(".editor .wholecomputer").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/wholecomputer-none.png` });
 
   /* ======= THE CONNECTIONS FILE, UNDER THE SWITCH THAT ALLOWS IT ============
    *
@@ -2303,6 +2920,12 @@ try {
      than a reassuring sentence about a switch he has not touched. */
   ok("with connected services off and no file remembered, the connections block says nothing at all",
     (await page.locator(".editor .connfile").count()) === 0);
+  /* Its twin, and the same law: reach outside its own folder off with no folder
+     ever chosen has nothing true to say either. Held here because the folder
+     block is new — the connections block earned this check by getting it wrong
+     first, and a new block that repeats the mistake would otherwise ship. */
+  ok("with reach outside its own folder off and no folder remembered, the folders block says nothing at all",
+    (await page.locator(".editor .wholecomputer").count()) === 0);
   ok("picking the bottom rung takes every one of them back",
     atBottom.every(r => !r.on),
     atBottom.filter(r => r.on).map(r => r.ability).join(", ") || "all off");
@@ -4517,6 +5140,489 @@ try {
   await page.click(".threadpanel .threadclose");
   await page.waitForSelector(".threadpanel", { state: "detached", timeout: 15000 });
 
+  /* ============ READING BACK MUST NOT COST HIM THE NEXT MESSAGE ============
+   *
+   * HIS WORDS: "the chat window doesn't auto-scroll to the newest message on
+   * Enter." The checks above already hold "a send takes the view down" — and
+   * they passed while the app was broken, because they never read back FAR
+   * ENOUGH to ask for an older page first.
+   *
+   * WHAT THIS WALK IS NOT, and this correction matters more than the walk.
+   * It was written against a FIRST DIAGNOSIS: that reaching the top of the list
+   * asks for an older page (`askForOlder`), that asking sets a scroll ANCHOR,
+   * and that the anchor was only ever released by the effect that runs when
+   * messages were really PREPENDED — so a page that added nothing left the
+   * anchor held for the rest of that room's life and every later arrival,
+   * including his own message coming back after Enter, was put back on the row
+   * he had been reading.
+   *
+   * THAT STORY WAS TESTED AND IT IS FALSE. Putting the old anchor code back
+   * leaves this walk GREEN. It never reproduced what he reported, so not one
+   * line below may be read as evidence of a cause. The prose that used to sit
+   * here claimed it was, and a suite that tells a false story about why it is
+   * green is worse than one check short.
+   *
+   * THE REAL CAUSE is in `useFollowToBottom`, and it is a clock: 700ms
+   * (`FOLLOW_SETTLES_MS`) was treated as how long a follow LASTS, when a smooth
+   * scroll's duration grows with the distance — 2,000px is about 745ms and
+   * 13,000px about 1,520ms. The timer fired in the middle of the app's own
+   * animation, the rule stopped recognising its own steps, wrote down "he is not
+   * at the bottom", and switched off both the arrival rule and the resize
+   * watcher — so the view landed on a target worked out before his row existed,
+   * short by exactly his row's height. The timer now measures STILLNESS rather
+   * than duration. The check that FAILS when that comes back is the far-back one
+   * further down (`# farback`), not this one — this room is only ~2,000px tall,
+   * far too short to outlast a 700ms clock.
+   *
+   * WHAT THIS WALK DOES STILL GUARANTEE, and it is worth keeping: from a
+   * conversation read all the way back to its start — the state where a page was
+   * asked for and added nothing, where the anchor and the start-of-history
+   * marker are both in play — pressing Enter still ends with the view on his own
+   * message, and the rule still names a SEND among its reasons. In plain words:
+   * the paging machinery never gets to claim the view away from a send.
+   *
+   * It is a room of its own rather than the one above: `# longhaul` has already
+   * been paged back through by the checks above, and the state this needs is a
+   * conversation that has never been walked. A second person is in it from the
+   * moment it is made, because "a message arrived" and "a message arrived FROM
+   * SOMEBODY ELSE" are different facts and only the second one raises the pill.
+   */
+  const priyaId = await fpage.evaluate(() => window.cloud9Wire.me());
+  await page.evaluate(id => window.cloud9Wire.ask(
+    { type: "createChannel", name: "scrollback", memberIds: [id], kind: "channel" }), priyaId);
+  await page.waitForSelector(".sidebar >> text=# scrollback", { timeout: 25000 });
+  await page.click(".sidebar >> text=# scrollback");
+  await page.evaluate(async () => {
+    const wire = window.cloud9Wire;
+    const id = wire.channels().find(c => c.name === "scrollback").id;
+    // more than one page (the relay hands over 50 at a time), so reading back
+    // really does ask the hub for more and really does run out of older ones
+    for (let i = 1; i <= 60; i++) {
+      wire.ask({ type: "send", channelId: id, text: `scrollback line ${i}` });
+      if (i % 20 === 0) await new Promise(r => setTimeout(r, 60));
+    }
+  });
+  await page.waitForSelector('.msg:has-text("scrollback line 60")', { timeout: 60000 });
+  /* A reload is the honest starting point, and it is also what makes this the
+     FIRST walk of this room: only the newest page is on screen and nothing has
+     been paged back through. */
+  await page.reload();
+  await page.waitForSelector(".sidebar >> text=# scrollback", { timeout: 30000 });
+  await page.click(".sidebar >> text=# scrollback");
+  await page.waitForSelector('.msg:has-text("scrollback line 60")', { timeout: 30000 });
+  await page.waitForTimeout(900);
+
+  /** Where this conversation is, and what the rule says it did. */
+  const scrollView = () => page.evaluate(() => {
+    const m = document.querySelector(".msgs");
+    return {
+      scrollTop: Math.round(m.scrollTop),
+      fromBottom: Math.round(m.scrollHeight - m.scrollTop - m.clientHeight),
+      rows: m.querySelectorAll(".msg").length,
+      followed: window.cloud9View.followed(),
+      newBelow: window.cloud9View.newBelow(),
+    };
+  });
+  /** Read back until the hub has nothing older left to give. */
+  const readBackToTheStart = () => page.evaluate(async () => {
+    const el = document.querySelector(".msgs");
+    el.scrollTop = el.scrollHeight;
+    await new Promise(r => setTimeout(r, 400));
+    let rows = el.querySelectorAll(".msg").length;
+    let asked = 0;
+    for (let i = 0; i < 8; i++) {
+      const before = rows;
+      el.scrollTop = 0;                       // fires the app's own scroll handler
+      asked += 1;
+      await new Promise(r => setTimeout(r, 1400));
+      rows = el.querySelectorAll(".msg").length;
+      if (rows === before && document.querySelector(".startofhistory")) break;
+    }
+    return { asked, rows, startOfHistory: !!document.querySelector(".startofhistory") };
+  });
+
+  const walkedBack = await readBackToTheStart();
+  const atTheTop = await scrollView();
+  ok("REPRODUCED: he has read all the way back through a conversation, so the last page he asked for added nothing at all",
+    walkedBack.startOfHistory === true && walkedBack.rows >= 60 && walkedBack.asked >= 2 &&
+    atTheTop.fromBottom >= 200,
+    `${walkedBack.rows} messages loaded after ${walkedBack.asked} walk(s) back; he is ` +
+    `${atTheTop.fromBottom}px off the bottom with the start of history on screen`);
+
+  /* Typed into the app's own box and sent with the app's own Enter, from a room
+     that has been read right back to its start. What this holds is that nothing
+     in the paging machinery — the anchor it sets, the page that added nothing,
+     the start-of-history marker — may keep the view when he sends. */
+  await page.fill(".thread .composer textarea", "and this is what I typed after reading right back");
+  await page.press(".thread .composer textarea", "Enter");
+  await page.waitForSelector('.msg p:has-text("after reading right back")', { timeout: 30000 });
+  /* Waited on, not slept through — but NOT allowed to throw: a regression here
+     must be reported as this check failing, not as a suite that fell over and
+     left sixty later checks unrun. */
+  await waitFor(page, () => {
+    const m = document.querySelector(".msgs");
+    return m.scrollHeight - m.scrollTop - m.clientHeight < 3;
+  }, undefined, { timeout: 20000, what: "the view to follow what he typed after reading back" })
+    .catch(() => { /* judged below */ });
+  const afterReadBackSend = await page.evaluate(() => {
+    const m = document.querySelector(".msgs");
+    const mine = [...m.querySelectorAll(".msg")]
+      .find(r => r.textContent.includes("after reading right back"));
+    const lb = m.getBoundingClientRect();
+    const mb = mine?.getBoundingClientRect();
+    return {
+      fromBottom: Math.round(m.scrollHeight - m.scrollTop - m.clientHeight),
+      mineInSight: !!mb && mb.top < lb.bottom && mb.bottom > lb.top,
+      followed: window.cloud9View.followed(),
+    };
+  });
+  const sinceReadBackSend = afterReadBackSend.followed.recent.slice(
+    -(afterReadBackSend.followed.n - atTheTop.followed.n));
+  ok("pressing Enter lands him on his own message even after reading right back to the start — nothing the paging machinery holds may keep the view from a send",
+    afterReadBackSend.fromBottom < 3 && afterReadBackSend.mineInSight === true &&
+    sinceReadBackSend.includes("sent"),
+    `${afterReadBackSend.fromBottom}px from the bottom, his message in sight: ` +
+    `${afterReadBackSend.mineInSight}, reasons since he pressed Enter: ` +
+    JSON.stringify(sinceReadBackSend));
+  await page.screenshot({ path: `${SHOTS}/scroll-enter-after-reading-back.png` });
+
+  /* ================= "↓ N NEW MESSAGES" — TOLD, NEVER YANKED ==============
+   *
+   * The other half of the same rule. A message arriving while he is reading
+   * back must not move him — and must not be silent either, or he is reading a
+   * conversation that has quietly moved on without him. So the app says how
+   * many are down there and leaves the decision to him.
+   *
+   * The pill's SLOT is always in the list and has no height, deliberately: a
+   * slot that came and went would change where the bottom is, and the follow
+   * rule watches for exactly that. Both facts are held below.
+   */
+  const priyaSays = text => fpage.evaluate(t => {
+    const wire = window.cloud9Wire;
+    const id = wire.channels().find(c => c.name === "scrollback").id;
+    wire.ask({ type: "send", channelId: id, text: t });
+  }, text);
+  const pillNow = () => page.evaluate(() => {
+    const b = document.querySelector(".newpill");
+    return {
+      slots: document.querySelectorAll(".newpillslot").length,
+      showing: !!b,
+      says: b ? b.textContent.replace(/\s+/g, " ").trim() : "",
+      attr: b ? b.dataset.newMessages : null,
+      rule: window.cloud9View.newBelow(),
+    };
+  });
+
+  await page.evaluate(async () => {
+    const el = document.querySelector(".msgs");
+    el.scrollTop = 0;
+    await new Promise(r => setTimeout(r, 900));
+  });
+  const beforeHers = await scrollView();
+  const calmPill = await pillNow();
+  await priyaSays("priya says something while he is reading back");
+  await waitFor(page, () => window.cloud9View.newBelow() >= 1, undefined,
+    { timeout: 30000, what: "the pill to count the message that arrived below him" })
+    .catch(() => { /* judged below */ });
+  await page.waitForTimeout(500);   // let anything wrong happen
+  const afterHers = await scrollView();
+  const raised = await pillNow();
+  ok("a message from somebody else while he has read back does NOT move him — the app tells him how many are down there instead",
+    calmPill.showing === false && calmPill.slots === 1 &&
+    afterHers.scrollTop === beforeHers.scrollTop &&
+    afterHers.followed.n === beforeHers.followed.n &&
+    raised.showing === true && raised.attr === "1" && raised.rule === 1 &&
+    /1 new message/.test(raised.says) && raised.slots === 1,
+    `the view stayed at ${afterHers.scrollTop} and the rule did not fire; the pill says ` +
+    `"${raised.says}" (data-new-messages=${raised.attr})`);
+  await page.screenshot({ path: `${SHOTS}/scroll-new-messages-pill.png` });
+
+  /* HIS OWN WORDS ARE NOT NEWS TO HIM. Sent through the app's own send frame
+     rather than the box, because the box would take him to the bottom — this is
+     the case where a message of his lands while he is still reading back (a
+     second window of his, or a send that was still on the wire). A pill
+     offering to take him to his own words would be counting the wrong thing. */
+  await page.evaluate(() => {
+    const wire = window.cloud9Wire;
+    const id = wire.channels().find(c => c.name === "scrollback").id;
+    wire.ask({ type: "send", channelId: id, text: "his own words landing while he reads back" });
+  });
+  await waitFor(page, () => [...document.querySelectorAll(".msgs .msg")]
+    .some(m => m.textContent.includes("his own words landing")), undefined,
+  { timeout: 30000, what: "his own message to land while he is still reading back" });
+  await page.waitForTimeout(600);
+  const afterHisOwn = await pillNow();
+  const viewAfterHisOwn = await scrollView();
+  await priyaSays("priya says a second thing while he is still reading back");
+  await waitFor(page, () => window.cloud9View.newBelow() >= 2, undefined,
+    { timeout: 30000, what: "the second message from somebody else to be counted" })
+    .catch(() => { /* judged below */ });
+  const afterSecondHers = await pillNow();
+  ok("his own message never counts toward the pill, and the next one from somebody else still does",
+    afterHisOwn.attr === "1" && afterHisOwn.rule === 1 &&
+    viewAfterHisOwn.scrollTop === beforeHers.scrollTop &&
+    afterSecondHers.attr === "2" && afterSecondHers.rule === 2 &&
+    /2 new messages/.test(afterSecondHers.says),
+    `after his own: "${afterHisOwn.says}"; after hers: "${afterSecondHers.says}"`);
+
+  /* CLICKING IT IS HIS DECISION, so it owns the view outright — and it goes
+     through the same one follow owner as everything else, under its own name. */
+  const beforeClick = await scrollView();
+  await page.click(".newpill");
+  await waitFor(page, () => {
+    const m = document.querySelector(".msgs");
+    return m.scrollHeight - m.scrollTop - m.clientHeight < 3;
+  }, undefined, { timeout: 20000, what: "the pill to take him to the newest message" })
+    .catch(() => { /* judged below */ });
+  await page.waitForTimeout(400);
+  const afterClick = await scrollView();
+  const clearedPill = await pillNow();
+  const sinceClick = afterClick.followed.recent.slice(
+    -(afterClick.followed.n - beforeClick.followed.n));
+  ok("clicking it takes him to the newest message and clears the count — and the empty slot it lived in stays, so nothing on screen jumps",
+    afterClick.fromBottom < 3 && clearedPill.showing === false &&
+    clearedPill.rule === 0 && clearedPill.slots === 1 &&
+    sinceClick.includes("caughtUp"),
+    `${afterClick.fromBottom}px from the bottom, reasons since he clicked: ` +
+    JSON.stringify(sinceClick));
+
+  /* AND WALKING DOWN THERE HIMSELF IS THE SAME FACT. A count that survived him
+     scrolling to the bottom would be a badge offering to take him where he
+     already is. */
+  await page.evaluate(async () => {
+    const el = document.querySelector(".msgs");
+    el.scrollTop = 0;
+    await new Promise(r => setTimeout(r, 900));
+  });
+  await priyaSays("priya says one more, and this time he walks down to it himself");
+  await waitFor(page, () => window.cloud9View.newBelow() >= 1, undefined,
+    { timeout: 30000, what: "the pill to come up before he scrolls down himself" })
+    .catch(() => { /* judged below */ });
+  const beforeWalking = await pillNow();
+  await page.evaluate(async () => {
+    const el = document.querySelector(".msgs");
+    el.scrollTop = el.scrollHeight;           // his own hand on the scrollbar
+    await new Promise(r => setTimeout(r, 700));
+  });
+  const afterWalking = await pillNow();
+  ok("and arriving at the bottom under his own steam clears it too — never a badge offering to take him where he already is",
+    beforeWalking.showing === true && beforeWalking.rule === 1 &&
+    afterWalking.showing === false && afterWalking.rule === 0 && afterWalking.slots === 1,
+    `before he scrolled: "${beforeWalking.says}"; after: ${afterWalking.showing ? afterWalking.says : "no pill"}`);
+
+  /* ================= SMOOTHNESS, HELD TO A NUMBER =========================
+   *
+   * "The chat is not smooth" is a claim about work done per event, and the only
+   * honest way to keep it true is to COUNT. `window.__cloud9Renders` is the
+   * app's own instrument (one integer add per render, nothing on screen reads
+   * it), and these two are the guard that stops the fix quietly rotting: one
+   * incoming message used to redraw 151 message bubbles and now redraws one, and
+   * an unrelated presence tick used to redraw 151 and now redraws none.
+   *
+   * THE THRESHOLD IS DELIBERATELY NOT 1. A single arrival can honestly touch the
+   * row above it (the "who said it" run of messages) as well as its own, and a
+   * check pinned to exactly one would be a check that fails on a correct change.
+   * Three is the point past which something is redrawing the LIST rather than
+   * the message — a room with sixty rows on screen makes that unmistakable.
+   * Zero is the right number for the presence tick, and there is nothing to be
+   * generous about: a message bubble has no business redrawing for it at all.
+   */
+  const rowsOnScreen = await page.locator(".msgs .msg").count();
+  await page.evaluate(() => window.__cloud9Renders.reset());
+  await priyaSays("a message to measure the redraw by");
+  await waitFor(page, () => [...document.querySelectorAll(".msgs .msg")]
+    .some(m => m.textContent.includes("a message to measure the redraw by")), undefined,
+  { timeout: 30000, what: "the message being measured to land" });
+  await page.waitForTimeout(800);   // let anything else that wanted to redraw, redraw
+  const onArrival = await page.evaluate(() => window.__cloud9Renders.read());
+  ok("one message arriving redraws the one new bubble, not every bubble in the room",
+    (onArrival.MessageRow ?? 0) >= 1 && (onArrival.MessageRow ?? 0) <= 3 &&
+    rowsOnScreen >= 20,
+    `${onArrival.MessageRow ?? 0} message redraw(s) with ${rowsOnScreen} messages on screen ` +
+    `(the whole tally: ${JSON.stringify(onArrival)})`);
+
+  /* A TICK ABOUT SOMETHING ELSE ENTIRELY. Fed through the app's own frame
+     handler — the same door the live socket uses — so this is the real world
+     update and not a poke at a React state. The agent it is about is not in this
+     room and has said nothing in it, which is the whole point: nothing about
+     this conversation changed, so nothing in it may redraw. The other counters
+     prove the frame really arrived, so a screen that ignored it entirely cannot
+     pass this by doing nothing at all. */
+  const someAgent = (await page.evaluate(() => window.cloud9Wire.agents()))[0];
+  await page.evaluate(() => window.__cloud9Renders.reset());
+  await page.evaluate(id => window.cloud9Wire.receive({
+    type: "agentStatus", agentId: id, status: "working", presence: "working",
+    reason: "a presence tick that has nothing to do with this conversation",
+  }), someAgent.id);
+  await page.waitForTimeout(800);
+  const onTick = await page.evaluate(() => window.__cloud9Renders.read());
+  const screenRedrew = (onTick.Workspace ?? 0) + (onTick.ChatScreen ?? 0) + (onTick.ChatView ?? 0);
+  ok("a presence tick that has nothing to do with this conversation redraws no message bubble at all",
+    (onTick.MessageRow ?? 0) === 0 && screenRedrew >= 1,
+    `${onTick.MessageRow ?? 0} message redraw(s), and the screen itself redrew ${screenRedrew} ` +
+    `time(s) so the tick really did arrive (the whole tally: ${JSON.stringify(onTick)})`);
+  await page.screenshot({ path: `${SHOTS}/smoothness-render-counts.png` });
+
+  /* ========== ENTER FROM A LONG WAY BACK — THE FOLLOW MUST OUTLAST ITS OWN CLOCK ==========
+   *
+   * HIS WORDS, again: "the chat window doesn't auto-scroll to the newest message
+   * on Enter." Every follow check above was green while that was still true of
+   * the app, and this is the one that would have caught it.
+   *
+   * WHAT WENT WRONG. Pressing Enter starts a SMOOTH scroll, and the rule that
+   * started it needs to know its own animation while it runs. It knew it by a
+   * 700ms clock (`FOLLOW_SETTLES_MS`), started once, and treated as "how long a
+   * follow lasts". But a smooth scroll's length is not a constant — it grows
+   * with the distance: about 745ms for 2,000px and about 1,520ms for 13,000px.
+   * So from a long way back the clock ran out MID-ANIMATION, `following` went
+   * false, and every remaining step of the app's OWN scroll was then read as the
+   * reader moving — writing down "he is not at the bottom". That one flag is
+   * what the arrival rule and the resize watcher both ask, so both switched off,
+   * and the view finished on a target worked out before his row existed: short
+   * by exactly the height of the message he had just typed. The fix makes the
+   * clock measure STILLNESS instead of duration — every recognised step of our
+   * own animation starts it again (`keepFollowing`).
+   *
+   * WHY THIS NEEDS A ROOM OF ITS OWN. The bug only shows itself over a scroll
+   * long enough to outlast 700ms. Every other room in this suite is around
+   * 2,000px tall, which is a follow of roughly 745ms — inside the clock, so the
+   * app looks perfect. So this builds a genuinely tall one: 260 long messages,
+   * read back four pages, and the reader parked more than 10,000px from the
+   * newest message.
+   *
+   * WHY THE HUB'S ANSWER IS HELD. The discriminating fact is what happens to his
+   * message when it comes back from the hub WHILE the scroll is still running.
+   * On a fast local hub the echo can land before the old clock had even run out,
+   * which hides the bug. `__c9hold` — the suite's own gate, which delays frames
+   * and never fakes them — keeps the `message` frame for 1,000ms so it always
+   * lands mid-animation, which is where he lives.
+   *
+   * AND THE CHECK THAT ACTUALLY DISCRIMINATES is not the pixel count, it is the
+   * rule's own trail. With the bug in place the reasons since Enter are exactly
+   * ["sent","resized"] — his echo arrived into a rule that had already talked
+   * itself out of following, so there is no "arrived" in there at all. With the
+   * clock measuring stillness, "arrived" is there. That word is the mechanism.
+   */
+  await page.evaluate(() => window.cloud9Wire.ask(
+    { type: "createChannel", name: "farback", memberIds: [], kind: "channel" }));
+  await page.waitForSelector(".sidebar >> text=# farback", { timeout: 25000 });
+  await page.click(".sidebar >> text=# farback");
+  await page.evaluate(async () => {
+    const wire = window.cloud9Wire;
+    const id = wire.channels().find(c => c.name === "farback").id;
+    const body = "lorem ipsum dolor sit amet ".repeat(6);
+    for (let i = 1; i <= 260; i++) {
+      wire.ask({ type: "send", channelId: id, text: `line ${i} — ${body}` });
+      if (i % 20 === 0) await new Promise(r => setTimeout(r, 90));
+    }
+  });
+  await page.waitForSelector('.msgs .msg p:has-text("line 260")', { timeout: 120000 });
+  /* A reload is the honest starting point AND it is what makes the walk real:
+     only the newest page is on screen, so reaching the top really does ask the
+     hub for older ones. */
+  await page.reload();
+  await page.waitForSelector(".sidebar >> text=# farback", { timeout: 30000 });
+  await page.click(".sidebar >> text=# farback");
+  await page.waitForSelector('.msgs .msg p:has-text("line 260")', { timeout: 30000 });
+  await page.waitForTimeout(900);
+  /* Four older pages, each one WAITED for rather than slept through, then parked
+     just below the top. The wait is on the row count really growing, which is
+     the only honest sign a page landed. */
+  const walkedFarBack = await page.evaluate(async () => {
+    const el = document.querySelector(".msgs");
+    let rows = el.querySelectorAll(".msg").length;
+    let pages = 0;
+    for (let i = 0; i < 4; i++) {
+      const before = rows;
+      el.scrollTop = 0;                        // fires the app's own scroll handler
+      const until = Date.now() + 20000;
+      while (Date.now() < until) {
+        await new Promise(r => setTimeout(r, 100));
+        rows = el.querySelectorAll(".msg").length;
+        if (rows > before) break;
+      }
+      if (rows > before) pages += 1;
+      await new Promise(r => setTimeout(r, 500));  // let the page settle and let any claim go
+    }
+    el.scrollTop = 200;                        // parked, a long way from the newest message
+    await new Promise(r => setTimeout(r, 700));
+    return { pages, rows };
+  });
+  /** Where this very tall conversation is, and what the rule says it has done. */
+  const farView = () => page.evaluate(() => {
+    const m = document.querySelector(".msgs");
+    return {
+      scrollTop: Math.round(m.scrollTop),
+      fromBottom: Math.round(m.scrollHeight - m.scrollTop - m.clientHeight),
+      rows: m.querySelectorAll(".msg").length,
+      followed: window.cloud9View.followed(),
+    };
+  });
+  /* TWELVE LINES, because the bug's signature is landing short by exactly the
+     height of the row he just added — a one-line message hides that in the
+     slack, a twelve-line one cannot. */
+  const twelveLines = Array.from({ length: 12 },
+    (_, i) => `twelve-line note from a long way back, line ${i + 1}`).join("\n");
+  await page.fill(".thread .composer textarea", twelveLines);
+  await page.waitForTimeout(400);
+  const beforeFarEnter = await farView();
+  ok("REPRODUCED: a conversation tall enough that following it takes longer than the old 700ms clock",
+    walkedFarBack.pages >= 4 && beforeFarEnter.rows >= 250 && beforeFarEnter.fromBottom >= 10000,
+    `${beforeFarEnter.rows} messages after ${walkedFarBack.pages} older page(s); he is ` +
+    `${beforeFarEnter.fromBottom}px from the newest message`);
+
+  /* HIS ECHO HELD OPEN so it lands mid-scroll, which is the state the bug needs.
+     Nothing is faked: the hub's own frame is delivered, to the app's own
+     handler, unchanged — only later. */
+  await page.evaluate(() => window.__c9hold.hold(["message"]));
+  await page.press(".thread .composer textarea", "Enter");
+  const heldEcho = await page.evaluate(async () => {
+    await new Promise(r => setTimeout(r, 1000));   // deep inside the smooth scroll
+    return window.__c9hold.release();
+  });
+  await page.waitForSelector('.msgs .msg p:has-text("twelve-line note from a long way back")',
+    { timeout: 30000 });
+  /* Waited on the movement HAVING FINISHED — but never allowed to throw, so a
+     regression is reported as these checks failing rather than as a suite that
+     fell over and left the rest of its checks unrun. */
+  await waitFor(page, () => {
+    const m = document.querySelector(".msgs");
+    return m.scrollHeight - m.scrollTop - m.clientHeight < 5;
+  }, undefined, { timeout: 20000, what: "the view to land on the message he typed from far back" })
+    .catch(() => { /* judged below */ });
+  await page.waitForTimeout(400);
+  const afterFarEnter = await page.evaluate(() => {
+    const m = document.querySelector(".msgs");
+    const mine = [...m.querySelectorAll(".msg")]
+      .find(r => r.textContent.includes("twelve-line note from a long way back"));
+    const lb = m.getBoundingClientRect();
+    const mb = mine?.getBoundingClientRect();
+    return {
+      fromBottom: Math.round(m.scrollHeight - m.scrollTop - m.clientHeight),
+      /* WHOLLY in sight, not merely poking into view: landing short by the
+         height of his own row is exactly what he saw, and a check that only
+         asked whether some part of it was visible would have passed on it. */
+      wholeRowInSight: !!mb && mb.top >= lb.top - 1 && mb.bottom <= lb.bottom + 1,
+      rowHeight: mb ? Math.round(mb.height) : 0,
+      followed: window.cloud9View.followed(),
+    };
+  });
+  const farFollows = Math.max(0, afterFarEnter.followed.n - beforeFarEnter.followed.n);
+  const sinceFarEnter = farFollows === 0
+    ? [] : afterFarEnter.followed.recent.slice(-Math.min(farFollows, 12));
+  ok("pressing Enter from more than 10,000px back lands the whole of his own message in sight, however long the scroll takes",
+    afterFarEnter.fromBottom < 5 && afterFarEnter.wholeRowInSight === true &&
+    afterFarEnter.rowHeight >= 100,
+    `${afterFarEnter.fromBottom}px from the bottom; his ${afterFarEnter.rowHeight}px row wholly ` +
+    `in sight: ${afterFarEnter.wholeRowInSight}`);
+  ok("and the rule still recognised his echo as one to follow — the clock measures stillness, not how long the animation lasts",
+    sinceFarEnter.includes("sent") && sinceFarEnter.includes("arrived") && heldEcho >= 1,
+    `${farFollows} follow(s) since he pressed Enter: ${JSON.stringify(sinceFarEnter)} ` +
+    `(${heldEcho} held frame(s) let through 1,000ms in). With the 700ms clock this reads ` +
+    `exactly ["sent","resized"] — no "arrived" at all, because the rule had already ` +
+    "talked itself out of following its own animation.");
+  await page.screenshot({ path: `${SHOTS}/scroll-enter-from-far-back.png` });
+
   /* ---- `from:` really filters now, so the placeholder is not a promise the
      hub breaks (§11.4). The author filter used to be applied in JavaScript
      AFTER SQL's limit, so on a busy room it returned nothing at all. Two people
@@ -4695,12 +5801,28 @@ try {
     jobRows.join("/") === "asked-by/ran-on/took", jobRows.join("/"));
   await page.screenshot({ path: `${SHOTS}/run-task.png` });
 
-  // ---- the same record, under the 📦 result in the conversation ----
+  /* ---- the same record, under the 📦 result — which lives in the THREAD ----
+   * The job was asked for with "@Scout !bg …" typed in the conversation, so the
+   * job answers where it was asked: `runTask` carries the ask's thread and
+   * `reportFinished` puts the 📦 detail (and its run card) under his message,
+   * leaving the room one short "🧵 Finished in the thread: …" line. This check
+   * used to look for the card in the scroll and would now never find it — so it
+   * looks where the result is, and says so in its name. */
   await page.click('.rail-btn[data-go="chat"]');
   await page.click(".sidebar >> text=# trip-goa");
-  await page.waitForSelector(`.msg .callout.run[data-run="${jobRunId}"]`, { timeout: 30000 });
-  ok("the 📦 job result in the conversation carries that job's own record, not a lookalike",
-    (await page.locator(`.msg .callout.run[data-run="${jobRunId}"]`).count()) === 1);
+  /* "!bg" is part of the words on purpose: the job's own room line QUOTES the
+     ask it finished ("🧵 Finished in the thread: compare 14 villas…") and sits
+     below it, so the ask has to be named by something only the ask says. */
+  const bgAskRoot = await page.locator('.msgs .msg:has-text("!bg compare 14 villas and shortlist 3")')
+    .last().getAttribute("data-msg");
+  await page.click(`.msgs .msg[data-msg="${bgAskRoot}"] .threadline`);
+  await page.waitForSelector(".threadpanel", { timeout: 20000 });
+  await page.waitForSelector(`.threadpanel .msg .callout.run[data-run="${jobRunId}"]`, { timeout: 30000 });
+  ok("the 📦 job result — in the thread under the message the job was asked in — carries that job's own record, not a lookalike",
+    (await page.locator(`.threadpanel .msg .callout.run[data-run="${jobRunId}"]`).count()) === 1 &&
+    (await page.locator(`.msgs .msg .callout.run[data-run="${jobRunId}"]`).count()) === 0,
+    `${await page.locator(`.threadpanel .callout.run[data-run="${jobRunId}"]`).count()} in the thread, ` +
+    `${await page.locator(`.msgs .callout.run[data-run="${jobRunId}"]`).count()} in the scroll`);
   await page.screenshot({ path: `${SHOTS}/run-chat.png` });
 
   /* A run card is the widest thing the app draws: a long ask in its title, a
@@ -4725,7 +5847,10 @@ try {
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
   };
-  await noSidewaysWithACard("under a job result in the conversation", "run-chat");
+  // the run card in its narrowest column of all — a thread beside the room
+  await noSidewaysWithACard("under a job result in the thread it was reported in", "run-chat");
+  await page.click(".threadpanel .threadclose");
+  await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
 
   await page.click('.rail-btn[data-go="tasks"]');
   await page.waitForSelector(`.taskrow .callout.run[data-run="${jobRunId}"]`, { timeout: 20000 });

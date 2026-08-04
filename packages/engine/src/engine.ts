@@ -10,6 +10,7 @@ import {
   Task, TaskStatus, WorkReaction,
   WorldState, describeRemoteAction, isSafeFileName,
   mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
+  LIVE_STEPS_PER_BATCH, RUN_LIMITS, RunStep,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
 import { Cloud9SearchAnswer } from "./cloud9tools.js";
@@ -583,6 +584,17 @@ export class Engine {
       startedAt: Date.now(),
     };
     let trace: ProviderTrace | undefined;
+    // CAN ANYBODY BE SHOWN THIS TURN AT ALL? A live signal is drawn on the
+    // message that triggered the turn, in the room that message is in, so a turn
+    // with neither has nowhere honest to appear. ONE answer, used by the
+    // receipts and by the live steps alike — two spellings of "may we signal?"
+    // is how a scheduled check-in ends up drawing on somebody else's message.
+    const canSignal = !!input.triggerMessageId && !!input.channelId;
+    /** did this turn ever actually show a live step? Only then is there a
+     *  preview to close — a provider that cannot stream (the mock, the SDK
+     *  path, any runner that ignores the option) must cost the room no frames
+     *  at all, not one meaningless "it's finished" for a box nobody saw. */
+    let streamed = false;
     // 👀 — THE SILENCE ENDS HERE. Sent before a single gate is checked, because
     // "we have your message" is true from this line onwards and is exactly the
     // thing his §2 says a person should never have to wait for. A turn that is
@@ -629,6 +641,18 @@ export class Engine {
         ...(input.channelId ? { channelId: input.channelId } : {}),
         ...(input.workdir ? { workdir: input.workdir } : {}),
         onTrace: t => { trace = t; },
+        // WHAT IT IS DOING, AS IT DOES IT. Only offered when there is a message
+        // and a room to show it against — the same gate `sendReceipt` uses, in
+        // the same one place, so a scheduled or proactive turn cannot stream
+        // its steps onto somebody else's message. When it is absent the
+        // provider streams nothing at all, and the screen behaves exactly as it
+        // did before: the record, at the end.
+        ...(canSignal ? {
+          onStep: (steps: RunStep[]) => {
+            streamed = true;
+            this.sendLiveSteps(agent.id, input, steps);
+          },
+        } : {}),
       });
       const record = this.recordRun(seed, { finishedAt: Date.now(), outcome: "ok", trace, reply: text });
       // THE ONE COMMITTED TICK, derived from what really happened — never from
@@ -661,6 +685,13 @@ export class Engine {
         error: err instanceof Error ? err.message : String(err),
       });
       throw err;
+    } finally {
+      // THE PREVIEW ENDS WHEN THE TURN DOES — worked, failed, refused, threw.
+      // In a `finally` because there is no ending that should leave a live box
+      // spinning; the screen's stale timer is the backstop for an engine that
+      // dies, not the normal way this stops. From here on the stored record is
+      // the only thing that speaks for this turn.
+      if (streamed) this.endLiveSteps(agent.id, input);
     }
   }
 
@@ -690,6 +721,50 @@ export class Engine {
       });
     } catch (err) {
       console.error("[engine] could not send a receipt:", err);
+    }
+  }
+
+  /**
+   * SEND ONE BATCH OF LIVE STEPS — what this agent just did, while it is still
+   * working (`@cloud9/shared/livesteps`).
+   *
+   * The same gate, the same silence and the same never-throws law as
+   * `sendReceipt`: no triggering message means no signal, and a live view is
+   * never worth a turn. It is capped here as well as at the hub, because a
+   * frame the hub would refuse is a frame worth not sending.
+   *
+   * NOTHING IS STORED BY THIS. The run record is built at the end of the turn
+   * from the whole transcript, exactly as it was before, and `recordRun` is
+   * still its only author.
+   */
+  private sendLiveSteps(agentId: ID, input: TurnInput, steps: readonly RunStep[]): void {
+    const messageId = input.triggerMessageId;
+    const channelId = input.channelId;
+    if (!messageId || !channelId || steps.length === 0) return;
+    try {
+      // REDACTED ON THE WAY OUT, by the same function and to the same lengths a
+      // stored record's steps go through (`shareableRun`). A live step names
+      // files and commands; it does not get to leak what the record would not.
+      const safe = steps.slice(0, LIVE_STEPS_PER_BATCH).map(s => ({
+        ...s,
+        label: redactForSharing(s.label, RUN_LIMITS.label),
+        ...(s.detail ? { detail: redactForSharing(s.detail, RUN_LIMITS.detail) } : {}),
+      }));
+      this.sendFrame({ type: "agentSteps", agentId, channelId, messageId, steps: safe });
+    } catch (err) {
+      console.error("[engine] could not send what an agent is doing:", err);
+    }
+  }
+
+  /** The turn is over — take the preview down. Carries no steps, by design. */
+  private endLiveSteps(agentId: ID, input: TurnInput): void {
+    const messageId = input.triggerMessageId;
+    const channelId = input.channelId;
+    if (!messageId || !channelId) return;
+    try {
+      this.sendFrame({ type: "agentSteps", agentId, channelId, messageId, done: true });
+    } catch (err) {
+      console.error("[engine] could not close a live view:", err);
     }
   }
 

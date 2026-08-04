@@ -28,6 +28,7 @@ import { envWithoutCredentials } from "./env.js";
 import {
   baseName, EventMapper, ProviderTrace, RunStepKind, RunUsage, traceFromStream,
 } from "./runrecord.js";
+import { liveStepWatcher } from "./livesteps.js";
 
 export interface ClaudeCliProviderOptions {
   /** where the agent's turn runs (its own files folder) */
@@ -463,7 +464,7 @@ export class ClaudeCliProvider implements ClaudeProvider {
   }
 
   async respond(input: RespondInput): Promise<string> {
-    const { agent, workdir, onTrace } = input;
+    const { agent, workdir, onTrace, onStep } = input;
     const timeoutMs = this.budgetFor(input);
     // its own git worktree when it is working in a repository (`repowork.ts`),
     // its own folder otherwise. One line, and it is the only way a turn can
@@ -490,6 +491,10 @@ export class ClaudeCliProvider implements ClaudeProvider {
       cloud9Tools: !!cloud9McpConfigPath,
     });
     const args = claudeArgs(agent, this.opts.models?.() ?? [], extras);
+    // A SECOND, THROWAWAY READER for the preview — the record below is still
+    // built from the whole buffered stdout, unchanged. `undefined` when nobody
+    // is watching, which is what keeps an unwatched turn identical to before.
+    const watchLine = liveStepWatcher("claude", claudeMapper(), onStep);
     let result;
     try {
       result = await this.runner(this.command, args, {
@@ -498,6 +503,12 @@ export class ClaudeCliProvider implements ClaudeProvider {
         stdin: prompt,
         // no credential variables: the local app's own login pays for this turn
         env: envWithoutCredentials(),
+        // THE LIVE VIEW. `claude -p --output-format stream-json` already prints
+        // one JSON line per tool call and per result; this feeds each line to
+        // the SAME `claudeMapper` the record is built from, as it arrives.
+        // Absent when nobody is watching, and ignored by a runner that does not
+        // offer it — in both cases the turn is exactly as it was.
+        ...(watchLine ? { onStdoutLine: watchLine } : {}),
       });
     } finally {
       // The ticket dies with the turn. A copy of the config file left on disk is

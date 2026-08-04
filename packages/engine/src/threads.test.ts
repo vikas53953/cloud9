@@ -9,10 +9,15 @@
 //
 // What is being held:
 //  1. asked in a thread → answered IN that thread;
-//  2. asked in the room → answered in the room, exactly as before (no thread
-//     is ever started by an agent on its own);
-//  3. the ONE-LEVEL rule stays the hub's. This engine carries the value the hub
-//     already normalised and never derives a parent of its own;
+//  2. asked in the ROOM → answered in a thread hanging off the question itself,
+//     so the room shows his one line with "1 reply" and the answer never
+//     flattens into the scroll. (This is the half that was missed: the answer
+//     came back flat and he said "he replied me over there only, not in that
+//     thread".)
+//  3. the ONE-LEVEL rule stays the hub's. `resolveReplyTo` returns
+//     `parent.replyTo ?? parent.id`, so handing it the trigger's id is
+//     idempotent — a room question becomes its own root, a threaded question
+//     keeps the root it already had. We never nest and never derive twice;
 //  4. a long job asked for in a thread reports into the thread AND leaves one
 //     short line in the room (the recorded decision — feature-gap.md:300);
 //  5. nothing proactive — a schedule firing — is dragged into a thread;
@@ -34,31 +39,59 @@ const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-thread-"
 
 // ---------------------------------------------------------------- the rule
 
-test("a message said inside a thread names that thread; one said in the room names none", () => {
-  assert.equal(threadOf({ replyTo: "m-root" }), "m-root");
-  assert.equal(threadOf({}), undefined, "a room message is answered in the room");
+test("a message said inside a thread names that thread; one said in the room names ITSELF", () => {
+  assert.equal(threadOf({ id: "m9", replyTo: "m-root" }), "m-root");
+  assert.equal(threadOf({ id: "m9" }), "m9",
+    "a question asked in the room becomes the root of its own thread");
   assert.equal(threadOf(undefined), undefined, "no trigger at all is a room message");
 });
 
-test("the one-level rule stays the HUB's — this engine never derives a parent", () => {
+test("the one-level rule stays the HUB's — this engine never derives a parent twice", () => {
   // The hub's `resolveReplyTo` re-parents a reply-to-a-reply onto the root, so
-  // what arrives here is ALREADY a root. Carrying it back unchanged is what
-  // keeps one owner; deriving `parent.replyTo ?? parent.id` a second time here
-  // is the copy this test exists to forbid.
+  // what arrives here is ALREADY a root. Carrying that root back unchanged is
+  // what keeps one owner: the answer joins the open thread, it does not start a
+  // nested one on the message being answered.
   const deliveredReplyToAReply: Message = {
     id: "m9", channelId: "c1", authorId: "u1", authorName: "Vikas", authorKind: "human",
     text: "@Scout and what about the second one?", ts: 3, replyTo: "m-root",
   };
   assert.equal(threadOf(deliveredReplyToAReply), "m-root",
     "the root the hub resolved, never the message being answered");
+  assert.notEqual(threadOf(deliveredReplyToAReply), "m9", "that would nest");
 
-  // and a ROOT that happens to have replies is still a room message: an agent
-  // does not start a thread on somebody else's message on its own
+  // A ROOT that already has replies is answered in its OWN thread — the one
+  // that is already there. Not a new one, and not the room.
   const rootWithReplies: Message = {
     id: "m-root", channelId: "c1", authorId: "u1", authorName: "Vikas", authorKind: "human",
     text: "@Scout have a look", ts: 1, replyCount: 3, lastReplyAt: 4,
   };
-  assert.equal(threadOf(rootWithReplies), undefined);
+  assert.equal(threadOf(rootWithReplies), "m-root");
+});
+
+test("what we hand the hub survives the hub's own rule unchanged (idempotent)", () => {
+  // A local stand-in for `apps/relay/src/server.ts` `resolveReplyTo`, verbatim:
+  // `return parent.replyTo ?? parent.id`. If that ever changes, this fails and
+  // tells us the engine's assumption has gone stale.
+  const room: Message = {
+    id: "m9", channelId: "c1", authorId: "u1", authorName: "Vikas", authorKind: "human",
+    text: "@Scout hello", ts: 2,
+  };
+  const inThread: Message = { ...room, id: "m11", replyTo: "m-root", ts: 3 };
+  const store = new Map<string, Message>([
+    [room.id, room], [inThread.id, inThread],
+    ["m-root", { ...room, id: "m-root", ts: 1 }],
+  ]);
+  const hub = (replyTo: string | undefined): string | undefined => {
+    if (!replyTo) return undefined;
+    const parent = store.get(replyTo)!;
+    return parent.replyTo ?? parent.id;
+  };
+
+  assert.equal(hub(threadOf(room)), "m9", "a room question becomes its own root");
+  assert.equal(hub(threadOf(inThread)), "m-root", "a threaded question keeps its root");
+  // and running it twice moves nothing — the value we send back is already a root
+  assert.equal(hub(hub(threadOf(room))), "m9");
+  assert.equal(hub(hub(threadOf(inThread))), "m-root");
 });
 
 test("the room line about a threaded job is short, plain, and says how it ended", () => {
@@ -76,10 +109,13 @@ test("a job remembers the thread it was asked for in, not just the message", () 
   assert.equal(found.messageId, "m9");
   assert.equal(found.replyTo, "m-root", "otherwise the answer comes back in the wrong place");
 
-  const fromTheRoom = takeAsk(
+  // The store keeps what it was handed and invents nothing: a job recorded with
+  // no thread comes back with no thread. WHERE the thread comes from is
+  // `threadOf`'s job alone, tested above — not a second answer kept in here.
+  const withoutOne = takeAsk(
     rememberAsk([], { agentId: "a1", channelId: "c1", title: "t", messageId: "m1", at: 1 }),
     { agentId: "a1", channelId: "c1", title: "t" });
-  assert.equal(fromTheRoom.replyTo, undefined, "a job asked for in the room stays in the room");
+  assert.equal(withoutOne.replyTo, undefined, "the store adds no thread of its own");
 });
 
 // ------------------------------------------------------------- end to end
@@ -149,15 +185,19 @@ test("a question asked INSIDE a thread is answered inside that thread", async t 
     "his complaint: the agent answered in the room and the thread died there");
 });
 
-test("the same question asked in the room is answered in the room", async t => {
+test("the same question asked in the CHANNEL is answered in a thread under it", async t => {
+  // THE MISS, and the test that encoded it. This used to assert `replyTo`
+  // was absent — "an agent never starts a thread nobody asked for" — and that
+  // is exactly the flattening he reported: he typed `@agent hello` in a room
+  // and the answer landed as a flat row beside his question.
   const { frames, feed } = makeEngine(t);
-  feed({ type: "message", message: asked() });
+  feed({ type: "message", message: asked() });   // id "m9", no replyTo
   await settle();
 
   const answers = said(frames);
-  assert.equal(answers.length, 1);
-  assert.equal(answers[0].replyTo, undefined,
-    "an agent never starts a thread nobody asked for");
+  assert.equal(answers.length, 1, "one answer");
+  assert.equal(answers[0].replyTo, "m9",
+    "the answer hangs off his question — the room shows his line with '1 reply'");
 });
 
 test("an answer to a reply-to-a-reply lands on the ROOT, by carrying the hub's own value", async t => {
@@ -218,24 +258,34 @@ test("a background job asked for in a thread reports INTO it — and the room ge
       "the room line is the short one; the detail lives in the thread");
   });
 
-test("a background job asked for in the ROOM behaves exactly as it always did", async t => {
-  const { frames, feed } = makeEngine(t, "Fixed it. The build is green again.");
-  feed({ type: "message", message: asked({ text: "@Scout !bg fix the build" }) });
-  await settle();
-  feed({
-    type: "task",
-    task: {
-      id: "t1", title: "fix the build", requesterId: "u1", requesterName: "Vikas",
-      agentId: "a1", channelId: "c1", status: "not_started", createdAt: 0, updatedAt: 0,
-    },
-  });
-  await settle();
+test("a background job asked for in the CHANNEL also reports into a thread on the ask",
+  async t => {
+    const { frames, feed } = makeEngine(t, "Fixed it. The build is green again.");
+    feed({ type: "message", message: asked({ text: "@Scout !bg fix the build" }) });
+    await settle();
+    feed({
+      type: "task",
+      task: {
+        id: "t1", title: "fix the build", requesterId: "u1", requesterName: "Vikas",
+        agentId: "a1", channelId: "c1", status: "not_started", createdAt: 0, updatedAt: 0,
+      },
+    });
+    await settle();
 
-  const all = said(frames);
-  assert.ok(all.every(s => s.replyTo === undefined), "nothing was moved into a thread");
-  assert.equal(all.filter(s => s.text.includes("🧵")).length, 0,
-    "and no second line about a thread that does not exist");
-});
+    const all = said(frames);
+    const ack = all[0];
+    assert.match(ack.text, /On it/);
+    assert.equal(ack.replyTo, "m9", "even the 'on it' hangs off the ask");
+
+    const detail = all.find(s => s.text.startsWith("📦 Task done:"));
+    assert.ok(detail, "the job reported");
+    assert.equal(detail.replyTo, "m9", "the work goes back onto the message that asked for it");
+
+    const roomLine = all.find(s => s.replyTo === undefined && s.text.includes("🧵"));
+    assert.ok(roomLine, "the room still gets ONE short line — feature-gap.md:300 says both");
+    assert.match(roomLine.text, /fix the build/);
+    assert.ok(roomLine.text.length < detail.text.length + 1, "and it is the short one");
+  });
 
 test("a schedule firing stays in the room — there is no question it is answering", async t => {
   const { engine, frames } = makeEngine(t, "All quiet.");
@@ -252,4 +302,19 @@ test("a schedule firing stays in the room — there is no question it is answeri
   assert.equal(answers[0].proactive, true);
   assert.equal(answers[0].replyTo, undefined,
     "a 6:30am check-in dropped into a weeks-old thread is a line nobody would ever see");
+});
+
+test("a RECEIVED handoff stays in the room — it carries a channel, never a thread", async t => {
+  const { engine, frames } = makeEngine(t, "Picked it up.");
+  await engine.receiveHandoff({
+    id: "h1", fromAgentId: "a2", toAgentId: "a1", task: "finish the migration",
+    contextPointer: { kind: "channel", ref: "c1" }, createdAt: 1,
+  });
+
+  const answers = said(frames);
+  assert.equal(answers.length, 1);
+  assert.match(answers[0].text, /Picked it up/);
+  assert.equal(answers[0].replyTo, undefined,
+    "the receiving engine never saw a message, so guessing a thread would hang the "
+    + "answer under something this agent has not read");
 });

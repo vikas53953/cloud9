@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-08-03T19:34:53.259Z",
+  "ranAt": "2026-08-04T05:37:28.788Z",
   "expected": 8,
   "executed": 8,
   "results": [
@@ -9,9 +9,9 @@
       "detail": ""
     },
     {
-      "name": "agent announces it is waiting for approval",
+      "name": "agent announces it is waiting for approval, in a thread under the message that asked",
       "pass": true,
-      "detail": ""
+      "detail": "1 line(s) in the thread, the ask says 1 reply/replies"
     },
     {
       "name": "tasks button shows pending-approval badge",
@@ -29,9 +29,9 @@
       "detail": ""
     },
     {
-      "name": "completion posts a proactive message in the channel",
+      "name": "a finished job posts one short line back to the channel, unasked, saying it ended and where the detail is",
       "pass": true,
-      "detail": ""
+      "detail": "Guard AGENT 11:07 Nobody asked — I noticed runs on Claude · Sonnet 5 🧵 Finished in the thread: summ"
     },
     {
       "name": "activity shows approval decisions attributed to Vikas",

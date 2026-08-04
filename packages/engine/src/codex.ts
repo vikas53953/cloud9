@@ -21,6 +21,7 @@ import { run, Runner, safeArg } from "./run.js";
 import {
   baseName, EventMapper, ProviderTrace, RunStepKind, traceFromStream,
 } from "./runrecord.js";
+import { liveStepWatcher } from "./livesteps.js";
 
 export interface CodexProviderOptions {
   /** where the agent's turn runs (its own files folder) */
@@ -574,7 +575,7 @@ export class CodexProvider implements ClaudeProvider {
   }
 
   async respond(input: RespondInput): Promise<string> {
-    const { agent, workdir, onTrace } = input;
+    const { agent, workdir, onTrace, onStep } = input;
     const timeoutMs = this.budgetFor(input);
     // its own git worktree when it is working in a repository (`repowork.ts`),
     // its own folder otherwise. `codexArgs` puts the same folder in `-C`, so
@@ -593,12 +594,17 @@ export class CodexProvider implements ClaudeProvider {
     });
     const key = this.opts.apiKey?.();
     const isolated = createCodexIsolatedEnvironment({ apiKey: key });
+    // The preview's own reader — see the twin in claude-cli.ts. `codex exec
+    // --json` prints one JSON line per item, so the SAME `codexMapper` that
+    // builds the record understands them one at a time.
+    const watchLine = liveStepWatcher("codex", codexMapper(), onStep);
     let result;
     try {
       result = await this.runner(this.command, args, {
         cwd,
         timeoutMs,
         stdin: prompt,
+        ...(watchLine ? { onStdoutLine: watchLine } : {}),
         // The child gets a disposable CODEX_HOME and user home. Only Codex's
         // login is copied in; both owner skill roots stay outside the process.
         env: isolated.env,

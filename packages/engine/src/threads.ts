@@ -26,16 +26,34 @@ import { ID, Message } from "@cloud9/shared";
 /**
  * The thread a turn triggered by this message must answer in.
  *
- * A message with a `replyTo` was said inside a thread, and `replyTo` is that
- * thread's root (the hub guarantees it). A message with none was said in the
- * main room, and the answer belongs in the main room — that is the ordinary
- * case and it is unchanged.
+ * AN ANSWER ALWAYS HANGS OFF THE MESSAGE IT ANSWERS. That is the whole point:
+ * "within Slack it automatically replies inside the thread". Two cases, one
+ * sentence:
  *
- * No trigger at all (a schedule firing, a proactive line, a presence note)
- * means there is nothing to answer inside, so it is a room message.
+ *  - the question was said INSIDE a thread → `replyTo` is that thread's root
+ *    (the hub guarantees a stored `replyTo` is always a root), so the answer
+ *    joins the thread that is already open;
+ *  - the question was said in the ROOM → the question's OWN id is the root, so
+ *    the answer starts the thread on it. The room keeps one line — his
+ *    question — with "1 reply" under it, instead of the answer flattening into
+ *    the scroll.
+ *
+ * Both are idempotent against the hub: `resolveReplyTo` returns
+ * `parent.replyTo ?? parent.id`, so handing it a root gives the root back and
+ * handing it a reply gives that reply's root back. We never nest.
+ *
+ * No trigger at all (a schedule firing, a received handoff, a proactive line,
+ * a presence note) means there is no message to answer, so it stays a room
+ * message. Those are the only things that reach the room on their own now.
+ *
+ * TURNING IT OFF is already his: `Prefs.replies = "inline"` draws every reply
+ * straight into the conversation under a "said in a thread" label and never
+ * opens a panel. That is a drawing choice on his screen, not a second rule in
+ * here — so there is still exactly one place that decides where an answer goes.
  */
-export function threadOf(trigger: Pick<Message, "replyTo"> | undefined): ID | undefined {
-  return trigger?.replyTo;
+export function threadOf(trigger: Pick<Message, "id" | "replyTo"> | undefined): ID | undefined {
+  if (!trigger) return undefined;
+  return trigger.replyTo ?? trigger.id;
 }
 
 /**

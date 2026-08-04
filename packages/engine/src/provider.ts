@@ -11,7 +11,7 @@ import { renderCloud9Tools } from "./cloud9tools.js";
 import { TurnTimedOutError } from "./timebudget.js";
 // type-only: erased at compile time, so runrecord.ts may import this file back
 // without creating a runtime import cycle.
-import type { ProviderTrace } from "./runrecord.js";
+import type { ProviderTrace, RunStep } from "./runrecord.js";
 
 /**
  * WHAT KIND OF TURN THIS IS. It decides how long an answer suits, and it is the
@@ -74,6 +74,24 @@ export interface RespondInput extends TurnBrief {
    * the caller its answer — the call belongs inside a try/catch.
    */
   onTrace?: (trace: ProviderTrace) => void;
+  /**
+   * Optional: WHAT IT IS DOING, WHILE IT IS DOING IT — the steps read off the
+   * CLI's output as each line arrives, rather than all at once at the end.
+   *
+   * Called with the steps ONE LINE added or changed, in `seq` order. A step can
+   * come back a second time with more filled in (a command is announced, then
+   * its exit code arrives); callers merge by `seq`.
+   *
+   * A PREVIEW, NEVER THE RECORD. `onTrace` is still the truth and is still built
+   * from the whole buffered output at the end of the turn; nothing here changes
+   * it, and a provider that never calls this behaves exactly as it always did —
+   * the caller shows the record when it lands and nothing before it. That
+   * silent fallback is the point: a provider that cannot stream must produce no
+   * live view at all, not an empty one.
+   *
+   * Same law as `onTrace`: a failure here may never cost the caller its answer.
+   */
+  onStep?: (steps: RunStep[]) => void;
 }
 
 export interface ClaudeProvider {

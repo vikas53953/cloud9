@@ -88,6 +88,14 @@ export {
   connectionsFileFor, mcpConfigPathFor, connectionsWords,
   type ConnectionsFile, type FileOnDisk,
 } from "./connections.js";
+// THE FOLDERS OUTSIDE ITS OWN — the same law, one rung up, and the same reason
+// it is exported: the agent editor reads the very function the engine host reads
+// when it builds `--add-dir`, so the screen cannot promise reach the command
+// line will not carry.
+export {
+  wholeComputerRootsFor, addDirRootsFor, wholeComputerWords,
+  type WholeComputerRoots, type FolderOnDisk,
+} from "./wholecomputer.js";
 export {
   HarnessManager, detectClaude, detectCodex, type HarnessOptions,
 } from "./harness.js";

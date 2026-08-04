@@ -23,12 +23,19 @@ import {
   CLAUDE_DEFAULT_MODEL, CLAUDE_MODELS, modelLabel as sharedModelLabel,
   // joining a friend's Cloud9 — the address book type and the reach words
   KnownHub, reachInWords,
+  // how many folders one agent may be opened up to — the hub's own number, so
+  // the screen refuses at exactly the count the hub would refuse at
+  WHOLE_COMPUTER_LIMITS,
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
 // The live 👀 / 💭 / verdict signals — ephemeral, and drawn so they can never
 // be mistaken for a person's reaction. All of it is in that one file.
 import { AgentReceipts } from "./receipts.js";
+// the live-steps store is ephemeral and lives beside the receipts one, for the
+// same reasons — see its header. Only the HOOK comes from there; the steps are
+// drawn by `RunSteps` below, the same renderer the stored record uses.
+import { useLiveSteps } from "./livesteps.js";
 import {
   abilitiesOn, abilityWords, MARKET_CATEGORIES, MARKET_TEMPLATES, MarketTemplate,
 } from "./market.js";
@@ -52,6 +59,12 @@ import { isolationFor } from "@cloud9/engine/dist/isolation.js";
 import {
   connectionsFileFor, connectionsWords, type ConnectionsFile,
 } from "@cloud9/engine/dist/connections.js";
+/* THE ONE OWNER of "which folders outside its own can this agent really reach?"
+   — the same function the engine host asks when it builds `--add-dir`, imported
+   by path for the same reason, and reading `@cloud9/shared` only. */
+import {
+  wholeComputerRootsFor, wholeComputerWords, type WholeComputerRoots,
+} from "@cloud9/engine/dist/wholecomputer.js";
 /* THE NOTIFICATION RULES AND THE FIVE EVENTS THAT FEED THEM.
    `decideNotification` is the ONE gate (quiet hours, de-dupe, self-suppression,
    the master switch) — the same one the phone will read. The `notify-feed`
@@ -685,8 +698,15 @@ function scrollBehavior(): ScrollBehavior {
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
 }
 
-/** Why a message list followed to its bottom. */
-type FollowReason = "opened" | "arrived" | "sent" | "resized";
+/**
+ * Why a message list followed to its bottom.
+ *
+ * `caughtUp` is him pressing the "↓ new messages" pill: not an arrival and not a
+ * send, but a third act of his own — "take me to the newest" — and it is named
+ * separately so a check can hold the pill to its own promise rather than reading
+ * it as an arrival that happened to land at the right moment.
+ */
+type FollowReason = "opened" | "arrived" | "sent" | "resized" | "caughtUp";
 
 /**
  * EVERY TIME A MESSAGE LIST FOLLOWED TO ITS BOTTOM, AND WHY.
@@ -704,15 +724,63 @@ type FollowReason = "opened" | "arrived" | "sent" | "resized";
 let followed: { n: number; why: FollowReason | null; recent: FollowReason[] } =
   { n: 0, why: null, recent: [] };
 
+/**
+ * WHAT THE "↓ NEW MESSAGES" PILL IS SAYING RIGHT NOW.
+ *
+ * Module-level for the same reason as the trail above: a check must be able to
+ * ask the rule, not photograph a pill that may be mid-fade. Written by the one
+ * conversation on screen and by nothing else.
+ */
+let newBelowNow = 0;
+
+/**
+ * HOW MANY MESSAGES ARRIVED BELOW HIM SINCE THE LAST ONE HE WAS SHOWN.
+ *
+ * Counted from the END, so the ordinary answer costs as many steps as there are
+ * new messages and not as many as there are messages. His own are never counted:
+ * a message he sent is one he has seen by definition, and a pill that offered to
+ * take him to his own words would be counting the wrong thing.
+ *
+ * A `seen` message that is no longer in the list (deleted, or scrolled out of the
+ * loaded page) answers 0 rather than guessing. The pill only ever appears for a
+ * number this function is sure of — an honest nothing beats a confident wrong
+ * number sitting on top of the conversation.
+ */
+function newBelowCount(messages: readonly Message[], seen: ID, meId: ID | undefined): number {
+  if (!seen) return 0;
+  let n = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].id === seen) return n;
+    if (messages[i].authorId !== meId) n += 1;
+  }
+  return 0;
+}
+
 /** How far off the bottom still counts as "he is down there, reading the newest". */
 const AT_BOTTOM_SLACK = 80;
 
 /**
- * How long a follow of ours may still be considered "in flight".
+ * How long a follow of ours may go WITHOUT MOVING before it is declared over.
  *
- * A smooth scroll in a browser takes a few hundred milliseconds however far it
- * has to go. This is not a guess at that length — it is the point past which a
- * follow that has not landed is over, so the rule below can never be left
+ * NOT how long a follow lasts, and the difference is a bug Vikas reported in his
+ * own words: "the chat window doesn't auto-scroll to the newest message on
+ * Enter". This used to be read as the whole length of a follow — but a smooth
+ * scroll does NOT take a few hundred milliseconds however far it has to go, it
+ * takes longer the further it goes. Measured in this app: 13,000px takes about
+ * 1,530ms. So the timer fired with 2,197px still to run, the rule stopped
+ * recognising its own animation, and read its own scroll events as the reader
+ * walking away (`atBottom.current = false`). His message came back from the hub
+ * 300ms later, and BOTH the things that would have chased it were switched off
+ * by that one false belief — the arrival rule (`if (atBottom.current) follow`)
+ * and the resize watcher (`if (!atBottom.current) return`). The animation
+ * finished at the bottom the list had BEFORE his message existed, so it stopped
+ * exactly one message short of it: 267px, with his own words below the fold and
+ * no pill to say so (his own message never counts toward the pill).
+ *
+ * So this is now measured from the last time the follow MOVED, and re-armed on
+ * every step of it (see `noteScrolled`). The guarantee it was written for is
+ * unchanged and now actually holds: a follow that has stopped moving for this
+ * long is over, whether it landed or not, so the rule can never be left
  * permanently believing the view is moving when it is not.
  */
 const FOLLOW_SETTLES_MS = 700;
@@ -776,6 +844,21 @@ function useFollowToBottom(
   const claimedRef = useRef(claimed);
   claimedRef.current = claimed;
 
+  /**
+   * THIS FOLLOW IS STILL RUNNING — start the clock again from now.
+   *
+   * Called when a follow begins and on every step of it that we recognise as
+   * ours. The clock therefore measures STILLNESS, not the length of the
+   * animation: a long scroll keeps re-arming it as it goes and stays ours the
+   * whole way down, while one that has genuinely stopped moving runs out and is
+   * let go. See `FOLLOW_SETTLES_MS`.
+   */
+  const keepFollowing = useCallback((): void => {
+    following.current = true;
+    clearTimeout(settle.current);
+    settle.current = setTimeout(() => { following.current = false; }, FOLLOW_SETTLES_MS);
+  }, []);
+
   const follow = useCallback((why: FollowReason): void => {
     const el = ref.current;
     if (!el) return;
@@ -796,8 +879,7 @@ function useFollowToBottom(
        makes its own movement recognisable, which is that it only ever goes down
        from here. */
     lastTop.current = el.scrollTop;
-    clearTimeout(settle.current);
-    settle.current = setTimeout(() => { following.current = false; }, FOLLOW_SETTLES_MS);
+    keepFollowing();
     const behavior: ScrollBehavior = placed.current ? scrollBehavior() : "auto";
     placed.current = true;
     followed = {
@@ -806,7 +888,7 @@ function useFollowToBottom(
       recent: [...followed.recent, why].slice(-12),
     };
     el.scrollTo({ top: el.scrollHeight, behavior });
-  }, [ref]);
+  }, [ref, keepFollowing]);
 
   const noteScrolled = useCallback((): void => {
     const el = ref.current;
@@ -840,18 +922,33 @@ function useFollowToBottom(
      * which is the very bug all this exists to fix.
      *
      * On top of that his own wheel, drag or key ends a follow immediately
-     * (below), and one that has not landed inside `FOLLOW_SETTLES_MS` is over
+     * (below), and one that has STOPPED MOVING for `FOLLOW_SETTLES_MS` is over
      * regardless — so the rule can never be left believing the view is moving
      * when it is still.
+     *
+     * AND A STEP OF OUR OWN ANIMATION SAYS IT IS STILL RUNNING (`keepFollowing`).
+     * That is the fix for the bug he reported as "the chat window doesn't
+     * auto-scroll to the newest message on Enter": the clock used to be started
+     * once at the top of the follow, so a scroll long enough to outlast it —
+     * 13,000px takes about 1,530ms, and 700ms is the clock — handed the rest of
+     * its own animation to the branch below, which wrote down "he is not at the
+     * bottom". His own message then arrived into a rule that had talked itself
+     * out of following anything, and the view stopped 267px short of it. Every
+     * step down re-arms the clock, so the follow is ours for as long as it is
+     * really moving and no longer.
      */
     if (following.current) {
-      if (down) { following.current = false; atBottom.current = true; lastTop.current = el.scrollTop; return; }
-      if (el.scrollTop >= lastTop.current) { lastTop.current = el.scrollTop; return; }
+      if (down) {
+        clearTimeout(settle.current);
+        following.current = false; atBottom.current = true; lastTop.current = el.scrollTop; return;
+      }
+      /* still going down: this step is ours, and it says the follow is alive */
+      if (el.scrollTop >= lastTop.current) { lastTop.current = el.scrollTop; keepFollowing(); return; }
       following.current = false;
     }
     lastTop.current = el.scrollTop;
     atBottom.current = down;
-  }, [ref]);
+  }, [ref, keepFollowing]);
 
   /* HE CAN ALWAYS INTERRUPT. A wheel, a drag or a key is the reader taking the
      view back, and it ends our follow there and then — otherwise scrolling away
@@ -2212,6 +2309,10 @@ function Workspace(): React.JSX.Element {
       /* Whether this machine has asked for no movement, answered by the one
          function every moving view in the app asks. */
       motion: () => scrollBehavior(),
+      /* WHAT THE PILL IS SAYING, from the rule rather than from the pixels: a
+         check can hold "he was not yanked, he was TOLD" to a number, and tell a
+         pill that is absent apart from a pill that is present saying nothing. */
+      newBelow: () => newBelowNow,
     };
     // QA hook, same shape again: what the screen is HOLDING about runs, so a
     // missing card can be told apart from a record that never arrived. It
@@ -3370,12 +3471,14 @@ const isLink = (s: string): boolean => /^https?:\/\//i.test(s);
  * opposite: it is the first evidence Cloud9 has ever had that a permission
  * boundary actually held, so it is drawn as a good thing, not an error.
  */
-function RunSteps({ record }: { record: RunRecord }): React.JSX.Element {
+function RunSteps({ steps, truncated }: {
+  steps: readonly RunStep[]; truncated?: boolean;
+}): React.JSX.Element {
   const [showQuiet, setShowQuiet] = useState(false);
   const isQuiet = (s: RunStep): boolean => s.kind === "thinking" || s.kind === "message";
-  const quiet = record.steps.filter(isQuiet);
+  const quiet = steps.filter(isQuiet);
   // already in `seq` order, and a filter keeps it that way
-  const shown = showQuiet ? record.steps : record.steps.filter(s => !isQuiet(s));
+  const shown = showQuiet ? steps : steps.filter(s => !isQuiet(s));
   return (
     <div className="runsteps">
       <ol>
@@ -3405,9 +3508,71 @@ function RunSteps({ record }: { record: RunRecord }): React.JSX.Element {
           {showQuiet ? "Hide" : "Show"} what it thought and said · {quiet.length}
         </button>
       )}
-      {record.truncated && (
+      {truncated && (
         <p className="runtrunc">Some steps were left out to keep this small.</p>
       )}
+    </div>
+  );
+}
+
+/* ============ WHAT IT IS DOING RIGHT NOW (the live half of the above) ========
+
+   THE GAP THIS CLOSES. The record above is honest and complete, and it arrives
+   at the END. Until it did, a person watching an agent work saw one line — "X
+   is working on it" — for minutes, and then the whole story at once. Sitting in
+   the CLI you watch each tool call as it lands. This is that, in the room.
+
+   FOUR PROMISES, and the code below is only these:
+
+   1. THE SAME RENDERER. `RunSteps` draws these, exactly as it draws a stored
+      record's. There is no second vocabulary and no second list — a live "Read
+      note.txt" and a recorded one are the same words in the same shape,
+      because they came from the same mapper reading the same line.
+   2. NOTHING INVENTED. Every row came out of the CLI's own output. There is no
+      "starting…", no guess at what is next, and no spinner pretending to be a
+      step.
+   3. NO EMPTY BOX. It draws nothing at all until a real step has arrived. A
+      provider or a run that cannot stream produces no live view whatsoever —
+      the person simply sees what they always saw, the record at the end. An
+      empty box that never fills would be a worse lie than no box.
+   4. IT GIVES WAY. The engine ends the preview when the turn ends and this
+      disappears; the stored record then appears under the agent's reply and is
+      the lasting answer. Reload mid-turn and the preview is gone — nothing is
+      lost, because it was never the record.                                  */
+
+/**
+ * The live steps for one message's turn, one block per agent working on it.
+ *
+ * `agents` is passed IN rather than read from the client, for the same reason
+ * `AgentReceipts` does it: one direction of import, and no cycle.
+ */
+function LiveWork({ messageId, agents }: {
+  messageId: ID; agents: readonly AgentDef[];
+}): React.JSX.Element | null {
+  const rows = useLiveSteps(messageId);
+  if (rows.length === 0) return null;
+  return (
+    <div className="livework" data-machine="yes" data-msg={messageId}>
+      {rows.map(row => {
+        if (row.steps.length === 0) return null;
+        const name = agents.find(a => a.id === row.agentId)?.name ?? "An agent";
+        return (
+          <div key={row.agentId} className="liveturn" data-agent={row.agentId}
+            data-live-steps={row.steps.length}>
+            <p className="livehd">
+              <span className="pulse" aria-hidden="true" />
+              {name} is working — here's what it's done so far
+            </p>
+            <RunSteps steps={row.steps} />
+            {/* SAID OUT LOUD on the thing itself, the same courtesy a receipt
+                pays: this is live, and it is not the record. The record lands
+                under the reply when the turn ends. */}
+            <p className="livenote">
+              Live from the app as it works. The full record appears when it finishes.
+            </p>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -3480,7 +3645,8 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
           What it did<span className="n">{countOf(record.steps.length, "step")}</span>
         </button>
       )}
-      {open && record.steps.length > 0 && <RunSteps record={record} />}
+      {open && record.steps.length > 0 &&
+        <RunSteps steps={record.steps} truncated={record.truncated} />}
     </div>
   );
 }
@@ -3763,6 +3929,38 @@ function ChatView({
    * loading, the file tray opening).
    */
   const newest = messages.length ? messages[messages.length - 1].id : "";
+  /* Read by the scroll handler, which must not be rebuilt every time a message
+     lands — a new handler on every arrival is a new listener on every arrival. */
+  const newestRef = useRef(newest);
+  newestRef.current = newest;
+
+  /**
+   * THE NEWEST MESSAGE HE HAS ACTUALLY BEEN SHOWN.
+   *
+   * Everything after it is what the pill counts. Written in exactly two places
+   * and both mean the same thing — the view is at the bottom, so what is at the
+   * bottom has been seen: the rule taking him there, and him arriving there
+   * under his own steam.
+   */
+  const seenNewest = useRef<ID>("");
+  /** how many have landed below him since; 0 means the pill is not there at all */
+  const [newBelow, setNewBelow] = useState(0);
+  const meId = world.me?.id;
+  const caughtUp = useCallback(() => {
+    seenNewest.current = newestRef.current;
+    setNewBelow(n => (n === 0 ? n : 0));
+  }, []);
+  /* The QA hook reads the rule, not the pill's pixels — see `newBelowNow`. */
+  useEffect(() => {
+    newBelowNow = newBelow;
+    return () => { newBelowNow = 0; };
+  }, [newBelow]);
+
+  /* THE PAGE WE ASKED FOR IS STILL COMING. Read as a plain boolean rather than
+     off `page`, whose object identity changes for reasons the rule below does
+     not care about. */
+  const pageLoading = page.loading;
+
   React.useLayoutEffect(() => {
     const el = streamRef.current;
     if (!el) return;
@@ -3770,6 +3968,34 @@ function ChatView({
     //    was actually looking at, whatever else is going on.
     const held = anchor.current;
     if (held) {
+      /**
+       * AN ANCHOR IS HELD ONLY WHILE THE PAGE IT IS WAITING FOR IS IN FLIGHT.
+       *
+       * WHAT THIS IS FOR, said honestly. It ties the anchor's life to the load's
+       * life: asking for an older page sets the anchor, and it is spent the
+       * moment that load FINISHES — whether the page moved a single pixel or
+       * not. Without it, any unrelated re-render between the ask and the answer
+       * (somebody else's message landing, say) would reach this branch first,
+       * restore nothing, drop the anchor, and leave the real page to land with
+       * nobody holding the reader's place — a whole page's jump under his eyes.
+       *
+       * WHAT IT IS NOT. This was once written up as the cause of the bug Vikas
+       * reported in his own words — "the chat window doesn't auto-scroll to the
+       * newest message on Enter" — with a story about the first `loadOlder` of a
+       * room prepending nothing and stranding the anchor forever. That story was
+       * put to the test and is FALSE, three times over: this effect's
+       * dependencies include `messages`, and the store hands back a NEW array on
+       * every `history` frame (`[...older, ...existing]`, store.ts) even when
+       * `older` is empty, so the effect re-runs and the anchor is dropped either
+       * way; `askForOlder` returns early once `hasMore` is false; and the first
+       * `loadOlder` of a room is fired by the channel-open effect, not by
+       * `askForOlder`, so it sets no anchor at all.
+       *
+       * The real cause of his complaint was in `useFollowToBottom` and is fixed
+       * there — see `FOLLOW_SETTLES_MS`. This guard stays because it is right on
+       * its own terms, not because it fixed that.
+       */
+      if (pageLoading) return;
       const still = el.querySelector<HTMLElement>(`.msg[data-msg="${CSS.escape(held.id)}"]`);
       if (still) el.scrollTop += still.getBoundingClientRect().top - held.top;
       anchor.current = null;
@@ -3780,8 +4006,40 @@ function ChatView({
     //    yanking the reader away from the thing they asked for.
     if (viewIsClaimed()) return;
     // 3. otherwise a new arrival follows a reader who is already at the bottom.
-    if (atBottom.current) follow("arrived");
-  }, [world.prepended, newest, messages.length, jumpTo, viewIsClaimed, atBottom, follow]);
+    if (atBottom.current) { follow("arrived"); caughtUp(); return; }
+    /* 4. …and one that arrives while he has read back does NOT move him. That
+       is the whole of the pill: instead of taking the view, the app says how
+       many are down there and leaves the decision to him. Counted here rather
+       than at the moment of arrival because this is the one place that already
+       knows both facts — what the list holds, and where he is. */
+    setNewBelow(n => {
+      const next = newBelowCount(messages, seenNewest.current, meId);
+      return n === next ? n : next;
+    });
+  }, [world.prepended, newest, messages.length, jumpTo, pageLoading,
+    viewIsClaimed, atBottom, follow, caughtUp, messages, meId]);
+
+  /**
+   * "TAKE ME TO THE NEWEST" — the pill, and the only thing it does.
+   *
+   * His own act, so it owns the view outright: an older page still on its way,
+   * or a walk to a search result, must not hold him away from the thing he just
+   * asked for. It goes through the same one follow owner as every other move, so
+   * it animates by the same rule and cannot fight it.
+   */
+  const goToNewest = useCallback(() => {
+    anchor.current = null;
+    atBottom.current = true;
+    follow("caughtUp");
+    caughtUp();
+  }, [follow, caughtUp, atBottom]);
+
+  /** he pressed Enter — see the note beside the box at the foot of this screen */
+  const onSent = useCallback(() => {
+    anchor.current = null;
+    follow("sent");
+    caughtUp();
+  }, [follow, caughtUp]);
 
   /**
    * Take the reader to one message already on screen, and mark it.
@@ -3805,8 +4063,12 @@ function ChatView({
     const el = streamRef.current;
     if (!el) return;
     noteScrolled();
+    /* WALKING DOWN THERE HIMSELF IS THE SAME FACT as being taken there, and the
+       pill has to know it: a count that survived him scrolling to the bottom
+       would be a badge offering to take him where he already is. */
+    if (atBottom.current) caughtUp();
     if (el.scrollTop < 160) askForOlder();
-  }, [askForOlder, noteScrolled]);
+  }, [askForOlder, noteScrolled, atBottom, caughtUp]);
 
   /* ---- a search result asked for one particular message ----
    * If it is already loaded, go to it. If it is further back than we have
@@ -4046,7 +4308,8 @@ function ChatView({
             <div className="empty-mark" aria-hidden="true">{isDm ? "✉" : "#"}</div>
             <h2>{isDm ? `This is the start of your chat with ${peerName}` : `Nothing said in #${channel.name} yet`}</h2>
             <p>Type below to start it. Put <code>@</code> in front of an agent's name to hand it a job,
-              and add <code>!bg</code> when it should work in the background.</p>
+              add <code>!bg</code> when it should work in the background, and type <code>/</code> to
+              see everything an agent can be asked to do.</p>
           </div>
         )}
         {rows.map(r => (
@@ -4103,15 +4366,43 @@ function ChatView({
         ))}
       </div>
 
+      {/**
+        * "↓ N NEW MESSAGES" — what the app says INSTEAD of taking the view.
+        *
+        * A zero-height slot so this can never move the conversation as it comes
+        * and goes: the pill floats over the foot of the list, and the list's own
+        * height is untouched (which matters — a slot that grew would move the
+        * bottom, and the follow rule watches for exactly that).
+        *
+        * It is only ever drawn for a number we are sure of (see
+        * `newBelowCount`), and it says the number because a bare arrow makes him
+        * guess whether it is worth the click.
+        */}
+      <div className="newpillslot">
+        {newBelow > 0 && (
+          <button className="newpill" data-new-messages={newBelow}
+            title="Go to the newest message"
+            onClick={goToNewest}>
+            <span className="np-arrow" aria-hidden="true">↓</span>
+            {countOf(newBelow, "new message")}
+          </button>
+        )}
+      </div>
+
       {/* In inline mode the conversation's own box is what carries a reply, so
           it says which message it is answering and offers a way out of it. */}
       {/* SENDING IS NOT A MESSAGE ARRIVING. Nobody sends a message they do not
           want to see, so this takes the view down whatever the reader had
           scrolled back to — the one thing Vikas named, and the case the old rule
           had no branch for at all. It goes through the same owner as every other
-          follow, so it animates by the same rule and cannot fight it. */}
+          follow, so it animates by the same rule and cannot fight it.
+
+          A SEND ALSO DROPS ANY CLAIM ON THE VIEW. An older page he asked for on
+          the way down, or a walk to a search result, would otherwise put him
+          back where he was a moment after his own message landed — which is the
+          bug branch 1 above describes, arriving by a second road. */}
       <Composer channel={channel}
-        onSent={() => follow("sent")}
+        onSent={onSent}
         replyTo={!threading && replyingTo ? replyingTo : undefined}
         answering={!threading && replyingTo
           ? all.find(m => m.id === replyingTo)
@@ -5160,6 +5451,9 @@ const MessageRow = React.memo(function MessageRow({
           {refusedNotes}
           {reactionRow}
           {!deleted && <AgentReceipts messageId={m.id} agents={agents} />}
+          {/* the steps arriving while the turn runs — drawn on the message that
+              ASKED, which is where the 👀 already is, and gone when it ends */}
+          {!deleted && <LiveWork messageId={m.id} agents={agents} />}
           {threadLine}
         </div>
         {actions}
@@ -5240,6 +5534,8 @@ const MessageRow = React.memo(function MessageRow({
         {refusedNotes}
         {reactionRow}
         {!deleted && <AgentReceipts messageId={m.id} agents={agents} />}
+        {/* same, on a full message — see the note on the continuation above */}
+        {!deleted && <LiveWork messageId={m.id} agents={agents} />}
         {threadLine}
       </div>
       {actions}
@@ -5538,6 +5834,27 @@ const ROOM_COMMANDS: RoomCommand[] = [
 const ACTIONS_PROMISE =
   "Nothing is sent yet. This writes the line into your box — read it, change it, then press Send.";
 
+/**
+ * DOES WHAT HE HAS TYPED AFTER THE SLASH POINT AT THIS COMMAND?
+ *
+ * Pure, and the only thing that decides what `/` offers. Matched on the command
+ * word WITHOUT its `!` (he typed `/`, so making him type `/!issue` would be
+ * absurd), on its other spellings, and on the words of its plain-English label —
+ * because the whole point of the menu is that he does not have to know the
+ * command's name. An empty query matches everything: `/` alone is "show me
+ * what there is", which is the same question the ＋ button asks.
+ */
+function commandMatches(c: RoomCommand, typed: string): boolean {
+  if (!typed) return true;
+  const words = [c.cmd, ...(c.aliases ?? [])].map(w => w.replace(/^!/, "").toLowerCase());
+  return words.some(w => w.startsWith(typed)) || c.label.toLowerCase().includes(typed);
+}
+
+/** Files being dragged over something, as opposed to text or a link. */
+function draggingFiles(dt: DataTransfer | null): boolean {
+  return !!dt && Array.from(dt.types).includes("Files");
+}
+
 function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   channel: Channel;
   /** set in a thread panel, and in the conversation's own box when threads are
@@ -5554,6 +5871,23 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const [acIndex, setAcIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  /**
+   * THE AFFORDANCES APPEAR ON INTENT (his draft, §3.2).
+   *
+   * A tool row that is there all the time is furniture: seven controls sitting
+   * under every conversation whether or not he is writing anything. So the row
+   * that is only useful WHILE WRITING recedes until he is writing — which is
+   * either the cursor being in the box (`focused`) or there being words in it.
+   * The two things that must never hide are the ＋ (the one always-visible way
+   * in to everything an agent can be told to do — see the note above
+   * `ROOM_COMMANDS`; invisible is the same as absent) and Send.
+   */
+  const [focused, setFocused] = useState(false);
+  /** files are being dragged over the box right now */
+  const [dragging, setDragging] = useState(false);
+  /** he pressed Escape on the `/` list, or picked from it — do not re-open it for this word */
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const [cmdIndex, setCmdIndex] = useState(0);
   /* A thread's box is a narrow rail and drops the wide affordances. The
      conversation's own box keeps every one of them even while it is answering
      something — it is the same box it always was, only aimed. */
@@ -5606,6 +5940,30 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
     return m ? m[1].toLowerCase() : null;
   }, [text]);
 
+  /**
+   * `/` IS THE FAST PATH TO THE SAME LIST THE ＋ OPENS — never a second one.
+   *
+   * Only at the very start of the box and only while no space has been typed,
+   * because that is exactly where a command can work at all (the engine reads
+   * `!issue` only as the FIRST thing in a message — see `prefill`). So a
+   * sentence that happens to contain a slash, a path, or a date is never
+   * mistaken for a command, and "/" followed by a space is just a message that
+   * starts with a slash.
+   */
+  const slashQuery = useMemo(() => {
+    const m = /^\/([\w-]*)$/.exec(text);
+    return m ? m[1].toLowerCase() : null;
+  }, [text]);
+  /* A new word is a new question: whatever he dismissed was about the old one. */
+  useEffect(() => { setSlashDismissed(false); setCmdIndex(0); }, [slashQuery]);
+
+  /* ONE WAY TO PUT A FILE ON A MESSAGE, whichever gesture asked for it — the
+     paperclip, a paste, or a drag. `client.attach` is the one owner of what
+     happens next (the tray, the ceiling, the hub's refusal in its own words). */
+  const attachFiles = useCallback((files: readonly File[]): void => {
+    for (const f of files) client.attach(channel.id, f);
+  }, [channel.id]);
+
   const directory = useMemo(() => [
     ...world.agents.map(a => ({ id: a.id, name: a.name, label: `${a.emoji} ${a.name}`, sub: "agent" })),
     ...onePerPerson(world.users).filter(u => u.id !== world.me?.id).map(u => ({ id: u.id, name: u.name, label: u.name, sub: "person" })),
@@ -5635,18 +5993,38 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
 
   /* ---- the actions menu: one way in for every typed command ---- */
 
+  /**
+   * TWO DOORS, ONE ROOM. The ＋ opens the whole list; `/` opens the same list
+   * narrowed to what he has typed. They are the same rows, the same reasons a
+   * row cannot be used, and the same one thing a row does — so there is one
+   * `open` question here, not two menus that can drift apart.
+   */
+  const slashRows = useMemo(
+    () => (slashQuery === null ? [] : ROOM_COMMANDS.filter(c => commandMatches(c, slashQuery))),
+    [slashQuery]);
+  const slashShowing = slashQuery !== null && !slashDismissed && slashRows.length > 0;
+  const menuOpen = actionsOpen || slashShowing;
+  const menuRows = actionsOpen ? ROOM_COMMANDS : slashRows;
+  const openedBy = actionsOpen ? "button" : "slash";
+
+  /** he is writing — the row of tools is worth its space; see `focused` above */
+  const armed = focused || text.length > 0 || uploads.length > 0 || menuOpen || emojiOpen;
+
   /* THE ONE OWNER OF "ESCAPE CLOSES WHAT IT OPENED" (see `useEscapeCloses`).
      Registered only while the menu is on screen, so a closed menu adds nothing
-     to the stack and the counts the QA suite takes of it are untouched. */
-  useEscapeCloses(() => setActionsOpen(false), actionsOpen);
+     to the stack and the counts the QA suite takes of it are untouched. It is
+     one registration for both doors: whichever opened the list, Escape shuts
+     THAT list and nothing underneath it. Dismissing the `/` list leaves his
+     words alone — a menu closing must never take the line he was typing. */
+  useEscapeCloses(() => { setActionsOpen(false); setSlashDismissed(true); }, menuOpen);
 
   /* WHICH REPOSITORIES ARE CONNECTED, asked the moment the menu opens — the
      same way the Projects screen asks, and for the same reason: a list cached
      from an earlier visit would let this menu offer a GitHub command against a
      repository that has since gone, or refuse one that has since been added. */
   useEffect(() => {
-    if (actionsOpen) client.askProjects();
-  }, [actionsOpen]);
+    if (menuOpen) client.askProjects();
+  }, [menuOpen]);
 
   /** the agents actually IN this room — an agent elsewhere cannot be told anything here */
   const roomAgents = useMemo(
@@ -5779,8 +6157,12 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
     : answering
       ? `Answering ${answering.authorName}`
       : peerName
-      ? `Message ${peerName}`
-      : `Message #${channel.name} — type @ to call an agent in`;
+      ? `Message ${peerName} — / for things to ask`
+      /* THE TWO TRIGGERS, SAID WHERE HE IS ABOUT TO TYPE THEM. This line is the
+         only place a person is looking when the affordances have receded, so it
+         is where they have to be named — an inline trigger nobody is told about
+         is the invisibility bug with better manners. */
+      : `Message #${channel.name} — @ for an agent, / for things to ask`;
 
   /**
    * An archived room is READ-ONLY, and the box says so in the hub's own words.
@@ -5802,7 +6184,30 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   }
 
   return (
-    <div className={`composer${inThreadPanel ? " threadcomposer" : ""}`}>
+    <div className={`composer${inThreadPanel ? " threadcomposer" : ""}${dragging ? " isdrop" : ""}`}
+      /* A FILE DRAGGED ONTO THE BOX IS A FILE ON THE MESSAGE (his draft, §3.2).
+         The whole box is the target, not a small strip, because a drop that
+         lands two pixels outside and opens the file in the window instead is
+         worse than no drop at all. `dragover` must be refused for the drop to
+         be offered at all — that is the browser's rule, not ours. */
+      data-dragover={dragging ? "yes" : "no"}
+      onDragOver={e => {
+        if (!draggingFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        if (!dragging) setDragging(true);
+      }}
+      onDragLeave={e => {
+        /* Moving between the box's own children is not leaving it. */
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        setDragging(false);
+      }}
+      onDrop={e => {
+        if (!draggingFiles(e.dataTransfer)) { setDragging(false); return; }
+        e.preventDefault();
+        setDragging(false);
+        attachFiles(Array.from(e.dataTransfer.files));
+        taRef.current?.focus();
+      }}>
       {/* AIMED AT ONE MESSAGE. Only in the conversation's own box, only when
           his setting keeps replies in the conversation — the way out is right
           here, because a box that is quietly still answering something from
@@ -5817,9 +6222,20 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
             onClick={() => onStopAnswering?.()}>✕</button>
         </div>
       )}
-      <div className="composer-box" title={`Posting as ${world.me?.name ?? "you"}`}>
+      <div className="composer-box" title={`Posting as ${world.me?.name ?? "you"}`}
+        /* WHAT "HE IS WRITING" MEANS, in one place, so the row that recedes and
+           the attribute a check reads can never disagree. Focus is tracked on
+           the whole box rather than the textarea alone: pressing a tool button
+           moves the focus onto that button, and a row that vanished under the
+           finger reaching for it would be unusable. */
+        onFocus={() => setFocused(true)}
+        onBlur={e => {
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          setFocused(false);
+        }}
+        data-writing={armed ? "yes" : "no"}>
         {suggestions.length > 0 && (
-          <div className="autocomplete">
+          <div className="autocomplete" data-mentions-open="yes" data-mentions={suggestions.length}>
             <div className="ac-head tag">Send this to</div>
             {suggestions.map((s, i) => (
               <div key={s.id} className={`opt ${i === acIndex ? "on" : ""}`}
@@ -5878,7 +6294,36 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               if (e.key === "ArrowUp") { e.preventDefault(); setAcIndex(i => (i - 1 + suggestions.length) % suggestions.length); return; }
               if (e.key === "Tab" || e.key === "Enter") { e.preventDefault(); applyMention(suggestions[acIndex].name); return; }
             }
+            /* THE `/` LIST IS DRIVEN FROM THE KEYBOARD, exactly like the `@`
+               list above it, because both are answers to something he is in the
+               middle of typing and reaching for the mouse loses the thread. The
+               two can never be open at once: `/` only exists while the box holds
+               nothing but a slash and a word, and `@` needs an `@` at the end. */
+            if (slashShowing) {
+              if (e.key === "ArrowDown") { e.preventDefault(); setCmdIndex(i => (i + 1) % slashRows.length); return; }
+              if (e.key === "ArrowUp") { e.preventDefault(); setCmdIndex(i => (i - 1 + slashRows.length) % slashRows.length); return; }
+              if (e.key === "Tab" || e.key === "Enter") {
+                e.preventDefault();
+                const pick = slashRows[Math.min(cmdIndex, slashRows.length - 1)];
+                /* A row that cannot work here says why rather than quietly
+                   writing a line that will come back refused — the same promise
+                   the list itself makes, kept on the keyboard road too. */
+                const why = pick ? blockedBecause(pick) : null;
+                if (why) client.notify(why);
+                else if (pick) prefill(pick);
+                return;
+              }
+            }
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendNow(); }
+          }}
+          /* CTRL+V PUTS A FILE ON THE MESSAGE (his draft, §3.2). Only when the
+             clipboard is actually carrying files — pasting ordinary text, which
+             is what a paste nearly always is, is left completely alone. */
+          onPaste={e => {
+            const files = Array.from(e.clipboardData?.files ?? []);
+            if (files.length === 0) return;
+            e.preventDefault();
+            attachFiles(files);
           }}
         />
         <div className="tools">
@@ -5889,38 +6334,56 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
           <input ref={fileRef} className="filepick" type="file" multiple
             aria-label="Choose files to attach"
             onChange={e => {
-              for (const f of Array.from(e.target.files ?? [])) client.attach(channel.id, f);
+              attachFiles(Array.from(e.target.files ?? []));
               e.target.value = "";
             }} />
-          {/* THE ONE WAY IN to everything an agent can be TOLD to do. It is in
-              the thread box as well as the room's own, deliberately breaking the
-              "wide affordances stay out of a thread" rule below: the commands
-              work the same in a thread, and hiding the only door in half the
-              places he types would be the invisibility bug again, smaller. */}
-          <button className="mini actionsbtn" title="Things you can ask an agent to do"
+          {/* THE ONE WAY IN to everything an agent can be TOLD to do, AND THE
+              ONE CONTROL THAT NEVER RECEDES.
+              It is in the thread box as well as the room's own, deliberately
+              breaking the "wide affordances stay out of a thread" rule below:
+              the commands work the same in a thread, and hiding the only door in
+              half the places he types would be the invisibility bug again,
+              smaller. That is also why the de-clutter below does not touch it —
+              `/` is the fast road for somebody who already knows what he wants,
+              and this is the road for somebody who does not. Invisible is the
+              same as absent. */}
+          <button className="mini actionsbtn" title="Things you can ask an agent to do — or type / in the box"
             aria-expanded={actionsOpen} aria-haspopup="menu"
             onClick={() => { setActionsOpen(o => !o); setEmojiOpen(false); }}>
             ＋ Actions
           </button>
-          <button className="mini attach" title={`Attach a file (up to ${ATTACHMENT_LIMITS.perMessage}, ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB each)`}
-            onClick={() => fileRef.current?.click()}>📎 Attach</button>
-          <button className="mini" title="Call an agent by name" onClick={() => insert("@")}>@ agent</button>
-          {/* THE SAME BOX, NARROWER — not a lesser one.
-              These four used to be dropped in the thread rail on the grounds
-              that "a thread is a narrow column and a reply is a sentence". That
-              was the panel deciding what he is allowed to say in it: a thread is
-              where the actual work gets discussed, so writing code in one, or
-              handing the job over from inside it, are exactly the things he
-              wants there — and the rail's tool row already wraps, so nothing is
-              squeezed. The delegate button carries the shorter word here for the
-              same reason: the label, not the ability, is what the width limits. */}
-          <button className="mini" title="Hand this over as background work"
-            onClick={() => insert("!bg ")}>{inThreadPanel ? "Delegate" : "Delegate as a job"}</button>
-          <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
-          <button className="mini ital" title="Italic" onClick={() => wrap("_")}>I</button>
-          <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
-          <button className="mini" title="Emoji" aria-expanded={emojiOpen}
-            onClick={() => setEmojiOpen(o => !o)}>🙂</button>
+          {/**
+            * THE ROW THAT ONLY MATTERS WHILE HE IS WRITING, and is only there
+            * while he is (his draft, §3.2: "affordances appear on intent, not
+            * permanently"). Held in the DOM either way and hidden by the
+            * stylesheet, so nothing here changes what the box can DO — the
+            * hidden file input above, and every one of these, still answer.
+            *
+            * WHAT WENT, and why it is not an ability lost:
+            *  - "@ agent" was a button whose whole job was to type one
+            *    character. Typing `@` opens the same list of people and agents
+            *    it did, and the box's own placeholder says so.
+            *  - the wide labels went to icons; the paperclip is now also a
+            *    paste (Ctrl+V) and a drop, which is how a file usually arrives.
+            *
+            * THE SAME BOX, NARROWER — not a lesser one. These used to be dropped
+            * in the thread rail on the grounds that "a thread is a narrow column
+            * and a reply is a sentence". That was the panel deciding what he is
+            * allowed to say in it: a thread is where the actual work gets
+            * discussed, so writing code in one, or handing the job over from
+            * inside it, are exactly the things he wants there.
+            */}
+          <span className="toolset">
+            <button className="mini attach" title={`Attach a file — or paste one, or drop one on the box (up to ${ATTACHMENT_LIMITS.perMessage}, ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB each)`}
+              onClick={() => fileRef.current?.click()}>📎</button>
+            <button className="mini" title="Hand this over as background work"
+              onClick={() => insert("!bg ")}>{inThreadPanel ? "Delegate" : "Delegate as a job"}</button>
+            <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
+            <button className="mini ital" title="Italic" onClick={() => wrap("_")}>I</button>
+            <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
+            <button className="mini" title="Emoji" aria-expanded={emojiOpen}
+              onClick={() => setEmojiOpen(o => !o)}>🙂</button>
+          </span>
           <div className="grow" />
           {!inThreadPanel && <span className="eyebrow">{busy ? "Sending a file up…" : "Enter to send"}</span>}
           {/* While a file is on its way the button SAYS so rather than sending
@@ -5941,18 +6404,33 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               ))}
             </div>
           )}
-          {/* One list, built from ONE table (`ROOM_COMMANDS`). A row that cannot
-              work here is drawn as it really is — off, with the reason on it. */}
-          {actionsOpen && (
-            <div className="actionspop" role="menu" aria-label="Things you can ask an agent to do">
-              <div className="ap-head tag">Ask an agent to…</div>
+          {/* One list, built from ONE table (`ROOM_COMMANDS`), whichever door
+              opened it — the ＋ beside the box or a `/` typed into it. A row that
+              cannot work here is drawn as it really is — off, with the reason on
+              it. `data-open-by` says which door, because "he found it by typing"
+              and "he found it by looking" are different claims about the same
+              list and a check should be able to hold either one. */}
+          {menuOpen && (
+            <div className={`actionspop${openedBy === "slash" ? " slashpop" : ""}`}
+              role="menu" aria-label="Things you can ask an agent to do"
+              data-actions-open="yes" data-open-by={openedBy} data-rows={menuRows.length}>
+              <div className="ap-head tag">
+                {openedBy === "slash" ? `Ask an agent to… (${countOf(menuRows.length, "match", "matches")})` : "Ask an agent to…"}
+              </div>
               <div className="ap-promise">{ACTIONS_PROMISE}</div>
-              {ROOM_COMMANDS.map(c => {
+              {menuRows.map((c, i) => {
                 const why = blockedBecause(c);
+                /* Only the typed road has a highlighted row: the ＋ list is
+                   pointed at with a mouse, and a lit row nobody can move with
+                   the arrow keys would be a promise the list does not keep. */
+                const on = openedBy === "slash" && i === Math.min(cmdIndex, menuRows.length - 1);
                 return (
-                  <button key={c.cmd} className={`ap-row${why ? " is-blocked" : ""}`}
+                  <button key={c.cmd} className={`ap-row${why ? " is-blocked" : ""}${on ? " on" : ""}`}
                     role="menuitem" data-command={c.cmd} data-blocked={why ? "yes" : "no"}
+                    data-on={on ? "yes" : "no"}
                     disabled={!!why}
+                    /* The cursor comes back to the box by itself — `prefill`
+                       puts it on the part he has to fill in. */
                     onClick={() => prefill(c)}>
                     <span className="ap-label">{c.label}</span>
                     <span className="ap-say">{why ?? c.say}</span>
@@ -7793,6 +8271,158 @@ function ConnectionsFilePick({ agentName, agentDraft, file, onChoose }: {
   );
 }
 
+/**
+ * WHICH FOLDERS THIS AGENT MAY REACH OUTSIDE ITS OWN — the last switch that was
+ * on the ceiling with nothing behind it, and the block that takes it down.
+ *
+ * PLAIN WORDS FIRST. This is "folders on this computer this agent may read and
+ * change, besides its own". Its own folder it always has. Everything else on
+ * this computer is closed to it unless you name it here — and because that
+ * changes your machine, it stops and asks you before it acts in any of them.
+ *
+ * THIS WINDOW NEVER TOUCHES THE FILESYSTEM. Choosing asks the desktop shell to
+ * draw the operating system's own folder picker (several at once), and the only
+ * thing that comes back is the folders chosen. "Are they still there?" is the
+ * same kind of question, asked the same way, and the answer is which ones and
+ * when it was asked — nothing inside any folder is ever listed or read here.
+ *
+ * FIVE HONEST ANSWERS AND NO SIXTH. Switched on with nothing chosen says so, and
+ * says plainly that the agent has NO extra reach. Folders that have vanished are
+ * named and are NOT used. A part-there list says which part. All of them come
+ * from `wholeComputerRootsFor` — the SAME function the engine host calls when it
+ * builds `--add-dir` — so this screen cannot promise reach the command line will
+ * not carry. A window with no shell to ask (dev, QA in a browser) says it cannot
+ * check rather than pretending either way.
+ */
+function WholeComputerPick({ agentName, agentDraft, roots, onChange }: {
+  agentName: string;
+  /** the agent as the switches stand right now, unsaved edits included */
+  agentDraft: AgentDef;
+  roots: string[];
+  onChange: (next: string[]) => void;
+}): React.JSX.Element | null {
+  const [here, setHere] = useState<{ here: string[]; checkedAt: number } | null>(null);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const key = roots.join(" ");
+
+  /* ASKED FRESH, NEVER REMEMBERED — a folder that was there when he chose it can
+     be moved, renamed or sit on a drive that is unplugged. The engine asks the
+     same question again at the top of every turn; this is the screen's copy of
+     the question, not a cached answer to it. */
+  useEffect(() => {
+    setHere(null);
+    if (roots.length === 0) return;
+    const ask = desktop()?.wholeComputerFoldersHere;
+    if (!ask) return; // no shell to ask — the "cannot check" wording below
+    let alive = true;
+    void ask(roots)
+      .then(answer => { if (alive) setHere(answer); })
+      .catch(() => { if (alive) setHere(null); });
+    return () => { alive = false; };
+  }, [key]);
+
+  const checked = here !== null;
+  const state: WholeComputerRoots = wholeComputerRootsFor(
+    { ...agentDraft, wholeComputerRoots: roots },
+    folder => here?.here.includes(folder) === true);
+  // Folders are stored and this window cannot say whether they are still there.
+  // That is its own answer — reporting "gone" would be a guess, and reporting
+  // "in use" would be the lie this whole block exists to prevent.
+  const shown = roots.length > 0 && !checked && state.state !== "off"
+    ? "unchecked" : state.state;
+  const words = wholeComputerWords(state, agentName);
+
+  // Switched off and nothing remembered: there is nothing honest to say here.
+  if (shown === "off" && state.chosen.length === 0) return null;
+
+  const add = async (): Promise<void> => {
+    setRefusal(null);
+    const picker = desktop()?.chooseWholeComputerFolders;
+    if (!picker) {
+      setRefusal("This window cannot open the computer's folder picker, so the folders have "
+        + "to be chosen in the installed Cloud9 app.");
+      return;
+    }
+    const picked = await picker().catch(() => ({
+      ok: false, error: "This computer could not open the folder picker.",
+    } as { ok: boolean; paths?: string[]; cancelled?: boolean; error?: string }));
+    if (picked.cancelled) return; // closing the picker means "not now"
+    if (!picked.ok || !picked.paths?.length) {
+      if (picked.error) setRefusal(picked.error);
+      return;
+    }
+    /* ADDED, NEVER REPLACED, and never twice: opening the picker again is how a
+       person adds a second folder, so it must not be a way to silently lose the
+       first. The count is his to see — the refusal says which folder did not
+       fit rather than quietly dropping it. */
+    const next = [...roots];
+    for (const path of picked.paths) {
+      const said = path.trim();
+      if (!said || next.includes(said)) continue;
+      if (next.length >= WHOLE_COMPUTER_LIMITS.roots) {
+        setRefusal(`One agent can be given ${WHOLE_COMPUTER_LIMITS.roots} folders at most. `
+          + "Take one off the list before adding another.");
+        break;
+      }
+      next.push(said);
+    }
+    if (next.length !== roots.length) onChange(next);
+  };
+
+  return (
+    <div className="notice wholecomputer" data-roots-state={shown}
+      data-roots-count={String(state.chosen.length)}>
+      <b>
+        {shown === "unchecked"
+          ? "This window cannot check those folders."
+          : words.headline}
+      </b>
+      <span>
+        {shown === "unchecked"
+          ? `The folders are remembered for ${agentName}, but only the computer that runs it `
+            + "can say whether they are still there. It checks every turn, and will not use a "
+            + "folder that has gone."
+          : words.detail}
+      </span>
+      {state.chosen.length > 0 && (
+        <ul className="rootlist" data-roots-list>
+          {state.chosen.map(root => {
+            const missing = shown !== "unchecked" && shown !== "off"
+              && state.missing.includes(root);
+            return (
+              <li key={root} data-root={root} data-root-missing={missing ? "yes" : "no"}>
+                <code className="folderpath">{root}</code>
+                {missing && <span className="chip is-gold">not on this computer</span>}
+                <button className="btn small" data-root-forget={root}
+                  onClick={() => { setRefusal(null); onChange(roots.filter(r => r !== root)); }}>
+                  Forget
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {(shown === "ready" || shown === "partly") && here && (
+        <span className="eyebrow" data-roots-checked={String(here.checkedAt)}>
+          Checked {fileDate(here.checkedAt)}
+        </span>
+      )}
+      <div className="actions">
+        <button className="btn small" data-roots-choose onClick={() => void add()}>
+          {state.chosen.length > 0 ? "Add another folder" : "Choose a folder"}
+        </button>
+        {state.chosen.length > 0 && (
+          <button className="btn small" data-roots-clear
+            onClick={() => { setRefusal(null); onChange([]); }}>
+            Forget them all
+          </button>
+        )}
+      </div>
+      <Problem text={refusal ?? undefined} attrs={{ "data-roots-refusal": "" }} />
+    </div>
+  );
+}
+
 /* ================= 5 · CREATE / EDIT AN AGENT ================= */
 
 function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
@@ -7838,6 +8468,11 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
      you, chosen for this one agent. Blank means none has been chosen, which is
      the honest default and never the same as "" stored on the agent. */
   const [connFile, setConnFile] = useState<string>(agent?.connectionsFile ?? "");
+  /* THE FOLDERS THIS AGENT MAY REACH OUTSIDE ITS OWN. Empty means none has been
+     chosen, which is the honest default and never the same as a list of blanks
+     stored on the agent. */
+  const [roots, setRoots] = useState<string[]>(
+    Array.isArray(agent?.wholeComputerRoots) ? agent!.wholeComputerRoots! : []);
 
   const { ids, fallback, preferred } = useModels(provider);
   // an agent must never end up without a model
@@ -7866,6 +8501,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
     || JSON.stringify(skills) !== JSON.stringify(Array.isArray(agent?.skills) ? agent!.skills! : [])
     || respondTo !== (agent?.respondTo ?? "owner")
     || connFile.trim() !== (agent?.connectionsFile ?? "").trim()
+    || JSON.stringify(roots) !== JSON.stringify(agent?.wholeComputerRoots ?? [])
     || JSON.stringify(allowlist) !== JSON.stringify(agent?.respondToAllowlist ?? []);
   /* THE MODEL IS DELIBERATELY NOT IN THAT LIST. An agent saved before a model
      list changed has one picked FOR it on the way in (see the effect above), so
@@ -7907,6 +8543,9 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                no connections file at all (the same rule the project folder
                follows). `undefined` never reaches the wire. */
             ...(connFile.trim() ? { connectionsFile: connFile.trim() } : {}),
+            /* The same rule for the folders: an empty list is not a field at
+               all, so there is one way to say "nothing opened up". */
+            ...(roots.length > 0 ? { wholeComputerRoots: roots } : {}),
           },
         }, setRefusal);
       if (!went) return;
@@ -7924,6 +8563,11 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
              at all — never with `""`, which would be a second way of saying
              "none" for anything downstream to disagree about. */
           connectionsFile: connFile.trim() || undefined,
+          /* Said explicitly for the same reason the line above is: FORGETTING a
+             folder has to travel too. `undefined` is dropped on the way onto
+             the wire, so the agent comes back with no folders at all — never
+             with `[]`, which would be a second way of saying "none". */
+          wholeComputerRoots: roots.length > 0 ? roots : undefined,
         },
       });
     }
@@ -7983,15 +8627,24 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
       provider: agent?.provider, abilities: agent?.abilities ?? NEW_AGENT_ABILITIES,
     })) === null);
   const switchesOpen = showSwitches;
-  /* The powers that are switched ON and still hand the agent nothing, because
-     the thing they need — a folder list — has nowhere to be chosen yet
-     (`capability-handoff.md` §4.4). Named here so the screen can admit it
-     instead of leaving him with a switch that looks broken.
-     `connections` LEFT THIS LIST on 2026-08-03: there is now somewhere to
-     choose its file, so it is no longer inert-by-design. Whether it is inert
-     TODAY is a question about this agent, answered below by `connState` — the
-     same answer the engine reads when it builds the command line. */
-  const inertSwitches = (["wholeComputer"] as const)
+  /* THE POWERS THAT ARE SWITCHED ON AND STILL HAND THE AGENT NOTHING, because
+     the thing they need has nowhere to be chosen yet. THIS LIST IS NOW EMPTY,
+     and that is the whole point of it (`capability-handoff.md` §4.4).
+
+     `connections` left it on 2026-08-03 and `wholeComputer` left it on
+     2026-08-04: there is now somewhere to choose a connections file AND
+     somewhere to choose folders, so neither switch is inert BY DESIGN any more.
+     Whether either is inert TODAY is a question about THIS agent, and it is
+     answered right below by `ConnectionsFilePick` and `WholeComputerPick` —
+     each reading the very function the engine reads when it builds the command
+     line, so a switch with nothing behind it still says so, in that agent's own
+     terms rather than as a standing apology from the app.
+
+     The mechanism is deliberately kept rather than deleted: the day a new
+     capability row lands that needs something the app cannot yet ask for, it
+     goes in this list and the honest notice appears again. Empty means there is
+     no switch in Cloud9 today that lies. */
+  const inertSwitches = ([] as (keyof AgentAbilities)[])
     .filter(key => ab[key] === true);
 
   const toggle = (
@@ -8269,25 +8922,34 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
             <ConnectionsFilePick agentName={shownName} agentDraft={draft}
               file={connFile} onChoose={setConnFile} />
 
-            {/* A SWITCH THAT IS ON AND STILL GRANTS NOTHING MUST SAY SO.
-                Two of these powers need something the app cannot yet ask him
-                for — which folders, and which service. The engine reads both
-                fresh every turn and, with nothing chosen, hands the agent
-                nothing extra. That is the safe way round, and it would read as
-                a broken switch if the screen kept quiet about it. Saying it
-                here costs a sentence; letting him believe he opened a door that
-                is still shut costs his trust in every other switch. */}
+            {/* THE LAST SWITCH THAT HAD NOWHERE TO POINT. "Reach files outside
+                its own folder" is allowed by the switch and DELIVERED by a list
+                of folders — so the folders are chosen right here, under the
+                switch that allows it, in his words: folders on this computer
+                this agent may read and change, besides its own. It reads the
+                same function the engine host reads, so it cannot promise reach
+                the command line will not carry. */}
+            <WholeComputerPick agentName={shownName} agentDraft={draft}
+              roots={roots} onChange={setRoots} />
+
+            {/* A SWITCH THAT IS ON AND STILL GRANTS NOTHING MUST SAY SO — and
+                as of 2026-08-04 there is no such switch left in Cloud9, so this
+                never draws. It is kept, not deleted: the next capability that
+                needs something the app cannot yet ask for goes in the list
+                above and this notice comes back on its own. Saying it costs a
+                sentence; letting him believe he opened a door that is still
+                shut costs his trust in every other switch. */}
             {inertSwitches.length > 0 && (
               <div className="notice inertswitch" data-inert={inertSwitches.join(",")}>
                 <b>On, but not doing anything yet.</b>
                 <ul>
-                  {inertSwitches.includes("wholeComputer") && (
-                    <li data-inert-row="wholeComputer">
-                      <b>Reach files outside its own folder</b> needs you to say which folders,
-                      and there is nowhere yet to choose them. Until there is, {shownName} gets
-                      nothing beyond its own folder.
+                  {inertSwitches.map(key => (
+                    <li key={key} data-inert-row={key}>
+                      <b>{CAPABILITIES.find(c => c.ability === key)?.label ?? key}</b> is switched
+                      on, but this app has nowhere yet for you to give it what it needs. Until
+                      there is, {shownName} gets nothing from it.
                     </li>
-                  )}
+                  ))}
                 </ul>
               </div>
             )}
@@ -9201,6 +9863,21 @@ interface DesktopBridge {
    * it was asked, and nothing else. Nothing inside the file ever comes back.
    */
   connectionsFileHere?: (file: string) => Promise<{ here: boolean; checkedAt: number }>;
+  /**
+   * Ask the OWNER, through the operating system's own picker, which folders one
+   * agent may reach outside its own — several at once. Same law as the two
+   * above: the window never touches the filesystem, and `cancelled` is a normal
+   * answer, not a failure.
+   */
+  chooseWholeComputerFolders?: () => Promise<
+    { ok: boolean; paths?: string[]; cancelled?: boolean; error?: string }>;
+  /**
+   * "Which of the folders I was given are still on this computer?" — the subset
+   * that is really there and the moment it was asked, and nothing else. Nothing
+   * inside any folder is ever listed or read.
+   */
+  wholeComputerFoldersHere?: (folders: string[]) => Promise<
+    { here: string[]; checkedAt: number }>;
   /**
    * WINDOWS' OWN NOTIFICATION — the door that reaches him with Cloud9 minimised.
    * Absent in a browser (dev), which is exactly the `osSupported: false` case

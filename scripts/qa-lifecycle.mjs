@@ -2,7 +2,7 @@
 // it speaks again (FR-AG-007).
 import { chromium } from "playwright";
 import {
-  AGENT_REPLY_TIMEOUT_MS, assertHarnessIsHonest, qaTarget, reportAndExit, signInAsOwner,
+  assertHarnessIsHonest, qaTarget, reportAndExit, signInAsOwner, waitForAgentAnswer,
 } from "./qa-target.mjs";
 // throwaway QA stack by default, never the real hub (finding #18)
 const { ui: UI } = qaTarget();
@@ -57,10 +57,19 @@ try {
    * silent for 15-25s — which is exactly how a 2.5s silence check used to pass
    * an agent that was never going to answer either way. So: get one real reply
    * first. From here on the engine is warm, and silence means silence. */
-  await box.fill("@Echo hello, are you awake?");
+  /* WHERE THE ANSWER IS. Since 2026-08-04 an agent answers in a thread hanging
+     off the message it answers, so a question typed in the channel is answered
+     under itself and not in the scroll — see `waitForAgentAnswer` in
+     qa-target.mjs, the one place every QA script asks this. */
+  await box.fill("@Echo wakecontrol hello, are you awake?");
   await box.press("Enter");
-  await p.waitForSelector(".msg:has-text('Echo') .badge", { timeout: AGENT_REPLY_TIMEOUT_MS });
-  ok("an enabled agent answers (the engine is awake — the control for the silence check below)", true);
+  const control = await waitForAgentAnswer(p, {
+    under: { text: "wakecontrol" }, author: "Echo",
+    what: "an enabled Echo to answer at all — the control for the silence check below",
+  });
+  ok("an enabled agent answers, in a thread under the question (the engine is awake — the control for the silence check below)",
+    control.answerIds.length >= 1 && control.replies >= 1,
+    `${control.answerIds.length} answer(s) in the thread, the question says ${control.replies} reply/replies`);
 
   // pause via edit modal
   await echoRow.hover();
@@ -117,12 +126,21 @@ try {
    * order it decided — so by the time the second answer is on screen, a first
    * answer, had one ever been coming, would already be sitting above it.
    *
-   * Silence is proved by something else arriving, never by time passing. */
+   * Silence is proved by something else arriving, never by time passing.
+   *
+   * AND SINCE 2026-08-04 SILENCE HAS A SECOND HIDING PLACE. An answer to a
+   * question typed in the channel goes into a THREAD under that question, so
+   * counting rows in the scroll would now find nothing whether Echo spoke or
+   * not — the check would pass for the wrong reason, which is the one failure
+   * worse than a red one. So the paused question is judged on its own replies
+   * line: a paused agent leaves the question with no thread at all. */
   await box.fill("@Echo pausedprobe are you there?");
   await box.press("Enter");
   // the hub has taken the question — so the engine has it too, and it has it
   // while Echo is still paused, before the un-pause below is even asked for
-  await p.waitForSelector('.msg:has-text("pausedprobe")', { timeout: 30000 });
+  await p.waitForSelector('.msgs .msg:has-text("pausedprobe")', { timeout: 30000 });
+  const pausedProbeId = await p.locator('.msgs .msg:has-text("pausedprobe")').last()
+    .getAttribute("data-msg");
 
   // unpause → replies again
   await echoRow.hover();
@@ -133,20 +151,34 @@ try {
   await p.click('.rail-btn[data-go="chat"]');
   await box.fill("@Echo wakeprobe are you there now?");
   await box.press("Enter");
-  await p.waitForFunction(
-    () => [...document.querySelectorAll(".msg.from-agent")]
-      .some(m => (m.textContent ?? "").includes("wakeprobe")),
-    null, { timeout: AGENT_REPLY_TIMEOUT_MS, polling: 250 });
-  ok("re-enabled agent replies", true);
+  const woke = await waitForAgentAnswer(p, {
+    under: { text: "wakeprobe" }, text: "wakeprobe", author: "Echo",
+    what: "the re-enabled Echo to answer, in the thread under the question",
+  });
+  ok("re-enabled agent replies, in a thread under the question it was asked",
+    woke.answerIds.length >= 1 && woke.replies >= 1,
+    `${woke.answerIds.length} answer(s), the question says ${woke.replies} reply/replies`);
 
-  /* Now — and only now — is Echo's silence a fact rather than a hope. If it DID
+  /* Now — and only now — is Echo's silence a fact rather than a hope. Asked in
+   * BOTH places an answer could legitimately be: the scroll, and the thread the
+   * paused question would have grown if it had ever been answered. If it DID
    * speak, say what it said: "false" on its own sends the next person hunting
    * through the engine for a bug that may not be there. */
-  const spoke = await p.$$eval(".msg.from-agent", rows => rows
+  const spokeInRoom = await p.$$eval(".msgs .msg.from-agent", rows => rows
     .filter(r => (r.textContent ?? "").includes("pausedprobe"))
     .map(r => r.innerText.replace(/\s+/g, " ").slice(0, 160)));
-  ok("paused agent stays silent — it never answered the question put to it while paused",
-    spoke.length === 0, spoke.length ? `it answered anyway: ${spoke.join(" || ")}` : "");
+  /* Read in one pass in the page rather than through a locator: a paused
+     question has NO replies line at all, and asking a locator for an attribute
+     it does not have waits out its own timeout before saying so. */
+  const probeReplies = await p.evaluate(id => {
+    const line = document.querySelector(`.msgs .msg[data-msg="${id}"] .threadline`);
+    return line ? Number(line.dataset.replies ?? 0) : null;
+  }, pausedProbeId);
+  ok("paused agent stays silent — no answer in the conversation AND no thread grown under the question put to it while paused",
+    spokeInRoom.length === 0 && (probeReplies === null || probeReplies === 0),
+    spokeInRoom.length
+      ? `it answered anyway: ${spokeInRoom.join(" || ")}`
+      : `the paused question says ${probeReplies ?? "no"} replies`);
 } catch (e) { ok("UNCAUGHT: " + String(e).slice(0, 160), false); }
 await b.close();
 reportAndExit("qa-lifecycle.mjs", results, EXPECTED_CHECKS);
