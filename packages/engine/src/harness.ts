@@ -54,6 +54,16 @@ export interface HarnessOptions {
   /** where the user's Codex default model is configured (tests override) */
   codexConfigPath?: string;
   /**
+   * KEEP LOOKING. Off only for tests that want one round and nothing else.
+   * See `scheduleRelook` for why a single look is not allowed to be the last
+   * word on whether an app exists.
+   */
+  relook?: boolean;
+  /** how long to wait before looking again while an app looks missing */
+  relookMissingMs?: number;
+  /** how long to wait before looking again when everything is present */
+  relookSteadyMs?: number;
+  /**
    * Where the proved Claude model list is remembered, keyed on the CLI version.
    * Absent means "don't remember and don't prove" — which is what tests want.
    */
@@ -71,6 +81,16 @@ export interface HarnessOptions {
   log?: (message: string) => void;
 }
 
+/**
+ * How long to wait before looking at this computer again while an app appears
+ * to be missing — 5s, 15s, 30s, a minute, two, then every five minutes for as
+ * long as it stays missing. Short at first because the usual cause is something
+ * momentary; it never stops, because the alternative is what he saw.
+ */
+const RELOOK_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
+/** How often to look again when both apps are present. */
+const RELOOK_STEADY_MS = 600_000;
+
 const BLANK = (name: HarnessName): HarnessInfo => ({
   name, installed: false, signedIn: false, authKind: "none",
   models: [], detail: "not checked yet",
@@ -84,6 +104,22 @@ const BLANK = (name: HarnessName): HarnessInfo => ({
  * good list. Detection never runs the probe itself — that takes half a minute
  * and detection has to be quick; `HarnessManager` starts it afterwards.
  */
+/**
+ * `<cli> --version`, with ONE second chance on a timeout.
+ *
+ * Both CLIs are Node programs: a cold start is seconds, and a machine doing
+ * anything else (a build, a virus scan of node.exe, an npm reinstall of the
+ * very shim being run) pushes that past any leash worth having. The first
+ * timeout is therefore treated as "the computer was busy", not as an answer,
+ * and it is asked once more with twice the patience before anybody is told
+ * anything. Shared by both harnesses so they can never drift apart.
+ */
+async function askVersion(runner: Runner, command: string, timeoutMs: number) {
+  const first = await runner(command, ["--version"], { timeoutMs });
+  if (!first.timedOut) return first;
+  return runner(command, ["--version"], { timeoutMs: timeoutMs * 2 });
+}
+
 export async function detectClaude(
   runner: Runner, command = "claude", timeoutMs = 20_000,
   opts: { modelCachePath?: string } = {},
@@ -92,7 +128,16 @@ export async function detectClaude(
     name: "claude", installed: false, signedIn: false, authKind: "none",
     models: [], detail: "the Claude app isn't installed on this computer",
   };
-  const version = await runner(command, ["--version"], { timeoutMs });
+  const version = await askVersion(runner, command, timeoutMs);
+  if (version.timedOut) {
+    // A LEASH IS NOT AN ANSWER. `claude --version` is a cold Node start and
+    // takes ~5s on a quiet machine; on a busy one it can blow any leash. Saying
+    // "not installed on this computer" because of that sends him off to install
+    // an app he already has. Say what actually happened, and let the manager's
+    // re-look settle it.
+    info.detail = "Claude is on this computer but did not answer in time — Cloud9 will look again shortly.";
+    return info;
+  }
   if (version.notFound || version.code !== 0) return info;
 
   info.installed = true;
@@ -145,7 +190,12 @@ export async function detectCodex(
     name: "codex", installed: false, signedIn: false, authKind: "none",
     models: [], detail: "the Codex app isn't installed on this computer",
   };
-  const version = await runner(command, ["--version"], { timeoutMs });
+  const version = await askVersion(runner, command, timeoutMs);
+  if (version.timedOut) {
+    // same reasoning as detectClaude — see askVersion
+    info.detail = "Codex is on this computer but did not answer in time — Cloud9 will look again shortly.";
+    return info;
+  }
   if (version.notFound || version.code !== 0) return info;
   info.installed = true;
   info.version = (version.stdout.trim().split(/\r?\n/)[0] ?? "").slice(0, 60) || undefined;
@@ -252,6 +302,10 @@ export class HarnessManager {
   private detected = false;
   /** a model-proving round already running — one at a time, they cost money */
   private provingModels = false;
+  /** the next automatic look at this computer (see `scheduleRelook`) */
+  private relookTimer?: ReturnType<typeof setTimeout>;
+  /** how many looks in a row have come back with an app missing */
+  private missedRounds = 0;
 
   constructor(private opts: HarnessOptions = {}) {
     this.runner = opts.runner ?? run;
@@ -358,7 +412,53 @@ export class HarnessManager {
     // nothing waits on this: detection has already answered, and proving the
     // model list takes about half a minute
     void this.proveClaudeModels();
+    this.scheduleRelook();
     return this.state;
+  }
+
+  /**
+   * ONE LOOK IS NEVER THE LAST WORD.
+   *
+   * 2026-08-05, his report: Settings said "Claude — not installed on this
+   * computer · ✗ app not found", with the sign-in button greyed out, on a
+   * machine where `claude` was installed and signed in the whole time. Cause:
+   * this computer was looked at EXACTLY ONCE, when the engine came up
+   * (`host.ts`, `engine.onReady`), and whatever that one look said stood
+   * forever. Anything momentary — an `npm i -g` rewriting the very shim being
+   * run, a busy machine blowing the leash, a virus scanner holding node.exe —
+   * became a permanent verdict, phrased as an accusation ("install it first").
+   * Reproduced by launching the installed app with the CLIs hidden from PATH:
+   * it said not-installed and was still saying it 150 seconds after they were
+   * reachable again.
+   *
+   * So: look again, always. Quickly and with a backoff while something looks
+   * missing (that is the answer most likely to be a lie), and slowly forever
+   * after, so a sign-out or a sign-in is noticed without him pressing anything.
+   * The timer is unref'd — it never holds a process open — and a sign-in in
+   * flight owns the CLI, so a re-look waits its turn rather than fighting it.
+   */
+  private scheduleRelook(): void {
+    if (this.stopped || this.opts.relook === false) return;
+    if (this.relookTimer) clearTimeout(this.relookTimer);
+    const missing = !this.state.claude.installed || !this.state.codex.installed;
+    let delay: number;
+    if (missing) {
+      delay = this.opts.relookMissingMs
+        ?? RELOOK_BACKOFF_MS[Math.min(this.missedRounds, RELOOK_BACKOFF_MS.length - 1)];
+      this.missedRounds++;
+    } else {
+      this.missedRounds = 0;
+      delay = this.opts.relookSteadyMs ?? RELOOK_STEADY_MS;
+    }
+    const timer = setTimeout(() => {
+      this.relookTimer = undefined;
+      if (this.stopped) return;
+      // a sign-in is driving the CLI right now; come back rather than collide
+      if (this.inFlight.size > 0) { this.scheduleRelook(); return; }
+      void this.refresh().catch(() => { /* the next look is already booked */ });
+    }, delay);
+    (timer as { unref?: () => void }).unref?.();
+    this.relookTimer = timer;
   }
 
   /**
@@ -595,6 +695,7 @@ export class HarnessManager {
 
   stop(): void {
     this.stopped = true;
+    if (this.relookTimer) { clearTimeout(this.relookTimer); this.relookTimer = undefined; }
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
     // settle anything still sleeping, so callers don't hang on a stopped manager

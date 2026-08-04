@@ -211,7 +211,45 @@ const EXPECTED_CHECKS = [
      is the box calm until I click into it (and does it show its tools when I
      do), and does pressing Enter actually put me on what I just said. */
   "the message box is calm until he clicks into it, and Enter lands him on what he just said",
+  /* 2026-08-05, and the reason this walk was 36/36 while the app was useless:
+     Settings said "Claude — not installed on this computer · ✗ app not found",
+     with the sign-in button greyed out, on a computer where `claude` was
+     installed and signed in the whole time. THIRTY-SIX CHECKS AND NOT ONE OF
+     THEM LOOKED AT THE CARD THAT DECIDES WHETHER ANY AGENT CAN RUN — the only
+     thing this walk ever asserted on the Settings screen was the GitHub card.
+     So the two questions a person asks in the first ten seconds now get asked
+     here, every run, of the app he double-clicks:
+       · did the engine ever say what it found, or is the card still "checking"
+         (an engine that never connects looks EXACTLY like a missing app);
+       · does what the card says match what this computer can really do — the
+         walk runs `claude --version` and `codex --version` itself and refuses
+         to accept a card that disagrees, in either direction. */
+  "the app says what it found about Claude and Codex, instead of checking forever",
+  "Settings agrees with this computer about whether Claude and Codex are really there",
 ];
+
+/* --------------------------------------------- what this computer really has
+ *
+ * The walk must be able to say "the card is LYING", which means having its own
+ * answer that owes nothing to the app. So it runs the CLI the same way a person
+ * at a terminal would — through the shell, because both are npm/.cmd shims —
+ * and treats anything but a clean exit as absent. The leash is generous on
+ * purpose: these are cold Node starts (measured ~5-9s on this machine), and a
+ * harness that called a slow answer a missing app would be repeating the exact
+ * bug it exists to catch.
+ */
+const HARNESS_CARDS = ["claude", "codex"];
+
+function cliOnThisComputer(cmd) {
+  try {
+    const out = execFileSync(cmd, ["--version"], {
+      encoding: "utf8", shell: true, timeout: 120000, stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { present: true, version: (out.trim().split(/\r?\n/)[0] ?? "").slice(0, 60) };
+  } catch (err) {
+    return { present: false, why: (err?.shortMessage ?? err?.message ?? String(err)).slice(0, 120) };
+  }
+}
 
 /* ---------------------------------------------------------------- results */
 
@@ -722,9 +760,16 @@ async function openInstalledEngineSocket(relay, token, handshakeTimeoutMs = 2000
 }
 
 async function connectInstalledEngine(page) {
+  /* WHERE THE OWNER KEY LIVES, AND WHY IT MOVED (2026-08-04, commit 82cdaf6).
+     It used to sit in the window's Local Storage — an ordinary unencrypted file
+     that any junk program reads, holding the one value that can create agents
+     with folders on this computer. The shell keeps it encrypted now and hands
+     it to the window in memory, so the ONLY way in is the preload bridge. The
+     old spelling is kept as a fallback for a plain browser (the member sidecar
+     below), which has nowhere else to put it. */
   const connection = await page.evaluate(() => ({
     relay: new URL(window.location.href).searchParams.get("relay"),
-    token: window.localStorage.getItem("cloud9.token"),
+    token: window.cloud9?.hubSignIn?.token?.() ?? window.localStorage.getItem("cloud9.token"),
   }));
   if (!/^ws:\/\/127\.0\.0\.1:\d+$/.test(connection.relay ?? "")) {
     throw new Error("the installed window did not name its own loopback hub");
@@ -2383,8 +2428,55 @@ async function walk(page) {
       }
       return `honestly ${settled}`;
     });
+
+    /* --- 8b. the two cards every agent depends on ------------------------- */
+
+    await page.waitForSelector('.harnesscard[data-harness="claude"]', { timeout: 30000 });
+    await shot(page, "settings-apps");
+
+    await check(EXPECTED_CHECKS[36], async () => {
+      const said = [];
+      for (const name of HARNESS_CARDS) {
+        const card = page.locator(`.harnesscard[data-harness="${name}"]`).first();
+        if (await card.count() === 0) throw new Error(`Settings has no ${name} card at all`);
+        /* "checking…" is what the card says while nothing has been reported.
+           An engine that never connects sits here forever, and looks to him
+           exactly like an app that is not installed. */
+        await until(`the ${name} card to say what was found`, async () =>
+          !/^checking/i.test(((await card.locator(".harnessstate").innerText()) ?? "").trim()),
+          { timeout: 120000 }).catch(() => {
+          throw new Error(`the ${name} card is still "checking…" after two minutes — ` +
+            "the engine never reported what it found on this computer");
+        });
+        said.push(`${name}: ${(await card.locator(".harnessstate").innerText()).trim()}`);
+      }
+      return said.join(" · ");
+    });
+
+    await check(EXPECTED_CHECKS[37], async () => {
+      const wrong = [];
+      const agreed = [];
+      for (const name of HARNESS_CARDS) {
+        const truth = cliOnThisComputer(name);
+        const card = page.locator(`.harnesscard[data-harness="${name}"]`).first();
+        const words = await card.innerText();
+        const cardFound = /✓\s*app found/.test(words);
+        if (truth.present && !cardFound) {
+          wrong.push(`${name}: this computer answers "${truth.version}", and Settings tells him ` +
+            "to install an app he already has");
+        } else if (!truth.present && cardFound) {
+          wrong.push(`${name}: Settings claims the app is here, but this computer cannot run it ` +
+            `(${truth.why})`);
+        } else {
+          agreed.push(`${name} ${truth.present ? `found (${truth.version})` : "genuinely absent"}`);
+        }
+      }
+      if (wrong.length) throw new Error(wrong.join("; "));
+      return agreed.join(" · ");
+    });
   } catch (err) {
-    failGroup([EXPECTED_CHECKS[18]].filter(n => !results.some(r => r.name === n)),
+    failGroup([EXPECTED_CHECKS[18], EXPECTED_CHECKS[36], EXPECTED_CHECKS[37]]
+      .filter(n => !results.some(r => r.name === n)),
       `the Settings screen did not open (${err.message})`);
     await shot(page, "settings-broken");
   }

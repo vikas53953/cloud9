@@ -32,9 +32,11 @@ function writeShim(dir: string, name: string, cmd: string, sh: string): void {
  * sign-in: `auth status` answers from a file that `setup-token` creates, so a
  * test can watch the flow actually flip from signed-out to signed-in.
  */
-function writeClaudeShim(dir: string, opts: { loggedIn: boolean; statePath?: string }): void {
+function writeClaudeShim(
+  dir: string, opts: { loggedIn: boolean; statePath?: string }, name = "claude",
+): void {
   const s = opts.statePath;
-  writeShim(dir, "claude",
+  writeShim(dir, name,
     [
       "@echo off",
       'if "%1"=="--version" goto ver',
@@ -639,4 +641,60 @@ test("gh missing when Sign in now is pressed fails at once instead of waiting fi
   assert.ok(Date.now() - started < 15_000, "it waited for a window that never opened");
   assert.match(after.github?.problem ?? "", /isn't installed/i);
   mgr.stop();
+});
+
+/* ------------------------------------------------------------------------
+ * 2026-08-05: "Claude — not installed on this computer · ✗ app not found",
+ * on a machine where Claude was installed and signed in the whole time.
+ *
+ * The app looked at this computer ONCE, at startup, and never again. So a
+ * moment when the CLI could not answer — an `npm i -g` rewriting the shim, a
+ * busy machine, a scanner holding node.exe — became a permanent verdict, with
+ * a greyed-out sign-in button and "install the Claude app first" underneath.
+ * These two hold the fix: a missing app is looked for again by itself, and a
+ * leash that ran out is never reported as an absence.
+ * ---------------------------------------------------------------------- */
+
+test("an app missing for a moment is found again on its own — nobody presses Re-check", async () => {
+  const dir = shimDir();
+  writeCodexShim(dir, path.join(dir, "codex-state.txt"));
+  writeGhShim(dir, path.join(dir, "gh-state.txt"));
+  await withPath(dir, async () => {
+    /* A NAME NOTHING ELSE ON THIS COMPUTER HAS. The real `claude` is installed
+       here, so a shim called "claude" would only ever be shadowing something
+       that answers anyway, and round one could never be honestly absent. */
+    const mgr = new HarnessManager({
+      log: () => {},
+      claudeCommand: "cloud9-test-claude",
+      // fast enough for a test, same code path the app runs
+      relookMissingMs: 50, relookSteadyMs: 60_000,
+    });
+    const first = await mgr.refresh();
+    assert.equal(first.claude.installed, false, "the Claude shim really is absent for round one");
+
+    // ...and now it is back, exactly as an interrupted reinstall would leave it
+    writeClaudeShim(dir, { loggedIn: true }, "cloud9-test-claude");
+
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline && !mgr.state.claude.installed) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    assert.equal(mgr.state.claude.installed, true,
+      "the app never looked again, so a momentary absence is permanent");
+    assert.equal(mgr.state.claude.signedIn, true);
+    mgr.stop();
+  });
+});
+
+test("a detection that ran out of time is not reported as 'not installed'", async () => {
+  const timedOut: RunResult =
+    { code: null, stdout: "", stderr: "", timedOut: true, notFound: false };
+  let asked = 0;
+  const runner = async () => { asked++; return timedOut; };
+  const info = await detectClaude(runner, "claude", 10);
+  assert.equal(asked, 2, "a timeout gets one second chance before anyone is told anything");
+  assert.equal(info.installed, false);
+  assert.doesNotMatch(info.detail ?? "", /isn't installed|not installed/i,
+    "a leash that ran out was reported as an app that is not there");
+  assert.match(info.detail ?? "", /did not answer in time/i);
 });
