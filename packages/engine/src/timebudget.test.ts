@@ -210,7 +210,7 @@ test("a timed-out turn still shuts its doorway and leaves no config file behind"
   await assert.rejects(
     () => new ClaudeCliProvider({
       agentDataDir: () => dir, runner, models: () => CLAUDE_MODELS,
-      cloud9Tools: () => ({ url: "http://127.0.0.1:1/x", secret: "s", close: () => { closed = true; } }),
+      cloud9Tools: () => ({ url: "http://127.0.0.1:1/x", secret: "s", id: "turn1", close: () => { closed = true; } }),
     }).respond({
       agent: claudeAgent(), context: "", trigger: "do it", triggerAuthor: "V",
       kind: "task", channelId: "c1",
@@ -218,6 +218,8 @@ test("a timed-out turn still shuts its doorway and leaves no config file behind"
     (err: unknown) => err instanceof TurnTimedOutError,
   );
   assert.ok(closed, "the tool doorway was left open after the turn was killed");
-  assert.ok(!fs.existsSync(path.join(dir, ".cloud9-mcp.json")),
+  // named for THIS turn (see `OpenTurn.id`) — two turns for one agent must not
+  // share a filename, so the check is for this turn's own file
+  assert.ok(!fs.existsSync(path.join(dir, ".cloud9-mcp-turn1.json")),
     "the one-turn config file was left on disk after the turn was killed");
 });

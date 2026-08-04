@@ -3990,13 +3990,23 @@ export const CREDENTIAL_ENV_VARS = [
   "CODEX_API_KEY",
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
+  // Cloud9's OWN escape-hatch variables (scripts/engine-host.mjs). These carry
+  // the real Anthropic and Codex credentials on a machine where the apps are
+  // signed out, and they were missed for a year because `CRED` is not the word
+  // `CREDENTIAL` — so an agent's child process, INCLUDING a Codex agent on a
+  // different account, was handed them. The pattern below now catches the shape
+  // as well; both are here because a name we have actually seen is worth
+  // writing down.
+  "CLOUD9_CRED",
+  "CLOUD9_CRED_KIND",
+  "CLOUD9_CODEX_CRED",
 ] as const;
 
 /**
  * The shape of a secret's NAME. A deny-list of known variables only ever
  * protects against the secrets we thought of; this catches the class.
  */
-const SECRET_NAME_RE = /(API[_-]?KEY|ACCESS[_-]?KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|_TOKEN$|^TOKEN$|AUTH_TOKEN|SESSION_KEY|PRIVATE_KEY)/i;
+const SECRET_NAME_RE = /(API[_-]?KEY|ACCESS[_-]?KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|(^|_)CREDS?($|_)|_TOKEN$|^TOKEN$|AUTH_TOKEN|SESSION_KEY|PRIVATE_KEY)/i;
 
 /** Is this variable name credential-shaped? Exported so tests can pin the rule. */
 export function isCredentialVar(name: string): boolean {

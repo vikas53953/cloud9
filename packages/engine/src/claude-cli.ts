@@ -564,7 +564,12 @@ export class ClaudeCliProvider implements ClaudeProvider {
    */
   private writeCloud9Config(agentId: string, doorway: OpenTurn): string | undefined {
     try {
-      const target = path.join(this.opts.agentDataDir(agentId), ".cloud9-mcp.json");
+      // THE TURN'S OWN ID IS IN THE NAME. One fixed name here meant two turns
+      // for one agent — which the engine allows — wrote over each other's
+      // ticket, so a turn in #general could be answered with #ops history and
+      // whichever turn finished first deleted the other's file. See `OpenTurn.id`.
+      const target = path.join(
+        this.opts.agentDataDir(agentId), `.cloud9-mcp-${doorway.id}.json`);
       fs.writeFileSync(target, cloud9McpConfig(cloud9McpEntry(), doorway), { mode: 0o600 });
       return target;
     } catch (err) {

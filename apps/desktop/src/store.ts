@@ -438,6 +438,43 @@ export const RELAY_URL =
 /** Where localStorage keeps the address book of known hubs. */
 const HUBBOOK_KEY = "cloud9.hubbook";
 
+/* ================= WHERE THIS COMPUTER'S HUB KEY LIVES =================
+ *
+ * THE LAW: a secret never sits in plain text on the disk. Browser Local Storage
+ * IS plain text on the disk — an ordinary file under %APPDATA% that any junk
+ * process running as him reads. The hub key used to be written there, and that
+ * key is not a chat cookie: it creates agents, and an agent is spawned with
+ * folders on this computer.
+ *
+ * So in the Cloud9 window the key is never stored by this screen at all. The
+ * shell (`preload.cjs` → the main process) hands it over in memory each launch
+ * and keeps the one copy encrypted by Windows.
+ *
+ * IN A PLAIN BROWSER — the QA sweep, and any browser pointed at a hub — there
+ * IS no shell to keep it, so Local Storage stays the only place there is. That
+ * path is unchanged and it is written down rather than implied: a browser has
+ * no OS keychain a web page may reach. What makes it acceptable is that it is
+ * not the path he uses; his Cloud9 is the window, and the window no longer
+ * writes anything.
+ */
+interface HubSignInBridge {
+  token(): string | null;
+  remember(token: string): Promise<{ ok: boolean; error?: string }>;
+  forget(): Promise<{ ok: boolean; error?: string }>;
+}
+
+function hubSignIn(): HubSignInBridge | undefined {
+  const bridge = (globalThis as unknown as { cloud9?: { hubSignIn?: HubSignInBridge } }).cloud9;
+  return bridge?.hubSignIn;
+}
+
+/**
+ * This launch's key, once the shell has handed it over. Memory only — declaring
+ * it here rather than reading storage is what makes "the window keeps no
+ * secret" a property of the code and not a habit.
+ */
+let sessionToken: string | null = null;
+
 /**
  * This computer's own hub, as a checked address — the floor every install has.
  * Derived from the loopback URL the shell handed the screen, so "self" is
@@ -468,6 +505,19 @@ function loadHubBook(): HubBook {
 const LEGACY_SECRET_KEYS = ["cloud9.claudeCred", "cloud9.claudeCredKind"];
 
 /**
+ * The hub key, which USED to be exempt from the purge above — and that
+ * exemption was the bug. It is a secret like any other: it creates agents, and
+ * an agent is spawned with folders on this computer. In the Cloud9 window the
+ * shell now keeps it, encrypted by the OS, so the copy sitting in this browser's
+ * storage from every previous run is pure liability and goes on the next start.
+ *
+ * It is purged ONLY where there is a shell to keep the key instead. A plain
+ * browser has nowhere else to put it, and wiping it there would sign the person
+ * out with nothing to sign back in with.
+ */
+const SHELL_HELD_SECRET_KEYS = ["cloud9.token"];
+
+/**
  * State that used to live in this browser and now lives on the account.
  *
  * `cloud9.lastRead` was read state kept per MACHINE: read a room on the laptop
@@ -488,6 +538,24 @@ export function purgeLegacySecrets(): void {
       if (localStorage.getItem(key) !== null) {
         localStorage.removeItem(key);
         console.warn(`[cloud9] removed an old credential (${key}) from browser storage`);
+      }
+    }
+    // The hub key, where the shell holds it instead. Anything already in
+    // storage is carried over to the shell FIRST, so a person who was signed in
+    // stays signed in — then the plaintext copy goes.
+    const bridge = hubSignIn();
+    if (bridge) {
+      for (const key of SHELL_HELD_SECRET_KEYS) {
+        const stale = localStorage.getItem(key);
+        if (stale === null) continue;
+        if (!bridge.token()) {
+          sessionToken = stale;
+          void bridge.remember(stale).catch(() => { /* asked again next launch */ });
+        }
+        localStorage.removeItem(key);
+        console.warn(
+          `[cloud9] moved the hub sign-in (${key}) out of browser storage — ` +
+          "this computer keeps it encrypted now");
       }
     }
   } catch { /* storage unavailable — nothing to purge */ }
@@ -705,11 +773,31 @@ export class RelayClient {
     this.connectActive();
   }
 
+  /**
+   * The key for THIS computer's hub.
+   *
+   * In the Cloud9 window: whatever the shell handed us this launch, or what we
+   * have been given since. Nothing is read from browser storage, because
+   * nothing is written there. In a plain browser (QA): storage, as before.
+   */
   token(): string {
+    const bridge = hubSignIn();
+    if (bridge) return sessionToken ?? bridge.token() ?? "";
     return localStorage.getItem("cloud9.token") ?? "";
   }
   /** Private on purpose — see `adoptCredential`, the only caller. */
   private setToken(token: string): void {
+    const bridge = hubSignIn();
+    if (bridge) {
+      // memory for this run, and the shell keeps the only stored copy —
+      // encrypted by the OS. A computer that cannot encrypt says so and simply
+      // asks again next launch; it never gets a plaintext copy instead.
+      sessionToken = token;
+      void bridge.remember(token).then(r => {
+        if (!r?.ok && r?.error) console.warn(`[cloud9] ${r.error}`);
+      }).catch(() => { /* the sign-in still works for this run */ });
+      return;
+    }
     localStorage.setItem("cloud9.token", token);
   }
 

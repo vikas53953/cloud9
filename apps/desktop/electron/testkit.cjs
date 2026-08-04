@@ -44,6 +44,8 @@ function fakeElectron(opts) {
     quit: 0,
     errorBoxes: [],
     userData: opts.userData,
+    /** Links handed to the person's OWN browser, outside this app. */
+    openedExternally: [],
   };
   const noop = () => {};
   const electron = {
@@ -68,7 +70,10 @@ function fakeElectron(opts) {
     },
     globalShortcut: { unregisterAll: noop, register: () => true, unregister: noop },
     ipcMain: { handle: noop, on: noop, removeHandler: noop },
-    shell: { openPath: async () => "" },
+    shell: {
+      openPath: async () => "",
+      openExternal: async (url) => { state.openedExternally.push(url); },
+    },
     safeStorage: {
       isEncryptionAvailable: () => opts.canEncrypt !== false,
       // The key goes at the END, behind the filler, because that is how real

@@ -6,7 +6,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ServerFrame } from "@cloud9/shared";
-import { LOOPBACK, Relay, resolveBind } from "./server.js";
+import { WebSocket } from "ws";
+import { DEFAULT_OWNER_TOKEN, LOOPBACK, Relay, isAllowedWsOrigin, resolveBind } from "./server.js";
 import { TestClient, tmp } from "./testclient.js";
 
 const BASE_AGENT = {
@@ -553,4 +554,79 @@ test("opening the hub to a private network does not open the harness gate", asyn
   assert.match(err.error, /only the owner/);
 
   owner.close(); friend.close(); relay.close();
+});
+
+// ---------------------------------------------------------------------------
+// Review 2026-08-04 C1 — a web page must not be able to reach this hub
+//
+// PROOF OF CONCEPT, run for real: this is exactly what a page on evil.com does.
+// The browser writes the `Origin` header itself and the page cannot forge or
+// remove it. Before the fix this connected, said hello with the token printed
+// in the source, was welcomed as Vikas, and minted a working invite.
+// ---------------------------------------------------------------------------
+
+test("PoC: a web page cannot open a socket to this hub, even with the right key", async () => {
+  const { relay, url, owner } = await stand("sec-origin.db");
+  const asPage = (origin: string) => new Promise<string>(resolve => {
+    const ws = new WebSocket(url, { headers: { Origin: origin } });
+    ws.on("open", () => { ws.close(); resolve("connected"); });
+    ws.on("unexpected-response", (_req, res) => { ws.close(); resolve(`refused ${res.statusCode}`); });
+    ws.on("error", () => resolve("refused"));
+  });
+
+  assert.equal(await asPage("https://evil.com"), "refused 403",
+    "a website was allowed to open a socket to the hub");
+  assert.equal(await asPage("http://cloud9.example.org"), "refused 403");
+  // ...and every real client still gets in. These are not websites:
+  assert.equal(await asPage("http://127.0.0.1:5173"), "connected"); // workbench app screen
+  assert.equal(await asPage("http://localhost:4173"), "connected"); // the QA browser
+  assert.equal(await asPage("null"), "connected");                  // the installed app window
+  // a program with no Origin at all — the engine host, the mobile app, a test
+  const plain = new WebSocket(url);
+  await new Promise<void>(r => plain.on("open", () => r()));
+  plain.close();
+
+  owner.close();
+  relay.close();
+});
+
+test("the hub refuses to start with the starter key anywhere but this computer", async () => {
+  // the key is printed in the source, the launcher and the sign-in box, so it
+  // is only ever safe behind loopback
+  const onNetwork = new Relay({
+    dbPath: tmp("sec-default-token-net.db"), ownerToken: DEFAULT_OWNER_TOKEN,
+    bind: "100.84.12.9", devMode: true,
+  });
+  await assert.rejects(() => onNetwork.listen(0), /starter key that everyone has/);
+  onNetwork.close();
+
+  const noDev = new Relay({
+    dbPath: tmp("sec-default-token-nodev.db"), ownerToken: DEFAULT_OWNER_TOKEN, devMode: false,
+  });
+  await assert.rejects(() => noDev.listen(0), /starter key that everyone has/);
+  noDev.close();
+
+  // the workbench — this computer only, dev mode on — still starts
+  const workbench = new Relay({
+    dbPath: tmp("sec-default-token-ok.db"), ownerToken: DEFAULT_OWNER_TOKEN, devMode: true,
+  });
+  const port = await workbench.listen(0);
+  assert.ok(port > 0);
+  workbench.close();
+});
+
+test("the origin rule itself: what counts as a program, this computer, or a website", () => {
+  assert.equal(isAllowedWsOrigin(undefined, LOOPBACK), true);      // a program
+  assert.equal(isAllowedWsOrigin("null", LOOPBACK), true);         // the installed app
+  assert.equal(isAllowedWsOrigin("file://", LOOPBACK), true);
+  assert.equal(isAllowedWsOrigin("http://127.0.0.1:5173", LOOPBACK), true);
+  assert.equal(isAllowedWsOrigin("http://[::1]:5173", LOOPBACK), true);
+  assert.equal(isAllowedWsOrigin("https://evil.com", LOOPBACK), false);
+  // a lookalike host must not pass by being a prefix or a suffix of a real one
+  assert.equal(isAllowedWsOrigin("https://localhost.evil.com", LOOPBACK), false);
+  assert.equal(isAllowedWsOrigin("https://127.0.0.1.evil.com", LOOPBACK), false);
+  assert.equal(isAllowedWsOrigin("javascript://localhost", LOOPBACK), false);
+  // a friend reaching the private address this hub was told to answer on
+  assert.equal(isAllowedWsOrigin("http://100.84.12.9:5173", "100.84.12.9"), true);
+  assert.equal(isAllowedWsOrigin("http://100.84.12.9:5173", LOOPBACK), false);
 });

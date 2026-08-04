@@ -135,6 +135,52 @@ export function resolveBind(requested?: string): string {
   return want;
 }
 
+/* ================= WHO MAY EVEN OPEN A SOCKET TO THIS HUB =================
+ *
+ * THE HOLE THIS CLOSES, in plain words: while Cloud9 is running, any website
+ * open in any browser could talk to this hub. Browsers do NOT apply the
+ * same-origin rule to WebSockets — a page on `evil.com` may open
+ * `ws://127.0.0.1:8787` and it will connect. CORS is no help either: it governs
+ * who may READ an HTTP response, and a WebSocket is not one. The only control
+ * that exists at this layer is to read the `Origin` header on the upgrade and
+ * refuse. A browser writes that header itself and a page cannot forge or remove
+ * it, which is exactly what makes it worth reading.
+ *
+ * WHAT IS ALLOWED, and why each one is a real client and not a website:
+ *   - NO Origin at all — a program, not a page: the engine host, the mobile
+ *     app, a test, `curl`. A website cannot produce this.
+ *   - `null` or a `file:` origin — the installed Cloud9 window, whose page is
+ *     loaded off the disk. Chromium sends the literal `null` for those.
+ *   - loopback (`localhost`, `127.0.0.1`, `[::1]`) on any port — the workbench
+ *     app screen (vite on 5173), the QA browser (4173). These are this computer.
+ *   - the address this hub was told to answer on — a friend's Cloud9 reaching
+ *     the owner's private (Tailscale) address.
+ *
+ * WHAT IS REFUSED: every other website, before a single frame is read, before
+ * any token is looked at.
+ *
+ * HONEST LIMIT, written down rather than implied: this stops a WEBSITE. It does
+ * not stop a program already running on this computer as him — that program can
+ * send no Origin at all and look exactly like the engine host. Nothing at this
+ * layer can tell those apart, and a program running as him has his files
+ * anyway. The control for that one is the token, not this.
+ */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+export function isAllowedWsOrigin(origin: string | undefined, bind: string): boolean {
+  // a program, not a page — a website cannot get here
+  if (origin === undefined || origin === "") return true;
+  // the installed app's own window: a page loaded from the disk
+  if (origin === "null" || origin.startsWith("file:")) return true;
+  let url: URL;
+  try { url = new URL(origin); } catch { return false; }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  const host = url.hostname.toLowerCase();
+  if (LOOPBACK_HOSTS.has(host)) return true;
+  // the private-network address this hub was actually told to answer on
+  return bind !== LOOPBACK && host === bind.replace(/^\[|\]$/g, "").toLowerCase();
+}
+
 /** A sign-in may be asked for once every 30s per user, one at a time. */
 const SIGNIN_COOLDOWN_MS = 30_000;
 /** If an engine never reports back, stop blocking the user after this long. */
@@ -218,7 +264,24 @@ export class Relay {
     // late — by then the hub has already held whatever was sent in memory to
     // find out how big it was. `maxPayload` refuses an oversized frame before
     // that, so a guest cannot make the hub read a gigabyte to be told no.
-    this.wss = new WebSocketServer({ server: this.server, maxPayload: WS_LIMITS.maxPayloadBytes });
+    this.wss = new WebSocketServer({
+      server: this.server,
+      maxPayload: WS_LIMITS.maxPayloadBytes,
+      // THE DOOR, before the frame. See `isAllowedWsOrigin`: a website's upgrade
+      // is refused here, so no token it guessed or read in a source file is ever
+      // looked at. `verifyClient` runs before the handshake completes, which is
+      // the only moment this header is still available.
+      verifyClient: ({ origin, req }, done) => {
+        if (isAllowedWsOrigin(origin ?? req.headers.origin as string | undefined, this.bind)) {
+          done(true);
+          return;
+        }
+        console.warn(
+          `[cloud9] refused a connection from a web page (${String(origin).slice(0, 100)}). ` +
+          "Cloud9 only answers its own app on this computer.");
+        done(false, 403, "Cloud9 does not answer web pages");
+      },
+    });
     this.wss.on("connection", ws => this.onConnection(ws));
     // Files that were uploaded and never sent are nobody's but their
     // uploader's, so nothing was ever going to reclaim them. Swept at every
@@ -231,6 +294,25 @@ export class Relay {
    * this computer, so the hub does not answer the network by default.
    */
   listen(port = 8787): Promise<number> {
+    // THE PASSWORD THAT IS PRINTED IN THE SOURCE CODE never goes on a street.
+    // `dev-owner-token` is public — it is in this file, in the launcher and in
+    // the sign-in box — so a hub using it is only as private as the door it is
+    // behind. On this computer only, in the workbench, that door is loopback and
+    // the origin check above. Anywhere else it is nothing at all, so the hub
+    // refuses to start rather than come up looking fine.
+    if (this.ownerToken === DEFAULT_OWNER_TOKEN) {
+      if (this.bind !== LOOPBACK) {
+        return Promise.reject(new Error(
+          `Cloud9 will not open its hub to the network (${this.bind}) while it is still using ` +
+          "the starter key that everyone has. Set your own key first (CLOUD9_OWNER_TOKEN), or " +
+          "leave the network box empty to stay on this computer only."));
+      }
+      if (!this.devMode) {
+        return Promise.reject(new Error(
+          "Cloud9 will not start with the starter key that everyone has. " +
+          "Set your own key (CLOUD9_OWNER_TOKEN) and start it again."));
+      }
+    }
     return new Promise(resolve => {
       this.server.listen(port, this.bind, () => {
         const addr = this.server.address();

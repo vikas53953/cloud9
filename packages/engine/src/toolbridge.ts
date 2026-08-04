@@ -25,6 +25,22 @@ import { answerCloud9Rpc, Cloud9McpTicket, Cloud9ToolTurn, JsonRpcRequest } from
 
 /** One open turn. Closing it makes every ticket for it stop working. */
 export interface OpenTurn extends Cloud9McpTicket {
+  /**
+   * THIS TURN'S OWN NAME, and the reason it exists: any file a turn writes must
+   * carry it.
+   *
+   * Two turns for the same agent may run at the same time (the engine's cap is
+   * two turns, and it is not per-agent). Both used to write their ticket to one
+   * fixed filename in the agent's folder, so the later write replaced the
+   * earlier one — and the first turn's tool child then read the SECOND turn's
+   * ticket, answering every history search with the other conversation's
+   * messages, which the first turn would then quote as fact into its own room.
+   * Whichever turn ended first also deleted the file out from under the other.
+   *
+   * It is deliberately NOT the ticket secret: a filename is visible to anything
+   * that can list the folder, and a secret is not.
+   */
+  id: string;
   close(): void;
 }
 
@@ -66,10 +82,14 @@ export class ToolBridge {
   openTurn(turn: Cloud9ToolTurn): OpenTurn | undefined {
     if (!this.listening) return undefined;
     const secret = crypto.randomBytes(24).toString("hex");
+    // A second random value, never derived from the secret: this one is allowed
+    // to appear in a filename, and the secret never is.
+    const id = crypto.randomBytes(8).toString("hex");
     this.turns.set(secret, turn);
     return {
       url: `http://127.0.0.1:${this.port}/tool`,
       secret,
+      id,
       close: () => { this.turns.delete(secret); },
     };
   }

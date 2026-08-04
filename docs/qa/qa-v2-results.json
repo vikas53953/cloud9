@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-08-04T05:37:28.788Z",
+  "ranAt": "2026-08-04T07:16:40.034Z",
   "expected": 8,
   "executed": 8,
   "results": [
@@ -31,7 +31,7 @@
     {
       "name": "a finished job posts one short line back to the channel, unasked, saying it ended and where the detail is",
       "pass": true,
-      "detail": "Guard AGENT 11:07 Nobody asked — I noticed runs on Claude · Sonnet 5 🧵 Finished in the thread: summ"
+      "detail": "Guard AGENT 12:46 Nobody asked — I noticed runs on Claude · Sonnet 5 🧵 Finished in the thread: summ"
     },
     {
       "name": "activity shows approval decisions attributed to Vikas",

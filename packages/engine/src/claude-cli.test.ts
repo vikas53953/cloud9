@@ -10,6 +10,10 @@ import { CLAUDE_BUILTIN_TOOLS, deniedClaudeTools } from "./abilities.js";
 import { HarnessUnavailableError } from "./provider.js";
 import { TurnTimedOutError } from "./timebudget.js";
 import { EMPTY_ARG, RunOptions, RunResult, UnsafeArgumentError } from "./run.js";
+import { OpenTurn, ToolBridge } from "./toolbridge.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const CLAUDE_MODELS = ["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5-20251001"];
 
@@ -184,4 +188,122 @@ test("an agent whose name carries shell characters still cannot reach a shell", 
     }),
     (err: unknown) => err instanceof UnsafeArgumentError || /model id|isn't one this app/.test(String(err)),
   );
+});
+
+/* ============ TWO TURNS FOR ONE AGENT, AT THE SAME TIME ============
+ *
+ * The engine's cap is two turns and it is NOT per-agent, so one agent really
+ * can be mid-turn twice. Each turn opens its own doorway with its own ticket
+ * and its own conversation. What broke: both turns wrote their ticket to one
+ * fixed filename in the agent's folder, so the second write replaced the first,
+ * the first turn's tool child read the SECOND turn's ticket, and every history
+ * search that turn ran came back with the other room's messages — which it then
+ * quoted into its own room as fact. Whichever turn ended first also deleted the
+ * file the other was still using.
+ *
+ * This test runs the real thing: two `respond` calls at once, held open until
+ * both have written, then each one is asked what its own child would read.
+ */
+test("two turns for one agent each read their own ticket, not each other's", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-turnfile-"));
+  try {
+    let bothWritten: () => void;
+    const barrier = new Promise<void>(resolve => { bothWritten = resolve; });
+    let written = 0;
+    /** What the CLI child would actually load, read at the moment it is spawned. */
+    const seen: { path: string; secret: string; channel: string }[] = [];
+    const runner = async (_cmd: string, args: string[]) => {
+      const at = args[args.indexOf("--mcp-config") + 1];
+      // both turns must have written before either child reads — that is the
+      // whole race, and waiting for it makes the test deterministic
+      if (++written === 2) bothWritten();
+      await barrier;
+      const conf = JSON.parse(fs.readFileSync(at, "utf8"));
+      const env = conf.mcpServers.cloud9.env;
+      seen.push({ path: at, secret: env.CLOUD9_TOOL_SECRET, channel: env.CLOUD9_TOOL_URL });
+      return {
+        code: 0, stdout: `{"type":"result","subtype":"success","is_error":false,"result":"ok"}`,
+        stderr: "", timedOut: false, notFound: false,
+      };
+    };
+    const bridge = new ToolBridge();
+    await bridge.start();
+    const turns: Record<string, OpenTurn | undefined> = {};
+    const cli = new ClaudeCliProvider({
+      agentDataDir: () => dir,
+      runner,
+      models: () => CLAUDE_MODELS,
+      cloud9Tools: ({ channelId }) => {
+        const open = bridge.openTurn({
+          channelId,
+          search: async () => ({ hits: [], hasMore: false }),
+        });
+        turns[channelId] = open;
+        return open;
+      },
+    });
+    const one = cli.respond({
+      agent: agent(), context: "", trigger: "hi", triggerAuthor: "V",
+      kind: "chat", channelId: "ch_general",
+    });
+    const two = cli.respond({
+      agent: agent(), context: "", trigger: "hi", triggerAuthor: "V",
+      kind: "chat", channelId: "ch_ops",
+    });
+    await Promise.all([one, two]);
+    bridge.stop();
+
+    assert.equal(seen.length, 2);
+    assert.notEqual(seen[0].path, seen[1].path,
+      "each turn must write its own file — one fixed name lets a turn read the other's ticket");
+    const secrets = new Set(seen.map(s => s.secret));
+    assert.equal(secrets.size, 2,
+      "each turn's child must be handed ITS OWN ticket, never the other turn's");
+    // and the tickets that were actually written are the two the bridge minted
+    const minted = new Set(Object.values(turns).map(t => t?.secret));
+    for (const s of secrets) assert.ok(minted.has(s), "a ticket appeared that nobody minted");
+    // nothing left behind on disk once both turns are over
+    assert.deepEqual(fs.readdirSync(dir).filter(f => f.startsWith(".cloud9-mcp")), [],
+      "a finished turn must take its own ticket file with it");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ============ THE STRIPPER MUST COVER CLOUD9'S OWN VARIABLES ============
+ *
+ * Security review 2026-08-04. The stripper is one shared function with a name
+ * list and a shape pattern, and it was right about every name it knew — but
+ * `CLOUD9_CRED` is the variable Cloud9's OWN launcher uses for the real
+ * Anthropic key (`scripts/engine-host.mjs`), and it matched neither: `CRED` is
+ * not the word `CREDENTIAL`. So on a machine started that way the key went to
+ * every child process, including a Codex agent, which is a different account
+ * and which this app promises will never see it.
+ *
+ * The names are asserted BY NAME here on purpose. Looping over the list is what
+ * let this through: a test that reads the same list as the code can only ever
+ * agree with it.
+ */
+test("Cloud9's own credential variables never reach a child process", () => {
+  const before = { ...process.env };
+  const planted = {
+    CLOUD9_CRED: "sk-ant-should-never-travel",
+    CLOUD9_CRED_KIND: "apiKey",
+    CLOUD9_CODEX_CRED: "codex-should-never-travel",
+  };
+  Object.assign(process.env, planted);
+  try {
+    const env = envWithoutCredentials();
+    for (const name of Object.keys(planted)) {
+      assert.equal(env[name], undefined,
+        `${name} was handed to the child process — that is the owner's key leaving the app`);
+    }
+    // and nothing else was taken with them
+    assert.ok(Object.keys(env).length > 0, "the whole environment was thrown away");
+  } finally {
+    for (const name of Object.keys(planted)) {
+      if (before[name] === undefined) delete process.env[name];
+      else process.env[name] = before[name];
+    }
+  }
 });

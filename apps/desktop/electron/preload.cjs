@@ -1,26 +1,39 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
-/* ---------- signing the owner in, in the installed app ----------
- * The installed Cloud9 runs its own hub and made its own random key on first
- * run. Nobody can type a key they were never shown, so the shell hands it to
- * the app screen here — before any app code runs — and the sign-in screen is
- * skipped. Dev gets null back and behaves exactly as it does today.
- * This is the hub session key only. Claude/Codex sign-ins never come through
- * this bridge; they stay in the main process, encrypted by the OS. */
-try {
-  const ownerToken = ipcRenderer.sendSync("cloud9:ownerToken");
-  if (ownerToken && window.localStorage.getItem("cloud9.token") !== ownerToken) {
-    window.localStorage.setItem("cloud9.token", ownerToken);
-  }
-} catch {
-  /* no storage here — the app screen falls back to its sign-in screen */
-}
+/* ---------- signing the owner in, WITHOUT writing a secret to disk ----------
+ *
+ * This used to copy the hub key into `window.localStorage`. That was wrong, and
+ * it was the exact thing `purgeLegacySecrets` exists to undo: Local Storage is a
+ * plain, unencrypted file under %APPDATA% that any junk process running as him
+ * reads by default, and this particular value is not a chat cookie — owner
+ * rights create agents, and an agent is spawned with folders on this computer.
+ *
+ * Now the key is READ ONLY, per launch, into memory. The main process keeps the
+ * one copy, encrypted by Windows. Nothing is written to the browser.
+ *
+ * `hubSignIn.token()` answers with the key or null; null simply means the
+ * sign-in screen is shown, which is what dev did before. */
+const hubToken = (() => {
+  try { return ipcRenderer.sendSync("cloud9:ownerToken") || null; } catch { return null; }
+})();
 
 // The renderer can SET or CLEAR a fallback key per app, and ASK whether one is
 // stored. It can never read a stored secret back — that stays in the main
 // process, encrypted by the OS (harness-signin.md decision 4).
 contextBridge.exposeInMainWorld("cloud9", {
   isDesktop: true,
+
+  /* ---------- THE HUB SIGN-IN, IN MEMORY ONLY ----------
+   * `token()` is this launch's key, or null when there is none to hand over.
+   * `remember(t)` asks the MAIN process to keep it — encrypted by Windows — so
+   * the next launch signs in by itself. `forget()` undoes that.
+   * The app screen must never put any of these values in browser storage; there
+   * is a test that fails the build if it starts to (`nosecrets.test.ts`). */
+  hubSignIn: {
+    token: () => hubToken,
+    remember: token => ipcRenderer.invoke("cloud9:rememberSignIn", token),
+    forget: () => ipcRenderer.invoke("cloud9:forgetSignIn"),
+  },
   setApiKey: (harness, kind, value) => ipcRenderer.invoke("cloud9:setApiKey", harness, kind, value),
   clearCredential: harness => ipcRenderer.invoke("cloud9:clearCredential", harness),
   credentialStatus: () => ipcRenderer.invoke("cloud9:credentialStatus"),

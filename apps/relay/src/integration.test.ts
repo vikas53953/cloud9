@@ -476,10 +476,26 @@ test("only the owner, on a non-default token, can drive the harnesses", async ()
 });
 
 test("the shipped default owner token cannot drive the harnesses", async () => {
-  const relay = new Relay({ dbPath: tmp("relay-harness3.db"), ownerToken: "dev-owner-token", ownerName: "Vikas" });
+  // FIRST WALL (review 2026-08-04 C1): outside dev mode the hub will not start
+  // at all on the key that is printed in the source. This is stronger than the
+  // gate below — the door never opens.
+  const refused = new Relay({
+    dbPath: tmp("relay-harness3.db"), ownerToken: "dev-owner-token", ownerName: "Vikas",
+  });
+  await assert.rejects(() => refused.listen(0), /starter key that everyone has/);
+  refused.close();
+
+  // SECOND WALL, still tested because a wall that stops being checked is a wall
+  // that quietly goes away: even on a hub that IS running, the default key may
+  // not start programs on this computer.
+  const relay = new Relay({
+    dbPath: tmp("relay-harness3b.db"), ownerToken: "dev-owner-token", ownerName: "Vikas",
+    devMode: true,
+  });
   const port = await relay.listen(0);
   const owner = new TestClient(`ws://127.0.0.1:${port}`, "dev-owner-token");
   await owner.wait(f => f.type === "welcome");
+  (relay as unknown as { devMode: boolean }).devMode = false;
 
   owner.send({ type: "harnessSignIn", harness: "claude" });
   const err = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");

@@ -124,7 +124,7 @@ test("every whole-file write out here acts on the answer, or says why it need no
     silent.map(s => `  ${s.where}  ${s.text}`).join("\n"));
 });
 
-test("the four writes this round moved are each still accounted for, by name", () => {
+test("the writes this round moved are each still accounted for, by name", () => {
   // Naming them is deliberate. If one disappears this test says so, rather than
   // quietly having nothing left to check.
   const byLabel = new Map(shippedFiles().map(f => [f.label, f.text]));
@@ -142,6 +142,9 @@ test("the four writes this round moved are each still accounted for, by name", (
     ["the private key", /writeFileWhole\(ownerTokenPath\(\)/],
     ["his settings", /writeFileWhole\(settingsPath\(\)/],
     ["the saved sign-ins", /writeFileWhole\(secretPath\(harness\)/],
+    // review 2026-08-04 C2: the hub sign-in moved OUT of the browser's storage
+    // and into this process, encrypted — so it is now one of these writes too
+    ["the hub sign-in", /writeFileWhole\(sessionTokenPath\(\)/],
   ] as [string, RegExp][]) {
     assert.match(main!, needle, `${what} is no longer written through the whole-file rule`);
   }
@@ -149,7 +152,7 @@ test("the four writes this round moved are each still accounted for, by name", (
   // The permission must be asked for on the two secret files, not applied after
   // the rename — a key that was briefly world-readable has already leaked.
   const modeAsks = (main!.match(/mode: 0o600/g) ?? []).length;
-  assert.equal(modeAsks, 2, "both secret files must still ask for owner-only permission");
+  assert.equal(modeAsks, 3, "all three secret files must still ask for owner-only permission");
 
   // And the app shell must reach the ONE owner rather than keep a copy of it.
   assert.match(main!, /await import\("@cloud9\/engine"\)/,

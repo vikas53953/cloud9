@@ -305,6 +305,64 @@ function writeSettings(s) {
  * The renderer never receives them — it only ever sees status. Nothing in this
  * file logs a secret value; lengths and booleans only. */
 
+/* ---------- THE HUB SIGN-IN, AND WHY IT IS NOT IN THE BROWSER ----------
+ *
+ * THE RULE, and it has no exception: a secret never sits in plain text on this
+ * disk. Claude and Codex sign-ins already obeyed it. The HUB key did not — the
+ * preload used to copy it into the app screen's Local Storage, which is an
+ * ordinary unencrypted file under %APPDATA%. That is not a chat cookie: owner
+ * rights create agents, and an agent is spawned with folders on this computer,
+ * so that one value is "read and change anything, as him". Local Storage files
+ * are the first thing ordinary junk software reads.
+ *
+ * So the key lives HERE, encrypted by Windows, in every mode — installed and
+ * workbench alike — and the app screen is handed it in memory when it starts.
+ * Nothing is written to the browser at all.
+ *
+ * A computer that cannot encrypt gets a REFUSAL, never a quiet plaintext copy:
+ * the app screen keeps the key for that one run and says it could not be
+ * remembered. That matches how the Claude sign-in already behaves.
+ */
+function sessionTokenPath() {
+  return path.join(app.getPath("userData"), "cloud9-session-token.bin");
+}
+
+function readSessionToken() {
+  try {
+    const blob = fs.readFileSync(sessionTokenPath());
+    // 0x01 = encrypted. There is no 0x00 case on purpose: a plaintext key file
+    // is not something this app will read, and therefore not something a future
+    // edit can be tempted to write.
+    if (blob[0] !== 0x01) return null;
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    return safeStorage.decryptString(blob.subarray(1)) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Returns `{ ok }`, and a sentence the app screen may show when it is false. */
+function writeSessionToken(token) {
+  if (!token) {
+    try { fs.unlinkSync(sessionTokenPath()); } catch { /* nothing stored */ }
+    return { ok: true };
+  }
+  if (!safeStorage.isEncryptionAvailable()) {
+    console.error("[cloud9] this computer can't encrypt, so the hub sign-in was not remembered");
+    return { ok: false, error: "This computer can't store sign-ins safely, so Cloud9 will ask you again next time." };
+  }
+  const blob = Buffer.concat([Buffer.from([0x01]), safeStorage.encryptString(token)]);
+  let why = "";
+  const ok = writeFileWhole(sessionTokenPath(), blob, (m) => { why = m; }, { mode: 0o600 });
+  if (!ok) {
+    // never the value, only that it did not land
+    console.error(`[cloud9] the hub sign-in could not be saved: ${why}`);
+    return { ok: false, error: "Cloud9 could not remember your sign-in on this computer." };
+  }
+  console.log(`[cloud9] remembered the hub sign-in securely (length ${token.length})`);
+  return { ok: true };
+}
+
 const HARNESSES = ["claude", "codex"];
 
 /** One file per harness — Claude and Codex are separate accounts. */
@@ -416,7 +474,48 @@ function appIconPath() {
  * built into it — there is no Vite in a packaged Cloud9. The hub address is
  * handed over in the address so the screen finds it even on a spare port.
  */
+/* ---------- A LINK IN A CHAT MESSAGE IS NOT ALLOWED TO BECOME THIS APP ----------
+ *
+ * THE HOLE, in plain words: every link in a message is drawn with
+ * `target="_blank"`, and Electron's own default for that is to open a CHILD
+ * WINDOW OF THIS APP — one that inherits the preload bridge. So a web page an
+ * agent read and quoted a link from would be running inside Cloud9, holding the
+ * bridge: the hub sign-in, the saved-key buttons, the network setting, the
+ * folder picker. That is the second wall behind the sign-in fix, and there was
+ * no wall here at all.
+ *
+ * The rule: a link goes to the person's OWN browser, outside this app, and
+ * nothing may navigate an app window anywhere but the app's own screen.
+ * `http`/`https`/`mailto` only — nothing else is handed to the operating system,
+ * because "open this with whatever handles it" is how a link becomes a program.
+ */
+const OPENABLE = new Set(["http:", "https:", "mailto:"]);
+
+function guardWindow(win) {
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    let scheme = "";
+    try { scheme = new URL(url).protocol; } catch { /* not a link at all */ }
+    // NEVER a child window of this app, whatever it is. The only question left
+    // is whether it is safe to hand to the operating system.
+    if (OPENABLE.has(scheme)) shell.openExternal(url).catch(() => { /* nothing to do */ });
+    else console.warn(`[cloud9] a link was not opened because it is not an ordinary web link`);
+    return { action: "deny" };
+  });
+  // ...and the app's own window may not be steered somewhere else either. The
+  // screen it starts on is the only one it ever shows.
+  win.webContents.on("will-navigate", (event, url) => {
+    const here = win.webContents.getURL();
+    const same = (u) => { try { return new URL(u).origin; } catch { return u; } };
+    if (same(url) === same(here)) return;   // the app's own reloads and routes
+    event.preventDefault();
+    let scheme = "";
+    try { scheme = new URL(url).protocol; } catch { /* not a link at all */ }
+    if (OPENABLE.has(scheme)) shell.openExternal(url).catch(() => { /* nothing to do */ });
+  });
+}
+
 function loadRenderer(win, hash) {
+  guardWindow(win);
   const suffix = hash ? `#${hash}` : "";
   // If the hub could not open its database, the screen shows that sentence
   // instead of a sign-in box it can never satisfy. The words come from the hub
@@ -955,7 +1054,25 @@ ipcMain.handle("cloud9:credentialStatus", () => {
  * leave the main process.
  */
 ipcMain.on("cloud9:ownerToken", (event) => {
-  event.returnValue = PACKAGED ? ownerToken : null;
+  // The installed app knows its own key. The workbench hands back whatever was
+  // remembered last time — encrypted, by this process — so signing in survives a
+  // restart without a single secret being written into the browser.
+  event.returnValue = PACKAGED ? ownerToken : readSessionToken();
+});
+
+/**
+ * The app screen got in, and asks this process to remember how. The value never
+ * goes back to the browser's own storage — that is the whole point.
+ */
+ipcMain.handle("cloud9:rememberSignIn", (_ev, token) => {
+  if (typeof token !== "string" || !token) return { ok: false, error: "nothing to remember" };
+  if (PACKAGED) return { ok: true };   // the installed app already owns its key
+  return writeSessionToken(token);
+});
+
+ipcMain.handle("cloud9:forgetSignIn", () => {
+  if (PACKAGED) return { ok: true };
+  return writeSessionToken("");
 });
 
 /* ---------- app menu (feedback round 1, his 14) ----------
@@ -1227,6 +1344,8 @@ module.exports = {
   __test: {
     loadDurableWrite, writeFileWhole, sweepOwnLitter,
     ownerTokenPath, readOwnerToken, writeOwnerToken, ensureOwnerToken,
+    sessionTokenPath, readSessionToken, writeSessionToken,
+    guardWindow,
     settingsPath, readSettings, writeSettings,
     secretPath, saveSecret, loadSecret, clearSecret,
   },
