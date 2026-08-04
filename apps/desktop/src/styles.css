@@ -440,6 +440,17 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
   display:flex;flex-direction:column;}
 .msgs>*{flex:none;}
 .msgs>.daymark:first-child,.msgs>.msg:first-child{margin-top:auto;}
+/* "↓ N new messages" — floats over the foot of the list and takes NO height of
+   its own, so appearing and disappearing can never move the bottom (the follow
+   rule watches the bottom, and a slot that grew would set it off). */
+.newpillslot{position:relative;height:0;flex:none;z-index:4;}
+.newpill{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);
+  display:inline-flex;align-items:center;gap:7px;white-space:nowrap;
+  padding:7px 15px;border-radius:999px;border:1px solid var(--line);
+  background:var(--ink);color:var(--bg);font-size:12.5px;font-weight:600;
+  box-shadow:0 6px 20px rgba(0,0,0,.22);cursor:pointer;}
+.newpill:hover{filter:brightness(1.12);}
+.newpill .np-arrow{font-size:13px;line-height:1;}
 .daymark{display:flex;align-items:center;gap:14px;margin:6px 0 22px;}
 .daymark::before,.daymark::after{content:"";height:1px;background:var(--line);flex:1;}
 .daymark .tag{white-space:nowrap;}
@@ -621,6 +632,30 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 }
 .runopen{margin-top:10px;}
 
+/* ---- what it is doing RIGHT NOW: the live preview ----
+   Quieter than a run card on purpose. A card is a finished, kept thing; this is
+   a live signal that will disappear, so it is a soft inset panel with no border
+   of its own, and it must never be mistaken for the record it precedes. The
+   steps inside are the SAME `.runstep` rows the record uses — one vocabulary,
+   one look, whichever half of the turn you are watching. */
+.livework{margin-top:8px;display:grid;gap:8px;}
+.liveturn{
+  padding:9px 11px;border-radius:var(--radius-s);background:var(--surface-2);
+  border-left:2px solid var(--ultra);
+}
+.liveturn .runsteps{margin-top:5px;border-top:0;padding-top:0;}
+.livehd{
+  margin:0;font-size:12px;color:var(--ink-2);
+  display:flex;align-items:center;gap:7px;
+}
+.livehd .pulse{
+  width:7px;height:7px;border-radius:50%;background:var(--ultra);flex:none;
+  animation:live-breathe 1.6s ease-in-out infinite;
+}
+.livenote{margin:7px 0 0;font-size:11px;color:var(--ink-3);}
+@keyframes live-breathe{0%,100%{opacity:.35;}50%{opacity:1;}}
+@media (prefers-reduced-motion: reduce){.livehd .pulse{animation:none;}}
+
 /* ---- an agent's recent work, in its editor ---- */
 .recentwork{display:grid;gap:7px;}
 .workrow{border:1px solid var(--line-soft);border-radius:var(--radius-s);background:var(--surface);}
@@ -677,6 +712,15 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 }
 .composer textarea::placeholder{color:var(--ink-3);}
 .composer .tools{display:flex;align-items:center;gap:8px;margin-top:9px;flex-wrap:nowrap;min-width:0;}
+/* THE TOOLS THAT ONLY MATTER WHILE HE IS WRITING (App.tsx, `armed`).
+   Hidden, not removed: the buttons and the file input stay in the page, so
+   nothing the box can do depends on this rule. `display:contents` puts them
+   back into the row itself rather than in a box of their own, so showing them
+   cannot change the spacing of the row around them. */
+.composer-box[data-writing="no"] .toolset{display:none;}
+.composer-box[data-writing="yes"] .toolset{display:contents;}
+/* A file being dragged over the box — the whole box is the target. */
+.composer.isdrop .composer-box{border-color:var(--pine);background:var(--pine-soft);}
 .composer .tools .mini{flex:none;}
 .composer .tools .primary{flex:none;}
 .composer .tools .eyebrow{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
@@ -716,6 +760,8 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
   font-family:var(--mono);font-size:10.5px;color:var(--ink-3);white-space:nowrap;
 }
 .ap-say{grid-column:1 / -1;font-size:11.5px;line-height:1.45;color:var(--ink-3);}
+/* The row the arrow keys are on, when the list was opened by typing `/`. */
+.ap-row.on{background:var(--surface-2);box-shadow:inset 3px 0 0 var(--pine);}
 .ap-row.is-blocked{cursor:not-allowed;opacity:.75;}
 .ap-row.is-blocked .ap-label{color:var(--ink-3);}
 .ap-row.is-blocked .ap-say{color:var(--marigold);}
@@ -2224,6 +2270,30 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .connfile[data-conn-state="gone"]{border-color:color-mix(in srgb,var(--madder) 40%,transparent);}
 .connfile[data-conn-state="ready"]{border-color:color-mix(in srgb,var(--sage,var(--ink-3)) 35%,transparent);}
 
+/* which folders one agent may reach outside its own — and honestly when it has
+   none. Same shape and same law as `.connfile` above: the border colour IS the
+   state, and a folder that is not on this computer is marked in the list rather
+   than quietly dropped out of it. */
+.wholecomputer{display:flex;flex-direction:column;gap:7px;margin-top:14px;align-items:flex-start;}
+.wholecomputer>b{font-size:13px;}
+.wholecomputer>span{font-size:12.5px;line-height:1.6;color:var(--ink-2);max-width:74ch;}
+.wholecomputer .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.wholecomputer .rootlist{
+  margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px;
+  width:100%;max-width:74ch;
+}
+.wholecomputer .rootlist li{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.wholecomputer .rootlist .folderpath{
+  font-size:12px;padding:5px 9px;border-radius:7px;word-break:break-all;
+  background:color-mix(in srgb,var(--ink-1) 6%,transparent);
+}
+.wholecomputer .rootlist li[data-root-missing="yes"] .folderpath{
+  text-decoration:line-through;color:var(--ink-3);
+}
+.wholecomputer[data-roots-state="gone"]{border-color:color-mix(in srgb,var(--madder) 40%,transparent);}
+.wholecomputer[data-roots-state="partly"]{border-color:color-mix(in srgb,var(--marigold) 40%,transparent);}
+.wholecomputer[data-roots-state="ready"]{border-color:color-mix(in srgb,var(--sage,var(--ink-3)) 35%,transparent);}
+
 /* ============================================================
    PROJECTS — a repository, its branches, its pull requests
    (his item 7). Studio language throughout: the two-column body
@@ -2843,4 +2913,23 @@ button.chip{cursor:pointer;}
   .artcard.place-workspace .artmain{flex-wrap:wrap;}
   .artcard.place-workspace .act{margin-left:59px;padding-top:0;}
   .accessperson{flex-wrap:wrap;}
+}
+
+/* ---- SEMANTIC RECEIPTS: a machine signal, never a human reaction ----
+   Deliberately NOT a .reactpill. No border, no background, no count, no
+   press: it is a small greyed mark that pulses while a turn is live and
+   fades when the turn ends. If these two ever start to look alike, the
+   feature is broken — a person must be able to tell at a glance that
+   nobody decided anything. */
+.receipts{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px;align-items:center;}
+.receipt{
+  font-size:11.5px;line-height:1.4;opacity:.55;filter:grayscale(.35);
+  cursor:default;user-select:none;
+}
+.receipt.reading,.receipt.thinking{animation:receipt-breathe 1.9s ease-in-out infinite;}
+.receipt.verdict{opacity:.7;filter:none;animation:receipt-fade 8s linear forwards;}
+@keyframes receipt-breathe{0%,100%{opacity:.35;}50%{opacity:.75;}}
+@keyframes receipt-fade{0%,70%{opacity:.7;}100%{opacity:0;}}
+@media (prefers-reduced-motion: reduce){
+  .receipt.reading,.receipt.thinking,.receipt.verdict{animation:none;}
 }

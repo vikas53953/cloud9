@@ -16,6 +16,8 @@ import {
   RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
+  isReceiptStage, isReceiptVerdict,
+  RUN_LIMITS, redactForSharing, validateLiveSteps,
   contentDisposition, downloadContentType, fitRunRecord, isBranchName, isSafeFileName,
   isSafeStoredId, latestVersion, looksLikeText, normaliseArtifactAccess,
   normaliseArtifactLinks, validateArtifactAccessMutation, validateArtifactLinks,
@@ -582,16 +584,28 @@ export class Relay {
   }
 
   /**
-   * ONLY THE OWNER, FROM A WINDOW, MAY POINT AN AGENT AT A FILE.
+   * ONLY THE OWNER, FROM A WINDOW, MAY POINT AN AGENT AT A PLACE ON THIS DISK.
    *
-   * The same law as `setProjectFolder`, applied to the connections file for the
-   * same reason: an agent able to name a file on this computer could name any
-   * file on this computer, and the whole safety of the `connections` switch is
-   * that the person who owns the machine chose what is behind it.
+   * The same law as `setProjectFolder`, applied to BOTH of the fields that name
+   * somewhere on this computer, for the same reason: an agent able to name a
+   * file could name any file, an agent able to name a folder could name the
+   * whole drive, and the whole safety of the `connections` and `wholeComputer`
+   * switches is that the person who owns the machine chose what is behind them.
+   *
+   * ONE GUARD, NOT TWO. `wholeComputerRoots` was added here rather than beside
+   * here on purpose: a second copy of this rule is a second thing to forget when
+   * a third path-shaped field arrives.
    */
-  private refuseAgentFileFromEngine(conn: Conn, connectionsFile: unknown): void {
-    if (conn.client === "engine" && typeof connectionsFile === "string" && connectionsFile.trim()) {
+  private refuseAgentPathsFromEngine(
+    conn: Conn, agent: { connectionsFile?: unknown; wholeComputerRoots?: unknown },
+  ): void {
+    if (conn.client !== "engine") return;
+    if (typeof agent.connectionsFile === "string" && agent.connectionsFile.trim()) {
       throw new Error("only you can choose an agent's connections file — an agent cannot");
+    }
+    const roots = agent.wholeComputerRoots;
+    if (Array.isArray(roots) && roots.some(r => typeof r === "string" && r.trim())) {
+      throw new Error("only you can choose the folders an agent may reach — an agent cannot");
     }
   }
 
@@ -1565,7 +1579,7 @@ export class Relay {
         break;
       }
       case "createAgent": {
-        this.refuseAgentFileFromEngine(conn, frame.agent.connectionsFile);
+        this.refuseAgentPathsFromEngine(conn, frame.agent);
         const agent: AgentDef = {
           ...frame.agent, id: newId("a"), ownerId: conn.userId, createdAt: Date.now(),
         };
@@ -1585,7 +1599,7 @@ export class Relay {
       }
       case "updateAgent": {
         const existing = this.myAgent(conn.userId, frame.agent.id);
-        this.refuseAgentFileFromEngine(conn, frame.agent.connectionsFile);
+        this.refuseAgentPathsFromEngine(conn, frame.agent);
         // AN AGENT KEEPING ITS OWN NAME IS NOT A DUPLICATE, and this is the
         // line that protects his EXISTING data. Two agents already called
         // `Scout` are in his database right now; asked the uniqueness question
@@ -2382,6 +2396,97 @@ export class Relay {
         // person's reaction takes — same table, same gates, same frame out.
         const agent = this.myAgent(conn.userId, frame.agentId);
         this.setReaction(conn, frame.messageId, agent.id, frame.emoji, frame.on);
+        break;
+      }
+      case "agentReceipt": {
+        // A SEMANTIC RECEIPT (his §2) — "reading" / "thinking" / one committed
+        // verdict, forwarded live to the room and then forgotten.
+        //
+        // IT DELIBERATELY DOES NOT TOUCH `this.store`. Not a message, not a
+        // reaction, not an activity row: nothing here is written, so nothing
+        // here can be searched, re-read after a reload, or counted as unread.
+        // A machine saying "I am reading this" is not something anyone should
+        // have to catch up on, and storing it would fill his history with the
+        // clutter §2 exists to replace.
+        //
+        // Every gate an agent's reaction passes, it passes too, and by the same
+        // functions: `myAgent` proves the engine owns the agent from STORED
+        // state, `messageFor` proves the message exists and this account can
+        // see the room it is in, and `audienceFor` (via `toChannel`) decides
+        // who hears it. One owner for visibility, reused — a broadcast with a
+        // second rule about who may see it is a leak waiting to be written.
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        const message = this.messageFor(conn.userId, frame.messageId);
+        // the frame's own channel must be the message's real one. A receipt is
+        // drawn on a message, so a mismatched channel is not a routing hint, it
+        // is a signal aimed at a room it does not belong to.
+        if (message.channelId !== frame.channelId) throw new Error("no such message");
+        if (!isReceiptStage(frame.stage)) throw new Error("that isn't a receipt");
+        // `verdict` is required for a verdict and refused for anything else —
+        // checked here rather than trusted, so no client can send a committed
+        // answer with nothing in it or a "reading" that carries a ✅.
+        if (frame.stage === "verdict") {
+          if (!isReceiptVerdict(frame.verdict)) throw new Error("that isn't a verdict");
+        } else if (frame.verdict !== undefined) {
+          throw new Error("only a committed receipt carries a verdict");
+        }
+        const ch = this.store.channel(message.channelId)!;
+        // `at` is OURS. An engine could report any clock it liked, and a screen
+        // decides when a signal is stale from this number.
+        this.toChannel(ch, {
+          type: "receipt",
+          receipt: {
+            channelId: ch.id, messageId: message.id, agentId: agent.id,
+            stage: frame.stage,
+            ...(frame.verdict ? { verdict: frame.verdict } : {}),
+            at: Date.now(),
+          },
+        });
+        break;
+      }
+      case "agentSteps": {
+        // WHAT THIS AGENT IS DOING RIGHT NOW — forwarded to the room, and then
+        // forgotten. The twin of `agentReceipt` above in every way that matters:
+        //
+        //   IT DOES NOT TOUCH `this.store`. Not a message, not an activity row,
+        //   not a run record. The STORED record still arrives separately through
+        //   `runRecorded`, at the end of the turn, and THAT is the one that is
+        //   written, searched and served later. Storing the preview as well
+        //   would be the same facts kept twice, and two copies of a fact is one
+        //   copy that can be wrong.
+        //
+        //   SAME GATES, SAME FUNCTIONS. `myAgent` proves ownership from stored
+        //   state, `messageFor` proves the message exists and this account can
+        //   see the room, `audienceFor` (via `toChannel`) decides who hears it.
+        //   No second rule about who may see a room.
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        const message = this.messageFor(conn.userId, frame.messageId);
+        if (message.channelId !== frame.channelId) throw new Error("no such message");
+        // shape checked, never trusted — the same limits a stored step lives
+        // under, so the live path cannot become a way around them
+        const bad = validateLiveSteps(frame.steps, frame.done);
+        if (bad) throw new Error(bad);
+        const ch = this.store.channel(message.channelId)!;
+        // REDACTED ON THE WAY OUT, exactly as a stored record is. A live step
+        // carries a file name and a command; the engine already scrubbed it, and
+        // this is the second pass that means a record from an older or broken
+        // engine is still scrubbed before it reaches anybody.
+        const steps = (frame.steps ?? []).map(s => ({
+          ...s,
+          label: redactForSharing(s.label, RUN_LIMITS.label),
+          ...(s.detail ? { detail: redactForSharing(s.detail, RUN_LIMITS.detail) } : {}),
+        }));
+        this.toChannel(ch, {
+          type: "liveSteps",
+          live: {
+            channelId: ch.id, messageId: message.id, agentId: agent.id,
+            steps,
+            ...(frame.done ? { done: true } : {}),
+            // OURS, like a receipt's. An engine could report any clock it liked,
+            // and the screen decides when a preview is stale from this number.
+            at: Date.now(),
+          },
+        });
         break;
       }
       case "editMessage": {

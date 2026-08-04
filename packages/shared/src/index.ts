@@ -1,5 +1,18 @@
 // Cloud9 shared protocol — types used by relay, engine, desktop and mobile.
 
+// Type-only, so it is erased at compile time and the two files are not really
+// circular: `receipts.ts` imports nothing but `ID` back, also type-only. The
+// frames below need these names in local scope; the `export … from` at the
+// bottom of this file publishes them but does NOT bind them here.
+import type { AgentReceipt, ReceiptStage, ReceiptVerdict } from "./receipts.js";
+// Same arrangement, same reason: `livesteps.ts` imports only `ID` and `RunStep`
+// back, type-only, so nothing here is really circular.
+import type { LiveRunSteps } from "./livesteps.js";
+// …but this one IS a value, and it is imported rather than re-spelled because
+// the hub's refusal has to be measured against the same number the wire
+// documents. It is a leaf: `livesteps.ts` has no runtime import of its own.
+import { LIVE_STEPS_PER_BATCH } from "./livesteps.js";
+
 export type ID = string;
 
 export interface User {
@@ -431,6 +444,24 @@ export interface AgentDef {
    * ALWAYS asked before the agent acts through it (`ALWAYS_ASK_ABILITIES`).
    */
   connectionsFile?: string;
+  /**
+   * THE FOLDERS ON THIS COMPUTER THIS AGENT MAY READ AND CHANGE, BESIDES ITS
+   * OWN — whole paths, chosen by the owner from the operating system's own
+   * folder picker, one list per agent.
+   *
+   * The exact twin of `connectionsFile` above, one rung more powerful, and under
+   * the same three rules: absent (or empty) means nobody has opened up anything
+   * (never a list of `""`), existence is never checked HERE (the computer that
+   * is about to hand them to a harness checks each one and says "that folder is
+   * gone" rather than using it), and it may only ever be set by the owner from a
+   * window — an agent that could name a folder could name the whole drive.
+   *
+   * It grants nothing on its own: the `wholeComputer` switch decides whether any
+   * of it is passed (`grantedSupply` in @cloud9/engine, which turns it into
+   * `--add-dir`), and the owner is ALWAYS asked before the agent acts through it
+   * (`ALWAYS_ASK_ABILITIES`).
+   */
+  wholeComputerRoots?: string[];
   createdAt: number;
 }
 
@@ -902,6 +933,69 @@ export function validateConnectionsFile(file: unknown): string | null {
        (`refusal.ts`), so a helpful example turns the whole sentence into
        "something went wrong inside Cloud9". */
     return "say the whole file, starting from the drive letter — not just its name";
+  }
+  return null;
+}
+
+/**
+ * How much reach outside its own folder one agent may be given at once.
+ *
+ * A COUNT, not a size: the point of the limit is that "which folders may this
+ * agent touch?" has to stay a question a person can answer by reading it. A list
+ * of fifty paths is not a boundary anybody could check, and every one of them
+ * ends up as an `--add-dir` on a real command line.
+ */
+export const WHOLE_COMPUTER_LIMITS = { roots: 12, path: 400 } as const;
+
+/**
+ * IS THIS A FOLDER ON THIS COMPUTER, said the whole way from the drive?
+ *
+ * One path, one answer — the single-folder rule the list rule below is built
+ * from, and the same law as `validateLocalFolder` and `validateConnectionsFile`.
+ * It does NOT ask whether the folder exists: existence is a fact about a moment,
+ * and only the computer that is about to hand it to a harness can answer it.
+ * That check lives in `wholeComputerRootsFor` in @cloud9/engine, which reports
+ * "that folder is gone" instead of quietly using it.
+ */
+export function validateWholeComputerRoot(folder: unknown): string | null {
+  if (typeof folder !== "string") return "that isn't a folder on this computer";
+  const said = folder.trim();
+  if (said.length === 0) return "that isn't a folder on this computer";
+  if (said.length > WHOLE_COMPUTER_LIMITS.path) {
+    return `that folder path is too long (max ${WHOLE_COMPUTER_LIMITS.path} characters)`;
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(said)) return "that isn't a folder on this computer";
+  if (said.includes("..")) return "that isn't a folder on this computer";
+  if (!isWholePath(said)) {
+    /* No example path in this sentence, for the same reason the two rules above
+       have none: the hub refuses to print any refusal carrying a disk path
+       (`refusal.ts`), so a helpful example turns the whole sentence into
+       "something went wrong inside Cloud9". */
+    return "say the whole folder, starting from the drive letter — not just its name";
+  }
+  return null;
+}
+
+/**
+ * THE LIST OF FOLDERS ONE AGENT MAY REACH OUTSIDE ITS OWN.
+ *
+ * Absent and empty are the same honest answer — "nobody has opened anything up"
+ * — so neither is refused here; `wholeComputerRootsFor` in @cloud9/engine reads
+ * them identically. Anything else must be a list of whole paths, because every
+ * entry becomes an `--add-dir` argument on a real command line.
+ */
+export function validateWholeComputerRoots(roots: unknown): string | null {
+  if (roots === undefined || roots === null) return null;
+  if (!Array.isArray(roots)) return "that isn't a list of folders on this computer";
+  if (roots.length === 0) return null; // nobody has opened anything up — honest
+  if (roots.length > WHOLE_COMPUTER_LIMITS.roots) {
+    return `one agent can be given ${WHOLE_COMPUTER_LIMITS.roots} folders at most — `
+      + "take one off the list first";
+  }
+  for (const root of roots) {
+    const bad = validateWholeComputerRoot(root);
+    if (bad) return bad;
   }
   return null;
 }
@@ -2012,6 +2106,36 @@ type ClientFrameBase =
    */
   | { type: "agentReact"; agentId: ID; messageId: ID; emoji: string; on?: boolean }
   | { type: "agentStatus"; agentId: ID; status: AgentStatus }
+  /**
+   * ENGINE-HOST ONLY: a SEMANTIC RECEIPT — "this agent is reading your message
+   * / thinking / has committed to this answer" (his §2).
+   *
+   * A BROADCAST, NOT A REQUEST. Nothing comes back and nothing is stored: the
+   * hub checks who may see the room, forwards it as `receipt`, and forgets it.
+   * It is deliberately NOT `agentReact`: that one ends in the reactions table
+   * and is a person-shaped, permanent fact. This one is a live signal that may
+   * honestly vanish on reload.
+   *
+   * Authorised exactly as `agentSend` and `agentReact` are — ownership is read
+   * from stored state, so an engine can never signal as an agent it does not
+   * own. `verdict` is required when `stage` is `verdict` and refused otherwise;
+   * the hub enforces that rather than trusting the frame's shape.
+   */
+  | { type: "agentReceipt"; agentId: ID; channelId: ID; messageId: ID; stage: ReceiptStage; verdict?: ReceiptVerdict }
+  /**
+   * ENGINE-HOST ONLY: WHAT THIS AGENT IS DOING RIGHT NOW — one batch of steps
+   * read off its CLI's output as the CLI printed them (`livesteps.ts`).
+   *
+   * THE SAME KIND OF THING AS `agentReceipt`, on purpose: a broadcast, nothing
+   * comes back, nothing is stored, and it is authorised by the same functions
+   * from the same stored state. The difference is only what it carries — a
+   * receipt says WHERE a turn is, this says WHAT it did.
+   *
+   * `done: true` ends the preview and carries no steps. The stored `RunRecord`
+   * still arrives by its own path (`runRecorded`), unchanged, and it is what
+   * survives — this is a preview of it, never a replacement for it.
+   */
+  | { type: "agentSteps"; agentId: ID; channelId: ID; messageId: ID; steps?: RunStep[]; done?: boolean }
   // v2 — tasks / approvals / activity
   // `requesterId` says WHO ASKED for this work. The engine host relays a task on
   // behalf of whoever typed "!bg …", so without it the relay would credit the
@@ -2391,6 +2515,26 @@ export type ServerFrame =
     }
   /** The full, current list of who reacted with this emoji. Empty means nobody does. */
   | { type: "reaction"; channelId: ID; messageId: ID; emoji: string; userIds: ID[] }
+  /**
+   * A SEMANTIC RECEIPT, live, to everyone who can see the conversation.
+   *
+   * EPHEMERAL BY DESIGN. It is not in `WorldState`, it is not in history, it is
+   * not in search, and it does not count as unread — a machine saying "I am
+   * reading this" is not a thing anybody should have to catch up on. A client
+   * that reconnects has simply missed it, and that is the honest outcome; the
+   * screen says so rather than pretending the silence means anything.
+   */
+  | { type: "receipt"; receipt: AgentReceipt }
+  /**
+   * WHAT AN AGENT IS DOING RIGHT NOW, live, to everyone who can see the room.
+   *
+   * EPHEMERAL, exactly as `receipt` is and for the same reasons: not in
+   * `WorldState`, not in history, not in search, not unread. Reload mid-turn and
+   * it is gone — and nothing is lost, because the stored `RunRecord` still
+   * arrives as `runRecorded` when the turn finishes and is the real answer to
+   * "what did it do?". This is only the waiting made visible.
+   */
+  | { type: "liveSteps"; live: LiveRunSteps }
   /** A message changed — edited, deleted, or given its first attachment. */
   | { type: "messageUpdated"; message: Message }
   | { type: "thread"; parentId: ID; messages: Message[] }
@@ -3346,6 +3490,8 @@ export interface AgentInput {
   respondToAllowlist?: unknown;
   /** the whole path to the connections file the owner chose for this agent */
   connectionsFile?: unknown;
+  /** the whole paths of the folders the owner opened up for this agent */
+  wholeComputerRoots?: unknown;
 }
 
 /** How many people one agent may be opened up to. */
@@ -3404,6 +3550,13 @@ export function validateAgentInput(agent: AgentInput, rules: AgentInputRules = {
   if (agent.connectionsFile !== undefined) {
     const badFile = validateConnectionsFile(agent.connectionsFile);
     if (badFile) return badFile;
+  }
+  // Every folder here ends up as a real `--add-dir <path>` on a command line, so
+  // it goes through the same two gates the connections file does — first at the
+  // hub, again in the engine, neither trusting the other.
+  if (agent.wholeComputerRoots !== undefined) {
+    const badRoots = validateWholeComputerRoots(agent.wholeComputerRoots);
+    if (badRoots) return badRoots;
   }
   return validateSkills(agent.skills);
 }
@@ -4175,7 +4328,20 @@ export function validateRunRecord(record: unknown): string | null {
   }
   if (!Array.isArray(r.steps)) return "a run record needs a list of steps";
   if (r.steps.length > RUN_LIMITS.steps) return "that run has too many steps";
-  for (const s of r.steps) {
+  const badStep = validateSteps(r.steps);
+  if (badStep) return badStep;
+  return null;
+}
+
+/**
+ * The step checks, shared by the stored record and the live preview.
+ *
+ * ONE OWNER. A live step is drawn by the very same component as a stored one,
+ * so a size a record may not carry must not be reachable through the live path
+ * either — that is how a "temporary" signal becomes a way around a limit.
+ */
+function validateSteps(steps: readonly Partial<RunStep>[]): string | null {
+  for (const s of steps) {
     if (!s || typeof s !== "object") return "that isn't a step";
     if (typeof s.label !== "string" || s.label.length > RUN_LIMITS.label) {
       return "a step's label is too long";
@@ -4186,6 +4352,31 @@ export function validateRunRecord(record: unknown): string | null {
     }
   }
   return null;
+}
+
+/**
+ * IS THIS A LIVE BATCH THE HUB MAY FORWARD? A sentence saying no, or null.
+ *
+ * Deliberately as strict as the stored record's check, because the screen
+ * cannot tell the two apart once they are drawn. A batch bigger than
+ * `LIVE_STEPS_PER_BATCH` is refused rather than trimmed: a frame that is trying
+ * to be a whole record has misunderstood what this channel is for, and quietly
+ * cutting it would hide that from whoever wrote it.
+ */
+export function validateLiveSteps(steps: unknown, done?: boolean): string | null {
+  if (steps === undefined) {
+    // the ONLY frame that may carry no steps is the one that ends the preview
+    return done ? null : "a live update needs either steps or an ending";
+  }
+  if (!Array.isArray(steps)) return "that isn't a list of steps";
+  if (steps.length > LIVE_STEPS_PER_BATCH) return "that's too many steps for one live update";
+  for (const s of steps as Partial<RunStep>[]) {
+    if (!s || typeof s !== "object") return "that isn't a step";
+    if (typeof s.seq !== "number" || !Number.isFinite(s.seq) || s.seq < 1) {
+      return "a live step needs its place in the run";
+    }
+  }
+  return validateSteps(steps as Partial<RunStep>[]);
 }
 
 /**
@@ -4283,3 +4474,22 @@ export {
   initialConn, backoffMs, reduceConn, connInWords,
   type ConnPhase, type ConnState, type ConnEffect, type ConnEvent,
 } from "./hubconnection.js";
+
+// ---------------------------------------------------------------------------
+// SEMANTIC RECEIPTS (his §2) — the live 👀 / 💭 / verdict signals. Their own
+// file because they are a VOCABULARY plus one honest limit (they are never
+// stored), and because the frames above must not be read as "another kind of
+// reaction". Re-exported here so all three programs import one package.
+export {
+  RECEIPT_EMOJI, RECEIPT_WORDS, RECEIPT_STALE_MS, RECEIPT_VERDICT_LINGER_MS,
+  isReceiptStage, isReceiptVerdict,
+  type AgentReceipt, type ReceiptStage, type ReceiptVerdict,
+} from "./receipts.js";
+
+// ---------------------------------------------------------------------------
+// LIVE STEPS — the same ephemeral law as receipts, applied to what an agent is
+// DOING rather than where its turn is. Its own file for the same reason: the
+// promise it makes (a preview, never a record) is longer than the type.
+export {
+  LIVE_STEPS_PER_BATCH, LIVE_STEPS_STALE_MS, type LiveRunSteps,
+} from "./livesteps.js";

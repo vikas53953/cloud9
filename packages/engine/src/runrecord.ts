@@ -97,16 +97,38 @@ export interface TraceBuilder {
 export type EventMapper = (event: Record<string, unknown>, t: TraceBuilder) => void;
 
 /**
- * Walk a CLI's output and build the shared trace.
+ * A stream being read ONE LINE AT A TIME.
  *
- * Fail-safe by construction: a line that is not JSON is skipped, a line that is
- * too big is skipped, and a mapper that throws on one event loses that event
- * and nothing else. A stream we cannot read at all yields an empty trace — it
- * never throws, because a recording problem must never cost the owner an answer.
+ * THIS IS THE STREAMING SEAM. It exists so that "read a whole transcript" and
+ * "read a transcript as it is being written" are the SAME code reading the same
+ * events in the same order — `traceFromStream` is now just a loop over `feed`.
+ * A second walker written for the live path is a second place for the two to
+ * disagree about what a CLI said, which is the one thing this module exists to
+ * prevent.
  */
-export function traceFromStream(raw: string, provider: string, map: EventMapper): ProviderTrace {
+export interface TraceWalker {
+  /** the trace so far — the SAME object throughout, filled in as lines arrive */
+  readonly trace: ProviderTrace;
+  /**
+   * Read ONE line. Returns COPIES of the steps this line added or changed, in
+   * order, so a caller can show them without holding a reference into the trace
+   * it is still building. An empty array is the normal answer: most lines say
+   * nothing a person would call a step.
+   *
+   * Never throws. A partial line, a blank line, a log line, a line that is not
+   * JSON at all and a mapper that falls over on one event all cost that one
+   * line and nothing else.
+   */
+  feed(line: string): RunStep[];
+  /** end of stream: settle the truncation flag and hand back the trace */
+  done(): ProviderTrace;
+}
+
+export function traceWalker(provider: string, map: EventMapper): TraceWalker {
   const trace: ProviderTrace = { provider, text: "", steps: [], events: 0 };
   let dropped = 0;
+  /** the steps this LINE touched — added or patched. Reset per line. */
+  let touched = new Set<number>();
 
   const builder: TraceBuilder = {
     add(step) {
@@ -119,6 +141,7 @@ export function traceFromStream(raw: string, provider: string, map: EventMapper)
         ...(step.detail ? { detail: clip(step.detail, RUN_LIMITS.detail) } : {}),
         ...(typeof step.ok === "boolean" ? { ok: step.ok } : {}),
       });
+      touched.add(seq);
       return seq;
     },
     update(seq, patch) {
@@ -128,25 +151,53 @@ export function traceFromStream(raw: string, provider: string, map: EventMapper)
       if (patch.label) step.label = clip(patch.label, RUN_LIMITS.label);
       if (patch.detail) step.detail = clip(patch.detail, RUN_LIMITS.detail);
       if (typeof patch.ok === "boolean") step.ok = patch.ok;
+      touched.add(step.seq);
     },
     setText(text) { const t = text.trim(); if (t) trace.text = t; },
     setError(message) { const m = message.trim(); if (m) trace.error = clip(m, RUN_LIMITS.error); },
     set(patch) { Object.assign(trace, patch); },
   };
 
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("{")) continue;
-    if (trimmed.length > RUN_LIMITS.line) continue;
-    let event: Record<string, unknown>;
-    try { event = JSON.parse(trimmed) as Record<string, unknown>; } catch { continue; }
-    trace.events++;
-    try { map(event, builder); } catch (err) {
-      console.error("[engine] could not read one line of a harness transcript:", err);
-    }
-  }
-  if (dropped > 0) trace.truncated = true;
-  return trace;
+  return {
+    trace,
+    feed(line) {
+      const trimmed = line.trim();
+      // NOT JSON, or only half of it. Both are ordinary mid-stream: a CLI logs
+      // plain sentences alongside its events, and a chunk boundary can land in
+      // the middle of one. Skipped, never guessed at, never thrown.
+      if (!trimmed.startsWith("{")) return [];
+      if (trimmed.length > RUN_LIMITS.line) return [];
+      let event: Record<string, unknown>;
+      try { event = JSON.parse(trimmed) as Record<string, unknown>; } catch { return []; }
+      trace.events++;
+      touched = new Set<number>();
+      try { map(event, builder); } catch (err) {
+        console.error("[engine] could not read one line of a harness transcript:", err);
+      }
+      if (touched.size === 0) return [];
+      return [...touched].sort((a, b) => a - b)
+        .map(seq => ({ ...trace.steps[seq - 1] }))
+        .filter((s): s is RunStep => !!s);
+    },
+    done() {
+      if (dropped > 0) trace.truncated = true;
+      return trace;
+    },
+  };
+}
+
+/**
+ * Walk a CLI's output and build the shared trace.
+ *
+ * Fail-safe by construction: a line that is not JSON is skipped, a line that is
+ * too big is skipped, and a mapper that throws on one event loses that event
+ * and nothing else. A stream we cannot read at all yields an empty trace — it
+ * never throws, because a recording problem must never cost the owner an answer.
+ */
+export function traceFromStream(raw: string, provider: string, map: EventMapper): ProviderTrace {
+  const walker = traceWalker(provider, map);
+  for (const line of raw.split(/\r?\n/)) walker.feed(line);
+  return walker.done();
 }
 
 // ----------------------------------------------------------- building a record

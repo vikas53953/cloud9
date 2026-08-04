@@ -26,6 +26,26 @@ export interface RunOptions {
   env?: NodeJS.ProcessEnv;
   /** don't wait — used for `codex login`, which owns the user's browser */
   detached?: boolean;
+  /**
+   * WATCH THE OUTPUT AS IT ARRIVES — one call per COMPLETE line of stdout.
+   *
+   * This is the whole of the live-progress seam. It is deliberately ADDITIVE:
+   * `stdout` in the returned `RunResult` is still captured exactly as it was,
+   * still capped the same way, and every caller that ignores this option gets
+   * byte-for-byte the behaviour it got before. Nothing downstream reads the
+   * stream twice by accident — the buffered result stays the truth, and this is
+   * only a preview of it.
+   *
+   * ONE LINE MEANS ONE COMPLETE LINE. A chunk that stops mid-JSON is held back
+   * until its newline arrives, because a half-written line handed to a parser
+   * is the normal case mid-stream, not an error. The last line of a stream that
+   * ended without a newline is flushed when the process closes.
+   *
+   * It can never break a run: it is called inside a try/catch, a line longer
+   * than `MAX_LINE_BYTES` is dropped rather than buffered forever, and the
+   * timeout/kill path does not depend on it at all.
+   */
+  onStdoutLine?: (line: string) => void;
 }
 
 /** Characters that may appear in a command-line argument. Nothing else. */
@@ -80,6 +100,14 @@ export function commandLine(cmd: string, args: string[]): string {
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 
 /**
+ * The longest single line the watcher will hold in memory before giving up on
+ * it. A CLI that emits one enormous line must not be able to grow this buffer
+ * without limit; the line is dropped from the LIVE view only — the buffered
+ * `stdout` still has it, and the record built at the end is unaffected.
+ */
+const MAX_LINE_BYTES = 1024 * 1024;
+
+/**
  * Run a CLI and collect its output. Never throws for a non-zero exit — the
  * caller decides what a failure means. Throws UnsafeArgumentError if the
  * command or any argument is not allowlist-clean.
@@ -125,9 +153,46 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
 
     let stdout = "";
     let stderr = "";
+    // the live watcher's own buffer, kept SEPARATE from `stdout` on purpose: the
+    // capture is capped and the watcher is not allowed to change what that cap
+    // does, in either direction.
+    const watch = opts.onStdoutLine;
+    let pending = "";
+    /** a line grew past the cap; skip it and everything up to the next newline */
+    let skipping = false;
+
+    const emit = (line: string): void => {
+      // never let a watcher's mistake become a failed turn — the same law
+      // `onTrace` already lives under one layer up.
+      try { watch?.(line); } catch (err) {
+        console.error("[engine] a live-output watcher threw; the run is unaffected:", err);
+      }
+    };
+
+    const feed = (chunk: string): void => {
+      pending += chunk;
+      let nl = pending.indexOf("\n");
+      while (nl !== -1) {
+        const line = pending.slice(0, nl);
+        pending = pending.slice(nl + 1);
+        if (skipping) skipping = false; else emit(line.endsWith("\r") ? line.slice(0, -1) : line);
+        nl = pending.indexOf("\n");
+      }
+      if (pending.length > MAX_LINE_BYTES) { pending = ""; skipping = true; }
+    };
+
+    /** the stream ended without a trailing newline — that tail is still a line */
+    const flush = (): void => {
+      if (!watch) return;
+      const tail = pending;
+      pending = "";
+      if (skipping) { skipping = false; return; }
+      if (tail.trim() !== "") emit(tail.endsWith("\r") ? tail.slice(0, -1) : tail);
+    };
+
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", d => { stdout = cap(stdout + d); });
+    child.stdout?.on("data", d => { stdout = cap(stdout + d); if (watch) feed(String(d)); });
     child.stderr?.on("data", d => { stderr = cap(stderr + d); });
 
     const timer = setTimeout(() => {
@@ -141,6 +206,9 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
     });
     child.on("close", code => {
       clearTimeout(timer);
+      // flush BEFORE settling, so the last line a CLI printed reaches the live
+      // view before the caller starts parsing the buffered result.
+      flush();
       finish({ code, stdout, stderr, timedOut: false, notFound: isNotFound(code, stderr) });
     });
 

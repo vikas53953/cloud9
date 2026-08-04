@@ -13,6 +13,7 @@ import path from "node:path";
 import { HarnessName, HarnessState } from "@cloud9/shared";
 import { ClaudeCliProvider } from "./claude-cli.js";
 import { mcpConfigPathFor } from "./connections.js";
+import { addDirRootsFor } from "./wholecomputer.js";
 import { CodexProvider } from "./codex.js";
 import { Engine } from "./engine.js";
 import { HarnessManager, HarnessOptions } from "./harness.js";
@@ -61,6 +62,22 @@ export interface EngineHost {
 function isFileOnDisk(file: string): boolean {
   try {
     return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * IS THIS FOLDER REALLY ON THIS COMPUTER, RIGHT NOW?
+ *
+ * The twin of `isFileOnDisk` above, and asked for the same reason: a folder the
+ * owner opened up last month can be moved, renamed, or sit on a drive that is
+ * unplugged, and a stale yes would put a path on a command line that is not
+ * there. A file is a no: `--add-dir` wants a folder.
+ */
+function isFolderOnDisk(folder: string): boolean {
+  try {
+    return fs.statSync(folder).isDirectory();
   } catch {
     return false;
   }
@@ -141,12 +158,20 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
         //
         // The switch still has the last word after this — `grantedSupply` in
         // `abilities.ts` drops the path for an agent without `connections`, and
-        // the prompt is built from what survives that. `wholeComputerRoots` is
-        // still NOT supplied: nothing on any screen chooses folders yet, and an
-        // agent on the top rung is told that switch is on with nothing behind it
-        // rather than being told it can use it (docs/qa/gap-audit.md §3).
+        // the prompt is built from what survives that.
         mcpConfigPath: (agentId: string) =>
           mcpConfigPathFor(engine.agentById(agentId), isFileOnDisk),
+        // THE FOLDERS THE OWNER OPENED UP FOR THIS AGENT — the one and only
+        // place stored paths become real `--add-dir` arguments on a command
+        // line, and the line that finally closes the LAST inert switch
+        // (docs/qa/gap-audit.md §3). It was empty until 2026-08-04 because
+        // nothing on any screen chose folders; the agent editor now does, and
+        // this reads the very same `wholeComputerRootsFor` the editor draws
+        // from, asked FRESH per turn. One decision, read twice: a folder the
+        // screen calls gone can never arrive here, and the folders the screen
+        // calls in use are exactly what the harness is handed.
+        wholeComputerRoots: (agentId: string) =>
+          addDirRootsFor(engine.agentById(agentId), isFolderOnDisk),
       });
     } else {
       engine.provider = undefined; // agents will say "my engine isn't connected"

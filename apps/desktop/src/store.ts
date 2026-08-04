@@ -1,4 +1,5 @@
 // Renderer-side relay client: one WebSocket, one mutable world, subscribers.
+import { useCallback, useRef, useSyncExternalStore } from "react";
 import {
   ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, ARTIFACT_LIMITS, Artifact, ArtifactAccess,
   ArtifactRelationView, ArtifactVersion, ArtifactWorkspaceEntry,
@@ -19,6 +20,11 @@ import {
   renameHub as renameHubInBook, switchTo, reconcile,
   initialConn, reduceConn, connInWords,
 } from "@cloud9/shared";
+// Semantic receipts live in their own tiny ephemeral store, on purpose — see
+// the header of that file. This is the only line of this module that knows.
+import { noteReceipt } from "./receipts.js";
+// …and so do live steps, for the same reasons, in their own file.
+import { noteLiveSteps } from "./livesteps.js";
 
 /**
  * Pull a join token (`join_…`) off the end of a pasted link, however it was
@@ -2748,6 +2754,22 @@ export class RelayClient {
         // A reaction frame is a FACT, not a delta: replace the list, never add
         this.applyReaction(frame.messageId, frame.emoji, frame.userIds);
         break;
+      case "receipt":
+        /* A SEMANTIC RECEIPT — live 👀 / 💭 / verdict. DELIBERATELY NOT PUT IN
+           THE WORLD: it is ephemeral, the hub stores none of it, and anything
+           that lands in `w` is a thing the rest of the app treats as real and
+           lasting. It goes to its own small store in `receipts.tsx`, which
+           throws it away on a timer and on reload. See that file's header. */
+        noteReceipt(frame.receipt);
+        break;
+      case "liveSteps":
+        /* WHAT AN AGENT IS DOING RIGHT NOW. Same law as `receipt` above, same
+           reason: ephemeral, stored nowhere, kept out of `w` entirely. The
+           STORED record still arrives as `runRecorded` when the turn ends and
+           is what survives — this only fills the silence in between. Its own
+           small store in `livesteps.ts`. */
+        noteLiveSteps(frame.live);
+        break;
       case "messageUpdated":
         this.replaceMessage(frame.message);
         break;
@@ -3056,3 +3078,95 @@ export class RelayClient {
 }
 
 export const client = new RelayClient();
+
+/* ============ READING ONE SLICE OF THE WORLD — the one owner ============
+ *
+ * WHY THIS EXISTS. `emit()` hands out a NEW world object on every frame — a
+ * message in any room, a presence tick, a reaction, a job update. Every screen
+ * that asked for the whole world therefore looked changed every time, and React
+ * redrew all of them. With 150 messages loaded, one arriving message redrew all
+ * 151 bubbles; so did an agent's status tick, which changes nothing a bubble
+ * draws. That is what "the chat is not smooth" was made of.
+ *
+ * The fix is to let a screen say WHAT IT READS. `useWorld` runs that little
+ * selector against each new world and, when the answer is the same as last
+ * time, hands back the SAME object — so React sees no change and does not
+ * redraw. The comparison is shallow by design: every field of the world is
+ * replaced (never mutated) when it changes, so "same object" IS "unchanged".
+ *
+ * Two rules for anyone adding a call site:
+ *  1. select the smallest thing you actually read (`w.messages[id]`, not
+ *     `w.messages`) — a wider selector is only ever a slower one;
+ *  2. never build a fresh object/array INSIDE a selector unless every field of
+ *     it is a world field, or the shallow check has nothing stable to compare
+ *     and the screen redraws exactly as often as before (no harm, no gain).
+ */
+
+/** Same object, or an object whose every field is the same object. */
+export function shallowEqual<T>(a: T, b: T): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || a === null || typeof b !== "object" || b === null) return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  for (const k of keys) {
+    if (!Object.prototype.hasOwnProperty.call(right, k)) return false;
+    if (!Object.is(left[k], right[k])) return false;
+  }
+  return true;
+}
+
+/**
+ * Watch one slice of the world from outside React (QA, tests, anything that is
+ * not a component). `onChange` runs only when the slice really changed.
+ */
+export function subscribeTo<T>(
+  select: (w: World) => T,
+  onChange: (value: T) => void,
+  isEqual: (a: T, b: T) => boolean = shallowEqual,
+): () => void {
+  let last = select(client.getSnapshot());
+  return client.subscribe(() => {
+    const next = select(client.getSnapshot());
+    if (isEqual(last, next)) return;
+    last = next;
+    onChange(next);
+  });
+}
+
+/**
+ * Read one slice of the world in a component, and redraw only when it changed.
+ *
+ * A drop-in for `useSyncExternalStore(client.subscribe, client.getSnapshot)`,
+ * with the selector as the whole difference. The held value is what makes it
+ * work: `useSyncExternalStore` compares what `read` returns with `Object.is`,
+ * so `read` has to hand back the identical object when nothing moved.
+ */
+export function useWorld<T>(
+  select: (w: World) => T,
+  isEqual: (a: T, b: T) => boolean = shallowEqual,
+): T {
+  const selectRef = useRef(select);
+  selectRef.current = select;
+  const equalRef = useRef(isEqual);
+  equalRef.current = isEqual;
+  /** the last answer, and the world it was read from */
+  const held = useRef<{ from: World; value: T } | null>(null);
+
+  const read = useCallback((): T => {
+    const w = client.getSnapshot();
+    const last = held.current;
+    // the same world cannot have a different answer
+    if (last && last.from === w) return last.value;
+    const next = selectRef.current(w);
+    if (last && equalRef.current(last.value, next)) {
+      held.current = { from: w, value: last.value };
+      return last.value;
+    }
+    held.current = { from: w, value: next };
+    return next;
+  }, []);
+
+  return useSyncExternalStore(client.subscribe, read);
+}

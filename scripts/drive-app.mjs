@@ -54,6 +54,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { artifactRef } from "@cloud9/shared";
+/* WHERE AN AGENT'S ANSWER LIVES — the same one owner the browser suite uses,
+   imported rather than re-spelled here. Since 2026-08-04 an answer hangs off the
+   message it answers, in the channel as well as inside a thread, and a harness
+   that kept its own idea of where to look would be the next thing to go red for
+   a feature that works. See the long note on `waitForAgentAnswer`. */
+import { waitForAgentAnswer } from "./qa-target.mjs";
 
 /* ------------------------------------------------------------------ where */
 
@@ -197,6 +203,14 @@ const EXPECTED_CHECKS = [
      chiming in about something else in the room cannot be mistaken for the
      answer leaking out. */
   "an agent asked inside a thread answers inside that thread, not in the conversation",
+  /* 2026-08-04, the chat-experience round. Two of its promises are about the
+     message box and the view — things a preview in a browser can agree with
+     while the app he double-clicks does something else, because the installed
+     app ships its own stylesheet and its own window size. So the walk asks the
+     INSTALLED app the two questions a person would notice within a minute:
+     is the box calm until I click into it (and does it show its tools when I
+     do), and does pressing Enter actually put me on what I just said. */
+  "the message box is calm until he clicks into it, and Enter lands him on what he just said",
 ];
 
 /* ---------------------------------------------------------------- results */
@@ -2032,9 +2046,96 @@ async function walk(page) {
       return `${rows.length} actions offered (${rows.filter(r => r.blocked).length} honestly blocked); ` +
         `choosing one filled in: "${filled.slice(0, 60)}"`;
     });
+    /* --- the box he types in, and the view he types into ------------------
+     *
+     * TWO PROMISES IN ONE CHECK, because they are one experience: the box does
+     * not shout at him while he is reading, and the moment he says something he
+     * is looking at it.
+     *
+     * `data-writing` is the app's OWN word for "he is writing" (focused, or
+     * holding text, or holding files, or with a menu open), written once beside
+     * the box. Reading it rather than measuring pixels means this can never
+     * disagree with the rule that drew it — and the second question, "is the
+     * tool row still IN the box", is asked separately, because a tool deleted
+     * when idle is a tool that cannot be found rather than a tidier box.
+     *
+     * Nothing here asks an agent anything: the message carries no `@`, so no
+     * turn starts and no subscription is spent proving the view moved.
+     */
+    await check(EXPECTED_CHECKS[35], async () => {
+      await page.click('.rail .rail-btn[data-go="chat"]');
+      await page.waitForSelector(".composer textarea", { timeout: 30000 });
+      const box = page.locator(".composer textarea").first();
+      await box.fill("");
+      await page.evaluate(() => document.activeElement?.blur?.());
+      const state = () => page.evaluate(() => {
+        const b = document.querySelector(".composer .composer-box");
+        if (!b) return null;
+        /* Judged on whether the control really takes up space, not on a class
+           name and not on the wrapper's own `display`: the row is hidden with
+           `display:none` and shown with `display:contents`, and a wrapper that
+           generates no box of its own is exactly what `contents` means. */
+        const showing = el => !!el && el.getClientRects().length > 0;
+        const receding = [...b.querySelectorAll(".toolset button.mini")];
+        return {
+          writing: b.dataset.writing ?? "(no data-writing)",
+          inBox: receding.length,
+          toolsShowing: receding.length > 0 && receding.every(showing),
+          actionsShowing: showing(b.querySelector(".actionsbtn")),
+          sendShowing: showing(b.querySelector(".sendbtn")),
+        };
+      });
+      await until("the box to go calm with nothing being written", async () =>
+        (await state())?.writing === "no", { timeout: 15000 });
+      const calm = await state();
+      if (!calm) throw new Error("NOT ON SCREEN — there is no message box on this screen at all");
+      await box.click();
+      await until("the box to show its tools when he clicks into it", async () =>
+        (await state())?.writing === "yes", { timeout: 15000 });
+      const armed = await state();
+      if (calm.toolsShowing || !armed.toolsShowing) {
+        throw new Error(`NOT ON SCREEN — the tool row shows=${calm.toolsShowing} when idle and ` +
+          `shows=${armed.toolsShowing} when he is writing; it should be the other way round`);
+      }
+      if (calm.inBox < 5 || armed.inBox !== calm.inBox) {
+        throw new Error(`the receding tools are not still in the box: ${calm.inBox} when idle, ` +
+          `${armed.inBox} when writing — hidden is right, removed is not`);
+      }
+      if (!calm.actionsShowing || !calm.sendShowing || !armed.actionsShowing || !armed.sendShowing) {
+        throw new Error("NOT ON SCREEN — the ＋ Actions door or Send receded with the rest; " +
+          `idle ＋=${calm.actionsShowing}/Send=${calm.sendShowing}, ` +
+          `writing ＋=${armed.actionsShowing}/Send=${armed.sendShowing}`);
+      }
+      await shot(page, "composer-calm-and-armed");
+
+      /* AND ENTER PUTS HIM ON WHAT HE SAID. Read back a little first, so this
+         is the question he actually asked rather than "does a message appear
+         at the bottom of a list already at its bottom". */
+      const SAID = `drivecheck-enter-lands-${Date.now()}`;
+      await page.evaluate(async () => {
+        const m = document.querySelector(".msgs");
+        if (m) { m.scrollTop = 0; await new Promise(r => setTimeout(r, 900)); }
+      });
+      await box.fill(SAID);
+      await box.press("Enter");
+      await page.waitForSelector(`.msgs .msg:has-text("${SAID}")`, { timeout: 30000 });
+      await until("the view to land on the message he just sent", async () =>
+        await page.evaluate(said => {
+          const m = document.querySelector(".msgs");
+          const mine = [...m.querySelectorAll(".msg")].find(r => r.textContent.includes(said));
+          const lb = m.getBoundingClientRect();
+          const mb = mine?.getBoundingClientRect();
+          return m.scrollHeight - m.scrollTop - m.clientHeight < 4
+            && !!mb && mb.top < lb.bottom && mb.bottom > lb.top;
+        }, SAID), { timeout: 20000, every: 250 });
+      await shot(page, "composer-enter-lands");
+      return `${calm.inBox} tools stay in the box and hide when idle; ＋ and Send stay on ` +
+        "screen in both states; Enter put the view on his own message";
+    });
   } catch (err) {
-    failGroup([EXPECTED_CHECKS[9], EXPECTED_CHECKS[17]].filter(n => !results.some(r => r.name === n)),
-      `the chat screen did not open (${err.message})`);
+    failGroup([EXPECTED_CHECKS[9], EXPECTED_CHECKS[17], EXPECTED_CHECKS[35]]
+      .filter(n => !results.some(r => r.name === n)),
+    `the chat screen did not open (${err.message})`);
     await shot(page, "chat-broken");
   }
 
@@ -2783,12 +2884,24 @@ async function walk(page) {
          already on its way could be counted as an answer to this message. */
       await until("the room to be quiet before the two agents are named", async () =>
         (await page.locator(".msgs .msg .thinking").count()) === 0, { timeout: 120000 });
-      /* Everything already on screen, so only what THIS message causes counts. */
-      const already = await page.$$eval(".msgs .msg[data-msg]",
-        els => els.map(el => el.getAttribute("data-msg")));
       await page.fill(".composer textarea", `@${first.name} @${second.name} say the word ok`);
       await page.press(".composer textarea", "Enter");
       await page.waitForSelector('.msgs .msg:has-text("say the word ok")', { timeout: 30000 });
+
+      /* WHERE THE ANSWERS ARE. Since 2026-08-04 an answer to a message typed in
+         the channel goes into a THREAD under that message, so counting new rows
+         in the scroll would find nothing whether one agent answered or both —
+         this check would have passed for the wrong reason, which is worse than
+         failing. The one shared helper opens the thread under the question (and
+         fails honestly if no answer ever lands there); the counting below then
+         reads THAT panel. The "is working on it" bubbles are still drawn in the
+         room against the message that asked, so the quiet window is unchanged. */
+      const askRoot = await page.locator('.msgs .msg:has-text("say the word ok")').last()
+        .getAttribute("data-msg");
+      await waitForAgentAnswer(page, {
+        under: askRoot, close: false, timeout: 240000,
+        what: `one of ${first.name} / ${second.name} to answer in the thread under the question`,
+      });
 
       /* WAITING ON WHAT CAN BE SEEN, not on a guessed number of seconds: an
          answer from one of the two, then a short quiet window in which nobody
@@ -2800,11 +2913,10 @@ async function walk(page) {
       const everWorking = new Set();
       let lastSaid = "";
       await until("one of the two named agents to answer and the room to go quiet", async () => {
-        const state = await page.evaluate(known => {
+        const state = await page.evaluate(root => {
           const said = [];
-          for (const row of document.querySelectorAll(".msgs .msg[data-msg]")) {
-            if (known.includes(row.getAttribute("data-msg"))) continue;
-            if (!row.classList.contains("from-agent")) continue;
+          for (const row of document.querySelectorAll(".threadpanel .msg.from-agent[data-msg]")) {
+            if (row.getAttribute("data-msg") === root) continue; // the question itself
             const who = row.querySelector(".who b")?.textContent?.trim();
             if (who) said.push({ who, words: row.innerText.replace(/\s+/g, " ").trim() });
           }
@@ -2812,7 +2924,7 @@ async function walk(page) {
             .map(el => el.textContent.replace(/is working on it.*/, "").trim())
             .filter(Boolean);
           return { said, working };
-        }, already);
+        }, askRoot);
         for (const one of state.said) {
           if (!spokeAt.has(one.who)) spokeAt.set(one.who, Date.now());
           if (one.who === first.name || one.who === second.name) lastSaid = one.words;
@@ -2835,10 +2947,13 @@ async function walk(page) {
           (alsoStarted.length ? `, and ${alsoStarted.join(", ")} started a turn as well` : ""));
       }
       await shot(page, "one-answer-per-question");
+      const close = page.locator(".threadpanel .threadclose");
+      if (await close.count()) await close.click();
       /* The words are reported, not judged: on a machine whose Claude is not
          signed in the one answer is an honest refusal, and that is still one
          owner for the turn. Claiming otherwise would be inventing a reply. */
-      return `${first.name} answered ("${lastSaid.slice(0, 60)}"), ${second.name} stayed quiet`;
+      return `${first.name} answered in the thread under the question ` +
+        `("${lastSaid.slice(0, 60)}"), ${second.name} stayed quiet`;
     });
 
     /* ---- where an agent's answer lands: the thread, or the room ---------- */

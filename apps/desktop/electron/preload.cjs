@@ -56,6 +56,25 @@ contextBridge.exposeInMainWorld("cloud9", {
     ipcRenderer.invoke("cloud9:chooseConnectionsFile", current),
   connectionsFileHere: file => ipcRenderer.invoke("cloud9:connectionsFileHere", file),
 
+  /* ---------- THE FOLDERS ONE AGENT MAY REACH OUTSIDE ITS OWN ----------
+   * Its own block, and it borrows nothing from the lines around it.
+   *
+   * In plain words: folders on this computer this agent may read and change,
+   * besides its own. The window never touches the filesystem: it asks for the
+   * OS's own folder picker (several folders at once), and it may ask which of
+   * the paths it was already given back are still there.
+   *
+   * `chooseWholeComputerFolders` → `{ ok: true, paths }`,
+   * `{ ok: false, cancelled: true }` when the picker was closed, or
+   * `{ ok: false, error }` with a sentence to print.
+   * `wholeComputerFoldersHere` → `{ here, checkedAt }` — the subset that is
+   * really there and when it was asked. Nothing inside any folder is ever
+   * listed or read across this bridge.
+   */
+  chooseWholeComputerFolders: () => ipcRenderer.invoke("cloud9:chooseWholeComputerFolders"),
+  wholeComputerFoldersHere: folders =>
+    ipcRenderer.invoke("cloud9:wholeComputerFoldersHere", folders),
+
   /**
    * The computer-wide quick-chat hotkey. OFF by default, because a global
    * shortcut takes that key away from every other program on the machine.

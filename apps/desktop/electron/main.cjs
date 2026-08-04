@@ -713,6 +713,78 @@ ipcMain.handle("cloud9:connectionsFileHere", (_ev, file) => {
   }
 });
 
+/* ---------- THE FOLDERS ONE AGENT MAY REACH OUTSIDE ITS OWN ----------
+ *
+ * A SEPARATE BLOCK ON PURPOSE, exactly like the connections file above, and it
+ * touches nothing else in this file.
+ *
+ * In the owner's words: folders on this computer this agent may read and change,
+ * besides its own. He picks them from the operating system's own picker — he can
+ * pick several at once — and they end up as real `--add-dir` arguments when that
+ * agent takes a turn. Two handlers, and between them they are the only way a
+ * folder path or a disk fact crosses into the window:
+ *
+ *   chooseWholeComputerFolders — the OS's own picker, `openDirectory` plus
+ *     `multiSelections`, answering `{ ok, paths }` / `{ ok: false, cancelled }` /
+ *     `{ ok: false, error }`. It ADDS to what he already chose rather than
+ *     replacing it, so a second visit to the picker is not a way to silently
+ *     lose the first folder — the window does that merge, this only reports what
+ *     was picked.
+ *   wholeComputerFoldersHere — "which of these are still on this computer?",
+ *     asked fresh, answered with the subset that is there and the time it was
+ *     asked. It lists NOTHING and reads NOTHING inside any folder, so it cannot
+ *     become a way to walk the disk from a page: it can only answer about paths
+ *     it was already handed. A path that is not a whole path, or one carrying
+ *     `..`, is answered "not there" without touching the filesystem at all, and
+ *     more paths than one agent may hold are refused outright.
+ *
+ * THE RENDERER STILL NEVER TOUCHES THE FILESYSTEM.
+ */
+const WHOLE_COMPUTER_ROOT_MAX = 12;
+
+ipcMain.handle("cloud9:chooseWholeComputerFolders", async () => {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+  const options = {
+    title: "Which folders may this agent read and change?",
+    properties: ["openDirectory", "multiSelections"],
+  };
+  try {
+    const picked = win
+      ? await dialog.showOpenDialog(win, options)
+      : await dialog.showOpenDialog(options);
+    if (picked.canceled || picked.filePaths.length === 0) return { ok: false, cancelled: true };
+    const paths = picked.filePaths
+      .map(wholePathOnThisComputer)
+      .filter(p => typeof p === "string");
+    if (paths.length === 0) {
+      return { ok: false, error: "That is not a folder Cloud9 can open up for an agent." };
+    }
+    return { ok: true, paths };
+  } catch (err) {
+    // never the inside of a program: the screen prints this word for word
+    console.error("[cloud9] the folder picker failed:", err);
+    return { ok: false, error: "This computer could not open the folder picker." };
+  }
+});
+
+ipcMain.handle("cloud9:wholeComputerFoldersHere", (_ev, folders) => {
+  const checkedAt = Date.now();
+  if (!Array.isArray(folders) || folders.length > WHOLE_COMPUTER_ROOT_MAX) {
+    return { here: [], checkedAt };
+  }
+  const here = [];
+  for (const folder of folders) {
+    const said = wholePathOnThisComputer(folder);
+    if (!said) continue; // refused shapes are answered without a disk lookup
+    try {
+      if (fs.statSync(said).isDirectory()) here.push(said);
+    } catch {
+      /* gone, unreadable, on a drive that is unplugged — all the same answer */
+    }
+  }
+  return { here, checkedAt };
+});
+
 /* ---------- Windows' own notifications ----------
  *
  * WHY THIS EXISTS. Everything Cloud9 had to say lived inside its own window, so
