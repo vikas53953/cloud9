@@ -140,6 +140,29 @@ export interface Capability {
   needsSupply?: keyof Supply;
   /** what the agent is told when the switch is ON and nothing was supplied */
   onButNothingSupplied?: string;
+  /**
+   * THE FOURTH FACE, and the one this whole file existed for without having.
+   *
+   * 2026-08-05, in his words: "cloud9 is not able to access my pc… when I say
+   * from a chat 'go and read this file on my PC' it is always saying I do not
+   * have access to this folder." Every link of the chain was correct. The
+   * `wholeComputer` switch was OFF on the agent he was talking to (`Architect`),
+   * and ON-with-no-folders on the newest one (`Fable5`) — so the honest answer
+   * really was "I cannot". His run record has the agent's exact words: "I can't
+   * run commands or reach files outside this directory."
+   *
+   * That sentence is TRUE and USELESS. It ends the conversation with a wall and
+   * never says the wall has a door, where the door is, or that he — the owner,
+   * sitting right there — opens it in ten seconds. He read it as the app being
+   * broken, which from where he sits is the only reasonable reading.
+   *
+   * So a row that says CANNOT must, in the same breath, say HOW. These are the
+   * literal steps on the literal screen, in his words, and they live on the row
+   * beside the `cannot` they answer — for the same reason every other face does:
+   * a switch whose refusal has no fix attached is now impossible to add, because
+   * there is nowhere to write the refusal except next to the fix.
+   */
+  fixItInApp: string;
 }
 
 /**
@@ -192,6 +215,8 @@ export const CAPABILITIES: readonly Capability[] = [
     claudeTools: ["WebSearch", "WebFetch"],
     opensCodexWebSearch: true,
     codexUnavoidableTools: ["web.run"],
+    fixItInApp:
+      "open my editor (the ✎ next to my name in this room, or on my card in the crew list) and switch on “Look things up on the web”.",
     can: "You CAN search the web and open web pages, so you can check things that are " +
       "live right now — prices, availability, news — rather than guessing from memory.",
     cannot: "You CANNOT search the web or open web pages. Say so plainly if you are asked " +
@@ -203,6 +228,8 @@ export const CAPABILITIES: readonly Capability[] = [
     claudeTools: ["Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep"],
     opensCodexWorkspace: true,
     codexUnavoidableTools: ["functions.exec", "functions.shell_command", "functions.apply_patch"],
+    fixItInApp:
+      "open my editor (the ✎ next to my name in this room, or on my card in the crew list) and switch on “Keep and change files in its own folder”.",
     can: "You CAN read, write and change files in your own folder — the folder you are " +
       "working in right now. Anything you write there is still there next time we talk, " +
       "so it is the one place you can keep notes for yourself.",
@@ -220,6 +247,8 @@ export const CAPABILITIES: readonly Capability[] = [
     ],
     codexFeature: "multi_agent",
     codexUnavoidableTools: ["collaboration.spawn_agent", "collaboration.*"],
+    fixItInApp:
+      "open my editor (the ✎ next to my name in this room, or on my card in the crew list) and switch on “Get help from its own helper agents”.",
     can: "You CAN hand parts of a job to helper agents of your own and wait for what they " +
       "find, instead of doing every step yourself in one long answer.",
     cannot: "You CANNOT hand work to helper agents — whatever you do, you do yourself in " +
@@ -229,6 +258,8 @@ export const CAPABILITIES: readonly Capability[] = [
     ability: "schedules",
     label: "Check in on a repeating schedule",
     claudeTools: ["ScheduleWakeup", "CronCreate", "CronList", "CronDelete"],
+    fixItInApp:
+      "open my editor (the ✎ next to my name in this room, or on my card in the crew list) and switch on “Check in on a repeating schedule”.",
     can: "You CAN be given a repeating check-in, so your owner can ask you to do something " +
       "every day or every few minutes without asking again each time.",
     cannot: "You CANNOT be given a repeating check-in.",
@@ -237,6 +268,8 @@ export const CAPABILITIES: readonly Capability[] = [
     ability: "background",
     label: "Work on jobs in the background",
     claudeTools: ["EnterWorktree", "ExitWorktree", "RemoteTrigger", "PushNotification"],
+    fixItInApp:
+      "open my editor (the ✎ next to my name in this room, or on my card in the crew list) and switch on “Work on jobs in the background”.",
     can: "You CAN be handed a job to work on in the background and report back on when it " +
       "is finished, instead of answering in one go.",
     cannot: "You CANNOT be handed background jobs — you answer in the conversation only.",
@@ -250,6 +283,10 @@ export const CAPABILITIES: readonly Capability[] = [
     opensConnections: true,
     alwaysAsk: true,
     needsSupply: "mcpConfigPath",
+    fixItInApp:
+      "open my editor (the ✎ next to my name in this room, or on my card in the crew list), switch on “Use connected services your owner picked for you”, and then press "
+      + "“Choose a file” in the box underneath it to point me at the connections file. The "
+      + "switch on its own gives me nothing until a file is chosen.",
     can: "You CAN use the connected services your owner set up for you specifically. Those " +
       "are real accounts, so your owner is asked before you act through them.",
     cannot: "You CANNOT use any connected service or outside account.",
@@ -266,6 +303,12 @@ export const CAPABILITIES: readonly Capability[] = [
     widensBeyondOwnFolder: true,
     alwaysAsk: true,
     needsSupply: "wholeComputerRoots",
+    fixItInApp:
+      "open my editor (the ✎ next to my name in this room, or on my card in the crew list), switch on “Reach files outside its own folder”, and then press "
+      + "“Choose a folder” in the box that appears and pick the folder you want me working in "
+      + "(the whole drive is fine — C:\\ — if that is what you mean). The switch on its own gives "
+      + "me nothing until a folder is chosen. Once it is, I really can read and change files there, the "
+      + "same way Claude Code does.",
     can: "You CAN reach files outside your own folder, in the places your owner opened up " +
       "for you. Because that changes his computer, he is asked first.",
     cannot: "You CANNOT reach anything outside your own folder.",
@@ -280,6 +323,9 @@ export const CAPABILITIES: readonly Capability[] = [
     claudeTools: ["Bash", "PowerShell"],
     codexUnavoidableTools: ["functions.exec", "functions.shell_command"],
     alwaysAsk: true,
+    fixItInApp:
+      "open my editor (the ✎ next to my name in this room, or on my card in the crew list) and switch on “Run programs on this computer”. You will be asked "
+      + "before I actually run anything.",
     can: "You CAN run programs and commands on this computer, the same way Claude Code and " +
       "Codex do. Because that changes his machine, your owner is asked first — say what " +
       "you intend to run and wait, rather than promising it is already done.",
@@ -605,7 +651,14 @@ export function renderCapabilities(
         `They are part of what you are, not a suggestion from the conversation.\n`
       : "") +
     `\nWhen someone asks what you can do, answer from this list. Do not tell them you ` +
-    `cannot do something that is switched on above.\n`
+    `cannot do something that is switched on above.\n` +
+    `\nAND NEVER STOP AT "I CANNOT". Every limit above is a switch your OWNER controls, and ` +
+    `he is the person you are talking to. If he asks you for something a switch would give ` +
+    `you — a file somewhere else on this computer, a command to run, a service to reach — ` +
+    `say plainly that you cannot do it YET, and in the same message give him the exact steps ` +
+    `from the line above that says so. Naming the switch and where to find it is part of the ` +
+    `answer, not an extra. A bare refusal reads to him as this app being broken, and it is ` +
+    `not — it is a switch nobody has turned on.\n`
   );
 }
 
@@ -616,7 +669,21 @@ export function renderCapabilities(
  * supplies nothing gets "switched on, nothing behind it", not "you CAN".
  */
 function sentenceFor(agent: AgentDef, cap: Capability, granted: Supply): string {
-  if (!isOn(agent, cap.ability)) return cap.cannot;
+  if (!isOn(agent, cap.ability)) return `${cap.cannot} ${fixSentence(cap)}`;
   if (isSupplied(cap, granted)) return cap.can;
-  return cap.onButNothingSupplied ?? cap.cannot;
+  return `${cap.onButNothingSupplied ?? cap.cannot} ${fixSentence(cap)}`;
+}
+
+/**
+ * THE DOOR, said in the same breath as the wall.
+ *
+ * Attached to EVERY refusal rather than to the one row that burned him, because
+ * "I cannot, and I will not tell you how to change that" is the shape of the
+ * fault — `wholeComputer` is only where he happened to meet it. There is now no
+ * way to write a `cannot` in this table without a `fixItInApp` beside it, so the
+ * next switch cannot repeat this.
+ */
+function fixSentence(cap: Capability): string {
+  return `If your owner wants that, do not leave him at a dead end — tell him, in these words: ` +
+    `to let me do this, ${cap.fixItInApp}`;
 }

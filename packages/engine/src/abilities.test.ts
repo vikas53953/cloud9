@@ -307,3 +307,61 @@ test("the engine's table and shared's list name the SAME always-ask abilities", 
     [...shared.ALWAYS_ASK_ABILITIES].sort(),
     "a new always-ask switch added to one and not the other is the drift this catches");
 });
+
+// ---------------------------------------------------------------------------
+// A REFUSAL WITHOUT A DOOR IS THE BUG — 2026-08-05.
+//
+// His words: "cloud9 is not able to access my pc… when I say from a chat 'go
+// and read this file on my pc' it is always saying 'i do not have access to
+// this folder'." Every link of the chain was correct — `--add-dir` reaches the
+// command line, the CLI reads the file, it was proved live. What was wrong is
+// that the agent he was actually talking to had the switch OFF, and its reply
+// said so and stopped: "I can't run commands or reach files outside this
+// directory." True, and a dead end. He read it as the app being broken.
+//
+// These tests pin the CLASS, not the case: no row of the table may state a
+// limit without stating, in the same breath, the exact steps that lift it.
+
+test("every switch carries the exact steps that lift it — no row can refuse without a door", () => {
+  for (const cap of CAPABILITIES) {
+    assert.equal(typeof cap.fixItInApp, "string", `${cap.ability} has no fix`);
+    assert.ok(cap.fixItInApp.length > 30,
+      `${cap.ability}'s fix is too short to be steps a person could follow`);
+    assert.ok(/editor/i.test(cap.fixItInApp),
+      `${cap.ability}'s fix must say WHERE — the agent editor — not just what`);
+    assert.ok(cap.fixItInApp.includes(cap.label),
+      `${cap.ability}'s fix must name the switch by the words on the screen (${cap.label})`);
+  }
+});
+
+test("a switched-off agent is told how to be switched on, not just that it is off", () => {
+  const nothing = agent();
+  const words = renderCapabilities(nothing);
+  for (const cap of CAPABILITIES) {
+    assert.ok(words.includes(cap.cannot), `${cap.ability}: the limit is missing`);
+    assert.ok(words.includes(cap.fixItInApp),
+      `${cap.ability}: the limit is stated with no way out of it — the exact bug of 2026-08-05`);
+  }
+  assert.ok(/NEVER STOP AT "I CANNOT"/.test(words),
+    "the standing instruction not to leave him at a dead end is missing");
+});
+
+test("switched ON with nothing chosen also says how to finish the job", () => {
+  // Fable5, his newest agent, is exactly this: wholeComputer true, no folders.
+  const halfway = agent({ files: true, wholeComputer: true });
+  const words = renderCapabilities(halfway, {});
+  const reach = CAPABILITIES.find(c => c.ability === "wholeComputer")!;
+  assert.ok(words.includes(reach.onButNothingSupplied!));
+  assert.ok(words.includes(reach.fixItInApp),
+    "on-but-nothing-chosen is the state he was actually in, and it must name Choose a folder");
+  assert.ok(reach.fixItInApp.includes("Choose a folder"));
+});
+
+test("a switch that IS working says so plainly and does not nag about steps", () => {
+  const working = agent({ files: true, wholeComputer: true });
+  const words = renderCapabilities(working, { wholeComputerRoots: ["C:\Users\vikasmit\cloud9"] });
+  const reach = CAPABILITIES.find(c => c.ability === "wholeComputer")!;
+  assert.ok(words.includes(reach.can));
+  assert.ok(!words.includes(reach.fixItInApp),
+    "telling an agent how to switch on something already on is noise, and reads as doubt");
+});

@@ -6860,6 +6860,44 @@ const ROLE_MEANS: Record<ChannelRole, string> = {
 
 /* ---- the right rail ---- */
 
+/**
+ * "IT SAYS IT CANNOT REACH MY PC" — the one click that ends that, 2026-08-05.
+ *
+ * His report: he asks an agent in chat to open a file on his computer and it
+ * answers "I do not have access to this folder". Nothing was broken. The agent
+ * he was talking to simply had no folder opened up for it — either the switch
+ * was off, or (on his newest agent) the switch was on and no folder had ever
+ * been chosen. The agent now SAYS the exact steps, because a refusal with no
+ * door is the fault; this is the other half — the door itself, next to the
+ * agent's name in the room he is already looking at, one press away.
+ *
+ * IT ONLY CLAIMS WHAT IT CAN KNOW HERE. Two of the five states — switched off,
+ * and on-with-nothing-chosen — are facts about the stored agent and need no
+ * disk at all. The other three (gone / partly / ready) are questions only the
+ * computer can answer, and this window is not allowed to ask it, so this line
+ * says nothing in those cases rather than guessing. Silence here means "the
+ * editor has the detail", never "all good".
+ */
+function ReachGap({ agent, onEdit }: {
+  agent: AgentDef; onEdit: () => void;
+}): React.JSX.Element | null {
+  // `onDisk` is never consulted for the two states below — an off switch is
+  // answered before the disk, and "nothing chosen" has nothing to look for.
+  const state = wholeComputerRootsFor(agent, () => false).state;
+  if (state !== "off" && state !== "none") return null;
+  return (
+    <span className="an-fix" data-reach-gap={state}>
+      {state === "off"
+        ? `${agent.name} can only touch its own folder — nothing else on this computer.`
+        : `${agent.name} is allowed outside its own folder, but no folder has been chosen yet.`}
+      {" "}
+      <button className="linkbtn" data-reach-fix onClick={onEdit}>
+        {state === "off" ? "Give it a folder" : "Choose a folder"}
+      </button>
+    </span>
+  );
+}
+
 function ChannelRail({ channel, onEditAgent, onOpenDm }: {
   channel: Channel;
   onEditAgent: (a: AgentDef) => void;
@@ -6904,6 +6942,7 @@ function ChannelRail({ channel, onEditAgent, onOpenDm }: {
                 </span>
                 {/* who is in this room BECAUSE this agent is */}
                 <AgentOwnerTag agent={a} />
+                <ReachGap agent={a} onEdit={() => onEditAgent(a)} />
               </span>
               <span className="tools">
                 <button className="iconbtn" title={`Open your chat with ${a.name}`}

@@ -226,6 +226,25 @@ const EXPECTED_CHECKS = [
          to accept a card that disagrees, in either direction. */
   "the app says what it found about Claude and Codex, instead of checking forever",
   "Settings agrees with this computer about whether Claude and Codex are really there",
+  /* 2026-08-05, and the loudest report yet: "cloud9 is not able to access my
+     pc… when I say from a chat 'go and read this file on my pc' it is always
+     saying I do not have access to this folder."
+     Nothing in the chain was broken — `--add-dir` reached the command line and
+     the CLI read the file, proved live the same day. The agent he was TALKING
+     to simply had no folder opened up for it, and its reply said "I can't reach
+     files outside this directory" and stopped there. A true sentence, a dead
+     end, and from where he sits indistinguishable from a broken app.
+     So this walks the whole journey in the app he double-clicks, in his order:
+       · an agent with no folder says so IN THE ROOM, with the way to change it
+         on the same line — the dead end is gone from the screen too;
+       · give it a real folder on this computer;
+       · type an ordinary chat message asking it to read a real file in there;
+       · the answer must contain what is actually in that file.
+     THE NATIVE FOLDER PICKER IS NOT DRIVEN — a Windows dialog is not something
+     this harness can press honestly. The folder is chosen through the window's
+     own save path (the very frame the editor sends), and this check says so
+     rather than pretending it clicked through Explorer. */
+  "an agent asked in chat to read a real file on this computer actually reads it",
 ];
 
 /* --------------------------------------------- what this computer really has
@@ -3320,6 +3339,162 @@ async function walk(page) {
     failGroup([EXPECTED_CHECKS[33]].filter(n => !results.some(r => r.name === n)),
       `the feature 5 screens could not be reached (${err.message})`);
     await shot(page, "feature5-broken");
+  }
+
+  /* --- 10. "cloud9 cannot access my pc" — the whole journey, end to end -----
+   *
+   * See the note on EXPECTED_CHECKS[38]. This is the one check that would have
+   * caught 2026-08-05, and none of the thirty-eight before it could: every one
+   * of them was about a screen or a switch, and the thing that failed him was
+   * the JOURNEY — switch, folder, chat message, file. It is deliberately the
+   * slowest check in the walk, because it is the only one that ends with real
+   * bytes out of a real file on this disk appearing in a real agent's answer.
+   */
+  let reachEngine = null;
+  const reachDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-reach-"));
+  try {
+    if (!OPTS.fresh) {
+      throw new Error("NOT CHECKED — giving an agent a folder on this computer and asking it to " +
+        "read a file would change your real Cloud9; run without --real-data for this walk");
+    }
+
+    /* A file only this run could know about. A model that guessed would have to
+       guess sixteen hex characters, so "it really read the file" is not an
+       inference from plausible-looking words. */
+    const marker = `cloud9-reach-${createHash("sha256").update(String(Date.now()) + reachDir)
+      .digest("hex").slice(0, 16)}`;
+    const reachFile = path.join(reachDir, "the-secret-note.txt");
+    fs.writeFileSync(reachFile,
+      `This file is on Vikas's computer, outside any agent's own folder.\n` +
+      `The passphrase is ${marker}\n`, "utf8");
+
+    /* THE SECTION BEFORE THIS ONE TICKS A SWITCH IN THE EDITOR AND WALKS OUT
+       WITHOUT SAVING, which is exactly what the unsaved-work owner exists to
+       stop — so the app is quite correctly holding a "you haven't saved what
+       you wrote" panel over everything. That is the app working, not a fault,
+       and the honest thing to do here is ANSWER it the way a person would:
+       throw the unsaved edit away. Clicking through it blindly would leave a
+       switch saved on his agent that nobody asked for. */
+    const leaveAsk = page.locator(".overlay.leaveask .discardwork");
+    if (await leaveAsk.count()) await leaveAsk.first().click();
+    await page.waitForSelector(".overlay.leaveask", { state: "detached", timeout: 15000 })
+      .catch(() => { throw new Error("the unsaved-work panel from the section before would not close"); });
+
+    await page.click('.rail .rail-btn[data-go="chat"]');
+    await page.waitForSelector(".composer textarea", { timeout: 30000 });
+
+    reachEngine = await connectInstalledEngine(page);
+    /* The WHOLE stored agent, from the hub's own opening picture of the world.
+       An edit has to send a complete agent (the hub judges the record, not the
+       frame), and the screen's QA hook reports names and ids only. */
+    const welcome = reachEngine.frames.find(f => f.type === "welcome");
+    const world = await page.evaluate(() => ({
+      channels: window.cloud9Wire.channels(),
+      me: window.cloud9Wire.me(),
+    }));
+    const room = world.channels.find(c => c.name === "general") ?? world.channels[0];
+    const mine = (welcome?.state?.agents ?? []).filter(a => a.ownerId === world.me);
+    const worker = mine.find(a => (a.provider ?? "claude") === "claude") ?? mine[0];
+    if (!room || !worker) {
+      throw new Error("the fresh app needs a room and one owned agent before this journey exists");
+    }
+
+    const openRoom = page.locator(`.sidebar .side-item[data-channel="${room.name}"]`).first();
+    if (await openRoom.count()) await openRoom.click();
+    await page.waitForSelector(".composer textarea", { timeout: 20000 });
+    const membersFrom = reachEngine.frames.length;
+    const askedMembers = reachEngine.ask({
+      type: "addMembers", channelId: room.id, memberIds: [worker.id],
+    });
+    await until(`${worker.name} to be a member of ${room.name}`, () => {
+      const recent = reachEngine.frames.slice(membersFrom);
+      const refused = recent.find(f => f.type === "error" && f.requestId === askedMembers);
+      if (refused) throw new Error(refused.error);
+      const latest = recent.filter(f => f.type === "channel" && f.channel?.id === room.id).pop();
+      return (latest?.channel?.memberIds ?? []).includes(worker.id);
+    }, { timeout: 30000, every: 100 });
+
+    await check(EXPECTED_CHECKS[38], async () => {
+      /* --- part one: the dead end is gone from the SCREEN ---------------- */
+      const rail = `.aside .mini-agent[data-agent="${worker.name}"]`;
+      if (await page.locator(rail).count() === 0) {
+        const opener = page.locator(".chathead .roomdetailsbtn");
+        if (await opener.count()) await opener.first().click();
+      }
+      await page.waitForSelector(rail, { timeout: 20000 })
+        .catch(() => { throw new Error(`NOT ON SCREEN — ${worker.name} is not in the room's details panel`); });
+      const gapBefore = await page.evaluate(sel => {
+        const el = document.querySelector(`${sel} [data-reach-gap]`);
+        return el ? {
+          state: el.getAttribute("data-reach-gap"),
+          words: el.innerText.replace(/\s+/g, " ").trim(),
+          fix: !!el.querySelector("[data-reach-fix]"),
+        } : null;
+      }, rail);
+      if (!gapBefore || !gapBefore.fix
+        || !/(own folder|no folder has been chosen)/i.test(gapBefore.words)) {
+        throw new Error("NOT ON SCREEN — an agent that cannot reach this computer says nothing " +
+          `about it in the room, or offers no way to change it: ${JSON.stringify(gapBefore)}`);
+      }
+      await shot(page, "reach-dead-end-has-a-door");
+
+      /* --- part two: give it a real folder ------------------------------ */
+      const saved = await page.evaluate(agent => window.cloud9Wire.ask({
+        type: "updateAgent", agent,
+      }), {
+        ...worker,
+        abilities: {
+          ...(worker.abilities ?? {}),
+          files: true, wholeComputer: true,
+        },
+        wholeComputerRoots: [reachDir],
+      });
+      if (!saved) throw new Error("the window never sent the save");
+      await until(`the room to stop saying ${worker.name} has nowhere to go`, async () =>
+        (await page.locator(`${rail} [data-reach-gap]`).count()) === 0,
+      { timeout: 30000, every: 200 });
+      await shot(page, "reach-folder-given");
+
+      /* --- part three: an ORDINARY chat message ------------------------- */
+      await until("the room to be quiet before the file is asked for", async () =>
+        (await page.locator(".msgs .msg .thinking").count()) === 0, { timeout: 120000 });
+      const ask = `@${worker.name} open ${reachFile} on my PC, read it, and tell me the passphrase in it`;
+      await page.fill(".composer textarea", ask);
+      await page.press(".composer textarea", "Enter");
+      await page.waitForSelector('.msgs .msg:has-text("the passphrase in it")', { timeout: 30000 });
+      const askRoot = await page.locator('.msgs .msg:has-text("the passphrase in it")').last()
+        .getAttribute("data-msg");
+      await waitForAgentAnswer(page, {
+        under: askRoot, close: false, timeout: 300000,
+        what: `${worker.name} to answer the question about the file on this computer`,
+      });
+      const answer = await page.evaluate(root => {
+        const said = [];
+        for (const row of document.querySelectorAll(".threadpanel .msg.from-agent[data-msg]")) {
+          if (row.getAttribute("data-msg") === root) continue;
+          said.push(row.innerText.replace(/\s+/g, " ").trim());
+        }
+        return said.join(" · ");
+      }, askRoot);
+      await shot(page, "reach-real-file-read-from-chat");
+      if (!answer.includes(marker)) {
+        throw new Error("THE THING HE REPORTED — asked in a plain chat message to read a real " +
+          `file on this computer, ${worker.name} did not come back with what is in it. It said: ` +
+          `"${answer.slice(0, 300)}"`);
+      }
+      const close = page.locator(".threadpanel .threadclose");
+      if (await close.count()) await close.click();
+      return `${worker.name} read ${reachFile} from a plain chat message and quoted ${marker}; ` +
+        `before the folder was given, the room offered "${gapBefore.words.slice(0, 60)}" with a ` +
+        `one-press fix. Windows' own folder picker is NOT driven by this check`;
+    });
+  } catch (err) {
+    failGroup([EXPECTED_CHECKS[38]].filter(n => !results.some(r => r.name === n)),
+      `the reach-my-computer journey could not be walked (${err.message})`);
+    await shot(page, "reach-my-computer-broken");
+  } finally {
+    try { await reachEngine?.close(); } catch { /* the walk's own socket */ }
+    try { fs.rmSync(reachDir, { recursive: true, force: true }); } catch { /* temp */ }
   }
 }
 

@@ -2210,6 +2210,11 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 [data-presence="working"] .an-state b{color:var(--marigold);}
 [data-presence="offline"] .an-state b,[data-presence="unknown"] .an-state b{color:var(--ink-3);}
 .mini-agent .an-state{display:block;margin-top:2px;}
+/* THE DOOR NEXT TO THE WALL (2026-08-05). An agent that cannot reach his PC says
+   so here, in the room he is already looking at, with the way to change it on
+   the same line. It wraps on purpose — a truncated instruction is not one. */
+.an-fix{display:block;margin-top:3px;font-size:11px;line-height:1.35;color:var(--ink-3);white-space:normal;}
+.an-fix .linkbtn{font-size:11px;}
 
 /* and the conversation header says it in full */
 .presencehere{
@@ -2235,7 +2240,14 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
    something. The reason is allowed to WRAP — a truncated reason is a reason he
    still has to go and look for. */
 .an-state.introuble{white-space:normal;overflow:visible;}
-.mini-agent .an-state.introuble{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;}
+/* CLAMPED MEANS CLAMPED. `.an-state.introuble` turns overflow back on so a
+   reason can wrap; in the narrow room rail it is also cut to three lines, and
+   those two together meant a long reason drew straight over whatever came after
+   it. Nothing was under it before, so nobody saw it — the "give it a folder"
+   line below is what it landed on. Hidden here restores the clamp's promise. */
+.mini-agent .an-state.introuble{
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;
+}
 [data-trouble="failed"] .an-state b,.presencehere[data-trouble="failed"] b{color:var(--madder);}
 [data-trouble="blocked"] .an-state b,.presencehere[data-trouble="blocked"] b{color:var(--marigold);}
 .chip.presencepill.introuble.is-failed{color:var(--madder);
