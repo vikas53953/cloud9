@@ -53,7 +53,7 @@ re-running the evidence chain and installing it.
 | # | Piece of his diagram | What is being built | Status |
 |---|---|---|---|
 | 15 | **Prompt** | A real system prompt (cached + obeyed properly) instead of everything as one user message | BUILDING |
-| 16 | **Prompt** | "Use my own Claude Code / Codex setup" — his CLAUDE.md, slash commands, MCP servers, hooks reach his agents. HE OVERRULED the isolation wall; it becomes his switch, recorded per run. Credentials still stripped. | BUILDING |
+| 16 | **Prompt** | "Use my own Claude Code / Codex setup" per-agent switch. PROVED: ON loads his CLAUDE.md, 17 MCP servers, 145 slash commands, 100 skills, 7 plugins, 41 tools (vs 8) and fires his hooks. OFF = todays isolation. New agents ON, existing untouched. COST: prompt 7,111 -> 30,213 tokens, ~4.25x (one probe 14x). Never inherited: his API keys, and browser/computer use (acting AS him). | BUILT, unproven |
 | 17 | **Skills** | Load on demand through the tool doorway instead of re-sending all 25 every turn | BUILDING |
 | 18 | **Tools** | Images and PDFs an agent can actually see (ranked #1 felt gap) | BUILDING |
 | 19 | **Tools** | Codex gets connected services + Cloud9's own tools (today: none at all) | BUILDING |
