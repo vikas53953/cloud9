@@ -52,7 +52,7 @@ re-running the evidence chain and installing it.
 
 | # | Piece of his diagram | What is being built | Status |
 |---|---|---|---|
-| 15 | **Prompt** | A real system prompt (cached + obeyed properly) instead of everything as one user message | BUILDING |
+| 15 | **Prompt** | Real system prompt: 88% of the brief is now cached instead of re-sent. MEASURED: the naive move made it WORSE ($0.019->$0.044); with the right flag it is CHEAPER than before ($0.016). Codex honestly has no equivalent flag. Plus "How hard should it think?" (Quick/Normal/Hard/Hardest) per agent. | BUILT, unproven |
 | 16 | **Prompt** | "Use my own Claude Code / Codex setup" per-agent switch. PROVED: ON loads his CLAUDE.md, 17 MCP servers, 145 slash commands, 100 skills, 7 plugins, 41 tools (vs 8) and fires his hooks. OFF = todays isolation. New agents ON, existing untouched. COST: prompt 7,111 -> 30,213 tokens, ~4.25x (one probe 14x). Never inherited: his API keys, and browser/computer use (acting AS him). | BUILT, unproven |
 | 17 | **Skills** | Load on demand through the tool doorway instead of re-sending all 25 every turn | BUILDING |
 | 18 | **Tools** | Images and PDFs an agent can actually see (ranked #1 felt gap) | BUILDING |
