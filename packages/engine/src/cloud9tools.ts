@@ -434,7 +434,25 @@ export function cloud9McpConfig(entry: string, ticket: Cloud9McpTicket): string 
       [CLOUD9_MCP_SERVER]: {
         command: process.execPath,
         args: [entry],
-        env: { CLOUD9_TOOL_URL: ticket.url, CLOUD9_TOOL_SECRET: ticket.secret },
+        env: {
+          /* RUN IT AS NODE, NOT AS THE APP. Measured on the INSTALLED app,
+             2026-08-05: `process.execPath` inside Electron's main process is
+             `…\Programs\Cloud9\Cloud9.exe`, so the config Cloud9 handed Claude
+             said, literally:
+                 "command": "…\\Cloud9.exe", "args": ["…\\cloud9mcp.js"]
+             Electron does not run a script it is handed — it starts the app. The
+             server therefore never spoke MCP on stdio, never connected, and
+             `search_conversation` / `open_attachment` were absent from EVERY turn
+             of the installed app while being present in dev (where execPath is
+             node.exe) and in every test. The agent's own words, from the room:
+                 "No search_conversation tool is available to me — ToolSearch …
+                  returned no matching deferred tool at all."
+             ELECTRON_RUN_AS_NODE=1 is Electron's own switch for exactly this:
+             the binary behaves as plain Node. Plain Node ignores the variable,
+             so dev and tests are unchanged. */
+          ELECTRON_RUN_AS_NODE: "1",
+          CLOUD9_TOOL_URL: ticket.url, CLOUD9_TOOL_SECRET: ticket.secret,
+        },
       },
     },
   }, null, 2);
