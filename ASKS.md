@@ -42,3 +42,30 @@ Rules that make it true, not the file itself:
   suppress when the reply answers his own question.
 - A channel-started background job now splits output: detail in the thread, one
   line in the room.
+
+## Overnight 2026-08-05 → 06 — his harness diagram, one row per piece
+
+He drew the harness he wants: Prompt · Skills · Tools · Hooks · Memory ·
+Permissions · Agent loop · Verification. Eight agents were spawned, one or
+more per piece. NOTHING here may be reported as done without the conductor
+re-running the evidence chain and installing it.
+
+| # | Piece of his diagram | What is being built | Status |
+|---|---|---|---|
+| 15 | **Prompt** | A real system prompt (cached + obeyed properly) instead of everything as one user message | BUILDING |
+| 16 | **Prompt** | "Use my own Claude Code / Codex setup" — his CLAUDE.md, slash commands, MCP servers, hooks reach his agents. HE OVERRULED the isolation wall; it becomes his switch, recorded per run. Credentials still stripped. | BUILDING |
+| 17 | **Skills** | Load on demand through the tool doorway instead of re-sending all 25 every turn | BUILDING |
+| 18 | **Tools** | Images and PDFs an agent can actually see (ranked #1 felt gap) | BUILDING |
+| 19 | **Tools** | Codex gets connected services + Cloud9's own tools (today: none at all) | BUILDING |
+| 20 | **Hooks** | Cloud9's OWN hooks — its events triggering its actions. Did not exist. | BUILDING |
+| 21 | **Memory** | Agents write their own notes (Buzz's real advantage); + the seeding bug that keeps OLDEST and drops NEWEST | BUILDING |
+| 22 | **Permissions** | Spend cap, plan mode, honest sandbox wording | BUILDING |
+| 23 | **Agent loop** | Context budget follows the model instead of a 24k constant; thread-scoped reading; fallback model | BUILDING |
+| 24 | **Agent loop** | A STOP button — today nothing can cancel a turn but the clock | BUILDING |
+| 25 | **Verification** | NEW, and neither Claude Code nor Buzz has it: check what the agent CLAIMED against what the record SHOWS, and say so when they disagree | BUILDING |
+| 26 | **Reported to him, his call** | His Buzz install runs `bypassPermissions respond_to=anyone parallelism=10`, and points at `wss://vikas.communities.buzz.xyz` — a relay he does not run | HIS DECISION |
+
+Conductor's rules for tonight: reconcile the agents' overlapping edits, run
+build → tests → browser QA → installer → install → walk, fix what the chain
+finds, commit per piece with his words in the message, install, and have ONE
+page ready for the morning. If a quota resets, resume without waiting.
