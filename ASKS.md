@@ -57,15 +57,17 @@ re-running the evidence chain and installing it.
 | 17 | **Skills** | Load on demand through the tool doorway instead of re-sending all 25 every turn | BUILDING |
 | 18 | **Tools** | Images and PDFs an agent can actually see (ranked #1 felt gap) | BUILDING |
 | 19 | **Tools** | Codex gets connected services + Cloud9's own tools (today: none at all) | BUILDING |
-| 20 | **Hooks** | Cloud9's OWN hooks — its events triggering its actions. Did not exist. | BUILDING |
-| 21 | **Memory** | Agents write their own notes (Buzz's real advantage); + the seeding bug that keeps OLDEST and drops NEWEST | BUILDING |
+| 20 | **Hooks** | Cloud9 OWN hooks: 4 events (turn finished, job finished, waiting for your OK, claim-vs-record mismatch) x 4 actions. A hook can never do what an agent would need approval for. | BUILT, unproven |
+| 21 | **Memory** | Agents write their own notes (remember_this), shown with who wrote them, one click to delete. SEEDING BUG CONFIRMED AND FIXED: a full budget kept last week and dropped today's correction. | BUILT, unproven |
 | 22 | **Permissions** | Spend cap, plan mode, honest sandbox wording | BUILDING |
 | 23 | **Agent loop** | Context budget follows the model instead of a 24k constant; thread-scoped reading; fallback model | BUILDING |
-| 24 | **Agent loop** | A STOP button — today nothing can cancel a turn but the clock | BUILDING |
-| 25 | **Verification** | NEW, and neither Claude Code nor Buzz has it: check what the agent CLAIMED against what the record SHOWS, and say so when they disagree | BUILDING |
+| 24 | **Agent loop** | STOP button on a working agent + !stop. Really kills the process tree; the run says "you stopped this", distinct from failed or timed out. | BUILT, unproven |
+| 25 | **Verification** | BUILT: checks 4 claim shapes (edited a file / tests pass / ran the build / pushed-PR-issue-comment) against the record, posts only on a mismatch, and REFUSES to accuse when it cannot see the record. | BUILT, unproven |
 | 26 | **Reported to him, his call** | His Buzz install runs `bypassPermissions respond_to=anyone parallelism=10`, and points at `wss://vikas.communities.buzz.xyz` — a relay he does not run | HIS DECISION |
 
 Conductor's rules for tonight: reconcile the agents' overlapping edits, run
 build → tests → browser QA → installer → install → walk, fix what the chain
 finds, commit per piece with his words in the message, install, and have ONE
 page ready for the morning. If a quota resets, resume without waiting.
+
+| 27 | **Catch-up** | His 5 existing agents lacked commands entirely and had no folder - they were telling the truth. A one-time startup migration adds only, never removes, tells him on screen what changed and how to undo it. | BUILT, unproven |
