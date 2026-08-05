@@ -68,10 +68,22 @@ export interface HarnessIsolation {
 }
 
 /**
- * Claude, measured 2026-07-29. `claudeArgs` passes `--safe-mode
- * --strict-mcp-config --disable-slash-commands` and an explicit `--tools <exact
- * set>`. Re-probed after that change: the tool list was exactly the agent's own,
- * MCP servers none, slash commands none, and the login still worked.
+ * Claude, re-measured 2026-08-05 on CLI 2.1.222 after `--safe-mode` came OFF
+ * the command line (see the long block in `claude-cli.ts` for why: it was
+ * killing Cloud9's own MCP doorway and the `connections` switch along with it).
+ *
+ * `claudeArgs` now passes `--strict-mcp-config --disable-slash-commands
+ * --setting-sources ""` plus an explicit `--tools <exact set>`, and the child's
+ * environment carries CLAUDE_CODE_DISABLE_AUTO_MEMORY=1. Probed live, in a
+ * folder holding its own CLAUDE.md, against a throwaway MCP server:
+ *   tools            → exactly the agent's own, plus Cloud9's
+ *   mcp_servers      → only the one we passed in; none of the owner's 17
+ *   plugins          → NONE (under `--safe-mode` the init event named SEVEN)
+ *   skills / commands→ none
+ *   CLAUDE.md        → neither the owner's global one nor the folder's own
+ *   hooks            → did not run
+ *   memory_paths     → absent
+ *   the login        → still works
  */
 const CLAUDE: HarnessIsolation = {
   harness: "claude",
@@ -83,16 +95,15 @@ const CLAUDE: HarnessIsolation = {
   stillLoaded: [],
   togglesControl: "every tool the agent has",
   unknowns: [
-    "Under --safe-mode the CLI still NAMES seven of your installed plugins in its " +
-    "own start-up report, while reporting no skills, no slash commands and no " +
-    "connected accounts. Nothing from them was measured reaching an agent, and the " +
-    "declared tool set is the same either way — but we cannot prove they contribute " +
-    "nothing, so it is written down instead of rounded off.",
-    "--safe-mode documents that admin-managed (policy) settings still apply. There " +
-    "is no such file on this machine, so this has never been observed. On a " +
+    // The plugin-naming unknown that stood here from 2026-07-30 is CLOSED: it was
+    // an artefact of --safe-mode, and the flag set that replaced it reports no
+    // plugins at all. Kept as a note rather than deleted, so the record shows the
+    // measurement moved rather than the claim being quietly upgraded.
+    "Admin-managed (policy) settings still apply, on this CLI, whatever we pass. " +
+    "There is no such file on this machine, so this has never been observed. On a " +
     "work-managed PC it would be a real hole and Cloud9 could not close it.",
   ],
-  measuredOn: "claude-code 2.1.220, 2026-07-30",
+  measuredOn: "claude-code 2.1.222, 2026-08-05",
 };
 
 /**

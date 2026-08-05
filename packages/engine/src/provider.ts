@@ -4,7 +4,9 @@
 //    credential (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN).
 import os from "node:os";
 import { AgentDef, DEMO_REPLY_PREFIX, RunKind, setMachineNames } from "@cloud9/shared";
-import { claudeToolsFor, deniedClaudeTools, renderCapabilities, Supply } from "./abilities.js";
+import {
+  claudeToolsFor, deniedClaudeTools, renderCapabilities, switchesNeedingSupply, Supply,
+} from "./abilities.js";
 import { renderCloud9Tools } from "./cloud9tools.js";
 // Runtime import, one direction only: timebudget.ts takes the turn kind as an
 // argument and imports nothing from here but the TYPE, so there is no cycle.
@@ -50,6 +52,16 @@ export interface TurnBrief {
   cloud9Tools?: boolean;
   /** the harness rendering this prompt; Codex has an admission gate, not a declared tool set */
   harness?: "claude" | "codex" | "mock";
+  /**
+   * TRUE WHEN `context` IS ONLY WHAT IS NEW — because the harness is being
+   * resumed and has already read everything before it (`sessionresume.ts`).
+   *
+   * It changes one sentence in the prompt and nothing else. Without it a
+   * resumed turn is handed three new lines under the heading "Recent
+   * conversation (oldest first)", which reads as though the room had been
+   * emptied — the agent then apologises for losing the thread it has not lost.
+   */
+  resumedContext?: boolean;
 }
 
 export interface RespondInput extends TurnBrief {
@@ -92,6 +104,35 @@ export interface RespondInput extends TurnBrief {
    * Same law as `onTrace`: a failure here may never cost the caller its answer.
    */
   onStep?: (steps: RunStep[]) => void;
+  /**
+   * THIS TURN BELONGS TO A CONVERSATION THREAD, and may therefore continue the
+   * harness's own session instead of starting a cold one (`sessionresume.ts`).
+   *
+   * Offered by the engine, DECIDED by the provider — because the facts the
+   * decision turns on (which folder the turn will run in, what the command line
+   * will really grant) are known only inside the provider. A provider that
+   * ignores this field behaves exactly as it always has.
+   *
+   * Absent for everything that must not resume: a turn with no conversation, a
+   * scheduled check-in with no thread, and repository work in a worktree.
+   */
+  thread?: ThreadContinuity;
+}
+
+/** What the engine can tell a provider about the thread this turn is in. */
+export interface ThreadContinuity {
+  /** agent + channel + thread root, already spelled into one key */
+  key: string;
+  /** the newest message included in the FULL `context` above */
+  newestMessageId: string;
+  /**
+   * The conversation SINCE a given message — asked for only if we really do
+   * resume, so an ordinary cold turn renders the room exactly once.
+   *
+   * Returns undefined when there is nothing new (which is itself a reason not
+   * to resume: a turn with nothing to say is not a turn).
+   */
+  since: (afterMessageId: string) => string | undefined;
 }
 
 export interface ClaudeProvider {
@@ -107,6 +148,42 @@ export class HarnessUnavailableError extends Error {
   constructor(public harness: string, message: string) {
     super(message);
     this.name = "HarnessUnavailableError";
+  }
+}
+
+/**
+ * A SWITCH THIS WAY OF RUNNING THE AGENT CANNOT KEEP — so the turn did not run.
+ *
+ * THE TRAP THIS EXISTS TO CLOSE (gap 2, 2026-08-05). `SdkProvider` — the path
+ * taken when the owner stores an API key instead of using the signed-in Claude
+ * app — hardcoded `supply: {}` and passed no folders at all. So an owner could
+ * switch on "Reach files outside its own folder", choose a folder, watch the
+ * agent editor say "In use", and get an agent that silently could not reach it.
+ * Today he is on the signed-in-app path, so nothing is lying to him yet; the
+ * moment he pastes an API key it would be, and nothing would say so.
+ *
+ * WHY THE ANSWER IS "REFUSE" RATHER THAN "WIRE IT UP". The SDK really does have
+ * an `additionalDirectories` option, so passing the folders was possible — and
+ * it would have been the wrong thing to do. The command-line path does not carry
+ * `--add-dir` on its own: it carries it alongside `--strict-mcp-config`,
+ * `--disable-slash-commands` and `--setting-sources ""`, the flags
+ * `claude-cli.ts` measured and that keep the OWNER'S own Claude Code setup — his
+ * CLAUDE.md, his plugins, his hooks, his MCP servers, his slash commands — out
+ * of his agents. This path has no equivalent of any of them, and it hands the
+ * child `process.env` whole. Quietly widening an un-isolated agent from its own
+ * folder to whatever folder the owner picked — his entire C: drive is an
+ * explicitly offered choice, in `abilities.ts` — is the one direction we must
+ * not take by accident. So it stops, and it says why in words he can act on.
+ */
+export class AbilityNotSupportedHereError extends Error {
+  constructor(public readonly switches: readonly string[]) {
+    super(`I did not run this because ${switches.join(", ")} ` +
+      `${switches.length === 1 ? "is" : "are"} switched on, and that only works when ` +
+      `Cloud9 is using the Claude app you are signed in to. This computer is running me ` +
+      `from a stored API key instead, and on that route I have no way to reach outside my ` +
+      `own folder — so rather than pretend, I stopped. Open Settings and sign in to Claude, ` +
+      `or switch that off.`);
+    this.name = "AbilityNotSupportedHereError";
   }
 }
 
@@ -155,6 +232,11 @@ export function sanitizeForChat(err: unknown, where: string): string {
   console.error(`[engine] ${where}:`, err);
   if (err instanceof HarnessUnavailableError) return HARNESS_DISCONNECTED_REPLY;
   if (err instanceof HarnessAbilityBoundaryError) return err.message;
+  // Built from capability LABELS out of the table and fixed words — no path, no
+  // argv, no error code — and it is the one thing the owner has to hear, since
+  // the alternative is an agent that quietly cannot do what its editor says it
+  // can. Same reasoning as the two above it.
+  if (err instanceof AbilityNotSupportedHereError) return err.message;
   // carries only the agent's name and its own file names — see the class
   if (err instanceof InstructionsNotSavedError) return err.message;
   // A CLOCK RAN OUT, and that is the one thing the person needs to hear. Its
@@ -265,12 +347,32 @@ export function buildAgentPrompt(agent: AgentDef, turn: TurnBrief): string {
     (turn.workdir
       ? `\nYou are working inside a checkout on this computer, not in your own folder.\n`
       : "") +
-    `\nRecent conversation (oldest first). ` +
-    `A line starting "↳" is a reply inside a thread; a line in square brackets is ` +
-    `something about the message above it, not something anybody said:\n${turn.context}\n\n` +
+    `\n${turn.resumedContext ? RESUMED_CONVERSATION_HEADING : CONVERSATION_HEADING}` +
+    `\n${turn.context}\n\n` +
     HOW_TO_ANSWER[kind](agent.name)
   );
 }
+
+/** The heading over the room, for a turn that is reading it fresh. */
+const CONVERSATION_HEADING =
+  `Recent conversation (oldest first). ` +
+  `A line starting "↳" is a reply inside a thread; a line in square brackets is ` +
+  `something about the message above it, not something anybody said:`;
+
+/**
+ * The heading over the room, for a turn that is CONTINUING its own session.
+ *
+ * It has to say "since you last replied" out loud. The agent is looking at its
+ * own earlier conversation plus two new lines; without this sentence the two
+ * new lines arrive under "Recent conversation" and read as the whole room,
+ * which is how a resumed agent ends up apologising for context it still has.
+ */
+const RESUMED_CONVERSATION_HEADING =
+  `This is the same conversation you were already in — you can see everything ` +
+  `said before this point earlier in our exchange, so do not ask for it again. ` +
+  `What follows is ONLY what has been said since your last reply, oldest first. ` +
+  `A line starting "↳" is a reply inside a thread; a line in square brackets is ` +
+  `something about the message above it, not something anybody said:`;
 
 /**
  * Which kind of turn this is, for the prompt. Derived, not passed twice: a
@@ -380,6 +482,20 @@ export class SdkProvider implements ClaudeProvider {
 
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir } = input;
+    // A SWITCH THIS PATH CANNOT KEEP STOPS THE TURN, BEFORE ANYTHING RUNS.
+    //
+    // This path supplies no folders and no connections file, so every switch
+    // that needs one is inert here — and inert is invisible from the editor,
+    // which reads the switch and says "In use". Refusing is the only answer
+    // that cannot become a lie: the owner is told, in his own words, that this
+    // is the stored-API-key route and the switch needs the signed-in app.
+    //
+    // It is asked from the TABLE, so it covers `connections` as well as
+    // `wholeComputer` and covers the next such row the day it is written.
+    const cannotKeep = switchesNeedingSupply(agent);
+    if (cannotKeep.length > 0) {
+      throw new AbilityNotSupportedHereError(cannotKeep.map(c => `“${c.label}”`));
+    }
     // Lazy import so mock mode never loads the SDK.
     const { query } = await import("@anthropic-ai/claude-agent-sdk");
     // the same table the CLI path and the prompt read — no third copy
@@ -392,7 +508,12 @@ export class SdkProvider implements ClaudeProvider {
     // THE WHOLE BRIEF, not just the conversation. This path supplies neither
     // `--add-dir` nor an MCP config and hands out no Cloud9 tool, so the supply
     // it declares is empty — and the prompt says so instead of promising them.
-    const prompt = buildAgentPrompt(agent, { ...input, supply: {} });
+    //
+    // Empty is now also PROVABLY empty rather than merely written empty: any
+    // switch that would have needed something in here has already stopped the
+    // turn above. What is left is the set of switches this path can genuinely
+    // keep, and `supply: {}` is the truth about them.
+    const prompt = buildAgentPrompt(agent, { ...input, supply: {}, cloud9Tools: false });
 
     let result = "";
     for await (const message of query({

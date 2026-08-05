@@ -60,6 +60,11 @@ export function claudeModels(): ModelList {
 export function claudeProbeArgs(model: string): string[] {
   return [
     "-p",
+    // --safe-mode is RIGHT HERE and WRONG on an agent turn (claude-cli.ts). The
+    // difference is that this probe wants NO MCP server at all, including ours —
+    // it asks "can this account run this model", loads nothing and calls nothing.
+    // An agent turn needs Cloud9's own --mcp-config honoured, and --safe-mode
+    // kills that too (measured 2026-08-05), which is why it is not on that line.
     "--safe-mode",              // his own hooks, skills and MCP servers stay out
     "--no-session-persistence", // a probe must not litter his session history
     "--tools", "",              // nothing to run, so nothing can be run

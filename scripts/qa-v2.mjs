@@ -73,26 +73,39 @@ try {
   // tasks rail button shows the badge + pending approval
   // (selector updated in the Studio reskin: Tasks is a rail button with a count
   // badge, exactly as the approved design draws it)
-  await page.waitForSelector('.rail-btn[data-go="tasks"] .rail-count:text-is("1")', { timeout: 30000 });
+  /* SCOPED TO THIS SCRIPT'S OWN JOB, never "the first row on the screen".
+   *
+   * WHY IT CHANGED, 2026-08-05. Every agent Cloud9 makes is fully capable from
+   * its first second, and every switch that changes the machine asks first — so
+   * jobs waiting on his word are now ordinary, and this hub carries whatever
+   * qa.mjs (which runs before this, on the same stack) left behind. A global
+   * count of exactly one stopped being a fact about THIS script, and reading it
+   * as one meant this suite could reject somebody else's job and call it a
+   * pass. The badge is still checked; it is simply no longer read as a number
+   * nobody owns. */
+  await page.waitForSelector('.rail-btn[data-go="tasks"] .rail-count', { timeout: 30000 });
   ok("tasks button shows pending-approval badge", true);
   await page.click('.rail-btn[data-go="tasks"]');
-  await page.waitForSelector(".taskrow");
-  await page.waitForSelector(".tstatus.waiting_approval");
+  const sensitiveRow = page.locator(".taskrow", { hasText: "research the sensitive topic" }).first();
+  await sensitiveRow.waitFor({ timeout: 30000 });
+  await sensitiveRow.locator(".tstatus.waiting_approval").waitFor({ timeout: 30000 });
   await page.screenshot({ path: `${SHOTS}/11-task-approval.png` });
 
   // reject → cancelled
-  await page.click('.taskrow button:has-text("Reject")');
-  await page.waitForSelector(".tstatus.cancelled", { timeout: 30000 });
+  await sensitiveRow.locator('button:has-text("Reject")').click();
+  await sensitiveRow.locator(".tstatus.cancelled").waitFor({ timeout: 30000 });
   ok("rejected task becomes cancelled and never runs", true);
   await page.click('.rail-btn[data-go="chat"]');
 
   // second request → approve → completes with proactive result
   await box.fill("@Guard !bg summarise the safe topic");
   await box.press("Enter");
-  await page.waitForSelector('.rail-btn[data-go="tasks"] .rail-count:text-is("1")', { timeout: 30000 });
+  await page.waitForSelector('.rail-btn[data-go="tasks"] .rail-count', { timeout: 30000 });
   await page.click('.rail-btn[data-go="tasks"]');
-  await page.click('.taskrow button:has-text("Approve")');
-  await page.waitForSelector(".tstatus.completed", { timeout: 90000 });
+  const safeRow = page.locator(".taskrow", { hasText: "summarise the safe topic" }).first();
+  await safeRow.waitFor({ timeout: 30000 });
+  await safeRow.locator('button:has-text("Approve")').click();
+  await safeRow.locator(".tstatus.completed").waitFor({ timeout: 90000 });
   await page.screenshot({ path: `${SHOTS}/12-task-completed.png` });
   ok("approved task runs to completed with result", true);
   await page.click('.rail-btn[data-go="chat"]');

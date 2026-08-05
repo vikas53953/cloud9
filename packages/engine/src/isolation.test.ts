@@ -82,7 +82,15 @@ test("no MCP server, skill, hook or CLAUDE.md of the owner's reaches an agent", 
     assert.ok(args.includes(flag), `missing ${flag}`);
   }
   // named individually so a future edit that drops one fails here, loudly
-  assert.ok(args.includes("--safe-mode"), "the owner's CLAUDE.md, skills, plugins and hooks");
+  const at = args.indexOf("--setting-sources");
+  assert.ok(at >= 0 && args[at + 1] === EMPTY_ARG,
+    "the owner's CLAUDE.md, skills, plugins and hooks — an EMPTY source list");
+  // AND THE FLAG THAT MUST NEVER COME BACK. --safe-mode reads like the obvious way
+  // to write this line and it is a trap: it kills Cloud9's OWN --mcp-config doorway
+  // too (measured 2026-08-05, CLI 2.1.222 — mcp_servers came back []).
+  assert.ok(!args.includes("--safe-mode"),
+    "--safe-mode silently kills the --mcp-config server below it: no search_conversation, " +
+    "no open_attachment, and the connections switch grants nothing");
   assert.ok(args.includes("--strict-mcp-config"), "the owner's connected accounts");
   assert.ok(args.includes("--disable-slash-commands"), "the owner's skills");
 });
@@ -210,7 +218,7 @@ test("the report says how high the switches GO, not only what they keep out", ()
   assert.notEqual(HARNESS_ISOLATION.claude.ceiling, HARNESS_ISOLATION.codex.ceiling);
   // and what we saw but could not settle is written down rather than rounded off
   assert.ok(HARNESS_ISOLATION.claude.unknowns.length > 0,
-    "safe-mode still names his plugins; silence about that would be a false 'clean'");
+    "admin-managed policy settings still apply whatever we pass; silence would be a false 'clean'");
 });
 
 test("a harness may not claim the toggles are the boundary while leaking tools", () => {

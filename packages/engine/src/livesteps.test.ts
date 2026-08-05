@@ -281,7 +281,14 @@ test("Claude streams its steps live AND still hands back the same finished recor
   assert.equal(text, "Contents: hello from cloud9 probe");
   // THE RECORD IS THE RECORD. Not assembled from the live batches, not touched
   // by them — parsed from the full buffered output exactly as it always was.
-  assert.deepEqual(recorded, traceClaude(CLAUDE_LINES.join("\n")));
+  //
+  // `resumed` is the ONE field the provider adds that the transcript cannot
+  // carry: whether this turn continued the harness's own session or started
+  // cold is a fact about how the turn was LAUNCHED, not about what the CLI
+  // said. It is spelled out here rather than loosened away, so that any OTHER
+  // difference between the streamed record and the parsed transcript still
+  // fails this test.
+  assert.deepEqual(recorded, { ...traceClaude(CLAUDE_LINES.join("\n")), resumed: false });
   // and the live view never showed a step the record does not contain
   const recordedSeqs = new Set(recorded!.steps.map(s => s.seq));
   for (const s of live) assert.ok(recordedSeqs.has(s.seq), `live step ${s.seq} is not in the record`);
@@ -318,7 +325,10 @@ test("NO STREAMING, NO LIVE BOX: a turn nobody watches is exactly the turn it wa
   const text = await provider.respond({ ...aTurn(), onTrace: t => { recorded = t; } });
   assert.equal(calls[0].opts.onStdoutLine, undefined, "nothing was asked of the runner");
   assert.equal(text, "Contents: hello from cloud9 probe");
-  assert.deepEqual(recorded, traceClaude(CLAUDE_LINES.join("\n")), "the record is untouched");
+  // `resumed: false` is the provider saying which way it launched this turn —
+  // see the note on the streamed case above.
+  assert.deepEqual(recorded, { ...traceClaude(CLAUDE_LINES.join("\n")), resumed: false },
+    "the record is untouched");
 });
 
 test("an old-style runner that ignores the option costs nothing but the live view", async () => {

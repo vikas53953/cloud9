@@ -114,10 +114,38 @@ const BLANK = (name: HarnessName): HarnessInfo => ({
  * and it is asked once more with twice the patience before anybody is told
  * anything. Shared by both harnesses so they can never drift apart.
  */
-async function askVersion(runner: Runner, command: string, timeoutMs: number) {
-  const first = await runner(command, ["--version"], { timeoutMs });
+async function askTwice(
+  runner: Runner, command: string, args: string[], timeoutMs: number, secondMs = timeoutMs * 2,
+) {
+  const first = await runner(command, args, { timeoutMs });
   if (!first.timedOut) return first;
-  return runner(command, ["--version"], { timeoutMs: timeoutMs * 2 });
+  return runner(command, args, { timeoutMs: secondMs });
+}
+
+async function askVersion(runner: Runner, command: string, timeoutMs: number) {
+  return askTwice(runner, command, ["--version"], timeoutMs);
+}
+
+/**
+ * IS THIS CLI SIGNED IN — asked with a leash that fits what the question really
+ * costs, and never answered by the leash itself.
+ *
+ * MEASURED 2026-08-05 on this machine, with Cloud9 running: `claude auth status`
+ * took **77 seconds**. The old code gave it the same 20s as `--version` and, on
+ * a timeout, read `code !== 0` as "not signed in". Two things then went wrong at
+ * once and the second is the expensive one:
+ *
+ *   1. every agent in the app answered "my engine isn't connected — open
+ *      Settings and sign in", on a machine that WAS signed in; and
+ *   2. because `installed` was true, `scheduleRelook` picked the STEADY delay —
+ *      ten minutes — so the whole crew stayed dead for ten minutes per miss.
+ *
+ * So the sign-in probe gets its own, much longer leash, a second chance like
+ * `--version` has always had, and — when it still does not answer — it reports
+ * `unsure`, which the manager reads as "come back soon", never as an answer.
+ */
+async function askSignedIn(runner: Runner, command: string, args: string[], timeoutMs: number) {
+  return askTwice(runner, command, args, timeoutMs * 3, timeoutMs * 6);
 }
 
 export async function detectClaude(
@@ -151,13 +179,22 @@ export async function detectClaude(
   info.modelsChecked = list.checked ?? false;
   info.modelsDetail = list.detail;
 
-  const status = await runner(command, ["auth", "status"], { timeoutMs });
+  const status = await askSignedIn(runner, command, ["auth", "status"], timeoutMs);
   const parsed = parseJsonish(status.stdout) ?? parseJsonish(status.stderr);
   let plan = "";
   if (parsed && typeof parsed.loggedIn === "boolean") {
     info.signedIn = parsed.loggedIn;
     if (typeof parsed.email === "string") info.account = parsed.email;
     if (typeof parsed.subscriptionType === "string") plan = parsed.subscriptionType;
+  } else if (status.timedOut) {
+    // A LEASH IS NOT AN ANSWER — the same law as `--version` above, and the one
+    // that used to cost the whole crew ten minutes of "my engine isn't
+    // connected". Unknown is said out loud and looked at again shortly.
+    info.signedIn = false;
+    info.unsure = true;
+    info.detail = "Claude is on this computer but did not say whether it is signed in — " +
+      "Cloud9 will look again shortly.";
+    return info;
   } else {
     info.signedIn = status.code === 0;
   }
@@ -200,7 +237,15 @@ export async function detectCodex(
   info.installed = true;
   info.version = (version.stdout.trim().split(/\r?\n/)[0] ?? "").slice(0, 60) || undefined;
 
-  const status = await runner(command, ["login", "status"], { timeoutMs });
+  const status = await askSignedIn(runner, command, ["login", "status"], timeoutMs);
+  if (status.timedOut) {
+    // same law as detectClaude's sign-in probe — unknown is not "signed out"
+    info.signedIn = false;
+    info.unsure = true;
+    info.detail = "Codex is on this computer but did not say whether it is signed in — " +
+      "Cloud9 will look again shortly.";
+    return info;
+  }
   const line = `${status.stdout} ${status.stderr}`.trim();
   info.signedIn = status.code === 0 && !/not logged in/i.test(line);
   if (info.signedIn) {
@@ -440,7 +485,11 @@ export class HarnessManager {
   private scheduleRelook(): void {
     if (this.stopped || this.opts.relook === false) return;
     if (this.relookTimer) clearTimeout(this.relookTimer);
-    const missing = !this.state.claude.installed || !this.state.codex.installed;
+    // "I could not tell" is treated exactly like "not here yet": come back in
+    // seconds. Without this an unanswered sign-in probe parked the whole crew on
+    // "my engine isn't connected" for the full ten-minute steady interval.
+    const missing = !this.state.claude.installed || !this.state.codex.installed
+      || this.state.claude.unsure === true || this.state.codex.unsure === true;
     let delay: number;
     if (missing) {
       delay = this.opts.relookMissingMs

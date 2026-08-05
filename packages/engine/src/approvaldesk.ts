@@ -25,7 +25,7 @@
 //     `mustAskBeforeActing` the first time.
 import {
   AgentDef, APPROVAL_LIMITS, Approval, ClientFrame, ID, RemoteAction, RemoteActionFacts,
-  describeRemoteAction, mustAskBeforeActing,
+  decideAsking, describeRemoteAction, isRemoteAction, trustLevel, trustOf,
 } from "@cloud9/shared";
 
 
@@ -34,6 +34,18 @@ export interface ApprovalOutcome {
   approved: boolean;
   reason: string;
   approvalId?: ID;
+  /**
+   * TRUE when this went ahead WITHOUT a card, because the owner had already
+   * answered in advance with this agent's trust setting.
+   *
+   * It is a separate field rather than a shade of `reason` because two things
+   * read it and neither may guess: the engine, which must still announce and
+   * record what happened when nobody was asked, and any test that has to prove
+   * the difference between "he said yes" and "he had said yes in advance". An
+   * `approved: true` with no `approvalId` and no `unasked` would be the one
+   * shape that could hide a bypass, and it is now unreachable.
+   */
+  unasked?: boolean;
 }
 
 export interface ApprovalDeskOptions {
@@ -64,6 +76,20 @@ export interface ApprovalDeskOptions {
    * gate for ever on a screen. `outcome` says which of the four it was.
    */
   onWaitEnd?: (end: { taskId: ID; outcome: ApprovalOutcome }) => void;
+  /**
+   * SOMETHING LEFT THE MACHINE AND NOBODY WAS ASKED — because he had already
+   * said, for this agent, that nobody should be.
+   *
+   * Fired for EVERY action that goes through unasked, before the caller is told
+   * it may proceed. The facts handed over are the same counted facts a card
+   * would have carried (branch, repository, commit count) — measured by the
+   * engine from what it is about to do, never a sentence the agent wrote about
+   * itself. `engine.ts` turns them into the line he reads in the room.
+   *
+   * NOT ASKING IS NOT THE SAME AS NOT TELLING. This hook is the whole difference,
+   * and it is why "don't ask me" does not cost him the audit.
+   */
+  onUnasked?: (what: { agent: AgentDef; taskId?: ID; channelId: ID; facts: RemoteActionFacts }) => void;
 }
 
 interface Waiting {
@@ -107,15 +133,34 @@ export class ApprovalDesk {
     facts: RemoteActionFacts;
   }): Promise<ApprovalOutcome> {
     const { agent, facts } = input;
-    // ONE OWNER FOR "MUST ASK", and it is shared's. Asked here rather than
-    // assumed, so that if this function is ever reached for something that does
-    // NOT have to be asked about, that is a bug we see rather than a silent
-    // extra prompt — and so the rule has exactly one definition on this side of
-    // the wire too.
-    if (!mustAskBeforeActing(agent, { remoteAction: facts.action })) {
+    // SOMETHING THIS APP HAS NO WORDS FOR NEVER HAPPENS. Asked FIRST, and asked
+    // about the action itself rather than about the agent, because "we cannot
+    // describe it" must not be answerable by any setting: an action with no row
+    // on `REMOTE_ACTIONS` has no sentence, no counted facts and no card, so
+    // letting it through on trust would be trusting a blank.
+    if (!isRemoteAction(facts.action)) {
       return Promise.resolve({
         approved: false,
         reason: "Cloud9 does not know how to ask about that, so it did not happen",
+      });
+    }
+    // ONE OWNER FOR "MUST ASK", and it is shared's — the same function the hub
+    // asks and the same function the agent editor asks. `goAhead` here is NOT
+    // the desk deciding: it is the owner's own standing answer for this agent,
+    // stored, validated and shown on the agent's card.
+    if (decideAsking(agent, { remoteAction: facts.action }) === "goAhead") {
+      // TOLD, ALWAYS, EVEN THOUGH HE IS NOT ASKED. Before the caller proceeds,
+      // so the record of it exists before the thing does.
+      this.tell(() => this.opts.onUnasked?.({
+        agent, channelId: input.channelId, facts,
+        ...(input.taskId ? { taskId: input.taskId } : {}),
+      }));
+      this.log(`went ahead unasked: ${describeRemoteAction(facts)}`);
+      return Promise.resolve({
+        approved: true,
+        unasked: true,
+        reason: `you chose “${trustLevel(trustOf(agent)).label}” for ${agent.name}, `
+          + `so it went ahead without asking`,
       });
     }
     if (this.waiting.length >= this.maxWaiting) {

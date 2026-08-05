@@ -105,11 +105,20 @@ export function renderConversation(
  * is no tree to draw. When the parent is inside the window the reply names it by
  * author, which is what a person reading the room would see.
  *
- * AN ATTACHMENT IS NAMED, NEVER OPENED. Naming it costs nothing and is the
- * difference between "here is the spreadsheet" meaning nothing and meaning
- * something. Cloud9 supplies no tool to read one yet — that is the next doorway,
- * not this one — so the agent is told the file is there and is not told it can
- * open it.
+ * AN ATTACHMENT IS NAMED, AND THE NAME IS NOW A HANDLE. Naming it costs nothing
+ * and is the difference between "here is the spreadsheet" meaning nothing and
+ * meaning something. Until 2026-08-05 that was the whole of it, and this comment
+ * said so: "never opened … Cloud9 supplies no tool to read one yet". The doorway
+ * is now built — `open_attachment` in `cloud9tools.ts` takes exactly this name
+ * and hands back what is in the file.
+ *
+ * THE NAME IS STILL ALL THIS FUNCTION SAYS, on purpose. Whether the agent can
+ * really open it is a fact about the TURN, not about the message: the doorway is
+ * only in an agent's hands when Cloud9's tools were actually supplied for that
+ * turn. So the sentence "you can open these" lives on the tool row that owns it
+ * and is printed only when the tool is truly there. Printing it here would put
+ * the same promise in front of an agent that has no way to keep it — which is
+ * precisely the fault `abilities.ts` was written to make impossible.
  */
 function renderMessage(m: Message, byId: Map<string, Message>): string {
   const parts: string[] = [];

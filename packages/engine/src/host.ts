@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { HarnessName, HarnessState } from "@cloud9/shared";
 import { ClaudeCliProvider } from "./claude-cli.js";
+import { SessionBook } from "./sessionresume.js";
 import { mcpConfigPathFor } from "./connections.js";
 import { addDirRootsFor } from "./wholecomputer.js";
 import { CodexProvider } from "./codex.js";
@@ -172,6 +173,14 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
         // calls in use are exactly what the harness is handed.
         wholeComputerRoots: (agentId: string) =>
           addDirRootsFor(engine.agentById(agentId), isFolderOnDisk),
+        // REMEMBER THE CONVERSATION BETWEEN TURNS (`sessionresume.ts`). One small
+        // file beside the run records, in the SAME folder they already live in —
+        // `engine.agentDataDir` is handed to both, so there is no second place
+        // an agent's history can end up.
+        //
+        // Leaving this out is a supported way to run Cloud9: every turn is then
+        // cold with the whole transcript, exactly as it was before this existed.
+        sessions: new SessionBook({ agentDataDir: engine.agentDataDir }),
       });
     } else {
       engine.provider = undefined; // agents will say "my engine isn't connected"

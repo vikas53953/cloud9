@@ -25,8 +25,8 @@
 //
 //   * the switches are still the whole boundary (Claude's `--tools` DECLARES
 //     the set, and everything not granted is spelled out in `--disallowed-tools`);
-//   * his own dev setup is still shut out at EVERY reach (`--safe-mode`,
-//     `--strict-mcp-config`, `--disable-slash-commands`, `--ignore-user-config`);
+//   * his own dev setup is still shut out at EVERY reach (`--strict-mcp-config`,
+//     `--disable-slash-commands`, `--setting-sources ""`, `--ignore-user-config`);
 //   * but the top of the ladder now grants the CLI's whole built-in surface;
 //   * and every row that changes the machine or spends money carries
 //     `alwaysAsk`, so the honest guard is "ask first", never "cannot".
@@ -37,7 +37,9 @@
 // exits 0 and answers normally. An unknown tool name is NOT an error; it is a
 // capability that silently never arrives. A test checks every name in this table
 // against that measured list, so a typo cannot become a switch that does nothing.
-import { AgentAbilities, AgentApprovals, AgentDef, mustAskBeforeActing } from "@cloud9/shared";
+import {
+  AgentAbilities, AgentApprovals, AgentDef, REMOTE_ACTIONS, RemoteAction, mustAskBeforeActing,
+} from "@cloud9/shared";
 
 /**
  * Every built-in tool claude-code **2.1.220** has, measured on 2026-07-30 by
@@ -45,7 +47,11 @@ import { AgentAbilities, AgentApprovals, AgentDef, mustAskBeforeActing } from "@
  * `system/init` event:
  *
  *   claude -p --output-format stream-json --verbose --permission-mode dontAsk \
- *     --safe-mode --strict-mcp-config --disable-slash-commands --tools default
+ *     --strict-mcp-config --disable-slash-commands --setting-sources "" --tools default
+ *
+ * RE-MEASURED 2026-08-05 on CLI 2.1.222 after `--safe-mode` came off that line
+ * (see claude-cli.ts): the built-in set came back BYTE-IDENTICAL, all 31 names,
+ * so this table and the denied list derived from it did not move.
  *
  *   tools: Task, Bash, CronCreate, CronDelete, CronList, DesignSync, Edit,
  *          EnterWorktree, ExitWorktree, Glob, Grep, Monitor, NotebookEdit,
@@ -60,11 +66,9 @@ import { AgentAbilities, AgentApprovals, AgentDef, mustAskBeforeActing } from "@
  *    `NEVER_ALLOWED_TOOLS = ["Bash"]` would not have stopped a shell on Windows
  *    if the declaration had ever slipped. The denied list is derived from THIS
  *    list now, so it cannot miss a sibling again.
- *  - the same probe still reported seven of Vikas's **plugins** by path under
- *    `--safe-mode`, while reporting zero skills, zero slash commands and zero
- *    MCP servers. Nothing measurably reached the agent, so it is not listed as a
- *    leak — but it is written down in `isolation.ts` as an unknown rather than
- *    quietly rounded to "clean".
+ *  - the same probe reported seven of Vikas's **plugins** by path under
+ *    `--safe-mode`. That is now moot: the flag set that replaced it on 2026-08-05
+ *    reports NO plugins at all, so the `isolation.ts` unknown it caused is closed.
  */
 export const CLAUDE_BUILTIN_TOOLS = [
   "Task", "Bash", "CronCreate", "CronDelete", "CronList", "DesignSync", "Edit",
@@ -163,6 +167,42 @@ export interface Capability {
    * there is nowhere to write the refusal except next to the fix.
    */
   fixItInApp: string;
+  /**
+   * THE ONE ROW A BRAND-NEW AGENT DOES NOT GET, and the reason written beside it.
+   *
+   * Every other row is ON the moment an agent exists (see `NEW_AGENT_ABILITIES`).
+   * A row may only opt out of that by proving it grants NOTHING until the owner
+   * hands over something THIS APP CANNOT PRODUCE — today that is `connections`,
+   * whose whole surface arrives as a config file written by whoever made the
+   * outside tool. Switching it on by default would put "on with nothing behind
+   * it" on every agent he owns, for ever, which is the exact half-state this
+   * file exists to kill. `wholeComputer` also needs something supplied and is
+   * still on by default, because the app CAN supply it honestly: his real home
+   * folder, resolved on this machine and shown to him.
+   */
+  offForNewAgents?: true;
+  /** why this row is off for a new agent, in his words. Required when it is. */
+  whyOffForNewAgents?: string;
+}
+
+/**
+ * THE ONE PRESS, and the only route any refusal is ever allowed to name.
+ *
+ * It used to be six discoveries: crew list → the agent → Edit → the reach
+ * section → two switches → a box that only appears after the second one. He did
+ * four of them, stopped, and his agent told him it could not reach his PC. So
+ * every `fixItInApp` below is built from this one sentence: there is now no way
+ * to write a limit in this table that points at a longer path, because the
+ * function that writes them only knows this one.
+ */
+const ONE_PRESS =
+  "press “Work on my computer, like Claude Code” in my editor (the ✎ next to my " +
+  "name in this room, or on my card in the crew list)";
+
+/** The fix sentence for one row: name the switch, name the one press, stop. */
+function onePressFix(label: string, extra = ""): string {
+  return `${ONE_PRESS}. That single press switches on “${label}” along with everything ` +
+    `else this app can do on this computer — there is no second step to find.${extra}`;
 }
 
 /**
@@ -207,6 +247,15 @@ function isSupplied(cap: Capability, granted: Supply): boolean {
  *
  * ORDER MATTERS: it runs from harmless to powerful, and the ladder below is
  * built by taking a prefix of it. A new row goes where its danger puts it.
+ *
+ * WHY `connections` IS LAST, moved there 2026-08-05. It reaches OUTSIDE this
+ * computer — real accounts, somebody else's servers — which is the furthest any
+ * row goes, so on the danger ordering it belongs at the end. And putting it
+ * there buys the thing that made a new agent read honestly: what a brand-new
+ * agent gets (every row the app can really grant) is now a PREFIX of this table
+ * like every rung is, so it IS a rung — "Work on my computer, like Claude Code"
+ * — instead of a mixture no rung could describe. Nothing else moved, so the
+ * rungs below it grant exactly what they granted before.
  */
 export const CAPABILITIES: readonly Capability[] = [
   {
@@ -215,8 +264,7 @@ export const CAPABILITIES: readonly Capability[] = [
     claudeTools: ["WebSearch", "WebFetch"],
     opensCodexWebSearch: true,
     codexUnavoidableTools: ["web.run"],
-    fixItInApp:
-      "open my editor (the ✎ next to my name in this room, or on my card in the crew list) and switch on “Look things up on the web”.",
+    fixItInApp: onePressFix("Look things up on the web"),
     can: "You CAN search the web and open web pages, so you can check things that are " +
       "live right now — prices, availability, news — rather than guessing from memory.",
     cannot: "You CANNOT search the web or open web pages. Say so plainly if you are asked " +
@@ -228,8 +276,7 @@ export const CAPABILITIES: readonly Capability[] = [
     claudeTools: ["Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep"],
     opensCodexWorkspace: true,
     codexUnavoidableTools: ["functions.exec", "functions.shell_command", "functions.apply_patch"],
-    fixItInApp:
-      "open my editor (the ✎ next to my name in this room, or on my card in the crew list) and switch on “Keep and change files in its own folder”.",
+    fixItInApp: onePressFix("Keep and change files in its own folder"),
     can: "You CAN read, write and change files in your own folder — the folder you are " +
       "working in right now. Anything you write there is still there next time we talk, " +
       "so it is the one place you can keep notes for yourself.",
@@ -247,8 +294,7 @@ export const CAPABILITIES: readonly Capability[] = [
     ],
     codexFeature: "multi_agent",
     codexUnavoidableTools: ["collaboration.spawn_agent", "collaboration.*"],
-    fixItInApp:
-      "open my editor (the ✎ next to my name in this room, or on my card in the crew list) and switch on “Get help from its own helper agents”.",
+    fixItInApp: onePressFix("Get help from its own helper agents"),
     can: "You CAN hand parts of a job to helper agents of your own and wait for what they " +
       "find, instead of doing every step yourself in one long answer.",
     cannot: "You CANNOT hand work to helper agents — whatever you do, you do yourself in " +
@@ -258,8 +304,7 @@ export const CAPABILITIES: readonly Capability[] = [
     ability: "schedules",
     label: "Check in on a repeating schedule",
     claudeTools: ["ScheduleWakeup", "CronCreate", "CronList", "CronDelete"],
-    fixItInApp:
-      "open my editor (the ✎ next to my name in this room, or on my card in the crew list) and switch on “Check in on a repeating schedule”.",
+    fixItInApp: onePressFix("Check in on a repeating schedule"),
     can: "You CAN be given a repeating check-in, so your owner can ask you to do something " +
       "every day or every few minutes without asking again each time.",
     cannot: "You CANNOT be given a repeating check-in.",
@@ -268,33 +313,10 @@ export const CAPABILITIES: readonly Capability[] = [
     ability: "background",
     label: "Work on jobs in the background",
     claudeTools: ["EnterWorktree", "ExitWorktree", "RemoteTrigger", "PushNotification"],
-    fixItInApp:
-      "open my editor (the ✎ next to my name in this room, or on my card in the crew list) and switch on “Work on jobs in the background”.",
+    fixItInApp: onePressFix("Work on jobs in the background"),
     can: "You CAN be handed a job to work on in the background and report back on when it " +
       "is finished, instead of answering in one go.",
     cannot: "You CANNOT be handed background jobs — you answer in the conversation only.",
-  },
-  {
-    ability: "connections",
-    label: "Use connected services your owner picked for you",
-    // no built-in tool: the surface arrives as an MCP config passed in for THIS
-    // agent. His own servers never load — `--strict-mcp-config` stays on always.
-    claudeTools: [],
-    opensConnections: true,
-    alwaysAsk: true,
-    needsSupply: "mcpConfigPath",
-    fixItInApp:
-      "open my editor (the ✎ next to my name in this room, or on my card in the crew list), switch on “Use connected services your owner picked for you”, and then press "
-      + "“Choose a file” in the box underneath it to point me at the connections file. The "
-      + "switch on its own gives me nothing until a file is chosen.",
-    can: "You CAN use the connected services your owner set up for you specifically. Those " +
-      "are real accounts, so your owner is asked before you act through them.",
-    cannot: "You CANNOT use any connected service or outside account.",
-    onButNothingSupplied:
-      "You CANNOT use any connected service right now. Your owner has allowed it, but this " +
-      "computer has not given you one — no service is connected for you on this turn, and " +
-      "no tool for one is in your hands. Say that plainly if you are asked; do not promise " +
-      "work through an account you cannot reach.",
   },
   {
     ability: "wholeComputer",
@@ -303,12 +325,11 @@ export const CAPABILITIES: readonly Capability[] = [
     widensBeyondOwnFolder: true,
     alwaysAsk: true,
     needsSupply: "wholeComputerRoots",
-    fixItInApp:
-      "open my editor (the ✎ next to my name in this room, or on my card in the crew list), switch on “Reach files outside its own folder”, and then press "
-      + "“Choose a folder” in the box that appears and pick the folder you want me working in "
-      + "(the whole drive is fine — C:\\ — if that is what you mean). The switch on its own gives "
-      + "me nothing until a folder is chosen. Once it is, I really can read and change files there, the "
-      + "same way Claude Code does.",
+    fixItInApp: onePressFix(
+      "Reach files outside its own folder",
+      " It opens “Choose a folder” in the same breath, so I am never allowed out of my own "
+      + "folder with nowhere to go — and a new agent already starts with your home folder, so "
+      + "there is usually nothing to do at all."),
     can: "You CAN reach files outside your own folder, in the places your owner opened up " +
       "for you. Because that changes his computer, he is asked first.",
     cannot: "You CANNOT reach anything outside your own folder.",
@@ -323,26 +344,63 @@ export const CAPABILITIES: readonly Capability[] = [
     claudeTools: ["Bash", "PowerShell"],
     codexUnavoidableTools: ["functions.exec", "functions.shell_command"],
     alwaysAsk: true,
-    fixItInApp:
-      "open my editor (the ✎ next to my name in this room, or on my card in the crew list) and switch on “Run programs on this computer”. You will be asked "
-      + "before I actually run anything.",
+    fixItInApp: onePressFix(
+      "Run programs on this computer",
+      " You are still asked before I actually run anything."),
     can: "You CAN run programs and commands on this computer, the same way Claude Code and " +
       "Codex do. Because that changes his machine, your owner is asked first — say what " +
       "you intend to run and wait, rather than promising it is already done.",
     cannot: "You CANNOT run programs, shell scripts or terminal commands.",
   },
+  {
+    ability: "connections",
+    label: "Use connected services your owner picked for you",
+    // no built-in tool: the surface arrives as an MCP config passed in for THIS
+    // agent. His own servers never load — `--strict-mcp-config` stays on always.
+    claudeTools: [],
+    opensConnections: true,
+    alwaysAsk: true,
+    needsSupply: "mcpConfigPath",
+    offForNewAgents: true,
+    whyOffForNewAgents:
+      "A connected service is an outside account, and the only thing that can switch it on "
+      + "for real is a small file written by whoever made that service. Cloud9 cannot invent "
+      + "one. Switching this on for every new agent would put “allowed, nothing connected” on "
+      + "every card you own — a promise the app cannot keep. Most people never need it; when "
+      + "you do, it is one press away in the same place as everything else.",
+    fixItInApp: onePressFix(
+      "Use connected services your owner picked for you",
+      " Connected services are the one thing that needs a second action afterwards: press "
+      + "“Choose the file” in the box that appears and point me at the connections file "
+      + "whoever made that service gave you. Nothing but that file can switch it on."),
+    can: "You CAN use the connected services your owner set up for you specifically. Those " +
+      "are real accounts, so your owner is asked before you act through them.",
+    cannot: "You CANNOT use any connected service or outside account.",
+    onButNothingSupplied:
+      "You CANNOT use any connected service right now. Your owner has allowed it, but this " +
+      "computer has not given you one — no service is connected for you on this turn, and " +
+      "no tool for one is in your hands. Say that plainly if you are asked; do not promise " +
+      "work through an account you cannot reach.",
+  },
 ] as const;
 
 /**
- * The ladder Vikas actually picks from. Four rungs, plain words, each one
- * everything below it plus more — from "answer questions only" to "everything
- * this app can do on this computer".
+ * The ladder Vikas actually picks from. Plain words, each rung everything below
+ * it plus more — from "answer questions only" to "everything this app can do on
+ * this computer".
  *
  * It is NOT a second source of truth: a rung is a PREFIX of the table above, so
  * a new capability row automatically lands on the rungs its position implies and
  * there is nowhere to forget it.
+ *
+ * `mypc` was added on 2026-08-05 and is WHAT EVERY NEW AGENT IS. It exists
+ * because the default had to be describable: a set of switches that is not a
+ * rung is drawn as "your own mixture", and every agent he made would have opened
+ * its file saying that. It is the whole table except the one row nobody but he
+ * can supply — and `fullreach.test.ts` holds it to `NEW_AGENT_ABILITIES`, so the
+ * rung and the default cannot come to mean different things.
  */
-export type Reach = "talk" | "look" | "work" | "computer";
+export type Reach = "talk" | "look" | "work" | "mypc" | "computer";
 
 export interface ReachLevel {
   level: Reach;
@@ -374,19 +432,27 @@ export const REACH_LEVELS: readonly ReachLevel[] = [
     rows: 5,
   },
   {
+    level: "mypc",
+    label: "Work on my computer, like Claude Code",
+    plainWords:
+      "What every new agent starts with: running programs, your files, helper agents. " +
+      "Anything that changes your machine asks you first.",
+    // every row the app can really hand over — see `capabilitiesForNewAgent`
+    rows: CAPABILITIES.filter(c => !c.offForNewAgents).length,
+  },
+  {
     level: "computer",
     label: "Everything this app can do on this computer",
     plainWords:
-      "The same reach Claude Code and Codex have on your PC — running programs, files anywhere, " +
-      "connected services. Anything that changes your machine or spends money asks you first.",
+      "The rung above plus connected services — outside accounts you point it at with a file. " +
+      "Most people never need this one.",
     rows: CAPABILITIES.length,
   },
 ] as const;
 
-/** The switches a rung turns on. The only place a rung becomes abilities. */
-export function abilitiesForReach(level: Reach): AgentAbilities {
-  const rung = REACH_LEVELS.find(l => l.level === level) ?? REACH_LEVELS[0];
-  const on = new Set(CAPABILITIES.slice(0, rung.rows).map(c => c.ability));
+/** A whole switch set from a list of rows: on for these, off for every other. */
+function abilitiesOf(rows: readonly Capability[]): AgentAbilities {
+  const on = new Set(rows.map(c => c.ability));
   const abilities: AgentAbilities = {
     webSearch: false, files: false, schedules: false, background: false,
   };
@@ -394,6 +460,134 @@ export function abilitiesForReach(level: Reach): AgentAbilities {
     (abilities as unknown as Record<string, boolean>)[cap.ability] = on.has(cap.ability);
   }
   return abilities;
+}
+
+/** The switches a rung turns on. The only place a rung becomes abilities. */
+export function abilitiesForReach(level: Reach): AgentAbilities {
+  const rung = REACH_LEVELS.find(l => l.level === level) ?? REACH_LEVELS[0];
+  return abilitiesOf(CAPABILITIES.slice(0, rung.rows));
+}
+
+/* ===========================================================================
+ * FULLY CAPABLE THE SECOND IT EXISTS — 2026-08-05, his instruction, repeated
+ * and finally in anger.
+ *
+ * "make cloud9 fully agentic"… "an agent can perform any task like codex or
+ * claude code"… "don't teach me". And still, the agent he had just made was
+ * answering him: "What I can't do: run git, npm, or build commands; create
+ * branches; push PRs; or delegate the work to other agents. Those need switches
+ * you'd have to turn on."
+ *
+ * IT WAS TELLING THE TRUTH. A new agent started on a SUBSET — web search, its
+ * own folder, schedules, background jobs — so the first thing every agent he
+ * made did was explain what it was not. He does not want to flip switches. He
+ * wants what Claude Code is on the day you install it.
+ *
+ * WHY THIS IS SAFE, AND NOT RECKLESS. Three things, none of which this change
+ * touches:
+ *   1. THE APPROVAL CARD. Every row that changes his machine or spends money
+ *      carries `alwaysAsk`; `approvalsFor()` forces the approval ON whenever the
+ *      switch is on, and no stored (or forged) agent definition can turn it off.
+ *      Power arrives; the hand on the door does not move.
+ *   2. OWNER-ONLY DRIVING. `mayDriveAgent` still means nobody but him can set
+ *      one of his agents working unless he says otherwise, so a capable agent is
+ *      a capable agent OF HIS.
+ *   3. THE TOOLS ARE STILL DECLARED PER TURN. `--tools` names the exact set and
+ *      `--disallowed-tools` spells out everything else, and his own Claude Code
+ *      setup — his CLAUDE.md, his slash commands, his MCP servers, his hooks —
+ *      is shut out at every reach by the isolation flags. "Fully capable" never
+ *      means "running as him with his configuration".
+ *
+ * ONE ROW IS OFF, and it is the honest kind of off: see `offForNewAgents`.
+ * =========================================================================== */
+
+/** The rows a brand-new agent is given. Everything the app can really grant. */
+export function capabilitiesForNewAgent(): Capability[] {
+  return CAPABILITIES.filter(c => !c.offForNewAgents);
+}
+
+/**
+ * WHAT A BRAND-NEW AGENT STARTS WITH — one owner for the answer, and it is the
+ * table, so a capability added tomorrow is granted the day it is written rather
+ * than the day somebody remembers a second list.
+ *
+ * The desktop's editor and the casting room both read THIS. There is no
+ * hand-typed default anywhere in Cloud9 any more.
+ */
+export const NEW_AGENT_ABILITIES: AgentAbilities = abilitiesOf(capabilitiesForNewAgent());
+
+/**
+ * IS THIS AGENT ALREADY AS CAPABLE AS A NEW ONE?
+ *
+ * Asked of the STORED switches, because that is what the one-press upgrade would
+ * write. A Codex agent whose app forces rows on is still counted as missing them
+ * if they are not stored on — pressing the button then stores what was already
+ * true, which is the honest direction.
+ */
+export function hasFullReach(
+  agent: Pick<AgentDef, "abilities" | "wholeComputerRoots">, homeFolder?: string,
+): boolean {
+  const stored = (agent.abilities ?? {}) as AgentAbilities;
+  if (capabilitiesForNewAgent().some(c => stored[c.ability] !== true)) return false;
+  // "allowed out of its own folder with nowhere to go" is not full reach either
+  if (homeFolder && storedRootCount(agent) === 0) return false;
+  return true;
+}
+
+function storedRootCount(agent: Pick<AgentDef, "wholeComputerRoots">): number {
+  const said = Array.isArray(agent.wholeComputerRoots) ? agent.wholeComputerRoots : [];
+  return said.filter(r => typeof r === "string" && r.trim().length > 0).length;
+}
+
+/**
+ * THE AGENTS HE ALREADY HAS THAT ARE STUCK BELOW A NEW ONE.
+ *
+ * He has six (Architect, sonnet, Opus, Sol, terra, Fable5) made before the
+ * defaults changed. Nothing rewrites them behind his back — this only answers
+ * "who would the one press change", so the screen can name them and count them
+ * before he presses anything.
+ */
+export function agentsWithoutFullReach<T extends Pick<AgentDef, "abilities" | "wholeComputerRoots">>(
+  agents: readonly T[], homeFolder?: string,
+): T[] {
+  return agents.filter(a => !hasFullReach(a, homeFolder));
+}
+
+/**
+ * ONE AGENT, BROUGHT UP TO WHAT A NEW ONE GETS — the whole of the one press.
+ *
+ * IT ONLY EVER ADDS. A switch he turned on that a new agent does not get
+ * (`connections`) stays on; a folder he chose stays chosen and is never replaced
+ * by the home folder. There is no path through this function that takes
+ * something away, which is what makes "do it to all six at once" a safe thing to
+ * offer.
+ *
+ * `changed` is the truth about THIS agent, so the caller can send nothing at all
+ * for an agent that already had everything — never a save that looks like a
+ * change and is not.
+ */
+export function bringUpToFullReach<T extends AgentDef>(
+  agent: T, homeFolder?: string,
+): { agent: T; changed: boolean } {
+  const stored = { ...((agent.abilities ?? {}) as AgentAbilities) };
+  let changed = false;
+  for (const cap of capabilitiesForNewAgent()) {
+    if (stored[cap.ability] !== true) { changed = true; }
+    (stored as unknown as Record<string, boolean>)[cap.ability] = true;
+  }
+  const roots = (Array.isArray(agent.wholeComputerRoots) ? agent.wholeComputerRoots : [])
+    .filter(r => typeof r === "string" && r.trim().length > 0);
+  const home = typeof homeFolder === "string" ? homeFolder.trim() : "";
+  const nextRoots = roots.length > 0 ? roots : (home ? [home] : []);
+  if (nextRoots.length !== roots.length) changed = true;
+  return {
+    agent: {
+      ...agent,
+      abilities: stored,
+      ...(nextRoots.length > 0 ? { wholeComputerRoots: nextRoots } : {}),
+    },
+    changed,
+  };
 }
 
 /**
@@ -529,6 +723,25 @@ export function withEffectiveAbilities<T extends Pick<AgentDef, "provider" | "ab
   return { ...agent, abilities: effectiveAbilities(agent) };
 }
 
+/**
+ * THE SWITCHES THIS AGENT HAS ON THAT ARE NOTHING WITHOUT SOMETHING SUPPLIED.
+ *
+ * A row with `needsSupply` grants no tool by itself: it only says the launcher
+ * MAY hand something over. A way of running an agent that can never hand it over
+ * is a way of running that agent in which the switch is permanently inert — and
+ * the owner cannot see that from the editor, which reads the switch and says
+ * "In use". `SdkProvider` asks this and refuses the turn rather than running one
+ * that quietly cannot do what he set it to do (see the class comment there).
+ *
+ * DERIVED FROM THE TABLE, so it is a CLASS and not a case. The trap was found on
+ * `wholeComputer`; `connections` had it too and would have been fixed separately
+ * or not at all. Any future row that needs something supplied is covered the day
+ * it is added, because there is nowhere to add it except the table this reads.
+ */
+export function switchesNeedingSupply(agent: AgentDef): Capability[] {
+  return CAPABILITIES.filter(c => c.needsSupply && isOn(agent, c.ability));
+}
+
 /** Does this agent's own folder stop being the edge of its world? */
 export function reachesBeyondOwnFolder(agent: AgentDef): boolean {
   return CAPABILITIES.some(c => c.widensBeyondOwnFolder && isOn(agent, c.ability));
@@ -555,6 +768,15 @@ export function alwaysAskAbilities(): (keyof AgentAbilities)[] {
  *
  * It reuses the app's EXISTING approvals — the same `AgentApprovals` the Tasks
  * panel and `decideApproval` already work on. There is no second mechanism.
+ *
+ * WHAT THIS IS **NOT**, since 2026-08-05. This says which approvals BELONG to
+ * this agent's powers. It does not say whether a given job or action will
+ * actually stop — that is `decideAsking` in shared, which also reads his
+ * per-agent trust setting. The forcing here is deliberately left absolute: a
+ * stored `commands: false` still cannot make an ability that changes the machine
+ * claim it needs no approval. The owner turns the asking down by choosing a
+ * trust setting in his own editor, out loud and per agent — never by a value
+ * appearing in `agent.approvals`.
  */
 export function approvalsFor(agent: AgentDef): Required<AgentApprovals> {
   const stored = agent.approvals;
@@ -596,7 +818,34 @@ export function needsApprovalToRun(agent: AgentDef): boolean {
  * `renderCapabilities`).
  */
 export function describeApprovalNeeds(agent: AgentDef): string[] {
-  return CAPABILITIES.filter(c => c.alwaysAsk && isOn(agent, c.ability)).map(c => c.label);
+  // HIS TRUST SETTING IS PART OF THE ANSWER, not a separate note further down
+  // the page. The editor draws this list under "you'll be asked before it", so a
+  // list that ignored the setting would tell him he is about to be interrupted
+  // by the very thing he just switched off — the same class of lie as a switch
+  // that says "In use" while the command line never carries it.
+  //
+  // It asks the ONE rule (`decideAsking`, in shared) per ability rather than
+  // re-deriving the trust logic here, so this list cannot come to mean something
+  // different from what actually happens.
+  return CAPABILITIES
+    .filter(c => c.alwaysAsk && isOn(agent, c.ability)
+      && mustAskBeforeActing({ abilities: { [c.ability]: true }, trust: agent.trust }))
+    .map(c => c.label);
+}
+
+/**
+ * THE ACTIONS THAT STILL STOP AND ASK HOWEVER MUCH HE TRUSTS THIS AGENT.
+ *
+ * Everything on the shared `REMOTE_ACTIONS` table, in plain words, filtered
+ * through the same one rule — so under "ask me only before something leaves this
+ * computer" the editor can list exactly what that means (push, pull request,
+ * issue, comment, review, checkout, resolve) instead of him having to take the
+ * sentence on faith, and under "don't ask me" it correctly lists nothing.
+ */
+export function describeRemoteAsks(agent: Pick<AgentDef, "trust">): string[] {
+  return (Object.keys(REMOTE_ACTIONS) as RemoteAction[])
+    .filter(action => mustAskBeforeActing({ trust: agent.trust }, { remoteAction: action }))
+    .map(action => REMOTE_ACTIONS[action]);
 }
 
 /**

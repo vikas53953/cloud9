@@ -26,6 +26,18 @@ import {
   // how many folders one agent may be opened up to — the hub's own number, so
   // the screen refuses at exactly the count the hub would refuse at
   WHOLE_COMPUTER_LIMITS,
+  /* THE HALF-STATE, OWNED IN ONE PLACE — a switch that is on with nothing
+     behind it. The crew card, the room rail and the agent editor all ask this
+     same function, which is what stops the gap being visible in only one of
+     them (which is how Vikas met it: on, empty, and only sayable three screens
+     from where he was standing). */
+  SUPPLY_SWITCHES, supplyChosen, supplyGapsOf, type SupplySwitch,
+  /* HOW MUCH THIS AGENT MAY DO WITHOUT STOPPING TO ASK — his choice, per agent,
+     in his own words. The three settings and the words on them live in shared
+     (the hub validates them, the engine obeys them, this screen draws them), so
+     there is no copy here that could describe a setting as something milder than
+     it is. `NEW_AGENT_TRUST` is the middle one; see the note beside it. */
+  AgentTrust, NEW_AGENT_TRUST, TRUST_LEVELS, trustLevel, trustOf, trustWords,
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -48,8 +60,14 @@ import {
    half of the engine that spawns processes, and none of that belongs in a
    browser bundle. These two modules read `@cloud9/shared` and nothing else.) */
 import {
-  abilitiesForReach, CAPABILITIES, describeApprovalNeeds, effectiveAbilities,
+  abilitiesForReach, CAPABILITIES, describeApprovalNeeds, describeRemoteAsks, effectiveAbilities,
   forcedOnCapabilities, FORCED_ON_NOTE, REACH_LEVELS, Reach, Capability,
+  /* FULLY CAPABLE THE SECOND IT EXISTS. What a new agent starts with is the
+     capability TABLE's own answer now, not a literal typed into this file — and
+     the one press that brings the agents he already has up to the same set is
+     the same code, so the two can never mean different things. */
+  NEW_AGENT_ABILITIES, capabilitiesForNewAgent,
+  agentsWithoutFullReach, bringUpToFullReach,
 } from "@cloud9/engine/dist/abilities.js";
 import { isolationFor } from "@cloud9/engine/dist/isolation.js";
 /* THE ONE OWNER of "does this agent really have connected services?" — the same
@@ -3612,6 +3630,13 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
   if (typeof record.usage?.costUsd === "number") {
     rows.push(["cost", "Cost", humanMoney(record.usage.costUsd)]);
   }
+  /* HOW MUCH OF THIS HE WAS ASKED ABOUT — recorded on the run at the moment it
+     started, so it says what was true THEN even if he has changed his mind
+     since. It is the row that makes "don't ask me" survivable: he stops being
+     interrupted, and he does not stop being able to find out afterwards which
+     turns were allowed to work while he was not looking. Absent on runs from
+     before the setting existed, and absent reads as the strictest one. */
+  rows.push(["trust", "Your rule then", trustLevel(trustOf(record)).cardWords]);
   /* THE ONE OWNER OF WHAT A FAILURE SAYS, applied to the row a person is most
      likely to meet one in. `redactForSharing` on the engine side took the
      secrets and the paths out; it does not turn computer-speak into English,
@@ -6881,18 +6906,58 @@ const ROLE_MEANS: Record<ChannelRole, string> = {
 function ReachGap({ agent, onEdit }: {
   agent: AgentDef; onEdit: () => void;
 }): React.JSX.Element | null {
-  // `onDisk` is never consulted for the two states below — an off switch is
-  // answered before the disk, and "nothing chosen" has nothing to look for.
-  const state = wholeComputerRootsFor(agent, () => false).state;
-  if (state !== "off" && state !== "none") return null;
+  /* A GAP FIRST, because a gap is a promise the app has made and cannot keep,
+     and "switched off" is a decision he made on purpose. */
+  if (supplyGapsOf(agent).length > 0) {
+    return <SupplyGapBadge agent={agent} onEdit={onEdit} where="rail" />;
+  }
+  // `onDisk` is never consulted here — an off switch is answered before the disk.
+  if (wholeComputerRootsFor(agent, () => false).state !== "off") return null;
   return (
-    <span className="an-fix" data-reach-gap={state}>
-      {state === "off"
-        ? `${agent.name} can only touch its own folder — nothing else on this computer.`
-        : `${agent.name} is allowed outside its own folder, but no folder has been chosen yet.`}
-      {" "}
-      <button className="linkbtn" data-reach-fix onClick={onEdit}>
-        {state === "off" ? "Give it a folder" : "Choose a folder"}
+    <span className="an-fix" data-reach-gap="off">
+      {agent.name} can only touch its own folder — nothing else on this computer.{" "}
+      <button className="linkbtn" data-reach-fix onClick={onEdit}>Give it a folder</button>
+    </span>
+  );
+}
+
+/**
+ * A SWITCH THAT IS ON WITH NOTHING BEHIND IT, SAID WHERE HE IS STANDING.
+ *
+ * THE FAULT, 2026-08-05, in his words: "cloud9 is not able to access my pc". The
+ * `wholeComputer` switch was on for that agent and no folder had ever been
+ * chosen, so the honest answer really was "I cannot" — and the ONLY place that
+ * fact was written down was inside that agent's own editor, which he had no
+ * reason to open because as far as he knew he had already switched it on.
+ *
+ * A GAP IS NOW LOUD EVERYWHERE THE AGENT IS. This one component is drawn on the
+ * crew card and in the room rail, and both read `supplyGapsOf` in
+ * `@cloud9/shared` — the same function the editor reads. There is no way to add
+ * a switch of this shape that shows up in one of those places and not the
+ * others, because none of them computes its own answer.
+ *
+ * NOT A DISK QUESTION. "Is that folder still there?" belongs to the engine,
+ * which can see the disk; a gone folder is said in the editor by
+ * `WholeComputerPick`. This says only the thing that needs no disk and is
+ * therefore true in any window: nothing has been chosen at all.
+ */
+function SupplyGapBadge({ agent, onEdit, where }: {
+  agent: AgentDef; onEdit: () => void; where: "card" | "rail";
+}): React.JSX.Element | null {
+  const gaps = supplyGapsOf(agent);
+  if (gaps.length === 0) return null;
+  const first = gaps[0];
+  return (
+    <span className={where === "card" ? "gapline" : "an-fix gapline"}
+      data-supply-gap={gaps.map(g => g.ability).join(",")} data-reach-gap="none">
+      <span className="chip is-gold" data-supply-gap-chip>Half set up</span>{" "}
+      {agent.name} {first.missing}
+      {gaps.length > 1
+        ? `, and ${countOf(gaps.length - 1, "other switch", "other switches")} like it`
+        : ""}.{" "}
+      <button className="linkbtn" data-reach-fix data-supply-gap-fix={first.ability}
+        onClick={onEdit}>
+        {first.fix}
       </button>
     </span>
   );
@@ -7018,6 +7083,104 @@ function Stat({ n, one, many }: { n: number; one: string; many: string }): React
   );
 }
 
+/**
+ * "LET ALL MY AGENTS WORK ON THIS COMPUTER" — ONE PRESS FOR THE WHOLE CREW.
+ *
+ * THE PROBLEM THIS IS, 2026-08-05. New agents are fully capable from the second
+ * they exist. The six he already has — Architect, sonnet, Opus, Sol, terra,
+ * Fable5 — were made before that and are stuck: they cannot run a command, reach
+ * a file of his, or hand work to a helper. Fixing them by hand is six trips
+ * through six editors, and he has said what he thinks of that.
+ *
+ * NOTHING IS CHANGED UNTIL HE PRESSES IT. A stored agent is his; the app does
+ * not quietly rewrite one because a default moved. So this counts them, names
+ * them, says exactly what it grants and that approvals still apply, and then
+ * does all of them in one action.
+ *
+ * IT ONLY EVER ADDS. `bringUpToFullReach` cannot take a switch away or replace a
+ * folder he chose, and it is the SAME function a new agent's defaults come from,
+ * so "as capable as a new one" cannot come to mean two different things.
+ *
+ * IT DISAPPEARS WHEN IT IS DONE, because a button with nothing to do is a
+ * question he has to answer every time he looks at this screen.
+ */
+function LetThemAllWork(): React.JSX.Element | null {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const home = useHomeFolder();
+  const [done, setDone] = useState<number | null>(null);
+  const mine = world.agents.filter(a => a.ownerId === world.me?.id) as AgentDef[];
+  const behind = agentsWithoutFullReach(mine, home ?? undefined);
+
+  if (done !== null) {
+    return (
+      <div className="crewupgrade is-done" data-crew-upgrade="done" data-crew-upgraded={done}>
+        <span className="cu-mark" aria-hidden="true">✓</span>
+        <span>
+          <b>{countOf(done, "agent")} brought up to full reach.</b> They can run programs,
+          reach your files and hand work to helper agents — and every one of those still
+          stops and asks you first.
+        </span>
+      </div>
+    );
+  }
+  if (mine.length === 0 || behind.length === 0) return null;
+
+  const grant = (): void => {
+    let changedCount = 0;
+    for (const a of behind) {
+      const next = bringUpToFullReach(a, home ?? undefined);
+      if (!next.changed) continue;
+      client.send({ type: "updateAgent", agent: next.agent });
+      changedCount++;
+    }
+    setDone(changedCount);
+  };
+
+  return (
+    <div className="crewupgrade" data-crew-upgrade="offer"
+      data-crew-upgrade-count={behind.length}
+      data-crew-upgrade-names={behind.map(a => a.name).join(",")}>
+      <div className="cu-head">
+        <span className="cu-mark" aria-hidden="true">▣</span>
+        <span className="cu-tx">
+          <b>Let all my agents work on this computer</b>
+          <span>
+            {countOf(behind.length, "agent")} you already have{" "}
+            {behind.length === 1 ? "was" : "were"} made before Cloud9 gave every new agent
+            the full working set — {behind.map(a => a.name).join(", ")}. One press brings{" "}
+            {behind.length === 1 ? "it" : "them"} up to the same reach a new agent has.
+          </span>
+        </span>
+        <button className="primary small" data-crew-upgrade-grant onClick={grant}>
+          Let them all work
+        </button>
+      </div>
+      {/* WHAT IT GRANTS, IN THE TABLE'S OWN WORDS — the same rows a new agent
+          gets, read from the same place, so this list cannot drift from it. */}
+      <ul className="cu-grants" data-crew-upgrade-grants={capabilitiesForNewAgent().map(c => c.ability).join(",")}>
+        {capabilitiesForNewAgent().map(c => <li key={c.ability}>{c.label}</li>)}
+      </ul>
+      <p className="cu-ask">
+        <b>You are still asked first.</b> Anything that changes this computer, spends your
+        money or reaches an outside account stops and waits for you —{" "}
+        {CAPABILITIES.filter(c => c.alwaysAsk).map(c => c.label.toLowerCase()).join("; ")}.
+        This does not switch that off, and nothing can.
+      </p>
+      <p className="cu-folder" data-crew-upgrade-folder={home ?? ""}>
+        {home
+          ? <>Any of them with no folder of yours opened up starts in <code className="folderpath">{home}</code>.
+            You can change or forget that on each agent's own page, any time.</>
+          : <>Folders are left exactly as they are: this window cannot ask this computer
+            where your home folder is, so it will not claim one.</>}
+      </p>
+      <p className="cu-keep">
+        Nothing is taken away. A switch you turned off on purpose that a new agent does not
+        get either — connected services — stays exactly as you left it.
+      </p>
+    </div>
+  );
+}
+
 function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
   onHire: () => void;
   onEdit: (a: AgentDef) => void;
@@ -7085,6 +7248,10 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
         <button className="btn tomarket" onClick={onMarket}>Browse the casting room</button>
         <button className="primary" onClick={onHire}>Write an agent</button>
       </div>
+
+      {/* THE AGENTS HE ALREADY HAS, BROUGHT UP TO WHAT A NEW ONE GETS — one
+          press for all of them, and nothing changes until he presses it. */}
+      <LetThemAllWork />
 
       {/* The one thing he has to know after hiring: it is his now. */}
       {justHired && (
@@ -7158,6 +7325,21 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
                         : world.users.find(u => u.id === a.ownerId)?.name ?? "its owner")}
                     </span>
                   </div>
+                  {/* HOW MUCH THIS ONE MAY DO UNATTENDED, ON THE CARD ITSELF.
+                      A setting that only exists inside an editor is a setting he
+                      has to remember he made — and this is the one setting where
+                      forgetting means being surprised by what an agent did while
+                      he was not looking. Only for HIS agents, like the supply
+                      gap below: somebody else's trust setting is not his to
+                      read or to change. One press on it opens the file at the
+                      choice. */}
+                  {a.ownerId === world.me?.id && (
+                    <button className="now trustline" data-trust={trustOf(a)}
+                      onClick={() => onEdit(a)} title="Change how much this agent does on its own">
+                      <MarkGate />
+                      <span>{trustWords(a)}</span>
+                    </button>
+                  )}
                   <div className="now nowpresence">
                     <MarkClock />
                     <span>
@@ -7168,6 +7350,14 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
                           : NOT_YET_LOOKED}
                     </span>
                   </div>
+                  {/* A SWITCH ON WITH NOTHING BEHIND IT, ON THE CARD ITSELF.
+                      He should never have to open an agent's file to find out
+                      that a power he switched on is handing it nothing — that
+                      is exactly how he ended up believing the app was broken.
+                      Only for HIS agents: nobody else can fix somebody's
+                      settings, so telling them about it is noise. */}
+                  {a.ownerId === world.me?.id &&
+                    <SupplyGapBadge agent={a} onEdit={() => onEdit(a)} where="card" />}
                 </div>
                 <div className="castbtns">
                   <button className="btn small" onClick={() => onOpen(a.id, a.name)}>Talk to {a.name}</button>
@@ -7539,19 +7729,21 @@ function QuickChat({ onClose, standalone }: { onClose?: () => void; standalone?:
 /* ================= model picker (his 5, 6) ================= */
 
 /** The models this harness really offers, or the documented set until it says. */
-/**
- * WHAT A BRAND NEW AGENT STARTS WITH — one owner for the answer.
+/* WHAT A BRAND NEW AGENT STARTS WITH is `NEW_AGENT_ABILITIES`, imported at the
+   top of this file from the engine's capability table.
  *
- * The editor starts here and so does a hire from the casting room, which is why
- * it is a constant rather than a literal typed into two places. A hired role
- * only ever says which switches it wants ON; everything it does not name keeps
- * whatever this says, and any switch added to the abilities model later is
- * absent here too — absent means off (`@cloud9/shared`), so nothing can be
- * granted to a hire by an ability arriving rather than by someone choosing it.
- */
-const NEW_AGENT_ABILITIES: AgentAbilities = {
-  webSearch: true, files: false, schedules: false, background: true,
-};
+ * IT USED TO BE TYPED HERE, and it was a SUBSET — web search and background jobs
+ * and nothing else. That is why every agent he made opened by explaining what it
+ * was not: "I can't run git, npm, or build commands; create branches; push PRs;
+ * or delegate the work to other agents. Those need switches you'd have to turn
+ * on." He does not want to turn on switches. So the default is now the top rung,
+ * it is DERIVED from the table (a capability written tomorrow is granted the day
+ * it is written), and the reason that is safe rather than reckless — the
+ * approval card, owner-only driving, per-turn tool declaration, his own Claude
+ * Code setup shut out — is written where the table is.
+ *
+ * A hired role still only ever says which switches it wants ON, and it is laid
+ * on top of this. Nothing about hiring can take a power away. */
 
 /** The same answer, for approvals. A hire is no more permissive than a hand-written agent. */
 const NEW_AGENT_APPROVALS: AgentApprovals = { background: false, schedules: false };
@@ -7589,6 +7781,11 @@ function agentFromTemplate(
     // the same default a hand-written agent gets: nobody but him sets it working
     respondTo: "owner",
     respondToAllowlist: [],
+    // …and the same default for how much it may do on its own. A role hired in
+    // two clicks must not be a quieter or a louder animal than one typed out —
+    // that split is the whole reason this function exists. It is written down as
+    // a real stored value, never left to the field's absence.
+    trust: NEW_AGENT_TRUST,
   };
 }
 
@@ -8197,6 +8394,79 @@ function rungOfExactly(ab: AgentAbilities): Reach | null {
   return found?.level ?? null;
 }
 
+/* ================= ASKING THE COMPUTER FOR THE THING A SWITCH NEEDS =========
+ *
+ * ONE PLACE THAT OPENS A PICKER, because there are now THREE callers of each
+ * one: the per-switch block below it, the switch itself (turning it on opens the
+ * picker in the same breath — see `AgentEditor`), and the one-press
+ * "Work on my computer" choice. Three copies of "ask the shell, treat cancel as
+ * not-now, print the refusal" is three chances for one of them to leave the
+ * owner with a switch on and nothing behind it, which is the exact half-state
+ * this round exists to kill.
+ *
+ * THREE ANSWERS AND NO FOURTH. `picked` is the only one that changes anything.
+ * `cancelled` means "not now" and is never an error. `refused` carries a
+ * sentence to print — including the honest one for a window with no shell to ask
+ * (dev, QA in a browser), which must never be silently treated as a cancel.
+ */
+type PickAnswer =
+  | { kind: "picked"; paths: string[] }
+  | { kind: "cancelled" }
+  | { kind: "refused"; why: string };
+
+const NO_FOLDER_PICKER = "This window cannot open the computer's folder picker, so the "
+  + "folders have to be chosen in the installed Cloud9 app.";
+const NO_FILE_PICKER = "This window cannot open the computer's file picker, so the file has "
+  + "to be chosen in the installed Cloud9 app.";
+
+/** The operating system's own folder picker, several at once. */
+async function askForFolders(): Promise<PickAnswer> {
+  const picker = desktop()?.chooseWholeComputerFolders;
+  if (!picker) return { kind: "refused", why: NO_FOLDER_PICKER };
+  const picked = await picker().catch(() => ({
+    ok: false, error: "This computer could not open the folder picker.",
+  } as { ok: boolean; paths?: string[]; cancelled?: boolean; error?: string }));
+  if (picked.cancelled) return { kind: "cancelled" };
+  if (!picked.ok || !picked.paths?.length) {
+    return picked.error ? { kind: "refused", why: picked.error } : { kind: "cancelled" };
+  }
+  return { kind: "picked", paths: picked.paths };
+}
+
+/** The operating system's own file picker, for one connections file. */
+async function askForConnectionsFile(current?: string): Promise<PickAnswer> {
+  const picker = desktop()?.chooseConnectionsFile;
+  if (!picker) return { kind: "refused", why: NO_FILE_PICKER };
+  const picked = await picker(current || undefined).catch(() => ({
+    ok: false, error: "This computer could not open the file picker.",
+  } as { ok: boolean; path?: string; cancelled?: boolean; error?: string }));
+  if (picked.ok && picked.path) return { kind: "picked", paths: [picked.path] };
+  if (picked.cancelled) return { kind: "cancelled" };
+  return picked.error ? { kind: "refused", why: picked.error } : { kind: "cancelled" };
+}
+
+/**
+ * ADDED, NEVER REPLACED, and never twice: opening the picker again is how a
+ * person adds a second folder, so it must not be a way to silently lose the
+ * first. The count is his to see — the refusal names the folder that did not
+ * fit rather than quietly dropping it.
+ */
+function mergeRoots(roots: string[], picked: string[]): { next: string[]; refusal: string | null } {
+  const next = [...roots];
+  let refusal: string | null = null;
+  for (const path of picked) {
+    const said = path.trim();
+    if (!said || next.includes(said)) continue;
+    if (next.length >= WHOLE_COMPUTER_LIMITS.roots) {
+      refusal = `One agent can be given ${WHOLE_COMPUTER_LIMITS.roots} folders at most. `
+        + "Take one off the list before adding another.";
+      break;
+    }
+    next.push(said);
+  }
+  return { next, refusal };
+}
+
 /**
  * WHICH CONNECTIONS FILE THIS ONE AGENT USES — and honestly when it has none.
  *
@@ -8261,18 +8531,10 @@ function ConnectionsFilePick({ agentName, agentDraft, file, onChoose }: {
 
   const pick = async (): Promise<void> => {
     setRefusal(null);
-    const picker = desktop()?.chooseConnectionsFile;
-    if (!picker) {
-      setRefusal("This window cannot open the computer's file picker, so the file has to "
-        + "be chosen in the installed Cloud9 app.");
-      return;
-    }
-    const picked = await picker(said || undefined).catch(() => ({
-      ok: false, error: "This computer could not open the file picker.",
-    } as { ok: boolean; path?: string; cancelled?: boolean; error?: string }));
-    if (picked.ok && picked.path) { onChoose(picked.path); return; }
-    if (picked.cancelled) return; // closing the picker means "not now"
-    if (picked.error) setRefusal(picked.error);
+    const answer = await askForConnectionsFile(said);
+    if (answer.kind === "picked") { onChoose(answer.paths[0]); return; }
+    if (answer.kind === "refused") setRefusal(answer.why);
+    // `cancelled` — closing the picker means "not now", and says nothing.
   };
 
   return (
@@ -8376,35 +8638,11 @@ function WholeComputerPick({ agentName, agentDraft, roots, onChange }: {
 
   const add = async (): Promise<void> => {
     setRefusal(null);
-    const picker = desktop()?.chooseWholeComputerFolders;
-    if (!picker) {
-      setRefusal("This window cannot open the computer's folder picker, so the folders have "
-        + "to be chosen in the installed Cloud9 app.");
-      return;
-    }
-    const picked = await picker().catch(() => ({
-      ok: false, error: "This computer could not open the folder picker.",
-    } as { ok: boolean; paths?: string[]; cancelled?: boolean; error?: string }));
-    if (picked.cancelled) return; // closing the picker means "not now"
-    if (!picked.ok || !picked.paths?.length) {
-      if (picked.error) setRefusal(picked.error);
-      return;
-    }
-    /* ADDED, NEVER REPLACED, and never twice: opening the picker again is how a
-       person adds a second folder, so it must not be a way to silently lose the
-       first. The count is his to see — the refusal says which folder did not
-       fit rather than quietly dropping it. */
-    const next = [...roots];
-    for (const path of picked.paths) {
-      const said = path.trim();
-      if (!said || next.includes(said)) continue;
-      if (next.length >= WHOLE_COMPUTER_LIMITS.roots) {
-        setRefusal(`One agent can be given ${WHOLE_COMPUTER_LIMITS.roots} folders at most. `
-          + "Take one off the list before adding another.");
-        break;
-      }
-      next.push(said);
-    }
+    const answer = await askForFolders();
+    if (answer.kind === "refused") { setRefusal(answer.why); return; }
+    if (answer.kind === "cancelled") return; // closing the picker means "not now"
+    const { next, refusal: tooMany } = mergeRoots(roots, answer.paths);
+    if (tooMany) setRefusal(tooMany);
     if (next.length !== roots.length) onChange(next);
   };
 
@@ -8462,6 +8700,254 @@ function WholeComputerPick({ agentName, agentDraft, roots, onChange }: {
   );
 }
 
+/**
+ * THIS COMPUTER'S HOME FOLDER — the folder a brand-new agent starts with.
+ *
+ * THE CHOICE, 2026-08-05, and why it went this way. `wholeComputer` is on for
+ * every new agent now, and a switch that is on with nowhere to go is a lying
+ * switch. There were two honest ways to close that: ask him for a folder the
+ * moment an agent is created, or START it somewhere real. Asking is one more
+ * dialog between "I want an agent" and having one, and it is exactly the kind of
+ * step he has told us, repeatedly, that he does not want. So a new agent starts
+ * with his home folder — the same place Claude Code lands when he opens a
+ * terminal there — and the folder is PLAINLY SHOWN in the editor with a Forget
+ * button beside it, so it is a starting point and never a thing done behind his
+ * back.
+ *
+ * IT IS THE REAL ONE, ASKED OF THE MACHINE. `os.homedir()` in the desktop shell,
+ * checked to be a whole path and to really be a folder this second. This window
+ * cannot build the value and there is no guessed fallback: in a browser (dev,
+ * QA) or on a machine that cannot vouch for it the answer is null and NO folder
+ * is claimed — the agent then shows the ordinary "no folder chosen yet" state,
+ * which is true. The app never says it opened up a folder it did not open up.
+ */
+function useHomeFolder(): string | null {
+  const [home, setHome] = useState<string | null>(null);
+  useEffect(() => {
+    const ask = desktop()?.homeFolder;
+    if (!ask) return;               // no shell to ask — nothing is claimed
+    let alive = true;
+    void ask()
+      .then(answer => {
+        const said = typeof answer?.path === "string" ? answer.path.trim() : "";
+        if (alive && answer?.ok === true && said) setHome(said);
+      })
+      .catch(() => { /* no answer is the same as no folder: claim nothing */ });
+    return () => { alive = false; };
+  }, []);
+  return home;
+}
+
+/* ================= "WORK ON MY COMPUTER, LIKE CLAUDE CODE" =================
+ *
+ * HIS ASK, SAID THE SAME WAY FOR WEEKS: "make cloud9 fully agentic… an agent can
+ * perform any task like codex or claude code… access any app, access any folder,
+ * run any command on my pc."
+ *
+ * WHAT HE ACTUALLY HAD TO DO TO GET IT, before this block existed. Find the crew
+ * list. Find the agent. Find Edit. Find the reach section. Understand that a
+ * ladder rung and a row of switches are the same fact. Turn on "Run programs on
+ * this computer". Turn on "Reach files outside its own folder". Notice that the
+ * second one, on its own, gives the agent NOTHING. Scroll to a box that only
+ * appears once that switch is on, and press "Choose a folder". Six discoveries,
+ * two of them invisible, and the fifth one is a trap: he did the first four,
+ * stopped, and his agent told him it could not reach his PC. He read that as the
+ * product being broken, which from where he was standing is the only reasonable
+ * reading.
+ *
+ * CLAUDE CODE NEEDS NONE OF THAT — because HE launched it, in the folder he
+ * wanted, and it just works. So this is one press with that shape: it says what
+ * it grants in his words, grants it, and OPENS THE FOLDER PICKER IN THE SAME
+ * BREATH, so there is no moment where a switch is on and nothing is behind it.
+ *
+ * IT IS NOT A NEW IDEA — IT IS THE TOP RUNG. Every ability comes from
+ * `abilitiesForReach("computer")` and the one-line summary is the rung's own
+ * `plainWords`, so the ladder below still draws itself as chosen and this can
+ * never drift from what that rung means. There is no second definition of "full
+ * reach" anywhere in Cloud9.
+ *
+ * IT DOES NOT TOUCH THE APPROVALS, ON PURPOSE. Every row that changes the
+ * machine or spends money carries `alwaysAsk`, `approvalsFor()` forces those on
+ * whatever is stored, and the approval CARD is what makes full reach safe to
+ * hand over at all. This grants power and nothing else; the hand on the door
+ * stays exactly where it was, and the card below says so in one line so he is
+ * never surprised by being asked.
+ */
+function WorkOnMyComputer({
+  shownName, creating, provider, ab, roots, connFile, onGrant, onRoots, onConnFile,
+}: {
+  shownName: string;
+  /** a brand new agent — the choice is offered up front, with a recommendation */
+  creating: boolean;
+  provider: Provider;
+  /** the switches as they stand right now, unsaved edits included */
+  ab: AgentAbilities;
+  roots: string[];
+  connFile: string;
+  onGrant: (next: AgentAbilities) => void;
+  onRoots: (next: string[]) => void;
+  onConnFile: (path: string) => void;
+}): React.JSX.Element {
+  const [refusal, setRefusal] = useState<string | null>(null);
+
+  const effAb = effectiveAbilities({ provider, abilities: ab });
+  /* THE RUNG THIS BUTTON REALLY GRANTS — the one every new agent is, not the
+     one above it. They differ by connected services alone, which nobody but he
+     can supply, and saying "everything" while handing over one row less is the
+     shape of lie this whole screen exists to stop. */
+  const topRung = REACH_LEVELS.find(r => r.level === "mypc") ?? REACH_LEVELS[REACH_LEVELS.length - 1];
+  /* THE SAME QUESTION THE HALF-STATE OWNER ASKS, asked of the unsaved draft —
+     so the prompt below appears the instant a switch goes on, not after a save. */
+  const gaps = supplyGapsOf({
+    abilities: effAb, wholeComputerRoots: roots, connectionsFile: connFile,
+  });
+  const gapOf = (ability: string): SupplySwitch | undefined =>
+    gaps.find(g => g.ability === ability);
+  /* "FULL" MEANS THE SAME THING HERE AS IT DOES FOR A NEW AGENT, and it is the
+     same code that answers it (`capabilitiesForNewAgent`). Everything this app
+     can really hand over is in; the one row that grants nothing until somebody
+     outside Cloud9 writes him a file is not, and is said out loud below rather
+     than sitting here as a permanent unfinished tick. */
+  const workingSet = capabilitiesForNewAgent();
+  const heldBack = CAPABILITIES.filter(c => c.offForNewAgents);
+  const fullReach = workingSet.every(c => effAb[c.ability] === true);
+  const on = fullReach && gaps.length === 0;
+
+  const chooseFolder = async (): Promise<void> => {
+    setRefusal(null);
+    const answer = await askForFolders();
+    if (answer.kind === "refused") { setRefusal(answer.why); return; }
+    if (answer.kind === "cancelled") return; // "not now" — the prompt below stays
+    const { next, refusal: tooMany } = mergeRoots(roots, answer.paths);
+    if (tooMany) setRefusal(tooMany);
+    if (next.length !== roots.length) onRoots(next);
+  };
+
+  const chooseFile = async (): Promise<void> => {
+    setRefusal(null);
+    const answer = await askForConnectionsFile(connFile);
+    if (answer.kind === "refused") { setRefusal(answer.why); return; }
+    if (answer.kind === "picked") onConnFile(answer.paths[0]);
+  };
+
+  /* ONE PRESS = THE WHOLE WORKING SET, AND THE FOLDER IN THE SAME FLOW.
+     The picker opens as part of this action rather than after it, because the
+     state this exists to kill is "switch on, nothing chosen" — and the only way
+     to make that state impossible to arrive at by accident is never to leave the
+     flow in it. If he closes the picker, the prompt below is loud and stays. */
+  const turnOn = async (): Promise<void> => {
+    setRefusal(null);
+    /* ONLY EVER ADDS. Laid on top of what he already set, so a switch he turned
+       on that the working set does not include (connected services) is not
+       quietly turned off by a button whose whole promise is MORE. */
+    const next = { ...ab } as AgentAbilities;
+    for (const cap of workingSet) {
+      (next as unknown as Record<string, boolean>)[cap.ability] = true;
+    }
+    onGrant(effectiveAbilities({ provider, abilities: next }));
+    if (roots.length === 0) await chooseFolder();
+  };
+
+  return (
+    <div className="oneclick" data-oneclick={on ? "on" : fullReach ? "half" : "off"}>
+      <div className="oc-head">
+        <span className="oc-mark" aria-hidden="true">▣</span>
+        <span className="oc-tx">
+          <b>
+            Work on my computer, like Claude Code
+            {creating && <span className="chip">Recommended</span>}
+          </b>
+          {/* THE RUNG'S OWN WORDS. Written here once it would be a second
+              description of the same thing, free to drift from what the rung
+              actually grants. */}
+          <span>{topRung.plainWords}</span>
+        </span>
+        {on
+          ? <span className="chip is-gold" data-oneclick-on="yes">On</span>
+          : <button className="primary small" data-oneclick-grant onClick={() => void turnOn()}>
+            Turn this on
+          </button>}
+      </div>
+
+      {/* WHAT IT GRANTS, IN THE TABLE'S OWN WORDS — read from the same rows the
+          command line reads, so a capability added to that table appears here
+          with no change and none can be quietly left out of this sentence. */}
+      <ul className="oc-grants" data-oneclick-grants={CAPABILITIES.map(c => c.ability).join(",")}>
+        {CAPABILITIES.map(c => (
+          <li key={c.ability} data-oneclick-grant-row={c.ability}
+            data-on={effAb[c.ability] === true ? "yes" : "no"}>
+            {c.label}
+          </li>
+        ))}
+      </ul>
+
+      {/* THE ONE ROW THIS PRESS DOES NOT GIVE, AND WHY — read from the table, so
+          it cannot be a row this screen forgot to mention. */}
+      {heldBack.map(c => (
+        <p className="oc-held" key={c.ability} data-oneclick-heldback={c.ability}>
+          <b>The one thing this does not give: “{c.label}”.</b> {c.whyOffForNewAgents}
+        </p>
+      ))}
+
+      <p className="oc-ask" data-oneclick-asks={CAPABILITIES.filter(c => c.alwaysAsk).length}>
+        <b>You are still asked first.</b> Anything that changes this computer, spends your
+        money or reaches an outside account stops and waits for you —{" "}
+        {CAPABILITIES.filter(c => c.alwaysAsk).map(c => c.label.toLowerCase()).join("; ")}.
+        That cannot be switched off, and this button does not switch it off.
+      </p>
+
+      {/* THE LAST STEP, SAID OUT LOUD. Pressing this button changes the FILE in
+          front of him, not the agent — and an agent that still cannot reach his
+          PC because nobody pressed Save is the same dead end in a new place. */}
+      <p className="oc-save" data-oneclick-save={creating ? "create" : "save"}>
+        Nothing here reaches {shownName} until you press{" "}
+        <b>{creating ? "Create agent" : "Save"}</b> at the top of this page.
+      </p>
+
+      {/* THE HALF-STATE, CAUGHT IN THE FLOW THAT CAUSES IT. Both switches that
+          need something supplied are answered here, the same way, from the same
+          list — so the next one of this shape lands here on its own. */}
+      {gapOf("wholeComputer") && (
+        <div className="notice oc-gap" data-oneclick-pending="wholeComputer">
+          <b>One thing left — pick the folder.</b>
+          <span>
+            {shownName} is allowed out of its own folder, but no folder has been chosen, so
+            it still cannot reach anything of yours. Point it at the folder you want it
+            working in — the whole drive is fine (C:\) if that is what you mean.
+          </span>
+          <div className="actions">
+            <button className="primary small" data-oneclick-folder
+              onClick={() => void chooseFolder()}>Choose a folder</button>
+            <button className="btn small" data-oneclick-folder-off
+              onClick={() => { setRefusal(null); onGrant({ ...ab, wholeComputer: false }); }}>
+              Not now — keep it to its own folder
+            </button>
+          </div>
+        </div>
+      )}
+      {gapOf("connections") && (
+        <div className="notice oc-gap" data-oneclick-pending="connections">
+          <b>Connected services are on, and nothing is connected.</b>
+          <span>
+            Those are outside accounts — a calendar, a ticket system — and whoever makes one
+            hands you a small file. Most people never need one. Point {shownName} at the
+            file, or leave connected services off; either way it changes nothing else above.
+          </span>
+          <div className="actions">
+            <button className="btn small" data-oneclick-connfile
+              onClick={() => void chooseFile()}>Choose the file</button>
+            <button className="btn small" data-oneclick-conn-off
+              onClick={() => { setRefusal(null); onGrant({ ...ab, connections: false }); }}>
+              Leave connected services off
+            </button>
+          </div>
+        </div>
+      )}
+      <Problem text={refusal ?? undefined} attrs={{ "data-oneclick-refusal": "" }} />
+    </div>
+  );
+}
+
 /* ================= 5 · CREATE / EDIT AN AGENT ================= */
 
 function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
@@ -8503,6 +8989,16 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
      before this setting existed must never be more open than one made after. */
   const [respondTo, setRespondTo] = useState<AgentRespondTo>(agent?.respondTo ?? "owner");
   const [allowlist, setAllowlist] = useState<ID[]>(agent?.respondToAllowlist ?? []);
+  /* HOW MUCH THIS AGENT MAY DO WITHOUT STOPPING TO ASK.
+     TWO DIFFERENT STARTING POINTS, AND THE DIFFERENCE IS THE POINT. A NEW agent
+     starts on `NEW_AGENT_TRUST` — the middle setting, written down at creation
+     so the value is his, in the database, rather than a default that could drift
+     under his existing agents later. An EXISTING agent starts on whatever it has
+     stored, and `trustOf` answers "ask me every time" for the six he made before
+     this setting existed. Nothing here ever widens an agent he already owns; the
+     only thing that can is him pressing one of the three below and saving. */
+  const [trust, setTrust] = useState<AgentTrust>(
+    creating ? NEW_AGENT_TRUST : trustOf(agent ?? {}));
   /* THE CONNECTIONS FILE THIS AGENT USES — the config the maker of a tool hands
      you, chosen for this one agent. Blank means none has been chosen, which is
      the honest default and never the same as "" stored on the agent. */
@@ -8512,6 +9008,26 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
      stored on the agent. */
   const [roots, setRoots] = useState<string[]>(
     Array.isArray(agent?.wholeComputerRoots) ? agent!.wholeComputerRoots! : []);
+
+  /* A NEW AGENT STARTS IN HIS HOME FOLDER — the other half of "fully capable the
+     second it exists". `wholeComputer` is on by default, so without this the
+     very first agent he makes would be allowed out of its own folder with
+     nowhere to go: the exact half-state that made him say the app was broken.
+     The folder is drawn below by `WholeComputerPick`, with Forget beside it.
+
+     IT IS ONLY EVER A STARTING POINT. It waits for the real answer from the
+     machine (a browser has none, and then nothing is claimed), it never touches
+     an agent that already exists, and it never overwrites a folder he has
+     chosen — including choosing to have none, because by then the picker has
+     been through his hands. */
+  const home = useHomeFolder();
+  const startingRoots = creating && home ? [home] : [];
+  const homeOffered = useRef(false);
+  useEffect(() => {
+    if (!creating || !home || homeOffered.current) return;
+    homeOffered.current = true;
+    setRoots(prev => (prev.length > 0 ? prev : [home]));
+  }, [creating, home]);
 
   const { ids, fallback, preferred } = useModels(provider);
   // an agent must never end up without a model
@@ -8539,8 +9055,12 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
     || provider !== ((agent?.provider ?? p.defaultProvider ?? "claude") as Provider)
     || JSON.stringify(skills) !== JSON.stringify(Array.isArray(agent?.skills) ? agent!.skills! : [])
     || respondTo !== (agent?.respondTo ?? "owner")
+    || trust !== (creating ? NEW_AGENT_TRUST : trustOf(agent ?? {}))
     || connFile.trim() !== (agent?.connectionsFile ?? "").trim()
-    || JSON.stringify(roots) !== JSON.stringify(agent?.wholeComputerRoots ?? [])
+    /* Against what the file OPENED with, which for a new agent now includes the
+       home folder it starts in — otherwise merely opening "write an agent" and
+       walking away would be reported as unsaved work he never typed. */
+    || JSON.stringify(roots) !== JSON.stringify(agent?.wholeComputerRoots ?? startingRoots)
     || JSON.stringify(allowlist) !== JSON.stringify(agent?.respondToAllowlist ?? []);
   /* THE MODEL IS DELIBERATELY NOT IN THAT LIST. An agent saved before a model
      list changed has one picked FOR it on the way in (see the effect above), so
@@ -8578,6 +9098,12 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
             abilities: ab, approvals: ap, provider,
             model: model || MODEL_DEFAULT[provider],
             skills, respondTo, respondToAllowlist: respondTo === "allowlist" ? allowlist : [],
+            /* WRITTEN DOWN, NOT LEFT TO A DEFAULT. A new agent carries the
+               middle setting as a real stored value from its first second, so
+               "what does absent mean" only ever has to answer for agents made
+               before the setting existed — and for those the answer is, and
+               stays, "ask me every time". */
+            trust,
             /* Absent means absent — a blank box is not `""` on the agent, it is
                no connections file at all (the same rule the project folder
                follows). `undefined` never reaches the wire. */
@@ -8596,6 +9122,11 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
           approvals: ap, provider, lifecycle: life,
           model: model || MODEL_DEFAULT[provider],
           skills, respondTo, respondToAllowlist: respondTo === "allowlist" ? allowlist : [],
+          /* Said explicitly, always — the hub treats silence as "leave it as he
+             set it", so an edit that meant to CHANGE the setting has to say so
+             out loud. It is one of the three exact words or the hub refuses the
+             whole save. */
+          trust,
           /* Said explicitly rather than left to the spread above, because
              FORGETTING the file has to travel too. `undefined` is dropped on the
              way onto the wire, so the agent comes back with no connections file
@@ -8638,7 +9169,10 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
      this component). `chosenRung` is null when his switches are a mixture of his
      own, and every part of the drawing below reads that one value — the dot, the
      inked spine, the words. There is no second derivation to disagree with it. */
-  const draft = { ...(agent ?? {}), abilities: ab, provider } as AgentDef;
+  /* `trust` is in the draft for the same reason `abilities` is: everything below
+     that says "you will be asked before …" reads THIS object, so the list must
+     reflect the setting he is looking at, not the one still in the database. */
+  const draft = { ...(agent ?? {}), abilities: ab, provider, trust } as AgentDef;
   /* WHAT THIS AGENT WOULD REALLY HAVE, from the engine's one owner of that
      question. `ab` is what gets SAVED — his switches, kept exactly as he set
      them so moving the agent back to Claude gives them back. `effAb` is what is
@@ -8685,6 +9219,54 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
      no switch in Cloud9 today that lies. */
   const inertSwitches = ([] as (keyof AgentAbilities)[])
     .filter(key => ab[key] === true);
+
+  /* ---- A SWITCH THAT NEEDS SOMETHING ASKS FOR IT THE MOMENT IT GOES ON ----
+   *
+   * THE TRAP, KILLED AS A CLASS. Switching on "Reach files outside its own
+   * folder" and stopping there is what left Vikas with an agent that truthfully
+   * said "I can't reach files outside this directory". The old screen answered
+   * that with a box further down the page telling him what he had not done yet —
+   * which is only ever read by someone who already suspects something is wrong.
+   *
+   * So the switch itself opens the picker. It is driven by `SUPPLY_SWITCHES`
+   * rather than by two `if`s, so the day a third switch of this shape is added
+   * it behaves this way without anybody remembering to make it. A picker he
+   * closes is "not now" and changes nothing — the gap is then loud on the card,
+   * in the room rail and in the block below, all reading the one owner.
+   */
+  const flipSwitch = (ability: keyof AgentAbilities, next: boolean): void => {
+    setAb({ ...ab, [ability]: next });
+    if (!next) return;
+    const supply = SUPPLY_SWITCHES.find(s => s.ability === ability);
+    if (!supply) return;
+    // Already has what it needs — never re-ask for something he has chosen.
+    if (supplyChosen({ wholeComputerRoots: roots, connectionsFile: connFile }, supply)) return;
+    void (async () => {
+      const answer = supply.field === "wholeComputerRoots"
+        ? await askForFolders()
+        : await askForConnectionsFile(connFile);
+      /* A refusal is NOT swallowed — it is said by the block for that switch
+         further down, which draws the same honest state ("no folder chosen yet")
+         and carries its own picker button and its own refusal line. */
+      if (answer.kind !== "picked") return;
+      if (supply.field === "wholeComputerRoots") setRoots(mergeRoots(roots, answer.paths).next);
+      else setConnFile(answer.paths[0]);
+    })();
+  };
+
+  /* A RUNG THAT REACHES OUTSIDE THE AGENT'S OWN FOLDER ASKS FOR THE FOLDER TOO.
+     The same law as `flipSwitch`, applied to the other way of turning that
+     switch on — otherwise the trap simply moves from the switch list to the
+     ladder, which is the more likely place for him to press. */
+  const pickRung = (level: Reach): void => {
+    const next = effectiveAbilities({ provider, abilities: abilitiesForReach(level) });
+    setAb(next);
+    if (next.wholeComputer !== true || roots.length > 0) return;
+    void (async () => {
+      const answer = await askForFolders();
+      if (answer.kind === "picked") setRoots(mergeRoots(roots, answer.paths).next);
+    })();
+  };
 
   const toggle = (
     title: string, why: string, on: boolean, set: (v: boolean) => void,
@@ -8837,9 +9419,18 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
           <section className="fieldset reachsec">
             <div className="sec-head"><h3>How far they can go</h3><span className="eyebrow">Reach</span></div>
             <p className="sec-note">
-              One choice, four rungs. Each rung is everything below it and more — and anything
+              One choice, {countOf(REACH_LEVELS.length, "rung")}. Each rung is everything below it and more — and anything
               that changes this computer or spends money stops and asks you first.
             </p>
+
+            {/* THE ONE PRESS THAT MEANS "WORK ON MY COMPUTER", ABOVE THE LADDER.
+                It is the top rung and nothing else (see the block comment on the
+                component), offered first because it is the thing he keeps asking
+                for by name — and it opens the folder picker in the same action,
+                so it cannot leave a switch on with nothing behind it. */}
+            <WorkOnMyComputer shownName={shownName} creating={creating} provider={provider}
+              ab={ab} roots={roots} connFile={connFile}
+              onGrant={setAb} onRoots={setRoots} onConnFile={setConnFile} />
             {/* SOME SWITCHES ARE NOT HIS TO TURN OFF, AND THAT IS SAID FIRST.
                 Codex keeps its web, file, helper-agent and command tools at
                 every setting, so an agent on Codex holds them whatever the
@@ -8875,7 +9466,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                   {abilitiesOnNow.length === 0
                     ? "Nothing is switched on."
                     : `On right now: ${abilitiesOnNow.map(c => c.label).join(", ")}.`}
-                  {" "}This is not one of the four rungs, so none of them is picked below.
+                  {" "}This is not one of the {REACH_LEVELS.length} rungs, so none of them is picked below.
                   Pick a rung to replace your mixture, or leave it as it is — the switches
                   are what the agent actually gets.
                 </span>
@@ -8888,9 +9479,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                 <button key={rung.level} className="reachrung" data-reach={rung.level}
                   data-within={chosenIndex >= 0 && i <= chosenIndex ? "yes" : "no"}
                   aria-pressed={rung.level === chosenRung}
-                  onClick={() => setAb(effectiveAbilities({
-                    provider, abilities: abilitiesForReach(rung.level),
-                  }))}>
+                  onClick={() => pickRung(rung.level)}>
                   <span className="rr-spine" aria-hidden="true"><span className="rr-node" /></span>
                   <span className="rr-tx">
                     <b>{rung.label}</b>
@@ -8937,7 +9526,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                         checked={effAb[cap.ability] === true}
                         disabled={locked}
                         title={locked ? FORCED_ON_NOTE : undefined}
-                        onChange={e => setAb({ ...ab, [cap.ability]: e.target.checked })} />
+                        onChange={e => flipSwitch(cap.ability, e.target.checked)} />
                     </label>
                   );
                 })}
@@ -9038,9 +9627,102 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
             )}
           </section>
 
+          {/* HOW MUCH HE WANTS TO BE INTERRUPTED — HIS CHOICE, ABOVE THE RULES.
+              It sits before "when to stop and ask" because it decides how much
+              of that section is even true: an agent on "just get on with it"
+              does not stop for the first two rules below at all. Drawn with the
+              same `choice-row` as "who can use this agent", because it is the
+              same shape of decision — one of three, his, changeable in one
+              press, and readable off the card afterwards. */}
+          <section className="fieldset trustsec">
+            <div className="sec-head">
+              <h3>How much can {shownName} do on its own?</h3>
+              <span className="eyebrow">Trust</span>
+            </div>
+            <p className="sec-note">
+              {shownName} can run programs, change your files and work on your computer.
+              This is how often it has to stop and wait for you while it does.
+            </p>
+            <div className="panelbox">
+              {TRUST_LEVELS.map(t => (
+                <button key={t.level} className="choice-row trustpick" data-trust={t.level}
+                  aria-pressed={trust === t.level} onClick={() => setTrust(t.level)}>
+                  <span className="tick" aria-hidden="true">{trust === t.level ? "●" : "○"}</span>
+                  <span className="tx">
+                    <b>
+                      {t.label}
+                      {t.level === NEW_AGENT_TRUST && <span className="chip">Recommended</span>}
+                      {t.warning && <span className="chip is-gold">Read this first</span>}
+                    </b>
+                    <span>{t.plainWords}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+            {/* THE ONE SENTENCE HE IS ACCEPTING, and only when he has actually
+                picked the setting that needs it. It is the setting's OWN
+                sentence, carried on the same row in shared as the setting — so
+                the most permissive choice cannot be given a gentler description
+                here than the one the rule was written with. */}
+            {trustLevel(trust).warning && (
+              <div className="notice trustwarn" data-trust-warning={trust}>
+                <b>You are choosing to be told afterwards, not asked first.</b>
+                <span>{trustLevel(trust).warning}</span>
+              </div>
+            )}
+            {/* WHAT STILL ASKS, LISTED RATHER THAN PROMISED. Under the middle
+                setting this is the whole point of the setting, so it is spelled
+                out from the same rule the engine obeys — never a reassuring
+                sentence written by hand beside it. */}
+            {trust === "localFree" && (
+              <div className="willask" data-remote-asks={describeRemoteAsks({ trust }).length}>
+                <span className="wa-head">It will still stop and ask you before it can:</span>
+                <ul>
+                  {describeRemoteAsks({ trust }).map(w => <li key={w} data-ask={w}>{w}</li>)}
+                </ul>
+                <span className="wa-note">
+                  Everything else — running programs, reading and changing your files, git
+                  on this computer — {shownName} does without stopping.
+                </span>
+              </div>
+            )}
+            {!creating && trustOf(agent ?? {}) !== trust && (
+              <p className="sec-note" data-trust-unsaved="yes">
+                Not saved yet — {shownName} still {trustWords(agent ?? {}).toLowerCase()} until
+                you press <b>Save</b>.
+              </p>
+            )}
+          </section>
+
           <section className="fieldset asksec">
             <div className="sec-head"><h3>When to stop and ask</h3><span className="eyebrow">Approval rules</span></div>
             <p className="sec-note">Anything matching a rule pauses the job and lands in Tasks with your name on it.</p>
+            {/* THE SETTING ABOVE CAN SWITCH THESE RULES OFF, AND IT SAYS SO HERE
+                RATHER THAN LETTING THEM LOOK LIVE. A row of toggles that cannot
+                fire is the same lie as a capability switch with nothing behind
+                it — and this screen has already been through that once. */}
+            {trust !== "askEveryTime" && (
+              <div className="notice trustquiet" data-quiet={trust}
+                data-still-asks={ap.background || ap.schedules ? "yes" : "no"}>
+                <b>
+                  {ap.background || ap.schedules
+                    ? "Your choice above has quietened this, but these two rules still fire."
+                    : "Nothing below is stopping this agent any more."}
+                </b>
+                <span>
+                  You chose “{trustLevel(trust).label}” for {shownName}, so having powerful
+                  abilities no longer stops a job on its own.{" "}
+                  {ap.background || ap.schedules
+                    ? "The two switches below are rules YOU set by hand, so they still stop it. "
+                      + "Turn them off here if you meant to stop being asked altogether."
+                    : "Neither switch below is on, so nothing stops it."}
+                  {" "}
+                  {trust === "localFree"
+                    ? "Anything that leaves this computer still asks you, wherever it happens."
+                    : "Nothing that leaves this computer asks you either."}
+                </span>
+              </div>
+            )}
             {willAsk.length > 0 && (
               <div className="willask" data-asks={willAsk.length}>
                 <span className="wa-head">You'll be asked before it:</span>
@@ -9917,6 +10599,14 @@ interface DesktopBridge {
    */
   wholeComputerFoldersHere?: (folders: string[]) => Promise<
     { here: string[]; checkedAt: number }>;
+  /**
+   * THIS COMPUTER'S HOME FOLDER, as the computer itself says it — what a brand
+   * new agent is given so it can reach his PC from its first message. Absent in
+   * a browser (dev, QA), and `{ ok: false }` when the machine cannot vouch for
+   * it; both mean the same thing here, and it is the only honest one: no folder
+   * is claimed. The window never invents a path.
+   */
+  homeFolder?: () => Promise<{ ok: boolean; path?: string }>;
   /**
    * WINDOWS' OWN NOTIFICATION — the door that reaches him with Cloud9 minimised.
    * Absent in a browser (dev), which is exactly the `osSupported: false` case

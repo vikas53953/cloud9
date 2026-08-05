@@ -46,6 +46,8 @@ function fakeElectron(opts) {
     userData: opts.userData,
     /** Links handed to the person's OWN browser, outside this app. */
     openedExternally: [],
+    /** every `ipcMain.handle(name, fn)` main.cjs registered, by name */
+    ipcHandlers: {},
   };
   const noop = () => {};
   const electron = {
@@ -69,7 +71,15 @@ function fakeElectron(opts) {
       showMessageBox: async () => ({ response: 0 }),
     },
     globalShortcut: { unregisterAll: noop, register: () => true, unregister: noop },
-    ipcMain: { handle: noop, on: noop, removeHandler: noop },
+    /* The handlers are KEPT rather than thrown away, so a test can call the
+       real one the window would call. `main.cjs` registers them at load time;
+       recording them costs nothing and is the only way to test a bridge answer
+       (`cloud9:homeFolder`, say) without an Electron window. */
+    ipcMain: {
+      handle: (name, fn) => { state.ipcHandlers[name] = fn; },
+      on: noop,
+      removeHandler: (name) => { delete state.ipcHandlers[name]; },
+    },
     shell: {
       openPath: async () => "",
       openExternal: async (url) => { state.openedExternally.push(url); },

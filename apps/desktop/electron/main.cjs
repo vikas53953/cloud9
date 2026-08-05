@@ -866,6 +866,31 @@ ipcMain.handle("cloud9:chooseWholeComputerFolders", async () => {
   }
 });
 
+/**
+ * THIS COMPUTER'S HOME FOLDER — the folder a brand-new agent starts able to
+ * reach, so it can do something for him from its first message.
+ *
+ * ASKED, NEVER GUESSED. `os.homedir()` is what Windows itself says, resolved in
+ * the main process on the machine the app is running on. It goes through the
+ * same path check every other folder does, and if anything about it is not a
+ * whole, ordinary path the answer is `null` — the window then chooses NO folder
+ * and says so plainly, rather than storing a path that might not exist. The
+ * renderer cannot construct this value itself and there is no fallback string
+ * anywhere: no home folder from here means no folder claimed.
+ */
+ipcMain.handle("cloud9:homeFolder", () => {
+  try {
+    const os = require("node:os");
+    const said = wholePathOnThisComputer(os.homedir());
+    if (!said) return { ok: false };
+    // it must really be a folder on this computer, right now
+    if (!fs.statSync(said).isDirectory()) return { ok: false };
+    return { ok: true, path: said };
+  } catch {
+    return { ok: false };
+  }
+});
+
 ipcMain.handle("cloud9:wholeComputerFoldersHere", (_ev, folders) => {
   const checkedAt = Date.now();
   if (!Array.isArray(folders) || folders.length > WHOLE_COMPUTER_ROOT_MAX) {

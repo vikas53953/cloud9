@@ -50,6 +50,21 @@ Three things that were assumed and are **not** true:
    reporting zero skills, zero slash commands and zero MCP servers. Nothing was
    measured reaching an agent — it is recorded as an *unknown*, not a leak.
 
+> **SUPERSEDED 2026-08-05 (CLI 2.1.222).** `--safe-mode` came OFF the agent
+> command line. It disables MCP servers ABSOLUTELY — including a server Cloud9
+> hands the CLI itself with `--mcp-config` on the same line. Measured: with it,
+> `mcp_servers: []` and the server process never spawned; without it,
+> `[{probe,connected}]` and the tool answered. For as long as it was there the
+> `connections` switch granted nothing and Cloud9’s OWN tools
+> (`search_conversation`, `open_attachment`) did not exist, while the prompt told
+> agents they did. The isolation is now `--strict-mcp-config
+> --disable-slash-commands --setting-sources ""` plus
+> `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in the child’s environment — measured as
+> isolated as `--safe-mode` on every axis and MORE so on plugins (it names none).
+> The plugin *unknown* above is therefore closed. See the block comment on
+> `CLAUDE_ISOLATION_FLAGS` in `packages/engine/src/claude-cli.ts` and the guard in
+> `packages/engine/src/mcpdoorway.test.ts`.
+
 Levers the CLI offers that we now use: `--tools`, `--allowed-tools`,
 `--disallowed-tools`, `--add-dir`, `--mcp-config` + `--strict-mcp-config`.
 
@@ -236,9 +251,11 @@ has another owner, so it was not touched.
 
 Checked by tests that fail if any of it is traded away for the ceiling:
 
-- `--safe-mode`, `--strict-mcp-config`, `--disable-slash-commands` are on **at
-  the top rung**, so his CLAUDE.md, plugins, hooks, MCP servers and 130 slash
-  commands are still shut out of an agent that can run programs.
+- `--strict-mcp-config`, `--disable-slash-commands` and `--setting-sources ""`
+  are on **at the top rung**, so his CLAUDE.md, plugins, hooks, MCP servers and
+  130 slash commands are still shut out of an agent that can run programs.
+  (`--safe-mode` used to be in this list; see the 2026-08-05 note in §2.1 for why
+  it had to go and what replaced it.)
 - `--ignore-user-config` and `--ignore-rules` likewise on the Codex side, and
   every feature that is a door into his own setup (`plugins`, `apps`,
   `memories`, `hooks`, `computer_use`, `browser_use`, `image_generation`) stays

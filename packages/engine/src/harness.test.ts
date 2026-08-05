@@ -698,3 +698,29 @@ test("a detection that ran out of time is not reported as 'not installed'", asyn
     "a leash that ran out was reported as an app that is not there");
   assert.match(info.detail ?? "", /did not answer in time/i);
 });
+
+/* MEASURED 2026-08-05: `claude auth status` took 77 SECONDS on Vikas's machine
+   while Cloud9 was running. The probe had a 20s leash and no second chance, and
+   a timeout was read as `code !== 0` → "not signed in". Every agent in the
+   installed app then answered "my engine isn't connected — open Settings and
+   sign in" on a machine that was signed in, and because `installed` was true the
+   next re-look was TEN MINUTES away. Three claims, one per failure. */
+test("a sign-in probe that ran out of time is 'unknown', not 'signed out'", async () => {
+  const timedOut: RunResult =
+    { code: null, stdout: "", stderr: "", timedOut: true, notFound: false };
+  const version: RunResult =
+    { code: 0, stdout: "2.1.222 (Claude Code)", stderr: "", timedOut: false, notFound: false };
+  const asked: string[][] = [];
+  const runner = async (_cmd: string, args: string[]) => {
+    asked.push(args);
+    return args[0] === "--version" ? version : timedOut;
+  };
+  const info = await detectClaude(runner, "claude", 10);
+  const signInTries = asked.filter(a => a[0] === "auth").length;
+  assert.equal(signInTries, 2, "the sign-in probe gets the same second chance --version has");
+  assert.equal(info.installed, true, "the CLI answered --version; it is here");
+  assert.equal(info.signedIn, false, "nothing proved a sign-in, so it is not claimed");
+  assert.equal(info.unsure, true, "a leash that ran out must be reported as unknown");
+  assert.doesNotMatch(info.detail ?? "", /not signed in yet/i,
+    "an unanswered probe was reported as a signed-out account");
+});

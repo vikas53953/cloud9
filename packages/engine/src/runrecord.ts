@@ -29,7 +29,7 @@
 // What stays here is what only the engine can do: read a harness's stream
 // (`traceFromStream` + an `EventMapper`) and turn one turn into a record.
 import {
-  RunKind, RunOutcome, RunRecord, RunStep, RunStepKind, RunUsage, RUN_LIMITS,
+  AgentTrust, RunKind, RunOutcome, RunRecord, RunStep, RunStepKind, RunUsage, RUN_LIMITS,
 } from "@cloud9/shared";
 
 export {
@@ -48,6 +48,16 @@ export interface ProviderTrace {
   usage?: RunUsage;
   /** the CLI's own conversation id, for matching against its logs */
   sessionId?: string;
+  /**
+   * TRUE when this turn CONTINUED the harness's own session rather than
+   * starting a cold one (`sessionresume.ts`).
+   *
+   * Recorded either way, never inferred. A resumed turn was sent only the
+   * messages new since it last spoke, so a person reading the record needs to
+   * know which shape of prompt produced this answer before the token counts
+   * beside it mean anything.
+   */
+  resumed?: boolean;
   /** the model the CLI says it actually used — not the one we asked for */
   model?: string;
   /** the CLI's own duration claim, when it makes one */
@@ -214,6 +224,13 @@ export interface RunSeed {
   requestedByKind: "human" | "agent" | "schedule";
   ask: string;
   startedAt: number;
+  /**
+   * The owner's trust setting for this agent at the moment the turn started —
+   * so "what it did" can also say how much of it he was asked about. Optional
+   * because a caller that does not know reads as "ask every time" downstream,
+   * which is the fail-closed answer everywhere else.
+   */
+  trust?: AgentTrust;
 }
 
 export interface RunFinish {
@@ -256,9 +273,13 @@ export function buildRunRecord(seed: RunSeed, finish: RunFinish, id = newRunId()
     steps: t?.steps ?? [],
     ...(t?.usage ? { usage: t.usage } : {}),
     ...(t?.sessionId ? { sessionId: t.sessionId } : {}),
+    // WHICH PATH THIS TURN TOOK. Present whenever the provider had an opinion,
+    // including `false` — see the note on `ProviderTrace.resumed`.
+    ...(typeof t?.resumed === "boolean" ? { resumed: t.resumed } : {}),
     ...(t?.model ? { actualModel: t.model } : {}),
     ...(typeof t?.cliDurationMs === "number" ? { cliDurationMs: t.cliDurationMs } : {}),
     ...(typeof t?.numTurns === "number" ? { numTurns: t.numTurns } : {}),
+    ...(seed.trust ? { trust: seed.trust } : {}),
     replyChars: finish.reply?.length ?? 0,
     events: t?.events ?? 0,
     ...(t?.truncated ? { truncated: true } : {}),

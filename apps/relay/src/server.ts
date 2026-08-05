@@ -22,7 +22,7 @@ import {
   isSafeStoredId, latestVersion, looksLikeText, normaliseArtifactAccess,
   normaliseArtifactLinks, validateArtifactAccessMutation, validateArtifactLinks,
   versionOf, validateArtifact,
-  mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
+  isRemoteAction, mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
   setMachineNames, shareableRun,
   extractMentions, nameKey, newId, validateAgentDefinition, validateAttachment, validateChannelText,
   validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji,
@@ -1716,6 +1716,15 @@ export class Relay {
           // never mentions them means "leave them alone" — it can never be a
           // request to strip an agent of what it may do.
           abilities: frame.agent.abilities ?? existing.abilities,
+          // …and the same sentence-vs-silence rule for how much this agent may
+          // do on its own. An older client, or a screen that has never heard of
+          // the setting, says nothing about it — and silence must mean "leave it
+          // as he set it", never "reset it". It cannot be used to widen an
+          // agent: silence PRESERVES, and saying one of the three words is a
+          // write only the owner's own editor can make (`myAgent` above proved
+          // whose agent this is) and only if `validateAgentDefinition` below
+          // recognises the word.
+          trust: frame.agent.trust ?? existing.trust,
         };
         const bad = validateAgentDefinition(saved, renaming
           ? this.agentRules(conn, frame.agent.provider, frame.agent.id)
@@ -1927,12 +1936,24 @@ export class Relay {
         const askId = typeof frame.askId === "string"
           ? frame.askId.slice(0, APPROVAL_LIMITS.askId).trim() : "";
         if (!askId) throw new Error("that request has no label to answer against");
-        // ONE OWNER FOR "MUST ASK", and it is shared's. Reading it here rather
-        // than assuming makes this frame obey the same rule the engine obeys —
-        // and it is the line that fails loudly if anyone ever teaches
-        // `mustAskBeforeActing` to say no to something on the REMOTE_ACTIONS
-        // table.
-        if (!mustAskBeforeActing(agent, { remoteAction: frame.facts.action })) {
+        // IS THIS A THING CLOUD9 CAN PUT WORDS TO? That is the hub's question,
+        // and `validateRemoteActionFacts` above has already answered it — the
+        // action is on the shared `REMOTE_ACTIONS` table or the frame was
+        // refused. So an extra card is always drawable and always safe.
+        //
+        // IT USED TO ASK `mustAskBeforeActing` HERE INSTEAD, and that became
+        // wrong the moment the owner could say "don't ask me about this agent".
+        // The engine and the hub read the same rule off the same stored agent,
+        // but not in the same instant: he can change the setting while a turn is
+        // already in flight. With the old line, the engine's slightly older copy
+        // saying "ask" met the hub's newer copy saying "go ahead" and the hub
+        // threw — turning HIS decision to be interrupted LESS into an error in
+        // the room. An extra question is never the unsafe direction; refusing to
+        // ask one is. The rule that decides whether anything HAPPENS is
+        // unchanged and still lives in exactly one place (`decideAsking`), read
+        // by the engine before it ever sends this frame and by `requiresApproval`
+        // before a job may start.
+        if (!isRemoteAction(frame.facts.action)) {
           throw new Error("that isn't something Cloud9 asks about");
         }
         // a job may only be NAMED if it really is this agent's job — the same
@@ -3275,12 +3296,19 @@ export { isBranchName as isSafeBranchName } from "@cloud9/shared";
  * opinion is not consulted — that was the hole in P1 #6.
  */
 export function requiresApproval(agent: AgentDef, title: string): boolean {
-  // An agent that can run programs, reach the whole computer, or use connected
-  // services ALWAYS asks first — whatever its stored approvals say. That rule
-  // is decided in one place (`mustAskBeforeActing`, in shared) because the hub
-  // and the engine cannot see each other's code, and reading `agent.approvals`
-  // here alone was exactly how a job from a shell-capable agent could have run
-  // unattended without the owner ever being asked.
+  // MAY THIS JOB START WITHOUT HIM? Decided in one place (`mustAskBeforeActing`
+  // → `decideAsking`, in shared) because the hub and the engine cannot see each
+  // other's code, and reading `agent.approvals` here alone was exactly how a job
+  // from a shell-capable agent could have run unattended without the owner ever
+  // being asked.
+  //
+  // WHAT CHANGED ON 2026-08-05, and it is the whole of his complaint: that rule
+  // now reads his per-agent trust setting. An agent he has marked "just get on
+  // with it" starts its job here without a card — while everything on the
+  // `REMOTE_ACTIONS` table still stops mid-run and asks, because that gate is a
+  // different question asked in a different place and this line does not touch
+  // it. The agent is read from THIS hub's store (`myAgent`), so the setting a
+  // client claims about itself is never the one consulted.
   if (mustAskBeforeActing(agent)) return true;
   const isSchedule = /^!schedule\b/i.test(title.trim());
   return isSchedule

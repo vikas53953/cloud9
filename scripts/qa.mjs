@@ -42,6 +42,9 @@ import {
 // with it instead of leaving a number here that used to be right.
 import {
   abilitiesForReach, CAPABILITIES, REACH_LEVELS,
+  // what a brand-new agent starts with, so this suite asks the table rather
+  // than carrying a list of switch names that used to be right
+  NEW_AGENT_ABILITIES, capabilitiesForNewAgent,
 } from "@cloud9/engine/dist/abilities.js";
 import { isolationFor } from "@cloud9/engine/dist/isolation.js";
 
@@ -481,7 +484,11 @@ function mintJoinTokenOn(port, token) {
 //      +3 LIVE STEPS, the new preview: they stream onto the message that asked,
 //         a step reported twice merges into one, the block says out loud it is
 //         not the record, and `done` really ends it.
-const EXPECTED_CHECKS = 572;
+//      +1 FULLY CAPABLE BY DEFAULT (2026-08-05): a hired role is now held to the
+//         SAME switch set a hand-written agent gets, read from the capability
+//         table — and the one row nobody but he can supply (connected services)
+//         is asked about separately, which is the check this adds.
+const EXPECTED_CHECKS = 573;
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
@@ -775,6 +782,22 @@ try {
   // background task
   await box.fill("@Scout !bg compare 14 villas and shortlist 3");
   await box.press("Enter");
+  /* ONE PRESS NOW STANDS BETWEEN A JOB AND THE WORK — 2026-08-05.
+   *
+   * Every agent Cloud9 creates is fully capable from its first second (see
+   * `NEW_AGENT_ABILITIES` in the engine's capability table), and every switch
+   * that changes his machine carries `alwaysAsk`. So a handed-out job now stops
+   * at the approval card in the room it was asked in, and waits — which is the
+   * whole point of raising the ceiling safely, and is exactly what a person
+   * would see. QA presses the same button he would.
+   *
+   * It does NOT insist on the card. An agent that holds nothing needing a yes
+   * simply gets on with the job, and this must not fail for that; the ack below
+   * is still the thing being checked either way. */
+  const bgApprovalCard = page.locator(`.msg[data-approval][data-state="pending"]`).last();
+  await bgApprovalCard.waitFor({ timeout: 60000 }).then(
+    () => bgApprovalCard.locator('button:has-text("Approve")').click(),
+    () => { /* nothing to approve — the job is already on its way */ });
   const bgAck = await waitForAgentAnswer(page, {
     under: { text: "compare 14 villas and shortlist 3" }, text: "background",
     what: "the agent's acknowledgement of the background job, in the thread under the ask",
@@ -3252,10 +3275,32 @@ try {
      app no longer offers an off that would not happen: those switches read ON
      and LOCKED, with the reason on the row. Nothing else is switched on for
      him — "reach files outside its own folder" is still his to give. */
-  ok("a hired role starts no more powerful than a hand-written agent plus what its brief asked for",
-    (await page.locator('.editor .toggle-row[data-ability="wholeComputer"] input').isChecked()) === false &&
-    (await page.locator('.editor .toggle-row[data-ability="connections"] input').isChecked()) === false,
-    `reads as ${await page.getAttribute(".editor .reachladder", "data-reach")}`);
+  /* A HIRED ROLE IS EXACTLY AS POWERFUL AS A HAND-WRITTEN ONE — no more, and
+     since 2026-08-05 no LESS either.
+
+     This check used to name two switches and demand they be off. That was the
+     old default talking: a new agent started on a subset, and every agent Vikas
+     made opened by telling him what it could not do. Every agent now starts with
+     the whole working set (`NEW_AGENT_ABILITIES`, derived from the capability
+     table), and the guard that makes that safe is the approval card, not a
+     switch left off. So the question this asks has changed shape: a hire must
+     match what a hand-written agent gets, switch for switch, read from the
+     table — never a list typed here that can quietly stop being true. */
+  const hiredSwitches = {};
+  for (const cap of CAPABILITIES) {
+    hiredSwitches[cap.ability] =
+      await page.locator(`.editor .toggle-row[data-ability="${cap.ability}"] input`).isChecked();
+  }
+  const shouldBeOn = a => NEW_AGENT_ABILITIES[a] === true
+    // this role was hired on Codex, which cannot give up four of them
+    || CAPABILITIES.some(c => c.ability === a && (c.codexUnavoidableTools?.length ?? 0) > 0);
+  ok("a hired role starts exactly as a hand-written agent does, plus what its brief asked for",
+    CAPABILITIES.every(c => hiredSwitches[c.ability] === shouldBeOn(c.ability)),
+    `${JSON.stringify(hiredSwitches)} vs new-agent default ${JSON.stringify(NEW_AGENT_ABILITIES)}`);
+  ok("and the one thing nobody but him can supply is still left for him to choose",
+    capabilitiesForNewAgent().length === CAPABILITIES.length - 1 &&
+    hiredSwitches.connections === false,
+    `connections reads ${hiredSwitches.connections}`);
   ok("the switches Codex cannot give up are shown on, locked, and say why — never a false off",
     (await page.locator('.editor .toggle-row[data-ability="commands"] input').isChecked()) === true &&
     (await page.locator('.editor .toggle-row[data-ability="commands"] input').isDisabled()) === true &&

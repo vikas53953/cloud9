@@ -84,9 +84,9 @@ test("abilities become tools, and everything not switched on is refused by name"
   // envelope, preceded by one line per tool call, which is the run record.
   // The isolation flags and the declared (here empty) tool set are not optional
   // extras — see CLAUDE_ISOLATION_FLAGS and isolation.test.ts.
-  assert.deepEqual(plain.slice(0, 13), [
+  assert.deepEqual(plain.slice(0, 14), [
     "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
-    "--safe-mode", "--strict-mcp-config", "--disable-slash-commands",
+    "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", EMPTY_ARG,
     "--model", "claude-sonnet-5",
     "--tools", EMPTY_ARG,
   ]);
@@ -94,8 +94,8 @@ test("abilities become tools, and everything not switched on is refused by name"
   // 2026-07-30 this was the hand-written list ["Bash"], which both promised
   // something we no longer mean ("no agent may EVER run a command") and missed
   // PowerShell — measured that day as its own separate tool on this machine.
-  assert.equal(plain[13], "--disallowed-tools");
-  assert.deepEqual(plain.slice(14), [...CLAUDE_BUILTIN_TOOLS]);
+  assert.equal(plain[14], "--disallowed-tools");
+  assert.deepEqual(plain.slice(15), [...CLAUDE_BUILTIN_TOOLS]);
   assert.ok(plain.includes("Bash") && plain.includes("PowerShell"));
 
   const full = claudeArgs(agent({
@@ -237,6 +237,7 @@ test("two turns for one agent each read their own ticket, not each other's", asy
         const open = bridge.openTurn({
           channelId,
           search: async () => ({ hits: [], hasMore: false }),
+          openAttachment: async () => ({ found: false, why: "nothing is attached here" }),
         });
         turns[channelId] = open;
         return open;

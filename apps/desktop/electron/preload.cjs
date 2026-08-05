@@ -84,6 +84,13 @@ contextBridge.exposeInMainWorld("cloud9", {
    * really there and when it was asked. Nothing inside any folder is ever
    * listed or read across this bridge.
    */
+  /**
+   * `homeFolder` → `{ ok: true, path }` with THIS computer's home folder, or
+   * `{ ok: false }` when it cannot be vouched for. It is what a new agent is
+   * given so it can reach his PC from its first message. The window never
+   * invents this path — no answer here means no folder is claimed at all.
+   */
+  homeFolder: () => ipcRenderer.invoke("cloud9:homeFolder"),
   chooseWholeComputerFolders: () => ipcRenderer.invoke("cloud9:chooseWholeComputerFolders"),
   wholeComputerFoldersHere: folders =>
     ipcRenderer.invoke("cloud9:wholeComputerFoldersHere", folders),

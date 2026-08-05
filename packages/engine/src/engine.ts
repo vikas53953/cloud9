@@ -5,15 +5,17 @@ import fs from "node:fs";
 import path from "node:path";
 import WebSocket from "ws";
 import {
-  AgentDef, AgentSchedule, ARTIFACT_LIMITS, Channel, ClientFrame, HarnessName, HarnessState, ID,
+  AgentDef, AgentSchedule, ARTIFACT_LIMITS, ATTACHMENT_LIMITS,
+  Channel, ClientFrame, HarnessName, HarnessState, ID,
   Message, Project, ReceiptStage, ReceiptVerdict, RemoteActionFacts, RunRecord, ServerFrame,
   Task, TaskStatus, WorkReaction,
   WorldState, describeRemoteAction, isSafeFileName,
   mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
-  LIVE_STEPS_PER_BATCH, RUN_LIMITS, RunStep,
+  LIVE_STEPS_PER_BATCH, RUN_LIMITS, RunStep, trustLevel, trustOf,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
-import { Cloud9SearchAnswer } from "./cloud9tools.js";
+import { Cloud9AttachmentAnswer, Cloud9SearchAnswer } from "./cloud9tools.js";
+import { openAttachmentInConversation } from "./attachmentreach.js";
 import { ConversationBudget, CONVERSATION_BUDGET, renderConversation } from "./context.js";
 import { OpenTurn, ToolBridge } from "./toolbridge.js";
 import { ArtifactSweep, describeRefusals, sweepProduced } from "./artifacts.js";
@@ -22,8 +24,9 @@ import { GitHubClient, GitHubOptions } from "./github.js";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
   ClaudeProvider, HarnessUnavailableError, InstructionsNotSavedError, MockProvider,
-  redactForSharing, sanitizeForChat,
+  redactForSharing, sanitizeForChat, ThreadContinuity,
 } from "./provider.js";
+import { sessionKeyId } from "./sessionresume.js";
 import { PendingAsk, rememberAsk, takeAsk, workEmoji } from "./reactions.js";
 import { TurnFacts, turnVerdict } from "./receipts.js";
 import { describeRepoTurn, repoTurn, RepoTurnResult } from "./repowork.js";
@@ -121,6 +124,20 @@ export interface TurnInput {
    * asked about.
    */
   triggerMessageId?: ID;
+  /**
+   * THE THREAD THIS TURN CONTINUES, for the harness's own session
+   * (`sessionresume.ts`).
+   *
+   * OFFERED, NOT DECIDED. The engine can say "this turn belongs to thread X and
+   * here is how to render only what is new"; whether the session is really
+   * continued depends on the folder the turn runs in and on what the command
+   * line will really grant, and only the provider knows those. A provider that
+   * ignores it runs exactly today's cold turn.
+   *
+   * Absent for every turn that has no thread of its own — a scheduled check-in,
+   * a proactive line, a received handoff.
+   */
+  thread?: ThreadContinuity;
 }
 
 export class Engine {
@@ -196,6 +213,14 @@ export class Engine {
   projects = new Map<ID, Project>();
   /** whoever is waiting on a `searchResults` frame right now */
   private searchWaiters = new Set<(f: Extract<ServerFrame, { type: "searchResults" }>) => boolean>();
+  /**
+   * Whoever is waiting on an `attachmentTicket` frame right now — an agent that
+   * asked to open a file somebody attached in the room it is standing in.
+   * Same shape as the search waiters above, and for the same reason: one frame
+   * out, one frame back, never waiting for ever.
+   */
+  private attachmentWaiters =
+    new Set<(f: Extract<ServerFrame, { type: "attachmentTicket" }>) => boolean>();
   private turnsInFlight = 0;
   private queue: (() => Promise<void>)[] = [];
   private opts: EngineOptions;
@@ -248,6 +273,8 @@ export class Engine {
       // THE ONE PLACE A JOB IS REALLY STUCK. See `jobIsStuck` below.
       onWaitStart: w => this.jobIsStuck(w.taskId, w.facts),
       onWaitEnd: e => this.jobIsMovingAgain(e.taskId),
+      // NOT ASKED IS NOT UNRECORDED. See `saidWithoutAsking`.
+      onUnasked: u => this.saidWithoutAsking(u),
     });
     this.schedules = this.loadSchedules();
     this.scheduler = new Scheduler(
@@ -378,6 +405,14 @@ export class Engine {
       case "searchResults":
         for (const waiter of [...this.searchWaiters]) {
           if (waiter(frame)) this.searchWaiters.delete(waiter);
+        }
+        break;
+      // the hub granted a one-use download for a file attached in that room —
+      // it says yes only when the owner may read the room the file was posted
+      // in, and it says the same thing again when the bytes are served
+      case "attachmentTicket":
+        for (const waiter of [...this.attachmentWaiters]) {
+          if (waiter(frame)) this.attachmentWaiters.delete(waiter);
         }
         break;
       // ---- agent memory: the screen wants to see, or clear, an agent's notes ----
@@ -582,6 +617,12 @@ export class Engine {
       requestedByKind: input.requesterKind ?? "human",
       ask: input.trigger,
       startedAt: Date.now(),
+      // UNDER WHICH RULE THIS TURN RAN. Read once, here, at the start — never
+      // looked up again when the record is drawn, because he can change the
+      // setting and a record that re-describes itself afterwards is not a
+      // record. `trustOf` fails closed, so an agent with nothing stored reads as
+      // "ask me every time" exactly as it behaves.
+      trust: trustOf(agent),
     };
     let trace: ProviderTrace | undefined;
     // CAN ANYBODY BE SHOWN THIS TURN AT ALL? A live signal is drawn on the
@@ -640,6 +681,10 @@ export class Engine {
         kind: seed.kind,
         ...(input.channelId ? { channelId: input.channelId } : {}),
         ...(input.workdir ? { workdir: input.workdir } : {}),
+        // THE THREAD, offered so the harness can continue its own session
+        // instead of being re-told the room every turn (`sessionresume.ts`).
+        // The provider decides; passing it costs a cold turn nothing.
+        ...(input.thread ? { thread: input.thread } : {}),
         onTrace: t => { trace = t; },
         // WHAT IT IS DOING, AS IT DOES IT. Only offered when there is a message
         // and a room to show it against — the same gate `sendReceipt` uses, in
@@ -965,6 +1010,15 @@ export class Engine {
         // the message the 👀 / 💭 / verdict are drawn on — the one being answered
         triggerMessageId: trigger.id,
         ...(replyTo ? { replyTo } : {}),
+        // THE SAME THREAD, TURN AFTER TURN — offered so the harness can continue
+        // its own session rather than being re-told the room. Chat turns only:
+        // a delegated job, a scheduled check-in and repository work all reach
+        // `respondAs` by other routes and stay cold, which is this slice's
+        // deliberate edge (`sessionresume.ts`).
+        ...(() => {
+          const thread = this.threadContinuity(agent.id, channelId, trigger);
+          return thread ? { thread } : {};
+        })(),
       });
       this.agentSend(agent.id, channelId, text, { ...(replyTo ? { replyTo } : {}) });
     } catch (err) {
@@ -1242,6 +1296,31 @@ export class Engine {
   }
 
   /**
+   * SOMETHING LEFT THIS COMPUTER AND HE WAS NOT ASKED — because he told this
+   * agent not to ask. He is told anyway, in the room, at the moment it happens.
+   *
+   * THIS IS THE HALF OF "DON'T ASK ME" THAT IS NOT NEGOTIABLE. He asked to stop
+   * being interrupted; he did not ask to stop being able to find out. So the
+   * card goes away and the sentence does not — and the sentence is built from the
+   * SAME counted facts the card would have carried (`describeRemoteAction`,
+   * shared's one owner for those words: the branch git generated, the repository
+   * gh named, the number `git rev-list` counted). Not one word of it is quoted
+   * from the agent, for exactly the reason the card never quoted the agent: a
+   * thing that describes itself describes itself as harmless.
+   *
+   * It is `proactive` because he did not ask for it — the room draws it as the
+   * agent volunteering something, which is what it is.
+   */
+  private saidWithoutAsking(
+    what: { agent: AgentDef; taskId?: ID; channelId: ID; facts: RemoteActionFacts },
+  ): void {
+    const line = `Done without asking you first: ${describeRemoteAction(what.facts)}. `
+      + `(You chose “${trustLevel(trustOf(what.agent)).label}” for me.)`;
+    this.agentSend(what.agent.id, what.channelId, redactForSharing(line, 400),
+      { proactive: true });
+  }
+
+  /**
    * HE ANSWERED, OR NOBODY DID. Either way the turn has been told and is doing
    * something again — writing the pull request, or writing the sentence that
    * says it did not happen — so the job is working, and the honest ending
@@ -1379,6 +1458,51 @@ export class Engine {
   }
 
   /**
+   * ONLY WHAT IS NEW — the conversation SINCE one message (`sessionresume.ts`,
+   * law 5).
+   *
+   * This is the saving. A resumed turn is handed these few lines instead of the
+   * whole 24,000-character room, because the harness's own session already
+   * holds everything before them; sending both would charge the owner twice for
+   * the same history and show the agent one conversation in two shapes.
+   *
+   * UNDEFINED IS A REAL ANSWER, and it is the safe one. If the message we were
+   * told to start after is no longer in the window — the room moved on, the
+   * engine restarted, the history was trimmed — then we do not know what the
+   * session has and has not seen. Guessing "everything after the oldest we
+   * still hold" would silently drop messages the agent never read. So it says
+   * nothing, and the caller runs a cold turn with the whole room.
+   */
+  private renderContextSince(channelId: ID, afterMessageId: string): string | undefined {
+    const history = this.history.get(channelId) ?? [];
+    const at = history.findIndex(m => m.id === afterMessageId);
+    if (at < 0) return undefined;
+    const fresh = history.slice(at + 1);
+    if (fresh.length === 0) return undefined;
+    return renderConversation(fresh, this.contextBudget);
+  }
+
+  /**
+   * WHAT THE PROVIDER NEEDS TO CONTINUE THIS THREAD'S SESSION, or undefined when
+   * there is nothing to continue.
+   *
+   * The key is the thread root, not the channel: two side conversations in one
+   * room are two conversations, and one session between them would hand each the
+   * other's history. `threads.ts` already owns what a thread root is.
+   */
+  private threadContinuity(
+    agentId: ID, channelId: ID, trigger: Message,
+  ): ThreadContinuity | undefined {
+    const root = threadOf(trigger);
+    if (!root) return undefined;
+    return {
+      key: sessionKeyId({ agentId, channelId, threadRoot: root }),
+      newestMessageId: trigger.id,
+      since: (afterMessageId: string) => this.renderContextSince(channelId, afterMessageId),
+    };
+  }
+
+  /**
    * How much conversation this engine gives an agent. `contextMessages` is still
    * honoured because tests and QA set it, but it is now a CEILING on top of the
    * real budget rather than the whole rule.
@@ -1444,8 +1568,68 @@ export class Engine {
     return this.tools.openTurn({
       channelId: turn.channelId,
       search: (query, limit) => this.searchChannel(turn.channelId, query, limit),
+      // THE SAME BINDING, FOR THE SAME REASON. The conversation is closed over
+      // here; `open_attachment` has no parameter through which another one could
+      // be named, and the hub asks its own question again before it hands over
+      // a single byte.
+      openAttachment: name => this.openAttachmentInChannel(turn.channelId, name),
     });
   };
+
+  /**
+   * OPEN A FILE ATTACHED IN ONE CONVERSATION, for the agent taking a turn there.
+   *
+   * The rules — which file, is it words, what do we say when it is not — live in
+   * `attachmentreach.ts` and are testable without any of this. What lives HERE
+   * is the only part that needs a live hub: turning an attachment into bytes.
+   *
+   * THE PERMISSION BOUNDARY, stated once:
+   *  • the candidates are the messages of THIS conversation and nothing else —
+   *    the channel is bound by `openToolTurn`, not passed by the model;
+   *  • the hub refuses a ticket for a file in a room this owner may not read
+   *    (`attachmentTicket` → `channelFor`), and asks the same question again on
+   *    the way out (`serveAttachment`). Neither check is copied here.
+   * Nothing is written to disk at any point, so there is nothing for the
+   * whole-computer grant to be needed for.
+   */
+  async openAttachmentInChannel(
+    channelId: ID, name: string,
+  ): Promise<Cloud9AttachmentAnswer> {
+    return openAttachmentInConversation(
+      this.history.get(channelId) ?? [],
+      name,
+      attachment => this.downloadAttachment(attachment.id),
+    );
+  }
+
+  /** One `attachmentTicket` frame out, one ticket back, one HTTP read. */
+  private async downloadAttachment(attachmentId: ID): Promise<Buffer | undefined> {
+    const granted = await new Promise<
+      Extract<ServerFrame, { type: "attachmentTicket" }> | undefined
+    >(resolve => {
+      const timer = setTimeout(() => {
+        this.attachmentWaiters.delete(waiter);
+        resolve(undefined);
+      }, SEARCH_WAIT_MS);
+      const waiter = (frame: Extract<ServerFrame, { type: "attachmentTicket" }>): boolean => {
+        if (frame.attachmentId !== attachmentId) return false;
+        clearTimeout(timer);
+        resolve(frame);
+        return true;
+      };
+      this.attachmentWaiters.add(waiter);
+      this.sendFrame({ type: "attachmentTicket", attachmentId });
+    });
+    if (!granted) return undefined;
+    const res = await fetch(new URL(granted.url, httpBaseOf(this.opts.relayUrl)));
+    if (!res.ok) return undefined;
+    const bytes = Buffer.from(await res.arrayBuffer());
+    // The hub will not serve more than `ATTACHMENT_LIMITS.bytes`; this is the
+    // same ceiling asked again on this side, because a reader that trusts the
+    // sender's length is a reader with no ceiling at all.
+    if (bytes.length > ATTACHMENT_LIMITS.bytes) return undefined;
+    return bytes;
+  }
 
   /** Start listening for tool calls. Until this runs there is simply no doorway. */
   async startTools(): Promise<void> {
@@ -2236,6 +2420,20 @@ export const SCHEDULE_NOT_SAVED =
  * is the honest answer and takes four seconds rather than three minutes.
  */
 const SEARCH_WAIT_MS = 4_000;
+
+/**
+ * The hub's ORDINARY address, derived from the one this engine already dials.
+ *
+ * The socket and the download endpoint are the same hub on the same port; only
+ * the scheme differs. Deriving it means there is no second address to configure,
+ * get wrong, or point somewhere else — a downloader that took its own host could
+ * be aimed off this machine, and this one cannot be.
+ */
+export function httpBaseOf(relayUrl: string): string {
+  const url = new URL(relayUrl);
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  return url.toString();
+}
 
 function isBrakedReset(history: Message[]): boolean {
   return history.length > 0 && history[history.length - 1].authorKind === "human";

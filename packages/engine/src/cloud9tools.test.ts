@@ -38,6 +38,7 @@ const agent = (abilities: Partial<AgentAbilities> = {}): AgentDef => ({
  */
 function stand(channelId: string) {
   const asked: { channelId: string; query: string }[] = [];
+  const opened: { channelId: string; name: string }[] = [];
   const turn: Cloud9ToolTurn = {
     channelId,
     search: async (query, limit): Promise<Cloud9SearchAnswer> => {
@@ -47,8 +48,12 @@ function stand(channelId: string) {
         hasMore: false,
       };
     },
+    openAttachment: async name => {
+      opened.push({ channelId, name });
+      return { found: true, name, text: "the villa costs 40,000", truncated: false };
+    },
   };
-  return { turn, asked };
+  return { turn, asked, opened };
 }
 
 const search = CLOUD9_TOOLS.find(t => t.name === "search_conversation")!;
@@ -213,6 +218,7 @@ test("a search that fails tells the agent to say so, never why", async () => {
   const turn: Cloud9ToolTurn = {
     channelId: "c1",
     search: async () => { throw new Error("ECONNRESET at C:\\Users\\Vikas\\cloud9\\hub.js:12"); },
+    openAttachment: async () => ({ found: false, why: "not asked in this test" }),
   };
   const out = await callCloud9Tool(search, { query: "villa" }, turn);
   assert.equal(out.isError, true);
@@ -223,6 +229,7 @@ test("a search that fails tells the agent to say so, never why", async () => {
 test("nothing found is reported as a real answer, not as a failure", async () => {
   const turn: Cloud9ToolTurn = {
     channelId: "c1", search: async () => ({ hits: [], hasMore: false }),
+    openAttachment: async () => ({ found: false, why: "not asked in this test" }),
   };
   const out = await callCloud9Tool(search, { query: "villa" }, turn);
   assert.notEqual(out.isError, true);

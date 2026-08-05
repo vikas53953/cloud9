@@ -1,6 +1,7 @@
 export { Engine, type EngineOptions, type TurnInput } from "./engine.js";
 export {
   MockProvider, SdkProvider, HarnessUnavailableError, InstructionsNotSavedError,
+  AbilityNotSupportedHereError,
   HARNESS_DISCONNECTED_REPLY,
   buildAgentPrompt, promptTurnKind, renderSkills, sanitizeForChat, redactForSharing,
   type ClaudeProvider, type SdkCredentials, type RespondInput,
@@ -21,15 +22,28 @@ export {
 // THE DOORWAY BACK INTO CLOUD9 — the tools Cloud9 itself supplies to an agent,
 // and the law that an agent may search only where it may read.
 export {
-  CLOUD9_TOOLS, CLOUD9_MCP_SERVER, CLOUD9_SEARCH_LIMIT, cloud9ToolNames,
+  CLOUD9_TOOLS, CLOUD9_MCP_SERVER, CLOUD9_SEARCH_LIMIT, CLOUD9_ATTACHMENT_TEXT_LIMIT,
+  cloud9ToolNames,
   renderCloud9Tools, answerCloud9Rpc, callCloud9Tool, cloud9McpConfig,
   type Cloud9Tool, type Cloud9ToolTurn, type Cloud9SearchAnswer, type Cloud9McpTicket,
+  type Cloud9AttachmentAnswer,
 } from "./cloud9tools.js";
+// OPENING A FILE SOMEBODY ATTACHED IN THE ROOM — which file, is it words, and
+// what the agent says when the answer is no. No hub, no socket, no disk.
+export {
+  filesInConversation, findAttachment, asWords, openAttachmentInConversation,
+  noSuchFileHere, notWordsSentence, couldNotFetchSentence,
+  type RoomFile,
+} from "./attachmentreach.js";
 export { ToolBridge, type OpenTurn } from "./toolbridge.js";
 export {
   ClaudeCliProvider, parseClaudeJson, traceClaude, claudeMapper, claudeArgs,
   claudeSupply, cloud9McpEntry,
-  CLAUDE_ISOLATION_FLAGS, envWithoutCredentials, CREDENTIAL_ENV_VARS,
+  // the isolation is TWO things now: the flags, and the one part of it the CLI
+  // has no flag for (auto-memory). Exported together so nobody can carry one
+  // half of the boundary somewhere and leave the other behind.
+  CLAUDE_ISOLATION_FLAGS, CLAUDE_ISOLATION_ENV,
+  envWithoutCredentials, CREDENTIAL_ENV_VARS,
   type ClaudeCliProviderOptions, type ClaudeArgExtras,
 } from "./claude-cli.js";
 export {
@@ -77,7 +91,11 @@ export {
   claudeToolsFor, deniedClaudeTools, codexSandboxFor, codexWebSearchFor,
   reachesBeyondOwnFolder, allowsConnections,
   alwaysAskAbilities, approvalsFor, needsApprovalToRun, describeApprovalNeeds,
-  renderCapabilities, grantedSupply,
+  renderCapabilities, grantedSupply, switchesNeedingSupply,
+  // FULLY CAPABLE THE SECOND IT EXISTS — what a new agent starts with, and the
+  // one press that brings the agents he already has up to the same set.
+  NEW_AGENT_ABILITIES, capabilitiesForNewAgent,
+  hasFullReach, agentsWithoutFullReach, bringUpToFullReach,
   type Capability, type Reach, type ReachLevel, type Supply,
 } from "./abilities.js";
 // THE ONE OWNER of "does this agent really have connected services?" — read by
@@ -126,6 +144,11 @@ export {
 // WHERE AN AGENT'S ANSWER BELONGS — the thread it was asked in, or the room.
 // One rule for every kind of turn; the one-level part stays the hub's.
 export { threadOf, roomLineForThreadJob } from "./threads.js";
+export {
+  SessionBook, SESSION_IDLE_MS, SESSIONS_PER_AGENT, abilityFingerprint, decideResume,
+  isUsableSessionId, looksLikeRefusedResume, sessionKeyId,
+  type SessionKey, type StoredSession, type ResumeVerdict, type ResumeWant,
+} from "./sessionresume.js";
 // Parallel git worktrees — one workspace per agent, so several can work one
 // repository at once without colliding (his items 6 and 7).
 export {

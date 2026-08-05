@@ -1680,6 +1680,32 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .allowrow input{accent-color:var(--pine);}
 .whocan svg{color:var(--marigold);}
 
+/* --- how much this agent may do on its own ---------------------------------
+   The same `choice-row` as "who may use this agent", because it is the same
+   shape of decision: one of three, his, and readable off the card afterwards.
+   Only the two things that are NOT the same get their own rules — the warning
+   on the most permissive choice, and the line on the crew card. */
+.trustpick[aria-pressed="true"][data-trust="neverAsk"] .tick{color:var(--marigold);}
+.notice.trustwarn{
+  border-color:color-mix(in srgb,var(--marigold) 55%,transparent);
+  background:color-mix(in srgb,var(--marigold) 9%,transparent);
+}
+.notice.trustquiet{border-style:dashed;}
+/* THE SETTING, ON THE CARD, AND IT IS A BUTTON. A setting he can only find by
+   opening an editor is a setting he has to remember he made — and this is the
+   one where forgetting means being surprised by what an agent did while he was
+   not looking. One press lands him on the choice. */
+.trustline{
+  display:flex;align-items:flex-start;gap:7px;width:100%;text-align:left;
+  background:none;border:0;padding:0;cursor:pointer;font:inherit;color:inherit;
+}
+.trustline svg{color:var(--ink-3);flex:none;}
+.trustline:hover span{text-decoration:underline;}
+/* the two that are not the quiet default are said in colour, not only in words */
+.trustline[data-trust="localFree"] svg{color:var(--pine);}
+.trustline[data-trust="neverAsk"] svg{color:var(--marigold);}
+.trustline[data-trust="neverAsk"] span{color:var(--ink);font-weight:600;}
+
 
 /* ============================================================
    FILES ON A MESSAGE, AND ROOMS AS REAL THINGS
@@ -2052,6 +2078,116 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 }
 .abilitywords .ab-none{font-size:13px;color:var(--ink-3);}
 
+
+/* ============================================================
+   "WORK ON MY COMPUTER, LIKE CLAUDE CODE" — the one press
+   ------------------------------------------------------------
+   The thing he keeps asking for by name, drawn as the loudest object in the
+   section so it is found in the glance rather than in a search. It sits ABOVE
+   the ladder for the same reason the mixture notice does: the answer he came
+   for has to be inside the first look, not underneath it.
+
+   Green (pine) when it is genuinely on and complete; marigold on the prompt
+   that appears when a switch is on and nothing is behind it — the app's one
+   colour for "read this before you believe the thing next to it".
+   ============================================================ */
+.oneclick{
+  margin:0 0 16px;padding:14px 16px;border:1px solid var(--line);
+  border-radius:var(--radius);background:var(--surface-2);
+  display:flex;flex-direction:column;gap:11px;
+}
+.oneclick[data-oneclick="on"]{
+  border-color:color-mix(in srgb,var(--pine) 45%,transparent);
+}
+.oneclick[data-oneclick="half"]{
+  border-color:color-mix(in srgb,var(--marigold) 55%,transparent);
+}
+.oneclick .oc-head{display:flex;align-items:flex-start;gap:11px;}
+.oneclick .oc-mark{
+  flex:none;margin-top:1px;font-size:15px;line-height:1.2;color:var(--pine);
+}
+.oneclick .oc-tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;}
+.oneclick .oc-tx b{
+  font-size:14.5px;font-weight:650;color:var(--ink);
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+}
+.oneclick .oc-tx span{font-size:12.5px;color:var(--ink-2);line-height:1.5;}
+.oneclick .oc-head .primary,.oneclick .oc-head .chip{flex:none;align-self:flex-start;}
+.oneclick .oc-grants{
+  list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:5px 7px;
+}
+.oneclick .oc-grants li{
+  font-size:11.5px;line-height:1.3;padding:3px 8px;border-radius:99px;
+  border:1px solid var(--line);color:var(--ink-3);background:var(--bg);
+}
+.oneclick .oc-grants li[data-on="yes"]{
+  color:var(--ink);border-color:color-mix(in srgb,var(--pine) 45%,transparent);
+}
+.oneclick .oc-grants li[data-on="yes"]::before{content:"✓ ";color:var(--pine);}
+.oneclick .oc-ask{margin:0;font-size:12px;line-height:1.55;color:var(--ink-2);}
+.oneclick .oc-ask b{color:var(--ink);}
+.oneclick .oc-save{margin:0;font-size:11.5px;line-height:1.5;color:var(--ink-3);}
+.oneclick .oc-save b{color:var(--ink-2);}
+.oneclick .oc-gap{
+  display:flex;flex-direction:column;gap:6px;margin:0;
+  border-color:color-mix(in srgb,var(--marigold) 55%,transparent);
+  background:var(--marigold-soft);color:var(--ink);
+}
+.oneclick .oc-gap b{display:block;}
+.oneclick .oc-gap span{color:var(--ink-2);}
+.oneclick .oc-gap .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px;}
+/* The one row the press does not give, and why — quiet, not alarming: it is a
+   fact about the outside world, not a fault in his setup. */
+.oneclick .oc-held{margin:0;font-size:11.5px;line-height:1.55;color:var(--ink-3);}
+.oneclick .oc-held b{color:var(--ink-2);}
+
+/* ============================================================
+   "LET ALL MY AGENTS WORK ON THIS COMPUTER" — the same block, one screen up.
+   It sits at the top of the crew list because the agents it is about are the
+   ones he is looking at, and it takes itself off the screen the moment there is
+   nothing left for it to do.
+   ============================================================ */
+.crewupgrade{
+  margin:0 0 16px;padding:14px 16px;border:1px solid var(--line);
+  border-radius:var(--radius);background:var(--surface-2);
+  display:flex;flex-direction:column;gap:11px;
+  border-color:color-mix(in srgb,var(--marigold) 45%,transparent);
+}
+.crewupgrade.is-done{
+  flex-direction:row;align-items:flex-start;gap:10px;
+  border-color:color-mix(in srgb,var(--pine) 45%,transparent);
+  font-size:12.5px;line-height:1.55;color:var(--ink-2);
+}
+.crewupgrade.is-done b{color:var(--ink);}
+.crewupgrade .cu-head{display:flex;align-items:flex-start;gap:11px;}
+.crewupgrade .cu-mark{flex:none;margin-top:1px;font-size:15px;line-height:1.2;color:var(--pine);}
+.crewupgrade .cu-tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;}
+.crewupgrade .cu-tx b{font-size:14.5px;font-weight:650;color:var(--ink);}
+.crewupgrade .cu-tx span{font-size:12.5px;color:var(--ink-2);line-height:1.5;}
+.crewupgrade .cu-head .primary{flex:none;align-self:flex-start;}
+.crewupgrade .cu-grants{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:5px 7px;}
+.crewupgrade .cu-grants li{
+  font-size:11.5px;line-height:1.3;padding:3px 8px;border-radius:99px;
+  border:1px solid color-mix(in srgb,var(--pine) 45%,transparent);
+  color:var(--ink);background:var(--bg);
+}
+.crewupgrade .cu-grants li::before{content:"✓ ";color:var(--pine);}
+.crewupgrade .cu-ask{margin:0;font-size:12px;line-height:1.55;color:var(--ink-2);}
+.crewupgrade .cu-ask b{color:var(--ink);}
+.crewupgrade .cu-folder,.crewupgrade .cu-keep{
+  margin:0;font-size:11.5px;line-height:1.5;color:var(--ink-3);
+}
+
+/* A SWITCH ON WITH NOTHING BEHIND IT, said on the crew card and in the room
+   rail. Same words, same one owner, drawn small enough to live on a card and
+   loud enough that he cannot walk past it. */
+.gapline{
+  display:block;margin-top:5px;font-size:11px;line-height:1.4;color:var(--ink-2);
+  white-space:normal;
+}
+.gapline .chip{margin-right:2px;}
+.gapline .linkbtn{font-size:11px;}
+.cast .gapline{margin-top:8px;}
 
 /* ============================================================
    THE REACH LADDER — how far one agent may go

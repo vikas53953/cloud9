@@ -9,7 +9,7 @@
 // facts are right. These tests pin the reconciliation:
 //
 //   the switches STAY the boundary,     (isolation.test.ts still passes)
-//   his own dev setup STAYS out,        (safe-mode / strict-mcp / ignore-config)
+//   his own dev setup STAYS out,        (no settings sources / strict-mcp / ignore-config)
 //   but the switches can now reach the CLI's FULL surface,
 //   and everything that changes the machine or spends money ASKS FIRST.
 import test from "node:test";
@@ -24,6 +24,7 @@ import { claudeArgs, CLAUDE_ISOLATION_FLAGS } from "./claude-cli.js";
 import { codexArgs, CODEX_ALWAYS_DISABLED, codexDisabledFeaturesFor } from "./codex.js";
 import { buildAgentPrompt } from "./provider.js";
 import { aTurn } from "./turnfixture.js";
+import { EMPTY_ARG } from "./run.js";
 
 const ALL_OFF: AgentAbilities = {
   webSearch: false, files: false, schedules: false, background: false,
@@ -80,7 +81,11 @@ test("no row may name a tool this CLI does not have — a typo is silently ignor
 
 test("the choices are a ladder: each rung is everything below it, plus more", () => {
   const names = REACH_LEVELS.map(l => l.level);
-  assert.deepEqual(names, ["talk", "look", "work", "computer"]);
+  /* `mypc` joined the ladder on 2026-08-05: it is what every new agent is —
+     everything except the one row nobody but the owner can supply — and it
+     exists so the default is a RUNG rather than a mixture no screen can name
+     (see `fullreach.test.ts`). The rungs below it were not touched. */
+  assert.deepEqual(names, ["talk", "look", "work", "mypc", "computer"]);
   let previous: string[] = [];
   for (const level of REACH_LEVELS) {
     const on = Object.entries(abilitiesForReach(level.level))
@@ -197,13 +202,17 @@ test("at maximum reach the owner's own setup is still shut out", () => {
   for (const flag of CLAUDE_ISOLATION_FLAGS) {
     assert.ok(args.includes(flag), `${flag} was traded away for the raised ceiling`);
   }
-  assert.ok(args.includes("--safe-mode"), "his CLAUDE.md, plugins and hooks");
   assert.ok(args.includes("--strict-mcp-config"), "his connected accounts");
   assert.ok(args.includes("--disable-slash-commands"), "his slash commands");
+  // his CLAUDE.md, plugins and hooks — an EMPTY list of setting sources, which is
+  // what replaced --safe-mode on 2026-08-05 (see claude-cli.ts). The EMPTY part
+  // matters: --setting-sources with a real value would load them right back.
+  const at = args.indexOf("--setting-sources");
+  assert.ok(at >= 0, "his CLAUDE.md, plugins and hooks");
+  assert.equal(args[at + 1], EMPTY_ARG, "an empty source list, not some sources");
   // no path adds his config back
-  assert.ok(!args.includes("--setting-sources"));
   assert.ok(!args.includes("--plugin-dir"));
-  assert.ok(!args.includes("--add-dir") || args.includes("--safe-mode"));
+  assert.ok(!args.includes("--settings"));
 });
 
 test("connections never load the owner's MCP servers — only ones passed for this agent", () => {

@@ -85,6 +85,178 @@ export interface AgentApprovals {
  */
 export const ALWAYS_ASK_ABILITIES = ["commands", "wholeComputer", "connections"] as const;
 
+/* ===========================================================================
+ * HOW MUCH THIS ONE AGENT MAY DO WITHOUT STOPPING TO ASK — 2026-08-05.
+ *
+ * HIS WORDS, angry and repeated: "make an agent so that the agent can run all
+ * these commands rather than asking me whether i can do this or not or whether
+ * it is denying — because in buzz those agents are fully capable of running
+ * anything."
+ *
+ * WHAT HAD JUST HAPPENED. Every new agent now gets every capability the app can
+ * grant (`NEW_AGENT_ABILITIES`). But `commands` and `wholeComputer` are on
+ * `ALWAYS_ASK_ABILITIES` above, and `mustAskBeforeActing` read that list with no
+ * way to answer anything but "ask". So the very agent that had just been made
+ * fully capable stopped at an approval card before it was allowed to START — the
+ * exact interruption he is complaining about, now on EVERY agent he owns.
+ *
+ * THE TENSION, STATED HONESTLY RATHER THAN DESIGNED AROUND. The approval card is
+ * what makes "an agent may do everything" safe instead of reckless. Buzz's own
+ * default is `bypass-permissions` — nobody is ever asked — which is why Buzz
+ * feels unlimited, and it is a real risk Cloud9 deliberately did not take. He has
+ * now asked for the Buzz behaviour, repeatedly and explicitly.
+ *
+ * SO IT BECOMES HIS CHOICE, PER AGENT, IN HIS OWN WORDS — not a silent default
+ * and not a global flag. Three settings, and the middle one exists because there
+ * IS a line worth drawing and the code already knows where it is: the
+ * `REMOTE_ACTIONS` table above. Everything on it is visible from outside this
+ * computer. Everything else — running programs, reading and writing files, git
+ * that stays on this machine — is his own PC, which he owns, and which he has
+ * told us four times he wants his agents to use.
+ *
+ * ONE OWNER FOR THE WHOLE RULE: `decideAsking` below. `mustAskBeforeActing` is a
+ * boolean over it, the hub's job gate reads it, the engine's approval desk reads
+ * it, and the editor's "you'll be asked before it" list reads it. There is no
+ * second place where "does this stop and ask?" gets answered.
+ * =========================================================================== */
+
+/**
+ * The three settings, as stored on one agent.
+ *
+ * - `"askEveryTime"` — the old behaviour, and what EVERY EXISTING AGENT IS.
+ *   Absent means this: an agent saved before this setting existed cannot be
+ *   silently widened by a code change he did not ask for.
+ * - `"localFree"` — local work goes ahead; anything that leaves this computer
+ *   still stops and asks. The default for a BRAND-NEW agent (see
+ *   `NEW_AGENT_TRUST`, which says why).
+ * - `"neverAsk"` — nothing is ever asked. A deliberate, typed-out choice that
+ *   carries a warning sentence; never reached by omission or by default.
+ */
+export type AgentTrust = "askEveryTime" | "localFree" | "neverAsk";
+
+/**
+ * The abilities whose USE reaches an outside account rather than this computer,
+ * and which therefore still ask under `"localFree"`.
+ *
+ * Only `connections` is on it. `commands` and `wholeComputer` change HIS machine,
+ * which is the thing he is asking to stop being interrupted about; `connections`
+ * is somebody else's server and somebody else's account, so it is on the far side
+ * of the line the middle setting draws. It is a SUBSET of
+ * `ALWAYS_ASK_ABILITIES` and a test holds it to that, so a future ability cannot
+ * land here without also being on the list that asks at all.
+ *
+ * Why an ability and not an action: a connected service has no `REMOTE_ACTIONS`
+ * row to gate — the surface arrives as a config file and Cloud9 never sees the
+ * individual calls. The honest gate available is therefore the one before the
+ * job starts, and this is it.
+ */
+export const OFF_MACHINE_ABILITIES = ["connections"] as const;
+
+/** One setting, with the words he actually reads on the screen. */
+export interface TrustLevel {
+  level: AgentTrust;
+  /** the choice as a button, in his words */
+  label: string;
+  /** one line under it: what it means */
+  plainWords: string;
+  /** the line on the agent's card */
+  cardWords: string;
+  /**
+   * THE ONE SENTENCE HE IS ACCEPTING. Present only on the setting that needs
+   * it — the app shows it beside the choice, so the most permissive setting can
+   * never be picked without reading what it costs.
+   */
+  warning?: string;
+}
+
+export const TRUST_LEVELS: readonly TrustLevel[] = [
+  {
+    level: "askEveryTime",
+    label: "Ask me every time",
+    plainWords:
+      "It stops and waits for you before it starts a job and before anything goes out. "
+      + "Nothing happens on this computer while you are not looking.",
+    cardWords: "Asks you before every job",
+  },
+  {
+    level: "localFree",
+    label: "Just get on with it — ask me only before something leaves this computer",
+    plainWords:
+      "Running programs, reading and changing your files, git on this machine: it does all "
+      + "of that without stopping. Pushing to GitHub, opening a pull request, commenting, "
+      + "or acting through a connected account still asks you first.",
+    cardWords: "Works on its own here · asks before anything leaves",
+  },
+  {
+    level: "neverAsk",
+    label: "Don't ask me — just do it",
+    plainWords:
+      "No approval card, ever. It pushes, opens pull requests and acts through your "
+      + "connected accounts on its own.",
+    cardWords: "Never asks — does everything on its own",
+    warning:
+      "You are accepting that this agent can change your computer AND publish to GitHub or "
+      + "your connected accounts without you seeing it first — everything it does is still "
+      + "written down in “What they've been doing”, but you will be reading it afterwards.",
+  },
+] as const;
+
+/**
+ * WHAT A BRAND-NEW AGENT STARTS ON, and why it is the middle one.
+ *
+ * A new agent already gets every capability this app can grant, so under
+ * `"askEveryTime"` the first thing every agent he makes does is stop at a card
+ * before it has done anything at all — which is the complaint, arriving by
+ * default on every agent. `"localFree"` removes that card for work that stays on
+ * the machine he owns, and keeps every single card for work that leaves it: the
+ * push, the pull request, the issue, the comment, the review, the connected
+ * account. The blast radius of the default is his own PC and nothing further, and
+ * everything irreversible-in-public still has his hand on it.
+ *
+ * `"neverAsk"` is deliberately NOT this. A default nobody chose must never be the
+ * one that can publish in his name.
+ */
+export const NEW_AGENT_TRUST: AgentTrust = "localFree";
+
+/** Is this one of the three real settings? Anything else is not a setting. */
+export function isAgentTrust(value: unknown): value is AgentTrust {
+  return TRUST_LEVELS.some(t => t.level === value);
+}
+
+/**
+ * WHAT THIS AGENT'S SETTING REALLY IS — the only reader of the stored field.
+ *
+ * FAIL CLOSED, AND THAT IS THE WHOLE POINT. Absent, misspelt, a number, an
+ * object, a value from a newer version of the app, a forged frame that says
+ * `"neverAskEver"` — every one of them lands on `"askEveryTime"`. There is no
+ * string anyone can store that widens an agent by accident; the only way to less
+ * asking is one of the three exact words, which only the owner's own editor
+ * writes and which the hub validates before it is ever stored.
+ */
+export function trustOf(agent: { trust?: unknown }): AgentTrust {
+  return isAgentTrust(agent.trust) ? agent.trust : "askEveryTime";
+}
+
+/** The words for one setting, for a screen. Never assembled at a call site. */
+export function trustLevel(trust: AgentTrust): TrustLevel {
+  return TRUST_LEVELS.find(t => t.level === trust) ?? TRUST_LEVELS[0]!;
+}
+
+/** The line an agent's card carries. Read off the agent, never guessed. */
+export function trustWords(agent: { trust?: unknown }): string {
+  return trustLevel(trustOf(agent)).cardWords;
+}
+
+/** Check the setting before it is stored. Silence is fine; nonsense is not. */
+export function validateTrust(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (!isAgentTrust(value)) {
+    return "say how much this agent may do on its own: ask every time, ask only before "
+      + "something leaves this computer, or never ask";
+  }
+  return null;
+}
+
 /**
  * THE THINGS AN AGENT CAN DO THAT ARE VISIBLE FROM OUTSIDE THIS COMPUTER.
  *
@@ -344,17 +516,56 @@ export function validateRemoteActionFacts(f: unknown): string | null {
  * about asking is how the hub and the engine came to disagree the first time.
  */
 export function mustAskBeforeActing(
-  agent: { abilities?: Partial<AgentAbilities> },
+  agent: { abilities?: Partial<AgentAbilities>; trust?: unknown },
   what?: { remoteAction?: RemoteAction },
 ): boolean {
-  // Anything on the REMOTE_ACTIONS table is visible from outside this machine,
-  // and his decision — branch + pull request, ALWAYS — means it is never the
-  // agent's call. Deliberately BEFORE the ability check so no combination of
-  // switches can reach a `false`.
-  if (what?.remoteAction !== undefined) return true;
+  return decideAsking(agent, what) === "ask";
+}
+
+/**
+ * THE ONE OWNER OF "DOES THIS STOP AND ASK?", and the only place his trust
+ * setting is ever read against a thing that is about to happen.
+ *
+ * `"ask"` means put a card in front of him and wait. `"goAhead"` means HE has
+ * already answered this, in advance, by choosing what this agent may do on its
+ * own — it is never the engine deciding, and it is never silence being taken for
+ * a yes.
+ *
+ * THE ORDER MATTERS AND IS DELIBERATE:
+ *
+ *  1. `"neverAsk"` — he typed it, with the warning in front of him, for this one
+ *     agent. Nothing below it can re-impose a card, because a setting that
+ *     something else overrides is not a setting.
+ *  2. ANYTHING ON THE `REMOTE_ACTIONS` TABLE STILL ASKS for both other settings.
+ *     A read-only agent that somehow reached `git push` asks; an agent with every
+ *     switch on asks. That is the old law, unchanged, and it is what makes
+ *     `"localFree"` a real boundary rather than a softer word for "off".
+ *  3. `"localFree"` — the job may start without a card, UNLESS this agent holds
+ *     an ability that reaches an outside account (`OFF_MACHINE_ABILITIES`).
+ *     Running programs and reaching his files are his own machine; a connected
+ *     service is somebody else's.
+ *  4. `"askEveryTime"` — exactly what it did before any of this existed.
+ *
+ * WHY IT IS A SINGLE FUNCTION AND NOT THREE CHECKS AT THREE CALL SITES: the hub
+ * decides whether a job may start, the engine's approval desk decides whether an
+ * action needs a card, and the agent editor tells him what he will be asked
+ * about. When that rule lived in two places, the hub and the engine came to
+ * disagree and a shell-capable agent could have run unattended with nobody asked.
+ * A trust setting is exactly the kind of change that would do that again.
+ */
+export function decideAsking(
+  agent: { abilities?: Partial<AgentAbilities>; trust?: unknown },
+  what?: { remoteAction?: RemoteAction },
+): "ask" | "goAhead" {
+  const trust = trustOf(agent);
+  if (trust === "neverAsk") return "goAhead";
+  if (what?.remoteAction !== undefined) return "ask";
   const a = agent.abilities;
-  if (!a) return false;
-  return ALWAYS_ASK_ABILITIES.some(k => a[k] === true);
+  if (!a) return "goAhead";
+  const asking: readonly string[] = trust === "localFree"
+    ? OFF_MACHINE_ABILITIES
+    : ALWAYS_ASK_ABILITIES;
+  return asking.some(k => a[k as keyof AgentAbilities] === true) ? "ask" : "goAhead";
 }
 
 /** Which locally-installed AI harness runs this agent's turns (FR-PC-002/003). */
@@ -423,6 +634,16 @@ export interface AgentDef {
   model?: string;
   /** FR (feedback round 1, his 9) — plain-words skills, absent means none */
   skills?: AgentSkill[];
+  /**
+   * HOW MUCH THIS AGENT MAY DO WITHOUT STOPPING TO ASK — his choice, per agent.
+   *
+   * ABSENT MEANS `"askEveryTime"`, and that is the load-bearing part: his six
+   * existing agents carry no such field, so none of them is widened by this
+   * change arriving. A new agent is given `NEW_AGENT_TRUST` by the editor, in
+   * writing, at the moment it is created — never by this field's absence meaning
+   * something friendlier than it did yesterday. See `decideAsking`.
+   */
+  trust?: AgentTrust;
   /** who may make this agent act — absent means "owner" (the safe default) */
   respondTo?: AgentRespondTo;
   /** user ids allowed to drive it, only read when respondTo is "allowlist" */
@@ -630,6 +851,15 @@ export interface RunRecord {
   usage?: RunUsage;
   /** the CLI's own conversation id */
   sessionId?: string;
+  /**
+   * DID THIS TURN CONTINUE THE HARNESS'S OWN SESSION, or start a cold one?
+   *
+   * A resumed turn was sent only the messages new since it last spoke, instead
+   * of the whole rendered room — so this is what tells a person whether the
+   * token counts beside it are comparable to the run above. Claude only; Codex
+   * is launched `--ephemeral` and has no session to continue.
+   */
+  resumed?: boolean;
   /** Claude only */
   numTurns?: number;
   /** how long the reply was — the reply TEXT is not copied into the record */
@@ -638,6 +868,21 @@ export interface RunRecord {
   events: number;
   /** steps were dropped to keep this record small */
   truncated?: boolean;
+  /**
+   * WHAT HIS TRUST SETTING WAS WHEN THIS TURN RAN — so that afterwards he can
+   * see which runs were allowed to work unattended and which had his hand on
+   * every gate. Recorded from the agent at the moment the turn started, never
+   * read back off the agent later: he may change the setting, and a run record
+   * that silently re-describes itself when he does is not a record.
+   *
+   * Absent on runs from before this existed, which read as "ask every time" —
+   * the same fail-closed answer `trustOf` gives everywhere else.
+   *
+   * IT DOES NOT REPLACE THE AUDIT. `steps` above still lists every command the
+   * agent ran, whatever the setting, and that is what "What they've been doing"
+   * draws. This field says under which rule those steps were taken.
+   */
+  trust?: AgentTrust;
 }
 
 /** A run as it appears in a list, without loading every step. */
@@ -998,6 +1243,103 @@ export function validateWholeComputerRoots(roots: unknown): string | null {
     if (bad) return bad;
   }
   return null;
+}
+
+/* ---------- A SWITCH THAT IS ON WITH NOTHING BEHIND IT ----------
+ *
+ * THE FAULT THIS KILLS AS A CLASS, 2026-08-05. Vikas asked an agent to read a
+ * file on his PC and was told "I can't reach files outside this directory".
+ * Nothing was broken. `wholeComputer` was ON for that agent and NO FOLDER had
+ * ever been chosen — a switch flipped, a supply never given, and the only place
+ * that said so was inside the agent's own editor, three screens from where he
+ * was standing.
+ *
+ * `connections` has exactly the same shape (switch on, no file chosen), so it is
+ * on this table too. The rule is not "fix wholeComputer"; it is: A SWITCH THAT
+ * NEEDS SOMETHING SUPPLIED MUST NAME WHAT IT NEEDS, IN ONE PLACE, so every
+ * screen that can show a gap shows the same gap and a new switch of this shape
+ * cannot be added without landing here.
+ *
+ * WHY SHARED AND NOT THE ENGINE. Three programs have to agree: the desktop draws
+ * the badge on the crew card and the room rail, the editor draws the in-flow
+ * prompt, and the field it is asking about (`wholeComputerRoots`,
+ * `connectionsFile`) is part of the wire shape defined in this file. The
+ * ENGINE's `CAPABILITIES` row still owns the tools, the approval and the words
+ * the agent is told; this owns only "which stored field feeds which switch", and
+ * `abilities.test.ts` in the engine is free to hold the two to each other.
+ *
+ * STORED STATE ONLY — NEVER THE DISK. "Is that folder still there?" is a fact
+ * about this second and belongs to `wholeComputerRootsFor` / `connectionsFileFor`
+ * in @cloud9/engine, which can see the disk. This answers the one question that
+ * needs no disk at all and is therefore safe to ask from any window: HAS HE
+ * CHOSEN ANYTHING AT ALL? That is the half-state that burned him.
+ */
+export interface SupplySwitch {
+  /** the switch on the agent */
+  ability: keyof AgentAbilities;
+  /** the field on the agent that feeds it */
+  field: "wholeComputerRoots" | "connectionsFile";
+  /** the switch in his words — the same words the engine's table uses */
+  label: string;
+  /** what is missing, in his words. Goes on a card, a rail and a button. */
+  missing: string;
+  /** the button that fixes it, in his words */
+  fix: string;
+}
+
+/**
+ * Every switch that grants nothing until the owner hands it something.
+ * ORDER IS "most likely to bite him first" — the folder is the one he met.
+ */
+export const SUPPLY_SWITCHES: readonly SupplySwitch[] = [
+  {
+    ability: "wholeComputer",
+    field: "wholeComputerRoots",
+    label: "Reach files outside its own folder",
+    missing: "is allowed outside its own folder, but no folder has been chosen yet",
+    fix: "Choose a folder",
+  },
+  {
+    ability: "connections",
+    field: "connectionsFile",
+    label: "Use connected services your owner picked for you",
+    missing: "is allowed to use connected services, but no connections file has been chosen yet",
+    fix: "Choose the file",
+  },
+] as const;
+
+/** Has the owner chosen anything at all for this switch? Stored state only. */
+export function supplyChosen(
+  agent: Pick<AgentDef, "wholeComputerRoots" | "connectionsFile">,
+  which: SupplySwitch,
+): boolean {
+  if (which.field === "wholeComputerRoots") {
+    const said = agent.wholeComputerRoots;
+    return Array.isArray(said) && said.some(r => typeof r === "string" && r.trim().length > 0);
+  }
+  const file = agent.connectionsFile;
+  return typeof file === "string" && file.trim().length > 0;
+}
+
+/**
+ * THE SWITCHES THIS AGENT HAS ON WITH NOTHING BEHIND THEM.
+ *
+ * Empty is the good answer and the common one. Anything in this list is a
+ * promise the app has made and cannot keep, so every screen that can show it
+ * MUST show it — the crew card, the room rail and the editor all read this one
+ * function, which is what stops the gap being visible in only one of them again.
+ *
+ * Reads `agent.abilities` directly on purpose: neither of these two switches is
+ * ever forced on by a harness (`forcedOnCapabilities` in @cloud9/engine covers
+ * the web, file, helper and command rows only), so there is no state in which
+ * the effective answer and the stored one differ here.
+ */
+export function supplyGapsOf(
+  agent: Pick<AgentDef, "abilities" | "wholeComputerRoots" | "connectionsFile">,
+): SupplySwitch[] {
+  const on = agent.abilities;
+  if (!on) return [];
+  return SUPPLY_SWITCHES.filter(s => on[s.ability] === true && !supplyChosen(agent, s));
 }
 
 // ---------- the repositories his GitHub sign-in can actually see ----------
@@ -1417,6 +1759,16 @@ export interface HarnessInfo {
   modelsDetail?: string;
   /** one plain sentence, user-facing */
   detail: string;
+  /**
+   * TRUE when the CLI is here but did not say whether it is signed in — the
+   * probe ran out of patience rather than answering. `signedIn` is false in that
+   * case because nothing proved otherwise, but this says WHY, and the re-look
+   * schedule reads it: unknown means come back in seconds, never in ten minutes.
+   * Measured 2026-08-05: `claude auth status` took 77s on this machine, and the
+   * old 20s leash was being read as "not signed in" — every agent then answered
+   * "my engine isn't connected" on a machine that was signed in.
+   */
+  unsure?: boolean;
   /** a sign-in is in progress (browser window open, waiting) */
   signingIn?: boolean;
   /** the last sign-in failure, in plain words */
@@ -3613,6 +3965,14 @@ export function validateAgentDefinition(agent: unknown, rules: AgentInputRules =
       if (typeof on !== "boolean") return AGENT_INCOMPLETE_REFUSAL;
     }
   }
+  // THE TRUST SETTING IS JUDGED HERE, on the record about to be STORED.
+  // Anything that is not one of the three exact words is refused rather than
+  // stored, so a forged or stale client cannot leave a value behind that a
+  // future reader might interpret generously. (`trustOf` also fails closed on
+  // read — two independent guards, because this one is the one that keeps the
+  // database clean and that one is the one that keeps a turn safe.)
+  const badTrust = validateTrust(whole.trust);
+  if (badTrust) return badTrust;
   // the field-by-field rules, unchanged — one owner for each of them
   return validateAgentInput(whole as AgentInput, rules);
 }
@@ -4340,6 +4700,10 @@ export function validateRunRecord(record: unknown): string | null {
   if (r.steps.length > RUN_LIMITS.steps) return "that run has too many steps";
   const badStep = validateSteps(r.steps);
   if (badStep) return badStep;
+  // the trust setting this run took place under — the same three words or
+  // nothing at all, so a stored run cannot claim a rule that does not exist
+  const badTrust = validateTrust(r.trust);
+  if (badTrust) return badTrust;
   return null;
 }
 
