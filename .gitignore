@@ -4,3 +4,26 @@ dist/
 *.db-*
 cloud9-engine-data/
 release/
+
+# ---------------------------------------------------------------- generated
+# Everything below is REBUILT by a command, so committing it only grows .git.
+# Each entry names the command that regenerates it.
+
+# The built web bundle — `npm run build -w @cloud9/desktop` (vite build,
+# outDir: dist-web). `npm run dist` runs `build:app` before electron-builder,
+# so the installer always packages a freshly built bundle. Every build emits a
+# new hashed filename, which means a brand-new blob in git forever.
+apps/desktop/dist-web/
+
+# QA evidence — rewritten wholesale on every `npm run qa` / `qa:app` run.
+# ~100 screenshots per round at ~100 KB each; nothing renders them (no <img>
+# or markdown embed anywhere in the repo), they are only cited by path in
+# reports. The files stay on disk for whoever wants to look at them.
+docs/qa/*.png
+docs/qa/*.log
+docs/qa/*.exit
+docs/qa/*-results.json
+
+# Hand-written QA notes are NOT generated — keep them tracked.
+!docs/qa/*.md
+!docs/qa/*.txt

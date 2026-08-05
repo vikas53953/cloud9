@@ -1,9 +1,0 @@
-Command: targeted simulation extracting the real createWorkspaceRefreshObserver and checkWithRequiredCleanup helpers from scripts/drive-app.mjs
-Scenario: Network.enable fails; rollback then fails in both Network.disable and CDP detach; the observer assignment never completes; the Files caller attempts ordinary required cleanup
-
-Exit code: 0
-
-drive-app production setup+dispose failure simulation
-PASS combined setup/disposal failure escaped
-PASS later Files checks did not run
-PASS Files result recorded required cleanup failure

@@ -877,10 +877,29 @@ export function renderCapabilities(
     `\nWhat you can actually do (your owner set these switches, and they are ` +
     `enforced outside this conversation — this list is the truth, not a wish):\n` +
     `${lines.join("\n")}\n` +
+    /* WHERE THE ASKING REALLY HAPPENS — measured on the installed app,
+       2026-08-05, and it is NOT here.
+       This paragraph used to say "say what you intend to do and wait to be let
+       through" about every always-ask row. In a chat turn there is nothing to
+       wait for: Cloud9 raises an approval card for a BACKGROUND job (`!bg`), a
+       schedule, and anything that leaves this computer — never for a command in
+       an ordinary reply. So an agent that obeyed the old sentence stalled on a
+       card that would never come. Both asks below were photographed:
+         "…since running programs on this computer needs your go-ahead first,
+          confirm and I'll execute it right away…"  (git rev-parse, 95s, 0 cards)
+         "…since running programs here needs your go-ahead first, confirm…"
+                                                    (node -e, 91s, 0 cards)
+       Vikas asked for an app that does the work, not one that asks twice. The
+       words now match the machinery: do it, say what you did. */
     (asks.length > 0
-      ? `\nSome of that asks your owner first — ${asks.map(a => a.toLowerCase()).join("; ")}. ` +
-        `When one of those is what a job needs, say what you intend to do and wait to be ` +
-        `let through. Never report it as already done.\n`
+      ? `\nSome of that — ${asks.map(a => a.toLowerCase()).join("; ")} — is powerful, so say ` +
+        `plainly what you ran or changed once you have done it. You do NOT need permission ` +
+        `for it in this conversation: your owner is here, he asked, and he granted the ` +
+        `switch. Do not stall waiting for a confirmation — there is no button for him to ` +
+        `press on an ordinary reply, so "confirm and I'll run it" leaves him stuck. The ` +
+        `only things that really stop and wait for his go-ahead are a background job, a ` +
+        `schedule, and anything that leaves this computer; those raise a card by ` +
+        `themselves, without you asking for one.\n`
       : "") +
     `\nTrue for every agent in Cloud9, whatever your switches say:\n` +
     (harness === "codex"

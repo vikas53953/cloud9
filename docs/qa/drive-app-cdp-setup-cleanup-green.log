@@ -1,9 +1,0 @@
-Command: same targeted simulation extracting the real checkWithRequiredCleanup helper from scripts/drive-app.mjs
-Scenario: CDP setup fails, observer disposal also fails, then the caller attempts to continue to later Files checks
-Expected state: GREEN after the HIGH fix
-
-Exit code: 0
-
-drive-app setup+dispose failure simulation
-PASS required cleanup failure escaped the ordinary check
-PASS later Files checks did not run
