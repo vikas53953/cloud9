@@ -18,6 +18,8 @@ import {
   // "show me the plan first" (2026-08-05) — the hub still writes the line the
   // owner reads and still bounds what the agent wrote
   planHeadline, tidyPlan, validatePlanAsk,
+  SavingProposal, applySaving, findWaste, rollUpTokenUse, savingDetail, savingHeadline,
+  tidySaving, validateSavingProposal,
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
   isReceiptStage, isReceiptVerdict,
@@ -2108,6 +2110,66 @@ export class Relay {
         this.scheduleExpiry(approval.expiresAt!);
         break;
       }
+      case "askSaving": {
+        // ENGINE ONLY, for exactly the reason the two cases above are: a client
+        // able to mint approval cards could manufacture one and then approve it
+        // with its own second frame.
+        if (conn.client !== "engine") {
+          throw new Error("only the engine can ask you about a saving");
+        }
+        // WHOSE AGENT IS ASKING, from stored state, never the frame.
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        const channel = this.channelFor(conn.userId, frame.channelId);
+        // AND WHOSE AGENT IT IS ABOUT — asked separately, through the SAME
+        // `myAgent` gate. This is the line that keeps one person's agent from
+        // ever putting a card in front of somebody else about an agent they do
+        // not own. `myAgent` throws if the id is not this owner's, so a
+        // proposal about a stranger's agent never becomes a card at all.
+        // SHAPE FIRST, THEN OWNERSHIP. The other order works but answers the
+        // wrong question out loud: a proposal with no `about` at all would come
+        // back as "not your agent", which sends whoever is reading the log
+        // hunting for a permission problem that is not there.
+        const badSaving = validateSavingProposal(frame.proposal);
+        if (badSaving) throw new Error(badSaving);
+        const about = this.myAgent(conn.userId, frame.proposal.about);
+        const askId = typeof frame.askId === "string"
+          ? frame.askId.slice(0, APPROVAL_LIMITS.askId).trim() : "";
+        if (!askId) throw new Error("that request has no label to answer against");
+        const namedTask = frame.taskId ? this.store.task(frame.taskId) : undefined;
+        const taskId = namedTask && namedTask.agentId === agent.id ? namedTask.id : undefined;
+        const now = Date.now();
+        // THE AGENT WROTE THE REASON, SO THE REASON IS CONTAINED — bounded and
+        // stripped by `tidySaving` here, at the hub, on the way in. Everything
+        // the owner reads FIRST is Cloud9's own: the headline, the detail line
+        // and the name of the agent are all built from the CHANGE, which comes
+        // out of a closed vocabulary, never from anything the agent phrased.
+        const proposal: SavingProposal = {
+          about: about.id,
+          // the stored name, not the one the agent typed — a card that names an
+          // agent has to name the one it would really change
+          aboutName: about.name,
+          change: frame.proposal.change,
+          because: tidySaving(frame.proposal.because),
+        };
+        const approval: Approval = {
+          id: newId("ap"), agentId: agent.id, ownerId: agent.ownerId,
+          action: savingHeadline(proposal).slice(0, APPROVAL_LIMITS.action),
+          status: "pending", createdAt: now,
+          kind: "saving", channelId: channel.id,
+          detail: savingDetail(proposal).slice(0, APPROVAL_LIMITS.detail),
+          saving: proposal,
+          // it dies if nobody answers — the SAME sweep as an action or plan card
+          expiresAt: now + this.approvalWaitMs,
+          ...(taskId ? { taskId } : {}),
+        };
+        this.store.saveApproval(approval);
+        this.audit(conn, "approval_requested", approval.id,
+          `${agent.name} suggested a way to spend less on ${about.name}`, { asAgent: agent });
+        send(conn.ws, { type: "approvalAsked", askId, approvalId: approval.id });
+        this.sendApproval(approval);
+        this.scheduleExpiry(approval.expiresAt!);
+        break;
+      }
       case "decideApproval": {
         // a card that ran out of time is not answerable, and saying so is the
         // whole point of `expired` — silence must never read as a yes
@@ -2121,6 +2183,50 @@ export class Relay {
         approval.decidedAt = Date.now();
         this.store.saveApproval(approval);
         this.audit(conn, "approval_decided", approval.id, `${frame.decision}: ${approval.action}`);
+        // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) — start =====
+        //
+        // A YES ON A SAVING CARD IS THE MOMENT THE SETTING CHANGES, and this is
+        // the only line in Cloud9 that makes that change.
+        //
+        // IT IS DONE HERE, IN THE DECISION, ON PURPOSE. The obvious alternative
+        // was for his window to send an ordinary `updateAgent` after clicking
+        // Approve. That is two frames with a gap between them, and the gap is
+        // where it goes wrong: if the second one is refused, the card already
+        // says "approved" and nothing has actually changed. A record that says
+        // he agreed to something that did not happen is exactly the shape of
+        // lie this app spends the rest of its comments avoiding. One frame, one
+        // decision, one write.
+        //
+        // NOBODY GAINS A POWER FROM THIS. The write is caused by the OWNER's own
+        // decision frame — `approval.ownerId !== conn.userId` two lines above is
+        // the same gate every other decision passes — and what may be written is
+        // `SavingChange`, a closed union of two settings that can only ever make
+        // an agent cost LESS or do LESS. The agent that suggested it cannot
+        // reach this line, cannot widen it, and is never told anything more than
+        // "he accepted it".
+        //
+        // AND IT NEVER FAILS SILENTLY. If the agent it is about has since been
+        // deleted, or the stored change is one this version does not recognise,
+        // nothing is written and it is said out loud in the trail — the decision
+        // still stands as his, because it was.
+        if (approval.kind === "saving" && frame.decision === "approved") {
+          const target = approval.saving
+            ? this.store.agents().find(a => a.id === approval.saving!.about)
+            : undefined;
+          const changed = target && target.ownerId === conn.userId && approval.saving
+            ? applySaving(target, approval.saving.change)
+            : undefined;
+          if (changed) {
+            this.store.saveAgent(changed);
+            this.audit(conn, "agent_updated", changed.id,
+              `${changed.name}: ${approval.action}`);
+            this.broadcast({ type: "agent", agent: changed });
+          } else {
+            this.audit(conn, "approval_decided", approval.id,
+              `nothing was changed — the agent this was about is no longer here`);
+          }
+        }
+        // ===== SPENDING BLOCK — end =====
         const task = approval.taskId ? this.store.task(approval.taskId) : undefined;
         if (task && task.status === "waiting_approval") {
           task.status = frame.decision === "approved" ? "not_started" : "cancelled";
@@ -2370,6 +2476,46 @@ export class Relay {
         this.recordRun(conn, frame.record);
         break;
       }
+      // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) — start =====
+      //
+      // WHAT HIS CREW IS COSTING HIM, added up here because here is where the
+      // records are. The window would otherwise need every stored run of every
+      // agent to see the figure on each one, which is hundreds of round trips to
+      // draw one screen.
+      //
+      // WHOSE CREW: `agentsOf(conn.userId)`. There is nothing on the frame to
+      // name anybody, so there is nothing to check against and nothing to get
+      // wrong. Being in a room with someone's agent has never been a licence to
+      // read what they spend, and this changes none of that.
+      //
+      // THE SAME ARITHMETIC THE AGENT'S OWN TOOL USES — `rollUpTokenUse` and
+      // `findWaste` out of @cloud9/shared, not a hub-flavoured version of them.
+      // A screen and an agent that disagree about the same money would be worse
+      // than neither existing.
+      case "spending": {
+        const at = Date.now();
+        const rows = this.store.agents().filter(a => a.ownerId === conn.userId).map(agent => {
+          const provider = agent.provider ?? "claude";
+          const use = rollUpTokenUse({
+            agentId: agent.id, agentName: agent.name, provider, now: at,
+            runs: this.store.runsForAgent(agent.id, RUN_RETENTION.perAgent).map(row => ({
+              startedAt: row.record.startedAt,
+              // the RUN's provider, not the agent's as it is set up today — see
+              // `RunStore.countableRuns` for why a record must not re-describe
+              // itself when he changes a setting
+              provider: row.record.provider || provider,
+              outcome: row.record.outcome,
+              ...(typeof row.record.ownerSetup === "boolean"
+                ? { ownerSetup: row.record.ownerSetup } : {}),
+              ...(row.record.usage ? { usage: row.record.usage } : {}),
+            })),
+          });
+          return { use, findings: findWaste({ use, agent }) };
+        }).filter(row => row.use.runs > 0);
+        send(conn.ws, { type: "spending", period: "thisMonth", at, rows });
+        break;
+      }
+      // ===== SPENDING BLOCK — end =====
       case "runList": {
         const limit = typeof frame.limit === "number" ? frame.limit : RUN_RETENTION.listDefault;
         if (frame.taskId) {

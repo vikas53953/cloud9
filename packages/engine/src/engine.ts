@@ -15,6 +15,11 @@ import {
   // GAP A/B/C (spending limits, show-me-the-plan, stand-in models, 2026-08-05)
   AgentSpendCap, SpendCapWhich, decideSpend, fallbackModelsOf, fellBackTo, fellBackWords,
   providerCanBeCapped, showsPlanFirst, spendCapOf, spendCapStopWords, tidyPlan,
+  // SPENDING BLOCK (what the crew costs, 2026-08-07): the arithmetic, the words
+  // and the closed list of changes an agent may offer all live in shared, so the
+  // engine, the hub and the window cannot end up with three opinions about the
+  // same money.
+  humanMoney, findWaste, narrowingOnly, renderTokenUseReport, rollUpTokenUse, tidySaving,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
 // WHOSE SETUP EACH TURN RUNS IN — the same one owner both harnesses read, asked
@@ -25,6 +30,8 @@ import {
   Cloud9AttachmentAnswer, Cloud9RememberAnswer, Cloud9SearchAnswer,
   // ===== GAP B BLOCK (skills on demand, 2026-08-05) =====
   Cloud9SkillAnswer,
+  // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) =====
+  Cloud9SavingAnswer, Cloud9SpendingAnswer,
 } from "./cloud9tools.js";
 import { openAttachmentInConversation } from "./attachmentreach.js";
 import {
@@ -2430,6 +2437,26 @@ export class Engine {
         },
       } : {}),
       // ===== GAP A BLOCK — end =====
+      // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) — start =====
+      // THE ONE DOORWAY IN THIS LIST THAT LOOKS PAST THE AGENT TAKING THE TURN,
+      // and it is still bound exactly as tightly as the rest — just around a
+      // different thing. The AGENT is closed over here; the OWNER is read off
+      // that agent inside; the crew is that owner's agents. `check_token_use`
+      // has no parameters at all, so there is nothing for a model to argue
+      // with, and a turn opened without an agent has no doorway.
+      //
+      // Widening what an agent can SEE is what the owner asked for ("so that
+      // agents can see and help optimize other agents"). Widening what an agent
+      // can DO is what he did not ask for and what the rest of this app is
+      // built to prevent — so `propose_saving` writes nothing, ever, and both
+      // the engine and the hub check the change is one of the closed two.
+      ...(turn.agentId ? {
+        spending: async () => this.spendingForOwnerOf(turn.agentId as ID),
+        proposeSaving: async (about: string, change: unknown, because: string) =>
+          this.proposeSavingFromAgent(
+            turn.agentId as ID, turn.channelId as ID, about, change, because),
+      } : {}),
+      // ===== SPENDING BLOCK — end =====
     });
   };
 
@@ -2500,6 +2527,138 @@ export class Engine {
     return { found: true, name: hit.name, instructions: hit.instructions };
   }
   // ===== GAP B BLOCK — end =====
+
+  // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) — start =====
+
+  /**
+   * WHAT THE OWNER'S WHOLE CREW HAS COST THIS MONTH, AND WHAT IS WASTEFUL ABOUT
+   * IT — the answer behind `check_token_use`.
+   *
+   * WHOSE CREW, decided here from stored state. The turn is opened with an
+   * agent id; the owner is read off THAT agent; the crew is every agent with
+   * the same `ownerId`. The model contributes nothing to that chain — there is
+   * no argument on the tool at all — so an agent cannot reach a stranger's
+   * spending however it phrases the request.
+   *
+   * WHAT LEAVES THIS METHOD is `renderTokenUseReport`'s words and nothing else:
+   * money, sizes and settings. The run records it is built from are reduced to
+   * `CountableRun` by `RunStore.countableRuns` before they get here, so there is
+   * no path by which an ask, a reply, a step, a file name or an error message
+   * could travel to another agent through this doorway. That reduction is the
+   * boundary, and it is enforced by the type, not by remembering.
+   */
+  async spendingForOwnerOf(agentId: ID): Promise<Cloud9SpendingAnswer> {
+    const asking = this.agentById(agentId);
+    if (!asking) {
+      return { found: false, why: "Cloud9 does not know which agent you are, so it " +
+        "cannot look up what your owner's crew costs." };
+    }
+    const crew = (this.state?.agents ?? []).filter(a => a.ownerId === asking.ownerId);
+    const rows = crew.map(agent => {
+      const use = rollUpTokenUse({
+        agentId: agent.id,
+        agentName: agent.name,
+        provider: agent.provider ?? "claude",
+        runs: this.runs.countableRuns(agent.id, agent.provider ?? "claude"),
+      });
+      return { use, findings: findWaste({ use, agent }) };
+    })
+      // AN AGENT THAT HAS NEVER TAKEN A TURN IS NOT A ROW. It has nothing to
+      // say and it would push the ones that do off the bottom of the report.
+      .filter(row => row.use.runs > 0);
+    return { found: true, report: renderTokenUseReport(rows, "thisMonth") };
+  }
+
+  /**
+   * PUT ONE NARROWING CHANGE IN FRONT OF THE OWNER — the answer behind
+   * `propose_saving`.
+   *
+   * IT CHANGES NOTHING. Not one field of any agent is written here or anywhere
+   * downstream of here. This raises the ordinary approval card, the owner
+   * answers it on his own screen, and his own screen makes the change through
+   * the agent editor's own `updateAgent`. That is the whole reason an agent is
+   * allowed to ask about another agent at all — see `SavingChange`.
+   *
+   * THREE THINGS ARE CHECKED HERE, and all three again at the hub:
+   *  1. the agent named is one of THIS owner's (matched by name, on the
+   *     engine's own list — a name the model typed is a label, never a lookup
+   *     into anything wider);
+   *  2. the change is one `narrowingOnly` recognises;
+   *  3. the change is not already true, because a card asking him to turn off
+   *     something already off is a card that teaches him to click yes without
+   *     reading.
+   */
+  async proposeSavingFromAgent(
+    agentId: ID, channelId: ID, aboutName: string, change: unknown, because: string,
+  ): Promise<Cloud9SavingAnswer> {
+    const asking = this.agentById(agentId);
+    if (!asking) {
+      return { raised: false, why: "Cloud9 does not know which agent you are, so it " +
+        "cannot put a suggestion in front of anybody." };
+    }
+    if (!narrowingOnly(change)) {
+      return { raised: false, why: "There are exactly two changes you may offer: " +
+        "\"stopUsingOwnerSetup\" or \"setMonthlyLimit\" with an amount. Nothing else " +
+        "can be put on a card." };
+    }
+    const crew = (this.state?.agents ?? []).filter(a => a.ownerId === asking.ownerId);
+    const wanted = aboutName.trim().toLowerCase();
+    const about = crew.find(a => a.name.trim().toLowerCase() === wanted);
+    if (!about) {
+      return {
+        raised: false,
+        why: `Your owner has no agent called "${aboutName}". These are the agents you ` +
+          `can suggest something about: ${crew.map(a => a.name).join(", ")}. Use one of ` +
+          `those names exactly.`,
+      };
+    }
+    // ALREADY TRUE IS NOT A SUGGESTION.
+    if (change.what === "stopUsingOwnerSetup" && about.useOwnerSetup !== true) {
+      return { raised: false, why: `${about.name} already runs in the plain setup Cloud9 ` +
+        `builds — it does not load your owner's own Claude Code setup. There is nothing ` +
+        `to change, so say that rather than offering it.` };
+    }
+    if (change.what === "setMonthlyLimit") {
+      if (!providerCanBeCapped(about.provider)) {
+        return { raised: false, why: `${about.name} runs on Codex, and Codex does not ` +
+          `report what a turn costs — so there is no way to hold it to a spending limit. ` +
+          `Say that plainly; it is a real answer.` };
+      }
+      const already = spendCapOf(about).perMonthUsd;
+      if (typeof already === "number" && already <= change.perMonthUsd) {
+        return { raised: false, why: `${about.name} already has a ${humanMoney(already)} ` +
+          `limit for the month, which is tighter than the one you were going to offer. ` +
+          `There is nothing to change.` };
+      }
+    }
+    const outcome = await this.approvals.askSaving({
+      agent: asking,
+      channelId,
+      proposal: {
+        about: about.id, aboutName: about.name, change, because: tidySaving(because),
+      },
+    });
+    if (!outcome.approved) {
+      return {
+        raised: false,
+        why: `Your suggestion was put in front of your owner and ${outcome.reason}. ` +
+          `Nothing has been changed. Say that plainly.`,
+      };
+    }
+    // HE SAID YES — AND HIS DECISION IS WHAT CHANGED IT, not this engine and not
+    // the agent. The change is made where the decision is recorded, in one step,
+    // so a card that says "approved" and a setting that did not move cannot
+    // exist. The wording matters: an agent that reports "I turned it off" is
+    // claiming a power it does not have and never had.
+    return {
+      raised: true,
+      what: `Your owner accepted your suggestion for ${about.name}, so the change is now ` +
+        `in place. HE made it by saying yes — you did not change anything and you cannot. ` +
+        `Say that he accepted it, not that you did it.`,
+    };
+  }
+
+  // ===== SPENDING BLOCK — end =====
 
   /** One `attachmentTicket` frame out, one ticket back, one HTTP read. */
   private async downloadAttachment(attachmentId: ID): Promise<Buffer | undefined> {

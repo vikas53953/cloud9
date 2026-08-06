@@ -21,8 +21,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
-  RunListEntry, RunRecord, RUN_RETENTION, fitRunRecord, isSafeStoredId, runListEntry,
-  spendMonthKey, validateRunRecord,
+  CountableRun, RunListEntry, RunRecord, RUN_RETENTION, fitRunRecord, isSafeStoredId,
+  runListEntry, spendMonthKey, validateRunRecord,
 } from "@cloud9/shared";
 import { isPendingName, writeWholeFile } from "./wholefile.js";
 
@@ -321,6 +321,61 @@ export class RunStore {
       total += costInMonth(record, month);
     }
     return total;
+  }
+
+  /**
+   * EVERY STORED RUN OF THIS AGENT, AS SOMETHING THAT CAN BE ADDED UP.
+   *
+   * `spentInMonth` above answers ONE question — "may this turn start?" — and it
+   * answers it as a single number, because that is all a ceiling needs. The
+   * spending screen and Cloud9's own `check_token_use` tool need something
+   * else: WHERE the money went, how much of it was material handed to the agent
+   * rather than work it did, and how much of it was spent with the owner's own
+   * setup loaded. None of that survives being summed into one figure.
+   *
+   * SO IT IS THE SAME FILES, READ ONCE MORE — never a second ledger. Adding a
+   * running "what this agent has cost, broken down" total on disk would be a
+   * second number to keep in step with the records, and the comment above
+   * `spentInMonth` explains at length why this store refuses to have one.
+   *
+   * WHAT IT DOES NOT HAND BACK, deliberately: no ask, no reply, no steps, no
+   * error, no session id, no file names. A caller that wants to know what an
+   * agent COST has no business being handed what it SAID — and the doorway that
+   * uses this hands its answer to another agent, so the narrowness is a
+   * boundary, not tidiness. `CountableRun` in @cloud9/shared is that boundary
+   * written as a type.
+   *
+   * HONEST LIMIT, and it is the same one the spending total lives with: an
+   * agent keeps only its most recent runs (`RUN_RETENTION.perAgent`), so a very
+   * busy month's earliest turns are simply not here any more. Unlike the
+   * spending total there is nothing carried forward, because a carried-forward
+   * TOTAL cannot say what it was made of. Callers say how many runs this was
+   * counted from, so a short answer reads as short rather than as small.
+   */
+  countableRuns(agentId: string, provider: string): CountableRun[] {
+    const dir = this.dirFor(agentId, false);
+    if (!dir) return [];
+    const out: CountableRun[] = [];
+    for (const id of this.idsNewestFirst(dir)) {
+      const target = this.fileFor(dir, id);
+      if (!target) continue;
+      const record = readRecord(target).record;
+      if (!record) continue;
+      out.push({
+        startedAt: record.startedAt,
+        // THE RUN'S OWN PROVIDER, not the agent's as it is set up today. He can
+        // move an agent from Codex to Claude, and a record that silently
+        // re-describes itself when he does is not a record — the same law
+        // `RunRecord.trust` and `RunRecord.ownerSetup` are written under. The
+        // agent's current provider is only the fallback for a record from
+        // before that field was written.
+        provider: record.provider || provider,
+        outcome: record.outcome,
+        ...(typeof record.ownerSetup === "boolean" ? { ownerSetup: record.ownerSetup } : {}),
+        ...(record.usage ? { usage: record.usage } : {}),
+      });
+    }
+    return out;
   }
 
   /** The per-month totals of runs this store has already deleted. */

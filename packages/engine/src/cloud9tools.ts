@@ -118,7 +118,74 @@ export interface Cloud9ToolTurn {
    */
   openSkill?(name: string): Promise<Cloud9SkillAnswer>;
   // ===== GAP B BLOCK — end =====
+  // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) — start =====
+  /**
+   * WHAT THE OWNER'S WHOLE CREW HAS COST, and what is wasteful about how it is
+   * set up. Bound by the engine to the agents belonging to the owner of THIS
+   * agent — there is no argument through which another person's crew could be
+   * named, exactly as `channelId` is bound for search.
+   *
+   * THIS IS THE ONE DOORWAY IN THIS FILE THAT LOOKS PAST THE AGENT TAKING THE
+   * TURN, and that is not an oversight — it is the feature. The owner asked for
+   * agents that can help optimise OTHER agents, and an agent that can only see
+   * its own bill cannot do that. So the widening is made as small as it can be
+   * and still do the job:
+   *
+   *   • it is READ-ONLY. Nothing here changes anything.
+   *   • it carries NUMBERS AND SETTINGS ONLY. No conversation, no message, no
+   *     file name, no reply, no ask, no path. `CountableRun` in @cloud9/shared
+   *     is that boundary as a type, and `RunStore.countableRuns` is where it is
+   *     enforced.
+   *   • it never crosses a PERSON. One owner's crew, decided by the engine from
+   *     stored state, never from anything the model said.
+   */
+  spending?(): Promise<Cloud9SpendingAnswer>;
+  /**
+   * PUT ONE NARROWING CHANGE IN FRONT OF THE OWNER, as a card he answers.
+   *
+   * The counterpart of `spending`, and the reason `spending` can be as wide as
+   * it is: seeing is wide, DOING is nothing at all. This does not change a
+   * setting. It cannot change a setting. It raises the same approval card a
+   * push raises, the owner decides, and if he says yes the change is made by
+   * HIS OWN screen through the ordinary agent-editor path.
+   *
+   * The engine checks — again, on its side — that the agent named belongs to
+   * the same owner, and that the change is one of the two `narrowingOnly`
+   * recognises. A model that argues its way past the description still cannot
+   * get anything else onto a card.
+   */
+  proposeSaving?(about: string, change: unknown, because: string): Promise<Cloud9SavingAnswer>;
+  // ===== SPENDING BLOCK — end =====
 }
+
+// ===== SPENDING BLOCK (what the crew costs, 2026-08-07) — start =====
+/**
+ * What came back when an agent asked what the crew is costing.
+ *
+ * The `report` is ALREADY WORDS, and deliberately the SAME words the owner's
+ * own spending screen shows him (`renderTokenUseReport` in @cloud9/shared).
+ * Handing the agent a private, more technical version of the same figures is
+ * how an agent ends up telling him things his own screen does not say, which he
+ * would have no way to check.
+ *
+ * A "no" is a real answer and carries the sentence the agent should read — the
+ * same law the answers above live under.
+ */
+export type Cloud9SpendingAnswer =
+  | { found: true; report: string }
+  | { found: false; why: string };
+
+/**
+ * What came back when an agent offered the owner a saving.
+ *
+ * `raised: true` means A CARD IS IN FRONT OF HIM — never that anything changed.
+ * The sentence says so, because an agent that reports "I turned that off" when
+ * a card is merely waiting has told the room something false.
+ */
+export type Cloud9SavingAnswer =
+  | { raised: true; what: string }
+  | { raised: false; why: string };
+// ===== SPENDING BLOCK — end =====
 
 // ===== GAP B BLOCK (skills on demand, 2026-08-05) — start =====
 /**
@@ -541,6 +608,130 @@ export const CLOUD9_TOOLS: readonly Cloud9Tool[] = [
       "have none, and there is nothing here to open.",
   },
   // ===== GAP B BLOCK — end =====
+  // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) — start =====
+  //
+  // THE FIFTH AND SIXTH DOORWAYS — SEEING WHAT THE CREW COSTS, AND OFFERING TO
+  // FIX IT.
+  //
+  // THE WALL, and it is a measured one. Cloud9 has recorded what every Claude
+  // turn cost since run records existed, and until today nothing read it except
+  // the spending ceiling. There was no screen that answered "which of my agents
+  // is the expensive one", and no agent could find out at all. Meanwhile the
+  // waste is real and it is enormous: the same tiny question, measured on this
+  // machine on 5 August 2026, cost $1.75 with the owner's own Claude Code setup
+  // loaded and $0.0055 without it — 318 times as much — and new agents default
+  // to having it ON with no spending limit.
+  //
+  // THE OWNER'S WORDS WERE "so that agents can see and help optimize other
+  // agents automatically". Taken literally, "automatically" means one agent
+  // silently editing another agent's settings — and that fights everything else
+  // this app is: approval cards, ALWAYS_ASK_ABILITIES, trust levels, nothing
+  // changing behind his back. So the power is SPLIT, and the split is the whole
+  // design:
+  //
+  //   SEEING is wide.  `check_token_use` reaches every agent of this owner.
+  //   DOING is nothing. `propose_saving` changes not one byte of any agent. It
+  //                     raises the SAME approval card a push raises. He decides,
+  //                     and his own screen makes the change.
+  //
+  // Same power in the end, nothing silent. And because a proposal is a CLOSED
+  // list of two changes (`SavingChange` in @cloud9/shared) rather than an
+  // arbitrary patch, even a card approved by mistake can only ever make an
+  // agent cost less and do less. It can never grant an ability, reach a file,
+  // touch a credential or raise a limit.
+  {
+    name: "check_token_use",
+    toolName: `mcp__${CLOUD9_MCP_SERVER}__check_token_use`,
+    description:
+      "Find out what your owner's agents are actually costing him, and what is wasteful " +
+      "about the way they are set up. Comes back as plain words: what each agent has spent " +
+      "this month, how much of that was material sent TO it rather than work it did, and " +
+      "any waste worth telling him about — for example an agent that loads his whole " +
+      "Claude Code setup on every single turn. It reads figures and settings only: no " +
+      "conversations, no messages, no files. It covers your owner's agents and nobody " +
+      "else's, and asking for anyone else's is not possible. You cannot change any of " +
+      "these settings — use propose_saving to put a suggestion in front of him.",
+    schema: {
+      // NO PROPERTIES AT ALL. Not a person, not an agent, not a date range —
+      // there is nothing to argue with. Everything this looks at is decided by
+      // the engine from stored state before the model is anywhere near it.
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    refuseExtraArgs:
+      "You can only ask about your own owner's agents, and there is nothing to narrow " +
+      "it with. `check_token_use` takes no arguments at all — there is no way to ask " +
+      "about anybody else's agents, or about any other period",
+    sentence:
+      "You CAN find out what your owner's agents are costing him with `check_token_use` — " +
+      "it takes no arguments and comes back in plain words, with the waste named rather " +
+      "than just measured. Use it when he asks about spending, when he asks you to look " +
+      "at how his crew is set up, or when you are about to suggest anything about cost, " +
+      "because the real figures are right there and guessing at them would be worse than " +
+      "useless. It reads money and settings only — never anybody's conversations.",
+  },
+  {
+    name: "propose_saving",
+    toolName: `mcp__${CLOUD9_MCP_SERVER}__propose_saving`,
+    description:
+      "Offer your owner ONE change that would make one of his agents cost less, as a card " +
+      "he can accept or decline with one click. THIS DOES NOT CHANGE ANYTHING — it asks " +
+      "him. Nothing happens unless he says yes, and if he does, he makes the change " +
+      "himself from his own screen. There are exactly two changes you may offer: " +
+      "\"stopUsingOwnerSetup\" (stop that agent loading his whole Claude Code setup on " +
+      "every turn) and \"setMonthlyLimit\" (put a ceiling in dollars on what it may spend " +
+      "in a month). Say WHY in one plain sentence with the real figures from " +
+      "check_token_use in it — a suggestion with no evidence wastes his time. Do not " +
+      "offer a change that is already true, and do not offer the same one twice.",
+    schema: {
+      type: "object",
+      // `about` NAMES AN AGENT AND NOTHING ELSE. There is no owner, no person,
+      // no id of anything but an agent, and the engine still checks on its own
+      // side that the agent named is one of this owner's — a name is a label
+      // here, never a permission.
+      properties: {
+        about: {
+          type: "string",
+          description: "the name of the agent this is about, exactly as your owner's crew shows it",
+        },
+        change: {
+          type: "string",
+          enum: ["stopUsingOwnerSetup", "setMonthlyLimit"],
+          description: "which of the two changes you are offering",
+        },
+        perMonthUsd: {
+          type: "number",
+          description:
+            "only for setMonthlyLimit: the ceiling in dollars for a calendar month. " +
+            "Leave real room — about twice what it has actually spent — because a limit " +
+            "that fires the same afternoon helps nobody",
+        },
+        because: {
+          type: "string",
+          description:
+            "one plain sentence saying why, with the real figures in it. No jargon: " +
+            "he is a network engineer, not a developer",
+        },
+      },
+      required: ["about", "change", "because"],
+      additionalProperties: false,
+    },
+    refuseExtraArgs:
+      "You can only offer one of the two changes Cloud9 knows how to make, about one " +
+      "of your owner's own agents. `propose_saving` takes the agent's name, which " +
+      "change, the amount where one is needed, and why — and nothing else. There is no " +
+      "way to change any other setting, and no way to make any change happen without him",
+    sentence:
+      "You CAN offer your owner a saving with `propose_saving` — it puts ONE suggestion " +
+      "in front of him as a card he accepts or declines with one click. It changes " +
+      "NOTHING by itself: never tell him you have turned something off or set a limit, " +
+      "only that you have put the suggestion in front of him. There are two things you " +
+      "may offer and no others: stop an agent loading his whole Claude Code setup on " +
+      "every turn, or put a monthly spending ceiling on it. Always run `check_token_use` " +
+      "first and put its real figures in your reason.",
+  },
+  // ===== SPENDING BLOCK — end =====
 ] as const;
 
 /** The tool names the harness is handed. The same list the sentences come from. */
@@ -654,6 +845,10 @@ export async function callCloud9Tool(
   // ===== GAP B BLOCK (skills on demand, 2026-08-05) — start =====
   if (tool.name === "open_skill") return openSkill(args, turn);
   // ===== GAP B BLOCK — end =====
+  // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) — start =====
+  if (tool.name === "check_token_use") return checkTokenUse(turn);
+  if (tool.name === "propose_saving") return proposeSaving(args, turn);
+  // ===== SPENDING BLOCK — end =====
   if (tool.name !== "search_conversation") {
     return refusal(`Cloud9 has no tool called "${tool.name}".`);
   }
@@ -876,6 +1071,81 @@ async function openSkill(
   };
 }
 // ===== GAP B BLOCK — end =====
+
+// ===== SPENDING BLOCK (what the crew costs, 2026-08-07) — start =====
+
+async function checkTokenUse(turn: Cloud9ToolTurn): Promise<Cloud9ToolResult> {
+  if (!turn.spending) {
+    return refusal("Cloud9 cannot look up what the crew costs in this turn. Say plainly " +
+      "that you could not check, rather than guessing at any figure — a made-up number " +
+      "about money is worse than no answer.");
+  }
+  let answer: Cloud9SpendingAnswer;
+  try {
+    answer = await turn.spending();
+  } catch (err) {
+    // Same law as every doorway above: the reason goes to the log, never to the
+    // model, because whatever the model is handed can end up in the room.
+    console.error("[cloud9-tools] could not read what the crew costs:", err);
+    return refusal("Cloud9 could not work out what the crew costs just now. Say so " +
+      "plainly rather than guessing at any figure.");
+  }
+  if (!answer.found) return refusal(answer.why);
+  return { content: [{ type: "text", text: answer.report }] };
+}
+
+async function proposeSaving(
+  args: Record<string, unknown>, turn: Cloud9ToolTurn,
+): Promise<Cloud9ToolResult> {
+  const about = typeof args.about === "string" ? args.about.trim() : "";
+  const what = typeof args.change === "string" ? args.change.trim() : "";
+  const because = typeof args.because === "string" ? args.because.trim() : "";
+  if (!about) {
+    return refusal("Say which agent this is about — `propose_saving` needs the agent's " +
+      "name, exactly as your owner's crew shows it.");
+  }
+  if (!because) {
+    return refusal("Say WHY, in one plain sentence with the real figures in it. A " +
+      "suggestion with no evidence is not something anybody can decide on, so it is " +
+      "not put in front of him.");
+  }
+  // THE CHANGE IS ASSEMBLED HERE AND JUDGED BY SHARED'S `narrowingOnly` ON THE
+  // ENGINE'S SIDE. Two flat arguments become one closed-union value, because a
+  // JSON Schema `oneOf` is the kind of thing models get wrong and this is the
+  // one place in the file where getting it wrong would put a setting on a card.
+  let change: unknown;
+  if (what === "stopUsingOwnerSetup") {
+    change = { what };
+  } else if (what === "setMonthlyLimit") {
+    const amount = args.perMonthUsd;
+    if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+      return refusal("A monthly limit needs an amount in dollars — pass `perMonthUsd`, " +
+        "and leave real room (about twice what the agent has actually spent), because a " +
+        "limit that fires the same afternoon helps nobody.");
+    }
+    change = { what, perMonthUsd: amount };
+  } else {
+    return refusal("There are exactly two changes you may offer: \"stopUsingOwnerSetup\" " +
+      "or \"setMonthlyLimit\". Nothing else can be put on a card.");
+  }
+  if (!turn.proposeSaving) {
+    return refusal("Cloud9 cannot put a suggestion in front of your owner in this turn. " +
+      "Tell him what you found in the conversation instead, and be clear that nothing " +
+      "has been changed.");
+  }
+  let answer: Cloud9SavingAnswer;
+  try {
+    answer = await turn.proposeSaving(about, change, because);
+  } catch (err) {
+    console.error("[cloud9-tools] could not raise a saving suggestion:", err);
+    return refusal("Cloud9 could not put that suggestion in front of your owner just " +
+      "now. Say so plainly, and do not say anything has been changed.");
+  }
+  if (!answer.raised) return refusal(answer.why);
+  return { content: [{ type: "text", text: answer.what }] };
+}
+
+// ===== SPENDING BLOCK — end =====
 
 function declaredArgs(tool: Cloud9Tool): Set<string> {
   const props = (tool.schema as { properties?: Record<string, unknown> }).properties ?? {};

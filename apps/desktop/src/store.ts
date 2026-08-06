@@ -9,6 +9,8 @@ import {
   EverywhereHit, SearchKind,
   ReachCatchup,
   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
+  // SPENDING BLOCK (what the crew costs, 2026-08-07)
+  AgentTokenUse, WasteFinding,
   UnreadEntry, User,
   effectiveArtifactAccess, latestVersion,
   validateAttachment, validateLocalFolder, validateProjectText, validateRepo,
@@ -280,6 +282,20 @@ export interface World {
   runs: Record<string, RunRecord>;
   /** histories, keyed by `runKey` — "agent:<id>" or "task:<id>" */
   runLists: Record<string, RunList>;
+  /**
+   * WHAT HIS CREW HAS COST HIM THIS MONTH, as the hub last added it up.
+   *
+   * `asked: false` and no rows is "we have never looked", which is why the
+   * screen says "working it out" rather than "nothing to show" the first time
+   * it opens — those are different answers and a person can tell.
+   */
+  spending: {
+    asked: boolean;
+    loading: boolean;
+    /** when the hub added it up; absent until it has */
+    at?: number;
+    rows: { use: AgentTokenUse; findings: WasteFinding[] }[];
+  };
   /**
    * Runs the hub has said are not there.
    *
@@ -575,6 +591,8 @@ export class RelayClient {
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
+    // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
+    spending: { asked: false, loading: false, rows: [] },
     projects: { asked: false, list: [] }, projectItems: {},
     repoChoices: { asked: false, asking: false },
     artifacts: {}, artifactsGone: {}, channelArtifacts: {},
@@ -1474,6 +1492,25 @@ export class RelayClient {
       ? { type: "runList", agentId: id, ...(limit ? { limit } : {}) }
       : { type: "runList", taskId: id, ...(limit ? { limit } : {}) });
   }
+
+  // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) — start =====
+  /**
+   * "WHAT ARE MY AGENTS COSTING ME?" — asked every time the screen opens.
+   *
+   * ASKED AFRESH, NEVER CACHED ACROSS AN OPENING, for the same reason
+   * `askRuns` is: this is not a record, it is a running total. It changes with
+   * every turn any agent takes, so an answer from the last time he looked is
+   * out of date the moment anything happens — and a spending figure that is
+   * quietly an hour old is the one kind of stale number that could cost him
+   * money. Only a request already in flight is skipped.
+   */
+  askSpending(): void {
+    if (this.world.spending.loading) return;
+    this.world.spending = { ...this.world.spending, loading: true };
+    this.emit();
+    this.send({ type: "spending" });
+  }
+  // ===== SPENDING BLOCK — end =====
 
   /**
    * An agent is gone, so what it did goes with it.
@@ -2948,6 +2985,10 @@ export class RelayClient {
         // so a run from a conversation this screen never opened still lands
         // somewhere findable rather than being dropped for not being expected.
         w.runs = { ...w.runs, [frame.record.id]: frame.record };
+        break;
+      // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) =====
+      case "spending":
+        w.spending = { asked: true, loading: false, at: frame.at, rows: frame.rows };
         break;
       case "runs": {
         // The frame echoes back WHICH question it answers, so two lists in

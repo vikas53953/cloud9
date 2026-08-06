@@ -18,6 +18,14 @@ import { LIVE_STEPS_PER_BATCH } from "./livesteps.js";
 // from` at the bottom publishes the whole module to every other program.
 import type { AgentEffort } from "./effort.js";
 import { isAgentEffort } from "./effort.js";
+// A CYCLE THAT IS SAFE BY CONSTRUCTION, and it is worth saying why rather than
+// leaving the next person to wonder. `tokenuse.ts` needs this file's money
+// words and its spending-cap reader; this file needs `tokenuse.ts`'s shape for
+// a `saving` approval. Nothing in `tokenuse.ts` runs at load time — it is
+// function declarations and plain object literals that name nothing from here —
+// so neither module can be caught half-built by the other. A `type` import
+// costs nothing at runtime at all.
+import type { AgentTokenUse, SavingProposal, UsePeriod, WasteFinding } from "./tokenuse.js";
 
 export type ID = string;
 
@@ -2073,11 +2081,23 @@ export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
  *    same `decideApproval` frame, it is drawn by the same card, and it is swept
  *    by the same expiry sweep. A parallel gate would be a parallel place for
  *    "did we ask?" to be answered, which is the exact split that bit us before.
+ *  • `saving` — asked when one agent has looked at what the crew costs, found
+ *    waste, and wants to suggest ONE narrowing change to ANOTHER agent's
+ *    settings: *shall I stop Scout loading your whole Claude Code setup on
+ *    every turn?* Added 2026-08-07, and added as a FOURTH KIND OF THE SAME
+ *    THING for exactly the reason `plan` was — same stored `Approval`, same
+ *    `decideApproval`, same card, same sweep.
+ *
+ *    IT IS THE ONLY THING AN AGENT MAY DO ABOUT ANOTHER AGENT'S SETTINGS, and
+ *    even approving it grants nobody a write: the owner's own screen makes the
+ *    change with the ordinary `updateAgent` his editor already sends. The
+ *    change itself is a `SavingChange` — a closed union of two, both of which
+ *    can only ever make an agent cost LESS or do LESS. See `tokenuse.ts`.
  *
  * ABSENT MEANS `task`. Every approval stored before 2026-07-30 is a job-shaped
  * one, and re-writing history to add a field is how a migration breaks.
  */
-export type ApprovalKind = "task" | "action" | "plan";
+export type ApprovalKind = "task" | "action" | "plan" | "saving";
 
 export interface Approval {
   id: ID;
@@ -2118,6 +2138,16 @@ export interface Approval {
    * Cloud9's own one-line summary of it, exactly as on the other two kinds.
    */
   plan?: string;
+  /**
+   * WHICH AGENT WOULD CHANGE, AND HOW — only on a `saving` approval.
+   *
+   * The `change` half is Cloud9's own closed vocabulary, checked by
+   * `narrowingOnly` before the hub will store it, so nothing an agent writes
+   * can widen what a yes means. The `because` half is the agent's own words and
+   * is contained exactly as `plan` above is — bounded and stripped by
+   * `tidySaving`, drawn as plain text, never interpreted.
+   */
+  saving?: SavingProposal;
 }
 
 export type ActivityKind =
@@ -3019,6 +3049,29 @@ type ClientFrameBase =
    * `askId` is the same correlation label as above — never a permission.
    */
   | { type: "askPlan"; askId: string; agentId: ID; channelId: ID; taskId?: ID; plan: string }
+  /**
+   * ENGINE-HOST ONLY: an agent has looked at what the crew is costing, found
+   * waste, and wants to put ONE narrowing change in front of the owner.
+   *
+   * THE FOURTH KIND OF THE SAME THING — see `ApprovalKind`. It becomes a stored
+   * `Approval` with `kind: "saving"`, it is answered by the same
+   * `decideApproval` frame, it is drawn by the same card and swept by the same
+   * expiry sweep. A separate FRAME only because what it carries is different in
+   * kind: not a row on `REMOTE_ACTIONS`, not prose, but a `SavingChange` — one
+   * of exactly two settings, both of which can only make an agent cost less.
+   *
+   * NOTHING IS WRITTEN BY THIS FRAME, AND THAT IS THE POINT. Approving the card
+   * does not give the engine or the agent any power to edit an agent: the
+   * owner's own screen sends the ordinary `updateAgent` his editor already
+   * sends, from his own connection. The agent may only ever ASK.
+   *
+   * `agentId` is the agent DOING the asking; `proposal.about` is the agent the
+   * change is about. They are frequently different — that is the whole feature.
+   */
+  | {
+    type: "askSaving"; askId: string; agentId: ID; channelId: ID; taskId?: ID;
+    proposal: SavingProposal;
+  }
   | { type: "activity"; before?: number; limit?: number }
   // ---- projects: a GitHub repository connected to Cloud9 (his item 7) ----
   /** Connect a repository. Yours: it runs through YOUR machine and YOUR `gh`. */
@@ -3106,6 +3159,22 @@ type ClientFrameBase =
   | { type: "runList"; agentId?: ID; taskId?: ID; limit?: number }
   /** One run, in full. The id is enough: who may see it is read from the record. */
   | { type: "runDetail"; runId: string }
+  /**
+   * "WHAT ARE MY AGENTS COSTING ME, AND WHAT IS WASTEFUL ABOUT IT?"
+   *
+   * Takes nothing, on purpose. There is no agent to name, no person, no date
+   * range: the answer is about the asker's OWN crew, decided at the hub from
+   * stored ownership, and the period is a calendar month because that is the
+   * period a spending limit is measured in and two different periods on two
+   * screens is how a number stops being checkable.
+   *
+   * WHY THE HUB ADDS IT UP RATHER THAN THE WINDOW. The window would otherwise
+   * have to fetch every stored run of every agent to see the cost on each one —
+   * hundreds of round trips to draw one screen. The hub already holds the
+   * records, so it does the arithmetic with the same `rollUpTokenUse` the
+   * engine's own tool uses, and both answers come from one implementation.
+   */
+  | { type: "spending" }
   // harness sign-in — asked by any of the owner's clients, answered by the engine host
   //
   // `refreshHarness` is the explicit "go and look again" (it replaced the
@@ -3534,6 +3603,21 @@ export type ServerFrame =
   | { type: "run"; record: RunRecord }
   /** Answers `runList`. Echoes back which question it is answering. */
   | { type: "runs"; agentId?: ID; taskId?: ID; runs: RunListEntry[] }
+  /**
+   * Answers `spending`. One row per agent that has actually taken a turn in the
+   * period — an agent with nothing recorded is not a row, because a row of
+   * blanks pushes the ones that mean something off the bottom.
+   *
+   * `at` is the moment the hub added it up, so the screen can say when rather
+   * than implying "now" over an answer that arrived a while ago. `findings` is
+   * `findWaste`'s output for that same agent, computed at the hub against its
+   * CURRENT settings, so a suggestion is never made about a switch he has
+   * already flipped.
+   */
+  | {
+    type: "spending"; period: UsePeriod; at: number;
+    rows: { use: AgentTokenUse; findings: WasteFinding[] }[];
+  }
   | { type: "push"; message: Message } // relay → mobile: delivered as notification
   // harness status broadcast to the owner's clients
   | { type: "harness"; state: HarnessState }
@@ -5581,3 +5665,22 @@ export {
   isAgentEffort, effortLevelFor, effortSupportedBy, effortWords,
   type AgentEffort, type AgentEffortChoice, type EffortHarness,
 } from "./effort.js";
+
+// ---------------------------------------------------------------------------
+// WHAT EACH AGENT IS COSTING, AND WHICH PART OF IT IS WASTE.
+//
+// Its own file for the same reason the skill library and the effort table have
+// one: three programs have to agree about it — the engine adds it up off disk,
+// the screen draws it, and an agent reads it through Cloud9's own tool doorway
+// — and a rule three programs share only stays shared if there is one copy of
+// it. `SavingProposal` in particular has to be understood identically by the
+// agent that writes one, the hub that stores it and the screen that acts on it.
+export {
+  TEXT_SIZE_RULE, SAVING_LIMITS, ENOUGH_RUNS_TO_JUDGE, MOSTLY_SENT_SHARE, LIMIT_HEADROOM,
+  rollUpTokenUse, dearestFirst, pagesOf, humanTextSize, moneyWords, sentVsWrote,
+  narrowingOnly, tidySaving, validateSavingProposal, savingHeadline, savingDetail,
+  applySaving, suggestedMonthlyLimit, findWaste, renderTokenUseReport, describeChangeForAgent,
+  type CountableRun, type AgentTokenUse, type UsePeriod, type RollUpInput,
+  type SavingChange, type SavingProposal, type WasteFinding, type FindWasteInput,
+  type TokenUseReportRow,
+} from "./tokenuse.js";
