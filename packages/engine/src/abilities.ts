@@ -40,6 +40,10 @@
 import {
   AgentAbilities, AgentApprovals, AgentDef, REMOTE_ACTIONS, RemoteAction, mustAskBeforeActing,
 } from "@cloud9/shared";
+// The ONE owner of "is this agent running in his setup?" — the same function
+// the command line, the run record and the isolation card all ask, so the
+// sentences below cannot say one thing while the flags do another.
+import { usesOwnerSetup } from "./ownersetup.js";
 
 /**
  * Every built-in tool claude-code **2.1.220** has, measured on 2026-07-30 by
@@ -1005,8 +1009,42 @@ export function renderCapabilities(
         `They are yours whatever the switches were set to, and this list says so above ` +
         `rather than pretending an off switch removed them.\n`
       : `• You have no tools at all beyond the ones listed above.\n`) +
-    `• Your owner's own Claude Code and Codex setup — his instructions, his connected ` +
-    `accounts, his shortcuts — is not loaded for you, and you should not act as if it were.\n` +
+    // ============================================================
+    // WHOSE SETUP IS LOADED — ASKED, NOT ASSUMED (2026-08-06).
+    // ============================================================
+    //
+    // THE BUG THIS FIXES. This bullet used to be unconditional: every agent was
+    // told, flatly, that its owner's own Claude Code and Codex setup "is not
+    // loaded for you, and you should not act as if it were". That was true of
+    // every agent Cloud9 had ever run — until the owner-setup switch shipped on
+    // 2026-08-05 (`ownersetup.ts`). With that switch ON, `claudeSetupFlags`
+    // returns NOTHING: no `--strict-mcp-config`, no `--disable-slash-commands`,
+    // no empty `--setting-sources`, no auto-memory block. Measured on this
+    // machine the same day: his CLAUDE.md loaded, 17 of his MCP servers, 132–147
+    // slash commands, 100 skills, 7 plugins, and his hooks really ran.
+    //
+    // So the two features were each right on their own and wrong together. The
+    // flags handed the agent his whole setup while the prompt told the agent it
+    // did not have it — the exact shape of the `--safe-mode` bug this file
+    // exists to prevent, only pointing the other way: a power GRANTED and then
+    // denied in words. An agent that believes this sentence will refuse to use
+    // his slash commands, ignore the instructions in his CLAUDE.md, and tell him
+    // to his face that it cannot reach a connected service it is holding.
+    //
+    // `isolation.ts` already tells the OWNER the truth about this on his screen.
+    // This is the same truth said to the AGENT, from the same one function that
+    // answers the question (`usesOwnerSetup`), so the two can no longer drift.
+    (usesOwnerSetup(agent)
+      ? `• Your owner asked for you to run inside HIS OWN Claude Code / Codex setup, so ` +
+        `his written instructions, his shortcuts, his connected services, his plugins and ` +
+        `his saved memory ARE loaded for you. Treat his instructions as real instructions. ` +
+        `Some tools you hold this turn come from his setup rather than from the switches ` +
+        `listed above, so the list above is the floor of what you can do, not the ceiling. ` +
+        `You still do not have his saved API keys, and you may not drive his browser or ` +
+        `his desktop as him.\n`
+      : `• Your owner's own Claude Code and Codex setup — his instructions, his connected ` +
+        `accounts, his shortcuts — is not loaded for you, and you should not act as if it ` +
+        `were.\n`) +
     `• You do not remember past conversations. What you have is the recent messages ` +
     `below` + (isOn(agent, "files")
       ? `, plus whatever you have written into your own folder.\n`

@@ -11,6 +11,7 @@
 // table, so switching an ability changes both or neither.
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import * as shared from "@cloud9/shared";
 import { AgentAbilities, AgentDef } from "@cloud9/shared";
 import {
@@ -136,9 +137,51 @@ test("the limits every agent has are always stated, whatever the switches say", 
     const prompt = buildAgentPrompt(agent(abilities), aTurn(""));
     assert.match(prompt, /no tools at all beyond the ones listed above/);
     assert.match(prompt, /do not remember past conversations/i);
+    // NOTE THE `useOwnerSetup` ABSENCE ABOVE. This sentence is true for an agent
+    // in the DECLARED environment, which is every agent unless its owner flipped
+    // the switch — and that is the case this loop is about. The other half of
+    // the rule is the test immediately below.
     assert.match(prompt, /own\s+Claude Code and Codex setup — his instructions/,
       "an agent is never left thinking its owner's own setup is loaded for it");
   }
+});
+
+// ---------------------------------------------------------------------------
+// THE SAME LAW, POINTING THE OTHER WAY (2026-08-06)
+// ---------------------------------------------------------------------------
+//
+// Two features built the same night, each correct alone, wrong together: the
+// owner-setup switch (`ownersetup.ts`) really does load his CLAUDE.md, his
+// shortcuts, his MCP servers, his plugins and his hooks — while this prompt
+// went on flatly telling every agent that none of that was loaded for it.
+//
+// It is the `--safe-mode` bug in reverse: not a power promised and withheld,
+// but a power GRANTED and then denied in words. An agent that believed the old
+// sentence would refuse to use the very tools it was holding.
+test("an agent really running in his setup is not told the opposite", () => {
+  const declared = buildAgentPrompt(agent(), aTurn(""));
+  const his = buildAgentPrompt(agent({}, { useOwnerSetup: true }), aTurn(""));
+
+  // the denial must be GONE — not merely balanced by a second sentence
+  assert.ok(!/is not loaded for you/.test(his),
+    "an agent holding his instructions, his shortcuts and his servers is still " +
+    "being told it has none of them");
+  assert.ok(/is not loaded for you/.test(declared),
+    "and the declared environment must still say so — this is a switch, not a new law");
+
+  // …and it must say what IS true, in the words the switch means
+  assert.match(his, /HIS OWN Claude Code \/ Codex setup/);
+  assert.match(his, /instructions/i);
+  // the list of switches is no longer the whole story, and it says so, because
+  // his MCP servers' tools arrive alongside `--tools` (measured 2026-08-05: an
+  // agent limited to 3 built-in tools held 127)
+  assert.match(his, /not the ceiling/);
+  // what the switch still does NOT buy is repeated to the agent itself
+  assert.match(his, /do not have his saved API keys/i);
+  assert.match(his, /browser or\s+his desktop/);
+
+  // absence is not a yes — the same rule `usesOwnerSetup` enforces everywhere
+  assert.equal(buildAgentPrompt(agent({}, { useOwnerSetup: false }), aTurn("")), declared);
 });
 
 test("memory is described honestly, and differently, depending on the files switch", () => {
@@ -181,8 +224,16 @@ test("told it can search → searches → the record shows it searched", async (
   ].join("\n");
 
   let seenPrompt = "";
-  const runner = async (_cmd: string, _args: string[], opts: RunOptions = {}): Promise<RunResult> => {
-    seenPrompt = opts.stdin ?? "";
+  const runner = async (_cmd: string, args: string[], opts: RunOptions = {}): Promise<RunResult> => {
+    // THE WHOLE PROMPT, BOTH HALVES. Since the prompt was cut in two
+    // (`splitAgentPrompt`), the standing brief — which is where the capability
+    // sentences live — travels as a real system prompt in a FILE, and only the
+    // turn goes down stdin. Reading stdin alone made this test claim the agent
+    // had not been told what it could do, when it had been.
+    const at = args.indexOf("--append-system-prompt-file");
+    const standing = at >= 0 && args[at + 1] && fs.existsSync(args[at + 1])
+      ? fs.readFileSync(args[at + 1], "utf8") : "";
+    seenPrompt = standing + (opts.stdin ?? "");
     return { code: 0, stdout: stream, stderr: "", timedOut: false, notFound: false };
   };
   let trace;

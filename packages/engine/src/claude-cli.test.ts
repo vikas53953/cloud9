@@ -172,8 +172,15 @@ test("a turn that blows the leash is stopped and explained in plain words", asyn
     // it says a CLOCK ran out, and how long it was given — see timebudget.ts.
     // The old sentence ("took longer than 60s") named seconds and a harness and
     // was then thrown away by `sanitizeForChat` before anybody read it.
+    //
+    // GAP A (2026-08-05): the words changed and the guard did not. It used to
+    // say "this was taking too long for a chat reply", which blamed the turn —
+    // and measurement showed the turn was usually WORKING, on a slow machine,
+    // when we killed it. It now says how long it was given and that it was
+    // working; what this test holds is unchanged: a recognisable timeout, and
+    // the number said in minutes.
     (err: unknown) => err instanceof TurnTimedOutError
-      && /too long for a chat reply/.test(err.message)
+      && /as long as I let a reply run/.test(err.message)
       && /1 minute/.test(err.message),
   );
 });

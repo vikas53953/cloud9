@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-08-05T20:23:41.095Z",
+  "ranAt": "2026-08-06T03:32:53.934Z",
   "mode": "smoke",
   "expected": [
     "signing in, the crew, and an agent that answers",
@@ -14,22 +14,22 @@
     "the stop button, and what the record calls a stopped turn",
     "did it really do what it said"
   ],
-  "executed": 88,
+  "executed": 100,
   "acts": [
     {
       "name": "signing in, the crew, and an agent that answers",
       "smoke": true,
       "ran": true,
-      "startedAt": 1785961233851,
+      "startedAt": 1785986915148,
       "checksBefore": 0,
       "checks": 18,
-      "seconds": 72.4
+      "seconds": 73.1
     },
     {
       "name": "what the sign-in card says about every harness",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961306212,
+      "startedAt": 1785986988223,
       "checksBefore": 18,
       "checks": 0,
       "seconds": 0
@@ -38,7 +38,7 @@
       "name": "settings, the model picker and skills",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961306213,
+      "startedAt": 1785986988223,
       "checksBefore": 18,
       "checks": 0,
       "seconds": 0
@@ -47,7 +47,7 @@
       "name": "what an agent remembers, hands over, and the actions menu",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961306213,
+      "startedAt": 1785986988223,
       "checksBefore": 18,
       "checks": 0,
       "seconds": 0
@@ -56,25 +56,25 @@
       "name": "a friend joins, and everyone is listed once",
       "smoke": true,
       "ran": true,
-      "startedAt": 1785961306213,
+      "startedAt": 1785986988223,
       "checksBefore": 18,
       "checks": 16,
-      "seconds": 16.1
+      "seconds": 17.5
     },
     {
       "name": "the design pass, and how a message is drawn",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961322362,
+      "startedAt": 1785987005702,
       "checksBefore": 34,
       "checks": 0,
-      "seconds": 0.7
+      "seconds": 1
     },
     {
       "name": "a conversation longer than one page, reactions, edits",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961323036,
+      "startedAt": 1785987006715,
       "checksBefore": 34,
       "checks": 0,
       "seconds": 0
@@ -83,16 +83,16 @@
       "name": "threads",
       "smoke": true,
       "ran": true,
-      "startedAt": 1785961323037,
+      "startedAt": 1785987006715,
       "checksBefore": 34,
       "checks": 5,
-      "seconds": 1.2
+      "seconds": 1
     },
     {
       "name": "where an answer lands, and the setting that moves it",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961324228,
+      "startedAt": 1785987007751,
       "checksBefore": 39,
       "checks": 0,
       "seconds": 0
@@ -101,7 +101,7 @@
       "name": "the control that was taken away, and the road it left",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961324229,
+      "startedAt": 1785987007751,
       "checksBefore": 39,
       "checks": 0,
       "seconds": 0
@@ -110,7 +110,7 @@
       "name": "a file dropped on the box, and the receipts",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961324229,
+      "startedAt": 1785987007751,
       "checksBefore": 39,
       "checks": 0,
       "seconds": 0
@@ -119,7 +119,7 @@
       "name": "a person's reaction, and the honest half of ephemeral",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961324229,
+      "startedAt": 1785987007751,
       "checksBefore": 39,
       "checks": 0,
       "seconds": 0
@@ -128,16 +128,16 @@
       "name": "search across everything",
       "smoke": true,
       "ran": true,
-      "startedAt": 1785961324229,
+      "startedAt": 1785987007751,
       "checksBefore": 39,
       "checks": 3,
-      "seconds": 2.4
+      "seconds": 2.3
     },
     {
       "name": "unread, and the rules that decide an interruption",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961326582,
+      "startedAt": 1785987010029,
       "checksBefore": 42,
       "checks": 0,
       "seconds": 0
@@ -146,43 +146,43 @@
       "name": "the four events that interrupt him",
       "smoke": true,
       "ran": true,
-      "startedAt": 1785961326582,
+      "startedAt": 1785987010030,
       "checksBefore": 42,
       "checks": 6,
-      "seconds": 38.7
+      "seconds": 40.3
     },
     {
       "name": "who may set an agent working",
       "smoke": true,
       "ran": true,
-      "startedAt": 1785961365288,
+      "startedAt": 1785987050358,
       "checksBefore": 48,
       "checks": 10,
-      "seconds": 1.6
+      "seconds": 3
     },
     {
       "name": "a rung really is a prefix of the table",
       "smoke": true,
       "ran": true,
-      "startedAt": 1785961366855,
+      "startedAt": 1785987053317,
       "checksBefore": 58,
       "checks": 8,
-      "seconds": 0.7
+      "seconds": 0.9
     },
     {
       "name": "what an agent will ask before it acts",
       "smoke": true,
       "ran": true,
-      "startedAt": 1785961367547,
+      "startedAt": 1785987054223,
       "checksBefore": 66,
       "checks": 11,
-      "seconds": 1.5
+      "seconds": 1.7
     },
     {
       "name": "a hand-picked mix is never rounded",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961369038,
+      "startedAt": 1785987055940,
       "checksBefore": 77,
       "checks": 0,
       "seconds": 0
@@ -191,7 +191,7 @@
       "name": "the honest report, and the casting room",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961369038,
+      "startedAt": 1785987055940,
       "checksBefore": 77,
       "checks": 0,
       "seconds": 0
@@ -200,7 +200,7 @@
       "name": "escape, where a count meets a word",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961369038,
+      "startedAt": 1785987055940,
       "checksBefore": 77,
       "checks": 0,
       "seconds": 0
@@ -209,16 +209,16 @@
       "name": "the rail, paused, and an agent nobody can run",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961369038,
+      "startedAt": 1785987055940,
       "checksBefore": 77,
       "checks": 0,
-      "seconds": 0.2
+      "seconds": 0.5
     },
     {
       "name": "a room name held to the same rule as an agent's",
       "smoke": false,
       "ran": false,
-      "startedAt": 1785961369261,
+      "startedAt": 1785987056418,
       "checksBefore": 77,
       "checks": 0,
       "seconds": 0
@@ -227,16 +227,94 @@
       "name": "a file: picked, sent, opened, and the bytes fetched back",
       "smoke": true,
       "ran": true,
-      "startedAt": 1785961369261,
+      "startedAt": 1785987056418,
       "checksBefore": 77,
-      "checks": 11,
-      "seconds": 51.8
+      "checks": 17,
+      "seconds": 13.5
+    },
+    {
+      "name": "rooms, membership, overlays, autoscroll, and run records",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785987069967,
+      "checksBefore": 94,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "GitHub projects, what leaves this computer, and the in-tray",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785987069967,
+      "checksBefore": 94,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "the ladder at its widest, presence, and files an agent made",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785987069967,
+      "checksBefore": 94,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "what a search result looks like, and the security one",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785987069967,
+      "checksBefore": 94,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "the stop button, and what the record calls a stopped turn",
+      "smoke": true,
+      "ran": true,
+      "startedAt": 1785987069967,
+      "checksBefore": 94,
+      "checks": 3,
+      "seconds": 93.9
+    },
+    {
+      "name": "did it really do what it said",
+      "smoke": true,
+      "ran": true,
+      "startedAt": 1785987163819,
+      "checksBefore": 97,
+      "checks": 2,
+      "seconds": 0
+    },
+    {
+      "name": "an agent can see a picture that was attached",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785987163848,
+      "checksBefore": 99,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "use my own Claude Code setup",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785987163851,
+      "checksBefore": 99,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "how hard should it think, and what an agent keeps in mind",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785987163851,
+      "checksBefore": 99,
+      "checks": 1,
+      "seconds": 10.1
     }
   ],
-  "missing": [
-    "the stop button, and what the record calls a stopped turn",
-    "did it really do what it said"
-  ],
+  "missing": [],
   "results": [
     {
       "name": "join screen renders",
@@ -316,7 +394,7 @@
     {
       "name": "a background job acknowledges in the thread, does its work there, and posts ONE short line back to the room saying where to look",
       "pass": true,
-      "detail": "2 line(s) in the thread :: room says \"Scout AGENT 01:50 Nobody asked — I noticed runs on Claude · Sonnet 5 🧵 Finished in the th\""
+      "detail": "2 line(s) in the thread :: room says \"Scout AGENT 08:58 Nobody asked — I noticed runs on Claude · Sonnet 5 🧵 Finished in the th\""
     },
     {
       "name": "quick chat (Ctrl/Cmd+K) sends",
@@ -331,7 +409,7 @@
     {
       "name": "invite code generated",
       "pass": true,
-      "detail": "inv_nAPdeRh_5IlSyH6dpMekvg"
+      "detail": "inv_mTfh2zjMScshHzfLBnU28Q"
     },
     {
       "name": "friend joins via invite",
@@ -351,7 +429,7 @@
     {
       "name": "a spent invite leaves the credential that was already working exactly as it was",
       "pass": true,
-      "detail": "stored \"tok_s_BOVsFZLTrQDuWpEmVPM3C-eszuoypbkTu4DsJT8CE\""
+      "detail": "stored \"tok_Ik4fjkjvdiBlIJ2NxFixsxFt_EX-v2BbJaw6mVK8YlQ\""
     },
     {
       "name": "a refused code drops the person back into their own Cloud9 rather than a dead sign-in box",
@@ -416,7 +494,7 @@
     {
       "name": "a reply lands in the thread and the message it answers says how many replies it has",
       "pass": true,
-      "detail": "↳ 1 reply · last at 01:52"
+      "detail": "↳ 1 reply · last at 09:00"
     },
     {
       "name": "the reply count opens the thread, with the message it started and every reply",
@@ -441,7 +519,7 @@
     {
       "name": "results are grouped by conversation, with who said it, when, and the words around it",
       "pass": true,
-      "detail": "1 group(s) :: V Vikas Today · 01:52 what should we do about the backlog?"
+      "detail": "1 group(s) :: V Vikas Today · 09:00 what should we do about the backlog?"
     },
     {
       "name": "clicking a result goes to that message, in the conversation it was said in",
@@ -669,9 +747,69 @@
       "detail": "Send with 2 files"
     },
     {
-      "name": "UNCAUGHT",
+      "name": "a message carries its files, each with its name and its size",
+      "pass": true,
+      "detail": "362 bytes · picture"
+    },
+    {
+      "name": "the tray is empty once the files have gone",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a picture offers to be shown in place and a file offers to be saved",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the file fetched back off the hub is byte-for-byte the file that was sent",
+      "pass": true,
+      "detail": "200 · sent 362 bytes, got 362"
+    },
+    {
+      "name": "the hub decides the type from the name, and tells the browser not to sniff",
+      "pass": true,
+      "detail": "image/png · inline; filename=\"site-plan.png\"; filename*=UTF-8''site-plan.png"
+    },
+    {
+      "name": "a ticket is spent by the first request — a second one is refused",
+      "pass": true,
+      "detail": "status 404"
+    },
+    {
+      "name": "a file the hub will not draw comes back as bytes with a download, unchanged",
+      "pass": true,
+      "detail": "application/octet-stream · attachment; filename=\"ledger.bin\"; filename*=UTF-8''ledger.bin"
+    },
+    {
+      "name": "clicking a picture opens it in place, with the picture really loaded",
+      "pass": true,
+      "detail": "{\"w\":180,\"h\":120,\"src\":\"blob:\"}"
+    },
+    {
+      "name": "while an agent is working, the owner is offered a Stop that names THAT agent",
+      "pass": true,
+      "detail": "Stop Scout and spend nothing more on this :: data-stop-agent=a_msgyi01z3cg2fb"
+    },
+    {
+      "name": "pressing it really ends the turn, and the record calls it stopped — never failed",
       "pass": false,
-      "detail": "TimeoutError: page.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.composer .primary.small')\u001b[22m\n\u001b[2m    - locator resolved to <button class=\"primary small sendbtn\">Send with 2 files</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"status\" class=\"notify-toast\" data-kind=\"thread_reply\" data-subject=\"m_msgja6f07jdfrn\">…</div> from <div role=\"region\" class=\"notify-stack\" aria-label=\"Notifications\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"status\" class=\"notify-toast\" data-kind=\"thread_reply\" data-subject=\"m_msgja6f07jdfrn\">…</div> from <div role=\"region\" class=\"notify-stack\" aria-label=\"Notifications\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    56 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is visible, enabled and stable\u001b[22m\n\u001b[2m       - scrolling into view if needed\u001b[22m\n\u001b[2m       - done scrolling\u001b[22m\n\u001b[2m       - <div role=\"status\" class=\"notify-toast\" data-kind=\"thread_reply\" data-subject=\"m_msgja6f07jdfrn\">…</div> from <div role=\"region\" class=\"notify-stack\" aria-label=\"Notifications\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n"
+      "detail": "0 agent(s) still working · outcomes: ok,ok,ok,ok,ok"
+    },
+    {
+      "name": "the record he reads says the owner stopped it, in the app's own sentence",
+      "pass": false,
+      "detail": "no stopped record on screen (thread opened); outcomes drawn: none"
+    },
+    {
+      "name": "a claim the record does not show is called out, and a claim it does show is left alone",
+      "pass": true,
+      "detail": "2 mismatch(es) :: ⚠️ Cloud9 checked what Scout just said against what it actually did — 2 things do not matc"
+    },
+    {
+      "name": "the app he runs actually applies the check — a turn's claims are held to its own record",
+      "pass": false,
+      "detail": "the engine this app starts never turns claim-checking on (Engine.verifyClaims stays false; attachHooks has no caller), so no turn is ever checked"
     },
     {
       "name": "no console errors",

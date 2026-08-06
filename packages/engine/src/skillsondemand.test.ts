@@ -148,16 +148,24 @@ test("with the doorway open, the agent is told about open_skill AND given the in
   assert.match(warm, /The steps themselves are NOT/);
 });
 
-test("an agent with no skills is never told it can open skills", () => {
+test("an agent with no skills is TOLD it has none, rather than left to find out", () => {
+  // A CORRECTION (2026-08-06). This test first said the opposite — that a
+  // skill-less agent should not be told about `open_skill` at all — and that was
+  // wrong, because the tool is on the command line for every turn with a
+  // doorway. `mcpdoorway.test.ts` already held the stronger law: granted means
+  // mentioned, always. So the honest answer is not silence, it is a sentence
+  // that covers the empty case out loud.
   const none = wholePrompt(agent({ skills: [] }), true);
-  assert.ok(!none.includes("open_skill"),
-    "an agent with nothing to open was told it could open something");
+  assert.match(none, /open_skill/);
+  assert.match(none, /If no skills are listed for you, you have none/);
   // the other doorways are unaffected
   assert.match(none, /search_conversation/);
   assert.match(none, /open_attachment/);
-  // and the renderer's default is still the old paragraph, for every old caller
-  assert.ok(!renderCloud9Tools().includes("open_skill"));
-  assert.ok(renderCloud9Tools({ skills: true }).includes("open_skill"));
+  // and there is no way at all to render the paragraph without every row in it
+  const paragraph = renderCloud9Tools();
+  for (const tool of CLOUD9_TOOLS) {
+    assert.ok(paragraph.includes(tool.name), `${tool.name} can be handed over unmentioned`);
+  }
 });
 
 // --------------------------------------------------------------- the doorway

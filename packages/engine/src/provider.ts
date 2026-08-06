@@ -559,15 +559,14 @@ export function splitAgentPrompt(agent: AgentDef, turn: TurnBrief): AgentPromptP
       `You are "${agent.name}", an agent in the Cloud9 group chat.\n` +
       `Your persona/brief: ${agent.persona}\n` +
       renderCapabilities(agent, turn.supply ?? {}, turn.harness === "codex" ? "codex" : "declared") +
+      (turn.cloud9Tools ? renderCloud9Tools() : "") +
       // ===== GAP B BLOCK (skills on demand, 2026-08-05) — start =====
-      // ONE FACT, BOTH SENTENCES. `turn.cloud9Tools` is the truth about whether
-      // Cloud9's doorway is really open this turn, so it decides BOTH whether
-      // the agent is told `open_skill` exists AND whether its skills are sent as
-      // an index rather than in full. They cannot come apart: there is no path
-      // that gives an agent a list of names and no way to read them.
-      (turn.cloud9Tools
-        ? renderCloud9Tools({ skills: (agent.skills ?? []).length > 0 })
-        : "") +
+      // ONE FACT DECIDES BOTH. `turn.cloud9Tools` is the truth about whether
+      // Cloud9's doorway is really open this turn. It is what puts `open_skill`
+      // in the paragraph above, and it is what decides whether skills go out as
+      // an index instead of in full. They cannot come apart: there is no path
+      // that hands an agent a list of names and no way to read them, and none
+      // that withholds the steps from a turn that cannot fetch them.
       renderSkills(agent, turn.cloud9Tools === true),
       // ===== GAP B BLOCK — end =====
     turn:

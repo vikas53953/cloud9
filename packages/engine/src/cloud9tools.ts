@@ -260,23 +260,6 @@ export interface Cloud9Tool {
   refuseExtraArgs: string;
   /** the sentence in the agent's own prompt */
   sentence: string;
-  // ===== GAP B BLOCK (skills on demand, 2026-08-05) — start =====
-  /**
-   * WHAT MUST BE TRUE OF THIS TURN BEFORE THE AGENT IS TOLD THIS TOOL EXISTS.
-   *
-   * Absent — which is every row but one — means "always, for every agent", which
-   * is what all three doorways above genuinely are. `"skills"` means the
-   * sentence is only written when the agent HAS skills: telling an agent with
-   * none that it can open its skills is exactly the class of half-truth this
-   * file was built to stop, and it belongs on the row rather than in the
-   * renderer, for the same reason `refuseExtraArgs` does.
-   *
-   * It gates the SENTENCE, never the tool: the tool is always handed over and
-   * always answers honestly, so there is no state in which the harness holds
-   * something the agent was told nothing about.
-   */
-  needs?: "skills";
-  // ===== GAP B BLOCK — end =====
 }
 
 /** The MCP server name. Part of the tool name the harness sees. */
@@ -540,14 +523,22 @@ export const CLOUD9_TOOLS: readonly Cloud9Tool[] = [
       "You can only open your own skills. `open_skill` takes the skill's name and " +
       "nothing else — there is no way to read another agent's skills from here, and no " +
       "way to name a place on this computer",
-    needs: "skills",
+    // NO GATE ON THIS SENTENCE, and that is a CORRECTION (2026-08-06). The first
+    // version of this row wrote its sentence only when the agent HAD skills —
+    // and that broke a law this file already had, guarded by `mcpdoorway.test.ts`:
+    // a tool handed to the harness must ALWAYS be named in the prompt, or the
+    // agent is holding something nobody told it about. The honest way to say
+    // "you may have none" is to say it IN the sentence, which is what the last
+    // line does. Going quiet about a tool the command line is still carrying is
+    // the very shape of half-truth this file exists to stop.
     sentence:
       "You CAN read the full instructions of any of your own skills with `open_skill` — " +
-      "give it the skill's name exactly as your list below shows it. The list below gives " +
-      "you each skill's name and what it is for; the STEPS are not there, on purpose, so " +
-      "that a long standing instruction does not crowd out the conversation. Whenever you " +
-      "are about to follow one of your skills, open it first and follow what it actually " +
-      "says — never work from the name.",
+      "give it the skill's name exactly as your own list of skills shows it. That list " +
+      "gives you each skill's name and what it is for; the STEPS are not there, on " +
+      "purpose, so that a long standing instruction does not crowd out the conversation. " +
+      "Whenever you are about to follow one of your skills, open it first and follow what " +
+      "it actually says — never work from the name. If no skills are listed for you, you " +
+      "have none, and there is nothing here to open.",
   },
   // ===== GAP B BLOCK — end =====
 ] as const;
@@ -561,18 +552,14 @@ export function cloud9ToolNames(): string[] {
  * The paragraph in the prompt. Written from the table, so a tool cannot be
  * handed to the harness without the agent being told it exists.
  */
-export function renderCloud9Tools(
-  // ===== GAP B BLOCK (skills on demand, 2026-08-05) — start =====
-  // WHAT IS TRUE OF THIS TURN, for the rows that only apply sometimes. Empty by
-  // default, so every existing caller gets exactly the paragraph it got before —
-  // a row with `needs` on it stays silent until somebody says the thing is true.
-  has: { skills?: boolean } = {},
-  // ===== GAP B BLOCK — end =====
-): string {
+export function renderCloud9Tools(): string {
+  // EVERY ROW, ALWAYS. There is deliberately no way to leave one out: the whole
+  // point of the table is that what the harness is handed (`cloud9ToolNames`)
+  // and what the agent is told come off the SAME list. A row that only applies
+  // sometimes says so in its own sentence — see `open_skill`.
   return (
     `\nWhat Cloud9 itself gives you (these are Cloud9's own tools, not your harness's):\n` +
-    CLOUD9_TOOLS.filter(t => !t.needs || has[t.needs] === true)
-      .map(t => `• ${t.sentence}`).join("\n") + "\n"
+    CLOUD9_TOOLS.map(t => `• ${t.sentence}`).join("\n") + "\n"
   );
 }
 

@@ -171,6 +171,85 @@ test("GAP A: a run that is PRUNED still counts against the month it happened in"
   assert.equal(store.spentInMonth("a1", now), 7);
 });
 
+test("GAP A: if the carried total cannot be written, the run is KEPT rather than its cost lost", () => {
+  const dir = tmp();
+  const store = new RunStore({
+    agentDataDir: () => path.join(dir, "a1"), keepPerAgent: 1, log: () => { /* quiet */ },
+  });
+  const now = Date.now();
+  const money = (id: string, cost: number): void => {
+    store.save(buildRunRecord(seed({ startedAt: now }), {
+      finishedAt: now, outcome: "ok",
+      trace: { provider: "claude", text: "", steps: [], events: 1, usage: { costUsd: cost } },
+    }, id));
+  };
+  money("r-aaa-0001", 3);
+
+  // THE WRITE FAILS. Injected at the seam rather than by breaking the disk:
+  // a full disk, a locked file and a read-only folder all arrive here as the
+  // same `false`, and that boolean is the thing under test. (A first attempt
+  // put a folder where the ledger goes; Windows quietly renamed over it, which
+  // proved only that the injection was unreliable.)
+  const store2 = store as unknown as { carryForward: (a: string, r: readonly RunRecord[]) => boolean };
+  const real = store2.carryForward.bind(store);
+  store2.carryForward = () => false;
+
+  money("r-aaa-0002", 4);
+
+  // The older run is STILL THERE — retention gave way rather than let $3 vanish
+  // out of the month's total. A limit that quietly gets looser the harder an
+  // agent works is not a limit, and that is the only failure this guard exists
+  // to prevent.
+  // `list` defaults its limit to the RETENTION count, which is 1 here — so the
+  // limit is given explicitly, or the test would be asking the wrong question.
+  assert.equal(store.list("a1", 10).length, 2,
+    "nothing is deleted until what it cost is safely written down");
+  assert.equal(store.spentInMonth("a1", now), 7, "and the month's total is still whole");
+
+  // AND IT HEALS ITSELF. Once the write works again, the next prune tidies up —
+  // the guard is a delay, never a leak, and nothing is counted twice.
+  store2.carryForward = real;
+  store.prune("a1");
+  assert.equal(store.list("a1", 10).length, 1, "retention catches up on the next attempt");
+  assert.equal(store.spentInMonth("a1", now), 7, "with the total still whole, and not doubled");
+
+  // BREAK: change `prune` back to `this.carryForward(...)` as a bare statement —
+  // the first assertion drops to 1 run and the month's total falls to 4, which is
+  // a spending limit quietly getting looser the harder the agent works.
+});
+
+test("GAP A: and the carry really does report failure when it cannot open the ledger", () => {
+  // The other half of the same law: `prune` acting on the answer is only worth
+  // anything if the answer is honest. An agent id that cannot become a folder
+  // has nowhere to write the total, and that must read as false, not as "done".
+  // A FILE where the agent's folder should be: `mkdirSync` cannot make a folder
+  // inside it, so there is genuinely nowhere to write the total. (An earlier
+  // attempt used "", which resolves to the working directory and cheerfully
+  // succeeded — writing a stray ledger into the package. The injection has to
+  // be somewhere that really cannot be written.)
+  const blocked = path.join(tmp(), "not-a-folder");
+  fs.writeFileSync(blocked, "this is a file");
+  const store = new RunStore({ agentDataDir: () => blocked, log: () => { /* quiet */ } });
+  const failed = (store as unknown as {
+    carryForward: (a: string, r: readonly RunRecord[]) => boolean;
+  }).carryForward("a1", [buildRunRecord(seed(), {
+    finishedAt: Date.now(), outcome: "ok",
+    trace: { provider: "claude", text: "", steps: [], events: 1, usage: { costUsd: 2 } },
+  }, "r-aaa-0001")]);
+  assert.equal(failed, false, "no ledger to write to is a failure, never a silent success");
+
+  // …and a run that cost nothing is always safe to delete, because deleting it
+  // takes nothing out of the total. Codex runs are all of these.
+  const nothingToCarry = (store as unknown as {
+    carryForward: (a: string, r: readonly RunRecord[]) => boolean;
+  }).carryForward("a1", [buildRunRecord(seed({ provider: "codex" }), {
+    finishedAt: Date.now(), outcome: "ok",
+    trace: { provider: "codex", text: "", steps: [], events: 1 },
+  }, "r-aaa-0002")]);
+  assert.equal(nothingToCarry, true,
+    "a run with no money on it must not be able to jam retention for ever");
+});
+
 test("GAP A: the harness is really handed --max-budget-usd, and only when there is a limit", () => {
   const withCap = claudeArgs(agent(), ["claude-sonnet-5"], { maxBudgetUsd: 1.5 });
   const i = withCap.indexOf("--max-budget-usd");

@@ -1495,6 +1495,29 @@ export class Engine {
         console.error(`[engine] could not stop a turn for agent ${agentId}:`, err);
       }
     }
+    // ================================================================
+    // AND THE WAIT THAT IS NOT A PROCESS (2026-08-06).
+    // ================================================================
+    //
+    // The loop above kills child processes. An agent standing at the approval
+    // desk — waiting to be allowed to push a branch, or waiting on its plan —
+    // has NO child process running: it is parked on a promise. So a stop
+    // reached nothing, the room said "🛑 Stopping — pulling the plug on what
+    // I'm doing now", and the jobs screen went on saying "waiting for you" for
+    // the rest of the card's life. The button was true about the processes and
+    // false about the only thing he could see.
+    //
+    // Ended as a NO, never as a yes — pressing stop is not permission — and the
+    // card's own path then does everything it already does for a refusal: the
+    // job comes off "stuck", the room is told nothing left this computer, and
+    // nothing is pushed. It is counted, so `!stop` still says something true
+    // when the wait was the only thing this agent was doing.
+    try {
+      count += this.approvals.giveUpFor(agentId,
+        "you stopped this run, so it did not happen");
+    } catch (err) {
+      console.error(`[engine] could not release a waiting card for agent ${agentId}:`, err);
+    }
     return count;
   }
 

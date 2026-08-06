@@ -127,6 +127,18 @@ export const SETTLED_KEEP = 50;
 
 interface Waiting {
   askId: string;
+  /**
+   * WHOSE AGENT IS STANDING HERE (2026-08-06).
+   *
+   * Added so the stop button can reach this queue. `stopAgent` kills the turn's
+   * child processes, and until now that was ALL it did — an agent parked on a
+   * card is not inside a `run()`, so there was no process to kill and nothing
+   * else knew a stop had happened. The room said "🛑 Stopping — pulling the plug"
+   * and the job then sat on the jobs screen as "waiting for you" until the card
+   * timed out minutes later. The stop was true of the processes and false of the
+   * thing the owner could actually see.
+   */
+  agentId: ID;
   approvalId?: ID;
   /** what is being waited on: a row on the shared table, or a plan */
   action: RemoteAction | "plan";
@@ -248,7 +260,7 @@ export class ApprovalDesk {
       // a waiting approval must never be the reason this process stays alive
       timer.unref?.();
       this.waiting.push({
-        askId, action: facts.action, facts, settle: resolve, timer,
+        askId, agentId: agent.id, action: facts.action, facts, settle: resolve, timer,
         ...(input.taskId ? { taskId: input.taskId } : {}),
       });
       this.opts.send({
@@ -315,7 +327,7 @@ export class ApprovalDesk {
       }, this.waitMs);
       timer.unref?.();
       this.waiting.push({
-        askId, action: "plan", settle: resolve, timer,
+        askId, agentId: input.agent.id, action: "plan", settle: resolve, timer,
         ...(input.taskId ? { taskId: input.taskId } : {}),
       });
       this.opts.send({
@@ -379,6 +391,32 @@ export class ApprovalDesk {
     for (const w of [...this.waiting]) {
       this.finish(w.askId, { approved: false, reason });
     }
+  }
+
+  /**
+   * THE OWNER PRESSED STOP ON ONE AGENT (2026-08-06).
+   *
+   * The same ending as `giveUpAll`, aimed. Two features shipped on 2026-08-05
+   * were each right alone and wrong together: the stop button (`run.ts`,
+   * `Engine.stopAgent`) reaches into a scope and kills its child processes, and
+   * the approval desk parks a turn on a card where there is NO child process to
+   * kill. So an agent waiting to be allowed to push, or waiting on its plan, was
+   * told nothing by a stop — the room said the plug had been pulled while the
+   * jobs screen went on saying "waiting for you" for the rest of the card's life.
+   *
+   * WHY IT IS A NO AND NEVER A YES. The same reason a dropped socket is a no:
+   * the only decision that may ever produce `approved: true` is one the owner
+   * really made. He pressed stop; that is not permission.
+   *
+   * ONE AGENT ONLY. Another agent's card is another piece of work he did not
+   * stop, and cancelling it would make one stop button mean "stop everything".
+   *
+   * Returns how many waits it ended, so the caller can say something true.
+   */
+  giveUpFor(agentId: ID, reason: string): number {
+    const mine = this.waiting.filter(w => w.agentId === agentId);
+    for (const w of mine) this.finish(w.askId, { approved: false, reason });
+    return mine.length;
   }
 
   private finish(askId: string, outcome: ApprovalOutcome): void {

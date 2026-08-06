@@ -246,7 +246,11 @@ export class RunStore {
       const record = readRecord(target).record;
       if (record) doomed.push(record);
     }
-    this.carryForward(agentId, doomed);
+    // AND IF IT COULD NOT BE WRITTEN DOWN, NOTHING IS DELETED. Keeping a run
+    // one turn longer costs a retention slot and fixes itself next time; losing
+    // what it cost makes the owner's spending limit quietly stop being a limit.
+    // See `carryForward`.
+    if (!this.carryForward(agentId, doomed)) return removed;
     for (const target of targets) {
       if (this.discard(target)) removed++;
     }
@@ -321,9 +325,23 @@ export class RunStore {
     }
   }
 
-  /** Add what these about-to-be-deleted runs cost to the carried totals. */
-  private carryForward(agentId: string, records: readonly RunRecord[]): void {
-    if (records.length === 0) return;
+  /**
+   * Add what these about-to-be-deleted runs cost to the carried totals.
+   *
+   * RETURNS WHETHER THE MONEY IS SAFELY WRITTEN DOWN, and the caller is not
+   * allowed to ignore it — `prune` deletes nothing until this says yes.
+   *
+   * WHY IT IS A BOOLEAN AND NOT A LOG LINE. This is the only moment a run's
+   * cost can be lost: the record is about to be deleted, so if the carried
+   * total does not reach the disk, that money leaves the month's sum for ever
+   * and the owner's spending limit quietly gets LOOSER the harder his agent
+   * works. Nothing would look broken; the cap would simply stop being a cap.
+   * Keeping the run instead costs a retention slot for one more turn and is
+   * self-healing — the next `prune` tries again — which makes "keep it" the
+   * only honest answer to "we could not write the total down".
+   */
+  private carryForward(agentId: string, records: readonly RunRecord[]): boolean {
+    if (records.length === 0) return true;
     const carried = this.carriedSpend(agentId);
     let changed = false;
     for (const record of records) {
@@ -333,12 +351,19 @@ export class RunStore {
       carried[month] = (carried[month] ?? 0) + cost;
       changed = true;
     }
-    if (!changed) return;
+    // NOTHING TO CARRY IS A SUCCESS, not a failure. Runs with no money on them
+    // — every Codex run, and any turn the CLI never costed — can be deleted
+    // freely, because deleting them takes nothing out of the total.
+    if (!changed) return true;
     const target = this.spendFile(agentId, true);
-    if (!target) return;
+    if (!target) {
+      this.log(`[engine] could not open the spending total for agent ${agentId} — `
+        + `keeping these runs rather than losing what they cost`);
+      return false;
+    }
     // the same write-then-rename owner every other file here goes through, so a
     // power cut cannot leave half a total behind under a name we would believe
-    writeWholeFile(target, JSON.stringify(carried, null, 2),
+    return writeWholeFile(target, JSON.stringify(carried, null, 2),
       m => this.log(`[engine] could not carry forward what agent ${agentId} spent: ${m}`));
   }
 

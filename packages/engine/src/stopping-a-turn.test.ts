@@ -272,3 +272,84 @@ test("'!stop' with nothing running says nothing was running, rather than going q
   });
   assert.match(agentSends(frames).join("\n"), /nothing running to stop/i);
 });
+
+// ===========================================================================
+// 3. THE WAIT THAT IS NOT A PROCESS (2026-08-06)
+// ===========================================================================
+//
+// Two features built the same night, each right on its own and wrong together.
+//
+//   · The stop button (above) works by reaching into a scope and KILLING CHILD
+//     PROCESSES.
+//   · The approval desk parks a turn on a card — waiting to be allowed to push
+//     a branch, waiting on a plan — where there is NO child process at all.
+//
+// So an agent standing at that gate was the one place a stop reached nothing.
+// The room said "🛑 Stopping — pulling the plug on what I'm doing now" and the
+// jobs screen went on saying "waiting for you" for the rest of the card's life
+// — up to the whole approval window. The button was true about the processes
+// and false about the only thing the owner could see.
+//
+// Neither feature's own tests could have caught it: the stop tests never park
+// an agent on a card, and the approval tests never press stop.
+
+const PUSH_FACTS = {
+  action: "push" as const,
+  repo: "vikas53953/cloud9", branch: "cloud9/scout-1", commits: 1, files: 2,
+};
+
+test("STOP RELEASES AN AGENT PARKED ON AN APPROVAL CARD — not just a running process", async () => {
+  const { engine, frames } = makeEngine(new HangingProvider());
+  // the agent is standing at the gate, exactly as `!code` leaves it
+  const waiting = engine.approvals.ask({
+    agent: agent(), channelId: "c1", facts: PUSH_FACTS,
+  });
+  assert.equal(engine.approvals.pending, 1, "the card is really on the table");
+  assert.ok(frames.some(f => f.type === "askApproval"), "and it really reached a screen");
+
+  // …and a stop must reach it, without a single process to kill
+  const stopped = engine.stopAgent("a1");
+  assert.equal(stopped, 1, "'!stop' must be able to say something true happened");
+
+  const outcome = await waiting;
+  assert.equal(outcome.approved, false,
+    "pressing stop is NOT permission — this is the one answer that may never be a yes");
+  assert.match(outcome.reason, /you stopped this run/i);
+  assert.equal(engine.approvals.pending, 0, "and the job is no longer stuck on the jobs screen");
+});
+
+test("a stop reaches ONE agent's card, never everybody's", async () => {
+  const mine = agent();
+  const theirs = agent({ id: "a2", name: "Ranger" });
+  const { engine } = makeEngine(new HangingProvider(), [mine, theirs]);
+  const a = engine.approvals.ask({ agent: mine, channelId: "c1", facts: PUSH_FACTS });
+  const b = engine.approvals.ask({ agent: theirs, channelId: "c1", facts: PUSH_FACTS });
+
+  assert.equal(engine.stopAgent("a1"), 1);
+  assert.equal((await a).approved, false);
+  assert.equal(engine.approvals.pending, 1,
+    "the other agent's work is not something he stopped, and one button must not mean 'stop everything'");
+
+  engine.stopAgent("a2");
+  assert.equal((await b).approved, false);
+});
+
+test("stopping an agent that is neither running nor waiting still says nothing happened", () => {
+  const { engine } = makeEngine(new HangingProvider());
+  assert.equal(engine.stopAgent("a1"), 0,
+    "no process and no card is a real zero — the room says 'nothing was running'");
+});
+
+test("'!stop' in the room releases the card too, end to end", async () => {
+  const { engine, frames } = makeEngine(new HangingProvider());
+  const waiting = engine.approvals.ask({
+    agent: agent(), channelId: "c1", facts: PUSH_FACTS,
+  });
+  await say(engine, {
+    id: "m9", channelId: "c1", authorId: OWNER, authorName: "Vikas",
+    authorKind: "human", text: "@Scout !stop", ts: 9,
+  });
+  assert.equal((await waiting).approved, false);
+  assert.match(agentSends(frames).join("\n"), /Stopping/i,
+    "and he is told the plug was pulled, rather than 'there was nothing running'");
+});

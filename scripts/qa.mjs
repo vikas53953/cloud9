@@ -603,6 +603,38 @@ function ok(name, pass, detail = "") {
 }
 
 /**
+ * PRESS SOMETHING THAT A TOAST MAY BE SITTING ON TOP OF.
+ *
+ * The notification stack is drawn over the bottom-right of the window — which
+ * is exactly where the message box, the Send button and the upload tray are —
+ * and a toast really does swallow the click: Playwright reports
+ * "notify-toast … intercepts pointer events" and then waits until it gives up.
+ * (Worth saying plainly: that is not only a QA problem. While a toast is up, a
+ * person cannot press Send either.)
+ *
+ * So this takes any toast down first — the ✕ each one carries, the same one he
+ * would press — and then clicks, retrying while new ones keep arriving. It
+ * never forces a click through: a control that is genuinely covered by
+ * something that is NOT a toast still fails, which is the failure we want.
+ */
+async function press(page, selector, { timeout = 30000 } = {}) {
+  const deadline = Date.now() + timeout;
+  let last;
+  for (;;) {
+    for (const x of await page.locator(".toast .toast-x, .notify-stack .notify-x").all()) {
+      await x.click({ timeout: 3000 }).catch(() => { /* it stood down on its own */ });
+    }
+    try {
+      await page.click(selector, { timeout: Math.min(8000, Math.max(1000, deadline - Date.now())) });
+      return;
+    } catch (err) {
+      last = err;
+      if (Date.now() >= deadline) throw last;
+    }
+  }
+}
+
+/**
  * A real PNG of one colour, built here rather than checked into the repo.
  *
  * The attachment checks below compare what came back off the hub with what went
@@ -676,7 +708,11 @@ try {
     abilityRows, openSwitches, rows, asksList, handMadeOffers, hallFace, brief, tiles,
     rowState, mine, pictureId, drawn, card, engineWs, engineFrames, engineGot, scout,
     general, base, rich, REPO, overflow, artId, shot, evMessageId, evReplyId, evLogId,
-    openEverywhere;
+    openEverywhere,
+    /* the real picture and the real ledger this run made: the file act sends them
+       and the picture act, further down, has to be able to compare against the
+       very same bytes */
+    PICTURE, LEDGER;
 
   if (act("signing in, the crew, and an agent that answers", { smoke: true })) {
   // ---------- owner context ----------
@@ -3439,9 +3475,21 @@ try {
     (await page.locator(".editor .hirednote").innerText()).replace(/\s+/g, " ").slice(0, 80));
 
   const hiredOffers = await editorOffers(page);
+  /* THE AGENT'S OWN NAME IS ALLOWED TO DIFFER, and nothing else is.
+     A section heading reads "How much can Architect do on its own?" on one
+     screen and "How much can Scout do on its own?" on the other — which is the
+     screen being personal, not the screen offering less. Comparing the raw text
+     made this check fail on the one difference that is SUPPOSED to be there,
+     which would have taught everybody to ignore it. The name is normalised out
+     the same way the portrait's gradient id is; everything else still has to
+     match field for field. */
+  const sameButForTheName = (offers, name) => JSON.stringify(offers)
+    .replaceAll(name, "THIS AGENT");
+  const hiredSaid = sameButForTheName(hiredOffers, "Architect");
+  const handMadeSaid = sameButForTheName(handMadeOffers, "Scout");
   ok("A HIRED AGENT'S FILE OFFERS EXACTLY WHAT A HAND-WRITTEN ONE'S DOES — nothing less",
-    JSON.stringify(hiredOffers) === JSON.stringify(handMadeOffers),
-    JSON.stringify(hiredOffers) === JSON.stringify(handMadeOffers)
+    hiredSaid === handMadeSaid,
+    hiredSaid === handMadeSaid
       ? `${hiredOffers.sections.length} sections, ${hiredOffers.rungs.length} rungs, ` +
         `${hiredOffers.abilities.length} switches, skills editor present`
       : `hired ${JSON.stringify(hiredOffers)} vs hand-made ${JSON.stringify(handMadeOffers)}`);
@@ -3976,8 +4024,8 @@ try {
     (await page.locator(".composer input.filepick").count()) === 1);
 
   // a real PNG, not a token one: a file worth a byte-for-byte comparison
-  const PICTURE = pngOfSolidColour(180, 120, [18, 83, 71]);
-  const LEDGER = Buffer.from("row,amount\nvilla,7400\nflights,5200\n", "utf8");
+  PICTURE = pngOfSolidColour(180, 120, [18, 83, 71]);
+  LEDGER = Buffer.from("row,amount\nvilla,7400\nflights,5200\n", "utf8");
 
   await page.setInputFiles(".composer input.filepick", {
     name: "site-plan.png", mimeType: "image/png", buffer: PICTURE,
@@ -4015,11 +4063,8 @@ try {
      Playwright waits thirty seconds and the run dies. WHICH toasts are on
      screen here depends on which acts ran before this one, so they are cleared
      on purpose rather than assumed away. */
-  for (const x of await page.locator(".toast .toast-x, .notify-stack .notify-x").all()) {
-    await x.click({ timeout: 5000 }).catch(() => { /* it stood down on its own */ });
-  }
   for (const everyday of ["report(1).pdf", "café-menu.txt", "photo#3.png"]) {
-    await page.click(`.uploadtray .uptile[data-upload="${everyday}"] .upx`, { timeout: 20000 });
+    await press(page, `.uploadtray .uptile[data-upload="${everyday}"] .upx`);
   }
   await waitFor(page, () => document.querySelectorAll(".uploadtray .uptile").length === 2,
     undefined, { timeout: 10000, what: "the everyday files to be taken back off" });
@@ -4080,7 +4125,7 @@ try {
     /2 files/.test(sendSays), sendSays);
 
   await page.fill(".composer textarea", "here is the site plan and the ledger");
-  await page.click(".composer .primary.small");
+  await press(page, ".composer .primary.small");
   await page.waitForSelector('.msg .fileblock[data-file="site-plan.png"]', { timeout: 20000 });
   ok("a message carries its files, each with its name and its size",
     (await page.locator(".msg .fileblock").count()) === 2 &&
@@ -6052,8 +6097,13 @@ try {
   ok("a run the app reported no money for renders NO COST ROW AT ALL — not a zero, not an estimate",
     (await jobCard.locator('[data-row="cost"]').count()) === 0 && !jobRows.includes("cost"),
     jobRows.join("/"));
+  /* FOUR ROWS SINCE 2026-08-06: `trust` joined them, because how far the agent
+     was allowed to go is now part of what the turn is a record OF. The list is
+     still spelled out on purpose — a row appearing or disappearing is exactly
+     the drift this check exists to catch, and a fifth one will fail here and be
+     read by a person before it is agreed to. */
   ok("and the rows it does carry are the ones the record really holds",
-    jobRows.join("/") === "asked-by/ran-on/took", jobRows.join("/"));
+    jobRows.join("/") === "asked-by/ran-on/took/trust", jobRows.join("/"));
   await page.screenshot({ path: `${SHOTS}/run-task.png` });
 
   /* ---- the same record, under the 📦 result — which lives in the THREAD ----
@@ -8336,48 +8386,80 @@ try {
      which is what "it went wrong" looks like and is a different thing. */
   await page.click(".sidebar >> text=# trip-goa");
   await page.waitForSelector(".composer textarea", { timeout: 15000 });
+
+  /* CATCH THE CONTROL THE MOMENT IT EXISTS, AND PRESS IT THERE AND THEN.
+     A turn can be over in a second (canned answers are instant), so a harness
+     that waits for the button, then reads it, then clicks it, is racing the
+     agent and loses on a fast machine — and would report "there is no Stop
+     button" about a feature that is working. This watches the page itself,
+     takes down what the button SAYS at the moment it appears, and clicks the
+     real control right then. It is one real click on the real button — the
+     same event his mouse would send — not a frame typed onto the wire. */
+  await page.evaluate(() => {
+    window.__c9stop = null;
+    const grab = () => {
+      const b = document.querySelector("button.stopnow[data-stop-agent]");
+      if (!b || window.__c9stop) return false;
+      window.__c9stop = {
+        agent: b.dataset.stopAgent, title: b.title ?? "", text: (b.innerText ?? "").trim(),
+      };
+      b.click();
+      return true;
+    };
+    if (!grab()) {
+      const mo = new MutationObserver(() => { if (grab()) mo.disconnect(); });
+      mo.observe(document.body, { childList: true, subtree: true, attributes: true });
+    }
+  });
   const stopBox = page.locator(".composer textarea");
   await stopBox.fill("@Scout !bg take your time comparing every villa in this shortlist");
   await stopBox.press("Enter");
-  await page.waitForSelector("button.stopnow[data-stop-agent]", { timeout: 60000 });
-  const stopBtn = page.locator("button.stopnow[data-stop-agent]").last();
-  const stopFor = await stopBtn.getAttribute("data-stop-agent");
-  const stopTitle = (await stopBtn.getAttribute("title")) ?? "";
+  await waitFor(page, () => !!window.__c9stop, undefined,
+    { timeout: 90000, what: "a Stop control to be offered while the agent works" });
+  const stopSeen = await page.evaluate(() => window.__c9stop);
   const scoutId = (await page.evaluate(() => window.cloud9Wire.agents()))
     .find(a => a.name === "Scout")?.id;
   ok("while an agent is working, the owner is offered a Stop that names THAT agent",
-    (await stopBtn.innerText()).trim() === "Stop" && stopFor === scoutId
-    && /Stop Scout/.test(stopTitle),
-    `${stopTitle} :: data-stop-agent=${stopFor}`);
+    stopSeen.text === "Stop" && stopSeen.agent === scoutId && /Stop Scout/.test(stopSeen.title),
+    `${stopSeen.title} :: data-stop-agent=${stopSeen.agent}`);
+  /* IT REALLY STOPPED — asked of the hub's own record, not of a sentence.
+     `RunOutcome` has no "timed out": a turn that ran out of time is `failed`,
+     so the distinction this feature exists for is cancelled-versus-failed, and
+     that is exactly what is read here. */
+  let outcomes = [];
+  await waitFor(page, () => (window.cloud9Runs?.held() ?? [])
+    .some(r => r.outcome === "cancelled"), undefined,
+  { timeout: 90000, what: "the stopped turn to be recorded as cancelled, not failed" })
+    .catch(() => { /* judged below, in words, rather than thrown */ });
+  outcomes = await page.evaluate(() => window.cloud9Runs?.held() ?? []);
+  const stillWorking = await page.locator("button.stopnow[data-stop-agent]").count();
+  ok("pressing it really ends the turn, and the record calls it stopped — never failed",
+    outcomes.some(r => r.outcome === "cancelled") && stillWorking === 0,
+    `${stillWorking} agent(s) still working · outcomes: ${outcomes.map(r => r.outcome).join(",") || "none"}`);
 
-  await stopBtn.click();
-  await waitFor(page, () => [...document.querySelectorAll(".msgs .msg, .threadpanel .msg")]
-    .some(m => /stopped/i.test(m.innerText ?? "")),
-  undefined, { timeout: 60000, what: "the agent to say out loud that it was stopped" });
-  const stopSaid = await page.evaluate(() =>
-    [...document.querySelectorAll(".msgs .msg, .threadpanel .msg")]
-      .map(m => (m.innerText ?? "").replace(/\s+/g, " "))
-      .filter(t => /stopped/i.test(t)).pop() ?? "");
-  ok("pressing it really ends the turn, and the agent says so in plain words",
-    /you stopped me|stopping|stopped/i.test(stopSaid)
-    && (await page.locator("button.stopnow[data-stop-agent]").count()) === 0,
-    stopSaid.slice(0, 140));
-
-  /* THE RECORD, which is the part he will read afterwards. `RunOutcome` has no
-     "timed out" — a timeout stays `failed` — so the whole distinction this
-     feature exists for is cancelled-vs-failed, and that is what is asserted. */
-  const stoppedRuns = await page.evaluate(() =>
+  /* AND HE CAN SEE IT. The record card lives under the message that asked, so
+     the thread is opened to read the words the app puts on it — the same
+     sentence `summarizeRun` writes, never one this file made up. */
+  const stopCard = await page.evaluate(() => {
+    const line = [...document.querySelectorAll(".msgs .msg .threadline")].pop();
+    if (line) line.click();
+    return true;
+  });
+  await page.waitForSelector(".threadpanel", { timeout: 20000 }).catch(() => { /* judged below */ });
+  const cards = await page.evaluate(() =>
     [...document.querySelectorAll(".callout.run[data-outcome]")].map(c => ({
       outcome: c.dataset.outcome,
-      title: (c.querySelector(".runtitle, h4, .callout-title")?.innerText ?? "").replace(/\s+/g, " "),
-      sum: (c.querySelector(".runsum")?.innerText ?? "").replace(/\s+/g, " "),
+      words: (c.innerText ?? "").replace(/\s+/g, " ").trim(),
     })));
-  const stoppedCard = stoppedRuns.find(r => r.outcome === "cancelled");
-  ok("the run record says the owner stopped it — never 'failed', and in the app's own sentence",
-    !!stoppedCard && /stopped/i.test(`${stoppedCard.title} ${stoppedCard.sum}`)
-    && stoppedCard.outcome !== "failed",
-    stoppedCard ? `${stoppedCard.title} :: ${stoppedCard.sum}`
-      : `no stopped record on screen; outcomes seen: ${stoppedRuns.map(r => r.outcome).join(",")}`);
+  const stoppedCard = cards.find(c => c.outcome === "cancelled");
+  ok("the record he reads says the owner stopped it, in the app's own sentence",
+    !!stoppedCard && /stopped/i.test(stoppedCard.words) && !/failed/i.test(stoppedCard.words),
+    stoppedCard ? stoppedCard.words.slice(0, 140)
+      : `no stopped record on screen (${stopCard ? "thread opened" : "no thread to open"}); ` +
+        `outcomes drawn: ${cards.map(c => c.outcome).join(",") || "none"}`);
+  if (await page.locator(".threadpanel .threadclose").count()) {
+    await page.click(".threadpanel .threadclose").catch(() => { /* already shut */ });
+  }
   } // end act: the stop button, and what the record calls a stopped turn
 
   if (act("did it really do what it said", { smoke: true })) {
@@ -8432,13 +8514,13 @@ try {
     !!kindSeen && kindSeen.as === "image" && Buffer.from(seenBytes).equals(PICTURE),
     `${kindSeen ? `${kindSeen.as} · ${kindSeen.mimeType ?? ""}` : "not recognised"} · ` +
     `${seenBytes.length} of ${PICTURE.length} bytes`);
+  const tooBig = tooBigSentence(
+    "huge.png", "a PNG picture", ATTACHMENT_LIMITS.bytes + 1, ATTACHMENT_LIMITS.bytes);
+  const ceilingMB = `${(ATTACHMENT_LIMITS.bytes / 1048576).toFixed(1)} MB`;
   ok("a picture too big to be shown is refused in plain words, with the shared ceiling in it",
-    new RegExp(String(Math.round(ATTACHMENT_LIMITS.bytes / 100000)))
-      .test(tooBigSentence("huge.png", "a PNG picture", ATTACHMENT_LIMITS.bytes + 1, ATTACHMENT_LIMITS.bytes))
-    && /have not seen it/.test(
-      tooBigSentence("huge.png", "a PNG picture", ATTACHMENT_LIMITS.bytes + 1, ATTACHMENT_LIMITS.bytes)),
-    tooBigSentence("huge.png", "a PNG picture", ATTACHMENT_LIMITS.bytes + 1, ATTACHMENT_LIMITS.bytes)
-      .slice(0, 120));
+    tooBig.includes("huge.png") && tooBig.includes(ceilingMB) && /have not seen it/.test(tooBig)
+    && /do not guess/.test(tooBig),
+    tooBig.slice(0, 120));
   } // end act: an agent can see a picture that was attached
 
   if (act("use my own Claude Code setup")) {

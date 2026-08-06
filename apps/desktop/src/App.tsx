@@ -5913,6 +5913,13 @@ const ROOM_COMMANDS: RoomCommand[] = [
     needs: ["agent"],
   },
   {
+    cmd: "!stop",
+    label: "Stop what this agent is doing now",
+    say: "Pulls the plug on the turn it is running right now. It tells you straight away, and again when it has really stopped. Anything it had already finished stays done.",
+    line: w => `@${w.first} !stop`,
+    needs: ["agent"],
+  },
+  {
     cmd: "!plan",
     label: "Ask to see the plan before it works",
     say: "The agent reads what it needs to, tells you what it intends to do, and waits. Nothing is changed until you press Approve — and if you say nothing, nothing happens.",
