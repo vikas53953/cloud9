@@ -81,6 +81,30 @@ Run in this session, not quoted from an agent:
 - **INSTALLED AND VERIFIED 12:19** — installed bundle `index-CsfrjYuU.css,
   index-DDU8N5Wk.js` compared by name against the built one. They match. This
   is the first time today's work has been on his machine.
+## FINAL — the walk, run by the conductor, not by an agent
+
+**`npm run qa:app` → 41 pass, 0 fail, exit 0.** Against the installed app,
+installed bundle `index-CsfrjYuU.css, index-DZF7gabT.js` verified equal to the
+built one. Tree clean, everything pushed. All three failures below are closed.
+
+THE STOP CORRECTION, OWED TO HIM AND NOW SETTLED: I told him Stop was proven
+broken in the app, then told him it was probably the harness lying. **The first
+was right.** Measured on the unfixed installed app: the run record underneath
+correctly said `cancelled`, but every surface he can SEE said the work finished
+normally — job `completed`, a green tick on his own message, the room reading
+"🧵 Finished in the thread", and no run card at all for 60+ seconds. Reading the
+code kept saying "this is fine" because the truth existed and never reached the
+screen. One line: `respondAs` RETURNED the stop sentence like an ordinary
+answer, so nothing downstream could tell a stop from a finish. Two more lies
+fell out of the same class fix — a run card was only drawn for a job that
+FINISHED, and every reason row was headed "What went wrong", so a job he stopped
+on purpose told him his own decision had gone wrong.
+
+STANDING RULE LEARNED THE HARD WAY TODAY: only ONE walk, ONE package and ONE
+install may be in flight on this machine at a time — three walks were destroyed
+by agents packaging concurrently. And an agent must never rewrite a whole shared
+file: one overwrote `App.tsx` mid-run and wiped another agent's screen edits.
+
 - **npm run qa:app RUN 14:10 against the installed app — 38 pass, 3 FAIL.**
   Exit 1. This is the run that decides the board, because it drives the real
   installed Cloud9 with a real harness rather than a browser mock.
