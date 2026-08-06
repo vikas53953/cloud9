@@ -180,8 +180,17 @@ test("a turn that blows the leash is stopped and explained in plain words", asyn
     // when we killed it. It now says how long it was given and that it was
     // working; what this test holds is unchanged: a recognisable timeout, and
     // the number said in minutes.
+    //
+    // 2026-08-07: the words changed again and the guard is still unchanged. The
+    // sentence used to say "as long as I let a reply run", which called the
+    // clock a deadline on the answer. It now reports only the two things the app
+    // can actually see — it was still going, and it hit the longest leash there
+    // is — and passes no verdict on the work. Note this test PINS the leash to
+    // 60 seconds, so it also proves the sentence reads correctly at a budget
+    // that is nothing like 45 minutes.
     (err: unknown) => err instanceof TurnTimedOutError
-      && /as long as I let a reply run/.test(err.message)
+      && /without finishing/.test(err.message)
+      && /longest I let anything run/.test(err.message)
       && /1 minute/.test(err.message),
   );
 });

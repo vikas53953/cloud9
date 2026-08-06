@@ -18,64 +18,98 @@
 //
 // WHAT IS NOT HERE. "Unlimited". The leash exists to stop a runaway CLI holding
 // a slot on this computer forever, and every kind still has a real ceiling.
+//
+// WHAT THIS FILE DOES NOT COVER, said plainly so nobody inherits a false sense
+// of completeness. Both clocks live in `run.ts`, so they only exist for turns
+// that go through a COMMAND-LINE harness — `ClaudeCliProvider` and
+// `CodexProvider`. `SdkProvider` (provider.ts) does not go through `run.ts` and
+// therefore runs under NO total clock and NO silence clock at all; its only
+// bound is `maxTurns: 6`. That path is not exotic: `host.ts` PREFERS it over the
+// CLI whenever a stored key or sign-in token exists, so it can be the one most
+// turns actually take. Nothing here regressed it and this change does not touch
+// it — but "the two clocks protect every turn" would be untrue, and the next
+// person to reason about hangs needs to know where the edge of this file is.
+//
+// WHAT CHANGED ON 2026-08-07, and it is the more important half of the story:
+// the TOTAL clock stopped being a judgement on the work. It had been used as a
+// deadline — "as long as I let a reply run" — and a deadline cannot tell working
+// from stuck, so it kept killing turns that were fine. It is now a backstop
+// against a program that never stops printing, one number for every kind of
+// turn. The clock that decides whether a turn is alive is the SILENCE clock, and
+// it is unchanged.
 import type { PromptTurnKind } from "./provider.js";
 
 /**
- * THE BUDGET TABLE. One place, four numbers, each with its reason.
+ * THE BACKSTOP TABLE. One number, four rows, and the row is the same on purpose.
  *
- * `chat` — 10 minutes, RAISED FROM 3 ON 2026-08-05, and this is the paragraph
- *   that explains why the old number was wrong rather than merely small.
+ * WHAT THIS CLOCK IS FOR, AND IT IS NOT A DEADLINE ON THE WORK. It exists to
+ * stop a program that never stops printing from holding this computer for ever.
+ * That is the whole job. It is NOT an opinion about how long a good answer is
+ * allowed to take, because — and this is the mistake that had to be pulled out
+ * by the root — HOW LONG A PIECE OF WORK TAKES IS NOT EVIDENCE OF ANYTHING. A
+ * real answer can take twenty minutes on this machine and be right.
  *
- *   MEASURED ON THE INSTALLED APP. Chat turns that really pick up a tool —
- *   running a command, reading files, then writing the answer — took **70 to 205
- *   seconds** on this machine. One of them, a plain `git rev-parse`, was KILLED
- *   at 180 seconds and the owner was told "this was taking too long for a chat
- *   reply". It was not taking too long. It was working, on a slow computer, and
- *   the app stopped it and blamed it.
+ * WHAT WENT WRONG, 2026-08-07, in the owner's hands. He asked for a real piece
+ * of work and was told, out loud, by his own app:
  *
- *   The old 3 minutes was set when a chat turn meant "write a sentence". Since
- *   2026-07-30 a chat turn can run programs, read the disk and search the web —
- *   the ceiling was raised for what an agent may DO and nobody raised the clock
- *   it does it under. 10 minutes is roughly three times the longest turn we have
- *   actually watched finish, so an ordinary slow day cannot reach it, and it is
- *   still a number a person reads as a limit rather than as a hang.
+ *   "this was still going after 10 minutes, which is as long as I let a reply
+ *    run, so I stopped it. It was working the whole time — it just needed
+ *    longer than that. Ask me again"
  *
- *   WHY THIS IS NOT SIMPLY "BE MORE PATIENT". A ten-minute total on its own
- *   would mean somebody sitting in front of a wedged CLI for ten minutes. That
- *   is why the quiet table below exists and why the two were changed together:
- *   the TOTAL says how long real work may take, and the QUIET says how long
- *   NOTHING may happen. A turn is only allowed the big number while it is
- *   visibly still going.
+ * The app killed work it could SEE was working and reported it as normal. That
+ * sentence was true, which is what makes it damning. The morning's change (3
+ * minutes to 10) did not fix it; it moved the guillotine ten minutes down the
+ * rope. The idea underneath both numbers was wrong: a total wall clock cannot
+ * tell working from stuck, so it must never be the thing that judges the work.
  *
- * `task` — 30 minutes. NOBODY IS WAITING. `!bg` and a job made from the Tasks
- *   panel are the whole delegated-work story: the point is to ask for something
- *   substantial and go and do something else. 30 minutes is a real piece of
- *   work — a CLI reading a dozen files, running a build, and writing a report —
- *   while still being short enough that a wedged process is noticed and cleared
- *   the same morning rather than found days later.
+ * WHAT DOES TELL WORKING FROM STUCK: the silence clock below, which already
+ * existed and is untouched. `claude -p --output-format stream-json` and
+ * `codex exec --json` both print a line for every step they take, and `run.ts`
+ * watches those lines arrive. A turn still printing steps is working. A turn
+ * that has printed NOTHING for three minutes, with a person sitting in front of
+ * it, is the only thing this app has any business calling stuck.
  *
- * `schedule` — 30 minutes. The same reason as `task`, more so: a 6:30am
- *   check-in has nobody waiting on it AT ALL, and it must not be the one kind of
- *   work that quietly cannot finish. Held level with `task` on purpose — a
- *   standing instruction and a delegated job are the same work with a different
- *   trigger, and giving them different clocks would be a difference nobody could
- *   explain.
+ * WHY ONE NUMBER FOR ALL FOUR KINDS. A runaway is a runaway whoever asked for
+ * it; the backstop's job does not change with the trigger. Different rows here
+ * only ever encoded "how patient are we with this kind of work", and patience
+ * is the silence clock's business, not this one's. Holding them level also kills
+ * an absurdity the old table carried: because `!code` promotes a chat message to
+ * `repo`, asking for the HARDER job used to change the leash under it. One row
+ * cannot drift out of step with another.
  *
- * `repo` — 30 minutes. `!code`. Work inside a checkout is the LONGEST kind this
- *   app does — a worktree, edits across files, a build, a test run — and it was
- *   the worst served by the old 3-minute leash. Same number as the other
- *   delegated kinds, deliberately: three separate long numbers would drift.
+ * WHY 45 MINUTES, and note what this reason does NOT claim. An earlier draft of
+ * this paragraph argued that no honest piece of work could ever reach 45 minutes,
+ * so reaching it would itself prove the program was looping. Review killed that,
+ * correctly, and it deserves to stay dead: it is the same mistake as the bug, one
+ * layer up. We do not know the longest honest turn. The one turn this change
+ * exists for was still working at TEN MINUTES when we cut it off, so all we have
+ * is a lower bound and no idea what it would have taken.
  *
- * Why 30 and not 60 or 120: it is the largest number that is still obviously
- * bounded. A person who sees "I stopped after 30 minutes" reads a limit; one who
- * sees "I stopped after 2 hours" reads a hang. If a real job needs more, this
- * table is the one line to change — that is the point of it being a table.
+ * So 45 is not a claim about work. It is a resource decision, and the only two
+ * things it has to be: long enough that it is not the thing deciding whether
+ * ordinary work lives — several times any turn ever measured here — and short
+ * enough that a wedged CLI is cleared the same morning rather than found days
+ * later. It also stays strictly under the ceiling below, so the clamp there
+ * remains a real guard against a future edit rather than decoration.
+ *
+ * Because the number no longer carries an argument about the work, the sentence
+ * the owner reads when it fires does not either — see `timedOutSentence`.
+ *
+ * WHAT THIS CLOCK IS NOT: a spending limit. Money is spent in tokens, not in
+ * minutes — a turn stuck in a tool loop burns more in ten minutes than a careful
+ * turn does in forty — so a clock is a dishonest proxy for cost and always was.
+ * The real guard is the agent's own spending ceiling (`spendCapOf` /
+ * `decideSpend` in @cloud9/shared), which is handed to the CLI as its own limit
+ * and stops the turn on the dollar. It is OFF unless the owner sets one; that is
+ * a gap in the MONEY guard and must be closed there, in money, not papered over
+ * here with a shorter clock. And for a chat turn a person is sitting in front of
+ * the Stop button the whole time.
  */
 export const TURN_TIME_BUDGET_MS: Readonly<Record<PromptTurnKind, number>> = {
-  chat: 10 * 60_000,
-  task: 30 * 60_000,
-  schedule: 30 * 60_000,
-  repo: 30 * 60_000,
+  chat: 45 * 60_000,
+  task: 45 * 60_000,
+  schedule: 45 * 60_000,
+  repo: 45 * 60_000,
 };
 
 /**
@@ -100,7 +134,14 @@ export const TURN_TIME_BUDGET_MS: Readonly<Record<PromptTurnKind, number>> = {
  * `chat` — 3 minutes of silence. A PERSON IS SITTING THERE, so the wait for
  *   nothing-at-all must stay short. It is generous enough to survive one long
  *   command inside a chat reply (a build, an install) and short enough that a
- *   wedged harness is admitted to within a few minutes rather than ten.
+ *   wedged harness is admitted to within a few minutes.
+ *
+ *   THIS ROW IS NOW THE ONLY CLOCK THAT JUDGES A CHAT TURN in practice, and that
+ *   is deliberate (2026-08-07). The total above is a backstop no honest turn can
+ *   reach; this is the number that decides, within three minutes, whether the
+ *   thing in front of him is alive. It is the right one to decide it, because it
+ *   is the only one of the two that is looking at the program rather than at the
+ *   calendar.
  *
  * `task` / `schedule` / `repo` — 10 minutes of silence. Nobody is waiting, and
  *   a single quiet step is genuinely longer here: a dependency install or a full
@@ -203,27 +244,50 @@ export class TurnTimedOutError extends Error {
 }
 
 /**
- * What the person reads. Two shapes, because the two situations are different:
- * somebody is waiting on a chat reply and can simply ask again, while a
- * delegated job has already had its half hour and needs to come back smaller.
+ * What the person reads. TWO SHAPES, and they are the two clocks — not, as
+ * before, one shape for a chat reply and one for a job.
+ *
+ * THE RULE THIS SENTENCE LIVES UNDER: SAY WHAT HAPPENED, NOT WHAT IT MEANT.
+ * The app can see two things and only two — the clock ran out, and which clock.
+ * It cannot see whether the work was nearly done, going round in circles, or
+ * fine. Every sentence that has ever been wrong here was wrong because it
+ * narrated the work instead of the event:
+ *
+ *   · "this was taking too long for a chat reply" — blamed the work for its
+ *     length, when it was usually working.
+ *   · "It was working the whole time — it just needed longer than that" — the
+ *     one the owner was handed on 2026-08-07. True, and an admission that the
+ *     app destroyed something it could see was fine.
+ *   · "it was going round in circles rather than nearly done" — MY OWN first
+ *     replacement, rejected in review on the same grounds. It swapped one
+ *     invented verdict for the opposite invented verdict. It also contradicted
+ *     the very argument this file is built on: if how long work takes is not
+ *     evidence of anything, then 45 minutes is not evidence of a loop either.
+ *
+ * So it now reports the clock and stops. The only comparison left is one the app
+ * genuinely knows — how long its own leash is — and that stays true whatever the
+ * budget is set to, including the short pinned leashes tests use. A sentence that
+ * only reads correctly at one number is a sentence waiting to become a lie.
+ *
+ * WHY `kind` NO LONGER CHANGES IT: the same event happened whoever asked, and
+ * the totals are now one number. The old delegated wording ("try a smaller
+ * piece") was the factual half worth keeping, so it is what both now say.
  */
 export function timedOutSentence(
-  kind: PromptTurnKind, budgetMs: number, wentQuiet = false,
+  _kind: PromptTurnKind, budgetMs: number, wentQuiet = false,
 ): string {
   const took = describeBudget(budgetMs);
-  // IT FROZE. Said as its own thing, because it is not the same event as running
-  // out of time and the owner's next move is different: there is nothing to make
-  // smaller, and asking again is the right answer even for a big job.
+  // IT FROZE. Said as its own thing, because it is not the same event as the
+  // backstop firing and the owner's next move is different: there is nothing to
+  // make smaller, and asking again is the right answer even for a big job.
   if (wentQuiet) {
     return `this stopped moving — nothing new came back from it for ${took}, so I ` +
       `treated it as stuck and shut it down. Nothing was left running. It had not ` +
       `finished, so ask me again.`;
   }
-  if (kind === "chat") {
-    return `this was still going after ${took}, which is as long as I let a reply run, ` +
-      `so I stopped it. It was working the whole time — it just needed longer than that. ` +
-      `Ask me again, or send it as a background job with !bg so it gets a much longer run.`;
-  }
-  return `this ran out of time — I gave it ${took} of work and then stopped it, ` +
-    `so it is unfinished. Nothing was left running. Try asking for a smaller piece of it.`;
+  // THE BACKSTOP. Two facts and no verdict: it was still going, and it hit the
+  // longest leash there is. What that means about the work is not ours to say.
+  return `this kept going for ${took} without finishing, so I stopped it — that is the ` +
+    `longest I let anything run. Nothing was left running. Ask me again, and if it does ` +
+    `the same, ask for a smaller piece of it.`;
 }
