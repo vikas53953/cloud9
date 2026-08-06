@@ -46,6 +46,42 @@ your agents and conversations are. (There is also a *development* database
 inside the repo folder — that one is for testing, not yours. Don't confuse
 them.)
 
+### How to install or update Cloud9 (the only supported way)
+
+Double-click **`Install Cloud9.cmd`** in the main Cloud9 folder. From a
+terminal it is:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-cloud9.ps1
+```
+
+It closes Cloud9 if it is open, runs the installer, and then **checks that the
+new version really landed**. It prints a heartbeat while it works, and if it
+gets stuck it stops itself and tells you why in plain English. It never sits
+there frozen and silent.
+
+**Do not run `release\Cloud9-Setup-0.1.0.exe /S` by hand.** On its own the
+installer gives no window, no progress and no error — if something blocks it,
+it just looks dead.
+
+**Why this machine is slow at installing.** It has *two* security products
+switched on at once (Windows Defender and McAfee). Both inspect every program
+as it starts. Measured on 2026-08-06: starting one tiny program took **336 ms
+to 776 ms** instead of the normal ~20 ms, and starting Windows PowerShell took
+**10 to 22 seconds**. An install that takes ~45 seconds here would take a few
+seconds on a clean machine. That is your antivirus, not Cloud9.
+
+If installs ever become unbearably slow, an administrator can exclude the two
+Cloud9 folders (this is Vikas's call, not something a script should do):
+
+```
+Add-MpPreference -ExclusionPath 'C:\Users\vikasmit\cloud9\release'
+Add-MpPreference -ExclusionPath 'C:\Users\vikasmit\AppData\Local\Programs\Cloud9'
+```
+
+and add the same two folders in McAfee → Settings → Real-Time Scanning →
+Excluded Files.
+
 ---
 
 ## 3. The screen tour — the icon rail down the side
