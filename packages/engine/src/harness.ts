@@ -408,6 +408,39 @@ export class HarnessManager {
    * spawning four more CLI processes.
    */
   refresh(): Promise<HarnessState> {
+    // ================================================================
+    // A STOPPED MANAGER STARTS NOTHING (2026-08-06).
+    // ================================================================
+    //
+    // `stop()` already did the hard half — it clears the timers and wakes
+    // anything sleeping, so a poll loop ends on the spot. What it could not do
+    // was stop what came AFTER: `signIn` ends with `return this.refresh()`, and
+    // that spawned a fresh detection round — five child processes — on a
+    // manager that had just been told to shut down. Measured on this machine
+    // 2026-08-06: one round costs 30 SECONDS, so pressing stop released the
+    // sleep and then made the caller wait half a minute for processes nobody
+    // wanted. From the outside that is indistinguishable from stop not working.
+    //
+    // It is the same law `run.ts` already keeps at the spawn ("a turn already
+    // stopped never starts one more process"), which is the argument for
+    // putting it here rather than at the one caller that showed the symptom:
+    // every path into `refresh` — the sign-in tail, the periodic re-look, an
+    // impatient "Re-check" — is equally able to fire after a shutdown.
+    //
+    // The last known state is returned rather than nothing, with the spinners
+    // cleared. That is honest: it is what we last really saw, and a stopped
+    // manager will never see anything newer.
+    if (this.stopped) {
+      this.state = {
+        ...this.state,
+        checking: false,
+        claude: { ...this.state.claude, signingIn: undefined },
+        codex: { ...this.state.codex, signingIn: undefined },
+        ...(this.state.github
+          ? { github: { ...this.state.github, signingIn: undefined } } : {}),
+      };
+      return Promise.resolve(this.state);
+    }
     if (this.refreshing) return this.refreshing;
     this.state.checking = true;
     this.publish();
@@ -558,6 +591,48 @@ export class HarnessManager {
    * token/key outranks the CLI's own login, and it can make a harness usable
    * even when the CLI itself is signed out.
    */
+  /**
+   * WHAT A SIGN-IN HANDS BACK, AND HOW LONG THAT TAKES (2026-08-06).
+   *
+   * Both sign-in paths used to end `return this.refresh()`. A detection round
+   * costs 30 SECONDS and five child processes — measured on this machine, and
+   * already written down at the top of `refresh` where the same cost was found
+   * hurting a stopped manager. That is the right price for a sign-in that
+   * WORKED: the whole point is to go and see what changed.
+   *
+   * It is the wrong price for one that FAILED, because nothing is going to be
+   * learned. `gh` is not installed; a round trip cannot make it installed. So
+   * the owner sat watching a spinner for half a minute to be told a thing we
+   * knew the moment the window refused to open.
+   *
+   * So: a failure publishes what it already knows AT ONCE, and the re-look is
+   * still started — just not stood in front of. The card is honest either way;
+   * only the waiting went. Same class as the stopped-manager guard above, which
+   * is why it lives here, at the one point both paths return through, instead
+   * of at the caller that happened to show the symptom.
+   */
+  private settleSignIn(harness: HarnessName | "github"): Promise<HarnessState> {
+    const problem = harness === "github"
+      ? this.githubProblem : this.lastProblem[harness];
+    if (!problem) return this.refresh();   // it worked — go and look properly
+
+    if (harness === "github") {
+      this.state.github = {
+        ...(this.state.github ?? blankGitHubAccount()),
+        signingIn: undefined, problem, detail: problem,
+      };
+    } else {
+      this.state[harness] = {
+        ...this.state[harness],
+        signingIn: undefined, problem, detail: problem, authKind: "none",
+      };
+    }
+    this.publish();
+    // still worth re-looking — it just happens behind him, not in front of him
+    void this.refresh().catch(() => { /* a re-look that fails changes nothing */ });
+    return Promise.resolve(this.state);
+  }
+
   private merge(fresh: HarnessInfo): HarnessInfo {
     const held = this.opts.credentialKind?.(fresh.name);
     const problem = this.lastProblem[fresh.name];
@@ -605,7 +680,7 @@ export class HarnessManager {
       this.inFlight.delete(harness);
       this.cancelled.delete(harness);
     }
-    return this.refresh();
+    return this.settleSignIn(harness);
   }
 
   /**
@@ -647,7 +722,7 @@ export class HarnessManager {
     } finally {
       this.githubInFlight = false;
     }
-    return this.refresh();
+    return this.settleSignIn("github");
   }
 
   /** The same shape as `pollUntilSignedIn`, asking gh's own status command. */

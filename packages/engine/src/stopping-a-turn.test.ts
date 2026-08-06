@@ -121,9 +121,14 @@ const trigger: Message = {
   authorKind: "human", text: "find villas", ts: 0,
 };
 
-function makeEngine(provider: ClaudeProvider, agents: AgentDef[] = [agent()]) {
+function makeEngine(
+  provider: ClaudeProvider, agents: AgentDef[] = [agent()],
+  // ONE SLOT is how the queue is made visible: with the default of two, a test
+  // about queued work would have to start three turns to see one wait.
+  over: { maxConcurrentTurns?: number } = {},
+) {
   const engine = new Engine({
-    relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: tmp(), provider,
+    relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: tmp(), provider, ...over,
   });
   const frames: ClientFrame[] = [];
   (engine as unknown as { ws: unknown }).ws = {
@@ -352,4 +357,65 @@ test("'!stop' in the room releases the card too, end to end", async () => {
   assert.equal((await waiting).approved, false);
   assert.match(agentSends(frames).join("\n"), /Stopping/i,
     "and he is told the plug was pulled, rather than 'there was nothing running'");
+});
+
+// ===========================================================================
+// 4. AND THE WORK THAT HAD NOT STARTED YET (2026-08-06)
+// ===========================================================================
+//
+// The engine runs two turns at a time and queues the rest. A queued turn has no
+// scope, no card and no child process — so `stopAgent` walked past it. The
+// owner pressed Stop, was told "there was nothing running to stop", and then
+// the agent answered anyway once a slot came free, recorded as an ordinary
+// `ok`. Both halves of that are wrong and the second one is the one that costs
+// him money.
+
+test("STOP DROPS WORK THAT IS STILL QUEUED — it does not run a moment later", async () => {
+  const provider = new HangingProvider();
+  // one slot, so the second and third turns can only ever be queued
+  const { engine } = makeEngine(provider, [agent()], { maxConcurrentTurns: 1 });
+
+  // three asks: one runs (and hangs), two sit in the queue
+  for (const id of ["m1", "m2", "m3"]) {
+    await say(engine, {
+      id, channelId: "c1", authorId: OWNER, authorName: "Vikas",
+      authorKind: "human", text: "@Scout find villas", ts: Number(id.slice(1)),
+    });
+  }
+  await untilWorking(engine, "a1");
+  assert.equal(provider.started, 1, "only one turn may be in flight");
+
+  // ONE stop: the live turn plus the two waiting behind it
+  const stopped = engine.stopAgent("a1");
+  assert.equal(stopped, 3, "the running turn AND the two queued ones");
+
+  provider.release();
+  // give the queue every chance to start something it should not
+  await new Promise(r => setTimeout(r, 150));
+  assert.equal(provider.started, 1,
+    "a turn he stopped ran anyway — this is the failure the owner pays for twice");
+});
+
+test("stopping one agent never drops another agent's queued work", async () => {
+  const provider = new HangingProvider();
+  const mine = agent();
+  const theirs = agent({ id: "a2", name: "Ranger" });
+  const { engine } = makeEngine(provider, [mine, theirs], { maxConcurrentTurns: 1 });
+
+  await say(engine, {
+    id: "m1", channelId: "c1", authorId: OWNER, authorName: "Vikas",
+    authorKind: "human", text: "@Scout find villas", ts: 1,
+  });
+  await untilWorking(engine, "a1");
+  await say(engine, {
+    id: "m2", channelId: "c1", authorId: OWNER, authorName: "Vikas",
+    authorKind: "human", text: "@Ranger find flights", ts: 2,
+  });
+
+  // stopping Scout must leave Ranger's queued turn exactly where it was
+  assert.equal(engine.stopAgent("a1"), 1,
+    "only Scout's live turn — Ranger's is not his to drop");
+  provider.release();
+  await new Promise(r => setTimeout(r, 150));
+  assert.equal(provider.started, 2, "Ranger's turn must still have run");
 });

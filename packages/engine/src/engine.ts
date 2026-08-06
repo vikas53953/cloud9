@@ -315,7 +315,8 @@ export class Engine {
    */
   private liveTurns = new Set<LiveTurn>();
   // ===== GAP C BLOCK — end =====
-  private queue: (() => Promise<void>)[] = [];
+  /** queued work, each tagged with whose turn it is so a stop can drop it */
+  private queue: { job: () => Promise<void>; agentId?: ID }[] = [];
   private opts: EngineOptions;
   private stopped = false;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
@@ -729,22 +730,46 @@ export class Engine {
       if (message.authorKind === "human" && /^!plan\s+/i.test(bare)) {
         const what = bare.replace(/^!plan\s+/i, "").trim();
         this.enqueue(() => this.takeTurn(
-          agent, channel.id, { ...message, text: what }, { planFirst: true }));
+          agent, channel.id, { ...message, text: what }, { planFirst: true }), agent.id);
         continue;
       }
-      this.enqueue(() => this.takeTurn(agent, channel.id, message));
+      this.enqueue(() => this.takeTurn(agent, channel.id, message), agent.id);
     }
   }
 
-  private enqueue(job: () => Promise<void>): void {
-    this.queue.push(job);
+  /**
+   * PUT WORK IN THE QUEUE, SAYING WHOSE IT IS (2026-08-06).
+   *
+   * The `agentId` is new and it is what makes a stop honest. See `stopAgent`:
+   * a turn that is QUEUED has no scope and no child process, so stopping
+   * reached nothing — the owner was told "there was nothing running to stop"
+   * and then the agent answered anyway, seconds later, as an ordinary `ok` run.
+   *
+   * Anonymous work (a handoff, a memory note) passes nothing and is never
+   * dropped by a stop: those are not the agent taking a turn.
+   */
+  private enqueue(job: () => Promise<void>, agentId?: ID): void {
+    this.queue.push({ job, ...(agentId ? { agentId } : {}) });
     void this.drain();
+  }
+
+  /**
+   * DROP THIS AGENT'S WORK THAT HAS NOT STARTED YET. Returns how many.
+   *
+   * Only turns — work tagged with this agent's id. A queued job is dropped
+   * rather than started and immediately killed, because starting it would spend
+   * money on a turn the owner has already said he does not want.
+   */
+  private dropQueuedTurns(agentId: ID): number {
+    const before = this.queue.length;
+    this.queue = this.queue.filter(q => q.agentId !== agentId);
+    return before - this.queue.length;
   }
 
   private async drain(): Promise<void> {
     const cap = this.opts.maxConcurrentTurns ?? 2;
     while (this.turnsInFlight < cap && this.queue.length > 0) {
-      const job = this.queue.shift()!;
+      const { job } = this.queue.shift()!;
       this.turnsInFlight++;
       job().catch(() => { /* logged below */ })
         .finally(() => { this.turnsInFlight--; void this.drain(); });
@@ -1518,6 +1543,25 @@ export class Engine {
     } catch (err) {
       console.error(`[engine] could not release a waiting card for agent ${agentId}:`, err);
     }
+    // ================================================================
+    // …AND THE WORK THAT HAS NOT STARTED YET (2026-08-06).
+    // ================================================================
+    //
+    // The engine runs two turns at a time and QUEUES the rest. A turn still in
+    // that queue has no scope, no card and no child process, so a stop reached
+    // nothing at all: the room said "there was nothing running to stop", and
+    // then — seconds later, once a slot came free — the agent went ahead and
+    // answered, and the run was written down as an ordinary `ok`. That is the
+    // worst version of this bug, because the owner was told his stop had found
+    // nothing AND the thing he stopped happened anyway.
+    //
+    // Dropped rather than started-and-killed: starting it would spend his
+    // money and his time on a turn he has already said he does not want.
+    try {
+      count += this.dropQueuedTurns(agentId);
+    } catch (err) {
+      console.error(`[engine] could not drop queued work for agent ${agentId}:`, err);
+    }
     return count;
   }
 
@@ -1700,7 +1744,7 @@ export class Engine {
       return;
     }
     this.claimed.add(task.id);
-    this.enqueue(() => this.runTask(agent, task));
+    this.enqueue(() => this.runTask(agent, task), agent.id);
   }
 
   private async runTask(agent: AgentDef, task: Task): Promise<void> {

@@ -239,21 +239,100 @@ const OWNER_SETUP_LEAKS: readonly LeakedSurface[] = [
   },
 ];
 
-/** The honest report for an agent running in HIS setup, built from the declared one. */
+/**
+ * WHAT THE CODEX SIDE OF THE SWITCH REALLY OPENS.
+ *
+ * Kept separate from the Claude list above because it was learned a different
+ * way and must not borrow the Claude probe's authority. What we know for Codex
+ * is what `codexSetupFlags` and `codexDisabledBySetup` STOP DOING when the
+ * switch is on (`ownersetup.ts`): `--ignore-user-config` and `--ignore-rules`
+ * come off the line, and the four features `plugins`, `apps`, `memories` and
+ * `hooks` are no longer disabled. Those names came from `codex features list`
+ * on this machine at 0.146.0, so none of them is a guess about the flag set.
+ *
+ * What we have NOT done on Codex is the end-to-end probe that was run on Claude
+ * — planting a codeword and watching it come back. So the flags are stated as
+ * flags, and the thing we did not watch happen is listed under `unknowns`,
+ * where "we looked and could not tell" belongs. That distinction is the whole
+ * point of this file.
+ */
+const CODEX_OWNER_SETUP_LEAKS: readonly LeakedSurface[] = [
+  {
+    name: "his own Codex configuration (config.toml) and its connected apps",
+    plainWords: "his Codex settings, his connected apps and their tools load here too",
+    why: "With the switch on, Cloud9 stops passing `--ignore-user-config`, so his own "
+      + "config.toml is read: his MCP servers, his connected apps, his chosen personality "
+      + "and any orchestration policy he set for himself.",
+  },
+  {
+    name: "his execpolicy rules (.rules)",
+    plainWords: "the command rules he wrote for himself apply to this agent",
+    why: "`--ignore-rules` comes off the line with the rest of the isolation, so his own "
+      + "and the project's rule files decide what commands are allowed.",
+  },
+  {
+    name: "his plugins, his saved memories and his hooks",
+    plainWords: "his installed plugins, what his own sessions remembered, and his hook scripts",
+    why: "These four Codex features (plugins, apps, memories, hooks) are switched OFF for a "
+      + "declared agent and left ON for one running in his setup. Hooks are programs he "
+      + "installed, and they really run on this agent's turns.",
+  },
+];
+
+/** What we did not measure on Codex, said as its own sentence rather than claimed. */
+const CODEX_OWNER_SETUP_UNKNOWNS: readonly string[] = [
+  "The Claude side of this switch was probed end to end on 2026-08-05 — a planted codeword "
+  + "came back, a hook fired, 124 extra tools arrived. The Codex side has NOT had that probe. "
+  + "What is listed above is what Cloud9 stops switching off, read from the flags and from "
+  + "`codex features list` at 0.146.0, not from watching a turn hold them.",
+];
+
+/**
+ * The honest report for an agent running in HIS setup, built from the declared
+ * one — PER HARNESS.
+ *
+ * ============================================================================
+ * THE BUG THIS FIXES (2026-08-06). It used to return one answer for every
+ * harness: the Claude leak list, and `measuredOn: "claude-code 2.1.222,
+ * owner-setup probe 2026-08-05"`. So a CODEX agent's card carried the CLAUDE
+ * app's version and the CLAUDE probe's date as the evidence for what that agent
+ * could reach, and listed three Claude-shaped leaks nobody had measured on
+ * Codex — on top of the three real Codex ones, which is where the "6 leaks
+ * where the table has 3" came from.
+ *
+ * That is precisely the class of lie this whole file exists to prevent, and it
+ * is worse than the lie it replaced: an unmeasured claim wearing another app's
+ * measurement is harder to catch than no claim at all. A card may only ever
+ * show the evidence for the app it is describing.
+ * ============================================================================
+ */
 function inOwnerSetup(base: HarnessIsolation): HarnessIsolation {
+  const claude = base.harness === "claude";
+  // The agent's OWN app is named, so the sentence is about the thing on screen
+  // rather than about both apps at once.
+  const appName = claude ? "Claude Code" : "Codex";
   return {
     ...base,
     togglesAreTheBoundary: false,
     headline:
-      "This agent is set to use your own setup, so it starts the way Claude Code or Codex "
-      + "does when you run it yourself. The switches still decide its own tools, but they "
-      + "are no longer the whole story — what is below arrives with your setup.",
+      `This agent is set to use your own setup, so it starts the way ${appName} does when `
+      + "you run it yourself. The switches still decide its own tools, but they are no "
+      + "longer the whole story — what is below arrives with your setup.",
     togglesControl: base.togglesAreTheBoundary
       ? "the agent's own tools — but not what your connected services, your instructions or "
         + "your hooks add on top"
       : base.togglesControl,
-    stillLoaded: [...OWNER_SETUP_LEAKS, ...base.stillLoaded],
-    measuredOn: "claude-code 2.1.222, owner-setup probe 2026-08-05",
+    stillLoaded: claude
+      ? [...OWNER_SETUP_LEAKS, ...base.stillLoaded]
+      : [...CODEX_OWNER_SETUP_LEAKS, ...base.stillLoaded],
+    unknowns: claude ? base.unknowns : [...CODEX_OWNER_SETUP_UNKNOWNS, ...base.unknowns],
+    // EACH CARD CARRIES ITS OWN APP'S EVIDENCE. The declared measurement is kept
+    // beside the switch's own, because both are still true of this card: the
+    // base report is what was measured about the app, and the second half is
+    // what was measured about the switch.
+    measuredOn: claude
+      ? "claude-code 2.1.222, owner-setup probe 2026-08-05"
+      : `${base.measuredOn}; owner-setup read from the flag set at codex-cli 0.146.0, not probed`,
   };
 }
 

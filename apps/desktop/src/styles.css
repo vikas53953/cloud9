@@ -1249,10 +1249,25 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 /* --- notifications: the four events that interrupt him ---
    The same card grammar as the error toast above — surface, border, big
    shadow, the round mark — but a calm neutral accent instead of the madder
-   red of a refusal, and stacked in the bottom-right so it never sits on top of
-   a centred error toast. A distinct class on purpose (see NotifyToasts). */
+   red of a refusal. A distinct class on purpose (see NotifyToasts).
+
+   MOVED FROM THE BOTTOM-RIGHT TO THE TOP-RIGHT (2026-08-06), and this is a
+   real bug fix rather than a taste change. Down there the stack sat directly
+   on top of the Send button and the upload tray: `pointer-events:none` on this
+   container was already right, but each toast card is `pointer-events:auto` —
+   it has a close button and has to be clickable — so an opaque card was
+   parked over the one control in this app he presses every single time. He
+   would click Send and nothing would happen, with no way to tell why. QA had
+   to grow a helper that dismissed toasts before it could press anything, which
+   is the tell: if the test harness needs to clear the screen before it can use
+   the app, so does he.
+
+   Top-right is the fix rather than "raise it a bit" because the composer grows
+   with what he types, so any fixed offset is only ever right for one message
+   length. Nothing up there is a control he holds down or presses repeatedly,
+   and it still never lands on the centred error toast at the bottom. */
 .notify-stack{
-  position:fixed;right:20px;bottom:20px;z-index:305;
+  position:fixed;right:20px;top:20px;z-index:305;
   display:flex;flex-direction:column;gap:8px;align-items:flex-end;
   max-width:min(380px,92vw);pointer-events:none;
 }
@@ -1271,7 +1286,10 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .notify-text{font-size:12px;color:var(--ink-2);line-height:1.35;overflow-wrap:anywhere;}
 .notify-x{color:var(--ink-3);font-size:12px;padding:2px 5px;border-radius:var(--radius-xs);flex:none;}
 .notify-x:hover{color:var(--ink);background:var(--surface-2);}
-@keyframes notify-in{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
+/* slides DOWN into place now that the stack hangs from the top edge — it used
+   to rise from the bottom, which read as coming from the wrong side of the
+   screen once the stack moved */
+@keyframes notify-in{from{opacity:0;transform:translateY(-6px);}to{opacity:1;transform:none;}}
 .demobanner{
   flex:none;padding:6px 16px;background:var(--marigold-soft);
   border-bottom:1px solid color-mix(in srgb,var(--marigold) 45%,transparent);
@@ -2316,16 +2334,23 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .honestleaks li b{display:block;color:var(--ink);font-weight:600;}
 .honestleaks li span{color:var(--ink-3);}
 
-/* what will stop and ask — a statement, never a control */
-.willask{
+/* WHAT WILL STOP AND ASK — a statement, never a control.
+   TWO BOXES, TWO QUESTIONS, TWO CLASSES (2026-08-06). They look the same on
+   purpose — they are the same kind of statement — but they answer different
+   questions and must not share a class name. `.willask` is "which of this
+   agent's POWERS raise a card"; `.trustasks` is "what still asks under the
+   trust setting you just picked". While both wore `.willask` the editor
+   rendered two boxes with the same styling and different lists, which reads as
+   the app telling him the same thing twice and disagreeing with itself. */
+.willask,.trustasks{
   margin-bottom:14px;padding:12px 15px;border-radius:var(--radius);
   border:1px solid color-mix(in srgb,var(--marigold) 45%,transparent);
   background:var(--marigold-soft);display:flex;flex-direction:column;gap:6px;
 }
-.willask .wa-head{font-size:13px;font-weight:600;color:var(--ink);}
-.willask ul{margin:0;padding:0 0 0 17px;display:flex;flex-direction:column;gap:3px;}
-.willask li{font-size:13px;color:var(--ink);}
-.willask .wa-note{font-size:12px;color:var(--ink-2);line-height:1.5;}
+.willask .wa-head,.trustasks .wa-head{font-size:13px;font-weight:600;color:var(--ink);}
+.willask ul,.trustasks ul{margin:0;padding:0 0 0 17px;display:flex;flex-direction:column;gap:3px;}
+.willask li,.trustasks li{font-size:13px;color:var(--ink);}
+.willask .wa-note,.trustasks .wa-note{font-size:12px;color:var(--ink-2);line-height:1.5;}
 
 /* ============================================================
    PRESENCE — can this agent actually be used right now

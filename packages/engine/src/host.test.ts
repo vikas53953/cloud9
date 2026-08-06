@@ -227,3 +227,43 @@ test("a machine NOT in demo mode says so too, rather than saying nothing", () =>
   assert.equal((sent[0] as { state: HarnessState }).state.demo, false);
   h.stop();
 });
+
+// ===========================================================================
+// BUILT IS NOT THE SAME AS REACHABLE (2026-08-06)
+// ===========================================================================
+//
+// Two finished features shipped with NO CALLER. `hooks.ts` and `verify.ts` both
+// passed their own contract tests, `attachHooks` is the one call that gives an
+// engine either of them, and the only place Cloud9 ever builds an engine —
+// `startEngineHost` — never called it. So in the app Vikas actually runs,
+// `engine.hooks` was undefined and `engine.verifyClaims` was false, always. A
+// hook he wrote sat on disk doing nothing and no turn was ever checked.
+//
+// Their own tests could not have caught this: a module test proves the module,
+// and what was missing was the wire. This tests the WIRE, which is why it lives
+// here — in the file about the thing that starts the real app — and not beside
+// either feature.
+
+test("the app that really starts gives its engine the owner's hooks", () => {
+  const h = host();
+  assert.ok(h.engine.hooks, "hooks were built and attached to nothing");
+  assert.ok(h.hooks, "and the host hands back a way to add and remove them");
+  assert.deepEqual(h.hooks.hooks(), [], "a machine with no rules on it fires nothing");
+  h.stop();
+});
+
+test("the 'did it do what it said' check is ON in the shipped app", () => {
+  const h = host();
+  assert.equal(h.engine.verifyClaims, true,
+    "verification shipped switched off — the whole feature was dark");
+  h.stop();
+});
+
+test("and it can still be turned off, deliberately, by whoever starts the engine", () => {
+  const h = host({ verifyClaims: false });
+  assert.equal(h.engine.verifyClaims, false);
+  // hooks are NOT tied to it: they are two different promises and one switch
+  // must never quietly decide both
+  assert.ok(h.engine.hooks, "turning verification off must not take the owner's hooks with it");
+  h.stop();
+});

@@ -13,6 +13,7 @@ import path from "node:path";
 import { HarnessName, HarnessState } from "@cloud9/shared";
 import { ClaudeCliProvider } from "./claude-cli.js";
 import { SessionBook } from "./sessionresume.js";
+import { attachHooks, type HookWiring } from "./hookwiring.js";
 import { mcpConfigPathFor } from "./connections.js";
 import { addDirRootsFor } from "./wholecomputer.js";
 import { CodexProvider } from "./codex.js";
@@ -41,12 +42,22 @@ export interface EngineHostOptions {
   onReady?: () => void;
   /** false in tests */
   connect?: boolean;
+  /**
+   * CHECK WHAT AN AGENT SAID AGAINST WHAT IT DID (`verify.ts`), after every turn.
+   *
+   * Defaults to ON here, and this is the only place that decision is made. See
+   * the block beside `attachHooks` below for why it defaults on and what it
+   * costs. Pass `false` to get the old silence back.
+   */
+  verifyClaims?: boolean;
   log?: (message: string) => void;
 }
 
 export interface EngineHost {
   engine: Engine;
   harness: HarnessManager;
+  /** the owner's hooks, now really plugged in — add, remove, list */
+  hooks: HookWiring;
   /** set or clear one harness's credential at runtime (sign-in, or settings) */
   useCredential(harness: HarnessName, kind: "apiKey" | "oauthToken", value: string): void;
   stop(): void;
@@ -96,6 +107,43 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
     log("[engine-host] DEMO MODE IS ON — agents will answer with made-up examples, " +
       "not real answers. Nothing here came from Claude or Codex.");
   }
+
+  // ========================================================================
+  // THE OWNER'S HOOKS, AND THE "DID IT DO WHAT IT SAID" CHECK — PLUGGED IN.
+  // (2026-08-06)
+  // ========================================================================
+  //
+  // WHAT WAS WRONG, and it is the worst kind of wrong: both features were
+  // finished, both passed their own tests, and NEITHER HAD A CALLER. `hooks.ts`
+  // and `verify.ts` were complete modules; `attachHooks` is the one call that
+  // gives an engine either of them; and the only place Cloud9 ever builds an
+  // engine is this function, which never called it. So `engine.hooks` was
+  // always undefined and `engine.verifyClaims` was always false in the app
+  // Vikas actually runs. Every hook he wrote would have sat on disk doing
+  // nothing, and no turn was ever checked. The status sheet said BUILT, and it
+  // was built — to nothing.
+  //
+  // This is exactly the class of failure the harness diagram exists to catch: a
+  // module that is correct and unreachable is indistinguishable, from the
+  // owner's chair, from a module that does not exist.
+  //
+  // WHY VERIFY DEFAULTS ON. It is the feature that catches an agent telling him
+  // it did something it did not do, which is the one failure he has said
+  // repeatedly he must never have to discover himself. It is also built to be
+  // quiet: `verifyTurn` says NOTHING unless a claim and the run record really
+  // disagree, says nothing at all about a turn he stopped, and softens to "I
+  // could not check" whenever the record is not a complete account of the turn.
+  // The honest cost of it being on is that it can occasionally say "I could not
+  // check" where it used to say nothing.
+  //
+  // Hooks are on with no switch at all because attaching them is not a
+  // behaviour change: it loads the owner's rules from his own folder, and a
+  // machine with no rules on it fires nothing. Before this, adding a rule was
+  // the thing that did nothing.
+  const hooks = attachHooks(engine, {
+    verify: opts.verifyClaims !== false,
+    log: (m: string) => log(`[hooks] ${m}`),
+  });
 
   // one slot per harness; a missing slot means "no credential"
   const creds: Partial<Record<HarnessName, StoredCredential>> = { ...opts.credentials };
@@ -286,7 +334,7 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
 
   if (opts.connect !== false) engine.connect();
   return {
-    engine, harness, useCredential,
+    engine, harness, hooks, useCredential,
     stop() { harness.stop(); engine.stop(); },
   };
 }

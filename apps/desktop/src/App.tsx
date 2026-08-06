@@ -10113,9 +10113,22 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                 setting this is the whole point of the setting, so it is spelled
                 out from the same rule the engine obeys — never a reassuring
                 sentence written by hand beside it. */}
+            {/* ITS OWN CLASS, AND THIS IS THE FIX RATHER THAN A RENAME
+                (2026-08-06). This box and the one in "When to stop and ask"
+                below both wore `.willask`, so the editor drew two identical
+                amber boxes with DIFFERENT lists and Vikas was told the same
+                thing twice, disagreeing with itself. They are not the same
+                thing: this one answers "given the trust setting you just
+                picked, what still asks?", and the other answers "which of the
+                powers you gave it raise a card?". One owner per question, one
+                class per question — and the heading now says which question it
+                is answering, so the two are told apart by reading and not only
+                by CSS. */}
             {trust === "localFree" && (
-              <div className="willask" data-remote-asks={describeRemoteAsks({ trust }).length}>
-                <span className="wa-head">It will still stop and ask you before it can:</span>
+              <div className="trustasks" data-remote-asks={describeRemoteAsks({ trust }).length}>
+                <span className="wa-head">
+                  Because of the setting above, it will still stop and ask you before it can:
+                </span>
                 <ul>
                   {describeRemoteAsks({ trust }).map(w => <li key={w} data-ask={w}>{w}</li>)}
                 </ul>
@@ -10164,7 +10177,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
             )}
             {willAsk.length > 0 && (
               <div className="willask" data-asks={willAsk.length}>
-                <span className="wa-head">You'll be asked before it:</span>
+                <span className="wa-head">Because of the powers you gave it, you'll be asked before it:</span>
                 <ul>
                   {willAsk.map(w => (
                     <li key={w} data-ask={w}>{w.charAt(0).toLowerCase() + w.slice(1)}</li>

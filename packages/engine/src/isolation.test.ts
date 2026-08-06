@@ -241,3 +241,74 @@ test("generalising to Codex never loosened Claude's own isolation", () => {
   for (const flag of CLAUDE_ISOLATION_FLAGS) assert.ok(args.includes(flag));
   assert.ok(!args.some(a => a.startsWith("--disable ")), "and no Codex-shaped flag leaked in");
 });
+
+// ===========================================================================
+// A CARD MAY ONLY EVER CARRY ITS OWN APP'S EVIDENCE (2026-08-06)
+// ===========================================================================
+//
+// THE BUG. `inOwnerSetup` returned ONE answer for every harness. A Codex
+// agent's card therefore showed `claude-code 2.1.222, owner-setup probe
+// 2026-08-05` as the evidence for what that agent could reach, and listed the
+// three CLAUDE-shaped leaks on top of its own three — six where the table has
+// three, all of them measured on the other app.
+//
+// This is the file whose entire job is "never show a claim you did not
+// measure". An unmeasured claim wearing another app's version number is worse
+// than none: it looks like evidence.
+//
+// The rule below is written as a rule, not as a case, so a third harness added
+// next year cannot repeat it.
+
+test("no harness's card ever quotes another harness's measurement", () => {
+  const other: Record<string, RegExp> = {
+    claude: /codex-cli|codex\s+0\.\d/i,
+    codex: /claude-code|claude\s+2\.\d/i,
+  };
+  for (const harness of ["claude", "codex"] as const) {
+    for (const mode of ["declared", "owner"] as const) {
+      const iso = isolationFor(harness, mode)!;
+      assert.doesNotMatch(iso.measuredOn, other[harness]!,
+        `the ${harness} card in ${mode} mode is quoting the other app's measurement: ` +
+        `"${iso.measuredOn}"`);
+    }
+  }
+});
+
+test("the his-setup card names the agent's OWN app, not both at once", () => {
+  assert.match(isolationFor("claude", "owner")!.headline, /the way Claude Code does/);
+  assert.match(isolationFor("codex", "owner")!.headline, /the way Codex does/);
+  assert.doesNotMatch(isolationFor("codex", "owner")!.headline, /Claude Code/,
+    "a Codex agent's card must not tell him about Claude Code");
+});
+
+test("his-setup ADDS to the declared leaks and never replaces or invents them", () => {
+  for (const harness of ["claude", "codex"] as const) {
+    const declared = isolationFor(harness)!;
+    const his = isolationFor(harness, "owner")!;
+    assert.ok(his.stillLoaded.length > declared.stillLoaded.length,
+      "switching his setup on can only ever open MORE, never fewer");
+    // every declared leak survives — a new list must not quietly drop a known one
+    for (const leak of declared.stillLoaded) {
+      assert.ok(his.stillLoaded.some(l => l.name === leak.name),
+        `${harness} lost a leak it had measured: ${leak.name}`);
+    }
+    // and the count is exactly the declared ones plus this harness's own additions
+    assert.equal(new Set(his.stillLoaded.map(l => l.name)).size, his.stillLoaded.length,
+      "the same leak must not be listed twice");
+  }
+});
+
+test("what was NOT probed on Codex is an unknown, never a measured leak", () => {
+  // The honest half of the fix: we know which flags come off the Codex line,
+  // and we have NOT watched a Codex turn hold the result. Those are different
+  // sentences and this file stores them in different fields.
+  const his = isolationFor("codex", "owner")!;
+  assert.ok(his.unknowns.some(u => /not probed|NOT had that probe/i.test(u)),
+    "the Codex side must say out loud that it was read from flags, not watched");
+  assert.ok(!his.stillLoaded.some(l => /CLAUDE\.md/.test(l.name)),
+    "a Claude-only surface must never appear on a Codex card as a measured leak");
+});
+
+test("the mock agent is untouched by the switch — it runs nothing either way", () => {
+  assert.deepEqual(isolationFor("mock", "owner"), isolationFor("mock"));
+});
