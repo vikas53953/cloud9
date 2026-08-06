@@ -19,7 +19,7 @@ import {
 import { ClaudeCliProvider, claudeAbilityFingerprint, claudeArgs } from "./claude-cli.js";
 import { RunOptions, RunResult } from "./run.js";
 import { ThreadContinuity } from "./provider.js";
-import { tempDir } from "./tmp-for-tests.js";
+import { tempDir as makeTempDir } from "./tmp-for-tests.js";
 
 const CLAUDE_MODELS = ["claude-sonnet-5", "claude-opus-5"];
 const SESSION_A = "7aba15f4-5dd0-4769-925c-527943765f45";
@@ -32,7 +32,7 @@ const agent = (over: Partial<AgentDef> = {}): AgentDef => ({
 });
 
 function tempDir(): string {
-  return tempDir("cloud9-sessions-");
+  return makeTempDir("cloud9-sessions-");
 }
 
 // ------------------------------------------------------------------- the key

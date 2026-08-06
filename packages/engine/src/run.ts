@@ -88,6 +88,36 @@ export interface RunOptions {
   // ===== GAP A BLOCK — end =====
 }
 
+/**
+ * COMMANDS THAT ARE REAL PROGRAMS, so they are started directly rather than by
+ * asking a shell to start them.
+ *
+ * WHY THIS EXISTS (measured on this machine, 2026-08-06). The module note above
+ * explains why `shell: true` is used: `claude` and `codex` are npm shims
+ * (`.ps1` / `.cmd`) that Node cannot execute directly. That reason is real — but
+ * it was applied to EVERY command, including the ones that are ordinary `.exe`s
+ * and never needed it. So each `git` call started TWO processes: a shell, whose
+ * only job was to start git, and then git.
+ *
+ * On a busy Windows machine that is not a rounding error. Starting ANY process
+ * here was measured at 0.2–4.4 seconds (a bare `cmd /c ver` took 1137ms at the
+ * median), so the free shell was doubling the cost of the single most repeated
+ * operation in the product: a repository turn runs fifteen-plus git commands,
+ * and every one of them was paying twice. Measured end to end, one `git`
+ * call went from 5952ms through the shell to 2225ms direct.
+ *
+ * IT IS ALSO THE SAFER BRANCH. A directly-spawned process takes its arguments as
+ * an ARRAY, so there is no command line for a quoting trick to hide in — the
+ * thing the allowlist above exists to defend against cannot arise at all. The
+ * allowlist is still applied to both branches regardless, so nothing that was
+ * refused before is accepted now.
+ *
+ * ONLY ADD A NAME HERE IF IT IS A REAL BINARY ON EVERY PLATFORM WE RUN ON. A
+ * shim added to this set would stop working outright rather than get slower,
+ * which is exactly why `claude` and `codex` are not in it.
+ */
+const REAL_EXECUTABLES = new Set(["git", "gh"]);
+
 /** Characters that may appear in a command-line argument. Nothing else. */
 const SAFE_ARG_RE = /^[A-Za-z0-9._:\\/=+@-]*$/;
 /** Same, but a path may also contain spaces (it gets quoted). */
@@ -283,14 +313,25 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): Promise
 
     let child;
     try {
-      child = spawn(line, {
-        shell: true,
-        windowsHide: true,
-        cwd: opts.cwd,
-        env: opts.env,
-        detached: opts.detached ?? false,
-        stdio: opts.detached ? "ignore" : ["pipe", "pipe", "pipe"],
-      });
+      // ONE PROCESS INSTEAD OF TWO, where a shell was never needed. See
+      // `REAL_EXECUTABLES` — this is the whole of the difference, and everything
+      // below (the clocks, the capture, the stop scope, the kill) is identical
+      // either way, because both branches hand back the same kind of child.
+      child = REAL_EXECUTABLES.has(cmd) && !opts.detached
+        ? spawn(cmd, args.map(a => (a === EMPTY_ARG ? "" : a)), {
+          windowsHide: true,
+          cwd: opts.cwd,
+          env: opts.env,
+          stdio: ["pipe", "pipe", "pipe"],
+        })
+        : spawn(line, {
+          shell: true,
+          windowsHide: true,
+          cwd: opts.cwd,
+          env: opts.env,
+          detached: opts.detached ?? false,
+          stdio: opts.detached ? "ignore" : ["pipe", "pipe", "pipe"],
+        });
     } catch (err) {
       finish({ code: null, stdout: "", stderr: String(err), timedOut: false, notFound: true });
       return;

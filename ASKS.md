@@ -70,4 +70,52 @@ build → tests → browser QA → installer → install → walk, fix what the 
 finds, commit per piece with his words in the message, install, and have ONE
 page ready for the morning. If a quota resets, resume without waiting.
 
+## 2026-08-06 11:00–12:20 — what the chain really said
+
+Run in this session, not quoted from an agent:
+
+- **build** clean, all four packages.
+- **npm test** — shared 134/134 · engine 1022/1037 · relay 413/417 (3 skip,
+  1 todo) · desktop 27/27. THE SUITE IS NOT GREEN. 15 engine reds.
+- **npm run qa** 585/596.
+- **INSTALLED AND VERIFIED 12:19** — installed bundle `index-CsfrjYuU.css,
+  index-DDU8N5Wk.js` compared by name against the built one. They match. This
+  is the first time today's work has been on his machine.
+- **npm run qa:app** — NOT YET RUN against this install. Until it is, every
+  row below stays BUILT/INSTALLED and none of them says DONE-PROVEN.
+
+### Two reds that were REAL, not flaky — and one that still is
+
+Two agents reported the slow reds as test-concurrency artifacts. That was
+checked rather than believed, by re-running the files alone on a quiet machine:
+
+- `harness.test.ts` 4 reds → **2 survived alone → both were real bugs**, now
+  fixed (`settleSignIn`, commit 0b3032c). 28/28. A failed sign-in used to make
+  him wait 30 SECONDS — a full five-process detection round — to be told a
+  thing known the instant the window refused to open. Measured 30s → 2.6s.
+- `repowork.test.ts` **8 reds survived alone**, so NOT contention. An agent is
+  root-causing; symptom is `gave up waiting: Scout to finish` with a STUB
+  provider, so nothing about a slow model can explain it.
+- Found on the way: **76,068 leftover `cloud9-*` temp folders** the suite never
+  cleaned up, compounding every run. Purged. The class fix — a test that
+  cleans up after itself — is still owed.
+
+### THE INSTALLER ITSELF IS A BUG (found 12:10, unfixed)
+
+`Cloud9-Setup-0.1.0.exe /S` **hangs**: 12 minutes alive on 1.4 seconds of CPU,
+no UAC prompt, no window, app not running. Three attempts, three hangs. Today's
+build reached his machine by copying `release/win-unpacked` over the install
+folder — byte-for-byte what the installer would have placed, then verified by
+comparing file names on both sides.
+
+This is not a test-rig problem. **It is the shipping path.** If it hangs here it
+hangs for anyone he ever gives this to. Nothing installs itself reliably today.
+
+### Waiting on him
+
+- **New agents default to owner-setup ON with NO spend cap. Measured $1.75 vs
+  $0.0055 on one tiny question — 318x**, not the ~4x estimated on 08-05.
+  Recommended to him 12:00: default OFF + a cap, switch stays one click away.
+- Tailscale sign-in (row 1) — ten minutes in his browser, nobody else can do it.
+
 | 27 | **Catch-up** | His 5 existing agents lacked commands entirely and had no folder - they were telling the truth. A one-time startup migration adds only, never removes, tells him on screen what changed and how to undo it. | BUILT, unproven |
