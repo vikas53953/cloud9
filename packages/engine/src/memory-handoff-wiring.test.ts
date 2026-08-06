@@ -20,10 +20,11 @@ import { AgentDef, ClientFrame, Message, WorldState } from "@cloud9/shared";
 import { Engine } from "./engine.js";
 import { ClaudeProvider, RespondInput } from "./provider.js";
 import { MemoryStore, newMemoryId } from "./agent-memory.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 const OWNER = "u-vikas";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-memwire-"));
+const tmp = (): string => tempDir("cloud9-memwire-");
 
 class StubProvider implements ClaudeProvider {
   calls: RespondInput[] = [];

@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // Engine host wiring: which harness state and which credentials produce a
 // working provider — and which must NOT quietly produce canned answers.
 import test from "node:test";
@@ -10,7 +11,7 @@ import { ClaudeCliProvider, CREDENTIAL_ENV_VARS } from "./claude-cli.js";
 import { EngineHostOptions, startEngineHost } from "./host.js";
 import { MockProvider, SdkProvider } from "./provider.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-host-"));
+const tmp = (): string => tempDir("cloud9-host-");
 
 const agent = (over: Partial<AgentDef> = {}): AgentDef => ({
   id: "a1", ownerId: "u1", name: "Scout", emoji: "🔭", persona: "You research travel",

@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // THE PRIVATE TURN MANIFEST AT THE ENGINE/WIRE SEAM.
 //
 // `artifacts.test.ts` proves the folder sweep. These checks prove the remaining
@@ -20,7 +21,7 @@ import { ArtifactSweep, sweepProduced } from "./artifacts.js";
 import { Engine, TurnInput } from "./engine.js";
 import { ClaudeProvider, RespondInput } from "./provider.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-artifact-manifest-"));
+const tmp = (): string => tempDir("cloud9-artifact-manifest-");
 
 const normalizeSource = (source: string): string => source.replace(/\r\n?/g, "\n");
 const readSource = (file: string): string => normalizeSource(fs.readFileSync(file, "utf8"));

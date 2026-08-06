@@ -37,6 +37,7 @@ import {
 import { CLOUD9_TOOLS, cloud9ToolNames, renderCloud9Tools } from "./cloud9tools.js";
 import { buildAgentPrompt } from "./provider.js";
 import { EMPTY_ARG } from "./run.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 const ALL_OFF: AgentAbilities = {
   webSearch: false, files: false, schedules: false, background: false,
@@ -108,7 +109,7 @@ test("auto-memory is closed by the environment, because the CLI has no flag for 
 });
 
 test("the provider really hands that environment to the child, not just declares it", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-doorway-"));
+  const dir = tempDir("cloud9-doorway-");
   try {
     let seen: NodeJS.ProcessEnv | undefined;
     const cli = new ClaudeCliProvider({

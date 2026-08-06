@@ -20,9 +20,10 @@ import os from "node:os";
 import path from "node:path";
 import { ClientFrame, Project, ServerFrame } from "@cloud9/shared";
 import { Engine } from "./engine.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 function tmpDir(name: string): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), name));
+  return tempDir(name);
 }
 
 function engineWith(opts: { repoDir?: string } = {}): { engine: Engine; frames: ClientFrame[] } {

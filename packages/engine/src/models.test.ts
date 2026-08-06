@@ -13,6 +13,7 @@ import {
   writeClaudeModelCache,
 } from "./models.js";
 import { isPendingName } from "./wholefile.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 /** A trimmed copy of the real `codex debug models` shape (CLI 0.144.4). */
 const CODEX_JSON = JSON.stringify({
@@ -115,7 +116,7 @@ test("one unreadable probe throws the whole round away rather than dropping a mo
 });
 
 test("the proved list is remembered per CLI build and thrown away when it changes", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-models-"));
+  const dir = tempDir("cloud9-models-");
   const file = path.join(dir, "sub", "claude-models.json");
   writeClaudeModelCache(file, "2.1.220 (Claude Code)", ["claude-sonnet-5", "claude-opus-5"]);
 
@@ -139,7 +140,7 @@ test("the remembered model list is written whole or not at all", () => {
   // and believed later, so it must never be catchable half-written. Two windows
   // opening at once both write it, and the reader has no way to tell a torn file
   // from a short one.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-modelcache-"));
+  const dir = tempDir("cloud9-modelcache-");
   const file = path.join(dir, "claude-models.json");
   const written: string[] = [];
 
@@ -188,7 +189,7 @@ test("junk from the CLI means 'we don't know', not 'anything goes'", () => {
 });
 
 test("the user's own default model is read from their Codex config", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-codexcfg-"));
+  const dir = tempDir("cloud9-codexcfg-");
   const file = path.join(dir, "config.toml");
   fs.writeFileSync(file, [
     'model = "gpt-5.6-sol"',
@@ -204,7 +205,7 @@ test("the user's own default model is read from their Codex config", () => {
 });
 
 test("detectCodexModels prefers the configured default when the CLI offers it", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-codexcfg2-"));
+  const dir = tempDir("cloud9-codexcfg2-");
   const file = path.join(dir, "config.toml");
   fs.writeFileSync(file, 'model = "gpt-5.4-mini"\n');
   const runner = async () => ({

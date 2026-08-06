@@ -18,6 +18,7 @@ import { AgentDef, Channel, mayDriveAgent, Message, Task } from "@cloud9/shared"
 import { shouldReply } from "./chatter.js";
 import { Engine } from "./engine.js";
 import { ClaudeProvider, RespondInput } from "./provider.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 const OWNER = "u-vikas";
 const FRIEND = "u-friend";
@@ -120,7 +121,7 @@ test("a refusal is silent — it never tells a guest the agent is even there", a
   const provider = new Loud();
   const engine = new Engine({
     relayUrl: "ws://127.0.0.1:1", token: "t",
-    dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-drive-")),
+    dataDir: tempDir("cloud9-drive-"),
     codexProvider: provider,
   });
   const sent: string[] = [];

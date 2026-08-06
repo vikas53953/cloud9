@@ -30,6 +30,7 @@ import {
   CLOUD9_TOOLS, Cloud9SkillAnswer, Cloud9ToolTurn, callCloud9Tool, cloud9TextOf as textOf, renderCloud9Tools,
 } from "./cloud9tools.js";
 import { ClaudeProvider, RespondInput, renderSkills, splitAgentPrompt } from "./provider.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 const OWNER = "u1";
 
@@ -252,7 +253,7 @@ test("nothing from underneath reaches the model when the doorway throws", async 
 
 // ------------------------------------------- an agent may open only ITS OWN skills
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-skills-"));
+const tmp = (): string => tempDir("cloud9-skills-");
 
 class StubProvider implements ClaudeProvider {
   async respond(_input: RespondInput): Promise<string> { return "stub"; }

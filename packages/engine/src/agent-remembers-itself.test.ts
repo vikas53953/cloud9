@@ -25,9 +25,10 @@ import {
   cloud9TextOf, renderCloud9Tools,
 } from "./cloud9tools.js";
 import { MEMORY_NOTES_PER_TURN, MEMORY_NOTE_LIMIT } from "./agent-memory.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 const OWNER = "u-vikas";
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-agentmem-"));
+const tmp = (): string => tempDir("cloud9-agentmem-");
 
 class StubProvider implements ClaudeProvider {
   calls: RespondInput[] = [];

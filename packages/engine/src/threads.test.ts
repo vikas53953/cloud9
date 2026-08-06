@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // HIS COMPLAINT, VERBATIM: "an agent does not have a conversation inside the
 // threads. they do discuss within channels only and that is where the thread is
 // not working... similar to Slack, within Slack it automatically replies inside
@@ -35,7 +36,7 @@ import { ClaudeProvider, RespondInput } from "./provider.js";
 import { rememberAsk, takeAsk } from "./reactions.js";
 import { roomLineForThreadJob, threadOf } from "./threads.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-thread-"));
+const tmp = (): string => tempDir("cloud9-thread-");
 
 // ---------------------------------------------------------------- the rule
 

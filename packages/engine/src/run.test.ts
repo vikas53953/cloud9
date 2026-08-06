@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // Command-line safety and the wall-clock leash.
 //
 // Everything here runs through `shell: true`, so an argument that escapes its
@@ -82,7 +83,7 @@ test("run() refuses to execute an unsafe argument at all", async () => {
 });
 
 test("run() kills the whole process tree when it times out", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-kill-"));
+  const dir = tempDir("cloud9-kill-");
   const beat = path.join(dir, "beat.txt");
   // A child that spawns a GRANDCHILD which keeps writing. Killing only the
   // shell would leave the grandchild ticking — that is the bug under test.
@@ -131,7 +132,7 @@ test("run() kills the whole process tree when it times out", async () => {
 test("output is captured as text and capped", async () => {
   // an inline `-e` program would (correctly) be refused by the allowlist, so
   // the noisy program goes in a file — the same route real CLIs take
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-cap-"));
+  const dir = tempDir("cloud9-cap-");
   const script = path.join(dir, "noisy.js");
   fs.writeFileSync(script, "const s='x'.repeat(1024);for(let i=0;i<4096;i++)console.log(s);");
 

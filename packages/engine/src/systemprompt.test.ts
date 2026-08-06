@@ -35,6 +35,7 @@ import { ClaudeCliProvider, claudeArgs } from "./claude-cli.js";
 import { codexArgs } from "./codex.js";
 import { buildAgentPrompt, splitAgentPrompt, TurnBrief } from "./provider.js";
 import { RunOptions, RunResult } from "./run.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 const ALL_OFF: AgentAbilities = {
   webSearch: false, files: false, schedules: false, background: false,
@@ -229,7 +230,7 @@ function spyRunner(): {
 }
 
 test("a real turn sends the agent in the system prompt and only the turn on stdin", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-sysprompt-"));
+  const dir = tempDir("cloud9-sysprompt-");
   const spy = spyRunner();
   const provider = new ClaudeCliProvider({
     agentDataDir: () => dir,

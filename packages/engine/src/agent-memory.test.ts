@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // WHAT AN AGENT REMEMBERS BETWEEN CONVERSATIONS — the store, the rule, and
 // the retrieval. The same durability promises as `runstore.test.ts`, asked
 // again here so a memory that costs the owner an answer can never come back.
@@ -12,7 +13,7 @@ import {
   worthRemembering,
 } from "./agent-memory.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-mem-"));
+const tmp = (): string => tempDir("cloud9-mem-");
 
 function note(over: Partial<MemoryNote> = {}): MemoryNote {
   return {

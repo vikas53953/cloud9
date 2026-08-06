@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // Harness detection + sign-in state machine, driven through REAL child
 // processes: fake `claude` / `codex` executables are written to a temp folder
 // and put on PATH, exactly the way the shipped code finds the real ones.
@@ -19,7 +20,7 @@ const STARTED: RunResult =
   { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 
 function shimDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-shims-"));
+  return tempDir("cloud9-shims-");
 }
 
 function writeShim(dir: string, name: string, cmd: string, sh: string): void {

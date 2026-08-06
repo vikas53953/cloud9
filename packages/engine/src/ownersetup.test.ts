@@ -40,6 +40,7 @@ import { buildRunRecord } from "./runrecord.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { tempDir } from "./tmp-for-tests.js";
 
 const ALL_OFF: AgentAbilities = {
   webSearch: false, files: false, schedules: false, background: false,
@@ -211,7 +212,7 @@ test("credentials are stripped in BOTH modes — Codex", () => {
 });
 
 test("credentials are stripped in BOTH modes — Claude, at the real child", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-ownersetup-"));
+  const dir = tempDir("cloud9-ownersetup-");
   try {
     for (const who of [HIS(), DECLARED()]) {
       let seen: NodeJS.ProcessEnv | undefined;

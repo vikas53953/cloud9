@@ -2255,6 +2255,14 @@ function Workspace(): React.JSX.Element {
          a check proves the SCREEN is safe whether or not it was, by handing the
          screen the exact wrapper text a raw failure arrives in. */
       notify: (text: string) => client.notify(text),
+      /* IS THE ENGINE CHECKING WHAT ITS AGENTS SAY? (`verify.ts`.)
+         Null when this engine has never said either way — an older host, or a
+         screen that has not had a harness update yet. It matters that this is
+         askable at all: the check is SILENT when a turn's claims all hold, so
+         "no complaint in the room" means either "checked and true" or "nothing
+         is checking", and only this can tell the two apart. It reads the engine's
+         own published fact, never a guess from the screen. */
+      verifyClaims: () => client.world.harness?.verifyClaims ?? null,
       search: (q: string) => client.search(q),
       clearSearch: () => client.clearSearch(),
       searching: () => client.world.search ?? null,

@@ -15,8 +15,9 @@ import {
   isHookEvent, loadHooks, newHookId, saveHooks,
   type Hook, type HookActions, type HookFact,
 } from "./hooks.js";
+import { tempDir } from "./tmp-for-tests.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-hooks-"));
+const tmp = (): string => tempDir("cloud9-hooks-");
 
 const OWNER = "u_vikas";
 const OTHER = "u_someone-else";

@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // WATCHING AN AGENT WORK — the streaming half of the run record.
 //
 // Everything here is about one promise: showing the work AS IT HAPPENS must not
@@ -165,7 +166,7 @@ test("nobody watching means no watcher at all — the silent fallback", () => {
 
 /** A tiny program that prints given lines, so the test drives the REAL spawn. */
 function printer(lines: string[], opts: { trailingNewline?: boolean } = {}): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-live-"));
+  const dir = tempDir("cloud9-live-");
   const script = path.join(dir, "printer.js");
   const body = lines.join("\n") + (opts.trailingNewline === false ? "" : "\n");
   fs.writeFileSync(script, `process.stdout.write(${JSON.stringify(body)});`);
@@ -216,7 +217,7 @@ test("THE LEASH IS UNTOUCHED: a watched turn that overruns is still killed and s
   // stopped. (The process-TREE kill has its own long-running test in
   // `run.test.ts`; this one is deliberately quick, because a slow test here
   // steals the machine from the timing-sensitive tests running beside it.)
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-live-kill-"));
+  const dir = tempDir("cloud9-live-kill-");
   const beat = path.join(dir, "beat.txt");
   const script = path.join(dir, "chatty.js");
   fs.writeFileSync(script,
@@ -391,7 +392,7 @@ const ASKED: Message = {
 /** An engine whose harness reports `steps` while it works, then answers. */
 function engineOver(t: TestContext, steps: RunStep[][], reply = "Done.") {
   const engine = new Engine({
-    relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-live-e-")),
+    relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: tempDir("cloud9-live-e-"),
     provider: {
       async respond(input): Promise<string> {
         for (const batch of steps) input.onStep?.(batch);
@@ -434,7 +435,7 @@ test("a turn that FELL OVER still closes its preview", async t => {
   // Otherwise a crash leaves a list of steps sitting under his message,
   // implying an agent that is still working. The `finally` is what stops that.
   const engine = new Engine({
-    relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-live-e-")),
+    relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: tempDir("cloud9-live-e-"),
     provider: {
       async respond(input): Promise<string> {
         input.onStep?.([{ seq: 1, kind: "read", label: "Read note.txt" }]);

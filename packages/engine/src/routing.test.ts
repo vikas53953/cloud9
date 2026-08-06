@@ -8,8 +8,9 @@ import path from "node:path";
 import { AgentDef, Message } from "@cloud9/shared";
 import { Engine } from "./engine.js";
 import { ClaudeProvider, HARNESS_DISCONNECTED_REPLY, RespondInput } from "./provider.js";
+import { tempDir } from "./tmp-for-tests.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-routing-"));
+const tmp = (): string => tempDir("cloud9-routing-");
 
 class StubProvider implements ClaudeProvider {
   calls: RespondInput[] = [];

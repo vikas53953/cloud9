@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // NOTICING what an agent's turn produced. These tests are about the half nobody
 // had: today the agent says "the file is at C:\Users\… " and that sentence is
 // useless to everybody except the machine it ran on.
@@ -15,7 +16,7 @@ import {
   CAPTURE_WORK_LIMIT_BYTES, SKIP_FOLDERS, SWEEP_DEFAULTS, describeRefusals, sweepProduced,
 } from "./artifacts.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-artifacts-"));
+const tmp = (): string => tempDir("cloud9-artifacts-");
 
 /** Write a file and set its modified time, so "this turn" is a real fact. */
 function put(dir: string, rel: string, body: string | Buffer, at?: number): string {

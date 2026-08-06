@@ -26,6 +26,7 @@ import {
   TurnTimedOutError, timedOutSentence, turnLeash, turnQuietBudgetMs, turnTimeBudgetMs,
 } from "./timebudget.js";
 import { RunOptions, RunResult, run } from "./run.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 const MINUTE = 60_000;
 const KINDS: PromptTurnKind[] = ["chat", "task", "schedule", "repo"];
@@ -167,7 +168,7 @@ async function probe(
 
 /** Write a throwaway script and give back a path `run()` will accept. */
 function script(body: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-leash-"));
+  const dir = tempDir("cloud9-leash-");
   const file = path.join(dir, "probe.js");
   fs.writeFileSync(file, body);
   return file;

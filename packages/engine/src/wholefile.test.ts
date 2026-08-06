@@ -13,8 +13,9 @@ import {
   sweepPending, sweepPendingTree, writeWholeFile,
 } from "./wholefile.js";
 import { plantKilledWriteLitter } from "./litter-for-tests.js";
+import { tempDir } from "./tmp-for-tests.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-whole-"));
+const tmp = (): string => tempDir("cloud9-whole-");
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 test("the bytes never touch the real name — they land next door and are renamed in", () => {

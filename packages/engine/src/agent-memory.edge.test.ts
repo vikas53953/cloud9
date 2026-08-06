@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // WHAT AN AGENT REMEMBERS — THE EDGES. The companion suite to
 // `agent-memory.test.ts`: where that suite shows the rule working, this one
 // stands exactly on the rule's boundary — the note that fits the character
@@ -16,7 +17,7 @@ import {
   worthRemembering,
 } from "./agent-memory.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-mem-edge-"));
+const tmp = (): string => tempDir("cloud9-mem-edge-");
 
 function note(over: Partial<MemoryNote> = {}): MemoryNote {
   return {

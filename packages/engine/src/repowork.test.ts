@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // AN AGENT DECIDING BY ITSELF THAT IT WANTS TO PUSH — driven the way the hub
 // drives the engine, against REAL git.
 //
@@ -26,7 +27,7 @@ import { ClaudeProvider, RespondInput } from "./provider.js";
 import { repoBriefing, wantsToPublish, withoutPublishMarker } from "./repowork.js";
 import { run, RunOptions, RunResult } from "./run.js";
 
-const tmp = (prefix: string): string => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+const tmp = (prefix: string): string => tempDir(prefix);
 
 // ------------------------------------------------------------- the marker
 

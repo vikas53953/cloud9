@@ -2298,6 +2298,21 @@ export interface HarnessState {
    * the one thing every client already listens to.
    */
   demo?: boolean;
+  /**
+   * THIS ENGINE CHECKS WHAT ITS AGENTS SAY AGAINST WHAT THEY DID (`verify.ts`).
+   *
+   * It rides here for the same reason `demo` does: the harness state is the one
+   * thing every client already listens to, and this is a fact about the engine
+   * the screen otherwise has no way to learn. Absent means an older engine host
+   * that never told us — which a screen must say as "not known", never as "off".
+   *
+   * WHY A SCREEN NEEDS IT AT ALL. The check is quiet by design: it says nothing
+   * unless a claim and the record disagree. Silence therefore means either "it
+   * checked and everything matched" or "nothing is checking", and those are very
+   * different things to be told. Until 2026-08-06 the second was always true and
+   * nothing anywhere could tell you.
+   */
+  verifyClaims?: boolean;
   updatedAt: number;
 }
 

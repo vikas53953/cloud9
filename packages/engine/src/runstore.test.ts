@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // Where run records live, and the promise that keeping them can never cost the
 // owner an answer.
 import test from "node:test";
@@ -12,7 +13,7 @@ import { buildRunRecord, RunRecord, RunSeed, newRunId } from "./runrecord.js";
 import { RunStore } from "./runstore.js";
 import { traceCodex } from "./codex.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-runs-"));
+const tmp = (): string => tempDir("cloud9-runs-");
 
 /** Real Codex output, captured on this machine 2026-07-29 (see runrecord.test.ts). */
 const CODEX_STREAM = [

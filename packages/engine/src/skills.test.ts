@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // Skills groundwork (feedback round 1, his 9): plain-words abilities the owner
 // writes for one agent. The engine puts them in the agent's prompt and drops
 // their files in the agent's own folder. No UI in this round.
@@ -15,7 +16,7 @@ import { aTurn } from "./turnfixture.js";
 import { isPendingName } from "./wholefile.js";
 import { plantKilledWriteLitter } from "./litter-for-tests.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-skills-"));
+const tmp = (): string => tempDir("cloud9-skills-");
 
 const skill = (over: Partial<AgentSkill> = {}): AgentSkill => ({
   id: "sk1", name: "Villa shortlist",

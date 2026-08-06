@@ -26,6 +26,7 @@ import {
 } from "./context.js";
 import { Engine } from "./engine.js";
 import { ClaudeProvider, RespondInput } from "./provider.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 // --------------------------------------------------------------- the number
 
@@ -164,7 +165,7 @@ function makeEngine(t: TestContext) {
   const provider = new CapturingProvider();
   const engine = new Engine({
     relayUrl: "ws://127.0.0.1:1", token: "t",
-    dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-ctxbudget-")),
+    dataDir: tempDir("cloud9-ctxbudget-"),
     provider,
   });
   (engine as unknown as { sendFrame: (f: ClientFrame) => void }).sendFrame = () => {};

@@ -24,6 +24,7 @@ import { ClientFrame, PROJECT_LIMITS, validateProjectItem } from "@cloud9/shared
 import { Engine } from "./engine.js";
 import { GitHubClient, readItems, whyGitHubSaidNo } from "./github.js";
 import { commandLine, RunOptions, RunResult, UnsafeArgumentError } from "./run.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 const quiet = (): void => { /* tests do not narrate */ };
 
@@ -307,7 +308,7 @@ test("GitHub answering nothing at all is an empty list, not a failure", () => {
 function engineFor(runner: unknown): { engine: Engine; frames: ClientFrame[] } {
   const engine = new Engine({
     relayUrl: "ws://127.0.0.1:1", token: "t",
-    dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-look-")),
+    dataDir: tempDir("cloud9-look-"),
     github: { runner: runner as never, log: quiet },
   });
   const frames: ClientFrame[] = [];

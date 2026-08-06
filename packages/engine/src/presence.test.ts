@@ -14,8 +14,9 @@ import { HarnessState, agentPresence } from "@cloud9/shared";
 import { HarnessManager } from "./harness.js";
 import { startEngineHost } from "./host.js";
 import { RunResult } from "./run.js";
+import { tempDir } from "./tmp-for-tests.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-presence-"));
+const tmp = (): string => tempDir("cloud9-presence-");
 
 const missing = (): Promise<RunResult> => Promise.resolve({
   code: 1, stdout: "", stderr: "'x' is not recognized as an internal or external command",

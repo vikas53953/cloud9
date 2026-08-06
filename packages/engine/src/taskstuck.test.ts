@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // "STUCK — WAITING ON SOMETHING", AND THE ONE CASE WHERE IT IS TRUE.
 //
 // `blocked` has been a task state since the jobs list was drawn, and the screen
@@ -30,7 +31,7 @@ import { Engine } from "./engine.js";
 import { ClaudeProvider, RespondInput } from "./provider.js";
 import { run, RunOptions, RunResult } from "./run.js";
 
-const tmp = (prefix: string): string => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+const tmp = (prefix: string): string => tempDir(prefix);
 
 const AGENT: AgentDef = {
   id: "a1", ownerId: "u1", name: "Scout", emoji: "🔭", persona: "You write code",

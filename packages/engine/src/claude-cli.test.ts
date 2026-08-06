@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // Running an agent turn on the local Claude app's own login — the primary path
 // after feedback round 1. Nothing here may involve a token.
 import test from "node:test";
@@ -212,7 +213,7 @@ test("an agent whose name carries shell characters still cannot reach a shell", 
  * both have written, then each one is asked what its own child would read.
  */
 test("two turns for one agent each read their own ticket, not each other's", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-turnfile-"));
+  const dir = tempDir("cloud9-turnfile-");
   try {
     let bothWritten: () => void;
     const barrier = new Promise<void>(resolve => { bothWritten = resolve; });

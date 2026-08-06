@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // GAP C (2026-08-05) — STOPPING A RUNNING TURN.
 //
 // Cloud9 had no stop. A turn that had misunderstood ran until a wall clock
@@ -23,7 +24,7 @@ import { Engine } from "./engine.js";
 import { ClaudeProvider, RespondInput } from "./provider.js";
 
 const OWNER = "u-vikas";
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-stop-"));
+const tmp = (): string => tempDir("cloud9-stop-");
 
 // --------------------------------------------------------- 1. the real kill
 

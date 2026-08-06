@@ -15,12 +15,13 @@ import {
   branchNameFor, commitMessage, GitError, GitWorkspace, isSafeBranchName, worktreePathFor,
 } from "./worktree.js";
 import { run } from "./run.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 const quiet = () => { /* tests do not narrate */ };
 
 /** A real repository with one commit, thrown away afterwards. */
 async function makeRepo(): Promise<{ repoDir: string; root: string }> {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-wt-"));
+  const base = tempDir("cloud9-wt-");
   const repoDir = path.join(base, "repo");
   fs.mkdirSync(repoDir);
   await run("git", ["init", "-q", "-b", "master"], { cwd: repoDir });

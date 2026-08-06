@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // SEMANTIC RECEIPTS (his §2), held to two promises:
 //
 //  1. THE VERDICT IS EARNED. Every rule in `turnVerdict` is pinned here, in
@@ -22,7 +23,7 @@ import { Engine } from "./engine.js";
 import { ClaudeProvider, RespondInput } from "./provider.js";
 import { endsWithQuestion, turnVerdict } from "./receipts.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-receipt-"));
+const tmp = (): string => tempDir("cloud9-receipt-");
 
 const step = (kind: RunStep["kind"], seq = 1): RunStep => ({ seq, kind, label: kind });
 

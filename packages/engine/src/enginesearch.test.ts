@@ -16,8 +16,9 @@ import path from "node:path";
 import { AgentDef, Message, ServerFrame } from "@cloud9/shared";
 import { Engine } from "./engine.js";
 import { ClaudeProvider, RespondInput } from "./provider.js";
+import { tempDir } from "./tmp-for-tests.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-search-"));
+const tmp = (): string => tempDir("cloud9-search-");
 
 const agent = (): AgentDef => ({
   id: "a1", ownerId: "u1", name: "Sol", emoji: "🌞", persona: "You research travel",

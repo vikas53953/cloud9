@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // THREE MEASURED GAPS, CLOSED — and each test here fails without its fix.
 //
 //   GAP A — a spending limit the owner sets in plain words. Cost per run was
@@ -43,7 +44,7 @@ import { buildRunRecord, RunRecord, RunSeed } from "./runrecord.js";
 import { RunStore } from "./runstore.js";
 import { claudeArgs, traceClaude } from "./claude-cli.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-cap-"));
+const tmp = (): string => tempDir("cloud9-cap-");
 
 const agent = (over: Partial<AgentDef> = {}): AgentDef => ({
   id: "a1", ownerId: "u1", name: "Scout", emoji: "🔭", persona: "You research travel",

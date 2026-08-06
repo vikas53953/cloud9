@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // HIS ITEM 5: "agents should react with emoji as work happens".
 //
 // Two things are being held here, and the second matters more than the first:
@@ -17,7 +18,7 @@ import { Engine } from "./engine.js";
 import { ClaudeProvider, RespondInput } from "./provider.js";
 import { PENDING_ASK_LIMIT, rememberAsk, takeAsk, WORK_REACTIONS, workEmoji } from "./reactions.js";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-react-"));
+const tmp = (): string => tempDir("cloud9-react-");
 
 // ------------------------------------------------------- one vocabulary only
 

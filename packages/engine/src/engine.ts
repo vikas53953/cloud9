@@ -2472,7 +2472,16 @@ export class Engine {
     // demo mode travels WITH the status every client already listens to, so the
     // screen can say "these answers are made up" without anyone having to
     // remember to ask a second question
-    this.sendFrame({ type: "harnessState", state: { ...state, demo: this.demoMode } });
+    // …and so does whether this engine is CHECKING what its agents say against
+    // what they did. Same reason, and it is the more important of the two to be
+    // able to see: the check is silent when everything matches, so without this
+    // there is no difference on screen between "checked, all true" and "nothing
+    // is checking". Read live rather than remembered at startup, because
+    // `verifyClaims` is a field a host can turn on after the engine exists.
+    this.sendFrame({
+      type: "harnessState",
+      state: { ...state, demo: this.demoMode, verifyClaims: this.verifyClaims },
+    });
   }
 
   /**

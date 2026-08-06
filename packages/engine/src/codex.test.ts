@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 // CodexProvider: JSONL transcript parsing and argument building.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -224,8 +225,8 @@ test("the codex turn never inherits ambient credentials", async () => {
 });
 
 test("a Codex turn gets clean homes with auth but none of the owner's skills", () => {
-  const ownerCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-owner-codex-"));
-  const ownerProfile = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-owner-profile-"));
+  const ownerCodexHome = tempDir("cloud9-owner-codex-");
+  const ownerProfile = tempDir("cloud9-owner-profile-");
   fs.mkdirSync(path.join(ownerCodexHome, "skills", "owner"), { recursive: true });
   fs.mkdirSync(path.join(ownerProfile, ".agents", "skills", "shared"), { recursive: true });
   fs.mkdirSync(path.join(ownerProfile, "linked-skill"), { recursive: true });

@@ -23,6 +23,7 @@ import { ClientFrame, REPO_LIST_LIMITS, validateRepoChoice } from "@cloud9/share
 import { Engine } from "./engine.js";
 import { GitHubClient, readRepoChoices } from "./github.js";
 import { commandLine, RunOptions, RunResult } from "./run.js";
+import { tempDir } from "./tmp-for-tests.js";
 
 const quiet = (): void => { /* tests do not narrate */ };
 
@@ -218,7 +219,7 @@ test("an answer we cannot read is said in words, not thrown", () => {
 function engineFor(runner: unknown): { engine: Engine; frames: ClientFrame[] } {
   const engine = new Engine({
     relayUrl: "ws://127.0.0.1:1", token: "t",
-    dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-repolist-")),
+    dataDir: tempDir("cloud9-repolist-"),
     github: { runner: runner as never, log: quiet },
   });
   const frames: ClientFrame[] = [];

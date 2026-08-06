@@ -1,3 +1,4 @@
+import { tempDir } from "./tmp-for-tests.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -48,7 +49,7 @@ test("disabled schedules never fire", () => {
 // every agent, and it is rewritten whole on every change. A torn write here
 // does not lose one run — it loses everything he ever scheduled, silently.
 
-const tmpDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-sched-"));
+const tmpDir = (): string => tempDir("cloud9-sched-");
 function engineIn(dataDir: string): Engine {
   return new Engine({ relayUrl: "ws://127.0.0.1:1", token: "t", dataDir });
 }
