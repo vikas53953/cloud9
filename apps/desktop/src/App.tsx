@@ -13447,6 +13447,16 @@ function ProjectsScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }):
  * answer to the same question.
  */
 
+/**
+ * The narrowest share of the bar that can still hold its own words.
+ *
+ * A fifth of the width fits "1% written back" at this font; below that the text
+ * is cut mid-word. Measured against the real case rather than guessed at — his
+ * dearest agent splits 99/1, so the clipped end is the normal case here, not an
+ * edge of it.
+ */
+const SPLIT_LABEL_FITS = 0.2;
+
 /** One agent's row: what it cost, how it splits, and what is wrong with it. */
 function SpendingRow({ row }: {
   row: { use: AgentTokenUse; findings: WasteFinding[] };
@@ -13478,11 +13488,22 @@ function SpendingRow({ row }: {
         <div className="splitbar" data-split={use.agentId}
           title={`${Math.round(split.sentShare * 100)}% sent to it, `
             + `${Math.round(split.wroteShare * 100)}% written back`}>
+          {/* A LABEL THAT DOES NOT FIT IS WORSE THAN NO LABEL. Caught on his
+              real data: the agent this feature exists to catch is 99%/1%, and
+              at 1% the segment drew the word "written" clipped to "ritten" —
+              which reads as a rendering fault and makes a person distrust the
+              number beside it. Below a width that can hold the words, the
+              segment carries none; the figure is in the sentence underneath and
+              in the bar's own hover text either way, so nothing is lost. */}
           <div className="sent" style={{ width: `${Math.round(split.sentShare * 100)}%` }}>
-            <span>{Math.round(split.sentShare * 100)}% handed to it</span>
+            {split.sentShare >= SPLIT_LABEL_FITS && (
+              <span>{Math.round(split.sentShare * 100)}% handed to it</span>
+            )}
           </div>
           <div className="wrote" style={{ width: `${Math.round(split.wroteShare * 100)}%` }}>
-            <span>{Math.round(split.wroteShare * 100)}% written back</span>
+            {split.wroteShare >= SPLIT_LABEL_FITS && (
+              <span>{Math.round(split.wroteShare * 100)}% written back</span>
+            )}
           </div>
         </div>
       )}
