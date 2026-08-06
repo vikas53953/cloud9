@@ -262,6 +262,18 @@ const EXPECTED_CHECKS = [
          that has to say STOPPED rather than failed. */
   "an agent shown a picture answers from what is inside it, not from its name",
   "stopping a real running turn really stops it, and the record says stopped, not failed",
+  /* 2026-08-07, his ask: "i want to add about token consumption so that agents
+     can see and help optimize others agents automatically."
+     Cloud9 had recorded what every Claude turn cost since run records existed
+     and never showed him one of those figures anywhere he would look, so the
+     first and largest half of this is simply A DOOR. This check exists because
+     that is exactly the failure this harness was built for: the arithmetic and
+     the hub can be perfect and green, and if there is no way to REACH it from
+     the window he double-clicks, he has nothing.
+     It asks the installed app the two things a person would: is Spending in the
+     rail, and does pressing it land on a page that says something honest —
+     either real figures, or "nothing recorded yet" — rather than a blank. */
+  "Spending is in the rail and opens a page that answers honestly",
 ];
 
 /* --------------------------------------------- what this computer really has
@@ -2436,6 +2448,65 @@ async function walk(page) {
     failGroup(PROJECT_GROUP.filter(n => !results.some(r => r.name === n)),
       `the Projects screen did not open (${err.message})`);
     await shot(page, "projects-broken");
+  }
+
+  /* --- 7b. spending: what the crew costs, and what is wasted -------------
+   *
+   * THE DOOR IS THE FEATURE. Cloud9 has held the cost of every Claude turn for
+   * months and never put one of those figures anywhere he would look. So the
+   * thing worth photographing is not the arithmetic — that is proved by 26
+   * tests in shared — it is that the page is REACHABLE and says something
+   * honest when it gets there.
+   *
+   * BOTH ANSWERS ARE A PASS, deliberately. On a fresh database nothing has been
+   * recorded, and "nothing recorded yet this month" is the true answer; on his
+   * real data there are rows. What FAILS is a rail with no Spending in it, a
+   * page that never appears, or a page that appears and says nothing at all —
+   * which is the one outcome that would leave him staring at a blank wondering
+   * whether it was broken or whether he really had spent nothing. */
+
+  try {
+    await page.click('.rail .rail-btn[data-go="spending"]');
+    await page.waitForSelector(".spending", { timeout: 30000 });
+    await shot(page, "spending");
+
+    await check(EXPECTED_CHECKS[42], async () => {
+      const seen = await page.evaluate(() => {
+        const root = document.querySelector(".spending");
+        if (!root) return null;
+        return {
+          heading: root.querySelector("h2")?.innerText.trim() ?? "",
+          words: (root.innerText ?? "").replace(/\s+/g, " ").trim(),
+          rows: root.querySelectorAll("[data-spend-agent]").length,
+          findings: root.querySelectorAll("[data-finding]").length,
+        };
+      });
+      if (!seen) throw new Error("NOT ON SCREEN — pressing Spending drew no page at all.");
+      if (!/spending/i.test(seen.heading)) {
+        throw new Error(`NOT ON SCREEN — the page's heading is "${seen.heading}".`);
+      }
+      // A REAL SENTENCE, EITHER WAY. A page that draws its heading and then
+      // nothing is the failure this check is really for.
+      const honest = seen.rows > 0
+        || /nothing has been recorded yet|working out what everything has cost/i.test(seen.words);
+      if (!honest) {
+        throw new Error(`NOT ON SCREEN — the page is there but says nothing a person could `
+          + `read: "${seen.words.slice(0, 160)}"`);
+      }
+      // NO INVENTED ZERO, asked of the pixels rather than of a unit test: an
+      // agent nobody costed must never appear as $0.00, because that reads as
+      // "this one is free" and is the most expensive lie this page could tell.
+      if (seen.rows > 0 && /\$0\.00/.test(seen.words)) {
+        throw new Error("a row is showing $0.00 — a cost nobody reported must be words, "
+          + "never a zero");
+      }
+      return seen.rows > 0
+        ? `${seen.rows} agent row(s), ${seen.findings} named piece(s) of waste`
+        : "no turns recorded yet, and it says so plainly";
+    });
+  } catch (err) {
+    fail(EXPECTED_CHECKS[42], err?.message ?? String(err));
+    await shot(page, "spending-broken");
   }
 
   /* --- 8. settings: the GitHub card ------------------------------------- */
