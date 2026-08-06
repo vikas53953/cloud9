@@ -81,8 +81,38 @@ Run in this session, not quoted from an agent:
 - **INSTALLED AND VERIFIED 12:19** — installed bundle `index-CsfrjYuU.css,
   index-DDU8N5Wk.js` compared by name against the built one. They match. This
   is the first time today's work has been on his machine.
-- **npm run qa:app** — NOT YET RUN against this install. Until it is, every
-  row below stays BUILT/INSTALLED and none of them says DONE-PROVEN.
+- **npm run qa:app RUN 14:10 against the installed app — 38 pass, 3 FAIL.**
+  Exit 1. This is the run that decides the board, because it drives the real
+  installed Cloud9 with a real harness rather than a browser mock.
+
+### The 3 failures, and why they matter more than the other 38
+
+1. **`an agent asked in chat to read a real file on this computer actually reads
+   it`** — HIS ORIGINAL COMPLAINT, told to him as fixed MORE THAN ONCE. Still
+   broken on the installed app. The second half is worse than the first: the
+   failure reads `NOT ON SCREEN — … says nothing about it in the room, or offers
+   no way to change it: null`. **A SILENT refusal.** He has said in his own words
+   that being told "I can't" with no reason and no door is the thing he hates.
+   The class fix owed: an agent that cannot do a thing must ALWAYS say what it
+   cannot do AND how he can allow it. Never `null`.
+2. **`stopping a real running turn really stops it, and the record says stopped,
+   not failed`** — gave up after 120s with no record saying he stopped it.
+   NOTE: an agent previously closed this as "a demo-mode artifact, the engine
+   path is correct". **That is now disproven** — this run used the real installed
+   app and a real harness. A Stop whose record still reads `ok` cannot be told
+   apart from finished or failed, which makes the button a lie.
+3. **`a hired agent's editor offers exactly what a hand-made one's does`** — a
+   hired Architect is missing the section "How much can … do on its own?". Agents
+   from the library silently offer him fewer controls than ones he builds.
+
+Two agents were spawned on these at 14:20. Until all three are green, NOTHING
+on this board says DONE-PROVEN.
+
+### The lesson to keep
+
+Unit tests were green (1023/1037) and browser QA was green (585/596) while all
+three of these were broken. Only walking the INSTALLED app found them. That is
+the argument for never closing a row on an agent's word, or on a passing suite.
 
 ### Two reds that were REAL, not flaky — and one that still is
 
