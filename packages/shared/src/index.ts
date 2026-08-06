@@ -5746,3 +5746,15 @@ export {
   type SavingChange, type SavingProposal, type WasteFinding, type FindWasteInput,
   type TokenUseReportRow,
 } from "./tokenuse.js";
+
+// ---------------------------------------------------------------------------
+// "WHAT IS MY CREW DOING RIGHT NOW" — the Activity board's vocabulary.
+//
+// Its own file for the same reason `agentPresence` above is one function: it is
+// a JOIN of several facts (the presence word, the idle/working lamp, an
+// unanswered go-ahead, the last finished job) into one sentence, and that join
+// is the part that can be wrong. Kept out of the screen so a test can read it.
+export {
+  ACTIVITY_ORDER, activityRank, agentActivityLine, agoWords, crewActivitySummary,
+  type AgentActivityFacts, type AgentActivityLine, type AgentActivityState,
+} from "./agentactivity.js";

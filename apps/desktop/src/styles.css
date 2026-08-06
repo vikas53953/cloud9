@@ -1144,6 +1144,45 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .act-day{display:flex;align-items:center;gap:12px;margin:22px 0 6px;}
 .act-day::after{content:"";flex:1;height:1px;background:var(--line);}
 .act-day:first-child{margin-top:0;}
+
+/* ---- RIGHT NOW: what each agent is doing this second ----
+   Sits above the trail on the SAME screen (now, then before) rather than in a
+   second one. Deliberately heavier than a trail row: this is the half he walks
+   up to the machine to read, and it has to win the glance. */
+.rightnow{max-width:960px;margin:0 0 8px;}
+.rn-head{display:grid;gap:3px;margin-bottom:12px;}
+.rn-head h3{font-family:var(--display);font-size:19px;color:var(--ink);font-weight:600;}
+.rn-sum{margin:0;font-size:13px;color:var(--ink-2);}
+.rn-rows{display:grid;gap:8px;}
+.rn-row{display:grid;grid-template-columns:32px minmax(0,1fr) auto;gap:12px;align-items:center;
+  padding:11px 14px;border:1px solid var(--line-soft);border-radius:var(--radius-s);
+  background:var(--surface);min-width:0;}
+.rn-face{display:flex;}
+.rn-tx{min-width:0;display:grid;gap:2px;}
+.rn-tx b{font-family:var(--display);font-size:14.5px;color:var(--ink);font-weight:600;}
+.rn-detail{font-size:12.5px;color:var(--ink-2);overflow-wrap:anywhere;}
+.rn-state{flex:none;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;
+  font-size:12px;font-weight:600;color:var(--ink-2);
+  border:1px solid var(--line-soft);border-radius:99px;padding:4px 11px;background:var(--surface-2);}
+.rn-mark{font-size:13px;line-height:1;}
+
+/* THE FIVE ENDINGS ARE FIVE COLOURS, because "you stopped it" and "it finished"
+   wearing the same grey is the exact bug 🛑 was added to fix. */
+.rn-state.is-working{color:var(--pine);border-color:var(--pine);background:var(--pine-soft);}
+.rn-state.is-waiting{color:var(--ultra);border-color:var(--ultra);background:var(--ultra-soft);}
+.rn-state.is-failed{color:var(--madder);border-color:var(--madder);background:var(--madder-soft);}
+.rn-state.is-stopped{color:var(--ink);border-color:var(--ink-3);}
+.rn-state.is-done{color:var(--pine);}
+.rn-row[data-state="working"]{border-color:var(--pine);}
+.rn-row[data-state="waiting"]{border-color:var(--ultra);}
+
+/* A working row breathes, so movement on the screen means work is moving. The
+   dot is the only animated thing here; nothing else on the board moves. */
+.rn-row[data-state="working"] .rn-mark{animation:rn-pulse 1.6s ease-in-out infinite;}
+@keyframes rn-pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+@media (prefers-reduced-motion:reduce){
+  .rn-row[data-state="working"] .rn-mark{animation:none;}
+}
 .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
 .filters .chip{cursor:pointer;}
 .filters .chip[aria-pressed="false"]{opacity:.45;}
