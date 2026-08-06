@@ -87,9 +87,32 @@ Run in this session, not quoted from an agent:
 
 ### The 3 failures, and why they matter more than the other 38
 
-1. **`an agent asked in chat to read a real file on this computer actually reads
-   it`** — HIS ORIGINAL COMPLAINT, told to him as fixed MORE THAN ONCE. Still
-   broken on the installed app. The second half is worse than the first: the
+1. **FIXED 15:40, commit `78f0dd9`, walk now 39/41.** `an agent asked in chat to
+   read a real file on this computer actually reads it` — HIS ORIGINAL
+   COMPLAINT, told to him as fixed MORE THAN ONCE before today.
+
+   ROOT CAUSE, and it explains every word of his complaint: the room's line
+   beside an agent's name could only speak in **2 of 5 reach states** and
+   returned `null` in the other three. Harmless until 2026-08-05, when new
+   agents started getting the home folder as a starting folder — from that day
+   **every new agent landed in a silent state**. He was not missing a setting;
+   there was nothing on screen to find. Second hole, same class: every "I can't"
+   carries a door EXCEPT the sentence read when the switch is already ON, which
+   is the one he kept meeting.
+
+   CLASS FIX: `reachLineInRoom` is now a TOTAL function — every provider ×
+   switch × folder list returns a sentence AND a button; the screen no longer
+   decides when to speak. `widenItInApp` added to the capability table so any
+   row bounded by something he supplies must carry the words that widen it.
+   `neversilent.test.ts` walks every combination and fails if any sentence says
+   no without saying how.
+
+   PROOF on the installed app: before `FAIL … gave up after 30s waiting for the
+   room to stop saying Drivecheck has nowhere to go` (38/41) → after
+   `PASS — Drivecheck read C:\...\the-secret-note.txt from a plain chat message`
+   (39/41).
+
+   Old text kept for the record: still broken on the installed app. The second half is worse than the first: the
    failure reads `NOT ON SCREEN — … says nothing about it in the room, or offers
    no way to change it: null`. **A SILENT refusal.** He has said in his own words
    that being told "I can't" with no reason and no door is the thing he hates.
@@ -98,9 +121,16 @@ Run in this session, not quoted from an agent:
 2. **`stopping a real running turn really stops it, and the record says stopped,
    not failed`** — gave up after 120s with no record saying he stopped it.
    NOTE: an agent previously closed this as "a demo-mode artifact, the engine
-   path is correct". **That is now disproven** — this run used the real installed
-   app and a real harness. A Stop whose record still reads `ok` cannot be told
-   apart from finished or failed, which makes the button a lie.
+   path is correct". A Stop whose record still reads `ok` cannot be told apart
+   from finished or failed, which makes the button a lie.
+
+   **CORRECTION 15:45 — I OVERSTATED THIS TO HIM.** I told him it was proven
+   broken in the real app. It may be the TEST HARNESS lying: `until()` in
+   `scripts/drive-app.mjs:496` returns a bare `true` instead of its callback's
+   value, so `const record = await until(...)` then `record.words` is
+   `undefined` — which is exactly the error this check now dies on. The check
+   never reads the record it waited for. Owed to him either way: a plain
+   correction once the agent on it says which it is, app or harness.
 3. **`a hired agent's editor offers exactly what a hand-made one's does`** — a
    hired Architect is missing the section "How much can … do on its own?". Agents
    from the library silently offer him fewer controls than ones he builds.
