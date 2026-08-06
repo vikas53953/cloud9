@@ -2470,7 +2470,7 @@ async function walk(page) {
     await page.waitForSelector(".spending", { timeout: 30000 });
     await shot(page, "spending");
 
-    await check(EXPECTED_CHECKS[42], async () => {
+    await check(EXPECTED_CHECKS[41], async () => {
       const seen = await page.evaluate(() => {
         const root = document.querySelector(".spending");
         if (!root) return null;
@@ -2479,6 +2479,13 @@ async function walk(page) {
           words: (root.innerText ?? "").replace(/\s+/g, " ").trim(),
           rows: root.querySelectorAll("[data-spend-agent]").length,
           findings: root.querySelectorAll("[data-finding]").length,
+          /* WHERE THE MONEY IS ACTUALLY PRINTED, and only there. The first
+             version of this check scanned the whole page for "$0.00" and went
+             red on the page's own honest sentence — "this agent shows no money
+             rather than showing $0.00". The rule being defended is about what
+             stands in the money column, so the money column is what it reads. */
+          amounts: [...root.querySelectorAll("[data-spend-agent] .amt")]
+            .map(a => a.innerText.trim()),
         };
       });
       if (!seen) throw new Error("NOT ON SCREEN — pressing Spending drew no page at all.");
@@ -2496,16 +2503,17 @@ async function walk(page) {
       // NO INVENTED ZERO, asked of the pixels rather than of a unit test: an
       // agent nobody costed must never appear as $0.00, because that reads as
       // "this one is free" and is the most expensive lie this page could tell.
-      if (seen.rows > 0 && /\$0\.00/.test(seen.words)) {
-        throw new Error("a row is showing $0.00 — a cost nobody reported must be words, "
-          + "never a zero");
+      const zero = seen.amounts.find(a => /^\$0\.00\b/.test(a));
+      if (zero) {
+        throw new Error(`a row's money reads "${zero}" — a cost nobody reported must be `
+          + "words, never a zero, because a zero reads as 'this one is free'");
       }
       return seen.rows > 0
         ? `${seen.rows} agent row(s), ${seen.findings} named piece(s) of waste`
         : "no turns recorded yet, and it says so plainly";
     });
   } catch (err) {
-    fail(EXPECTED_CHECKS[42], err?.message ?? String(err));
+    fail(EXPECTED_CHECKS[41], err?.message ?? String(err));
     await shot(page, "spending-broken");
   }
 
