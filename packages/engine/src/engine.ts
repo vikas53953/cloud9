@@ -67,6 +67,44 @@ import { sweepPendingTree, writeWholeFile } from "./wholefile.js";
 // `killTree`; the engine only ever opens a scope around a turn and asks it to stop.
 import { newStopScope, withStopScope } from "./run.js";
 
+/**
+ * THE OWNER STOPPED THIS TURN — and it is THROWN, not returned.
+ *
+ * WHY A THROW (2026-08-06, measured on the installed app). `respondAs` used to
+ * hand a stopped turn back as an ordinary string. Every caller then wrote it
+ * down as an ordinary answer: a stopped background job was marked `completed`,
+ * his own message wore a ✅, and the room said "🧵 Finished in the thread".
+ * The run record underneath said `cancelled` all along — but the only place
+ * that word appeared was a card inside a thread panel he had not opened. So he
+ * pressed Stop and the app told him the work had finished normally, which is
+ * the exact confusion the Stop button exists to prevent.
+ *
+ * A thrown ending cannot be mistaken for an answer. Anything that runs a turn
+ * either handles this on purpose or falls into its own "did not finish" path —
+ * never into "finished". `said` is the agent's own sentence about the stop, so
+ * a caller that just wants words has them without inventing any.
+ */
+export class TurnStoppedError extends Error {
+  readonly said: string;
+  constructor(said: string) {
+    super("you stopped this run");
+    this.name = "TurnStoppedError";
+    this.said = said;
+  }
+}
+
+/**
+ * What an agent says when a turn ended badly.
+ *
+ * ONE PLACE, because there are three endings and only two used to be told
+ * apart. A stop is the OWNER'S doing and speaks in the agent's own words; a
+ * real failure still goes through the safe-words rule that strips paths, argv
+ * and anything secret-shaped.
+ */
+function saidWhenTurnEnded(err: unknown, where: string): string {
+  return err instanceof TurnStoppedError ? err.said : sanitizeForChat(err, where);
+}
+
 export interface EngineOptions {
   relayUrl: string;      // ws://host:port
   token: string;         // this user's relay token
@@ -968,7 +1006,7 @@ export class Engine {
       // THE OWNER PULLED THE PLUG AND THE HARNESS STILL ANSWERED — a half-made
       // answer from a process that was killed mid-sentence. It is not reported
       // as a good turn, because it is not one.
-      if (stop.stopped) return this.turnWasStopped(agent, seed, input, trace);
+      if (stop.stopped) this.turnWasStopped(agent, seed, input, trace); // throws
       // ===== GAP C BLOCK — end =====
       // DID THIS TURN GET THE MODEL IT ASKED FOR? Worked out once, here, and
       // put on the record, so the screen never has to guess from two ids what
@@ -1031,7 +1069,10 @@ export class Engine {
       // BEFORE the failure path: a run the owner stopped is never written down
       // as a run that broke, and he is never shown a scary sentence for doing
       // exactly what the button offered.
-      if (stop?.stopped) return this.turnWasStopped(agent, seed, input, trace);
+      // Already recorded and already spoken for by the line above — it must not
+      // be written down a second time on its way out.
+      if (err instanceof TurnStoppedError) throw err;
+      if (stop?.stopped) this.turnWasStopped(agent, seed, input, trace); // throws
       // ===== GAP C BLOCK — end =====
       this.recordRun(seed, {
         finishedAt: Date.now(), outcome: "failed", trace,
@@ -1588,7 +1629,7 @@ export class Engine {
    */
   private turnWasStopped(
     agent: AgentDef, seed: RunSeed, input: TurnInput, trace?: ProviderTrace,
-  ): string {
+  ): never {
     this.recordRun(seed, {
       finishedAt: Date.now(), outcome: "cancelled", trace,
       error: "you stopped this run",
@@ -1597,9 +1638,12 @@ export class Engine {
       outcome: "failed", ...(trace?.steps ? { steps: trace.steps } : {}),
       error: "you stopped this run",
     });
-    return "🛑 Stopped. You stopped me, so I dropped what I was doing — nothing of it is " +
+    // THROWN, NOT RETURNED — see `TurnStoppedError`. Returning the sentence is
+    // what let every caller file a stopped turn under "finished".
+    throw new TurnStoppedError(
+      "🛑 Stopped. You stopped me, so I dropped what I was doing — nothing of it is " +
       "still running and nothing more will be spent on it. Tell me what to do differently " +
-      "and I'll start again.";
+      "and I'll start again.");
   }
 
   // ===== GAP C BLOCK — end =====
@@ -1711,8 +1755,10 @@ export class Engine {
       const text = await this.respondAs(agent, brief);
       this.agentSend(agent.id, channelId, text, { ...(replyTo ? { replyTo } : {}) });
     } catch (err) {
+      // A STOP IS NOT A BREAKAGE. He pressed the button, so the agent says so
+      // in its own words rather than being reported as broken.
       this.agentSend(agent.id, channelId,
-        sanitizeForChat(err, `${agent.name} could not take a turn`),
+        saidWhenTurnEnded(err, `${agent.name} could not take a turn`),
         { ...(replyTo ? { replyTo } : {}) });
     } finally {
       this.setStatus(agent.id, "idle");
@@ -1883,6 +1929,9 @@ export class Engine {
       this.reportFinished(agent.id, task.channelId, thread,
         `📦 Task done:\n${text}`, roomLineForThreadJob(task.title));
     } catch (err) {
+      // HE STOPPED IT, so it is not a job that failed and it is certainly not a
+      // job that finished. Its own ending, written down and said out loud.
+      if (err instanceof TurnStoppedError) { this.jobWasStopped(agent, task, err.said); return; }
       const said = sanitizeForChat(err, `task "${task.title}" failed`);
       this.sendFrame({
         type: "updateTask", taskId: task.id, status: "failed", error: said,
@@ -1899,6 +1948,38 @@ export class Engine {
       this.askMessageFor.delete(task.id);
       this.askThreadFor.delete(task.id);
     }
+  }
+
+  /**
+   * A JOB THE OWNER STOPPED — written down and said out loud as its own thing.
+   *
+   * THE THIRD ENDING. A job used to have two: it finished, or it fell over.
+   * A stop was quietly filed under the first, because `respondAs` handed the
+   * stop sentence back like any other answer — so the job read `completed`, his
+   * message wore a ✅ and the room said "Finished in the thread". Three
+   * different things were being told to him as one.
+   *
+   * WHERE IT IS SAID, and this is deliberate: THE ROOM, not the thread. He
+   * pressed Stop while looking at the room, so the answer to "did that work?"
+   * belongs in front of him — not folded into a thread panel he would have to
+   * know to open. It is one message, not two, so he is never told the same
+   * thing twice in two places (the duplicate-block rule the agent editor
+   * learned the hard way). Written in the shape the screen already understands
+   * for the end of a job, so the run card — the one that says `cancelled` — is
+   * drawn beside it without a second mechanism.
+   */
+  private jobWasStopped(agent: AgentDef, task: Task, said: string): void {
+    this.sendFrame({
+      type: "updateTask", taskId: task.id, status: "cancelled",
+      result: said.slice(0, 2000),
+      ...this.summaryFor(said),
+    });
+    this.markWork(task, "working", false);
+    this.markWork(task, "stopped");
+    // NOT "proactive": he asked for this by pressing the button, so the message
+    // must not wear the "Nobody asked — I noticed" badge that marks a line the
+    // agent volunteered.
+    this.agentSend(agent.id, task.channelId, `📦 Task stopped:\n${said}`);
   }
 
   /**
@@ -2101,6 +2182,11 @@ export class Engine {
       });
       this.reportFinished(agent.id, channelId, thread, `📦 Background task done:\n${text}`,
         roomLineForThreadJob(trigger.text.replace(/^!bg\s+/i, "")));
+    } catch (err) {
+      // Same law as `jobWasStopped`: a stop is said in the room he pressed the
+      // button in, and it is never dressed up as a job that finished.
+      if (!(err instanceof TurnStoppedError)) throw err;
+      this.agentSend(agent.id, channelId, `📦 Background task stopped:\n${err.said}`);
     } finally {
       this.setStatus(agent.id, "idle");
     }
@@ -2132,7 +2218,8 @@ export class Engine {
       });
       this.agentSend(agent.id, s.channelId, `⏰ ${text}`, { proactive: true });
     } catch (err) {
-      this.agentSend(agent.id, s.channelId, sanitizeForChat(err, `scheduled check-in ${s.id} failed`));
+      this.agentSend(agent.id, s.channelId,
+        saidWhenTurnEnded(err, `scheduled check-in ${s.id} failed`));
     } finally {
       this.setStatus(agent.id, "idle");
     }
@@ -2586,7 +2673,7 @@ export class Engine {
       return result;
     } catch (err) {
       this.agentSend(agent.id, input.channelId,
-        sanitizeForChat(err, `${agent.name} could not work in the repository`), inThread);
+        saidWhenTurnEnded(err, `${agent.name} could not work in the repository`), inThread);
       return undefined;
     } finally {
       this.setStatus(agent.id, "idle");
@@ -3024,7 +3111,7 @@ export class Engine {
       this.agentSend(target.id, channelId, text);
     } catch (err) {
       this.agentSend(target.id, channelId,
-        sanitizeForChat(err, `${target.name} could not pick up a handoff`));
+        saidWhenTurnEnded(err, `${target.name} could not pick up a handoff`));
     } finally {
       this.setStatus(target.id, "idle");
     }

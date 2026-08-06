@@ -3286,6 +3286,15 @@ export const WORK_REACTIONS = {
   done: "✅",
   /** finished, and it didn't */
   failed: "❌",
+  /**
+   * THE OWNER STOPPED IT — the third ending, added 2026-08-06.
+   *
+   * There were two ticks for three things that can happen, so a job the owner
+   * stopped wore the same ✅ as one that ran to the end. He pressed Stop and
+   * his own message told him the work had finished normally. A stop is neither
+   * a success nor a breakage, so it is neither of their ticks.
+   */
+  stopped: "🛑",
 } as const;
 
 export type WorkReaction = keyof typeof WORK_REACTIONS;

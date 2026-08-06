@@ -22,13 +22,20 @@ const tmp = (): string => tempDir("cloud9-react-");
 
 // ------------------------------------------------------- one vocabulary only
 
-test("the four work emoji are shared's, not a copy of shared's", () => {
+test("the work emoji are shared's, not a copy of shared's", () => {
   // identity, not deep-equality: two lists that happen to agree today are
   // exactly the drift this rule exists to prevent
   assert.equal(WORK_REACTIONS, shared.WORK_REACTIONS);
   assert.equal(workEmoji("picked"), shared.WORK_REACTIONS.picked);
   assert.equal(workEmoji("done"), shared.WORK_REACTIONS.done);
-  assert.equal(Object.keys(shared.WORK_REACTIONS).length, 4, "four moments, no fifth");
+  assert.equal(workEmoji("stopped"), shared.WORK_REACTIONS.stopped);
+  // FIVE SINCE 2026-08-06, and the fifth is not a decoration: a job can end
+  // three ways — it worked, it broke, or he stopped it — and until `stopped`
+  // existed a job the owner stopped wore the same ✅ as one that finished.
+  assert.equal(Object.keys(shared.WORK_REACTIONS).length, 5,
+    "picked, working, done, failed, stopped — no sixth");
+  assert.notEqual(shared.WORK_REACTIONS.stopped, shared.WORK_REACTIONS.done);
+  assert.notEqual(shared.WORK_REACTIONS.stopped, shared.WORK_REACTIONS.failed);
 });
 
 // ------------------------------------------------------------- bookkeeping

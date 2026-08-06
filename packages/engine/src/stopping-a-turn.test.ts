@@ -18,7 +18,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AgentDef, ClientFrame, Message, RunRecord, WorldState } from "@cloud9/shared";
+import {
+  AgentDef, ClientFrame, Message, RunRecord, Task, WORK_REACTIONS, WorldState,
+} from "@cloud9/shared";
 import { newStopScope, run, withStopScope } from "./run.js";
 import { Engine } from "./engine.js";
 import { ClaudeProvider, RespondInput } from "./provider.js";
@@ -419,4 +421,82 @@ test("stopping one agent never drops another agent's queued work", async () => {
   provider.release();
   await new Promise(r => setTimeout(r, 150));
   assert.equal(provider.started, 2, "Ranger's turn must still have run");
+});
+
+// ===========================================================================
+// 5. AND THE THIRD ENDING (2026-08-06)
+// ===========================================================================
+//
+// Found by driving the INSTALLED app, not by reading the code. Everything above
+// was already true — a stopped turn really was recorded as `cancelled`. What
+// nothing here asked was what the rest of the app then DID with it.
+//
+// Measured on the real Windows build: press Stop on a background job and the
+// run record says `cancelled`, while the job says `completed`, the asking
+// message wears a ✅ and the room says "🧵 Finished in the thread". The only
+// word "stopped" on the whole machine was inside a run card in a thread panel
+// he had not opened. He pressed Stop and every surface he could see told him
+// the work had finished normally — which is exactly the confusion the button
+// exists to prevent.
+//
+// The cause was one line: `respondAs` HANDED BACK the stop sentence like any
+// other answer, so no caller could tell the difference. It now throws
+// `TurnStoppedError`, and these hold the three endings apart.
+
+const job = (over: Partial<Task> = {}): Task => ({
+  id: "t1", channelId: "c1", agentId: "a1", title: "compare every villa",
+  status: "not_started", requesterId: OWNER, requesterName: "Vikas",
+  createdAt: 0, updatedAt: 0, ...over,
+} as Task);
+
+const taskUpdates = (frames: ClientFrame[]) =>
+  frames.filter((f): f is Extract<ClientFrame, { type: "updateTask" }> => f.type === "updateTask");
+
+const reactions = (frames: ClientFrame[]) =>
+  frames.filter((f): f is Extract<ClientFrame, { type: "agentReact" }> => f.type === "agentReact");
+
+test("A JOB THE OWNER STOPPED IS WRITTEN DOWN AS STOPPED — not as one that finished", async () => {
+  const provider = new HangingProvider();
+  const { engine, frames } = makeEngine(provider);
+  const inner = engine as unknown as {
+    runTask(a: AgentDef, t: Task): Promise<void>;
+    askMessageFor: Map<string, string>;
+  };
+  // the message he typed the "@Scout !bg …" in, so the ticks have somewhere to go
+  inner.askMessageFor.set("t1", "m1");
+
+  const running = inner.runTask(agent(), job());
+  await untilWorking(engine, "a1");
+  engine.stopAgent("a1");
+  provider.release();
+  await running;
+
+  assert.equal(recorded(frames)[0]?.outcome, "cancelled", "the record still says he stopped it");
+
+  const last = taskUpdates(frames).at(-1);
+  assert.equal(last?.status, "cancelled",
+    "a job he stopped may never be filed as 'completed' — that is the lie the installed " +
+    "app was telling him");
+
+  const said = agentSends(frames).join("\n");
+  assert.match(said, /stopped/i, "and the room he pressed the button in is told so");
+  assert.ok(!/Task done|Finished in the thread/i.test(said),
+    "nothing may call a stopped job finished");
+
+  const ticks = reactions(frames).filter(r => r.on !== false).map(r => r.emoji);
+  assert.ok(ticks.includes(WORK_REACTIONS.stopped),
+    "his own message wears the stop tick");
+  assert.ok(!ticks.includes(WORK_REACTIONS.done),
+    "…and never the ✅ that says it ran to the end");
+});
+
+test("a job nobody stopped still ends as a job that finished", async () => {
+  class Quick implements ClaudeProvider {
+    async respond(): Promise<string> { return "here are the villas"; }
+  }
+  const { engine, frames } = makeEngine(new Quick());
+  await (engine as unknown as { runTask(a: AgentDef, t: Task): Promise<void> })
+    .runTask(agent(), job());
+  assert.equal(taskUpdates(frames).at(-1)?.status, "completed",
+    "stopping must not turn every job into one he stopped");
 });
