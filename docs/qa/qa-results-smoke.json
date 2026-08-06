@@ -1,0 +1,682 @@
+{
+  "ranAt": "2026-08-05T20:23:41.095Z",
+  "mode": "smoke",
+  "expected": [
+    "signing in, the crew, and an agent that answers",
+    "a friend joins, and everyone is listed once",
+    "threads",
+    "search across everything",
+    "the four events that interrupt him",
+    "who may set an agent working",
+    "a rung really is a prefix of the table",
+    "what an agent will ask before it acts",
+    "a file: picked, sent, opened, and the bytes fetched back",
+    "the stop button, and what the record calls a stopped turn",
+    "did it really do what it said"
+  ],
+  "executed": 88,
+  "acts": [
+    {
+      "name": "signing in, the crew, and an agent that answers",
+      "smoke": true,
+      "ran": true,
+      "startedAt": 1785961233851,
+      "checksBefore": 0,
+      "checks": 18,
+      "seconds": 72.4
+    },
+    {
+      "name": "what the sign-in card says about every harness",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961306212,
+      "checksBefore": 18,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "settings, the model picker and skills",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961306213,
+      "checksBefore": 18,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "what an agent remembers, hands over, and the actions menu",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961306213,
+      "checksBefore": 18,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "a friend joins, and everyone is listed once",
+      "smoke": true,
+      "ran": true,
+      "startedAt": 1785961306213,
+      "checksBefore": 18,
+      "checks": 16,
+      "seconds": 16.1
+    },
+    {
+      "name": "the design pass, and how a message is drawn",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961322362,
+      "checksBefore": 34,
+      "checks": 0,
+      "seconds": 0.7
+    },
+    {
+      "name": "a conversation longer than one page, reactions, edits",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961323036,
+      "checksBefore": 34,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "threads",
+      "smoke": true,
+      "ran": true,
+      "startedAt": 1785961323037,
+      "checksBefore": 34,
+      "checks": 5,
+      "seconds": 1.2
+    },
+    {
+      "name": "where an answer lands, and the setting that moves it",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961324228,
+      "checksBefore": 39,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "the control that was taken away, and the road it left",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961324229,
+      "checksBefore": 39,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "a file dropped on the box, and the receipts",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961324229,
+      "checksBefore": 39,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "a person's reaction, and the honest half of ephemeral",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961324229,
+      "checksBefore": 39,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "search across everything",
+      "smoke": true,
+      "ran": true,
+      "startedAt": 1785961324229,
+      "checksBefore": 39,
+      "checks": 3,
+      "seconds": 2.4
+    },
+    {
+      "name": "unread, and the rules that decide an interruption",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961326582,
+      "checksBefore": 42,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "the four events that interrupt him",
+      "smoke": true,
+      "ran": true,
+      "startedAt": 1785961326582,
+      "checksBefore": 42,
+      "checks": 6,
+      "seconds": 38.7
+    },
+    {
+      "name": "who may set an agent working",
+      "smoke": true,
+      "ran": true,
+      "startedAt": 1785961365288,
+      "checksBefore": 48,
+      "checks": 10,
+      "seconds": 1.6
+    },
+    {
+      "name": "a rung really is a prefix of the table",
+      "smoke": true,
+      "ran": true,
+      "startedAt": 1785961366855,
+      "checksBefore": 58,
+      "checks": 8,
+      "seconds": 0.7
+    },
+    {
+      "name": "what an agent will ask before it acts",
+      "smoke": true,
+      "ran": true,
+      "startedAt": 1785961367547,
+      "checksBefore": 66,
+      "checks": 11,
+      "seconds": 1.5
+    },
+    {
+      "name": "a hand-picked mix is never rounded",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961369038,
+      "checksBefore": 77,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "the honest report, and the casting room",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961369038,
+      "checksBefore": 77,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "escape, where a count meets a word",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961369038,
+      "checksBefore": 77,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "the rail, paused, and an agent nobody can run",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961369038,
+      "checksBefore": 77,
+      "checks": 0,
+      "seconds": 0.2
+    },
+    {
+      "name": "a room name held to the same rule as an agent's",
+      "smoke": false,
+      "ran": false,
+      "startedAt": 1785961369261,
+      "checksBefore": 77,
+      "checks": 0,
+      "seconds": 0
+    },
+    {
+      "name": "a file: picked, sent, opened, and the bytes fetched back",
+      "smoke": true,
+      "ran": true,
+      "startedAt": 1785961369261,
+      "checksBefore": 77,
+      "checks": 11,
+      "seconds": 51.8
+    }
+  ],
+  "missing": [
+    "the stop button, and what the record calls a stopped turn",
+    "did it really do what it said"
+  ],
+  "results": [
+    {
+      "name": "join screen renders",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "owner connects, #general visible",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "agent create offers a provider picker (Claude default)",
+      "pass": true,
+      "detail": "claude/codex value=claude"
+    },
+    {
+      "name": "agent create offers a model picker with a model already chosen",
+      "pass": true,
+      "detail": "claude-fable-5/claude-opus-5/claude-opus-4-8/claude-opus-4-7/claude-opus-4-6/claude-opus-4-5/claude-opus-4-1/claude-opus-4-0/claude-sonnet-5/claude-sonnet-4-6/claude-sonnet-4-5/claude-haiku-4-5/claude-haiku-4-5-20251001 value=claude-sonnet-5"
+    },
+    {
+      "name": "models are shown by friendly name, not raw ids",
+      "pass": true,
+      "detail": "Fable 5/Opus 5/Opus 4.8/Opus 4.7/Opus 4.6/Opus 4.5/Opus 4.1/Opus 4/Sonnet 5/Sonnet 4.6/Sonnet 4.5/Haiku 4.5/Haiku 4.5 (dated build)"
+    },
+    {
+      "name": "agent create has a Skills section with a way to write and to upload one",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "agent created and listed",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "B6: a second agent with a name already taken is refused in plain words, and nothing he typed is lost",
+      "pass": true,
+      "detail": "you already have an agent called \"Scout\" — give this one a different name :: name \"scout\", 59 characters of personality kept"
+    },
+    {
+      "name": "B6b: there is exactly ONE Scout to point at, so an @ mention can only mean one agent",
+      "pass": true,
+      "detail": "1 agents named Scout"
+    },
+    {
+      "name": "clicking an agent opens the direct conversation with it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the agent's conversation shows the app and the model it runs on",
+      "pass": true,
+      "detail": "Claude · Sonnet 5"
+    },
+    {
+      "name": "that conversation is found, not created a second time",
+      "pass": true,
+      "detail": "0 then 0 rows named Scout"
+    },
+    {
+      "name": "channel created with agent member",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "@mention in the conversation is answered in a thread under the question, and the question says it has a reply",
+      "pass": true,
+      "detail": "1 agent answer(s) in the thread, the question says 1 reply/replies"
+    },
+    {
+      "name": "free chatter: a relevant agent chimes in unmentioned, in a thread under what it is answering",
+      "pass": true,
+      "detail": "1 reply/replies on the question"
+    },
+    {
+      "name": "a background job acknowledges in the thread, does its work there, and posts ONE short line back to the room saying where to look",
+      "pass": true,
+      "detail": "2 line(s) in the thread :: room says \"Scout AGENT 01:50 Nobody asked — I noticed runs on Claude · Sonnet 5 🧵 Finished in the th\""
+    },
+    {
+      "name": "quick chat (Ctrl/Cmd+K) sends",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "settings shows live Claude + Codex status",
+      "pass": true,
+      "detail": "claude: signed in as vikas53953@gmail.com | codex: signed in as ChatGPT account"
+    },
+    {
+      "name": "invite code generated",
+      "pass": true,
+      "detail": "inv_nAPdeRh_5IlSyH6dpMekvg"
+    },
+    {
+      "name": "friend joins via invite",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "human-to-human message syncs across clients",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a successful join stores the durable credential the hub issued, never the invite code",
+      "pass": true,
+      "detail": "47 chars"
+    },
+    {
+      "name": "a spent invite leaves the credential that was already working exactly as it was",
+      "pass": true,
+      "detail": "stored \"tok_s_BOVsFZLTrQDuWpEmVPM3C-eszuoypbkTu4DsJT8CE\""
+    },
+    {
+      "name": "a refused code drops the person back into their own Cloud9 rather than a dead sign-in box",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and it says what happened in plain words, including that nothing was lost",
+      "pass": true,
+      "detail": "That invite has already been used — ask Vikas for a new one. You are still signed in as before."
+    },
+    {
+      "name": "a bad code with nothing to fall back to says so and does not pretend you are signed in",
+      "pass": true,
+      "detail": "That invite code isn't valid. Check it for typos, or ask Vikas for a new one."
+    },
+    {
+      "name": "a join that works replaces the old credential with the one the hub just issued",
+      "pass": true,
+      "detail": "47 chars"
+    },
+    {
+      "name": "and a reload comes straight back in on it, with no sign-in box",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the one startup path that wipes credentials still leaves the session credential alone",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "empty message is not sent",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the people list shows each person once",
+      "pass": true,
+      "detail": "Vikas, Priya, Ravi"
+    },
+    {
+      "name": "clicking a person opens the direct conversation with them",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "clicking that person again reuses the same conversation",
+      "pass": true,
+      "detail": "1 DM row(s)"
+    },
+    {
+      "name": "your own row is marked as you, not offered as a chat",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a message can be replied to in a thread, and the thread opens beside it",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a reply lands in the thread and the message it answers says how many replies it has",
+      "pass": true,
+      "detail": "↳ 1 reply · last at 01:52"
+    },
+    {
+      "name": "the reply count opens the thread, with the message it started and every reply",
+      "pass": true,
+      "detail": "2 messages in the panel"
+    },
+    {
+      "name": "with threads on, a reply is kept in its thread and is NOT a row in the conversation",
+      "pass": true,
+      "detail": "1 row(s) in the room"
+    },
+    {
+      "name": "the way into a thread is a control that says Reply, not a bare glyph",
+      "pass": true,
+      "detail": "↳ Reply"
+    },
+    {
+      "name": "search opens from the menu and looks across everything, not one room",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "results are grouped by conversation, with who said it, when, and the words around it",
+      "pass": true,
+      "detail": "1 group(s) :: V Vikas Today · 01:52 what should we do about the backlog?"
+    },
+    {
+      "name": "clicking a result goes to that message, in the conversation it was said in",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a mention raises an on-screen toast, in plain words",
+      "pass": true,
+      "detail": "Priya mentioned you :: @Vikas notify-mention-alpha please"
+    },
+    {
+      "name": "a duplicate does not stack — the same mention subject shows exactly one toast",
+      "pass": true,
+      "detail": "toasts for that subject: 1"
+    },
+    {
+      "name": "his own action shows nothing — a line he sends never toasts him",
+      "pass": true,
+      "detail": "self toasts: 0"
+    },
+    {
+      "name": "a job finishing shows a toast with the right words",
+      "pass": true,
+      "detail": "A job was cancelled"
+    },
+    {
+      "name": "a real reply in a thread he started interrupts him, and says whose thread it was",
+      "pass": true,
+      "detail": "Priya replied in your thread :: notify-thread-reply-alpha, one more thing"
+    },
+    {
+      "name": "quiet hours silence the toast — nothing pops inside the window",
+      "pass": true,
+      "detail": "toasts during quiet: 0"
+    },
+    {
+      "name": "the agent editor asks who may use this agent, and starts closed",
+      "pass": true,
+      "detail": "owner/allowlist/anyone chosen=owner"
+    },
+    {
+      "name": "choosing “me and these people” offers the people to choose",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the crew card says, in plain words, who may set this agent working",
+      "pass": true,
+      "detail": "you and 1 other person can use it"
+    },
+    {
+      "name": "the choice is saved on the agent and is there when you open it again",
+      "pass": true,
+      "detail": "Only you can use it"
+    },
+    {
+      "name": "the agent editor leads with the whole ladder the engine offers, not four checkboxes",
+      "pass": true,
+      "detail": "talk → look → work → mypc → computer"
+    },
+    {
+      "name": "every rung says in his words what it means for his computer",
+      "pass": true,
+      "detail": "all match"
+    },
+    {
+      "name": "the top rung is offered as a thing he can pick, not hidden behind a warning",
+      "pass": true,
+      "detail": "Everything this app can do on this computer"
+    },
+    {
+      "name": "every power the engine's table owns has a switch on this screen, in the same order",
+      "pass": true,
+      "detail": "8 rows: webSearch, files, helpers, schedules, background, wholeComputer, commands, connections"
+    },
+    {
+      "name": "each switch is named in his words, never with a tool name",
+      "pass": true,
+      "detail": "Look things up on the web | Keep and change files in its own folder | Get help from its own helper agents | Check in on a repeating schedule | Work on jobs in the background | Reach files outside its own folder\nasks you first | Run programs on this computer\nasks you first | Use connected services your owner picked for you\nasks you first"
+    },
+    {
+      "name": "the powers that change his machine or spend money are marked as asking first",
+      "pass": true,
+      "detail": "wholeComputer, commands, connections"
+    },
+    {
+      "name": "picking the top rung really hands over every power the engine has",
+      "pass": true,
+      "detail": "all on"
+    },
+    {
+      "name": "and the ladder then reads as the top rung",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "no switch is on and granting nothing any more — the 'not doing anything yet' notice draws nothing at all",
+      "pass": true,
+      "detail": "0 notice(s), 0 inert row(s)"
+    },
+    {
+      "name": "with reach outside its own folder switched on and no folder chosen, the screen says the agent HAS none",
+      "pass": true,
+      "detail": "No folders chosen yet, so it has no extra reach. You have allowed Scout to go outside its own folder, but you have not said which "
+    },
+    {
+      "name": "and it offers the way to choose one, with nothing to forget while there is nothing chosen",
+      "pass": true,
+      "detail": "Choose a folder"
+    },
+    {
+      "name": "a window with no folder picker says which one can choose folders instead of pretending, and claims nothing new about reach",
+      "pass": true,
+      "detail": "This window cannot open the computer's folder picker, so the folders have to be chosen in the installed Cloud9 app."
+    },
+    {
+      "name": "with connected services switched on and no file chosen, the screen says the agent HAS none",
+      "pass": true,
+      "detail": "No connections file chosen yet, so there are no connections. You have allowed Scout to use connected services, but you have not pi"
+    },
+    {
+      "name": "choosing is offered, and a window with no file picker says which one can instead of pretending",
+      "pass": true,
+      "detail": "This window cannot open the computer's file picker, so the file has to be chosen in the installed Cloud9 app."
+    },
+    {
+      "name": "with the top rung on, the screen names exactly the powers that will stop and ask him — once",
+      "pass": false,
+      "detail": "2 \"you'll be asked\" block(s) on screen :: Use connected services your owner picked for you"
+    },
+    {
+      "name": "and those are stated, never offered as switches he could clear",
+      "pass": true,
+      "detail": "Everything else — running programs, reading and changing your files, git on this computer — Scout does without stopping. || These are not sw"
+    },
+    {
+      "name": "the two approvals that really are his choice stay editable",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "and with nothing switched on, nothing claims to be inert either",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "with connected services off and no file remembered, the connections block says nothing at all",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "with reach outside its own folder off and no folder remembered, the folders block says nothing at all",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "picking the bottom rung takes every one of them back",
+      "pass": true,
+      "detail": "all off"
+    },
+    {
+      "name": "and nothing then claims it will ask him about anything",
+      "pass": false,
+      "detail": ""
+    },
+    {
+      "name": "TWO ABILITIES ON: no rung claims to be his choice — the dot is off “Just talk” entirely",
+      "pass": true,
+      "detail": "{\"ladder\":\"mixture\",\"pressed\":[],\"inked\":[],\"banner\":\"Your own mixture — 2 abilities of 8 switched on. On right now: Look things up on the web, Work on jobs in the background. This is not one of the 5 rungs, so none of them is picked below. Pick a rung to replace your mixture, or leave it as it is — the switches are what the agent actually gets.\",\"on\":2}"
+    },
+    {
+      "name": "and the screen says his own mixture, names what is really on, and names NO rung",
+      "pass": true,
+      "detail": "Your own mixture — 2 abilities of 8 switched on. On right now: Look things up on the web, Work on jobs in the background. This is not one of the 5 rungs, so none of them "
+    },
+    {
+      "name": "every rung, picked, reads back as exactly itself — and nothing then calls it a mixture",
+      "pass": true,
+      "detail": "[{\"ladder\":\"talk\",\"pressed\":[\"talk\"],\"mixture\":0,\"on\":0},{\"ladder\":\"look\",\"pressed\":[\"look\"],\"mixture\":0,\"on\":2},{\"ladder\":\"work\",\"pressed\":[\"work\"],\"mixture\":0,\"on\":5},{\"ladder\":\"mypc\",\"pressed\":[\"mypc\"],\"mixture\":0,\"on\":7},{\"ladder\":\"computer\",\"pressed\":[\"computer\"],\"mixture\":0,\"on\":8}]"
+    },
+    {
+      "name": "A3: a message too long is refused in plain words AND every character he typed is still there",
+      "pass": true,
+      "detail": "that message is too long (max 40000 characters) :: box holds 41000 of 41000"
+    },
+    {
+      "name": "the composer offers a way to attach a file",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "a picked file goes up and says it is ready to send",
+      "pass": true,
+      "detail": "362 bytes · ready to send"
+    },
+    {
+      "name": "F3: the everyday file names a person really has are accepted, not bounced",
+      "pass": true,
+      "detail": "site-plan.png:uptile done | ledger.bin:uptile done | report(1).pdf:uptile done | café-menu.txt:uptile done | photo#3.png:uptile done"
+    },
+    {
+      "name": "a file the hub would refuse is refused in the composer, in plain words",
+      "pass": true,
+      "detail": "that file name isn't allowed — keep it to 128 characters or fewer, start it with a letter, a number or a picture, leave out / \\ : * ? \" < > | and .., don't end it with a dot or a space, leave out hidden control characters, and don't name it after a Windows device (CON, NUL, COM1 and friends)"
+    },
+    {
+      "name": "F3: the refusal on screen is the sentence the rule generated, word for word",
+      "pass": true,
+      "detail": "that file name isn't allowed — keep it to 128 characters or fewer, start it with a letter, a number or a picture, leave out / \\ : * ? \" < > | and .., don't end it with a dot or a space, leave out hidden control characters, and don't name it after a Windows device (CON, NUL, COM1 and friends)\n  rule says: that file name isn't allowed — keep it to 128 characters or fewer, start it with a letter, a number or a picture, leave out / \\ : * ? \" < > | and .., don't end it with a dot or a space, leave out hidden control characters, and don't name it after a Windows device (CON, NUL, COM1 and friends)"
+    },
+    {
+      "name": "a file can be taken back off the message before it is sent",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "the composer says how much is waiting to be sent, against the ceiling the hub itself holds",
+      "pass": true,
+      "detail": "FILES WAITING TO BE SENT 397 bytes of 50 MB Kept for 24 hours — send them or take them off before then. :: held=397 max=50000000"
+    },
+    {
+      "name": "the send button says how many files are going with the message",
+      "pass": true,
+      "detail": "Send with 2 files"
+    },
+    {
+      "name": "UNCAUGHT",
+      "pass": false,
+      "detail": "TimeoutError: page.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.composer .primary.small')\u001b[22m\n\u001b[2m    - locator resolved to <button class=\"primary small sendbtn\">Send with 2 files</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"status\" class=\"notify-toast\" data-kind=\"thread_reply\" data-subject=\"m_msgja6f07jdfrn\">…</div> from <div role=\"region\" class=\"notify-stack\" aria-label=\"Notifications\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <div role=\"status\" class=\"notify-toast\" data-kind=\"thread_reply\" data-subject=\"m_msgja6f07jdfrn\">…</div> from <div role=\"region\" class=\"notify-stack\" aria-label=\"Notifications\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    56 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is visible, enabled and stable\u001b[22m\n\u001b[2m       - scrolling into view if needed\u001b[22m\n\u001b[2m       - done scrolling\u001b[22m\n\u001b[2m       - <div role=\"status\" class=\"notify-toast\" data-kind=\"thread_reply\" data-subject=\"m_msgja6f07jdfrn\">…</div> from <div role=\"region\" class=\"notify-stack\" aria-label=\"Notifications\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n"
+    },
+    {
+      "name": "no console errors",
+      "pass": true,
+      "detail": ""
+    }
+  ]
+}

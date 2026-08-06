@@ -955,10 +955,31 @@ export class Store implements JoinHubStore {
   }
 
   private setSchemaVersion(v: number): void {
+    this.setMeta("schemaVersion", String(v));
+  }
+
+  /**
+   * ONE REMEMBERED FACT ABOUT THIS DATABASE ITSELF — read.
+   *
+   * `schemaVersion` was the only thing `meta` was ever asked for, through a
+   * hand-written SELECT. A one-time job needs the same table to answer "have I
+   * already run on this file?", and the honest way to give it one is to open
+   * the existing row store rather than add a second place where the database
+   * remembers things about itself. Absent means "never written", which is what
+   * makes a marker a marker.
+   */
+  meta(key: string): string | undefined {
+    const row = this.db.prepare("SELECT value FROM meta WHERE key=?").get(key) as
+      { value: string } | undefined;
+    return row?.value;
+  }
+
+  /** The same fact, written. Last write wins — one row per key, by primary key. */
+  setMeta(key: string, value: string): void {
     this.db.prepare(
-      "INSERT INTO meta(key,value) VALUES('schemaVersion',?) " +
+      "INSERT INTO meta(key,value) VALUES(?,?) " +
       "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-    ).run(String(v));
+    ).run(key, value);
   }
 
   private chainExistingActivity(): void {

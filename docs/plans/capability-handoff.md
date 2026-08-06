@@ -251,6 +251,22 @@ has another owner, so it was not touched.
 
 Checked by tests that fail if any of it is traded away for the ceiling:
 
+> **AMENDED 2026-08-06 — HE ASKED FOR THE OPPOSITE, AND IT IS HIS MACHINE.**
+> Everything in this section still describes what an agent gets by default and
+> what it gets whenever the new per-agent switch **"Use my own Claude Code /
+> Codex setup"** is OFF. With that switch ON, the isolation flags are simply not
+> applied and his own setup loads: his CLAUDE.md/AGENTS.md, his slash commands,
+> his connected services, his plugins, his hooks, his saved memory. The decision
+> has ONE owner for both harnesses — `packages/engine/src/ownersetup.ts` — and
+> the run record now says which mode each turn ran in. Two things are still NOT
+> inherited at either setting: his stored API credentials (`envWithoutCredentials`
+> runs in both modes) and driving his signed-in browser or desktop as him
+> (`CODEX_NEVER_ENABLED`). Measured live 2026-08-05/06 through Cloud9's own
+> `claudeArgs`: switch OFF → 0 MCP servers, 0 slash commands, CLAUDE.md not
+> loaded, "Unknown command: /cloud9probe", 7,111-token prompt; switch ON → 17 MCP
+> servers, 145 slash commands, CLAUDE.md loaded, the slash command ran,
+> 30,213-token prompt. See `ownersetup.test.ts`.
+
 - `--strict-mcp-config`, `--disable-slash-commands` and `--setting-sources ""`
   are on **at the top rung**, so his CLAUDE.md, plugins, hooks, MCP servers and
   130 slash commands are still shut out of an agent that can run programs.

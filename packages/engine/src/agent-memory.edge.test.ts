@@ -109,47 +109,52 @@ test("newMemoryId at the ends of its range is still safe, padded and sortable", 
 
 // --------------------------------------------------------------- retrieval, exactly at budget
 
-test("the character budget keeps the note that fits EXACTLY, and drops the one after", () => {
-  const n0 = note({ id: "m-000000001-0000", text: "the owner prefers plain words" });
-  const n1 = note({
-    id: "m-000000002-0000", kind: "decision", source: "agent",
+// GAP B (2026-08-05): the budget is now spent from the NEWEST end backwards, so
+// every "which one goes?" test below asks about the OLDEST end. What survives is
+// still rendered oldest-first — that half did not change and is pinned too.
+
+test("the character budget keeps the note that fits EXACTLY, and drops the one before it", () => {
+  const n0 = note({ id: "m-000000001-0000", text: "this one never fits" });
+  const n1 = note({ id: "m-000000002-0000", text: "the owner prefers plain words" });
+  const n2 = note({
+    id: "m-000000003-0000", kind: "decision", source: "agent",
     text: "the deploy key lives in the vault",
   });
-  const n2 = note({ id: "m-000000003-0000", text: "this one never fits" });
-  const line0 = lineOf(n0);
   const line1 = lineOf(n1);
-  // the budget that covers both lines and the newline between them, to the character
-  const exact = line0.length + line1.length + 2;
+  const line2 = lineOf(n2);
+  // the budget that covers the two NEWEST lines and the newline between them
+  const exact = line1.length + line2.length + 2;
   const rendered = retrieveMemory([n0, n1, n2], { characters: exact, notes: 200 });
-  assert.equal(rendered, `${line0}\n${line1}`,
-    "both notes kept — the second fit with zero characters to spare");
+  assert.equal(rendered, `${line1}\n${line2}`,
+    "both newest notes kept — the second fit with zero characters to spare, and they read in order");
   // BREAK: change `spent + line.length + 1 > budget` to `>=` and the exact fit is
   // dropped — memory silently one note poorer. Watched.
 });
 
-test("one character short of the budget drops the second note entirely", () => {
+test("one character short of the budget drops the OLDER note entirely", () => {
   const n0 = note({ id: "m-000000001-0000" });
   const n1 = note({ id: "m-000000002-0000", text: "the deploy key lives in the vault" });
   const line0 = lineOf(n0);
   const line1 = lineOf(n1);
   const oneShort = line0.length + line1.length + 1;
   const rendered = retrieveMemory([n0, n1], { characters: oneShort, notes: 200 });
-  assert.equal(rendered, line0, "the second note needed one more character than there was");
+  assert.equal(rendered, line1, "the older note needed one more character than there was");
 });
 
-test("the note-count budget keeps exactly N notes and drops note N+1", () => {
+test("the note-count budget keeps exactly the N newest and drops the one before them", () => {
   const notes = [1, 2, 3, 4].map(i =>
     note({ id: `m-00000000${i}-0000`, text: `note number ${i}` }));
   const three = retrieveMemory(notes, { characters: 1_000_000, notes: 3 }).split("\n");
   assert.equal(three.length, 3);
-  assert.ok(three[0].includes("note number 1"));
-  assert.ok(!three.some(l => l.includes("note number 4")), "note N+1 is the first to go");
+  assert.ok(three[0].includes("note number 2"), "the kept notes still read oldest-first");
+  assert.ok(three[2].includes("note number 4"));
+  assert.ok(!three.some(l => l.includes("note number 1")), "the oldest is the first to go");
   const one = retrieveMemory(notes, { characters: 1_000_000, notes: 1 });
-  assert.ok(one.includes("note number 1"));
-  assert.ok(!one.includes("note number 2"), "a budget of one note is one note");
+  assert.ok(one.includes("note number 4"));
+  assert.ok(!one.includes("note number 3"), "a budget of one note is the one newest note");
 });
 
-test("the first note alone may exceed the budget — truncated, saying so, to the character", () => {
+test("the newest note alone may exceed the budget — truncated, saying so, to the character", () => {
   const n0 = note({ id: "m-000000001-0000", text: "w".repeat(600) });
   const line = lineOf(n0);
   const marker = " …(this note was too long to show in full)";
@@ -163,13 +168,13 @@ test("the first note alone may exceed the budget — truncated, saying so, to th
     "the overshoot is exactly the marker's length, never more");
 });
 
-test("only the FIRST note is ever truncated — an overlong second note is dropped, not cut", () => {
-  const n0 = note({ id: "m-000000001-0000" });
-  const huge = note({ id: "m-000000002-0000", text: "y".repeat(600) });
-  const line0 = lineOf(n0);
-  const rendered = retrieveMemory([n0, huge], { characters: line0.length + 10, notes: 200 });
-  assert.equal(rendered, line0,
-    "the spent>0 check fires before the truncation branch — truncation is a first-note privilege");
+test("only the NEWEST note is ever truncated — an overlong older note is dropped, not cut", () => {
+  const huge = note({ id: "m-000000001-0000", text: "y".repeat(600) });
+  const n1 = note({ id: "m-000000002-0000" });
+  const line1 = lineOf(n1);
+  const rendered = retrieveMemory([huge, n1], { characters: line1.length + 10, notes: 200 });
+  assert.equal(rendered, line1,
+    "the spent>0 check fires before the truncation branch — truncation is the newest note's privilege");
   assert.ok(!rendered.includes("too long"), "and no marker for a note that was dropped whole");
 });
 

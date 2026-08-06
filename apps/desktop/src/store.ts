@@ -7,6 +7,7 @@ import {
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   MemoryNote,
   EverywhereHit, SearchKind,
+  ReachCatchup,
   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
   UnreadEntry, User,
   effectiveArtifactAccess, latestVersion,
@@ -237,6 +238,12 @@ export interface World {
    * follows them between machines. There is no browser copy of this any more.
    */
   unread: Record<ID, UnreadEntry>;
+  /**
+   * WHAT THE HUB CHANGED ABOUT HIS AGENTS BEFORE HE ARRIVED — the receipt for
+   * the one-time catch-up, from the welcome frame, and only ever sent to the
+   * person whose agents they are. Absent means nothing was changed.
+   */
+  reachCatchup?: ReachCatchup;
   /** the one search running or last answered */
   search?: SearchState;
   /** the one "search everywhere" running or last answered */
@@ -2724,6 +2731,11 @@ export class RelayClient {
         // "loading" rather than the honest empty state it has not earned.
         w.memory = {};
         for (const entry of frame.state.unread ?? []) w.unread[entry.channelId] = entry;
+        // The one-time catch-up's receipt, if this hub ran it just now. It is a
+        // fact about THIS connection like everything else above, so a reconnect
+        // to a hub that has nothing to say clears it rather than leaving a
+        // notice on screen about something that has already been told.
+        w.reachCatchup = frame.state.reachCatchup;
         break;
       }
       case "token":

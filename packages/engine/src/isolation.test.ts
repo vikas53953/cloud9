@@ -105,7 +105,12 @@ test("a Codex agent does not load the owner's config or rules either", () => {
   assert.throws(() => codexArgs(agent(), "C:/data/a1"), HarnessAbilityBoundaryError);
 });
 
-test("isolation is not something an agent definition can switch off", () => {
+// AMENDED 2026-08-06. There is now exactly ONE way the isolation comes off: the
+// owner's own "use my setup" switch, stored on the agent by him from a window
+// (the hub refuses that field from an engine client, like the path fields). This
+// test still says what it always said — no ABILITY mix can do it — and
+// `ownersetup.test.ts` owns the switch itself.
+test("isolation is not something an agent's abilities can switch off", () => {
   // every shape of agent still gets every isolation flag
   const shapes: Partial<AgentAbilities>[] = [
     {}, { webSearch: true }, { files: true },

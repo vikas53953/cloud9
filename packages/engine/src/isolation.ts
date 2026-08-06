@@ -185,10 +185,81 @@ export const HARNESS_ISOLATION: Readonly<Record<HarnessName, HarnessIsolation>> 
 };
 
 /**
+ * =============================================================================
+ * …AND THE SAME HONESTY, FOR AN AGENT RUNNING IN HIS OWN SETUP. (2026-08-06)
+ * =============================================================================
+ *
+ * Every report above describes the DECLARED environment. When the owner switches
+ * an agent to his own Claude Code / Codex setup (`ownersetup.ts`), the
+ * reassuring sentence stops being true and MUST NOT be shown — that is exactly
+ * the class of lie this file exists to prevent, arriving from a new direction.
+ *
+ * MEASURED, not assumed, 2026-08-05 on CLI 2.1.222. The probe passed
+ * `--tools Read Grep Glob` with the switch ON:
+ *   built-in tools   → still exactly Read, Grep, Glob. The switches held.
+ *   ALL tools        → 127. His MCP servers arrived with 124 tools of their own,
+ *                      because `--tools` governs BUILT-INS ONLY and there is no
+ *                      equivalent flag for MCP tools.
+ *   his CLAUDE.md    → loaded (it answered a codeword planted there)
+ *   his hooks        → ran (a SessionEnd hook fired at the end of the turn)
+ *
+ * So for a his-setup agent the toggles are NOT the whole boundary on either
+ * harness, and the leaks are named rather than summarised.
+ */
+const OWNER_SETUP_LEAKS: readonly LeakedSurface[] = [
+  {
+    name: "his connected services (MCP servers) and their tools",
+    plainWords: "everything he has connected to Claude Code or Codex is connected here too",
+    why: "He asked for his own setup, and his servers are part of it. Their tools are not "
+      + "governed by the ability switches — measured 2026-08-05: an agent limited to three "
+      + "built-in tools still arrived holding 124 more from his servers.",
+  },
+  {
+    name: "his own written instructions (CLAUDE.md / AGENTS.md) and slash commands",
+    plainWords: "the rules he wrote for himself steer this agent too",
+    why: "That is the point of the switch. It also means the agent may follow an instruction "
+      + "he wrote for his own coding sessions and never meant for an agent.",
+  },
+  {
+    name: "his hooks",
+    plainWords: "whatever his hook scripts do, they really run on this turn",
+    why: "Hooks are programs he installed. With his setup loaded they fire on this agent's "
+      + "turns exactly as they fire on his own.",
+  },
+];
+
+/** The honest report for an agent running in HIS setup, built from the declared one. */
+function inOwnerSetup(base: HarnessIsolation): HarnessIsolation {
+  return {
+    ...base,
+    togglesAreTheBoundary: false,
+    headline:
+      "This agent is set to use your own setup, so it starts the way Claude Code or Codex "
+      + "does when you run it yourself. The switches still decide its own tools, but they "
+      + "are no longer the whole story — what is below arrives with your setup.",
+    togglesControl: base.togglesAreTheBoundary
+      ? "the agent's own tools — but not what your connected services, your instructions or "
+        + "your hooks add on top"
+      : base.togglesControl,
+    stillLoaded: [...OWNER_SETUP_LEAKS, ...base.stillLoaded],
+    measuredOn: "claude-code 2.1.222, owner-setup probe 2026-08-05",
+  };
+}
+
+/**
  * The honest report for a harness name off the wire, or undefined if we have
  * never measured that harness. Undefined means "we do not know" — a screen must
  * NOT fall back to the reassuring sentence.
+ *
+ * `mode` is the agent's setup choice (`setupModeFor` in `ownersetup.ts`).
+ * Omitted means the declared environment, which is what every caller written
+ * before the switch existed meant — and what an agent with the switch off gets.
+ * A mock agent runs nothing at all, so its report is the same either way.
  */
-export function isolationFor(harness: string): HarnessIsolation | undefined {
-  return (HARNESS_ISOLATION as Record<string, HarnessIsolation>)[harness];
+export function isolationFor(
+  harness: string, mode: "declared" | "owner" = "declared",
+): HarnessIsolation | undefined {
+  const base = (HARNESS_ISOLATION as Record<string, HarnessIsolation>)[harness];
+  if (!base) return undefined;
+  return mode === "owner" && harness !== "mock" ? inOwnerSetup(base) : base;
 }

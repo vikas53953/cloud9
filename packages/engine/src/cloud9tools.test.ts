@@ -16,7 +16,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  answerCloud9Rpc, callCloud9Tool, CLOUD9_TOOLS, cloud9McpConfig, cloud9ToolNames,
+  answerCloud9Rpc, callCloud9Tool, CLOUD9_TOOLS, cloud9McpConfig, cloud9TextOf, cloud9ToolNames,
   Cloud9SearchAnswer, Cloud9ToolTurn, renderCloud9Tools,
 } from "./cloud9tools.js";
 import { ToolBridge } from "./toolbridge.js";
@@ -50,7 +50,7 @@ function stand(channelId: string) {
     },
     openAttachment: async name => {
       opened.push({ channelId, name });
-      return { found: true, name, text: "the villa costs 40,000", truncated: false };
+      return { found: true, as: "words" as const, name, text: "the villa costs 40,000", truncated: false };
     },
   };
   return { turn, asked, opened };
@@ -85,7 +85,7 @@ test("an agent's search cannot leave the conversation it is taking a turn in", a
   for (const args of attempts) {
     const out = await callCloud9Tool(search, args, turn);
     assert.equal(out.isError, true, `${JSON.stringify(args)} was not refused`);
-    assert.match(out.content[0].text, /only search the conversation you are in/);
+    assert.match(cloud9TextOf(out), /only search the conversation you are in/);
   }
   assert.deepEqual(asked, [], "a widened search actually ran");
 
@@ -222,8 +222,8 @@ test("a search that fails tells the agent to say so, never why", async () => {
   };
   const out = await callCloud9Tool(search, { query: "villa" }, turn);
   assert.equal(out.isError, true);
-  assert.doesNotMatch(out.content[0].text, /ECONNRESET|Vikas|hub\.js/);
-  assert.match(out.content[0].text, /say so rather than guessing/);
+  assert.doesNotMatch(cloud9TextOf(out), /ECONNRESET|Vikas|hub\.js/);
+  assert.match(cloud9TextOf(out), /say so rather than guessing/);
 });
 
 test("nothing found is reported as a real answer, not as a failure", async () => {
@@ -233,7 +233,7 @@ test("nothing found is reported as a real answer, not as a failure", async () =>
   };
   const out = await callCloud9Tool(search, { query: "villa" }, turn);
   assert.notEqual(out.isError, true);
-  assert.match(out.content[0].text, /it was not said here/);
+  assert.match(cloud9TextOf(out), /it was not said here/);
 });
 
 // -------------------------------------------------- the tool and the sentence

@@ -30,6 +30,7 @@
 // (`traceFromStream` + an `EventMapper`) and turn one turn into a record.
 import {
   AgentTrust, RunKind, RunOutcome, RunRecord, RunStep, RunStepKind, RunUsage, RUN_LIMITS,
+  SpendCapWhich,
 } from "@cloud9/shared";
 
 export {
@@ -70,6 +71,16 @@ export interface ProviderTrace {
   events: number;
   /** we stopped adding steps because the run blew the cap */
   truncated?: boolean;
+  /**
+   * THE HARNESS STOPPED THIS TURN ITSELF because it reached the spending
+   * ceiling Cloud9 handed it (`--max-budget-usd`).
+   *
+   * A FLAG, DELIBERATELY NOT A SENTENCE. The provider knows that a ceiling
+   * fired; only the engine knows WHICH of the owner's two limits produced the
+   * number, and therefore which words are true. Absent means it did not happen —
+   * never `false` as a shrug.
+   */
+  stoppedByBudget?: boolean;
 }
 
 // ------------------------------------------------------------------ the seam
@@ -92,7 +103,7 @@ export interface TraceBuilder {
   setError(message: string): void;
   /** anything else the CLI told us about the run as a whole */
   set(patch: Partial<Pick<ProviderTrace,
-    "sessionId" | "model" | "cliDurationMs" | "numTurns" | "usage">>): void;
+    "sessionId" | "model" | "cliDurationMs" | "numTurns" | "usage" | "stoppedByBudget">>): void;
 }
 
 /**
@@ -231,6 +242,14 @@ export interface RunSeed {
    * which is the fail-closed answer everywhere else.
    */
   trust?: AgentTrust;
+  /**
+   * DID THIS TURN RUN IN THE OWNER'S OWN CLAUDE CODE / CODEX SETUP
+   * (`ownersetup.ts`)? Recorded either way when the caller knows, because
+   * "no" is a fact worth having beside a token count, not just an absence.
+   * A caller that does not say leaves the field off, which reads as "no" —
+   * the same fail-closed answer `usesOwnerSetup` gives everywhere else.
+   */
+  ownerSetup?: boolean;
 }
 
 export interface RunFinish {
@@ -241,6 +260,25 @@ export interface RunFinish {
   error?: string;
   /** the reply — only its LENGTH is kept */
   reply?: string;
+  /**
+   * A SPENDING CEILING STOPPED THIS RUN, and which of the owner's two it was.
+   *
+   * Set by the engine, which is the only thing that knows both limits. It
+   * covers BOTH shapes of the event — a turn refused before it started because
+   * the month was already spent, and a turn the app cut short when it reached
+   * the ceiling — because to the person reading the record they are one event.
+   */
+  capStop?: { which: SpendCapWhich; capUsd: number };
+  /**
+   * THIS TURN RAN ON A STAND-IN MODEL, not the one the owner chose.
+   *
+   * Worked out by the engine with `fellBackTo` in @cloud9/shared, which only
+   * ever says yes when the model the app REPORTED is one the owner actually
+   * named as a stand-in. A swap we cannot prove is never claimed here.
+   */
+  fellBackTo?: string;
+  /** this run was the agent writing a plan, not doing the work */
+  planOnly?: boolean;
 }
 
 /** A run id that is also a safe file name and sorts by time. No underscores: the
@@ -280,6 +318,16 @@ export function buildRunRecord(seed: RunSeed, finish: RunFinish, id = newRunId()
     ...(typeof t?.cliDurationMs === "number" ? { cliDurationMs: t.cliDurationMs } : {}),
     ...(typeof t?.numTurns === "number" ? { numTurns: t.numTurns } : {}),
     ...(seed.trust ? { trust: seed.trust } : {}),
+    // WHOSE SETUP IT RAN IN. `false` is kept, not dropped: a run that says
+    // "not your setup" out loud is the half of this record he most needs when
+    // two runs of the same agent cost wildly different amounts.
+    ...(typeof seed.ownerSetup === "boolean" ? { ownerSetup: seed.ownerSetup } : {}),
+    // A LIMIT STOPPED IT, and a stand-in model ran it. Both present only when
+    // they really happened — an absent field here is the honest "it didn't",
+    // never a zero or a false standing in for one.
+    ...(finish.capStop ? { capStop: finish.capStop } : {}),
+    ...(finish.fellBackTo ? { fellBackTo: finish.fellBackTo } : {}),
+    ...(finish.planOnly ? { planOnly: true } : {}),
     replyChars: finish.reply?.length ?? 0,
     events: t?.events ?? 0,
     ...(t?.truncated ? { truncated: true } : {}),

@@ -4,6 +4,9 @@ export {
   AbilityNotSupportedHereError,
   HARNESS_DISCONNECTED_REPLY,
   buildAgentPrompt, promptTurnKind, renderSkills, sanitizeForChat, redactForSharing,
+  // THE PROMPT, CUT IN TWO (gap A) — the standing half a harness can send as a
+  // real system prompt, and the half that is only about this turn.
+  splitAgentPrompt, type AgentPromptParts,
   type ClaudeProvider, type SdkCredentials, type RespondInput,
   type TurnBrief, type PromptTurnKind,
 } from "./provider.js";
@@ -14,26 +17,37 @@ export {
   TURN_TIME_BUDGET_MS, MAX_TURN_TIME_BUDGET_MS, TurnTimedOutError,
   describeBudget, timedOutSentence, turnTimeBudgetMs,
 } from "./timebudget.js";
-// HOW MUCH CONVERSATION AN AGENT SEES — one named budget, in characters, with
-// its justification written down. It replaced a `slice(-20)` nobody had chosen.
+// HOW MUCH CONVERSATION AN AGENT SEES — one budget, in characters, DERIVED FROM
+// THE MODEL, with its justification and its measurements written down. It
+// replaced a `slice(-20)` nobody had chosen, and then a flat 24,000 that could
+// not tell a 200,000-token model from a million-token one.
 export {
-  renderConversation, CONVERSATION_BUDGET, type ConversationBudget,
+  renderConversation, conversationBudgetFor, maxConversationMessages,
+  CONVERSATION_BUDGET, CONVERSATION_BUDGET_RULE,
+  type ConversationBudget, type ConversationScope,
 } from "./context.js";
 // THE DOORWAY BACK INTO CLOUD9 — the tools Cloud9 itself supplies to an agent,
 // and the law that an agent may search only where it may read.
 export {
   CLOUD9_TOOLS, CLOUD9_MCP_SERVER, CLOUD9_SEARCH_LIMIT, CLOUD9_ATTACHMENT_TEXT_LIMIT,
+  // the two ceilings on what an agent can be SHOWN, as opposed to told about
+  CLOUD9_IMAGE_BYTES_LIMIT, CLOUD9_PDF_BYTES_LIMIT,
   cloud9ToolNames,
   renderCloud9Tools, answerCloud9Rpc, callCloud9Tool, cloud9McpConfig,
   type Cloud9Tool, type Cloud9ToolTurn, type Cloud9SearchAnswer, type Cloud9McpTicket,
-  type Cloud9AttachmentAnswer,
+  type Cloud9AttachmentAnswer, type Cloud9ToolContent, type Cloud9ToolResult,
+  // ===== GAP B BLOCK (skills on demand, 2026-08-05) =====
+  type Cloud9SkillAnswer,
 } from "./cloud9tools.js";
 // OPENING A FILE SOMEBODY ATTACHED IN THE ROOM — which file, is it words, and
 // what the agent says when the answer is no. No hub, no socket, no disk.
 export {
   filesInConversation, findAttachment, asWords, openAttachmentInConversation,
   noSuchFileHere, notWordsSentence, couldNotFetchSentence,
-  type RoomFile,
+  // WHAT KIND OF THING IS THIS — asked of the bytes, so a picture is a picture
+  // whatever the name says, and a PDF never decodes into fake "words".
+  sniffKind, describeOpaque, tooBigSentence,
+  type RoomFile, type FileKind,
 } from "./attachmentreach.js";
 export { ToolBridge, type OpenTurn } from "./toolbridge.js";
 export {
@@ -49,8 +63,20 @@ export {
 export {
   CodexProvider, parseCodexJsonl, traceCodex, codexMapper, codexArgs,
   CODEX_ISOLATION_FLAGS, CODEX_ALWAYS_DISABLED, codexDisabledFeaturesFor,
-  type CodexProviderOptions, type CodexTranscript,
+  // CLOUD9'S OWN DOORWAY ON CODEX — an HTTP MCP server named by `-c`, which is
+  // the only channel that survives `--ignore-user-config`. Measured, not assumed.
+  codexCloud9ToolArgs, CODEX_CLOUD9_SERVER, CODEX_TOOL_SECRET_ENV,
+  type CodexProviderOptions, type CodexTranscript, type CodexArgExtras,
 } from "./codex.js";
+// WHOSE SETUP AN AGENT RUNS IN — the ONE owner of "isolated, or his own Claude
+// Code / Codex setup", read by both harnesses so they can never drift apart.
+export {
+  usesOwnerSetup, setupModeFor, claudeSetupFlags, claudeSetupEnv,
+  codexSetupFlags, codexDisabledBySetup, codexUsesDisposableHome,
+  CODEX_OWNER_SETUP_FEATURES, CODEX_NEVER_ENABLED,
+  OWNER_SETUP_WORDS, NEVER_INHERITED,
+  type SetupMode, type SetupChoice,
+} from "./ownersetup.js";
 // The honest per-harness answer to "are these toggles the permission boundary?"
 // A screen that shows one sentence for both harnesses is telling a lie about one.
 export {
@@ -114,6 +140,10 @@ export {
   wholeComputerRootsFor, addDirRootsFor, wholeComputerWords,
   type WholeComputerRoots, type FolderOnDisk,
 } from "./wholecomputer.js";
+// GAP C (2026-08-05): WHAT KIND OF BOUNDARY A FOLDER REALLY IS, in one place, so
+// every screen that talks about reach reads the same measured answer rather than
+// writing its own. See the long note in abilities.ts.
+export { FILE_FENCE_WORDS, fileFenceFor, type FileFence } from "./abilities.js";
 export {
   HarnessManager, detectClaude, detectCodex, type HarnessOptions,
 } from "./harness.js";
@@ -182,7 +212,8 @@ export {
 // Asking him MID-RUN, and waiting for the answer without stopping the engine.
 // This is what makes the gate in github.ts answerable rather than just closed.
 export {
-  ApprovalDesk, type ApprovalOutcome, type ApprovalDeskOptions,
+  ApprovalDesk, SETTLED_KEEP,
+  type ApprovalOutcome, type ApprovalDeskOptions, type SettledRemoteAction,
 } from "./approvaldesk.js";
 // An agent working in a repository, and deciding BY ITSELF that it wants its
 // branch published. This is the caller `Engine.githubFor` never had.
@@ -208,6 +239,25 @@ export {
   type MemoryBudget, type MemoryKind, type MemoryNote, type RememberInput,
   type MemoryStoreOptions,
 } from "./agent-memory.js";
+// CLOUD9'S OWN HOOKS — the owner's events setting off the owner's actions.
+// Four events Cloud9 already knew about, four things Cloud9 already knew how to
+// do, and five laws that stop a hook being a way round anything. See hooks.ts.
+export {
+  HOOK_EVENTS, HOOK_ACTIONS, HOOK_DEFAULTS, HOOKS_FILE, HookBook,
+  describeHook, fill, hookProblem, hooksPath, isHookEvent, loadHooks, newHookId, saveHooks,
+  type Hook, type HookAction, type HookActionKind, type HookActions,
+  type HookBookOptions, type HookEvent, type HookFact, type HookFiring,
+} from "./hooks.js";
+export {
+  attachHooks, engineActions, HOOK_COMMAND_TIMEOUT_MS, type HookWiring,
+} from "./hookwiring.js";
+// DID IT REALLY DO WHAT IT SAID? — the harness's verification pass. A pure
+// function over the run record and the counted approval facts; no model grades
+// itself anywhere in it.
+export {
+  verifyTurn, readClaims, CLAIM_QUOTE_MAX, CLAIM_LINES_MAX,
+  type Claim, type ClaimKind, type ClaimVerdict, type VerifyInput, type VerificationReport,
+} from "./verify.js";
 export {
   buildHandoff, validateHandoff, newHandoffId, HandoffError,
   HANDOFF_TASK_LIMIT, HANDOFF_NOTE_LIMIT,

@@ -77,7 +77,8 @@ test("with folders really there, the agent is told it CAN reach outside its own 
   const disk = diskWith(NOTES);
   const prompt = renderCapabilities(
     scout, grantedSupply(scout, { wholeComputerRoots: addDirRootsFor(scout, disk.onDisk) }));
-  assert.match(prompt, /You CAN reach files outside your own folder/);
+  // GAP C (2026-08-05): a rule the agent must keep, not a wall it cannot climb.
+  assert.match(prompt, /must work ONLY inside your own folder and the places your owner/);
 });
 
 test("the same folder twice is one folder, on the screen and on the command line", () => {
@@ -107,7 +108,9 @@ test("no folder chosen: the engine gets nothing and the screen says there is non
   // the words the owner reads
   const words = wholeComputerWords(state, "Scout");
   assert.match(words.headline, /No folders chosen yet/);
-  assert.match(words.detail, /it has none/);
+  // GAP C: "it has none — it still cannot read or change anything else on this
+  // computer" was measured false. What is true is that it was sent nowhere.
+  assert.match(words.detail, /it has been sent nowhere, so it stays in its own folder/);
   assert.doesNotMatch(words.headline + words.detail, /\bin use\b/i,
     "a switch with nothing behind it must never read as working");
 
@@ -115,7 +118,7 @@ test("no folder chosen: the engine gets nothing and the screen says there is non
   assert.deepEqual(addDirs(claudeArgs(scout)), []);
   assert.match(
     renderCapabilities(scout, grantedSupply(scout, {})),
-    /You CANNOT reach anything outside your own folder right now/);
+    /must NOT touch anything outside your own folder right now/);
 });
 
 test("blank and whitespace mean the same as absent — there is no second way to say none", () => {
@@ -154,7 +157,7 @@ test("the folder was moved or deleted: reported plainly, and NOT used", () => {
     renderCapabilities(scout, grantedSupply(scout, {
       wholeComputerRoots: addDirRootsFor(scout, disk.onDisk),
     })),
-    /You CANNOT reach anything outside your own folder right now/);
+    /must NOT touch anything outside your own folder right now/);
 });
 
 test("one there and one gone: the one that is there is used, the other is named", () => {

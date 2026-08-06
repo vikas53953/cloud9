@@ -195,6 +195,12 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
         command: opts.harness?.codexCommand,
         apiKey: () => creds.codex?.value || undefined,
         models: () => modelsFor("codex"),
+        // CLOUD9'S OWN DOORWAY — the SAME engine method the Claude path is
+        // given, so an agent's ability to search the room it is standing in
+        // does not depend on which harness its owner picked. Until 2026-08-06
+        // there was no MCP path in `codex.ts` at all and every Codex turn went
+        // without it; see the long note there for what had to be measured.
+        cloud9Tools: engine.openToolTurn,
       });
     } else {
       engine.codexProvider = undefined;

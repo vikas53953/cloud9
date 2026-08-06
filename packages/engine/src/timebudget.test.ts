@@ -54,7 +54,9 @@ const MINUTE = 60_000;
 
 test("the budget table gives every kind of turn a number, and it is the one documented", () => {
   assert.deepEqual(TURN_TIME_BUDGET_MS, {
-    chat: 3 * MINUTE,
+    // raised from 3 on 2026-08-05 — see the note on the table, and
+    // `turnleash.test.ts` for the measurements that forced it
+    chat: 10 * MINUTE,
     task: 30 * MINUTE,
     schedule: 30 * MINUTE,
     repo: 30 * MINUTE,
@@ -71,7 +73,7 @@ test("the budget table gives every kind of turn a number, and it is the one docu
 test("delegated work gets a materially longer leash than a chat reply — and still a real ceiling", () => {
   const chat = turnTimeBudgetMs("chat");
   for (const kind of ["task", "schedule", "repo"] as PromptTurnKind[]) {
-    assert.ok(turnTimeBudgetMs(kind) >= chat * 5,
+    assert.ok(turnTimeBudgetMs(kind) >= chat * 2,
       `${kind} is not meaningfully longer than a chat reply`);
   }
   // NOTHING is unlimited. The leash exists to stop a runaway CLI holding a slot
@@ -89,7 +91,7 @@ test("a chat turn reaches the Claude CLI on the short budget", async () => {
   await new ClaudeCliProvider({
     agentDataDir: () => process.cwd(), runner, models: () => CLAUDE_MODELS,
   }).respond({ agent: claudeAgent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" });
-  assert.equal(calls[0]?.opts.timeoutMs, 3 * MINUTE);
+  assert.equal(calls[0]?.opts.timeoutMs, 10 * MINUTE);
 });
 
 test("a delegated turn reaches the Claude CLI on the long budget", async () => {
@@ -121,7 +123,7 @@ test("Codex reads the same table — chat short, delegated long", async () => {
   const chat = spy();
   await new CodexProvider({ agentDataDir: () => process.cwd(), runner: chat.runner })
     .respond({ agent: codexAgent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" });
-  assert.equal(chat.calls[0]?.opts.timeoutMs, 3 * MINUTE);
+  assert.equal(chat.calls[0]?.opts.timeoutMs, 10 * MINUTE);
 
   const job = spy();
   await new CodexProvider({ agentDataDir: () => process.cwd(), runner: job.runner })
@@ -162,9 +164,10 @@ test("Codex says the same thing, and a chat timeout offers the way out", async (
       .respond({ agent: codexAgent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" }),
     (err: unknown) => {
       assert.ok(err instanceof TurnTimedOutError);
-      assert.equal(err.budgetMs, 3 * MINUTE);
-      assert.match(err.message, /too long for a chat reply/);
-      assert.match(err.message, /3 minutes/);
+      assert.equal(err.budgetMs, 10 * MINUTE);
+      // the sentence no longer blames the turn for being slow: it WAS working
+      assert.match(err.message, /as long as I let a reply run/);
+      assert.match(err.message, /10 minutes/);
       assert.match(err.message, /!bg/); // the thing to do instead
       return true;
     },

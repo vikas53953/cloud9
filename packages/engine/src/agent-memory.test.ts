@@ -198,7 +198,7 @@ test("how many notes are kept on disk is ONE number, derived from the constant",
 
 // ------------------------------------------------------------- retrieval
 
-test("retrieveMemory keeps the oldest within budget and drops the newest", () => {
+test("retrieveMemory keeps the NEWEST within budget and drops the oldest", () => {
   const dir = tmp();
   const store = storeIn(dir);
   // 10 notes, each 100 chars — total 1,000 chars, well under the 8,000 cap
@@ -212,9 +212,36 @@ test("retrieveMemory keeps the oldest within budget and drops the newest", () =>
   // each rendered line is ~120 chars; 300 chars fits 2 lines, the rest dropped
   const lines = rendered.split("\n");
   assert.ok(lines.length >= 1 && lines.length <= 3, `expected 1-3 lines, got ${lines.length}`);
-  assert.ok(lines[0].includes("note number 0"), "the oldest note is the first line — the foundation survives");
-  assert.ok(!rendered.includes("note number 9"), "the newest note is dropped first");
-  assert.ok(!rendered.includes("note number 8"), "and the second-newest is dropped too");
+  assert.ok(rendered.includes("note number 9"), "the newest note survives — it is the freshest truth");
+  assert.ok(!rendered.includes("note number 0"), "the oldest note is dropped first");
+  assert.ok(!rendered.includes("note number 1"), "and the second-oldest is dropped too");
+  assert.ok(rendered.indexOf("note number 8") < rendered.indexOf("note number 9"),
+    "what is kept still reads oldest-first, so the agent reads its memory in order");
+});
+
+// GAP B (2026-08-05) — THE ONE THAT COST AN ANSWER. A correction the owner made
+// today must not be pushed out of the seed by a stale note from last week. This
+// test fails against the old retrieval, which spent the budget from the oldest
+// end and dropped whatever was newest.
+test("a correction made today survives a full budget; last week's stale note does not", () => {
+  const lastWeek = note({
+    id: "m-000000001-0000", kind: "fact", createdAt: 1_000_000,
+    text: "the owner deploys on Fridays".padEnd(120, "."),
+  });
+  const filler = note({
+    id: "m-000000002-0000", kind: "fact", createdAt: 2_000_000,
+    text: "the owner likes short answers".padEnd(120, "."),
+  });
+  const today = note({
+    id: "m-000000003-0000", kind: "correction", createdAt: 3_000_000,
+    text: "STOP — the owner does NOT deploy on Fridays any more".padEnd(120, "."),
+  });
+  // room for two lines out of three
+  const rendered = retrieveMemory([lastWeek, filler, today], { characters: 300, notes: 200 });
+  assert.ok(rendered.includes("does NOT deploy on Fridays"),
+    "today's correction must be in the seed — it is the whole point of memory");
+  assert.ok(!rendered.includes("the owner deploys on Fridays"),
+    "last week's superseded note is the one that goes when the room runs out");
 });
 
 test("retrieveMemory of an empty memory is empty", () => {

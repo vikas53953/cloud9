@@ -9,8 +9,13 @@
 //
 // Usage:
 //   node scripts/qa-stack.mjs                  # stack + UI, then run the QA scripts
+//   node scripts/qa-stack.mjs --smoke          # stack + UI, then the SHORT run only
 //   node scripts/qa-stack.mjs --stack-only     # just the stack; Ctrl+C to stop
 //   node scripts/qa-stack.mjs --no-ui          # relay + engine only (no vite)
+//
+// `--smoke` runs `scripts/qa.mjs --smoke`: the same checks, tagged, with only
+// the load-bearing journeys played. It is the round-by-round run; the full
+// gate (no flag) is what a change ships behind.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -74,6 +79,7 @@ function sweepStaleWorkspaces(ownWorkspace) {
 async function main() {
   const args = process.argv.slice(2);
   const stackOnly = args.includes("--stack-only");
+  const smoke = args.includes("--smoke");
   const noUi = args.includes("--no-ui") || stackOnly;
 
   const RELAY_PORT = Number(process.env.CLOUD9_RELAY_PORT ?? 8799);
@@ -230,7 +236,12 @@ async function main() {
   if (stackOnly || noUi) {
     console.log("[qa-stack] stack is up. Ctrl+C to stop and delete the QA data.");
   } else {
-    const scripts = ["scripts/qa.mjs", "scripts/qa-v2.mjs", "scripts/qa-lifecycle.mjs"];
+    /* THE SHORT RUN IS ONE SCRIPT, AND SAYS SO. It is `qa.mjs` with its
+     * full-only acts left unplayed — never a second copy of the checks — so
+     * `qa-v2.mjs` and `qa-lifecycle.mjs` are not part of it. */
+    const scripts = smoke
+      ? [["scripts/qa.mjs", "--smoke"]]
+      : [["scripts/qa.mjs"], ["scripts/qa-v2.mjs"], ["scripts/qa-lifecycle.mjs"]];
     let failed = 0;
     /* One line per script at the very end.
      *
@@ -242,11 +253,11 @@ async function main() {
      * that stopped early already fails inside `reportAndExit`, and that verdict is
      * simply carried here. */
     const verdicts = [];
-    for (const script of scripts) {
-      console.log(`\n[qa-stack] === ${script} ===`);
+    for (const [script, ...scriptArgs] of scripts) {
+      console.log(`\n[qa-stack] === ${[script, ...scriptArgs].join(" ")} ===`);
       const started = Date.now();
       const code = await new Promise(resolve => {
-        const child = spawn("node", [script], {
+        const child = spawn("node", [script, ...scriptArgs], {
           cwd: repo, stdio: "inherit", shell: process.platform === "win32",
           env: {
             ...process.env,

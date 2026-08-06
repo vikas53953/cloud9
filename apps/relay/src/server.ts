@@ -12,8 +12,12 @@ import {
   Channel, ChannelMember,
   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
   MESSAGE_LIMITS, ARTIFACT_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
+  ReachCatchup,
   RepoChoice, REPO_LIST_LIMITS, validateRepoChoice, validateLocalFolder,
   RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
+  // "show me the plan first" (2026-08-05) — the hub still writes the line the
+  // owner reads and still bounds what the agent wrote
+  planHeadline, tidyPlan, validatePlanAsk,
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
   isReceiptStage, isReceiptVerdict,
@@ -36,6 +40,7 @@ import os from "node:os";
 // `@cloud9/engine`, so there is one owner of "is this a real handoff".
 import { validateHandoff } from "@cloud9/engine";
 import { RunRow, Store, searchTerms } from "./store.js";
+import { runReachCatchup } from "./reachcatchup.js";
 
 /**
  * The hub runs on somebody's own computer, so its own home folder and account
@@ -93,6 +98,13 @@ export interface RelayOptions {
    * produce MORE expiries, never a yes nobody gave.
    */
   approvalWaitMs?: number;
+  /**
+   * This computer's home folder, as the SHELL resolved it (`cloud9:homeFolder`).
+   * Handed in, never worked out here: it is the folder the one-time catch-up
+   * opens up for an agent that has none, and a folder this app cannot vouch for
+   * is one it must not claim. Absent means the catch-up gives nobody a folder.
+   */
+  homeFolder?: string;
 }
 
 /**
@@ -225,6 +237,15 @@ export class Relay {
    */
   private tickets = new Map<string, { target: TicketTarget; userId: ID; expiresAt: number }>();
 
+  /**
+   * The receipt for the one-time catch-up, when this start is the one that ran
+   * it and it really changed something. It goes to the OWNER only, in his
+   * welcome frame, and it is deliberately not stored on the hub beyond this
+   * process: the marker in the database is what makes it never happen again,
+   * this is only the sentence telling him it did.
+   */
+  reachCatchup?: ReachCatchup;
+
   constructor(opts: RelayOptions = {}) {
     this.ownerToken = opts.ownerToken ?? process.env.CLOUD9_OWNER_TOKEN ?? "dev-owner-token";
     // The store is opened with the owner's token IN HAND. The membership
@@ -287,6 +308,26 @@ export class Relay {
     // uploader's, so nothing was ever going to reclaim them. Swept at every
     // start, and again on each upload, so the disk cannot fill with drafts.
     this.store.sweepParkedAttachments(Date.now() - ATTACHMENT_LIMITS.parkedTtlMs);
+    // THE AGENTS HE ALREADY HAD, CAUGHT UP — once, here, before anybody is let
+    // in, so the first world he is handed is already the true one and no client
+    // ever sees the old state and then a change arriving behind it. It only
+    // adds, only to HIS agents, and only ever once on this file: see
+    // `reachcatchup.ts`. The receipt goes to his screen in `worldFor`.
+    try {
+      // NO ENVIRONMENT FALLBACK for the folder, on purpose. The one thing
+      // allowed to say where his home folder is, is the shell that checked it
+      // really is a whole folder on this computer (`cloud9:homeFolder`). A hub
+      // started without that answer grants the switches and claims no folder —
+      // the honest empty, and the crew-screen button still opens one.
+      this.reachCatchup = runReachCatchup(this.store, this.ownerId, {
+        homeFolder: opts.homeFolder,
+      });
+    } catch (err) {
+      // His messages open either way. A catch-up that could not run is a crew
+      // still on the old switches — the crew-screen button still fixes them —
+      // and never a hub that will not start.
+      console.warn("[cloud9] could not bring existing agents up to full reach:", err);
+    }
   }
 
   /**
@@ -589,6 +630,12 @@ export class Relay {
       // read state comes from the RELAY now, not from one browser's storage, so
       // reading on the laptop is read on the phone too
       unread: this.unreadFor(userId, channels),
+      // WHAT THE HUB CHANGED ABOUT HIS AGENTS BEFORE HE ARRIVED, to the person
+      // whose agents they are and to nobody else. A guest is not shown a list of
+      // somebody else's crew, and it is absent entirely when nothing happened.
+      ...(userId === this.ownerId && this.reachCatchup
+        ? { reachCatchup: this.reachCatchup }
+        : {}),
     };
   }
 
@@ -679,9 +726,22 @@ export class Relay {
    * a third path-shaped field arrives.
    */
   private refuseAgentPathsFromEngine(
-    conn: Conn, agent: { connectionsFile?: unknown; wholeComputerRoots?: unknown },
+    conn: Conn,
+    agent: {
+      connectionsFile?: unknown; wholeComputerRoots?: unknown; useOwnerSetup?: unknown;
+    },
   ): void {
     if (conn.client !== "engine") return;
+    // …AND THE SAME LAW FOR "USE MY OWN SETUP" (2026-08-06). It belongs in this
+    // guard and not beside it, for the reason written above: a second copy is a
+    // second thing to forget. Turning it ON loads his instructions, his
+    // connected services and his hook scripts into an agent — which is a bigger
+    // grant than either of the path fields, so an agent must not be able to make
+    // it for itself. Only he can, from a window. Turning it OFF is refused too:
+    // this guard is about who may WRITE the field, not which way is safer.
+    if (agent.useOwnerSetup !== undefined) {
+      throw new Error("only you can decide whether an agent uses your own setup — an agent cannot");
+    }
     if (typeof agent.connectionsFile === "string" && agent.connectionsFile.trim()) {
       throw new Error("only you can choose an agent's connections file — an agent cannot");
     }
@@ -1725,6 +1785,26 @@ export class Relay {
           // whose agent this is) and only if `validateAgentDefinition` below
           // recognises the word.
           trust: frame.agent.trust ?? existing.trust,
+          // …and the same sentence-vs-silence rule for whose setup it runs in.
+          // An older client, or any screen that has never heard of the switch,
+          // says nothing — and silence must mean "leave it as he set it". It
+          // cannot be used to widen an agent either: silence PRESERVES, and
+          // saying yes is a write only his own editor can make (`myAgent` proved
+          // whose agent this is, and `refuseAgentPathsFromEngine` above proved
+          // it did not come from an agent).
+          useOwnerSetup: frame.agent.useOwnerSetup ?? existing.useOwnerSetup,
+          // …AND THE SAME RULE AGAIN for the three settings added 2026-08-05.
+          // Silence PRESERVES. It matters most for the spending limit, where the
+          // two readings point in opposite directions: an older client, or any
+          // screen that has never heard of the setting, saying nothing about it
+          // must not be able to REMOVE a ceiling the owner deliberately set —
+          // "your spending limit quietly disappeared" is the one outcome a limit
+          // may never have. It cannot be used to widen anything either: silence
+          // keeps what is stored, and setting a value is a write only his own
+          // editor can make, and only if `validateAgentDefinition` accepts it.
+          spendCap: frame.agent.spendCap ?? existing.spendCap,
+          planFirst: frame.agent.planFirst ?? existing.planFirst,
+          fallbackModels: frame.agent.fallbackModels ?? existing.fallbackModels,
         };
         const bad = validateAgentDefinition(saved, renaming
           ? this.agentRules(conn, frame.agent.provider, frame.agent.id)
@@ -1983,6 +2063,48 @@ export class Relay {
         send(conn.ws, { type: "approvalAsked", askId, approvalId: approval.id });
         this.sendApproval(approval);
         // and it dies on the clock, not on the next person to look
+        this.scheduleExpiry(approval.expiresAt!);
+        break;
+      }
+      case "askPlan": {
+        // ENGINE ONLY, for exactly the reason the case above is: a desktop
+        // client able to mint approval cards could manufacture a harmless one
+        // and then approve it with its own second frame.
+        if (conn.client !== "engine") {
+          throw new Error("only the engine can ask you to look at a plan");
+        }
+        // WHOSE AGENT and WHICH ROOM, both from stored state, never the frame.
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        const channel = this.channelFor(conn.userId, frame.channelId);
+        const badPlan = validatePlanAsk(frame.plan);
+        if (badPlan) throw new Error(badPlan);
+        const askId = typeof frame.askId === "string"
+          ? frame.askId.slice(0, APPROVAL_LIMITS.askId).trim() : "";
+        if (!askId) throw new Error("that request has no label to answer against");
+        const namedTask = frame.taskId ? this.store.task(frame.taskId) : undefined;
+        const taskId = namedTask && namedTask.agentId === agent.id ? namedTask.id : undefined;
+        const now = Date.now();
+        // THE AGENT WROTE THE PLAN, SO THE PLAN IS CONTAINED — bounded and
+        // stripped by `tidyPlan` here, at the hub, on the way in. The line the
+        // owner reads FIRST is still Cloud9's (`planHeadline`), taken from the
+        // plan rather than composed by the agent, exactly as the sentence on an
+        // `action` card is Cloud9's rather than the agent's.
+        const plan = tidyPlan(frame.plan);
+        const approval: Approval = {
+          id: newId("ap"), agentId: agent.id, ownerId: agent.ownerId,
+          action: planHeadline(plan).slice(0, APPROVAL_LIMITS.action),
+          status: "pending", createdAt: now,
+          kind: "plan", channelId: channel.id,
+          plan,
+          // it dies if nobody answers — the SAME sweep as an action card
+          expiresAt: now + this.approvalWaitMs,
+          ...(taskId ? { taskId } : {}),
+        };
+        this.store.saveApproval(approval);
+        this.audit(conn, "approval_requested", approval.id,
+          `${agent.name} is waiting for you to look at a plan`, { asAgent: agent });
+        send(conn.ws, { type: "approvalAsked", askId, approvalId: approval.id });
+        this.sendApproval(approval);
         this.scheduleExpiry(approval.expiresAt!);
         break;
       }

@@ -16,13 +16,43 @@
 // half of that same law: the ONE place that turns "a stored path" into "a path
 // the harness may have", so the screen and the command line cannot disagree.
 //
-// FOUR STATES, AND NONE OF THEM IS A GUESS:
-//   off   — the switch is off. Nothing is passed, whatever is stored.
-//   none  — the switch is on and no file has been chosen. The agent gets none.
-//   gone  — a file was chosen and it is not on this computer any more. NOT used,
-//           and said out loud: a path that silently stops working is exactly the
-//           kind of quiet lie this product refuses.
-//   ready — the switch is on, a file was chosen, and it is there right now.
+// FIVE STATES, AND NONE OF THEM IS A GUESS:
+//   off         — the switch is off. Nothing is passed, whatever is stored.
+//   none        — the switch is on and no file has been chosen. The agent gets none.
+//   gone        — a file was chosen and it is not on this computer any more. NOT
+//                 used, and said out loud: a path that silently stops working is
+//                 exactly the kind of quiet lie this product refuses.
+//   ready       — the switch is on, a file was chosen, and it is there right now.
+//   unsupported — this agent runs on Codex, and Codex cannot be handed one.
+//
+// WHY "UNSUPPORTED" HAD TO EXIST (2026-08-06). The switch, the file picker and
+// all four sentences above were shown for a Codex agent exactly as for a Claude
+// one — and `codex.ts` has never carried a connections file onto a command line.
+// So the screen could say "In use. Scout can reach the services in this file"
+// about an agent that could reach nothing of the kind. That is the precise
+// class of quiet lie this whole file was written to make impossible, and it was
+// sitting inside it.
+//
+// AND IT IS NOT LAZINESS — it was measured on codex-cli 0.146.0, 2026-08-06:
+//
+//  - Codex's MCP servers live in TOML, not in the JSON a connections file
+//    holds, so the file cannot be handed over as a file. The only channels are
+//    a config file or `-c` overrides.
+//  - A `$CODEX_HOME/<name>.config.toml` profile — the one Cloud9 already writes
+//    — is NOT read when `--ignore-user-config` is on. Proved with
+//    `--strict-config` and a tracer key, both directions. Writing the owner's
+//    servers there would do nothing; dropping `--ignore-user-config` to make it
+//    work would remove the wall that keeps his OWN config.toml out of an agent.
+//  - `-c` overrides do work, but an MCP server needs an argument list and
+//    environment table, which means `[`, `]` and `"` on a command line, and
+//    `run.ts` refuses those characters outright rather than trying to escape
+//    them. That guard is not worth weakening to buy this.
+//
+// Cloud9's OWN tools reach Codex perfectly well and now do (`codexCloud9ToolArgs`
+// in `codex.ts`) — they need only a loopback URL and a variable name, which are
+// allowlist-clean. It is the OWNER'S OWN connections file, and only that, which
+// Codex cannot be given. So the app says so, in his words, in the one place that
+// owns the answer.
 //
 // EXISTENCE IS ASKED FRESH, NEVER REMEMBERED. `onDisk` is injected rather than
 // imported, for two reasons: the answer is a fact about THIS MOMENT (a file the
@@ -37,7 +67,7 @@ export type FileOnDisk = (path: string) => boolean;
 
 export interface ConnectionsFile {
   /** what is true for this agent this second */
-  state: "off" | "none" | "gone" | "ready";
+  state: "off" | "none" | "gone" | "ready" | "unsupported";
   /** the path the owner chose, when one is stored — shown even when unusable */
   path?: string;
   /**
@@ -61,6 +91,15 @@ export function connectionsFileFor(
   // Blank and absent are the same answer — "nobody has chosen one" — so there is
   // no second meaning for `""` anywhere in the app.
   const path = said.length > 0 ? said : undefined;
+  // THE HARNESS HAS THE FIRST WORD. A Codex agent cannot be handed a
+  // connections file at all — see the long note at the top — so no switch and
+  // no chosen file can make one true for it, and neither the screen nor the
+  // command line is allowed to imply otherwise. It comes BEFORE the switch on
+  // purpose: "you turned it on" is not a reason to promise something that
+  // cannot happen.
+  if (agent.provider === "codex") {
+    return path ? { state: "unsupported", path } : { state: "unsupported" };
+  }
   // The switch has the last word, and it is asked through `allowsConnections`
   // (which reads `effectiveAbilities`), never from `agent.abilities` directly.
   if (!allowsConnections(agent as AgentDef)) return path ? { state: "off", path } : { state: "off" };
@@ -95,6 +134,17 @@ export function connectionsWords(
   file: ConnectionsFile, agentName: string,
 ): { headline: string; detail: string } {
   switch (file.state) {
+    case "unsupported":
+      return {
+        headline: "Codex agents cannot use a connections file.",
+        detail: `${agentName} runs on Codex, and Codex has no way to be handed one for a ` +
+          "single turn without also opening up your own Codex setup, which Cloud9 will not " +
+          "do. So it has no connected services and cannot get any" +
+          (file.path ? ", and the file remembered here is not being used" : "") +
+          ". Its Cloud9 tools — searching this conversation and opening a file somebody " +
+          "attached to it — work exactly as they do for every other agent. If you need " +
+          `${agentName} to reach an outside service, run it on Claude instead.`,
+      };
     case "off":
       return {
         headline: "Connected services are switched off.",

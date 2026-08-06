@@ -15,6 +15,11 @@ import {
   EverywhereHit, SearchKind,
   SearchHit, ServerFrame, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
   validateMessageText, validateName,
+  /* spending limits, "show me the plan first", stand-in models (2026-08-05) —
+     the words and the rules come from shared, so the screen and the engine
+     cannot describe the same limit differently */
+  AgentSpendCap, SPEND_CAP_LIMITS, FALLBACK_MODEL_LIMITS,
+  fellBackWords, providerCanBeCapped, spendCapOf, validateSpendCap,
   /* THE SKILL LIBRARY — the same two lists the relay and the engine can read.
      The screen owns NO copy of a shelf or a skill: the filter bar, the group
      headings and the ordering are all computed from these, so adding a skill
@@ -38,6 +43,12 @@ import {
      there is no copy here that could describe a setting as something milder than
      it is. `NEW_AGENT_TRUST` is the middle one; see the note beside it. */
   AgentTrust, NEW_AGENT_TRUST, TRUST_LEVELS, trustLevel, trustOf, trustWords,
+  NEW_AGENT_USE_OWNER_SETUP,
+  /* HOW HARD AN AGENT SHOULD THINK — the four words and the sentence under each
+     one, from the same file the two command lines read. The screen owns no copy:
+     it never says "low", "xhigh" or "reasoning effort", because those are the
+     apps' words and the translating happens in one place. */
+  AGENT_EFFORT_CHOICES, AGENT_EFFORT_UNSET_HINT, AGENT_EFFORT_UNSET_LABEL, type AgentEffort,
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -70,6 +81,11 @@ import {
   agentsWithoutFullReach, bringUpToFullReach,
 } from "@cloud9/engine/dist/abilities.js";
 import { isolationFor } from "@cloud9/engine/dist/isolation.js";
+/* WHOSE SETUP AN AGENT RUNS IN. The ONE owner of that decision lives in the
+   engine (`ownersetup.ts`) and is read by both harnesses; this screen reads the
+   same file for the WORDS, so the sentence he is shown and the behaviour he gets
+   can never come from two different places. */
+import { OWNER_SETUP_WORDS } from "@cloud9/engine/dist/ownersetup.js";
 /* THE ONE OWNER of "does this agent really have connected services?" — the same
    function the engine host asks when it builds the command line, so the sentence
    on this screen and the flag on that line are one decision. Imported by path
@@ -2589,6 +2605,12 @@ function Workspace(): React.JSX.Element {
         </nav>
 
         <main className="stage">
+          {/* THE ONE THING THE HUB CHANGED WITHOUT ASKING, said where he cannot
+              walk past it. Not on the crew screen only: he would have had to go
+              and find it, which is the whole complaint this answers. It draws
+              nothing at all unless a catch-up really happened and he has not
+              said "Got it" to it. */}
+          <CaughtThemUp />
           {screen === "chat" && (
             <ChatScreen
               active={active} setActiveId={id => goChannel(id)}
@@ -3630,6 +3652,28 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
   if (typeof record.usage?.costUsd === "number") {
     rows.push(["cost", "Cost", humanMoney(record.usage.costUsd)]);
   }
+  /* HE CHOSE A MODEL AND DID NOT GET IT. Its own row, above everything else
+     about what happened, because "why does this run look different from the
+     last one" is unanswerable without it. It is only ever present when the app
+     reported a model the owner had NAMED as a stand-in — a swap we cannot
+     prove is never claimed here (see `fellBackTo` in @cloud9/shared). */
+  if (record.fellBackTo) {
+    rows.push(["fell-back", "Model", fellBackWords(record.model, record.fellBackTo)]);
+  }
+  /* A SPENDING LIMIT STOPPED IT. The row exists for the same reason the failure
+     row does: an agent that stops has to say why, and "your limit" is a reason
+     he can act on, unlike "something went wrong". Absent on every run that was
+     not stopped by one, which — until he sets one — is all of them. */
+  if (record.capStop) {
+    rows.push(["cap-stop", "Stopped by", record.capStop.which === "perJob"
+      ? `your ${humanMoney(record.capStop.capUsd)} limit for one job`
+      : `your ${humanMoney(record.capStop.capUsd)} limit for this month`]);
+  }
+  /* A PLAN IS NOT THE JOB. Said out loud so a person reading a list of runs
+     does not read the plan turn as the work having been done. */
+  if (record.planOnly) {
+    rows.push(["plan-only", "This run", "was the plan only — no work was done"]);
+  }
   /* HOW MUCH OF THIS HE WAS ASKED ABOUT — recorded on the run at the moment it
      started, so it says what was true THEN even if he has changed his mind
      since. It is the row that makes "don't ask me" survivable: he stops being
@@ -3772,8 +3816,13 @@ function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
           This agent hasn't saved anything to remember yet.
         </div>
       )}
+      {/* GAP A (2026-08-05): a note the AGENT wrote itself is marked, because an
+          agent may now write its own memory and the owner must be able to see
+          which notes are his and which are its. `data-source` says it in the
+          markup as well as in the words, so a QA sweep can prove it. */}
       {notes.map(n => (
-        <div className="memrow" key={n.id} data-note={n.id}>
+        <div className={`memrow${n.source === "agent" ? " by-agent" : ""}`}
+          key={n.id} data-note={n.id} data-source={n.source}>
           <span className="mem-tx">
             <b>{n.text}</b>
             <span className="mem-when">
@@ -4385,6 +4434,23 @@ function ChatView({
               <div className="thinking">
                 <span className="bars" aria-hidden="true"><i /><i /><i /><i /><i /></span>
                 {a.name} is working on it
+                {/* ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
+                    THE STOP BUTTON, and it is here because this is the only place
+                    on the screen that says something is running. A control for
+                    stopping work that lives in a settings panel is a control
+                    nobody finds while the thing is running.
+
+                    IT TYPES THE SAME COMMAND HE COULD TYPE. "!stop" is the one
+                    owner of stopping in the engine, and this button sends exactly
+                    that message rather than inventing a second private route —
+                    so the button and the typed command can never mean different
+                    things, and stopping works identically from the phone. */}
+                <button className="btn small ghost stopnow" data-stop-agent={a.id}
+                  title={`Stop ${a.name} and spend nothing more on this`}
+                  onClick={() => client.send({
+                    type: "send", channelId: channel.id, text: `@${a.name} !stop`,
+                  })}>Stop</button>
+                {/* ===== GAP C BLOCK — end ===== */}
               </div>
             </div>
           </div>
@@ -4541,17 +4607,23 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
      is a job-shaped one, and treating a missing field as "action" would draw a
      branch-and-repository card for a job that has neither. */
   const action = approval.kind === "action";
-  const now = useCountdown(action && approval.status === "pending" && !!approval.expiresAt);
+  /* THE THIRD KIND OF THE SAME CARD (2026-08-05). "Show me the plan first"
+     stops an agent one step EARLIER than an action card does: nothing has been
+     done and nothing will be until he answers. It ticks down like an action
+     card, because an agent is standing there waiting either way. */
+  const plan = approval.kind === "plan";
+  const timed = action || plan;
+  const now = useCountdown(timed && approval.status === "pending" && !!approval.expiresAt);
   const dead = approvalIsDead(approval, now);
 
   const rows: [string, string][] = [];
   if (agent) {
     rows.push(["Agent", `${agent.name} · ${PROVIDER_LABEL[(agent.provider ?? "claude") as Provider]} · ${modelWords(agent.model)}`]);
   }
-  const rule = action ? null : ruleWords(agent);
+  const rule = timed ? null : ruleWords(agent);
   if (rule) rows.push(["Rule hit", rule]);
   rows.push(["Asked", clock(approval.createdAt)]);
-  if (action && approval.expiresAt) {
+  if (timed && approval.expiresAt) {
     rows.push(["Expires", dead ? "the time ran out" : expiryWords(approval.expiresAt, now)]);
   }
 
@@ -4561,11 +4633,15 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
      reason it can be trusted. It is not reworded, not shortened, and never
      swapped for a job title the agent chose. A job-shaped approval keeps the
      old behaviour: its title if it has one, its sentence if it does not. */
-  const headline = action ? actionHeadline(approval) : (task?.title ?? approval.action);
+  /* A PLAN CARD LEADS WITH CLOUD9'S OWN LINE, not the agent's — `planHeadline`
+     at the hub took it from the plan and bounded it, exactly as
+     `describeRemoteAction` writes the line on an action card. The agent's own
+     words appear below, as plain text, never as the sentence he judges by. */
+  const headline = action ? actionHeadline(approval) : (plan ? approval.action : (task?.title ?? approval.action));
 
   return (
     <div className="msg from-agent" data-approval={approval.id}
-      data-kind={action ? "action" : "task"} data-state={dead ? "expired" : approval.status}>
+      data-kind={approval.kind ?? "task"} data-state={dead ? "expired" : approval.status}>
       {agent ? <AgentFace name={agent.name} size={34} lamp={dead ? "idle" : "wait"} /> : <PersonFace name="?" size={34} />}
       <div className="body">
         <div className="who">
@@ -4579,11 +4655,15 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
         <p>
           {action
             ? "I've stopped before doing something outside this computer. Nothing has left it."
-            : "I've stopped before doing this — it needs your go-ahead."}
+            : plan
+              ? "Here's what I intend to do. I haven't started — nothing has been changed."
+              : "I've stopped before doing this — it needs your go-ahead."}
         </p>
         <AnswerCard
           tone="approval"
-          title={action ? "Permission to act outside this computer" : "Permission to act"}
+          title={action
+            ? "Permission to act outside this computer"
+            : plan ? "What it intends to do" : "Permission to act"}
           rows={rows}
           lead={
             <div className="spend">
@@ -4596,6 +4676,14 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
               <span className="amt">{headline}</span>
               {/* Absent when we do not know. No "0 files". */}
               {approval.detail && <span className="apdetail">{approval.detail}</span>}
+              {/* THE AGENT'S OWN WORDS, and the only place on any card where the
+                  agent writes what he reads — see `Approval.plan`. The hub has
+                  already bounded and stripped it (`tidyPlan`); it is rendered as
+                  plain text inside its own block, so it can look like the plan
+                  it is and never like another line of the card. */}
+              {plan && approval.plan && (
+                <pre className="planbody" data-plan={approval.id}>{approval.plan}</pre>
+              )}
               <span className="per">
                 {dead ? "nothing happened" : "nothing runs until you say so"}
               </span>
@@ -4607,7 +4695,7 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
                 Nobody answered in time — it didn't happen. Ask again and the agent will
                 stop here once more.
               </span>
-              {!action && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
+              {!action && !plan && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
             </>
           ) : (
             <>
@@ -4615,9 +4703,9 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
                 onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "approved" })}>
                 Approve
               </button>
-              <button className={action ? "btn" : "btn danger"}
+              <button className={action || plan ? "btn" : "btn danger"}
                 onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "rejected" })}>
-                {action ? "Not now" : "Reject"}
+                {action || plan ? "Not now" : "Reject"}
               </button>
               {/* Only a job-shaped approval HAS a job to look at. */}
               {approval.taskId && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
@@ -4642,14 +4730,19 @@ function ApprovalTray({ approval, agent, task }: {
   approval: Approval; agent?: AgentDef; task?: Task;
 }): React.JSX.Element {
   const action = approval.kind === "action";
-  const now = useCountdown(action && approval.status === "pending" && !!approval.expiresAt);
+  /* the same third kind as in `ApprovalMoment` — one card, three shapes */
+  const plan = approval.kind === "plan";
+  const timed = action || plan;
+  const now = useCountdown(timed && approval.status === "pending" && !!approval.expiresAt);
   const dead = approvalIsDead(approval, now);
-  const rule = action ? null : ruleWords(agent);
-  const headline = action ? actionHeadline(approval) : (task?.title ?? approval.action);
+  const rule = timed ? null : ruleWords(agent);
+  const headline = action
+    ? actionHeadline(approval)
+    : (plan ? approval.action : (task?.title ?? approval.action));
 
   return (
     <div className="approval" key={approval.id} data-appr={approval.id}
-      data-kind={action ? "action" : "task"} data-state={dead ? "expired" : approval.status}>
+      data-kind={approval.kind ?? "task"} data-state={dead ? "expired" : approval.status}>
       <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 8 }}>
         {agent ? <AgentFace name={agent.name} size={30} lamp={dead ? "idle" : "wait"} /> : <PersonFace name="?" size={30} />}
         <div style={{ minWidth: 0 }}>
@@ -4662,10 +4755,14 @@ function ApprovalTray({ approval, agent, task }: {
       </div>
       {/* On an action card the headline IS the sentence, so repeating it below
           would be the same words twice. A job-shaped one still needs it. */}
-      {!action && <p className="ap-say">{approval.action}</p>}
+      {!action && !plan && <p className="ap-say">{approval.action}</p>}
       {approval.detail && <p className="apdetail">{approval.detail}</p>}
+      {/* the agent's own words, bounded at the hub — see `Approval.plan` */}
+      {plan && approval.plan && (
+        <pre className="planbody" data-plan={approval.id}>{approval.plan}</pre>
+      )}
       {rule && <p className="meta" style={{ margin: "0 0 10px" }}>Rule hit: {rule}</p>}
-      {action && approval.expiresAt && (
+      {timed && approval.expiresAt && (
         <p className="meta apexpiry" style={{ margin: "0 0 10px" }}>
           {dead ? "The time ran out." : `Expires ${expiryWords(approval.expiresAt, now)}.`}
         </p>
@@ -4678,9 +4775,9 @@ function ApprovalTray({ approval, agent, task }: {
         <div className="actions">
           <button className="gold small"
             onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "approved" })}>Approve</button>
-          <button className={action ? "btn small" : "btn small danger"}
+          <button className={timed ? "btn small" : "btn small danger"}
             onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "rejected" })}>
-            {action ? "Not now" : "Reject"}
+            {timed ? "Not now" : "Reject"}
           </button>
         </div>
       )}
@@ -5813,6 +5910,13 @@ const ROOM_COMMANDS: RoomCommand[] = [
     label: "Give a job to work on in the background",
     say: "The agent takes the job away and posts here when it is done. If that agent needs your nod, an approval card comes first.",
     line: w => `@${w.first} !bg <what to do>`,
+    needs: ["agent"],
+  },
+  {
+    cmd: "!plan",
+    label: "Ask to see the plan before it works",
+    say: "The agent reads what it needs to, tells you what it intends to do, and waits. Nothing is changed until you press Approve — and if you say nothing, nothing happens.",
+    line: w => `@${w.first} !plan <what to do>`,
     needs: ["agent"],
   },
   {
@@ -7063,6 +7167,99 @@ function ChannelRail({ channel, onEditAgent, onOpenDm }: {
 /* ================= 4 · THE CREW (call sheet) ================= */
 
 /**
+ * "I ALREADY DID IT" — the receipt for the one-time catch-up, on his screen.
+ *
+ * THE CHANGE THIS ANNOUNCES. Cloud9 changed what a new agent gets; the six he
+ * already had were made before that and were stuck below it. The hub now brings
+ * them up by itself, once, at startup (`reachcatchup.ts`) — and a change to
+ * things he owns that he cannot see is exactly the kind that costs trust. So it
+ * is said in plain words, on every screen, until he has read it: which agents
+ * changed, what each one gained, the trust setting they were given, and where
+ * to undo any of it.
+ *
+ * IT IS NOT A BUTTON HE HAS TO FIND. The work is already done by the time this
+ * appears; the only thing to press is "Got it".
+ *
+ * DISMISSED PER CATCH-UP, not per session, and remembered in this window's own
+ * storage — so it survives a reload (which would otherwise show it again from
+ * the same welcome frame) and a second, different catch-up would still be told.
+ */
+const CAUGHT_UP_SEEN = "cloud9.reachCatchup.seen";
+
+function CaughtThemUp(): React.JSX.Element | null {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const said = world.reachCatchup;
+  const [seen, setSeen] = useState<string>(() => {
+    try { return localStorage.getItem(CAUGHT_UP_SEEN) ?? ""; } catch { return ""; }
+  });
+
+  if (!said || said.agents.length === 0) return null;
+  const stamp = String(said.ranAt);
+  if (seen === stamp) return null;
+
+  const got = (): void => {
+    try { localStorage.setItem(CAUGHT_UP_SEEN, stamp); } catch { /* no storage — say it again */ }
+    setSeen(stamp);
+  };
+
+  // THE WORDS ON THE SWITCHES, not a summary of them — read from the rows the
+  // hub actually granted, so this list cannot say something the grant did not.
+  const gained = [...new Set(said.agents.flatMap(a => a.gained))];
+  const names = said.agents.map(a => a.name);
+  const folderNames = said.agents.filter(a => a.folder).map(a => a.name);
+  const trusted = said.agents.filter(a => a.trustSet).map(a => a.name);
+
+  return (
+    <div className="crewupgrade caughtup" data-caught-up={stamp}
+      data-caught-up-names={names.join(",")}
+      data-caught-up-gained={gained.join(",")}>
+      <div className="cu-head">
+        <span className="cu-mark" aria-hidden="true">✓</span>
+        <span className="cu-tx">
+          <b>Your agents can now work on this computer.</b>
+          <span>
+            {countOf(names.length, "agent")} you already had{" "}
+            {names.length === 1 ? "was" : "were"} made before Cloud9 gave every new agent the
+            full working set, so Cloud9 brought {names.length === 1 ? "it" : "them"} up to the
+            same reach when it started — once, by itself. {names.join(", ")}.
+          </span>
+        </span>
+        <button className="primary small" data-caught-up-ok onClick={got}>Got it</button>
+      </div>
+      {gained.length > 0 && (
+        <ul className="cu-grants">
+          {gained.map(label => <li key={label}>{label}</li>)}
+        </ul>
+      )}
+      {folderNames.length > 0 && said.homeFolder && (
+        <p className="cu-folder">
+          {folderNames.join(", ")} had no folder of yours opened up, so{" "}
+          {folderNames.length === 1 ? "it now starts" : "they now start"} in{" "}
+          <code className="folderpath">{said.homeFolder}</code>. A folder you chose yourself
+          was never replaced.
+        </p>
+      )}
+      {trusted.length > 0 && (
+        <p className="cu-ask">
+          <b>They were also given a setting they never had.</b> {trusted.join(", ")} had no
+          answer stored for “how much may this agent do on its own”, which means{" "}
+          <b>{trustLevel("askEveryTime").label.toLowerCase()}</b> — a card before every single
+          job, which would have replaced one complaint with another. They now have what a new
+          agent gets: <b>{trustLevel(said.trust).label.toLowerCase()}</b>.{" "}
+          {trustLevel(said.trust).plainWords}
+        </p>
+      )}
+      <p className="cu-keep">
+        Nothing was taken away: no switch was turned off, no folder of yours was replaced, and
+        this happens once — it will not run again. To change any of it, open the agent
+        (the <b>✎</b> on its card in the crew list) and set the switches, the folder and the
+        trust setting to whatever you want.
+      </p>
+    </div>
+  );
+}
+
+/**
  * ONE STAT TILE — a number over the word for that many.
  *
  * The casting room printed **"1 CATEGORIES"** because the number came from a
@@ -7786,6 +7983,9 @@ function agentFromTemplate(
     // that split is the whole reason this function exists. It is written down as
     // a real stored value, never left to the field's absence.
     trust: NEW_AGENT_TRUST,
+    // …and the same for whose setup it runs in: a role hired in two clicks gets
+    // exactly what a hand-written agent gets, written down rather than inferred.
+    useOwnerSetup: NEW_AGENT_USE_OWNER_SETUP,
   };
 }
 
@@ -8272,8 +8472,17 @@ function SkillLibraryPanel({ have, agentName, roleId, onClose, onTake }: {
  * is written here. An app we have never measured gets NO sentence at all, because
  * falling back to the comforting one is how this goes wrong.
  */
-function HarnessHonesty({ provider, forcedOn }: {
+function HarnessHonesty({ provider, forcedOn, mode = "declared" }: {
   provider: Provider;
+  /**
+   * WHOSE SETUP THE AGENT BEING EDITED RUNS IN. The card's whole answer turns on
+   * it: with his own setup loaded, his connected services bring tools the
+   * switches never granted, his instructions steer the agent and his hooks run —
+   * measured 2026-08-05, an agent limited to three built-in tools arrived at the
+   * model holding 127. `isolationFor` owns that difference so this screen cannot
+   * describe it a second, drifting way.
+   */
+  mode?: "declared" | "owner";
   /**
    * The switches this app keeps on whatever the owner set — handed in from the
    * editor so this card, the switch list and the ladder are reading ONE answer
@@ -8282,7 +8491,7 @@ function HarnessHonesty({ provider, forcedOn }: {
    */
   forcedOn: Capability[];
 }): React.JSX.Element {
-  const iso = isolationFor(provider);
+  const iso = isolationFor(provider, mode);
   if (!iso) {
     return (
       <div className="notice harnessunknown">
@@ -8523,7 +8732,11 @@ function ConnectionsFilePick({ agentName, agentDraft, file, onChoose }: {
   // A file is stored and this window cannot say whether it is still there. That
   // is its own answer — reporting "gone" would be a guess, and reporting "in
   // use" would be the lie this whole feature exists to prevent.
-  const shown = said && !checked && state.state !== "off" ? "unchecked" : state.state;
+  // "unsupported" joins "off" here: whether the file is still on the disk is
+  // beside the point for an agent that could never have been handed it, and
+  // "cannot check that file" would bury the sentence that actually matters.
+  const unaskable = state.state === "off" || state.state === "unsupported";
+  const shown = said && !checked && !unaskable ? "unchecked" : state.state;
   const words = connectionsWords(state, agentName);
 
   // Switched off and nothing remembered: there is nothing honest to say here.
@@ -8911,9 +9124,11 @@ function WorkOnMyComputer({
         <div className="notice oc-gap" data-oneclick-pending="wholeComputer">
           <b>One thing left — pick the folder.</b>
           <span>
-            {shownName} is allowed out of its own folder, but no folder has been chosen, so
-            it still cannot reach anything of yours. Point it at the folder you want it
-            working in — the whole drive is fine (C:\) if that is what you mean.
+            {shownName} is allowed out of its own folder, but no folder has been chosen,
+            so it has been sent nowhere and stays in its own folder. Point it at the folder
+            you want it working in — the whole drive is fine (C:\) if that is what you
+            mean. That folder is where it is aimed and told to stay; the hard limit is
+            which tools it holds, not a wall around the folder.
           </span>
           <div className="actions">
             <button className="primary small" data-oneclick-folder
@@ -8983,6 +9198,12 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
     (agent?.provider ?? p.defaultProvider ?? "claude") as Provider);
   const [model, setModel] = useState<string>(
     agent?.model ?? p.defaultModel?.[(agent?.provider ?? p.defaultProvider ?? "claude") as Provider] ?? MODEL_DEFAULT.claude);
+  /* HOW HARD SHOULD IT THINK? — his choice, per agent, and `""` means he has
+     never made one. That empty string is NOT the same as "Normal": empty means
+     Cloud9 says nothing at all and the app uses whatever it normally would,
+     which is exactly what every agent he already owns does today. Nothing about
+     an existing agent changes until he picks one of the four. */
+  const [effort, setEffort] = useState<AgentEffort | "">(agent?.effort ?? "");
   const [skills, setSkills] = useState<AgentSkill[]>(Array.isArray(agent?.skills) ? agent!.skills! : []);
   const [confirmDelete, setConfirmDelete] = useState(false);
   /* WHO MAY SET THIS AGENT WORKING. Absent means "owner" — an agent made
@@ -8999,6 +9220,16 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
      only thing that can is him pressing one of the three below and saving. */
   const [trust, setTrust] = useState<AgentTrust>(
     creating ? NEW_AGENT_TRUST : trustOf(agent ?? {}));
+  /* DOES THIS AGENT USE HIS OWN CLAUDE CODE / CODEX SETUP?
+     THE SAME TWO STARTING POINTS AS TRUST ABOVE, AND FOR THE SAME REASON. A NEW
+     agent starts ON — he has asked for this repeatedly, and it is his machine —
+     and the value is WRITTEN DOWN at creation. An EXISTING agent starts on
+     whatever it has stored, and an agent saved before this switch existed reads
+     as OFF: nothing he already owns starts obeying his personal instructions,
+     running his hooks or paying for a much bigger prompt because an update
+     shipped. Only him pressing this and saving can do that. */
+  const [ownerSetup, setOwnerSetup] = useState<boolean>(
+    creating ? NEW_AGENT_USE_OWNER_SETUP : agent?.useOwnerSetup === true);
   /* THE CONNECTIONS FILE THIS AGENT USES — the config the maker of a tool hands
      you, chosen for this one agent. Blank means none has been chosen, which is
      the honest default and never the same as "" stored on the agent. */
@@ -9008,6 +9239,26 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
      stored on the agent. */
   const [roots, setRoots] = useState<string[]>(
     Array.isArray(agent?.wholeComputerRoots) ? agent!.wholeComputerRoots! : []);
+  /* THE MOST THIS AGENT MAY SPEND — two boxes, both blank by default and blank
+     for every agent he already has. Held as TEXT, not numbers, because a number
+     input that has been emptied is neither 0 nor a limit and a person clearing a
+     box means "no limit", not "spend nothing". `spendCapOf` reads what is stored;
+     what is typed only becomes a stored amount at save. */
+  const startCap = spendCapOf(agent ?? {});
+  const [perJob, setPerJob] = useState<string>(
+    typeof startCap.perJobUsd === "number" ? String(startCap.perJobUsd) : "");
+  const [perMonth, setPerMonth] = useState<string>(
+    typeof startCap.perMonthUsd === "number" ? String(startCap.perMonthUsd) : "");
+  /* SHOW ME THE PLAN FIRST. OFF for a new agent and OFF for every agent saved
+     before this existed — an update must never start making his crew stop and
+     wait for him. */
+  const [planFirst, setPlanFirst] = useState<boolean>(agent?.planFirst === true);
+  /* IF THAT MODEL IS BUSY, USE THIS ONE. One stand-in from the same list the
+     model picker draws, because one is what the need actually is — and blank,
+     which is today's behaviour: a busy model is a failed turn. */
+  const [standIn, setStandIn] = useState<string>(
+    Array.isArray(agent?.fallbackModels) && agent!.fallbackModels!.length > 0
+      ? agent!.fallbackModels![0]! : "");
 
   /* A NEW AGENT STARTS IN HIS HOME FOLDER — the other half of "fully capable the
      second it exists". `wholeComputer` is on by default, so without this the
@@ -9053,9 +9304,13 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
     || JSON.stringify(ap) !== JSON.stringify(agent?.approvals ?? NEW_AGENT_APPROVALS)
     || life !== (agent?.lifecycle ?? "enabled")
     || provider !== ((agent?.provider ?? p.defaultProvider ?? "claude") as Provider)
+    /* Unlike the model, this one IS counted: nothing picks it for him on the way
+       in, so a difference here is always something he chose. */
+    || effort !== (agent?.effort ?? "")
     || JSON.stringify(skills) !== JSON.stringify(Array.isArray(agent?.skills) ? agent!.skills! : [])
     || respondTo !== (agent?.respondTo ?? "owner")
     || trust !== (creating ? NEW_AGENT_TRUST : trustOf(agent ?? {}))
+    || ownerSetup !== (creating ? NEW_AGENT_USE_OWNER_SETUP : agent?.useOwnerSetup === true)
     || connFile.trim() !== (agent?.connectionsFile ?? "").trim()
     /* Against what the file OPENED with, which for a new agent now includes the
        home folder it starts in — otherwise merely opening "write an agent" and
@@ -9080,7 +9335,28 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
      here and the toast is at the other end of the window. */
   const [refusal, setRefusal] = useState<string | null>(null);
 
+  /* THE TWO BOXES, TURNED INTO ONE STORED CEILING — or into no field at all.
+     A BLANK BOX IS NOT A ZERO. Clearing a box means "no limit on this", so it
+     produces no key; and when both are blank there is no `spendCap` on the
+     agent at all, which is exactly the shape every agent he already has has.
+     There is one way to say "no limit", so nothing downstream can disagree
+     about what the absence of a number means. */
+  const capFromBoxes = (): AgentSpendCap | undefined => {
+    const cap: AgentSpendCap = {};
+    const job = Number(perJob.trim());
+    const month = Number(perMonth.trim());
+    if (perJob.trim() && Number.isFinite(job)) cap.perJobUsd = job;
+    if (perMonth.trim() && Number.isFinite(month)) cap.perMonthUsd = month;
+    return cap.perJobUsd === undefined && cap.perMonthUsd === undefined ? undefined : cap;
+  };
+
   const save = () => {
+    /* REFUSED HERE, BY THE HUB'S OWN RULE, before anything is sent. The hub
+       would refuse it anyway — this is the second gate, not the only one — but
+       a refusal that arrives as a toast after the form has closed is a refusal
+       he has to remember; one in the form is one he can act on. */
+    const badCap = validateSpendCap(capFromBoxes());
+    if (badCap) { setRefusal(badCap); return; }
     if (creating) {
       if (!ready) return;
       const wanted = name.trim().replace(/\s+/g, "-");
@@ -9097,6 +9373,10 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
             name: wanted, emoji, persona: persona.trim(),
             abilities: ab, approvals: ap, provider,
             model: model || MODEL_DEFAULT[provider],
+            /* Absent means absent — "the app decides" is NO field, never `""`,
+               so there is one way to say it and nothing downstream to disagree
+               about. Same rule as the connections file below. */
+            ...(effort ? { effort } : {}),
             skills, respondTo, respondToAllowlist: respondTo === "allowlist" ? allowlist : [],
             /* WRITTEN DOWN, NOT LEFT TO A DEFAULT. A new agent carries the
                middle setting as a real stored value from its first second, so
@@ -9104,6 +9384,10 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                before the setting existed — and for those the answer is, and
                stays, "ask me every time". */
             trust,
+            /* WRITTEN DOWN AT CREATION, exactly like the trust setting above, so
+               "absent" only ever has to answer for agents made before this
+               switch existed — and for those the answer is, and stays, no. */
+            useOwnerSetup: ownerSetup,
             /* Absent means absent — a blank box is not `""` on the agent, it is
                no connections file at all (the same rule the project folder
                follows). `undefined` never reaches the wire. */
@@ -9111,6 +9395,12 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
             /* The same rule for the folders: an empty list is not a field at
                all, so there is one way to say "nothing opened up". */
             ...(roots.length > 0 ? { wholeComputerRoots: roots } : {}),
+            /* The same absent-means-absent rule for the three settings added
+               2026-08-05: no limit is NO field, "show me the plan" off is NO
+               field, no stand-in model is NO field. */
+            ...(capFromBoxes() ? { spendCap: capFromBoxes() } : {}),
+            ...(planFirst ? { planFirst: true } : {}),
+            ...(standIn ? { fallbackModels: [standIn] } : {}),
           },
         }, setRefusal);
       if (!went) return;
@@ -9121,12 +9411,22 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
           ...agent!, emoji, persona: persona.trim() || agent!.persona, abilities: ab,
           approvals: ap, provider, lifecycle: life,
           model: model || MODEL_DEFAULT[provider],
+          /* Said explicitly rather than left to the spread, because going BACK
+             to "the app decides" has to travel too. `undefined` is dropped on
+             the way onto the wire, so the agent comes back with no thinking-time
+             setting at all — never with `""`, which would be a second way of
+             saying the same thing. */
+          effort: effort || undefined,
           skills, respondTo, respondToAllowlist: respondTo === "allowlist" ? allowlist : [],
           /* Said explicitly, always — the hub treats silence as "leave it as he
              set it", so an edit that meant to CHANGE the setting has to say so
              out loud. It is one of the three exact words or the hub refuses the
              whole save. */
           trust,
+          /* Said explicitly, always — the hub treats silence as "leave it as he
+             set it", so an edit that meant to turn his own setup OFF has to say
+             so out loud rather than hoping a missing field is read as a no. */
+          useOwnerSetup: ownerSetup,
           /* Said explicitly rather than left to the spread above, because
              FORGETTING the file has to travel too. `undefined` is dropped on the
              way onto the wire, so the agent comes back with no connections file
@@ -9138,6 +9438,16 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
              the wire, so the agent comes back with no folders at all — never
              with `[]`, which would be a second way of saying "none". */
           wholeComputerRoots: roots.length > 0 ? roots : undefined,
+          /* Said explicitly for the same reason every line above is: REMOVING a
+             spending limit, turning the plan gate back off and dropping a
+             stand-in model all have to travel. `undefined` is dropped on the
+             way onto the wire, so the agent comes back with no such field at
+             all — and the hub reads a field that never arrived as "leave it as
+             he set it", which is why saying so out loud is the only way to
+             change it. */
+          spendCap: capFromBoxes(),
+          planFirst,
+          fallbackModels: standIn ? [standIn] : undefined,
         },
       });
     }
@@ -9402,7 +9712,108 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                   {ids.map(id => <option key={id} value={id}>{modelLabel(id)}</option>)}
                 </select>
               </div>
+              {/* HOW HARD SHOULD IT THINK? — the second dial both apps offer and
+                  Cloud9 never turned. Deliberately in HIS words, not the apps':
+                  Claude calls these low/medium/high/max and Codex calls them
+                  low/medium/high/xhigh, and he should never have to know that.
+                  The one table in @cloud9/shared does the translating.
+                  The first option is not one of the four on purpose. Leaving it
+                  alone is a real answer — it means Cloud9 says nothing and the
+                  app uses whatever it normally would, which is what every agent
+                  he already owns does. */}
+              <div className="field-row">
+                <label htmlFor="f-effort">How hard should it think?</label>
+                <select className="select" id="f-effort" value={effort}
+                  onChange={e => setEffort(e.target.value as AgentEffort | "")}>
+                  <option value="">{AGENT_EFFORT_UNSET_LABEL}</option>
+                  {AGENT_EFFORT_CHOICES.map(c => (
+                    <option key={c.id} value={c.id}>{c.label}</option>
+                  ))}
+                </select>
+              </div>
+              {/* IF THAT MODEL IS BUSY — the stand-in. Drawn from the SAME list
+                  the model picker above draws, so it can only ever be a model
+                  this app really offers. Leaving it alone is a real answer and
+                  is what every agent he already owns does: a busy model is
+                  then a turn that failed, and he is told so. */}
+              <div className="field-row">
+                <label htmlFor="f-standin">If that model is busy</label>
+                <select className="select" id="f-standin" value={standIn}
+                  onChange={e => setStandIn(e.target.value)}>
+                  <option value="">Don't try another one — tell me it failed</option>
+                  {ids.filter(id => id !== (ids.includes(model) ? model : preferred))
+                    .slice(0, FALLBACK_MODEL_LIMITS.count + 6)
+                    .map(id => (
+                      <option key={id} value={id}>Use {modelLabel(id)} instead</option>
+                    ))}
+                </select>
+              </div>
+              {/* SHOW ME THE PLAN FIRST. Off for every agent he already has, and
+                  off for a new one — this can only ever be switched on by hand.
+                  Only the Claude app has a plan mode, so a Codex agent is told
+                  that here rather than being offered a switch that does nothing
+                  (`canPlan` in the engine refuses such a turn out loud too). */}
+              <label className="toggle-row" key="planfirst">
+                <span className="tx">
+                  <b>Show me the plan first</b>
+                  <span>
+                    {provider === "codex"
+                      ? "Only agents on Claude can do this — Codex has no plan mode."
+                      : "It says what it intends to do and waits for your go-ahead. "
+                        + "Nothing runs until you say so."}
+                  </span>
+                </span>
+                <input className="sw" type="checkbox" aria-label="Show me the plan first"
+                  disabled={provider === "codex"}
+                  checked={planFirst && provider !== "codex"}
+                  onChange={e => setPlanFirst(e.target.checked)} />
+              </label>
+              {/* THE MOST THIS AGENT MAY SPEND. Both boxes blank by default and
+                  blank on every agent he already has, so nothing changes for
+                  them. Only the Claude app reports what a turn cost — one owner
+                  for that fact, `providerCanBeCapped` — so a Codex agent is told
+                  plainly rather than shown boxes that would do nothing. */}
+              <div className="field-row">
+                <label htmlFor="f-perjob">Most it may spend on one job</label>
+                {providerCanBeCapped(provider)
+                  ? <input className="input" id="f-perjob" type="text" inputMode="decimal"
+                    value={perJob} placeholder="no limit"
+                    onChange={e => { setPerJob(e.target.value); setRefusal(null); }} />
+                  : <input className="input" id="f-perjob" type="text" disabled
+                    value="" placeholder="Codex doesn't report what a turn costs"
+                    title="Only agents on Claude can be given a spending limit" />}
+              </div>
+              <div className="field-row">
+                <label htmlFor="f-permonth">Most it may spend in a month</label>
+                {providerCanBeCapped(provider)
+                  ? <input className="input" id="f-permonth" type="text" inputMode="decimal"
+                    value={perMonth} placeholder="no limit"
+                    onChange={e => { setPerMonth(e.target.value); setRefusal(null); }} />
+                  : <input className="input" id="f-permonth" type="text" disabled
+                    value="" placeholder="Codex doesn't report what a turn costs"
+                    title="Only agents on Claude can be given a spending limit" />}
+              </div>
+              {/* SAID BEFORE HE PRESSES SAVE, in the form, by the SAME function
+                  the hub will judge it with — so the sentence he reads here is
+                  the sentence he would have got back. */}
+              {validateSpendCap(capFromBoxes()) && (
+                <p className="refusal" data-refuse="spendcap">
+                  {validateSpendCap(capFromBoxes())}
+                </p>
+              )}
+              {providerCanBeCapped(provider) && (perJob.trim() || perMonth.trim()) && (
+                <p className="meta" data-hint="spendcap">
+                  Amounts are in dollars, smallest {SPEND_CAP_LIMITS.minUsd.toFixed(2)}.
+                  Leave a box empty for no limit. When a limit is reached the agent stops
+                  and says so — it never half-finishes in silence.
+                </p>
+              )}
             </div>
+            <p className="sec-note" style={{ marginTop: 8 }}>
+              {effort
+                ? AGENT_EFFORT_CHOICES.find(c => c.id === effort)!.hint
+                : AGENT_EFFORT_UNSET_HINT}
+            </p>
             <p className="sec-note" style={{ marginTop: 8 }}>
               {fallback
                 ? "This is the list Cloud9 ships with. Once the app is signed in under Settings, its own list is used."
@@ -9582,7 +9993,28 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
               </div>
             )}
 
-            <HarnessHonesty provider={provider} forcedOn={forcedOn} />
+            {/* WHOSE SETUP THIS AGENT RUNS IN — his choice, on this agent, with
+                one honest line about what changes and one about what it costs.
+                It sits directly above the honesty card because the card's answer
+                DEPENDS on it: with his setup loaded, "nothing else reaches it"
+                stops being true, and the card says so instead of reassuring him. */}
+            <div className="panelbox ownersetup" data-owner-setup={ownerSetup ? "on" : "off"}>
+              <button className="choice-row ownersetuppick" aria-pressed={ownerSetup}
+                onClick={() => setOwnerSetup(!ownerSetup)}>
+                <b>{OWNER_SETUP_WORDS.label}{ownerSetup ? "" : " — off"}</b>
+                <span>{ownerSetup ? OWNER_SETUP_WORDS.oneLine : OWNER_SETUP_WORDS.whenOff}</span>
+              </button>
+              {/* The cost is said ONCE, and only when it applies — a warning he
+                  reads under a switch he has turned off is a warning he learns
+                  to skip past on the day it matters. */}
+              {ownerSetup && (
+                <p className="sec-note ownersetupcost">{OWNER_SETUP_WORDS.cost}</p>
+              )}
+              <p className="sec-note ownersetupkept">{OWNER_SETUP_WORDS.keptBack}</p>
+            </div>
+
+            <HarnessHonesty provider={provider} forcedOn={forcedOn}
+              mode={ownerSetup ? "owner" : "declared"} />
           </section>
 
           <section className="fieldset whocanuse">

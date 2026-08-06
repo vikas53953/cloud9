@@ -102,7 +102,7 @@ export class ToolBridge {
       // The ticket decides everything. An unknown one is not "no scope", it is
       // no answer at all — a stale ticket from a finished turn must not quietly
       // reach a conversation that turn is no longer taking place in.
-      const secret = String(req.headers["x-cloud9-turn"] ?? "");
+      const secret = ticketFrom(req.headers);
       const turn = secret ? this.turns.get(secret) : undefined;
       if (!turn) { res.writeHead(403); res.end(); return; }
       const body = await readBody(req);
@@ -111,13 +111,48 @@ export class ToolBridge {
       try { rpc = JSON.parse(body) as JsonRpcRequest; }
       catch { res.writeHead(400); res.end(); return; }
       const answer = await answerCloud9Rpc(rpc, turn);
+      // A NOTIFICATION GETS NO ANSWER AT ALL, and over HTTP that means an empty
+      // 202 — not the four letters "null" with a JSON content type.
+      //
+      // This line used to write `JSON.stringify(answer ?? null)` for everything.
+      // Over stdio nobody noticed, because `cloud9mcp.ts` checks for `undefined`
+      // and stays silent on our behalf. Over HTTP the body IS the answer, so
+      // Codex received `null` as the reply to `notifications/initialized`, took
+      // it for a broken server and dropped the connection — measured 2026-08-06:
+      // the exact same command line reached `tools/list` against a server that
+      // returned 202 and never got past `initialize` against this one. Every
+      // Cloud9 tool was silently missing from the turn.
+      if (answer === undefined || answer === null) { res.writeHead(202); res.end(); return; }
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(answer ?? null));
+      res.end(JSON.stringify(answer));
     } catch (err) {
       console.error("[tool-bridge] could not answer a tool call:", err);
       try { res.writeHead(500); res.end(); } catch { /* the socket already went */ }
     }
   }
+}
+
+/**
+ * THE TICKET, however the caller was told to send it. One ticket, one meaning,
+ * two spellings — because the two harnesses were built by different people:
+ *
+ *  - `x-cloud9-turn` is what Cloud9's own MCP child sends (`cloud9mcp.ts`); it
+ *    is our program and we chose the header.
+ *  - `Authorization: Bearer …` is what the Codex CLI sends, and it is not
+ *    negotiable: `mcp_servers.<name>.bearer_token_env_var` is the only way to
+ *    authenticate an HTTP MCP server there, and it sends that header. Measured
+ *    on 0.146.0, 2026-08-06, straight off the wire.
+ *
+ * NEITHER IS A WEAKER GATE. Both carry the SAME per-turn secret, minted here,
+ * held only in memory, and dead the moment the turn closes. This function only
+ * says where to read it from.
+ */
+function ticketFrom(headers: http.IncomingHttpHeaders): string {
+  const own = String(headers["x-cloud9-turn"] ?? "");
+  if (own) return own;
+  const auth = String(headers.authorization ?? "");
+  const bearer = /^Bearer\s+(\S+)$/i.exec(auth);
+  return bearer ? bearer[1] : "";
 }
 
 function readBody(req: http.IncomingMessage): Promise<string | undefined> {

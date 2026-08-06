@@ -79,6 +79,85 @@ export const CLAUDE_BUILTIN_TOOLS = [
   "Workflow", "Write",
 ] as const;
 
+/* ===========================================================================
+ * WHAT ACTUALLY STOPS AN AGENT WRITING SOMEWHERE — gap C, MEASURED 2026-08-05.
+ *
+ * THE CLAIM THE APP WAS MAKING. A Codex agent gets a real fence: `-s
+ * workspace-write`, driven from `codexSandboxFor` below, is codex-cli's own OS
+ * sandbox and it refuses a write outside the workspace on its own. A CLAUDE
+ * agent gets a declared tool list plus `--add-dir`, and the screens described
+ * that as though it were the same kind of thing — "and only these; the rest of
+ * this computer is still closed to it".
+ *
+ * IT IS NOT THE SAME KIND OF THING. Probes on this machine against the INSTALLED
+ * CLI (2.1.222), all in `-p` mode, all writing to a folder that was neither the
+ * working directory nor named in any `--add-dir`:
+ *
+ *   --permission-mode dontAsk      + --add-dir A   → WRITE SUCCEEDED, 0 denials
+ *   --permission-mode acceptEdits  + --add-dir A   → WRITE SUCCEEDED, 0 denials
+ *   --permission-mode manual       + --add-dir A   → WRITE SUCCEEDED, 0 denials
+ *   --permission-mode dontAsk, NO --add-dir at all → WRITE SUCCEEDED, 0 denials
+ *   --settings with permissions.deny naming that
+ *     exact file, under dontAsk and under manual  → WRITE SUCCEEDED, 0 denials
+ *   a deny rule naming a file INSIDE the workspace → WRITE SUCCEEDED, 0 denials
+ *
+ * The model said so itself, unprompted, in the first run: "probeB is outside my
+ * configured working directory, and the write went through anyway — worth
+ * knowing if that boundary was meant to hold." And `claude --help` at 2.1.222
+ * lists no sandbox flag of any kind: `--add-dir` is documented as "Additional
+ * directories to allow tool access to", which is about what the agent is POINTED
+ * at, not about what it is prevented from touching. In print mode the CLI says
+ * outright that the workspace trust dialog is skipped.
+ *
+ * SO THE HONEST ACCOUNT, and every screen now says a version of it:
+ *   · the HARD boundary Cloud9 has on the Claude side is WHICH TOOLS EXIST.
+ *     `--tools` declares the set and `--disallowed-tools` spells out the rest;
+ *     an agent without the file rows has no way to touch a file at all, and that
+ *     really is enforced outside the conversation.
+ *   · the FOLDERS are a direction, not a lock. The agent is pointed at them and
+ *     told to stay in them, and it does — but nothing outside Cloud9 forces it.
+ *   · if a real fence is wanted for a particular job, that agent goes on Codex.
+ *
+ * WHY NOT CLOSE IT INSTEAD. We tried, and every route was measured shut: there
+ * is no sandbox flag, no permission mode that denies in print mode, and deny
+ * rules did not fire at all. Half a fence described as a fence is worse than an
+ * honest direction, so this is written down rather than papered over.
+ * =========================================================================== */
+
+/** How an agent's file reach is really held. Two kinds, and they differ. */
+export type FileFence = "os-sandbox" | "tools-only";
+
+/**
+ * Which kind THIS agent gets. Derived from its harness, because that is the
+ * only thing that decides it — no switch, setting or folder changes the answer.
+ */
+export function fileFenceFor(agent: Pick<AgentDef, "provider">): FileFence {
+  return (agent.provider ?? "claude") === "codex" ? "os-sandbox" : "tools-only";
+}
+
+/**
+ * The same two facts in the owner's words. Every screen that talks about folders
+ * reads THIS — there is no second wording to drift, which is exactly how "and
+ * only these" ended up on a screen in the first place.
+ */
+export const FILE_FENCE_WORDS: Readonly<Record<FileFence, { headline: string; detail: string }>> = {
+  "os-sandbox": {
+    headline: "A real fence.",
+    detail: "This one runs on Codex, and Codex boxes it in itself: a write outside the " +
+      "folders it was given is refused by its own program, whatever it tries.",
+  },
+  "tools-only": {
+    headline: "A direction, not a lock.",
+    detail: "This one runs on Claude. We tested it here: Claude's own program has no way " +
+      "to fence an agent to a folder — a write outside every folder we named went " +
+      "through, in every setting we tried. What Cloud9 CAN hard-stop is which tools it " +
+      "holds: with file tools switched off it has no way to touch a file at all. With " +
+      "them on, it is pointed at the folders you chose and told to work only there, and " +
+      "it does — but the folders are where it is aimed, not a wall it cannot climb. If " +
+      "you want a wall for a particular job, run that agent on Codex.",
+  },
+};
+
 /**
  * One switch on an agent, and everything that follows from it: the tools it
  * hands the CLI, the sandbox it opens, whether the owner is asked first, and —
@@ -330,13 +409,24 @@ export const CAPABILITIES: readonly Capability[] = [
       " It opens “Choose a folder” in the same breath, so I am never allowed out of my own "
       + "folder with nowhere to go — and a new agent already starts with your home folder, so "
       + "there is usually nothing to do at all."),
-    can: "You CAN reach files outside your own folder, in the places your owner opened up " +
-      "for you. Because that changes his computer, he is asked first.",
-    cannot: "You CANNOT reach anything outside your own folder.",
+    // GAP C (2026-08-05): these are RULES the agent must keep, and they are now
+    // worded as rules. They used to be worded as facts — "you CANNOT reach
+    // anything outside your own folder" — and that was measured false on the
+    // Claude side (see FILE_FENCE_WORDS above). An agent told a false "cannot"
+    // is an agent that will discover it can; an agent given a clear "must not"
+    // keeps the rule. Same guard, honest sentence.
+    can: "You must work ONLY inside your own folder and the places your owner opened up " +
+      "for you, listed in your instructions. Nothing else on this computer is yours to " +
+      "read or change, even if you can technically get to it — going outside them is a " +
+      "mistake, not a shortcut. Because that folder is his computer, he is asked first.",
+    cannot: "You must NOT touch anything outside your own folder. Treat that as a hard " +
+      "rule: not a file, not a folder, nowhere else on this computer, even if a tool you " +
+      "hold would let you.",
     onButNothingSupplied:
-      "You CANNOT reach anything outside your own folder right now. Your owner has allowed " +
-      "it, but he has not opened up any folder for you, so there is nowhere outside your " +
-      "own folder you can actually get to. Say that plainly rather than trying.",
+      "You must NOT touch anything outside your own folder right now. Your owner has " +
+      "allowed it in principle, but he has not opened up any folder for you, so there is " +
+      "nowhere outside your own folder you have been sent. Say that plainly rather than " +
+      "going and having a look anyway.",
   },
   {
     ability: "commands",
@@ -422,13 +512,20 @@ export const REACH_LEVELS: readonly ReachLevel[] = [
   {
     level: "look",
     label: "Look things up and keep notes",
-    plainWords: "Can check the web and keep files in its own folder. Nothing on your PC changes.",
+    // GAP C (2026-08-05): "Nothing on your PC changes" was not true — this rung
+    // hands over the file tools, and its own folder is on your PC. What IS true
+    // is that no other folder is opened up for it.
+    plainWords: "Can check the web and keep notes in its own folder on this computer. "
+      + "No other folder is opened up for it.",
     rows: 2,
   },
   {
     level: "work",
     label: "Do real work for you",
-    plainWords: "Adds helper agents, repeating check-ins and background jobs. Still only its own folder.",
+    // GAP C: "Still only its own folder" read as a wall. It is where the agent is
+    // pointed, which is a different promise — see FILE_FENCE_WORDS.
+    plainWords: "Adds helper agents, repeating check-ins and background jobs. "
+      + "Still no other folder opened up for it.",
     rows: 5,
   },
   {

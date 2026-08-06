@@ -25,7 +25,7 @@
 //     `mustAskBeforeActing` the first time.
 import {
   AgentDef, APPROVAL_LIMITS, Approval, ClientFrame, ID, RemoteAction, RemoteActionFacts,
-  decideAsking, describeRemoteAction, isRemoteAction, trustLevel, trustOf,
+  decideAsking, describeRemoteAction, isRemoteAction, tidyPlan, trustLevel, trustOf,
 } from "@cloud9/shared";
 
 
@@ -69,7 +69,13 @@ export interface ApprovalDeskOptions {
    * The desk does not know what a task is and does not touch one — it reports.
    * `engine.ts` owns what that means on screen.
    */
-  onWaitStart?: (wait: { taskId: ID; facts: RemoteActionFacts }) => void;
+  onWaitStart?: (wait: {
+    taskId: ID;
+    /** the counted facts of a remote action — absent on a plan wait */
+    facts?: RemoteActionFacts;
+    /** TRUE when what is being waited on is a plan, not an action */
+    plan?: true;
+  }) => void;
   /**
    * THE WAIT IS OVER — yes, no, expired, or the hub went away. Always fires if
    * `onWaitStart` fired, exactly once, so nothing can be left standing at the
@@ -92,10 +98,48 @@ export interface ApprovalDeskOptions {
   onUnasked?: (what: { agent: AgentDef; taskId?: ID; channelId: ID; facts: RemoteActionFacts }) => void;
 }
 
+/**
+ * ONE THING THAT WENT THROUGH THIS GATE, OR DID NOT — counted facts and a
+ * decision, nothing else.
+ *
+ * ADDED FOR VERIFICATION (`verify.ts`). When an agent's reply says "I pushed
+ * it", the only honest way to check is against the gate every push must pass:
+ * the `RemoteActionFacts` here are the branch git generated, the repository gh
+ * named and the number `git rev-list` counted — the same facts the card carried,
+ * never a sentence the agent wrote about itself.
+ *
+ * THE HONEST LIMIT, written down because it decides what verification may say:
+ * `approved` means the owner said yes (or had said yes in advance), NOT that
+ * the action then succeeded. So "he said he pushed and no push was ever
+ * approved" is a fact; "he said he pushed and one was approved" is only
+ * agreement, never proof that GitHub took it.
+ */
+export interface SettledRemoteAction {
+  facts: RemoteActionFacts;
+  approved: boolean;
+  /** it went ahead because the owner had already answered, in advance */
+  unasked?: boolean;
+  at: number;
+}
+
+/** How many settled actions the desk remembers. A verification window, not a log. */
+export const SETTLED_KEEP = 50;
+
 interface Waiting {
   askId: string;
   approvalId?: ID;
-  action: RemoteAction;
+  /** what is being waited on: a row on the shared table, or a plan */
+  action: RemoteAction | "plan";
+  /**
+   * The counted facts the card carried — kept for the settled ledger.
+   *
+   * ABSENT ON A PLAN WAIT, and that is the whole reason it is optional. The
+   * ledger exists so `verify.ts` can check "I pushed it" against the gate every
+   * push must pass; a plan is not a remote action, has no counted facts and
+   * never left this computer, so it belongs in that ledger under NO facts at all
+   * rather than under borrowed ones that would read as a push nobody made.
+   */
+  facts?: RemoteActionFacts;
   /** the delegated job this wait belongs to, when there is one */
   taskId?: ID;
   settle: (outcome: ApprovalOutcome) => void;
@@ -118,6 +162,25 @@ export class ApprovalDesk {
 
   /** How many agents are standing here right now. For a status line, and tests. */
   get pending(): number { return this.waiting.length; }
+
+  /**
+   * WHAT REALLY WENT THROUGH THIS GATE, oldest first, capped at `SETTLED_KEEP`.
+   *
+   * READ-ONLY BY CONSTRUCTION and read-only by intent: this is a record for
+   * `verify.ts` to check an agent's words against. Nothing here decides
+   * anything, and adding it changed no decision the desk makes.
+   */
+  get settledActions(): readonly SettledRemoteAction[] { return this.ledger; }
+
+  /** Every remote action that settled, in order. See `SettledRemoteAction`. */
+  private ledger: SettledRemoteAction[] = [];
+
+  private noteSettled(entry: SettledRemoteAction): void {
+    this.ledger.push(entry);
+    if (this.ledger.length > SETTLED_KEEP) {
+      this.ledger.splice(0, this.ledger.length - SETTLED_KEEP);
+    }
+  }
 
   /**
    * "May I do this one thing?" — asked while the agent is mid-run.
@@ -156,6 +219,9 @@ export class ApprovalDesk {
         ...(input.taskId ? { taskId: input.taskId } : {}),
       }));
       this.log(`went ahead unasked: ${describeRemoteAction(facts)}`);
+      // ON THE LEDGER EITHER WAY. "Not asked" must not also mean "not written
+      // down" — that is the same half of "don't ask me" `onUnasked` protects.
+      this.noteSettled({ facts, approved: true, unasked: true, at: Date.now() });
       return Promise.resolve({
         approved: true,
         unasked: true,
@@ -182,7 +248,7 @@ export class ApprovalDesk {
       // a waiting approval must never be the reason this process stays alive
       timer.unref?.();
       this.waiting.push({
-        askId, action: facts.action, settle: resolve, timer,
+        askId, action: facts.action, facts, settle: resolve, timer,
         ...(input.taskId ? { taskId: input.taskId } : {}),
       });
       this.opts.send({
@@ -197,6 +263,80 @@ export class ApprovalDesk {
       // throws must not take the wait down with it, because the wait is the
       // thing that actually protects GitHub.
       if (input.taskId) this.tell(() => this.opts.onWaitStart?.({ taskId: input.taskId!, facts }));
+    });
+  }
+
+  /**
+   * "HERE IS WHAT I INTEND TO DO — shall I?" — asked BEFORE the work, when the
+   * owner has said he wants to see the plan first.
+   *
+   * IT IS THE SAME DESK, DELIBERATELY. Same waiting list, same one timer per
+   * wait, same `maxWaiting` leash, same `onApproval` settle path, same
+   * `giveUpAll` when the hub goes away — so the three properties at the top of
+   * this file hold for a plan exactly as they hold for a push, and there is
+   * still exactly one place where "did we ask?" is answered.
+   *
+   * WHAT IT DOES NOT DO IS CONSULT THE TRUST SETTING, and that is not an
+   * oversight. `decideAsking` answers "may this agent do things outside this
+   * computer without stopping?" — a different question from "does he want to
+   * see the plan before it starts". He asked to be shown; he is shown. There is
+   * no path through this method that goes ahead without a card, which is why it
+   * cannot weaken anything: it can only add a stop that was not there before.
+   */
+  askPlan(input: {
+    agent: AgentDef;
+    channelId: ID;
+    taskId?: ID;
+    /** what the agent said it intends to do, in its own words */
+    plan: string;
+  }): Promise<ApprovalOutcome> {
+    const plan = tidyPlan(input.plan);
+    if (!plan) {
+      // nothing to show him is not something to approve — and silence would be
+      // the one shape that could look like a yes
+      return Promise.resolve({
+        approved: false,
+        reason: "the agent did not say what it intended to do, so nothing was started",
+      });
+    }
+    if (this.waiting.length >= this.maxWaiting) {
+      return Promise.resolve({
+        approved: false,
+        reason: "too many agents are already waiting on an answer",
+      });
+    }
+    const askId = `ask-${(++asks).toString(36)}-${Date.now().toString(36)}`;
+    return new Promise<ApprovalOutcome>(resolve => {
+      const timer = setTimeout(() => {
+        this.finish(askId, {
+          approved: false,
+          reason: `nobody answered in ${howLong(this.waitMs)}, so it did not happen`,
+        });
+      }, this.waitMs);
+      timer.unref?.();
+      this.waiting.push({
+        askId, action: "plan", settle: resolve, timer,
+        ...(input.taskId ? { taskId: input.taskId } : {}),
+      });
+      this.opts.send({
+        type: "askPlan", askId,
+        agentId: input.agent.id, channelId: input.channelId,
+        ...(input.taskId ? { taskId: input.taskId } : {}),
+        plan,
+      });
+      this.log(`asked for a go-ahead on a plan from ${input.agent.name}`);
+      // A JOB STANDING AT THIS GATE IS STUCK IN EXACTLY THE SAME SENSE as one
+      // standing at the push gate, so it is reported the same way and the jobs
+      // screen needs no second idea of "waiting".
+      if (input.taskId) {
+        this.tell(() => this.opts.onWaitStart?.({
+          taskId: input.taskId!,
+          // the desk reports FACTS about a wait; a plan has no `REMOTE_ACTIONS`
+          // row, so it reports the plan wait as itself rather than borrowing a
+          // row that would say something untrue about GitHub
+          plan: true,
+        }));
+      }
     });
   }
 
@@ -248,6 +388,11 @@ export class ApprovalDesk {
     if (!w) return;
     clearTimeout(w.timer);
     this.log(`${w.action}: ${outcome.reason}`);
+    // WRITTEN DOWN BEFORE ANYONE IS TOLD. See `SettledRemoteAction` — and see
+    // `Waiting.facts` for why a plan wait writes nothing here.
+    if (w.facts) {
+      this.noteSettled({ facts: w.facts, approved: outcome.approved, at: Date.now() });
+    }
     // THE JOB IS MOVING AGAIN — whatever the answer was. Said before the
     // promise settles so the screen is never behind the work: the turn carries
     // on the instant it is told, and it is no longer stuck the instant before.

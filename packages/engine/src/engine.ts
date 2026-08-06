@@ -12,11 +12,25 @@ import {
   WorldState, describeRemoteAction, isSafeFileName,
   mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
   LIVE_STEPS_PER_BATCH, RUN_LIMITS, RunStep, trustLevel, trustOf,
+  // GAP A/B/C (spending limits, show-me-the-plan, stand-in models, 2026-08-05)
+  AgentSpendCap, SpendCapWhich, decideSpend, fallbackModelsOf, fellBackTo, fellBackWords,
+  providerCanBeCapped, showsPlanFirst, spendCapOf, spendCapStopWords, tidyPlan,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
-import { Cloud9AttachmentAnswer, Cloud9SearchAnswer } from "./cloud9tools.js";
+// WHOSE SETUP EACH TURN RUNS IN — the same one owner both harnesses read, asked
+// here only so the run record can say afterwards which mode a turn was in.
+import { usesOwnerSetup } from "./ownersetup.js";
+// `Cloud9RememberAnswer` is the gap-A addition (agent-written memory, 2026-08-05).
+import {
+  Cloud9AttachmentAnswer, Cloud9RememberAnswer, Cloud9SearchAnswer,
+  // ===== GAP B BLOCK (skills on demand, 2026-08-05) =====
+  Cloud9SkillAnswer,
+} from "./cloud9tools.js";
 import { openAttachmentInConversation } from "./attachmentreach.js";
-import { ConversationBudget, CONVERSATION_BUDGET, renderConversation } from "./context.js";
+import {
+  ConversationBudget, CONVERSATION_BUDGET, conversationBudgetFor,
+  maxConversationMessages, renderConversation,
+} from "./context.js";
 import { OpenTurn, ToolBridge } from "./toolbridge.js";
 import { ArtifactSweep, describeRefusals, sweepProduced } from "./artifacts.js";
 import { ApprovalDesk, ApprovalOutcome } from "./approvaldesk.js";
@@ -24,24 +38,34 @@ import { GitHubClient, GitHubOptions } from "./github.js";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
   ClaudeProvider, HarnessUnavailableError, InstructionsNotSavedError, MockProvider,
-  redactForSharing, sanitizeForChat, ThreadContinuity,
+  PlanNotOfferedError, redactForSharing, sanitizeForChat, SpendCapReachedError, ThreadContinuity,
 } from "./provider.js";
 import { sessionKeyId } from "./sessionresume.js";
 import { PendingAsk, rememberAsk, takeAsk, workEmoji } from "./reactions.js";
 import { TurnFacts, turnVerdict } from "./receipts.js";
+// ---- HOOKS + VERIFICATION (the two harness pieces Cloud9 did not have) ----
+// `hooks.ts` decides WHETHER an owner's rule may act; this file is only ever
+// the thing that reports a fact to it and does the four actions. `verify.ts` is
+// a pure function over the run record — no model, no second opinion.
+import { HookBook, type HookFact } from "./hooks.js";
+import { verifyTurn } from "./verify.js";
 import { describeRepoTurn, repoTurn, RepoTurnResult } from "./repowork.js";
 import { GitWorkspace, Worktree } from "./worktree.js";
 import { GitHubWriteRequest, GitHubWriteRequestWithoutRepo, runGitHubWrite } from "./githubwrite.js";
 import { buildRunRecord, ProviderTrace, RunFinish, RunKind, RunSeed } from "./runrecord.js";
 import { RunStore } from "./runstore.js";
 import {
-  MemoryStore, MemoryNote, newMemoryId, retrieveMemory, worthRemembering,
+  MemoryStore, MemoryKind, MemoryNote, MEMORY_NOTES_PER_TURN, newMemoryId,
+  retrieveMemory, worthRemembering,
 } from "./agent-memory.js";
 import { AgentHandoff, buildHandoff, HandoffError } from "./agent-handoff.js";
 import { isScheduleWhen, Scheduler } from "./scheduler.js";
 import { taskTldr } from "./tldr.js";
 import { roomLineForThreadJob, threadOf } from "./threads.js";
 import { sweepPendingTree, writeWholeFile } from "./wholefile.js";
+// GAP C (stopping a running turn, 2026-08-05). `run.ts` owns the pid and owns
+// `killTree`; the engine only ever opens a scope around a turn and asks it to stop.
+import { newStopScope, withStopScope } from "./run.js";
 
 export interface EngineOptions {
   relayUrl: string;      // ws://host:port
@@ -89,7 +113,42 @@ export interface EngineOptions {
   repoDir?: string;
 }
 
+// ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
+/**
+ * ONE TURN THAT IS RUNNING RIGHT NOW, and the handle that kills it.
+ *
+ * It carries the agent's NAME as well as its id because the sentence the room
+ * gets is written from this row, and looking the name up again afterwards would
+ * mean an agent renamed mid-turn is reported under the wrong one.
+ */
+export interface LiveTurn {
+  agentId: ID;
+  agentName: string;
+  channelId?: ID;
+  startedAt: number;
+  /** kills every child process this turn started — `run.ts` owns the killing */
+  scope: { stop(): void; readonly stopped: boolean };
+}
+// ===== GAP C BLOCK — end =====
+
 /** Everything a turn needs, plus who is asking and on whose behalf. */
+/**
+ * WHICH OF HIS TWO LIMITS THE HARNESS ACTUALLY HIT.
+ *
+ * Only ONE number goes to the harness — the smaller of "the most one job may
+ * cost" and "what is left of the month" — so when it fires, this works back to
+ * which of the two that number came from. It matters because the two have
+ * different answers: a job limit is raised on the agent, a month that is spent
+ * either waits or is raised.
+ *
+ * The tie is given to the JOB limit, because that is the one he can act on
+ * straight away — and when both are the same number, both sentences are true.
+ */
+function spendCapWhichFired(cap: AgentSpendCap, turnCapUsd: number | undefined): SpendCapWhich {
+  if (typeof turnCapUsd !== "number") return "perMonth";
+  return cap.perJobUsd === turnCapUsd ? "perJob" : "perMonth";
+}
+
 export interface TurnInput {
   context: string;
   trigger: string;
@@ -138,6 +197,14 @@ export interface TurnInput {
    * a proactive line, a received handoff.
    */
   thread?: ThreadContinuity;
+  /**
+   * THIS TURN IS THE AGENT WRITING A PLAN, not doing the work.
+   *
+   * Set only by `planFirstTurn`, which is the one place a plan is ever asked
+   * for. The turn runs read-only, its answer IS the plan, and it is recorded as
+   * a plan rather than as the job.
+   */
+  planOnly?: boolean;
 }
 
 export class Engine {
@@ -173,6 +240,20 @@ export class Engine {
   lastRun?: RunRecord;
   /** told about every run as it finishes, so a host can forward it to clients */
   onRunRecorded?: (record: RunRecord) => void;
+  /**
+   * THE OWNER'S OWN HOOKS — "when this happens, do that" (`hooks.ts`).
+   *
+   * ABSENT MEANS NOTHING EVER FIRES, and that is the default: an engine with no
+   * book set behaves exactly as it did before hooks existed. Set by whoever
+   * launches the engine (`hookwiring.ts` does it in one call).
+   */
+  hooks?: HookBook;
+  /**
+   * CHECK WHAT AN AGENT SAID AGAINST WHAT IT DID, after every turn
+   * (`verify.ts`). Off unless asked for, and even when on it says nothing
+   * unless a claim and the record really disagree.
+   */
+  verifyClaims = false;
   private history = new Map<ID, Message[]>();
   tasks = new Map<ID, Task>();
   private claimed = new Set<ID>();
@@ -222,6 +303,18 @@ export class Engine {
   private attachmentWaiters =
     new Set<(f: Extract<ServerFrame, { type: "attachmentTicket" }>) => boolean>();
   private turnsInFlight = 0;
+  // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
+  /**
+   * EVERY TURN CURRENTLY RUNNING, and the handle that stops it.
+   *
+   * One set for the whole engine rather than one per agent, because "stop"
+   * arrives naming an agent and has to find whatever that agent has running —
+   * a chat turn, a background job, repository work — without each kind of turn
+   * having to remember to register itself somewhere different. They all go
+   * through `respondAs`, so they all end up here.
+   */
+  private liveTurns = new Set<LiveTurn>();
+  // ===== GAP C BLOCK — end =====
   private queue: (() => Promise<void>)[] = [];
   private opts: EngineOptions;
   private stopped = false;
@@ -271,7 +364,22 @@ export class Engine {
       send: frame => this.sendFrame(frame),
       ...(opts.approvalWaitMs ? { waitMs: opts.approvalWaitMs } : {}),
       // THE ONE PLACE A JOB IS REALLY STUCK. See `jobIsStuck` below.
-      onWaitStart: w => this.jobIsStuck(w.taskId, w.facts),
+      // AND the one place a hook can hear that somebody is waiting on HIM: the
+      // sentence handed over is `describeRemoteAction`'s — counted facts, never
+      // the agent's own words about itself.
+      onWaitStart: w => {
+        // A PLAN WAIT IS A WAIT LIKE ANY OTHER on this screen — the job has
+        // stopped and he is the reason it can start again — but the words are
+        // not `describeRemoteAction`'s, because nothing is leaving this
+        // computer and saying so would be untrue.
+        this.jobIsStuck(w.taskId, w.facts);
+        this.fireHook({
+          event: "approval.waiting", taskId: w.taskId,
+          what: w.facts
+            ? `waiting for your OK to ${describeRemoteAction(w.facts)}`
+            : "waiting for you to look at a plan before any work starts",
+        });
+      },
       onWaitEnd: e => this.jobIsMovingAgain(e.taskId),
       // NOT ASKED IS NOT UNRECORDED. See `saidWithoutAsking`.
       onUnasked: u => this.saidWithoutAsking(u),
@@ -433,10 +541,21 @@ export class Engine {
     }
   }
 
+  /**
+   * The room as this engine remembers it, newest at the end.
+   *
+   * HOW MANY IT KEEPS IS NOT A NUMBER WRITTEN HERE. It used to be a literal 300,
+   * chosen when the conversation budget was a flat 200 messages and therefore
+   * comfortably above it. Now that the budget follows the model, a big model
+   * asks for a thousand — and a 300-message ring would have quietly capped it,
+   * which is a second limit, in a second file, that nobody could find. It is
+   * asked of the one owner of the rule instead (`context.ts`).
+   */
   private pushHistory(m: Message): void {
     const list = this.history.get(m.channelId) ?? [];
     list.push(m);
-    if (list.length > 300) list.splice(0, list.length - 300);
+    const keep = maxConversationMessages();
+    if (list.length > keep) list.splice(0, list.length - keep);
     this.history.set(m.channelId, list);
   }
 
@@ -492,6 +611,34 @@ export class Engine {
         if (me === handoffCmd.to.toLowerCase()) continue;
       }
       const bare = message.text.replace(/@[\w-]+\s*/g, "");
+      // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
+      // STOP WHAT IT IS DOING: "@Agent !stop".
+      //
+      // FIRST in the command list, on purpose, and answered OUTSIDE the turn
+      // queue. Every other command here is enqueued behind whatever is already
+      // running — which for a stop would be exactly backwards: the one thing he
+      // types when a turn is running long must not have to wait for that turn to
+      // finish before it is read. `stopAgent` returns immediately.
+      //
+      // It is a HUMAN-ONLY command, like every command in this list: an agent
+      // must not be able to stop another agent's work by saying the right words
+      // in a room they share.
+      if (message.authorKind === "human" && /^!stop\b/i.test(bare.trim())) {
+        const stopped = this.stopAgent(agent.id);
+        // SAID OUT LOUD EITHER WAY. Silence after pressing stop is how a person
+        // concludes the button does nothing and starts closing the app.
+        this.agentSend(agent.id, channel.id, stopped > 0
+          // TWO LINES, TWO MOMENTS, and they do not repeat each other: this one
+          // is the instant receipt ("I heard you, I'm pulling the plug"), and
+          // the turn itself says the second one when the process is really gone.
+          // Silence between the two is the thing that makes a person press the
+          // button again.
+          ? `🛑 Stopping — pulling the plug on what I'm doing now.`
+          : `There was nothing running to stop — I'm not working on anything right now.`,
+          { ...(thread ? { replyTo: thread } : {}) });
+        continue;
+      }
+      // ===== GAP C BLOCK — end =====
       // REMEMBER SOMETHING BETWEEN CONVERSATIONS: "@Agent !remember <text>". The
       // worth-remembering rule decides whether it lands; a refusal is said out
       // loud in the agent's own voice rather than swallowed.
@@ -566,6 +713,25 @@ export class Engine {
           continue;
         }
       }
+      // SHOW ME THE PLAN FOR THIS ONE THING: "@Agent !plan <what to do>".
+      //
+      // WHY A BANG COMMAND AS WELL AS A SETTING, and it is not belt-and-braces.
+      // The setting is a standing rule about an agent — right for the one that
+      // touches his repositories, wrong for the one that answers questions. The
+      // bang is about ONE ask, which is how the need actually turns up: he
+      // trusts an agent generally and wants to see the plan for this particular
+      // job before it starts. A setting alone would make him edit an agent and
+      // then edit it back; a bang alone would make him remember to type it every
+      // single time on the agent he never wants running unwatched.
+      //
+      // They share one implementation (`planFirstTurn`), so there is still only
+      // one plan gate — this line only decides that this message goes through it.
+      if (message.authorKind === "human" && /^!plan\s+/i.test(bare)) {
+        const what = bare.replace(/^!plan\s+/i, "").trim();
+        this.enqueue(() => this.takeTurn(
+          agent, channel.id, { ...message, text: what }, { planFirst: true }));
+        continue;
+      }
       this.enqueue(() => this.takeTurn(agent, channel.id, message));
     }
   }
@@ -623,8 +789,40 @@ export class Engine {
       // record. `trustOf` fails closed, so an agent with nothing stored reads as
       // "ask me every time" exactly as it behaves.
       trust: trustOf(agent),
+      // …AND WHOSE SETUP IT RAN IN. Read once, here, from the stored agent —
+      // exactly like the trust setting above, and for the same reason: he can
+      // flip the switch, and a record that re-describes itself afterwards is not
+      // a record. This is what lets him look back and see which turns had his
+      // CLAUDE.md, his connected services and his hooks loaded (`ownersetup.ts`).
+      ownerSetup: usesOwnerSetup(agent),
     };
     let trace: ProviderTrace | undefined;
+    // ==================================================================
+    // WHAT THIS AGENT MAY SPEND — decided HERE, once, for every kind of turn
+    // ==================================================================
+    //
+    // `respondAs` is the one door every turn goes through: an ordinary chat
+    // reply, a delegated job, a scheduled check-in, repository work, a handoff.
+    // So it is the one place a spending ceiling can be applied without somebody
+    // having to remember to apply it to the next kind of turn somebody invents.
+    //
+    // TWO THINGS COME OUT OF THIS, AND ONLY ONE OF THEM IS A REFUSAL:
+    //
+    //  • The month is already spent → the turn does not start at all. It is
+    //    recorded as a run that was stopped by a limit, the agent says one
+    //    honest sentence naming the limit, and a job carrying it is marked on
+    //    the jobs screen by the ordinary failure path. Nothing half-runs.
+    //  • There is room left → one number goes to the harness as its own
+    //    ceiling, so the turn cannot walk past either limit while it works.
+    //
+    // OFF BY DEFAULT AND IT COSTS NOTHING WHEN OFF. `spendCapOf` reads an agent
+    // with no ceiling as `{}`, `decideSpend` then allows with no number, and
+    // the disk is not even read — `spentInMonth` is only asked when there is a
+    // monthly ceiling to compare it against.
+    const cap = providerCanBeCapped(harness) ? spendCapOf(agent) : {};
+    const spent = typeof cap.perMonthUsd === "number"
+      ? this.spentThisMonth(agent.id, seed.startedAt) : 0;
+    const spendVerdict = decideSpend(cap, spent);
     // CAN ANYBODY BE SHOWN THIS TURN AT ALL? A live signal is drawn on the
     // message that triggered the turn, in the room that message is in, so a turn
     // with neither has nowhere honest to appear. ONE answer, used by the
@@ -636,6 +834,12 @@ export class Engine {
      *  path, any runner that ignores the option) must cost the room no frames
      *  at all, not one meaningless "it's finished" for a box nobody saw. */
     let streamed = false;
+    // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
+    /** the handle that stops this turn; absent until the harness is actually run */
+    let stop: ReturnType<typeof newStopScope> | undefined;
+    /** this turn's row in `liveTurns`, so the `finally` can take it out again */
+    let stopRegistration: LiveTurn | undefined;
+    // ===== GAP C BLOCK — end =====
     // 👀 — THE SILENCE ENDS HERE. Sent before a single gate is checked, because
     // "we have your message" is true from this line onwards and is exactly the
     // thing his §2 says a person should never have to wait for. A turn that is
@@ -644,12 +848,26 @@ export class Engine {
     try {
       // last-gate validation: this agent definition arrived from a client, and
       // its model is checked against the harness's REAL list, not just its shape
+      // THE CEILING IS CHECKED BEFORE ANYTHING SPENDS ANYTHING. Inside the try
+      // so the `catch` below writes the run record and the verdict exactly as
+      // it does for every other reason a turn does not happen — one path, not a
+      // special case that could forget the paperwork.
+      if (!spendVerdict.allowed) {
+        throw new SpendCapReachedError(
+          spendVerdict.which ?? "perMonth", spendVerdict.capUsd ?? 0,
+          spendVerdict.reason ?? "this agent has reached its spending limit, so it did not start");
+      }
       const problem = validateAgentInput(agent, { models: this.harnessModels?.(harness) });
       if (problem) throw new Error(`refusing to run agent ${agent.id}: ${problem}`);
       const provider = this.providerFor(agent);
       if (!provider) {
         throw new HarnessUnavailableError(harness, `${harness} is not connected on this machine`);
       }
+      // ASKED TO SHOW A PLAN BY A HARNESS THAT HAS NO PLAN MODE. Refused out
+      // loud rather than quietly doing the work — see `PlanNotOfferedError`.
+      // This is the last gate; `planFirstTurn` asks the same question earlier so
+      // the owner is never promised a card that cannot come.
+      if (input.planOnly && !provider.canPlan?.()) throw new PlanNotOfferedError(harness);
       // An agent whose instructions did not all reach the disk does NOT take
       // the turn. Running it anyway would answer from an incomplete brief and
       // present that answer as an ordinary one; the run is recorded as failed
@@ -663,11 +881,26 @@ export class Engine {
       // missing harness, instructions that would not save) all fail without
       // ever claiming the agent was thinking about the answer.
       this.sendReceipt(agent.id, input, "thinking");
-      const text = await provider.respond({
+      // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
+      // FROM HERE THE TURN CAN BE STOPPED. The scope is opened around the
+      // provider call and nothing else: everything above is a gate that takes no
+      // time and spends no money, and there is nothing there worth killing.
+      // Every child process started underneath — this harness, any harness, at
+      // any depth — is stoppable because the scope travels with the turn rather
+      // than being handed down through each layer (`run.ts`).
+      stop = newStopScope();
+      const live: LiveTurn = {
+        agentId: agent.id, agentName: agent.name, scope: stop, startedAt: seed.startedAt,
+        ...(input.channelId ? { channelId: input.channelId } : {}),
+      };
+      this.liveTurns.add(live);
+      stopRegistration = live;
+      // ===== GAP C BLOCK — end =====
+      const text = await withStopScope(stop, () => provider.respond({
         agent,
         context: input.context,
         // WHAT THIS AGENT REMEMBERS, seeded into the turn. `retrieveMemory` has
-        // already spent the memory budget (oldest kept, newest dropped) so this
+        // already spent the memory budget (newest kept, oldest dropped) so this
         // is a bounded string; an agent that has saved nothing gets "" and the
         // prompt says nothing about memory. Reading its own store must never be
         // the reason a turn fails, so it is wrapped.
@@ -685,6 +918,13 @@ export class Engine {
         // instead of being re-told the room every turn (`sessionresume.ts`).
         // The provider decides; passing it costs a cold turn nothing.
         ...(input.thread ? { thread: input.thread } : {}),
+        // THE CEILING FOR THIS TURN — one number, worked out above from BOTH of
+        // the owner's limits. Absent when he set none, which is the default and
+        // is the same command line the app built yesterday.
+        ...(typeof spendVerdict.turnCapUsd === "number"
+          ? { maxBudgetUsd: spendVerdict.turnCapUsd } : {}),
+        // SAY WHAT YOU INTEND, AND DO NOTHING. Only ever set by `planFirstTurn`.
+        ...(input.planOnly ? { planOnly: true } : {}),
         onTrace: t => { trace = t; },
         // WHAT IT IS DOING, AS IT DOES IT. Only offered when there is a message
         // and a room to show it against — the same gate `sendReceipt` uses, in
@@ -698,8 +938,48 @@ export class Engine {
             this.sendLiveSteps(agent.id, input, steps);
           },
         } : {}),
+      }));
+      // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
+      // THE OWNER PULLED THE PLUG AND THE HARNESS STILL ANSWERED — a half-made
+      // answer from a process that was killed mid-sentence. It is not reported
+      // as a good turn, because it is not one.
+      if (stop.stopped) return this.turnWasStopped(agent, seed, input, trace);
+      // ===== GAP C BLOCK — end =====
+      // DID THIS TURN GET THE MODEL IT ASKED FOR? Worked out once, here, and
+      // put on the record, so the screen never has to guess from two ids what
+      // the difference between them meant. `fellBackTo` only says yes when the
+      // model the app REPORTED is one the owner actually named as a stand-in —
+      // an alias the app resolved on its own is not a fallback and is not
+      // claimed as one.
+      const stoodIn = fellBackTo(agent.model, trace?.model, fallbackModelsOf(agent));
+      // THE HARNESS STOPPED ITSELF ON THE CEILING WE HANDED IT. It may well
+      // have said something useful first — and that is exactly why this is not
+      // allowed to return as an ordinary answer. Half a job reported as a whole
+      // one is the failure this whole feature exists to prevent, so it goes
+      // down the same path as any other turn that did not finish: one honest
+      // sentence naming the limit, a run record marked with it, and a job
+      // marked on the jobs screen.
+      if (trace?.stoppedByBudget) {
+        throw new SpendCapReachedError(
+          spendCapWhichFired(cap, spendVerdict.turnCapUsd),
+          spendVerdict.turnCapUsd ?? 0,
+          spendCapStopWords(
+            spendCapWhichFired(cap, spendVerdict.turnCapUsd), spendVerdict.turnCapUsd ?? 0));
+      }
+      const record = this.recordRun(seed, {
+        finishedAt: Date.now(), outcome: "ok", trace, reply: text,
+        ...(stoodIn ? { fellBackTo: stoodIn } : {}),
+        ...(input.planOnly ? { planOnly: true } : {}),
       });
-      const record = this.recordRun(seed, { finishedAt: Date.now(), outcome: "ok", trace, reply: text });
+      // NEVER A SILENT SWAP. He chose a model; he is told, in the room, when he
+      // did not get it. The record carries the fact whether or not there is a
+      // room to say it in, so a scheduled check-in that fell back is still
+      // reviewable afterwards.
+      if (stoodIn && input.channelId) {
+        this.agentSend(agent.id, input.channelId,
+          `(${fellBackWords(agent.model, stoodIn)}.)`,
+          { ...(input.replyTo ? { replyTo: input.replyTo } : {}) });
+      }
       // THE ONE COMMITTED TICK, derived from what really happened — never from
       // asking the model to describe its own answer. `turnVerdict` may decline,
       // and a declined verdict sends nothing rather than a cheerful default.
@@ -715,13 +995,31 @@ export class Engine {
       // record itself could not be built, the turn still returns its answer but
       // no unattributed file is invented on the hub.
       if (record) this.shareProduced(agent, input, seed.startedAt, record.id);
+      // DID IT DO WHAT IT SAID? Checked against the record it just wrote, and
+      // said out loud ONLY where the two disagree. See `checkClaims`.
+      if (record) this.checkClaims(agent, input, text, record);
       return text;
     } catch (err) {
+      // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
+      // A KILLED HARNESS THROWS, and what it throws is meaningless — it is the
+      // noise of a process that was shot, not a reason. So the stop is checked
+      // BEFORE the failure path: a run the owner stopped is never written down
+      // as a run that broke, and he is never shown a scary sentence for doing
+      // exactly what the button offered.
+      if (stop?.stopped) return this.turnWasStopped(agent, seed, input, trace);
+      // ===== GAP C BLOCK — end =====
       this.recordRun(seed, {
         finishedAt: Date.now(), outcome: "failed", trace,
         // the record keeps WHY, in words that carry no path, no argv and no
         // environment — the same rule sanitizeForChat enforces for chat
         error: redactForSharing(err instanceof Error ? err.message : String(err)),
+        // A LIMIT STOPPED IT — the FACT, beside the sentence, so a screen can
+        // mark the run without reading English. Both shapes of the event land
+        // here: the turn that never started because the month was spent, and the
+        // one the harness cut short on the ceiling we handed it.
+        ...(err instanceof SpendCapReachedError
+          ? { capStop: { which: err.which, capUsd: err.capUsd } } : {}),
+        ...(input.planOnly ? { planOnly: true } : {}),
       });
       // ⚠️ — it did not go through. The tick says the STATE; the honest
       // sentence the caller posts says the words.
@@ -731,6 +1029,13 @@ export class Engine {
       });
       throw err;
     } finally {
+      // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
+      // THIS TURN IS NO LONGER STOPPABLE, whichever way it ended. In the
+      // `finally` for the same reason the live preview is: a turn that is over
+      // must not sit in the list offering a button that would kill nothing, or
+      // worse, a pid the operating system has since given to something else.
+      if (stopRegistration) this.liveTurns.delete(stopRegistration);
+      // ===== GAP C BLOCK — end =====
       // THE PREVIEW ENDS WHEN THE TURN DOES — worked, failed, refused, threw.
       // In a `finally` because there is no ending that should leave a live box
       // spinning; the screen's stale timer is the backstop for an engine that
@@ -823,6 +1128,219 @@ export class Engine {
     this.sendReceipt(agentId, input, "verdict", verdict);
   }
 
+  // ================= HOOKS: telling the owner's rules what happened ==========
+  //
+  // THE ENGINE REPORTS; `hooks.ts` DECIDES. Nothing about whether a hook may
+  // act — whose agent it is, whether a command needs an approval, whether a
+  // hook is setting off another hook — is answered here. This method's whole
+  // job is to fill in the facts a rule is matched against and hand them over.
+
+  /**
+   * TELL THE HOOKS SOMETHING HAPPENED. Never throws, and never delays anything:
+   * the same fire-and-forget shape as `approvaldesk.ts`'s `tell()`, for the same
+   * reason — a rule the owner set for his own convenience must never be able to
+   * cost him a turn that really worked.
+   */
+  private fireHook(seed: {
+    event: HookFact["event"];
+    what: string;
+    agentId?: ID;
+    channelId?: ID;
+    taskId?: ID;
+    outcome?: HookFact["outcome"];
+    causedByHook?: boolean;
+  }): void {
+    try {
+      if (!this.hooks) return;                       // no book set: nothing fires
+      // A JOB KNOWS ITS OWN AGENT AND ROOM, so an event that arrives carrying
+      // only a job id is still a complete fact.
+      const task = seed.taskId ? this.tasks.get(seed.taskId) : undefined;
+      const agentId = seed.agentId ?? task?.agentId;
+      if (!agentId) return;
+      const agent = this.agentById(agentId);
+      // NO OWNER, NO EVENT. `hooks.ts` matches every rule against the owner of
+      // the world the thing happened in; a fact with nobody's name on it would
+      // be a fact every owner's rules could see.
+      if (!agent) return;
+      this.hooks.fire({
+        event: seed.event,
+        at: Date.now(),
+        ownerId: agent.ownerId,
+        agentId,
+        agentName: agent.name,
+        ...(seed.channelId ?? task?.channelId
+          ? { channelId: (seed.channelId ?? task?.channelId)! } : {}),
+        ...(seed.taskId ? { taskId: seed.taskId } : {}),
+        ...(seed.outcome ? { outcome: seed.outcome } : {}),
+        // REDACTED LIKE EVERY OTHER FREE-TEXT FIELD this process puts on a
+        // screen: a hook's message can end up in a room, so a path, an argument
+        // list or an environment value must not be able to ride out on it.
+        what: redactForSharing(seed.what, 300),
+        ...(seed.causedByHook ? { causedByHook: true } : {}),
+      });
+    } catch (err) {
+      console.error("[engine] could not run the owner's hooks:", err);
+    }
+  }
+
+  // ============ VERIFICATION: did it do what it said? =======================
+
+  /**
+   * CHECK THE AGENT'S OWN WORDS AGAINST THE RECORD IT JUST WROTE, and say so in
+   * the room when the two disagree (`verify.ts`).
+   *
+   * WHY IT IS HERE and not in `verify.ts`: the check itself is a pure function
+   * over facts, and it stays that way. This method is only the plumbing — which
+   * facts to hand it, and where the sentence goes if there is one.
+   *
+   * THE COUNTED HALF. What "left this computer" is read from the approval
+   * desk's own ledger, narrowed to this turn's window, so a claim about a push
+   * is checked against the gate every push must pass rather than against
+   * anything the agent said. A desk with no ledger yet means every remote claim
+   * comes back "I could not check" — never "it did not happen".
+   *
+   * Never throws, and never says anything when everything checks out. Silence
+   * is the normal answer.
+   */
+  private checkClaims(agent: AgentDef, input: TurnInput, reply: string, record: RunRecord): void {
+    try {
+      if (!this.verifyClaims) return;
+      const channelId = input.channelId;
+      const remote = this.approvals.settledActions
+        .filter(s => s.approved && s.at >= record.startedAt && s.at <= record.finishedAt + 1000)
+        .map(s => s.facts);
+      const report = verifyTurn({ reply, record, remote, remoteKnown: true });
+      if (!report.line) return;
+      // A MISMATCH IS NEWS, so a hook may act on it — before the sentence goes
+      // out, so the record of it exists before the room hears it.
+      this.fireHook({
+        event: "check.mismatch", agentId: agent.id, outcome: record.outcome,
+        ...(channelId ? { channelId } : {}),
+        ...(record.taskId ? { taskId: record.taskId } : {}),
+        what: `what ${agent.name} said does not match what it did`
+          + ` (${report.mismatches.length} of ${report.claims.length})`,
+      });
+      if (!channelId) return;
+      // SAID BY CLOUD9, IN THE AGENT'S OWN CONVERSATION, and marked `proactive`
+      // because nobody asked for it. It goes in the thread the turn was
+      // answering in, so it lands beside the claim it is about.
+      this.agentSend(agent.id, channelId, redactForSharing(report.line, 1200), {
+        proactive: true, ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+      });
+    } catch (err) {
+      console.error("[engine] could not check what an agent said against what it did:", err);
+    }
+  }
+
+  /**
+   * WHAT THIS AGENT HAS SPENT THIS MONTH, in dollars.
+   *
+   * One line, because the sum lives where the run records live (`RunStore`).
+   * Wrapped because a spending total is paperwork, and paperwork that cannot be
+   * read must never be the reason a crew stops: an unreadable folder reads as 0,
+   * which applies no ceiling rather than applying one nobody can see.
+   */
+  private spentThisMonth(agentId: ID, at: number): number {
+    try {
+      return this.runs.spentInMonth(agentId, at);
+    } catch (err) {
+      console.error(`[engine] could not add up what agent ${agentId} has spent:`, err);
+      return 0;
+    }
+  }
+
+  /**
+   * ASK THE AGENT WHAT IT INTENDS TO DO, SHOW HIM THE CARD, AND ONLY THEN WORK.
+   *
+   * THE SHAPE, and every part of it is an existing part of Cloud9:
+   *
+   *  1. ONE READ-ONLY TURN. `planOnly` narrows the harness to plan mode and the
+   *     reading half of this agent's own tools (`CLAUDE_PLAN_TOOLS`). It is a
+   *     real turn, so it is recorded like one — marked `planOnly` so nobody
+   *     mistakes the plan for the job.
+   *  2. THE PLAN GOES IN THE ROOM, so he can read it where he asked for it, and
+   *     onto the ORDINARY APPROVAL CARD — the same `Approval`, the same
+   *     Approve / Not now buttons, the same expiry, the same `decideApproval`.
+   *     There is no second approval concept here; there is a third `kind`.
+   *  3. NOTHING RUNS UNTIL HE ANSWERS. Every way out of the desk that is not an
+   *     explicit yes is a no, and the agent says which in plain words.
+   *  4. ON YES, the real turn runs — with the plan it just wrote handed back to
+   *     it, so it does the thing he approved rather than starting again.
+   *
+   * Returns TRUE when the work went ahead, so the caller knows whether it still
+   * has a turn to take.
+   */
+  private async planFirstTurn(agent: AgentDef, input: TurnInput): Promise<boolean> {
+    const channelId = input.channelId;
+    if (!channelId) {
+      // no room means no card, and a promise of a card that cannot be drawn is
+      // worse than not offering one — so the work does NOT go ahead silently
+      await this.sayAs(agent, undefined, "I was asked to show a plan first, but this isn't "
+        + "happening in a conversation where I can show you one, so I've stopped.", input);
+      return false;
+    }
+    const plan = tidyPlan(await this.respondAs(agent, {
+      ...input,
+      planOnly: true,
+      // WHY THIS PARAGRAPH IS SO EXPLICIT, and it is not padding. Measured
+      // against CLI 2.1.222 on 2026-08-05 with the exact command line this
+      // builds: plan mode's own system prompt tells the model to save a plan
+      // FILE and then call `ExitPlanMode`. Cloud9 grants neither — a plan is
+      // something the owner reads on a card, not a file an agent leaves in his
+      // `~/.claude` folder — so the model spent its whole turn reporting that
+      // both tools were missing and asking to be let out of plan mode. Nothing
+      // was written, which is the boundary holding, but the owner would have
+      // got a complaint on his card instead of a plan. So the turn says up
+      // front that the answer IS the plan and that the absent tools are
+      // deliberate.
+      trigger: `${input.trigger}\n\nDo NOT do any of this yet, and do not try to save a `
+        + `plan file or leave plan mode — those tools are deliberately not yours this turn, `
+        + `and their absence is not a problem to report. YOUR REPLY IS THE PLAN. Write it `
+        + `as a short numbered list someone who is not a programmer can judge: which files `
+        + `or places you would touch, what you would change, and anything you would `
+        + `deliberately leave alone. You are running read-only, so nothing you describe has `
+        + `happened. Your owner will read this and say yes or no; if he says yes you will `
+        + `be asked again, with the tools to do it.`,
+    }));
+    if (!plan) {
+      await this.sayAs(agent, channelId, "I was asked to show you a plan first and I could "
+        + "not produce one, so I have not started the work.", input);
+      return false;
+    }
+    await this.sayAs(agent, channelId, `Here's what I intend to do — nothing has happened `
+      + `yet:\n\n${plan}`, input);
+    const outcome = await this.approvals.askPlan({
+      agent, channelId, plan,
+      ...(input.taskId ? { taskId: input.taskId } : {}),
+    });
+    if (!outcome.approved) {
+      await this.sayAs(agent, channelId,
+        `I haven't done any of it — ${outcome.reason}.`, input);
+      return false;
+    }
+    // THE PLAN HE APPROVED IS WHAT GETS DONE, so it travels into the real turn.
+    // Starting again from the original ask would let the agent quietly do
+    // something other than the thing on the card he said yes to.
+    await this.respondAs(agent, {
+      ...input,
+      trigger: `${input.trigger}\n\nYour owner has approved this plan. Carry out EXACTLY `
+        + `this plan and nothing beyond it:\n\n${plan}`,
+    }).then(text => this.sayAs(agent, channelId, text, input));
+    return true;
+  }
+
+  /** One sentence from an agent, in the room and the thread the turn belongs to. */
+  private async sayAs(
+    agent: AgentDef, channelId: ID | undefined, text: string, input: TurnInput,
+  ): Promise<void> {
+    if (!channelId) { console.error(`[engine] ${agent.name}: ${text}`); return; }
+    // Not `sanitizeForChat`: that turns an ERROR into safe words, and every
+    // sentence reaching here is either Cloud9's own or a plan already bounded
+    // and stripped by `tidyPlan`.
+    this.agentSend(agent.id, channelId, text,
+      { ...(input.replyTo ? { replyTo: input.replyTo } : {}) });
+  }
+
   /**
    * Build and store one run record. Never throws: a turn that worked must not
    * be reported as broken because its paperwork failed.
@@ -834,6 +1352,23 @@ export class Engine {
       this.runs.save(record);
       this.publishRun(record);
       this.onRunRecorded?.(record);
+      // A TURN ENDED, AND A JOB ENDED WITH IT WHEN THERE WAS ONE. Told after
+      // the record is stored, so a hook can never fire on a turn whose account
+      // of itself does not yet exist. Fire-and-forget — see `fireHook`.
+      this.fireHook({
+        event: "turn.finished", agentId: record.agentId, outcome: record.outcome,
+        ...(record.channelId ? { channelId: record.channelId } : {}),
+        ...(record.taskId ? { taskId: record.taskId } : {}),
+        what: `${record.agentName} ${plainOutcome(record.outcome)} — ${record.ask}`,
+      });
+      if (record.taskId) {
+        this.fireHook({
+          event: "job.finished", agentId: record.agentId, outcome: record.outcome,
+          taskId: record.taskId,
+          ...(record.channelId ? { channelId: record.channelId } : {}),
+          what: `the job “${record.ask}” ${plainOutcome(record.outcome)}`,
+        });
+      }
       return record;
     } catch (err) {
       console.error(`[engine] could not record what ${seed.agentName} did:`, err);
@@ -932,6 +1467,76 @@ export class Engine {
     }
   }
 
+  // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
+
+  /**
+   * STOP WHAT THIS AGENT IS DOING, NOW. Returns how many running turns were
+   * stopped — 0 is a real answer and the caller says so out loud, because
+   * "nothing happened" with no explanation is exactly how a person decides a
+   * button is broken.
+   *
+   * Only this engine's own agents: an agent belonging to somebody else is not
+   * this computer's to kill, and the check is here rather than only at the
+   * caller, the same way `forgetMemoryNote` checks.
+   *
+   * It never throws. Stopping is what a person reaches for when things have
+   * already gone wrong, and it failing loudly on top of that would be the worst
+   * possible moment.
+   */
+  stopAgent(agentId: ID): number {
+    if (!this.myAgents.some(a => a.id === agentId)) return 0;
+    let count = 0;
+    for (const live of [...this.liveTurns]) {
+      if (live.agentId !== agentId) continue;
+      try {
+        live.scope.stop();
+        count++;
+      } catch (err) {
+        console.error(`[engine] could not stop a turn for agent ${agentId}:`, err);
+      }
+    }
+    return count;
+  }
+
+  /** Is this agent running anything a stop could reach? Used by the room's answer. */
+  isWorking(agentId: ID): boolean {
+    for (const live of this.liveTurns) if (live.agentId === agentId) return true;
+    return false;
+  }
+
+  /**
+   * THE ONE PLACE A STOPPED TURN IS WRITTEN DOWN AND SPOKEN ABOUT.
+   *
+   * WHAT THE RECORD SAYS. `outcome: "cancelled"`, which is a different outcome
+   * from `failed` — so a stop can never be mistaken for a crash in the run list,
+   * and the summary reads "Stopped after …" instead of "Didn't finish". A
+   * TIMEOUT stays `failed` with the clock named in its error, so the three
+   * endings a turn can have — it worked, the clock beat it, he stopped it — are
+   * three different things on the record and not one blurred one.
+   *
+   * WHAT THE ROOM SAYS is the sentence returned here: the caller posts it as the
+   * agent's own reply, so the conversation says plainly that the work stopped
+   * and why, rather than going quiet and leaving him wondering whether it is
+   * still running and still costing him.
+   */
+  private turnWasStopped(
+    agent: AgentDef, seed: RunSeed, input: TurnInput, trace?: ProviderTrace,
+  ): string {
+    this.recordRun(seed, {
+      finishedAt: Date.now(), outcome: "cancelled", trace,
+      error: "you stopped this run",
+    });
+    this.sendVerdict(agent.id, input, {
+      outcome: "failed", ...(trace?.steps ? { steps: trace.steps } : {}),
+      error: "you stopped this run",
+    });
+    return "🛑 Stopped. You stopped me, so I dropped what I was doing — nothing of it is " +
+      "still running and nothing more will be spent on it. Tell me what to do differently " +
+      "and I'll start again.";
+  }
+
+  // ===== GAP C BLOCK — end =====
+
   /**
    * The owner pulled the plug while the agent was still working. The run really
    * happened, so the record stays — it is re-saved as cancelled rather than
@@ -996,12 +1601,15 @@ export class Engine {
    * turn — the answer, the honest failure sentence and anything `respondAs`
    * says afterwards all inherit it.
    */
-  async takeTurn(agent: AgentDef, channelId: ID, trigger: Message): Promise<void> {
+  async takeTurn(
+    agent: AgentDef, channelId: ID, trigger: Message,
+    opts: { planFirst?: boolean } = {},
+  ): Promise<void> {
     this.setStatus(agent.id, "working");
     const replyTo = threadOf(trigger);
     try {
-      const text = await this.respondAs(agent, {
-        context: this.renderContext(channelId),
+      const brief: TurnInput = {
+        context: this.renderContext(channelId, agent, replyTo),
         trigger: trigger.text,
         triggerAuthor: trigger.authorName,
         kind: "chat",
@@ -1016,10 +1624,24 @@ export class Engine {
         // `respondAs` by other routes and stay cold, which is this slice's
         // deliberate edge (`sessionresume.ts`).
         ...(() => {
-          const thread = this.threadContinuity(agent.id, channelId, trigger);
+          const thread = this.threadContinuity(agent, channelId, trigger);
           return thread ? { thread } : {};
         })(),
-      });
+      };
+      // SHOW ME THE PLAN FIRST. Two ways in and ONE implementation: the owner's
+      // standing setting on the agent (`showsPlanFirst`), or this one message
+      // asking for it (`!plan …`). Neither is checked anywhere else, so a plan
+      // gate cannot be half-applied.
+      //
+      // A PLAN TURN DOES NOT RESUME THE THREAD, so the continuity offered above
+      // is dropped for it — see `planResume` in claude-cli.ts for why a
+      // read-only session must not become the one the real turn continues.
+      if (opts.planFirst || showsPlanFirst(agent)) {
+        const { thread: _dropped, ...cold } = brief;
+        await this.planFirstTurn(agent, cold);
+        return;
+      }
+      const text = await this.respondAs(agent, brief);
       this.agentSend(agent.id, channelId, text, { ...(replyTo ? { replyTo } : {}) });
     } catch (err) {
       this.agentSend(agent.id, channelId,
@@ -1165,7 +1787,7 @@ export class Engine {
         return;
       }
       const text = await this.respondAs(agent, {
-        context: this.renderContext(task.channelId),
+        context: this.renderContext(task.channelId, agent, thread),
         trigger: `Background task: ${task.title}. Do the work and report the outcome.`,
         triggerAuthor: task.requesterName,
         kind: "task",
@@ -1280,7 +1902,7 @@ export class Engine {
    * other free-text field this process puts on the wire: a path, an argument
    * list or an environment value can never ride out on a status line.
    */
-  private jobIsStuck(taskId: ID, facts: RemoteActionFacts): void {
+  private jobIsStuck(taskId: ID, facts?: RemoteActionFacts): void {
     const seen = this.stuckJobs.get(taskId) ?? { asks: 0, said: false };
     seen.asks += 1;
     this.stuckJobs.set(taskId, seen);
@@ -1290,7 +1912,9 @@ export class Engine {
     this.sendFrame({
       type: "updateTask", taskId, status: "blocked",
       // the field the screen already reads for a job in trouble
-      error: redactForSharing(`Waiting for you to approve: ${describeRemoteAction(facts)}.`, 300),
+      error: redactForSharing(facts
+        ? `Waiting for you to approve: ${describeRemoteAction(facts)}.`
+        : "Waiting for you to look at the plan. Nothing has been done yet.", 300),
     });
     this.noteStatus(taskId, "blocked");
   }
@@ -1400,7 +2024,7 @@ export class Engine {
     const thread = threadOf(trigger);
     try {
       const text = await this.respondAs(agent, {
-        context: this.renderContext(channelId),
+        context: this.renderContext(channelId, agent, thread),
         trigger: `Background task: ${trigger.text.replace(/^!bg\s+/i, "")}. Do the work and report the outcome.`,
         triggerAuthor: trigger.authorName,
         kind: "task",
@@ -1430,7 +2054,9 @@ export class Engine {
     this.setStatus(agent.id, "working");
     try {
       const text = await this.respondAs(agent, {
-        context: this.renderContext(s.channelId),
+        // no thread: a schedule answers nothing, so there is no side
+        // conversation to serve first — see `fireSchedule`'s own note.
+        context: this.renderContext(s.channelId, agent),
         trigger: `Scheduled task fired: ${s.prompt}`,
         triggerAuthor: "schedule",
         kind: "schedule",
@@ -1452,19 +2078,43 @@ export class Engine {
    * note in that file for why that was the single most damaging line in the
    * engine.
    */
-  private renderContext(channelId: ID): string {
+  private renderContext(
+    channelId: ID, agent?: Pick<AgentDef, "model" | "provider">, thread?: ID,
+  ): string {
     const history = this.history.get(channelId) ?? [];
-    return renderConversation(history, this.contextBudget);
+    // THE THREAD FIRST, THEN THE REST OF THE ROOM.
+    //
+    // `thread` is the SAME value that decides where the answer goes — every
+    // caller already worked it out through `threadOf` (`threads.ts`) and then
+    // used it for nothing but the reply. So a turn taken inside a thread was
+    // handed the whole room flat, and the thread's own opening message competed
+    // with unrelated room chatter for the same budget: an agent could be dropped
+    // into a side conversation without being given the start of it.
+    //
+    // One value, two uses now. Nothing is dropped that was not already being
+    // dropped — it is an ORDERING; see the note on `renderConversation`.
+    return renderConversation(history, this.contextBudgetFor(agent),
+      thread ? { thread } : {});
   }
 
   /**
    * ONLY WHAT IS NEW — the conversation SINCE one message (`sessionresume.ts`,
    * law 5).
    *
-   * This is the saving. A resumed turn is handed these few lines instead of the
-   * whole 24,000-character room, because the harness's own session already
-   * holds everything before them; sending both would charge the owner twice for
-   * the same history and show the agent one conversation in two shapes.
+   * This is the saving, AND IT IS WHAT MAKES A BIGGER BUDGET AFFORDABLE. A
+   * resumed turn is handed these few lines instead of the whole room, because
+   * the harness's own session already holds everything before them; sending
+   * both would charge the owner twice for the same history and show the agent
+   * one conversation in two shapes.
+   *
+   * Measured (2026-08-05, Sonnet 5): the cold first turn of a thread on a
+   * 1,000,000-token model now costs about 47,000 tokens of conversation instead
+   * of 9,700. Every turn after it in the same thread costs only the handful of
+   * lines said since — a few hundred tokens. So widening the budget is paid
+   * once per thread, not once per turn. What still pays it every time is the
+   * turns that CANNOT resume: a scheduled check-in, a delegated job, a
+   * repository turn and any room message that is not in a thread. That is
+   * precisely why `conversationBudgetFor` has a ceiling.
    *
    * UNDEFINED IS A REAL ANSWER, and it is the safe one. If the message we were
    * told to start after is no longer in the window — the room moved on, the
@@ -1473,13 +2123,18 @@ export class Engine {
    * still hold" would silently drop messages the agent never read. So it says
    * nothing, and the caller runs a cold turn with the whole room.
    */
-  private renderContextSince(channelId: ID, afterMessageId: string): string | undefined {
+  private renderContextSince(
+    channelId: ID, afterMessageId: string, agent?: Pick<AgentDef, "model" | "provider">,
+  ): string | undefined {
     const history = this.history.get(channelId) ?? [];
     const at = history.findIndex(m => m.id === afterMessageId);
     if (at < 0) return undefined;
     const fresh = history.slice(at + 1);
     if (fresh.length === 0) return undefined;
-    return renderConversation(fresh, this.contextBudget);
+    // NO THREAD SCOPE HERE, on purpose: these are the few lines said since the
+    // last turn, and putting some of them before others would reorder a handful
+    // of messages for no gain. The budget still follows the model.
+    return renderConversation(fresh, this.contextBudgetFor(agent));
   }
 
   /**
@@ -1491,27 +2146,35 @@ export class Engine {
    * other's history. `threads.ts` already owns what a thread root is.
    */
   private threadContinuity(
-    agentId: ID, channelId: ID, trigger: Message,
+    agent: Pick<AgentDef, "id" | "model" | "provider">, channelId: ID, trigger: Message,
   ): ThreadContinuity | undefined {
     const root = threadOf(trigger);
     if (!root) return undefined;
     return {
-      key: sessionKeyId({ agentId, channelId, threadRoot: root }),
+      key: sessionKeyId({ agentId: agent.id, channelId, threadRoot: root }),
       newestMessageId: trigger.id,
-      since: (afterMessageId: string) => this.renderContextSince(channelId, afterMessageId),
+      since: (afterMessageId: string) =>
+        this.renderContextSince(channelId, afterMessageId, agent),
     };
   }
 
   /**
-   * How much conversation this engine gives an agent. `contextMessages` is still
-   * honoured because tests and QA set it, but it is now a CEILING on top of the
-   * real budget rather than the whole rule.
+   * How much conversation this engine gives an agent — ASKED PER AGENT, because
+   * the answer depends on the model that agent runs on (`context.ts` owns the
+   * rule; this is only "whose model").
+   *
+   * An agent we were not given — an older call site, a test — falls back to the
+   * floor, which is exactly the number every agent got before 2026-08-05.
+   *
+   * `contextMessages` is still honoured because tests and QA set it, and it is
+   * still a CEILING on top of the real budget rather than the whole rule.
    */
-  private get contextBudget(): ConversationBudget {
+  private contextBudgetFor(agent?: Pick<AgentDef, "model" | "provider">): ConversationBudget {
+    const budget = agent
+      ? conversationBudgetFor(agent.model, agent.provider)
+      : CONVERSATION_BUDGET;
     const n = this.opts.contextMessages;
-    return n === undefined
-      ? CONVERSATION_BUDGET
-      : { characters: CONVERSATION_BUDGET.characters, messages: n };
+    return n === undefined ? budget : { characters: budget.characters, messages: n };
   }
 
   /**
@@ -1564,7 +2227,13 @@ export class Engine {
    * where it is known, and there is no way to pass a different one in — which is
    * the whole of the "an agent may search only where it may read" law.
    */
-  openToolTurn = (turn: { channelId: string }): OpenTurn | undefined => {
+  openToolTurn = (turn: { channelId: string; agentId?: string }): OpenTurn | undefined => {
+    // ===== GAP A BLOCK (agent-written memory, 2026-08-05) — start =====
+    // THIS TURN'S OWN ALLOWANCE. It lives in the closure, so it is per-turn by
+    // construction rather than by somebody remembering to reset it: when the
+    // turn closes, the counter goes with it.
+    let written = 0;
+    // ===== GAP A BLOCK — end =====
     return this.tools.openTurn({
       channelId: turn.channelId,
       search: (query, limit) => this.searchChannel(turn.channelId, query, limit),
@@ -1573,6 +2242,40 @@ export class Engine {
       // be named, and the hub asks its own question again before it hands over
       // a single byte.
       openAttachment: name => this.openAttachmentInChannel(turn.channelId, name),
+      // ===== GAP A BLOCK (agent-written memory, 2026-08-05) — start =====
+      // THE SAME BINDING A THIRD TIME. The AGENT is closed over here, so
+      // `remember_this` has no parameter through which another agent's memory
+      // could be named — and `rememberFromAgent` asks whose agent it is again
+      // on its own side before anything is written.
+      //
+      // A turn opened without an agent (an older caller, a test) simply has no
+      // memory doorway: the tool says so plainly. It is never "write it into
+      // whichever agent we happen to have".
+      // ===== GAP B BLOCK (skills on demand, 2026-08-05) — start =====
+      // THE SAME BINDING AGAIN, FOR SKILLS. The AGENT is closed over here, so
+      // `open_skill` has no parameter through which another agent's standing
+      // instructions could be named. A turn opened without an agent has no skill
+      // doorway at all, and the prompt is built from that same fact — such a turn
+      // is given its skills in full instead.
+      ...(turn.agentId ? { openSkill: async (name: string) =>
+        this.openSkillForAgent(turn.agentId as ID, name) } : {}),
+      // ===== GAP B BLOCK — end =====
+      ...(turn.agentId ? {
+        remember: async (text: string, kind: string) => {
+          if (written >= MEMORY_NOTES_PER_TURN) {
+            return {
+              saved: false as const,
+              why: `You have already saved ${MEMORY_NOTES_PER_TURN} notes in this turn, ` +
+                `which is as many as one turn may keep. Say what else you learned in your ` +
+                `answer instead, and remember it next time if it still matters.`,
+            };
+          }
+          const answer = await this.rememberFromAgent(turn.agentId!, text, kind);
+          if (answer.saved) written++;
+          return answer;
+        },
+      } : {}),
+      // ===== GAP A BLOCK — end =====
     });
   };
 
@@ -1590,7 +2293,11 @@ export class Engine {
    *    (`attachmentTicket` → `channelFor`), and asks the same question again on
    *    the way out (`serveAttachment`). Neither check is copied here.
    * Nothing is written to disk at any point, so there is nothing for the
-   * whole-computer grant to be needed for.
+   * whole-computer grant to be needed for. THAT IS STILL TRUE NOW THAT PICTURES
+   * AND PDFs TRAVEL (gap 1b): they go to the model as MCP content blocks —
+   * base64 in the tool result, in memory the whole way — never as a file on a
+   * path. `attachmentreach.test.ts` asserts it structurally, by refusing either
+   * of the two files on this path the right to import `node:fs` at all.
    */
   async openAttachmentInChannel(
     channelId: ID, name: string,
@@ -1601,6 +2308,44 @@ export class Engine {
       attachment => this.downloadAttachment(attachment.id),
     );
   }
+
+  // ===== GAP B BLOCK (skills on demand, 2026-08-05) — start =====
+  /**
+   * THE FULL WORDS OF ONE OF AN AGENT'S OWN SKILLS.
+   *
+   * WHY THE ENGINE AND NOT THE TOOL FILE. The skills live on the agent
+   * definition the engine already holds; nothing is read off the disk and no
+   * path is involved, so there is nothing here for the whole-computer grant to
+   * be needed for. And the agent is looked up BY ID from the engine's own list —
+   * the id the turn was opened with, never a name the model supplied.
+   *
+   * A MISS IS A REAL ANSWER, and it names what the agent DOES have. An agent
+   * that asks for "code review" when the skill is called "Code review" must not
+   * be left guessing; the alternative is a model that decides the tool is broken
+   * and invents the steps, which is the failure this whole doorway exists to
+   * avoid.
+   */
+  async openSkillForAgent(agentId: ID, name: string): Promise<Cloud9SkillAnswer> {
+    const agent = this.agentById(agentId);
+    const skills = agent?.skills ?? [];
+    if (skills.length === 0) {
+      return { found: false, why: "You have no skills at all, so there is nothing to open." };
+    }
+    const wanted = name.trim().toLowerCase();
+    const hit = skills.find(s => s.name.trim().toLowerCase() === wanted)
+      // a forgiving second pass, so a near miss is answered rather than refused
+      ?? skills.find(s => s.name.trim().toLowerCase().includes(wanted))
+      ?? skills.find(s => wanted.includes(s.name.trim().toLowerCase()));
+    if (!hit) {
+      return {
+        found: false,
+        why: `You have no skill called "${name}". These are the skills you have: ` +
+          `${skills.map(s => s.name).join(", ")}. Ask for one of those by its exact name.`,
+      };
+    }
+    return { found: true, name: hit.name, instructions: hit.instructions };
+  }
+  // ===== GAP B BLOCK — end =====
 
   /** One `attachmentTicket` frame out, one ticket back, one HTTP read. */
   private async downloadAttachment(attachmentId: ID): Promise<Buffer | undefined> {
@@ -1741,7 +2486,7 @@ export class Engine {
       }, {
         git: new GitWorkspace({ root: this.agentDataDir(agent.id) }),
         respond: ({ workdir, briefing }) => this.respondAs(agent, {
-          context: this.renderContext(input.channelId),
+          context: this.renderContext(input.channelId, agent, input.replyTo),
           trigger: `${input.ask}${briefing}`,
           triggerAuthor: input.triggerAuthor,
           kind: input.taskId ? "task" : "chat",
@@ -2032,6 +2777,75 @@ export class Engine {
     this.reportMemory(agent.id);
   }
 
+  // ===== GAP A BLOCK (agent-written memory, 2026-08-05) — start =====
+  /**
+   * AN AGENT REMEMBERS SOMETHING BY ITSELF — the engine half of the
+   * `remember_this` tool. Public so tests can drive it. Never throws.
+   *
+   * WHOSE MEMORY: only this engine's own agents, checked here against
+   * `myAgents` and not merely trusted from the caller. The tool has no argument
+   * that names an agent, and this is the second gate behind that — the same
+   * two-gates-that-do-not-trust-each-other shape search and attachments use.
+   *
+   * WHY IT IS NOT AN APPROVAL. The owner is not asked before a note lands, and
+   * that is a decision, not an oversight. A confirmation card per note would be
+   * approved unread within a day — the appearance of control with none of it.
+   * What he gets instead is stronger and cheaper to use: every note the agent
+   * wrote is stamped `source: "agent"`, the memory panel says "it chose to
+   * remember this" beside it, the panel is pushed the new list the moment it
+   * lands, and one click clears it for good. Nothing an agent writes can reach
+   * anybody else, cost anything, or change this computer.
+   *
+   * THE SAME RULE AS THE OWNER'S OWN NOTES: `worthRemembering` decides, the
+   * 500-character ceiling refuses rather than truncates, and the store prunes at
+   * its own cap. A refusal comes back in words the agent can read out.
+   */
+  async rememberFromAgent(
+    agentId: ID, text: string, kind: string,
+  ): Promise<Cloud9RememberAnswer> {
+    if (!this.myAgents.some(a => a.id === agentId)) {
+      return { saved: false, why: "That memory does not belong to you, so nothing was saved." };
+    }
+    const verdict = worthRemembering(text);
+    if (!verdict.keep) {
+      return {
+        saved: false,
+        why: `That was not saved to your memory — ${verdict.reason}. Keep a note to one ` +
+          `short sentence that will still be true in a month.`,
+      };
+    }
+    // AN UNKNOWN KIND IS A FACT, not a refusal: the tool's own schema already
+    // lists the five, and a model that invents a sixth has still learned
+    // something real. The stored kind is only ever one of the five, so nothing
+    // a model types can reach `validateNote` as a surprise.
+    const known: MemoryKind[] = ["fact", "preference", "decision", "outcome", "correction"];
+    const note: MemoryNote = {
+      id: newMemoryId(), agentId, kind: known.includes(kind as MemoryKind) ? kind as MemoryKind : "fact",
+      text: text.trim(), createdAt: Date.now(),
+      // WHO WROTE IT, honestly. This is the whole of the owner's visibility: the
+      // panel reads this field to say "it chose to remember this".
+      source: "agent",
+    };
+    let saved: string | undefined;
+    try {
+      saved = this.memory.save(note);
+    } catch (err) {
+      console.error(`[engine] could not save a memory for agent ${agentId}:`, err);
+    }
+    if (!saved) {
+      return {
+        saved: false,
+        why: "Cloud9 could not save that to your memory on this computer. Carry on " +
+          "without it rather than acting as though you will remember it.",
+      };
+    }
+    // The panel finds out the moment it lands — visibility is the whole design,
+    // so it must not wait for the owner to reopen the screen.
+    this.reportMemory(agentId);
+    return { saved: true, text: note.text };
+  }
+  // ===== GAP A BLOCK — end =====
+
   /**
    * Tell the owner's screens what an agent has saved, off THIS computer's own
    * store — the one durable copy. Only ever for the engine's own agents; the
@@ -2122,7 +2936,9 @@ export class Engine {
     this.setStatus(target.id, "working");
     try {
       const text = await this.respondAs(target, {
-        context: this.renderContext(channelId),
+        // no thread: a handoff carries a channel pointer and nothing finer, as
+        // the note above says, so there is no side conversation to serve first.
+        context: this.renderContext(channelId, target),
         trigger: handoffTrigger(handoff, fromName),
         triggerAuthor: fromName,
         kind: "chat",
@@ -2155,6 +2971,27 @@ export class Engine {
     this.sendFrame({
       type: "agentSend", agentId, channelId, text, proactive: opts.proactive ?? false,
       ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
+    });
+  }
+
+  /**
+   * ASK THE HUB TO START A JOB FOR AN AGENT — the one door a hook goes through
+   * when it wants work started (`hooks.ts`, the `job` action).
+   *
+   * IT IS NOT A SHORTCUT PAST THE GATE. The `needsApproval` flag is decided by
+   * the SAME two functions a person's `!task` goes through — `approvalsFor`
+   * (the owner's own background-work setting) and `needsApprovalToRun` (the
+   * abilities that always ask). A hook that starts a job for an agent the owner
+   * wanted to be asked about produces a card, exactly as he asked; it does not
+   * produce a running job with nobody told.
+   */
+  requestJob(agent: AgentDef, channelId: ID, title: string, requesterId?: ID): void {
+    const mustAsk = approvalsFor(agent).background || needsApprovalToRun(agent);
+    this.sendFrame({
+      type: "createTask", agentId: agent.id, channelId,
+      title: title.slice(0, 200),
+      ...(requesterId ? { requesterId } : {}),
+      ...(mustAsk ? { needsApproval: true, action: `Start a job: ${title.slice(0, 150)}` } : {}),
     });
   }
 
@@ -2385,6 +3222,11 @@ function isFolderOnDisk(folder: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** "worked" / "went wrong" / "was stopped" — for the sentence a hook carries. */
+function plainOutcome(outcome: RunRecord["outcome"]): string {
+  return outcome === "ok" ? "finished" : outcome === "failed" ? "went wrong" : "was stopped";
 }
 
 function scheduleProblem(row: unknown): string | null {

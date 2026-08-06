@@ -53,6 +53,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 import { artifactRef } from "@cloud9/shared";
 /* WHERE AN AGENT'S ANSWER LIVES — the same one owner the browser suite uses,
    imported rather than re-spelled here. Since 2026-08-04 an answer hangs off the
@@ -245,6 +246,22 @@ const EXPECTED_CHECKS = [
      own save path (the very frame the editor sends), and this check says so
      rather than pretending it clicked through Explorer. */
   "an agent asked in chat to read a real file on this computer actually reads it",
+  /* 2026-08-06, and deliberately only TWO added for a night that landed a dozen
+     features: everything else about them can be proved in a browser, and a walk
+     that grows with every feature stops being run. These two cannot:
+       · A PICTURE. "Can it see the image I attached" is a question about a real
+         model looking at real bytes. A preview with canned replies can agree
+         with itself all day; only the installed app puts the picture in front
+         of a real Claude. The trap is set on purpose — the file is NAMED after
+         one colour and IS another, so an answer that guessed from the file name
+         is not just unproven, it is caught.
+       · STOPPING A REAL TURN. The stop button has to kill a child process that
+         is really running on this computer. There is no child process in a
+         browser suite, so its "stopped" is a state machine agreeing with
+         itself; here it is a real CLI that has to actually stop, and a record
+         that has to say STOPPED rather than failed. */
+  "an agent shown a picture answers from what is inside it, not from its name",
+  "stopping a real running turn really stops it, and the record says stopped, not failed",
 ];
 
 /* --------------------------------------------- what this computer really has
@@ -3496,6 +3513,149 @@ async function walk(page) {
     try { await reachEngine?.close(); } catch { /* the walk's own socket */ }
     try { fs.rmSync(reachDir, { recursive: true, force: true }); } catch { /* temp */ }
   }
+
+  /* --- 11. the two things ONLY the installed app can prove (2026-08-06) -----
+   *
+   * See the note on EXPECTED_CHECKS[39] and [40]. Both need a real harness on
+   * this computer: a real model looking at real bytes, and a real child process
+   * being killed. Both are slow, and both are worth it — they are the only
+   * evidence that either feature does anything outside a test's imagination. */
+  try {
+    if (!OPTS.fresh) {
+      throw new Error("NOT CHECKED — attaching a picture and stopping a turn would leave " +
+        "messages in your real Cloud9; run without --real-data for this walk");
+    }
+    const leaveAsk2 = page.locator(".overlay.leaveask .discardwork");
+    if (await leaveAsk2.count()) await leaveAsk2.first().click();
+    await page.click('.rail .rail-btn[data-go="chat"]');
+    await page.waitForSelector(".composer textarea", { timeout: 30000 });
+    const who = await page.evaluate(() => (window.cloud9Wire.agents() ?? [])[0]?.name ?? "");
+    if (!who) throw new Error("the fresh app has no agent to ask");
+
+    await check(EXPECTED_CHECKS[39], async () => {
+      /* MAGENTA BYTES IN A FILE CALLED ocean-blue. An answer taken from the
+         name says blue and is caught; an answer taken from the picture says
+         magenta, pink or purple and can only have come from looking. */
+      const MAGENTA = pngOfOneColour(240, 160, [255, 0, 255]);
+      await page.setInputFiles(".composer input.filepick", {
+        name: "ocean-blue.png", mimeType: "image/png", buffer: MAGENTA,
+      });
+      await page.waitForSelector('.uploadtray .uptile[data-upload="ocean-blue.png"].done',
+        { timeout: 60000 });
+      const ask = `@${who} open the picture I just attached and tell me, in one word, ` +
+        "what colour the whole image is";
+      await page.fill(".composer textarea", ask);
+      await page.press(".composer textarea", "Enter");
+      await page.waitForSelector('.msgs .msg:has-text("what colour the whole image is")',
+        { timeout: 30000 });
+      const root = await page.locator('.msgs .msg:has-text("what colour the whole image is")')
+        .last().getAttribute("data-msg");
+      await waitForAgentAnswer(page, {
+        under: root, close: false, timeout: 300000,
+        what: `${who} to answer what is inside the picture`,
+      });
+      const said = await page.evaluate(r => [...document.querySelectorAll(
+        ".threadpanel .msg.from-agent[data-msg]")]
+        .filter(m => m.getAttribute("data-msg") !== r)
+        .map(m => m.innerText.replace(/\s+/g, " ").trim()).join(" · "), root);
+      await shot(page, "picture-seen-not-guessed");
+      const close = page.locator(".threadpanel .threadclose");
+      if (await close.count()) await close.click();
+      if (/blue/i.test(said) && !/magenta|pink|purple|fuchsia/i.test(said)) {
+        throw new Error("IT GUESSED FROM THE FILE NAME — the picture is magenta and is called " +
+          `ocean-blue.png, and ${who} said: "${said.slice(0, 200)}"`);
+      }
+      if (!/magenta|pink|purple|fuchsia/i.test(said)) {
+        throw new Error(`${who} never said what is actually in the picture. It said: ` +
+          `"${said.slice(0, 250)}"`);
+      }
+      return `${who} was shown a magenta picture named ocean-blue.png and answered from the ` +
+        `bytes: "${said.slice(0, 120)}"`;
+    });
+
+    await check(EXPECTED_CHECKS[40], async () => {
+      const ask = `@${who} !bg take your time and write me a long, careful comparison of ` +
+        "every villa you can think of";
+      await page.fill(".composer textarea", ask);
+      await page.press(".composer textarea", "Enter");
+      await page.waitForSelector("button.stopnow[data-stop-agent]", { timeout: 120000 })
+        .catch(() => { throw new Error("NOT ON SCREEN — an agent was set working and no Stop " +
+          "control ever appeared, so there is no way for him to pull the plug"); });
+      await shot(page, "stop-offered-while-working");
+      await page.click("button.stopnow[data-stop-agent]");
+      await until("the running turn to really stop", async () =>
+        (await page.locator("button.stopnow[data-stop-agent]").count()) === 0,
+      { timeout: 120000, every: 250 });
+      const record = await until("a run record saying the owner stopped it", async () => {
+        const cards = await page.evaluate(() => [...document.querySelectorAll(
+          ".callout.run[data-outcome]")].map(c => ({
+          outcome: c.dataset.outcome,
+          words: c.innerText.replace(/\s+/g, " ").trim(),
+        })));
+        return cards.find(c => c.outcome === "cancelled") ?? false;
+      }, { timeout: 120000, every: 500 });
+      await shot(page, "stopped-by-you-record");
+      if (/failed|went wrong/i.test(record.words) || !/stopped/i.test(record.words)) {
+        throw new Error("the record of a turn the owner stopped does not say so plainly: " +
+          `"${record.words.slice(0, 200)}"`);
+      }
+      return `a real turn was stopped from the app and the record reads "${record.words.slice(0, 120)}"`;
+    });
+  } catch (err) {
+    failGroup([EXPECTED_CHECKS[39], EXPECTED_CHECKS[40]]
+      .filter(n => !results.some(r => r.name === n)),
+    `the picture-and-stop walk could not be made (${err.message})`);
+    await shot(page, "picture-and-stop-broken");
+  }
+}
+
+/**
+ * One real PNG of one colour, made here so the walk owes nothing to a file in
+ * the repo. Signature, IHDR, a deflated IDAT and IEND, each with its CRC — the
+ * same construction the browser suite uses, kept separate on purpose so this
+ * harness can still be run on its own.
+ */
+function pngOfOneColour(width, height, [r, g, b]) {
+  const table = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c;
+  }
+  const crc32 = buf => {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < buf.length; i++) c = table[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length, 0);
+    const typed = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(typed), 0);
+    return Buffer.concat([len, typed, crc]);
+  };
+  const stride = width * 3 + 1;
+  const raw = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++) {
+    const row = y * stride;
+    for (let x = 0; x < width; x++) {
+      raw[row + 1 + x * 3] = r;
+      raw[row + 2 + x * 3] = g;
+      raw[row + 3 + x * 3] = b;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", zlib.deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
 }
 
 /* ------------------------------------------------------- narrow sidecar proof */

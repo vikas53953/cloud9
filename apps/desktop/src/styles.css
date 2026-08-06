@@ -683,9 +683,21 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 .memrow .mem-tx b{font-size:13px;color:var(--ink);overflow-wrap:anywhere;font-weight:500;}
 .memrow .mem-when{font-size:11px;color:var(--ink-3);font-family:var(--mono);}
 .memrow .mem-clear{flex:none;}
+/* ===== GAP A BLOCK (agent-written memory, 2026-08-05) — start =====
+   A note the AGENT chose to keep is marked on its left edge, so a panel of
+   twenty notes answers "which of these did I ask for?" at a glance rather than
+   only in the small print underneath each one. Nothing is hidden and nothing is
+   coloured as a warning — an agent's own note is normal, it is just not his. */
+.memrow.by-agent{border-left:3px solid var(--pine);}
+/* ===== GAP A BLOCK — end ===== */
 
 /* --- working indicator --- */
 .thinking{display:flex;align-items:center;gap:10px;color:var(--ink-2);font-size:13px;margin-bottom:22px;}
+/* ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
+   The stop button sits at the end of the "is working on it" line — the only
+   place on the screen that says something is running. */
+.thinking .stopnow{margin-left:auto;flex:none;}
+/* ===== GAP C BLOCK — end ===== */
 .bars{display:flex;gap:3px;align-items:flex-end;height:14px;}
 .bars i{width:3px;height:5px;background:var(--pine);border-radius:2px;display:block;}
 .bars i:nth-child(2){height:14px;}
@@ -2176,6 +2188,13 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .crewupgrade .cu-ask b{color:var(--ink);}
 .crewupgrade .cu-folder,.crewupgrade .cu-keep{
   margin:0;font-size:11.5px;line-height:1.5;color:var(--ink-3);
+}
+/* The SAME box, told after the fact rather than offered: it sits at the top of
+   whatever screen he is on, so a change the hub made by itself cannot be walked
+   past. Green, because nothing here is a question. */
+.crewupgrade.caughtup{
+  border-color:color-mix(in srgb,var(--pine) 45%,transparent);
+  margin:0 0 14px;
 }
 
 /* A SWITCH ON WITH NOTHING BEHIND IT, said on the crew card and in the room

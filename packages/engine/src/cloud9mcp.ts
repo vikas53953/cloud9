@@ -33,8 +33,14 @@ export async function proxyLine(line: string, io: McpProxyIo): Promise<void> {
       headers: { "content-type": "application/json", "x-cloud9-turn": io.secret },
       body: text,
     });
+    // 202 WITH NO BODY is the bridge saying "that was a notification" — MCP
+    // wants silence, and reading a body that is not there would land in the
+    // catch below and look like the engine had gone. (It used to answer every
+    // notification with the four letters `null`, which this line then dropped.
+    // Harmless here; fatal for an MCP client speaking to the bridge directly,
+    // which is why the bridge stopped doing it — see `toolbridge.ts`.)
+    if (res.status === 202) return;
     const answer = (await res.json()) as unknown;
-    // `null` is the engine saying "that was a notification" — MCP wants silence.
     if (answer !== null && answer !== undefined) io.send(JSON.stringify(answer));
   } catch {
     // The engine has gone, or this ticket has expired with its turn. Answering

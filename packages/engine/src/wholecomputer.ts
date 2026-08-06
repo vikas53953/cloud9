@@ -32,7 +32,7 @@
 // module is imported by the desktop window, which is not allowed to touch the
 // filesystem at all — it asks the desktop shell and passes the answer back in.
 import { AgentDef, validateWholeComputerRoot } from "@cloud9/shared";
-import { reachesBeyondOwnFolder } from "./abilities.js";
+import { FILE_FENCE_WORDS, FileFence, fileFenceFor, reachesBeyondOwnFolder } from "./abilities.js";
 
 /** Is this folder on the computer, right now? Answered by whoever can see the disk. */
 export type FolderOnDisk = (path: string) => boolean;
@@ -50,6 +50,16 @@ export interface WholeComputerRoots {
    * is no state in which a caller could take a path the screen calls gone.
    */
   supply: string[];
+  /**
+   * GAP C (2026-08-05): WHAT KIND OF BOUNDARY THIS REALLY IS.
+   *
+   * It rides on the answer rather than being asked separately, so the words
+   * below cannot describe one kind of fence while the agent has the other. See
+   * the long measured note on `FILE_FENCE_WORDS` in abilities.ts: a Codex agent
+   * is genuinely boxed in by its own program; a Claude agent is POINTED at these
+   * folders, and the hard boundary it really has is which tools exist at all.
+   */
+  fence: FileFence;
 }
 
 /** Blank, absent and a list of blanks are one answer: nobody chose anything. */
@@ -80,10 +90,11 @@ export function wholeComputerRootsFor(
   // The switch has the last word, and it is asked through `reachesBeyondOwnFolder`
   // (which reads `effectiveAbilities`), never from `agent.abilities` directly.
   // An off switch is answered without touching the disk at all.
+  const fence = fileFenceFor(agent);
   if (!reachesBeyondOwnFolder(agent as AgentDef)) {
-    return { state: "off", chosen, missing: [], supply: [] };
+    return { state: "off", chosen, missing: [], supply: [], fence };
   }
-  if (chosen.length === 0) return { state: "none", chosen, missing: [], supply: [] };
+  if (chosen.length === 0) return { state: "none", chosen, missing: [], supply: [], fence };
 
   const supply: string[] = [];
   const missing: string[] = [];
@@ -96,9 +107,9 @@ export function wholeComputerRootsFor(
     if (!safely(() => onDisk(root))) { missing.push(root); continue; }
     supply.push(root);
   }
-  if (supply.length === 0) return { state: "gone", chosen, missing, supply: [] };
-  if (missing.length > 0) return { state: "partly", chosen, missing, supply };
-  return { state: "ready", chosen, missing: [], supply };
+  if (supply.length === 0) return { state: "gone", chosen, missing, supply: [], fence };
+  if (missing.length > 0) return { state: "partly", chosen, missing, supply, fence };
+  return { state: "ready", chosen, missing: [], supply, fence };
 }
 
 /**
@@ -129,14 +140,15 @@ export function wholeComputerWords(
         detail: roots.chosen.length > 0
           ? `${agentName} is not using the folders you chose, and will not until you switch `
             + "this back on."
-          : `${agentName} can only touch its own folder — nothing else on this computer.`,
+          : `${agentName} is working in its own folder only — no other folder on this `
+            + `computer has been opened up for it. ${fenceNote(roots)}`,
       };
     case "none":
       return {
         headline: "No folders chosen yet, so it has no extra reach.",
         detail: `You have allowed ${agentName} to go outside its own folder, but you have not `
-          + "said which folders. Until you do, it has none — it still cannot read or change "
-          + "anything else on this computer.",
+          + "said which folders. Until you do it has been sent nowhere, so it stays in its "
+          + `own folder. ${fenceNote(roots)}`,
       };
     case "gone":
       return {
@@ -155,11 +167,24 @@ export function wholeComputerWords(
     default:
       return {
         headline: "In use.",
-        detail: `${agentName} can read and change what is in these folders, and only these — `
-          + "the rest of this computer is still closed to it. You are asked before it acts "
-          + "in any of them.",
+        detail: `${agentName} is pointed at these folders and told to work in them only. `
+          + `You are asked before it acts in any of them. ${fenceNote(roots)}`,
       };
   }
+}
+
+/**
+ * GAP C (2026-08-05): THE ONE SENTENCE ABOUT WHAT THIS BOUNDARY REALLY IS.
+ *
+ * It is appended to every state that talks about reach, and it is read off the
+ * ONE table in abilities.ts rather than written here — because the reason this
+ * needed fixing at all is that a screen invented its own version ("and only
+ * these; the rest of this computer is still closed to it") and nobody had
+ * measured whether it was true. It is not, on the Claude side.
+ */
+function fenceNote(roots: WholeComputerRoots): string {
+  const words = FILE_FENCE_WORDS[roots.fence];
+  return `${words.headline} ${words.detail}`;
 }
 
 /** A disk check must never take a turn down with it — an error means "not there". */

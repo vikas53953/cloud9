@@ -83,6 +83,28 @@ export const MEMORY_NOTE_LIMIT = 500;
  */
 export const MEMORY_STORE_KEEP = 1_000;
 
+/**
+ * The most notes an agent may write about ONE turn, through its own
+ * `remember_this` tool (gap A, 2026-08-05).
+ *
+ * **Why there is a ceiling at all.** The owner's `!remember` is one note because
+ * he typed one. An agent's is a tool it can call in a loop, and a confused agent
+ * in a loop is not a theory — it is the ordinary failure of every tool that
+ * writes. Without a ceiling, one bad turn could push a hundred lines of its own
+ * chatter into a store that seeds every future turn, and the notes that mattered
+ * would be the ones dropped.
+ *
+ * **Why three.** A turn that genuinely learned four durable things about its
+ * owner is rarer than a turn that has lost the plot. Three is enough for a real
+ * turn and short enough that a runaway one costs almost nothing; the refusal
+ * says so in plain words, so the agent knows it hit a limit rather than
+ * believing it saved something it did not.
+ *
+ * It is a SEED cap, not a store cap: nothing already written is touched, and the
+ * next turn starts with three again.
+ */
+export const MEMORY_NOTES_PER_TURN = 3;
+
 // --------------------------------------------------------------- the shapes
 
 /**
@@ -351,18 +373,29 @@ export class MemoryStore {
 /**
  * The memory an agent is seeded with for one turn, as a single string.
  *
- * OLDEST KEPT, NEWEST DROPPED — the opposite of `renderConversation`. The
- * reason is the reason the whole module exists: memory is what the
- * conversation has FORGOTTEN. The newest memory is also the most likely to
- * still be in the conversation window, so dropping it costs the least; the
- * oldest memory is the foundation, and a foundation that disappears between
- * one turn and the next is an agent that has forgotten who its owner is. So
- * the budget is spent from the NEWEST end backwards, and the newest is what
- * gets dropped when the room runs out.
+ * NEWEST KEPT, OLDEST DROPPED (fixed 2026-08-05 — see the note below).
+ *
+ * The budget is spent from the NEWEST end backwards, and the OLDEST note is
+ * what goes when the room runs out. The reason is the one thing memory is for:
+ * a note is only worth carrying if it is still TRUE, and the newest note is the
+ * one most likely to be. When the owner corrects an agent today, that
+ * correction is the newest note there is — and under the old order it was the
+ * FIRST thing dropped, while the very note it corrected (older, therefore
+ * kept) went on being seeded into every turn. The agent then confidently
+ * repeated the thing it had just been told was wrong, and nobody could see why.
+ *
+ * The old comment argued the other way: that the newest note is probably still
+ * in the conversation window, so dropping it costs least. That is true of a
+ * note made MINUTES ago and false of everything else — memory is read at the
+ * start of a NEW conversation, where nothing at all is still in the window.
+ *
+ * WHAT IS KEPT IS STILL RENDERED OLDEST-FIRST, so an agent reads its memory in
+ * the order the notes were made. Only the DROPPING end changed.
  *
  * A note longer than the whole budget is still included — truncated, and it
  * says so — because dropping it would leave the agent without the one note
- * that wanted to be heard.
+ * that wanted to be heard. That privilege belongs to the NEWEST note, because
+ * that is the one the budget is now spent on first.
  *
  * `notes` are assumed oldest-first (the order `MemoryStore.list` returns
  * them in). The rendering is one exported function so there is one place to
@@ -376,10 +409,12 @@ export function retrieveMemory(
   if (notes.length === 0) return "";
   const kept: string[] = [];
   let spent = 0;
-  // spend from the OLDEST end forwards; the newest is dropped first when the
-  // room runs out. `notes` are assumed oldest-first (the order `MemoryStore.list`
-  // returns them in), so the output is oldest-first with no reversal.
-  for (let i = 0; i < notes.length; i++) {
+  // GAP B FIX (2026-08-05): spend from the NEWEST end backwards, so the OLDEST
+  // note is dropped first when the room runs out. `notes` are assumed
+  // oldest-first (the order `MemoryStore.list` returns them in), so the walk
+  // runs backwards and what survives is turned back the right way round before
+  // it is joined — the agent still reads its memory oldest-first.
+  for (let i = notes.length - 1; i >= 0; i--) {
     if (kept.length >= budget.notes) break;
     let line = renderNote(notes[i]);
     if (spent > 0 && spent + line.length + 1 > budget.characters) break;
@@ -389,7 +424,7 @@ export function retrieveMemory(
     kept.push(line);
     spent += line.length + 1;
   }
-  return kept.join("\n");
+  return kept.reverse().join("\n");
 }
 
 /**

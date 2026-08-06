@@ -611,6 +611,11 @@ async function startRelay() {
     // An installed app must never accept the token every checkout ships with,
     // whatever CLOUD9_DEV happens to say in the environment it was launched from.
     devMode: false,
+    // THE SAME ANSWER THE WINDOW GETS for "where is his home folder" — one
+    // function, asked here and by `cloud9:homeFolder`, so the folder the hub's
+    // one-time catch-up opens up for an agent that has none is the exact folder
+    // the crew-screen button would have opened. Null means the hub claims none.
+    homeFolder: homeFolderHere() ?? undefined,
   });
   const wanted = Number(process.env.CLOUD9_RELAY_PORT || 8787);
   let port;
@@ -878,17 +883,22 @@ ipcMain.handle("cloud9:chooseWholeComputerFolders", async () => {
  * renderer cannot construct this value itself and there is no fallback string
  * anywhere: no home folder from here means no folder claimed.
  */
-ipcMain.handle("cloud9:homeFolder", () => {
+function homeFolderHere() {
   try {
     const os = require("node:os");
     const said = wholePathOnThisComputer(os.homedir());
-    if (!said) return { ok: false };
+    if (!said) return null;
     // it must really be a folder on this computer, right now
-    if (!fs.statSync(said).isDirectory()) return { ok: false };
-    return { ok: true, path: said };
+    if (!fs.statSync(said).isDirectory()) return null;
+    return said;
   } catch {
-    return { ok: false };
+    return null;
   }
+}
+
+ipcMain.handle("cloud9:homeFolder", () => {
+  const said = homeFolderHere();
+  return said ? { ok: true, path: said } : { ok: false };
 });
 
 ipcMain.handle("cloud9:wholeComputerFoldersHere", (_ev, folders) => {

@@ -112,7 +112,8 @@ test("a new agent is handed the real tools, not just the words", () => {
   const words = renderCapabilities(newAgent(), { wholeComputerRoots: [HOME] });
   assert.match(words, /You CAN run programs and commands on this computer/);
   assert.match(words, /You CAN hand parts of a job to helper agents/);
-  assert.match(words, /You CAN reach files outside your own folder/);
+  // GAP C (2026-08-05): the sentence is now a RULE, not a claim about a wall.
+  assert.match(words, /must work ONLY inside your own folder and the places your owner/);
 });
 
 // --------------------------------- 2 · the folder: really set, or not claimed
@@ -129,7 +130,7 @@ test("no folder supplied is said plainly — the app never claims one it did not
   const args = claudeArgs(noFolder, [], {});
   assert.ok(!args.includes("--add-dir"));
   const words = renderCapabilities(noFolder, {});
-  assert.match(words, /You CANNOT reach anything outside your own folder right now/);
+  assert.match(words, /must NOT touch anything outside your own folder right now/);
 });
 
 // ------------------------------------------- 3 · the approval gate is untouched

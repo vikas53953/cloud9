@@ -12,6 +12,12 @@ import type { LiveRunSteps } from "./livesteps.js";
 // the hub's refusal has to be measured against the same number the wire
 // documents. It is a leaf: `livesteps.ts` has no runtime import of its own.
 import { LIVE_STEPS_PER_BATCH } from "./livesteps.js";
+// The same arrangement again, for the thinking-time dial. `effort.ts` is a true
+// leaf — it imports nothing at all — so the type is bound here for `AgentDef`
+// and the checker is bound here for `validateAgentInput`, while the `export …
+// from` at the bottom publishes the whole module to every other program.
+import type { AgentEffort } from "./effort.js";
+import { isAgentEffort } from "./effort.js";
 
 export type ID = string;
 
@@ -222,6 +228,26 @@ export const NEW_AGENT_TRUST: AgentTrust = "localFree";
 export function isAgentTrust(value: unknown): value is AgentTrust {
   return TRUST_LEVELS.some(t => t.level === value);
 }
+
+/* ---- HIS OWN CLAUDE CODE / CODEX SETUP: what a NEW agent starts on ----------
+ *
+ * ON. He has asked for this four times, in his own words: "do fix it and make
+ * cloud9 similar to claude code or codex when it comes to harness." It is his
+ * machine and his agents, so an agent he makes today starts the way he starts.
+ *
+ * IT IS WRITTEN DOWN, NOT INFERRED — the same shape as `NEW_AGENT_TRUST` above.
+ * The editor stores this value on the agent at the moment it is created, so
+ * ABSENT still means OFF for the agents he already owns. That is the whole
+ * safety of the default: nothing he saved before this switch existed changes
+ * behaviour, grows a 14x prompt or starts running his hooks because a new
+ * version shipped. Only a new agent, or him pressing the switch, does that.
+ *
+ * The switch is drawn in the agent editor with one honest line about what
+ * changes and what it costs; the words live in `OWNER_SETUP_WORDS`
+ * (@cloud9/engine, `ownersetup.ts`), which is also the one place that decides
+ * what the setting DOES.
+ */
+export const NEW_AGENT_USE_OWNER_SETUP = true;
 
 /**
  * WHAT THIS AGENT'S SETTING REALLY IS — the only reader of the stored field.
@@ -588,6 +614,294 @@ export type HarnessName = "claude" | "codex";
  */
 export type AgentRespondTo = "owner" | "allowlist" | "anyone";
 
+// =====================================================================
+// WHAT THIS AGENT MAY SPEND — the owner's ceiling, in dollars
+// =====================================================================
+//
+// WHY IT LIVES IN SHARED. Three programs have to agree about it: the engine
+// stops the turn, the hub stores the agent, and the screen draws the box he
+// types the number into. A second copy of "what counts as over the limit" is
+// how a cap that reads as reached on one screen quietly keeps spending on
+// another.
+//
+// TWO CEILINGS, BOTH OPTIONAL, BOTH OFF BY DEFAULT. An agent with no
+// `spendCap` at all behaves exactly as every agent behaved yesterday — the
+// absence of this field can never mean a limit appeared.
+//
+//  • `perJobUsd`   — the most ONE turn may cost. A runaway job stops itself.
+//  • `perMonthUsd` — the most this agent may cost in a calendar month, counted
+//    from what its own run records actually reported. A slow leak stops too.
+//
+// HONEST LIMIT, stated once here and repeated to the owner on screen: only the
+// Claude app reports what a turn cost. Codex reports no money at all
+// (`runrecord.test.ts` pins that), so a Codex agent cannot be capped and the
+// app says so rather than showing him a box that does nothing.
+export interface AgentSpendCap {
+  /** most this agent may spend on ONE turn. Absent means no per-job ceiling. */
+  perJobUsd?: number;
+  /** most this agent may spend in a calendar month. Absent means no monthly ceiling. */
+  perMonthUsd?: number;
+}
+
+/**
+ * The smallest and largest ceiling a person may set.
+ *
+ * The floor is a cent because a limit below one cent is not a limit, it is a
+ * way to switch an agent off by accident — and "your agent stopped and nobody
+ * knows why" is the exact failure this feature exists to prevent.
+ */
+export const SPEND_CAP_LIMITS = {
+  minUsd: 0.01,
+  maxUsd: 10_000,
+} as const;
+
+/**
+ * Only the Claude app tells Cloud9 what a turn cost, so only a Claude agent can
+ * be held to a ceiling. ONE owner for that fact — the editor greys the boxes
+ * out with it, the engine skips the check with it, and neither gets to have its
+ * own opinion.
+ */
+export function providerCanBeCapped(provider: string | undefined): boolean {
+  return (provider ?? "claude") === "claude";
+}
+
+/**
+ * The agent's ceilings, read fail-open-to-NO-LIMIT on purpose.
+ *
+ * This is the one place in the file where failing OPEN is the safe direction,
+ * and it is worth saying why: every other setting here decides what an agent is
+ * allowed to DO, so a corrupt value must read as "not allowed". This one
+ * decides whether an agent is allowed to KEEP WORKING. A garbled number that
+ * read as "you have spent everything" would silently stop his crew, which is a
+ * worse and much more confusing failure than a limit that is not applied. A
+ * value that is not a usable number is therefore treated as "he never set one"
+ * — the same as the field being absent, which is what it is for every agent he
+ * already has.
+ */
+export function spendCapOf(agent: Pick<AgentDef, "spendCap">): AgentSpendCap {
+  const raw = agent.spendCap;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const cap: AgentSpendCap = {};
+  if (isUsableCapAmount(raw.perJobUsd)) cap.perJobUsd = raw.perJobUsd;
+  if (isUsableCapAmount(raw.perMonthUsd)) cap.perMonthUsd = raw.perMonthUsd;
+  return cap;
+}
+
+function isUsableCapAmount(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v)
+    && v >= SPEND_CAP_LIMITS.minUsd && v <= SPEND_CAP_LIMITS.maxUsd;
+}
+
+/** Is this a ceiling the hub may store? Plain words, or null when it is fine. */
+export function validateSpendCap(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return "a spending limit is one or two amounts in dollars";
+  }
+  const cap = value as Partial<AgentSpendCap>;
+  for (const [what, amount] of [
+    ["limit for one job", cap.perJobUsd],
+    ["limit for the month", cap.perMonthUsd],
+  ] as const) {
+    if (amount === undefined) continue;
+    if (typeof amount !== "number" || !Number.isFinite(amount)) {
+      return `that ${what} isn't an amount of money`;
+    }
+    if (amount < SPEND_CAP_LIMITS.minUsd) {
+      return `that ${what} is too small — the smallest limit is one cent`;
+    }
+    if (amount > SPEND_CAP_LIMITS.maxUsd) {
+      return `that ${what} is too big — the largest limit is $${SPEND_CAP_LIMITS.maxUsd}`;
+    }
+  }
+  return null;
+}
+
+/** Which calendar month a moment falls in — "2026-08". The month is the owner's local one. */
+export function spendMonthKey(at: number): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * WHAT THE OWNER IS TOLD WHEN A CEILING STOPS SOMETHING. Never a stack trace,
+ * never a field name, and it always names the ceiling and the amount, because
+ * "your agent stopped" without a number is indistinguishable from a bug.
+ */
+export type SpendCapWhich = "perJob" | "perMonth";
+
+export interface SpendVerdict {
+  /** may this turn start at all? */
+  allowed: boolean;
+  /** which ceiling stopped it — only when `allowed` is false */
+  which?: SpendCapWhich;
+  /** the ceiling that stopped it, in dollars */
+  capUsd?: number;
+  /** the sentence the owner reads. Present on every refusal. */
+  reason?: string;
+  /**
+   * THE CEILING FOR THIS ONE TURN, handed to the harness as its own spend limit.
+   *
+   * It is the SMALLER of "the most one job may cost" and "what is left of the
+   * month" — one number, derived from both, so a turn can neither blow the job
+   * ceiling nor walk through the monthly one on its way past it. Absent when the
+   * owner set no ceiling at all, which is the day-one default.
+   */
+  turnCapUsd?: number;
+}
+
+/**
+ * THE ONE OWNER OF "HAS HE SPENT IT?".
+ *
+ * The engine asks this before a turn, and it is the only place the comparison
+ * is made. `spentThisMonthUsd` is counted from the agent's own stored run
+ * records — real reported figures, never an estimate.
+ */
+export function decideSpend(cap: AgentSpendCap, spentThisMonthUsd: number): SpendVerdict {
+  const spent = Number.isFinite(spentThisMonthUsd) && spentThisMonthUsd > 0 ? spentThisMonthUsd : 0;
+  if (typeof cap.perMonthUsd === "number" && spent >= cap.perMonthUsd) {
+    return {
+      allowed: false,
+      which: "perMonth",
+      capUsd: cap.perMonthUsd,
+      reason: `this agent has already used its ${humanMoney(cap.perMonthUsd)} limit for `
+        + `this month (${humanMoney(spent)} so far), so it did not start. `
+        + `Raise the limit on the agent, or wait for next month.`,
+    };
+  }
+  const ceilings: number[] = [];
+  if (typeof cap.perJobUsd === "number") ceilings.push(cap.perJobUsd);
+  if (typeof cap.perMonthUsd === "number") ceilings.push(cap.perMonthUsd - spent);
+  if (ceilings.length === 0) return { allowed: true };
+  return { allowed: true, turnCapUsd: Math.min(...ceilings) };
+}
+
+/**
+ * THE SENTENCE FOR A TURN THE HARNESS ITSELF STOPPED because it reached the
+ * ceiling we handed it. Written here so the engine, the record and the job all
+ * say the same words about the same event.
+ */
+export function spendCapStopWords(which: SpendCapWhich, capUsd: number): string {
+  return which === "perJob"
+    ? `this job reached its ${humanMoney(capUsd)} spending limit, so it stopped part-way `
+      + `through. Nothing after that point was done. Raise the limit on the agent if the `
+      + `job genuinely needs more.`
+    : `this agent reached its ${humanMoney(capUsd)} limit for this month part-way through, `
+      + `so it stopped. Nothing after that point was done. Raise the limit on the agent, or `
+      + `wait for next month.`;
+}
+
+/** The ceilings in the owner's own words — for the agent card and the editor. */
+export function spendCapWords(cap: AgentSpendCap): string {
+  const bits: string[] = [];
+  if (typeof cap.perJobUsd === "number") bits.push(`${humanMoney(cap.perJobUsd)} per job`);
+  if (typeof cap.perMonthUsd === "number") bits.push(`${humanMoney(cap.perMonthUsd)} a month`);
+  return bits.length ? bits.join(", ") : "no spending limit";
+}
+
+// =====================================================================
+// SHOW ME THE PLAN FIRST — the agent says what it intends, before it does it
+// =====================================================================
+//
+// The owner can ask an agent to stop one step earlier than it does today: not
+// "ask me before you push", but "tell me what you are about to do at all". The
+// agent takes one READ-ONLY turn, says what it intends, and nothing runs until
+// he answers the card.
+//
+// IT IS THE SAME APPROVAL ENTITY, not a second one. A plan is a third `kind` of
+// `Approval` alongside `task` and `action` — same card, same Approve/Not-now
+// buttons, same `decideApproval` frame, same expiry sweep. See `ApprovalKind`.
+//
+// ABSENT MEANS OFF. Every agent he already has carries no such field, so none
+// of them starts stopping to show him a plan because this arrived.
+
+/** How long a plan the agent wrote may be, on the card and on the wire. */
+export const PLAN_LIMITS = {
+  /** the plan text itself */
+  text: 4000,
+  /** the one line the card leads with */
+  headline: 300,
+} as const;
+
+/** Did the owner ask this agent to show its plan before it works? Fails closed to NO. */
+export function showsPlanFirst(agent: Pick<AgentDef, "planFirst">): boolean {
+  return agent.planFirst === true;
+}
+
+/**
+ * Tidy a plan an agent wrote so it can go on a card.
+ *
+ * The agent wrote these words, which is exactly why they are bounded and
+ * stripped of anything that could pretend to be another line of the card — the
+ * same law `describeRemoteAction` follows by never letting the agent write the
+ * sentence at all. Here it must write it (only the agent knows its plan), so
+ * the words are contained instead.
+ */
+export function tidyPlan(text: unknown): string {
+  if (typeof text !== "string") return "";
+  const flat = text
+    .replace(new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f"
+      + "\\u200b-\\u200f\\u2028\\u2029]", "g"), "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return flat.length > PLAN_LIMITS.text ? `${flat.slice(0, PLAN_LIMITS.text - 1)}…` : flat;
+}
+
+/** The one line the plan card leads with — the plan's first real sentence. */
+export function planHeadline(plan: string): string {
+  const first = plan.split("\n").map(l => l.replace(/^[#>*\-\d.\s]+/, "").trim())
+    .find(l => l.length > 0) ?? "";
+  const line = first || "a plan for this job";
+  return line.length > PLAN_LIMITS.headline
+    ? `${line.slice(0, PLAN_LIMITS.headline - 1)}…` : line;
+}
+
+/** Is this a plan the hub may turn into a card? */
+export function validatePlanAsk(plan: unknown): string | null {
+  if (typeof plan !== "string") return "that isn't a plan";
+  if (tidyPlan(plan).length === 0) return "the agent did not say what it intends to do";
+  return null;
+}
+
+// =====================================================================
+// IF THAT MODEL IS BUSY, USE THIS ONE — and always say that it happened
+// =====================================================================
+//
+// When the model an agent is set to is overloaded, a turn today just fails and
+// the owner is shown a failure he can do nothing about. A fallback lets it
+// degrade to a model that is working instead.
+//
+// THE RULE THAT MAKES IT HONEST: a swap is never silent. The run record already
+// carries `actualModel` — what the app SAID it used — and `fellBackTo` below is
+// set only when that actual model is one the owner NAMED as a fallback. It is
+// deliberately not "actual differs from asked": measured on CLI 2.1.222, asking
+// for `claude-opus-4-1-20250805` came back reported as `claude-opus-5` with no
+// fallback involved at all, so "differs" would cry wolf. Claiming a fallback
+// that did not happen is the same class of lie as hiding one that did.
+
+/**
+ * Did this turn end up on a model the owner listed as a stand-in?
+ *
+ * Returns the model it fell back to, or undefined. Comparison is exact on the
+ * ids, because both sides are ids this app validated — `MODEL_ID_RE` on the way
+ * in, and the CLI's own `message.model` on the way out.
+ */
+export function fellBackTo(
+  asked: string | undefined, actual: string | undefined, fallbacks: readonly string[],
+): string | undefined {
+  if (!actual || fallbacks.length === 0) return undefined;
+  if (asked && actual === asked) return undefined;
+  return fallbacks.includes(actual) ? actual : undefined;
+}
+
+/** The sentence the owner reads on a run that did not get the model he chose. */
+export function fellBackWords(asked: string | undefined, actual: string): string {
+  return asked
+    ? `${modelLabel(asked)} was busy, so this ran on ${modelLabel(actual)} instead`
+    : `this ran on ${modelLabel(actual)}, which is not the model that was asked for`;
+}
+
 /**
  * A skill is a plain-words ability the owner writes for one agent: a name, what
  * it does, and the instructions to follow. Optional files are dropped into the
@@ -632,6 +946,17 @@ export interface AgentDef {
    * relay and engine both check it against that harness's real model list.
    */
   model?: string;
+  /**
+   * HOW HARD THIS AGENT SHOULD THINK before it answers — his choice, per agent,
+   * in his own four words (`effort.ts`).
+   *
+   * ABSENT MEANS EXACTLY TODAY'S BEHAVIOUR: no dial is set on the command line
+   * at all and the app uses whatever it normally would. That is the load-bearing
+   * part — every agent already in his database carries no such field, so none of
+   * them starts thinking harder, slower or dearer because this arrived. It only
+   * ever changes when he picks one of the four.
+   */
+  effort?: AgentEffort;
   /** FR (feedback round 1, his 9) — plain-words skills, absent means none */
   skills?: AgentSkill[];
   /**
@@ -644,6 +969,25 @@ export interface AgentDef {
    * something friendlier than it did yesterday. See `decideAsking`.
    */
   trust?: AgentTrust;
+  /**
+   * DOES THIS AGENT RUN IN HIS OWN CLAUDE CODE / CODEX SETUP?
+   *
+   * True means the harness starts up the way it does when he runs it himself:
+   * his CLAUDE.md / AGENTS.md, his slash commands, his connected services, his
+   * plugins, his hooks, his saved memory. False — and ABSENT — means the plain
+   * declared environment Cloud9 builds, with nothing of his loaded, which is
+   * exactly what every agent did before this switch existed.
+   *
+   * Absent means OFF on purpose: an agent he saved months ago must not start
+   * obeying his personal instructions, running his hook scripts and paying for a
+   * fourteen-times-bigger prompt because an update shipped. New agents are given
+   * `NEW_AGENT_USE_OWNER_SETUP` (true) in writing by the editor.
+   *
+   * ONE OWNER DECIDES WHAT IT MEANS: `ownersetup.ts` in @cloud9/engine, read by
+   * BOTH harnesses. It is also recorded on every run record, so he can see
+   * afterwards which turns ran with his setup loaded.
+   */
+  useOwnerSetup?: boolean;
   /** who may make this agent act — absent means "owner" (the safe default) */
   respondTo?: AgentRespondTo;
   /** user ids allowed to drive it, only read when respondTo is "allowlist" */
@@ -683,7 +1027,57 @@ export interface AgentDef {
    * (`ALWAYS_ASK_ABILITIES`).
    */
   wholeComputerRoots?: string[];
+  /**
+   * THE MOST THIS AGENT MAY SPEND — see `AgentSpendCap` above.
+   *
+   * Absent means no ceiling, which is what every agent he already has carries,
+   * so nothing about them changes. Read through `spendCapOf`, never directly:
+   * a garbled value must read as "he never set one" rather than stopping a
+   * working crew.
+   */
+  spendCap?: AgentSpendCap;
+  /**
+   * SHOW ME THE PLAN FIRST — see the block above `PLAN_LIMITS`.
+   *
+   * Absent (and `false`) mean the agent works the way it always has. `true`
+   * means it takes one read-only turn, says what it intends, and waits on the
+   * ordinary approval card before anything is done.
+   */
+  planFirst?: boolean;
+  /**
+   * IF THE CHOSEN MODEL IS BUSY, USE THESE INSTEAD — in order.
+   *
+   * Absent or empty means today's behaviour exactly: an overloaded model is a
+   * failed turn. Every id here is checked against the harness's real model list
+   * at the same gate `model` is, because it ends up on the same command line.
+   * Claude only; Codex has no equivalent.
+   */
+  fallbackModels?: string[];
   createdAt: number;
+}
+
+/**
+ * HOW MANY STAND-IN MODELS ONE AGENT MAY NAME — one.
+ *
+ * MEASURED, AND THE NUMBER IS A CONSEQUENCE, NOT A PREFERENCE. The CLI's own
+ * `--fallback-model` takes "a comma-separated list to try each in order", but
+ * Cloud9 has exactly one owner for what may go on a command line (`safeArg` in
+ * `run.ts`) and it refuses commas — for the same good reason it refuses quotes
+ * and shell characters. Weakening that rule to fit a nicety would be trading a
+ * real boundary for a second-choice model.
+ *
+ * So the list is one long, the editor offers one dropdown, and the shape stays
+ * a list because the CLI's is: if `safeArg` ever gains a measured, safe way to
+ * pass a list, this number is the only thing that changes.
+ */
+export const FALLBACK_MODEL_LIMITS = { count: 1 } as const;
+
+/** The stand-in models this agent really has, fail-closed to none. */
+export function fallbackModelsOf(agent: Pick<AgentDef, "fallbackModels">): string[] {
+  const raw = agent.fallbackModels;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((m): m is string => typeof m === "string" && MODEL_ID_RE.test(m))
+    .slice(0, FALLBACK_MODEL_LIMITS.count);
 }
 
 /**
@@ -883,6 +1277,54 @@ export interface RunRecord {
    * draws. This field says under which rule those steps were taken.
    */
   trust?: AgentTrust;
+  /**
+   * DID THIS TURN RUN IN HIS OWN CLAUDE CODE / CODEX SETUP?
+   *
+   * The exact twin of `trust` above and recorded the same way: read off the
+   * agent once, at the moment the turn starts, never looked up again when the
+   * record is drawn. He can flip the switch, and a run that silently
+   * re-describes itself afterwards is not a record.
+   *
+   * It is what makes the switch reviewable rather than merely available: a turn
+   * that read his CLAUDE.md, loaded his connected services and fired his hooks
+   * is a different kind of turn from one that did not, and the token counts
+   * beside it are not comparable to a run without it. Absent on runs from before
+   * this existed, which read as "no" — the same fail-closed answer
+   * `usesOwnerSetup` gives everywhere else.
+   */
+  ownerSetup?: boolean;
+  /**
+   * THIS RUN WAS STOPPED BY THE OWNER'S SPENDING LIMIT, and by which one.
+   *
+   * Present in BOTH shapes of that event, because to a person reading the
+   * record they are the same event and he should not have to know the
+   * difference: a turn that never started because the month was already spent,
+   * and a turn the app itself cut short when it reached the ceiling we handed
+   * it. `error` above carries the sentence; this carries the fact, so a screen
+   * can mark the run without having to read English.
+   *
+   * Absent on every run that was not stopped by a limit — which, until he sets
+   * one, is all of them.
+   */
+  capStop?: { which: SpendCapWhich; capUsd: number };
+  /**
+   * THIS TURN DID NOT GET THE MODEL IT ASKED FOR — it fell back to one the
+   * owner named as a stand-in, because the first was busy.
+   *
+   * `actualModel` above already says what really ran; this says that the
+   * difference was a FALLBACK rather than the app resolving an alias, which is
+   * the only version of the claim we can prove (see `fellBackTo`). A swap that
+   * cannot be proved is never claimed, and a proved one is never hidden.
+   */
+  fellBackTo?: string;
+  /**
+   * THIS RUN WAS THE AGENT WRITING A PLAN, not doing the work.
+   *
+   * A plan turn is read-only by construction and costs money like any other, so
+   * it gets a record like any other — but a person looking at what an agent has
+   * been doing must be able to tell the plan apart from the job.
+   */
+  planOnly?: boolean;
 }
 
 /** A run as it appears in a list, without loading every step. */
@@ -1616,18 +2058,26 @@ export function validateCiCheckView(v: unknown): string | null {
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
 
 /**
- * The two shapes an approval comes in:
+ * The three shapes an approval comes in:
  *
  *  • `task` — the one that already existed: *may this agent run this job at
  *    all?* Asked BEFORE anything starts, answered once, and the job waits.
  *  • `action` — asked MID-RUN, when the agent is already working and has come
  *    to one specific thing it may not do on its own: *may I push this branch?*
  *    The branch is real by then and the request can name it.
+ *  • `plan` — asked BEFORE the work, when the owner has said "show me the plan
+ *    first": the agent has taken one READ-ONLY turn and written down what it
+ *    intends to do. Nothing has been done yet and nothing will be until he
+ *    answers. Added 2026-08-05 as a THIRD KIND OF THE SAME THING rather than a
+ *    second approval mechanism — it stores an `Approval`, it is answered by the
+ *    same `decideApproval` frame, it is drawn by the same card, and it is swept
+ *    by the same expiry sweep. A parallel gate would be a parallel place for
+ *    "did we ask?" to be answered, which is the exact split that bit us before.
  *
  * ABSENT MEANS `task`. Every approval stored before 2026-07-30 is a job-shaped
  * one, and re-writing history to add a field is how a migration breaks.
  */
-export type ApprovalKind = "task" | "action";
+export type ApprovalKind = "task" | "action" | "plan";
 
 export interface Approval {
   id: ID;
@@ -1652,11 +2102,22 @@ export interface Approval {
   /** the smaller line under the sentence — "3 files changed" */
   detail?: string;
   /**
-   * When this stops being answerable. Only an `action` approval has one: an
-   * agent is standing there waiting, so a request nobody answers has to die
-   * rather than be approved next Tuesday against a branch that has moved on.
+   * When this stops being answerable. Only an `action` or a `plan` approval has
+   * one: an agent is standing there waiting, so a request nobody answers has to
+   * die rather than be approved next Tuesday against a branch that has moved on.
    */
   expiresAt?: number;
+  /**
+   * WHAT THE AGENT SAID IT INTENDS TO DO, in its own words — only on a `plan`
+   * approval.
+   *
+   * This is the one field on this record the AGENT writes, and it has to be:
+   * only the agent knows its plan. So it is contained instead of trusted —
+   * bounded and stripped by `tidyPlan` before it is stored, and drawn as plain
+   * text, never as anything a screen would interpret. `action` above is still
+   * Cloud9's own one-line summary of it, exactly as on the other two kinds.
+   */
+  plan?: string;
 }
 
 export type ActivityKind =
@@ -2523,6 +2984,26 @@ type ClientFrameBase =
    * which id belongs to which. It is a label, never a permission.
    */
   | { type: "askApproval"; askId: string; agentId: ID; channelId: ID; taskId?: ID; facts: RemoteActionFacts }
+  /**
+   * ENGINE-HOST ONLY: the owner asked to see the plan first, so the agent has
+   * taken one READ-ONLY turn and written down what it intends to do. NOTHING
+   * HAS BEEN DONE. "Shall I go ahead?"
+   *
+   * IT IS THE SAME APPROVAL ENTITY AS THE TWO ABOVE, on purpose and for the
+   * same reason `askApproval` is: it becomes a stored `Approval` with
+   * `kind: "plan"`, it is answered by the same `decideApproval` frame, it is
+   * drawn by the same card and swept by the same expiry sweep. It is a separate
+   * FRAME only because what it carries is different in kind — a plan is prose
+   * the agent wrote, not a row on `REMOTE_ACTIONS` with counted facts.
+   *
+   * AND THAT IS EXACTLY WHY THE PLAN IS CONTAINED. The hub still writes the
+   * headline the owner reads (`planHeadline`) and still bounds and strips the
+   * body (`tidyPlan`); the agent's words go on the card as plain text and can
+   * never be a second line of it.
+   *
+   * `askId` is the same correlation label as above — never a permission.
+   */
+  | { type: "askPlan"; askId: string; agentId: ID; channelId: ID; taskId?: ID; plan: string }
   | { type: "activity"; before?: number; limit?: number }
   // ---- projects: a GitHub repository connected to Cloud9 (his item 7) ----
   /** Connect a repository. Yours: it runs through YOUR machine and YOUR `gh`. */
@@ -2823,6 +3304,52 @@ export interface WorldState {
    * follows them between machines (absent on a relay older than this round).
    */
   unread?: UnreadEntry[];
+  /**
+   * WHAT THE HUB CHANGED ABOUT HIS AGENTS WHILE HE WAS NOT LOOKING.
+   *
+   * Absent for everybody except the person who runs this Cloud9, and absent for
+   * him too unless the one-time catch-up really changed something. See
+   * `ReachCatchup` — a change he cannot see is the kind that erodes trust, so
+   * the hub carries the receipt in the same breath as the world it changed.
+   */
+  reachCatchup?: ReachCatchup;
+}
+
+/**
+ * THE RECEIPT FOR THE ONE-TIME CATCH-UP, in the hub's own words.
+ *
+ * Cloud9 changed what a NEW agent gets. The agents he already had were made
+ * before that and were stuck below it: no way to run a command, no folder of his
+ * to read, and no trust setting at all — which fails closed, so they would have
+ * stopped and asked before every job. A button on the crew screen could fix
+ * them, and he said, four times, that he should not have to find a button.
+ *
+ * So the hub does it once, by itself, and then SAYS SO. This is the saying-so:
+ * which agents changed, what each one gained, and enough for the screen to tell
+ * him where to undo any of it. It is the honest half of an automatic change —
+ * without it the app would have quietly rewritten things he owns.
+ */
+export interface ReachCatchup {
+  /** when it ran, once, on this database */
+  ranAt: number;
+  /** the folder handed to agents that had none — absent if none was offered */
+  homeFolder?: string;
+  /** the trust setting agents with none were given (the new-agent default) */
+  trust: AgentTrust;
+  /** one row per agent that really changed. Empty means nothing was touched. */
+  agents: ReachCatchupAgent[];
+}
+
+/** One agent the catch-up changed, and exactly what it gained. */
+export interface ReachCatchupAgent {
+  id: ID;
+  name: string;
+  /** the switches it did not have, in the words on the switch itself */
+  gained: string[];
+  /** the folder it was given, when it had none of his folders opened up */
+  folder?: string;
+  /** true when it had no trust setting and was given the new-agent default */
+  trustSet: boolean;
 }
 
 export type ServerFrame =
@@ -3831,12 +4358,99 @@ export function modelLabel(id: string): string {
   return CLAUDE_MODEL_CATALOGUE.find(m => m.id === id)?.label ?? id;
 }
 
+/**
+ * HOW MUCH A MODEL CAN HOLD AT ONCE, in tokens. One owner for that fact.
+ *
+ * It exists because something had to decide how much conversation an agent is
+ * given (`CONVERSATION_BUDGET` in the engine's `context.ts`), and until
+ * 2026-08-05 that was a single constant — every agent was fed 24,000 characters
+ * whether it was running on a model that holds 200,000 tokens or one that holds
+ * a million. A constant cannot follow the model, so this table can.
+ *
+ * MEASURED ON THIS MACHINE, 2026-08-05, not looked up and not guessed:
+ *
+ *  - CLAUDE, read out of the installed CLI's own model registry (Claude Code
+ *    2.1.222), the same binary and the same method `CLAUDE_MODEL_CATALOGUE`
+ *    above came from:
+ *      grep -aoE 'id:"claude-[a-z0-9.-]+",family:"[a-z]+".*?context:\{window:[0-9e]+' claude.exe
+ *    Every 4.x model reads 200000; Fable 5, Opus 4.7, Opus 4.8, Opus 5,
+ *    Sonnet 5 and Mythos 5 read 1e6.
+ *
+ *  - CODEX, from `codex debug models` on codex-cli 0.146.0, which prints
+ *    `context_window` per model itself: the whole listed 5.x family is 272000
+ *    except `gpt-5.3-codex-spark`, which is 128000.
+ *
+ * WHEN WE DO NOT KNOW, WE SAY SO. An id nobody has measured falls back to the
+ * SMALLEST window measured for its harness, never to the largest — being wrong
+ * small costs an agent some history, being wrong large costs a failed turn. An
+ * id belonging to no harness we know returns undefined, and the caller then
+ * keeps whatever it does today.
+ */
+export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
+  // Claude — from the CLI's own registry
+  "claude-fable-5": 1_000_000,
+  "claude-opus-5": 1_000_000,
+  "claude-opus-4-8": 1_000_000,
+  "claude-opus-4-7": 1_000_000,
+  "claude-opus-4-6": 200_000,
+  "claude-opus-4-5": 200_000,
+  "claude-opus-4-1": 200_000,
+  "claude-opus-4-0": 200_000,
+  "claude-sonnet-5": 1_000_000,
+  "claude-sonnet-4-6": 200_000,
+  "claude-sonnet-4-5": 200_000,
+  "claude-sonnet-4-0": 200_000,
+  "claude-haiku-4-5": 200_000,
+  "claude-haiku-4-5-20251001": 200_000,
+  "claude-mythos-5": 1_000_000,
+  // Codex — from `codex debug models`
+  "gpt-5.6-sol": 272_000,
+  "gpt-5.6-terra": 272_000,
+  "gpt-5.6-luna": 272_000,
+  "gpt-5.5": 272_000,
+  "gpt-5.4": 272_000,
+  "gpt-5.4-mini": 272_000,
+  "gpt-5.3-codex-spark": 128_000,
+} as const;
+
+/**
+ * The smallest window measured for each harness — what an unmeasured model of
+ * that family is assumed to have. Deliberately the smallest, see above.
+ */
+export const SMALLEST_KNOWN_WINDOW = { claude: 200_000, codex: 128_000 } as const;
+
+/**
+ * How much this model can hold at once, or undefined when nobody has measured
+ * anything like it.
+ *
+ * `harness` is used only when the id itself says nothing — an agent that never
+ * picked a model still runs on SOME model of its harness, and the smallest one
+ * that harness offers is the honest answer for it.
+ */
+export function contextWindowTokens(
+  model?: string, harness?: string,
+): number | undefined {
+  const id = typeof model === "string" ? model.trim() : "";
+  const exact = MODEL_CONTEXT_WINDOWS[id];
+  if (exact) return exact;
+  if (id.startsWith("claude-")) return SMALLEST_KNOWN_WINDOW.claude;
+  if (id.startsWith("gpt-") || id.startsWith("o1") || id.startsWith("o3")) {
+    return SMALLEST_KNOWN_WINDOW.codex;
+  }
+  if (id) return undefined; // a model id we have never seen — do not invent one
+  if (harness === "claude") return SMALLEST_KNOWN_WINDOW.claude;
+  if (harness === "codex") return SMALLEST_KNOWN_WINDOW.codex;
+  return undefined;
+}
+
 export interface AgentInput {
   name?: string;
   emoji?: string;
   persona?: string;
   model?: string;
   provider?: string;
+  /** one of the four thinking-time words, or absent for "the app decides" */
+  effort?: unknown;
   skills?: unknown;
   respondTo?: unknown;
   respondToAllowlist?: unknown;
@@ -3844,6 +4458,14 @@ export interface AgentInput {
   connectionsFile?: unknown;
   /** the whole paths of the folders the owner opened up for this agent */
   wholeComputerRoots?: unknown;
+  /** yes/no — does this agent run in the owner's own Claude Code / Codex setup */
+  useOwnerSetup?: unknown;
+  /** the most this agent may spend, per job and per month */
+  spendCap?: unknown;
+  /** does it show its plan and wait, before it works? */
+  planFirst?: unknown;
+  /** the stand-in models to use when the chosen one is busy */
+  fallbackModels?: unknown;
 }
 
 /** How many people one agent may be opened up to. */
@@ -3894,8 +4516,58 @@ export function validateAgentInput(agent: AgentInput, rules: AgentInputRules = {
       return "that model isn't one this app offers";
     }
   }
+  // THE THINKING-TIME DIAL, checked at the same gate as the model id and for the
+  // same reason: it ends up as a real `--effort <level>` on a Claude command line
+  // and a real `-c model_reasoning_effort=<level>` on a Codex one. Absent is
+  // always fine and always means "the app decides"; a word that is not one of the
+  // four is refused here rather than sanitised, exactly like a bad model id.
+  if (agent.effort !== undefined && agent.effort !== "" && !isAgentEffort(agent.effort)) {
+    return "that isn't one of the thinking-time settings this app offers";
+  }
+  // THE STAND-IN MODELS, checked at the SAME gate and by the SAME two rules the
+  // chosen model above goes through — shape first (the injection guard, never
+  // skipped), then "is it one this app offers". They end up as a real
+  // `--fallback-model a,b` on a command line, so anything looser here would be
+  // a way round the check the line above makes.
+  if (agent.fallbackModels !== undefined && agent.fallbackModels !== null) {
+    if (!Array.isArray(agent.fallbackModels)) {
+      return "the stand-in models must be a list";
+    }
+    if (agent.fallbackModels.length > FALLBACK_MODEL_LIMITS.count) {
+      return FALLBACK_MODEL_LIMITS.count === 1
+        ? "an agent can have one stand-in model, not several"
+        : `that's too many stand-in models (max ${FALLBACK_MODEL_LIMITS.count})`;
+    }
+    for (const id of agent.fallbackModels) {
+      if (typeof id !== "string" || !MODEL_ID_RE.test(id)) {
+        return "that stand-in model name isn't a valid model id";
+      }
+      if (rules.models && rules.models.length > 0 && !rules.models.includes(id)) {
+        return "that stand-in model isn't one this app offers";
+      }
+      if (agent.model !== undefined && agent.model === id) {
+        return "a stand-in model has to be different from the model the agent already uses";
+      }
+    }
+  }
+  // THE SPENDING CEILING. It becomes a real `--max-budget-usd` on a command
+  // line, so like every other field that does, it is checked at the hub and
+  // again in the engine, neither trusting the other.
+  const badCap = validateSpendCap(agent.spendCap);
+  if (badCap) return badCap;
+  if (agent.planFirst !== undefined && typeof agent.planFirst !== "boolean") {
+    return "\"show me the plan first\" is either on or off";
+  }
   const openness = validateRespondTo(agent.respondTo, agent.respondToAllowlist);
   if (openness) return openness;
+  // WHOSE SETUP THIS AGENT RUNS IN is a yes/no and nothing else. A truthy string
+  // arriving from an older or hand-written client must not read as "yes": this
+  // one field decides whether his instructions, his hooks and his connected
+  // services load, so anything that is not literally true or false is refused
+  // rather than coerced. (`ownersetup.ts` in @cloud9/engine owns what it means.)
+  if (agent.useOwnerSetup !== undefined && typeof agent.useOwnerSetup !== "boolean") {
+    return "whether an agent uses your own setup is a yes/no";
+  }
   // The connections file ends up as `--mcp-config <path>` on a command line, so
   // it is checked at the same gate as everything else that does — first at the
   // hub, again in the engine, neither trusting the other.
@@ -4704,6 +5376,12 @@ export function validateRunRecord(record: unknown): string | null {
   // nothing at all, so a stored run cannot claim a rule that does not exist
   const badTrust = validateTrust(r.trust);
   if (badTrust) return badTrust;
+  // …and whose setup it ran in: a yes/no or nothing at all, never a word that
+  // merely looks true. A record that overstates this would tell him a turn was
+  // sandboxed when it was not, which is worse than not recording it.
+  if (r.ownerSetup !== undefined && typeof r.ownerSetup !== "boolean") {
+    return "a run either used your own setup or it didn't";
+  }
   return null;
 }
 
@@ -4867,3 +5545,15 @@ export {
 export {
   LIVE_STEPS_PER_BATCH, LIVE_STEPS_STALE_MS, type LiveRunSteps,
 } from "./livesteps.js";
+
+// ---------------------------------------------------------------------------
+// HOW HARD AN AGENT SHOULD THINK — the four words the owner chooses between, and
+// the one table that turns them into what each installed app actually takes. Its
+// own file for the same reason the skill library has one: three things have to
+// agree (his words, Claude's flag, Codex's config key) and they only stay in
+// agreement if adding a rung means adding a row.
+export {
+  AGENT_EFFORT_CHOICES, AGENT_EFFORT_UNSET_LABEL, AGENT_EFFORT_UNSET_HINT,
+  isAgentEffort, effortLevelFor, effortSupportedBy, effortWords,
+  type AgentEffort, type AgentEffortChoice, type EffortHarness,
+} from "./effort.js";

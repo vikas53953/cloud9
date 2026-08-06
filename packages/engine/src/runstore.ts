@@ -22,7 +22,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   RunListEntry, RunRecord, RUN_RETENTION, fitRunRecord, isSafeStoredId, runListEntry,
-  validateRunRecord,
+  spendMonthKey, validateRunRecord,
 } from "@cloud9/shared";
 import { isPendingName, writeWholeFile } from "./wholefile.js";
 
@@ -231,12 +231,124 @@ export class RunStore {
       if (!isPendingName(name)) continue;
       if (this.discard(path.join(dir, name))) removed++;
     }
+    // WHAT IS ABOUT TO BE FORGOTTEN IS COUNTED FIRST. A run that leaves this
+    // folder must not take what it cost out of the month's total with it —
+    // otherwise a spending limit would drift upwards the harder an agent
+    // worked, which is precisely backwards. Read BEFORE the delete, carried
+    // forward BEFORE the delete, so a crash between the two can only ever
+    // count a run twice as still-present, never lose it. See `spentInMonth`.
+    const doomed: RunRecord[] = [];
+    const targets: string[] = [];
     for (const id of this.idsNewestFirst(dir).slice(this.keep)) {
       const target = this.fileFor(dir, id);
       if (!target) continue;
+      targets.push(target);
+      const record = readRecord(target).record;
+      if (record) doomed.push(record);
+    }
+    this.carryForward(agentId, doomed);
+    for (const target of targets) {
       if (this.discard(target)) removed++;
     }
     return removed;
+  }
+
+  // ==================================================================
+  // WHAT THIS AGENT HAS SPENT THIS MONTH — a query, not a second system
+  // ==================================================================
+  //
+  // Cloud9 already writes down what every turn cost: `usage.costUsd` on the run
+  // record, taken from the Claude app's own `total_cost_usd` and never
+  // estimated. This store is where all of an agent's records live, so "how much
+  // has it spent" is a sum over what is already here — there is no ledger of
+  // spending to keep in step with the records, because a second number is a
+  // second number that can be wrong.
+  //
+  // THE ONE HOLE IN THAT, AND HOW IT IS CLOSED. An agent keeps its most recent
+  // runs and no more (`RUN_RETENTION.perAgent`), so a busy month would have its
+  // earliest turns deleted and a plain sum would quietly forget them — the cap
+  // would then drift UPWARDS the harder the agent worked, which is the exact
+  // opposite of what a cap is for. `prune` below is the ONLY place a run is
+  // ever deleted, so it is also the place the deleted amount is carried
+  // forward, per month, into `spent.ledger`. Nothing is counted twice: a run is
+  // either still on disk (summed here) or gone (carried there), never both.
+  //
+  // HONEST LIMIT: Codex reports no money at all, so a Codex run contributes
+  // nothing here and a Codex agent cannot be capped. `providerCanBeCapped` in
+  // @cloud9/shared is the one owner of that fact, and the screen says it out
+  // loud rather than showing a box that does nothing.
+
+  /**
+   * What this agent has spent in the calendar month containing `at`, in
+   * dollars — every run that reported a figure, plus what was carried forward
+   * from runs since deleted.
+   *
+   * Never throws. A folder we cannot read reads as 0, which is the fail-open
+   * direction on purpose: a ceiling that cannot be measured must not become a
+   * crew that has silently stopped working.
+   */
+  spentInMonth(agentId: string, at = Date.now()): number {
+    const month = spendMonthKey(at);
+    let total = this.carriedSpend(agentId)[month] ?? 0;
+    const dir = this.dirFor(agentId, false);
+    if (!dir) return total;
+    for (const id of this.idsNewestFirst(dir)) {
+      const target = this.fileFor(dir, id);
+      if (!target) continue;
+      const record = readRecord(target).record;
+      if (!record) continue;
+      total += costInMonth(record, month);
+    }
+    return total;
+  }
+
+  /** The per-month totals of runs this store has already deleted. */
+  private carriedSpend(agentId: string): Record<string, number> {
+    const target = this.spendFile(agentId, false);
+    if (!target) return {};
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(target, "utf8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      const out: Record<string, number> = {};
+      for (const [month, amount] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof amount === "number" && Number.isFinite(amount) && amount > 0) {
+          out[month] = amount;
+        }
+      }
+      return out;
+    } catch {
+      return {}; // missing, busy or damaged — 0 is the fail-open answer
+    }
+  }
+
+  /** Add what these about-to-be-deleted runs cost to the carried totals. */
+  private carryForward(agentId: string, records: readonly RunRecord[]): void {
+    if (records.length === 0) return;
+    const carried = this.carriedSpend(agentId);
+    let changed = false;
+    for (const record of records) {
+      const cost = record.usage?.costUsd;
+      if (typeof cost !== "number" || !Number.isFinite(cost) || cost <= 0) continue;
+      const month = spendMonthKey(record.startedAt);
+      carried[month] = (carried[month] ?? 0) + cost;
+      changed = true;
+    }
+    if (!changed) return;
+    const target = this.spendFile(agentId, true);
+    if (!target) return;
+    // the same write-then-rename owner every other file here goes through, so a
+    // power cut cannot leave half a total behind under a name we would believe
+    writeWholeFile(target, JSON.stringify(carried, null, 2),
+      m => this.log(`[engine] could not carry forward what agent ${agentId} spent: ${m}`));
+  }
+
+  /** Where the carried totals live — beside the runs, under the same path rules. */
+  private spendFile(agentId: string, create: boolean): string | undefined {
+    const dir = this.dirFor(agentId, create);
+    if (!dir) return undefined;
+    const target = path.resolve(path.join(dir, "spent.ledger"));
+    if (path.relative(dir, target) !== "spent.ledger") return undefined;
+    return target;
   }
 
   /** Remove one file we are sure carries nothing worth keeping. */
@@ -321,4 +433,20 @@ function readRecord(target: string): { record?: RunRecord; junk?: boolean; reaso
 
 function serialize(record: RunRecord): string {
   return JSON.stringify(record, null, 2);
+}
+
+/**
+ * What this run cost, if it fell in the month asked about and if the app that
+ * ran it reported a figure at all.
+ *
+ * NOTHING IS INFERRED, which is the same law the record itself is written
+ * under: a run with no money on it contributes 0 rather than an estimate, and a
+ * Codex run always has no money on it. The month is decided by when the turn
+ * STARTED, so a turn that runs across midnight on the last of the month belongs
+ * to the month the owner watched it start in.
+ */
+function costInMonth(record: RunRecord, month: string): number {
+  const cost = record.usage?.costUsd;
+  if (typeof cost !== "number" || !Number.isFinite(cost) || cost <= 0) return 0;
+  return spendMonthKey(record.startedAt) === month ? cost : 0;
 }

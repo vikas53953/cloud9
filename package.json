@@ -17,6 +17,7 @@
     "dist": "npm run build:app && npm run prepack:tools && npm run dist -w @cloud9/desktop",
     "test": "npm test -w @cloud9/shared -w @cloud9/engine -w @cloud9/relay -w @cloud9/desktop",
     "qa": "node scripts/qa-stack.mjs",
+    "qa:smoke": "node scripts/qa-stack.mjs --smoke",
     "qa:app": "node scripts/drive-app.mjs",
     "dev:relay": "npm run dev -w @cloud9/relay"
   },

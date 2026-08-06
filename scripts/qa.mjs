@@ -21,6 +21,7 @@ import {
 // rather than re-typed, so a check can never agree with a sentence this file
 // made up.
 import {
+  AGENT_EFFORT_CHOICES, AGENT_EFFORT_UNSET_LABEL,
   ATTACHMENT_LIMITS, describeRemoteAction, detailRemoteAction, FILE_NAME_SENTENCE, humanMoney,
   isGitHubWriteKind,
   MESSAGE_LIMITS, NAME_LIMITS, REMOTE_ACTIONS, summarizeRun, validateLocalFolder, validateName,
@@ -47,6 +48,17 @@ import {
   NEW_AGENT_ABILITIES, capabilitiesForNewAgent,
 } from "@cloud9/engine/dist/abilities.js";
 import { isolationFor } from "@cloud9/engine/dist/isolation.js";
+/* WHAT LANDED OVERNIGHT (2026-08-05/06), each read from the module that owns it
+ * rather than re-spelled here: the claim check, the picture an agent is shown,
+ * the "use my own setup" switch, and the memory that has to keep the NEWEST
+ * notes. A check that typed any of these sentences or flags out by hand could
+ * agree with an app that was wrong in exactly the same way. */
+import { verifyTurn } from "@cloud9/engine/dist/verify.js";
+import { sniffKind, tooBigSentence } from "@cloud9/engine/dist/attachmentreach.js";
+import {
+  CLAUDE_ISOLATION_FLAGS, claudeSetupFlags, NEVER_INHERITED, OWNER_SETUP_WORDS,
+} from "@cloud9/engine/dist/ownersetup.js";
+import { retrieveMemory } from "@cloud9/engine/dist/agent-memory.js";
 
 /**
  * EVERYTHING ONE AGENT EDITOR PUTS IN FRONT OF HIM.
@@ -488,14 +500,106 @@ function mintJoinTokenOn(port, token) {
 //         SAME switch set a hand-written agent gets, read from the capability
 //         table — and the one row nobody but he can supply (connected services)
 //         is asked about separately, which is the check this adds.
-const EXPECTED_CHECKS = 573;
+// +11 (2026-08-06): the fewest checks that would go red if each of the night's
+// features broke — three for the stop button, two for the claim check, two for
+// the picture an agent is shown, two for the "use my own setup" switch, and one
+// each for how hard it thinks and for keeping the NEWEST notes.
+const EXPECTED_CHECKS = 584;
+
+/* ---- ONE SUITE, TWO RUN MODES (2026-08-05) --------------------------------
+ *
+ *   node scripts/qa.mjs            the full gate — every check, nothing skipped
+ *   node scripts/qa.mjs --smoke    the load-bearing journeys only  (npm run qa:smoke)
+ *
+ * WHY. This suite grew to 573 browser checks, and a full pass is a long wait on
+ * every round of work. A wait that long stops being run, and a check nobody runs
+ * is worth nothing. So the same source now has a SHORT mode covering the
+ * journeys that carry the app — signing in and what the sign-in card says, an
+ * agent actually answering, threads, files, search, what an agent will ask
+ * before it acts, the four interruptions, the reach ladder, the stop button and
+ * the verification pass — plus a FULL mode that is unchanged and is still the
+ * gate before anything ships.
+ *
+ * HOW, and the rule that matters: THE CHECKS ARE TAGGED, NEVER COPIED. There is
+ * exactly one copy of every check in this file. `act()` names a stretch of the
+ * story and says whether the short run includes it; a stretch the short run
+ * leaves out is simply not executed. Two files of checks would drift apart
+ * within a week and then disagree, and a suite that disagrees with itself
+ * cannot settle anything.
+ *
+ * The bodies below are deliberately NOT re-indented inside their `if (act(...))`
+ * braces. Re-indenting seven thousand lines would bury the tagging in a diff
+ * nobody could read, and JavaScript does not care. Every block ends with a
+ * `} // end act:` line naming what it closed.
+ */
+const SMOKE = process.argv.includes("--smoke");
+const RUN_MODE = SMOKE ? "smoke" : "full";
+const acts = [];
+let openAct = null;
+
+function closeAct() {
+  if (!openAct) return;
+  openAct.seconds = Math.round((Date.now() - openAct.startedAt) / 100) / 10;
+  openAct.checks = results.length - openAct.checksBefore;
+  openAct = null;
+}
+
+/**
+ * Name one act of the story, and say whether the short run plays it.
+ *
+ * Used as `if (act("...", { smoke: true })) { ... }`. Returns false in a smoke
+ * run for an act that is full-only, so the driving inside it — which is where
+ * the minutes actually go — never happens.
+ */
+function act(name, { smoke = false } = {}) {
+  closeAct();
+  const ran = !SMOKE || smoke;
+  openAct = { name, smoke, ran, startedAt: Date.now(), checksBefore: results.length,
+    checks: 0, seconds: 0 };
+  acts.push(openAct);
+  if (!ran) console.log(`SKIP (full only) - ${name}`);
+  return ran;
+}
+
+/**
+ * WHAT THE SHORT RUN MUST HAVE PLAYED — the same law as `EXPECTED_CHECKS`, held
+ * a better way.
+ *
+ * The full run is held to a NUMBER, and a number goes stale every time a check
+ * is added and is a lie in between. What actually has to be true of a short run
+ * is that every journey it exists to cover really happened: an act that died
+ * half way never gets its later siblings registered at all, so a run that
+ * stopped is a run with acts missing from this list. Names, not arithmetic —
+ * and a failure names the journey that never ran instead of a count nobody can
+ * act on.
+ */
+const SMOKE_ACTS = [
+  "signing in, the crew, and an agent that answers",
+  "a friend joins, and everyone is listed once",
+  "threads",
+  "search across everything",
+  "the four events that interrupt him",
+  "who may set an agent working",
+  "a rung really is a prefix of the table",
+  "what an agent will ask before it acts",
+  "a file: picked, sent, opened, and the bytes fetched back",
+  "the stop button, and what the record calls a stopped turn",
+  "did it really do what it said",
+];
+
 const results = [];
 let failShot = null; // set once a page exists, so an uncaught error leaves evidence
 const consoleErrors = [];
 
+/* Every check line carries how far into the run it landed. Without it, "the
+ * suite is slow" is untraceable — this is the only record of WHERE the minutes
+ * went, and it is what the smoke/full split was chosen from. */
+const RUN_STARTED = Date.now();
+const sinceStart = () => `${String(Math.round((Date.now() - RUN_STARTED) / 1000)).padStart(4)}s`;
+
 function ok(name, pass, detail = "") {
   results.push({ name, pass, detail });
-  console.log(`${pass ? "PASS" : "FAIL"} - ${name}${detail ? " :: " + detail : ""}`);
+  console.log(`${sinceStart()} ${pass ? "PASS" : "FAIL"} - ${name}${detail ? " :: " + detail : ""}`);
 }
 
 /**
@@ -560,8 +664,23 @@ const browser = await chromium.launch(
   process.env.CLOUD9_CHROMIUM ? { executablePath: process.env.CLOUD9_CHROMIUM } : {}
 );
 try {
+  /* NAMES THE ACTS SHARE.
+   *
+   * The story below is cut into acts (see `act()` at the top), and an act is a
+   * BLOCK — so anything an act declared with `const` would be invisible to the
+   * acts after it. Every name that is really handed from one act to another is
+   * declared once here and assigned where it always was. Nothing else moved.
+   */
+  let owner, page, box, seen, code, friendCtx, fpage, before, last, pill, rowsInRoom,
+    cbox, calmBox, armedBox, scoutForReceipt, goaId, carrier, carrierId, signalsOn,
+    abilityRows, openSwitches, rows, asksList, handMadeOffers, hallFace, brief, tiles,
+    rowState, mine, pictureId, drawn, card, engineWs, engineFrames, engineGot, scout,
+    general, base, rich, REPO, overflow, artId, shot, evMessageId, evReplyId, evLogId,
+    openEverywhere;
+
+  if (act("signing in, the crew, and an agent that answers", { smoke: true })) {
   // ---------- owner context ----------
-  const owner = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  owner = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 
   /* ---- A HOLD ON ONE KIND OF ANSWER FROM THE HUB ----------------------------
    *
@@ -621,7 +740,7 @@ try {
     window.WebSocket = Gated;
   });
 
-  const page = await owner.newPage();
+  page = await owner.newPage();
   failShot = page;
   /* A failed WebSocket connection is logged by the BROWSER itself (net::
    * ERR_CONNECTION_REFUSED), not by the app — and the join proof below
@@ -752,7 +871,7 @@ try {
    * `waitForAgentAnswer`. So "the agent replied" is no longer "there is a row in
    * the scroll": his question carries "1 reply" and the words are in the panel.
    * Every wait on an agent's answer in this file goes through the one helper. */
-  const box = page.locator(".composer textarea");
+  box = page.locator(".composer textarea");
   await box.fill("@Scout find beach villas in Goa under 8k");
   await box.press("Enter");
   // This is the FIRST time the engine is asked to speak, so it pays the whole
@@ -845,6 +964,8 @@ try {
   ok("settings shows live Claude + Codex status", !!claudeState && !!codexState,
     `claude: ${claudeState} | codex: ${codexState}`);
 
+  } // end act: signing in, the crew, and an agent that answers
+  if (act("what the sign-in card says about every harness")) {
   // ---- his 1 + 11: the sign-in card says what is TRUE for its state ----
   // Replaces the old "both sign-in buttons are present" check: when a harness is
   // already signed in the contract forbids a sign-in button at all, so the check
@@ -995,6 +1116,8 @@ try {
 
   await page.screenshot({ path: `${SHOTS}/github-card.png`, animations: "disabled" });
 
+  } // end act: what the sign-in card says about every harness
+  if (act("settings, the model picker and skills")) {
   // ---- his 13: settings has real, changeable things ----
   // selectors updated (Studio reskin): the look is chosen with the approved
   // design's three painted cards, each addressed by the theme it sets.
@@ -1125,6 +1248,8 @@ try {
   await page.waitForTimeout(400);
   await page.click('.rail-btn[data-go="chat"]');
 
+  } // end act: settings, the model picker and skills
+  if (act("what an agent remembers, hands over, and the actions menu")) {
   // ============ agent memory + agent-to-agent handoff ============
   //
   // Memory: an agent keeps durable notes between conversations, tells the owner
@@ -1134,7 +1259,7 @@ try {
   // engine's own store on this computer, and the handoff is delivered through
   // the hub — so a broken feature shows as a failed check, never a fake pass.
   // Bounded waits record a FAIL rather than crashing the whole suite.
-  const seen = (locator, timeout = 20000) =>
+  seen = (locator, timeout = 20000) =>
     locator.first().waitFor({ timeout }).then(() => true).catch(() => false);
 
   // -- a note saved with "!remember" --
@@ -1280,18 +1405,26 @@ try {
       && (await page.evaluate(() => window.cloud9Escape.stacked())) === 0
       && (await acBox.inputValue()) === "");
 
+  } // end act: what an agent remembers, hands over, and the actions menu
+  if (act("a friend joins, and everyone is listed once", { smoke: true })) {
   // invite flow
+  /* Back to chat first: the acts before this one may or may not have been
+     played (a short run skips them), and the invite control lives on the chat
+     screen. An act that assumes where the last one left the app is an act that
+     only works in one of the two run modes. */
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.waitForSelector('button[title="Invite a friend"]', { timeout: 20000 });
   await page.click('button[title="Invite a friend"]');
   await page.waitForSelector(".code");
   await page.waitForFunction(() => document.querySelector(".code")?.textContent?.startsWith("inv_"));
-  const code = (await page.textContent(".code")).trim();
+  code = (await page.textContent(".code")).trim();
   await page.screenshot({ path: `${SHOTS}/07-invite.png` });
   await page.click('.overlay .foot button:has-text("Done")');
   ok("invite code generated", true, code);
 
   // ---------- friend context ----------
-  const friendCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  const fpage = await friendCtx.newPage();
+  friendCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  fpage = await friendCtx.newPage();
   fpage.on("console", m => { if (m.type() === "error") consoleErrors.push("friend: " + m.text()); });
   await fpage.goto(UI);
   await fpage.click("text=I have an invite");
@@ -1440,7 +1573,7 @@ try {
     (await storedToken(fpage)) === priyaToken);
 
   // empty-input edge: Enter on empty composer sends nothing
-  const before = await page.locator(".msg").count();
+  before = await page.locator(".msg").count();
   await box.press("Enter");
   await page.waitForTimeout(400);
   ok("empty message is not sent", (await page.locator(".msg").count()) === before);
@@ -1466,6 +1599,8 @@ try {
   ok("your own row is marked as you, not offered as a chat",
     (await page.locator(".sidebar .person-row.is-me .youtag").count()) === 1);
 
+  } // end act: a friend joins, and everyone is listed once
+  if (act("the design pass, and how a message is drawn")) {
   // ---- his 12+14: the design pass — screenshots and no sideways scroll ----
   await page.click(".sidebar >> text=# general");
   for (const [width, height] of [[1280, 800], [1440, 900]]) {
@@ -1542,7 +1677,7 @@ try {
   ].join("\n");
   await box.fill(md);
   await box.press("Enter");
-  const last = page.locator(".msg").last();
+  last = page.locator(".msg").last();
   await last.locator(".md strong").first().waitFor({ timeout: 8000 });
 
   ok("a message renders bold, italic and inline code",
@@ -1569,6 +1704,7 @@ try {
    * against the real relay: scrollback, search, reactions, edit and delete,
    * threads, account-level unread, and who may set an agent working. */
 
+  } // end act: the design pass, and how a message is drawn
   // ---------- a conversation longer than one page ----------
   await page.click('button[title="New channel"]');
   await page.fill('.panel input[placeholder="trip-goa"]', "backlog");
@@ -1576,6 +1712,7 @@ try {
   await page.waitForSelector(".sidebar >> text=# backlog");
   await page.click("text=# backlog");
   const backlogBox = page.locator(".composer textarea");
+  if (act("a conversation longer than one page, reactions, edits")) {
   const LINES = 55; // more than one 50-message page, so paging is real
   for (let i = 1; i <= LINES; i++) {
     await backlogBox.fill(`backlog line ${i}`);
@@ -1638,7 +1775,7 @@ try {
   await lastBacklog.locator(".ma.react").click();
   await page.click('.reactpop button:has-text("👍")');
   await page.waitForSelector('.reactpill[data-emoji="👍"]', { timeout: 15000 });
-  const pill = page.locator('.reactpill[data-emoji="👍"]').last();
+  pill = page.locator('.reactpill[data-emoji="👍"]').last();
   ok("a reaction can be added on hover, and says who reacted",
     (await pill.locator(".n").innerText()).trim() === "1" &&
     /You/.test(await pill.getAttribute("title")),
@@ -1686,6 +1823,8 @@ try {
     (await theirs.locator(".ma.edit").count()) === 0 &&
     (await theirs.locator(".ma.del").count()) === 0);
 
+  } // end act: a conversation longer than one page, reactions, edits
+  if (act("threads", { smoke: true })) {
   // ---------- threads ----------
   await page.click(".sidebar >> text=# backlog");
   await backlogBox.fill("what should we do about the backlog?");
@@ -1725,7 +1864,7 @@ try {
    * nobody can see. So: with threads on, a reply is NOT a row in the
    * conversation. That is the check.
    */
-  const rowsInRoom = async () => page.evaluate(() => [...document.querySelectorAll(".msgs .msg")]
+  rowsInRoom = async () => page.evaluate(() => [...document.querySelectorAll(".msgs .msg")]
     .map(m => (m.querySelector(".body")?.innerText ?? "").replace(/\s+/g, " ")));
   const roomRows = await rowsInRoom();
   ok("with threads on, a reply is kept in its thread and is NOT a row in the conversation",
@@ -1741,6 +1880,8 @@ try {
     (await root.locator(".ma.reply").innerText()).replace(/\s+/g, " "));
   await page.screenshot({ path: `${SHOTS}/thread-channel.png` });
 
+  } // end act: threads
+  if (act("where an answer lands, and the setting that moves it")) {
   /* ---- and the setting he asked for, which must CHANGE the behaviour ---- */
   await page.evaluate(() => window.cloud9Menu.run("settings"));
   await page.waitForSelector("#set-replies", { timeout: 15000 });
@@ -1989,7 +2130,7 @@ try {
    */
   await page.click(".sidebar >> text=# trip-goa");
   await page.waitForSelector(".thread .composer textarea", { timeout: 20000 });
-  const cbox = page.locator(".thread .composer textarea");
+  cbox = page.locator(".thread .composer textarea");
   await cbox.fill("");
   await page.evaluate(() => document.activeElement?.blur?.());
   await waitFor(page, () =>
@@ -2020,12 +2161,12 @@ try {
         .filter(b => /@\s*agent/i.test((b.textContent ?? "").trim())).length,
     };
   });
-  const calmBox = await composerNow();
+  calmBox = await composerNow();
   await cbox.click();
   await waitFor(page, () =>
     document.querySelector(".thread .composer .composer-box")?.dataset.writing === "yes",
   undefined, { timeout: 10000, what: "the box to arm when he clicks into it" });
-  const armedBox = await composerNow();
+  armedBox = await composerNow();
   ok("the message box is calm when nothing is being written, and shows its tools the moment he is — and they never left the box",
     calmBox.writing === "no" && calmBox.recedingShowing === false &&
     calmBox.recedingInBox.length >= 5 &&
@@ -2040,6 +2181,8 @@ try {
     `writing: ＋=${armedBox.actionsShowing} Send=${armedBox.sendShowing}`);
   await page.screenshot({ path: `${SHOTS}/composer-calm-and-armed.png` });
 
+  } // end act: where an answer lands, and the setting that moves it
+  if (act("the control that was taken away, and the road it left")) {
   /* ---- the one control that was really taken away, and the road it left ----
      "@ agent" was a button that typed an `@`. The list it opened is opened by
      typing the character itself, and always was — so the check is not "is the
@@ -2128,6 +2271,8 @@ try {
   await cbox.fill("");
   await page.keyboard.press("Escape").catch(() => {});
 
+  } // end act: the control that was taken away, and the road it left
+  if (act("a file dropped on the box, and the receipts")) {
   /* ---- a file arrives the way a file usually arrives ----
      The paperclip is already held elsewhere (the upload tray, the ceiling, the
      hub's refusal). These are the two roads that were added when the wide
@@ -2195,16 +2340,16 @@ try {
    * The message they hang off carries no `@`, so no agent is asked anything and
    * no subscription is spent on drawing three emoji.
    */
-  const scoutForReceipt = (await page.evaluate(() => window.cloud9Wire.agents()))
+  scoutForReceipt = (await page.evaluate(() => window.cloud9Wire.agents()))
     .find(a => a.name === "Scout");
-  const goaId = (await page.evaluate(() => window.cloud9Wire.channels()))
+  goaId = (await page.evaluate(() => window.cloud9Wire.channels()))
     .find(c => c.name === "trip-goa").id;
   await cbox.fill("receipt-carrier: the villa shortlist, for the record");
   await cbox.press("Enter");
-  const carrier = page.locator('.msgs .msg:has-text("receipt-carrier")').last();
+  carrier = page.locator('.msgs .msg:has-text("receipt-carrier")').last();
   await carrier.waitFor({ timeout: 25000 });
-  const carrierId = await carrier.getAttribute("data-msg");
-  const signalsOn = id => page.evaluate(msg => {
+  carrierId = await carrier.getAttribute("data-msg");
+  signalsOn = id => page.evaluate(msg => {
     const row = document.querySelector(`.msgs .msg[data-msg="${msg}"]`);
     return [...(row?.querySelectorAll(".receipt") ?? [])].map(r => ({
       tag: r.tagName,
@@ -2244,6 +2389,8 @@ try {
     `${verdict.map(r => r.emoji).join("")} (${verdict.length} row(s) on the message)`);
   await page.screenshot({ path: `${SHOTS}/receipt-live-signal.png` });
 
+  } // end act: a file dropped on the box, and the receipts
+  if (act("a person's reaction, and the honest half of ephemeral")) {
   /* ---- and a person who reacts is a completely different thing on screen ----
      The failure this exists to stop is somebody reading a machine's "I am
      looking at this" as a colleague's decision. A reaction is a BUTTON with a
@@ -2370,6 +2517,8 @@ try {
     `.msgs .msg[data-msg="${id}"] .reactpill`).length === 0,
   carrierId, { timeout: 15000, what: "the reaction to be taken back off the carrier message" });
 
+  } // end act: a person's reaction, and the honest half of ephemeral
+  if (act("search across everything", { smoke: true })) {
   // ---------- search across everything ----------
   await page.evaluate(() => window.cloud9Menu.run("search"));
   await page.waitForSelector(".searchpanel", { timeout: 10000 });
@@ -2399,6 +2548,8 @@ try {
   ok("clicking a result goes to that message, in the conversation it was said in", true);
   await page.screenshot({ path: `${SHOTS}/chat-search-jump.png` });
 
+  } // end act: search across everything
+  if (act("unread, and the rules that decide an interruption")) {
   // ---------- unread, from the account and not from this browser ----------
   await page.evaluate(() => localStorage.setItem("cloud9.lastRead", '{"c":1}'));
   await page.reload();
@@ -2546,6 +2697,8 @@ try {
     threadRule.alsoMentionsHim === null,
     JSON.stringify(threadRule.alsoMentionsHim));
 
+  } // end act: unread, and the rules that decide an interruption
+  if (act("the four events that interrupt him", { smoke: true })) {
   // ---------- NOTIFICATIONS: the four events that interrupt him ----------
   //
   // Each raises ONE on-screen toast, through the single `decideNotification`
@@ -2707,6 +2860,8 @@ try {
     await backToGeneral();
   }
 
+  } // end act: the four events that interrupt him
+  if (act("who may set an agent working", { smoke: true })) {
   // ---------- who may set an agent working ----------
   await page.hover(".sidebar .agentrow");
   await page.click('.sidebar .agentrow button[title="Edit agent"]');
@@ -2786,21 +2941,21 @@ try {
     /Everything this app can do on this computer/.test(rungs[rungs.length - 1].label),
     rungs[rungs.length - 1].label);
 
-  const abilityRows = () => page.$$eval(".editor .abilitypick .toggle-row", rs => rs.map(r => ({
+  abilityRows = () => page.$$eval(".editor .abilitypick .toggle-row", rs => rs.map(r => ({
     ability: r.dataset.ability,
     label: r.querySelector(".tx b")?.innerText.trim() ?? "",
     on: r.querySelector("input")?.checked === true,
   })));
   /* Open the one-by-one list once, deliberately, and leave it open: it is his
      disclosure, and nothing in the ladder re-decides it under him. */
-  const openSwitches = async () => {
+  openSwitches = async () => {
     if ((await page.getAttribute(".editor .abilitypick", "data-open")) !== "yes") {
       await page.click(".editor .abilityshow");
     }
     await page.waitForSelector('.editor .abilitypick[data-open="yes"]', { timeout: 10000 });
   };
   await openSwitches();
-  const rows = await abilityRows();
+  rows = await abilityRows();
   ok("every power the engine's table owns has a switch on this screen, in the same order",
     rows.length === CAPABILITIES.length &&
     rows.every((r, i) => r.ability === CAPABILITIES[i].ability),
@@ -2816,6 +2971,12 @@ try {
       !rows.find(r => r.ability === c.ability)?.label.includes("asks you first")),
     rows.filter(r => r.label.includes("asks you first")).map(r => r.ability).join(", "));
 
+  } // end act: who may set an agent working
+  /* IN THE SHORT RUN TOO: this act is what leaves the ladder in the state the
+     "what it will ask" act reads, so the two travel together. Splitting them
+     made the short run read a different screen and fail for a reason that had
+     nothing to do with the feature. */
+  if (act("a rung really is a prefix of the table", { smoke: true })) {
   // ---- a rung really is a prefix of the table, in both directions ----
   await page.locator('.editor .reachrung[data-reach="computer"]').click();
   const atTop = await abilityRows();
@@ -2919,19 +3080,33 @@ try {
     connRefusal.slice(0, 120));
   await page.screenshot({ path: `${SHOTS}/connections-none.png` });
 
+  } // end act: a rung really is a prefix of the table
+  if (act("what an agent will ask before it acts", { smoke: true })) {
   // ---- what will ask first, and that it is NOT something he can clear ----
-  const asksList = () => page.$$eval(".editor .willask li", ls => ls.map(l => l.dataset.ask));
+  /* SCOPED TO THE APPROVALS SECTION, and it says out loud how many of these
+     lists are on screen. The editor has TWO blocks that can draw a "you'll be
+     asked before it" list — the approvals one and the one the middle trust
+     setting adds — and when both draw at once the screen tells him the same
+     thing twice with different lists. This check read them merged, agreed with
+     neither, and then DIED on a selector that matched two notes, taking 413
+     checks with it. It now judges the approvals list on its own and fails
+     loudly, in words, when a second list has appeared beside it. */
+  asksList = () => page.$$eval(".editor .asksec .willask li", ls => ls.map(l => l.dataset.ask));
   const shownAsks = await asksList();
-  ok("with the top rung on, the screen names exactly the powers that will stop and ask him",
+  const askBlocks = await page.locator(".editor .willask").count();
+  ok("with the top rung on, the screen names exactly the powers that will stop and ask him — once",
     JSON.stringify(shownAsks) ===
-      JSON.stringify(CAPABILITIES.filter(c => c.alwaysAsk).map(c => c.label)),
-    shownAsks.join(" / "));
+      JSON.stringify(CAPABILITIES.filter(c => c.alwaysAsk).map(c => c.label))
+    && askBlocks === 1,
+    `${askBlocks} "you'll be asked" block(s) on screen :: ${shownAsks.join(" / ")}`);
+  const askNotes = await page.$$eval(".editor .willask .wa-note",
+    ns => ns.map(n => n.innerText.replace(/\s+/g, " ").trim()));
   ok("and those are stated, never offered as switches he could clear",
     (await page.locator(".editor .willask input").count()) === 0 &&
-    /not switches/i.test(await page.locator(".editor .willask .wa-note").innerText()));
+    askNotes.some(n => /not switches/i.test(n)), askNotes.join(" || ").slice(0, 140));
   ok("the two approvals that really are his choice stay editable",
     (await page.locator(".editor .asksec .panelbox .toggle-row input").count()) === 2);
-  await page.locator(".editor .willask").scrollIntoViewIfNeeded();
+  await page.locator(".editor .willask").first().scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${SHOTS}/reach-asks.png` });
 
   await page.locator('.editor .reachrung[data-reach="talk"]').click();
@@ -3021,6 +3196,8 @@ try {
       s.mixture === 0 && s.on === REACH_LEVELS[i].rows),
     JSON.stringify(rungRoundTrip));
 
+  } // end act: what an agent will ask before it acts
+  if (act("a hand-picked mix is never rounded")) {
   // ---- a hand-picked mix is never rounded, in either direction ----
   await page.locator('.editor .reachrung[data-reach="look"]').click();
   await openSwitches();
@@ -3040,6 +3217,8 @@ try {
   await page.locator(".editor .reachladder").scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${SHOTS}/reach-ladder.png` });
 
+  } // end act: a hand-picked mix is never rounded
+  if (act("the honest report, and the casting room")) {
   /* ---- the honest report: how high the switches go, and whether they hold ---- */
   const claudeIso = isolationFor("claude");
   const codexIso = isolationFor("codex");
@@ -3081,7 +3260,7 @@ try {
 
   /* WHAT A HAND-MADE AGENT'S EDITOR OFFERS — held for the comparison below.
      Nothing typed here is saved: the editor is left with Cancel. */
-  const handMadeOffers = await editorOffers(page);
+  handMadeOffers = await editorOffers(page);
   ok("a hand-written agent's file offers the ladder, the switches, who may use it, and skills",
     handMadeOffers.rungs.length === REACH_LEVELS.length &&
     handMadeOffers.abilities.length === CAPABILITIES.length &&
@@ -3158,7 +3337,7 @@ try {
     (await page.locator(".market .cast.role .plate.roleplate .portrait svg").count()) === roles.length &&
     (await page.locator(".market .roleface").count()) === 0,
     `${await page.locator(".market .cast.role .plate.roleplate .portrait svg").count()} portraits`);
-  const hallFace = await portraitOf(page,
+  hallFace = await portraitOf(page,
     '.market .cast.role[data-role="sw-architect"] .roleplate .portrait svg');
   await page.screenshot({ path: `${SHOTS}/hall-roles.png` });
   await page.screenshot({ path: `${SHOTS}/market-hall.png` });
@@ -3166,7 +3345,7 @@ try {
   // the brief itself — the product, not filler
   await page.click('.market .cast.role[data-role="sw-architect"] .rolesee');
   await page.waitForSelector(".hirepanel", { timeout: 15000 });
-  const brief = (await page.locator(".hirepanel .briefbox").innerText()).trim();
+  brief = (await page.locator(".hirepanel .briefbox").innerText()).trim();
   ok("the brief he is hiring is shown in full, in the agent's own words",
     brief.length > 400 && /^You are my software architect/.test(brief),
     `${brief.length} characters`);
@@ -3184,6 +3363,8 @@ try {
   await page.screenshot({ path: `${SHOTS}/market-brief.png` });
   await page.screenshot({ path: `${SHOTS}/hall-brief.png` });
 
+  } // end act: the honest report, and the casting room
+  if (act("escape, where a count meets a word")) {
   /* ---- ESCAPE CLOSES WHAT IT OPENED (Phase 6, UI-2) ----
      This brief ignored Escape while the Ctrl-K palette obeyed it, because every
      overlay answered the key its own way — six overlays, five answers. There is
@@ -3217,7 +3398,7 @@ try {
      from a list. One owner pluralises now, and a stat tile has to be given both
      forms of its word — so the singular case and the plural case are read off
      the SAME header here, and a sweep says no visible line prints "1 <word>s". */
-  const tiles = await page.$$eval(".market .crew-stats .stat", ts => ts.map(t => ({
+  tiles = await page.$$eval(".market .crew-stats .stat", ts => ts.map(t => ({
     n: Number(t.querySelector(".n").innerText.trim()),
     label: t.querySelector(".l").innerText.trim(),
   })));
@@ -3583,14 +3764,14 @@ try {
    */
   await page.click('.rail-btn[data-go="chat"]');
   await page.waitForSelector(".sidebar .agentrow", { timeout: 20000 });
-  const rowState = pg => pg.$$eval(".sidebar .agentrow", rs => rs.map(r => ({
+  rowState = pg => pg.$$eval(".sidebar .agentrow", rs => rs.map(r => ({
     agent: r.dataset.agent,
     presence: r.dataset.presence,
     word: r.querySelector(".an-state b")?.innerText.trim() ?? "",
     why: (r.querySelector(".an-state")?.innerText ?? "").replace(/\s+/g, " ").trim(),
     dot: [...(r.querySelector(".pdot")?.classList ?? [])].find(c => c.startsWith("p-")) ?? "",
   })));
-  const mine = await rowState(page);
+  mine = await rowState(page);
   const WORDS = { ready: "Ready", working: "Working", paused: "Paused", offline: "Offline" };
   ok("every agent row on screen carries a presence, and it is one the hub can actually say",
     mine.length >= 2 && mine.every(r => ["ready", "working", "paused", "offline"].includes(r.presence)),
@@ -3606,6 +3787,8 @@ try {
     mine.map(r => `${r.agent}:${r.dot}`).join(", "));
   await page.screenshot({ path: `${SHOTS}/presence-sidebar.png` });
 
+  } // end act: escape, where a count meets a word
+  if (act("the rail, paused, and an agent nobody can run")) {
   // ---- the conversation says the same thing the rail says ----
   await page.click('.sidebar .agentrow[data-agent="Scout"] .agentmain');
   await page.waitForSelector(".dm-head .presencehere", { timeout: 20000 });
@@ -3709,8 +3892,23 @@ try {
    * up, send it, see it on the message, open it, and — the part that is not
    * inferrable from a link appearing — fetch the bytes back and compare them
    * to what was sent. */
+  } // end act: the rail, paused, and an agent nobody can run
+  /* LEAVE THE AGENT EDITOR PROPERLY BEFORE GOING BACK TO CHAT.
+     An editor with unsaved words in it puts up "You haven't saved what you
+     wrote" the moment you navigate away, and a run that walks into that dialog
+     dies clicking a rail button nothing can reach. In a full run the acts in
+     between happened to leave the editor closed; a short run reaches here
+     straight out of it, so leaving is done ON PURPOSE here rather than assumed. */
+  if ((await page.locator(".editor").count()) > 0) {
+    await page.click(".editor .topbar >> text=Cancel").catch(() => { /* already gone */ });
+    const throwAway = page.locator('button:has-text("Leave and throw them away")');
+    if (await throwAway.count()) await throwAway.click();
+    await page.waitForSelector(".editor", { state: "detached", timeout: 15000 })
+      .catch(() => { /* the editor closed some other way */ });
+  }
   await page.click('.rail-btn[data-go="chat"]');
   await page.click('button[title="New channel"]');
+  if (act("a room name held to the same rule as an agent's")) {
 
   /* ---- D3 / D4 / D2: the room name is held to the SAME rule as an agent's ----
      Before this the channel box had no length cap, no uniqueness rule and no
@@ -3748,6 +3946,8 @@ try {
     /at least one letter or number|needs a name/.test(spaces.said) && dashRooms === 0,
     `${spaces.said} :: ${dashRooms} room(s) named -`);
 
+  } // end act: a room name held to the same rule as an agent's
+  if (act("a file: picked, sent, opened, and the bytes fetched back", { smoke: true })) {
   await page.fill('.panel input[placeholder="trip-goa"]', "paperwork");
   await page.click(".panel .foot >> text=Create");
   await page.waitForSelector(".sidebar >> text=# paperwork");
@@ -3810,8 +4010,16 @@ try {
     ["report(1).pdf", "café-menu.txt", "photo#3.png"].every(
       n => everydayLanded.some(t => t.startsWith(`${n}:`) && !t.includes("failed"))),
     everydayLanded.join(" | "));
+  /* CLEAR ANY TOAST FIRST. A toast sits over the bottom of the screen, which is
+     exactly where the upload tray is, and a click on a covered ✕ never lands —
+     Playwright waits thirty seconds and the run dies. WHICH toasts are on
+     screen here depends on which acts ran before this one, so they are cleared
+     on purpose rather than assumed away. */
+  for (const x of await page.locator(".toast .toast-x, .notify-stack .notify-x").all()) {
+    await x.click({ timeout: 5000 }).catch(() => { /* it stood down on its own */ });
+  }
   for (const everyday of ["report(1).pdf", "café-menu.txt", "photo#3.png"]) {
-    await page.click(`.uploadtray .uptile[data-upload="${everyday}"] .upx`);
+    await page.click(`.uploadtray .uptile[data-upload="${everyday}"] .upx`, { timeout: 20000 });
   }
   await waitFor(page, () => document.querySelectorAll(".uploadtray .uptile").length === 2,
     undefined, { timeout: 10000, what: "the everyday files to be taken back off" });
@@ -3888,7 +4096,7 @@ try {
     (await page.locator('.fileblock[data-file="site-plan.png"] .fileopen').innerText()).trim() === "Show" &&
     (await page.locator('.fileblock[data-file="ledger.bin"] .fileopen').innerText()).trim() === "Save");
 
-  const pictureId = await page.getAttribute('.fileblock[data-file="site-plan.png"]', "data-attachment");
+  pictureId = await page.getAttribute('.fileblock[data-file="site-plan.png"]', "data-attachment");
 
   /* ---- the bytes, fetched back over the real HTTP path ----
    * The ticket is minted through the app's own path, then redeemed from here.
@@ -3924,7 +4132,7 @@ try {
   // ---- and the same journey through the buttons a person actually presses ----
   await page.click('.fileblock[data-file="site-plan.png"] .fileopen');
   await page.waitForSelector('.fileblock[data-file="site-plan.png"] .fileshot img', { timeout: 20000 });
-  const drawn = await page.evaluate(() => {
+  drawn = await page.evaluate(() => {
     const img = document.querySelector('.fileblock[data-file="site-plan.png"] .fileshot img');
     return { w: img.naturalWidth, h: img.naturalHeight, src: img.src.slice(0, 5) };
   });
@@ -3932,6 +4140,8 @@ try {
     drawn.w === 180 && drawn.h === 120, JSON.stringify(drawn));
   await page.screenshot({ path: `${SHOTS}/files-message.png` });
 
+  } // end act: a file: picked, sent, opened, and the bytes fetched back
+  if (act("rooms, membership, overlays, autoscroll, and run records")) {
   /* ---- ONE ROUTE TO A FILE, and this is the run that proves it ----
      The screen is served on :4173 and the hub answers on :8799, so every fetch
      below really is cross-origin. There used to be a second code path for
@@ -4022,7 +4232,7 @@ try {
   // ---- and now it can be found and joined, with no members and no messages on offer ----
   await fpage.click(".sidebar .browserooms");
   await fpage.waitForSelector('.browsepanel .roomcard[data-room="paperwork"]', { timeout: 20000 });
-  const card = fpage.locator('.browsepanel .roomcard[data-room="paperwork"]');
+  card = fpage.locator('.browsepanel .roomcard[data-room="paperwork"]');
   ok("an open room can be found by somebody who is not in it, with what it's for and how many are in it",
     /has to be filed/.test(await card.locator(".rc-desc").innerText()) &&
     /1 person/.test(await card.locator(".rc-count").innerText()),
@@ -5910,7 +6120,7 @@ try {
      belong to this owner's agent, redacts them and pushes them out like any
      other. */
   const { relayPort } = qaTarget();
-  const engineWs = new WebSocket(`ws://127.0.0.1:${relayPort}`);
+  engineWs = new WebSocket(`ws://127.0.0.1:${relayPort}`);
   const hub = await new Promise((resolve, reject) => {
     const giveUp = setTimeout(() => reject(new Error("the hub never answered the QA engine")), 20000);
     engineWs.onerror = () => { clearTimeout(giveUp); reject(new Error("the QA engine could not connect")); };
@@ -5927,10 +6137,10 @@ try {
      sends the engine is kept, because the only honest way to prove the "Look at
      GitHub now" button is to watch the request arrive where the `gh` command
      would really be run. The screen cannot reach GitHub and must not pretend to. */
-  const engineFrames = [];
+  engineFrames = [];
   engineWs.onmessage = ev => { engineFrames.push(JSON.parse(ev.data)); };
   /** Wait for one frame the hub sent the engine. Never a sleep. */
-  const engineGot = async (match, why, ms = 20000) => {
+  engineGot = async (match, why, ms = 20000) => {
     const until = Date.now() + ms;
     for (;;) {
       const found = engineFrames.find(match);
@@ -5940,11 +6150,11 @@ try {
     }
   };
 
-  const scout = hub.agents.find(a => a.name === "Scout");
-  const general = hub.channels.find(c => c.name === "general");
+  scout = hub.agents.find(a => a.name === "Scout");
+  general = hub.channels.find(c => c.name === "general");
   if (!scout || !general) throw new Error("the QA engine could not find Scout and #general to report against");
 
-  const base = {
+  base = {
     kind: "chat", agentId: scout.id, agentName: "Scout", channelId: general.id,
     requestedBy: "Vikas", requestedByKind: "human",
     // the newest runs this agent has: "Recent work" shows the last ten, and by
@@ -5953,7 +6163,7 @@ try {
     replyChars: 812, events: 24,
   };
   const RICH_URL = "https://villas.example/goa";
-  const rich = {
+  rich = {
     ...base, id: "r-qa-rich-1", provider: "claude",
     model: "claude-sonnet-5", actualModel: "claude-sonnet-5",
     ask: "find three villas in Goa under 8k", outcome: "ok",
@@ -6100,7 +6310,7 @@ try {
      the screen.
      ====================================================================== */
 
-  const REPO = "vikas53953/cloud9";
+  REPO = "vikas53953/cloud9";
   await page.click('.rail-btn[data-go="projects"]');
   await page.waitForSelector(".projects", { timeout: 20000 });
 
@@ -6119,6 +6329,8 @@ try {
     /nothing connected/i.test(await page.locator(".proj-list").innerText()),
     (await page.locator(".proj-main").innerText()).slice(0, 90).replace(/\s+/g, " "));
 
+  } // end act: rooms, membership, overlays, autoscroll, and run records
+  if (act("GitHub projects, what leaves this computer, and the in-tray")) {
   /* ---- a name that is not owner/name is refused WHERE HE IS LOOKING ---- */
   await page.click(".projects .topbar [data-connect]");
   await page.waitForSelector(".connectproj", { timeout: 15000 });
@@ -6832,7 +7044,7 @@ try {
   await page.click(".sidebar >> text=# backlog");
   await page.locator(".threadline").last().click();
   await page.waitForSelector(".threadpanel", { timeout: 15000 });
-  const overflow = async () => page.evaluate(() => ({
+  overflow = async () => page.evaluate(() => ({
     doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     body: document.body.scrollWidth - document.body.clientWidth,
   }));
@@ -6872,6 +7084,8 @@ try {
   }
   await page.keyboard.press("Escape");
 
+  } // end act: GitHub projects, what leaves this computer, and the in-tray
+  if (act("the ladder at its widest, presence, and files an agent made")) {
   /* ---- the reach ladder, at its widest: top rung, everything disclosed ---- */
   await page.click('.rail-btn[data-go="crew"]');
   await page.waitForSelector(".crew-bar", { timeout: 20000 });
@@ -6992,7 +7206,7 @@ try {
   const v1 = await publishAsEngine({
     channelId: generalId, agentId: artAgent.id, name: "villas.md", data: REPORT_V1,
   });
-  const artId = v1.id;
+  artId = v1.id;
 
   const artBox = page.locator(".composer textarea");
   await artBox.fill(`here is the write-up ${artifactRef(artId)}`);
@@ -7088,7 +7302,7 @@ try {
     (await artCard.locator(".artpeek pre").innerText()).includes("prices corrected"),
     (await artCard.locator(".artpeek pre").innerText()).slice(0, 60));
 
-  const shot = pngOfSolidColour(6, 6, [12, 90, 60]);
+  shot = pngOfSolidColour(6, 6, [12, 90, 60]);
   const pic = await publishAsEngine({
     channelId: generalId, agentId: artAgent.id, name: "chart.png", data: shot,
   });
@@ -7351,7 +7565,7 @@ try {
   await evBox.fill("the wobbegong sighting was near the reef");
   await evBox.press("Enter");
   await page.waitForSelector('.msgs .msg:has-text("wobbegong sighting")', { timeout: 25000 });
-  const evMessageId = await page.locator('.msgs .msg:has-text("wobbegong sighting")')
+  evMessageId = await page.locator('.msgs .msg:has-text("wobbegong sighting")')
     .last().getAttribute("data-msg");
 
   const evRoot = page.locator('.msgs .msg:has-text("wobbegong sighting")').last();
@@ -7361,7 +7575,7 @@ try {
   await page.fill(".threadcomposer textarea", "the quokkatrail guide confirmed it");
   await page.press(".threadcomposer textarea", "Enter");
   await page.waitForSelector('.threadpanel .msg:has-text("quokkatrail guide")', { timeout: 25000 });
-  const evReplyId = await page.locator('.threadpanel .msg:has-text("quokkatrail guide")')
+  evReplyId = await page.locator('.threadpanel .msg:has-text("quokkatrail guide")')
     .last().getAttribute("data-msg");
   await page.click(".threadpanel .threadclose");
   await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
@@ -7376,15 +7590,17 @@ try {
   await publishAsEngine({
     channelId: generalId, agentId: artAgent.id, name: "nudibranch-log.md", data: EV_LOG_V2,
   });
-  const evLogId = evLog1.id;
+  evLogId = evLog1.id;
 
-  const openEverywhere = async (p, words) => {
+  openEverywhere = async (p, words) => {
     await p.evaluate(() => window.cloud9Menu.run("search"));
     await p.waitForSelector('.searchpanel .searchscopes[data-search-scope="everywhere"]',
       { timeout: 10000 });
     await p.fill(".search-input", words);
   };
 
+  } // end act: the ladder at its widest, presence, and files an agent made
+  if (act("what a search result looks like, and the security one")) {
   // --- 1 · the honest empty state, and nothing asked for ---
   await page.evaluate(() => window.cloud9Menu.run("search"));
   await page.waitForSelector(".searchpanel", { timeout: 10000 });
@@ -8101,6 +8317,190 @@ try {
    * agent and the next screen to read it fell over. See implementation-notes.md.
    */
 
+  } // end act: what a search result looks like, and the security one
+
+  /* ======================= WHAT LANDED ON 2026-08-05/06 ======================
+   *
+   * The features built overnight, each held to the FEWEST checks that would go
+   * red if it broke — never one per screen, because a suite that grows a dozen
+   * checks per feature stops being run at all. Read the honest state of each in
+   * `docs/qa/tonight.md`; where a check is red below it is because the feature
+   * is not wired to the running app yet, and the check says so in its name.
+   */
+
+  if (act("the stop button, and what the record calls a stopped turn", { smoke: true })) {
+  /* AN OWNER CAN PULL THE PLUG. Three checks, and they are the three things
+     that break separately: the control has to be THERE while an agent is
+     working and has to name that agent; pressing it has to really end the turn
+     and be said out loud; and the record has to call it STOPPED — not failed,
+     which is what "it went wrong" looks like and is a different thing. */
+  await page.click(".sidebar >> text=# trip-goa");
+  await page.waitForSelector(".composer textarea", { timeout: 15000 });
+  const stopBox = page.locator(".composer textarea");
+  await stopBox.fill("@Scout !bg take your time comparing every villa in this shortlist");
+  await stopBox.press("Enter");
+  await page.waitForSelector("button.stopnow[data-stop-agent]", { timeout: 60000 });
+  const stopBtn = page.locator("button.stopnow[data-stop-agent]").last();
+  const stopFor = await stopBtn.getAttribute("data-stop-agent");
+  const stopTitle = (await stopBtn.getAttribute("title")) ?? "";
+  const scoutId = (await page.evaluate(() => window.cloud9Wire.agents()))
+    .find(a => a.name === "Scout")?.id;
+  ok("while an agent is working, the owner is offered a Stop that names THAT agent",
+    (await stopBtn.innerText()).trim() === "Stop" && stopFor === scoutId
+    && /Stop Scout/.test(stopTitle),
+    `${stopTitle} :: data-stop-agent=${stopFor}`);
+
+  await stopBtn.click();
+  await waitFor(page, () => [...document.querySelectorAll(".msgs .msg, .threadpanel .msg")]
+    .some(m => /stopped/i.test(m.innerText ?? "")),
+  undefined, { timeout: 60000, what: "the agent to say out loud that it was stopped" });
+  const stopSaid = await page.evaluate(() =>
+    [...document.querySelectorAll(".msgs .msg, .threadpanel .msg")]
+      .map(m => (m.innerText ?? "").replace(/\s+/g, " "))
+      .filter(t => /stopped/i.test(t)).pop() ?? "");
+  ok("pressing it really ends the turn, and the agent says so in plain words",
+    /you stopped me|stopping|stopped/i.test(stopSaid)
+    && (await page.locator("button.stopnow[data-stop-agent]").count()) === 0,
+    stopSaid.slice(0, 140));
+
+  /* THE RECORD, which is the part he will read afterwards. `RunOutcome` has no
+     "timed out" — a timeout stays `failed` — so the whole distinction this
+     feature exists for is cancelled-vs-failed, and that is what is asserted. */
+  const stoppedRuns = await page.evaluate(() =>
+    [...document.querySelectorAll(".callout.run[data-outcome]")].map(c => ({
+      outcome: c.dataset.outcome,
+      title: (c.querySelector(".runtitle, h4, .callout-title")?.innerText ?? "").replace(/\s+/g, " "),
+      sum: (c.querySelector(".runsum")?.innerText ?? "").replace(/\s+/g, " "),
+    })));
+  const stoppedCard = stoppedRuns.find(r => r.outcome === "cancelled");
+  ok("the run record says the owner stopped it — never 'failed', and in the app's own sentence",
+    !!stoppedCard && /stopped/i.test(`${stoppedCard.title} ${stoppedCard.sum}`)
+    && stoppedCard.outcome !== "failed",
+    stoppedCard ? `${stoppedCard.title} :: ${stoppedCard.sum}`
+      : `no stopped record on screen; outcomes seen: ${stoppedRuns.map(r => r.outcome).join(",")}`);
+  } // end act: the stop button, and what the record calls a stopped turn
+
+  if (act("did it really do what it said", { smoke: true })) {
+  /* THE ANTI-HALLUCINATION PASS. Two checks: the rule itself, and whether the
+     app he actually runs ever applies it. They fail for different reasons and
+     that is the point — a correct module nobody switched on is not a feature. */
+  const claimedWrite = verifyTurn({
+    reply: "Done — I updated notes.md and the tests pass.",
+    record: { steps: [{ seq: 1, kind: "read", label: "Read notes.md", detail: "notes.md", ok: true }],
+      events: 4, outcome: "ok", agentName: "Scout" },
+  });
+  const claimKept = verifyTurn({
+    reply: "Done — I updated notes.md.",
+    record: { steps: [{ seq: 1, kind: "write", label: "Wrote notes.md", detail: "notes.md", ok: true }],
+      events: 4, outcome: "ok", agentName: "Scout" },
+  });
+  ok("a claim the record does not show is called out, and a claim it does show is left alone",
+    claimedWrite.mismatches.length >= 1 && !!claimedWrite.line
+    && /notes\.md/.test(claimedWrite.line) && claimKept.mismatches.length === 0
+    && claimKept.line === undefined,
+    `${claimedWrite.mismatches.length} mismatch(es) :: ${(claimedWrite.line ?? "").slice(0, 90)}`);
+
+  /* AND IS IT ON? `Engine.verifyClaims` ships false and only `attachHooks` ever
+     turns it on, so this asks the running app rather than the module: after a
+     turn, does the room ever carry the line? It is red until the engine host
+     the app starts switches the check on. */
+  const checkedAloud = await page.evaluate(() =>
+    [...document.querySelectorAll(".msgs .msg, .threadpanel .msg")]
+      .some(m => /Cloud9 checked what/.test(m.innerText ?? "")));
+  const verifyOn = await page.evaluate(() => window.cloud9Wire?.verifyClaims?.() ?? null);
+  ok("the app he runs actually applies the check — a turn's claims are held to its own record",
+    checkedAloud || verifyOn === true,
+    verifyOn === null
+      ? "the engine this app starts never turns claim-checking on (Engine.verifyClaims stays false; " +
+        "attachHooks has no caller), so no turn is ever checked"
+      : `verifyClaims=${verifyOn}`);
+  } // end act: did it really do what it said
+
+  if (act("an agent can see a picture that was attached")) {
+  /* THE FILE AN AGENT IS SHOWN. Nothing renders in the app for this — it is an
+     engine tool (`open_attachment`) — so the two checks are the two halves that
+     can really break: the bytes that come back off the hub are recognised as a
+     PICTURE (not "a packed format I cannot read"), and the size ceiling is the
+     shared table's, not a number this file made up. */
+  const seenBytes = await page.evaluate(async id => {
+    const t = await window.cloud9Files.ticket(id);
+    const r = await fetch(t.url ?? t);
+    return [...new Uint8Array(await r.arrayBuffer())];
+  }, pictureId);
+  const kindSeen = sniffKind(Buffer.from(seenBytes));
+  ok("the picture an agent fetches back off the hub is recognised as a picture it can be shown",
+    !!kindSeen && kindSeen.as === "image" && Buffer.from(seenBytes).equals(PICTURE),
+    `${kindSeen ? `${kindSeen.as} · ${kindSeen.mimeType ?? ""}` : "not recognised"} · ` +
+    `${seenBytes.length} of ${PICTURE.length} bytes`);
+  ok("a picture too big to be shown is refused in plain words, with the shared ceiling in it",
+    new RegExp(String(Math.round(ATTACHMENT_LIMITS.bytes / 100000)))
+      .test(tooBigSentence("huge.png", "a PNG picture", ATTACHMENT_LIMITS.bytes + 1, ATTACHMENT_LIMITS.bytes))
+    && /have not seen it/.test(
+      tooBigSentence("huge.png", "a PNG picture", ATTACHMENT_LIMITS.bytes + 1, ATTACHMENT_LIMITS.bytes)),
+    tooBigSentence("huge.png", "a PNG picture", ATTACHMENT_LIMITS.bytes + 1, ATTACHMENT_LIMITS.bytes)
+      .slice(0, 120));
+  } // end act: an agent can see a picture that was attached
+
+  if (act("use my own Claude Code setup")) {
+  /* THE SWITCH HE ASKED FOR. One check on the screen — is it there to press —
+     and one on what it does, because a switch that changes nothing is worse
+     than none. Credentials are stripped either way, and that is not optional. */
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click('.sidebar .agentrow[data-agent="Scout"] button[title="Edit agent"]');
+  await page.waitForSelector(".editor", { timeout: 20000 });
+  const setupSwitch = await page.evaluate(label => {
+    const rows = [...document.querySelectorAll(".editor .toggle-row, .editor .field-row")];
+    const row = rows.find(r => (r.innerText ?? "").includes(label));
+    return row ? { found: true, text: row.innerText.replace(/\s+/g, " ").slice(0, 120) } : { found: false };
+  }, OWNER_SETUP_WORDS.label);
+  ok("the agent editor offers the 'use my own setup' switch, in the words the engine owns",
+    setupSwitch.found === true,
+    setupSwitch.found ? setupSwitch.text
+      : `no row carrying "${OWNER_SETUP_WORDS.label}" anywhere in the editor — ` +
+        "nothing for him to press, so the engine's switch can never be turned on");
+  ok("off means Cloud9's own isolation, on means his setup — and neither hands over a saved key",
+    claudeSetupFlags({ useOwnerSetup: false }).join(" ") === CLAUDE_ISOLATION_FLAGS.join(" ")
+    && claudeSetupFlags({ useOwnerSetup: true }).length === 0
+    && NEVER_INHERITED.length > 0,
+    `off: ${claudeSetupFlags({ useOwnerSetup: false }).join(" ")} · ` +
+    `on: ${claudeSetupFlags({ useOwnerSetup: true }).length} flag(s)`);
+  } // end act: use my own Claude Code setup
+
+  if (act("how hard should it think, and what an agent keeps in mind")) {
+  /* REASONING EFFORT: one check, on the one control. The editor is opened here
+     rather than borrowed, so this act stands up on its own. */
+  await page.click('.rail-btn[data-go="chat"]');
+  if ((await page.locator(".editor").count()) === 0) {
+    await page.click('.sidebar .agentrow[data-agent="Scout"] button[title="Edit agent"]');
+    await page.waitForSelector(".editor", { timeout: 20000 });
+  }
+  const effort = await page.evaluate(() => {
+    const sel = document.querySelector("#f-effort");
+    if (!sel) return null;
+    return { options: [...sel.options].map(o => `${o.value}:${o.textContent.trim()}`),
+      value: sel.value };
+  });
+  ok("an agent can be told how hard to think, in the four words the app owns",
+    !!effort && AGENT_EFFORT_CHOICES.every(c => effort.options.includes(`${c.id}:${c.label}`))
+    && effort.options.some(o => o.endsWith(`:${AGENT_EFFORT_UNSET_LABEL}`)),
+    effort ? effort.options.join(" / ") : "no #f-effort control in the agent editor");
+
+  /* MEMORY SEEDING: the bug was that the OLDEST notes survived and the NEWEST
+     were dropped — so an old note that had already been corrected kept steering
+     the agent. One check, on the rule itself, because what is fed into a prompt
+     never appears on screen. */
+  const note = (id, text, at) => ({ id, agentId: "a1", kind: "fact", text,
+    createdAt: at, source: "agent" });
+  const long = "x".repeat(400);
+  const carried = retrieveMemory([
+    note("n1", `oldest ${long}`, 1), note("n2", `middle ${long}`, 2),
+    note("n3", `newest ${long}`, 3),
+  ], { characters: 900, notes: 200 });
+  ok("when memory will not all fit, the NEWEST notes are kept and the oldest is dropped",
+    /newest/.test(carried) && !/oldest/.test(carried),
+    carried.replace(/x+/g, "…").replace(/\s+/g, " ").slice(0, 120));
+  } // end act: how hard should it think, and what an agent keeps in mind
+
   await owner.close();
   await friendCtx.close();
 } catch (err) {
@@ -8116,8 +8516,40 @@ try {
 }
 
 ok("no console errors", consoleErrors.length === 0, consoleErrors.slice(0, 5).join(" | "));
-fs.writeFileSync(`${SHOTS}/qa-results.json`, JSON.stringify({
-  ranAt: new Date().toISOString(), expected: EXPECTED_CHECKS, executed: results.length, results,
+closeAct();
+
+/* WHERE THE MINUTES WENT, act by act. A smoke run also says which acts it left
+ * out, so nobody can mistake a short run for a full one by reading the score. */
+console.log(`\n---- ${RUN_MODE} run, act by act ----`);
+for (const a of acts) {
+  console.log(a.ran
+    ? `${String(a.seconds).padStart(6)}s  ${String(a.checks).padStart(3)} checks  ${a.name}`
+    : `      -    skipped (full only)  ${a.name}`);
+}
+const skipped = acts.filter(a => !a.ran).length;
+console.log(`total ${Math.round((Date.now() - RUN_STARTED) / 1000)}s` +
+  (skipped ? ` · ${skipped} act(s) not played — this was the SHORT run, not the gate` : ""));
+
+const smokeMissing = SMOKE
+  ? SMOKE_ACTS.filter(name => !acts.some(a => a.name === name && a.ran && a.checks > 0))
+  : [];
+fs.writeFileSync(`${SHOTS}/qa-results${SMOKE ? "-smoke" : ""}.json`, JSON.stringify({
+  ranAt: new Date().toISOString(), mode: RUN_MODE,
+  expected: SMOKE ? SMOKE_ACTS : EXPECTED_CHECKS,
+  executed: results.length, acts, missing: smokeMissing, results,
 }, null, 2));
+
 // a run that stopped early is a FAILURE, not a good score out of a small number
+if (SMOKE) {
+  const fails = results.filter(r => !r.pass).length;
+  console.log(`\n${results.length - fails}/${results.length} passed`);
+  if (smokeMissing.length > 0) {
+    console.error(`\nFAIL — the short run never played ${smokeMissing.length} of its ` +
+      `${SMOKE_ACTS.length} journeys, so nothing here can be read as a pass:\n  · ` +
+      `${smokeMissing.join("\n  · ")}`);
+  } else {
+    console.log(`qa.mjs --smoke: all ${SMOKE_ACTS.length} short-run journeys were played.`);
+  }
+  process.exit(fails || smokeMissing.length ? 1 : 0);
+}
 reportAndExit("qa.mjs", results, EXPECTED_CHECKS);

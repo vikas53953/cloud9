@@ -6,22 +6,28 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AgentDef, MODEL_ID_RE, validateAgentInput } from "@cloud9/shared";
+import { AgentDef, effortLevelFor, MODEL_ID_RE, validateAgentInput } from "@cloud9/shared";
 import {
   buildAgentPrompt, ClaudeProvider, HarnessAbilityBoundaryError, HarnessUnavailableError,
   promptTurnKind, RespondInput,
 } from "./provider.js";
-import { TurnTimedOutError, turnTimeBudgetMs } from "./timebudget.js";
+import { TurnTimedOutError, turnQuietBudgetMs, turnTimeBudgetMs } from "./timebudget.js";
 import {
   CAPABILITIES, codexSandboxFor, codexUnavoidableCapabilities, codexWebSearchFor,
   effectiveAbilities, grantedSupply, reachesBeyondOwnFolder, withEffectiveAbilities,
 } from "./abilities.js";
 import { envWithoutCredentials } from "./env.js";
+// ONE OWNER for "isolated, or the owner's own setup" — read by this file and by
+// claude-cli.ts, so the two harnesses can never drift apart on the question.
+import {
+  codexDisabledBySetup, codexSetupFlags, codexUsesDisposableHome, SetupChoice,
+} from "./ownersetup.js";
 import { run, Runner, safeArg } from "./run.js";
 import {
   baseName, EventMapper, ProviderTrace, RunStepKind, traceFromStream,
 } from "./runrecord.js";
 import { liveStepWatcher } from "./livesteps.js";
+import { OpenTurn } from "./toolbridge.js";
 
 export interface CodexProviderOptions {
   /** where the agent's turn runs (its own files folder) */
@@ -52,6 +58,17 @@ export interface CodexProviderOptions {
    * per turn. Ignored entirely for an agent without that switch.
    */
   wholeComputerRoots?: (agentId: string) => string[];
+  /**
+   * OPEN CLOUD9'S OWN DOORWAY FOR ONE TURN — search, opening an attachment,
+   * writing one note into this agent's own memory, each already scoped to this
+   * conversation and this agent by the engine that opens it.
+   *
+   * The exact twin of `ClaudeCliProviderOptions.cloud9Tools`, so both harnesses
+   * are handed the same doorway by the same engine method. Left out (a test, an
+   * older caller) means a turn simply has no Cloud9 tools, and the prompt is
+   * built from the same answer so nothing is promised.
+   */
+  cloud9Tools?: (turn: { channelId: string; agentId?: string }) => OpenTurn | undefined;
   runner?: Runner;
 }
 
@@ -106,10 +123,26 @@ export interface CodexIsolatedEnvironment {
 export interface CodexIsolatedEnvironmentOptions {
   baseEnv?: NodeJS.ProcessEnv;
   apiKey?: string;
+  /**
+   * THIS TURN'S TICKET for Cloud9's own tool doorway, in the child's
+   * ENVIRONMENT and never on a command line — the same law the Claude path
+   * follows (`cloud9tools.ts`): any process on this machine can read another
+   * one's command line, and none of them can read its environment. Codex is
+   * told only the NAME of this variable and reads the value itself.
+   */
+  toolSecret?: string;
   /** overridden by tests; defaults to the owner's current CODEX_HOME */
   ownerCodexHome?: string;
   /** overridden by tests; defaults to the real OS user home */
   ownerUserHome?: string;
+  /**
+   * THE AGENT WHOSE SETUP CHOICE DECIDES THIS (`ownersetup.ts`). Absent — and an
+   * agent with the switch off — gets the one-turn home exactly as before. An
+   * agent running in his own setup gets his REAL `CODEX_HOME` and home folder,
+   * which is what makes his `config.toml`, his AGENTS.md and both skill roots
+   * load. The credential stripping below happens either way.
+   */
+  agent?: SetupChoice;
 }
 
 export const CODEX_ISOLATION_PROFILE = "cloud9-isolated";
@@ -124,6 +157,22 @@ export function createCodexIsolatedEnvironment(
   options: CodexIsolatedEnvironmentOptions = {},
 ): CodexIsolatedEnvironment {
   const baseEnv = options.baseEnv ?? process.env;
+  // --- HIS OWN SETUP: no throwaway home at all (ownersetup.ts) ---------------
+  // Codex finds his config.toml, his AGENTS.md and his skills through CODEX_HOME
+  // and the user profile, so "run in his setup" is exactly "do not move them".
+  // THE CREDENTIAL STRIPPING STILL HAPPENS — that is the line that does not move
+  // whichever mode this is, and it is the same `envWithoutCredentials` the
+  // Claude path calls. Nothing is created, so `dispose` has nothing to delete.
+  if (!codexUsesDisposableHome(options.agent)) {
+    return {
+      env: envWithoutCredentials(baseEnv, {
+        ...(options.apiKey ? { CODEX_API_KEY: options.apiKey } : {}),
+        ...(options.toolSecret ? { [CODEX_TOOL_SECRET_ENV]: options.toolSecret } : {}),
+      }),
+      dispose: () => { /* nothing was made, so there is nothing to throw away */ },
+    };
+  }
+  // ---------------------------------------------------------------------------
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cloud9-codex-"));
   const codexHome = path.join(root, "codex");
   const userHome = path.join(root, "profile");
@@ -153,6 +202,7 @@ export function createCodexIsolatedEnvironment(
 
     const env = envWithoutCredentials(baseEnv, {
       ...(options.apiKey ? { CODEX_API_KEY: options.apiKey } : {}),
+      ...(options.toolSecret ? { [CODEX_TOOL_SECRET_ENV]: options.toolSecret } : {}),
       CODEX_HOME: codexHome,
       HOME: userHome,
       USERPROFILE: userHome,
@@ -427,58 +477,120 @@ function str(v: unknown): string | undefined {
  * or commands are off. It is less flexible than Claude's declared set, but it
  * is a real gate: a denied tool never reaches a running agent. The disposable
  * homes in `createCodexIsolatedEnvironment` separately close both skill roots.
+ *
+ * ============================================================================
+ * …AND ALL OF THAT IS NOW ONE OF TWO CHOICES. (2026-08-05)
+ * ============================================================================
+ *
+ * Everything above describes the DECLARED environment — what a Codex agent gets
+ * when the owner has not asked for his own setup. He has asked for the other
+ * one, so the lists themselves moved to `ownersetup.ts`, the single owner of
+ * "isolated, or his setup", which the Claude path reads too. The constants are
+ * re-exported from here so every existing caller and test keeps working against
+ * one definition; `codexSetupFlags(agent)` and `codexDisabledBySetup(agent)` are
+ * what this file now asks.
  */
-export const CODEX_ISOLATION_FLAGS = ["--ignore-user-config", "--ignore-rules"] as const;
+export { CODEX_ISOLATION_FLAGS, CODEX_ALWAYS_DISABLED } from "./ownersetup.js";
+
+// ===========================================================================
+// CLOUD9'S OWN TOOLS, ON CODEX (gap B, measured 2026-08-05/06 on 0.146.0)
+// ===========================================================================
+//
+// WHAT WAS WRONG. There was no MCP path in this file at all. `search_conversation`
+// and `open_attachment` — Cloud9's own doorway back into the conversation the
+// agent is already reading — were on every Claude turn and on no Codex turn. A
+// Codex agent asked "what does budget-q3.xlsx say?" could see the NAME of the
+// file in its context and had no way to open it, and could not search a word
+// said further back than its budget. The comment in `respond` below said the
+// truthful half ("Codex has no MCP config at all in Cloud9") and left the gap.
+//
+// WHAT WAS MEASURED, on the installed CLI, with real turns:
+//
+//  1. **A `$CODEX_HOME/<name>.config.toml` profile is NOT read when
+//     `--ignore-user-config` is on.** Proved with `--strict-config` and a
+//     nonsense key as a tracer: the same profile errors the turn without
+//     `--ignore-user-config` and is silently ignored with it. So Cloud9's
+//     existing one-turn profile is inert on an isolated turn, and writing MCP
+//     servers into it does nothing — a live turn confirmed it, the tool never
+//     appeared.
+//  2. **`-c` overrides ARE honoured with `--ignore-user-config` on.** They are
+//     therefore the only channel into an isolated turn, and they are enough.
+//  3. **`mcp_servers.<name>.url` works — a streamable-HTTP MCP server.** Codex
+//     POSTs JSON-RPC to the URL and accepts a plain JSON answer, which is
+//     EXACTLY the shape Cloud9's `ToolBridge` already speaks. No second process,
+//     no stdio proxy, nothing new listening: the doorway the Claude path opens
+//     for the turn is the same doorway Codex is pointed at.
+//  4. **`bearer_token_env_var` names an environment variable**, and Codex sends
+//     `Authorization: Bearer <that value>`. The ticket therefore stays out of
+//     the command line, exactly as it does on the Claude side.
+//  5. **`default_tools_approval_mode=approve` is required.** Without it the
+//     tool call comes back "user cancelled MCP tool call" — `codex exec` is
+//     non-interactive, so an approval request has nobody to ask and is refused.
+//     The valid values are `auto`, `prompt`, `writes`, `approve` (the CLI says
+//     so itself when handed anything else). This does NOT widen what an agent
+//     may do: the tools it approves are Cloud9's own three, each already bound
+//     to this one conversation and this one agent by the engine, and each
+//     already ungated on the Claude path.
+//  6. **`--disable apps` and `--disable plugins` do not touch this.** The whole
+//     isolation set was on the command line for every probe above: throwaway
+//     CODEX_HOME and user home, `--ignore-user-config`, `--ignore-rules`,
+//     `--ephemeral`, and all seven `--disable` switches. The owner's own MCP
+//     servers stayed out; Cloud9's arrived.
+//
+// EVERY VALUE HERE IS ALLOWLIST-CLEAN. `run.ts` refuses quotes, brackets and
+// braces in an argument — which is why the owner's connections file cannot come
+// this way (see `connections.ts`) and why this one can: a loopback URL, a
+// variable NAME and one word are all made of characters `safeArg` accepts.
 
 /**
- * Features that are OFF for every agent at every reach, because every one of
- * them is a door into VIKAS'S OWN setup — his plugins, his connected apps, his
- * memories, his hook scripts, his desktop and his browser. Raising the ceiling
- * on 2026-07-30 did not touch this list: "an agent may do everything Codex can
- * do" was never "an agent may be me".
- *
- * Each name came from `codex features list` on this machine (re-read at
- * 0.146.0 on 2026-07-30), so none of them can be a typo the CLI silently
- * ignores. `--disable X` is the CLI's documented shorthand for
- * `-c features.X=false`.
- *
- * MEASURED, not hoped for. Two real `codex exec` turns on codex-cli 0.146.0,
- * 2026-07-29, differing only in these switches, asked the model to name its own
- * tools. Six tools stopped arriving:
- *
- *   tool_search_tool, functions.list_mcp_resources,
- *   functions.list_mcp_resource_templates, functions.read_mcp_resource,
- *   functions.request_plugin_install, image_gen.imagegen
- *
- * and the CLI's own "Skill descriptions were shortened" note stopped appearing.
- * `codex debug prompt-input` (which renders exactly what reaches the model,
- * offline and for free) confirms the matching text goes too: the owner's
- * `<plugins_instructions>`, `<apps_instructions>` and `<recommended_plugins>`
- * blocks — 4,641 characters of his setup that every turn used to pay for.
+ * The environment variable Codex is told to read this turn's ticket from. The
+ * same name `cloud9McpConfig` puts in the Claude child's environment, so there
+ * is one spelling of "the ticket" in the product.
  */
-export const CODEX_ALWAYS_DISABLED = [
-  "plugins",          // functions.request_plugin_install + the owner's installed plugins
-  "apps",             // the owner's connected apps and their MCP tools
-  "image_generation", // image_gen.imagegen — confirmed gone
-  "computer_use",     // driving the owner's actual desktop
-  "browser_use",      // driving the owner's actual browser
-  "memories",         // the owner's own memories, written by his own sessions
-  "hooks",            // the owner's hook scripts
-] as const;
+export const CODEX_TOOL_SECRET_ENV = "CLOUD9_TOOL_SECRET";
+
+/** The MCP server name Codex will namespace Cloud9's tools under. */
+export const CODEX_CLOUD9_SERVER = "cloud9";
 
 /**
- * The features switched off for THIS agent: the always-off list above, plus
- * every feature a capability row would have kept on that this agent was not
- * given. Today that is exactly one — `multi_agent`, owned by the `helpers`
- * switch — but it is derived from the table rather than listed here, so a
- * second one cannot be added to the table and forgotten on the command line.
+ * The `-c` overrides that put Cloud9's own doorway on a Codex command line.
+ *
+ * No ticket (the bridge is not listening, or the turn has no conversation) means
+ * NO ARGUMENTS AT ALL — and because `respond` builds the prompt from this same
+ * answer, an agent is never told about a doorway that is not there.
+ */
+export function codexCloud9ToolArgs(ticket?: { url: string }): string[] {
+  if (!ticket?.url) return [];
+  const s = CODEX_CLOUD9_SERVER;
+  return [
+    "-c", `mcp_servers.${s}.url=${safeArg(ticket.url)}`,
+    "-c", `mcp_servers.${s}.bearer_token_env_var=${CODEX_TOOL_SECRET_ENV}`,
+    // see measurement 5 above — without this every call is cancelled unasked
+    "-c", `mcp_servers.${s}.default_tools_approval_mode=approve`,
+  ];
+}
+
+/**
+ * The features switched off for THIS agent: whatever the setup choice takes
+ * away, plus every feature a capability row would have kept on that this agent
+ * was not given. Today the second part is exactly one — `multi_agent`, owned by
+ * the `helpers` switch — but it is derived from the table rather than listed
+ * here, so a second one cannot be added to the table and forgotten on the
+ * command line.
+ *
+ * THE FIRST PART IS NOW A CHOICE, and `ownersetup.ts` owns it. In the declared
+ * environment it is the whole of `CODEX_ALWAYS_DISABLED`, exactly as before. In
+ * his-setup mode it is only `CODEX_NEVER_ENABLED` — his plugins, his connected
+ * apps, his memories and his hooks load, while driving his actual desktop or his
+ * signed-in browser stays off at every setting, because that is an agent being
+ * HIM rather than an agent using his settings.
  *
  * `multi_agent` did NOT remove `collaboration.*` when measured on 0.146.0, so an
  * agent with helpers off is refused before this list reaches a command line.
  * The mapping remains for the day a newer CLI honours it.
  */
 export function codexDisabledFeaturesFor(agent: AgentDef): string[] {
-  const off = [...CODEX_ALWAYS_DISABLED] as string[];
+  const off = [...codexDisabledBySetup(agent)] as string[];
   const has = effectiveAbilities(agent);
   for (const cap of CAPABILITIES) {
     if (cap.codexFeature && has[cap.ability] !== true) off.push(cap.codexFeature);
@@ -503,8 +615,21 @@ export function codexDisabledFeaturesFor(agent: AgentDef): string[] {
  * produced something neither of them would accept. The cwd is ALSO passed
  * through `RunOptions.cwd`, exactly as the Claude path does it.
  */
+export interface CodexArgExtras {
+  /**
+   * CLOUD9'S OWN DOORWAY for this turn — the loopback ticket from `ToolBridge`.
+   * Deliberately its own slot and NOT the owner's connections file: that one is
+   * gated behind the `connections` switch and cannot be carried on a Codex
+   * command line at all (`connections.ts` says so in the owner's words), while
+   * this is Cloud9 handing an agent a way to search the conversation it is
+   * already reading.
+   */
+  cloud9Tool?: { url: string };
+}
+
 export function codexArgs(
   rawAgent: AgentDef, cwd: string, models: string[] = [], wholeComputerRoots: string[] = [],
+  extras: CodexArgExtras = {},
 ): string[] {
   const problem = validateAgentInput(rawAgent, { models });
   if (problem) throw new Error(`refusing to run this agent: ${problem}`);
@@ -522,15 +647,27 @@ export function codexArgs(
     // the sandbox comes from the same table that writes the sentences the agent
     // reads about itself (abilities.ts) — one rule, two faces
     "-s", codexSandboxFor(agent),
-    "-p", CODEX_ISOLATION_PROFILE,
   ];
+  // --- WHOSE SETUP DOES THIS AGENT RUN IN? (ownersetup.ts) -------------------
+  // The one-turn profile lives in the throwaway CODEX_HOME and exists ONLY in
+  // the declared environment; naming a profile that is not there would fail the
+  // turn before the model was reached. `codexUsesDisposableHome` is the same
+  // answer `createCodexIsolatedEnvironment` uses to decide whether to write it,
+  // so the flag and the folder cannot disagree.
+  if (codexUsesDisposableHome(agent)) args.push("-p", CODEX_ISOLATION_PROFILE);
   if (agent.model) {
     if (!MODEL_ID_RE.test(agent.model)) throw new Error("refusing to run this agent: bad model id");
     args.push("-m", safeArg(agent.model));
   }
-  args.push("-c", "approval_policy=never", "--ephemeral", ...CODEX_ISOLATION_FLAGS);
+  // …and the isolation flags themselves: all of them, or none of them. EMPTY
+  // when he has switched this agent to his own Codex setup, which is the whole
+  // of the change — his config.toml, his AGENTS.md, his MCP servers and his
+  // rules then load exactly as they do when he runs `codex` himself.
+  args.push("-c", "approval_policy=never", "--ephemeral", ...codexSetupFlags(agent));
+  // ---------------------------------------------------------------------------
   // Every feature switch this agent's switches say to take away — the owner's
-  // own setup always, plus anything a capability row would have kept on.
+  // own setup unless he asked for it, plus anything a capability row would have
+  // kept on.
   for (const feature of codexDisabledFeaturesFor(agent)) args.push("--disable", feature);
   // Beyond its own folder, only when that switch is on. `--add-dir` is the CLI's
   // own flag ("Additional directories that should be writable alongside the
@@ -546,6 +683,32 @@ export function codexArgs(
   // in BOTH directions, so an agent that was never allowed the web is at least
   // never handed it on purpose.
   args.push("-c", `tools.web_search=${codexWebSearchFor(agent)}`);
+  // ==================================================================
+  // HOW HARD THIS AGENT SHOULD THINK (gap B, measured 2026-08-05 on 0.146.0).
+  // ==================================================================
+  //
+  // Codex has NO `--effort` flag — `codex exec --help` was read in full and
+  // there is nothing of the kind. The dial it does have is a config value, and
+  // this is the CLI's own documented way to set one (`-c key=value`). Proved on
+  // live turns rather than read: `model_reasoning_effort=high` ran normally,
+  // and a nonsense value came back as a real refusal from the service
+  // ("[ReasoningEffortParam] [reasoning.effort] [invalid…]"), which is how we
+  // know the key is the right one and is not being quietly ignored.
+  //
+  // The LEVEL comes from the one owner of that table (@cloud9/shared,
+  // effort.ts), never from a mapping written here — and see that file for why
+  // "Hardest" is `xhigh` on Codex and `max` on Claude: four of the nine models
+  // `codex debug models` lists on this machine refuse anything above `xhigh`,
+  // so `max` would have been a setting that worked for some agents and broke
+  // others. Undefined for an agent that has never been given a choice, and the
+  // line then says nothing at all, exactly as it always did.
+  const effort = effortLevelFor("codex", agent.effort);
+  if (effort) args.push("-c", `model_reasoning_effort=${safeArg(effort)}`);
+  // CLOUD9'S OWN TOOLS. Ungated, for the same reason they are ungated on the
+  // Claude path: reading the room you are standing in is not a new power — every
+  // agent, on every rung, is already handed the recent messages of it. Absent
+  // when no doorway was opened, and the prompt is built from the same answer.
+  args.push(...codexCloud9ToolArgs(extras.cloud9Tool));
   // NOT SET, and the reason is worth keeping. `-c agents.max_depth=0` looked
   // like the way to stop an agent spawning further agents. Running it proved
   // two things: it does not remove `collaboration.spawn_agent` (it was still in
@@ -577,23 +740,59 @@ export class CodexProvider implements ClaudeProvider {
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir, onTrace, onStep } = input;
     const timeoutMs = this.budgetFor(input);
+    // ===== GAP A BLOCK (the silence clock, 2026-08-05) — start =====
+    // The same two clocks the Claude path reads, from the same table — a second
+    // idea of "is this stuck?" per harness is exactly what `timebudget.ts` exists
+    // to prevent.
+    const quietMs = this.fixedTimeoutMs ?? turnQuietBudgetMs(promptTurnKind(input));
+    // ===== GAP A BLOCK — end =====
     // its own git worktree when it is working in a repository (`repowork.ts`),
     // its own folder otherwise. `codexArgs` puts the same folder in `-C`, so
     // the sandbox root and the working folder cannot drift apart.
     const cwd = workdir ?? this.opts.agentDataDir(agent.id);
     const roots = this.opts.wholeComputerRoots?.(agent.id) ?? [];
-    const args = codexArgs(agent, cwd, this.opts.models?.() ?? [], roots);
-    // THE SAME ONE ANSWER the Claude path uses. Codex has no MCP config at all
-    // in Cloud9, so `mcpConfigPath` is genuinely never supplied here — and a
-    // Codex agent with the `connections` switch on is therefore told, truthfully,
-    // that nothing is connected for it, instead of being told it can.
+    // THE DOORWAY, opened for this turn only and shut in the `finally` below —
+    // the same call, on the same engine method, that the Claude path makes.
+    const doorway = input.channelId
+      ? this.opts.cloud9Tools?.({ channelId: input.channelId, agentId: agent.id })
+      : undefined;
+    const args = codexArgs(agent, cwd, this.opts.models?.() ?? [], roots,
+      doorway ? { cloud9Tool: { url: doorway.url } } : {});
+    // THE SAME ONE ANSWER the Claude path uses. The owner's CONNECTIONS FILE is
+    // still genuinely never supplied here — `connections.ts` explains, in his
+    // words, why a Codex agent cannot be handed one without either breaking its
+    // isolation or putting quotes and brackets on a command line `run.ts`
+    // rightly refuses — so a Codex agent with the `connections` switch on is
+    // told, truthfully, that nothing is connected for it.
+    //
+    // CLOUD9'S OWN TOOLS ARE A DIFFERENT QUESTION and, since 2026-08-06, a
+    // different answer: `cloud9Tools` above is true whenever the doorway really
+    // opened, so the agent is told about `search_conversation` and
+    // `open_attachment` exactly when it really has them, and never otherwise.
+    //
+    // ONE MESSAGE, ON PURPOSE — the prompt split (gap A) STOPS HERE, and this is
+    // not an oversight to be tidied up later. Codex has no way to send a system
+    // prompt alongside a turn: `codex exec --help` was read in full at 0.146.0
+    // and there is no `--system-prompt`, no `--append-system-prompt` and no file
+    // form of either. The only thing in reach is `base_instructions`, which
+    // REPLACES Codex's own base instructions wholesale — it would take the
+    // harness's entire operating brief away to make room for ours, which is a far
+    // bigger change than "send the standing half separately" and not one anybody
+    // asked for. So the Codex path keeps `buildAgentPrompt`, which is still the
+    // two halves joined in the same order, byte for byte, exactly as before.
     const prompt = buildAgentPrompt(agent, {
       ...input,
       supply: grantedSupply(agent, { wholeComputerRoots: roots }),
       harness: "codex",
+      cloud9Tools: !!doorway,
     });
     const key = this.opts.apiKey?.();
-    const isolated = createCodexIsolatedEnvironment({ apiKey: key });
+    // WHOSE SETUP THIS TURN RUNS IN, asked with the agent in hand — the same
+    // answer `codexArgs` above used for the flags and the profile. The ticket
+    // rides in the environment, never in argv.
+    const isolated = createCodexIsolatedEnvironment({
+      apiKey: key, agent, ...(doorway ? { toolSecret: doorway.secret } : {}),
+    });
     // The preview's own reader — see the twin in claude-cli.ts. `codex exec
     // --json` prints one JSON line per item, so the SAME `codexMapper` that
     // builds the record understands them one at a time.
@@ -603,6 +802,9 @@ export class CodexProvider implements ClaudeProvider {
       result = await this.runner(this.command, args, {
         cwd,
         timeoutMs,
+        // ===== GAP A BLOCK (the silence clock, 2026-08-05) — start =====
+        quietMs,
+        // ===== GAP A BLOCK — end =====
         stdin: prompt,
         ...(watchLine ? { onStdoutLine: watchLine } : {}),
         // The child gets a disposable CODEX_HOME and user home. Only Codex's
@@ -611,6 +813,10 @@ export class CodexProvider implements ClaudeProvider {
       });
     } finally {
       isolated.dispose();
+      // SHUT THE DOORWAY. The ticket stops working the moment the turn ends, so
+      // a copy of it taken from the child's environment is worth nothing after
+      // this line — the same law the Claude path lives under.
+      try { doorway?.close(); } catch { /* a doorway that will not shut is still shut by the bridge */ }
     }
 
     if (result.notFound) {
@@ -620,7 +826,11 @@ export class CodexProvider implements ClaudeProvider {
     // error names the CLOCK, in minutes, so this does not reach the room as a
     // generic "something went wrong".
     if (result.timedOut) {
-      throw new TurnTimedOutError("codex", promptTurnKind(input), timeoutMs);
+      // ===== GAP A BLOCK (the silence clock, 2026-08-05) — start =====
+      const quiet = result.wentQuiet === true;
+      throw new TurnTimedOutError(
+        "codex", promptTurnKind(input), quiet ? quietMs : timeoutMs, quiet);
+      // ===== GAP A BLOCK — end =====
     }
     // Only the CLI's OWN complaint counts. Scanning stdout would let a model
     // that merely *talks about* logging in fake a signed-out harness.
