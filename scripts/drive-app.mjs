@@ -915,6 +915,33 @@ async function shot(page, slug) {
   return file;
 }
 
+/**
+ * KEEP ONE SHOT, because somebody is going to have to look at it later.
+ *
+ * Every other picture this harness takes is deleted at the start of the next
+ * run — there are around a hundred of them and nothing renders any of them.
+ * That is right for a walk-through and wrong for the two or three that are
+ * cited as evidence in a pull request: a reviewer opening that pull request is
+ * not sitting at this machine, and "docs/qa/app-15-spending.png" tells them
+ * nothing at all. Kept shots land in `docs/qa/kept/` under a STABLE name (no
+ * step number — the number moves whenever a check is added ahead of it) and are
+ * the only pictures in this repository that are tracked.
+ *
+ * Never throws. Evidence failing to copy must not take a walk down with it.
+ */
+function keep(file, name) {
+  try {
+    const dir = path.join(SHOTS, "kept");
+    fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(file)) return;
+    const target = path.join(dir, `${name}.png`);
+    fs.copyFileSync(file, target);
+    console.log(`  kept  ${target}`);
+  } catch (err) {
+    console.log(`  kept  FAILED for ${name}: ${err.message}`);
+  }
+}
+
 /* ---------------------------------------------------------------- launching */
 
 /** List every packaged file under one bundle, relative to that bundle. */
@@ -2468,7 +2495,12 @@ async function walk(page) {
   try {
     await page.click('.rail .rail-btn[data-go="spending"]');
     await page.waitForSelector(".spending", { timeout: 30000 });
-    await shot(page, "spending");
+    const spendingShot = await shot(page, "spending");
+    // KEPT, not thrown away with the rest. This picture is cited in a pull
+    // request, and a path on this machine proves nothing to a reviewer who was
+    // not sitting at it. `docs/qa/kept/` is the one place a run may leave
+    // something behind — see .gitignore.
+    keep(spendingShot, "spending");
 
     await check(EXPECTED_CHECKS[41], async () => {
       const seen = await page.evaluate(() => {
