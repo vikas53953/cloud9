@@ -364,6 +364,41 @@ a{color:var(--ultra);}
 }
 .chatgrid.no-aside{grid-template-columns:var(--side-w) minmax(0,1fr);}
 
+/* ------------------------------------------------------------------
+   THE THREAD NEVER SQUEEZES THE CONVERSATION (2026-08-07, his 4th time
+   asking for Slack behaviour).
+
+   The thread used to be `var(--aside-w)` — a FIXED 292px that never gave
+   way. `minmax(0,1fr)` on the chat means "shrink to nothing if you must",
+   so as his window narrowed the CHAT is what collapsed while the thread
+   kept every pixel. That is backwards: the room is the thing being read;
+   the thread is the aside.
+
+   Slack's rule, which is what he keeps asking for:
+     • the conversation keeps a floor it can never go below,
+     • the thread takes a SHARE of what is left, not a fixed slab,
+     • and when there genuinely is not room for both, the thread stops
+       being a column and lies over the top instead of crushing the room.
+
+   Written as a rule, not a number, so a new screen size cannot bring the
+   same complaint back.
+   ------------------------------------------------------------------ */
+.chatgrid.withthread{
+  grid-template-columns:var(--side-w) minmax(var(--chat-floor),1fr) clamp(300px,26%,392px);
+}
+:root{ --chat-floor:520px; }
+
+/* Not enough room for both? The thread becomes a panel OVER the room —
+   the room stays whole underneath, exactly as Slack does on a small window. */
+@media (max-width:1180px){
+  .chatgrid.withthread{ grid-template-columns:var(--side-w) minmax(0,1fr); position:relative; }
+  .chatgrid.withthread > .threadpanel{
+    position:absolute; top:0; right:0; bottom:0;
+    width:min(392px,86vw); z-index:20;
+    box-shadow:-14px 0 34px rgba(0,0,0,.13);
+  }
+}
+
 .sidebar{
   border-right:1px solid var(--line);background:var(--bg-2);
   display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;

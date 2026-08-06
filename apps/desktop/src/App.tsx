@@ -3172,7 +3172,8 @@ function ChatScreen({
     world.channels.find(c => c.kind === "dm" && c.memberIds.includes(a.id));
 
   return (
-    <div className={`chatgrid${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}`}>
+    <div className={`chatgrid${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}${
+      threadRoot ? " withthread" : ""}`}>
       <aside className="sidebar" aria-label="Studio floor">
         <div className="sidebar-head">
           <h2>Studio floor</h2>
