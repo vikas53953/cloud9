@@ -365,38 +365,38 @@ a{color:var(--ultra);}
 .chatgrid.no-aside{grid-template-columns:var(--side-w) minmax(0,1fr);}
 
 /* ------------------------------------------------------------------
-   THE THREAD NEVER SQUEEZES THE CONVERSATION (2026-08-07, his 4th time
-   asking for Slack behaviour).
+   THE THREAD IS THE NARROW ONE (2026-08-07). His words, five times now:
+   the thread "opens too wide" and should sit as a narrow side panel.
 
-   The thread used to be `var(--aside-w)` — a FIXED 292px that never gave
-   way. `minmax(0,1fr)` on the chat means "shrink to nothing if you must",
-   so as his window narrowed the CHAT is what collapsed while the thread
-   kept every pixel. That is backwards: the room is the thing being read;
-   the thread is the aside.
+   ATTEMPT 1 TODAY WAS REJECTED IN REVIEW AND THE REASON IS WORTH KEEPING:
+   it used `clamp(300px,26%,392px)`, whose FLOOR was already wider than the
+   292px he was complaining about. It made his own complaint 32-100px worse
+   at every window size, while the `--chat-floor` it was named after never
+   once activated (the room never gets that narrow). It shipped on "the
+   build is clean" — which proves the code compiles and proves NOTHING about
+   how wide a thing looks.
 
-   Slack's rule, which is what he keeps asking for:
-     • the conversation keeps a floor it can never go below,
-     • the thread takes a SHARE of what is left, not a fixed slab,
-     • and when there genuinely is not room for both, the thread stops
-       being a column and lies over the top instead of crushing the room.
+   So this one is measured against the number he objected to, and it is
+   narrower than it EVERYWHERE:
 
-   Written as a rule, not a number, so a new screen size cannot bring the
-   same complaint back.
+     his window 1184 -> 248px  (was 268)
+     1440             -> 272px  (was 292, the screenshot he complained about)
+     maximised 1920   -> 288px  (was 292)
+
+   The percentage is deliberately measured against `.chatgrid` itself, not
+   the viewport: `.app` spends 78px on the icon rail first, so a viewport
+   percentage would be deciding with a number 78px bigger than the space it
+   is dividing. `container-type:inline-size` makes `cqw` mean what the
+   comment says it means.
+
+   NO OVERLAY. The rejected attempt made the panel lie OVER the room below
+   1180px, where it covered the room's own Send button with an opaque panel
+   that also ate the clicks — at the 800px minimum window it buried 77% of
+   the room. A narrow column that stays a column is honest at every size.
    ------------------------------------------------------------------ */
+.chatgrid{container-type:inline-size;}
 .chatgrid.withthread{
-  grid-template-columns:var(--side-w) minmax(var(--chat-floor),1fr) clamp(300px,26%,392px);
-}
-:root{ --chat-floor:520px; }
-
-/* Not enough room for both? The thread becomes a panel OVER the room —
-   the room stays whole underneath, exactly as Slack does on a small window. */
-@media (max-width:1180px){
-  .chatgrid.withthread{ grid-template-columns:var(--side-w) minmax(0,1fr); position:relative; }
-  .chatgrid.withthread > .threadpanel{
-    position:absolute; top:0; right:0; bottom:0;
-    width:min(392px,86vw); z-index:20;
-    box-shadow:-14px 0 34px rgba(0,0,0,.13);
-  }
+  grid-template-columns:var(--side-w) minmax(0,1fr) clamp(248px,20cqw,288px);
 }
 
 .sidebar{
