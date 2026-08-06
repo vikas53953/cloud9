@@ -263,6 +263,23 @@ function claudeUsage(ev: Record<string, unknown>): RunUsage | undefined {
     if (typeof u.cache_read_input_tokens === "number") {
       usage.cachedInputTokens = u.cache_read_input_tokens;
     }
+    // MATERIAL SENT FOR THE FIRST TIME AND CACHED FOR NEXT TURN. It was never
+    // recorded before 2026-08-07, and its absence is why "how much is this
+    // agent handed" could not be answered honestly: the biggest slice of a
+    // first turn was simply invisible.
+    if (typeof u.cache_creation_input_tokens === "number") {
+      usage.cacheWriteTokens = u.cache_creation_input_tokens;
+    }
+    // WHAT WAS REALLY HANDED OVER, IN CLAUDE'S OWN ACCOUNTING — the un-cached
+    // remainder PLUS what was read from the cache PLUS what was written into
+    // it. Claude's `input_tokens` is only the first of the three (see the
+    // warning on `RunUsage`), so anything outside this file that treated it as
+    // "the prompt" was reading a number two or three orders of magnitude too
+    // small. It is computed HERE because here is the only place that knows
+    // which of the two conventions this turn was counted in.
+    const handed = [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens]
+      .filter((n): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0);
+    if (handed.length > 0) usage.handedToIt = handed.reduce((a, b) => a + b, 0);
   }
   if (typeof ev.total_cost_usd === "number") usage.costUsd = ev.total_cost_usd;
   return Object.keys(usage).length > 0 ? usage : undefined;

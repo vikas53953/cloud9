@@ -48,6 +48,79 @@ import {
 } from "./index.js";
 
 // ---------------------------------------------------------------------------
+// 0. HOW MUCH WAS HANDED TO IT — the one figure that means the same thing
+//    whichever app ran the turn.
+// ---------------------------------------------------------------------------
+
+/**
+ * WHAT WENT UP THE WIRE TO THE AGENT THIS TURN, and how sure we are of it.
+ *
+ * THE BUG THIS EXISTS TO KILL. The first version of this file summed
+ * `usage.inputTokens`. For Claude that field is the UN-CACHED REMAINDER — two
+ * to four tokens on a normal turn — while the actual material arrives as
+ * `cache_read_input_tokens` and `cache_creation_input_tokens`. Run against the
+ * owner's own 185 stored runs, his dearest agent drew as "0% handed to it, 100%
+ * written back" while having really been handed 1,120,105 tokens. The finding
+ * whose entire job is to name that waste could not fire on a single Claude
+ * agent, and one card contradicted itself on screen: "loads your whole Claude
+ * Code setup on every turn" printed directly above "less than a page handed to
+ * it per turn". Fifty-nine green tests missed it because every fixture in them
+ * was hand-written, and no hand-written fixture had a cache in it.
+ *
+ * TWO WAYS THIS CAN ANSWER, and they are told apart on purpose:
+ *
+ *  • `reported` — the provider's own mapper wrote `handedToIt` down at the time
+ *    (`claude-cli.ts`, `codex.ts`). Nothing was worked out here.
+ *  • `rebuilt` — an older record, from before that field existed. The figure is
+ *    rebuilt from that provider's documented, live-verified convention.
+ *
+ * REBUILDING IS NOT ESTIMATING, and the difference matters enough to spell out.
+ * Nothing is averaged, inferred or priced. It is the same arithmetic the mapper
+ * itself now does, applied after the fact to figures the CLI really reported —
+ * exactly what `claudeUsage` does when it adds three numbers the CLI printed.
+ * The alternative was to show nothing at all for the owner's entire history,
+ * which would have made this feature useless on the day it shipped.
+ *
+ * AND WHEN IT CANNOT BE DONE, IT IS NOT DONE. A record with no usable figures
+ * comes back `undefined`, and every total built from it says how many runs it
+ * was actually able to count.
+ */
+export type HandedToIt =
+  | { tokens: number; how: "reported" | "rebuilt" }
+  | undefined;
+
+export function handedToItOf(
+  usage: RunRecord["usage"], provider: string | undefined,
+): HandedToIt {
+  if (!usage) return undefined;
+  const said = plainNumber(usage.handedToIt);
+  if (said !== undefined) return { tokens: said, how: "reported" };
+
+  const input = plainNumber(usage.inputTokens);
+  const cached = plainNumber(usage.cachedInputTokens);
+  const written = plainNumber(usage.cacheWriteTokens);
+
+  // CODEX COUNTS THE WAY OPENAI DOES: `input_tokens` is the TOTAL and
+  // `cached_input_tokens` is the part of it that came from the cache. Adding
+  // them would count the cache twice — the mirror image of the Claude bug.
+  if ((provider ?? "claude") === "codex") {
+    return input === undefined ? undefined : { tokens: input, how: "rebuilt" };
+  }
+  // CLAUDE COUNTS IN THREE SEPARATE PILES and `input_tokens` is only the
+  // smallest of them. All three, added, is what was handed over. See the
+  // warning on `RunUsage` in index.ts for the live-verified shapes.
+  const parts = [input, cached, written].filter((n): n is number => n !== undefined);
+  return parts.length === 0
+    ? undefined
+    : { tokens: parts.reduce((a, b) => a + b, 0), how: "rebuilt" };
+}
+
+/** A figure a CLI really reported. Nonsense is not zero — it is nothing. */
+function plainNumber(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
+}
+
+// ---------------------------------------------------------------------------
 // 1. THE ARITHMETIC
 // ---------------------------------------------------------------------------
 
@@ -93,13 +166,23 @@ export interface AgentTokenUse {
   /** the money, summed from real reported figures only. Absent if none reported. */
   costUsd?: number;
 
-  /** of those, how many carried size figures. The four sizes are sums of THESE. */
+  /** of those, how many carried size figures. The sizes are sums of THESE. */
   runsWithSize: number;
-  /** what was sent TO it — the standing instructions, the room, the skills, the lot */
+  /**
+   * WHAT WAS HANDED TO IT — the standing instructions, the room, the skills,
+   * the lot. Summed through `handedToItOf`, never off `inputTokens`; see the
+   * note there for the inversion that caused.
+   */
   sentToIt?: number;
   /** what it wrote back */
   wroteBack?: number;
-  /** how much of what was sent was material the app already had and did not re-read */
+  /**
+   * Of the runs counted in `sentToIt`, how many had to have their figure
+   * REBUILT from an older record rather than read off one the provider wrote
+   * down. A screen may say so; it must never pretend the difference away.
+   */
+  runsWithRebuiltSize: number;
+  /** how much of what was handed over was material the app already had */
   reusedFromLastTime?: number;
   /** thinking the app charged for and reported separately */
   thinking?: number;
@@ -148,6 +231,7 @@ export function rollUpTokenUse(input: RollUpInput): AgentTokenUse {
     runs: 0,
     runsWithCost: 0,
     runsWithSize: 0,
+    runsWithRebuiltSize: 0,
     runsInOwnerSetup: 0,
     runsInOwnerSetupWithCost: 0,
     runsOutsideOwnerSetupWithCost: 0,
@@ -176,13 +260,19 @@ export function rollUpTokenUse(input: RollUpInput): AgentTokenUse {
       else { out.runsOutsideOwnerSetupWithCost++; costOut += money; }
     }
 
-    const inTok = usable(run.usage?.inputTokens);
+    // NEVER `usage.inputTokens`. The two apps mean opposite things by it, and
+    // reading it directly is the bug this whole file was rebuilt around — see
+    // `handedToItOf`. The provider is taken from the RUN, so a record made
+    // while the agent was on Codex is read in Codex's accounting even if the
+    // agent is on Claude today.
+    const handed = handedToItOf(run.usage, run.provider);
     const outTok = usable(run.usage?.outputTokens);
-    if (inTok !== undefined || outTok !== undefined) {
+    if (handed !== undefined || outTok !== undefined) {
       out.runsWithSize++;
       anySize = true;
-      sent += inTok ?? 0;
+      sent += handed?.tokens ?? 0;
       wrote += outTok ?? 0;
+      if (handed?.how === "rebuilt") out.runsWithRebuiltSize++;
     }
     const cached = usable(run.usage?.cachedInputTokens);
     if (cached !== undefined) { anyReused = true; reused += cached; }
@@ -491,7 +581,7 @@ export function applySaving(agent: AgentDef, change: SavingChange): AgentDef | u
  */
 export interface WasteFinding {
   /** stable name, so a screen or a test can point at one */
-  id: "ownerSetupOnEveryTurn" | "noSpendingLimit" | "mostlyWhatItIsSent" | "nothingReused" | "noCostReported";
+  id: "ownerSetupOnEveryTurn" | "noSpendingLimit" | "mostlyWhatItIsSent" | "noCostReported";
   agentId: ID;
   agentName: string;
   /** the one line he reads first */
@@ -500,6 +590,16 @@ export interface WasteFinding {
   evidence: string[];
   /** what he would gain, when it can be said honestly. Absent when it cannot. */
   worth?: string;
+  /**
+   * A MEASUREMENT FROM SOMEWHERE ELSE, kept apart from `evidence` and always
+   * saying whose it is.
+   *
+   * It exists because a hard-coded figure from a different agent on a different
+   * day was sitting in `evidence` among counted facts about THIS agent, where
+   * it read as something Cloud9 had measured here. Facts about him go in
+   * `evidence`; anything borrowed goes here, drawn differently and attributed.
+   */
+  reference?: string;
   /** the change that would fix it — absent when there is nothing to propose */
   change?: SavingChange;
 }
@@ -543,6 +643,24 @@ export interface FindWasteInput {
   use: AgentTokenUse;
   /** the agent as it is set up right now — what is already true is not a finding */
   agent: Pick<AgentDef, "useOwnerSetup" | "spendCap">;
+  /**
+   * WHAT THE SPENDING CEILING WILL ACTUALLY BE COMPARED AGAINST — the figure
+   * `decideSpend` uses, which is `RunStore.spentInMonth`.
+   *
+   * IT IS NOT THE SAME AS `use.costUsd`, AND THAT GAP WAS A REAL BUG. The
+   * roll-up can only sum runs still on disk; `spentInMonth` also adds
+   * `spent.ledger`, the money carried forward from runs since deleted. So a
+   * limit suggested at twice the roll-up could be BELOW what the month has
+   * really cost — and he would accept a card promising "this won't get in its
+   * way today" and watch the agent stop within the hour. That is the single
+   * worst thing this feature could do to him, because it would look exactly
+   * like the app breaking his crew for no reason.
+   *
+   * Absent means the caller has no better figure than the roll-up (the hub,
+   * which keeps no carry ledger). The suggestion then still cannot land below
+   * what it can see — see `suggestedMonthlyLimit`.
+   */
+  spentThisMonthUsd?: number;
 }
 
 /**
@@ -560,12 +678,22 @@ export function findWaste(input: FindWasteInput): WasteFinding[] {
   const who = { agentId: use.agentId, agentName: use.agentName };
 
   // --- the 318x one. First, because on this machine it is the whole game. ---
-  if (agent.useOwnerSetup === true && use.runsInOwnerSetup > 0) {
+  //
+  // HELD TO `ENOUGH_RUNS_TO_JUDGE` LIKE EVERY OTHER FINDING, and it was not.
+  // It fired on a single turn — proved by the very screenshot taken to show the
+  // feature working, which raised it on 1 of 1 turn that had no reported cost
+  // at all. One turn is not a habit, and telling him to change a setting on the
+  // strength of one run is how an app loses the right to be believed. The rule
+  // was always written down; this finding simply did not ask.
+  if (agent.useOwnerSetup === true
+    && use.runsInOwnerSetup > 0
+    && use.runs >= ENOUGH_RUNS_TO_JUDGE) {
     const evidence = [
       `${use.runsInOwnerSetup} of its ${use.runs} turn${use.runs === 1 ? "" : "s"} this month `
       + `started up with your own Claude Code setup loaded.`,
     ];
     let worth: string | undefined;
+    let reference: string | undefined;
     // THE BEST EVIDENCE IS THIS AGENT'S OWN. When it happens to have run both
     // ways, the comparison is real and measured here, on his machine, on his
     // work — so that is what is shown. It is only when it has never run the
@@ -586,22 +714,33 @@ export function findWaste(input: FindWasteInput): WasteFinding[] {
         }
       }
     } else {
-      evidence.push(
-        `Cloud9 measured this switch on your machine on 5 August 2026: the same tiny `
-        + `question cost $1.75 with your setup loaded and $0.0055 without it — 318 times `
-        + `as much — because the standing instructions go up the wire every single turn.`,
-      );
+      // A MEASUREMENT OF SOMETHING ELSE IS NOT EVIDENCE ABOUT THIS AGENT.
+      //
+      // This sentence used to sit in `evidence` beside counted facts about his
+      // agent, which made a hard-coded figure from a different agent on a
+      // different day read as something Cloud9 had measured about THIS one. It
+      // is the same number and it is still worth knowing — so it moves to
+      // `reference`, which the screen draws apart and attributes out loud.
+      reference =
+        "For scale, from a different test on this computer on 5 August 2026: the same "
+        + "tiny question cost $1.75 with your setup loaded and $0.0055 without it — 318 "
+        + "times as much. That was measured on another agent, not on this one.";
     }
+    // WHAT THIS AGENT IS REALLY HANDED, per turn, measured on its own runs.
+    // Worth far more than the borrowed 318x and it was drawn far too small
+    // until `handedToItOf` existed — "less than a page" printed directly under
+    // "loads your whole Claude Code setup", which is a card arguing with itself.
     if (use.sentToIt !== undefined && use.runsWithSize > 0) {
       evidence.push(
-        `Across those turns it was sent ${humanTextSize(use.sentToIt / use.runsWithSize)} `
-        + `of material per turn before your question was added to it.`,
+        `Across those turns it was handed `
+        + `${humanTextSize(use.sentToIt / use.runsWithSize)} of material per turn before `
+        + `your question was added to it.`,
       );
     }
     out.push({
       id: "ownerSetupOnEveryTurn", ...who,
       headline: `${use.agentName} loads your whole Claude Code setup on every turn`,
-      evidence, ...(worth ? { worth } : {}),
+      evidence, ...(worth ? { worth } : {}), ...(reference ? { reference } : {}),
       change: { what: "stopUsingOwnerSetup" },
     });
   }
@@ -610,12 +749,16 @@ export function findWaste(input: FindWasteInput): WasteFinding[] {
   const cap = spendCapOf(agent);
   if (use.reportsCost && cap.perMonthUsd === undefined
     && use.costUsd !== undefined && use.runs >= ENOUGH_RUNS_TO_JUDGE) {
-    const limit = suggestedMonthlyLimit(use.costUsd);
+    // THE FIGURE THE CEILING WILL REALLY BE JUDGED AGAINST, never the roll-up
+    // alone — see `FindWasteInput.spentThisMonthUsd`. The larger of the two,
+    // because whichever is bigger is the one the agent has provably spent.
+    const spent = Math.max(use.costUsd, input.spentThisMonthUsd ?? 0);
+    const limit = suggestedMonthlyLimit(spent);
     out.push({
       id: "noSpendingLimit", ...who,
       headline: `${use.agentName} has no spending limit at all`,
       evidence: [
-        `It has spent ${humanMoney(use.costUsd)} this month across ${use.runsWithCost} `
+        `It has spent ${humanMoney(spent)} this month across ${use.runsWithCost} `
         + `turn${use.runsWithCost === 1 ? "" : "s"}.`,
         `Nothing would stop it spending more than that — there is no ceiling on it, `
         + `and there never has been.`,
@@ -642,19 +785,25 @@ export function findWaste(input: FindWasteInput): WasteFinding[] {
     });
   }
 
-  // --- nothing is being re-used between turns ---
-  if (use.sentToIt !== undefined && use.sentToIt > 0
-    && use.runsWithSize >= ENOUGH_RUNS_TO_JUDGE
-    && (use.reusedFromLastTime ?? 0) === 0) {
-    out.push({
-      id: "nothingReused", ...who,
-      headline: `${use.agentName} is paying full price for the same material every turn`,
-      evidence: [
-        `Not one of its ${use.runsWithSize} measured turns re-used anything from the turn `
-        + `before — every turn was charged in full for material it had already been sent.`,
-      ],
-    });
-  }
+  // --- THERE IS DELIBERATELY NO "nothing is being re-used" FINDING ------------
+  //
+  // There was one. It said "this agent is paying full price for the same
+  // material every turn" whenever `reusedFromLastTime` came out at zero, and it
+  // was WRONG, in the most damaging direction an app can be wrong: it made an
+  // accusation out of something it could not tell apart from its opposite.
+  //
+  // A run with no cache reads is either an agent genuinely re-sending
+  // everything, or an agent WRITING the cache — the first turn of a
+  // conversation, which is the correct and cheapest thing for it to be doing.
+  // Until 2026-08-07 nothing recorded `cache_creation_input_tokens` at all, so
+  // for every run the owner already had, those two are indistinguishable. And a
+  // zero that is really an absence read as the bad one of the two.
+  //
+  // The honest fix was not a better threshold. It was to stop saying it. The
+  // field it needs (`RunUsage.cacheWriteTokens`) is now recorded going forward,
+  // so a future version of this finding can be written on evidence rather than
+  // on the absence of evidence — and if it ever is, it must refuse to speak
+  // about any run that predates the field.
 
   // --- and the honest one, which is not a fault ---
   if (!use.reportsCost && use.runs > 0) {
@@ -719,6 +868,11 @@ export function renderTokenUseReport(rows: readonly TokenUseReportRow[], period:
       lines.push(`  ⚠ ${f.headline}`);
       for (const e of f.evidence) lines.push(`    - ${e}`);
       if (f.worth) lines.push(`    - ${f.worth}`);
+      // KEPT APART AND ATTRIBUTED, exactly as the screen keeps it apart. An
+      // agent handed a borrowed measurement among counted facts will repeat it
+      // as this agent's own, and then he is being quoted a number about
+      // something else as though it were about his.
+      if (f.reference) lines.push(`    (for scale, measured elsewhere) ${f.reference}`);
       if (f.change) {
         lines.push(`    → You can offer this to the owner with propose_saving: `
           + `about "${u.agentName}", change ${describeChangeForAgent(f.change)}.`);

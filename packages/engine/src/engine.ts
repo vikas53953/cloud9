@@ -2561,7 +2561,17 @@ export class Engine {
         provider: agent.provider ?? "claude",
         runs: this.runs.countableRuns(agent.id, agent.provider ?? "claude"),
       });
-      return { use, findings: findWaste({ use, agent }) };
+      // THE FIGURE THE CEILING WILL REALLY BE JUDGED BY, handed in rather than
+      // left to be inferred from the roll-up. `spentInMonth` also counts money
+      // carried forward from runs since deleted, which the roll-up cannot see —
+      // and a limit suggested below what the month has really cost would stop
+      // his agent the same afternoon. See `FindWasteInput.spentThisMonthUsd`.
+      return {
+        use,
+        findings: findWaste({
+          use, agent, spentThisMonthUsd: this.runs.spentInMonth(agent.id),
+        }),
+      };
     })
       // AN AGENT THAT HAS NEVER TAKEN A TURN IS NOT A ROW. It has nothing to
       // say and it would push the ones that do off the bottom of the report.
@@ -2629,6 +2639,27 @@ export class Engine {
         return { raised: false, why: `${about.name} already has a ${humanMoney(already)} ` +
           `limit for the month, which is tighter than the one you were going to offer. ` +
           `There is nothing to change.` };
+      }
+      // A CEILING THAT WOULD FIRE THIS AFTERNOON NEVER REACHES HIM.
+      //
+      // The card promises "this won't get in its way today". If the agent has
+      // ALREADY spent more than the number on it, that promise is false, and he
+      // finds out by watching his crew stop for no visible reason — which looks
+      // exactly like the app breaking, and is the worst thing this feature
+      // could do to him.
+      //
+      // Checked against `spentInMonth`, which is the SAME figure `decideSpend`
+      // will judge the ceiling by — and which includes money carried forward
+      // from runs since deleted. An agent proposing from the roll-up alone
+      // cannot see that carried money, so this is the one place the two can be
+      // reconciled, and it is the last gate before a card exists at all.
+      const spent = this.runs.spentInMonth(about.id);
+      if (change.perMonthUsd <= spent) {
+        return { raised: false, why: `${about.name} has already spent `
+          + `${humanMoney(spent)} this month, so a ${humanMoney(change.perMonthUsd)} `
+          + `ceiling would stop it immediately rather than protect it. Offer a limit with `
+          + `real room above what it has actually spent — about twice it — or say plainly `
+          + `that it is already spending more than a sensible ceiling would allow.` };
       }
     }
     const outcome = await this.approvals.askSaving({

@@ -1206,14 +1206,76 @@ export interface RunStep {
   ok?: boolean;
 }
 
-/** Token and money figures, each present only if the CLI reported it. */
+/**
+ * Token and money figures, each present only if the CLI reported it.
+ *
+ * ================= READ THIS BEFORE ADDING UP `inputTokens` =================
+ *
+ * THE TWO APPS MEAN OPPOSITE THINGS BY IT, and that is not a bug in either of
+ * them — it is two houses' accounting, verified live against both CLIs:
+ *
+ *   CLAUDE (claude-cli.ts:115, CLI 2.1.220):
+ *     {"input_tokens":4, "cache_read_input_tokens":35267,
+ *      "cache_creation_input_tokens":35418}
+ *     `input_tokens` is the UN-CACHED REMAINDER. The other two are SEPARATE
+ *     amounts on top. What was really handed over is all three added up.
+ *
+ *   CODEX (codex.ts:264):
+ *     {"input_tokens":50710, "cached_input_tokens":24320,
+ *      "cache_write_input_tokens":0}
+ *     `input_tokens` is the TOTAL. `cached_input_tokens` is the PART OF IT that
+ *     came from the cache. Adding them together counts the cache twice.
+ *
+ * SO `inputTokens` IS NOT COMPARABLE ACROSS PROVIDERS AND MUST NEVER BE SUMMED
+ * AS IF IT WERE. It was, and it produced the exact inversion this warning
+ * exists to prevent: measured against 185 of the owner's own stored runs, his
+ * most expensive agent drew as "0% handed to it, 100% written back" while
+ * having really been handed 1,120,105 tokens of material. The one finding whose
+ * whole job is to name that waste could therefore never fire on a Claude agent
+ * at all.
+ *
+ * THE FIX IS `handedToIt` BELOW, and the rule is: nothing outside a provider's
+ * own mapper may reason about `inputTokens`. Ask `handedToItOf` instead.
+ */
 export interface RunUsage {
+  /**
+   * WHAT THIS PROVIDER CALLS "input tokens" — IN ITS OWN VOCABULARY.
+   *
+   * Kept exactly as reported, because a record is a record. It is NOT a
+   * cross-provider quantity; see the warning above. Use `handedToIt`.
+   */
   inputTokens?: number;
   outputTokens?: number;
+  /** of what was handed over, how much the app already had and did not re-read */
   cachedInputTokens?: number;
+  /**
+   * Material handed over for the FIRST time and written into the app's cache so
+   * the next turn can have it cheaply.
+   *
+   * Absent on every run recorded before 2026-08-07, which is a real absence and
+   * not a zero: it means nobody wrote it down, not that nothing was cached.
+   * That distinction is load-bearing — see `nothingReused`'s deletion note in
+   * `tokenuse.ts` for the accusation it stops the app making.
+   */
+  cacheWriteTokens?: number;
   reasoningTokens?: number;
   /** the CLI's own cost figure. Codex does not report one; Claude does. */
   costUsd?: number;
+  /**
+   * EVERYTHING THAT WENT UP THE WIRE TO IT THIS TURN — the one figure that
+   * means the same thing whichever app ran the turn.
+   *
+   * WRITTEN BY THE PROVIDER'S OWN MAPPER, because only the mapper knows its own
+   * house's accounting. That is the same seam `runrecord.ts` is built on: a
+   * provider contributes a mapper, and everything after that point has ONE
+   * implementation so the two paths cannot drift. A shared function trying to
+   * guess which convention it was handed is precisely the drift.
+   *
+   * Absent on every run recorded before 2026-08-07. `handedToItOf` rebuilds it
+   * for those from the provider's documented convention rather than dropping
+   * the owner's whole history — and says which of the two it did.
+   */
+  handedToIt?: number;
 }
 
 export type RunOutcome = "ok" | "failed" | "cancelled";

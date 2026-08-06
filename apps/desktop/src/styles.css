@@ -3220,3 +3220,7 @@ button.chip{cursor:pointer;}
 .finding li{font-size:12.5px;line-height:1.6;color:var(--ink-2);margin-bottom:3px;}
 .finding li.worth{color:var(--marigold);}
 .finding .meta{margin:8px 0 0;font-size:11.5px;}
+/* A measurement borrowed from somewhere else — quieter than the counted facts
+   above it, and never mistaken for one of them. See `WasteFinding.reference`. */
+.finding .borrowed{margin:8px 0 0;font-size:11.5px;font-style:italic;color:var(--ink-3);
+  border-left:2px solid var(--line-soft);padding-left:9px;}

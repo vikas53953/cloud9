@@ -13490,6 +13490,18 @@ function SpendingRow({ row }: {
         <p className="meta perturn">
           Per turn: {humanTextSize((use.sentToIt ?? 0) / Math.max(1, use.runsWithSize))} handed
           to it, {humanTextSize((use.wroteBack ?? 0) / Math.max(1, use.runsWithSize))} written back.
+          {/* WHERE THE FIGURE CAME FROM, when some of it had to be rebuilt from
+              records made before the app wrote this number down. Saying so is
+              cheap; letting him think every figure was reported at the time is
+              the kind of quiet overclaim that costs an app its credibility the
+              first time somebody checks. */}
+          {use.runsWithRebuiltSize > 0 && (
+            use.runsWithRebuiltSize === use.runsWithSize
+              ? " These sizes are worked out from what each app reported at the time."
+              : ` ${use.runsWithRebuiltSize} of these ${use.runsWithSize} turns predate Cloud9`
+                + " recording this directly, so their sizes are worked out from what each"
+                + " app reported at the time."
+          )}
         </p>
       )}
 
@@ -13503,6 +13515,11 @@ function SpendingRow({ row }: {
             {f.evidence.map((e, i) => <li key={i}>{e}</li>)}
             {f.worth && <li className="worth">{f.worth}</li>}
           </ul>
+          {/* A MEASUREMENT FROM SOMEWHERE ELSE, drawn apart from the counted
+              facts above and saying whose it is. It used to sit in the list
+              with them, which made a figure from a different agent on a
+              different day read as something measured about THIS one. */}
+          {f.reference && <p className="meta borrowed">{f.reference}</p>}
           {/* NO BUTTON HERE, AND THAT IS DELIBERATE. Everything on this screen
               is a thing to READ. The change itself is made where every other
               change to an agent is made — on the agent's own page — or by

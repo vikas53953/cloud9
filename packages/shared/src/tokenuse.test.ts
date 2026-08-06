@@ -310,16 +310,31 @@ test("every finding carries the counted facts it came from", () => {
 });
 
 test("the 318x switch is named as the problem, not merely measured", () => {
+  // THIS TEST USED TO ENCODE THE BUG IT WAS MEANT TO CATCH. It handed the
+  // finding ONE run and asserted it fired — so it was the reason nobody noticed
+  // that this finding alone skipped `ENOUGH_RUNS_TO_JUDGE`, and it went green
+  // while the app told the owner to change a setting on the strength of a
+  // single turn. It now uses enough turns to be a habit, which is what the
+  // sentence it is checking actually claims.
   const use = rollUpTokenUse({
     agentId: "a1", agentName: "Scout", provider: "claude", now: NOW,
-    runs: [run({ ownerSetup: true, usage: { costUsd: 1.75 } })],
+    runs: Array.from({ length: ENOUGH_RUNS_TO_JUDGE }, () => run({
+      ownerSetup: true,
+      usage: { costUsd: 1.75, inputTokens: 4, cachedInputTokens: 87_000, outputTokens: 120 },
+    })),
   });
   const f = findWaste({ use, agent: { useOwnerSetup: true } })
     .find(x => x.id === "ownerSetupOnEveryTurn")!;
   assert.ok(f, "the single most expensive setting on this machine has to be findable");
-  assert.match(f.evidence.join(" "), /318 times/,
-    "with no comparison of its own it quotes the measurement, and says whose it is");
   assert.deepEqual(f.change, { what: "stopUsingOwnerSetup" });
+  // WHAT IT SAYS ABOUT HIS AGENT IS MEASURED ON HIS AGENT. The 318x came off a
+  // different agent on a different day, so it is no longer allowed to sit among
+  // counted facts about this one — it goes in `reference`, attributed.
+  assert.ok(f.evidence.every(e => !/318/.test(e)));
+  assert.match(String(f.reference), /318 times/);
+  assert.match(String(f.reference), /measured on another agent, not on this one/);
+  assert.match(f.evidence.join(" "), /handed .* of material per turn/,
+    "and the fact about THIS agent is how much it is really handed");
 });
 
 test("when the agent has run BOTH ways, its own figures win over the general ones", () => {
@@ -374,7 +389,9 @@ test("one expensive turn is not a habit — a pattern needs enough turns to be o
   const ids = findWaste({ use: thin, agent: {} }).map(f => f.id);
   assert.ok(!ids.includes("mostlyWhatItIsSent"));
   assert.ok(!ids.includes("noSpendingLimit"));
-  assert.ok(!ids.includes("nothingReused"));
+  assert.ok(!ids.includes("ownerSetupOnEveryTurn"),
+    "this one skipped the guard and fired on a single turn — the screenshot taken to "
+    + "prove the feature working is what caught it");
 });
 
 // ===========================================================================

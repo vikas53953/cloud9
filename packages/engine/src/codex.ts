@@ -290,7 +290,17 @@ export function codexMapper(): EventMapper {
             inputTokens: num(u.input_tokens),
             outputTokens: num(u.output_tokens),
             cachedInputTokens: num(u.cached_input_tokens),
+            cacheWriteTokens: num(u.cache_write_input_tokens),
             reasoningTokens: num(u.reasoning_output_tokens),
+            // WHAT WAS REALLY HANDED OVER, IN CODEX'S OWN ACCOUNTING — and here
+            // that is `input_tokens` BY ITSELF. Codex counts the way OpenAI
+            // does: `input_tokens` is the TOTAL and `cached_input_tokens` is the
+            // part of it that came from the cache. Adding the two would count
+            // the cache twice, which is the exact opposite of the mistake the
+            // Claude mapper had to fix — and is why this figure is computed in
+            // each provider's own file rather than once in shared. See the
+            // warning on `RunUsage`.
+            handedToIt: num(u.input_tokens),
             // Codex reports no money figure. Absent means absent — we do not
             // multiply tokens by a price we would be guessing at.
           }),
