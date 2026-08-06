@@ -173,6 +173,88 @@ export function wholeComputerWords(
   }
 }
 
+/* ================== NEVER SILENT ABOUT REACH — 2026-08-06 ==================
+ *
+ * THE FAULT, AND IT IS THE THIRD TIME HE HAS REPORTED THE SAME FEELING.
+ * "cloud9 is not able to access my pc… it is always saying I am not able to
+ * access this folder", "still saying what I can't do", "make the agent fully
+ * agentic and don't give me any excuse".
+ *
+ * The room's line beside an agent's name could only speak about TWO of the five
+ * states above — "switched off", and "switched on with nothing chosen". For the
+ * other three it returned NOTHING AT ALL, because the desktop window cannot see
+ * the disk and the code (rightly) refused to guess. So the room went quiet in
+ * exactly the states where a person is most likely to be staring at "I cannot
+ * reach that folder": the folders were chosen and one of them has moved, or the
+ * folder he needs was simply never on the list. Silence, and no door.
+ *
+ * A REFUSAL WITH NO DOOR IS THE FAULT — that has been the law here since
+ * 2026-08-05; this closes the hole in it. There is now NO STATE in which the
+ * room says nothing: every agent, every provider, every stored shape gets one
+ * sentence and one control that changes it. The words never claim to know the
+ * disk — the "chosen" sentence says which folders were opened up and invites him
+ * to add another, which is true whether or not those folders still exist.
+ *
+ * WHY IT LIVES HERE AND NOT ON THE SCREEN. The screen used to decide when to
+ * speak, which is how it ended up with three unwritten branches. This function
+ * is total — one return per state, no null — and `neversilent.test.ts` walks every
+ * provider × switch × folder shape and fails if any of them produces an empty
+ * sentence or an empty door. A new state cannot be added without landing here.
+ * ========================================================================== */
+
+/** One line the room shows beside an agent's name. Never empty, never silent. */
+export interface ReachLine {
+  /** which of the three stored-only states this is — also the screen's hook */
+  state: "off" | "none" | "chosen";
+  /** the whole sentence, in his words */
+  words: string;
+  /** the button beside it that changes the answer */
+  fix: string;
+}
+
+/**
+ * WHAT THE ROOM SAYS ABOUT THIS AGENT'S REACH — always something, always a door.
+ *
+ * STORED STATE ONLY, on purpose: this is read by the desktop window, which is
+ * not allowed to touch the disk. "gone" and "partly" are disk questions and stay
+ * where they belong (the agent's own editor, via `wholeComputerWords`); this
+ * says the part that is true from any window and names the door either way.
+ */
+export function reachLineInRoom(
+  agent: Pick<AgentDef, "provider" | "abilities" | "wholeComputerRoots">,
+  agentName: string,
+): ReachLine {
+  const chosen = storedRoots(agent);
+  if (!reachesBeyondOwnFolder(agent as AgentDef)) {
+    return {
+      state: "off",
+      /* NOT "can only touch its own folder", which is the sentence `filefence.test.ts`
+         measured and refused: on the Claude side there is no wall around a folder,
+         so a line promising one is the wrong kind of honest. This says what was
+         DECIDED — the switch is off and nothing has been opened up — which is true
+         of every provider. */
+      words: `Going outside its own folder is switched off for ${agentName}, so no other `
+        + "folder on this computer has been opened up for it.",
+      fix: "Give it a folder",
+    };
+  }
+  if (chosen.length === 0) {
+    return {
+      state: "none",
+      words: `${agentName} is allowed outside its own folder, but no folder has been chosen `
+        + "yet, so it cannot reach anything on this computer.",
+      fix: "Choose a folder",
+    };
+  }
+  return {
+    state: "chosen",
+    words: `${agentName} can work in ${chosen.length === 1 ? "1 folder" : `${chosen.length} folders`} `
+      + "on this computer, besides its own folder. If it says it cannot reach something, "
+      + "that folder is not on its list — or has moved.",
+    fix: "Change the folders",
+  };
+}
+
 /**
  * GAP C (2026-08-05): THE ONE SENTENCE ABOUT WHAT THIS BOUNDARY REALLY IS.
  *

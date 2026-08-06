@@ -251,6 +251,28 @@ export interface Capability {
    */
   fixItInApp: string;
   /**
+   * THE FIFTH FACE — THE DOOR THAT IS STILL THERE WHEN THE SWITCH IS ON.
+   *
+   * 2026-08-06, and it is the SAME report a third time: "cloud9 is not able to
+   * access my pc… it is always saying I am not able to access this folder."
+   *
+   * The 2026-08-05 fix put a door beside every CANNOT. It did not put one beside
+   * the sentence an agent reads when the switch is ON — and that is now the
+   * common case, because a new agent starts with the home folder already opened
+   * up. So the refusal he meets today is not "the switch is off"; it is "that
+   * folder is not on my list", and the agent said the true, useless half of it:
+   * "I must not touch anything outside the places you opened up for me." A wall
+   * again, and no door again, in the one state we had not covered.
+   *
+   * Any row that is bounded by something the owner SUPPLIES must therefore also
+   * carry the sentence that widens it, and `sentenceFor` appends it in the
+   * supplied case. `neversilent.test.ts` walks every row in every state and
+   * fails if any sentence an agent can read lacks a way to change the answer, so
+   * there is no state of any switch left in which Cloud9 tells him "no" and
+   * stops.
+   */
+  widenItInApp?: string;
+  /**
    * THE ONE ROW A BRAND-NEW AGENT DOES NOT GET, and the reason written beside it.
    *
    * Every other row is ON the moment an agent exists (see `NEW_AGENT_ABILITIES`).
@@ -286,6 +308,19 @@ const ONE_PRESS =
 function onePressFix(label: string, extra = ""): string {
   return `${ONE_PRESS}. That single press switches on “${label}” along with everything ` +
     `else this app can do on this computer — there is no second step to find.${extra}`;
+}
+
+/**
+ * THE DOOR THAT IS STILL THERE WHEN THE SWITCH IS ALREADY ON (2026-08-06).
+ *
+ * The same shape as `onePressFix` and for the same reason: the agent is never
+ * allowed to invent its own version of where the door is, so both sentences are
+ * built by a function that knows one route into the app.
+ */
+function widenFix(what: string): string {
+  return `If he names ${what}, do NOT stop at “I must not” — tell him, in these words: ` +
+    `you can open that up for me in ten seconds — ${ONE_PRESS}, and add it there. Then say ` +
+    "you will do it the moment he has.";
 }
 
 /**
@@ -413,6 +448,7 @@ export const CAPABILITIES: readonly Capability[] = [
       " It opens “Choose a folder” in the same breath, so I am never allowed out of my own "
       + "folder with nowhere to go — and a new agent already starts with your home folder, so "
       + "there is usually nothing to do at all."),
+    widenItInApp: widenFix("a folder that is not on that list"),
     // GAP C (2026-08-05): these are RULES the agent must keep, and they are now
     // worded as rules. They used to be worded as facts — "you CANNOT reach
     // anything outside your own folder" — and that was measured false on the
@@ -467,6 +503,7 @@ export const CAPABILITIES: readonly Capability[] = [
       " Connected services are the one thing that needs a second action afterwards: press "
       + "“Choose the file” in the box that appears and point me at the connections file "
       + "whoever made that service gave you. Nothing but that file can switch it on."),
+    widenItInApp: widenFix("a service that is not in the file he gave me"),
     can: "You CAN use the connected services your owner set up for you specifically. Those " +
       "are real accounts, so your owner is asked before you act through them.",
     cannot: "You CANNOT use any connected service or outside account.",
@@ -1073,7 +1110,13 @@ export function renderCapabilities(
  */
 function sentenceFor(agent: AgentDef, cap: Capability, granted: Supply): string {
   if (!isOn(agent, cap.ability)) return `${cap.cannot} ${fixSentence(cap)}`;
-  if (isSupplied(cap, granted)) return cap.can;
+  /* ON AND SUPPLIED IS STILL A BOUNDARY — the 2026-08-06 hole. A row bounded by
+     something the owner supplied (which folders, which connections file) can
+     still refuse him, and until now that refusal was the only one in the whole
+     table with no door on it. See `widenItInApp`. */
+  if (isSupplied(cap, granted)) {
+    return cap.widenItInApp ? `${cap.can} ${cap.widenItInApp}` : cap.can;
+  }
   return `${cap.onButNothingSupplied ?? cap.cannot} ${fixSentence(cap)}`;
 }
 

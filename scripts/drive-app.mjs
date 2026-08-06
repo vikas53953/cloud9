@@ -3432,7 +3432,22 @@ async function walk(page) {
     }, { timeout: 30000, every: 100 });
 
     await check(EXPECTED_CHECKS[38], async () => {
-      /* --- part one: the dead end is gone from the SCREEN ---------------- */
+      /* --- part one: the dead end is gone from the SCREEN ----------------
+       *
+       * 2026-08-06, AND THE REASON THIS PART WAS REWRITTEN. It used to read the
+       * line off whatever agent the walk happened to have made and expect a
+       * dead end. That assumption stopped being true the same day it was
+       * written: a brand-new agent is now given the home folder as its starting
+       * folder (`useHomeFolder` in App.tsx), so the agent had reach, the room
+       * had nothing to warn about, and the check reported `null` — a real
+       * failure, but not the one it was aiming at.
+       *
+       * So the state he actually hit is now PUT THERE ON PURPOSE, through the
+       * window's own save: allowed outside its own folder, and no folder chosen.
+       * That is the exact half-state from his report. Then the room must say so
+       * with a door on the same line — and, since the app no longer goes silent
+       * about reach in ANY state, the line is read again after the folder is
+       * given and must have changed its answer rather than vanished. */
       const rail = `.aside .mini-agent[data-agent="${worker.name}"]`;
       if (await page.locator(rail).count() === 0) {
         const opener = page.locator(".chathead .roomdetailsbtn");
@@ -3440,7 +3455,8 @@ async function walk(page) {
       }
       await page.waitForSelector(rail, { timeout: 20000 })
         .catch(() => { throw new Error(`NOT ON SCREEN — ${worker.name} is not in the room's details panel`); });
-      const gapBefore = await page.evaluate(sel => {
+
+      const readLine = async () => page.evaluate(sel => {
         const el = document.querySelector(`${sel} [data-reach-gap]`);
         return el ? {
           state: el.getAttribute("data-reach-gap"),
@@ -3448,6 +3464,27 @@ async function walk(page) {
           fix: !!el.querySelector("[data-reach-fix]"),
         } : null;
       }, rail);
+
+      // the half-state from his report: allowed out, nowhere to go
+      const emptied = await page.evaluate(agent => window.cloud9Wire.ask({
+        type: "updateAgent", agent,
+      }), {
+        ...worker,
+        abilities: { ...(worker.abilities ?? {}), files: true, wholeComputer: true },
+        wholeComputerRoots: [],
+      });
+      if (!emptied) throw new Error("the window never sent the save that empties the folder list");
+      /* `until` answers true/false and throws on a timeout — it does not hand the
+         value back — so the line is kept here and read after, and a timeout is
+         allowed to fall through to whatever the room really says, which is the
+         sentence this check must print when it fails. */
+      let gapBefore = null;
+      await until(
+        `the room to notice ${worker.name} has nowhere to go`,
+        async () => {
+          gapBefore = await readLine();
+          return !!gapBefore && /no folder has been chosen/i.test(gapBefore.words);
+        }, { timeout: 30000, every: 200 }).catch(() => { /* say what it DOES read, below */ });
       if (!gapBefore || !gapBefore.fix
         || !/(own folder|no folder has been chosen)/i.test(gapBefore.words)) {
         throw new Error("NOT ON SCREEN — an agent that cannot reach this computer says nothing " +
@@ -3467,9 +3504,17 @@ async function walk(page) {
         wholeComputerRoots: [reachDir],
       });
       if (!saved) throw new Error("the window never sent the save");
-      await until(`the room to stop saying ${worker.name} has nowhere to go`, async () =>
-        (await page.locator(`${rail} [data-reach-gap]`).count()) === 0,
-      { timeout: 30000, every: 200 });
+      let gapAfter = null;
+      await until(
+        `the room to stop saying ${worker.name} has nowhere to go`,
+        async () => {
+          gapAfter = await readLine();
+          return gapAfter?.state === "chosen";
+        }, { timeout: 30000, every: 200 });
+      if (!gapAfter?.fix) {
+        throw new Error("NOT ON SCREEN — the room says which folders the agent has but offers " +
+          `no way to change them: ${JSON.stringify(gapAfter)}`);
+      }
       await shot(page, "reach-folder-given");
 
       /* --- part three: an ORDINARY chat message ------------------------- */

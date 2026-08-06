@@ -97,7 +97,8 @@ import {
    — the same function the engine host asks when it builds `--add-dir`, imported
    by path for the same reason, and reading `@cloud9/shared` only. */
 import {
-  wholeComputerRootsFor, wholeComputerWords, type WholeComputerRoots,
+  wholeComputerRootsFor, wholeComputerWords, reachLineInRoom,
+  type WholeComputerRoots,
 } from "@cloud9/engine/dist/wholecomputer.js";
 /* THE NOTIFICATION RULES AND THE FIVE EVENTS THAT FEED THEM.
    `decideNotification` is the ONE gate (quiet hours, de-dupe, self-suppression,
@@ -3365,7 +3366,7 @@ interface Row {
  * agent's own previous post — that ask was already answered.
  */
 /**
- * THE JOB EACH "📦 Task done" MESSAGE IS THE RESULT OF — for a whole list.
+ * THE JOB EACH "📦 Task …" MESSAGE IS THE RESULT OF — for a whole list.
  *
  * A message carries no job id, so the only honest link is the RESULT ITSELF:
  * the hub stores a finished job's result, and the agent posts exactly that text
@@ -3385,7 +3386,13 @@ function doneRunIdsFor(messages: Message[], tasks: Task[]): Map<ID, string> {
   const map = new Map<ID, string>();
   for (const m of messages) {
     if (m.authorKind !== "agent" || m.deletedAt) continue;
-    const head = /^📦 (?:Background t|T)ask done:\n/.exec(m.text);
+    /* EVERY WAY A JOB ENDS, not only the happy one (2026-08-06). This read
+       "done" alone, so a job the owner STOPPED got no card — and the card is
+       the only thing on the screen that says `cancelled` rather than
+       "finished". He pressed Stop and nothing in front of him disagreed with
+       the word "done". One expression, all the endings: whatever a job's last
+       message is called, it is matched to its job the same way. */
+    const head = /^📦 (?:Background t|T)ask (?:done|stopped):\n/.exec(m.text);
     if (!head) continue;
     const body = m.text.slice(head[0].length);
     const hits = tasks.filter(t =>
@@ -7015,27 +7022,33 @@ const ROLE_MEANS: Record<ChannelRole, string> = {
  * door is the fault; this is the other half — the door itself, next to the
  * agent's name in the room he is already looking at, one press away.
  *
- * IT ONLY CLAIMS WHAT IT CAN KNOW HERE. Two of the five states — switched off,
- * and on-with-nothing-chosen — are facts about the stored agent and need no
- * disk at all. The other three (gone / partly / ready) are questions only the
- * computer can answer, and this window is not allowed to ask it, so this line
- * says nothing in those cases rather than guessing. Silence here means "the
- * editor has the detail", never "all good".
+ * NEVER SILENT, SINCE 2026-08-06 — and this is the third report of the same
+ * feeling. This line used to speak in two of the five states and say NOTHING in
+ * the other three, because they are disk questions and this window cannot see
+ * the disk. The result was that the room went quiet in exactly the states where
+ * he is most likely to be staring at "I cannot reach that folder": the folder he
+ * needs was never on the list, or one that was has moved. A blank space and no
+ * door, which from where he sits is a broken app.
+ *
+ * So the words come from `reachLineInRoom` in @cloud9/engine, which is TOTAL —
+ * one sentence and one door for every provider, every switch and every folder
+ * list, held by `neversilent.test.ts`. This component chooses nothing and can no
+ * longer forget a state; it only draws what that one owner returns.
  */
 function ReachGap({ agent, onEdit }: {
   agent: AgentDef; onEdit: () => void;
-}): React.JSX.Element | null {
-  /* A GAP FIRST, because a gap is a promise the app has made and cannot keep,
-     and "switched off" is a decision he made on purpose. */
+}): React.JSX.Element {
+  /* A GAP FIRST, because a gap is a promise the app has made and cannot keep —
+     and that badge covers connected services too, which this line never
+     mentions. Everything else falls through to the total answer below. */
   if (supplyGapsOf(agent).length > 0) {
     return <SupplyGapBadge agent={agent} onEdit={onEdit} where="rail" />;
   }
-  // `onDisk` is never consulted here — an off switch is answered before the disk.
-  if (wholeComputerRootsFor(agent, () => false).state !== "off") return null;
+  const line = reachLineInRoom(agent, agent.name);
   return (
-    <span className="an-fix" data-reach-gap="off">
-      {agent.name} can only touch its own folder — nothing else on this computer.{" "}
-      <button className="linkbtn" data-reach-fix onClick={onEdit}>Give it a folder</button>
+    <span className="an-fix" data-reach-gap={line.state}>
+      {line.words}{" "}
+      <button className="linkbtn" data-reach-fix onClick={onEdit}>{line.fix}</button>
     </span>
   );
 }
@@ -10083,7 +10096,19 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
               press, and readable off the card afterwards. */}
           <section className="fieldset trustsec">
             <div className="sec-head">
-              <h3>How much can {shownName} do on its own?</h3>
+              {/* A SECTION IS NAMED FOR WHAT IT CONTROLS, NEVER FOR WHOSE IT IS
+                  (2026-08-06). This heading read "How much can {name} do on its
+                  own?" — the only one of the editor's nine that changed with the
+                  agent. Two consequences, and neither is cosmetic. The obvious
+                  one: the same control is called something different on every
+                  agent, so it cannot be looked for by name. The one that cost a
+                  day: it made "does a hired agent offer what a hand-made one
+                  does?" unanswerable — compare the two editors and this section
+                  looks MISSING from both, because "…can Drivecheck do…" and
+                  "…can Architect do…" are not the same words. The agent's name
+                  still appears immediately below, in the sentence that is
+                  actually about that agent. */}
+              <h3>How much they can do on their own</h3>
               <span className="eyebrow">Trust</span>
             </div>
             <p className="sec-note">

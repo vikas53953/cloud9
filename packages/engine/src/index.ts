@@ -138,7 +138,9 @@ export {
 // line will not carry.
 export {
   wholeComputerRootsFor, addDirRootsFor, wholeComputerWords,
-  type WholeComputerRoots, type FolderOnDisk,
+  // NEVER SILENT ABOUT REACH — the room's line, total over every state
+  reachLineInRoom,
+  type WholeComputerRoots, type FolderOnDisk, type ReachLine,
 } from "./wholecomputer.js";
 // GAP C (2026-08-05): WHAT KIND OF BOUNDARY A FOLDER REALLY IS, in one place, so
 // every screen that talks about reach reads the same measured answer rather than

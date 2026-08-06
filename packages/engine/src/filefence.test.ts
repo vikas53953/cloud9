@@ -25,7 +25,7 @@ import {
   CAPABILITIES, FILE_FENCE_WORDS, REACH_LEVELS, claudeToolsFor, codexSandboxFor,
   deniedClaudeTools, fileFenceFor, renderCapabilities,
 } from "./abilities.js";
-import { wholeComputerRootsFor, wholeComputerWords } from "./wholecomputer.js";
+import { reachLineInRoom, wholeComputerRootsFor, wholeComputerWords } from "./wholecomputer.js";
 
 const agent = (over: Partial<AgentDef> = {}): AgentDef => ({
   id: "a1", ownerId: "u1", name: "Scout", emoji: "🔭", persona: "You research travel",
@@ -46,6 +46,15 @@ function ownerFacingSentences(a: AgentDef): string[] {
   for (const state of ["off", "none", "gone", "partly", "ready"] as const) {
     const words = wholeComputerWords({ ...roots, state }, a.name);
     said.push(`${words.headline} ${words.detail}`);
+  }
+  /* THE ROOM'S LINE IS A SENTENCE HE READS TOO (2026-08-06). It went in the day
+     the room stopped being able to go silent about reach, and it is swept here so
+     it can never start promising the wall the rest of these sentences may not. */
+  for (const folders of [undefined, [], ["C:/work"], ["C:/work", "D:/other"]]) {
+    said.push(reachLineInRoom({ ...a, wholeComputerRoots: folders }, a.name).words);
+    said.push(reachLineInRoom({
+      ...a, abilities: { ...a.abilities, wholeComputer: false }, wholeComputerRoots: folders,
+    }, a.name).words);
   }
   said.push(...REACH_LEVELS.map(l => l.plainWords));
   said.push(renderCapabilities(a, { wholeComputerRoots: ["C:/work"] }));
