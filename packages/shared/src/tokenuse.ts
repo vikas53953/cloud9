@@ -104,7 +104,26 @@ export function handedToItOf(
   // `cached_input_tokens` is the part of it that came from the cache. Adding
   // them would count the cache twice — the mirror image of the Claude bug.
   if ((provider ?? "claude") === "codex") {
-    return input === undefined ? undefined : { tokens: input, how: "rebuilt" };
+    if (input === undefined) return undefined;
+    // THE REBUILD CHECKS ITSELF, AND REFUSES RATHER THAN GUESSES.
+    //
+    // Everything above rests on one fact off the record — `provider` — and if
+    // that fact is wrong the answer is wrong by the size of the whole cache,
+    // silently, with no way for a reader to tell. That is exactly the class of
+    // thing this feature exists to catch, and it does not stop being that when
+    // it is us doing it.
+    //
+    // So the Codex convention is CHECKED against the figures it is about to be
+    // applied to. Under it, the cache is a PART of the total, so
+    // `cached > input` is not unlikely — it is arithmetically impossible. When
+    // it happens, either the record is not really a Codex run or its figures
+    // are corrupt, and in both cases the honest answer is that we do not know.
+    //
+    // MEASURED ON THE OWNER'S OWN 185 RECORDS: all 69 Codex runs satisfy it,
+    // and 84 Claude runs violate it — so it genuinely separates the two rather
+    // than being a rule that never fires.
+    if (cached !== undefined && cached > input) return undefined;
+    return { tokens: input, how: "rebuilt" };
   }
   // CLAUDE COUNTS IN THREE SEPARATE PILES and `input_tokens` is only the
   // smallest of them. All three, added, is what was handed over. See the
@@ -861,8 +880,17 @@ export function renderTokenUseReport(rows: readonly TokenUseReportRow[], period:
     lines.push(`• ${u.agentName} (${u.provider}) — ${moneyWords(u)}`);
     const split = sentVsWrote(u);
     if (split) {
-      lines.push(`  ${pct(split.sentShare)} of that was material sent TO it; `
+      lines.push(`  ${pct(split.sentShare)} of that was material handed TO it; `
         + `${pct(split.wroteShare)} was what it wrote back.`);
+      // AN AGENT MUST BE TOLD WHICH FIGURES WERE REBUILT, or it will repeat
+      // them to the owner as measured — which is the same overclaim as a screen
+      // making it, except he has no way at all to check an agent's sentence.
+      // The screen says this; so does this.
+      if (u.runsWithRebuiltSize > 0) {
+        lines.push(`  (${u.runsWithRebuiltSize} of those ${u.runsWithSize} turns predate `
+          + `Cloud9 recording this figure directly, so their sizes are worked out from the `
+          + `separate amounts each app did report. Say so if you quote them.)`);
+      }
     }
     for (const f of row.findings) {
       lines.push(`  ⚠ ${f.headline}`);

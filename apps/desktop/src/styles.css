@@ -3224,3 +3224,6 @@ button.chip{cursor:pointer;}
    above it, and never mistaken for one of them. See `WasteFinding.reference`. */
 .finding .borrowed{margin:8px 0 0;font-size:11.5px;font-style:italic;color:var(--ink-3);
   border-left:2px solid var(--line-soft);padding-left:9px;}
+/* A figure worked out from an older record rather than read off one total.
+   Quieter than the sentence it follows, and never absent when it applies. */
+.spendrow .perturn .rebuilt{color:var(--ink-3);}

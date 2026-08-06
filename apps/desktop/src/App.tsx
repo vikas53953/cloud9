@@ -13496,11 +13496,14 @@ function SpendingRow({ row }: {
               the kind of quiet overclaim that costs an app its credibility the
               first time somebody checks. */}
           {use.runsWithRebuiltSize > 0 && (
-            use.runsWithRebuiltSize === use.runsWithSize
-              ? " These sizes are worked out from what each app reported at the time."
-              : ` ${use.runsWithRebuiltSize} of these ${use.runsWithSize} turns predate Cloud9`
-                + " recording this directly, so their sizes are worked out from what each"
-                + " app reported at the time."
+            <span className="rebuilt">
+              {use.runsWithRebuiltSize === use.runsWithSize
+                ? " None of these turns"
+                : ` ${use.runsWithRebuiltSize} of these ${use.runsWithSize} turns`} recorded
+              a single total at the time, so the size above is added up from the separate
+              amounts the app did report. Nothing is estimated — but it is worked out
+              rather than read off.
+            </span>
           )}
         </p>
       )}
