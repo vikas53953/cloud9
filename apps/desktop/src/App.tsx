@@ -58,7 +58,8 @@ import {
   /* WHAT EACH AGENT IS DOING RIGHT NOW, in his words. The join of presence +
      lamp + unanswered go-ahead + last finished job happens in shared, where a
      test can read it — the screen below only draws what comes back. */
-  activityRank, agentActivityLine, crewActivitySummary,
+  activityRank, agentActivityLine, crewActivitySummary, workingCount,
+  type AgentActivityLine,
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -467,6 +468,17 @@ const clock = (ts: number): string =>
  * fact on the Right now board is already pushed as it changes.
  */
 const ACTIVITY_REFRESH_MS = 4000;
+
+/**
+ * HOW MANY PAST JOBS AN AGENT'S HISTORY HOLDS — ONE number, for every asker.
+ *
+ * A history is stored under one key per agent, so the last answer wins. The
+ * Activity board asked for 1 and an agent's own Recent work panel asked for 10,
+ * which meant visiting Activity and then opening an agent showed ONE job where
+ * there should have been ten — the board had overwritten the list. Everything
+ * asks for the same number now and reads as much of it as it needs.
+ */
+const RUN_HISTORY_LIMIT = 10;
 
 /**
  * A message shrunk to one line, for the "answering…" line above a reply.
@@ -2082,11 +2094,13 @@ function Workspace(): React.JSX.Element {
   const pendingApprovals = useMyApprovals(world.approvals, world.me?.id).waiting.length;
 
   /* HOW MANY OF HIS OWN AGENTS ARE WORKING THIS SECOND — the number on the
-     Activity button. His own only, for the same reason the board below is his
-     own only: another person's agent working is not his business and the hub
-     would not tell him about it anyway. */
-  const workingNow = world.agents.filter(
-    a => a.ownerId === world.me?.id && world.agentStatus[a.id] === "working").length;
+     Activity button, taken from THE SAME LINES THE BOARD DRAWS.
+     This used to count `agentStatus === "working"` on its own, which is a
+     different question from the one the board answers: the engine keeps that
+     lamp lit while an agent stands waiting for a go-ahead, so the button said
+     "1" and the board said "Nothing is being worked on" — both visible at once,
+     one of them lying. `workingCount` is now the only answer either can give. */
+  const workingNow = workingCount(useAgentActivity().map(r => r.line));
 
   /* ---- EVERY WAY OUT OF A SCREEN GOES THROUGH ONE DOOR ----
    *
@@ -3850,7 +3864,7 @@ function RecentWork({ agentId }: { agentId: ID }): React.JSX.Element {
   useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [open, setOpen] = useState<string | null>(null);
   const list = client.runsFor("agent", agentId);
-  useEffect(() => { client.askRuns("agent", agentId, 10); }, [agentId]);
+  useEffect(() => { client.askRuns("agent", agentId, RUN_HISTORY_LIMIT); }, [agentId]);
 
   return (
     <div className="recentwork" data-agent={agentId}>
@@ -13675,7 +13689,22 @@ function SpendingScreen(): React.JSX.Element {
  * steps arrive on their own channel. The board is a render of state that was
  * already arriving, which is why it moves while he watches it.
  */
-function RightNowBoard(): React.JSX.Element {
+/**
+ * ONE OWNER OF "WHAT IS EACH OF MY AGENTS DOING" — read by the board AND by the
+ * count on the rail button.
+ *
+ * ======================= WHY THIS IS A HOOK ================================
+ *
+ * It used to be a block inside the board, and the rail counted the working
+ * lamps itself. Two computations of one fact is two chances to be right, and
+ * they disagreed in a way he could SEE AT ONCE: an agent that stops mid-job to
+ * ask him something still has the engine's working lamp lit, so the button said
+ * "1" and the board said "Nothing is being worked on".
+ *
+ * Now there is one list of lines and everything on the screen is derived from
+ * it. A second way to count agents is, from here on, a bug.
+ */
+function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine }[] {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const liveWork = useLiveWorkByAgent();
 
@@ -13687,17 +13716,33 @@ function RightNowBoard(): React.JSX.Element {
     () => world.agents.filter(a => a.ownerId === world.me?.id),
     [world.agents, world.me?.id]);
 
+  /* THE ONE OWNER OF "IS THIS STILL WAITING ON HIM" — the same function the
+     tasks tray and the rail's approval badge use, and NOT a second reading of
+     `status === "pending"`.
+     Re-implementing it here is how the board came to raise "Waiting for you"
+     over go-aheads that had already run out. That is worse than a wrong row:
+     it is rank-0, so it HID the agent's real state behind a button he no longer
+     has. `useMyApprovals` applies `approvalIsDead` and ticks the clock. */
+  const { waiting: liveApprovals } = useMyApprovals(world.approvals, world.me?.id);
+
   /* THE LAST THING EACH ONE DID — re-asked WHENEVER A LAMP MOVES, not once.
      Asking only on mount was the stale-by-design version of this row: he would
      watch an agent finish in front of him and the board would still be showing
      the job before it, because a finished job only becomes a fact this app
      holds after the hub is asked again. Keying the ask on the lamps means the
      moment one goes from working to idle, the row goes and fetches what it just
-     did. `askRuns` already refuses to stack requests, so this cannot pile up. */
+     did. `askRuns` already refuses to stack requests, so this cannot pile up.
+
+     TEN, NOT ONE, and that number is load-bearing. A run history is stored under
+     one key per agent, so the board asking for 1 and the agent's own Recent work
+     panel asking for 10 were overwriting each other's answer: open an agent
+     after visiting this screen and nine of its ten jobs had vanished. The board
+     only ever reads the newest, so asking for the same 10 costs nothing and
+     leaves one list that satisfies both. */
   const lampKey = mine.map(a => `${a.id}:${world.agentStatus[a.id] ?? "idle"}`).join(" ");
   useEffect(() => {
     for (const pair of lampKey ? lampKey.split(" ") : []) {
-      client.askRuns("agent", pair.slice(0, pair.lastIndexOf(":")), 1);
+      client.askRuns("agent", pair.slice(0, pair.lastIndexOf(":")), RUN_HISTORY_LIMIT);
     }
   }, [lampKey]);
 
@@ -13712,14 +13757,15 @@ function RightNowBoard(): React.JSX.Element {
     return undefined;
   }, [world.messages]);
 
-  const rows = useMemo(() => mine.map(agent => {
+  return useMemo(() => mine.map(agent => {
     const presence = world.presence[agent.id];
     const work = liveWork[agent.id];
-    /* Only a go-ahead that is still answerable counts as waiting on him. One
-       that already expired is not something he can act on, and a row that
-       nagged about it would send him looking for a button that is gone. */
-    const asking = world.approvals.find(ap =>
-      ap.agentId === agent.id && ap.ownerId === world.me?.id && ap.status === "pending");
+    const asking = liveApprovals.find(ap => ap.agentId === agent.id);
+    /* A JOB IT IS HOLDING BUT HAS NOT STARTED. The engine queues turns and runs
+       two at once, and its working lamp only lights when a turn really begins —
+       so an agent sitting on his job was drawn as idle, still wearing the tick
+       from the job before. `not_started` is the hub's own word for that gap. */
+    const queued = world.tasks.find(t => t.agentId === agent.id && t.status === "not_started");
     const last = client.runsFor("agent", agent.id).entries[0];
     const line = agentActivityLine({
       presence: presence?.presence,
@@ -13730,8 +13776,16 @@ function RightNowBoard(): React.JSX.Element {
       askedTo: work ? askOf(work.messageId) : undefined,
       awaitingOwner: !!asking,
       awaitingWhat: asking?.action,
+      queuedWork: queued?.title,
       last: last && {
-        outcome: last.outcome, ask: last.ask, summary: last.summary, startedAt: last.startedAt,
+        outcome: last.outcome,
+        ask: last.ask,
+        summary: last.summary,
+        /* WHEN IT ENDED, not when it began — a record stores a start and a
+           length, so the end has to be added up. "3 minutes ago" over a job
+           that started three hours ago and finished seconds ago was the row
+           being confidently wrong about its only claim. */
+        finishedAt: last.startedAt + last.durationMs,
       },
     });
     return { agent, line };
@@ -13741,8 +13795,12 @@ function RightNowBoard(): React.JSX.Element {
        dependencies meant the answer to "what did it just do" could land and the
        board would never redraw to show it. The row would sit on "Ready" for
        ever with the record already in memory. */
-  }), [mine, world.presence, world.agentStatus, world.approvals, world.me?.id,
-    world.runLists, liveWork, askOf]);
+  }), [mine, world.presence, world.agentStatus, world.tasks, world.runLists,
+    liveApprovals, liveWork, askOf]);
+}
+
+function RightNowBoard(): React.JSX.Element {
+  const rows = useAgentActivity();
 
   /* Stable inside a state, so a lamp changing somewhere else never reshuffles
      the rows he is reading. */

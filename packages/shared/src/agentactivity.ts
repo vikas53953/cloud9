@@ -22,6 +22,7 @@
 // network engineer, not a developer: he reads "working now", "you stopped it",
 // "waiting for you".
 import { AgentPresence, AgentStatus, RunOutcome, WORK_REACTIONS } from "./index.js";
+import { RECEIPT_EMOJI } from "./receipts.js";
 
 /**
  * The eight things an agent can be, from the owner's side of the screen.
@@ -39,6 +40,8 @@ import { AgentPresence, AgentStatus, RunOutcome, WORK_REACTIONS } from "./index.
 export type AgentActivityState =
   | "working"    // mid-job right now
   | "waiting"    // stopped and asking him for a go-ahead
+  | "queued"     // it has his job and has not started it yet
+  | "braked"     // it stopped itself after going round in circles
   | "stopped"    // he stopped it
   | "failed"     // it ran and didn't finish
   | "done"       // it ran and finished
@@ -64,10 +67,28 @@ export interface AgentActivityFacts {
   doingNow?: string;
   /** what it was asked, if a job is in flight */
   askedTo?: string;
-  /** is one of ITS go-ahead requests sitting unanswered in front of him? */
+  /**
+   * Is one of ITS go-ahead requests sitting unanswered in front of him?
+   *
+   * ONLY ONE THAT IS STILL ANSWERABLE. A request that ran out is not something
+   * he can act on, and because this fact outranks every other one, getting it
+   * wrong does not just add a bad row — it HIDES the agent's real state behind
+   * a button that is no longer there. The caller must decide this with the same
+   * `approvalIsDead` rule the tasks tray and the rail badge use, never by
+   * looking at `status === "pending"` alone.
+   */
   awaitingOwner?: boolean;
   /** what it asked him for, so the row can say what is being held up */
   awaitingWhat?: string;
+  /**
+   * IT HAS ONE OF HIS JOBS AND HAS NOT STARTED IT YET.
+   *
+   * The engine queues turns and runs two at a time, and the working lamp is
+   * only lit once a turn actually begins — so an agent sitting on his job looked
+   * exactly like an idle one, right down to showing the tick from the job
+   * BEFORE it. This is the title of the job that is waiting to start.
+   */
+  queuedWork?: string;
   /** the most recent finished job we know about, if any */
   last?: {
     outcome: RunOutcome;
@@ -75,8 +96,15 @@ export interface AgentActivityFacts {
     ask: string;
     /** the plain-words wrap-up — `summarizeRun` already builds this */
     summary: string;
-    /** when it started, so the row can say how long ago */
-    startedAt: number;
+    /**
+     * WHEN IT ENDED, not when it began.
+     *
+     * "3 minutes ago" for a job that started three hours ago and finished ten
+     * seconds ago is a lie about the only thing the row is claiming. Callers
+     * pass `startedAt + durationMs`, because a run record stores a start and a
+     * length and there is no stored end.
+     */
+    finishedAt: number;
   };
 }
 
@@ -106,24 +134,41 @@ export interface AgentActivityLine {
  *
  *  1. It is BLOCKED ON HIM. Nothing else on the row matters if he is the reason
  *     the work is not moving, so this outranks even "working now": an agent can
- *     be mid-job and still be standing there waiting for a go-ahead.
+ *     be mid-job and still be standing there waiting for a go-ahead. THE ENGINE
+ *     KEEPS THE WORKING LAMP LIT THROUGH AN APPROVAL WAIT (the lamp is set when
+ *     a turn starts and cleared when it ends, and the asking happens in
+ *     between), which is exactly why this rung has to come first and why
+ *     anything counting "who is working" must count THESE STATES and not the
+ *     raw lamp — see `workingCount`.
  *  2. It is WORKING. Beats paused and switched off deliberately — a job already
  *     in flight is a fact on the screen, and hiding it behind a setting would
  *     make a busy agent look idle.
  *  3. NOTHING CAN RUN IT — switched off, or the hub says offline. Said WITH the
  *     reason, because "off" without a why is the version of this screen that
- *     sends him hunting.
+ *     sends him hunting. Above the queue on purpose: a job queued for an agent
+ *     nothing can run is not about to happen, and saying "next up" would be a
+ *     promise the app cannot keep.
  *  4. He PAUSED it. His own choice, so it is a state and not a fault.
- *  5. Otherwise the last finished job speaks: stopped / didn't finish /
+ *  5. IT IS HOLDING HIS JOB but has not started. Invisible until now, because
+ *     the working lamp only lights once a turn really begins.
+ *  6. IT PUT ITS OWN BRAKE ON. Its own row, never the last job's tick — an
+ *     agent that stopped itself has NOT "finished", and drawing ✅ on it is the
+ *     same lie 🛑 was added to stop the app telling.
+ *  7. Otherwise the last finished job speaks: stopped / didn't finish /
  *     finished, in that order of "things he'd want to know first".
- *  6. And if there is no last job, say so plainly rather than showing a
+ *  8. And if there is no last job, say so plainly rather than showing a
  *     confident-looking empty row.
  */
 export function agentActivityLine(facts: AgentActivityFacts): AgentActivityLine {
   if (facts.awaitingOwner) {
     return {
       state: "waiting",
-      mark: WORK_REACTIONS.picked,
+      /* ❓ ALREADY MEANS "it asked a question back; the next move is a person's"
+         (`RECEIPT_EMOJI.needsInput`) — which is this row exactly. 👀 was wrong
+         here: it is already spoken for, and it means the opposite thing
+         ("picked your message up, the job is queued"), so the same tick would
+         have meant both "I am holding this" and "I am stuck on you". */
+      mark: RECEIPT_EMOJI.needsInput,
       headline: "Waiting for you",
       detail: facts.awaitingWhat
         ? `It stopped to ask: ${facts.awaitingWhat}`
@@ -161,8 +206,32 @@ export function agentActivityLine(facts: AgentActivityFacts): AgentActivityLine 
     };
   }
 
+  if (facts.queuedWork) {
+    return {
+      state: "queued",
+      /* 👀 IS THE RIGHT TICK HERE AND ONLY HERE: the app already puts it on his
+         message to mean "picked your message up — the job is queued". This row
+         is that same fact, gathered onto one screen. */
+      mark: WORK_REACTIONS.picked,
+      headline: "Next up",
+      detail: `It has your job and hasn't started it yet: ${facts.queuedWork}`,
+    };
+  }
+
+  if (facts.status === "braked") {
+    return {
+      state: "braked",
+      mark: "—",
+      headline: "Taking a break",
+      /* THE WORDS THE RAIL ALREADY USES for this same lamp ("taking a break"),
+         so one fact is not called two things on two screens. */
+      detail: "It stopped itself after your agents went back and forth too long. "
+        + "Say something and it picks up again.",
+    };
+  }
+
   if (facts.last) {
-    const when = `${agoWords(facts.last.startedAt)}, you asked it: ${facts.last.ask}`;
+    const when = `${agoWords(facts.last.finishedAt)}, you asked it: ${facts.last.ask}`;
     if (facts.last.outcome === "cancelled") {
       return {
         state: "stopped",
@@ -206,12 +275,39 @@ export function agentActivityLine(facts: AgentActivityFacts): AgentActivityLine 
  * around under his eyes every time a lamp changes.
  */
 export const ACTIVITY_ORDER: readonly AgentActivityState[] = [
-  "waiting", "working", "failed", "stopped", "done", "ready", "paused", "off",
+  /* Things he can DO SOMETHING ABOUT, hardest first. `off` sits up here, not
+     down with the quiet rows: "Claude isn't signed in" is a job for him, and
+     burying it under three finished agents is how it stays unfixed for a day.
+     It was below `done` and `ready` in the first version of this list, which
+     contradicted this file's own stated rule. */
+  "waiting", "working", "queued", "off", "failed", "stopped", "braked",
+  /* Nothing to do here. */
+  "done", "ready", "paused",
 ];
 
 export function activityRank(state: AgentActivityState): number {
   const i = ACTIVITY_ORDER.indexOf(state);
   return i < 0 ? ACTIVITY_ORDER.length : i;
+}
+
+/**
+ * HOW MANY AGENTS ARE WORKING — the ONE answer, for every part of the screen.
+ *
+ * ================== WHY THIS IS A FUNCTION AND NOT A FILTER =================
+ *
+ * The button in the side bar used to count `agentStatus === "working"` itself
+ * while the board decided each row with the ladder above. Those are two
+ * different questions and they gave two different answers ON THE SAME SCREEN:
+ * the engine holds the working lamp lit through an approval wait, so an agent
+ * that had stopped to ask him something made the button say "1" while the board
+ * three inches away said "Nothing is being worked on".
+ *
+ * A person cannot be shown two numbers for one fact and be expected to pick the
+ * true one. So there is now exactly one place that answers it, it answers from
+ * the SAME lines the board draws, and any other count is a bug.
+ */
+export function workingCount(lines: readonly AgentActivityLine[]): number {
+  return lines.filter(l => l.state === "working").length;
 }
 
 /**
@@ -229,23 +325,32 @@ export function crewActivitySummary(lines: readonly AgentActivityLine[]): string
   }
   const total = lines.length;
   const crew = total === 1 ? "your agent" : `your ${total} agents`;
-  const working = lines.filter(l => l.state === "working").length;
+  const working = workingCount(lines);
   const waiting = lines.filter(l => l.state === "waiting").length;
+  const queued = lines.filter(l => l.state === "queued").length;
 
   const waitingBit = waiting === 0
     ? ""
     : waiting === 1
       ? " One is waiting for your go-ahead."
       : ` ${waiting} are waiting for your go-ahead.`;
+  const queuedBit = queued === 0
+    ? ""
+    : queued === 1
+      ? " One has a job lined up."
+      : ` ${queued} have jobs lined up.`;
 
   if (working > 0) {
     const busy = working === 1
       ? (total === 1 ? "Your agent is working right now." : `1 of ${crew} is working right now.`)
       : `${working} of ${crew} are working right now.`;
-    return `${busy}${waitingBit}`;
+    return `${busy}${waitingBit}${queuedBit}`;
   }
-  if (waiting > 0) {
-    return `Nothing is being worked on.${waitingBit}`;
+  /* "NOTHING IS BEING WORKED ON" MUST NOT BE SAID OVER WORK THAT EXISTS. A
+     queued job is work he has already handed over, so a summary that ignored it
+     would be the top line disagreeing with a row three inches below it. */
+  if (waiting > 0 || queued > 0) {
+    return `Nothing has started yet.${waitingBit}${queuedBit}`;
   }
   const stuck = lines.filter(l => l.state === "off").length;
   if (stuck === total) {

@@ -97,6 +97,34 @@ async function makeAgent(page, name, persona) {
   console.log(`  made agent ${name}`);
 }
 
+/**
+ * Ask an agent something WITHOUT LEAVING THE BOARD.
+ *
+ * Quick chat is drawn above the screen, so the board stays mounted behind it.
+ * That matters: walking to the chat screen and back takes longer than a short
+ * turn, so earlier versions of this script kept arriving after the live row was
+ * already over and reporting a working feature as unproven.
+ */
+async function askFromBoard(page, agentName, text) {
+  await page.keyboard.press("Control+K");
+  await page.waitForSelector(".qc-input", { timeout: 15000 });
+  await page.fill(".qc-input", text);
+  const opt = page.locator(".qc-opt").filter({ hasText: agentName }).first();
+  if (await opt.count()) await opt.click();
+  await page.press(".qc-input", "Enter");
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.waitForSelector(".qc-input", { state: "detached", timeout: 15000 }).catch(() => {});
+  console.log(`  asked ${agentName}: "${text}" (from quick chat, standing on the board)`);
+}
+
+/** Read every row on the board, as a person would see it. */
+const readBoard = page => page.$$eval(".rn-row", rows => rows.map(r => ({
+  state: r.getAttribute("data-state"),
+  name: r.querySelector(".rn-tx b")?.innerText.trim(),
+  headline: r.querySelector(".rn-state")?.innerText.trim(),
+  detail: r.querySelector(".rn-detail")?.innerText.trim(),
+})));
+
 async function main() {
   if (!fs.existsSync(APP_EXE)) {
     throw new Error(`no Cloud9 to photograph at: ${APP_EXE}\n` +
@@ -217,14 +245,7 @@ async function main() {
     console.log("  (Claude never reported in — the turn below may not run)");
   });
 
-  await page.keyboard.press("Control+K");
-  await page.waitForSelector(".qc-input", { timeout: 15000 });
-  await page.fill(".qc-input", "say the word ok");
-  const scoutOpt = page.locator(".qc-opt").filter({ hasText: "Scout" }).first();
-  if (await scoutOpt.count()) await scoutOpt.click();
-  await page.press(".qc-input", "Enter");
-  await page.keyboard.press("Escape").catch(() => {});
-  console.log("  asked Scout something from quick chat, standing on the board");
+  await askFromBoard(page, "Scout", "say the word ok");
 
   let sawWorking = false;
   try {
@@ -269,8 +290,112 @@ async function main() {
     console.log("  (no finished job reached the board within the wait)");
   }
 
+  /* ---- 5. YOU STOPPED IT -------------------------------------------------
+     One of the two states the review named. 🛑 exists because a job the owner
+     stopped used to wear the same ✅ as one that ran to the end, so a board
+     that cannot show this row has not been checked where it matters most.
+     The Stop button sends "!stop" — the engine's one owner of stopping — so
+     typing it is the same route the button takes.
+
+     ON LEDGER, NOT SCOUT, AND BEFORE THE PLAN TEST. Both of these are ordering
+     lessons from a run that stalled: an agent with an unanswered go-ahead is
+     BLOCKED, so a long job sent to it never starts and the stop lands on
+     nothing. Each state gets an agent that is free to enter it, and the test
+     that deliberately blocks an agent goes last. */
+
+  await askFromBoard(page, "Ledger",
+    "count slowly from 1 to 500, writing out every single number in words");
+
+  /* WAIT FOR **LEDGER** TO BE WORKING, NOT FOR "SOMEBODY" TO BE WORKING.
+     The first version watched for any working row at all, so another agent's
+     turn satisfied it and the stop went out while Ledger's turn was still
+     QUEUED. A queued turn is dropped rather than killed — deliberately, so his
+     money is not spent on work he has cancelled — and a dropped turn writes no
+     record, so there was correctly nothing for the board to show. The harness
+     was stopping the wrong thing at the wrong moment and calling the feature
+     unproven. */
+  const ledgerWorking = page.locator('.rn-row[data-state="working"]').filter({ hasText: "Ledger" });
+  let ledgerRan = true;
+  await until("Ledger itself to start the long job",
+    async () => await ledgerWorking.count() > 0,
+    { timeout: 300000, every: 300 }).catch(() => {
+      ledgerRan = false;
+      console.log("  (Ledger never started the long job — cannot stop what is not running)");
+    });
+  if (ledgerRan) {
+    /* Let the turn get properly underway. Stopping the instant the lamp lights
+       can still land between "slot taken" and "process running", which is the
+       same nothing-to-kill case one step later. */
+    await page.waitForTimeout(10000);
+    await askFromBoard(page, "Ledger", "!stop");
+  }
+
+  let sawStopped = false;
+  if (ledgerRan) {
+    try {
+      await until("the board to say HE stopped it", async () => {
+        sawStopped = await page.locator('.rn-row[data-state="stopped"]').count() > 0;
+        return sawStopped;
+      }, { timeout: 300000, every: 400 });
+    } catch { /* said out loud below */ }
+  }
+
+  if (sawStopped) {
+    const row = await page.locator('.rn-row[data-state="stopped"]').first().innerText();
+    console.log(`  STOPPED row: ${row.replace(/\s+/g, " ")}`);
+    /* THE WHOLE POINT OF 🛑: a job he stopped must never read as finished. */
+    if (/Finished/.test(row) || /✅/.test(row)) {
+      throw new Error(`a job HE stopped is wearing the finished tick: ${row}`);
+    }
+    await shot(page, "5-you-stopped-it");
+  } else {
+    console.log("  (no stopped job reached the board within the wait)");
+  }
+
+  /* ---- 6. WAITING FOR YOU ------------------------------------------------
+     The other state the review named by hand, because three of its eight
+     findings live in this path: the rail count disagreeing with the board, and
+     expired go-aheads being raised as live ones. "!plan" is the owner's own way
+     of saying "show me the plan before you do anything", and it produces a real
+     approval that really sits waiting on him.
+     LAST, because it deliberately leaves an agent blocked. */
+
+  await askFromBoard(page, "Scout", "!plan tidy up my notes folder");
+
+  let sawWaiting = false;
+  try {
+    await until("the board to show an agent waiting on him", async () => {
+      sawWaiting = await page.locator('.rn-row[data-state="waiting"]').count() > 0;
+      return sawWaiting;
+    }, { timeout: 420000, every: 400 });
+  } catch { /* said out loud below */ }
+
+  if (sawWaiting) {
+    const row = await page.locator('.rn-row[data-state="waiting"]').first().innerText();
+    const line = (await page.locator(".rn-sum").innerText()).trim();
+    /* THE CONTRADICTION THE REVIEW FOUND, CHECKED ON THE REAL SCREEN.
+       The engine keeps the working lamp lit while an agent stands waiting, so
+       this is exactly the moment the rail button used to say "1" over a board
+       reading "Nothing is being worked on". Both are read here, together. */
+    const badge = (await page.locator('.rail .rail-btn[data-go="activity"] .rail-count')
+      .innerText().catch(() => "0")).trim() || "0";
+    console.log(`  WAITING row: ${row.replace(/\s+/g, " ")}`);
+    console.log(`  WAITING top line: "${line}"`);
+    console.log(`  WAITING rail badge: "${badge}"`);
+    if (/working right now/.test(line) && badge === "0") {
+      throw new Error("the top line and the badge disagree about who is working");
+    }
+    if (badge !== "0" && !/working right now/.test(line)) {
+      throw new Error(`CONTRADICTION — rail badge says ${badge}, board says "${line}"`);
+    }
+    await shot(page, "6-waiting-for-you");
+  } else {
+    console.log("  (no go-ahead reached the board within the wait)");
+  }
+
   console.log("\n  Activity board is on screen, with words in every row.");
-  console.log(`  working state photographed: ${sawWorking}; ending state photographed: ${sawEnding}`);
+  console.log(`  photographed — working: ${sawWorking}  finished: ${sawEnding}  ` +
+    `waiting-for-you: ${sawWaiting}  you-stopped-it: ${sawStopped}`);
   if (KEEP_OPEN) {
     console.log("  --keep-open: the window is still up; close it yourself.");
     return;

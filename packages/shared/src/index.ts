@@ -5756,5 +5756,6 @@ export {
 // is the part that can be wrong. Kept out of the screen so a test can read it.
 export {
   ACTIVITY_ORDER, activityRank, agentActivityLine, agoWords, crewActivitySummary,
+  workingCount,
   type AgentActivityFacts, type AgentActivityLine, type AgentActivityState,
 } from "./agentactivity.js";
