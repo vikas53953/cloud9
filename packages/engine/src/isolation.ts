@@ -102,6 +102,17 @@ const CLAUDE: HarnessIsolation = {
     "Admin-managed (policy) settings still apply, on this CLI, whatever we pass. " +
     "There is no such file on this machine, so this has never been observed. On a " +
     "work-managed PC it would be a real hole and Cloud9 could not close it.",
+    // GAP C, measured 2026-08-05. The line above this list says the switches are
+    // the whole boundary, and that is true of WHICH TOOLS EXIST — which is what
+    // it claims. It is NOT true of WHERE those tools may write, and the folder
+    // picker sat right beside it looking like it was. Said here so the honest
+    // report is honest about its own edge. Full measurements: abilities.ts.
+    "The switches decide which tools this agent has; they do not fence WHERE a " +
+    "tool may write. Claude Code offers no sandbox on this route — a write outside " +
+    "every folder we named went through in every permission mode we tried, and " +
+    "even with a rule naming that exact file. So the folders you choose are where " +
+    "this agent is pointed, not a wall around it. Switch the file tools off and it " +
+    "genuinely cannot touch a file; leave them on and a real fence needs Codex.",
   ],
   measuredOn: "claude-code 2.1.222, 2026-08-05",
 };

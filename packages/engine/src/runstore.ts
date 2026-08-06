@@ -56,6 +56,13 @@ export interface RunStoreOptions {
  * fix is that there is only one number and a test that fails if either line
  * stops deriving it.
  */
+/**
+ * How far past its retention count an agent's runs may pile up while the
+ * spending total refuses to be written, before they are deleted anyway.
+ * See `tooManyToKeep`.
+ */
+const PRUNE_ANYWAY_MULTIPLE = 4;
+
 export const RUN_STORE_DEFAULTS = {
   keepPerAgent: RUN_RETENTION.perAgent,
   maxBytes: RUN_RETENTION.bytes,
@@ -250,7 +257,17 @@ export class RunStore {
     // one turn longer costs a retention slot and fixes itself next time; losing
     // what it cost makes the owner's spending limit quietly stop being a limit.
     // See `carryForward`.
-    if (!this.carryForward(agentId, doomed)) return removed;
+    //
+    // BUT A GUARD THAT CAN NEVER RELEASE IS ITSELF A LEAK, so it has a ceiling.
+    // In practice the things that stop the total being written — a full disk, an
+    // unwritable folder — stop run records being written too, so the pile cannot
+    // grow. The case this covers is the odd one out: that ONE file locked (a
+    // virus scanner holding a handle, a stale lock) while records still save
+    // fine. Left alone, retention would stop for ever and his data folder would
+    // fill with run records. So past a hard ceiling the runs go anyway, and the
+    // log SAYS the month's total is now understated — an announced undercount
+    // beats both a silent one and a folder that grows without end.
+    if (!this.carryForward(agentId, doomed) && !this.tooManyToKeep(dir)) return removed;
     for (const target of targets) {
       if (this.discard(target)) removed++;
     }
@@ -365,6 +382,26 @@ export class RunStore {
     // power cut cannot leave half a total behind under a name we would believe
     return writeWholeFile(target, JSON.stringify(carried, null, 2),
       m => this.log(`[engine] could not carry forward what agent ${agentId} spent: ${m}`));
+  }
+
+  /**
+   * Has the "keep it until the total is written" guard held so long that it has
+   * become the bigger problem? See the note in `prune`.
+   *
+   * The ceiling is a MULTIPLE of the retention count rather than a number of its
+   * own, so it moves with the setting it protects and there is nothing to keep
+   * in step. Four times is enough that a scanner holding the file for a few
+   * minutes never reaches it, and small enough that the folder cannot quietly
+   * become thousands of records.
+   */
+  private tooManyToKeep(dir: string): boolean {
+    const held = this.idsNewestFirst(dir).length;
+    if (held <= this.keep * PRUNE_ANYWAY_MULTIPLE) return false;
+    this.log(`[engine] the spending total could not be written for too long — `
+      + `deleting ${held - this.keep} old run(s) anyway. What they cost is no longer `
+      + `counted, so this agent's spending limit for this month now reads LOWER than it `
+      + `really is until next month.`);
+    return true;
   }
 
   /** Where the carried totals live — beside the runs, under the same path rules. */

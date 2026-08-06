@@ -218,6 +218,40 @@ test("GAP A: if the carried total cannot be written, the run is KEPT rather than
   // a spending limit quietly getting looser the harder the agent works.
 });
 
+test("GAP A: the guard RELEASES rather than piling up runs for ever", () => {
+  // A GUARD THAT CAN NEVER LET GO IS ITSELF A LEAK. If the total stays
+  // unwritable while records keep saving fine — one file locked by a scanner,
+  // say — retention would stop for good and his folder would fill up. Past a
+  // hard ceiling the runs go anyway, and the log says the month now reads LOWER
+  // than it really is. An announced undercount beats a silent one AND beats a
+  // folder that grows without end.
+  const dir = tmp();
+  const said: string[] = [];
+  const store = new RunStore({
+    agentDataDir: () => path.join(dir, "a1"), keepPerAgent: 1, log: m => said.push(m),
+  });
+  const store2 = store as unknown as { carryForward: () => boolean };
+  store2.carryForward = () => false;
+
+  const now = Date.now();
+  for (let i = 1; i <= 9; i++) {
+    store.save(buildRunRecord(seed({ startedAt: now }), {
+      finishedAt: now, outcome: "ok",
+      trace: { provider: "claude", text: "", steps: [], events: 1, usage: { costUsd: 1 } },
+    }, `r-aaa-000${i}`));
+  }
+
+  // keep=1, so the ceiling is 4 — the pile is cut back once it passes it
+  assert.ok(store.list("a1", 50).length <= 4,
+    "the pile is bounded even though the total could never be written");
+  assert.ok(said.some(m => /reads LOWER than it really is/.test(m)),
+    "and it is SAID, in plain words — an undercount nobody is told about is the "
+    + "silent failure this whole guard exists to prevent");
+
+  // BREAK: drop `&& !this.tooManyToKeep(dir)` from `prune` and all nine runs
+  // stay for ever, with nothing ever saying why.
+});
+
 test("GAP A: and the carry really does report failure when it cannot open the ledger", () => {
   // The other half of the same law: `prune` acting on the answer is only worth
   // anything if the answer is honest. An agent id that cannot become a folder

@@ -432,3 +432,119 @@ test("the run record says which path the answer came from", async () => {
   assert.deepEqual(seen, [false, true]);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ===========================================================================
+// THE THINGS THAT WERE BUILT BESIDE THIS ONE, THE SAME NIGHT (2026-08-06)
+// ===========================================================================
+//
+// `abilityFingerprint` grew three new parts on 2026-08-05 — the thinking dial
+// (`effort.ts`), whether a real system prompt is sent (`systemprompt`), and
+// whose setup the turn runs in (`ownersetup.ts`) — and each was added by a
+// different pair of hands. The unit tests above only ever exercised the raw
+// helper with hand-written parts, so a part could be declared on the interface
+// and never actually passed by `claudeAbilityFingerprint`, and every one of
+// those tests would still be green while the real thing quietly resumed a
+// session opened at a different setting.
+//
+// These hold the REAL function — the one the provider calls — against the real
+// command line. A part that stops being passed fails here, by name.
+
+test("the thinking dial is really in the fingerprint the provider uses", () => {
+  // NOTE THE `extras` — this is the honest shape and it is worth saying out
+  // loud. The dial does not reach the command line from `agent.effort`: the
+  // provider translates it once (`effortLevelFor`) and puts the app's own word
+  // in `extras.effortLevel`, and the fingerprint reads THAT, so the fingerprint
+  // and the flag can only ever come from one answer. A caller that built a
+  // fingerprint from the agent alone would get `effort=` for every agent.
+  const quick = { effortLevel: "low" };
+  const hardest = { effortLevel: "max" };
+  const a = agent();
+  assert.notEqual(claudeAbilityFingerprint(a, quick), claudeAbilityFingerprint(a, hardest),
+    "a session opened at one thinking level must not be silently continued at another — " +
+    "the whole point of the dial is that it changes how the model works");
+  assert.notEqual(claudeAbilityFingerprint(a, quick), claudeAbilityFingerprint(a, {}),
+    "and 'the app decides' is its own setting, not the same as any rung");
+  // …and it really is the flag on the line that moved, not a coincidence. Same
+  // `extras`, same one answer, which is the whole point of the arrangement.
+  assert.ok(claudeArgs(a, CLAUDE_MODELS, quick).includes("--effort"));
+  assert.ok(!claudeArgs(a, CLAUDE_MODELS, {}).includes("--effort"));
+});
+
+test("sending a real system prompt is really in the fingerprint", () => {
+  // With a brief file the agent's identity, switches and skills travel in the
+  // harness's system prompt and stdin carries only the turn; without one they
+  // are joined back together on stdin. Those are two different conversations,
+  // so a session must not be carried across the change.
+  const a = agent();
+  assert.notEqual(
+    claudeAbilityFingerprint(a, { standingBriefPath: "C:/agents/a1/.cloud9-brief-x.txt" }),
+    claudeAbilityFingerprint(a, {}),
+  );
+});
+
+test("A REAL SECOND TURN AT A NEW THINKING LEVEL STARTS COLD", async () => {
+  // The end-to-end version of the two above: not the fingerprint function, the
+  // actual provider deciding about an actual stored session.
+  const dir = tempDir();
+  const book = new SessionBook({ agentDataDir: () => dir, log: () => {} });
+  const t1 = turn(book, dir, aThread("m1", "x"));
+  await t1.provider(fakeCli().runner).respond({ ...t1.input, agent: agent({ effort: "quick" }) });
+  assert.equal(book.find("a1", "a1 c1 m1")?.sessionId, SESSION_A, "turn one was remembered");
+
+  const cli = fakeCli();
+  const t2 = turn(book, dir, aThread("m2", "Vikas: and the flights?"));
+  await t2.provider(cli.runner).respond({ ...t2.input, agent: agent({ effort: "hardest" }) });
+  assert.ok(!cli.calls[0].args.includes("--resume"),
+    "the dial moved, so the session must be dropped and the room re-read");
+  assert.ok(cli.calls[0].stdin.includes("all 24,000 characters"),
+    "and a cold turn is a WHOLE turn — never an empty one");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("A REAL SECOND TURN AFTER THE OWNER-SETUP SWITCH FLIPS STARTS COLD", async () => {
+  const dir = tempDir();
+  const book = new SessionBook({ agentDataDir: () => dir, log: () => {} });
+  const t1 = turn(book, dir, aThread("m1", "x"));
+  await t1.provider(fakeCli().runner).respond(t1.input);
+
+  const cli = fakeCli();
+  const t2 = turn(book, dir, aThread("m2", "Vikas: and the flights?"));
+  await t2.provider(cli.runner).respond({
+    ...t2.input, agent: agent({ useOwnerSetup: true }),
+  });
+  assert.ok(!cli.calls[0].args.includes("--resume"),
+    "a session started without his CLAUDE.md, his commands and his servers is not " +
+    "the conversation the agent is in after the switch flips");
+  // and the line really did change too, so this is not a fingerprint that moved on its own
+  assert.ok(!cli.calls[0].args.includes("--disable-slash-commands"));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("A RESUMED TURN STILL CARRIES THE SYSTEM PROMPT AND THE DIAL", async () => {
+  // The failure this rules out: the standing brief and the `--effort` flag are
+  // built once, before the resume decision, and the resumed attempt rebuilds the
+  // argument list. If either were dropped on that second path, a resumed turn
+  // would run without the agent's own brief — the agent would lose its persona,
+  // its switches and its skills on every turn after the first, and nothing else
+  // would look wrong.
+  const dir = tempDir();
+  const book = new SessionBook({ agentDataDir: () => dir, log: () => {} });
+  const scout = agent({ effort: "hardest" });
+  const t1 = turn(book, dir, aThread("m1", "x"));
+  await t1.provider(fakeCli().runner).respond({ ...t1.input, agent: scout });
+
+  const cli = fakeCli();
+  const t2 = turn(book, dir, aThread("m2", "Vikas: and the flights?"));
+  await t2.provider(cli.runner).respond({ ...t2.input, agent: scout });
+
+  const args = cli.calls[0].args;
+  assert.ok(args.includes("--resume"), "this turn really did continue the session");
+  assert.ok(args.includes("--effort"), "a resumed turn must still be told how hard to think");
+  const at = args.indexOf("--append-system-prompt-file");
+  assert.ok(at >= 0, "a resumed turn must still carry the agent's standing brief");
+  // and it is not a stale path from the first turn — the file existed when the
+  // command line was built, and its contents really are this agent's brief
+  assert.ok(args.includes("--exclude-dynamic-system-prompt-sections"),
+    "the flag that makes the split worth doing must ride with it on the resumed path too");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
