@@ -153,7 +153,13 @@ test("a summary goes through the gate that was already there, and is bounded", a
 // ---------------------------------------------------------------------------
 
 test("the work emoji are one fixed set, defined once", () => {
-  assert.deepEqual(Object.keys(WORK_REACTIONS), ["picked", "working", "done", "failed"]);
+  // "stopped" (🛑) JOINED THEM ON 2026-08-06 and this line is why the test is
+  // worth keeping: there were two ticks for three endings, so a job the owner
+  // stopped wore the same ✅ as one that ran to the end — he pressed Stop and
+  // his own message told him the work had finished normally. A fixed list that
+  // has to be edited on purpose is exactly what caught the fifth one arriving.
+  assert.deepEqual(Object.keys(WORK_REACTIONS),
+    ["picked", "working", "done", "failed", "stopped"]);
   for (const emoji of Object.values(WORK_REACTIONS)) assert.equal(isWorkReaction(emoji), true);
   assert.equal(isWorkReaction("🍕"), false);
 });
