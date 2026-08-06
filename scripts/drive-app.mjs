@@ -492,12 +492,26 @@ function sweepOldTempDirs() {
   if (swept) console.log(`  (swept ${swept} throwaway folder(s) left by earlier runs)`);
 }
 
-/** Wait for a thing to become true, rather than sleeping for a guess. */
+/**
+ * Wait for a thing to become true, rather than sleeping for a guess — AND HAND
+ * BACK WHAT IT FOUND.
+ *
+ * IT USED TO RETURN A BARE `true` (fixed 2026-08-06). Every waiter that also
+ * wanted the thing it was waiting FOR — "wait until a run card says the owner
+ * stopped it, then read that card" — silently got `true` instead. The next line
+ * then asked `true` for its words, got `undefined`, and the check died on
+ * "Cannot read properties of undefined" while pointing at the feature. A
+ * harness that throws a confusing error at the app is worse than no harness.
+ *
+ * So the callback's own value comes back. Nothing that ignores it changes —
+ * every existing waiter reads the answer as a plain truthy — and a waiter that
+ * wants the value can no longer be handed a `true` that looks like one.
+ */
 async function until(what, fn, { timeout = 60000, every = 250 } = {}) {
   const deadline = Date.now() + timeout;
   let last;
   for (;;) {
-    try { if (await fn()) return true; } catch (err) { last = err; }
+    try { const found = await fn(); if (found) return found; } catch (err) { last = err; }
     if (Date.now() > deadline) {
       throw new Error(`gave up after ${Math.round(timeout / 1000)}s waiting for ${what}` +
         (last ? ` (last error: ${last.message})` : ""));

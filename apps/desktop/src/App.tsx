@@ -3700,7 +3700,17 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
      likely to meet one in. `redactForSharing` on the engine side took the
      secrets and the paths out; it does not turn computer-speak into English,
      which is why this row could read `Claude exited with 1: fatal: …`. */
-  if (record.error) rows.push(["went-wrong", "What went wrong", plainError(record.error)]);
+  /* WHY IT ENDED, IN THE WORDS THAT FIT HOW IT ENDED (2026-08-06). This row was
+     always headed "What went wrong", whatever the outcome — so a run the OWNER
+     stopped told him, on the receipt, that his own decision had gone wrong. It
+     is the same lie the ✅ on a stopped job was telling, one screen further on:
+     a stop is neither a success nor a fault, and it must not be filed under
+     either. The sentence is unchanged; only the question it is answering is. */
+  if (record.error) {
+    rows.push(record.outcome === "cancelled"
+      ? ["stopped-by-you", "Why it stopped", plainError(record.error)]
+      : ["went-wrong", "What went wrong", plainError(record.error)]);
+  }
 
   const title = record.outcome === "failed"
     ? `${record.agentName} didn't finish “${record.ask}”`
