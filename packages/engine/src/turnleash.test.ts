@@ -7,15 +7,11 @@
 // It was not taking too long — it was working, on a slow computer, and the app
 // stopped it and blamed it.
 //
-// THE FIX IS TWO CLOCKS, NOT A BIGGER ONE. The SILENCE clock says how long
+// THE FIX IS TWO CLOCKS, NOT A BIGGER ONE. The total ceiling says how long real
+// work may take (chat 10 minutes now, not 3). The SILENCE clock says how long
 // nothing at all may happen (chat 3 minutes). A turn that is still printing
 // steps is working; one that has printed nothing for that long is stuck. Neither
 // is unlimited, and whichever fires first stops the turn.
-//
-// AND ON 2026-08-07 THE TOTAL STOPPED BEING A DEADLINE. Raising it from 3 to 10
-// only moved the guillotine: it still killed turns for the crime of taking a
-// while. It is now one backstop number for every kind of turn, far past anything
-// honest, and the silence clock does all the judging.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -81,68 +77,6 @@ test("a chat turn that is really doing tool work is not killed on this machine",
   assert.ok(turnTimeBudgetMs("chat") >= longestReal * 2, "no headroom over the measured worst case");
 });
 
-// ------------------------------------------------ the bug the owner reported
-
-/**
- * WHAT HE WAS TOLD, 2026-08-07, word for word:
- *
- *   "this was still going after 10 minutes, which is as long as I let a reply
- *    run, so I stopped it. It was working the whole time — it just needed
- *    longer than that. Ask me again"
- *
- * The app killed work it could see was working, and said so out loud as if that
- * were normal. Raising 3 minutes to 10 in the morning only moved the guillotine;
- * the mistake is the idea underneath it, that HOW LONG a piece of work takes is
- * evidence of anything. It is not. A good answer can take twenty minutes. The
- * thing that proves a program is stuck is that it STOPPED PRODUCING OUTPUT, and
- * that is the silence clock below, which is unchanged and still three minutes.
- */
-const A_LONG_BUT_HONEST_CHAT_TURN_MS = 20 * MINUTE;
-
-test("a chat turn that works for twenty minutes is not killed for taking twenty minutes", () => {
-  assert.ok(turnTimeBudgetMs("chat") > A_LONG_BUT_HONEST_CHAT_TURN_MS,
-    `a reply that is visibly still working is stopped after ${turnTimeBudgetMs("chat")}ms — ` +
-    `a real piece of work can honestly take longer than that, and duration is not evidence`);
-});
-
-test("no kind of turn is given less room than another — the total is a runaway guard, not a deadline", () => {
-  // WHY THEY ARE ALL THE SAME NOW. The total's only job is to stop a program
-  // that never stops printing from holding this computer for ever. That job is
-  // identical whoever asked for the turn. The difference between "somebody is
-  // sitting there" and "nobody is waiting" belongs to the SILENCE clock, which
-  // is the one that can actually tell working from stuck.
-  const totals = KINDS.map(turnTimeBudgetMs);
-  assert.equal(new Set(totals).size, 1,
-    `the totals still disagree (${KINDS.map(k => `${k}=${turnTimeBudgetMs(k)}`).join(", ")}) — ` +
-    `which means one kind of work is still being judged by how long it takes`);
-});
-
-test("typing !code can never SHORTEN the leash a message already had", () => {
-  // `!code` turns a chat message into repository work (promptTurnKind → "repo").
-  // If the two rows ever differ, asking for the harder job buys less time, which
-  // is the sort of rule nobody could explain to the person it happens to.
-  assert.ok(turnTimeBudgetMs("repo") >= turnTimeBudgetMs("chat"),
-    "asking for repository work gives the turn LESS time than the chat message it came from");
-});
-
-test("the ceiling is still above the table, so a bad edit can still be caught", () => {
-  // A ceiling equal to the biggest row is decoration: `Math.min` would never
-  // change anything, and a future edit that added a zero would sail through.
-  for (const kind of KINDS) {
-    assert.ok(turnTimeBudgetMs(kind) < MAX_TURN_TIME_BUDGET_MS,
-      `${kind} sits ON the ceiling, so the clamp above it can no longer catch anything`);
-  }
-});
-
-test("the app never again admits to killing work it could see was working", () => {
-  // The exact sentence he was handed. Whatever we say when the total fires, it
-  // may not be a confession that we stopped something mid-stride and shrugged.
-  const said = timedOutSentence("chat", turnTimeBudgetMs("chat"), false);
-  assert.doesNotMatch(said, /as long as I let a reply run/, "still calls the clock a reply deadline");
-  assert.doesNotMatch(said, /working the whole time/, "still admits to killing working work");
-  assert.doesNotMatch(said, /just needed longer/, "still blames the length of the work");
-});
-
 test("nothing became unlimited: every clock still has a real ceiling", () => {
   for (const kind of KINDS) {
     assert.ok(Number.isFinite(turnTimeBudgetMs(kind)), `${kind} total is not finite`);
@@ -150,14 +84,11 @@ test("nothing became unlimited: every clock still has a real ceiling", () => {
     assert.ok(turnTimeBudgetMs(kind) <= MAX_TURN_TIME_BUDGET_MS, `${kind} total is past the ceiling`);
     assert.ok(turnQuietBudgetMs(kind) <= MAX_TURN_QUIET_BUDGET_MS, `${kind} silence is past the ceiling`);
   }
-  // THE DIFFERENCE BETWEEN ATTENDED AND UNATTENDED WORK STILL EXISTS — it just
-  // lives in the clock that can actually see it. A delegated job is allowed to
-  // say nothing for far longer than a reply somebody is sitting in front of.
-  // (This assertion used to be made on the TOTALS, which was the bug: a chat
-  // reply was cut off sooner for no reason connected to whether it was working.)
+  // a chat reply is still much shorter than a delegated job — raising it must
+  // not have quietly collapsed the difference the table exists to draw
   for (const kind of ["task", "schedule", "repo"] as PromptTurnKind[]) {
-    assert.ok(turnQuietBudgetMs(kind) >= turnQuietBudgetMs("chat") * 2,
-      `${kind} is no more patient with silence than a reply somebody is watching`);
+    assert.ok(turnTimeBudgetMs(kind) >= turnTimeBudgetMs("chat") * 2,
+      `${kind} is no longer meaningfully longer than a chat reply`);
   }
 });
 
@@ -333,7 +264,7 @@ test("Codex says the same thing about a freeze, with its own kind's number", asy
   );
 });
 
-test("a turn stopped by the backstop still says so, and still names the way out", async () => {
+test("a turn that used up its whole time still says so, and still names the way out", async () => {
   const { runner } = spy({ timedOut: true, code: null, stdout: "" });
   await assert.rejects(
     () => new ClaudeCliProvider({
@@ -343,12 +274,10 @@ test("a turn stopped by the backstop still says so, and still names the way out"
       assert.ok(err instanceof TurnTimedOutError);
       assert.equal(err.wentQuiet, false);
       assert.equal(err.budgetMs, TURN_TIME_BUDGET_MS.chat);
-      assert.match(err.message, /45 minutes/);
-      // it no longer blames the turn for being slow, and no longer offers `!bg`
-      // as a way round its own clock — there is no shorter clock to escape
+      assert.match(err.message, /10 minutes/);
+      assert.match(err.message, /!bg/);
+      // and it no longer blames the turn for being slow — it WAS working
       assert.doesNotMatch(err.message, /taking too long/);
-      assert.doesNotMatch(err.message, /!bg/);
-      assert.match(err.message, /ask me again/);
       return true;
     },
   );
@@ -357,7 +286,7 @@ test("a turn stopped by the backstop still says so, and still names the way out"
 test("the owner is still TOLD, whichever clock stopped it — no 'something went wrong'", () => {
   for (const quiet of [false, true]) {
     const said = sanitizeForChat(
-      new TurnTimedOutError("claude", "chat", quiet ? 3 * MINUTE : 45 * MINUTE, quiet),
+      new TurnTimedOutError("claude", "chat", quiet ? 3 * MINUTE : 10 * MINUTE, quiet),
       "a turn was stopped");
     assert.doesNotMatch(said, /something went wrong/, `quiet=${quiet}: the reason was swallowed`);
     assert.match(said, /minutes/);

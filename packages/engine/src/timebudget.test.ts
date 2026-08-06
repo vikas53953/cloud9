@@ -54,14 +54,12 @@ const MINUTE = 60_000;
 
 test("the budget table gives every kind of turn a number, and it is the one documented", () => {
   assert.deepEqual(TURN_TIME_BUDGET_MS, {
-    // ONE NUMBER, FOUR ROWS (2026-08-07). This clock stopped being a deadline on
-    // the work — it is a backstop against a program that never stops printing,
-    // and that job is the same whoever asked. See the note on the table, and
-    // `turnleash.test.ts` for the report that forced it.
-    chat: 45 * MINUTE,
-    task: 45 * MINUTE,
-    schedule: 45 * MINUTE,
-    repo: 45 * MINUTE,
+    // raised from 3 on 2026-08-05 — see the note on the table, and
+    // `turnleash.test.ts` for the measurements that forced it
+    chat: 10 * MINUTE,
+    task: 30 * MINUTE,
+    schedule: 30 * MINUTE,
+    repo: 30 * MINUTE,
   });
   // every kind `promptTurnKind` can return has a row — a new kind cannot
   // silently fall through to somebody else's clock
@@ -72,17 +70,11 @@ test("the budget table gives every kind of turn a number, and it is the one docu
   }
 });
 
-test("no kind of work is judged more harshly than another — and there is still a real ceiling", () => {
-  // WHAT THIS USED TO ASSERT, and why it was wrong: it demanded that delegated
-  // work get a LONGER total than a chat reply, on the reasoning that nobody is
-  // waiting for it. That reasoning belongs to the silence clock (checked in
-  // `turnleash.test.ts`); applied to the total it meant a chat turn was cut off
-  // sooner for no reason connected to whether it was working — the exact bug the
-  // owner hit on 2026-08-07.
+test("delegated work gets a materially longer leash than a chat reply — and still a real ceiling", () => {
   const chat = turnTimeBudgetMs("chat");
   for (const kind of ["task", "schedule", "repo"] as PromptTurnKind[]) {
-    assert.equal(turnTimeBudgetMs(kind), chat,
-      `${kind} is judged by a different clock than a chat reply, for no reason it could explain`);
+    assert.ok(turnTimeBudgetMs(kind) >= chat * 2,
+      `${kind} is not meaningfully longer than a chat reply`);
   }
   // NOTHING is unlimited. The leash exists to stop a runaway CLI holding a slot
   // on this computer forever, and that reason does not go away for a long job.
@@ -94,25 +86,25 @@ test("no kind of work is judged more harshly than another — and there is still
 
 // ------------------------------------------- the budget where it is really used
 
-test("a chat turn reaches the Claude CLI on the backstop budget", async () => {
+test("a chat turn reaches the Claude CLI on the short budget", async () => {
   const { calls, runner } = spy();
   await new ClaudeCliProvider({
     agentDataDir: () => process.cwd(), runner, models: () => CLAUDE_MODELS,
   }).respond({ agent: claudeAgent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" });
-  assert.equal(calls[0]?.opts.timeoutMs, 45 * MINUTE);
+  assert.equal(calls[0]?.opts.timeoutMs, 10 * MINUTE);
 });
 
-test("a delegated turn reaches the Claude CLI on the same backstop", async () => {
+test("a delegated turn reaches the Claude CLI on the long budget", async () => {
   for (const kind of ["task", "schedule"] as const) {
     const { calls, runner } = spy();
     await new ClaudeCliProvider({
       agentDataDir: () => process.cwd(), runner, models: () => CLAUDE_MODELS,
     }).respond({ agent: claudeAgent(), context: "", trigger: "do the work", triggerAuthor: "V", kind });
-    assert.equal(calls[0]?.opts.timeoutMs, 45 * MINUTE, `a ${kind} turn was cut short`);
+    assert.equal(calls[0]?.opts.timeoutMs, 30 * MINUTE, `a ${kind} turn was cut short`);
   }
 });
 
-test("work inside a repository is on the same backstop as the chat message it came from", async () => {
+test("work inside a repository gets the long budget even though it was typed as a chat message", async () => {
   // `!code` in the room is recorded as kind "chat" and given a worktree
   // (engine.ts, workInRepository). The worktree is the one thing only repository
   // work has, so the budget follows the SAME derivation the prompt does.
@@ -124,19 +116,19 @@ test("work inside a repository is on the same backstop as the chat message it ca
     kind: "chat", workdir: process.cwd(),
   });
   assert.equal(promptTurnKind({ context: "", trigger: "x", triggerAuthor: "V", kind: "chat", workdir: "/w" }), "repo");
-  assert.equal(calls[0]?.opts.timeoutMs, 45 * MINUTE);
+  assert.equal(calls[0]?.opts.timeoutMs, 30 * MINUTE);
 });
 
-test("Codex reads the same table, and reads the same number for both kinds", async () => {
+test("Codex reads the same table — chat short, delegated long", async () => {
   const chat = spy();
   await new CodexProvider({ agentDataDir: () => process.cwd(), runner: chat.runner })
     .respond({ agent: codexAgent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" });
-  assert.equal(chat.calls[0]?.opts.timeoutMs, 45 * MINUTE);
+  assert.equal(chat.calls[0]?.opts.timeoutMs, 10 * MINUTE);
 
   const job = spy();
   await new CodexProvider({ agentDataDir: () => process.cwd(), runner: job.runner })
     .respond({ agent: codexAgent(), context: "", trigger: "do it", triggerAuthor: "V", kind: "task" });
-  assert.equal(job.calls[0]?.opts.timeoutMs, 45 * MINUTE);
+  assert.equal(job.calls[0]?.opts.timeoutMs, 30 * MINUTE);
 });
 
 test("a pinned leash still overrides the table, for every kind", async () => {
@@ -149,7 +141,7 @@ test("a pinned leash still overrides the table, for every kind", async () => {
 
 // --------------------------------------------- what the person is actually told
 
-test("a turn stopped by the backstop SAYS what happened, in minutes", async () => {
+test("a turn that runs out of time SAYS it ran out of time, in minutes", async () => {
   const { runner } = spy({ timedOut: true, code: null, stdout: "" });
   await assert.rejects(
     () => new ClaudeCliProvider({
@@ -157,44 +149,35 @@ test("a turn stopped by the backstop SAYS what happened, in minutes", async () =
     }).respond({ agent: claudeAgent(), context: "", trigger: "do it", triggerAuthor: "V", kind: "task" }),
     (err: unknown) => {
       assert.ok(err instanceof TurnTimedOutError, "not recognisable as a timeout");
-      assert.equal(err.budgetMs, 45 * MINUTE);
-      // it says what it saw — it kept going and never got to an answer — and it
-      // does NOT claim the work was fine and killed anyway (2026-08-07)
-      assert.match(err.message, /never arrived at an answer/);
-      assert.match(err.message, /45 minutes/);
-      assert.doesNotMatch(err.message, /working the whole time/);
+      assert.equal(err.budgetMs, 30 * MINUTE);
+      assert.match(err.message, /ran out of time/);
+      assert.match(err.message, /30 minutes/);
       return true;
     },
   );
 });
 
-test("Codex says the same thing about a chat turn, and names the next move", async () => {
+test("Codex says the same thing, and a chat timeout offers the way out", async () => {
   const { runner } = spy({ timedOut: true, code: null, stdout: "" });
   await assert.rejects(
     () => new CodexProvider({ agentDataDir: () => process.cwd(), runner })
       .respond({ agent: codexAgent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" }),
     (err: unknown) => {
       assert.ok(err instanceof TurnTimedOutError);
-      assert.equal(err.budgetMs, 45 * MINUTE);
-      // THE SENTENCE HE WAS HANDED ON 2026-08-07 IS GONE. It told him the app
-      // had stopped work it could see was working, and offered `!bg` as the way
-      // round its own clock. There is no longer a clock to get round: the
-      // backstop is the same for every kind of turn, so pointing him at `!bg`
-      // would be selling him a longer run that does not exist.
-      assert.match(err.message, /never arrived at an answer/);
-      assert.match(err.message, /45 minutes/);
-      assert.doesNotMatch(err.message, /as long as I let a reply run/);
-      assert.doesNotMatch(err.message, /!bg/);
-      assert.match(err.message, /ask me again/);
+      assert.equal(err.budgetMs, 10 * MINUTE);
+      // the sentence no longer blames the turn for being slow: it WAS working
+      assert.match(err.message, /as long as I let a reply run/);
+      assert.match(err.message, /10 minutes/);
+      assert.match(err.message, /!bg/); // the thing to do instead
       return true;
     },
   );
 });
 
 test("the timeout sentence survives the chat sanitiser instead of becoming 'something went wrong'", () => {
-  const said = sanitizeForChat(new TurnTimedOutError("claude", "task", 45 * MINUTE), "a job timed out");
-  assert.match(said, /never arrived at an answer/);
-  assert.match(said, /45 minutes/);
+  const said = sanitizeForChat(new TurnTimedOutError("claude", "task", 30 * MINUTE), "a job timed out");
+  assert.match(said, /ran out of time/);
+  assert.match(said, /30 minutes/);
   assert.doesNotMatch(said, /something went wrong/);
 });
 
