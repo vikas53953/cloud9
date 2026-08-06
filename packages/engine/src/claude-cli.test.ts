@@ -180,8 +180,13 @@ test("a turn that blows the leash is stopped and explained in plain words", asyn
     // when we killed it. It now says how long it was given and that it was
     // working; what this test holds is unchanged: a recognisable timeout, and
     // the number said in minutes.
+    //
+    // 2026-08-07: the words changed again and the guard is still unchanged. The
+    // sentence used to say "as long as I let a reply run", which called the
+    // clock a deadline on the answer; the clock is now a backstop against a
+    // program that never stops, and the sentence says what was actually seen.
     (err: unknown) => err instanceof TurnTimedOutError
-      && /as long as I let a reply run/.test(err.message)
+      && /never arrived at an answer/.test(err.message)
       && /1 minute/.test(err.message),
   );
 });

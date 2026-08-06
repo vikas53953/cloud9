@@ -16,14 +16,14 @@ Last updated: **2026-08-07, evening** · by: conductor session
 |---|---|
 | Things Vikas has asked for and are open | **4** |
 | Agents working right now | **4** |
-| Open PRs | **1** (#4 threads) |
-| Merged today | 0 — the review loop started today |
+| Open PRs | **0** — verified with `gh pr list` |
+| Merged today | 1 — PR #4, but it merged the REJECTED version before its review existed. Master is carrying that regression until the threads agent removes it. |
 
 | # | HIS ASK (his words — never renamed) | Who has it | Stage | Evidence so far |
 |---|---|---|---|---|
 | 1 | **threads** — "still able to pull thread intersection to make it big… should be like slack" | reviewer agent | **PR #4 · attempt 2 · in adversarial review** | Attempt 1 REJECTED: it made the panel *wider* (300px floor vs the 292px he objected to) and its overlay covered the Send button. Attempt 2 claims 248/272/288px. Reviewer must report a MEASURED pixel width from a fresh screenshot. |
 | 2 | **agent activity and details** | agent | building | Must first prove what the existing Log screen / live steps / run records already show. A duplicate screen is worse than none. |
-| 3 | **agent time bug** — his Fable task was killed at 10 min, "It was working the whole time" | agent | building | Cause: a TOTAL clock on a chat turn. The silence clock (3 min) is the honest hang detector. Agent was told to challenge this diagnosis, not accept it. |
+| 3 | **agent time bug** — his Fable task was killed at 10 min, "It was working the whole time" | agent | **fix written · tests green · not yet pushed** | Cause confirmed and widened: a TOTAL wall clock was being used as a deadline on the ANSWER, so how long work took decided whether it lived. Raising 3 min → 10 min in the morning only moved it. Fix: the total is now one backstop number (45 min) for every kind of turn — chat, job, schedule, repo — so no kind is judged by its length, and the SILENCE clock (chat 3 min, jobs 10 min, unchanged) does all the judging, because it is the only one that can see whether the program is still producing output. Also proposed differently from the sketch: 60 min was rejected — it sat ON the ceiling (clamp becomes decoration) and made an attended chat reply outlive an unattended job. Money is NOT guarded by a clock and never was; see "the money default" above — that is the honest place to close it. Fail-then-pass on `turnleash.test.ts` / `timebudget.test.ts`; full engine suite green against `dist`. |
 | 4 | **token consumption** — "so that agents can see and help optimize others agents automatically" | agent | building | Real waste measured: own-setup = **318x** ($1.75 vs $0.0055); skills-on-demand already cut prompts **74%**; one room already at **88%** of its limit. |
 
 ### Waiting on Vikas — nobody else can do these
