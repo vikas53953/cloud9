@@ -81,6 +81,40 @@ Run in this session, not quoted from an agent:
 - **INSTALLED AND VERIFIED 12:19** — installed bundle `index-CsfrjYuU.css,
   index-DDU8N5Wk.js` compared by name against the built one. They match. This
   is the first time today's work has been on his machine.
+## CLOSING NUMBERS — 2026-08-06 evening, every one run by the conductor
+
+- **walk through the installed app: 41 / 41, exit 0.**
+- **tests: 1,618 / 1,620** (shared 134/134 · engine 1045/1046 · relay 412/417
+  incl. 3 skip + 1 todo · desktop 27/27).
+- **installer: 19 SECONDS**, and it verifies its own work — it counts the newly
+  built screen files against the installed ones and says so in words. It used to
+  sit for 12 minutes producing nothing.
+- installed bundle verified equal to the built one; tree clean; all pushed.
+
+### The last two failures, and what they really were
+
+1. **`the work emoji are one fixed set, defined once`** — the TEST was stale, not
+   the app. Today's stop work added a FIFTH tick (🛑) and the test demanded
+   exactly four. Updated rather than loosened, because that fixed list is
+   precisely what noticed a new tick had arrived; a check that accepts any number
+   would let a tick appear or vanish silently.
+2. **`work with no ask stays on its own branch`** — MEASURED, not written off:
+   **passes alone in 8.3s**, fails at 26s+ under full-suite load. Contention,
+   with a number attached. The real fix is the machine (McAfee), not a bigger
+   budget — loosening the budget would hide the slowdown rather than show it.
+
+### THE LESSON OF THE DAY, worth more than any of the fixes
+
+**"It's just this slow machine" explained away THREE REAL BUGS today.** Two
+`harness` failures were called environmental; running them alone showed both
+were real (the 30-second sign-in). Three more were baselined as gh timing; they
+failed in 3 SECONDS, not by timing out — a slow machine times out, it does not
+fail instantly. That mismatch uncovered the `git`/`gh` wrapper bug that would
+have brought back "GitHub is not installed" on a computer where it plainly is.
+
+Slowness is a hiding place. A red test gets an explanation with a measurement
+attached, or it stays red on this board.
+
 ## FINAL — the walk, run by the conductor, not by an agent
 
 **`npm run qa:app` → 41 pass, 0 fail, exit 0.** Against the installed app,
