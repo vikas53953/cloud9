@@ -295,7 +295,7 @@ test("provider sends the prompt on stdin and returns the reply", async () => {
 
 test("a truncated Codex stream with only an intermediate agent message fails loudly", async () => {
   const intermediate = JSON.stringify({
-    type: "item.completed", item: { type: "agent_message", text: "STALE-EARLY" },
+    type: "item.completed", item: { type: "agent_message", phase: "commentary", text: "STALE-EARLY" },
   });
   const overflow = "x".repeat(17 * 1024 * 1024);
   const provider = new CodexProvider({
@@ -339,10 +339,11 @@ test("a truncated Codex stream with only a terminal envelope and no answer fails
 
 test("a truncated Codex stream succeeds when a terminal turn envelope survives", async () => {
   const intermediate = JSON.stringify({
-    type: "item.completed", item: { type: "agent_message", text: "STALE-EARLY" },
+    type: "item.completed", item: { type: "agent_message", phase: "commentary", text: "STALE-EARLY" },
   });
   const final = JSON.stringify({
-    type: "item.completed", item: { type: "agent_message", phase: "final_answer", text: "FINAL-ANSWER" },
+    // Codex 0.146.0's final agent_message has no phase field.
+    type: "item.completed", item: { type: "agent_message", text: "FINAL-ANSWER" },
   });
   const done = JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } });
   const overflow = "x".repeat(17 * 1024 * 1024);

@@ -322,11 +322,13 @@ export function codexMapper(): EventMapper {
       const said = itemText(item);
       if (!said) return;
       // Codex can emit commentary/intermediate agent_message items before the
-      // answer.  Only an explicit final-answer phase is safe to pair with a
-      // surviving turn.completed envelope after the byte cap; otherwise a
-      // stale early sentence could be mistaken for the answer.
+      // answer.  The 0.146.0 JSONL shape has no phase on its final
+      // agent_message, so an absent phase remains the backwards-compatible
+      // final answer; explicit commentary/intermediate phases are not. This
+      // is what lets a capped stream reject stale early text while accepting
+      // a genuine no-phase final message tied to turn.completed.
       const phase = String(item.phase ?? "").toLowerCase();
-      const finalAnswer = phase === "final_answer" || phase === "final";
+      const finalAnswer = phase === "" || phase === "final_answer" || phase === "final";
       t.setText(said, finalAnswer);
       t.add({ kind: "message", label: "Said something", detail: said });
       return;
