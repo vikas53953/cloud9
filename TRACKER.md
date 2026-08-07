@@ -6,7 +6,7 @@ a commit, or an agent's report, THIS FILE WINS.**
 Anyone arriving — Vikas, a new session, a new agent — reads this first and
 needs nothing else. Anyone doing work updates it as they go, not at the end.
 
-Last updated: **2026-08-07, evening** · by: conductor session
+Last updated: **2026-08-07, ~04:00 — PAUSED ON QUOTA, resets 6am** · by: conductor session
 
 ---
 
@@ -16,8 +16,8 @@ Last updated: **2026-08-07, evening** · by: conductor session
 |---|---|
 | Things Vikas has asked for and are open | **4** |
 | Agents working right now | **4** |
-| Open PRs | **3** — #6 time limit, #9 activity, #10 spending. All three came back CHANGES REQUESTED and are being fixed. |
-| Merged today | **3** — #5 and #8 (both reverts of code that reached master unreviewed), and #7, the real threads fix. |
+| Open PRs | **2** — #9 activity, #10 spending. Both agents stopped mid-work on the session limit at ~04:00; both resume from where they stopped, nothing lost. |
+| Merged today | **4** — #7 threads (the real fix), #6 the time limit, and #5 and #8, both reverts of code that reached master without review (one of them mine). |
 
 | # | HIS ASK (his words — never renamed) | Who has it | Stage | Evidence so far |
 |---|---|---|---|---|
@@ -28,6 +28,32 @@ Last updated: **2026-08-07, evening** · by: conductor session
 | 5 | **(found for him, not asked)** a Codex agent cannot be given a spending limit AT ALL | nobody yet | **OPEN — needs an agent** | `providerCanBeCapped` (shared/index.ts:664) returns true only for `"claude"`, because only Claude reports what a turn cost. So a Codex agent has NO money ceiling and cannot be given one. The time limit was its only ceiling, and PR #6 raises that 10 -> 45 min. Found by the PR #6 reviewer. Ties directly to "the money default" below — that decision is now more urgent than it looked. |
 | 6 | **(found for him, not asked)** an agent that asks him a question is killed before he can answer | nobody yet | **OPEN — needs an agent** | The permission card waits **10 minutes** (shared/index.ts:470, engine.ts:2009) but a chat turn is killed after **3 minutes of silence** — and a turn parked on a card prints nothing. So it asks, he thinks about it, and it dies telling him it "stopped moving". Pre-existing, not caused by PR #6, but it means "the silence clock does all the judging" is not yet a complete fix. |
 | 7 | **(found for him, not asked)** one path runs with no time limit at all | nobody yet | **OPEN — needs an agent** | `SdkProvider` (provider.ts:705) runs under NO total clock and NO silence clock, and `host.ts:183-189` PREFERS it over the command-line app whenever a stored key or sign-in token exists. A hung turn there hangs for ever. Pre-existing. |
+
+
+### PAUSED AT ~04:00 ON THE SESSION LIMIT (resets 6am)
+
+Both remaining agents stopped mid-work. Neither is broken and nothing is lost —
+their work is on their branches and their context survives, so each resumes
+where it stopped rather than starting again.
+
+- **#10 spending** — ONE blocker left, about five minutes: two stale
+  `deepStrictEqual` fixtures in `runrecord.test.ts` that were never updated for
+  the new mapper fields. The values it produces are CORRECT; only the
+  expectations are stale. The reviewer also asked that the test be rewritten
+  rather than renumbered, because its name "carried through untouched" is now
+  false — the mapper deliberately derives a field, and that seam is exactly
+  where a future double-count would surface.
+- **#9 activity** — had just packaged the app and was taking the walk to
+  photograph the two states it never captured (🛑 "you stopped it" and
+  "waiting for you"), which is where three of its eight faults live.
+
+### WHAT IS NOT ON HIS MACHINE
+
+Threads and the time limit are MERGED but **not installed**. His Cloud9
+currently runs the spending branch's build, because that agent installed to take
+a screenshot. Nobody may say threads is done until a build from master is
+installed, the files compared, and it is walked.
+
 
 ### Waiting on Vikas — nobody else can do these
 
