@@ -1,0 +1,590 @@
+// WHAT EACH AGENT IS DOING RIGHT NOW, in the owner's words.
+//
+// ============================ WHY THIS FILE EXISTS ============================
+//
+// The app could already answer "what happened" (the Activity trail) and "what
+// did THIS ONE agent do" (its Recent work list, one agent at a time). It could
+// not answer the question the owner actually asks when he walks up to the
+// machine: **"what is my crew doing RIGHT NOW?"**
+//
+// Answering that means turning several separate facts — a presence word, an
+// idle/working lamp, a pending go-ahead, the last finished run — into ONE
+// sentence per agent. That join is the thing worth testing, so it lives here as
+// a pure function rather than inside a React component where nothing can reach
+// it.
+//
+// NOTHING HERE GUESSES. Every branch below is driven by a fact the app was
+// already given; when a fact is absent the line SAYS it is absent rather than
+// inventing a cheerful default. That is the same law `agentPresence` follows,
+// and this function sits directly on top of it.
+//
+// PLAIN WORDS ONLY. No "turn", no "invocation", no "run". The owner is a
+// network engineer, not a developer: he reads "working now", "you stopped it",
+// "waiting for you".
+import { AgentPresence, AgentStatus, RunListEntry, RunOutcome, WORK_REACTIONS } from "./index.js";
+import { RECEIPT_EMOJI } from "./receipts.js";
+
+/**
+ * The eleven things an agent can be, from the owner's side of the screen.
+ *
+ * WHY ELEVEN AND NOT FOUR. `AgentPresence` has four words and answers "can I use
+ * this agent". That is a different question from "what is it doing" — a ready
+ * agent that just failed and a ready agent that just finished are the same
+ * presence and must not look the same on this board. So the endings (`done`,
+ * `failed`, `stopped`) are states here even though they are all `ready` there.
+ *
+ * `stopped` is its own state and not a flavour of `done` for exactly the reason
+ * 🛑 was added to the work ticks on 2026-08-06: he pressed Stop, and a screen
+ * that then says "finished" is lying to him about his own action.
+ */
+export type AgentActivityState =
+  | "working"    // mid-job right now
+  | "waiting"    // stopped and asking him for a go-ahead
+  | "queued"     // it has his job and has not started it yet
+  | "braked"     // it stopped itself after going round in circles
+  | "stopped"    // he stopped it
+  | "failed"     // it ran and didn't finish
+  | "done"       // it ran and finished
+  | "paused"     // paused by him
+  | "off"        // switched off, or nothing can run it
+  | "ready"      // able to work, nothing to report yet
+  /**
+   * THE STATE THAT EXISTS SO SILENCE CANNOT BECOME A CLAIM.
+   *
+   * An agent whose state this build does not understand — a hub newer than the
+   * app. It has a row of its own because the alternative is what shipped once
+   * already: an unhandled state falling through to "✅ Finished" and telling
+   * him a job succeeded that nobody knows anything about.
+   */
+  | "unknown";
+
+/** Everything the board is allowed to know about one agent. All observed. */
+export interface AgentActivityFacts {
+  /** the hub's own verdict on whether this agent can be used — `agentPresence` */
+  presence?: AgentPresence;
+  /** the hub's reason for that verdict, already in plain words */
+  presenceReason?: string;
+  /** the last idle/working/braked the engine reported */
+  status?: AgentStatus;
+  /** what its owner set it to */
+  lifecycle?: "enabled" | "paused" | "disabled";
+  /**
+   * The newest live step's label, if it is mid-job and has said anything —
+   * "Read note.txt", "Ran a command". ABSENT is normal and means it has not
+   * reported a step yet, NOT that it is doing nothing.
+   */
+  doingNow?: string;
+  /** what it was asked, if a job is in flight */
+  askedTo?: string;
+  /**
+   * Is one of ITS go-ahead requests sitting unanswered in front of him?
+   *
+   * ONLY ONE THAT IS STILL ANSWERABLE. A request that ran out is not something
+   * he can act on, and because this fact outranks every other one, getting it
+   * wrong does not just add a bad row — it HIDES the agent's real state behind
+   * a button that is no longer there. The caller must decide this with the same
+   * `approvalIsDead` rule the tasks tray and the rail badge use, never by
+   * looking at `status === "pending"` alone.
+   */
+  awaitingOwner?: boolean;
+  /** what it asked him for, so the row can say what is being held up */
+  awaitingWhat?: string;
+  /**
+   * IT HAS ONE OF HIS HANDED-OVER JOBS AND HAS NOT STARTED IT YET.
+   *
+   * The title of a JOB — something handed over with `!bg` and tracked in the
+   * jobs tray, sitting at `not_started`. Without this an agent holding his job
+   * was drawn as idle, still wearing the tick from the job before it.
+   *
+   * ================= WHAT THIS IS NOT, AND IT MATTERS =================
+   *
+   * It is NOT the engine's own queue of turns. The engine also runs only two
+   * turns at once and holds the rest in memory, and an ordinary `@Agent do X`
+   * in a room creates no job at all — so a chat turn waiting for a slot is
+   * invisible to this field and its row still shows the LAST thing that agent
+   * finished. That is a real gap and it is written down as its own item on the
+   * board rather than papered over here, because closing it needs the engine to
+   * report its queue and there is nothing on the wire today that says so.
+   * Describing this field as "the engine queues turns" was the previous version
+   * of this comment claiming exactly that missing coverage.
+   */
+  queuedWork?: string;
+  /**
+   * The most recent finished job we know about, if any.
+   *
+   * THESE ARE THE RECORD'S OWN FIELDS, NOT A SUMMARY OF THEM. It briefly took a
+   * `finishedAt` that the caller worked out — and the caller worked it out from
+   * `startedAt`, so a three-hour job that ended ten seconds ago read as three
+   * hours old. Taking `startedAt` and `durationMs` exactly as a run record
+   * stores them means the only arithmetic happens in `endedAt`, once, where a
+   * test can reach it. A caller can pass a `RunListEntry` straight through.
+   */
+  last?: Pick<RunListEntry, "outcome" | "ask" | "summary" | "startedAt" | "durationMs">;
+}
+
+/** One row of the board: a tick, a state, and a sentence that is never empty. */
+export interface AgentActivityLine {
+  state: AgentActivityState;
+  /** the SAME tick he already reads in the chat — 👀 ⚙️ ✅ ❌ 🛑 — never a new alphabet */
+  mark: string;
+  /** the state in his words: "Working now", "Waiting for you" */
+  headline: string;
+  /**
+   * What it is doing, what it just did, or why it cannot work.
+   *
+   * NEVER EMPTY. A blank second line on a status board reads as "the app does
+   * not know", and the app usually does know something — so every branch below
+   * ends in a real sentence, including the branches where the honest answer is
+   * "it has not said".
+   */
+  detail: string;
+}
+
+/**
+ * Turn the facts about one agent into the line the board draws.
+ *
+ * READ THE ORDER AS A LADDER OF URGENCY, not a list of cases — the first true
+ * thing wins, and the order is the order he cares about:
+ *
+ *  1. It is BLOCKED ON HIM. Nothing else on the row matters if he is the reason
+ *     the work is not moving, so this outranks even "working now": an agent can
+ *     be mid-job and still be standing there waiting for a go-ahead. THE ENGINE
+ *     KEEPS THE WORKING LAMP LIT THROUGH AN APPROVAL WAIT (the lamp is set when
+ *     a turn starts and cleared when it ends, and the asking happens in
+ *     between), which is exactly why this rung has to come first and why
+ *     anything counting "who is working" must count THESE STATES and not the
+ *     raw lamp — see `workingCount`.
+ *  2. It is WORKING. Beats paused and switched off deliberately — a job already
+ *     in flight is a fact on the screen, and hiding it behind a setting would
+ *     make a busy agent look idle.
+ *  3. NOTHING CAN RUN IT — switched off, or the hub says offline. Said WITH the
+ *     reason, because "off" without a why is the version of this screen that
+ *     sends him hunting. Above the queue on purpose: a job queued for an agent
+ *     nothing can run is not about to happen, and saying "next up" would be a
+ *     promise the app cannot keep.
+ *  4. He PAUSED it. His own choice, so it is a state and not a fault.
+ *  5. IT IS HOLDING HIS JOB but has not started. Invisible until now, because
+ *     the working lamp only lights once a turn really begins.
+ *  6. IT PUT ITS OWN BRAKE ON. Its own row, never the last job's tick — an
+ *     agent that stopped itself has NOT "finished", and drawing ✅ on it is the
+ *     same lie 🛑 was added to stop the app telling.
+ *  7. Otherwise the last finished job speaks: stopped / didn't finish /
+ *     finished, in that order of "things he'd want to know first".
+ *  8. And if there is no last job, say so plainly rather than showing a
+ *     confident-looking empty row.
+ */
+export function agentActivityLine(facts: AgentActivityFacts): AgentActivityLine {
+  if (facts.awaitingOwner) {
+    return {
+      state: "waiting",
+      /* ❓ ALREADY MEANS "it asked a question back; the next move is a person's"
+         (`RECEIPT_EMOJI.needsInput`) — which is this row exactly. 👀 was wrong
+         here: it is already spoken for, and it means the opposite thing
+         ("picked your message up, the job is queued"), so the same tick would
+         have meant both "I am holding this" and "I am stuck on you". */
+      mark: RECEIPT_EMOJI.needsInput,
+      headline: "Waiting for you",
+      detail: facts.awaitingWhat
+        ? `It stopped to ask: ${facts.awaitingWhat}`
+        : "It stopped to ask you something and can't carry on until you answer.",
+    };
+  }
+
+  const working = facts.status === "working" || facts.presence === "working";
+  if (working) {
+    const detail = facts.doingNow
+      ? (facts.askedTo ? `${facts.doingNow} — for: ${facts.askedTo}` : facts.doingNow)
+      : facts.askedTo
+        ? `Working on: ${facts.askedTo}`
+        : "It hasn't said what it's up to yet.";
+    return { state: "working", mark: WORK_REACTIONS.working, headline: "Working now", detail };
+  }
+
+  if (facts.lifecycle === "disabled" || facts.presence === "offline") {
+    return {
+      state: "off",
+      mark: "—",
+      headline: facts.lifecycle === "disabled" ? "Switched off" : "Can't work right now",
+      detail: facts.presenceReason
+        ? capitalise(facts.presenceReason)
+        : "Nothing on this computer can run it at the moment.",
+    };
+  }
+
+  if (facts.lifecycle === "paused" || facts.presence === "paused") {
+    return {
+      state: "paused",
+      mark: "—",
+      headline: "Paused",
+      detail: "You paused it. It won't pick anything up until you start it again.",
+    };
+  }
+
+  if (facts.queuedWork) {
+    return {
+      state: "queued",
+      /* 👀 IS THE RIGHT TICK HERE AND ONLY HERE: the app already puts it on his
+         message to mean "picked your message up — the job is queued". This row
+         is that same fact, gathered onto one screen. */
+      mark: WORK_REACTIONS.picked,
+      headline: "Next up",
+      detail: `It has your job and hasn't started it yet: ${facts.queuedWork}`,
+    };
+  }
+
+  /* ===================================================================
+     THE GATE. Nothing below this line may be reached by an agent whose
+     state this build does not affirmatively understand.
+
+     ALL FOUR WORDS THAT ARRIVE OVER THE WIRE, not just one. The first
+     version of this gate guarded `status` and nothing else, so a hub
+     newer than this app could still reach a green tick through
+     `presence`, `lifecycle`, or — worst of the four — `outcome`, which
+     is the field that decides 🛑 from ✅ in the first place. The
+     argument for the gate was that fixing one case leaves the shape of
+     the mistake intact; the shape was intact on three inputs out of
+     four.
+     =================================================================== */
+  const own = statusSpeaksForItself(facts.status);
+  if (own) return own;
+  const unrecognised = presenceIsKnown(facts.presence)
+    ?? lifecycleIsKnown(facts.lifecycle)
+    ?? outcomeIsKnown(facts.last?.outcome);
+  if (unrecognised) return unrecognised;
+
+  if (facts.last) {
+    /* THE END IS COMPUTED HERE, FROM THE RECORD'S OWN TWO FIELDS, so no caller
+       can get it wrong. It used to take a `finishedAt` that the screen worked
+       out for itself, and the screen worked it out from `startedAt` — so a
+       three-hour job that ended ten seconds ago read as three hours old. A
+       number a caller has to derive is a number some caller will derive wrong;
+       taking the stored fields removes the chance rather than testing for it. */
+    const when = `${agoWords(endedAt(facts.last))}, you asked it: ${facts.last.ask}`;
+    if (facts.last.outcome === "cancelled") {
+      return {
+        state: "stopped",
+        mark: WORK_REACTIONS.stopped,
+        headline: "You stopped it",
+        detail: `${when}. ${facts.last.summary}`,
+      };
+    }
+    if (facts.last.outcome === "failed") {
+      return {
+        state: "failed",
+        mark: WORK_REACTIONS.failed,
+        headline: "Didn't finish",
+        detail: `${when}. ${facts.last.summary}`,
+      };
+    }
+    /* ONLY "ok" GETS THE TICK, AND IT IS SAID OUT LOUD RATHER THAN LEFT AS THE
+       fall-through. A bare `return done` here meant that every ending which was
+       not one of the two named above claimed success — including a fourth kind
+       of ending a newer hub might send. `outcomeIsKnown` above has already
+       turned that away; this line is what stops the shape coming back if
+       somebody deletes it. */
+    if (facts.last.outcome === "ok") {
+      return {
+        state: "done",
+        mark: WORK_REACTIONS.done,
+        headline: "Finished",
+        detail: `${when}. ${facts.last.summary}`,
+      };
+    }
+    const unhandledEnding: never = facts.last.outcome;
+    return notSure(`how its last job ended (${String(unhandledEnding)})`);
+  }
+
+  return {
+    state: "ready",
+    mark: "—",
+    headline: "Ready",
+    detail: facts.presenceReason
+      ? `${capitalise(facts.presenceReason)}. It hasn't been asked to do anything yet.`
+      : "It hasn't been asked to do anything yet.",
+  };
+}
+
+/** When a run really ended — the two stored fields, added up in ONE place. */
+function endedAt(last: { startedAt: number; durationMs: number }): number {
+  return last.startedAt + last.durationMs;
+}
+
+/**
+ * THE ONE "I DON'T KNOW" ROW, so every field says it the same way.
+ *
+ * It is deliberately not a tick and deliberately not green — the whole point is
+ * that the app is NOT claiming anything went well. `what` finishes the sentence
+ * in the owner's words: "what it's doing", "how its last job ended".
+ */
+function notSure(what: string): AgentActivityLine {
+  return {
+    state: "unknown",
+    mark: "—",
+    headline: "Not sure",
+    detail: `This copy of Cloud9 doesn't recognise ${what}. `
+      + "That usually means it needs updating.",
+  };
+}
+
+/* ===========================================================================
+   THE FOUR WORDS THAT ARRIVE OVER THE WIRE, each guarded the same way.
+
+   Every one of these is a closed set in THIS build and an open set on the
+   network: the hub can be newer than the app. Each guard therefore has two
+   halves, and both are needed:
+
+     · a RUNTIME list, which catches a word this build has never heard of and
+       gives it an honest row instead of a green tick;
+     · a `never` in the default, which turns "somebody added a case to the type
+       and forgot this screen" into a BUILD FAILURE rather than a lie on screen.
+
+   Returning `null` means "recognised — carry on". Nothing may reach the last
+   job's tick without a `null` from all four.
+   =========================================================================== */
+
+/** Every agent state this build understands. Anything else is not guessed at. */
+const KNOWN_STATUSES: readonly string[] = ["idle", "working", "braked"];
+const KNOWN_PRESENCES: readonly string[] = ["ready", "working", "paused", "offline"];
+const KNOWN_LIFECYCLES: readonly string[] = ["enabled", "paused", "disabled"];
+const KNOWN_OUTCOMES: readonly string[] = ["ok", "failed", "cancelled"];
+
+/** Can this agent be used? A word we do not know is never read as "yes". */
+function presenceIsKnown(presence: AgentPresence | undefined): AgentActivityLine | null {
+  if (presence === undefined) return null;
+  if (!KNOWN_PRESENCES.includes(presence)) return notSure("whether it can work");
+  switch (presence) {
+    case "ready":
+    case "working":
+    case "paused":
+    case "offline":
+      return null;
+    default: {
+      const unhandled: never = presence;
+      return notSure(`whether it can work ("${String(unhandled)}")`);
+    }
+  }
+}
+
+/** What its owner set it to. Same rule. */
+function lifecycleIsKnown(
+  lifecycle: AgentActivityFacts["lifecycle"],
+): AgentActivityLine | null {
+  if (lifecycle === undefined) return null;
+  if (!KNOWN_LIFECYCLES.includes(lifecycle)) return notSure("whether it's switched on");
+  switch (lifecycle) {
+    case "enabled":
+    case "paused":
+    case "disabled":
+      return null;
+    default: {
+      const unhandled: never = lifecycle;
+      return notSure(`whether it's switched on ("${String(unhandled)}")`);
+    }
+  }
+}
+
+/**
+ * HOW THE LAST JOB ENDED — the field this whole screen turns on.
+ *
+ * `outcome` is what decides 🛑 from ✅. It arrives over the wire and it had no
+ * guard at all: anything that was not "cancelled" or "failed" fell through to
+ * "Finished", so a fourth kind of ending from a newer hub — a job that timed
+ * out, a job that was killed — would have been drawn as a success. That is the
+ * exact scenario the "Not sure" row was added for, on the one field where
+ * getting it wrong is the original bug.
+ */
+function outcomeIsKnown(outcome: RunOutcome | undefined): AgentActivityLine | null {
+  if (outcome === undefined) return null;
+  if (!KNOWN_OUTCOMES.includes(outcome)) return notSure("how its last job ended");
+  switch (outcome) {
+    case "ok":
+    case "failed":
+    case "cancelled":
+      return null;
+    default: {
+      const unhandled: never = outcome;
+      return notSure(`how its last job ended ("${String(unhandled)}")`);
+    }
+  }
+}
+
+/**
+ * WHAT THE AGENT'S OWN STATE SAYS — or `null` when it is quiet enough for the
+ * last finished job to be the news.
+ *
+ * ===================== WHY THIS IS A SWITCH AND NOT AN `if` =================
+ *
+ * A braked agent used to read "✅ Finished". Not because anyone decided it
+ * should, but because there was no branch for `braked` and the function simply
+ * carried on to the last job — the SAME lie the 🛑 tick was added to stop this
+ * app telling, brought back to life in a new screen.
+ *
+ * Adding a `braked` branch would fix that one case and leave the shape of the
+ * mistake intact: the default behaviour of an unhandled state would still be to
+ * claim success. So the default is inverted instead. Reaching the last job now
+ * requires an affirmative "this agent is quiet", and there are exactly two ways
+ * to fail to get one:
+ *
+ *   · A STATE THIS BUILD HAS NEVER HEARD OF — a hub newer than this app — is
+ *     caught at run time by `KNOWN_STATUSES` and gets an honest row saying so.
+ *   · A STATE ADDED TO `AgentStatus` LATER is caught at COMPILE time by the
+ *     `never` below: adding a fourth status and forgetting this screen is a
+ *     BUILD FAILURE. Nobody has to remember.
+ *
+ * "Working" returns null here only because it is decided further up the ladder;
+ * it is still listed so the switch stays exhaustive.
+ */
+function statusSpeaksForItself(status: AgentStatus | undefined): AgentActivityLine | null {
+  if (status !== undefined && !KNOWN_STATUSES.includes(status)) {
+    return notSure("what it's doing");
+  }
+  switch (status) {
+    case undefined:
+    case "idle":
+    case "working":
+      return null;
+    case "braked":
+      return {
+        state: "braked",
+        mark: "—",
+        headline: "Taking a break",
+        /* THE WORDS THE RAIL ALREADY USES for this same lamp ("taking a
+           break"), so one fact is not called two things on two screens. */
+        detail: "It stopped itself after your agents went back and forth too long. "
+          + "Say something and it picks up again.",
+      };
+    default: {
+      /* If this line stops compiling, a new agent state was added and this
+         screen was not told. Give it a row above — do NOT delete this line. */
+      const unhandled: never = status;
+      return notSure(`what it's doing ("${String(unhandled)}")`);
+    }
+  }
+}
+
+/**
+ * Which rows go at the top.
+ *
+ * The two states he can ACT on come first — something waiting on him, then
+ * something in flight — and the quiet states sink. Within a state the board
+ * keeps the caller's order (the crew's own order), so rows do not shuffle
+ * around under his eyes every time a lamp changes.
+ */
+export const ACTIVITY_ORDER: readonly AgentActivityState[] = [
+  /* Things he can DO SOMETHING ABOUT, hardest first. `off` sits up here, not
+     down with the quiet rows: "Claude isn't signed in" is a job for him, and
+     burying it under three finished agents is how it stays unfixed for a day.
+     It was below `done` and `ready` in the first version of this list, which
+     contradicted this file's own stated rule. */
+  "waiting", "working", "queued", "off", "unknown", "failed", "stopped", "braked",
+  /* Nothing to do here. */
+  "done", "ready", "paused",
+];
+
+export function activityRank(state: AgentActivityState): number {
+  const i = ACTIVITY_ORDER.indexOf(state);
+  return i < 0 ? ACTIVITY_ORDER.length : i;
+}
+
+/**
+ * HOW MANY AGENTS ARE WORKING — the ONE answer, for every part of the screen.
+ *
+ * ================== WHY THIS IS A FUNCTION AND NOT A FILTER =================
+ *
+ * The button in the side bar used to count `agentStatus === "working"` itself
+ * while the board decided each row with the ladder above. Those are two
+ * different questions and they gave two different answers ON THE SAME SCREEN:
+ * the engine holds the working lamp lit through an approval wait, so an agent
+ * that had stopped to ask him something made the button say "1" while the board
+ * three inches away said "Nothing is being worked on".
+ *
+ * A person cannot be shown two numbers for one fact and be expected to pick the
+ * true one. So there is now exactly one place that answers it, it answers from
+ * the SAME lines the board draws, and any other count is a bug.
+ */
+export function workingCount(lines: readonly AgentActivityLine[]): number {
+  return lines.filter(l => l.state === "working").length;
+}
+
+/**
+ * ONE SENTENCE FOR THE WHOLE CREW — the line at the top of the board.
+ *
+ * THERE IS NO SILENT VERSION OF THIS BOARD. "Nothing is happening" is an
+ * answer he came for, so it is written out in words; an empty panel is the app
+ * refusing to answer. Every return below is a full sentence, including the
+ * no-agents one, which is also the only place that tells a brand-new owner what
+ * the screen is for.
+ */
+export function crewActivitySummary(lines: readonly AgentActivityLine[]): string {
+  if (lines.length === 0) {
+    return "You don't have any agents yet. When you hire one, this is where you'll watch it work.";
+  }
+  const total = lines.length;
+  const crew = total === 1 ? "your agent" : `your ${total} agents`;
+  const working = workingCount(lines);
+  const waiting = lines.filter(l => l.state === "waiting").length;
+  const queued = lines.filter(l => l.state === "queued").length;
+
+  const waitingBit = waiting === 0
+    ? ""
+    : waiting === 1
+      ? " One is waiting for your go-ahead."
+      : ` ${waiting} are waiting for your go-ahead.`;
+  const queuedBit = queued === 0
+    ? ""
+    : queued === 1
+      ? " One has a job lined up."
+      : ` ${queued} have jobs lined up.`;
+
+  if (working > 0) {
+    const busy = working === 1
+      ? (total === 1 ? "Your agent is working right now." : `1 of ${crew} is working right now.`)
+      : `${working} of ${crew} are working right now.`;
+    return `${busy}${waitingBit}${queuedBit}`;
+  }
+  /* "NOTHING IS BEING WORKED ON" MUST NOT BE SAID OVER WORK THAT EXISTS. A
+     queued job is work he has already handed over, so a summary that ignored it
+     would be the top line disagreeing with a row three inches below it. */
+  if (waiting > 0 || queued > 0) {
+    return `Nothing has started yet.${waitingBit}${queuedBit}`;
+  }
+  /* "READY WHEN YOU ARE" MUST NOT BE SAID OVER A ROW THAT NEEDS HIM.
+     ================================================================
+     `off` is "Claude isn't signed in" and `unknown` is "Not sure — this copy
+     needs updating". Both are jobs for him, and a cheerful sentence sitting on
+     top of them is the same lie as a cheerful ROW — moved up one line, where it
+     is read first and hardest. So the summary counts them and says so.
+
+     They are counted TOGETHER because they are the same thing to him: a row he
+     has to go and look at before that agent is any use. */
+  const needsHim = lines.filter(l => l.state === "off" || l.state === "unknown").length;
+  if (needsHim === total) {
+    return total === 1
+      ? "Your agent can't work at the moment — the row below says why."
+      : `None of ${crew} can work at the moment — the rows below say why.`;
+  }
+  if (needsHim > 0) {
+    return needsHim === 1
+      ? `Nothing is being worked on, and one of ${crew} needs a look — the row below says why.`
+      : `Nothing is being worked on, and ${needsHim} of ${crew} need a look — the rows below say why.`;
+  }
+  return total === 1
+    ? "Nothing is being worked on. Your agent is ready when you are."
+    : `Nothing is being worked on. ${crew.charAt(0).toUpperCase()}${crew.slice(1)} are ready when you are.`;
+}
+
+/** "just now", "4 minutes ago", "2 hours ago", "yesterday" — no clock arithmetic on screen. */
+export function agoWords(then: number, now: number = Date.now()): string {
+  const secs = Math.max(0, Math.round((now - then) / 1000));
+  if (secs < 45) return "Just now";
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? "Yesterday" : `${days} days ago`;
+}
+
+function capitalise(text: string): string {
+  return text.length === 0 ? text : `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+}
