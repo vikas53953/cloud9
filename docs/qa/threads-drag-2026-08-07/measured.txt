@@ -1,6 +1,6 @@
-BINARY: C:\Users\vikasmit\cloud9-threadsdivider\release\win-unpacked\Cloud9.exe
-  built 2026-08-07T07:55:58.755Z
-  web bundle: index-BeqPuHxR.css  index-CnXyHbcD.js
+BINARY: C:\Users\vikasmit\AppData\Local\Programs\Cloud9\Cloud9.exe
+  built 2026-08-07T09:37:14.000Z
+  web bundle: index-CR2CkA3K.js  index-shSU9Pdt.css
 
 1 · HIS OWN WINDOW, thread just opened
   as it opens                        viewport 1920  thread   388px  room  1204px  [beside the room]  kept: nullpx
