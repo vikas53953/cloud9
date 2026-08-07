@@ -10,6 +10,9 @@ test("Saved/Later screen has honest loading, tombstone, retry, and guarded sourc
   assert.match(app, /Nothing saved yet/);
   assert.match(app, /Reminder date \(no notification\)/);
   assert.match(app, /Save details/);
+  assert.match(app, /Load more saved messages/);
+  assert.match(app, /safeReminderDate/);
+  assert.match(app, /aria-busy=\{savedPending\}/);
   assert.match(app, /Source unavailable/);
   assert.match(app, /Try again/);
   const start = app.indexOf("screen === \"saved\"");
@@ -24,12 +27,14 @@ test("Saved/Later mutations use request correlation and scoped errors", () => {
   const store = fs.readFileSync(path.join(__dirname, "..", "src", "store.ts"), "utf8");
   assert.match(store, /Do not present a disconnected copy/);
   assert.match(store, /this\.savedRequests\.clear\(\)/);
-  const start = store.indexOf("askSaved(): void");
+  const start = store.indexOf("askSaved(");
   const end = store.indexOf("/* ---------------- search", start);
   assert.ok(start >= 0 && end > start, "saved request methods are present");
   const block = store.slice(start, end);
   assert.match(block, /f\.requestId === requestId/);
   assert.match(block, /savedRequests\.set\(requestId/);
+  assert.match(block, /savedPending/);
+  assert.match(block, /this\.world\.savedProblem = undefined/);
   assert.match(block, /savedProblem/);
   assert.match(block, /The relay did not answer/);
   assert.match(block, /saveForLater/);

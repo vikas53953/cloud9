@@ -158,6 +158,13 @@ export interface SavedMessageRow {
   remindAt?: number;
 }
 
+export interface SavedMessagePage {
+  entries: SavedMessageRow[];
+  hasMore: boolean;
+  nextSavedAt?: number;
+  nextMessageId?: ID;
+}
+
 export type SavedMutationKind = "saveMessage" | "unsaveMessage";
 
 interface SavedMutationReceipt {
@@ -1595,7 +1602,7 @@ export class Store implements JoinHubStore {
     this.db.prepare("DELETE FROM saved_mutation_receipts WHERE createdAt < ?").run(now - 30 * 24 * 60 * 60 * 1000);
     this.db.prepare(
       "DELETE FROM saved_mutation_receipts WHERE userId=? AND requestId NOT IN "
-      + "(SELECT requestId FROM saved_mutation_receipts WHERE userId=? ORDER BY createdAt DESC LIMIT 512)",
+      + "(SELECT requestId FROM saved_mutation_receipts WHERE userId=? ORDER BY createdAt DESC,requestId DESC LIMIT 512)",
     ).run(userId, userId);
   }
 
@@ -1650,11 +1657,28 @@ export class Store implements JoinHubStore {
   }
 
   savedMessages(userId: ID, limit = 500): SavedMessageRow[] {
-    const rows = this.db.prepare(
-      "SELECT userId,messageId,channelId,savedAt,note,remindAt FROM saved_messages "
-      + "WHERE userId=? AND removedAt IS NULL ORDER BY savedAt DESC,messageId DESC LIMIT ?",
-    ).all(userId, Math.max(1, Math.min(Math.floor(limit), 500))) as unknown as RawSavedMessageRow[];
-    return rows.map(toSavedMessageRow);
+    return this.savedMessagesPage(userId, limit).entries;
+  }
+
+  savedMessagesPage(userId: ID, limit = 100, beforeSavedAt?: number, beforeMessageId?: ID): SavedMessagePage {
+    const safeLimit = Math.max(1, Math.min(Math.floor(limit), 500));
+    const rows = (beforeSavedAt !== undefined && beforeMessageId !== undefined
+      ? this.db.prepare(
+        "SELECT userId,messageId,channelId,savedAt,note,remindAt FROM saved_messages "
+        + "WHERE userId=? AND removedAt IS NULL AND (savedAt < ? OR (savedAt=? AND messageId<?)) "
+        + "ORDER BY savedAt DESC,messageId DESC LIMIT ?",
+      ).all(userId, beforeSavedAt, beforeSavedAt, beforeMessageId, safeLimit + 1)
+      : this.db.prepare(
+        "SELECT userId,messageId,channelId,savedAt,note,remindAt FROM saved_messages "
+        + "WHERE userId=? AND removedAt IS NULL ORDER BY savedAt DESC,messageId DESC LIMIT ?",
+      ).all(userId, safeLimit + 1)) as unknown as RawSavedMessageRow[];
+    const hasMore = rows.length > safeLimit;
+    const visible = rows.slice(0, safeLimit).map(toSavedMessageRow);
+    const last = visible[visible.length - 1];
+    return {
+      entries: visible, hasMore,
+      ...(hasMore && last ? { nextSavedAt: last.savedAt, nextMessageId: last.messageId } : {}),
+    };
   }
 
   /** Monotonic-enough snapshot marker for same-socket uncorrelated pushes. */

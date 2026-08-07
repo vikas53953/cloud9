@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { TestContext } from "node:test";
+import test, { TestContext } from "node:test";
 import { Message, ServerFrame } from "@cloud9/shared";
 import { Relay } from "./server.js";
 import { Store } from "./store.js";
@@ -45,15 +45,16 @@ test("saved rows survive reopen and unsave is a durable soft removal", () => {
     () => first.saveSavedMessage(owner.id, "m-saved", "ch-general", "changed", 99, "save-replay"),
     /already used/,
   );
+  first.saveSavedMessage(owner.id, "m-active", "ch-general", "keep after restart", undefined, "active-save");
   assert.equal(first.schemaVersion(), 8);
-  assert.equal(first.savedMessages(owner.id)[0].note, "bring it up");
+  assert.ok(first.savedMessages(owner.id).some(entry => entry.note === "bring it up"));
   first.unsaveMessage(owner.id, "m-saved");
-  assert.deepEqual(first.savedMessages(owner.id), []);
+  assert.ok(!first.savedMessages(owner.id).some(entry => entry.messageId === "m-saved"));
   first.db.close();
 
   const reopened = new Store(dbPath, { ownerToken: "tok-owner" });
   assert.equal(reopened.schemaVersion(), 8);
-  assert.deepEqual(reopened.savedMessages(owner.id), []);
+  assert.ok(reopened.savedMessages(owner.id).some(entry => entry.messageId === "m-active"), "active saves survive restart");
   reopened.db.close();
 });
 
@@ -84,10 +85,11 @@ test("saved mutation receipts are owner-scoped, bounded, and expire conservative
   store.db.close();
 });
 
-test("saved v8 migration preserves the reserved Workflow v7 shape", () => {
+test("saved v8 migration runs after Workflow v7 from a v6 database", () => {
   const dbPath = tmp("saved-after-workflow-v7.db");
   const old = new Store(dbPath, { ownerToken: "tok-owner" });
-  old.db.exec("CREATE TABLE workflows(id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, json TEXT NOT NULL); UPDATE meta SET value='7' WHERE key='schemaVersion'");
+  old.db.exec("UPDATE meta SET value='6' WHERE key='schemaVersion'");
+  assert.equal(old.schemaVersion(), 6);
   old.db.close();
   const migrated = new Store(dbPath, { ownerToken: "tok-owner" });
   assert.equal(migrated.schemaVersion(), 8);

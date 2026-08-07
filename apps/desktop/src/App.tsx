@@ -14724,6 +14724,11 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
             })}
           </div>
         )}
+        {!loading && world.savedHasMore && world.savedNextSavedAt !== undefined && world.savedNextMessageId && (
+          <button type="button" className="btn small ghost" onClick={() => client.askSaved(world.savedNextSavedAt, world.savedNextMessageId)}>
+            Load more saved messages
+          </button>
+        )}
       </div>
     </div>
   );

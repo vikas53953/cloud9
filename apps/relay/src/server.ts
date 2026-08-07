@@ -1019,8 +1019,8 @@ export class Relay {
   }
 
   /** Project saves against current membership and current message tombstones. */
-  private savedMessageProjection(userId: ID): SavedMessageEntry[] {
-    return this.store.savedMessages(userId).map(row => {
+  private savedMessageProjection(userId: ID, opts: { limit?: number; beforeSavedAt?: number; beforeMessageId?: ID } = {}): SavedMessageEntry[] {
+    return this.store.savedMessagesPage(userId, opts.limit, opts.beforeSavedAt, opts.beforeMessageId).entries.map(row => {
       const base: SavedMessageEntry = {
         id: row.id, messageId: row.messageId, channelId: row.channelId,
         savedAt: row.savedAt, state: "inaccessible",
@@ -1618,10 +1618,14 @@ export class Relay {
   }
 
   /** Saved queue updates are private to the account, but mirror to its windows. */
-  private tellSaved(userId: ID, requestId?: ID, origin?: Conn): void {
+  private tellSaved(userId: ID, requestId?: ID, origin?: Conn, opts: { limit?: number; beforeSavedAt?: number; beforeMessageId?: ID } = {}): void {
+    const page = this.store.savedMessagesPage(userId, opts.limit, opts.beforeSavedAt, opts.beforeMessageId);
     const base: ServerFrame = {
-      type: "savedMessages", entries: this.savedMessageProjection(userId),
+      type: "savedMessages", entries: this.savedMessageProjection(userId, opts),
       revision: this.store.savedMessagesRevision(userId),
+      hasMore: page.hasMore,
+      ...(page.nextSavedAt !== undefined ? { nextSavedAt: page.nextSavedAt } : {}),
+      ...(page.nextMessageId !== undefined ? { nextMessageId: page.nextMessageId } : {}),
     };
     const correlated = Boolean(origin && requestId);
     for (const conn of this.conns) {
@@ -3824,7 +3828,7 @@ export class Relay {
         break;
       }
       case "listSaved": {
-        this.tellSaved(conn.userId, frame.requestId, conn);
+        this.tellSaved(conn.userId, frame.requestId, conn, frame);
         break;
       }
       case "saveMessage": {

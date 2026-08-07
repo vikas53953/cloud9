@@ -3112,7 +3112,7 @@ type ClientFrameBase =
   /** The whole of one thread: the message that started it and every reply. */
   | { type: "thread"; messageId: ID; limit?: number }
   /** Ask for this person's durable saved-message queue. */
-  | { type: "listSaved" }
+  | { type: "listSaved"; limit?: number; beforeSavedAt?: number; beforeMessageId?: ID }
   /** Save one readable message; repeating the request is idempotent. */
   | { type: "saveMessage"; messageId: ID; note?: string; remindAt?: number }
   /** Remove one of this person's saves; repeating the request is idempotent. */
@@ -3834,7 +3834,7 @@ export type ServerFrame =
   /** One inbox row changed state, echoed to that person's machines. */
   | { type: "notificationUpdated"; entry: NotificationInboxEntry }
   /** Durable saved-message answer/push, scoped to the authenticated person. */
-  | { type: "savedMessages"; entries: SavedMessageEntry[]; revision?: number; requestId?: ID }
+  | { type: "savedMessages"; entries: SavedMessageEntry[]; revision?: number; hasMore?: boolean; nextSavedAt?: number; nextMessageId?: ID; requestId?: ID }
   | { type: "userJoined"; user: User }
   | { type: "userRemoved"; userId: ID }
   | { type: "token"; token: string } // durable token issued after invite redemption

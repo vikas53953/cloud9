@@ -250,6 +250,9 @@ export interface World {
   savedAsked: boolean;
   savedRequestId?: ID;
   savedRevision: number;
+  savedHasMore: boolean;
+  savedNextSavedAt?: number;
+  savedNextMessageId?: ID;
   savedProblem?: string;
   savedNotice?: { text: string; ts: number };
   savedPending: ID[];
@@ -634,7 +637,7 @@ export class RelayClient {
     workflows: [], workflowRuns: [], workflowLoading: false,
     savedMessages: [], savedLoading: false, savedAsked: false,
     savedRequestId: undefined, savedProblem: undefined, savedNotice: undefined,
-    savedRevision: 0, savedPending: [], savedNew: false,
+    savedRevision: 0, savedHasMore: false, savedPending: [], savedNew: false,
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
@@ -821,6 +824,9 @@ export class RelayClient {
       this.world.savedRequestId = undefined;
       this.world.savedProblem = undefined;
       this.world.savedRevision = 0;
+      this.world.savedHasMore = false;
+      this.world.savedNextSavedAt = undefined;
+      this.world.savedNextMessageId = undefined;
       this.world.savedPending = [];
       // A credential the hub REFUSED must not spin: the reason is on screen and
       // retrying it would only overwrite it with the same refusal.
@@ -1406,23 +1412,31 @@ export class RelayClient {
   }
 
   /** Fetch saved messages with a loading/error boundary scoped to this route. */
-  askSaved(): void {
+  askSaved(beforeSavedAt?: number, beforeMessageId?: ID): void {
     const requestId = this.nextRequestId("listSaved");
-    this.world.savedNew = false;
+    const append = beforeSavedAt !== undefined && beforeMessageId !== undefined;
+    if (!append) this.world.savedNew = false;
     this.world.savedAsked = true;
     this.world.savedLoading = true;
     this.world.savedRequestId = requestId;
     this.world.savedProblem = undefined;
     this.emit();
-    const frame: SavedRequestFrame = { type: "listSaved" };
+    const frame: SavedRequestFrame = {
+      type: "listSaved", ...(append ? { beforeSavedAt, beforeMessageId } : {}),
+    };
     this.savedRequests.set(requestId, frame);
     const sent = this.ask({ ...frame, requestId }, {
       answers: f => f.type === "savedMessages" && f.requestId === requestId,
       answered: f => {
         if (f.type !== "savedMessages" || this.world.savedRequestId !== requestId) return;
         this.savedRequests.delete(requestId);
-        this.world.savedMessages = [...f.entries];
+        this.world.savedMessages = append
+          ? [...this.world.savedMessages, ...f.entries.filter(entry => !this.world.savedMessages.some(old => old.id === entry.id))]
+          : [...f.entries];
         this.world.savedRevision = f.revision ?? this.world.savedRevision;
+        this.world.savedHasMore = f.hasMore ?? false;
+        this.world.savedNextSavedAt = f.nextSavedAt;
+        this.world.savedNextMessageId = f.nextMessageId;
         this.world.savedLoading = false;
         this.world.savedProblem = undefined;
         this.world.savedRequestId = undefined;
@@ -3009,6 +3023,9 @@ export class RelayClient {
         w.savedProblem = undefined;
         w.savedNotice = undefined;
         w.savedRevision = 0;
+        w.savedHasMore = false;
+        w.savedNextSavedAt = undefined;
+        w.savedNextMessageId = undefined;
         w.savedPending = [];
         w.savedNew = false;
         w.messages = {};
@@ -3120,6 +3137,9 @@ export class RelayClient {
           w.savedNew = true;
         }
         w.savedRevision = frame.revision ?? w.savedRevision;
+        w.savedHasMore = frame.hasMore ?? false;
+        w.savedNextSavedAt = frame.nextSavedAt;
+        w.savedNextMessageId = frame.nextMessageId;
         w.savedMessages = [...frame.entries];
         break;
       }
