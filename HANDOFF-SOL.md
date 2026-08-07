@@ -11,6 +11,25 @@ learn what you did. **So keep `TRACKER.md` current — that is the handover back
 
 ---
 
+## THE LINKS — everything you need to reach
+
+| What | Where |
+|---|---|
+| **Repository** | **https://github.com/vikas53953/cloud9** (branch `master`) |
+| **Local clone** | `C:\Users\vikasmit\cloud9` |
+| **PR #14 — threads drag** | https://github.com/vikas53953/cloud9/pull/14 · **built, pushed, NEVER REVIEWED — start here** |
+| **PR #13 — remove the timing** | https://github.com/vikas53953/cloud9/pull/13 · four blockers fixed, conflicting on `TRACKER.md`, needs one clean control run |
+| **All open PRs** | https://github.com/vikas53953/cloud9/pulls |
+| **The board** | https://github.com/vikas53953/cloud9/blob/master/TRACKER.md |
+| **Harness report** (merged, he has read it) | https://github.com/vikas53953/cloud9/blob/master/docs/harness-vs-claude-code.html |
+| **Threads design** (merged, he approved it — this is the spec) | https://github.com/vikas53953/cloud9/blob/master/docs/threads-like-slack.html |
+| Buzz, the reference app | https://github.com/block/buzz · installed at `%LOCALAPPDATA%\Buzz\buzz-desktop.exe` |
+
+`gh` is signed in as **vikas53953** on this machine, so `gh pr list`, `gh pr view`
+and `gh pr merge` all work with no further setup.
+
+---
+
 ## 0. YOUR ROLE — you orchestrate, you do not do the work yourself
 
 **Vikas's rule: one agent per issue. Always.** You are a workstator /
