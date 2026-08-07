@@ -44,6 +44,33 @@
 // Stop is therefore the ONLY early ending, and it is the one that has a person
 // behind it. That is the whole design: a decision, never a clock.
 //
+// WHERE THAT SENTENCE IS NOT YET TRUE, said plainly so nobody inherits a false
+// sense of completeness — this is the same warning the old version of this file
+// carried about its own clocks, and it is still owed:
+//
+//   · `SdkProvider` (provider.ts) runs no child process and takes no abort
+//     signal, so `withStopScope` reaches nothing inside it: Stop reports success
+//     and the work carries on, and carries on billing. `host.ts` PREFERS that
+//     route whenever a stored key or sign-in token exists, so it can be the one
+//     most turns actually take. Removing the clocks did not cause that and does
+//     not make it worse — the SDK path never had a clock either — but it does
+//     mean "a turn ends when it finishes, fails, or he presses Stop" is a claim
+//     about the two COMMAND-LINE harnesses and not yet about every turn. It is
+//     tracked as its own row and it needs an abort signal, not a clock.
+//
+//   · MONEY IS THE OTHER CEILING, and for one harness there is now none at all.
+//     A turn is bounded by the agent's spending limit (`spendCapOf` /
+//     `decideSpend` in @cloud9/shared), handed to the CLI as its own limit — but
+//     that limit is OFF unless the owner sets one, and `providerCanBeCapped`
+//     answers true only for Claude, because only Claude reports what a turn
+//     cost. So a CODEX agent cannot be given a money ceiling at all, and the
+//     clock was the only bound it had. That is a real consequence of this
+//     change and the owner has to be told it rather than discover it. The answer
+//     is a money guard for Codex, not a clock brought back through the side
+//     door: a clock was always a dishonest proxy for cost, because a turn stuck
+//     in a tool loop burns more in ten minutes than a careful turn does in
+//     forty.
+//
 // WHAT WENT WITH IT: `TURN_TIME_BUDGET_MS`, `TURN_QUIET_BUDGET_MS`, their
 // ceilings and clamps, `turnLeash`, `TurnTimedOutError`, `timedOutSentence`,
 // `describeBudget`, the `quietMs` option in `run.ts`, and the `wentQuiet` fact

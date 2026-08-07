@@ -831,7 +831,7 @@ export function spendCapWords(cap: AgentSpendCap): string {
 //
 // IT IS THE SAME APPROVAL ENTITY, not a second one. A plan is a third `kind` of
 // `Approval` alongside `task` and `action` — same card, same Approve/Not-now
-// buttons, same `decideApproval` frame, same expiry sweep. See `ApprovalKind`.
+// buttons, same `decideApproval` frame. See `ApprovalKind`.
 //
 // ABSENT MEANS OFF. Every agent he already has carries no such field, so none
 // of them starts stopping to show him a plan because this arrived.
@@ -3124,7 +3124,7 @@ type ClientFrameBase =
    * IT IS THE SAME APPROVAL ENTITY AS THE TWO ABOVE, on purpose and for the
    * same reason `askApproval` is: it becomes a stored `Approval` with
    * `kind: "plan"`, it is answered by the same `decideApproval` frame, it is
-   * drawn by the same card and swept by the same expiry sweep. It is a separate
+   * drawn by the same card. It is a separate
    * FRAME only because what it carries is different in kind — a plan is prose
    * the agent wrote, not a row on `REMOTE_ACTIONS` with counted facts.
    *
@@ -3143,7 +3143,7 @@ type ClientFrameBase =
    * THE FOURTH KIND OF THE SAME THING — see `ApprovalKind`. It becomes a stored
    * `Approval` with `kind: "saving"`, it is answered by the same
    * `decideApproval` frame, it is drawn by the same card and swept by the same
-   * expiry sweep. A separate FRAME only because what it carries is different in
+   * card. A separate FRAME only because what it carries is different in
    * kind: not a row on `REMOTE_ACTIONS`, not prose, but a `SavingChange` — one
    * of exactly two settings, both of which can only make an agent cost less.
    *

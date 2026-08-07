@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import WebSocket from "ws";
 import {
-  AgentDef, AgentSchedule, ARTIFACT_LIMITS, ATTACHMENT_LIMITS,
+  AgentDef, AgentSchedule, Approval, ARTIFACT_LIMITS, ATTACHMENT_LIMITS,
   Channel, ClientFrame, HarnessName, HarnessState, ID,
   Message, Project, ReceiptStage, ReceiptVerdict, RemoteActionFacts, RunRecord, ServerFrame,
   Task, TaskStatus, WorkReaction,
@@ -402,6 +402,11 @@ export class Engine {
     });
     this.approvals = new ApprovalDesk({
       send: frame => this.sendFrame(frame),
+      // A TURN JUST PARKED, OR JUST STOPPED BEING PARKED — so how many turns are
+      // really working has changed, and somebody in the queue may be able to go
+      // now. Without this line the slot is freed on paper and nothing notices
+      // until the next message happens to arrive. See `workingTurns`.
+      onWaitingChanged: () => { void this.drain(); },
       // THE ONE PLACE A JOB IS REALLY STUCK. See `jobIsStuck` below.
       // AND the one place a hook can hear that somebody is waiting on HIM: the
       // sentence handed over is `describeRemoteAction`'s — counted facts, never
@@ -437,14 +442,56 @@ export class Engine {
     });
     this.ws.on("message", raw => this.onFrame(JSON.parse(String(raw)) as ServerFrame));
     this.ws.on("close", () => {
-      // NOBODY IS THERE TO ANSWER, so nothing leaves this machine. A dropped
-      // socket is the one moment where carrying on and assuming it was fine
-      // would be most tempting and most wrong.
-      this.approvals.giveUpAll("the hub went away before anyone answered, so it did not happen");
+      // THE WAIT SURVIVES A DROPPED SOCKET (2026-08-07). It used to be thrown
+      // away here, as a no, on every close — and with the hub's ten-minute
+      // sweep gone that turned a wifi blip or a laptop sleep into a ZOMBIE
+      // CARD: this side gave up, the hub's card stayed `pending` for ever with
+      // a live Approve button on it, and when he pressed it in the morning
+      // there was no longer anybody listening. The card went green and the
+      // branch was never pushed. Nobody was told.
+      //
+      // NOTHING HERE IS A YES, which is the rule that mattered and still does:
+      // the wait simply stays a wait. This process is still running, the agent
+      // is still standing there, and `onFrame`'s `welcome` reconciles every
+      // card the moment the hub comes back — including one he answered while
+      // we were away. Only a real ending settles it: his decision, his Stop, or
+      // Cloud9 shutting down (`stop`, below, which still gives up all).
       if (this.stopped) return;
       this.reconnectTimer = setTimeout(() => this.connect(), 2000);
     });
     this.ws.on("error", () => { /* close handler reconnects */ });
+  }
+
+  /**
+   * HIS YES ARRIVED, AND THERE WAS NOBODY LEFT TO ACT ON IT.
+   *
+   * THE ZOMBIE CARD. No card expires any more, which is right — his question
+   * waits for him. But it means a card can outlive the run behind it: he
+   * approves a push at 9am against an agent that stopped waiting when Cloud9
+   * was last closed. The hub records `approved` and draws the card green, and
+   * this side has no waiter to hand it to. Silently doing nothing there is the
+   * worst outcome this app can produce: a record that says he agreed to
+   * something, and nothing agreed to.
+   *
+   * So he is told, in the room the card came from, and told what it means: the
+   * work did NOT happen and nothing left this computer. Only ever said for a
+   * decision that really was his — `onApproval` returns false for a card still
+   * pending and for one this engine was never waiting on, so a reconnect
+   * replaying old decisions cannot make this speak.
+   */
+  private sayApprovalArrivedTooLate(approval: Approval): void {
+    if (approval.status !== "approved" && approval.status !== "rejected") return;
+    const channelId = approval.channelId;
+    if (!channelId) return;
+    // only about a card of OURS, in a room we know — never somebody else's
+    const agent = this.myAgents.find(a => a.id === approval.agentId);
+    if (!agent) return;
+    if (approval.status === "rejected") return;  // a no changes nothing anyway
+    this.agentSend(agent.id, channelId,
+      "You've just said yes to this, but I'm no longer waiting on it — Cloud9 was " +
+      "restarted after I asked, so nothing was standing by to act on your answer. " +
+      "**It did not happen and nothing left this computer.** Ask me again and I'll " +
+      "stop and ask you in the same place.");
   }
 
   stop(): void {
@@ -461,6 +508,13 @@ export class Engine {
     switch (frame.type) {
       case "welcome":
         this.state = frame.state;
+        // WHAT HAPPENED WHILE WE WERE AWAY. A dropped socket no longer throws a
+        // waiting agent's question away, so this is the other half of that: any
+        // card he ANSWERED while this engine was disconnected is applied now,
+        // exactly as if the decision had arrived over the wire. `onApproval`
+        // ignores anything still pending and anything it is not waiting on, so
+        // this is a replay, never a second decision mechanism.
+        for (const a of frame.state.approvals) this.approvals.onApproval(a);
         for (const m of frame.state.messages) this.pushHistory(m);
         for (const t of frame.state.tasks) this.tasks.set(t.id, t);
         this.scheduler.start();
@@ -546,7 +600,16 @@ export class Engine {
         this.approvals.onAsked(frame.askId, frame.approvalId);
         break;
       case "approval":
-        this.approvals.onApproval(frame.approval);
+        // NEVER SILENT ABOUT A YES NOBODY IS LEFT TO ACT ON. If Cloud9 has been
+        // restarted since the agent asked, the card on his screen outlived the
+        // agent that was waiting behind it — he presses Approve, the hub records
+        // it, and this side has nobody to tell. That used to be a silent no-op:
+        // the card went green and the branch was never pushed. Now he is told,
+        // in the room the card came from, that his yes arrived too late for the
+        // agent and what to do about it.
+        if (!this.approvals.onApproval(frame.approval)) {
+          this.sayApprovalArrivedTooLate(frame.approval);
+        }
         break;
       // an agent asked Cloud9 to search the conversation it is standing in
       case "searchResults":
@@ -804,9 +867,39 @@ export class Engine {
     return before - this.queue.length;
   }
 
+  /**
+   * HOW MANY TURNS ARE REALLY WORKING RIGHT NOW.
+   *
+   * NOT the same as how many are in flight, and the difference is a bug that
+   * would have run all night. A turn that has stopped to ask the owner
+   * something is sitting on a promise inside its own job, so it still counts as
+   * "in flight" — it holds one of the two slots while it waits. That was always
+   * true, and it was survivable only because the hub swept an unanswered card
+   * away after ten minutes and handed the slot back.
+   *
+   * There is no sweep any more (2026-08-07, and rightly — his question is not
+   * rubbish to be cleared up while he thinks). So without this, two agents
+   * parked on cards would freeze EVERY other agent in EVERY room, for ever: he
+   * goes to bed, two agents reach a `!publish` gate, and in the morning nothing
+   * else has answered a single message all night.
+   *
+   * A WAIT ON A PERSON IS NOT WORK. It costs no CPU, no money and no harness —
+   * it is a promise in a list. So it does not occupy the slot the cap exists to
+   * ration, and the cap counts only turns that are actually running something.
+   *
+   * CLAMPED DELIBERATELY. `pending` counts every open card, and a card can be
+   * raised somewhere that is not one of these jobs (a `!issue` typed in a room).
+   * Crediting more parked turns than there are turns in flight would let the cap
+   * drift upwards, so the credit can never exceed what is actually in flight.
+   */
+  private workingTurns(): number {
+    const parked = Math.min(this.approvals.pending, this.turnsInFlight);
+    return this.turnsInFlight - parked;
+  }
+
   private async drain(): Promise<void> {
     const cap = this.opts.maxConcurrentTurns ?? 2;
-    while (this.turnsInFlight < cap && this.queue.length > 0) {
+    while (this.workingTurns() < cap && this.queue.length > 0) {
       const { job } = this.queue.shift()!;
       this.turnsInFlight++;
       job().catch(() => { /* logged below */ })
@@ -1326,7 +1419,7 @@ export class Engine {
    *     mistakes the plan for the job.
    *  2. THE PLAN GOES IN THE ROOM, so he can read it where he asked for it, and
    *     onto the ORDINARY APPROVAL CARD — the same `Approval`, the same
-   *     Approve / Not now buttons, the same expiry, the same `decideApproval`.
+   *     Approve / Not now buttons, the same `decideApproval`.
    *     There is no second approval concept here; there is a third `kind`.
    *  3. NOTHING RUNS UNTIL HE ANSWERS. Every way out of the desk that is not an
    *     explicit yes is a no, and the agent says which in plain words.
@@ -2018,7 +2111,7 @@ export class Engine {
   // Why only that case, and why nothing else here:
   //  * A JOB WAITING ON AN APPROVAL CARD is genuinely not working. Its turn has
   //    stopped, mid-run, at the one thing it may not do alone, and it will not
-  //    move again until a person answers or the ten minutes run out. Nothing is
+  //    move again until a person answers or he stops it. Nothing is
   //    wrong with it and nothing is going to change without him. That is the
   //    definition of stuck, and it is the state he most needs to see, because he
   //    is the thing it is stuck on.
@@ -2034,7 +2127,7 @@ export class Engine {
   //    tells him to expect it to carry on.
   //
   // AND IT ALWAYS CLEARS. `onWaitEnd` fires on every way out of the desk — yes,
-  // no, ten minutes, hub gone — so the job goes back to working and the ordinary
+  // no, stopped, engine shutting down — so the job goes back to working and the ordinary
   // completed/failed ending follows from the turn itself. A stuck state with no
   // way out would be worse than no stuck state at all.
 
@@ -3015,7 +3108,7 @@ export class Engine {
    * PERFORM A GITHUB WRITE ASKED FOR IN A ROOM — through the SAME approval desk
    * the push uses. It reads the repository name first (a read, no approval),
    * then hands the counted facts to the desk; only a yes builds and runs the
-   * `gh` command. A no, an expiry or a dropped hub runs nothing and says which.
+   * `gh` command. A no, or a stop, runs nothing and says which.
    */
   async workGitHubWriteInRoom(
     agent: AgentDef, channelId: ID, partial: GitHubWriteRequestWithoutRepo, replyTo?: ID,

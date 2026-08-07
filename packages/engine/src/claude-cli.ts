@@ -19,7 +19,7 @@ import {
   validateAgentInput,
 } from "@cloud9/shared";
 import {
-  ClaudeProvider, HarnessUnavailableError, RespondInput, splitAgentPrompt,
+  ClaudeProvider, HarnessUnavailableError, TurnOutputTooBigError, RespondInput, splitAgentPrompt,
 } from "./provider.js";
 import {
   CLAUDE_BUILTIN_TOOLS, claudeToolsFor, deniedClaudeTools, grantedSupply, Supply,
@@ -1092,6 +1092,16 @@ export class ClaudeCliProvider implements ClaudeProvider {
 
     if (result.code !== 0 && !trace.text) {
       throw new Error(`Claude exited with ${result.code}: ${firstLine(result.stderr)}`);
+    }
+    // THE OUTPUT OVERFLOWED AND WE DID NOT SEE A FINISHED ANSWER. Said out
+    // loud, never patched over. `cap` keeps the END of the stream precisely so
+    // the harness's own result line survives an overflow — so if we got here
+    // with no answer AND the stream was truncated, what is in `trace.text` is a
+    // fragment of somebody's tool output, not a reply. Returning it would be
+    // the exact shape of lie this whole branch exists to remove: a turn the
+    // owner watched work all night, recorded `ok`, answered with rubbish.
+    if (result.truncated && !trace.text) {
+      throw new TurnOutputTooBigError();
     }
     if (trace.error && !trace.text) throw new Error(trace.error);
     return trace.text || "(no response)";

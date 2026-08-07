@@ -2833,13 +2833,13 @@ button.chip{cursor:pointer;}
 }
 
 /* ============================================================
-   AN APPROVAL THAT LEAVES THIS COMPUTER, AND ONE THAT RAN OUT
+   AN APPROVAL THAT LEAVES THIS COMPUTER
 
-   A `kind:"action"` card names a branch, a repository and a
-   deadline. `expired` is its OWN state and is never painted as
-   an error: nothing happened, which is the safe outcome — but
-   the card stays where it was, so a request that timed out is
-   something he FINDS rather than a silence he has to notice.
+   A `kind:"action"` card names a branch and a repository. It has
+   no deadline: nothing expires a card any more (2026-08-07) —
+   it waits for him. `expired` survives as its own state, never
+   painted as an error, only so cards swept away before that
+   change still read correctly on his machine.
    ============================================================ */
 .spend .eyebrow.remoteact,.approval .eyebrow.remoteact{
   display:block;width:100%;color:var(--marigold);margin-bottom:2px;

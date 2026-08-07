@@ -270,13 +270,22 @@ test("nobody has answered yet, so the job is STILL STUCK — it never un-sticks 
     reply: "Fixed the build.\n!publish", writes: { "fix.txt": "patched\n" },
   });
   feed({ type: "task", task: job("!code fix the build") });
-  await untilStuck(frames);
+  const { askId } = await untilStuck(frames);
 
   await new Promise(r => setTimeout(r, 500));
   assert.deepEqual(statuses(frames), ["working", "blocked"],
     "the job moved on without him — his question was answered by a clock");
   assert.ok(!updates(frames).some(u => u.status === "completed" || u.status === "failed"),
     "nothing finished: it is waiting on a person and it says so");
+
+  // AND NOW LET IT GO, INSIDE THE TEST. Leaving the wait for `t.after` to
+  // release means this job's REAL git work runs on into the next test and the
+  // two fight over the machine — which is exactly why this file started failing
+  // a different test on every run. Nothing cleans up after a test any more, so
+  // a test that parks a wait ends it itself and waits for the work to stop.
+  decide(feed, askId, "rejected");
+  await waitFor(() => updates(frames).find(u => u.status === "completed"),
+    "the job to finish after he finally answered");
 });
 
 // ====================================== a real failure is never dressed up as stuck

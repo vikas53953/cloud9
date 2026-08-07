@@ -209,6 +209,29 @@ export class SpendCapReachedError extends Error {
 }
 
 /**
+ * THE TURN PRINTED MORE THAN CLOUD9 COULD HOLD, and no finished answer survived.
+ *
+ * A turn has no clock any more, so nothing bounds how much a harness can print
+ * over a long night. `run.ts` holds the last 16 MB and keeps the END, because
+ * that is where a harness announces its result — so reaching this means the
+ * overflow ate the answer as well, and whatever text is left is a fragment of a
+ * tool result rather than a reply.
+ *
+ * IT IS AN ERROR AND NOT A SHRUG. Handing that fragment back would be a turn the
+ * owner watched work all night, recorded `ok`, answered with rubbish. Its
+ * message is fixed words and one size — no path, no argv, nothing from the CLI —
+ * so it passes through `sanitizeForChat` whole, like the classes around it.
+ */
+export class TurnOutputTooBigError extends Error {
+  constructor() {
+    super("this printed more than I can hold on to — 16 MB — and the answer itself was " +
+      "lost in what had to be dropped, so I have nothing honest to show you. Nothing was " +
+      "left running. Ask me again, and if it does the same, ask for a smaller piece of it.");
+    this.name = "TurnOutputTooBigError";
+  }
+}
+
+/**
  * The agent's harness (Claude or Codex) is missing, signed out, or refused the
  * turn. The engine turns this into a plain-words chat reply rather than a stack
  * trace (harness-signin.md decision 3, FR-TL-005).
@@ -311,6 +334,12 @@ export function sanitizeForChat(err: unknown, where: string): string {
   // (There used to be a case here for a turn that ran out of time. There is no
   // such ending any more — see `timebudget.ts`. A turn finishes, fails, or the
   // owner stops it, and each of those already has its own true sentence.)
+  //
+  // IT PRINTED MORE THAN WE CAN HOLD, and the answer went with the overflow.
+  // Fixed words and one size — nothing from the CLI — and it is the one thing
+  // the owner must hear, because the alternative is a fragment presented as his
+  // answer. See `TurnOutputTooBigError`.
+  if (err instanceof TurnOutputTooBigError) return err.message;
   // A SPENDING LIMIT STOPPED IT, and — exactly like the clock above — the limit
   // and the amount are the whole of what the person needs to hear. The message
   // is written by `spendCapStopWords` / `decideSpend` in @cloud9/shared out of

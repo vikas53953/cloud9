@@ -2124,8 +2124,9 @@ function Workspace(): React.JSX.Element {
       closeSearch();
     }
   }, [closeSearch]);
-  // One owner for "how many are waiting" — see `useMyApprovals`. A request past
-  // its deadline is not waiting on him, whatever the database still says.
+  // One owner for "how many are waiting" — see `useMyApprovals`. Nothing has a
+  // deadline any more (2026-08-07): a card waits for him, so the only thing not
+  // counted is one that was already swept away before that change.
   const pendingApprovals = useMyApprovals(world.approvals, world.me?.id).waiting.length;
 
   /* HOW MANY OF HIS OWN AGENTS ARE WORKING THIS SECOND — the number on the
@@ -4967,11 +4968,11 @@ function actionHeadline(approval: Approval): string {
  *
  * Three places count approvals: the badge on the rail, the gold pill above a
  * conversation, and the Tasks in-tray. They used to count `status === "pending"`
- * each in their own words, which was right until a card could run out of time:
- * a request past its deadline is still `pending` in the hub's database for the
- * moment before the hub's own timer fires, so the pill said "2 waiting" over two
- * cards that both read "nobody answered". A number that argues with the thing
- * underneath it is worse than no number.
+ * each in their own words, which drifted the moment a card could run out of
+ * time. Nothing runs out of time now (2026-08-07) — a card waits for him — so
+ * this reads simply: pending, minus the ones already swept away before that
+ * change. It stays one owner because three counts in three places is how the
+ * pill ended up arguing with the cards underneath it once before.
  *
  * `mine` is everything of his the screen is holding; `waiting` is the subset
  * that can still be answered. Everything that counts, counts this.
@@ -5135,9 +5136,9 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
  * The same request, in the Tasks in-tray — smaller, and held to the same laws.
  *
  * ONE COMPONENT for "an approval in the side panel", so the sentence, the
- * detail line, the deadline and the expired wording cannot drift between the
+ * detail line and the wording cannot drift between the
  * conversation and the tray. The tray used to keep its own copy and it showed
- * neither the branch card's detail nor its deadline at all.
+ * neither the branch card's detail nor its counted facts at all.
  */
 function ApprovalTray({ approval, agent, task }: {
   approval: Approval; agent?: AgentDef; task?: Task;

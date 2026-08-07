@@ -112,7 +112,7 @@ test("a request the builder refuses (malformed) runs nothing and does not lie", 
   assert.equal(calls.length, 0, "a malformed write must never reach the runner");
 });
 
-// ----- the SAME no-paths, driven through the real ApprovalDesk (yes/no/expiry/disconnect)
+// ----- the SAME no-paths, driven through the real ApprovalDesk (yes / no / disconnect)
 
 /** Wire a real ApprovalDesk to the executor and hand back the levers the hub pulls. */
 function withDesk() {

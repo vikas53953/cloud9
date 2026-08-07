@@ -62,6 +62,20 @@ export interface ApprovalDeskOptions {
   send: (frame: ClientFrame) => void;
   /** how many agents may be waiting at once — a leash, not a policy */
   maxWaiting?: number;
+  /**
+   * THE NUMBER OF AGENTS STANDING HERE JUST CHANGED.
+   *
+   * Fired on every push and every removal, for EVERY kind of card, with no
+   * arguments — the caller reads `pending`. It exists because of a starvation
+   * bug the removal of the ten-minute sweep turned from temporary into
+   * permanent: a turn parked on a card is holding one of the engine's two
+   * concurrency slots while it waits, and the sweep used to be the thing that
+   * eventually handed that slot back. See `Engine.drain`.
+   *
+   * It is a NOTIFICATION, never a decision — like `onWaitStart`, it is told and
+   * it does not get to change what this desk does.
+   */
+  onWaitingChanged?: () => void;
   log?: (message: string) => void;
   /**
    * A JOB HAS STOPPED MOVING AND IS STANDING HERE.
@@ -142,7 +156,7 @@ interface Waiting {
    * card is not inside a `run()`, so there was no process to kill and nothing
    * else knew a stop had happened. The room said "🛑 Stopping — pulling the plug"
    * and the job then sat on the jobs screen as "waiting for you" until the card
-   * timed out minutes later. The stop was true of the processes and false of the
+   * sat there afterwards. The stop was true of the processes and false of the
    * thing the owner could actually see.
    */
   agentId: ID;
@@ -190,6 +204,11 @@ export class ApprovalDesk {
 
   /** Every remote action that settled, in order. See `SettledRemoteAction`. */
   private ledger: SettledRemoteAction[] = [];
+
+  /** Somebody joined or left the queue. Told, never obeyed — see the option. */
+  private waitingChanged(): void {
+    this.tell(() => this.opts.onWaitingChanged?.());
+  }
 
   private noteSettled(entry: SettledRemoteAction): void {
     this.ledger.push(entry);
@@ -259,6 +278,7 @@ export class ApprovalDesk {
         askId, agentId: agent.id, action: facts.action, facts, settle: resolve,
         ...(input.taskId ? { taskId: input.taskId } : {}),
       });
+      this.waitingChanged();
       this.opts.send({
         type: "askApproval", askId,
         agentId: agent.id, channelId: input.channelId,
@@ -318,6 +338,7 @@ export class ApprovalDesk {
         askId, agentId: input.agent.id, action: "plan", settle: resolve,
         ...(input.taskId ? { taskId: input.taskId } : {}),
       });
+      this.waitingChanged();
       this.opts.send({
         type: "askPlan", askId,
         agentId: input.agent.id, channelId: input.channelId,
@@ -392,6 +413,7 @@ export class ApprovalDesk {
         askId, agentId: input.agent.id, action: "saving", settle: resolve,
         ...(input.taskId ? { taskId: input.taskId } : {}),
       });
+      this.waitingChanged();
       this.opts.send({
         type: "askSaving", askId,
         agentId: input.agent.id, channelId: input.channelId,
@@ -422,13 +444,25 @@ export class ApprovalDesk {
    * A decision arrived. `approved` is the ONLY value that lets anything happen;
    * `rejected` and `expired` are told apart because they are different events
    * and he deserves to hear which one it was.
+   *
+   * RETURNS WHETHER IT REACHED ANYBODY (2026-08-07), and that is not a detail.
+   * A card can now outlive the agent that raised it — Cloud9 restarts, and his
+   * screen still shows a `pending` card with a live Approve button, because
+   * nothing expires one any more. When he presses it, there is no waiter left,
+   * and the honest answer is not `void`: it is FALSE, so the caller can tell him
+   * his yes arrived after the agent had gone rather than letting the card turn
+   * green over work that never happened.
+   *
+   * `false` also covers "still pending" and "somebody else's card", which are
+   * both correctly nothing-happened — the engine only speaks up for a decision
+   * that really was his and really found nobody.
    */
-  onApproval(approval: Approval): void {
+  onApproval(approval: Approval): boolean {
     const w = this.waiting.find(x => x.approvalId === approval.id);
-    if (!w || approval.status === "pending") return;
+    if (!w || approval.status === "pending") return false;
     if (approval.status === "approved") {
       this.finish(w.askId, { approved: true, reason: "approved", approvalId: approval.id });
-      return;
+      return true;
     }
     this.finish(w.askId, {
       approved: false,
@@ -437,6 +471,7 @@ export class ApprovalDesk {
         ? "nobody answered in time, so it did not happen"
         : "the owner said no, so it did not happen",
     });
+    return true;
   }
 
   /**
@@ -484,6 +519,7 @@ export class ApprovalDesk {
     if (i < 0) return;
     const [w] = this.waiting.splice(i, 1);
     if (!w) return;
+    this.waitingChanged();
     this.log(`${w.action}: ${outcome.reason}`);
     // WRITTEN DOWN BEFORE ANYONE IS TOLD. See `SettledRemoteAction` — and see
     // `Waiting.facts` for why a plan wait writes nothing here.

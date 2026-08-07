@@ -339,7 +339,7 @@ test("SILENCE IS NOT REFUSAL, AND IT IS NOT A YES — the question simply stays 
   });
   feed({ type: "message", message: says("a1", "@Scout !code add a module") });
 
-  await waitFor(() => asks(frames).length > 0 ? true : undefined, "the agent to ask");
+  const ask = await waitFor(() => asks(frames)[0], "the agent to ask");
   // long past the old ten-minute leash in this test's terms: nothing resolves it
   await new Promise(r => setTimeout(r, 500));
   assert.equal(left.length, 0, "something left this computer without him saying yes");
@@ -347,6 +347,17 @@ test("SILENCE IS NOT REFUSAL, AND IT IS NOT A YES — the question simply stays 
   assert.doesNotMatch(said(frames), /nobody answered/,
     "his unanswered question was thrown away instead of waiting for him");
   assert.doesNotMatch(said(frames), /said no/, "silence was read as a refusal");
+
+  // AND NOW LET IT GO, INSIDE THE TEST. Not tidiness — leaving the wait open
+  // for `t.after` to release means the repository work behind it carries on
+  // doing REAL git while the NEXT test is already running, and the two fight
+  // over the machine. That is what made `taskstuck` fail differently on every
+  // run. There is no clock left to clean up after a test, so a test that parks
+  // a wait has to end it itself and wait for the work to actually stop.
+  decide(feed, ask.askId, "rejected");
+  await waitFor(
+    () => said(frames).includes("said no") ? said(frames) : undefined,
+    "the job to finish after he finally answered");
 });
 
 test("TWO AGENTS work one repository at the same time, each on its own branch", async t => {

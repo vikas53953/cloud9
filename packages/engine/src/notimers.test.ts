@@ -67,6 +67,11 @@ function spy() {
   return { calls, runner };
 }
 
+/** Is this process still running? `kill(pid, 0)` asks without sending anything. */
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
 /** Write a throwaway script and give back a path `run()` will accept. */
 function script(body: string): string {
   const file = path.join(tempDir("cloud9-notimer-"), "probe.js");
@@ -137,24 +142,55 @@ test("an ordinary command KEEPS its few seconds — this is not a licence to han
 
 // ================================ 3. Stop still works, and is now the only way
 
-test("STOP still kills a real process tree with NO clock underneath it", async () => {
-  // THE BLOCKER TEST. Stop was already the honest ending; it is now the ONLY
-  // early one, so if removing the clocks weakened it in any way, this is where
-  // it shows. Note the run has no leash at all: nothing but the stop can end it,
-  // so a pass here cannot be a timeout in disguise.
+test("STOP really kills the whole TREE, with NO clock underneath it", async () => {
+  // THE BLOCKER TEST, and it now tests its own name. Review caught that this
+  // used to launch a `setInterval` — a leaf with no children — so it proved a
+  // process died and said nothing whatever about a TREE. That matters more than
+  // any other single property here: a harness spawns its own children (a build,
+  // a test run, a git command), the child Cloud9 sees is a shell, and killing
+  // the shell alone leaves the real work running and billing. `killTree` is the
+  // one owner of "make it stop" and Stop is now the ONLY early ending there is.
+  //
+  // So the child below starts a GRANDCHILD, writes its pid down, and the test
+  // checks that pid is gone afterwards. The run has no leash at all, so a pass
+  // cannot be a timeout in disguise.
+  const dir = tempDir("cloud9-tree-");
+  const pidFile = path.join(dir, "grandchild.pid").split(path.sep).join("/");
+  const file = script(
+    `const { spawn } = require("node:child_process");
+     const fs = require("node:fs");
+     const kid = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"],
+       { stdio: "ignore" });
+     fs.writeFileSync(${JSON.stringify(pidFile)}, String(kid.pid));
+     setInterval(() => {}, 1000);`);
   const scope = newStopScope();
-  const file = script(`setInterval(() => {}, 1000);`);
   const started = Date.now();
   const running = withStopScope(scope, () =>
     run(process.execPath, [file], { timeoutMs: NO_TIME_LIMIT }));
-  await new Promise(r => setTimeout(r, 400));
+  // wait for the GRANDCHILD to really exist before pulling the plug
+  const stopWaiting = Date.now() + 30_000;
+  while (!fs.existsSync(pidFile) && Date.now() < stopWaiting) {
+    await new Promise(r => setTimeout(r, 50));
+  }
+  assert.ok(fs.existsSync(pidFile), "the child never started a grandchild, so no tree was tested");
+  const grandchild = Number(fs.readFileSync(pidFile, "utf8"));
+  assert.ok(grandchild > 0, "no grandchild pid was written");
+  assert.equal(alive(grandchild), true, "the grandchild was never running in the first place");
+
   scope.stop();
   const result = await running;
 
   assert.equal(result.stopped, true, "the record does not say the owner stopped it");
   assert.equal(result.timedOut, false, "a stop is not a timeout, and there is no clock to be one");
   assert.equal(result.notFound, false, "a stop was read as 'the app isn't installed'");
-  assert.ok(Date.now() - started < 30_000, "the child outlived the stop");
+  assert.ok(Date.now() - started < 60_000, "the child outlived the stop");
+
+  // THE POINT OF THE TEST: the grandchild is gone too.
+  const gone = Date.now() + 20_000;
+  while (alive(grandchild) && Date.now() < gone) await new Promise(r => setTimeout(r, 50));
+  assert.equal(alive(grandchild), false,
+    "Stop killed the process Cloud9 could see and left its children running — which is a " +
+    "harness still working, and still billing, after he was told it had stopped");
 });
 
 test("a child that ends on its own is still reaped, with no clock to notice it", async () => {
