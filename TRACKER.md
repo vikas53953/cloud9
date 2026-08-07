@@ -82,11 +82,12 @@ review-ready, with the latest pushed commit reported in the PR.
 Evidence carried forward from the timing branch: the four review blockers were
 addressed (parked approval waits release execution slots; websocket close and
 restart replay do not answer for the owner and explain how to ask again; the
-16 MiB capture keeps the answer tail and fails loudly when it is lost; and the
-taskstuck comparison was paired with controls). Focused evidence is
+16 MiB capture keeps the answer tail and fails loudly when it is lost; and a
+historical, non-quiet taskstuck comparison was paired with controls). That
+historical comparison is machine-sensitive evidence only; no fresh detached,
+rebuilt, quiet-machine taskstuck control has been run yet. Focused evidence is
 `notimers.test.ts` 7/7, `spendplanfallback` 28/28, shared 218/218, full build
-green, relay reconnect probe 2/2, and the targeted engine run 24/24. The
-taskstuck control remains intentionally pending a quiet-machine detached run.
+green, relay reconnect probe 2/2, and the targeted engine run 24/24.
 Boundaries remain explicit: the Codex provider has no spending cap, and Stop
 does not reach the `SdkProvider` route.
 
