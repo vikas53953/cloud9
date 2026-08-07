@@ -87,7 +87,7 @@ test("the hub writes owner-words and counts for each GitHub write kind", async (
     assert.equal(card.approval.remoteAction, c.remoteAction, c.askId);
     assert.equal(card.approval.action, c.action, c.askId);
     assert.equal(card.approval.status, "pending", c.askId);
-    assert.ok(typeof card.approval.expiresAt === "number", `${c.askId} must be able to die`);
+    assert.equal(card.approval.expiresAt, undefined, `${c.askId} has no expiry clock`);
     if (c.detail) assert.match(card.approval.detail ?? "", c.detail, c.askId);
   }
   owner.close(); engine.close(); await relay.close();

@@ -11,20 +11,28 @@
 // `approvaldesk.test.ts`:
 //
 //  1. IT DOES NOT BLOCK AND IT DOES NOT SPIN. A wait is a promise sitting in a
-//     map with one timer against it. The engine keeps answering messages,
-//     running other agents' turns and reconnecting while an agent waits. There
-//     is no loop, no poll and no `await` on the socket.
+//     list. The engine keeps answering messages, running other agents' turns and
+//     reconnecting while an agent waits. There is no loop, no poll, no timer and
+//     no `await` on the socket.
 //  2. SILENCE IS NEVER A YES. Every path out of here that is not an explicit
-//     "approved" is a no: the deadline passing, the hub going away, the engine
-//     stopping, a malformed answer. The agent is told WHICH, in plain words, so
-//     it can say something true in the conversation.
+//     "approved" is a no: the owner saying no, the owner pressing Stop, the hub
+//     going away, the engine stopping, a malformed answer. The agent is told
+//     WHICH, in plain words, so it can say something true in the conversation.
+//
+// AND THE CARD NO LONGER DIES OF OLD AGE (2026-08-07). It used to be killed
+// after ten minutes, and the agent behind it told "nobody answered in time".
+// That was invented here, not asked for, and it is not how the tools this app
+// copies behave: Claude Code and Codex ask and then wait. His question survives
+// lunch. Property 2 above is what keeps silence from ever becoming a yes; a
+// deadline was never part of it, and re-adding one would only mean losing his
+// question rather than protecting anything.
 //  3. IT IS THE SAME APPROVAL ENTITY. This sends `askApproval` and listens for
 //     the ordinary `approval` frame that `decideApproval` already produces. No
 //     second decision mechanism, no second place for "did we ask?" to be
 //     answered — that split is what let the hub and the engine disagree about
 //     `mustAskBeforeActing` the first time.
 import {
-  AgentDef, APPROVAL_LIMITS, Approval, ClientFrame, ID, RemoteAction, RemoteActionFacts,
+  AgentDef, Approval, ClientFrame, ID, RemoteAction, RemoteActionFacts,
   SavingProposal, decideAsking, describeRemoteAction, isRemoteAction, tidyPlan, tidySaving,
   trustLevel, trustOf, validateSavingProposal,
 } from "@cloud9/shared";
@@ -52,10 +60,24 @@ export interface ApprovalOutcome {
 export interface ApprovalDeskOptions {
   /** how the engine puts a frame on the wire */
   send: (frame: ClientFrame) => void;
-  /** overridden in tests; the real one is the shared ten minutes */
-  waitMs?: number;
   /** how many agents may be waiting at once — a leash, not a policy */
   maxWaiting?: number;
+  /**
+   * THE NUMBER OF AGENTS STANDING HERE JUST CHANGED.
+   *
+   * Fired on every push and every removal, for EVERY kind of card, with no
+   * arguments — the caller reads `pending`. It exists because of a starvation
+   * bug the removal of the ten-minute sweep turned from temporary into
+   * permanent: a turn parked on a card is holding one of the engine's two
+   * concurrency slots while it waits, and the sweep used to be the thing that
+   * eventually handed that slot back. See `Engine.drain`.
+   *
+   * It is a NOTIFICATION, never a decision — like `onWaitStart`, it is told and
+   * it does not get to change what this desk does.
+   */
+  onWaitingChanged?: (change: ApprovalWaitChange) => void;
+  /** current queue-turn token, including provider code that calls the desk directly */
+  currentTurnToken?: (agentId: ID) => string | undefined;
   log?: (message: string) => void;
   /**
    * A JOB HAS STOPPED MOVING AND IS STANDING HERE.
@@ -78,7 +100,7 @@ export interface ApprovalDeskOptions {
     plan?: true;
   }) => void;
   /**
-   * THE WAIT IS OVER — yes, no, expired, or the hub went away. Always fires if
+   * THE WAIT IS OVER — yes, no, stopped, or the hub went away. Always fires if
    * `onWaitStart` fired, exactly once, so nothing can be left standing at the
    * gate for ever on a screen. `outcome` says which of the four it was.
    */
@@ -97,6 +119,14 @@ export interface ApprovalDeskOptions {
    * and it is why "don't ask me" does not cost him the audit.
    */
   onUnasked?: (what: { agent: AgentDef; taskId?: ID; channelId: ID; facts: RemoteActionFacts }) => void;
+}
+
+/** One wait entered or left the desk. `turnToken` is absent for external cards. */
+export interface ApprovalWaitChange {
+  type: "added" | "removed";
+  askId: string;
+  agentId: ID;
+  turnToken?: string;
 }
 
 /**
@@ -136,7 +166,7 @@ interface Waiting {
    * card is not inside a `run()`, so there was no process to kill and nothing
    * else knew a stop had happened. The room said "🛑 Stopping — pulling the plug"
    * and the job then sat on the jobs screen as "waiting for you" until the card
-   * timed out minutes later. The stop was true of the processes and false of the
+   * sat there afterwards. The stop was true of the processes and false of the
    * thing the owner could actually see.
    */
   agentId: ID;
@@ -155,20 +185,19 @@ interface Waiting {
   facts?: RemoteActionFacts;
   /** the delegated job this wait belongs to, when there is one */
   taskId?: ID;
+  /** the engine turn that owns this wait; absent for an external/manual card */
+  turnToken?: string;
   settle: (outcome: ApprovalOutcome) => void;
-  timer: ReturnType<typeof setTimeout>;
 }
 
 let asks = 0;
 
 export class ApprovalDesk {
   private waiting: Waiting[] = [];
-  private waitMs: number;
   private maxWaiting: number;
   private log: (message: string) => void;
 
   constructor(private opts: ApprovalDeskOptions) {
-    this.waitMs = opts.waitMs ?? APPROVAL_LIMITS.waitMs;
     this.maxWaiting = opts.maxWaiting ?? 20;
     this.log = opts.log ?? ((m: string) => console.log(`[approval] ${m}`));
   }
@@ -188,6 +217,11 @@ export class ApprovalDesk {
   /** Every remote action that settled, in order. See `SettledRemoteAction`. */
   private ledger: SettledRemoteAction[] = [];
 
+  /** Somebody joined or left the queue. Told, never obeyed — see the option. */
+  private waitingChanged(change: ApprovalWaitChange): void {
+    this.tell(() => this.opts.onWaitingChanged?.(change));
+  }
+
   private noteSettled(entry: SettledRemoteAction): void {
     this.ledger.push(entry);
     if (this.ledger.length > SETTLED_KEEP) {
@@ -198,17 +232,21 @@ export class ApprovalDesk {
   /**
    * "May I do this one thing?" — asked while the agent is mid-run.
    *
-   * Returns a promise that settles when he answers, when the deadline passes,
-   * or when the hub goes away. It never settles `approved: true` on anything
-   * other than a decision that really said `approved`.
+   * Returns a promise that settles when he answers, when he presses Stop, or
+   * when the hub goes away — and NOT until one of those happens. It never
+   * settles `approved: true` on anything other than a decision that really said
+   * `approved`.
    */
   ask(input: {
     agent: AgentDef;
     channelId: ID;
     taskId?: ID;
     facts: RemoteActionFacts;
+    turnToken?: string | null;
   }): Promise<ApprovalOutcome> {
     const { agent, facts } = input;
+    const turnToken = input.turnToken === null ? undefined
+      : input.turnToken ?? this.opts.currentTurnToken?.(agent.id);
     // SOMETHING THIS APP HAS NO WORDS FOR NEVER HAPPENS. Asked FIRST, and asked
     // about the action itself rather than about the agent, because "we cannot
     // describe it" must not be answerable by any setting: an action with no row
@@ -251,19 +289,13 @@ export class ApprovalDesk {
 
     const askId = `ask-${(++asks).toString(36)}-${Date.now().toString(36)}`;
     return new Promise<ApprovalOutcome>(resolve => {
-      const timer = setTimeout(() => {
-        // NOBODY ANSWERED. This is the honest end, and it is a no.
-        this.finish(askId, {
-          approved: false,
-          reason: `nobody answered in ${howLong(this.waitMs)}, so it did not happen`,
-        });
-      }, this.waitMs);
-      // a waiting approval must never be the reason this process stays alive
-      timer.unref?.();
       this.waiting.push({
-        askId, agentId: agent.id, action: facts.action, facts, settle: resolve, timer,
+        askId, agentId: agent.id, action: facts.action, facts, settle: resolve,
         ...(input.taskId ? { taskId: input.taskId } : {}),
+        ...(turnToken ? { turnToken } : {}),
       });
+      this.waitingChanged({ type: "added", askId, agentId: agent.id,
+        ...(turnToken ? { turnToken } : {}) });
       this.opts.send({
         type: "askApproval", askId,
         agentId: agent.id, channelId: input.channelId,
@@ -283,8 +315,7 @@ export class ApprovalDesk {
    * "HERE IS WHAT I INTEND TO DO — shall I?" — asked BEFORE the work, when the
    * owner has said he wants to see the plan first.
    *
-   * IT IS THE SAME DESK, DELIBERATELY. Same waiting list, same one timer per
-   * wait, same `maxWaiting` leash, same `onApproval` settle path, same
+   * IT IS THE SAME DESK, DELIBERATELY. Same waiting list, same `maxWaiting` leash, same `onApproval` settle path, same
    * `giveUpAll` when the hub goes away — so the three properties at the top of
    * this file hold for a plan exactly as they hold for a push, and there is
    * still exactly one place where "did we ask?" is answered.
@@ -302,7 +333,10 @@ export class ApprovalDesk {
     taskId?: ID;
     /** what the agent said it intends to do, in its own words */
     plan: string;
+    turnToken?: string | null;
   }): Promise<ApprovalOutcome> {
+    const turnToken = input.turnToken === null ? undefined
+      : input.turnToken ?? this.opts.currentTurnToken?.(input.agent.id);
     const plan = tidyPlan(input.plan);
     if (!plan) {
       // nothing to show him is not something to approve — and silence would be
@@ -320,17 +354,13 @@ export class ApprovalDesk {
     }
     const askId = `ask-${(++asks).toString(36)}-${Date.now().toString(36)}`;
     return new Promise<ApprovalOutcome>(resolve => {
-      const timer = setTimeout(() => {
-        this.finish(askId, {
-          approved: false,
-          reason: `nobody answered in ${howLong(this.waitMs)}, so it did not happen`,
-        });
-      }, this.waitMs);
-      timer.unref?.();
       this.waiting.push({
-        askId, agentId: input.agent.id, action: "plan", settle: resolve, timer,
+        askId, agentId: input.agent.id, action: "plan", settle: resolve,
         ...(input.taskId ? { taskId: input.taskId } : {}),
+        ...(turnToken ? { turnToken } : {}),
       });
+      this.waitingChanged({ type: "added", askId, agentId: input.agent.id,
+        ...(turnToken ? { turnToken } : {}) });
       this.opts.send({
         type: "askPlan", askId,
         agentId: input.agent.id, channelId: input.channelId,
@@ -358,7 +388,7 @@ export class ApprovalDesk {
    * — asked when an agent has looked at the crew's spending and found waste.
    *
    * IT IS THE SAME DESK AGAIN, for the same reasons `askPlan` is: same waiting
-   * list, same one timer per wait, same `maxWaiting` leash, same `onApproval`
+   * list, same `maxWaiting` leash, same `onApproval`
    * settle path, same `giveUpAll` and `giveUpFor`. The three properties at the
    * top of this file hold for a saving exactly as they hold for a push.
    *
@@ -381,7 +411,10 @@ export class ApprovalDesk {
     channelId: ID;
     taskId?: ID;
     proposal: SavingProposal;
+    turnToken?: string | null;
   }): Promise<ApprovalOutcome> {
+    const turnToken = input.turnToken === null ? undefined
+      : input.turnToken ?? this.opts.currentTurnToken?.(input.agent.id);
     // JUDGED HERE AS WELL AS AT THE HUB. Not belt-and-braces: this is the side
     // that can still say something useful to the AGENT, whereas a refusal at
     // the hub is a card that never appears and an agent left wondering.
@@ -401,17 +434,13 @@ export class ApprovalDesk {
     };
     const askId = `ask-${(++asks).toString(36)}-${Date.now().toString(36)}`;
     return new Promise<ApprovalOutcome>(resolve => {
-      const timer = setTimeout(() => {
-        this.finish(askId, {
-          approved: false,
-          reason: `nobody answered in ${howLong(this.waitMs)}, so nothing was changed`,
-        });
-      }, this.waitMs);
-      timer.unref?.();
       this.waiting.push({
-        askId, agentId: input.agent.id, action: "saving", settle: resolve, timer,
+        askId, agentId: input.agent.id, action: "saving", settle: resolve,
         ...(input.taskId ? { taskId: input.taskId } : {}),
+        ...(turnToken ? { turnToken } : {}),
       });
+      this.waitingChanged({ type: "added", askId, agentId: input.agent.id,
+        ...(turnToken ? { turnToken } : {}) });
       this.opts.send({
         type: "askSaving", askId,
         agentId: input.agent.id, channelId: input.channelId,
@@ -442,13 +471,25 @@ export class ApprovalDesk {
    * A decision arrived. `approved` is the ONLY value that lets anything happen;
    * `rejected` and `expired` are told apart because they are different events
    * and he deserves to hear which one it was.
+   *
+   * RETURNS WHETHER IT REACHED ANYBODY (2026-08-07), and that is not a detail.
+   * A card can now outlive the agent that raised it — Cloud9 restarts, and his
+   * screen still shows a `pending` card with a live Approve button, because
+   * nothing expires one any more. When he presses it, there is no waiter left,
+   * and the honest answer is not `void`: it is FALSE, so the caller can tell him
+   * his yes arrived after the agent had gone rather than letting the card turn
+   * green over work that never happened.
+   *
+   * `false` also covers "still pending" and "somebody else's card", which are
+   * both correctly nothing-happened — the engine only speaks up for a decision
+   * that really was his and really found nobody.
    */
-  onApproval(approval: Approval): void {
+  onApproval(approval: Approval): boolean {
     const w = this.waiting.find(x => x.approvalId === approval.id);
-    if (!w || approval.status === "pending") return;
+    if (!w || approval.status === "pending") return false;
     if (approval.status === "approved") {
       this.finish(w.askId, { approved: true, reason: "approved", approvalId: approval.id });
-      return;
+      return true;
     }
     this.finish(w.askId, {
       approved: false,
@@ -457,6 +498,7 @@ export class ApprovalDesk {
         ? "nobody answered in time, so it did not happen"
         : "the owner said no, so it did not happen",
     });
+    return true;
   }
 
   /**
@@ -504,7 +546,8 @@ export class ApprovalDesk {
     if (i < 0) return;
     const [w] = this.waiting.splice(i, 1);
     if (!w) return;
-    clearTimeout(w.timer);
+    this.waitingChanged({ type: "removed", askId: w.askId, agentId: w.agentId,
+      ...(w.turnToken ? { turnToken: w.turnToken } : {}) });
     this.log(`${w.action}: ${outcome.reason}`);
     // WRITTEN DOWN BEFORE ANYONE IS TOLD. See `SettledRemoteAction` — and see
     // `Waiting.facts` for why a plan wait writes nothing here.
@@ -522,20 +565,4 @@ export class ApprovalDesk {
   private tell(what: () => void): void {
     try { what(); } catch (err) { this.log(`a waiting listener threw: ${String(err)}`); }
   }
-}
-
-/**
- * "10 minutes" / "20 seconds", never "0 minutes".
- *
- * Caught by the real end-to-end run, not by a unit test: with a 20-second
- * leash the agent told the owner "nobody answered in 0 minutes", which reads
- * like a bug in the very sentence whose whole job is to be believable.
- */
-function howLong(ms: number): string {
-  if (ms < 90_000) {
-    const s = Math.max(1, Math.round(ms / 1000));
-    return `${s} second${s === 1 ? "" : "s"}`;
-  }
-  const m = Math.round(ms / 60_000);
-  return `${m} minute${m === 1 ? "" : "s"}`;
 }

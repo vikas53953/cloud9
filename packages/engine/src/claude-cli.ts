@@ -8,8 +8,8 @@
 // in the shell — if it runs, it runs on the app's own sign-in.
 //
 // Same seam and same hardening as CodexProvider: the prompt goes on STDIN
-// (never argv), every argument is allowlist-checked, and there is a wall-clock
-// leash with a process-tree kill.
+// (never argv), every argument is allowlist-checked, and Stop owns a
+// process-tree kill.
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -19,15 +19,14 @@ import {
   validateAgentInput,
 } from "@cloud9/shared";
 import {
-  ClaudeProvider, HarnessUnavailableError, promptTurnKind, RespondInput, splitAgentPrompt,
+  ClaudeProvider, HarnessUnavailableError, TurnOutputTooBigError, RespondInput, splitAgentPrompt,
 } from "./provider.js";
-import { TurnTimedOutError, turnQuietBudgetMs, turnTimeBudgetMs } from "./timebudget.js";
 import {
   CLAUDE_BUILTIN_TOOLS, claudeToolsFor, deniedClaudeTools, grantedSupply, Supply,
 } from "./abilities.js";
 import { cloud9McpConfig, cloud9ToolNames } from "./cloud9tools.js";
 import { OpenTurn } from "./toolbridge.js";
-import { EMPTY_ARG, Runner, run, safeArg } from "./run.js";
+import { EMPTY_ARG, NO_TIME_LIMIT, Runner, run, safeArg } from "./run.js";
 import { envWithoutCredentials } from "./env.js";
 // ONE OWNER for "isolated, or the owner's own setup" — read by this file and by
 // codex.ts, so the two harnesses can never drift apart on the question.
@@ -45,16 +44,6 @@ export interface ClaudeCliProviderOptions {
   agentDataDir: (agentId: string) => string;
   /** command name — overridden by tests with a shim */
   command?: string;
-  /**
-   * FORCE ONE wall-clock leash for every turn, whatever kind of work it is.
-   *
-   * It used to be the only leash there was, defaulting to 3 minutes, which is
-   * why a background job was killed like a late chat message. It is now an
-   * OVERRIDE and nothing sets it in the app: leave it out and each turn gets the
-   * budget for its own kind of work (`timebudget.ts`). Tests set it to pin a
-   * number; the host does not.
-   */
-  timeoutMs?: number;
   /** the models this harness offers; a turn is refused for anything else */
   models?: () => string[];
   /**
@@ -141,7 +130,14 @@ export function claudeMapper(): EventMapper {
         const kind = String(block.type ?? "");
         if (kind === "text") {
           const said = str(block.text);
-          if (said) { t.setText(said); t.add({ kind: "message", label: "Said something", detail: said }); }
+          if (said) {
+            // Intermediate assistant blocks are useful trace text, but they
+            // are not the answer until Claude emits its terminal result
+            // envelope. A truncated stream must never promote one of these
+            // stale fragments into the turn's reply.
+            t.setText(said, false);
+            t.add({ kind: "message", label: "Said something", detail: said });
+          }
         } else if (kind === "thinking") {
           const thought = str(block.thinking);
           if (thought) t.add({ kind: "thinking", label: "Thought it through", detail: thought });
@@ -177,6 +173,7 @@ export function claudeMapper(): EventMapper {
       || (!type && ("result" in ev || "is_error" in ev || "subtype" in ev));
     if (isResult) {
       const said = str(ev.result);
+      t.setTerminal();
       if (said) t.setText(said);
       t.set({
         ...(typeof ev.duration_ms === "number" ? { cliDurationMs: ev.duration_ms } : {}),
@@ -823,26 +820,10 @@ export function claudeAbilityFingerprint(
 export class ClaudeCliProvider implements ClaudeProvider {
   private runner: Runner;
   private command: string;
-  /** set only when a caller pinned one leash for every kind — normally undefined */
-  private fixedTimeoutMs: number | undefined;
 
   constructor(private opts: ClaudeCliProviderOptions) {
     this.runner = opts.runner ?? run;
     this.command = opts.command ?? "claude";
-    this.fixedTimeoutMs = opts.timeoutMs;
-  }
-
-  /**
-   * HOW LONG THIS TURN GETS. Per turn, not per provider — the provider is built
-   * once at sign-in (`host.ts`) and then answers chat messages, background jobs
-   * and repository work through the same object, so a constructor is the one
-   * place this decision could NOT be made correctly.
-   *
-   * `promptTurnKind` is the same answer the prompt is built from, so the clock
-   * and the sentence the agent reads about its turn cannot drift apart.
-   */
-  private budgetFor(input: RespondInput): number {
-    return this.fixedTimeoutMs ?? turnTimeBudgetMs(promptTurnKind(input));
   }
 
   /**
@@ -934,14 +915,6 @@ export class ClaudeCliProvider implements ClaudeProvider {
 
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir, onTrace, onStep } = input;
-    const timeoutMs = this.budgetFor(input);
-    // ===== GAP A BLOCK (the silence clock, 2026-08-05) — start =====
-    // THE SECOND CLOCK. `timeoutMs` above says how long real work may take;
-    // this says how long NOTHING may happen (`timebudget.ts`). Pinning a leash
-    // pins both, so a test that fixes one number does not get a stray silence
-    // kill from the other.
-    const quietMs = this.fixedTimeoutMs ?? turnQuietBudgetMs(promptTurnKind(input));
-    // ===== GAP A BLOCK — end =====
     // its own git worktree when it is working in a repository (`repowork.ts`),
     // its own folder otherwise. One line, and it is the only way a turn can
     // happen anywhere but the agent's folder.
@@ -1032,10 +1005,9 @@ export class ClaudeCliProvider implements ClaudeProvider {
       const watchLine = liveStepWatcher("claude", claudeMapper(), onStep);
       const ran = await this.runner(this.command, args, {
         cwd,
-        timeoutMs,
-        // ===== GAP A BLOCK (the silence clock, 2026-08-05) — start =====
-        quietMs,
-        // ===== GAP A BLOCK — end =====
+        // NO CLOCK. A turn ends when it finishes, when it fails, or when the
+        // owner presses Stop — see `NO_TIME_LIMIT` and `timebudget.ts`.
+        timeoutMs: NO_TIME_LIMIT,
         stdin: prompt,
         // NO CREDENTIAL VARIABLES, AT EITHER SETTING. The local app's own login
         // pays for this turn, whether or not the owner asked for his own setup:
@@ -1105,20 +1077,6 @@ export class ClaudeCliProvider implements ClaudeProvider {
     if (result.notFound) {
       throw new HarnessUnavailableError("claude", "the Claude app isn't installed on this machine");
     }
-    // THE LEASH FIRED. `run()` has already killed the whole process tree by the
-    // time this returns (see `killTree`), so nothing is still running — and the
-    // error carries the budget so the person is told a CLOCK ran out, in
-    // minutes, rather than reading "something went wrong on my side".
-    if (result.timedOut) {
-      // ===== GAP A BLOCK (the silence clock, 2026-08-05) — start =====
-      // WHICH clock ran out decides which sentence the owner reads, and the
-      // number quoted has to be that clock's own — telling him "it went quiet
-      // for 10 minutes" when it went quiet for 3 would be a new small lie.
-      const quiet = result.wentQuiet === true;
-      throw new TurnTimedOutError(
-        "claude", promptTurnKind(input), quiet ? quietMs : timeoutMs, quiet);
-      // ===== GAP A BLOCK — end =====
-    }
     // Only the CLI's OWN complaint counts. Scanning the reply text would let a
     // model that merely *talks about* logging in fake a signed-out harness.
     if (result.code !== 0 && looksSignedOut(result.stderr)) {
@@ -1142,6 +1100,16 @@ export class ClaudeCliProvider implements ClaudeProvider {
 
     if (result.code !== 0 && !trace.text) {
       throw new Error(`Claude exited with ${result.code}: ${firstLine(result.stderr)}`);
+    }
+    // THE OUTPUT OVERFLOWED AND WE DID NOT SEE A FINISHED ANSWER. Said out
+    // loud, never patched over. `cap` keeps the END of the stream precisely so
+    // the harness's own result line survives an overflow — so if we got here
+    // with no answer AND the stream was truncated, what is in `trace.text` is a
+    // fragment of somebody's tool output, not a reply. Returning it would be
+    // the exact shape of lie this whole branch exists to remove: a turn the
+    // owner watched work all night, recorded `ok`, answered with rubbish.
+    if (result.truncated && !trace.terminal) {
+      throw new TurnOutputTooBigError();
     }
     if (trace.error && !trace.text) throw new Error(trace.error);
     return trace.text || "(no response)";

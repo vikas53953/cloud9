@@ -1,5 +1,5 @@
 import { tempDir } from "./tmp-for-tests.js";
-// Command-line safety and the wall-clock leash.
+// Command-line safety and process-tree stopping.
 //
 // Everything here runs through `shell: true`, so an argument that escapes its
 // quoting is a remote-code-execution bug. These tests assert the module REFUSES
@@ -138,9 +138,24 @@ test("output is captured as text and capped", async () => {
 
   const result = await run(process.execPath, [script], { timeoutMs: 60_000 });
   assert.equal(typeof result.stdout, "string", "decoded as text, not Buffers");
-  assert.ok(result.stdout.length <= 2 * 1024 * 1024 + 8192,
-    `captured ${result.stdout.length} bytes — the 2MB cap did not hold`);
+  assert.ok(Buffer.byteLength(result.stdout, "utf8") <= 16 * 1024 * 1024,
+    `captured ${Buffer.byteLength(result.stdout, "utf8")} bytes — the 16MB cap did not hold`);
   assert.ok(result.stdout.length > 1024, "it really did produce output");
+});
+
+test("UTF-8 capture is byte-capped, valid, and keeps the answer tail", async () => {
+  const dir = tempDir("cloud9-utf8-cap-");
+  const script = path.join(dir, "unicode.js");
+  fs.writeFileSync(script,
+    "process.stdout.write('😀'.repeat(4194310));" +
+    "process.stdout.write('\\nFINAL-ANSWER-TAIL');");
+
+  const result = await run(process.execPath, [script], { timeoutMs: 60_000 });
+  assert.equal(result.truncated, true, "the multibyte fixture did exceed the cap");
+  assert.ok(Buffer.byteLength(result.stdout, "utf8") <= 16 * 1024 * 1024,
+    "the retained output exceeded 16 MiB in UTF-8 bytes");
+  assert.doesNotMatch(result.stdout, /�/, "the tail starts with a split UTF-8 code point");
+  assert.match(result.stdout, /FINAL-ANSWER-TAIL$/, "the answer tail was lost");
 });
 
 test("a detached spawn of a missing command does not crash the process", async () => {

@@ -2124,8 +2124,9 @@ function Workspace(): React.JSX.Element {
       closeSearch();
     }
   }, [closeSearch]);
-  // One owner for "how many are waiting" — see `useMyApprovals`. A request past
-  // its deadline is not waiting on him, whatever the database still says.
+  // One owner for "how many are waiting" — see `useMyApprovals`. Nothing has a
+  // deadline any more (2026-08-07): a card waits for him, so the only thing not
+  // counted is one that was already swept away before that change.
   const pendingApprovals = useMyApprovals(world.approvals, world.me?.id).waiting.length;
 
   /* HOW MANY OF HIS OWN AGENTS ARE WORKING THIS SECOND — the number on the
@@ -4922,59 +4923,28 @@ function ChatView({
   );
 }
 
-/* ---- an approval that can run out of time ---------------------------------
+/* ---- an approval NOBODY takes away from him --------------------------------
  *
- * A mid-run request (`kind: "action"`) carries an `expiresAt`, because an agent
- * is standing still waiting for it: a request nobody answers has to die rather
- * than be approved next Tuesday against a branch that has moved on.
+ * A card used to run out of time: ten minutes after an agent asked, the hub
+ * swept it away, and this screen counted down to it in seconds. All of that went
+ * on 2026-08-07. A question put to the owner is not rubbish to be cleared up
+ * while he thinks about it — the tools this app is a front end for ask and then
+ * wait, and so does this. There is no countdown here any more because there is
+ * nothing to count down to.
  *
- * "HE SAID NO" AND "HE NEVER SAW IT" ARE DIFFERENT EVENTS and this screen draws
- * them differently. Expiry is not an error and is never painted red: nothing
- * happened, which is the safe outcome. It is also not silent — the card stays
- * where it was, with the buttons replaced, so a request that timed out while he
- * was away is something he FINDS rather than something that vanished.
+ * A card stops being answerable for exactly two reasons now, and both have a
+ * person behind them: he decided, or he pressed Stop.
  */
-
-/** How long is left, in words. `now` is passed in so one clock drives every card. */
-function expiryWords(expiresAt: number, now: number): string {
-  const left = expiresAt - now;
-  if (left <= 0) return "the time ran out";
-  const mins = Math.floor(left / 60_000);
-  if (mins >= 2) return `in ${mins} minutes`;
-  if (left >= 60_000) return "in about a minute";
-  return `in ${Math.max(1, Math.round(left / 1000))} seconds`;
-}
-
-/**
- * A clock that only ticks while something is actually counting down.
- *
- * An interval that runs for the life of the app would re-render every message
- * on screen once a second for the sake of a card that is usually not there.
- */
-function useCountdown(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [active]);
-  return now;
-}
 
 /**
  * Can this request still be answered?
  *
- * The HUB owns the status and sends an `approval` frame with `expired` when its
- * own timer fires. This owns the clock only, and for one reason: between the
- * deadline passing and that frame arriving, an Approve button would be a button
- * that cannot work — the hub refuses a late decision. Offering it would be the
- * lie. So the card goes quiet the moment the time is up, and the frame that
- * follows changes nothing he can see.
+ * The one case left is a card written down BEFORE the sweep was removed, which
+ * really was killed by the old clock and still says so on his disk. Nothing
+ * creates a new one — see `ApprovalStatus` in @cloud9/shared.
  */
-function approvalIsDead(approval: Approval, now: number): boolean {
-  if (approval.status === "expired") return true;
-  return approval.status === "pending" && !!approval.expiresAt && approval.expiresAt <= now;
+function approvalIsDead(approval: Approval): boolean {
+  return approval.status === "expired";
 }
 
 /**
@@ -4998,11 +4968,11 @@ function actionHeadline(approval: Approval): string {
  *
  * Three places count approvals: the badge on the rail, the gold pill above a
  * conversation, and the Tasks in-tray. They used to count `status === "pending"`
- * each in their own words, which was right until a card could run out of time:
- * a request past its deadline is still `pending` in the hub's database for the
- * moment before the hub's own timer fires, so the pill said "2 waiting" over two
- * cards that both read "nobody answered". A number that argues with the thing
- * underneath it is worse than no number.
+ * each in their own words, which drifted the moment a card could run out of
+ * time. Nothing runs out of time now (2026-08-07) — a card waits for him — so
+ * this reads simply: pending, minus the ones already swept away before that
+ * change. It stays one owner because three counts in three places is how the
+ * pill ended up arguing with the cards underneath it once before.
  *
  * `mine` is everything of his the screen is holding; `waiting` is the subset
  * that can still be answered. Everything that counts, counts this.
@@ -5011,11 +4981,9 @@ function actionHeadline(approval: Approval): string {
    has selected only a slice of the world can still ask it. */
 function useMyApprovals(
   approvals: Approval[], meId: ID | undefined,
-): { mine: Approval[]; waiting: Approval[]; now: number } {
+): { mine: Approval[]; waiting: Approval[] } {
   const mine = approvals.filter(a => a.ownerId === meId);
-  const ticking = mine.some(a => a.status === "pending" && !!a.expiresAt);
-  const now = useCountdown(ticking);
-  return { mine, waiting: mine.filter(a => a.status === "pending" && !approvalIsDead(a, now)), now };
+  return { mine, waiting: mine.filter(a => a.status === "pending" && !approvalIsDead(a)) };
 }
 
 /** The moment an agent stops and asks — the prototype's permission card. */
@@ -5033,13 +5001,12 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
   const plan = approval.kind === "plan";
   /* THE FOURTH KIND OF THE SAME CARD (2026-08-07). One agent looked at what
      the crew costs and wants to change ANOTHER agent's settings to spend less.
-     It is timed like the other two because an agent is standing there waiting,
+     It behaves like the other two because an agent is standing there waiting,
      and it is the same Approve/Not now — the difference is only what he is
      being asked about, and which agent it would touch. */
   const saving = approval.kind === "saving";
-  const timed = action || plan || saving;
-  const now = useCountdown(timed && approval.status === "pending" && !!approval.expiresAt);
-  const dead = approvalIsDead(approval, now);
+  const midRun = action || plan || saving;
+  const dead = approvalIsDead(approval);
 
   const rows: [string, string][] = [];
   /* WHICH AGENT WOULD ACTUALLY CHANGE — the fact he most needs and the one the
@@ -5049,12 +5016,9 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
   if (agent) {
     rows.push(["Agent", `${agent.name} · ${PROVIDER_LABEL[(agent.provider ?? "claude") as Provider]} · ${modelWords(agent.model)}`]);
   }
-  const rule = timed ? null : ruleWords(agent);
+  const rule = midRun ? null : ruleWords(agent);
   if (rule) rows.push(["Rule hit", rule]);
   rows.push(["Asked", clock(approval.createdAt)]);
-  if (timed && approval.expiresAt) {
-    rows.push(["Expires", dead ? "the time ran out" : expiryWords(approval.expiresAt, now)]);
-  }
 
   /* THE SENTENCE HE JUDGES, VERBATIM. On an action card every noun in
      `approval.action` — the branch, the repository, the number of commits —
@@ -5145,7 +5109,7 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
                 Nobody answered in time — it didn't happen. Ask again and the agent will
                 stop here once more.
               </span>
-              {!timed && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
+              {!midRun && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
             </>
           ) : (
             <>
@@ -5153,9 +5117,9 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
                 onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "approved" })}>
                 Approve
               </button>
-              <button className={timed ? "btn" : "btn danger"}
+              <button className={midRun ? "btn" : "btn danger"}
                 onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "rejected" })}>
-                {timed ? "Not now" : "Reject"}
+                {midRun ? "Not now" : "Reject"}
               </button>
               {/* Only a job-shaped approval HAS a job to look at. */}
               {approval.taskId && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
@@ -5172,9 +5136,9 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
  * The same request, in the Tasks in-tray — smaller, and held to the same laws.
  *
  * ONE COMPONENT for "an approval in the side panel", so the sentence, the
- * detail line, the deadline and the expired wording cannot drift between the
+ * detail line and the wording cannot drift between the
  * conversation and the tray. The tray used to keep its own copy and it showed
- * neither the branch card's detail nor its deadline at all.
+ * neither the branch card's detail nor its counted facts at all.
  */
 function ApprovalTray({ approval, agent, task }: {
   approval: Approval; agent?: AgentDef; task?: Task;
@@ -5183,10 +5147,9 @@ function ApprovalTray({ approval, agent, task }: {
   /* the same third and fourth kinds as in `ApprovalMoment` — one card, four shapes */
   const plan = approval.kind === "plan";
   const saving = approval.kind === "saving";
-  const timed = action || plan || saving;
-  const now = useCountdown(timed && approval.status === "pending" && !!approval.expiresAt);
-  const dead = approvalIsDead(approval, now);
-  const rule = timed ? null : ruleWords(agent);
+  const midRun = action || plan || saving;
+  const dead = approvalIsDead(approval);
+  const rule = midRun ? null : ruleWords(agent);
   const headline = action
     ? actionHeadline(approval)
     : (plan || saving ? approval.action : (task?.title ?? approval.action));
@@ -5206,7 +5169,7 @@ function ApprovalTray({ approval, agent, task }: {
       </div>
       {/* On an action card the headline IS the sentence, so repeating it below
           would be the same words twice. A job-shaped one still needs it. */}
-      {!timed && <p className="ap-say">{approval.action}</p>}
+      {!midRun && <p className="ap-say">{approval.action}</p>}
       {/* WHICH AGENT WOULD ACTUALLY CHANGE. On every other kind of card the
           agent asking and the agent affected are the same one; on this kind they
           are usually not, and a card that does not say which would be asking him
@@ -5224,11 +5187,6 @@ function ApprovalTray({ approval, agent, task }: {
         <pre className="planbody" data-saving={approval.id}>{approval.saving.because}</pre>
       )}
       {rule && <p className="meta" style={{ margin: "0 0 10px" }}>Rule hit: {rule}</p>}
-      {timed && approval.expiresAt && (
-        <p className="meta apexpiry" style={{ margin: "0 0 10px" }}>
-          {dead ? "The time ran out." : `Expires ${expiryWords(approval.expiresAt, now)}.`}
-        </p>
-      )}
       {dead ? (
         <p className="expiredline" data-expired={approval.id}>
           Nobody answered in time — it didn't happen.
@@ -5237,9 +5195,9 @@ function ApprovalTray({ approval, agent, task }: {
         <div className="actions">
           <button className="gold small"
             onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "approved" })}>Approve</button>
-          <button className={timed ? "btn small" : "btn small danger"}
+          <button className={midRun ? "btn small" : "btn small danger"}
             onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "rejected" })}>
-            {timed ? "Not now" : "Reject"}
+            {midRun ? "Not now" : "Reject"}
           </button>
         </div>
       )}
@@ -12914,17 +12872,15 @@ function TasksScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): Re
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [filter, setFilter] = useState<"all" | "running" | "done" | "failed">("all");
 
-  /* Waiting, and — separately — the ones that ran out. A mid-run request nobody
-     answered has to be findable here too, or the only record of it is a job
-     that quietly did less than he thinks it did. */
-  /* Both off `useMyApprovals`, so this panel, the pill above a conversation and
-     the badge on the rail can never disagree about what is still waiting. A
-     request past its deadline moves to the second list even before the hub's
-     own timer has caught up with it. */
-  const { mine: mineAll, waiting: mineWaiting, now: apNow } =
+  /* Waiting, and — separately — the ones that ran out under the old ten-minute
+     sweep, before it was removed on 2026-08-07. Nothing new can land in the
+     second list; the ones already on his disk stay findable, because the only
+     other record of them is a job that quietly did less than he thinks it did.
+     Both off `useMyApprovals`, so this panel, the pill above a conversation and
+     the badge on the rail can never disagree about what is still waiting. */
+  const { mine: mineAll, waiting: mineWaiting } =
     useMyApprovals(world.approvals, world.me?.id);
-  const mineExpired = mineAll.filter(a =>
-    (a.status === "expired" || a.status === "pending") && approvalIsDead(a, apNow));
+  const mineExpired = mineAll.filter(a => approvalIsDead(a));
 
   const shown = world.tasks.filter(t => {
     if (filter === "running") return RUNNING_STATES.includes(t.status);

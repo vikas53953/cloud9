@@ -45,6 +45,10 @@ export interface ProviderTrace {
   provider: string;
   /** the agent's final chat message */
   text: string;
+  /** the harness emitted its terminal/final envelope after this text */
+  terminal?: boolean;
+  /** The provider explicitly marked a surviving answer as final. */
+  finalAnswer?: boolean;
   steps: RunStep[];
   usage?: RunUsage;
   /** the CLI's own conversation id, for matching against its logs */
@@ -98,7 +102,9 @@ export interface TraceBuilder {
   /** fill in what a later event told us about a step already recorded */
   update(seq: number | undefined, patch: { label?: string; detail?: string; ok?: boolean }): void;
   /** the agent's latest chat message — the LAST one wins */
-  setText(text: string): void;
+  setText(text: string, terminal?: boolean): void;
+  /** mark a terminal envelope even when it carries no text */
+  setTerminal(): void;
   /** a turn-level failure the CLI reported */
   setError(message: string): void;
   /** anything else the CLI told us about the run as a whole */
@@ -174,7 +180,15 @@ export function traceWalker(provider: string, map: EventMapper): TraceWalker {
       if (typeof patch.ok === "boolean") step.ok = patch.ok;
       touched.add(step.seq);
     },
-    setText(text) { const t = text.trim(); if (t) trace.text = t; },
+    setText(text, terminal = true) {
+      const t = text.trim();
+      if (t) trace.text = t;
+      if (terminal) {
+        trace.terminal = true;
+        trace.finalAnswer = true;
+      }
+    },
+    setTerminal() { trace.terminal = true; },
     setError(message) { const m = message.trim(); if (m) trace.error = clip(m, RUN_LIMITS.error); },
     set(patch) { Object.assign(trace, patch); },
   };

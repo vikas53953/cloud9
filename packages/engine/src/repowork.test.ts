@@ -76,6 +76,7 @@ const AGENT: AgentDef = {
 };
 
 const SECOND: AgentDef = { ...AGENT, id: "a2", name: "Mason" };
+const THIRD: AgentDef = { ...AGENT, id: "a3", name: "Pilot" };
 
 function world(agents: AgentDef[] = [AGENT]): WorldState {
   return {
@@ -168,7 +169,6 @@ async function rig(t: TestContext, input: {
   writes?: Record<string, string>;
   agents?: AgentDef[];
   repoDir?: string;
-  approvalWaitMs?: number;
 }): Promise<Rig> {
   const repoDir = input.repoDir ?? await makeRepo();
   const worker = new Worker(input.reply, input.writes ?? {});
@@ -178,7 +178,6 @@ async function rig(t: TestContext, input: {
     provider: worker,
     repoDir,
     github: { runner, log: () => { /* quiet */ } },
-    ...(input.approvalWaitMs ? { approvalWaitMs: input.approvalWaitMs } : {}),
   });
   const frames: ClientFrame[] = [];
   (engine as unknown as { sendFrame: (f: ClientFrame) => void }).sendFrame = f => { frames.push(f); };
@@ -281,6 +280,51 @@ test("THE CARD'S FACTS ARE COUNTED BY GIT, NOT QUOTED FROM THE AGENT", async t =
   assert.equal(ask.channelId, "c1", "the card belongs in the conversation it happened in");
 });
 
+test("a !code approval owns its turn slot, so a third queued chat can proceed", async t => {
+  const repoDir = await makeRepo();
+  let engine!: Engine;
+  const calls: string[] = [];
+  const provider: ClaudeProvider = {
+    async respond(input: RespondInput): Promise<string> {
+      calls.push(input.agent.id);
+      if (input.agent.id === "a1" || input.agent.id === "a2") {
+        await engine.approvals.askPlan({
+          agent: input.agent, channelId: input.channelId!, plan: "1. check the queue",
+        });
+      }
+      return "done";
+    },
+  };
+  const { runner } = fakeGitHub();
+  engine = new Engine({
+    relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: tmp("cloud9-repowork-ownership-"),
+    provider, repoDir, github: { runner, log: () => { /* quiet */ } },
+  });
+  const frames: ClientFrame[] = [];
+  (engine as unknown as { sendFrame: (f: ClientFrame) => void }).sendFrame = f => { frames.push(f); };
+  const feed = (f: ServerFrame): void =>
+    (engine as unknown as { onFrame: (f: ServerFrame) => void }).onFrame(f);
+  feed({ type: "welcome", state: world([AGENT, SECOND, THIRD]) });
+  t.after(() => { engine.stop(); });
+
+  feed({ type: "message", message: says("a1", "@Scout !code check one") });
+  feed({ type: "message", message: says("a2", "@Mason !code check two", "m2") });
+  await waitFor(() => engine.approvals.pending === 2 ? true : undefined,
+    "both repository turns to park on approval cards");
+
+  feed({ type: "message", message: says("a3", "@Pilot are you there?", "m3") });
+  await waitFor(() => calls.includes("a3") ? calls : undefined,
+    "the third chat to use a slot released by the two genuine waits");
+  assert.equal(calls.filter(id => id === "a3").length, 1);
+
+  engine.stopAgent("a1");
+  engine.stopAgent("a2");
+  await waitFor(() => engine.approvals.pending === 0 ? true : undefined,
+    "repository approval cancellation cleanup");
+  assert.ok((engine as unknown as { workingTurns(): number }).workingTurns() >= 0,
+    "repository cancellation released a slot twice");
+});
+
 test("APPROVED: the branch goes up and a pull request is opened, and only then", async t => {
   const { frames, feed, left } = await rig(t, {
     reply: "Added the module.\n!publish",
@@ -329,21 +373,37 @@ test("REFUSED: he said no, and GitHub never hears about the branch", async t => 
   assert.equal(asks(frames).length, 1, "and it did not go on to ask for a pull request anyway");
 });
 
-test("SILENCE IS NOT REFUSAL, and it is not a yes either", async t => {
+test("SILENCE IS NOT REFUSAL, AND IT IS NOT A YES — the question simply stays open", async t => {
+  // IT USED TO BE A THIRD THING: after ten minutes the card died and the agent
+  // said "nobody answered in 60 seconds, so it did not happen". Removed
+  // 2026-08-07 — his question is not rubbish to be thrown out while he thinks.
+  // What is left is the half that was always the point: NOTHING LEAVES THIS
+  // COMPUTER until he says yes.
   const { frames, feed, left } = await rig(t, {
     reply: "Added the module.\n!publish",
     writes: { "a.ts": "export const a = 1;\n" },
-    approvalWaitMs: 60,
   });
   feed({ type: "message", message: says("a1", "@Scout !code add a module") });
 
-  const text = await waitFor(
-    () => said(frames).includes("nobody answered") ? said(frames) : undefined,
-    "the agent to say nobody answered");
-  assert.match(text, /nobody answered in \d+ seconds?, so it did not happen/,
-    "a different sentence from 'the owner said no' — they are different events");
-  assert.doesNotMatch(text, /said no/);
-  assert.equal(left.length, 0, "and, like a refusal, nothing left this computer");
+  const ask = await waitFor(() => asks(frames)[0], "the agent to ask");
+  // long past the old ten-minute leash in this test's terms: nothing resolves it
+  await new Promise(r => setTimeout(r, 500));
+  assert.equal(left.length, 0, "something left this computer without him saying yes");
+  assert.equal(asks(frames).length, 1, "it asked twice, or gave up and carried on");
+  assert.doesNotMatch(said(frames), /nobody answered/,
+    "his unanswered question was thrown away instead of waiting for him");
+  assert.doesNotMatch(said(frames), /said no/, "silence was read as a refusal");
+
+  // AND NOW LET IT GO, INSIDE THE TEST. Not tidiness — leaving the wait open
+  // for `t.after` to release means the repository work behind it carries on
+  // doing REAL git while the NEXT test is already running, and the two fight
+  // over the machine. That is what made `taskstuck` fail differently on every
+  // run. There is no clock left to clean up after a test, so a test that parks
+  // a wait has to end it itself and wait for the work to actually stop.
+  decide(feed, ask.askId, "rejected");
+  await waitFor(
+    () => said(frames).includes("said no") ? said(frames) : undefined,
+    "the job to finish after he finally answered");
 });
 
 test("TWO AGENTS work one repository at the same time, each on its own branch", async t => {

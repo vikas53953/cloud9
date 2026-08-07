@@ -3,9 +3,10 @@
 // (Stage-1 decision 5).
 import fs from "node:fs";
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import WebSocket from "ws";
 import {
-  AgentDef, AgentSchedule, ARTIFACT_LIMITS, ATTACHMENT_LIMITS,
+  AgentDef, AgentSchedule, Approval, ARTIFACT_LIMITS, ATTACHMENT_LIMITS,
   Channel, ClientFrame, HarnessName, HarnessState, ID,
   Message, Project, ReceiptStage, ReceiptVerdict, RemoteActionFacts, RunRecord, ServerFrame,
   Task, TaskStatus, WorkReaction,
@@ -40,7 +41,7 @@ import {
 } from "./context.js";
 import { OpenTurn, ToolBridge } from "./toolbridge.js";
 import { ArtifactSweep, describeRefusals, sweepProduced } from "./artifacts.js";
-import { ApprovalDesk, ApprovalOutcome } from "./approvaldesk.js";
+import { ApprovalDesk, ApprovalOutcome, ApprovalWaitChange } from "./approvaldesk.js";
 import { GitHubClient, GitHubOptions } from "./github.js";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
@@ -133,12 +134,6 @@ export interface EngineOptions {
   keepRunsPerAgent?: number;
   /** how many memory notes to keep per agent on disk before the oldest are pruned */
   keepMemoryPerAgent?: number;
-  /**
-   * How long an agent waits for a mid-run "may I push this?" before giving up.
-   * Defaults to the shared ten minutes; tests shorten it. Shortening it can
-   * only ever produce MORE refusals, never a yes nobody gave.
-   */
-  approvalWaitMs?: number;
   /**
    * How the read-only half of GitHub is reached — the `gh` command and the
    * runner. Only ever used WITHOUT an approver, so nothing built from it can
@@ -348,6 +343,16 @@ export class Engine {
   private attachmentWaiters =
     new Set<(f: Extract<ServerFrame, { type: "attachmentTicket" }>) => boolean>();
   private turnsInFlight = 0;
+  /** The queue turn currently executing, propagated through provider awaits. */
+  private turnContext = new AsyncLocalStorage<string>();
+  /** Active queue turns and the approval waits each one owns. */
+  private activeTurnTokens = new Set<string>();
+  private turnOwners = new Map<string, ID>();
+  private parkedWaits = new Map<string, string>();
+  private nextTurnToken = 0;
+  /** Approval IDs already announced as stale, persisted across reconnects/restarts. */
+  private lateWarningIds = new Set<ID>();
+  private lateWarningPath: string;
   // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
   /**
    * EVERY TURN CURRENTLY RUNNING, and the handle that stops it.
@@ -361,7 +366,7 @@ export class Engine {
   private liveTurns = new Set<LiveTurn>();
   // ===== GAP C BLOCK — end =====
   /** queued work, each tagged with whose turn it is so a stop can drop it */
-  private queue: { job: () => Promise<void>; agentId?: ID }[] = [];
+  private queue: { job: () => Promise<void>; agentId?: ID; onDropped?: () => void }[] = [];
   private opts: EngineOptions;
   private stopped = false;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
@@ -383,6 +388,13 @@ export class Engine {
     this.provider = opts.provider ?? (opts.demoMode ? new MockProvider() : undefined);
     this.codexProvider = opts.codexProvider ?? (opts.demoMode ? new MockProvider() : undefined);
     this.dataDir = opts.dataDir ?? path.join(process.cwd(), "cloud9-engine-data");
+    this.lateWarningPath = path.join(this.dataDir, "late-approval-warnings.json");
+    try {
+      const saved = JSON.parse(fs.readFileSync(this.lateWarningPath, "utf8")) as unknown;
+      if (Array.isArray(saved)) {
+        for (const id of saved) if (typeof id === "string") this.lateWarningIds.add(id);
+      }
+    } catch { /* no file yet, or an interrupted write: no stale IDs to trust */ }
     this.brake = opts.brake ?? DEFAULT_BRAKE;
     fs.mkdirSync(this.dataDir, { recursive: true });
     // Clear up after the last time this was killed mid-write. A temporary file
@@ -408,7 +420,18 @@ export class Engine {
     });
     this.approvals = new ApprovalDesk({
       send: frame => this.sendFrame(frame),
-      ...(opts.approvalWaitMs ? { waitMs: opts.approvalWaitMs } : {}),
+      // A TURN JUST PARKED, OR JUST STOPPED BEING PARKED — so how many turns are
+      // really working has changed, and somebody in the queue may be able to go
+      // now. Without this line the slot is freed on paper and nothing notices
+      // until the next message happens to arrive. See `workingTurns`.
+      onWaitingChanged: (change: ApprovalWaitChange) => {
+        if (change.turnToken && this.activeTurnTokens.has(change.turnToken)) {
+          if (change.type === "added") this.parkedWaits.set(change.askId, change.turnToken);
+          else this.parkedWaits.delete(change.askId);
+        }
+        void this.drain();
+      },
+      currentTurnToken: agentId => this.currentTurnToken(agentId),
       // THE ONE PLACE A JOB IS REALLY STUCK. See `jobIsStuck` below.
       // AND the one place a hook can hear that somebody is waiting on HIM: the
       // sentence handed over is `describeRemoteAction`'s — counted facts, never
@@ -444,14 +467,62 @@ export class Engine {
     });
     this.ws.on("message", raw => this.onFrame(JSON.parse(String(raw)) as ServerFrame));
     this.ws.on("close", () => {
-      // NOBODY IS THERE TO ANSWER, so nothing leaves this machine. A dropped
-      // socket is the one moment where carrying on and assuming it was fine
-      // would be most tempting and most wrong.
-      this.approvals.giveUpAll("the hub went away before anyone answered, so it did not happen");
+      // THE WAIT SURVIVES A DROPPED SOCKET (2026-08-07). It used to be thrown
+      // away here, as a no, on every close — and with the hub's ten-minute
+      // sweep gone that turned a wifi blip or a laptop sleep into a ZOMBIE
+      // CARD: this side gave up, the hub's card stayed `pending` for ever with
+      // a live Approve button on it, and when he pressed it in the morning
+      // there was no longer anybody listening. The card went green and the
+      // branch was never pushed. Nobody was told.
+      //
+      // NOTHING HERE IS A YES, which is the rule that mattered and still does:
+      // the wait simply stays a wait. This process is still running, the agent
+      // is still standing there, and `onFrame`'s `welcome` reconciles every
+      // card the moment the hub comes back — including one he answered while
+      // we were away. Only a real ending settles it: his decision, his Stop, or
+      // Cloud9 shutting down (`stop`, below, which still gives up all).
       if (this.stopped) return;
       this.reconnectTimer = setTimeout(() => this.connect(), 2000);
     });
     this.ws.on("error", () => { /* close handler reconnects */ });
+  }
+
+  /**
+   * HIS YES ARRIVED, AND THERE WAS NOBODY LEFT TO ACT ON IT.
+   *
+   * THE ZOMBIE CARD. No card expires any more, which is right — his question
+   * waits for him. But it means a card can outlive the run behind it: he
+   * approves a push at 9am against an agent that stopped waiting when Cloud9
+   * was last closed. The hub records `approved` and draws the card green, and
+   * this side has no waiter to hand it to. Silently doing nothing there is the
+   * worst outcome this app can produce: a record that says he agreed to
+   * something, and nothing agreed to.
+   *
+   * So he is told, in the room the card came from, and told what it means: the
+   * work did NOT happen and nothing left this computer. Only ever said for a
+   * decision that really was his — `onApproval` returns false for a card still
+   * pending and for one this engine was never waiting on, so a reconnect
+   * replaying old decisions cannot make this speak.
+   */
+  private sayApprovalArrivedTooLate(approval: Approval): void {
+    if (approval.status !== "approved" && approval.status !== "rejected") return;
+    const channelId = approval.channelId;
+    if (!channelId) return;
+    // only about a card of OURS, in a room we know — never somebody else's
+    const agent = this.myAgents.find(a => a.id === approval.agentId);
+    if (!agent) return;
+    if (approval.status === "rejected") return;  // a no changes nothing anyway
+    if (this.lateWarningIds.has(approval.id)) return;
+    // Mark before sending: duplicate live frames and welcome replays cannot
+    // produce a second warning, even when the first send is still in flight.
+    this.lateWarningIds.add(approval.id);
+    writeWholeFile(this.lateWarningPath, JSON.stringify([...this.lateWarningIds]),
+      message => console.error(`[engine] could not save late approval warning: ${message}`));
+    this.agentSend(agent.id, channelId,
+      "You've just said yes to this, but I'm no longer waiting on it — Cloud9 was " +
+      "restarted after I asked, so nothing was standing by to act on your answer. " +
+      "**It did not happen and nothing left this computer.** Ask me again and I'll " +
+      "stop and ask you in the same place.");
   }
 
   stop(): void {
@@ -468,6 +539,15 @@ export class Engine {
     switch (frame.type) {
       case "welcome":
         this.state = frame.state;
+        // WHAT HAPPENED WHILE WE WERE AWAY. A dropped socket no longer throws a
+        // waiting agent's question away, so this is the other half of that: any
+        // card he ANSWERED while this engine was disconnected is applied now,
+        // exactly as if the decision had arrived over the wire. `onApproval`
+        // ignores anything still pending and anything it is not waiting on, so
+        // this is a replay, never a second decision mechanism.
+        for (const a of frame.state.approvals) {
+          if (!this.approvals.onApproval(a)) this.sayApprovalArrivedTooLate(a);
+        }
         for (const m of frame.state.messages) this.pushHistory(m);
         for (const t of frame.state.tasks) this.tasks.set(t.id, t);
         this.scheduler.start();
@@ -553,7 +633,16 @@ export class Engine {
         this.approvals.onAsked(frame.askId, frame.approvalId);
         break;
       case "approval":
-        this.approvals.onApproval(frame.approval);
+        // NEVER SILENT ABOUT A YES NOBODY IS LEFT TO ACT ON. If Cloud9 has been
+        // restarted since the agent asked, the card on his screen outlived the
+        // agent that was waiting behind it — he presses Approve, the hub records
+        // it, and this side has nobody to tell. That used to be a silent no-op:
+        // the card went green and the branch was never pushed. Now he is told,
+        // in the room the card came from, that his yes arrived too late for the
+        // agent and what to do about it.
+        if (!this.approvals.onApproval(frame.approval)) {
+          this.sayApprovalArrivedTooLate(frame.approval);
+        }
         break;
       // an agent asked Cloud9 to search the conversation it is standing in
       case "searchResults":
@@ -739,7 +828,7 @@ export class Engine {
       // computer is behind the card, exactly as it was before.
       if (message.authorKind === "human" && /^!code\s+/i.test(bare)) {
         const what = bare.replace(/^!code\s+/i, "").trim();
-        this.enqueue(async () => {
+        void this.enqueueAgentTurn(agent.id, async () => {
           await this.workInRepository(agent, {
             channelId: channel.id, ask: what, triggerAuthor: message.authorName,
             ...(thread ? { replyTo: thread } : {}),
@@ -755,7 +844,8 @@ export class Engine {
       if (message.authorKind === "human") {
         const write = this.parseGitHubWriteCommand(bare);
         if (write) {
-          this.enqueue(() => this.workGitHubWriteInRoom(agent, channel.id, write, thread));
+          void this.enqueueAgentTurn(agent.id,
+            () => this.workGitHubWriteInRoom(agent, channel.id, write, thread));
           continue;
         }
       }
@@ -774,11 +864,11 @@ export class Engine {
       // one plan gate — this line only decides that this message goes through it.
       if (message.authorKind === "human" && /^!plan\s+/i.test(bare)) {
         const what = bare.replace(/^!plan\s+/i, "").trim();
-        this.enqueue(() => this.takeTurn(
-          agent, channel.id, { ...message, text: what }, { planFirst: true }), agent.id);
+        void this.enqueueAgentTurn(agent.id, () => this.takeTurn(
+          agent, channel.id, { ...message, text: what }, { planFirst: true }));
         continue;
       }
-      this.enqueue(() => this.takeTurn(agent, channel.id, message), agent.id);
+      void this.enqueueAgentTurn(agent.id, () => this.takeTurn(agent, channel.id, message));
     }
   }
 
@@ -793,9 +883,31 @@ export class Engine {
    * Anonymous work (a handoff, a memory note) passes nothing and is never
    * dropped by a stop: those are not the agent taking a turn.
    */
-  private enqueue(job: () => Promise<void>, agentId?: ID): void {
-    this.queue.push({ job, ...(agentId ? { agentId } : {}) });
+  private enqueue(job: () => Promise<void>, agentId?: ID, onDropped?: () => void): void {
+    this.queue.push({ job, ...(agentId ? { agentId } : {}), ...(onDropped ? { onDropped } : {}) });
     void this.drain();
+  }
+
+  /**
+   * Queue one provider-backed turn with the owner ID that the drain token must
+   * carry. Every entrypoint that can reach `respondAs` goes through this seam:
+   * room messages, plans, tasks, repository/GitHub work, schedules and
+   * handoffs. The promise resolves when the queued job has finished; errors are
+   * still handled by the job's existing user-facing boundary and never escape
+   * the engine's queue.
+   */
+  private enqueueAgentTurn(agentId: ID, job: () => Promise<void>): Promise<void> {
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      this.enqueue(async () => {
+        try { await job(); } finally { finish(); }
+      }, agentId, finish);
+    });
   }
 
   /**
@@ -807,18 +919,72 @@ export class Engine {
    */
   private dropQueuedTurns(agentId: ID): number {
     const before = this.queue.length;
-    this.queue = this.queue.filter(q => q.agentId !== agentId);
+    const kept = [] as typeof this.queue;
+    for (const q of this.queue) {
+      if (q.agentId === agentId) q.onDropped?.();
+      else kept.push(q);
+    }
+    this.queue = kept;
     return before - this.queue.length;
+  }
+
+  /**
+   * HOW MANY TURNS ARE REALLY WORKING RIGHT NOW.
+   *
+   * NOT the same as how many are in flight, and the difference is a bug that
+   * would have run all night. A turn that has stopped to ask the owner
+   * something is sitting on a promise inside its own job, so it still counts as
+   * "in flight" — it holds one of the two slots while it waits. That was always
+   * true, and it was survivable only because the hub swept an unanswered card
+   * away after ten minutes and handed the slot back.
+   *
+   * There is no sweep any more (2026-08-07, and rightly — his question is not
+   * rubbish to be cleared up while he thinks). So without this, two agents
+   * parked on cards would freeze EVERY other agent in EVERY room, for ever: he
+   * goes to bed, two agents reach a `!publish` gate, and in the morning nothing
+   * else has answered a single message all night.
+   *
+   * A WAIT ON A PERSON IS NOT WORK. It costs no CPU, no money and no harness —
+   * it is a promise in a list. So it does not occupy the slot the cap exists to
+   * ration, and the cap counts only turns that are actually running something.
+   *
+   * CLAMPED DELIBERATELY. `pending` counts every open card, and a card can be
+   * raised somewhere that is not one of these jobs (a `!issue` typed in a room).
+   * Crediting more parked turns than there are turns in flight would let the cap
+   * drift upwards, so the credit can never exceed what is actually in flight.
+   */
+  private workingTurns(): number {
+    let parked = 0;
+    for (const token of this.parkedWaits.values()) {
+      if (this.activeTurnTokens.has(token)) parked++;
+    }
+    return Math.max(0, this.turnsInFlight - parked);
   }
 
   private async drain(): Promise<void> {
     const cap = this.opts.maxConcurrentTurns ?? 2;
-    while (this.turnsInFlight < cap && this.queue.length > 0) {
-      const { job } = this.queue.shift()!;
+    while (this.workingTurns() < cap && this.queue.length > 0) {
+      const { job, agentId } = this.queue.shift()!;
+      const token = `turn-${(++this.nextTurnToken).toString(36)}`;
       this.turnsInFlight++;
-      job().catch(() => { /* logged below */ })
-        .finally(() => { this.turnsInFlight--; void this.drain(); });
+      this.activeTurnTokens.add(token);
+      if (agentId) this.turnOwners.set(token, agentId);
+      this.turnContext.run(token, job).catch(() => { /* logged below */ })
+        .finally(() => {
+          this.activeTurnTokens.delete(token);
+          this.turnOwners.delete(token);
+          for (const [askId, owner] of this.parkedWaits) {
+            if (owner === token) this.parkedWaits.delete(askId);
+          }
+          this.turnsInFlight--;
+          void this.drain();
+        });
     }
+  }
+
+  private currentTurnToken(agentId?: ID): string | undefined {
+    const token = this.turnContext.getStore();
+    return token && agentId && this.turnOwners.get(token) === agentId ? token : undefined;
   }
 
   /**
@@ -1111,8 +1277,8 @@ export class Engine {
       // ===== GAP C BLOCK — end =====
       // THE PREVIEW ENDS WHEN THE TURN DOES — worked, failed, refused, threw.
       // In a `finally` because there is no ending that should leave a live box
-      // spinning; the screen's stale timer is the backstop for an engine that
-      // dies, not the normal way this stops. From here on the stored record is
+      // spinning; lifecycle cleanup is the backstop for an engine that dies,
+      // not a deadline on the turn. From here on the stored record is
       // the only thing that speaks for this turn.
       if (streamed) this.endLiveSteps(agent.id, input);
     }
@@ -1333,7 +1499,7 @@ export class Engine {
    *     mistakes the plan for the job.
    *  2. THE PLAN GOES IN THE ROOM, so he can read it where he asked for it, and
    *     onto the ORDINARY APPROVAL CARD — the same `Approval`, the same
-   *     Approve / Not now buttons, the same expiry, the same `decideApproval`.
+   *     Approve / Not now buttons, the same `decideApproval`.
    *     There is no second approval concept here; there is a third `kind`.
    *  3. NOTHING RUNS UNTIL HE ANSWERS. Every way out of the desk that is not an
    *     explicit yes is a no, and the agent says which in plain words.
@@ -1385,6 +1551,7 @@ export class Engine {
     const outcome = await this.approvals.askPlan({
       agent, channelId, plan,
       ...(input.taskId ? { taskId: input.taskId } : {}),
+      ...(this.currentTurnToken(agent.id) ? { turnToken: this.currentTurnToken(agent.id) } : {}),
     });
     if (!outcome.approved) {
       await this.sayAs(agent, channelId,
@@ -1625,9 +1792,8 @@ export class Engine {
    * WHAT THE RECORD SAYS. `outcome: "cancelled"`, which is a different outcome
    * from `failed` — so a stop can never be mistaken for a crash in the run list,
    * and the summary reads "Stopped after …" instead of "Didn't finish". A
-   * TIMEOUT stays `failed` with the clock named in its error, so the three
-   * endings a turn can have — it worked, the clock beat it, he stopped it — are
-   * three different things on the record and not one blurred one.
+   * A turn has no timeout outcome: it works, fails, or the owner stops it.
+   * Those three endings remain distinct on the record rather than blurred.
    *
    * WHAT THE ROOM SAYS is the sentence returned here: the caller posts it as the
    * agent's own reply, so the conversation says plainly that the work stopped
@@ -1797,7 +1963,7 @@ export class Engine {
       return;
     }
     this.claimed.add(task.id);
-    this.enqueue(() => this.runTask(agent, task), agent.id);
+    void this.enqueueAgentTurn(agent.id, () => this.runTask(agent, task));
   }
 
   private async runTask(agent: AgentDef, task: Task): Promise<void> {
@@ -2025,7 +2191,7 @@ export class Engine {
   // Why only that case, and why nothing else here:
   //  * A JOB WAITING ON AN APPROVAL CARD is genuinely not working. Its turn has
   //    stopped, mid-run, at the one thing it may not do alone, and it will not
-  //    move again until a person answers or the ten minutes run out. Nothing is
+  //    move again until a person answers or he stops it. Nothing is
   //    wrong with it and nothing is going to change without him. That is the
   //    definition of stuck, and it is the state he most needs to see, because he
   //    is the thing it is stuck on.
@@ -2041,7 +2207,7 @@ export class Engine {
   //    tells him to expect it to carry on.
   //
   // AND IT ALWAYS CLEARS. `onWaitEnd` fires on every way out of the desk — yes,
-  // no, ten minutes, hub gone — so the job goes back to working and the ordinary
+  // no, stopped, engine shutting down — so the job goes back to working and the ordinary
   // completed/failed ending follows from the turn itself. A stuck state with no
   // way out would be worse than no stuck state at all.
 
@@ -2211,25 +2377,27 @@ export class Engine {
     const agent = this.myAgents.find(a => a.id === s.agentId);
     if (!agent) return;
     if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") return; // FR-AG-007
-    this.setStatus(agent.id, "working");
-    try {
-      const text = await this.respondAs(agent, {
+    await this.enqueueAgentTurn(agent.id, async () => {
+      this.setStatus(agent.id, "working");
+      try {
+        const text = await this.respondAs(agent, {
         // no thread: a schedule answers nothing, so there is no side
         // conversation to serve first — see `fireSchedule`'s own note.
-        context: this.renderContext(s.channelId, agent),
-        trigger: `Scheduled task fired: ${s.prompt}`,
-        triggerAuthor: "schedule",
-        kind: "schedule",
-        channelId: s.channelId,
-        requesterKind: "schedule",
-      });
+          context: this.renderContext(s.channelId, agent),
+          trigger: `Scheduled task fired: ${s.prompt}`,
+          triggerAuthor: "schedule",
+          kind: "schedule",
+          channelId: s.channelId,
+          requesterKind: "schedule",
+        });
       this.agentSend(agent.id, s.channelId, `⏰ ${text}`, { proactive: true });
-    } catch (err) {
-      this.agentSend(agent.id, s.channelId,
-        saidWhenTurnEnded(err, `scheduled check-in ${s.id} failed`));
-    } finally {
-      this.setStatus(agent.id, "idle");
-    }
+      } catch (err) {
+        this.agentSend(agent.id, s.channelId,
+          saidWhenTurnEnded(err, `scheduled check-in ${s.id} failed`));
+      } finally {
+        this.setStatus(agent.id, "idle");
+      }
+    });
   }
 
   /**
@@ -2665,6 +2833,7 @@ export class Engine {
     const outcome = await this.approvals.askSaving({
       agent: asking,
       channelId,
+      ...(this.currentTurnToken(asking.id) ? { turnToken: this.currentTurnToken(asking.id) } : {}),
       proposal: {
         about: about.id, aboutName: about.name, change, because: tidySaving(because),
       },
@@ -2789,6 +2958,7 @@ export class Engine {
         const outcome: ApprovalOutcome = await this.approvals.ask({
           agent, channelId: where.channelId,
           ...(where.taskId ? { taskId: where.taskId } : {}),
+          ...(this.currentTurnToken(agent.id) ? { turnToken: this.currentTurnToken(agent.id) } : {}),
           facts,
         });
         refusal = outcome.approved ? undefined : outcome.reason;
@@ -3022,7 +3192,7 @@ export class Engine {
    * PERFORM A GITHUB WRITE ASKED FOR IN A ROOM — through the SAME approval desk
    * the push uses. It reads the repository name first (a read, no approval),
    * then hands the counted facts to the desk; only a yes builds and runs the
-   * `gh` command. A no, an expiry or a dropped hub runs nothing and says which.
+   * `gh` command. A no, or a stop, runs nothing and says which.
    */
   async workGitHubWriteInRoom(
     agent: AgentDef, channelId: ID, partial: GitHubWriteRequestWithoutRepo, replyTo?: ID,
@@ -3053,7 +3223,8 @@ export class Engine {
       const outcome = await runGitHubWrite({
         request,
         ask: async facts => {
-          const o: ApprovalOutcome = await this.approvals.ask({ agent, channelId, facts });
+          const o: ApprovalOutcome = await this.approvals.ask({ agent, channelId,
+            ...(this.currentTurnToken(agent.id) ? { turnToken: this.currentTurnToken(agent.id) } : {}), facts });
           return { approved: o.approved, reason: o.reason };
         },
         ...(this.opts.github?.runner ? { run: this.opts.github.runner } : {}),
@@ -3286,25 +3457,27 @@ export class Engine {
     if (!channelId) return;
     const fromName = this.state?.agents.find(a => a.id === handoff.fromAgentId)?.name
       ?? handoff.fromAgentId;
-    this.setStatus(target.id, "working");
-    try {
-      const text = await this.respondAs(target, {
+    await this.enqueueAgentTurn(target.id, async () => {
+      this.setStatus(target.id, "working");
+      try {
+        const text = await this.respondAs(target, {
         // no thread: a handoff carries a channel pointer and nothing finer, as
         // the note above says, so there is no side conversation to serve first.
-        context: this.renderContext(channelId, target),
-        trigger: handoffTrigger(handoff, fromName),
-        triggerAuthor: fromName,
-        kind: "chat",
-        channelId,
-        requesterKind: "agent",
-      });
-      this.agentSend(target.id, channelId, text);
-    } catch (err) {
-      this.agentSend(target.id, channelId,
-        saidWhenTurnEnded(err, `${target.name} could not pick up a handoff`));
-    } finally {
-      this.setStatus(target.id, "idle");
-    }
+          context: this.renderContext(channelId, target),
+          trigger: handoffTrigger(handoff, fromName),
+          triggerAuthor: fromName,
+          kind: "chat",
+          channelId,
+          requesterKind: "agent",
+        });
+        this.agentSend(target.id, channelId, text);
+      } catch (err) {
+        this.agentSend(target.id, channelId,
+          saidWhenTurnEnded(err, `${target.name} could not pick up a handoff`));
+      } finally {
+        this.setStatus(target.id, "idle");
+      }
+    });
   }
 
   /**
@@ -3609,10 +3782,9 @@ export const SCHEDULE_NOT_SAVED =
 /**
  * How long an agent's search may wait on the hub before it gives up.
  *
- * Short on purpose. The agent is mid-turn on a wall-clock leash of its own, and
- * a search that hangs would spend that leash on nothing. Giving up says so — the
- * agent is told the search did not run and to carry on without guessing, which
- * is the honest answer and takes four seconds rather than three minutes.
+ * Short on purpose. A search that hangs must not hold the agent's turn forever.
+ * Giving up says so — the agent is told the search did not run and to carry on
+ * without guessing, which is the honest answer and takes four seconds.
  */
 const SEARCH_WAIT_MS = 4_000;
 

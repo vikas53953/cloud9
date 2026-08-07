@@ -43,9 +43,18 @@ is not there, say so and ask once.
 
 | # | Ask | Owner | Current stage | Evidence / boundary |
 |---|---|---|---|---|
-| 17 | **Persistent mentions-and-replies notification inbox** | notification author | **IN PROGRESS — BUILDING — PR #19 OPEN** on `feature/persistent-notifications` (rebased onto origin/master `38d6dbc`; latest pushed commit is reported in PR #19; independent review pending) | Shared protocol contract, relay SQLite inbox with deterministic ids/idempotent writes, recipient-scoped read/dismiss, conservative age/count retention, current-access tombstone projection, edit/delete refresh, desktop rail/list/empty/loading/error/focus/live states, and source-level relay/desktop typechecks are in the worktree. The normal multi-workspace build is currently blocked by the fresh worktree's missing workspace aliases/dependencies (no install/package/QA run); no runtime app walk is claimed. Existing mention/thread recipient rules remain the authority; mute/quiet/OS toast rules are not used to suppress durable rows. PR: https://github.com/vikas53953/cloud9/pull/19 |
+| 12 | **remove the timing** — *"agents are employees"* | timing author | **PR #13 OPEN — MERGEABLE/CLEAN against `origin/master` `551b2f8`; final independent review pending (not approved or merged)** | Stable code/test commit `8f50f61` is rebased on `551b2f8`; the timing source, no-expiry relay assertions, and final hygiene checks are complete. Later tracker/body-only commits may move the PR head without changing this code evidence. |
+| 17 | **Persistent mentions-and-replies notification inbox** | notification author | **MERGED — PR #19 on `feature/persistent-notifications`, based on `origin/master` `551b2f8`** | Durable mention/thread-reply inbox shipped with deterministic ids, idempotent SQLite writes, recipient-scoped read/dismiss, retention, tombstone projection, edit/delete refresh, accessible rail/list/empty/loading/error/focus/live states, request correlation, and guarded navigation. PR #19 is merged; no package/install/QA/app-walk claim is added here. PR: https://github.com/vikas53953/cloud9/pull/19 |
 
-The dated snapshot rows below are preserved history; this current row is the live stage for the notification work.
+The dated snapshot rows below are preserved history; the rows above are the current live stages for PR13 and PR17.
+
+### Historical tracker rows (preserved snapshots)
+
+Historical PR13 snapshot (2026-08-07 17:43 IST): PR #13 was OPEN and
+MERGEABLE/CLEAN against `origin/master` (`7ce7bcd`) at head `6fc1c5f`.
+Round-2 ownership and terminal-output fixes were pushed; review was pending,
+and the PR was not approved or merged. The count table below is retained as
+dated history, including its earlier CONFLICTING state.
 
 | Count | |
 |---|---|
@@ -65,6 +74,27 @@ The dated snapshot rows below are preserved history; this current row is the liv
 | 7 | **(found for him, not asked)** one path runs with no time limit at all | nobody yet | **OPEN — needs an agent** | `SdkProvider` (provider.ts:705) runs under NO total clock and NO silence clock, and `host.ts:183-189` PREFERS it over the command-line app whenever a stored key or sign-in token exists. A hung turn there hangs for ever. Pre-existing. |
 | 8 | **(found for him, not asked)** a message an agent is queued behind still shows the LAST thing it finished | nobody yet | **OPEN — needs an agent** | The Activity board now shows "Next up" for a job he handed over with `!bg` — that comes from the jobs tray, where a job that has not begun is marked `not_started`. But an ordinary `@Agent do X` in a room creates **no job at all**, and the engine runs only **two turns at once** (`engine.ts:808`) and holds the rest in memory. So he can type a message, the agent is genuinely holding it, and its row goes on saying "✅ Finished — 2 hours ago" about something else entirely. Closing it is not a screen change: **nothing on the wire says an agent has a message queued**, so the engine has to start reporting its own queue before the board can draw it. Found by the PR #9 second review, which correctly did not block the branch on it — the board is right about everything it is actually told. |
 
+
+### CURRENT RECONCILIATION — PR #13 (2026-08-07)
+
+The timing branch was rebased onto current `origin/master` `551b2f8`. All
+master tracker rows and the branch-only timing evidence are retained. PR #13
+is currently **OPEN and MERGEABLE/CLEAN** against that base; the stable code/test
+commit is `8f50f61`, and final independent review is pending. It is not approved
+or merged, and later tracker/body-only commits may move the PR head without
+changing the code evidence.
+
+Evidence carried forward from the timing branch: the four review blockers were
+addressed (parked approval waits release execution slots; websocket close and
+restart replay do not answer for the owner and explain how to ask again; the
+16 MiB capture keeps the answer tail and fails loudly when it is lost; and a
+historical, non-quiet taskstuck comparison was paired with controls). That
+historical comparison is machine-sensitive evidence only; no fresh detached,
+rebuilt, quiet-machine taskstuck control has been run yet. Focused evidence is
+`notimers.test.ts` 7/7, `spendplanfallback` 28/28, shared 218/218, full build
+green, relay reconnect probe 2/2, and the targeted engine run 24/24.
+Boundaries remain explicit: the Codex provider has no spending cap, and Stop
+does not reach the `SdkProvider` route.
 
 ### THE PAUSE AT ~04:00 IS OVER
 

@@ -98,12 +98,6 @@ export interface RelayOptions {
   /** allow harness control with the well-known default token (dev/QA only) */
   devMode?: boolean;
   /**
-   * How long a mid-run "may I push this?" card stays answerable. Defaults to
-   * the shared ten minutes; tests shorten it. Shortening it can only ever
-   * produce MORE expiries, never a yes nobody gave.
-   */
-  approvalWaitMs?: number;
-  /**
    * This computer's home folder, as the SHELL resolved it (`cloud9:homeFolder`).
    * Handed in, never worked out here: it is the folder the one-time catch-up
    * opens up for an agent that has none, and a folder this app cannot vouch for
@@ -220,14 +214,10 @@ export class Relay {
   ownerId: ID;
   bind: string;
   devMode: boolean;
-  /**
-   * How long a mid-run approval stays answerable, and the one-shot timers that
-   * make it die ON TIME rather than the next time somebody happens to read it.
-   * Without these a card sits on his screen looking live for as long as nobody
-   * opens anything — which is exactly the moment he would click it.
-   */
-  private approvalWaitMs: number;
-  private expiryTimers = new Set<ReturnType<typeof setTimeout>>();
+  // (A mid-run card used to stay answerable for ten minutes and then be swept
+  // away by one-shot timers kept here. Removed 2026-08-07: a question put to the
+  // owner is not rubbish to be cleared up while he thinks about it. It stays on
+  // his screen, live, until he answers it or stops the agent.)
   /** last sign-in request per user, and whether one is still running */
   private signInAt: Record<ID, number> = {};
   private signInFlight: Record<ID, number> = {};
@@ -266,7 +256,6 @@ export class Relay {
     this.ownerName = opts.ownerName ?? process.env.CLOUD9_OWNER_NAME ?? "Vikas";
     this.bind = resolveBind(opts.bind ?? process.env.CLOUD9_BIND);
     this.devMode = opts.devMode ?? process.env.CLOUD9_DEV === "1";
-    this.approvalWaitMs = opts.approvalWaitMs ?? APPROVAL_LIMITS.waitMs;
     // Owner exists from first boot; a default #general channel too.
     const owner = this.store.ensureOwner(this.ownerName, this.ownerToken);
     this.ownerId = owner.id;
@@ -368,8 +357,6 @@ export class Relay {
   }
 
   close(): void {
-    for (const t of this.expiryTimers) clearTimeout(t);
-    this.expiryTimers.clear();
     for (const t of this.looking.values()) clearTimeout(t);
     this.looking.clear();
     for (const c of this.conns) c.ws.close();
@@ -2157,8 +2144,6 @@ export class Relay {
           action: describeRemoteAction(frame.facts).slice(0, APPROVAL_LIMITS.action),
           status: "pending", createdAt: now,
           kind: "action", remoteAction: frame.facts.action, channelId: channel.id,
-          // it dies if nobody answers — see `sweepExpiredApprovals`
-          expiresAt: now + this.approvalWaitMs,
           ...(taskId ? { taskId } : {}),
           ...(detail ? { detail: detail.slice(0, APPROVAL_LIMITS.detail) } : {}),
         };
@@ -2169,8 +2154,7 @@ export class Relay {
         // owner's screens (and to that same engine, which is one of them)
         send(conn.ws, { type: "approvalAsked", askId, approvalId: approval.id });
         this.sendApproval(approval);
-        // and it dies on the clock, not on the next person to look
-        this.scheduleExpiry(approval.expiresAt!);
+        // and it remains pending until the owner decides or stops the agent
         break;
       }
       case "askPlan": {
@@ -2203,8 +2187,6 @@ export class Relay {
           status: "pending", createdAt: now,
           kind: "plan", channelId: channel.id,
           plan,
-          // it dies if nobody answers — the SAME sweep as an action card
-          expiresAt: now + this.approvalWaitMs,
           ...(taskId ? { taskId } : {}),
         };
         this.store.saveApproval(approval);
@@ -2212,7 +2194,6 @@ export class Relay {
           `${agent.name} is waiting for you to look at a plan`, { asAgent: agent });
         send(conn.ws, { type: "approvalAsked", askId, approvalId: approval.id });
         this.sendApproval(approval);
-        this.scheduleExpiry(approval.expiresAt!);
         break;
       }
       case "askSaving": {
@@ -2263,8 +2244,6 @@ export class Relay {
           kind: "saving", channelId: channel.id,
           detail: savingDetail(proposal).slice(0, APPROVAL_LIMITS.detail),
           saving: proposal,
-          // it dies if nobody answers — the SAME sweep as an action or plan card
-          expiresAt: now + this.approvalWaitMs,
           ...(taskId ? { taskId } : {}),
         };
         this.store.saveApproval(approval);
@@ -2272,13 +2251,11 @@ export class Relay {
           `${agent.name} suggested a way to spend less on ${about.name}`, { asAgent: agent });
         send(conn.ws, { type: "approvalAsked", askId, approvalId: approval.id });
         this.sendApproval(approval);
-        this.scheduleExpiry(approval.expiresAt!);
         break;
       }
       case "decideApproval": {
-        // a card that ran out of time is not answerable, and saying so is the
-        // whole point of `expired` — silence must never read as a yes
-        const approval = this.freshApproval(frame.approvalId);
+        // a card he has already answered is not answerable twice
+        const approval = this.store.approval(frame.approvalId);
         if (!approval) throw new Error("no such approval");
         // Provisional policy (PARKING-LOT D4): only the agent's owner decides.
         if (approval.ownerId !== conn.userId) throw new Error("only the agent's owner can decide this");
@@ -3635,50 +3612,15 @@ export class Relay {
     else this.broadcast({ type: "approval", approval });
   }
 
-  /**
-   * NOBODY ANSWERED, so the request is dead — and it says so.
-   *
-   * `expired` is a fourth word rather than a quiet `rejected` because they are
-   * not the same event: he said no, versus he never saw it. The agent is told
-   * the difference and so is the activity trail.
-   */
-  private sweepExpiredApprovals(now = Date.now()): void {
-    for (const a of this.store.approvals(1000)) {
-      if (a.status !== "pending" || typeof a.expiresAt !== "number" || a.expiresAt > now) continue;
-      a.status = "expired";
-      this.store.saveApproval(a);
-      this.store.logActivity({
-        actorKind: "system", actorId: a.agentId, actorName: "Cloud9",
-        kind: "approval_decided", refId: a.id,
-        detail: `expired with nobody answering: ${a.action}`,
-      });
-      this.sendApproval(a);
-    }
-  }
+  // NOTHING KILLS A CARD ANY MORE (2026-08-07). There used to be a sweep here
+  // that turned an unanswered card into `expired` after ten minutes, plus the
+  // timers that fired it. Both are gone: his question waits for him. The word
+  // `expired` still exists so cards swept before that date read back correctly
+  // (@cloud9/shared, `ApprovalStatus`), but nothing produces a new one, and a
+  // card only stops being pending because HE decided or he pressed Stop.
 
-  /**
-   * Come back at the deadline and sweep. One shot per card, unref'd so a
-   * waiting approval is never the reason this process stays alive, and cleared
-   * on close so a test does not leave one behind.
-   */
-  private scheduleExpiry(at: number): void {
-    const t = setTimeout(() => {
-      this.expiryTimers.delete(t);
-      this.sweepExpiredApprovals();
-    }, Math.max(0, at - Date.now()) + 25);
-    t.unref?.();
-    this.expiryTimers.add(t);
-  }
-
-  /** The stored approval, after the clock has been allowed to catch up with it. */
-  private freshApproval(id: ID): Approval | undefined {
-    this.sweepExpiredApprovals();
-    return this.store.approval(id);
-  }
-
-  /** The approvals this person may be shown, swept first. */
+  /** The approvals this person may be shown. */
   private visibleApprovals(userId: ID): Approval[] {
-    this.sweepExpiredApprovals();
     return this.store.approvals().filter(a => a.kind !== "action" || a.ownerId === userId);
   }
 
