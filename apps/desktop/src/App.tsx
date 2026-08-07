@@ -12983,6 +12983,7 @@ function WorkflowsScreen(): React.JSX.Element {
     setDraft(pendingDraft);
     setPendingDraft(null);
     setAnnounce(world.workflowError.text);
+    requestAnimationFrame(() => document.getElementById("workflow-error")?.focus());
   }, [pendingDraft, world.workflowError]);
   useEffect(() => {
     if (!pendingDraft || world.workflowNotice?.text !== "Workflow saved") return;
@@ -13062,7 +13063,7 @@ function WorkflowsScreen(): React.JSX.Element {
           : <div className="workflow-state" role="status">Choose a workflow to see its steps and run history.</div>}
       </div>
     </div>
-    {world.workflowError && <p className="problem workflow-problem" role="alert">
+    {world.workflowError && <p id="workflow-error" className="problem workflow-problem" role="alert" tabIndex={-1}>
       <span>{world.workflowError.text}</span>
       {world.workflowRetry && <button className="linkbtn" onClick={retryWorkflow}>Try again</button>}
     </p>}
