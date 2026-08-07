@@ -91,7 +91,14 @@ something could not be checked, it says <b>not verified</b> — no gap is filled
   accessibility changelog, which names the thread pane directly. See section 1.</p>
   <p>Every measured number was re-taken by driving Buzz over a debug port and reading the real
   element sizes, instead of measuring off screenshots. The old numbers were all short by about
-  15 px — the width of the divider itself. <b>Every figure on this page has been corrected.</b></p>
+  15 px — the width of the divider itself.</p>
+  <p><b>One figure escaped that first correction pass, and it is worth telling you rather than
+  quietly mending.</b> The width of the expanded thread was left at 1470 px because nobody had
+  re-taken it. Measured properly it is <b>1691 px</b> — out by 221 px, fifteen times the slop
+  this page complains about everywhere else. It is corrected in section 3, and it makes the
+  case for the take-over mode stronger, not weaker. So rather than claim every figure is
+  right: <b>every figure on this page has now been taken from the real elements, and the one
+  that had not been is named above.</b></p>
 </section>
 
 <section data-fb="The short answer">
@@ -300,12 +307,20 @@ something could not be checked, it says <b>not verified</b> — no gap is filled
     <img src="threads-like-slack/buzz-expanded.png" alt="Buzz with the thread expanded over the dimmed channel behind it">
     <figcaption><b>A control beside the "Thread" heading expands it</b> — in Buzz's own
     markup it is labelled <code>Expand thread</code>. The thread floats out over the room,
-    and <b>the room dims behind it</b> rather than disappearing. Roughly 1470 px of reading
-    width. One click there, one click back.</figcaption>
+    and <b>the room dims behind it</b> rather than disappearing. <b>1691 px of reading
+    width</b> — the overlay runs from 221 px to 1912 px across your 1920 px viewport. One
+    click there, one click back.</figcaption>
   </figure>
-  <p>One detail that is easy to miss and is worth copying: <b>the expanded mode survives a
-  restart even though the width does not.</b> Buzz remembers which mode you were in but
-  forgets how wide you dragged it. Cloud9 will remember both.</p>
+  <p style="color:var(--dim);font-size:14px">That 1691 replaces 1470 on the earlier version.
+  1470 was the last figure still coming off a screenshot, and it was 221 px short. The real
+  comparison is therefore <b>280 px today against 1691 px expanded</b>.</p>
+  <p>Two details easy to miss and worth copying. <b>The expanded mode survives a restart even
+  though the width does not</b> — set expanded, kill the process, start it again, and it
+  comes back expanded with no divider at all. That was asserted on the earlier version with
+  nothing behind it; it has now actually been done. And <b>the way back out is not a back
+  arrow at this size</b> — the control is labelled, in Buzz's own markup,
+  <code>Show thread beside channel</code>. Cloud9 will use those words too, for the same
+  reason it uses Buzz's tooltip words: they explain themselves.</p>
 
   <h3>And on a narrow window it stops splitting altogether — same idea, different trigger</h3>
   <figure>
@@ -455,9 +470,11 @@ something could not be checked, it says <b>not verified</b> — no gap is filled
   <h3>7. The take-over mode — you asked for it, and it also fixes the worst hole in this plan</h3>
   <p>You said you want both, so both get built. Copying what was measured in Buzz rather
   than inventing it: a control beside the <b>Thread</b> heading, labelled so a screen reader
-  says "expand thread"; the thread floats out over the room; <b>the room dims behind it</b>
-  rather than vanishing; one click there and one click back. And unlike Buzz, the mode
-  <em>and</em> your width are both remembered after a restart.</p>
+  says <b>"expand thread"</b>; the thread floats out over the room; <b>the room dims behind
+  it</b> rather than vanishing; and the way back out says <b>"show thread beside channel"</b>
+  — Buzz's own words, not a bare arrow. One click there and one click back. It is a big
+  jump: <b>280 px today against 1691 px expanded</b>. And unlike Buzz, the mode <em>and</em>
+  your width are both remembered after a restart.</p>
 
   <h3 style="color:var(--warn)">8. The narrow window — this was a dead handle, and that is a fault, not wording</h3>
   <p>The earlier version said: when the window is too narrow for both floors, "share
@@ -481,10 +498,31 @@ something could not be checked, it says <b>not verified</b> — no gap is filled
   for the mechanism.</b> Buzz's narrow-window behaviour and Buzz's take-over mode are the
   same thing wearing two hats: the thread gets the whole area and there is one obvious way
   back. So below 894 px, Cloud9 does exactly that — <b>the thread takes over the whole area
-  with a back arrow to the room</b>, which is Buzz's own answer at 800 px, and it reuses the
+  with one obvious way back to the room</b> — drawn as a back arrow at this size, and saying
+  "show thread beside channel" for anyone who cannot see it, which is Buzz's own wording.
+  That is Buzz's own answer at 800 px, and it reuses the
   take-over mode from point 7 rather than being a second thing to build. Above 894 px it
-  splits and drags as normal, and your width is waiting for you when you widen the window
-  again. <b>Nothing on screen ever refuses you in silence.</b></p>
+  splits and drags — though honestly, <b>only barely at first</b>: at 894 px the handle has
+  <b>nowhere to travel at all</b>, about 6 px at 900, roughly 56 px at 950, and it only feels
+  like a real control from about 1000 px up. That is not a fault to fix, it is just what two
+  300 px floors in a small window add up to, and <b>Buzz tapers off in exactly the same
+  way</b>. Your width is waiting for you when you widen the window again.
+  <b>Nothing on screen ever refuses you in silence.</b></p>
+
+  <h3>9. Your width is never thrown away — including the case that would have caught you out</h3>
+  <p>This one is not in the earlier version and it is the likeliest way the finished thing
+  would have quietly disappointed you. Say you drag the thread to <b>1200 px</b> on your big
+  screen, then make the window smaller — at 1330 px there is only 1036 px to divide, so the
+  widest the thread can be is 736 px. <b>What happens to your 1200?</b></p>
+  <ul>
+    <li><b>It is kept, not overwritten.</b> The thread is drawn at whatever the window can
+    actually give it — 736 px in that example — but the 1200 you chose is what is stored.</li>
+    <li>Widen the window again and <b>you get your 1200 back</b>, without touching anything.
+    The same is true coming back up out of the take-over mode below 894 px.</li>
+    <li>Only dragging the handle yourself, or double-clicking it to reset, ever changes the
+    number that is remembered. <b>The window never edits your choice — it only borrows it
+    for as long as it has to.</b></li>
+  </ul>
   <p style="color:var(--dim);font-size:14px">For comparison, Buzz's own switch-over is
   between 800 and 850 px — it still splits and drags at 850. Ours falls at 894 because
   Cloud9's sidebar takes 216 px at these sizes. Same rule, different furniture.</p>
@@ -508,13 +546,21 @@ something could not be checked, it says <b>not verified</b> — no gap is filled
     recommendation was "just the divider, for now", and <b>you overruled it</b>. Both get
     built: the draggable divider <em>and</em> the take-over mode. It will not be asked
     again.</li>
-    <li><b>The room gives way when you widen the thread — and this is how that got
-    decided.</b> That rule lives inside the proposal section above ("the room never goes
-    below 300 px, and there is no cap on the thread"), and <b>you marked that section 👍</b>.
-    So it was answered by your approval of the block it lives in, not by a separate yes and
-    not by anybody assuming it. This is the axis all three previous attempts died on: the
-    shipped code kept protecting the room, and you wanted the thread. It is now settled the
-    other way, in writing.</li>
+    <li><b>The room gives way when you widen the thread — and here is exactly how much of
+    that is your word and how much is mine.</b> You marked the proposal block 👍, and the
+    room-gives-way rule lives inside that block, so the <em>direction</em> is genuinely
+    yours. But I have to be straight about one thing: <b>the version of that block you
+    marked said the room never goes below 380 px. This version says 300 px. It is not the
+    same block any more.</b> Carrying your tick across a changed number and calling it a
+    confirmation would be me inferring your answer on the single axis all three previous
+    attempts died on — the shipped code kept protecting the room, and you wanted the thread.
+    So, plainly:
+    <div class="src" style="border-left-color:var(--accent)"><q>You marked the earlier
+    version of this block 👍. That version let the room shrink to 380 px; this one lets it
+    shrink to 300 px — same direction, more room for the thread. If that is not what you
+    meant, say so before I start.</q></div>
+    I am treating that as settled and I am not asking you again — but the door is there, and
+    you have not been quietly counted as having said something you did not.</li>
   </ul>
 </section>
 
