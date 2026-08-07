@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Slack frontend and chat experience audit — 2026-08-08</title>
+<style>
+:root{color-scheme:light;--ink:#172432;--muted:#53687a;--paper:#f6f8fb;--card:#fff;--line:#d9e2ec;--blue:#2167a5;--blue-bg:#e9f3ff;--green:#17643d;--green-bg:#e8f6ee;--amber:#855b00;--amber-bg:#fff4d6;--red:#963d3d;--red-bg:#fff0f0;--violet:#5c42a4;--violet-bg:#f2efff}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}main{max-width:1320px;margin:auto;padding:30px 32px 90px}h1{font-size:clamp(30px,4vw,48px);line-height:1.08;margin:0 0 10px}h2{font-size:25px;margin:36px 0 10px}h3{font-size:18px;margin:0 0 6px}.meta{color:var(--muted);margin:0 0 20px}.lead{font-size:18px;max-width:900px}.callout{border:1px solid var(--line);border-left:6px solid var(--blue);background:var(--card);padding:16px 18px;border-radius:12px;margin:16px 0}.callout.warn{border-left-color:#d4931d;background:var(--amber-bg)}.callout.boundary{border-left-color:var(--violet);background:var(--violet-bg)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:15px}.metric{font-size:30px;font-weight:750;line-height:1}.metric-label{margin-top:7px;color:var(--muted)}.verified{color:var(--green)}.fog{color:var(--amber)}.gap{color:var(--red)}.boundary{color:var(--violet)}.tag{display:inline-block;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:700;letter-spacing:.02em;text-transform:uppercase}.tag.verified{background:var(--green-bg)}.tag.fog{background:var(--amber-bg)}.tag.gap{background:var(--red-bg)}.tag.boundary{background:var(--violet-bg)}table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:14px}th,td{padding:11px 12px;border:1px solid var(--line);vertical-align:top;text-align:left}th{background:#edf3f9;color:#29445d;position:sticky;top:0}td:first-child{font-weight:650;min-width:210px}.source{font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;color:#315f87}.evidence{font-size:12px;color:var(--muted)}a{color:var(--blue)}code{font:0.92em ui-monospace,SFMono-Regular,Consolas,monospace;background:#edf2f6;padding:1px 4px;border-radius:4px}.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin:18px 0}.flow-step{position:relative;background:var(--card);border:1px solid var(--line);padding:17px 14px;min-height:112px}.flow-step:not(:last-child){border-right:0}.flow-step:not(:last-child)::after{content:"→";position:absolute;right:-14px;top:39px;width:27px;height:27px;text-align:center;line-height:25px;border-radius:50%;background:var(--blue);color:#fff;z-index:2;font-weight:700}.flow-step:first-child{border-radius:12px 0 0 12px}.flow-step:last-child{border-radius:0 12px 12px 0}@media(max-width:800px){main{padding:22px 16px 70px}.flow{grid-template-columns:1fr}.flow-step:not(:last-child){border-right:1px solid var(--line);border-bottom:0}.flow-step:not(:last-child)::after{content:"↓";right:calc(50% - 13px);top:auto;bottom:-14px}.flow-step:first-child{border-radius:12px 12px 0 0}.flow-step:last-child{border-radius:0 0 12px 12px}}.footer{margin-top:40px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<main>
+<section data-fb="audit summary">
+<h1>Slack frontend and chat experience audit</h1>
+<p class="meta">Evidence snapshot: 8 August 2026 01:34 +05:30 · Cloud9 source citations are pinned to inspected commit <code>7329537</code> (not a current-master claim) · live board was last verified against <code>master</code> at <code>c3519a6</code> · worktree branch <code>slack-chat-audit</code> · report only, no product features implemented.</p>
+<p class="lead">This map separates what was observed, what only proves a page exists, what Cloud9 has in source, and what remains fog. It does not turn an unavailable Slack screen into a parity claim.</p>
+<div class="callout boundary"><strong>Privacy boundary:</strong> no Slack messages, names, screenshots, cookies, storage, credentials, workspace identifiers, or private content were inspected.</div>
+<div class="grid">
+<div class="card"><div class="metric verified">1</div><div class="metric-label">generic Slack load-error text recorded</div></div>
+<div class="card"><div class="metric fog">0</div><div class="metric-label">current official help pages verified</div></div>
+<div class="card"><div class="metric gap">2</div><div class="metric-label">new Cloud9 source gaps proposed</div></div>
+<div class="card"><div class="metric boundary">0</div><div class="metric-label">private screenshots added</div></div>
+</div>
+<p class="evidence">Arithmetic: 1 recorded load-error text + 2 unresolved historical documentation references + 1 preserved thread row + 2 source gaps = 6 mapped evidence items. This is an evidence map, not a Slack feature-count claim.</p>
+</section>
+
+<section data-fb="chrome blocker">
+<h2>1 · Chrome blocker</h2>
+<div class="callout warn"><span class="tag fog">FOG</span> <strong>Slack did not load.</strong> Chrome was connected to a Slack workspace. After one reload, the only visible result was the generic message <q>For some reason, Slack couldn’t load</q>.</div>
+<p><strong>What this proves:</strong> a load blocker was present in the connected Chrome session. <strong>What it does not prove:</strong> Slack message, thread, Later, Activity, width, persistence, or narrow-window behavior.</p>
+<p><strong>No screenshot is included.</strong> This lane did not safely capture a shell-only image with the required Chrome control skill without risking private content; no other browser or search was substituted. The generic shell is recorded as text only.</p>
+</section>
+
+<section data-fb="official help pages">
+<h2>2 · Official Slack references: current status unresolved</h2>
+<div class="grid">
+<article class="card"><span class="tag fog">UNRESOLVED</span><h3>Save messages for later</h3><p>An earlier evidence packet named Slack Help article ID <code>360054455974</code>, but its current canonical URL, status, and body were not reverified in this audit. It must not be called an existing page.</p><p class="evidence">Evidence class: historical reference only · current status/content <span class="fog">FOG</span>.</p></article>
+<article class="card"><span class="tag fog">UNRESOLVED</span><h3>View and manage activity</h3><p>An earlier evidence packet named Slack Help article ID <code>360056381533</code>, but its current canonical URL, status, and body were not reverified in this audit. It must not be called an existing page.</p><p class="evidence">Evidence class: historical reference only · current status/content <span class="fog">FOG</span>.</p></article>
+</div>
+<div class="callout boundary"><strong>Reading rule:</strong> no current canonical Slack Help URL is verified here. The historical IDs above are unresolved references only, not citations that a page exists or that its behavior was inspected.</div>
+</section>
+
+<section data-fb="source map">
+<h2>3 · Source map: existing thread work stays separate</h2>
+<table><thead><tr><th>Surface</th><th>What the source shows</th><th>Evidence and boundary</th></tr></thead><tbody>
+<tr><td>Existing thread feature</td><td>Cloud9 already has a thread state, message-to-thread opener, and rendered thread panel. This row is preserved; it is not one of the new gaps.</td><td class="source">apps/desktop/src/App.tsx:3442-3484 (state/focus), 3503-3524 (open/jump), 3679-3725 (panel/takeover), 5911-5967 (message actions); docs/threads-like-slack.html</td></tr>
+<tr><td>Activity and notifications</td><td>Activity is an explicit screen. Notifications are built into an in-memory toast stack; a toast can be dismissed or auto-dismisses after 9 seconds.</td><td class="source">apps/desktop/src/App.tsx:1976 (ScreenName), 2715-2757 (rail/Activity), 2829-2831 (screen switch), 2879-3091 and 3104-3119 (toast processing), 3149-3167 (dismiss/9-second toast); packages/shared/src/notify.ts:55-95, 188-256</td></tr>
+<tr><td>Later / Saved route</td><td>No persistent Later or Saved route appears in the inspected desktop App route/rail/switch. This is a narrow Cloud9 UI-route finding, not a whole-repository model search and not a claim about Slack parity.</td><td class="source">apps/desktop/src/App.tsx:1976 (ScreenName union), 2714-2756 (rail), 2829-2831 (screen switch)</td></tr>
+<tr><td>Message identity and read state</td><td>Messages, replies, and account-level unread/read markers already exist; a future durable queue must add its own identity, persistence, navigation, deletion/access, and retention contract.</td><td class="source">packages/shared/src/index.ts:2789-2833 (Message), 2884-2892 (UnreadEntry); apps/relay/src/store.ts:1431-1435 (saveMessage), 2771-2794 (SQLite unread reads)</td></tr>
+</tbody></table>
+<p class="evidence">Existing threads evidence and the two new source gaps are intentionally different rows. The approved thread page records exact widths, persistence, and narrow behavior as <span class="fog">not verified for Slack</span>.</p>
+<p><a href="threads-like-slack.html">Open the existing threads evidence page</a> · its official Slack links and correction trail remain the source for that separate work.</p>
+</section>
+
+<section data-fb="program map">
+<h2>4 · Program map</h2>
+<div class="flow">
+<div class="flow-step"><span class="tag verified">OBSERVED</span><h3>Chrome shell</h3><p>Generic Slack load error only. No private content.</p></div>
+<div class="flow-step"><span class="tag fog">UNRESOLVED</span><h3>Official references</h3><p>No current canonical Later or Activity help URL was verified.</p></div>
+<div class="flow-step"><span class="tag verified">MERGED</span><h3>Cloud9 work</h3><p>Notifications and Saved/Later are merged Cloud9 contracts; Slack behavior remains fog.</p></div>
+<div class="flow-step"><span class="tag fog">FOG</span><h3>Slack behavior</h3><p>Live UI and help bodies were unavailable.</p></div>
+</div>
+<table><thead><tr><th>Evidence class</th><th>Safe statement</th><th>Unsafe statement</th></tr></thead><tbody>
+<tr><td><span class="tag verified">Observed</span></td><td>The connected Chrome session showed generic Slack load-error text.</td><td>Slack Later or Activity behavior was verified.</td></tr>
+<tr><td><span class="tag fog">Unresolved reference</span></td><td>Historical article IDs were supplied, but current canonical status and content were not verified.</td><td>A live help page, steps, layout, or screenshots were verified.</td></tr>
+<tr><td><span class="tag gap">Cloud9 source gap</span></td><td>No persistent Later/Saved route appears in the inspected desktop App route/rail/switch; model persistence was not inferred from that UI-only inspection.</td><td>Cloud9 is being declared non-parity against a verified Slack implementation.</td></tr>
+<tr><td><span class="tag fog">FOG</span></td><td>Slack behavior for the two proposed rows remains unverified.</td><td>Retention or exact interaction semantics are being guessed now.</td></tr>
+</tbody></table>
+</section>
+
+<section data-fb="proposed rows">
+<h2>5 · Proposed work — live delivery board status</h2>
+<div class="grid">
+<article class="card"><span class="tag verified">MERGED</span><h3>Persistent mentions-and-replies notification inbox</h3><p>A separate durable per-user notification inbox for mention and thread-reply entries—not a second view of the existing agent Activity screen. Support read/dismiss; jump to the source room/thread; honest deleted or inaccessible state.</p><p><strong>Dependencies:</strong> notification event IDs + unread/read + navigation + persistence/storage + owner isolation/auth + retention + deleted/inaccessible handling + mute/quiet/OS preservation.</p><p class="evidence">Last verified at 2026-08-08 01:34 +05:30: PR #19 is merged to <code>master</code> at <code>551b2f8</code> (author Vikas Mittal; reviewer chatgpt-codex-connector). PR #17 remains this audit/contract only. Slack behavior: <span class="fog">FOG</span>. Do not turn this source-gap row into a Slack-parity claim.</p></article>
+<article class="card"><span class="tag verified">MERGED</span><h3>Saved/Later message queue</h3><p>Save/unsave; durable per-user list; open the source message/thread; honest deleted or inaccessible state.</p><p><strong>Dependencies:</strong> message identity + persistence + per-user ownership/auth isolation + navigation/read + deletion/access/retention semantics.</p><p class="evidence">Last verified at 2026-08-08 01:34 +05:30: PR #28 is merged to <code>master</code> at <code>9429c48</code> (author Vikas Mittal; reviewer unassigned; merge is included in master <code>c3519a6</code>). PR #17 remains this audit/contract only. Slack behavior: <span class="fog">FOG</span>. Retention semantics were chosen by the implementation; this audit does not infer them from Slack.</p></article>
+</div>
+<h3>Live delivery board reconciliation</h3>
+<table><thead><tr><th>Feature</th><th>Status</th><th>Branch / PR / head</th><th>Author · reviewer</th></tr></thead><tbody>
+<tr><td>Remove timing</td><td>MERGED</td><td><code>fix/agents-are-not-on-a-timer</code> · PR #13 · <code>97daeae</code></td><td>Vikas Mittal · unassigned</td></tr>
+<tr><td>Manual workflows</td><td>MERGED</td><td><code>master</code> · PR #18 · <code>daf851f</code></td><td>Vikas Mittal · chatgpt-codex-connector</td></tr>
+<tr><td>Persistent mentions-and-replies notification inbox</td><td>MERGED</td><td><code>master</code> · PR #19 · <code>551b2f8</code></td><td>Vikas Mittal · chatgpt-codex-connector</td></tr>
+<tr><td>Saved/Later message queue</td><td>MERGED</td><td><code>master</code> · PR #28 · <code>9429c48</code></td><td>Vikas Mittal · unassigned</td></tr>
+<tr><td>Engineering Pulse</td><td>BUILDING</td><td><code>engineering-pulse</code> · PR #21 · <code>9b37d00</code></td><td>Vikas Mittal · unassigned</td></tr>
+<tr><td>Internal team social feed</td><td>BUILDING</td><td><code>internal-team-social-feed</code> · PR #20 · <code>c712bf0</code></td><td>Vikas Mittal · chatgpt-codex-connector</td></tr>
+<tr><td>Project polls</td><td>BUILDING</td><td><code>feature/project-polls</code> · PR #22 · <code>b03b99a</code></td><td>Vikas Mittal · unassigned</td></tr>
+<tr><td>Hooks editor</td><td>BUILDING</td><td><code>feature/hooks-rules-editor</code> · PR #27 · <code>ab25e85</code></td><td>Vikas Mittal · unassigned</td></tr>
+<tr><td>Engineering Canvas</td><td>BUILDING</td><td><code>feature/engineering-canvas</code> / PR #26 / <code>83ebc26</code></td><td>Vikas Mittal / unassigned</td></tr>
+<tr><td>Project forums/decision threads</td><td>BUILDING</td><td><code>project-forums-decision-threads</code> · PR #23 · <code>6a76fbf</code></td><td>Vikas Mittal · chatgpt-codex-connector</td></tr>
+<tr><td>Huddle presence/shared notes</td><td>BUILDING</td><td><code>huddle-presence-shared-notes</code> · PR #24 · <code>9c8fbb9</code></td><td>Vikas Mittal · chatgpt-codex-connector</td></tr>
+<tr><td>Public project update publishing</td><td>BUILDING</td><td><code>public-project-updates</code> · PR #25 · <code>1f6efa3</code></td><td>Vikas Mittal · chatgpt-codex-connector</td></tr>
+</tbody></table>
+<p class="evidence">The board was last verified against GitHub on 8 August 2026 01:34 +05:30 against <code>master</code> <code>c3519a6</code>; open PR heads and review state can change without this file changing. Cloud9 source line references above remain pinned to <code>7329537</code>. PR #17 is the audit/contract branch, not the merged notification implementation.</p>
+<p class="callout boundary"><strong>Scope guard:</strong> this audit proposes no rows for rich-text parity, admin/account, or billing. Huddle presence/shared notes and Engineering Canvas are BUILDING on the live Tracker; neither is a Slack-parity claim in this page. The existing <strong>Workflow list / builder</strong> row is preserved exactly in <code>TRACKER.md</code>.</p>
+</section>
+
+<section data-fb="privacy and handoff">
+<h2>6 · Privacy, provenance, and handoff</h2>
+<ul>
+<li><strong>Images:</strong> none added. There is no screenshot provenance or image privacy claim to inspect.</li>
+<li><strong>Official references:</strong> historical article IDs remain unresolved; no current canonical URL or page existence is claimed.</li>
+<li><strong>Source references:</strong> line ranges above were re-read from pinned Cloud9 source snapshot <code>7329537</code>; they describe Cloud9 source only and do not imply current-master line stability.</li>
+<li><strong>Feedback:</strong> use the controls on each marked section, then press <q>Copy my feedback</q>.</li>
+</ul>
+<div class="callout boundary"><strong>Copy/paste limitation:</strong> this page cannot send feedback back to a Claude session. The embedded feedback layer stores notes in this browser's local storage and copies plain text; someone must paste that text back into the working conversation.</div>
+</section>
+
+<div class="footer"><p>Report-only audit · no build, package, install, or QA run was performed.</p><p>All unknowns stay labelled <strong>FOG</strong>. A timeout is unknown state, not recovery and not a product diagnosis.</p></div>
+</main>
+<script>/* ============================================================
+   Vikas review kit — feedback layer for every HTML review page.
+   Paste this embedded layer at the end of any artifact I hand him.
+
+   What it gives him:
+     - click any section marked data-fb="<label>" to attach a note
+     - thumbs up / down per section
+     - a floating panel listing everything he has said
+     - ONE button that copies it all as plain text to paste back
+
+   Why it exists: published artifacts cannot send data back into a
+   Claude session (no such capability). This turns "read a wall and
+   retype your thoughts" into "click, type, copy once".
+
+   Usage:
+     1. mark reviewable blocks with a data-fb="Option A — Slack True" attribute
+     2. include this script once, at the end of the page.
+   ============================================================ */
+(function () {
+  "use strict";
+  var VERSION = "2026-08-07-v2";
+  var title = document.title || location.pathname;
+  var blocks = [].slice.call(document.querySelectorAll("[data-fb]"));
+  var valid = {};
+  blocks.forEach(function (el) { valid[el.getAttribute("data-fb")] = true; });
+  var STORE = "vikas-fb-" + VERSION + "-" + title;
+  var notes = {};
+  try {
+    var stored = JSON.parse(localStorage.getItem(STORE) || "{}");
+    Object.keys(stored).forEach(function (key) {
+      if (valid[key] && stored[key] && typeof stored[key] === "object") {
+        notes[key] = {
+          verdict: stored[key].verdict === "yes" || stored[key].verdict === "no" ? stored[key].verdict : "",
+          text: typeof stored[key].text === "string" ? stored[key].text : ""
+        };
+      }
+    });
+  } catch (e) { notes = {}; }
+
+  function save() {
+    var current = {};
+    Object.keys(notes).forEach(function (key) {
+      if (valid[key] && notes[key]) current[key] = notes[key];
+    });
+    notes = current;
+    try { localStorage.setItem(STORE, JSON.stringify(notes)); } catch (e) {}
+  }
+
+  var css = document.createElement("style");
+  css.textContent = [
+    ':root{--fb-ink:#16232e;--fb-bg:#fff;--fb-line:#d8e0e8;--fb-accent:#2c7fc4;',
+    '--fb-yes:#1e7d4f;--fb-yes-bg:#e3f3ea;--fb-no:#b03535;--fb-no-bg:#fbe7e7;--fb-muted:#5a6b7a;}',
+    '@media (prefers-color-scheme:dark){:root{--fb-ink:#e6edf3;--fb-bg:#18232e;--fb-line:#2f3d4a;',
+    '--fb-accent:#5aa5dd;--fb-yes:#5cc78f;--fb-yes-bg:#14372a;--fb-no:#e07a7a;--fb-no-bg:#3d1d1d;--fb-muted:#93a4b3;}}',
+    '[data-fb]{position:relative;}',
+    '[data-fb].fb-has{outline:2px solid var(--fb-accent);outline-offset:3px;border-radius:8px;}',
+    '.fb-tools{position:absolute;top:.4rem;right:.4rem;display:flex;gap:.25rem;opacity:.45;',
+    'transition:opacity .15s;z-index:5;}',
+    '[data-fb]:hover .fb-tools,[data-fb]:focus-within .fb-tools{opacity:1;}',
+    '@media (prefers-reduced-motion:reduce){.fb-tools{transition:none;}}',
+    '.fb-tools button{font:600 .78rem/1 system-ui,sans-serif;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);border-radius:99px;padding:.3rem .6rem;cursor:pointer;}',
+    '.fb-tools button:hover{border-color:var(--fb-accent);color:var(--fb-accent);}',
+    '.fb-tools button.on-yes{background:var(--fb-yes-bg);color:var(--fb-yes);border-color:var(--fb-yes);}',
+    '.fb-tools button.on-no{background:var(--fb-no-bg);color:var(--fb-no);border-color:var(--fb-no);}',
+    '.fb-note{margin-top:.6rem;width:100%;box-sizing:border-box;font:.92rem/1.5 system-ui,sans-serif;',
+    'color:var(--fb-ink);background:var(--fb-bg);border:1px dashed var(--fb-line);border-radius:8px;',
+    'padding:.55rem .7rem;resize:vertical;min-height:2.6rem;}',
+    '.fb-note:focus{outline:2px solid var(--fb-accent);outline-offset:1px;border-style:solid;}',
+    '.fb-bar{position:fixed;right:1rem;bottom:1rem;z-index:9999;display:flex;flex-direction:column;',
+    'align-items:flex-end;gap:.5rem;font:14px/1.5 system-ui,sans-serif;}',
+    '.fb-bar button{cursor:pointer;border-radius:99px;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);padding:.55rem 1rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.14);}',
+    '.fb-bar .fb-copy{background:var(--fb-accent);color:#fff;border-color:transparent;}',
+    '.fb-status{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}',
+    '.fb-panel{background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;',
+    'padding:.9rem 1rem;max-width:min(380px,90vw);max-height:50vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.2);display:none;}',
+    '.fb-panel.open{display:block;}',
+    '.fb-panel h4{margin:0 0 .5rem;font-size:.95rem;}',
+    '.fb-panel li{margin-bottom:.5rem;font-size:.88rem;}',
+    '.fb-panel .lbl{font-weight:600;}',
+    '.fb-empty{color:var(--fb-muted);font-size:.88rem;margin:0;}',
+    '@media print{.fb-bar,.fb-tools{display:none;}}'
+  ].join("");
+  document.head.appendChild(css);
+
+  // The floating bar is built FIRST: per-section wiring calls render(), which
+  // needs these to exist. (Building it after the loop threw on the first
+  // section and left every later section without its buttons.)
+  var bar = document.createElement("div");
+  bar.className = "fb-bar";
+  var panel = document.createElement("div");
+  panel.className = "fb-panel";
+  panel.id = "feedback-panel";
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.setAttribute("aria-label", "Show feedback summary");
+  toggle.title = "Show feedback summary";
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.setAttribute("aria-controls", "feedback-panel");
+  var copy = document.createElement("button");
+  copy.type = "button"; copy.className = "fb-copy"; copy.textContent = "\uD83D\uDCCB Copy my feedback";
+  copy.setAttribute("aria-label", "Copy my feedback");
+  copy.title = "Copy all feedback to paste back";
+  copy.setAttribute("aria-live", "polite");
+  var status = document.createElement("span");
+  status.className = "fb-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.setAttribute("aria-atomic", "true");
+  bar.appendChild(panel); bar.appendChild(toggle); bar.appendChild(copy); bar.appendChild(status);
+  document.body.appendChild(bar);
+
+  // Standalone mode: a page with no marked-up blocks (e.g. a full-screen
+  // prototype we did not author) still gets a working note box, so the layer
+  // can be injected into ANY page rather than only pages we wrote.
+  if (!blocks.length) {
+    var solo = document.createElement("div");
+    solo.setAttribute("data-fb", document.title || "this page");
+    solo.setAttribute("data-fb-solo", "");
+    solo.style.cssText = "position:fixed;left:1rem;bottom:1rem;z-index:9998;width:min(320px,80vw);" +
+      "background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;" +
+      "padding:2.2rem .8rem .8rem;box-shadow:0 8px 30px rgba(0,0,0,.2);font:14px/1.5 system-ui,sans-serif;";
+    var cap = document.createElement("div");
+    cap.textContent = "Notes on this page";
+    cap.style.cssText = "font-weight:600;font-size:.85rem;margin-bottom:.3rem;";
+    solo.appendChild(cap);
+    document.body.appendChild(solo);
+    blocks = [solo];
+    valid[solo.getAttribute("data-fb")] = true;
+  }
+  blocks.forEach(function (el) {
+    var key = el.getAttribute("data-fb");
+    if (!notes[key]) notes[key] = { verdict: "", text: "" };
+
+    var tools = document.createElement("div");
+    tools.className = "fb-tools";
+    var yes = document.createElement("button");
+    yes.type = "button"; yes.textContent = "👍 like"; yes.title = "I like this"; yes.setAttribute("aria-label", "Like " + key);
+    var no = document.createElement("button");
+    no.type = "button"; no.textContent = "👎 no"; no.title = "Not this"; no.setAttribute("aria-label", "Dislike " + key);
+    var add = document.createElement("button");
+    add.type = "button"; add.textContent = "💬 note"; add.title = "Write a note"; add.setAttribute("aria-label", "Add a note to " + key);
+    tools.appendChild(yes); tools.appendChild(no); tools.appendChild(add);
+    el.appendChild(tools);
+
+    var note = document.createElement("textarea");
+    note.className = "fb-note";
+    note.placeholder = "Your note on “" + key + "”…";
+    note.setAttribute("aria-label", "Feedback note for " + key);
+    note.title = "Feedback note for " + key;
+    note.value = notes[key].text || "";
+    // in standalone mode the box is the whole point — always show it
+    var solo = el.hasAttribute("data-fb-solo");
+    note.style.display = notes[key].text || solo ? "block" : "none";
+    el.appendChild(note);
+
+    function paint() {
+      yes.className = notes[key].verdict === "yes" ? "on-yes" : "";
+      no.className = notes[key].verdict === "no" ? "on-no" : "";
+      el.classList.toggle("fb-has", !!(notes[key].verdict || notes[key].text));
+      render();
+    }
+    yes.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "yes" ? "" : "yes"; save(); paint();
+    });
+    no.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "no" ? "" : "no"; save(); paint();
+    });
+    add.addEventListener("click", function () {
+      note.style.display = "block"; note.focus();
+    });
+    note.addEventListener("input", function () {
+      notes[key].text = note.value.trim(); save(); paint();
+    });
+    paint();
+  });
+
+  function collected() {
+    return Object.keys(notes)
+      .filter(function (k) { return valid[k] && notes[k] && (notes[k].verdict || notes[k].text); })
+      .map(function (k) { return { key: k, v: notes[k].verdict, t: notes[k].text }; });
+  }
+
+  function asText() {
+    var items = collected();
+    if (!items.length) return "";
+    var out = ["FEEDBACK ON: " + (document.title || "this page"), ""];
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "LIKE" : i.v === "no" ? "NO" : "NOTE";
+      out.push("- [" + mark + "] " + i.key + (i.t ? " — " + i.t : ""));
+    });
+    return out.join("\n");
+  }
+
+  function render() {
+    var items = collected();
+    toggle.textContent = items.length ? "🗒 " + items.length + " marked" : "🗒 no marks yet";
+    if (!items.length) { panel.innerHTML = '<p class="fb-empty">Hover any section, then use 👍 / 👎 / 💬.</p>'; return; }
+    var html = "<h4>What you've said</h4><ul>";
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "👍" : i.v === "no" ? "👎" : "💬";
+      html += '<li>' + mark + ' <span class="lbl">' + escapeHtml(i.key) + "</span>" +
+        (i.t ? " — " + escapeHtml(i.t) : "") + "</li>";
+    });
+    panel.innerHTML = html + "</ul>";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  toggle.addEventListener("click", function () {
+    var open = !panel.classList.contains("open");
+    panel.classList.toggle("open", open);
+    toggle.setAttribute("aria-expanded", String(open));
+  });
+  copy.addEventListener("click", function () {
+    var text = asText();
+    if (!text) { copy.textContent = "nothing marked yet"; status.textContent = "No feedback marked"; setTimeout(function () { copy.textContent = "\uD83D\uDCCB Copy my feedback"; }, 1600); return; }
+    var done = function () {
+      copy.textContent = "✅ copied — paste it to Claude"; status.textContent = "Feedback copied";
+      setTimeout(function () { copy.textContent = "\uD83D\uDCCB Copy my feedback"; }, 2600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy") === true; } catch (e) {}
+      if (ok) done();
+      else { copy.textContent = "Copy failed — select and copy the text"; status.textContent = "Copy failed; select the text manually"; window.prompt("Copy this:", text); }
+      document.body.removeChild(ta);
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
