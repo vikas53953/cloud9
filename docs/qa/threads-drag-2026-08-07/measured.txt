@@ -1,25 +1,32 @@
 BINARY: C:\Users\vikasmit\AppData\Local\Programs\Cloud9\Cloud9.exe
-  built 2026-08-07T09:37:14.000Z
-  web bundle: index-CR2CkA3K.js  index-shSU9Pdt.css
+  built 2026-08-07T10:31:08.000Z
+  web bundle: index-DUjpBH9y.js  index-shSU9Pdt.css
 
 1 · HIS OWN WINDOW, thread just opened
   as it opens                        viewport 1920  thread   388px  room  1204px  [beside the room]  kept: nullpx
       the strip says: "Drag to resize."
       the mode button is called: "expand thread"
+      divider aria: min 300, now 388, max 1292
     photo  docs\qa\threads-drag-2026-08-07\1-his-window-as-it-opens.png
 
 2 · DRAGGED, with real pointer events
   dragged wide                       viewport 1920  thread  1100px  room   492px  [beside the room]  kept: 1100px
       the strip says: "Drag to resize. Double-click to reset width."
       the mode button is called: "expand thread"
+      divider aria: min 300, now 1100, max 1292
+      pointer cleanup: dragged wide removed body and divider dragging state
     photo  docs\qa\threads-drag-2026-08-07\2-dragged-wide.png
   dragged narrow                     viewport 1920  thread   340px  room  1252px  [beside the room]  kept: 340px
       the strip says: "Drag to resize. Double-click to reset width."
       the mode button is called: "expand thread"
+      divider aria: min 300, now 340, max 1292
+      pointer cleanup: dragged narrow removed body and divider dragging state
     photo  docs\qa\threads-drag-2026-08-07\3-dragged-narrow.png
   dragged past the room's floor      viewport 1920  thread  1292px  room   300px  [beside the room]  kept: 1292px
       the strip says: "Drag to resize. Double-click to reset width."
       the mode button is called: "expand thread"
+      divider aria: min 300, now 1292, max 1292
+      pointer cleanup: room floor removed body and divider dragging state
     photo  docs\qa\threads-drag-2026-08-07\4-room-floor-holds.png
 
 3 · THE KEYBOARD (Slack ships this; a mouse-only control is not acceptable)
@@ -40,6 +47,7 @@ BINARY: C:\Users\vikasmit\AppData\Local\Programs\Cloud9\Cloud9.exe
 5 · THE TAKE-OVER MODE — he asked for this as well as the divider
   taken over                         viewport 1920  thread  1474px  room  1592px  [takeover (he asked)]  kept: 900px + takeover
       the mode button is called: "show thread beside channel"
+      focus isolation: wide takeover inert + aria-hidden; 40 Tab presses never entered the room
     photo  docs\qa\threads-drag-2026-08-07\7-take-over-the-room.png
   back beside the room               viewport 1920  thread   900px  room   692px  [beside the room]  kept: 900px
       the strip says: "Drag to resize. Double-click to reset width."
@@ -50,9 +58,11 @@ BINARY: C:\Users\vikasmit\AppData\Local\Programs\Cloud9\Cloud9.exe
   at 894px (the last size that splits) viewport 894  thread   300px  room   300px  [beside the room]  kept: 900px
       the strip says: "Drag to resize. Double-click to reset width."
       the mode button is called: "expand thread"
+      divider aria: min 300, now 300, max 300
     photo  docs\qa\threads-drag-2026-08-07\9-at-894-still-splits.png
   at 800px (too narrow to split)     viewport 800  thread   506px  room   506px  [takeover (window forced it)]  kept: 900px
       the mode button is called: "show thread beside channel"
+      focus isolation: 800 forced takeover inert + aria-hidden; 40 Tab presses never entered the room
     photo  docs\qa\threads-drag-2026-08-07\10-at-800-thread-takes-over.png
   at 1330px (the sidebar steps to 216) viewport 1330  thread   736px  room   300px  [beside the room]  kept: 900px
       the strip says: "Drag to resize. Double-click to reset width."

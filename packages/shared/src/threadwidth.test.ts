@@ -95,7 +95,15 @@ test("before the screen has measured itself, he still gets HIS width", () => {
      open — it looks like a fault and it is not one. */
   assert.equal(widthToDraw(900, 0), 900);
   assert.equal(widthToDraw(THREAD_DEFAULT, 0), THREAD_DEFAULT);
+  assert.equal(widthToDraw(1_200_000, 0), 1_200_000,
+    "a valid large choice is not capped while measurement is pending");
+  assert.equal(widthToDraw(0.1, 0), 1,
+    "a positive fractional choice cannot become a zero CSS track");
+  assert.equal(widthToDraw(0, 0), THREAD_DEFAULT);
+  assert.equal(widthToDraw(-1, 0), THREAD_DEFAULT);
+  assert.equal(widthToDraw(-500, 0), THREAD_DEFAULT);
   assert.equal(widthToDraw(NaN, 0), THREAD_DEFAULT);
+  assert.equal(widthToDraw(Infinity, 0), THREAD_DEFAULT);
 });
 
 test("it opens at Buzz's measured default, not at today's 280", () => {

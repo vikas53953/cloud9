@@ -97,7 +97,14 @@ export function widthToDraw(stored: number, space: number): number {
      hairline for one frame before it snapped open, which looks like a bug and
      is not one. Not knowing is a reason to give him his own number back, never
      a reason to invent a small one. */
-  if (space <= 0) return Number.isFinite(stored) ? Math.round(stored) : THREAD_DEFAULT;
+  if (space <= 0) {
+    /* Preferences are JSON and may be edited or corrupted. Never put a zero,
+       negative, or non-finite value into CSS while the grid is still measuring.
+       A valid large choice remains exactly that choice (apart from the same
+       integer rounding used once the grid is measured). */
+    if (!Number.isFinite(stored) || stored <= 0) return THREAD_DEFAULT;
+    return Math.max(1, Math.round(stored));
+  }
   if (cannotSplit(space)) return space;         // take-over: the whole area
   const widest = widestThread(space);
   if (!Number.isFinite(stored)) return THREAD_DEFAULT;

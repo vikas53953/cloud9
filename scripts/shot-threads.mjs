@@ -125,12 +125,71 @@ const measure = page => page.evaluate(() => {
     gripShowing: !!grip,
     gripTooltip: grip?.getAttribute("title") ?? null,
     gripSpoken: grip?.getAttribute("aria-label") ?? null,
+    gripAriaMin: grip?.getAttribute("aria-valuemin") ?? null,
+    gripAriaNow: grip?.getAttribute("aria-valuenow") ?? null,
+    gripAriaMax: grip?.getAttribute("aria-valuemax") ?? null,
     modeButton: document.querySelector(".threadmode")?.getAttribute("aria-label") ?? null,
+    roomAriaHidden: document.querySelector(".chatgrid > .thread")?.getAttribute("aria-hidden") ?? null,
+    roomInert: !!document.querySelector(".chatgrid > .thread")?.inert,
     mode,
     storedWidth: stored?.threadWidth ?? null,
     storedTakeover: stored?.threadTakeover ?? null,
   };
 });
+
+/**
+ * A take-over must remove the covered room from the real tab order, not merely
+ * dim it. This walks actual Tab events and refuses a pass if focus lands in the
+ * hidden room. It is run at both the requested and window-forced take-over.
+ */
+async function assertFocusIsolation(page, label) {
+  const state = await page.evaluate(() => {
+    const room = document.querySelector(".chatgrid > .thread");
+    const first = document.querySelector(
+      ".threadpanel button, .threadpanel textarea, .threadpanel input, .threadpanel select");
+    first?.focus();
+    return {
+      inert: !!room?.inert,
+      ariaHidden: room?.getAttribute("aria-hidden"),
+      focusedInRoom: !!room?.contains(document.activeElement),
+    };
+  });
+  if (!state.inert || state.ariaHidden !== "true" || state.focusedInRoom) {
+    throw new Error(`${label} did not isolate the room (inert=${state.inert}, aria-hidden=${state.ariaHidden}, focusedInRoom=${state.focusedInRoom})`);
+  }
+  for (let i = 0; i < 40; i++) {
+    await page.keyboard.press("Tab");
+    const inside = await page.evaluate(() => {
+      const room = document.querySelector(".chatgrid > .thread");
+      return !!room?.contains(document.activeElement);
+    });
+    if (inside) throw new Error(`${label} Tab ${i + 1} entered the covered room`);
+  }
+  say(`      focus isolation: ${label} inert + aria-hidden; 40 Tab presses never entered the room`);
+}
+
+function assertDividerAria(m, label) {
+  if (!m.gripShowing) throw new Error(`${label} has no divider to inspect`);
+  const min = Number(m.gripAriaMin);
+  const now = Number(m.gripAriaNow);
+  const max = Number(m.gripAriaMax);
+  if (min !== 300 || !Number.isFinite(now) || !Number.isFinite(max)
+      || now < min || now > max || max < min) {
+    throw new Error(`${label} divider aria is invalid (min=${m.gripAriaMin}, now=${m.gripAriaNow}, max=${m.gripAriaMax})`);
+  }
+  say(`      divider aria: min ${min}, now ${now}, max ${max}`);
+}
+
+async function assertPointerCleanup(page, label) {
+  const state = await page.evaluate(() => ({
+    bodyDragging: document.body.classList.contains("dragging-thread"),
+    gripDragging: !!document.querySelector(".threadgrip.dragging"),
+  }));
+  if (state.bodyDragging || state.gripDragging) {
+    throw new Error(`${label} left pointer-drag state behind (body=${state.bodyDragging}, grip=${state.gripDragging})`);
+  }
+  say(`      pointer cleanup: ${label} removed body and divider dragging state`);
+}
 
 function report(tag, m) {
   const thread = m.thread ? `${m.thread.w}px` : "not on screen";
@@ -300,6 +359,8 @@ async function main() {
   say("\n1 · HIS OWN WINDOW, thread just opened");
   let m = await measure(page);
   report("as it opens", m);
+  if (m.thread?.w !== 388) throw new Error(`startup drew ${m.thread?.w}px, not the 388px default`);
+  assertDividerAria(m, "startup");
   await shot(page, "1-his-window-as-it-opens");
 
   if (BEFORE) {
@@ -318,18 +379,26 @@ async function main() {
   /* ---- 2. dragged wide, then narrow -------------------------------------- */
   say("\n2 · DRAGGED, with real pointer events");
   await dragGripTo(page, 1100);
-  report("dragged wide", await measure(page));
+  const draggedWide = await measure(page);
+  report("dragged wide", draggedWide);
+  assertDividerAria(draggedWide, "dragged wide");
+  await assertPointerCleanup(page, "dragged wide");
   await shot(page, "2-dragged-wide");
 
   await dragGripTo(page, 340);
-  report("dragged narrow", await measure(page));
+  const draggedNarrow = await measure(page);
+  report("dragged narrow", draggedNarrow);
+  assertDividerAria(draggedNarrow, "dragged narrow");
+  await assertPointerCleanup(page, "dragged narrow");
   await shot(page, "3-dragged-narrow");
 
   /* Past the floor on purpose: the room must not be allowed to disappear. */
   await dragGripTo(page, 3000);
   const pushed = await measure(page);
   report("dragged past the room's floor", pushed);
-  if (pushed.room.w < 295) throw new Error(`the room fell to ${pushed.room.w}px — its floor is 300`);
+  if (pushed.room.w < 300) throw new Error(`the room fell to ${pushed.room.w}px — its floor is 300`);
+  assertDividerAria(pushed, "room floor");
+  await assertPointerCleanup(page, "room floor");
   await shot(page, "4-room-floor-holds");
 
   /* ---- 3. the keyboard --------------------------------------------------- */
@@ -374,6 +443,7 @@ async function main() {
   if (over.modeButton !== "show thread beside channel") {
     throw new Error(`the way back is called "${over.modeButton}", not Buzz's own words`);
   }
+  await assertFocusIsolation(page, "wide takeover");
   await shot(page, "7-take-over-the-room");
 
   await page.click(".threadmode");
@@ -389,6 +459,10 @@ async function main() {
   const at894 = await measure(page);
   report("at 894px (the last size that splits)", at894);
   if (!at894.gripShowing) throw new Error("894 should still split and still have a strip");
+  if (at894.thread?.w !== 300 || at894.room?.w !== 300) {
+    throw new Error(`894 should draw an exact 300/300 split (thread=${at894.thread?.w}, room=${at894.room?.w})`);
+  }
+  assertDividerAria(at894, "894px");
   await shot(page, "9-at-894-still-splits");
 
   await setWindow(page, 800);
@@ -397,6 +471,7 @@ async function main() {
   if (at800.gripShowing) throw new Error("a strip that cannot move is a refusal with no door");
   if (!/forced/.test(at800.mode)) throw new Error("800px did not hand the area to the thread");
   if (at800.storedWidth !== 900) throw new Error(`his 900 was overwritten to ${at800.storedWidth}`);
+  await assertFocusIsolation(page, "800 forced takeover");
   await shot(page, "10-at-800-thread-takes-over");
 
   await setWindow(page, 1330);

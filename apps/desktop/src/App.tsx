@@ -3573,7 +3573,7 @@ Open your chat with ${a.name}`}>
           onCloseFind={onCloseFind} onEditAgent={onEditAgent} onOpenTasks={onOpenTasks}
           jumpTo={jumpTo} onJumped={onJumped}
           onOpenThread={threading ? openThread : undefined} threadRoot={threadRoot}
-          onToggleDetails={toggleDetails} detailsOpen={detailsOpen} />
+          onToggleDetails={toggleDetails} detailsOpen={detailsOpen} takeover={takeover} />
       ) : (
         <div className="thread">
           <div className="msgs">
@@ -4149,6 +4149,7 @@ function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
 function ChatView({
   channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpenTasks,
   jumpTo, onJumped, onOpenThread, threadRoot, onToggleDetails, detailsOpen,
+  takeover,
 }: {
   channel: Channel; lastRead: number; findOpen: boolean; onCloseFind: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenTasks: () => void;
@@ -4156,6 +4157,8 @@ function ChatView({
   /** absent when his setting says replies stay in the conversation */
   onOpenThread?: (rootId: ID) => void; threadRoot: ID | null;
   onToggleDetails: () => void; detailsOpen: boolean;
+  /** The room is covered by a take-over thread and must leave the tab order. */
+  takeover: boolean;
 }): React.JSX.Element {
   countRender("ChatView");
   /* WHAT THIS SCREEN ACTUALLY READS — nothing else can redraw it.
@@ -4182,6 +4185,13 @@ function ChatView({
   useEffect(() => { setReplyingTo(null); }, [channel.id]);
   useEffect(() => { if (threading) setReplyingTo(null); }, [threading]);
   const streamRef = useRef<HTMLDivElement>(null);
+  const roomRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const room = roomRef.current;
+    if (!room) return;
+    room.inert = takeover;
+    return () => { room.inert = false; };
+  }, [takeover]);
   const findRef = useRef<HTMLInputElement>(null);
   const [openedAt] = useState(lastRead);
   /**
@@ -4579,7 +4589,7 @@ function ChatView({
   const dmSays = peerAgent ? presenceSays(world, peerAgent.id, dmPresence) : undefined;
 
   return (
-    <div className="thread">
+    <div ref={roomRef} className="thread" aria-hidden={takeover ? "true" : undefined}>
       {isDm ? (
         <header className="topbar dm-head chathead">
           {peerAgent
@@ -6026,6 +6036,7 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
   forced: boolean;
   onToggleTakeover: () => void;
 }): React.JSX.Element {
+  const panelRef = useRef<HTMLElement>(null);
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const held = world.threads[rootId];
   // the root may also be on screen in the conversation behind this panel
@@ -6058,9 +6069,15 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
   React.useLayoutEffect(() => {
     if (atBottom.current) follow("arrived");
   }, [messages.length, follow, atBottom]);
+  useEffect(() => {
+    if (!takeover) return;
+    const first = panelRef.current?.querySelector<HTMLElement>(
+      "button, textarea, input, select, [tabindex]:not([tabindex='-1'])");
+    first?.focus();
+  }, [takeover]);
 
   return (
-    <aside className={`aside threadpanel${takeover ? " takeover" : ""}${forced ? " forced" : ""}`}
+    <aside ref={panelRef} className={`aside threadpanel${takeover ? " takeover" : ""}${forced ? " forced" : ""}`}
       aria-label="Thread">
       <div className="threadhead">
         {/* THE WAY BACK, when the thread is over the room. At a narrow window
