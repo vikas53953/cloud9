@@ -88,7 +88,7 @@ test("workflow definitions and runs survive a Store reopen at schema 7", () => {
     id: "wfr-restart", workflowId: workflow.id, workflowVersion: 1, ownerId: owner.id,
     requestedBy: owner.id, channelId: workflow.channelId, status: "succeeded",
     steps: [{ ...workflow.steps[0], status: "succeeded", attempts: [] }],
-    createdAt: 11, finishedAt: 12,
+    createdAt: 11, finishedAt: 12, updatedAt: 12,
   };
   first.saveWorkflow(workflow);
   first.saveWorkflowRun(run);
@@ -115,6 +115,38 @@ test("opening a schema 6 database applies the workflow migration idempotently", 
   ).all() as { name: string }[];
   assert.deepEqual(tables.map(row => row.name), ["workflow_runs", "workflows"]);
   migrated.db.close();
+});
+
+test("a relay restart marks active runs interrupted and never resumes them", () => {
+  const dbPath = tmp("workflow-interrupted.db");
+  const firstRelay = new Relay({ dbPath, ownerToken: "tok-owner", ownerName: "Vikas" });
+  const owner = firstRelay.store.userByToken("tok-owner")!;
+  const run: WorkflowRun = {
+    id: "wfr-active", workflowId: "wf-active", workflowVersion: 1, ownerId: owner.id,
+    requestedBy: owner.id, channelId: "ch-general", status: "running", steps: [
+      { id: "step-active", agentId: "agent-active", instruction: "Wait", status: "running", attempts: [], },
+    ], currentStepId: "step-active", createdAt: 10, updatedAt: 11,
+  };
+  firstRelay.store.saveWorkflowRun(run);
+  firstRelay.close();
+  const restarted = new Relay({ dbPath, ownerToken: "tok-owner", ownerName: "Vikas" });
+  const interrupted = restarted.store.workflowRun(run.id)!;
+  assert.equal(interrupted.status, "interrupted");
+  assert.match(interrupted.error ?? "", /restarted.*run it again manually/i);
+  restarted.close();
+});
+
+test("run history orders by transition time, with id as a deterministic tie-breaker", () => {
+  const store = new Store(tmp("workflow-order.db"), { ownerToken: "tok-owner" });
+  const owner = store.ensureOwner("Vikas", "tok-owner");
+  const base = (id: string, updatedAt: number): WorkflowRun => ({
+    id, workflowId: "wf-order", workflowVersion: 1, ownerId: owner.id, requestedBy: owner.id,
+    channelId: "ch-general", status: "running", steps: [], createdAt: 1, updatedAt,
+  });
+  store.saveWorkflowRun(base("run-old", 10));
+  store.saveWorkflowRun(base("run-new", 20));
+  assert.deepEqual(store.workflowRuns(owner.id).map(run => run.id).slice(0, 2), ["run-new", "run-old"]);
+  store.db.close();
 });
 
 test("workflow run executes ordered steps through the existing task path", async t => {
@@ -152,8 +184,34 @@ test("workflow run executes ordered steps through the existing task path", async
   assert.equal(done.run.steps[1].result, "second result");
 });
 
+test("replayed terminal task updates are idempotent and cannot regress a run", async t => {
+  const { owner, engine, channelId, relay } = await stand(t, "workflow-replay.db");
+  const first = await makeAgent(owner, "Scout");
+  const second = await makeAgent(owner, "Scribe");
+  const workflow = await saveWorkflow(owner, channelId, [first.id, second.id], "Replay brief");
+  const created = await run(owner, workflow);
+  const taskOne = await engine.wait<Extract<ServerFrame, { type: "task" }>>(
+    f => f.type === "task" && f.task.workflowRunId === created.id && f.task.workflowStepId === "step-1",
+  );
+  engine.send({ type: "updateTask", taskId: taskOne.task.id, status: "completed" });
+  const taskTwo = await engine.wait<Extract<ServerFrame, { type: "task" }>>(
+    f => f.type === "task" && f.task.workflowRunId === created.id && f.task.workflowStepId === "step-2",
+  );
+  engine.frames.length = 0;
+  engine.send({ type: "updateTask", taskId: taskOne.task.id, status: "completed" });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(engine.frames.filter(f => f.type === "task" && f.task.workflowStepId === "step-2").length, 0);
+
+  engine.send({ type: "updateTask", taskId: taskTwo.task.id, status: "completed" });
+  await owner.wait(f => f.type === "workflowRun" && f.run.id === created.id && f.run.status === "succeeded");
+  engine.send({ type: "updateTask", taskId: taskTwo.task.id, status: "working" });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(relay.store.task(taskTwo.task.id)?.status, "completed");
+  assert.equal(relay.store.workflowRun(created.id)?.status, "succeeded");
+});
+
 test("workflow uses the existing approval gate and waits without claiming active work", async t => {
-  const { owner, engine, channelId } = await stand(t, "workflow-approval.db");
+  const { owner, engine, channelId, relay } = await stand(t, "workflow-approval.db");
   const agent = await makeAgent(owner, "Careful", true);
   const workflow = await saveWorkflow(owner, channelId, [agent.id], "Approval brief");
   const created = await run(owner, workflow);
@@ -167,6 +225,14 @@ test("workflow uses the existing approval gate and waits without claiming active
   assert.equal(task.task.status, "waiting_approval");
   assert.ok(task.task.approvalId);
 
+  // A delayed queued replay must not erase the visible approval wait.
+  engine.send({ type: "updateTask", taskId: task.task.id, status: "not_started" });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(relay.store.task(task.task.id)?.status, "waiting_approval");
+  assert.equal(relay.store.workflowRun(created.id)?.status, "waiting_you");
+
+  owner.frames.length = 0;
+  engine.frames.length = 0;
   owner.send({ type: "decideApproval", approvalId: task.task.approvalId!, decision: "approved" });
   await owner.wait(f => f.type === "workflowRun" && f.run.id === created.id && f.run.status === "queued");
   const released = await engine.wait<Extract<ServerFrame, { type: "task" }>>(
@@ -229,6 +295,16 @@ test("owner-only workflow gates reject a friend and missing agents stay explicit
   const { owner, open, channelId, relay } = await stand(t, "workflow-permissions.db");
   const agent = await makeAgent(owner, "Scout");
   const workflow = await saveWorkflow(owner, channelId, [agent.id], "Owner brief");
+  owner.send({ type: "archiveWorkflow", workflowId: workflow.id, archived: true });
+  const archived = await owner.wait<Extract<ServerFrame, { type: "workflow" }>>(
+    frame => frame.type === "workflow" && frame.workflow.id === workflow.id && frame.workflow.archivedAt !== undefined,
+  );
+  assert.ok(archived.workflow.archivedAt);
+  owner.send({ type: "archiveWorkflow", workflowId: workflow.id, archived: false });
+  await owner.wait(frame => frame.type === "workflow" && frame.workflow.id === workflow.id && frame.workflow.archivedAt === undefined);
+  const activityKinds = relay.store.activity(Date.now() + 1, 1000).map(record => record.kind);
+  assert.ok(activityKinds.includes("workflow_created"));
+  assert.ok(activityKinds.includes("workflow_archived"));
   owner.send({ type: "createInvite" });
   const invite = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
   const friend = open("invite:" + invite.code + ":Priya");
@@ -249,4 +325,49 @@ test("owner-only workflow gates reject a friend and missing agents stay explicit
   const missing = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
   assert.match(missing.error, /workflow step agent is missing/);
   friend.close();
+});
+
+test("workflow tasks stay out of an unrelated friend's initial world and live feed", async t => {
+  const { owner, engine, open } = await stand(t, "workflow-private-task.db");
+  const agent = await makeAgent(owner, "Scout");
+  owner.send({ type: "createChannel", name: "private-runbook", memberIds: [], kind: "channel" });
+  const channel = await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    frame => frame.type === "channel" && frame.channel.name === "private-runbook",
+  );
+  const workflow = await saveWorkflow(owner, channel.channel.id, [agent.id], "Private brief");
+  owner.send({ type: "createInvite" });
+  const invite = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(frame => frame.type === "invite");
+  const friend = open("invite:" + invite.code + ":Priya");
+  const welcome = await friend.wait<Extract<ServerFrame, { type: "welcome" }>>(frame => frame.type === "welcome");
+  assert.equal(welcome.state.tasks.some(task => task.workflowId === workflow.id), false);
+  friend.frames.length = 0;
+  const run = await runWorkflowForTest(owner, workflow);
+  await engine.wait(frame => frame.type === "task" && frame.task.workflowRunId === run.id);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(friend.frames.some(frame => frame.type === "task" && frame.task.workflowRunId === run.id), false);
+  friend.close();
+});
+
+async function runWorkflowForTest(owner: TestClient, workflow: Workflow): Promise<WorkflowRun> {
+  owner.send({ type: "runWorkflow", workflowId: workflow.id });
+  return (await owner.wait<Extract<ServerFrame, { type: "workflowRun" }>>(
+    frame => frame.type === "workflowRun" && frame.run.workflowId === workflow.id,
+  )).run;
+}
+
+test("deleting an agent stops its active workflow instead of leaving it queued", async t => {
+  const { owner, engine, channelId, relay } = await stand(t, "workflow-agent-delete.db");
+  const agent = await makeAgent(owner, "Disposable");
+  const workflow = await saveWorkflow(owner, channelId, [agent.id], "Delete race");
+  const created = await run(owner, workflow);
+  const task = await engine.wait<Extract<ServerFrame, { type: "task" }>>(
+    frame => frame.type === "task" && frame.task.workflowRunId === created.id,
+  );
+  engine.send({ type: "updateTask", taskId: task.task.id, status: "working" });
+  owner.send({ type: "deleteAgent", agentId: agent.id });
+  const stopped = await owner.wait<Extract<ServerFrame, { type: "workflowRun" }>>(
+    frame => frame.type === "workflowRun" && frame.run.id === created.id && frame.run.status === "stopped",
+  );
+  assert.match(stopped.run.error ?? "", /agent.*removed/i);
+  assert.equal(relay.store.task(task.task.id)?.status, "cancelled");
 });

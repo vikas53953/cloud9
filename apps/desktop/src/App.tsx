@@ -12897,6 +12897,7 @@ function workflowStatusWords(status: WorkflowRun["status"]): string {
     case "succeeded": return "Succeeded";
     case "failed": return "Failed";
     case "stopped": return "Stopped";
+    case "interrupted": return "Interrupted after restart";
   }
 }
 
@@ -12907,13 +12908,15 @@ function WorkflowsScreen(): React.JSX.Element {
   const runs = world.workflowRuns ?? [];
   const [selectedId, setSelectedId] = useState<ID | null>(workflows[0]?.id ?? null);
   const [draft, setDraft] = useState<WorkflowDraft | null>(null);
+  const [pendingDraft, setPendingDraft] = useState<WorkflowDraft | null>(null);
+  const [validation, setValidation] = useState<{ field: string; message: string } | null>(null);
   const [announce, setAnnounce] = useState("Workflows");
   const titleRef = useRef<HTMLInputElement>(null);
   const newWorkflowRef = useRef<HTMLButtonElement>(null);
   const hadDraft = useRef(false);
 
   useEffect(() => {
-    if (world.connected && owner) client.send({ type: "listWorkflows" });
+    if (world.connected && owner) client.listWorkflows();
   }, [world.connected, owner]);
   useEffect(() => {
     if (!selectedId && workflows[0]) setSelectedId(workflows[0].id);
@@ -12944,27 +12947,48 @@ function WorkflowsScreen(): React.JSX.Element {
   };
   const save = (): void => {
     if (!draft) return;
+    const invalid = (field: string, message: string): void => {
+      setValidation({ field, message });
+      setAnnounce(message);
+      requestAnimationFrame(() => document.getElementById(field)?.focus());
+    };
     const name = draft.name.trim();
     const steps = draft.steps.map(s => ({ ...s, instruction: s.instruction.trim() }));
-    if (!name) { setAnnounce("Workflow name is required"); titleRef.current?.focus(); return; }
-    if (!draft.channelId) { setAnnounce("Choose a channel before saving"); return; }
-    if (!steps.length) { setAnnounce("Add at least one step before saving"); return; }
-    if (steps.some(s => !s.agentId || !s.instruction)) {
-      setAnnounce("Each step needs an agent and an instruction"); return;
-    }
+    setValidation(null);
+    if (!name) { invalid("workflow-name", "Workflow name is required"); return; }
+    if (!draft.channelId) { invalid("workflow-channel", "Choose a channel before saving"); return; }
+    if (!steps.length) { invalid("workflow-empty-steps", "Add at least one step before saving"); return; }
+    const missingAgent = steps.find(s => !s.agentId);
+    if (missingAgent) { invalid("workflow-step-" + missingAgent.id + "-agent", "Choose an agent for every step"); return; }
+    const missingInstruction = steps.find(s => !s.instruction);
+    if (missingInstruction) { invalid("workflow-step-" + missingInstruction.id + "-instruction", "Write an instruction for every step"); return; }
+    setValidation(null);
+    const snapshot = { ...draft, steps };
     if (draft.id) {
-      client.send({ type: "updateWorkflow", workflowId: draft.id,
+      const requestId = client.sendWorkflow({ type: "updateWorkflow", workflowId: draft.id,
         patch: { name, description: draft.description.trim() || undefined,
           channelId: draft.channelId, enabled: draft.enabled, steps } });
-      setAnnounce("Workflow save requested");
+      if (!requestId) { setAnnounce("Cloud9 is offline; your draft is still open"); return; }
     } else {
-      client.send({ type: "createWorkflow",
+      const requestId = client.sendWorkflow({ type: "createWorkflow",
         workflow: { name, description: draft.description.trim() || undefined,
           channelId: draft.channelId, enabled: draft.enabled, steps } });
-      setAnnounce("Workflow creation requested");
+      if (!requestId) { setAnnounce("Cloud9 is offline; your draft is still open"); return; }
     }
+    setPendingDraft(snapshot);
     setDraft(null);
   };
+  useEffect(() => {
+    if (!pendingDraft || !world.workflowError) return;
+    setDraft(pendingDraft);
+    setPendingDraft(null);
+    setAnnounce(world.workflowError.text);
+  }, [pendingDraft, world.workflowError]);
+  useEffect(() => {
+    if (!pendingDraft || world.workflowNotice?.text !== "Workflow saved") return;
+    setPendingDraft(null);
+    setAnnounce("Workflow saved");
+  }, [pendingDraft, world.workflowNotice]);
   const updateStep = (id: ID, patch: Partial<WorkflowDraft["steps"][number]>): void =>
     setDraft(d => d ? { ...d, steps: d.steps.map(s => s.id === id ? { ...s, ...patch } : s) } : d);
   const moveStep = (index: number, delta: number): void => {
@@ -12976,14 +13000,23 @@ function WorkflowsScreen(): React.JSX.Element {
     setAnnounce("Moved step " + (index + 1) + (delta < 0 ? " up" : " down"));
     setDraft({ ...d, steps });
   };
+  const retryWorkflow = (): void => {
+    const retryFrame = world.workflowRetry;
+    if (!retryFrame) return;
+    const keepDraft = draft && (retryFrame.type === "createWorkflow" || retryFrame.type === "updateWorkflow")
+      ? { ...draft, steps: draft.steps.map(step => ({ ...step })) } : null;
+    if (keepDraft) { setPendingDraft(keepDraft); setDraft(null); }
+    const requestId = client.retryWorkflowRequest();
+    if (!requestId && keepDraft) { setDraft(keepDraft); setPendingDraft(null); }
+  };
 
   if (!owner) return <section className="workspace-screen workflow-screen" aria-labelledby="workflows-heading">
     <div className="screen-head"><div><span className="eyebrow">Runbooks</span><h1 id="workflows-heading">Workflows</h1></div></div>
     <div className="emptyplate"><h4>Workflows belong to the owner</h4><p>You can read tasks, but only the owner can save or run a workflow.</p></div>
   </section>;
-  if (!world.connected) return <section className="workspace-screen workflow-screen" aria-labelledby="workflows-heading">
+  if (!world.connected || world.workflowLoading) return <section className="workspace-screen workflow-screen" aria-labelledby="workflows-heading">
     <div className="screen-head"><div><span className="eyebrow">Runbooks</span><h1 id="workflows-heading">Workflows</h1></div></div>
-    <div className="workflow-state" role="status">Loading workflows…</div>
+    <div className="workflow-loading" role="status" aria-live="polite"><span>Loading workflows…</span><i /><i /><i /></div>
   </section>;
   const selected = workflows.find(w => w.id === selectedId);
   const selectedRuns = runs.filter(r => r.workflowId === selectedId);
@@ -12993,7 +13026,7 @@ function WorkflowsScreen(): React.JSX.Element {
         <p className="screen-note">A saved list of agent steps. Nothing starts until you press Run.</p></div>
       <button ref={newWorkflowRef} className="primary" onClick={() => openDraft()}><span aria-hidden="true">＋</span> New workflow</button>
     </header>
-    {announce !== "Workflows" && <p className="workflow-announcement" role="status">{announce}</p>}
+    {(announce !== "Workflows" || world.workflowNotice) && <p className="workflow-announcement" role="status">{world.workflowNotice?.text ?? announce}</p>}
     <div className="workflow-layout">
       <aside className="workflow-list" aria-label="Saved workflows">
         {workflows.length === 0 ? <div className="workflow-empty"><span className="workflow-empty-mark" aria-hidden="true">↗</span>
@@ -13006,59 +13039,72 @@ function WorkflowsScreen(): React.JSX.Element {
               data-workflow-row={w.id}
               onClick={() => { setSelectedId(w.id); setDraft(null); }}>
               <span className="workflow-row-top"><b>{w.name}</b><span className={"chip workflow-" + (latest?.status ?? "idle")}>{latest ? workflowStatusWords(latest.status) : "Not run"}</span></span>
-              <span className="workflow-row-sub">{w.steps.length} {w.steps.length === 1 ? "step" : "steps"} · {w.enabled ? "Ready to run" : "Switched off"}</span>
+              <span className="workflow-row-sub">{w.steps.length} {w.steps.length === 1 ? "step" : "steps"} · {w.archivedAt ? "Archived" : w.enabled ? "Ready to run" : "Switched off"}</span>
             </button>;
           })}
       </aside>
       <div className="workflow-detail" aria-live="polite">
         {draft ? <WorkflowEditor draft={draft} setDraft={setDraft} titleRef={titleRef}
           announce={announce} setAnnounce={setAnnounce} save={save} updateStep={updateStep}
-          moveStep={moveStep} onCancel={() => setDraft(null)} world={world} />
+          moveStep={moveStep} onCancel={() => setDraft(null)} world={world} validation={validation} />
           : selected ? <WorkflowDetail workflow={selected} runs={selectedRuns}
             onEdit={() => openDraft(selected)}
-            onRun={() => { client.send({ type: "runWorkflow", workflowId: selected.id }); setAnnounce("Run requested"); }}
-            onStop={run => client.send({ type: "stopWorkflow", workflowRunId: run.id })}
-            onRetry={(run, stepId) => client.send({ type: "retryWorkflow", workflowRunId: run.id, stepId })} />
+            agents={world.agents}
+            onRun={() => { client.sendWorkflow({ type: "runWorkflow", workflowId: selected.id }); setAnnounce("Run requested"); }}
+            onArchive={() => {
+              const archived = !selected.archivedAt;
+              if (archived && !window.confirm("Archive this workflow? Its run history will stay.")) return;
+              client.sendWorkflow({ type: "archiveWorkflow", workflowId: selected.id, archived });
+              setAnnounce(archived ? "Archive requested" : "Restore requested");
+            }}
+            onStop={run => client.sendWorkflow({ type: "stopWorkflow", workflowRunId: run.id })}
+            onRetry={(run, stepId) => client.sendWorkflow({ type: "retryWorkflow", workflowRunId: run.id, stepId })} />
           : <div className="workflow-state" role="status">Choose a workflow to see its steps and run history.</div>}
       </div>
     </div>
-    {world.lastError && <p className="problem workflow-problem" role="alert">
-      <span>{world.lastError.text}</span>
-      <button className="linkbtn" onClick={() => client.send({ type: "listWorkflows" })}>Try again</button>
+    {world.workflowError && <p className="problem workflow-problem" role="alert">
+      <span>{world.workflowError.text}</span>
+      {world.workflowRetry && <button className="linkbtn" onClick={retryWorkflow}>Try again</button>}
     </p>}
   </section>;
 }
 
-function WorkflowEditor({ draft, setDraft, titleRef, announce, setAnnounce, save, updateStep, moveStep, onCancel, world }: {
+function WorkflowEditor({ draft, setDraft, titleRef, announce, setAnnounce, save, updateStep, moveStep, onCancel, world, validation }: {
   draft: WorkflowDraft; setDraft: React.Dispatch<React.SetStateAction<WorkflowDraft | null>>;
   titleRef: React.RefObject<HTMLInputElement>; announce: string; setAnnounce: (v: string) => void;
   save: () => void; updateStep: (id: ID, patch: Partial<WorkflowDraft["steps"][number]>) => void;
   moveStep: (index: number, delta: number) => void; onCancel: () => void; world: World;
+  validation?: { field: string; message: string } | null;
 }): React.JSX.Element {
   return <div className="workflow-editor">
     <div className="workflow-editor-head"><div><span className="eyebrow">Builder</span><h2>{draft.id ? "Edit workflow" : "New workflow"}</h2></div>
       <button className="ghost" onClick={onCancel}>Cancel</button></div>
     <div className="workflow-form">
-      <label>Workflow name<input ref={titleRef} value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })}
-        placeholder="e.g. Weekly release notes" aria-required="true" /></label>
+      <label>Workflow name<input id="workflow-name" ref={titleRef} value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })}
+        placeholder="e.g. Weekly release notes" aria-required="true" aria-describedby="workflow-name-error" />
+        {validation?.field === "workflow-name" && <span id="workflow-name-error" className="field-error" role="alert">{validation.message}</span>}</label>
       <label>Description <span className="optional">(optional)</span><textarea value={draft.description}
         onChange={e => setDraft({ ...draft, description: e.target.value })} placeholder="What does this runbook do?" rows={2} /></label>
-      <label>Channel<select value={draft.channelId} onChange={e => setDraft({ ...draft, channelId: e.target.value })}
-        aria-describedby="workflow-channel-help"><option value="">Choose a channel</option>
+      <label>Channel<select id="workflow-channel" value={draft.channelId} onChange={e => setDraft({ ...draft, channelId: e.target.value })}
+        aria-describedby="workflow-channel-help workflow-channel-error"><option value="">Choose a channel</option>
         {world.channels.filter(c => c.kind === "channel").map(c => <option key={c.id} value={c.id}>#{c.name}</option>)}</select>
-        <span id="workflow-channel-help" className="field-help">Steps use this room for context and task history.</span></label>
+        <span id="workflow-channel-help" className="field-help">Steps use this room for context and task history.</span>
+        {validation?.field === "workflow-channel" && <span id="workflow-channel-error" className="field-error" role="alert">{validation.message}</span>}</label>
       <label className="workflow-toggle"><input type="checkbox" checked={draft.enabled}
         onChange={e => setDraft({ ...draft, enabled: e.target.checked })} /> Ready to run</label>
       <div className="workflow-steps-head"><div><h3>Ordered steps</h3><p>One agent at a time. The next starts only after the previous succeeds.</p></div>
         <button className="secondary small" onClick={() => setDraft({ ...draft, steps: [...draft.steps,
           { id: workflowStepId(), agentId: world.agents.find(a => a.ownerId === world.me?.id)?.id ?? "", instruction: "" }] })}>＋ Add step</button></div>
       <ol className="workflow-steps">
-        {draft.steps.length === 0 && <li className="workflow-no-steps">No steps yet. Add one to get started.</li>}
+        {draft.steps.length === 0 && <li id="workflow-empty-steps" className="workflow-no-steps" aria-describedby="workflow-empty-steps-error">No steps yet. Add one to get started.
+          {validation?.field === "workflow-empty-steps" && <span id="workflow-empty-steps-error" className="field-error" role="alert">{validation.message}</span>}</li>}
         {draft.steps.map((step, index) => <li className="workflow-step" key={step.id}><span className="step-number" aria-hidden="true">{index + 1}</span>
-          <div className="step-fields"><label>Agent<select value={step.agentId} onChange={e => updateStep(step.id, { agentId: e.target.value })}>
-            <option value="">Choose an agent</option>{world.agents.filter(a => a.ownerId === world.me?.id).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
-            <label>Instruction<textarea value={step.instruction} onChange={e => updateStep(step.id, { instruction: e.target.value })}
-              placeholder="Describe the work in plain words." rows={3} /></label></div>
+          <div className="step-fields"><label>Agent<select id={"workflow-step-" + step.id + "-agent"} aria-describedby={"workflow-step-" + step.id + "-agent-error"} value={step.agentId} onChange={e => updateStep(step.id, { agentId: e.target.value })}>
+            <option value="">Choose an agent</option>{world.agents.filter(a => a.ownerId === world.me?.id).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+            {validation?.field === "workflow-step-" + step.id + "-agent" && <span id={"workflow-step-" + step.id + "-agent-error"} className="field-error" role="alert">{validation.message}</span>}</label>
+            <label>Instruction<textarea id={"workflow-step-" + step.id + "-instruction"} value={step.instruction} onChange={e => updateStep(step.id, { instruction: e.target.value })}
+              aria-describedby={"workflow-step-" + step.id + "-instruction-error"} placeholder="Describe the work in plain words." rows={3} />
+              {validation?.field === "workflow-step-" + step.id + "-instruction" && <span id={"workflow-step-" + step.id + "-instruction-error"} className="field-error" role="alert">{validation.message}</span>}</label></div>
           <div className="step-actions"><button className="iconbtn" title="Move step up" aria-label={"Move step " + (index + 1) + " up"}
             disabled={index === 0} onClick={() => moveStep(index, -1)}>↑</button>
             <button className="iconbtn" title="Move step down" aria-label={"Move step " + (index + 1) + " down"}
@@ -13072,25 +13118,26 @@ function WorkflowEditor({ draft, setDraft, titleRef, announce, setAnnounce, save
   </div>;
 }
 
-function WorkflowDetail({ workflow, runs, onEdit, onRun, onStop, onRetry }: {
+function WorkflowDetail({ workflow, runs, onEdit, onRun, onArchive, onStop, onRetry, agents }: {
   workflow: Workflow; runs: WorkflowRun[]; onEdit: () => void; onRun: () => void;
   onStop: (run: WorkflowRun) => void; onRetry: (run: WorkflowRun, stepId: ID) => void;
+  onArchive: () => void; agents: AgentDef[];
 }): React.JSX.Element {
   const latest = runs[0];
   return <div className="workflow-detail-inner"><header className="workflow-detail-head"><div>
-    <span className="eyebrow">{workflow.enabled ? "Ready to run" : "Switched off"}</span><h2>{workflow.name}</h2>
+    <span className="eyebrow">{workflow.archivedAt ? "Archived" : workflow.enabled ? "Ready to run" : "Switched off"}</span><h2>{workflow.name}</h2>
     {workflow.description && <p>{workflow.description}</p>}</div><div className="workflow-detail-actions">
-    <button className="secondary" onClick={onEdit}>Edit</button><button className="primary" disabled={!workflow.enabled || workflow.steps.length === 0} onClick={onRun}>Run workflow</button></div></header>
-    <div className="workflow-meta"><span>Channel {workflow.channelId}</span><span>{workflow.steps.length} {workflow.steps.length === 1 ? "step" : "steps"}</span><span>Manual only · no schedules</span><span>Delete is not available in v1</span></div>
-    <ol className="workflow-preview">{workflow.steps.map((step, i) => <li key={step.id}><span className="step-number">{i + 1}</span><div><b>{step.instruction}</b><span>{step.agentId}</span></div></li>)}</ol>
+    <button className="secondary" onClick={onEdit}>Edit</button><button className="ghost" onClick={onArchive}>{workflow.archivedAt ? "Restore" : "Archive"}</button><button className="primary" disabled={Boolean(workflow.archivedAt) || !workflow.enabled || workflow.steps.length === 0} onClick={onRun}>Run workflow</button></div></header>
+    <div className="workflow-meta"><span>Channel {workflow.channelId}</span><span>{workflow.steps.length} {workflow.steps.length === 1 ? "step" : "steps"}</span><span>Manual only · no schedules</span><span>Archive keeps history</span></div>
+    <ol className="workflow-preview">{workflow.steps.map((step, i) => <li key={step.id}><span className="step-number">{i + 1}</span><div><b>{step.instruction}</b><span>{agents.find(agent => agent.id === step.agentId)?.name ?? "Agent removed"}</span></div></li>)}</ol>
     <section className="workflow-history" aria-labelledby="workflow-history-heading"><div className="workflow-section-head"><div><span className="eyebrow">Receipts</span><h3 id="workflow-history-heading">Run history</h3></div>
       {latest && <span className={"chip workflow-" + latest.status}>{workflowStatusWords(latest.status)}</span>}</div>
       {!runs.length ? <p className="workflow-state">No runs yet. Press Run when you are ready.</p> : runs.slice(0, 8).map(run => <article className="workflow-run" key={run.id}>
         <div className="workflow-run-head"><b>{workflowStatusWords(run.status)}</b><span>{new Date(run.createdAt).toLocaleString()}</span>
-          {!["succeeded", "failed", "stopped"].includes(run.status) && <button className="linkbtn" onClick={() => onStop(run)}>Stop</button>}</div>
+          {!["succeeded", "failed", "stopped", "interrupted"].includes(run.status) && <button className="linkbtn" onClick={() => onStop(run)}>Stop</button>}</div>
         {run.steps.map(step => <div className="workflow-run-step" key={step.id}><span className={"run-dot run-" + step.status} aria-hidden="true" /><span>{step.instruction}</span>
           <span className="run-step-status">{workflowStatusWords(step.status as WorkflowRun["status"])}</span>
-          {(step.status === "failed" || step.status === "stopped") && <button className="linkbtn" onClick={() => onRetry(run, step.id)}>Retry from here</button>}</div>)}
+          {(step.status === "failed" || step.status === "stopped" || step.status === "interrupted") && <button className="linkbtn" onClick={() => onRetry(run, step.id)}>Retry from here</button>}</div>)}
         {run.error && <p className="workflow-run-error" role="alert">{run.error}</p>}</article>)}
     </section>
   </div>;

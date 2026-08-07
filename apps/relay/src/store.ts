@@ -2958,22 +2958,64 @@ export class Store implements JoinHubStore {
   saveWorkflowRun(run: WorkflowRun): void {
     this.db.prepare(
       "INSERT OR REPLACE INTO workflow_runs(id,workflowId,ownerId,updatedAt,json) VALUES(?,?,?,?,?)",
-    ).run(run.id, run.workflowId, run.ownerId, run.finishedAt ?? run.createdAt, JSON.stringify(run));
+    ).run(run.id, run.workflowId, run.ownerId, run.updatedAt ?? run.finishedAt ?? run.createdAt, JSON.stringify(run));
   }
   workflowRun(id: ID): WorkflowRun | undefined {
-    const row = this.db.prepare("SELECT json FROM workflow_runs WHERE id=?").get(id) as
-      { json: string } | undefined;
-    return row ? JSON.parse(row.json) as WorkflowRun : undefined;
+    const row = this.db.prepare("SELECT json,updatedAt FROM workflow_runs WHERE id=?").get(id) as
+      { json: string; updatedAt: number } | undefined;
+    if (!row) return undefined;
+    const run = JSON.parse(row.json) as WorkflowRun;
+    if (run.updatedAt === undefined) run.updatedAt = row.updatedAt;
+    return run;
   }
   workflowRuns(ownerId: ID, workflowId?: ID, limit = 200): WorkflowRun[] {
     const rows = workflowId
       ? this.db.prepare(
-        "SELECT json FROM workflow_runs WHERE ownerId=? AND workflowId=? ORDER BY updatedAt DESC LIMIT ?",
+        "SELECT json,updatedAt FROM workflow_runs WHERE ownerId=? AND workflowId=? ORDER BY updatedAt DESC,id DESC LIMIT ?",
       ).all(ownerId, workflowId, limit)
       : this.db.prepare(
-        "SELECT json FROM workflow_runs WHERE ownerId=? ORDER BY updatedAt DESC LIMIT ?",
+        "SELECT json,updatedAt FROM workflow_runs WHERE ownerId=? ORDER BY updatedAt DESC,id DESC LIMIT ?",
       ).all(ownerId, limit);
-    return (rows as { json: string }[]).map(r => JSON.parse(r.json) as WorkflowRun);
+    return (rows as { json: string; updatedAt: number }[]).map(r => {
+      const run = JSON.parse(r.json) as WorkflowRun;
+      if (run.updatedAt === undefined) run.updatedAt = r.updatedAt;
+      return run;
+    });
+  }
+  /** Active runs cannot resume silently after this relay process restarts. */
+  interruptActiveWorkflowRuns(ownerId: ID): WorkflowRun[] {
+    const active = new Set(["queued", "running", "waiting_you"]);
+    const changed: WorkflowRun[] = [];
+    for (const run of this.workflowRuns(ownerId, undefined, 1000)) {
+      if (!active.has(run.status)) continue;
+      const now = Date.now();
+      const message = "Cloud9 restarted before a result was recorded; run it again manually.";
+      const current = run.currentStepId ? run.steps.find(step => step.id === run.currentStepId) : undefined;
+      if (current) {
+        current.status = "interrupted";
+        current.error = message;
+        const attempt = current.attempts.at(-1);
+        if (attempt) {
+          attempt.status = "interrupted";
+          attempt.error = message;
+          attempt.finishedAt = now;
+          const task = this.task(attempt.taskId);
+          if (task && !["completed", "failed", "cancelled"].includes(task.status)) {
+            task.status = "cancelled";
+            task.error = message;
+            task.updatedAt = now;
+            this.saveTask(task);
+          }
+        }
+      }
+      run.status = "interrupted";
+      run.error = message;
+      run.finishedAt = now;
+      run.updatedAt = now;
+      this.saveWorkflowRun(run);
+      changed.push(run);
+    }
+    return changed;
   }
   saveApproval(a: Approval): void {
     this.db.prepare("INSERT OR REPLACE INTO approvals(id,json) VALUES(?,?)").run(a.id, JSON.stringify(a));

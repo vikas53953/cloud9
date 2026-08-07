@@ -1186,10 +1186,10 @@ export interface Task {
 
 /** A saved workflow is a runbook, not a clock or an event listener. */
 export type WorkflowRunStatus =
-  | "queued" | "running" | "waiting_you" | "succeeded" | "failed" | "stopped";
+  | "queued" | "running" | "waiting_you" | "succeeded" | "failed" | "stopped" | "interrupted";
 
 export type WorkflowStepStatus =
-  | "queued" | "running" | "waiting_you" | "succeeded" | "failed" | "stopped";
+  | "queued" | "running" | "waiting_you" | "succeeded" | "failed" | "stopped" | "interrupted";
 
 export interface WorkflowStep {
   id: ID;
@@ -1204,6 +1204,8 @@ export interface Workflow {
   name: string;
   description?: string;
   enabled: boolean;
+  /** Set when the owner archives this runbook; rows and history remain recoverable. */
+  archivedAt?: number;
   /** Incremented whenever the saved definition changes. */
   version: number;
   steps: WorkflowStep[];
@@ -1247,6 +1249,8 @@ export interface WorkflowRun {
   startedAt?: number;
   finishedAt?: number;
   error?: string;
+  /** Last relay transition, used to order active history deterministically. */
+  updatedAt?: number;
 }
 
 export const WORKFLOW_LIMITS = {
@@ -1271,6 +1275,9 @@ export function validateWorkflow(value: unknown): string | null {
     return "that workflow description is too long (max " + WORKFLOW_LIMITS.description + " characters)";
   }
   if (typeof w.enabled !== "boolean") return "a workflow must say whether it is enabled";
+  if (w.archivedAt !== undefined && (typeof w.archivedAt !== "number" || !Number.isFinite(w.archivedAt))) {
+    return "that workflow archive time isn't usable";
+  }
   if (!Number.isInteger(w.version) || (w.version ?? 0) < 1) return "a workflow needs a version";
   if (!Array.isArray(w.steps) || w.steps.length > WORKFLOW_LIMITS.steps) {
     return "a workflow needs at most " + WORKFLOW_LIMITS.steps + " steps";
@@ -2350,6 +2357,8 @@ export interface Approval {
 export type ActivityKind =
   | "message" | "task_created" | "task_status" | "approval_requested"
   | "approval_decided" | "agent_created" | "agent_updated" | "agent_deleted"
+  | "workflow_created" | "workflow_updated" | "workflow_archived" | "workflow_run_started"
+  | "workflow_run_state"
   | "channel_created" | "member_added" | "invite_created" | "invite_redeemed"
   // §7: a room is a thing that can change, so every change to it is an action
   | "channel_updated" | "channel_archived" | "member_removed" | "member_role_changed"
@@ -3223,6 +3232,7 @@ type ClientFrameBase =
       workflowId: ID;
       patch: Partial<Pick<Workflow, "name" | "description" | "channelId" | "enabled" | "steps">>;
     }
+  | { type: "archiveWorkflow"; workflowId: ID; archived: boolean }
   | { type: "runWorkflow"; workflowId: ID }
   | { type: "stopWorkflow"; workflowRunId: ID }
   | { type: "retryWorkflow"; workflowRunId: ID; stepId: ID }
@@ -3804,9 +3814,9 @@ export type ServerFrame =
   | { type: "token"; token: string } // durable token issued after invite redemption
   | { type: "task"; task: Task }
   | { type: "approval"; approval: Approval }
-  | { type: "workflows"; workflows: Workflow[]; runs: WorkflowRun[] }
-  | { type: "workflow"; workflow: Workflow }
-  | { type: "workflowRun"; run: WorkflowRun }
+  | { type: "workflows"; workflows: Workflow[]; runs: WorkflowRun[]; requestId?: ID }
+  | { type: "workflow"; workflow: Workflow; requestId?: ID }
+  | { type: "workflowRun"; run: WorkflowRun; requestId?: ID }
   /**
    * "I heard you, and this is the id of the card he is now looking at."
    *

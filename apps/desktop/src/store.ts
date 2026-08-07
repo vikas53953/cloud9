@@ -31,6 +31,10 @@ import { noteReceipt } from "./receipts.js";
 // …and so do live steps, for the same reasons, in their own file.
 import { noteLiveSteps } from "./livesteps.js";
 
+type WorkflowRequestFrame = Extract<ClientFrame, {
+  type: "listWorkflows" | "createWorkflow" | "updateWorkflow" | "archiveWorkflow" | "runWorkflow" | "stopWorkflow" | "retryWorkflow"
+}>;
+
 /**
  * Pull a join token (`join_…`) off the end of a pasted link, however it was
  * attached, leaving the bare address for `parseHubAddress`. An `inv_…` code is
@@ -217,6 +221,10 @@ export interface World {
   approvals: Approval[];
   workflows: Workflow[];
   workflowRuns: WorkflowRun[];
+  workflowLoading: boolean;
+  workflowError?: { text: string; ts: number; requestId?: ID };
+  workflowNotice?: { text: string; ts: number };
+  workflowRetry?: WorkflowRequestFrame;
   activity: ActivityRecord[];
   /** Durable mention and thread-reply rows for this account. */
   notifications: NotificationInboxEntry[];
@@ -602,7 +610,7 @@ export class RelayClient {
     messages: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
     notifications: [], notificationsAsked: false, notificationsLoading: false,
     notificationsRequestId: undefined, notificationsProblem: undefined,
-    workflows: [], workflowRuns: [],
+    workflows: [], workflowRuns: [], workflowLoading: false,
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
@@ -1035,6 +1043,7 @@ export class RelayClient {
    * if that request has been called off the answer goes nowhere.
    */
   private asked: Asked[] = [];
+  private workflowRequests = new Map<ID, WorkflowRequestFrame>();
 
   /** Give every outgoing frame one identity without changing its caller's object. */
   private identify(frame: ClientFrame): ClientFrame & { requestId: ID } {
@@ -1110,6 +1119,36 @@ export class RelayClient {
   /** Fire-and-forget still returns the exact id put on the wire for deterministic QA. */
   send(frame: ClientFrame): ID | undefined {
     return this.transmit(frame);
+  }
+
+  listWorkflows(): ID | undefined {
+    this.world.workflowError = undefined;
+    this.world.workflowRetry = undefined;
+    this.world.workflowNotice = undefined;
+    this.world.workflowLoading = true;
+    this.emit();
+    const frame: WorkflowRequestFrame = { type: "listWorkflows" };
+    const id = this.send(frame);
+    if (id) this.workflowRequests.set(id, frame);
+    else this.world.workflowLoading = false;
+    return id;
+  }
+
+  sendWorkflow(frame: Exclude<WorkflowRequestFrame, { type: "listWorkflows" }>): ID | undefined {
+    this.world.workflowError = undefined;
+    this.world.workflowRetry = undefined;
+    this.world.workflowNotice = undefined;
+    const id = this.send(frame);
+    if (id) this.workflowRequests.set(id, frame);
+    return id;
+  }
+
+  /** Replay only the workflow frame that was refused, with a fresh request id. */
+  retryWorkflowRequest(): ID | undefined {
+    const frame = this.world.workflowRetry;
+    if (!frame) return undefined;
+    if (frame.type === "listWorkflows") return this.listWorkflows();
+    return this.sendWorkflow(frame as Exclude<WorkflowRequestFrame, { type: "listWorkflows" }>);
   }
 
   /**
@@ -2787,6 +2826,10 @@ export class RelayClient {
         w.notificationsProblem = undefined;
         w.workflows = frame.state.workflows ?? [];
         w.workflowRuns = frame.state.workflowRuns ?? [];
+        // The welcome snapshot is a useful seed, but the owner still asks for
+        // the canonical workflow list. Keep the route in loading until that
+        // correlated answer arrives so an empty seed never flashes as truth.
+        w.workflowLoading = true;
         w.messages = {};
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
@@ -2950,16 +2993,35 @@ export class RelayClient {
         break;
       }
       case "workflows":
+        if (frame.requestId) this.workflowRequests.delete(frame.requestId);
+        w.workflowError = undefined;
+        w.workflowRetry = undefined;
         w.workflows = frame.workflows;
         w.workflowRuns = frame.runs;
+        w.workflowLoading = false;
         break;
       case "workflow": {
+        if (frame.requestId) {
+          this.workflowRequests.delete(frame.requestId);
+          w.workflowError = undefined;
+          w.workflowRetry = undefined;
+          w.workflowNotice = { text: "Workflow saved", ts: Date.now() };
+        }
         const i = w.workflows.findIndex(x => x.id === frame.workflow.id);
         if (i >= 0) w.workflows[i] = frame.workflow; else w.workflows.unshift(frame.workflow);
         w.workflows = [...w.workflows];
         break;
       }
       case "workflowRun": {
+        if (frame.requestId) {
+          const request = this.workflowRequests.get(frame.requestId);
+          this.workflowRequests.delete(frame.requestId);
+          w.workflowError = undefined;
+          w.workflowRetry = undefined;
+          if (request?.type === "runWorkflow") {
+            w.workflowNotice = { text: "Workflow run started", ts: Date.now() };
+          }
+        }
         const i = w.workflowRuns.findIndex(x => x.id === frame.run.id);
         if (i >= 0) w.workflowRuns[i] = frame.run; else w.workflowRuns.unshift(frame.run);
         w.workflowRuns = [...w.workflowRuns];
@@ -3048,6 +3110,15 @@ export class RelayClient {
         break;
       }
       case "error": {
+        if (frame.requestId) {
+          const workflowFrame = this.workflowRequests.get(frame.requestId);
+          if (workflowFrame) {
+            this.workflowRequests.delete(frame.requestId);
+            if (workflowFrame.type === "listWorkflows") w.workflowLoading = false;
+            w.workflowError = { text: frame.error, ts: Date.now(), requestId: frame.requestId };
+            w.workflowRetry = workflowFrame;
+          }
+        }
         w.lastError = { text: frame.error, ts: Date.now() };
         if (frame.requestId !== undefined && frame.requestId === w.notificationsRequestId) {
           w.notificationsLoading = false;
