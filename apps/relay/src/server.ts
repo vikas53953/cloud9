@@ -2493,6 +2493,8 @@ export class Relay {
             : "queued";
           if (attempt && (attempt.status === "succeeded" || attempt.status === "failed" || attempt.status === "stopped" || attempt.status === "interrupted")) break;
           if (attempt && (attempt.status === "running" || attempt.status === "waiting_you") && incoming === "queued") break;
+          if (attempt?.status === "waiting_you" && task.approvalId
+            && this.store.approval(task.approvalId)?.status === "pending" && incoming !== "waiting_you") break;
         }
         task.status = frame.status;
         if (frame.result !== undefined) task.result = frame.result;

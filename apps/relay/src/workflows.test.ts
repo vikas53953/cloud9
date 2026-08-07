@@ -230,6 +230,10 @@ test("workflow uses the existing approval gate and waits without claiming active
   await new Promise(resolve => setTimeout(resolve, 40));
   assert.equal(relay.store.task(task.task.id)?.status, "waiting_approval");
   assert.equal(relay.store.workflowRun(created.id)?.status, "waiting_you");
+  engine.send({ type: "updateTask", taskId: task.task.id, status: "working" });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(relay.store.task(task.task.id)?.status, "waiting_approval");
+  assert.equal(relay.store.workflowRun(created.id)?.status, "waiting_you");
 
   owner.frames.length = 0;
   engine.frames.length = 0;
