@@ -254,6 +254,8 @@ export class Store implements JoinHubStore {
    * rather than a door that is shut forever.
    */
   readonly problems: string[] = [];
+  /** Approval cards retired by the one startup interruption sweep. */
+  private interruptedWorkflowApprovals: Approval[] = [];
 
   private readonly ownerToken?: string;
   /** Distinguishes this process lifetime from an older process that reused its pid. */
@@ -2952,7 +2954,7 @@ export class Store implements JoinHubStore {
   }
   workflows(ownerId: ID, limit = 200): Workflow[] {
     return (this.db.prepare(
-      "SELECT json FROM workflows WHERE ownerId=? ORDER BY updatedAt DESC LIMIT ?",
+      "SELECT json FROM workflows WHERE ownerId=? ORDER BY updatedAt DESC, id DESC LIMIT ?",
     ).all(ownerId, limit) as { json: string }[]).map(r => JSON.parse(r.json) as Workflow);
   }
   saveWorkflowRun(run: WorkflowRun): void {
@@ -3005,6 +3007,13 @@ export class Store implements JoinHubStore {
             task.error = message;
             task.updatedAt = now;
             this.saveTask(task);
+            for (const approval of this.approvals(1000)) {
+              if (approval.taskId !== task.id || approval.status !== "pending") continue;
+              approval.status = "expired";
+              approval.decidedAt = now;
+              this.saveApproval(approval);
+              this.interruptedWorkflowApprovals.push(approval);
+            }
           }
         }
       }
@@ -3016,6 +3025,12 @@ export class Store implements JoinHubStore {
       changed.push(run);
     }
     return changed;
+  }
+  /** Consume approvals expired by the most recent startup sweep for broadcast. */
+  takeInterruptedWorkflowApprovals(): Approval[] {
+    const approvals = this.interruptedWorkflowApprovals;
+    this.interruptedWorkflowApprovals = [];
+    return approvals;
   }
   saveApproval(a: Approval): void {
     this.db.prepare("INSERT OR REPLACE INTO approvals(id,json) VALUES(?,?)").run(a.id, JSON.stringify(a));

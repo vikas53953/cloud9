@@ -35,6 +35,11 @@ type WorkflowRequestFrame = Extract<ClientFrame, {
   type: "listWorkflows" | "createWorkflow" | "updateWorkflow" | "archiveWorkflow" | "runWorkflow" | "stopWorkflow" | "retryWorkflow"
 }>;
 
+/** Match relay's updatedAt/id ordering for both snapshots and live receipts. */
+function workflowOrder(a: Workflow, b: Workflow): number {
+  return (b.updatedAt - a.updatedAt) || b.id.localeCompare(a.id);
+}
+
 /**
  * Pull a join token (`join_…`) off the end of a pasted link, however it was
  * attached, leaving the bare address for `parseHubAddress`. An `inv_…` code is
@@ -223,7 +228,7 @@ export interface World {
   workflowRuns: WorkflowRun[];
   workflowLoading: boolean;
   workflowError?: { text: string; ts: number; requestId?: ID };
-  workflowNotice?: { text: string; ts: number };
+  workflowNotice?: { text: string; ts: number; workflowId?: ID };
   workflowRetry?: WorkflowRequestFrame;
   activity: ActivityRecord[];
   /** Durable mention and thread-reply rows for this account. */
@@ -1134,21 +1139,31 @@ export class RelayClient {
     return id;
   }
 
-  sendWorkflow(frame: Exclude<WorkflowRequestFrame, { type: "listWorkflows" }>): ID | undefined {
+  sendWorkflow(frame: Exclude<WorkflowRequestFrame, { type: "listWorkflows" }>, onLost?: () => void): ID | undefined {
     this.world.workflowError = undefined;
     this.world.workflowRetry = undefined;
     this.world.workflowNotice = undefined;
-    const id = this.send(frame);
+    const requestId = this.nextRequestId(frame.type);
+    const outgoing = { ...frame, requestId };
+    const id = this.transmit(outgoing, onLost ? {
+      answers: response => (response as { requestId?: ID }).requestId === requestId
+        && (response.type === "workflow" || response.type === "workflowRun"),
+      refused: () => { /* the correlated workflow error restores the draft */ },
+      lost: () => {
+        this.workflowRequests.delete(requestId);
+        onLost();
+      },
+    } : {});
     if (id) this.workflowRequests.set(id, frame);
     return id;
   }
 
   /** Replay only the workflow frame that was refused, with a fresh request id. */
-  retryWorkflowRequest(): ID | undefined {
+  retryWorkflowRequest(onLost?: () => void): ID | undefined {
     const frame = this.world.workflowRetry;
     if (!frame) return undefined;
     if (frame.type === "listWorkflows") return this.listWorkflows();
-    return this.sendWorkflow(frame as Exclude<WorkflowRequestFrame, { type: "listWorkflows" }>);
+    return this.sendWorkflow(frame as Exclude<WorkflowRequestFrame, { type: "listWorkflows" }>, onLost);
   }
 
   /**
@@ -2824,7 +2839,7 @@ export class RelayClient {
         w.notificationsLoading = false;
         w.notificationsRequestId = undefined;
         w.notificationsProblem = undefined;
-        w.workflows = frame.state.workflows ?? [];
+        w.workflows = [...(frame.state.workflows ?? [])].sort(workflowOrder);
         w.workflowRuns = frame.state.workflowRuns ?? [];
         // The welcome snapshot is a useful seed, but the owner still asks for
         // the canonical workflow list. Keep the route in loading until that
@@ -2996,7 +3011,7 @@ export class RelayClient {
         if (frame.requestId) this.workflowRequests.delete(frame.requestId);
         w.workflowError = undefined;
         w.workflowRetry = undefined;
-        w.workflows = frame.workflows;
+        w.workflows = [...frame.workflows].sort(workflowOrder);
         w.workflowRuns = frame.runs;
         w.workflowLoading = false;
         break;
@@ -3005,11 +3020,11 @@ export class RelayClient {
           this.workflowRequests.delete(frame.requestId);
           w.workflowError = undefined;
           w.workflowRetry = undefined;
-          w.workflowNotice = { text: "Workflow saved", ts: Date.now() };
+          w.workflowNotice = { text: "Workflow saved", ts: Date.now(), workflowId: frame.workflow.id };
         }
         const i = w.workflows.findIndex(x => x.id === frame.workflow.id);
         if (i >= 0) w.workflows[i] = frame.workflow; else w.workflows.unshift(frame.workflow);
-        w.workflows = [...w.workflows];
+        w.workflows = [...w.workflows].sort(workflowOrder);
         break;
       }
       case "workflowRun": {

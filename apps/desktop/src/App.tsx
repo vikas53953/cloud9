@@ -12964,15 +12964,21 @@ function WorkflowsScreen(): React.JSX.Element {
     if (missingInstruction) { invalid("workflow-step-" + missingInstruction.id + "-instruction", "Write an instruction for every step"); return; }
     setValidation(null);
     const snapshot = { ...draft, steps };
+    const restoreLostDraft = (): void => {
+      setPendingDraft(null);
+      setDraft(snapshot);
+      setAnnounce("Cloud9 disconnected before the workflow was saved; your draft is still open");
+      requestAnimationFrame(() => titleRef.current?.focus());
+    };
     if (draft.id) {
       const requestId = client.sendWorkflow({ type: "updateWorkflow", workflowId: draft.id,
         patch: { name, description: draft.description.trim() || undefined,
-          channelId: draft.channelId, enabled: draft.enabled, steps } });
+          channelId: draft.channelId, enabled: draft.enabled, steps } }, restoreLostDraft);
       if (!requestId) { setAnnounce("Cloud9 is offline; your draft is still open"); return; }
     } else {
       const requestId = client.sendWorkflow({ type: "createWorkflow",
         workflow: { name, description: draft.description.trim() || undefined,
-          channelId: draft.channelId, enabled: draft.enabled, steps } });
+          channelId: draft.channelId, enabled: draft.enabled, steps } }, restoreLostDraft);
       if (!requestId) { setAnnounce("Cloud9 is offline; your draft is still open"); return; }
     }
     setPendingDraft(snapshot);
@@ -12987,6 +12993,7 @@ function WorkflowsScreen(): React.JSX.Element {
   }, [pendingDraft, world.workflowError]);
   useEffect(() => {
     if (!pendingDraft || world.workflowNotice?.text !== "Workflow saved") return;
+    if (world.workflowNotice.workflowId) setSelectedId(world.workflowNotice.workflowId);
     setPendingDraft(null);
     setAnnounce("Workflow saved");
   }, [pendingDraft, world.workflowNotice]);
@@ -13007,7 +13014,13 @@ function WorkflowsScreen(): React.JSX.Element {
     const keepDraft = draft && (retryFrame.type === "createWorkflow" || retryFrame.type === "updateWorkflow")
       ? { ...draft, steps: draft.steps.map(step => ({ ...step })) } : null;
     if (keepDraft) { setPendingDraft(keepDraft); setDraft(null); }
-    const requestId = client.retryWorkflowRequest();
+    const restoreLostDraft = keepDraft ? (): void => {
+      setPendingDraft(null);
+      setDraft(keepDraft);
+      setAnnounce("Cloud9 disconnected before the workflow was saved; your draft is still open");
+      requestAnimationFrame(() => titleRef.current?.focus());
+    } : undefined;
+    const requestId = client.retryWorkflowRequest(restoreLostDraft);
     if (!requestId && keepDraft) { setDraft(keepDraft); setPendingDraft(null); }
   };
 
@@ -13015,7 +13028,7 @@ function WorkflowsScreen(): React.JSX.Element {
     <div className="screen-head"><div><span className="eyebrow">Runbooks</span><h1 id="workflows-heading">Workflows</h1></div></div>
     <div className="emptyplate"><h4>Workflows belong to the owner</h4><p>You can read tasks, but only the owner can save or run a workflow.</p></div>
   </section>;
-  if (!world.connected || world.workflowLoading) return <section className="workspace-screen workflow-screen" aria-labelledby="workflows-heading">
+  if ((!world.connected || world.workflowLoading) && !draft) return <section className="workspace-screen workflow-screen" aria-labelledby="workflows-heading">
     <div className="screen-head"><div><span className="eyebrow">Runbooks</span><h1 id="workflows-heading">Workflows</h1></div></div>
     <div className="workflow-loading" role="status" aria-live="polite"><span>Loading workflows…</span><i /><i /><i /></div>
   </section>;

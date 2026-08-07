@@ -136,6 +136,47 @@ test("a relay restart marks active runs interrupted and never resumes them", () 
   restarted.close();
 });
 
+test("a relay restart expires a workflow approval and shows the expired receipt", async () => {
+  const dbPath = tmp("workflow-restart-approval.db");
+  const firstRelay = new Relay({ dbPath, ownerToken: "tok-owner", ownerName: "Vikas" });
+  const owner = firstRelay.store.userByToken("tok-owner")!;
+  const run: WorkflowRun = {
+    id: "wfr-approval-restart", workflowId: "wf-approval-restart", workflowVersion: 1,
+    ownerId: owner.id, requestedBy: owner.id, channelId: "ch-general", status: "waiting_you", steps: [
+      { id: "step-approval-restart", agentId: "agent-approval-restart", instruction: "Wait", status: "waiting_you", attempts: [
+        { taskId: "task-approval-restart", status: "waiting_you", createdAt: 10 },
+      ] },
+    ], currentStepId: "step-approval-restart", createdAt: 10, updatedAt: 11,
+  };
+  firstRelay.store.saveWorkflowRun(run);
+  firstRelay.store.saveTask({
+    id: "task-approval-restart", title: "Wait", requesterId: owner.id, requesterName: owner.name,
+    agentId: "agent-approval-restart", channelId: "ch-general", status: "waiting_approval",
+    approvalId: "approval-restart", workflowId: run.workflowId, workflowRunId: run.id,
+    workflowStepId: "step-approval-restart", createdAt: 10, updatedAt: 10,
+  });
+  firstRelay.store.saveApproval({
+    id: "approval-restart", taskId: "task-approval-restart", agentId: "agent-approval-restart",
+    ownerId: owner.id, action: "run the workflow step", status: "pending", channelId: "ch-general", createdAt: 10,
+  });
+  firstRelay.close();
+
+  const restarted = new Relay({ dbPath, ownerToken: "tok-owner", ownerName: "Vikas" });
+  assert.equal(restarted.store.approval("approval-restart")?.status, "expired");
+  const port = await restarted.listen(0);
+  const client = new TestClient("ws://127.0.0.1:" + port, "tok-owner");
+  try {
+    await client.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
+    const expired = await client.wait<Extract<ServerFrame, { type: "approval" }>>(
+      f => f.type === "approval" && f.approval.id === "approval-restart",
+    );
+    assert.equal(expired.approval.status, "expired");
+  } finally {
+    client.close();
+    restarted.close();
+  }
+});
+
 test("run history orders by transition time, with id as a deterministic tie-breaker", () => {
   const store = new Store(tmp("workflow-order.db"), { ownerToken: "tok-owner" });
   const owner = store.ensureOwner("Vikas", "tok-owner");
@@ -146,6 +187,13 @@ test("run history orders by transition time, with id as a deterministic tie-brea
   store.saveWorkflowRun(base("run-old", 10));
   store.saveWorkflowRun(base("run-new", 20));
   assert.deepEqual(store.workflowRuns(owner.id).map(run => run.id).slice(0, 2), ["run-new", "run-old"]);
+  const definition = (id: string): Workflow => ({
+    id, ownerId: owner.id, channelId: "ch-general", name: id, enabled: true, version: 1,
+    steps: [{ id: "step-" + id, agentId: "agent-order", instruction: "Report" }], createdAt: 1, updatedAt: 50,
+  });
+  store.saveWorkflow(definition("wf-a"));
+  store.saveWorkflow(definition("wf-z"));
+  assert.deepEqual(store.workflows(owner.id).map(workflow => workflow.id).slice(0, 2), ["wf-z", "wf-a"]);
   store.db.close();
 });
 
@@ -166,6 +214,9 @@ test("workflow run executes ordered steps through the existing task path", async
   engine.send({ type: "updateTask", taskId: taskOne.task.id, status: "waiting_user" });
   await owner.wait(f => f.type === "workflowRun" && f.run.id === created.id && f.run.status === "waiting_you");
   engine.send({ type: "updateTask", taskId: taskOne.task.id, status: "working" });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(relay.store.task(taskOne.task.id)?.status, "waiting_user");
+  assert.equal(relay.store.workflowRun(created.id)?.status, "waiting_you");
   engine.send({ type: "updateTask", taskId: taskOne.task.id, status: "completed", result: "first result" });
 
   const taskTwo = await engine.wait<Extract<ServerFrame, { type: "task" }>>(
@@ -349,6 +400,34 @@ test("workflow tasks stay out of an unrelated friend's initial world and live fe
   await engine.wait(frame => frame.type === "task" && frame.task.workflowRunId === run.id);
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(friend.frames.some(frame => frame.type === "task" && frame.task.workflowRunId === run.id), false);
+  friend.close();
+});
+
+test("workflow approvals stay scoped to the owner and run channel", async t => {
+  const { owner, engine, open, channelId } = await stand(t, "workflow-private-approval.db");
+  const agent = await makeAgent(owner, "Careful", true);
+  owner.send({ type: "createChannel", name: "private-approval", memberIds: [], kind: "channel" });
+  const channel = await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    frame => frame.type === "channel" && frame.channel.name === "private-approval",
+  );
+  const workflow = await saveWorkflow(owner, channel.channel.id, [agent.id], "Private approval");
+  owner.send({ type: "createInvite" });
+  const invite = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(frame => frame.type === "invite");
+  const friend = open("invite:" + invite.code + ":Priya");
+  await friend.wait(f => f.type === "welcome");
+  owner.frames.length = 0;
+  friend.frames.length = 0;
+  owner.send({ type: "runWorkflow", workflowId: workflow.id });
+  const task = await owner.wait<Extract<ServerFrame, { type: "task" }>>(
+    frame => frame.type === "task" && frame.task.workflowRunId !== undefined,
+  );
+  assert.equal(task.task.channelId, channel.channel.id);
+  await owner.wait<Extract<ServerFrame, { type: "approval" }>>(
+    frame => frame.type === "approval" && frame.approval.taskId === task.task.id,
+  );
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(friend.frames.some(frame => frame.type === "approval" && frame.approval.taskId === task.task.id), false);
+  engine.close();
   friend.close();
 });
 

@@ -215,10 +215,13 @@ export class Relay {
   ownerId: ID;
   bind: string;
   devMode: boolean;
+  // Approval cards stay live until the owner answers or stops the agent.
   // (A mid-run card used to stay answerable for ten minutes and then be swept
   // away by one-shot timers kept here. Removed 2026-08-07: a question put to the
   // owner is not rubbish to be cleared up while he thinks about it. It stays on
   // his screen, live, until he answers it or stops the agent.)
+  /** Startup-expired workflow approvals are re-broadcast once the owner arrives. */
+  private restartExpiredWorkflowApprovals: Approval[] = [];
   /** last sign-in request per user, and whether one is still running */
   private signInAt: Record<ID, number> = {};
   private signInFlight: Record<ID, number> = {};
@@ -261,6 +264,7 @@ export class Relay {
     const owner = this.store.ensureOwner(this.ownerName, this.ownerToken);
     this.ownerId = owner.id;
     const interrupted = this.store.interruptActiveWorkflowRuns(this.ownerId);
+    this.restartExpiredWorkflowApprovals = this.store.takeInterruptedWorkflowApprovals();
     if (interrupted.length) {
       console.warn(`[cloud9] marked ${interrupted.length} workflow run(s) interrupted after restart`);
     }
@@ -479,6 +483,11 @@ export class Relay {
     const conn: Conn = { ws, userId: user.id, client: frame.client };
     this.conns.add(conn);
     send(ws, { type: "welcome", state: this.worldFor(user.id) });
+    if (conn.userId === this.ownerId && this.restartExpiredWorkflowApprovals.length) {
+      const expired = this.restartExpiredWorkflowApprovals;
+      this.restartExpiredWorkflowApprovals = [];
+      for (const approval of expired) this.sendApproval(approval);
+    }
     // An engine arriving changes the answer for every agent it can run, and
     // everyone in a room with those agents needs to hear it — not only the
     // owner. This is the other half of the disconnect rule above.
@@ -1603,18 +1612,20 @@ export class Relay {
       ...(input.workflowRunId ? { workflowRunId: input.workflowRunId } : {}),
       ...(input.workflowStepId ? { workflowStepId: input.workflowStepId } : {}),
     };
+    let approval: Approval | undefined;
     if (needsApproval) {
-      const approval: Approval = {
+      approval = {
         id: newId("ap"), taskId: task.id, agentId: agent.id, ownerId: agent.ownerId,
         action: describeApproval(task.title), status: "pending", createdAt: now,
+        ...(input.workflowRunId ? { channelId: channel.id } : {}),
       };
       task.approvalId = approval.id;
       this.store.saveApproval(approval);
       this.audit(conn, "approval_requested", approval.id,
         agent.name + " requests approval: " + approval.action, { asUser: requester });
-      this.sendApproval(approval);
     }
     this.store.saveTask(task);
+    if (approval) this.sendApproval(approval);
     this.audit(conn, "task_created", task.id, "task for " + agent.name + ": " + task.title,
       { asUser: requester });
     this.publishTask(task);
@@ -1701,6 +1712,10 @@ export class Relay {
     // moving forward; the one intentional exception is the approved
     // waiting-for-you task becoming queued again for the engine.
     if (attempt.status === "running" && status === "queued") return;
+    // Waiting-for-you is a held state. A late working receipt from the same
+    // engine cannot claim the step resumed; only the explicit approval release
+    // below is allowed to move it through queued first.
+    if (attempt.status === "waiting_you" && status === "running") return;
     if (attempt.status === "waiting_you" && status === "queued") {
       const approval = task.approvalId ? this.store.approval(task.approvalId) : undefined;
       if (approval?.status !== "approved") return;
@@ -2493,6 +2508,7 @@ export class Relay {
             : "queued";
           if (attempt && (attempt.status === "succeeded" || attempt.status === "failed" || attempt.status === "stopped" || attempt.status === "interrupted")) break;
           if (attempt && (attempt.status === "running" || attempt.status === "waiting_you") && incoming === "queued") break;
+          if (attempt?.status === "waiting_you" && incoming === "running") break;
           if (attempt?.status === "waiting_you" && task.approvalId
             && this.store.approval(task.approvalId)?.status === "pending" && incoming !== "waiting_you") break;
         }
@@ -4080,6 +4096,13 @@ export class Relay {
    * his phone and the engine that asked, all at once.
    */
   private sendApproval(approval: Approval): void {
+    if (this.isWorkflowApproval(approval)) {
+      const audience = this.workflowApprovalAudience(approval);
+      for (const conn of this.conns) {
+        if (audience.has(conn.userId)) send(conn.ws, { type: "approval", approval });
+      }
+      return;
+    }
     if (approval.kind === "action") this.toUser(approval.ownerId, { type: "approval", approval });
     else this.broadcast({ type: "approval", approval });
   }
@@ -4091,9 +4114,28 @@ export class Relay {
   // (@cloud9/shared, `ApprovalStatus`), but nothing produces a new one, and a
   // card only stops being pending because HE decided or he pressed Stop.
 
+  /** Saved runbook approvals follow the task's room, plus the owner who decides. */
+  private isWorkflowApproval(approval: Approval): boolean {
+    const task = approval.taskId ? this.store.task(approval.taskId) : undefined;
+    return Boolean(task?.workflowRunId);
+  }
+
+  private workflowApprovalAudience(approval: Approval): Set<ID> {
+    const audience = new Set<ID>([approval.ownerId]);
+    const channel = approval.channelId ? this.store.channel(approval.channelId) : undefined;
+    const agents = this.store.agents();
+    for (const memberId of channel?.memberIds ?? []) {
+      const memberAgent = agents.find(agent => agent.id === memberId);
+      audience.add(memberAgent?.ownerId ?? memberId);
+    }
+    return audience;
+  }
+
   /** The approvals this person may be shown. */
   private visibleApprovals(userId: ID): Approval[] {
-    return this.store.approvals().filter(a => a.kind !== "action" || a.ownerId === userId);
+    return this.store.approvals().filter(a => this.isWorkflowApproval(a)
+      ? this.workflowApprovalAudience(a).has(userId)
+      : a.kind !== "action" || a.ownerId === userId);
   }
 
   /** Send to one user's engine host connection(s) only. */
