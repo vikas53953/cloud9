@@ -59,7 +59,7 @@ import {
      lamp + unanswered go-ahead + last finished job happens in shared, where a
      test can read it — the screen below only draws what comes back. */
   activityRank, agentActivityLine, crewActivitySummary, workingCount,
-  type AgentActivityLine,
+  type AgentActivityLine, type AgentStatus,
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -7559,10 +7559,39 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
   const [filter, setFilter] = useState<"all" | "working" | "waiting" | "off">("all");
   const agents = world.agents as AgentDefPlus[];
 
-  const waitingOn = (id: ID) =>
-    world.approvals.some(a => a.status === "pending" && a.agentId === id && a.ownerId === world.me?.id);
+  /* THE SAME TWO ANSWERS THE ACTIVITY BOARD GIVES, not this screen's own.
+     ================================================================
+     Both numbers in the banner above were worked out here, separately, and both
+     were wrong in the ways the Activity review had already named — one screen
+     over, where nobody looked:
 
-  const workingCount = agents.filter(a => presenceOf(world, a.id)?.presence === "working").length;
+       · "Waiting on you" counted `status === "pending"` and nothing else, so a
+         go-ahead that had already run out was still counted as waiting on him.
+         `useMyApprovals` is the one owner of that question — the rail badge,
+         the pill over a conversation, the jobs tray and the board all ask it.
+
+       · "Working now" counted the presence word by itself. An agent that has
+         stopped mid-job to ask him something still reads `working` there, so
+         this screen said "1 working" while the Activity button and the board
+         said nobody was. `agentActivityLine` is the one ladder that decides
+         what "working" means, and now this screen climbs it too rather than
+         keeping a shortcut of its own.
+
+     No new rule is written here. Both numbers are read off the same functions
+     the rest of the app reads them off, which is the whole point. */
+  const { waiting: liveApprovals } = useMyApprovals(world.approvals, world.me?.id);
+  const waitingOn = (id: ID) => liveApprovals.some(a => a.agentId === id);
+
+  /* One line per agent, from the shared ladder. No run history is asked for —
+     this screen only needs to know what each agent is DOING, and asking the hub
+     about another person's agent's past jobs would be refused anyway. */
+  const activityOf = (a: AgentDefPlus) => agentActivityLine({
+    presence: presenceOf(world, a.id)?.presence,
+    status: world.agentStatus[a.id],
+    lifecycle: a.lifecycle,
+    awaitingOwner: waitingOn(a.id),
+  });
+  const workingNow = workingCount(agents.map(activityOf));
   const waitingCount = agents.filter(a => waitingOn(a.id)).length;
 
   const monthStart = new Date();
@@ -7570,7 +7599,10 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
   const jobsThisMonth = world.tasks.filter(t => t.createdAt >= monthStart.getTime()).length;
 
   const shown = agents.filter(a => {
-    if (filter === "working") return presenceOf(world, a.id)?.presence === "working";
+    /* THE FILTER AND THE NUMBER ABOVE IT MUST MEAN THE SAME THING. Pressing
+       "Working" and getting more rows than the "Working now" figure said is the
+       same contradiction, one click later. */
+    if (filter === "working") return activityOf(a).state === "working";
     if (filter === "waiting") return waitingOn(a.id);
     if (filter === "off") {
       const p = presenceOf(world, a.id)?.presence;
@@ -7595,7 +7627,7 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
           </p>
         </div>
         <div className="crew-stats">
-          <Stat n={workingCount} one="Working now" many="Working now" />
+          <Stat n={workingNow} one="Working now" many="Working now" />
           <Stat n={waitingCount} one="Waiting on you" many="Waiting on you" />
           <Stat n={jobsThisMonth} one="Job this month" many="Jobs this month" />
         </div>
@@ -13734,26 +13766,12 @@ function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine }[] {
      has. `useMyApprovals` applies `approvalIsDead` and ticks the clock. */
   const { waiting: liveApprovals } = useMyApprovals(world.approvals, world.me?.id);
 
-  /* THE LAST THING EACH ONE DID — re-asked WHENEVER A LAMP MOVES, not once.
-     Asking only on mount was the stale-by-design version of this row: he would
-     watch an agent finish in front of him and the board would still be showing
-     the job before it, because a finished job only becomes a fact this app
-     holds after the hub is asked again. Keying the ask on the lamps means the
-     moment one goes from working to idle, the row goes and fetches what it just
-     did. `askRuns` already refuses to stack requests, so this cannot pile up.
-
-     TEN, NOT ONE, and that number is load-bearing. A run history is stored under
-     one key per agent, so the board asking for 1 and the agent's own Recent work
-     panel asking for 10 were overwriting each other's answer: open an agent
-     after visiting this screen and nine of its ten jobs had vanished. The board
-     only ever reads the newest, so asking for the same 10 costs nothing and
-     leaves one list that satisfies both. */
-  const lampKey = mine.map(a => `${a.id}:${world.agentStatus[a.id] ?? "idle"}`).join(" ");
-  useEffect(() => {
-    for (const pair of lampKey ? lampKey.split(" ") : []) {
-      client.askRuns("agent", pair.slice(0, pair.lastIndexOf(":")), RUN_HISTORY_LIMIT);
-    }
-  }, [lampKey]);
+  /* THE LAST THING EACH ONE DID IS FETCHED BY THE SCREEN THAT SHOWS IT, NOT
+     HERE. Making the rail button read from these same lines put this hook
+     inside the always-on part of the app, so a fetch living here would have
+     gone out for every agent every time any lamp moved, all day, whether or not
+     he was looking at the board. Nothing but the board reads the past-jobs part
+     of a line — see `useRunHistoryWhileWatching` below. */
 
   /* WHAT HE WAS ASKED, for an agent that is mid-job. The live steps know which
      MESSAGE they answer; the message text is the ask. Looked up here rather
@@ -13804,8 +13822,39 @@ function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine }[] {
     liveApprovals, liveWork, askOf]);
 }
 
+/**
+ * KEEP "what it just did" FRESH, FOR AS LONG AS HE IS WATCHING.
+ *
+ * A finished job only becomes a fact this app holds once the hub is asked
+ * again, so asking once on mount was the stale-by-design version of this row:
+ * he would watch an agent finish in front of him and the board would still be
+ * showing the job before it. Keying the ask on the lamps means the moment one
+ * goes from working to idle, the board fetches what it just did. `askRuns`
+ * refuses to stack requests, so this cannot pile up.
+ *
+ * TEN, NOT ONE, and that number is load-bearing. A history is stored under one
+ * key per agent, so the board asking for 1 and an agent's own Recent work panel
+ * asking for 10 overwrote each other: open an agent after visiting this screen
+ * and nine of its ten jobs had vanished. The board reads only the newest, so
+ * asking for the same 10 costs nothing and leaves one list that suits both.
+ *
+ * It lives on the BOARD and not in `useAgentActivity` because that hook is now
+ * read by the rail button too, which is on screen always — a fetch in there
+ * would go out for every agent every time any lamp moved, for ever.
+ */
+function useRunHistoryWhileWatching(agentIds: readonly ID[], statuses: Record<ID, AgentStatus>): void {
+  const lampKey = agentIds.map(id => `${id}:${statuses[id] ?? "idle"}`).join(" ");
+  useEffect(() => {
+    for (const pair of lampKey ? lampKey.split(" ") : []) {
+      client.askRuns("agent", pair.slice(0, pair.lastIndexOf(":")), RUN_HISTORY_LIMIT);
+    }
+  }, [lampKey]);
+}
+
 function RightNowBoard(): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const rows = useAgentActivity();
+  useRunHistoryWhileWatching(rows.map(r => r.agent.id), world.agentStatus);
 
   /* Stable inside a state, so a lamp changing somewhere else never reshuffles
      the rows he is reading. */
