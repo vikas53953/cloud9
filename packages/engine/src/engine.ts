@@ -3,6 +3,7 @@
 // (Stage-1 decision 5).
 import fs from "node:fs";
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, Approval, ARTIFACT_LIMITS, ATTACHMENT_LIMITS,
@@ -40,7 +41,7 @@ import {
 } from "./context.js";
 import { OpenTurn, ToolBridge } from "./toolbridge.js";
 import { ArtifactSweep, describeRefusals, sweepProduced } from "./artifacts.js";
-import { ApprovalDesk, ApprovalOutcome } from "./approvaldesk.js";
+import { ApprovalDesk, ApprovalOutcome, ApprovalWaitChange } from "./approvaldesk.js";
 import { GitHubClient, GitHubOptions } from "./github.js";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
@@ -342,6 +343,16 @@ export class Engine {
   private attachmentWaiters =
     new Set<(f: Extract<ServerFrame, { type: "attachmentTicket" }>) => boolean>();
   private turnsInFlight = 0;
+  /** The queue turn currently executing, propagated through provider awaits. */
+  private turnContext = new AsyncLocalStorage<string>();
+  /** Active queue turns and the approval waits each one owns. */
+  private activeTurnTokens = new Set<string>();
+  private turnOwners = new Map<string, ID>();
+  private parkedWaits = new Map<string, string>();
+  private nextTurnToken = 0;
+  /** Approval IDs already announced as stale, persisted across reconnects/restarts. */
+  private lateWarningIds = new Set<ID>();
+  private lateWarningPath: string;
   // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
   /**
    * EVERY TURN CURRENTLY RUNNING, and the handle that stops it.
@@ -377,6 +388,13 @@ export class Engine {
     this.provider = opts.provider ?? (opts.demoMode ? new MockProvider() : undefined);
     this.codexProvider = opts.codexProvider ?? (opts.demoMode ? new MockProvider() : undefined);
     this.dataDir = opts.dataDir ?? path.join(process.cwd(), "cloud9-engine-data");
+    this.lateWarningPath = path.join(this.dataDir, "late-approval-warnings.json");
+    try {
+      const saved = JSON.parse(fs.readFileSync(this.lateWarningPath, "utf8")) as unknown;
+      if (Array.isArray(saved)) {
+        for (const id of saved) if (typeof id === "string") this.lateWarningIds.add(id);
+      }
+    } catch { /* no file yet, or an interrupted write: no stale IDs to trust */ }
     this.brake = opts.brake ?? DEFAULT_BRAKE;
     fs.mkdirSync(this.dataDir, { recursive: true });
     // Clear up after the last time this was killed mid-write. A temporary file
@@ -406,7 +424,14 @@ export class Engine {
       // really working has changed, and somebody in the queue may be able to go
       // now. Without this line the slot is freed on paper and nothing notices
       // until the next message happens to arrive. See `workingTurns`.
-      onWaitingChanged: () => { void this.drain(); },
+      onWaitingChanged: (change: ApprovalWaitChange) => {
+        if (change.turnToken && this.activeTurnTokens.has(change.turnToken)) {
+          if (change.type === "added") this.parkedWaits.set(change.askId, change.turnToken);
+          else this.parkedWaits.delete(change.askId);
+        }
+        void this.drain();
+      },
+      currentTurnToken: agentId => this.currentTurnToken(agentId),
       // THE ONE PLACE A JOB IS REALLY STUCK. See `jobIsStuck` below.
       // AND the one place a hook can hear that somebody is waiting on HIM: the
       // sentence handed over is `describeRemoteAction`'s — counted facts, never
@@ -487,6 +512,12 @@ export class Engine {
     const agent = this.myAgents.find(a => a.id === approval.agentId);
     if (!agent) return;
     if (approval.status === "rejected") return;  // a no changes nothing anyway
+    if (this.lateWarningIds.has(approval.id)) return;
+    // Mark before sending: duplicate live frames and welcome replays cannot
+    // produce a second warning, even when the first send is still in flight.
+    this.lateWarningIds.add(approval.id);
+    writeWholeFile(this.lateWarningPath, JSON.stringify([...this.lateWarningIds]),
+      message => console.error(`[engine] could not save late approval warning: ${message}`));
     this.agentSend(agent.id, channelId,
       "You've just said yes to this, but I'm no longer waiting on it — Cloud9 was " +
       "restarted after I asked, so nothing was standing by to act on your answer. " +
@@ -802,7 +833,7 @@ export class Engine {
             channelId: channel.id, ask: what, triggerAuthor: message.authorName,
             ...(thread ? { replyTo: thread } : {}),
           });
-        });
+        }, agent.id);
         continue;
       }
       // A GITHUB WRITE, asked for in the room: "!issue <title>",
@@ -813,7 +844,7 @@ export class Engine {
       if (message.authorKind === "human") {
         const write = this.parseGitHubWriteCommand(bare);
         if (write) {
-          this.enqueue(() => this.workGitHubWriteInRoom(agent, channel.id, write, thread));
+          this.enqueue(() => this.workGitHubWriteInRoom(agent, channel.id, write, thread), agent.id);
           continue;
         }
       }
@@ -895,18 +926,37 @@ export class Engine {
    * drift upwards, so the credit can never exceed what is actually in flight.
    */
   private workingTurns(): number {
-    const parked = Math.min(this.approvals.pending, this.turnsInFlight);
-    return this.turnsInFlight - parked;
+    let parked = 0;
+    for (const token of this.parkedWaits.values()) {
+      if (this.activeTurnTokens.has(token)) parked++;
+    }
+    return Math.max(0, this.turnsInFlight - parked);
   }
 
   private async drain(): Promise<void> {
     const cap = this.opts.maxConcurrentTurns ?? 2;
     while (this.workingTurns() < cap && this.queue.length > 0) {
-      const { job } = this.queue.shift()!;
+      const { job, agentId } = this.queue.shift()!;
+      const token = `turn-${(++this.nextTurnToken).toString(36)}`;
       this.turnsInFlight++;
-      job().catch(() => { /* logged below */ })
-        .finally(() => { this.turnsInFlight--; void this.drain(); });
+      this.activeTurnTokens.add(token);
+      if (agentId) this.turnOwners.set(token, agentId);
+      this.turnContext.run(token, job).catch(() => { /* logged below */ })
+        .finally(() => {
+          this.activeTurnTokens.delete(token);
+          this.turnOwners.delete(token);
+          for (const [askId, owner] of this.parkedWaits) {
+            if (owner === token) this.parkedWaits.delete(askId);
+          }
+          this.turnsInFlight--;
+          void this.drain();
+        });
     }
+  }
+
+  private currentTurnToken(agentId?: ID): string | undefined {
+    const token = this.turnContext.getStore();
+    return token && agentId && this.turnOwners.get(token) === agentId ? token : undefined;
   }
 
   /**
@@ -1473,6 +1523,7 @@ export class Engine {
     const outcome = await this.approvals.askPlan({
       agent, channelId, plan,
       ...(input.taskId ? { taskId: input.taskId } : {}),
+      ...(this.currentTurnToken(agent.id) ? { turnToken: this.currentTurnToken(agent.id) } : {}),
     });
     if (!outcome.approved) {
       await this.sayAs(agent, channelId,
@@ -2753,6 +2804,7 @@ export class Engine {
     const outcome = await this.approvals.askSaving({
       agent: asking,
       channelId,
+      ...(this.currentTurnToken(asking.id) ? { turnToken: this.currentTurnToken(asking.id) } : {}),
       proposal: {
         about: about.id, aboutName: about.name, change, because: tidySaving(because),
       },
@@ -2877,6 +2929,7 @@ export class Engine {
         const outcome: ApprovalOutcome = await this.approvals.ask({
           agent, channelId: where.channelId,
           ...(where.taskId ? { taskId: where.taskId } : {}),
+          ...(this.currentTurnToken(agent.id) ? { turnToken: this.currentTurnToken(agent.id) } : {}),
           facts,
         });
         refusal = outcome.approved ? undefined : outcome.reason;
@@ -3141,7 +3194,8 @@ export class Engine {
       const outcome = await runGitHubWrite({
         request,
         ask: async facts => {
-          const o: ApprovalOutcome = await this.approvals.ask({ agent, channelId, facts });
+          const o: ApprovalOutcome = await this.approvals.ask({ agent, channelId,
+            ...(this.currentTurnToken(agent.id) ? { turnToken: this.currentTurnToken(agent.id) } : {}), facts });
           return { approved: o.approved, reason: o.reason };
         },
         ...(this.opts.github?.runner ? { run: this.opts.github.runner } : {}),

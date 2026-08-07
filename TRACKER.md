@@ -54,6 +54,10 @@ The dated snapshot rows below are preserved history; this current row is the liv
 | Open PRs | **1** — #13 (remove the timing), CONFLICTING on `TRACKER.md` after #11 and #12 landed. **As of 2026-08-07 11:00.** |
 | Merged today | **8** — #6 time limit · #7 threads width · #9 activity · #10 spending · **#11 harness inventory** · **#12 threads research** · plus #5 and #8, both reverts of code that reached master unreviewed (one the conductor's). |
 
+**Current live snapshot (2026-08-07 16:55 IST):** PR #13 is OPEN, pushed at
+`e7d8664`, and **CLEAN against `origin/master`**. It is not approved or merged;
+the older row below saying `CONFLICTING` is retained as dated review history.
+
 | # | HIS ASK (his words — never renamed) | Who has it | Stage | Evidence so far |
 |---|---|---|---|---|
 | 1 | **threads** — *"pull it to the left-hand side like slack"* | build agent | **RESEARCH MERGED (PR #12) · BUILD IN PROGRESS · he has read and approved the design** | **Three attempts failed because nobody opened Slack.** The fourth opened Slack's own docs AND drove **Buzz on his machine** over a debug port. Findings: Slack's thread pane IS draggable (their accessibility changelog, June 2026, names it and adds **arrow-key** resizing); Buzz drags **308 → 1399px**, default 388, symmetric ~300 floors both sides, forgets the width on restart. Cloud9 had a hard **280px ceiling and NO handle anywhere in the codebase**. **Buzz's smallest thread is wider than Cloud9's biggest.** Two bad citations were caught in review AFTER being published to him — one quote about Slack's LEFT sidebar used as proof about the thread pane, one quote absent from the article named. Both corrected and owned on the page. **He answered: "i want both"** — divider AND take-over mode, overruling the divider-only recommendation. Building: drag + arrow keys + 388 default + 300/300 floors + width AND mode remembered across restarts + conditional tooltip + take-over over a dimmed room — **and below 894px the take-over mode IS the narrow-window answer, one mechanism not two.** Proof required: photographs from the INSTALLED app at 1920, including after a restart. |
@@ -159,14 +163,18 @@ the branch's additional measurements here rather than silently dropping them:
 **Current author stage (2026-08-07, after merge reconciliation):** PR #13 is
 OPEN and pushed on `fix/agents-are-not-on-a-timer`; this branch is no longer
 conflicting with `origin/master`, but it is **not approved or merged**. The
-targeted engine run is **24/24**, relay build is green, and the new real-socket
-probe `apps/relay/src/reconnect.test.ts` is **2/2**: an actual close reconnects
+review-round targeted engine checks are **36/36** (`parkedwaits` + `run` 19/19;
+`notimers` + `approvaldesk` 17/17), including one-warning-per-approved-card
+replay/restart dedupe, a valid UTF-8 16 MiB byte tail, and exact approval-slot
+ownership. Relay build is green and the real-socket probe
+`apps/relay/src/reconnect.test.ts` is **2/2**: an actual close reconnects
 without answering for the owner, and an approved card after a real restart
-gets the plain "did not happen ... ask me again" message. The welcome replay
-now invokes that late-approval message path as well as the live-frame path.
-The isolated relay no-deadline check is **2/2**; the full `midrun.test.ts`
-remains a harness hang here and is not claimed green. No fresh quiet-machine
-`taskstuck` control has been run, so that evidence remains pending review.
+gets the plain "did not happen ... ask me again" message. The isolated relay
+no-deadline check is **2/2**; the full `midrun.test.ts` remains a harness hang
+here and is not claimed green. No fresh quiet-machine `taskstuck` control has
+been run, so that evidence remains pending review.
+| 13 | **Buzz vs Cloud9 — installed feature audit (2026-08-07)** | audit agent | **AUDIT COMPLETE · REPORT ONLY · no feature implementation** | Opened `%LOCALAPPDATA%\Buzz\buzz-desktop.exe` (external metadata reported **0.5.5; unverified in the app**) and walked Inbox/home, Pulse, Projects, Agents, Workflows and `#coding`. Dated screenshots are in `docs/qa/buzz-*-2026-08-07.jpg`; the visual report is `docs/buzz-vs-cloud9-2026-08-07.html`. Counts: **8 Cloud9 source capability rows (installed UI unverified) · 1 visible Buzz gap · 2 Buzz surfaces that need Vikas's decision before copying · 6 unverified feature rows · 2 partial behavior checks · 1 observed Runtime errors state excluded from feature counts.** Feature classes total **17 rows**; adding the two partial checks and one observed state gives **20 audited checks**. Unverified feature rows: **DMs, Approvals, Repos/PR/project details, Canvas, Forums, Settings/account.** Partial behavior checks: **Search execution and file send/artifact card.** Runtime errors remain observed Buzz state and are excluded from feature counts. Inbox visibly showed Sol twice, luna and Fizz; no Honey. The red “Some message context could not be loaded” banner is recorded as Buzz app state, not a Cloud9 gap or proven Buzz defect. Cloud9 was compared from source at commit `6f4b7ea`; its installed app was not launched in this lane. |
+| 14 | **Workflow list / builder** | nobody yet | **PROPOSED — not started; no author or reviewer chosen** | Installed Buzz visibly has a Workflows screen with **Create Workflow** and an empty first-workflow state (`docs/qa/buzz-workflows-2026-08-07.jpg`). Cloud9's `ScreenName`/rail has no workflow route (`apps/desktop/src/App.tsx:1945-1946, 2668-2703`), although the engine has a `Workflow` tool ability (`packages/engine/src/abilities.ts:65-83`). This is a verified visible-surface gap, but the smallest product spec still needs Vikas's decision: persistence model, trigger/schedule semantics, run status/history, permissions, and separation from the existing Workflow tool ability. Before the conductor spawns one author and a different reviewer, Vikas must approve that shape. |
 
 ### Waiting on Vikas — nobody else can do these
 

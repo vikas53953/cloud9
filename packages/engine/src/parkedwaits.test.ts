@@ -42,9 +42,9 @@ const agent = (id: string, name: string): AgentDef => ({
 
 const CREW = [agent("a1", "Scout"), agent("a2", "Ranger"), agent("a3", "Pilot")];
 
-function makeEngine(provider: ClaudeProvider) {
+function makeEngine(provider: ClaudeProvider, dataDir = tmp()) {
   const engine = new Engine({
-    relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: tmp(), provider,
+    relayUrl: "ws://127.0.0.1:1", token: "t", dataDir, provider,
   });
   const frames: ClientFrame[] = [];
   (engine as unknown as { ws: unknown }).ws = {
@@ -143,6 +143,38 @@ test("TWO AGENTS PARKED ON CARDS DO NOT FREEZE THE REST OF THE CREW", async () =
   engine.stop();
 });
 
+test("an unrelated pending card cannot release a third turn slot", async () => {
+  let engine!: Engine;
+  const provider = new (class implements ClaudeProvider {
+    readonly answered: string[] = [];
+    async respond(input: RespondInput): Promise<string> {
+      if (input.agent.id === "a1" || input.agent.id === "a2") {
+        return await new Promise<string>(() => { /* active work, not a parked wait */ });
+      }
+      this.answered.push(input.agent.id);
+      return "done";
+    }
+  })();
+  const made = makeEngine(provider);
+  engine = made.engine;
+
+  void say(engine, says("a1", "@Scout keep working"));
+  void say(engine, says("a2", "@Ranger keep working"));
+  await until(() => (engine as unknown as { workingTurns(): number }).workingTurns() === 2,
+    "two active turns");
+
+  // This card did not come from a queued turn, so it must not be counted as a
+  // parked slot even though it belongs to the same crew.
+  void engine.approvals.askPlan({ agent: CREW[2]!, channelId: "c1", plan: "1. external card", turnToken: null });
+  await until(() => engine.approvals.pending === 1, "the unrelated card");
+  void say(engine, says("a3", "@Pilot are you there?"));
+  await new Promise(r => setTimeout(r, 100));
+  assert.deepEqual(provider.answered, [], "an unrelated card released the third slot");
+
+  engine.stopAgent("a3");
+  engine.stop();
+});
+
 test("a wait still cannot be used to run the whole crew at once", async () => {
   // The credit is CLAMPED: a card raised somewhere that is not one of these jobs
   // must not push the cap upwards for ever. Two parked turns can free at most
@@ -158,6 +190,44 @@ test("a wait still cannot be used to run the whole crew at once", async () => {
   assert.equal(working, 0,
     "the cap was credited for waits that are not holding a slot, so it can drift upwards");
   desk.giveUpAll("test over");
+  engine.stop();
+});
+
+test("approve, reconnect, and cancel release only their own parked slot", async () => {
+  let engine!: Engine;
+  const park = new Set(["a1", "a2"]);
+  const provider = new AsksHimSomething(() => engine, park);
+  const made = makeEngine(provider);
+  engine = made.engine;
+  await Promise.all([
+    say(engine, says("a1", "@Scout publish it")),
+    say(engine, says("a2", "@Ranger publish it")),
+  ]).catch(() => { /* both are deliberately parked */ });
+  await until(() => engine.approvals.pending === 2, "both waits");
+
+  const waiting = (engine.approvals as unknown as {
+    waiting: { askId: string; agentId: string }[];
+  }).waiting;
+  const a1 = waiting.find(w => w.agentId === "a1")!;
+  engine.approvals.onAsked(a1.askId, "ap-a1");
+  engine.approvals.onApproval({
+    id: "ap-a1", agentId: "a1", ownerId: OWNER, channelId: "c1",
+    action: "publish", status: "approved", createdAt: 0, kind: "plan",
+  } as Approval);
+  await until(() => engine.approvals.pending === 1, "approval to release only a1");
+
+  // A reconnect does not add or remove a wait. One genuine parked turn remains,
+  // so a third turn may use the one real slot but never more than one.
+  (engine as unknown as { ws?: unknown }).ws = undefined;
+  void say(engine, says("a3", "@Pilot are you there?"));
+  await until(() => provider.answered.includes("a3"), "the one released slot");
+  assert.deepEqual(provider.answered, ["a3"]);
+
+  engine.stopAgent("a2");
+  engine.stopAgent("a2");
+  await until(() => engine.approvals.pending === 0, "cancel to be idempotent");
+  assert.ok((engine as unknown as { workingTurns(): number }).workingTurns() >= 0,
+    "slot accounting went negative after cancel/reconnect");
   engine.stop();
 });
 
@@ -236,6 +306,44 @@ test("a card still PENDING is not something to announce — only a real decision
   assert.doesNotMatch(said(frames), /no longer waiting/i,
     "he is nagged about cards nothing was ever going to happen for");
   engine.stop();
+});
+
+test("a late approval warning is one-per-card across replay, live duplicates, and restart", () => {
+  const dataDir = tmp();
+  const provider = new (class implements ClaudeProvider {
+    async respond(): Promise<string> { return "ok"; }
+  })();
+  const first = makeEngine(provider, dataDir);
+  const approval = (id: string): Approval => ({
+    id, agentId: "a1", ownerId: OWNER, channelId: "c1",
+    action: "push a branch to GitHub", status: "approved", createdAt: 0, kind: "action",
+  });
+  const welcome = (engine: Engine, cards: Approval[]): void => {
+    (engine as unknown as { onFrame(f: unknown): void }).onFrame({
+      type: "welcome", state: { ...engine.state!, approvals: cards },
+    });
+  };
+  const old = approval("ap-old");
+  const newer = approval("ap-new");
+  welcome(first.engine, [old]);
+  welcome(first.engine, [old]);
+  (first.engine as unknown as { onFrame(f: unknown): void }).onFrame({ type: "approval", approval: old });
+  (first.engine as unknown as { onFrame(f: unknown): void }).onFrame({ type: "approval", approval: old });
+  assert.equal(first.frames.filter(f => f.type === "agentSend").length, 1,
+    "the same approved card was announced more than once");
+  (first.engine as unknown as { onFrame(f: unknown): void }).onFrame({ type: "approval", approval: newer });
+  assert.equal(first.frames.filter(f => f.type === "agentSend").length, 2,
+    "a genuinely new approval ID did not get its one warning");
+
+  const restarted = makeEngine(provider, dataDir);
+  welcome(restarted.engine, [old, newer]);
+  (restarted.engine as unknown as { onFrame(f: unknown): void }).onFrame({
+    type: "approval", approval: newer,
+  });
+  assert.equal(restarted.frames.filter(f => f.type === "agentSend").length, 0,
+    "a persisted card replayed after restart was announced again");
+  first.engine.stop();
+  restarted.engine.stop();
 });
 
 // ============================================ 3. the answer at the end survives

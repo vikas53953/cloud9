@@ -75,7 +75,9 @@ export interface ApprovalDeskOptions {
    * It is a NOTIFICATION, never a decision — like `onWaitStart`, it is told and
    * it does not get to change what this desk does.
    */
-  onWaitingChanged?: () => void;
+  onWaitingChanged?: (change: ApprovalWaitChange) => void;
+  /** current queue-turn token, including provider code that calls the desk directly */
+  currentTurnToken?: (agentId: ID) => string | undefined;
   log?: (message: string) => void;
   /**
    * A JOB HAS STOPPED MOVING AND IS STANDING HERE.
@@ -117,6 +119,14 @@ export interface ApprovalDeskOptions {
    * and it is why "don't ask me" does not cost him the audit.
    */
   onUnasked?: (what: { agent: AgentDef; taskId?: ID; channelId: ID; facts: RemoteActionFacts }) => void;
+}
+
+/** One wait entered or left the desk. `turnToken` is absent for external cards. */
+export interface ApprovalWaitChange {
+  type: "added" | "removed";
+  askId: string;
+  agentId: ID;
+  turnToken?: string;
 }
 
 /**
@@ -175,6 +185,8 @@ interface Waiting {
   facts?: RemoteActionFacts;
   /** the delegated job this wait belongs to, when there is one */
   taskId?: ID;
+  /** the engine turn that owns this wait; absent for an external/manual card */
+  turnToken?: string;
   settle: (outcome: ApprovalOutcome) => void;
 }
 
@@ -206,8 +218,8 @@ export class ApprovalDesk {
   private ledger: SettledRemoteAction[] = [];
 
   /** Somebody joined or left the queue. Told, never obeyed — see the option. */
-  private waitingChanged(): void {
-    this.tell(() => this.opts.onWaitingChanged?.());
+  private waitingChanged(change: ApprovalWaitChange): void {
+    this.tell(() => this.opts.onWaitingChanged?.(change));
   }
 
   private noteSettled(entry: SettledRemoteAction): void {
@@ -230,8 +242,11 @@ export class ApprovalDesk {
     channelId: ID;
     taskId?: ID;
     facts: RemoteActionFacts;
+    turnToken?: string | null;
   }): Promise<ApprovalOutcome> {
     const { agent, facts } = input;
+    const turnToken = input.turnToken === null ? undefined
+      : input.turnToken ?? this.opts.currentTurnToken?.(agent.id);
     // SOMETHING THIS APP HAS NO WORDS FOR NEVER HAPPENS. Asked FIRST, and asked
     // about the action itself rather than about the agent, because "we cannot
     // describe it" must not be answerable by any setting: an action with no row
@@ -277,8 +292,10 @@ export class ApprovalDesk {
       this.waiting.push({
         askId, agentId: agent.id, action: facts.action, facts, settle: resolve,
         ...(input.taskId ? { taskId: input.taskId } : {}),
+        ...(turnToken ? { turnToken } : {}),
       });
-      this.waitingChanged();
+      this.waitingChanged({ type: "added", askId, agentId: agent.id,
+        ...(turnToken ? { turnToken } : {}) });
       this.opts.send({
         type: "askApproval", askId,
         agentId: agent.id, channelId: input.channelId,
@@ -316,7 +333,10 @@ export class ApprovalDesk {
     taskId?: ID;
     /** what the agent said it intends to do, in its own words */
     plan: string;
+    turnToken?: string | null;
   }): Promise<ApprovalOutcome> {
+    const turnToken = input.turnToken === null ? undefined
+      : input.turnToken ?? this.opts.currentTurnToken?.(input.agent.id);
     const plan = tidyPlan(input.plan);
     if (!plan) {
       // nothing to show him is not something to approve — and silence would be
@@ -337,8 +357,10 @@ export class ApprovalDesk {
       this.waiting.push({
         askId, agentId: input.agent.id, action: "plan", settle: resolve,
         ...(input.taskId ? { taskId: input.taskId } : {}),
+        ...(turnToken ? { turnToken } : {}),
       });
-      this.waitingChanged();
+      this.waitingChanged({ type: "added", askId, agentId: input.agent.id,
+        ...(turnToken ? { turnToken } : {}) });
       this.opts.send({
         type: "askPlan", askId,
         agentId: input.agent.id, channelId: input.channelId,
@@ -389,7 +411,10 @@ export class ApprovalDesk {
     channelId: ID;
     taskId?: ID;
     proposal: SavingProposal;
+    turnToken?: string | null;
   }): Promise<ApprovalOutcome> {
+    const turnToken = input.turnToken === null ? undefined
+      : input.turnToken ?? this.opts.currentTurnToken?.(input.agent.id);
     // JUDGED HERE AS WELL AS AT THE HUB. Not belt-and-braces: this is the side
     // that can still say something useful to the AGENT, whereas a refusal at
     // the hub is a card that never appears and an agent left wondering.
@@ -412,8 +437,10 @@ export class ApprovalDesk {
       this.waiting.push({
         askId, agentId: input.agent.id, action: "saving", settle: resolve,
         ...(input.taskId ? { taskId: input.taskId } : {}),
+        ...(turnToken ? { turnToken } : {}),
       });
-      this.waitingChanged();
+      this.waitingChanged({ type: "added", askId, agentId: input.agent.id,
+        ...(turnToken ? { turnToken } : {}) });
       this.opts.send({
         type: "askSaving", askId,
         agentId: input.agent.id, channelId: input.channelId,
@@ -519,7 +546,8 @@ export class ApprovalDesk {
     if (i < 0) return;
     const [w] = this.waiting.splice(i, 1);
     if (!w) return;
-    this.waitingChanged();
+    this.waitingChanged({ type: "removed", askId: w.askId, agentId: w.agentId,
+      ...(w.turnToken ? { turnToken: w.turnToken } : {}) });
     this.log(`${w.action}: ${outcome.reason}`);
     // WRITTEN DOWN BEFORE ANYONE IS TOLD. See `SettledRemoteAction` — and see
     // `Waiting.facts` for why a plan wait writes nothing here.
@@ -538,4 +566,3 @@ export class ApprovalDesk {
     try { what(); } catch (err) { this.log(`a waiting listener threw: ${String(err)}`); }
   }
 }
-
