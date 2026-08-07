@@ -429,10 +429,11 @@ a{color:var(--ultra);}
 .threadgrip:focus-visible::before,
 .threadgrip.dragging::before{width:3px;background:var(--ultra);}
 .threadgrip:focus-visible{outline:none;}
-/* While he is dragging, nothing else on the screen should be selecting text
-   or fighting him for the pointer. */
-.chatgrid.dragging-thread{user-select:none;cursor:col-resize;}
-.chatgrid.dragging-thread *{cursor:col-resize !important;}
+/* While he is dragging, nothing else on the screen should be selecting text or
+   fighting him for the pointer — including the parts of the screen his hand has
+   travelled out over, which is why this is on the page and not on the grid. */
+body.dragging-thread{user-select:none;}
+body.dragging-thread *{cursor:col-resize !important;}
 
 /* ---- the room, dimmed behind the thread --------------------------------- */
 .threadscrim{

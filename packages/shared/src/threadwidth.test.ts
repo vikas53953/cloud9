@@ -90,6 +90,14 @@ test("a keyboard nudge in a window too small to split still lands somewhere sane
 
 /* --------------------------------------------------------------- the defaults */
 
+test("before the screen has measured itself, he still gets HIS width", () => {
+  /* `space` is 0 on the first frame. Drawing 0 there is a hairline that snaps
+     open — it looks like a fault and it is not one. */
+  assert.equal(widthToDraw(900, 0), 900);
+  assert.equal(widthToDraw(THREAD_DEFAULT, 0), THREAD_DEFAULT);
+  assert.equal(widthToDraw(NaN, 0), THREAD_DEFAULT);
+});
+
 test("it opens at Buzz's measured default, not at today's 280", () => {
   assert.equal(THREAD_DEFAULT, 388);
   assert.equal(widthToDraw(THREAD_DEFAULT, spaceToShare(1920)), 388);

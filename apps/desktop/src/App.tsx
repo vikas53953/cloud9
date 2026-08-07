@@ -66,8 +66,8 @@ import {
      that HIS width is never edited by the window all live in shared, where a
      test reads them. This screen owns no thread arithmetic of its own — that
      is exactly where the last three attempts went wrong. */
-  BESIDE_LABEL, EXPAND_LABEL, THREAD_DEFAULT, THREAD_STEP,
-  cannotSplit, dividerSpokenWords, dividerWords, widthHeChose, widthToDraw,
+  BESIDE_LABEL, EXPAND_LABEL, THREAD_DEFAULT, THREAD_FLOOR, THREAD_STEP,
+  cannotSplit, dividerSpokenWords, dividerWords, widestThread, widthHeChose, widthToDraw,
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -3265,6 +3265,15 @@ function ThreadDivider({ stored, drawn, space, onChoose, onReset }: {
   const [dragging, setDragging] = useState(false);
   const grip = useRef<HTMLButtonElement>(null);
 
+  /* His hand travels out over the room while he drags, so the "do not select
+     text, and keep showing the resize pointer" rule has to be on the page, not
+     on the strip. Taken off again the moment he lets go, and on unmount, so a
+     thread closed mid-drag cannot leave the whole app stuck in that state. */
+  useEffect(() => {
+    document.body.classList.toggle("dragging-thread", dragging);
+    return () => document.body.classList.remove("dragging-thread");
+  }, [dragging]);
+
   /* The thread follows the pointer live — measured from the grid's own right
      edge, so it is the distance from the edge of the window to his cursor and
      nothing has to be guessed about what is outside the grid. */
@@ -3308,7 +3317,8 @@ function ThreadDivider({ stored, drawn, space, onChoose, onReset }: {
       role="separator"
       aria-orientation="vertical"
       aria-label={dividerSpokenWords(stored)}
-      aria-valuenow={drawn} aria-valuemin={300} aria-valuemax={Math.max(300, space - 300)}
+      aria-valuenow={drawn} aria-valuemin={THREAD_FLOOR}
+      aria-valuemax={Math.max(THREAD_FLOOR, widestThread(space))}
       title={dividerWords(stored)}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}

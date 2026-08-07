@@ -92,6 +92,12 @@ export function cannotSplit(space: number): boolean {
  * HIS NUMBER IS NOT TOUCHED — this returns a different one when it has to.
  */
 export function widthToDraw(stored: number, space: number): number {
+  /* NOTHING KNOWN YET. On the very first frame the screen has not measured
+     itself, and `space` is 0. Answering "0" there would draw his thread as a
+     hairline for one frame before it snapped open, which looks like a bug and
+     is not one. Not knowing is a reason to give him his own number back, never
+     a reason to invent a small one. */
+  if (space <= 0) return Number.isFinite(stored) ? Math.round(stored) : THREAD_DEFAULT;
   if (cannotSplit(space)) return space;         // take-over: the whole area
   const widest = widestThread(space);
   if (!Number.isFinite(stored)) return THREAD_DEFAULT;
