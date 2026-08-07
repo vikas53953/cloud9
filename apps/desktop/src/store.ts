@@ -3024,7 +3024,11 @@ export class RelayClient {
         }
         const i = w.workflowRuns.findIndex(x => x.id === frame.run.id);
         if (i >= 0) w.workflowRuns[i] = frame.run; else w.workflowRuns.unshift(frame.run);
-        w.workflowRuns = [...w.workflowRuns];
+        // A transition on an older run can make it the newest receipt. Keep
+        // the detail screen's first row aligned with relay's updatedAt order.
+        w.workflowRuns = [...w.workflowRuns].sort((a, b) =>
+          (b.updatedAt ?? b.finishedAt ?? b.createdAt) - (a.updatedAt ?? a.finishedAt ?? a.createdAt)
+          || b.id.localeCompare(a.id));
         break;
       }
       case "activity":
