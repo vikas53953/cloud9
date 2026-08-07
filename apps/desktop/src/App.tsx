@@ -13,7 +13,7 @@ import {
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectItemKind, ProjectItemState,
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
   EverywhereHit, SearchKind,
-  SearchHit, ServerFrame, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
+  SearchHit, ServerFrame, SKILL_LIMITS, SocialLink, SocialPost, summarizeRun, Task, User, humanDuration, humanMoney,
   StoredHook, HOOK_EVENTS, HOOK_ACTIONS,
   NotificationInboxEntry,
   Workflow, WorkflowRun,
@@ -1149,6 +1149,11 @@ const IconProjects = (): React.JSX.Element => (
     <path d="M7 7.7v8.6" /><path d="M17.5 11.3v.8a3.2 3.2 0 0 1-3.2 3.2h-2.1a3.2 3.2 0 0 0-3.2 3.1" />
   </svg>
 );
+const IconSocial = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M5 5.5h14v10H9l-4 3v-13Z" /><path d="M8 9h8M8 12h5" />
+  </svg>
+);
 const IconLog = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12.5h4l2.2-6 3.4 12 2.5-7.5 1.6 3.5H21" /></svg>
 );
@@ -1984,7 +1989,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "hooks" | "spending" | "activity" | "notifications" | "saved" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "hooks" | "social" | "spending" | "activity" | "notifications" | "saved" | "settings";
 type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -2148,6 +2153,7 @@ function Workspace(): React.JSX.Element {
      "1" and the board said "Nothing is being worked on" — both visible at once,
      one of them lying. `workingCount` is now the only answer either can give. */
   const workingNow = workingCount(useAgentActivity().map(r => r.line));
+  const socialUnread = Object.values(world.socialFeeds).reduce((total, feed) => total + feed.unread, 0);
   const unreadNotifications = world.notifications.filter(n => n.state === "unread").length;
 
   /* ---- EVERY WAY OUT OF A SCREEN GOES THROUGH ONE DOOR ----
@@ -2241,6 +2247,13 @@ function Workspace(): React.JSX.Element {
     attemptLeave(() => {
       client.askProjects();
       setScreen("projects");
+    });
+  }, []);
+
+  const openSocial = useCallback(() => {
+    attemptLeave(() => {
+      client.askSocialProjects();
+      setScreen("social");
     });
   }, []);
 
@@ -2772,6 +2785,7 @@ function Workspace(): React.JSX.Element {
               hold about his repositories arrives through this one door. */}
           {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
           {railBtn("hooks", "Hooks", <IconGear />)}
+          {railBtn("social", "Team feed", <IconSocial />, socialUnread, openSocial)}
           {/* ADDED 2026-08-07. It sits beside the Activity button because it
               answers the same shape of question — "what has been going on?" —
               about money rather than about actions. */}
@@ -2858,6 +2872,7 @@ function Workspace(): React.JSX.Element {
             <ProjectsScreen onOpenChannel={id => goChannel(id)} />
           )}
           {screen === "hooks" && <HooksScreen />}
+          {screen === "social" && <SocialFeedScreen />}
           {screen === "spending" && <SpendingScreen />}
           {screen === "activity" && <ActivityScreen />}
           {screen === "notifications" && <NotificationsScreen onOpen={openInboxEntry} />}
@@ -14082,7 +14097,7 @@ function ProjectsScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }):
 
   useEffect(() => { client.askProjects(); }, []);
 
-  const projects = world.projects.list;
+  const projects = world.socialProjects.list;
   const picked = projects.find(p => p.id === pickedId) ?? projects[0];
 
   /* A repository just connected is the one he wants to look at. Matched on the
@@ -14698,13 +14713,111 @@ function NotificationsScreen({ onOpen }: {
                 <div className="notification-actions">
                   {entry.state === "unread" && <button type="button" className="linkish" onClick={() => client.markNotificationRead(entry.id)}>Mark read</button>}
                   {entry.state !== "dismissed" && <button type="button" className="linkish" onClick={() => client.dismissNotification(entry.id)}>Dismiss</button>}
+                 </div>
+               </article>
+             ))}
+           </div>
+         )}
+       </div>
+     </div>
+   );
+ }
+
+function socialLinkLabel(link: SocialLink): string {
+  if (link.kind === "projectItem") return `${link.itemKind === "pull" ? "PR" : "Issue"} #${link.number ?? "?"}`;
+  return `${link.kind} ${link.id}`;
+}
+
+function SocialFeedScreen(): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [projectId, setProjectId] = useState<ID | "">("");
+  const [text, setText] = useState("");
+  const [replyTo, setReplyTo] = useState<ID | undefined>();
+  const [editing, setEditing] = useState<ID | undefined>();
+  const [editText, setEditText] = useState("");
+  const [linkKind, setLinkKind] = useState<SocialLink["kind"]>("task");
+  const [linkId, setLinkId] = useState("");
+  const [itemKind, setItemKind] = useState<"pull" | "issue">("pull");
+  const [itemNumber, setItemNumber] = useState("");
+  const projects = world.projects.list;
+  const selectedId = projectId || projects[0]?.id || "";
+  const feed = selectedId ? client.socialFor(selectedId) : undefined;
+  const newest = feed?.posts.reduce((n, post) => Math.max(n, post.createdAt), 0) ?? 0;
+
+  useEffect(() => {
+    if (!world.socialProjects.asked && world.connected) client.askSocialProjects();
+  }, [world.socialProjects.asked, world.connected]);
+  useEffect(() => {
+    if (!selectedId || feed?.loading) return;
+    if (!feed?.asked) client.askSocialFeed(selectedId);
+  }, [selectedId, feed?.asked, feed?.loading]);
+  useEffect(() => {
+    if (!selectedId || !newest || !world.connected) return;
+    client.markSocialRead(selectedId, newest);
+  }, [selectedId, newest, world.connected]);
+
+  const submit = () => {
+    if (!selectedId) return;
+    const links: SocialLink[] = [];
+    if (linkKind === "projectItem") {
+      const number = Number(itemNumber);
+      if (Number.isInteger(number) && number > 0) {
+        links.push({ kind: linkKind, id: selectedId, projectId: selectedId, itemKind, number });
+      }
+    } else if (linkId.trim()) {
+      links.push({ kind: linkKind, id: linkId.trim() });
+    }
+    if (!client.createSocialPost(selectedId, text, replyTo, links)) return;
+    setText(""); setReplyTo(undefined); setLinkId(""); setItemNumber("");
+  };
+  const submitEdit = (postId: ID) => {
+    if (!client.editSocialPost(postId, editText)) return;
+    setEditing(undefined); setEditText("");
+  };
+  const own = (post: SocialPost): boolean => post.authorKind === "human" && post.authorId === world.me?.id;
+
+  return (
+    <section className="social-screen" aria-labelledby="social-title">
+      <header className="social-head">
+        <div><span className="eyebrow">Internal team</span><h1 id="social-title">Project feed</h1>
+          <p className="subtle">Chronological project posts by people and agents. This feed stays inside project membership.</p></div>
+        <label className="social-project-picker">Project
+          <select aria-label="Project feed" value={selectedId} onChange={e => setProjectId(e.target.value)}>
+            <option value="">Choose a project</option>
+            {projects.map(project => <option value={project.id} key={project.id}>{project.name}</option>)}
+          </select>
+        </label>
+      </header>
+      {!world.socialProjects.asked ? <div className="state loading" role="status">Loading projects…</div>
+        : projects.length === 0 ? <div className="state empty">No project is connected yet. Connect one in Projects to start an internal feed.</div>
+        : !feed ? <div className="state loading" role="status">Loading feed…</div>
+        : feed.problem ? <div className="state error" role="alert">{feed.problem}</div>
+        : <>
+          <div className="social-feed" role="feed" aria-live="polite" aria-busy={feed.loading ? "true" : "false"}>
+            {feed.loading && feed.posts.length === 0 ? <div className="state loading" role="status">Loading feed…</div> : null}
+            {!feed.loading && feed.posts.length === 0 ? <div className="state empty">No posts yet. Share a project update with the team.</div> : null}
+            {feed.posts.map(post => (
+              <article className={`social-post${post.parentId ? " social-comment" : ""}`} key={post.id} aria-label={`${post.authorName} ${post.parentId ? "comment" : "post"}`}>
+                <div className="social-avatar" aria-hidden="true">{post.authorName.slice(0, 1).toUpperCase()}</div>
+                <div className="social-post-body">
+                  <div className="social-post-meta"><strong>{post.authorName}</strong><span>{post.authorKind === "agent" ? "agent" : "human"}</span><time dateTime={new Date(post.createdAt).toISOString()}>{new Date(post.createdAt).toLocaleString()}</time>{post.editedAt ? <em>edited</em> : null}</div>
+                  {post.deletedAt ? <p className="social-tombstone">This post was deleted.</p> : editing === post.id ? <div className="social-edit"><label htmlFor={`social-edit-${post.id}`}>Edit post</label><textarea id={`social-edit-${post.id}`} value={editText} onChange={e => setEditText(e.target.value)} /><button className="primary" onClick={() => submitEdit(post.id)}>Save</button><button onClick={() => setEditing(undefined)}>Cancel</button></div> : <p className="social-post-text">{post.text}</p>}
+                  {post.links?.length ? <div className="social-links" aria-label="Linked Cloud9 records">{post.links.map((link, i) => <span className="social-link" key={`${link.kind}-${link.id}-${i}`}>{socialLinkLabel(link)}</span>)}</div> : null}
+                  {post.reactions?.length ? <div className="social-reactions" aria-label="Reactions">{post.reactions.map(reaction => <button key={reaction.emoji} aria-label={`Reacted ${reaction.emoji} by ${reaction.actorIds.length} people`} onClick={() => client.reactSocialPost(post.id, reaction.emoji, !reaction.actorIds.includes(world.me?.id ?? ""))}>{reaction.emoji} {reaction.actorIds.length}</button>)}</div> : null}
+                  <div className="social-actions">{!post.deletedAt ? <><button onClick={() => { setReplyTo(post.id); setText(""); }}>Comment</button><button onClick={() => client.reactSocialPost(post.id, "👍", !(post.reactions ?? []).find(r => r.emoji === "👍")?.actorIds.includes(world.me?.id ?? ""))}>React</button></> : null}{own(post) && !post.deletedAt ? <><button onClick={() => { setEditing(post.id); setEditText(post.text); }}>Edit</button><button onClick={() => client.deleteSocialPost(post.id)}>Delete</button></> : null}</div>
                 </div>
               </article>
             ))}
           </div>
-        )}
-      </div>
-    </div>
+          {feed.hasMore ? <button className="social-more" onClick={() => client.askSocialFeed(selectedId, true)} disabled={feed.loading}>Load older posts</button> : null}
+          <form className="social-composer" onSubmit={e => { e.preventDefault(); submit(); }} aria-label={replyTo ? "Write a comment" : "Write a project post"}>
+            <div className="social-composer-heading">{replyTo ? <><span>Commenting on a post</span><button type="button" onClick={() => setReplyTo(undefined)}>Cancel comment</button></> : <span>Share with this project</span>}</div>
+            <label htmlFor="social-composer-text">{replyTo ? "Comment" : "Post"}</label><textarea id="social-composer-text" value={text} onChange={e => setText(e.target.value)} placeholder={replyTo ? "Add a useful follow-up…" : "What should the team know?"} rows={4} />
+            <div className="social-link-fields"><label>Link<select aria-label="Linked record type" value={linkKind} onChange={e => setLinkKind(e.target.value as SocialLink["kind"])}><option value="task">Task</option><option value="run">Run</option><option value="artifact">Artifact</option><option value="projectItem">PR or issue</option></select></label>{linkKind === "projectItem" ? <><label>Kind<select aria-label="Work item kind" value={itemKind} onChange={e => setItemKind(e.target.value as "pull" | "issue")}><option value="pull">PR</option><option value="issue">Issue</option></select></label><label>Number<input aria-label="Work item number" inputMode="numeric" value={itemNumber} onChange={e => setItemNumber(e.target.value)} /></label></> : <label>ID<input aria-label={`Linked ${linkKind} ID`} value={linkId} onChange={e => setLinkId(e.target.value)} /></label>}</div>
+            <button className="primary" type="submit" disabled={!text.trim() || !selectedId}>Publish to project</button>
+          </form>
+        </>}
+    </section>
   );
 }
 

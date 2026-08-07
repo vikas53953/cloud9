@@ -9,6 +9,7 @@ import {
   StoredArtifact, StoredArtifactVersion, artifactVersionForPublic,
   ChannelRole, EverywhereHit, ID, Message, SearchKind,
   MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
+  SocialPost, SocialReaction, SocialReadEntry, SocialLink, SOCIAL_LIMITS,
   RunRecord, RUN_RETENTION, Task, User, StoredHook, isSafeStoredId, nameKey, newId,
   NOTIFICATION_INBOX_LIMITS,
   type NotificationInboxKind, type NotificationInboxState,
@@ -573,6 +574,31 @@ export class Store implements JoinHubStore {
         PRIMARY KEY (projectId, kind, number)
       );
       CREATE INDEX IF NOT EXISTS proj_item_updated ON project_items(projectId, updatedAt);
+
+      -- Internal project social feed. Posts and comments share one durable
+      -- table; parentId makes comments chronological without a second tree.
+      CREATE TABLE IF NOT EXISTS social_posts(
+        id TEXT PRIMARY KEY, projectId TEXT NOT NULL, parentId TEXT,
+        authorId TEXT NOT NULL, ownerId TEXT NOT NULL, authorKind TEXT NOT NULL,
+        createdAt INTEGER NOT NULL, deletedAt INTEGER, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS social_project_time ON social_posts(projectId, createdAt, id);
+      CREATE INDEX IF NOT EXISTS social_parent ON social_posts(projectId, parentId, createdAt, id);
+      CREATE TABLE IF NOT EXISTS social_reactions(
+        projectId TEXT NOT NULL, postId TEXT NOT NULL, actorId TEXT NOT NULL,
+        emoji TEXT NOT NULL, ts INTEGER NOT NULL, removedAt INTEGER,
+        PRIMARY KEY(postId, actorId, emoji)
+      );
+      CREATE INDEX IF NOT EXISTS social_react_post ON social_reactions(postId);
+      CREATE TABLE IF NOT EXISTS social_reads(
+        userId TEXT NOT NULL, projectId TEXT NOT NULL, lastReadAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL, PRIMARY KEY(userId, projectId)
+      );
+      CREATE TABLE IF NOT EXISTS social_members(
+        projectId TEXT NOT NULL, userId TEXT NOT NULL, addedAt INTEGER NOT NULL,
+        removedAt INTEGER, PRIMARY KEY(projectId, userId)
+      );
+      CREATE INDEX IF NOT EXISTS social_member_user ON social_members(userId);
     `);
       this.migrate();
       this.sweepArtifactOrphans();
@@ -3324,6 +3350,14 @@ export class Store implements JoinHubStore {
       .all(ownerId) as { json: string }[]).map(r => JSON.parse(r.json) as Project);
   }
 
+  /** Projects a person may use as a social-feed member, including ownership. */
+  socialProjectsOf(userId: ID): Project[] {
+    return (this.db.prepare(
+      "SELECT DISTINCT p.json FROM projects p LEFT JOIN social_members sm ON sm.projectId=p.id " +
+      "WHERE p.ownerId=? OR (sm.userId=? AND sm.removedAt IS NULL) ORDER BY p.createdAt DESC",
+    ).all(userId, userId) as { json: string }[]).map(r => JSON.parse(r.json) as Project);
+  }
+
   /** The one this person already has for this repository, if any. */
   projectByRepo(ownerId: ID, repo: string): Project | undefined {
     const row = this.db.prepare("SELECT json FROM projects WHERE ownerId=? AND repo=?")
@@ -3448,6 +3482,10 @@ export class Store implements JoinHubStore {
   /** Forget our copy. THE REPOSITORY IS NOT TOUCHED — it is not ours to touch. */
   forgetProject(id: ID): void {
     this.db.prepare("DELETE FROM project_items WHERE projectId=?").run(id);
+    this.db.prepare("DELETE FROM social_reactions WHERE projectId=?").run(id);
+    this.db.prepare("DELETE FROM social_posts WHERE projectId=?").run(id);
+    this.db.prepare("DELETE FROM social_reads WHERE projectId=?").run(id);
+    this.db.prepare("DELETE FROM social_members WHERE projectId=?").run(id);
     this.db.prepare("DELETE FROM projects WHERE id=?").run(id);
   }
 
@@ -3481,6 +3519,159 @@ export class Store implements JoinHubStore {
     return (this.db.prepare(
       "SELECT json FROM project_items WHERE projectId=? ORDER BY updatedAt DESC",
     ).all(projectId) as { json: string }[]).map(r => JSON.parse(r.json) as ProjectItem);
+  }
+
+  // ---- internal project social feed ----
+
+  /** The owner is always a member; additional members are soft-deleted rows. */
+  socialIsMember(projectId: ID, userId: ID, ownerId?: ID): boolean {
+    if (ownerId && ownerId === userId) return true;
+    const row = this.db.prepare(
+      "SELECT 1 FROM social_members WHERE projectId=? AND userId=? AND removedAt IS NULL",
+    ).get(projectId, userId);
+    return !!row;
+  }
+
+  socialMembers(projectId: ID, ownerId: ID): ID[] {
+    const rows = this.db.prepare(
+      "SELECT userId FROM social_members WHERE projectId=? AND removedAt IS NULL ORDER BY addedAt ASC, userId ASC",
+    ).all(projectId) as { userId: string }[];
+    const ids = rows.map(r => r.userId);
+    if (!ids.includes(ownerId)) ids.unshift(ownerId);
+    return ids;
+  }
+
+  addSocialMember(projectId: ID, userId: ID, at = Date.now()): void {
+    this.db.prepare(
+      "INSERT INTO social_members(projectId,userId,addedAt,removedAt) VALUES(?,?,?,NULL) " +
+      "ON CONFLICT(projectId,userId) DO UPDATE SET addedAt=excluded.addedAt, removedAt=NULL",
+    ).run(projectId, userId, at);
+  }
+
+  removeSocialMember(projectId: ID, userId: ID, at = Date.now()): void {
+    this.db.prepare("UPDATE social_members SET removedAt=? WHERE projectId=? AND userId=?")
+      .run(at, projectId, userId);
+  }
+
+  saveSocialPost(post: SocialPost): void {
+    const { reactions: _reactions, replyCount: _replyCount, ...stored } = post;
+    void _reactions; void _replyCount;
+    this.db.prepare(
+      "INSERT OR REPLACE INTO social_posts(id,projectId,parentId,authorId,ownerId,authorKind,createdAt,deletedAt,json) " +
+      "VALUES(?,?,?,?,?,?,?,?,?)",
+    ).run(
+      stored.id, stored.projectId, stored.parentId ?? null, stored.authorId, stored.ownerId,
+      stored.authorKind, stored.createdAt, stored.deletedAt ?? null, JSON.stringify(stored),
+    );
+  }
+
+  socialPost(id: ID): SocialPost | undefined {
+    const row = this.db.prepare("SELECT json FROM social_posts WHERE id=?").get(id) as
+      { json: string } | undefined;
+    if (!row) return undefined;
+    const post = JSON.parse(row.json) as SocialPost;
+    this.hydrateSocial([post]);
+    return post;
+  }
+
+  socialPosts(
+    projectId: ID,
+    cursor: { before?: number; beforeId?: ID },
+    limit: number = SOCIAL_LIMITS.feedPage,
+  ): Page<SocialPost> {
+    const size = Math.max(1, Math.min(limit, SOCIAL_LIMITS.feedPage));
+    const before = cursor.before;
+    let rows: { json: string }[];
+    if (before === undefined) {
+      rows = this.db.prepare(
+        "SELECT json FROM social_posts WHERE projectId=? ORDER BY createdAt DESC, id DESC LIMIT ?",
+      ).all(projectId, size + 1) as { json: string }[];
+    } else {
+      const beforeId = cursor.beforeId ?? AFTER_EVERY_ID;
+      rows = this.db.prepare(
+        "SELECT json FROM social_posts WHERE projectId=? AND (createdAt < ? OR (createdAt = ? AND id < ?)) " +
+        "ORDER BY createdAt DESC, id DESC LIMIT ?",
+      ).all(projectId, before, before, beforeId, size + 1) as { json: string }[];
+    }
+    const hasMore = rows.length > size;
+    const page = (hasMore ? rows.slice(0, size) : rows)
+      .map(row => JSON.parse(row.json) as SocialPost);
+    const oldest = page[page.length - 1];
+    const posts = page.reverse();
+    this.hydrateSocial(posts);
+    return {
+      items: posts,
+      hasMore,
+      nextBefore: hasMore && oldest ? oldest.createdAt : undefined,
+      nextBeforeId: hasMore && oldest ? oldest.id : undefined,
+    };
+  }
+
+  private hydrateSocial(posts: SocialPost[]): SocialPost[] {
+    if (posts.length === 0) return posts;
+    const ids = posts.map(p => p.id);
+    const slots = ids.map(() => "?").join(",");
+    const reactions = this.db.prepare(
+      `SELECT postId,emoji,actorId FROM social_reactions WHERE postId IN (${slots}) AND removedAt IS NULL ORDER BY postId,emoji,actorId`,
+    ).all(...ids) as { postId: string; emoji: string; actorId: string }[];
+    const grouped = new Map<ID, SocialReaction[]>();
+    for (const row of reactions) {
+      const list = grouped.get(row.postId) ?? [];
+      const found = list.find(r => r.emoji === row.emoji);
+      if (found) found.actorIds.push(row.actorId);
+      else list.push({ emoji: row.emoji, actorIds: [row.actorId] });
+      grouped.set(row.postId, list);
+    }
+    const counts = this.db.prepare(
+      `SELECT parentId,COUNT(*) AS count FROM social_posts WHERE parentId IN (${slots}) GROUP BY parentId`,
+    ).all(...ids) as { parentId: string; count: number }[];
+    const replies = new Map(counts.map(row => [row.parentId, Number(row.count)]));
+    for (const post of posts) {
+      const rs = grouped.get(post.id);
+      if (!post.deletedAt && rs?.length) post.reactions = rs;
+      else delete post.reactions;
+      const count = replies.get(post.id) ?? 0;
+      if (count) post.replyCount = count;
+      else delete post.replyCount;
+    }
+    return posts;
+  }
+
+  socialUnread(userId: ID, projectId: ID): SocialReadEntry {
+    const row = this.db.prepare(
+      "SELECT lastReadAt FROM social_reads WHERE userId=? AND projectId=?",
+    ).get(userId, projectId) as { lastReadAt: number } | undefined;
+    const lastReadAt = row?.lastReadAt ?? 0;
+    const count = this.db.prepare(
+      "SELECT COUNT(*) AS count FROM social_posts WHERE projectId=? AND createdAt>? AND ownerId<>? AND deletedAt IS NULL",
+    ).get(projectId, lastReadAt, userId) as { count: number };
+    return { projectId, lastReadAt, unread: Number(count.count) };
+  }
+
+  markSocialRead(userId: ID, projectId: ID, at: number): SocialReadEntry {
+    const now = Date.now();
+    this.db.prepare(
+      "INSERT INTO social_reads(userId,projectId,lastReadAt,updatedAt) VALUES(?,?,?,?) " +
+      "ON CONFLICT(userId,projectId) DO UPDATE SET lastReadAt=MAX(lastReadAt,excluded.lastReadAt), updatedAt=excluded.updatedAt",
+    ).run(userId, projectId, at, now);
+    return this.socialUnread(userId, projectId);
+  }
+
+  setSocialReaction(projectId: ID, postId: ID, actorId: ID, emoji: string, on: boolean): ID[] {
+    const now = Date.now();
+    if (on) {
+      this.db.prepare(
+        "INSERT INTO social_reactions(projectId,postId,actorId,emoji,ts,removedAt) VALUES(?,?,?,?,?,NULL) " +
+        "ON CONFLICT(postId,actorId,emoji) DO UPDATE SET projectId=excluded.projectId, ts=excluded.ts, removedAt=NULL",
+      ).run(projectId, postId, actorId, emoji, now);
+    } else {
+      this.db.prepare(
+        "UPDATE social_reactions SET removedAt=? WHERE postId=? AND actorId=? AND emoji=? AND removedAt IS NULL",
+      ).run(now, postId, actorId, emoji);
+    }
+    return (this.db.prepare(
+      "SELECT actorId FROM social_reactions WHERE postId=? AND emoji=? AND removedAt IS NULL ORDER BY actorId",
+    ).all(postId, emoji) as { actorId: string }[]).map(r => r.actorId);
   }
 
   /**

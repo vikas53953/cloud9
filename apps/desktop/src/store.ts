@@ -12,11 +12,13 @@ import {
   ReachCatchup,
   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
   Workflow, WorkflowRun,
+  SocialLink, SocialPost,
   // SPENDING BLOCK (what the crew costs, 2026-08-07)
   AgentTokenUse, WasteFinding,
   UnreadEntry, User,
   effectiveArtifactAccess, latestVersion,
-  validateAttachment, validateLocalFolder, validateProjectText, validateRepo,
+  validateAttachment, validateLocalFolder, validateMessageText, validateProjectText, validateRepo,
+  validateSocialLinks,
   // Joining a friend's Cloud9 — the address, the address book, the connection
   // lifecycle. All three are the shared modules the handoff says to build ON,
   // never reimplement (docs/plans/join-hub-handoff.md).
@@ -371,6 +373,12 @@ export interface World {
    */
   projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
   hooks: { asked: boolean; requestId?: ID; mutationRequestId?: ID; pending?: Record<ID, true>; auditRequestId?: ID; auditAsked?: boolean; auditLoading?: boolean; audit?: HookAuditEntry[]; auditProblem?: string; list: StoredHook[]; problem?: string; test?: { hookId: ID; ok: boolean; said: string } };
+  socialProjects: { asked: boolean; list: Project[] };
+  /** Project-scoped social feeds, loaded only when the Social screen asks. */
+  socialFeeds: Record<ID, {
+    asked: boolean; loading: boolean; posts: SocialPost[]; hasMore: boolean;
+    nextBefore?: number; nextBeforeId?: ID; unread: number; problem?: string;
+  }>;
   /**
    * THE REPOSITORIES HIS OWN GITHUB SIGN-IN CAN SEE — the picker's list.
    *
@@ -657,6 +665,7 @@ export class RelayClient {
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
     projects: { asked: false, list: [] }, projectItems: {}, hooks: { asked: false, list: [] },
+    socialProjects: { asked: false, list: [] }, socialFeeds: {},
     repoChoices: { asked: false, asking: false },
     artifacts: {}, artifactsGone: {}, channelArtifacts: {},
     artifactWorkspace: emptyArtifactWorkspace(),
@@ -2034,6 +2043,83 @@ export class RelayClient {
   deleteHook(hookId: ID): void { const requestId = this.nextRequestId("deleteHook"); this.hookMutation({ type: "deleteHook", hookId }, requestId); }
   testHook(hookId: ID): void { const requestId = this.nextRequestId("testHook"); this.hookMutation({ type: "testHook", hookId }, requestId); }
 
+  askSocialProjects(): void {
+    this.ask({ type: "socialProjects" }, {
+      answers: f => f.type === "socialProjects",
+      answered: f => {
+        if (f.type !== "socialProjects") return;
+        this.world.socialProjects = { asked: true, list: f.projects };
+        this.emit();
+      },
+      refused: () => { this.world.socialProjects = { ...this.world.socialProjects, asked: true }; this.emit(); },
+      lost: () => { this.world.socialProjects = { ...this.world.socialProjects, asked: true }; this.emit(); },
+    });
+  }
+
+  socialFor(projectId: ID): {
+    asked: boolean; loading: boolean; posts: SocialPost[]; hasMore: boolean;
+    nextBefore?: number; nextBeforeId?: ID; unread: number; problem?: string;
+  } {
+    return this.world.socialFeeds[projectId] ?? {
+      asked: false, loading: false, posts: [], hasMore: true, unread: 0,
+    };
+  }
+
+  askSocialFeed(projectId: ID, older = false): void {
+    const current = this.socialFor(projectId);
+    if (current.loading) return;
+    const frame: ClientFrame = older
+      ? {
+          type: "socialList", projectId,
+          ...(current.nextBefore !== undefined ? { before: current.nextBefore } : {}),
+          ...(current.nextBeforeId !== undefined ? { beforeId: current.nextBeforeId } : {}),
+        }
+      : { type: "socialList", projectId };
+    this.world.socialFeeds = {
+      ...this.world.socialFeeds, [projectId]: { ...current, loading: true, problem: undefined },
+    };
+    this.emit();
+    const settle = (problem?: string): void => {
+      const now = this.socialFor(projectId);
+      this.world.socialFeeds = {
+        ...this.world.socialFeeds, [projectId]: { ...now, asked: true, loading: false, ...(problem ? { problem } : {}) },
+      };
+      this.emit();
+    };
+    const sent = this.ask(frame, {
+      answers: f => f.type === "socialFeed" && f.projectId === projectId,
+      answered: () => { /* applied in onFrame so pushed answers are identical */ },
+      refused: settle,
+      lost: () => settle("the hub did not answer — is it still running?"),
+    });
+    if (!sent) settle("not connected to the hub yet");
+  }
+
+  createSocialPost(projectId: ID, text: string, parentId?: ID, links?: SocialLink[]): boolean {
+    const bad = validateMessageText(text) ?? validateSocialLinks(links);
+    if (this.refused(bad)) return false;
+    this.send({ type: "socialCreate", projectId, text, ...(parentId ? { parentId } : {}), ...(links?.length ? { links } : {}) });
+    return true;
+  }
+
+  editSocialPost(postId: ID, text: string): boolean {
+    if (this.refused(validateMessageText(text))) return false;
+    this.send({ type: "socialEdit", postId, text });
+    return true;
+  }
+
+  deleteSocialPost(postId: ID): void {
+    this.send({ type: "socialDelete", postId });
+  }
+
+  reactSocialPost(postId: ID, emoji: string, on = true): void {
+    this.send({ type: "socialReact", postId, emoji, on });
+  }
+
+  markSocialRead(projectId: ID, at?: number): void {
+    this.send({ type: "socialMarkRead", projectId, ...(at !== undefined ? { at } : {}) });
+  }
+
   /**
    * "LOOK AT GITHUB NOW" for one project.
    *
@@ -3149,6 +3235,8 @@ export class RelayClient {
         w.projects = { asked: false, list: [] };
         w.projectItems = {};
         w.hooks = { asked: false, list: [] };
+        w.socialProjects = { asked: false, list: [] };
+        w.socialFeeds = {};
         // Files agents made belonged to the last connection too, and `asked`
         // goes back to false with them: this world has not asked anything yet,
         // so a room's file list says "looking" rather than "there are none".
@@ -3696,6 +3784,85 @@ export class RelayClient {
       case "hookAudit":
         if (frame.requestId === undefined || frame.requestId !== w.hooks.auditRequestId) break;
         w.hooks = { ...w.hooks, auditRequestId: undefined, auditLoading: false, audit: frame.entries, auditProblem: undefined };
+        break;
+      case "socialProjects":
+        w.socialProjects = { asked: true, list: frame.projects };
+        break;
+      case "socialFeed": {
+        const current = w.socialFeeds[frame.projectId] ?? {
+          asked: false, loading: false, posts: [], hasMore: true, unread: 0,
+        };
+        const known = new Set(current.posts.map(post => post.id));
+        const incoming = frame.posts.filter(post => !known.has(post.id));
+        const posts = current.posts.length > 0 && current.nextBeforeId
+          ? [...incoming, ...current.posts]
+          : frame.posts;
+        w.socialFeeds = {
+          ...w.socialFeeds,
+          [frame.projectId]: {
+            asked: true, loading: false, posts, hasMore: frame.hasMore,
+            unread: frame.unread,
+            nextBefore: frame.nextBefore,
+            nextBeforeId: frame.nextBeforeId,
+          },
+        };
+        break;
+      }
+      case "socialPost": {
+        const current = w.socialFeeds[frame.post.projectId];
+        if (!current) break;
+        if (current.posts.some(post => post.id === frame.post.id)) break;
+        w.socialFeeds = {
+          ...w.socialFeeds,
+          [frame.post.projectId]: { ...current, posts: [...current.posts, frame.post] },
+        };
+        break;
+      }
+      case "socialUpdated": {
+        const current = w.socialFeeds[frame.post.projectId];
+        if (!current) break;
+        w.socialFeeds = {
+          ...w.socialFeeds,
+          [frame.post.projectId]: {
+            ...current,
+            posts: current.posts.map(post => post.id === frame.post.id ? frame.post : post),
+          },
+        };
+        break;
+      }
+      case "socialReaction": {
+        const current = w.socialFeeds[frame.projectId];
+        if (!current) break;
+        const posts = current.posts.map(post => {
+          if (post.id !== frame.postId) return post;
+          const reactions = (post.reactions ?? []).filter(reaction => reaction.emoji !== frame.emoji);
+          if (frame.actorIds.length) reactions.push({ emoji: frame.emoji, actorIds: frame.actorIds });
+          return { ...post, reactions: reactions.length ? reactions : undefined };
+        });
+        w.socialFeeds = { ...w.socialFeeds, [frame.projectId]: { ...current, posts } };
+        break;
+      }
+      case "socialRead": {
+        const current = w.socialFeeds[frame.entry.projectId];
+        if (current) {
+          w.socialFeeds = {
+            ...w.socialFeeds,
+            [frame.entry.projectId]: { ...current, unread: frame.entry.unread },
+          };
+        }
+        break;
+      }
+      case "socialUnavailable": {
+        const { [frame.projectId]: gone, ...rest } = w.socialFeeds;
+        void gone;
+        w.socialFeeds = rest;
+        w.socialProjects = {
+          ...w.socialProjects,
+          list: w.socialProjects.list.filter(project => project.id !== frame.projectId),
+        };
+        break;
+      }
+      case "socialMembers":
         break;
       // ENGINE-ONLY RECEIPT, and it is right that the screen drops it. When an
       // agent asks mid-run "may I push this branch?", the hub answers the
