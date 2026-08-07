@@ -6,16 +6,16 @@ a commit, or an agent's report, THIS FILE WINS.**
 Anyone arriving — Vikas, a new session, a new agent — reads this first and
 needs nothing else. Anyone doing work updates it as they go, not at the end.
 
-Last updated: **2026-08-07 23:26 +05:30** · by: audit session · *live delivery board below is the current contract; external counts still rot and must be re-read before action*
+Last updated: **2026-08-07 23:35 +05:30** · by: audit session · *live delivery board below is the current contract; external counts still rot and must be re-read before action*
 
-## LIVE DELIVERY BOARD — 2026-08-07 23:26 +05:30
+## LIVE DELIVERY BOARD — 2026-08-07 23:35 +05:30
 
 This compact board is the live delivery contract. Allowed statuses are **MERGED**, **BUILDING**, **IN REVIEW**, **READY NEXT**, and **BLOCKED WITH REASON**. “Unassigned” is intentional until an author and a different reviewer are named.
 
 | Feature | Status | Branch-PR | Author | Reviewer | Next proof / software-team scope |
 |---|---|---|---|---|---|
 | Resizable threads | MERGED | `master` / PR #14 | Luna | unassigned | Verify the installed build still preserves draggable width, focus restoration, narrow takeover, and restart persistence. |
-| Remove timing | IN REVIEW | `fix/agents-are-not-on-a-timer` / PR #13 (`97daeae`) | Vikas Mittal | unassigned | Review the no-clock turn/approval contract and prove Stop still owns the real process tree. |
+| Remove timing | MERGED | `master` / PR #13 (`7329537`) | Vikas Mittal | unassigned | Re-read the merged no-clock turn/approval contract; retain the focused Stop/process-tree proof and unknown installed-build gates. |
 | Manual workflows | IN REVIEW | `workflow-list-builder` / PR #18 (`ded3a1c`) | Vikas Mittal | chatgpt-codex-connector | Keep manual list/builder work scoped; review the plain manual-v1 slice without implying triggers, schedules, run history, or permissions. |
 | Persistent mentions-and-replies notification inbox | MERGED | `master` / PR #19 (`551b2f8`) | Vikas Mittal | chatgpt-codex-connector | Re-read the merged durable per-user mention/reply contract and later prove read/dismiss, source navigation, ownership, retention, mute/quiet/OS, and deleted/inaccessible states. |
 | Saved/Later message queue | READY NEXT | unassigned / next PR | unassigned | unassigned | Prove per-user save/unsave, persistence, auth isolation, source navigation, retention, and deleted/inaccessible handling; PR #17 is audit/contract only. |
