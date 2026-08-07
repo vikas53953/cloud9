@@ -259,6 +259,57 @@ process *tree*, and stale comments still describe the deadline as current.
 
 ---
 
+## 6b. EXACTLY WHERE THE THREE AGENTS WERE STOPPED — *2026-08-07 ~12:00*
+
+Vikas stopped three agents to save the last of his Claude quota. **None of them
+failed. None of their work is lost — it is all on branches and in PRs.** Pick up
+from here.
+
+### PR #14 — "threads — you can now drag the thread's edge and make it as big as you like"
+Branch `threads-drag-divider`. **MERGEABLE. The build is DONE and pushed.**
+Its adversarial review had just been started and was stopped before reporting.
+
+**So: PR #14 has NEVER BEEN REVIEWED. Do not merge it. Start there.**
+Spawn a fresh reviewer, brief it from section 4, and hold it to the nine points
+in section 6A — especially:
+- floors **300/300**, a floor on the ROOM and **never a cap on the thread**
+- **below 894px the take-over mode IS the narrow-window answer** (one mechanism)
+- **width AND mode both survive a restart**
+- **photographs from the INSTALLED app at 1920** — before/after, dragged wide,
+  dragged narrow, keyboard, take-over and back, at 800px, at 894px, and after a
+  restart. **A green build is not evidence.** Check which binary each came from.
+
+### PR #13 — "just remove the timing"
+Branch `fix/agents-are-not-on-a-timer`. **CONFLICTING on `TRACKER.md`** — resolve
+that first, and **diff the merged file against both parents**, because a
+`TRACKER.md` row is one enormous line and a resolution can silently drop the
+other side's row (trap 8).
+
+All four blockers are FIXED (starvation, zombie card, lost answer, taskstuck).
+The reviewer was on its second pass and was stopped mid-verdict. **The one
+question left open, in the author's own words:** its `master` control was the
+main working tree, **not a freshly detached rebuilt `origin/master`**. The
+reviewer had built exactly that rig before at `C:\Users\vikasmit\cloud9-basecheck`
+(detached, both `dist` deleted and rebuilt).
+
+**What the next reviewer must run before signing this off:**
+1. A properly detached `origin/master` control, both `dist` folders deleted and
+   rebuilt, paired against the branch on a quiet machine — for `taskstuck`.
+   Last numbers: round 1 branch 11/11 100s / master 11/11 97s; round 2 branch
+   9/11 324s / **master 8/11 326s** (master worse — the asymmetry is gone, but
+   nobody has a clean pair yet).
+2. **The two-parked-agents script against the new dist.** That measurement is
+   what found the worst blocker and no test file can vouch for it.
+3. Sleep → wake → Approve, for the zombie card.
+4. A run past 16 MB, to confirm a truncated capture fails loudly instead of
+   recording `outcome: "ok"`.
+
+**Do not lower the bar because it has been waiting.** A merge that starves his
+crew overnight is far worse than this waiting.
+
+
+---
+
 ## 7. MACHINE CONDITIONS — known, not bugs to chase
 
 - **Program start costs ~271ms instead of ~20ms.** McAfee real-time scanning is
