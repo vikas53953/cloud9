@@ -6,7 +6,7 @@ a commit, or an agent's report, THIS FILE WINS.**
 Anyone arriving — Vikas, a new session, a new agent — reads this first and
 needs nothing else. Anyone doing work updates it as they go, not at the end.
 
-Last updated: **2026-08-07 ~11:00** · by: conductor session · *counts below are from `gh pr list` run at that moment — see rule 10, they rot on their own*
+Last updated: **2026-08-07 17:43 IST** · by: remove-the-timing author · *the count table below is a dated snapshot; live PR state is recorded immediately below it — see rule 10, external counts rot on their own*
 
 ## 0. THE THREE REFERENCES — read this before designing anything
 
@@ -47,6 +47,12 @@ is not there, say so and ask once.
 
 The dated snapshot rows below are preserved history; this current row is the live stage for the notification work.
 
+Historical PR13 snapshot (2026-08-07 17:43 IST): PR #13 was OPEN and
+MERGEABLE/CLEAN against `origin/master` (`7ce7bcd`) at head `6fc1c5f`.
+Round-2 ownership and terminal-output fixes were pushed; review was pending,
+and the PR was not approved or merged. The count table below is retained as
+dated history, including its earlier CONFLICTING state.
+
 | Count | |
 |---|---|
 | Things Vikas has asked for and are open | **2** — **threads** (design approved, build in progress) and **remove the timing** (PR #13, rejected in review). The other four are merged, installed and walked. 5 problems found FOR him stay open below. |
@@ -54,10 +60,10 @@ The dated snapshot rows below are preserved history; this current row is the liv
 | Open PRs | **1** — #13 (remove the timing), CONFLICTING on `TRACKER.md` after #11 and #12 landed. **As of 2026-08-07 11:00.** |
 | Merged today | **8** — #6 time limit · #7 threads width · #9 activity · #10 spending · **#11 harness inventory** · **#12 threads research** · plus #5 and #8, both reverts of code that reached master unreviewed (one the conductor's). |
 
-**Current live snapshot (2026-08-07 17:38 IST):** PR #13 is OPEN; review fixes
-are in `42e1b3c`, and it is **CLEAN against `origin/master`**. It is not
-approved or merged;
-the older row below saying `CONFLICTING` is retained as dated review history.
+**Previous live snapshot (2026-08-07 17:38 IST):** PR #13 was OPEN; review
+fixes were in `42e1b3c`, and it was **CLEAN against `origin/master`**. It was
+not approved or merged; the older row below saying `CONFLICTING` is retained
+as dated review history.
 
 | # | HIS ASK (his words — never renamed) | Who has it | Stage | Evidence so far |
 |---|---|---|---|---|
