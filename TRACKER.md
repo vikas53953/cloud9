@@ -43,10 +43,10 @@ is not there, say so and ask once.
 
 | # | Ask | Owner | Current stage | Evidence / boundary |
 |---|---|---|---|---|
-| 12 | **remove the timing** — *"agents are employees"* | timing author | **PR #13 OPEN — MERGEABLE/CLEAN against `origin/master` `551b2f8`; source and hygiene approved; tracker-only final check pending** | Current head `d7776cc` is rebased on `551b2f8`; the timing source and final hygiene checks are complete, and this tracker-only correction is the remaining author action. PR #13 is not approved or merged. |
+| 12 | **remove the timing** — *"agents are employees"* | timing author | **PR #13 OPEN — MERGEABLE/CLEAN against `origin/master` `551b2f8`; final independent review pending (not approved or merged)** | Stable code/test commit `8f50f61` is rebased on `551b2f8`; the timing source, no-expiry relay assertions, and final hygiene checks are complete. Later tracker/body-only commits may move the PR head without changing this code evidence. |
 | 17 | **Persistent mentions-and-replies notification inbox** | notification author | **MERGED — PR #19 on `feature/persistent-notifications`, based on `origin/master` `551b2f8`** | Durable mention/thread-reply inbox shipped with deterministic ids, idempotent SQLite writes, recipient-scoped read/dismiss, retention, tombstone projection, edit/delete refresh, accessible rail/list/empty/loading/error/focus/live states, request correlation, and guarded navigation. PR #19 is merged; no package/install/QA/app-walk claim is added here. PR: https://github.com/vikas53953/cloud9/pull/19 |
 
-The dated snapshot rows below are preserved history; the rows above are the current live stages for PR12 and PR17.
+The dated snapshot rows below are preserved history; the rows above are the current live stages for PR13 and PR17.
 
 ### Historical tracker rows (preserved snapshots)
 
@@ -79,9 +79,10 @@ dated history, including its earlier CONFLICTING state.
 
 The timing branch was rebased onto current `origin/master` `551b2f8`. All
 master tracker rows and the branch-only timing evidence are retained. PR #13
-is currently **OPEN and MERGEABLE/CLEAN** against that base; source and hygiene
-are approved pending this tracker-only final check. It is not approved or
-merged, and the branch status is clean and review-ready.
+is currently **OPEN and MERGEABLE/CLEAN** against that base; the stable code/test
+commit is `8f50f61`, and final independent review is pending. It is not approved
+or merged, and later tracker/body-only commits may move the PR head without
+changing the code evidence.
 
 Evidence carried forward from the timing branch: the four review blockers were
 addressed (parked approval waits release execution slots; websocket close and
