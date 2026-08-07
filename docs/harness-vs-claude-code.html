@@ -79,6 +79,7 @@ code,.ev{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12
   line-height:30px;text-align:center;border-radius:8px;background:var(--noBg);color:var(--no);font-weight:800;font-size:14px}
 .rank.good li::before{background:var(--haveBg);color:var(--have)}
 .big{font-size:17px;font-weight:650;letter-spacing:-.01em}
+.stamp{color:var(--half);font-weight:700}
 .quote{border-left:3px solid var(--line);padding-left:14px;color:var(--dim);font-style:italic;margin:12px 0}
 .pill{display:inline-block;background:var(--unkBg);border:1px solid var(--line);
   border-radius:8px;padding:3px 9px;font-size:12.5px;margin:0 6px 6px 0}
@@ -143,6 +144,13 @@ installed on your machine right now.</p>
   agent runs inside your real Claude Code world or in a bare one.</p>
   <p>Every row carries a file and line number, or a command that was run. Where nothing could be
   proved, the row says <b>not verified</b> instead of guessing.</p>
+  <p><b class="stamp">Anything marked "as of 2026-08-07 06:00" rots on its own.</b> Those few claims
+  say who is or is not already working on something, and they come from asking GitHub what was open
+  at that moment. <b>Nobody has to touch this page for them to go wrong</b> — a colleague opening or
+  merging a pull request is enough. Every other line here is about code, and stays true until the
+  code changes. <b>Before acting on a stamped line, ask what is open now.</b>
+  This page has already been wrong in both directions on exactly this: it once said someone was
+  removing the clocks when nobody was, and then said nobody was when someone already had.</p>
 </section>
 
 <section class="card" data-fb="The seven things you would notice most">
@@ -175,8 +183,10 @@ installed on your machine right now.</p>
       dead — and you only find out when you press it.
       <span class="ev"><b>Evidence</b> · card waits 10 minutes,
       <code>shared/src/index.ts:487</code> · chat turn killed after 3 minutes of silence,
-      <code>timebudget.ts:156-160</code> · this is board row 6, open, nobody assigned. Neither
-      clock exists in Claude Code.</span></li>
+      <code>timebudget.ts:156-160</code> · neither clock exists in Claude Code.
+      <b class="stamp">As of 2026-08-07 06:00:</b> this is board row 6, and it is <b>no longer
+      unassigned — PR #13 is open and removes both of these clocks.</b> Nothing to ask for here;
+      it needs reviewing and landing.</span></li>
     <li data-fb="The rules engine (hooks) is finished, switch"><b>The rules engine ("hooks") is finished, switched on — and there is no screen to write a rule.</b>
       The only way to add one is to hand-write a JSON file containing internal ID codes the app
       never shows you.
@@ -196,10 +206,15 @@ installed on your machine right now.</p>
       <span class="ev"><b>Evidence</b> · <code>timebudget.ts:108-112</code> (45 min) ·
       <code>timebudget.ts:156-160</code> (3 min chat silence) ·
       <code>shared/src/index.ts:487</code> <code>waitMs: 10 * 60_000</code>. <b>All three are live
-      on your machine and nobody is currently removing any of them</b> — <code>gh pr list</code>
-      shows only this report's own pull request. The 45-minute one is not leftover: it is the
-      deliberate result of the merged time-limit fix, and it replaced much shorter clocks. The
-      10-minute card deadline is the one with nobody's name against it (board row 6).</span></li>
+      on the machine — and all three are already being taken out.</b>
+      <b class="stamp">As of 2026-08-07 06:00:</b> <code>gh pr list</code> shows <b>PR #13, "just
+      remove the timing — an agent is not on a clock any more"</b>, open and ready to merge, and its
+      change removes <b>all three</b> — the 45-minute total, the silence clock, and the card's
+      deadline. <b>An earlier draft of this page defended the 45-minute one</b> as "the deliberate
+      result of the merged time-limit fix". <b>That defence is withdrawn.</b> You ruled otherwise —
+      "agents are employees so i don't want to implement a timing foundation" — and a clock on an
+      employee was a product decision that was yours, not an engineering one that was ours. Arguing
+      the backstop was the same mistake as inventing the clocks in the first place.</span></li>
     <li data-fb="Nothing tells you how much room is left in"><b>Nothing tells you how much room is left in the conversation.</b>
       Claude Code shows context left; Cloud9 shows money spent instead. When a chat gets long the
       oldest messages are simply dropped with no summary and no warning.
@@ -596,11 +611,15 @@ installed on your machine right now.</p>
       agent parked on a card prints nothing, and a chat turn that has printed nothing for
       <b>three</b> minutes is killed. So you believe you have ten minutes to think and in a chat you
       have three — after that the card is still on screen and the agent behind it is gone.
-      <b>Nobody is removing this — it is board row 6 with nobody's name against it.</b> The timer is
-      live in three places, so a partial removal will only half-work.
+      <b class="stamp">As of 2026-08-07 06:00:</b> <b>this is already being removed — PR #13 is open
+      and ready to merge, and it takes out this deadline along with the other two clocks.</b> The
+      timer lives in three places, so the thing to check when reviewing that PR is that all three
+      go; a partial removal only half-works.
       <span class="ev"><code>shared/src/index.ts:487</code>; the default is copied in at <code>approvaldesk.ts:171</code> and the timers set at <code>:260, :328, :409</code>; the 3-minute silence clock is <code>timebudget.ts:157</code> and three <code>setTimeout</code> sites; also in the hub
       (<code>server.ts:266, 2056, 3488</code>) and on screen (<code>App.tsx:4673, 4739, 4841</code>).
-      <code>gh pr list</code> returns only this report’s own pull request.</span></td></tr>
+      <b>The PR-list facts on this page were read at 2026-08-07 06:00 and go stale on their own</b> —
+      nobody has to touch this page for them to become wrong. Re-run <code>gh pr list</code> before
+      acting on any of them.</span></td></tr>
 
   <tr><td class="what">Rules with patterns, e.g. "always allow <code>npm test</code>"</td>
     <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
@@ -924,7 +943,7 @@ installed on your machine right now.</p>
       unless you set one</b> — no cap at all is "the day-one default", said in those words at
       <code>shared/src/index.ts:756</code> — <b>and a Codex agent cannot be given one at all</b>,
       because only Claude reports what a turn cost (<code>providerCanBeCapped</code>,
-      <code>shared/src/index.ts:672-674</code>). Board row 5, open, nobody assigned.</span></li>
+      <code>shared/src/index.ts:672-674</code>). Board row 5 — <b class="stamp">as of 2026-08-07 06:00</b>, open with nobody assigned.</span></li>
     <li data-fb="A spending screen that names why an agent "><b>A spending screen that names why an agent is expensive.</b>
       <span class="ev"><code>App.tsx:13656</code>; <code>shared/src/tokenuse.ts</code>.</span></li>
     <li data-fb="The approval card and the trust ladder"><b>The approval card and the trust ladder</b> — one place where everything that leaves your
@@ -974,6 +993,13 @@ installed on your machine right now.</p>
       trail here rather than tidying it away.</li>
     <li data-fb="How a Cloud9 agent invokes one of your 100"><b>How a Cloud9 agent invokes one of your 100 real skills</b> when the setup switch is on —
       not verified. They load; the tool that normally runs them is not on the line.</li>
+    <li data-fb="The claims that rot on their own"><b>One kind of claim here rots without anybody touching this page.</b> Anything about who is
+      or is not already working on something comes from asking GitHub what was open at
+      <b class="stamp">2026-08-07 06:00</b>, and a colleague opening or merging a pull request makes
+      it wrong on its own. <b>This page has now been wrong in both directions on that one class</b> —
+      an early draft said someone was removing the clocks when nobody was; a later one said nobody
+      was when PR #13 already had. Those lines are stamped; ask what is open now before acting on
+      them. Everything else here is about code and holds until the code changes.</li>
     <li data-fb="Small tidy-up spotted in passing:"><b>Small tidy-up spotted in passing:</b> three files ending <code>.test.ts.new</code> sit in
       the engine folder — never compiled, never run, dead weight.</li>
   </ul>
@@ -1012,15 +1038,18 @@ installed on your machine right now.</p>
       <b>Why second</b> · it is the largest single gap on this page, it is invisible until it bites, and it
       is the cheapest to fix — it is one line deciding which route wins.</span></li>
 
-    <li data-fb="FIX Stop an agent dying while you are decidi"><b class="big">Stop an agent dying while you are deciding.</b><br>
-      The card waits ten minutes; the agent behind it is killed after three. So for seven of those
-      ten minutes you are looking at a live card attached to a corpse. Take the ten-minute deadline
-      off the card entirely — Claude Code has no such thing and a question of yours should not
-      expire — and make a turn parked on a card exempt from the silence clock, because "waiting for
-      Vikas" is not "gone quiet". Remove it in all three places or it will only half-work.
+    <li data-fb="FIX Land PR 13 which already removes the clocks"><b class="big">Land PR #13 — this one is already built, it needs reviewing, not building.</b><br>
+      <b class="stamp">As of 2026-08-07 06:00.</b> The problem is real: the card waits ten minutes,
+      the agent behind it is killed after three, so for seven of those ten minutes you are looking at
+      a live card attached to a corpse. <b>But do not send anyone to build this.</b> PR #13, "just
+      remove the timing — an agent is not on a clock any more", is open and ready to merge and takes
+      out all three clocks. What it needs from us is a review, and the one thing to check is that the
+      card's deadline really goes in <b>all three</b> places — engine, hub and screen — because a
+      partial removal only half-works. Worth checking too that a turn parked on a card can no longer
+      be killed for going quiet, since "waiting for Vikas" was never "gone quiet".
       <span class="ev"><b>Where</b> · <code>shared/src/index.ts:487</code>, plus the hub
       (<code>server.ts:266, 2056, 3488</code>) and the screen (<code>App.tsx:4673, 4739</code>) ·
-      silence clock <code>timebudget.ts:156-160</code>. This is board row 6, open, nobody assigned.
+      silence clock <code>timebudget.ts:156-160</code>. Board row 6 — <b>no longer unassigned</b>.
       <b>Why third</b> · it silently wastes work you already paid for, and it makes the one
       safety feature you rely on untrustworthy.</span></li>
 
@@ -1038,7 +1067,7 @@ installed on your machine right now.</p>
   cannot be given a spending limit <em>at all</em> — only Claude reports what a turn cost, so
   <code>providerCanBeCapped</code> (<code>shared/src/index.ts:672-674</code>) returns true for Claude
   only. Its one remaining ceiling was the clock, and that just went from 10 minutes to 45. That is
-  board row 5, open, nobody assigned. It is real money, unbounded, today.</p>
+  board row 5 — <b class="stamp">as of 2026-08-07 06:00</b>, open with nobody assigned. It is real money, unbounded, today.</p>
   <p><b>What I would not do yet:</b> reading real <code>SKILL.md</code>
   skills, squeezing a long conversation instead of dropping it, undo, transcript export, or a
   context-left gauge. They are real gaps, but every one of them is invisible next to the three
