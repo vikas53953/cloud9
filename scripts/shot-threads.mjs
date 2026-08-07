@@ -168,6 +168,28 @@ async function assertFocusIsolation(page, label) {
   say(`      focus isolation: ${label} inert + aria-hidden; 40 Tab presses never entered the room`);
 }
 
+async function assertFocusRestored(page, label) {
+  const state = await page.evaluate(() => {
+    const opener = document.querySelector("[data-thread-opener='yes']");
+    const fallback = document.querySelector(
+      ".composer textarea:not(:disabled), .threadgrip:not(:disabled), "
+      + ".chathead button:not(:disabled), .sidebar [aria-current='true'], "
+      + ".msgs button:not(:disabled)");
+    const active = document.activeElement;
+    return {
+      opener: !!opener && active === opener,
+      fallback: !!fallback && active === fallback,
+      active: active
+        ? `${active.tagName.toLowerCase()}.${active.className}`
+        : "none",
+    };
+  });
+  if (!state.opener && !state.fallback) {
+    throw new Error(`${label} left focus on ${state.active}, not the opener or a visible room fallback`);
+  }
+  say(`      focus restoration: ${label} returned to ${state.opener ? "the initiating reply control" : "the visible room fallback"}`);
+}
+
 function assertDividerAria(m, label) {
   if (!m.gripShowing) throw new Error(`${label} has no divider to inspect`);
   const min = Number(m.gripAriaMin);
@@ -299,6 +321,7 @@ async function openAThread(page) {
   await root.hover();
   const reply = root.locator(".ma.reply");
   if (await reply.count() === 0) throw new Error("NOT ON SCREEN — no Reply control to open a thread with");
+  await reply.evaluate(el => el.setAttribute("data-thread-opener", "yes"));
   await reply.click();
   await page.waitForSelector(".threadpanel", { timeout: 20000 });
   /* A reply of his own, so the panel has something in it worth looking at. */
@@ -354,6 +377,7 @@ async function main() {
 
   await setWindow(page, HIS_WIDTH);
   await openAThread(page);
+  const root = page.locator('.msgs .msg:has-text("villa shortlist")').last();
 
   /* ---- 1. his own window, before he touches anything --------------------- */
   say("\n1 · HIS OWN WINDOW, thread just opened");
@@ -451,7 +475,16 @@ async function main() {
   const beside = await measure(page);
   report("back beside the room", beside);
   if (beside.thread.w !== 900) throw new Error(`his 900px did not survive the round trip: ${beside.thread.w}px`);
+  await assertFocusRestored(page, "wide takeover back");
   await shot(page, "8-back-beside-the-channel");
+
+  await page.click(".threadclose");
+  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await assertFocusRestored(page, "beside close");
+  await root.hover();
+  await root.locator(".ma.reply").click();
+  await page.waitForSelector(".threadpanel", { timeout: 20000 });
+  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
 
   /* ---- 6. the narrow window — the take-over IS the answer ----------------- */
   say("\n6 · A NARROW WINDOW. His width is BORROWED, never rewritten.");
@@ -475,6 +508,20 @@ async function main() {
   await shot(page, "10-at-800-thread-takes-over");
 
   await setWindow(page, 1330);
+  await assertFocusRestored(page, "responsive 800-to-1330 unforce");
+  await setWindow(page, 800);
+  const forcedAgain = await measure(page);
+  if (!/forced/.test(forcedAgain.mode)) throw new Error("responsive 800 did not force takeover again");
+  await assertFocusIsolation(page, "responsive 800 forced again");
+  await page.click(".threadmode");
+  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await assertFocusRestored(page, "800 forced takeover back");
+
+  await setWindow(page, 1330);
+  await root.hover();
+  await root.locator(".ma.reply").click();
+  await page.waitForSelector(".threadpanel", { timeout: 20000 });
+  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
   const at1330 = await measure(page);
   report("at 1330px (the sidebar steps to 216)", at1330);
   if (at1330.storedWidth !== 900) throw new Error(`his 900 was overwritten to ${at1330.storedWidth}`);

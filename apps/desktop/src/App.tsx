@@ -3330,6 +3330,36 @@ function ThreadDivider({ stored, drawn, space, onChoose, onReset }: {
   );
 }
 
+/**
+ * THE WAY BACK TO THE THING THAT OPENED THE THREAD.
+ *
+ * A takeover moves focus into its own controls. When he leaves it, the
+ * keyboard must not fall through to the document body: the reply control that
+ * opened the thread is the natural place to continue. The opener can vanish
+ * while a room changes or a narrow window forces the panel closed, so every
+ * candidate is checked again after the new layout has landed.
+ */
+function isVisibleFocusTarget(el: HTMLElement | null): el is HTMLElement {
+  if (!el || !el.isConnected || el.matches(":disabled,[aria-disabled='true']")) return false;
+  if (el.closest("[inert],[aria-hidden='true']")) return false;
+  const css = getComputedStyle(el);
+  if (css.display === "none" || css.visibility === "hidden") return false;
+  const box = el.getBoundingClientRect();
+  return box.width > 0 && box.height > 0;
+}
+
+function focusThreadTarget(root: HTMLElement | null, opener: HTMLElement | null): boolean {
+  const fallback = root?.querySelector<HTMLElement>(
+    ".composer textarea:not(:disabled), .threadgrip:not(:disabled), "
+    + ".chathead button:not(:disabled), .sidebar [aria-current='true'], "
+    + ".msgs button:not(:disabled)") ?? null;
+  const target = isVisibleFocusTarget(opener) ? opener
+    : (isVisibleFocusTarget(fallback) ? fallback : null);
+  if (!target) return false;
+  target.focus({ preventScroll: true });
+  return document.activeElement === target;
+}
+
 function ChatScreen({
   active, setActiveId, channels, humanDms, agents, people, unreadFor, peerOf, owner,
   onNewChannel, onBrowseRooms, onNewAgent, onBrowseMarket, onInvite, onEditAgent, onOpenDm,
@@ -3377,19 +3407,44 @@ function ChatScreen({
      window can actually honour, which on a smaller window is a smaller number
      — borrowed, not saved. Widen the window and his own is back untouched. */
   const gridRef = useRef<HTMLDivElement>(null);
+  const threadOpener = useRef<HTMLElement | null>(null);
+  const restoreFocusPending = useRef(false);
   const space = useSpaceToShare(gridRef);
   const tooNarrowToSplit = space > 0 && cannotSplit(space);
   const takeover = !!threadRoot && (tooNarrowToSplit || p.threadTakeover);
+  const previousTakeover = useRef(takeover);
   const drawnWidth = widthToDraw(p.threadWidth, space);
   const chooseWidth = useCallback((px: number) => { prefs.set({ threadWidth: px }); }, []);
   const resetWidth = useCallback(() => { prefs.set({ threadWidth: THREAD_DEFAULT }); }, []);
+  const requestThreadFocusRestore = useCallback(() => {
+    restoreFocusPending.current = true;
+  }, []);
+  const restoreThreadFocus = useCallback(() => {
+    /* Keep the opener for the rest of this thread session. A responsive
+       force/unforce can cross the same boundary more than once; opening a new
+       thread or changing rooms will replace or invalidate this ref naturally. */
+    focusThreadTarget(gridRef.current, threadOpener.current);
+  }, []);
+  /* Focus is restored on the frame AFTER the room has stopped being inert and
+     the panel has either changed mode or gone away. This also handles a
+     responsive 800px forced takeover becoming a split again without leaving a
+     stale opener focused inside a hidden room. */
+  useEffect(() => {
+    const leftTakeover = previousTakeover.current && !takeover;
+    previousTakeover.current = takeover;
+    if (!restoreFocusPending.current && !leftTakeover) return;
+    restoreFocusPending.current = false;
+    const frame = requestAnimationFrame(restoreThreadFocus);
+    return () => cancelAnimationFrame(frame);
+  }, [takeover, threadRoot, restoreThreadFocus]);
   /* The way back out of the take-over. When the WINDOW forced it there is no
      "beside" to go back to, so the way back is the room itself — which is what
      Buzz's back arrow does at that size. */
   const leaveTakeover = useCallback(() => {
+    requestThreadFocusRestore();
     if (tooNarrowToSplit) setThreadRoot(null);
     else prefs.set({ threadTakeover: false });
-  }, [tooNarrowToSplit]);
+  }, [requestThreadFocusRestore, tooNarrowToSplit]);
 
   // a thread — and a details panel — belong to the conversation they were
   // opened from, and go when it changes
@@ -3401,6 +3456,10 @@ function ChatScreen({
   useEffect(() => { if (!threading) setThreadRoot(null); }, [threading]);
 
   const openThread = useCallback((rootId: ID) => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body) {
+      threadOpener.current = active;
+    }
     setThreadRoot(rootId);
     setDetailsOpen(false);
     client.send({ type: "thread", messageId: rootId });
@@ -3602,7 +3661,7 @@ Open your chat with ${a.name}`}>
           onToggleTakeover={takeover
             ? leaveTakeover
             : () => prefs.set({ threadTakeover: true })}
-          onClose={() => setThreadRoot(null)} />
+          onClose={() => { requestThreadFocusRestore(); setThreadRoot(null); }} />
       )}
       {/* THE STRIP HE GRABS. There is deliberately no handle at all when the
           window cannot split — a handle that refuses him in silence is the

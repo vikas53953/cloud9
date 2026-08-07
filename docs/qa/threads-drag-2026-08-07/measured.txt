@@ -1,6 +1,6 @@
 BINARY: C:\Users\vikasmit\AppData\Local\Programs\Cloud9\Cloud9.exe
-  built 2026-08-07T10:31:08.000Z
-  web bundle: index-DUjpBH9y.js  index-shSU9Pdt.css
+  built 2026-08-07T11:05:30.000Z
+  web bundle: index-BlCBLMNl.js  index-shSU9Pdt.css
 
 1 · HIS OWN WINDOW, thread just opened
   as it opens                        viewport 1920  thread   388px  room  1204px  [beside the room]  kept: nullpx
@@ -52,7 +52,9 @@ BINARY: C:\Users\vikasmit\AppData\Local\Programs\Cloud9\Cloud9.exe
   back beside the room               viewport 1920  thread   900px  room   692px  [beside the room]  kept: 900px
       the strip says: "Drag to resize. Double-click to reset width."
       the mode button is called: "expand thread"
+      focus restoration: wide takeover back returned to the initiating reply control
     photo  docs\qa\threads-drag-2026-08-07\8-back-beside-the-channel.png
+      focus restoration: beside close returned to the visible room fallback
 
 6 · A NARROW WINDOW. His width is BORROWED, never rewritten.
   at 894px (the last size that splits) viewport 894  thread   300px  room   300px  [beside the room]  kept: 900px
@@ -64,6 +66,7 @@ BINARY: C:\Users\vikasmit\AppData\Local\Programs\Cloud9\Cloud9.exe
       the mode button is called: "show thread beside channel"
       focus isolation: 800 forced takeover inert + aria-hidden; 40 Tab presses never entered the room
     photo  docs\qa\threads-drag-2026-08-07\10-at-800-thread-takes-over.png
+      focus restoration: 800 forced takeover back returned to the initiating reply control
   at 1330px (the sidebar steps to 216) viewport 1330  thread   736px  room   300px  [beside the room]  kept: 900px
       the strip says: "Drag to resize. Double-click to reset width."
       the mode button is called: "expand thread"
