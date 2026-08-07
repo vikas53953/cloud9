@@ -10,6 +10,7 @@ import {
   EverywhereHit, SearchKind,
   ReachCatchup,
   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
+  Workflow, WorkflowRun,
   // SPENDING BLOCK (what the crew costs, 2026-08-07)
   AgentTokenUse, WasteFinding,
   UnreadEntry, User,
@@ -29,6 +30,15 @@ import {
 import { noteReceipt } from "./receipts.js";
 // …and so do live steps, for the same reasons, in their own file.
 import { noteLiveSteps } from "./livesteps.js";
+
+type WorkflowRequestFrame = Extract<ClientFrame, {
+  type: "listWorkflows" | "createWorkflow" | "updateWorkflow" | "archiveWorkflow" | "runWorkflow" | "stopWorkflow" | "retryWorkflow"
+}>;
+
+/** Match relay's updatedAt/id ordering for both snapshots and live receipts. */
+function workflowOrder(a: Workflow, b: Workflow): number {
+  return (b.updatedAt - a.updatedAt) || b.id.localeCompare(a.id);
+}
 
 /**
  * Pull a join token (`join_…`) off the end of a pasted link, however it was
@@ -214,6 +224,12 @@ export interface World {
   hubConn: { phase: ConnState["phase"]; line: string };
   tasks: Task[];
   approvals: Approval[];
+  workflows: Workflow[];
+  workflowRuns: WorkflowRun[];
+  workflowLoading: boolean;
+  workflowError?: { text: string; ts: number; requestId?: ID };
+  workflowNotice?: { text: string; ts: number; workflowId?: ID };
+  workflowRetry?: WorkflowRequestFrame;
   activity: ActivityRecord[];
   /** Durable mention and thread-reply rows for this account. */
   notifications: NotificationInboxEntry[];
@@ -599,6 +615,7 @@ export class RelayClient {
     messages: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
     notifications: [], notificationsAsked: false, notificationsLoading: false,
     notificationsRequestId: undefined, notificationsProblem: undefined,
+    workflows: [], workflowRuns: [], workflowLoading: false,
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
@@ -613,6 +630,8 @@ export class RelayClient {
     hubs: [], activeHubId: "self", hubConn: { phase: "idle", line: "" },
   };
   private ws?: WebSocket;
+  /** Frames from a socket that has been replaced never reach the new world. */
+  private socketEpoch = 0;
   private listeners = new Set<Listener>();
   private snapshotCache: World = { ...this.world };
 
@@ -755,6 +774,7 @@ export class RelayClient {
 
   private openSocketTo(url: string): void {
     this.ws?.close();
+    const epoch = ++this.socketEpoch;
     const ws = new WebSocket(url);
     this.ws = ws;
     let opened = false;
@@ -768,12 +788,20 @@ export class RelayClient {
       // belongs to a connection nobody is on any more.
       if (this.ws !== ws) return;
       this.world.connected = false;
+      // Request ids belong to this socket epoch. A late workflow response from
+      // the dropped socket must never settle a new window's run/archive/stop
+      // request after reconnect; those mutations are durable and the welcome
+      // snapshot is the source of truth for the next epoch.
+      this.workflowRequests.clear();
       // A credential the hub REFUSED must not spin: the reason is on screen and
       // retrying it would only overwrite it with the same refusal.
       if (this.world.authFailed) { this.syncHubWorld(); this.emit(); return; }
       this.applyConn(reduceConn(this.conn, { t: opened ? "dropped" : "failed" }));
     };
-    ws.onmessage = ev => this.onFrame(JSON.parse(ev.data) as ServerFrame);
+    ws.onmessage = ev => {
+      if (this.ws !== ws || this.socketEpoch !== epoch) return;
+      this.onFrame(JSON.parse(ev.data) as ServerFrame);
+    };
   }
 
   /** Prove who we are to the active hub — the right credential for THIS hub. */
@@ -1031,6 +1059,7 @@ export class RelayClient {
    * if that request has been called off the answer goes nowhere.
    */
   private asked: Asked[] = [];
+  private workflowRequests = new Map<ID, WorkflowRequestFrame>();
 
   /** Give every outgoing frame one identity without changing its caller's object. */
   private identify(frame: ClientFrame): ClientFrame & { requestId: ID } {
@@ -1106,6 +1135,53 @@ export class RelayClient {
   /** Fire-and-forget still returns the exact id put on the wire for deterministic QA. */
   send(frame: ClientFrame): ID | undefined {
     return this.transmit(frame);
+  }
+
+  listWorkflows(): ID | undefined {
+    this.world.workflowError = undefined;
+    this.world.workflowRetry = undefined;
+    this.world.workflowNotice = undefined;
+    this.world.workflowLoading = true;
+    this.emit();
+    const frame: WorkflowRequestFrame = { type: "listWorkflows" };
+    const id = this.send(frame);
+    if (id) this.workflowRequests.set(id, frame);
+    else this.world.workflowLoading = false;
+    return id;
+  }
+
+  sendWorkflow(frame: Exclude<WorkflowRequestFrame, { type: "listWorkflows" }>, onLost?: () => void): ID | undefined {
+    this.world.workflowError = undefined;
+    this.world.workflowRetry = undefined;
+    this.world.workflowNotice = undefined;
+    const requestId = this.nextRequestId(frame.type);
+    const outgoing = { ...frame, requestId };
+    const id = this.transmit(outgoing, {
+      answers: response => (response as { requestId?: ID }).requestId === requestId
+        && (response.type === "workflow" || response.type === "workflowRun"),
+      refused: () => { /* the correlated workflow error restores the draft */ },
+      lost: () => {
+        this.workflowRequests.delete(requestId);
+        this.world.workflowError = {
+          text: "Cloud9 disconnected before it confirmed that workflow action. Try again.",
+          ts: Date.now(), requestId,
+        };
+        this.world.workflowRetry = frame;
+        this.world.workflowNotice = undefined;
+        this.emit();
+        onLost?.();
+      },
+    });
+    if (id) this.workflowRequests.set(id, frame);
+    return id;
+  }
+
+  /** Replay only the workflow frame that was refused, with a fresh request id. */
+  retryWorkflowRequest(onLost?: () => void): ID | undefined {
+    const frame = this.world.workflowRetry;
+    if (!frame) return undefined;
+    if (frame.type === "listWorkflows") return this.listWorkflows();
+    return this.sendWorkflow(frame as Exclude<WorkflowRequestFrame, { type: "listWorkflows" }>, onLost);
   }
 
   /**
@@ -2781,6 +2857,15 @@ export class RelayClient {
         w.notificationsLoading = false;
         w.notificationsRequestId = undefined;
         w.notificationsProblem = undefined;
+        w.workflows = [...(frame.state.workflows ?? [])].sort(workflowOrder);
+        w.workflowRuns = frame.state.workflowRuns ?? [];
+        // A reconnect starts a new request epoch. Do not let a stale response
+        // from the old socket match run/archive/stop/retry bookkeeping.
+        this.workflowRequests.clear();
+        // The welcome snapshot is a useful seed, but the owner still asks for
+        // the canonical workflow list. Keep the route in loading until that
+        // correlated answer arrives so an empty seed never flashes as truth.
+        w.workflowLoading = true;
         w.messages = {};
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
@@ -2943,6 +3028,50 @@ export class RelayClient {
         w.approvals = [...w.approvals];
         break;
       }
+      case "workflows":
+        if (frame.requestId) {
+          if (!this.workflowRequests.has(frame.requestId)) break;
+          this.workflowRequests.delete(frame.requestId);
+        }
+        w.workflowError = undefined;
+        w.workflowRetry = undefined;
+        w.workflows = [...frame.workflows].sort(workflowOrder);
+        w.workflowRuns = frame.runs;
+        w.workflowLoading = false;
+        break;
+      case "workflow": {
+        if (frame.requestId) {
+          if (!this.workflowRequests.has(frame.requestId)) break;
+          this.workflowRequests.delete(frame.requestId);
+          w.workflowError = undefined;
+          w.workflowRetry = undefined;
+          w.workflowNotice = { text: "Workflow saved", ts: Date.now(), workflowId: frame.workflow.id };
+        }
+        const i = w.workflows.findIndex(x => x.id === frame.workflow.id);
+        if (i >= 0) w.workflows[i] = frame.workflow; else w.workflows.unshift(frame.workflow);
+        w.workflows = [...w.workflows].sort(workflowOrder);
+        break;
+      }
+      case "workflowRun": {
+        if (frame.requestId) {
+          if (!this.workflowRequests.has(frame.requestId)) break;
+          const request = this.workflowRequests.get(frame.requestId);
+          this.workflowRequests.delete(frame.requestId);
+          w.workflowError = undefined;
+          w.workflowRetry = undefined;
+          if (request?.type === "runWorkflow") {
+            w.workflowNotice = { text: "Workflow run started", ts: Date.now() };
+          }
+        }
+        const i = w.workflowRuns.findIndex(x => x.id === frame.run.id);
+        if (i >= 0) w.workflowRuns[i] = frame.run; else w.workflowRuns.unshift(frame.run);
+        // A transition on an older run can make it the newest receipt. Keep
+        // the detail screen's first row aligned with relay's updatedAt order.
+        w.workflowRuns = [...w.workflowRuns].sort((a, b) =>
+          (b.updatedAt ?? b.finishedAt ?? b.createdAt) - (a.updatedAt ?? a.finishedAt ?? a.createdAt)
+          || b.id.localeCompare(a.id));
+        break;
+      }
       case "activity":
         w.activity = frame.records;
         break;
@@ -3026,6 +3155,15 @@ export class RelayClient {
         break;
       }
       case "error": {
+        if (frame.requestId) {
+          const workflowFrame = this.workflowRequests.get(frame.requestId);
+          if (workflowFrame) {
+            this.workflowRequests.delete(frame.requestId);
+            if (workflowFrame.type === "listWorkflows") w.workflowLoading = false;
+            w.workflowError = { text: frame.error, ts: Date.now(), requestId: frame.requestId };
+            w.workflowRetry = workflowFrame;
+          }
+        }
         w.lastError = { text: frame.error, ts: Date.now() };
         if (frame.requestId !== undefined && frame.requestId === w.notificationsRequestId) {
           w.notificationsLoading = false;

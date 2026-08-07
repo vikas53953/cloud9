@@ -62,3 +62,17 @@ test("notification inbox answers are request-correlated and fetched once on moun
   assert.equal(app.slice(openStart, openEnd).includes("askNotifications"), false,
     "opening the screen must not issue a duplicate fetch before its mount effect");
 });
+
+test("workflow frames are fenced to the active socket epoch and actions admit offline loss", () => {
+  const store = fs.readFileSync(path.join(__dirname, "..", "src", "store.ts"), "utf8");
+  assert.match(store, /private socketEpoch = 0/);
+  assert.match(store, /const epoch = \+\+this\.socketEpoch/);
+  assert.match(store, /this\.ws !== ws \|\| this\.socketEpoch !== epoch/,
+    "a late push from a replaced socket must be ignored");
+  assert.match(store, /Cloud9 disconnected before it confirmed that workflow action/,
+    "lost run/archive/stop/retry requests must be visible");
+  const app = fs.readFileSync(path.join(__dirname, "..", "src", "App.tsx"), "utf8");
+  for (const phrase of ["Run requested; waiting for Cloud9", "Archive requested; waiting for Cloud9", "Stop requested; waiting for Cloud9", "Retry requested; waiting for Cloud9"]) {
+    assert.ok(app.includes(phrase), `${phrase} is announced only after a request id exists`);
+  }
+});

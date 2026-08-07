@@ -1174,8 +1174,131 @@ export interface Task {
    * which is also the honest answer for every task from before this existed.
    */
   runId?: string;
+  /** A task created by a saved manual workflow, when applicable. */
+  workflowId?: ID;
+  workflowRunId?: ID;
+  workflowStepId?: ID;
   createdAt: number;
   updatedAt: number;
+}
+
+// ---------- manual reusable workflows ----------
+
+/** A saved workflow is a runbook, not a clock or an event listener. */
+export type WorkflowRunStatus =
+  | "queued" | "running" | "waiting_you" | "succeeded" | "failed" | "stopped" | "interrupted";
+
+export type WorkflowStepStatus =
+  | "queued" | "running" | "waiting_you" | "succeeded" | "failed" | "stopped" | "interrupted";
+
+export interface WorkflowStep {
+  id: ID;
+  agentId: ID;
+  instruction: string;
+}
+
+export interface Workflow {
+  id: ID;
+  ownerId: ID;
+  channelId: ID;
+  name: string;
+  description?: string;
+  enabled: boolean;
+  /** Set when the owner archives this runbook; rows and history remain recoverable. */
+  archivedAt?: number;
+  /** Incremented whenever the saved definition changes. */
+  version: number;
+  steps: WorkflowStep[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WorkflowRunAttempt {
+  taskId: ID;
+  status: WorkflowStepStatus;
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  result?: string;
+  error?: string;
+}
+
+export interface WorkflowRunStep {
+  id: ID;
+  agentId: ID;
+  instruction: string;
+  status: WorkflowStepStatus;
+  attempts: WorkflowRunAttempt[];
+  startedAt?: number;
+  finishedAt?: number;
+  result?: string;
+  error?: string;
+}
+
+export interface WorkflowRun {
+  id: ID;
+  workflowId: ID;
+  workflowVersion: number;
+  ownerId: ID;
+  requestedBy: ID;
+  channelId: ID;
+  status: WorkflowRunStatus;
+  steps: WorkflowRunStep[];
+  currentStepId?: ID;
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  error?: string;
+  /** Last relay transition, used to order active history deterministically. */
+  updatedAt?: number;
+}
+
+export const WORKFLOW_LIMITS = {
+  name: 80,
+  description: 500,
+  instruction: 4000,
+  steps: 30,
+} as const;
+
+export function validateWorkflow(value: unknown): string | null {
+  if (!value || typeof value !== "object") return "that isn't a workflow";
+  const w = value as Partial<Workflow>;
+  if (!isSafeStoredId(w.id)) return "that workflow id isn't usable";
+  if (!isSafeStoredId(w.ownerId)) return "a workflow needs an owner";
+  if (!isSafeStoredId(w.channelId)) return "a workflow needs a channel";
+  if (typeof w.name !== "string" || !w.name.trim()) return "a workflow needs a name";
+  if (w.name.trim().length > WORKFLOW_LIMITS.name) {
+    return "that workflow name is too long (max " + WORKFLOW_LIMITS.name + " characters)";
+  }
+  if (w.description !== undefined
+    && (typeof w.description !== "string" || w.description.length > WORKFLOW_LIMITS.description)) {
+    return "that workflow description is too long (max " + WORKFLOW_LIMITS.description + " characters)";
+  }
+  if (typeof w.enabled !== "boolean") return "a workflow must say whether it is enabled";
+  if (w.archivedAt !== undefined && (typeof w.archivedAt !== "number" || !Number.isFinite(w.archivedAt))) {
+    return "that workflow archive time isn't usable";
+  }
+  if (!Number.isInteger(w.version) || (w.version ?? 0) < 1) return "a workflow needs a version";
+  if (!Array.isArray(w.steps) || w.steps.length > WORKFLOW_LIMITS.steps) {
+    return "a workflow needs at most " + WORKFLOW_LIMITS.steps + " steps";
+  }
+  if (w.steps.length === 0) return "add at least one workflow step";
+  const seen = new Set<string>();
+  for (const step of w.steps as Partial<WorkflowStep>[]) {
+    if (!step || typeof step !== "object" || !isSafeStoredId(step.id)) {
+      return "each workflow step needs an id";
+    }
+    if (seen.has(step.id)) return "workflow step ids must be unique";
+    seen.add(step.id);
+    if (!isSafeStoredId(step.agentId)) return "each workflow step needs an agent";
+    if (typeof step.instruction !== "string" || !step.instruction.trim()) {
+      return "each workflow step needs an instruction";
+    }
+    if (step.instruction.length > WORKFLOW_LIMITS.instruction) {
+      return "a workflow instruction is too long (max " + WORKFLOW_LIMITS.instruction + " characters)";
+    }
+  }
+  return null;
 }
 
 // ---------- what an agent actually DID: the run record ----------
@@ -2234,6 +2357,8 @@ export interface Approval {
 export type ActivityKind =
   | "message" | "task_created" | "task_status" | "approval_requested"
   | "approval_decided" | "agent_created" | "agent_updated" | "agent_deleted"
+  | "workflow_created" | "workflow_updated" | "workflow_archived" | "workflow_run_started"
+  | "workflow_run_state"
   | "channel_created" | "member_added" | "invite_created" | "invite_redeemed"
   // §7: a room is a thing that can change, so every change to it is an action
   | "channel_updated" | "channel_archived" | "member_removed" | "member_role_changed"
@@ -3096,6 +3221,21 @@ type ClientFrameBase =
    */
   | { type: "updateTask"; taskId: ID; status: TaskStatus; result?: string; error?: string; summary?: string }
   | { type: "cancelTask"; taskId: ID }
+  // ---- manual reusable workflows ----
+  | { type: "listWorkflows" }
+  | {
+      type: "createWorkflow";
+      workflow: Omit<Workflow, "id" | "ownerId" | "version" | "createdAt" | "updatedAt">;
+    }
+  | {
+      type: "updateWorkflow";
+      workflowId: ID;
+      patch: Partial<Pick<Workflow, "name" | "description" | "channelId" | "enabled" | "steps">>;
+    }
+  | { type: "archiveWorkflow"; workflowId: ID; archived: boolean }
+  | { type: "runWorkflow"; workflowId: ID }
+  | { type: "stopWorkflow"; workflowRunId: ID }
+  | { type: "retryWorkflow"; workflowRunId: ID; stepId: ID }
   | { type: "decideApproval"; approvalId: ID; decision: "approved" | "rejected" }
   /**
    * ENGINE-HOST ONLY: an agent is MID-RUN and has reached one specific thing it
@@ -3481,6 +3621,9 @@ export interface WorldState {
   approvals: Approval[];
   /** Durable mention and thread-reply rows for this person only. */
   notifications?: NotificationInboxEntry[];
+  /** Saved manual runbooks and their runs; only the owner receives these. */
+  workflows?: Workflow[];
+  workflowRuns?: WorkflowRun[];
   /**
    * Where this person has read up to, per conversation — from the RELAY, so it
    * follows them between machines (absent on a relay older than this round).
@@ -3671,6 +3814,9 @@ export type ServerFrame =
   | { type: "token"; token: string } // durable token issued after invite redemption
   | { type: "task"; task: Task }
   | { type: "approval"; approval: Approval }
+  | { type: "workflows"; workflows: Workflow[]; runs: WorkflowRun[]; requestId?: ID }
+  | { type: "workflow"; workflow: Workflow; requestId?: ID }
+  | { type: "workflowRun"; run: WorkflowRun; requestId?: ID }
   /**
    * "I heard you, and this is the id of the card he is now looking at."
    *

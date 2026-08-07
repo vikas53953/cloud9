@@ -12,7 +12,7 @@ import {
   RunRecord, RUN_RETENTION, Task, User, isSafeStoredId, nameKey, newId,
   NOTIFICATION_INBOX_LIMITS,
   type NotificationInboxKind, type NotificationInboxState,
-  validateArtifactLinks,
+  Workflow, WorkflowRun, validateArtifactLinks, validateWorkflow,
 } from "@cloud9/shared";
 // THE ONE OWNER of "write a file this app will later believe" — write next
 // door, flush it down to the disk, rename it into place. It lives in the engine
@@ -254,6 +254,8 @@ export class Store implements JoinHubStore {
    * rather than a door that is shut forever.
    */
   readonly problems: string[] = [];
+  /** Approval cards retired by the one startup interruption sweep. */
+  private interruptedWorkflowApprovals: Approval[] = [];
 
   private readonly ownerToken?: string;
   /** Distinguishes this process lifetime from an older process that reused its pid. */
@@ -313,6 +315,16 @@ export class Store implements JoinHubStore {
       CREATE TABLE IF NOT EXISTS tasks(
         id TEXT PRIMARY KEY, updatedAt INTEGER NOT NULL, json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS workflows(
+        id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, updatedAt INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS workflow_owner ON workflows(ownerId, updatedAt);
+      CREATE TABLE IF NOT EXISTS workflow_runs(
+        id TEXT PRIMARY KEY, workflowId TEXT NOT NULL, ownerId TEXT NOT NULL,
+        updatedAt INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS workflow_run_owner ON workflow_runs(ownerId, updatedAt);
+      CREATE INDEX IF NOT EXISTS workflow_run_workflow ON workflow_runs(workflowId, updatedAt);
       CREATE TABLE IF NOT EXISTS approvals(
         id TEXT PRIMARY KEY, json TEXT NOT NULL
       );
@@ -826,6 +838,11 @@ export class Store implements JoinHubStore {
     // immutable rows and throw the other away.
     this.step(6, () => this.addArtifactWorkspaceSchema());
 
+    // v6 → v7: saved manual workflow definitions and their durable run history.
+    // The tables are also created in the guarded open above, so an interrupted
+    // or older database can safely retry this idempotent step.
+    this.step(7, () => this.addWorkflowSchema());
+
     // The one thing that still says a person can only be in a room once at a
     // time, now that the primary key no longer does. It lives here, below the
     // step that reshapes the table, for the same reason act_seq does.
@@ -858,6 +875,19 @@ export class Store implements JoinHubStore {
    * reported instead of guessed at: renumbering one would change a stable exact
    * reference, and deleting one would destroy retained bytes.
    */
+  private addWorkflowSchema(): void {
+    this.db.exec(
+      "CREATE TABLE IF NOT EXISTS workflows(" +
+      "id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, updatedAt INTEGER NOT NULL, json TEXT NOT NULL);" +
+      "CREATE INDEX IF NOT EXISTS workflow_owner ON workflows(ownerId, updatedAt);" +
+      "CREATE TABLE IF NOT EXISTS workflow_runs(" +
+      "id TEXT PRIMARY KEY, workflowId TEXT NOT NULL, ownerId TEXT NOT NULL," +
+      "updatedAt INTEGER NOT NULL, json TEXT NOT NULL);" +
+      "CREATE INDEX IF NOT EXISTS workflow_run_owner ON workflow_runs(ownerId, updatedAt);" +
+      "CREATE INDEX IF NOT EXISTS workflow_run_workflow ON workflow_runs(workflowId, updatedAt);",
+    );
+  }
+
   private addArtifactWorkspaceSchema(): void {
     const duplicate = this.db.prepare(
       "SELECT artifactId,version,COUNT(*) n FROM artifact_versions " +
@@ -2910,6 +2940,98 @@ export class Store implements JoinHubStore {
     return (this.db.prepare("SELECT json FROM tasks ORDER BY updatedAt DESC LIMIT ?").all(limit) as { json: string }[])
       .map(r => JSON.parse(r.json) as Task);
   }
+  saveWorkflow(w: Workflow): void {
+    const bad = validateWorkflow(w);
+    if (bad) throw new Error(bad);
+    this.db.prepare(
+      "INSERT OR REPLACE INTO workflows(id,ownerId,updatedAt,json) VALUES(?,?,?,?)",
+    ).run(w.id, w.ownerId, w.updatedAt, JSON.stringify(w));
+  }
+  workflow(id: ID): Workflow | undefined {
+    const row = this.db.prepare("SELECT json FROM workflows WHERE id=?").get(id) as
+      { json: string } | undefined;
+    return row ? JSON.parse(row.json) as Workflow : undefined;
+  }
+  workflows(ownerId: ID, limit = 200): Workflow[] {
+    return (this.db.prepare(
+      "SELECT json FROM workflows WHERE ownerId=? ORDER BY updatedAt DESC, id DESC LIMIT ?",
+    ).all(ownerId, limit) as { json: string }[]).map(r => JSON.parse(r.json) as Workflow);
+  }
+  saveWorkflowRun(run: WorkflowRun): void {
+    this.db.prepare(
+      "INSERT OR REPLACE INTO workflow_runs(id,workflowId,ownerId,updatedAt,json) VALUES(?,?,?,?,?)",
+    ).run(run.id, run.workflowId, run.ownerId, run.updatedAt ?? run.finishedAt ?? run.createdAt, JSON.stringify(run));
+  }
+  workflowRun(id: ID): WorkflowRun | undefined {
+    const row = this.db.prepare("SELECT json,updatedAt FROM workflow_runs WHERE id=?").get(id) as
+      { json: string; updatedAt: number } | undefined;
+    if (!row) return undefined;
+    const run = JSON.parse(row.json) as WorkflowRun;
+    if (run.updatedAt === undefined) run.updatedAt = row.updatedAt;
+    return run;
+  }
+  workflowRuns(ownerId: ID, workflowId?: ID, limit = 200): WorkflowRun[] {
+    const rows = workflowId
+      ? this.db.prepare(
+        "SELECT json,updatedAt FROM workflow_runs WHERE ownerId=? AND workflowId=? ORDER BY updatedAt DESC,id DESC LIMIT ?",
+      ).all(ownerId, workflowId, limit)
+      : this.db.prepare(
+        "SELECT json,updatedAt FROM workflow_runs WHERE ownerId=? ORDER BY updatedAt DESC,id DESC LIMIT ?",
+      ).all(ownerId, limit);
+    return (rows as { json: string; updatedAt: number }[]).map(r => {
+      const run = JSON.parse(r.json) as WorkflowRun;
+      if (run.updatedAt === undefined) run.updatedAt = r.updatedAt;
+      return run;
+    });
+  }
+  /** Active runs cannot resume silently after this relay process restarts. */
+  interruptActiveWorkflowRuns(ownerId: ID): WorkflowRun[] {
+    const active = new Set(["queued", "running", "waiting_you"]);
+    const changed: WorkflowRun[] = [];
+    for (const run of this.workflowRuns(ownerId, undefined, 1000)) {
+      if (!active.has(run.status)) continue;
+      const now = Date.now();
+      const message = "Cloud9 restarted before a result was recorded; run it again manually.";
+      const current = run.currentStepId ? run.steps.find(step => step.id === run.currentStepId) : undefined;
+      if (current) {
+        current.status = "interrupted";
+        current.error = message;
+        const attempt = current.attempts.at(-1);
+        if (attempt) {
+          attempt.status = "interrupted";
+          attempt.error = message;
+          attempt.finishedAt = now;
+          const task = this.task(attempt.taskId);
+          if (task && !["completed", "failed", "cancelled"].includes(task.status)) {
+            task.status = "cancelled";
+            task.error = message;
+            task.updatedAt = now;
+            this.saveTask(task);
+            for (const approval of this.approvals(1000)) {
+              if (approval.taskId !== task.id || approval.status !== "pending") continue;
+              approval.status = "expired";
+              approval.decidedAt = now;
+              this.saveApproval(approval);
+              this.interruptedWorkflowApprovals.push(approval);
+            }
+          }
+        }
+      }
+      run.status = "interrupted";
+      run.error = message;
+      run.finishedAt = now;
+      run.updatedAt = now;
+      this.saveWorkflowRun(run);
+      changed.push(run);
+    }
+    return changed;
+  }
+  /** Consume approvals expired by the most recent startup sweep for broadcast. */
+  takeInterruptedWorkflowApprovals(): Approval[] {
+    const approvals = this.interruptedWorkflowApprovals;
+    this.interruptedWorkflowApprovals = [];
+    return approvals;
+  }
   saveApproval(a: Approval): void {
     this.db.prepare("INSERT OR REPLACE INTO approvals(id,json) VALUES(?,?)").run(a.id, JSON.stringify(a));
   }
@@ -3165,8 +3287,9 @@ export const ARTIFACT_STAGE_GRACE_MS = 60_000;
  * 5 = a membership row per spell in a room, so a rejoin cannot overwrite a
  *     first arrival.
  * 6 = artifact chain access, exact-version links, and immutable version keys.
+ * 7 = saved manual workflow definitions and durable workflow-run records.
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /**
  * The fingerprint of one line of the trail.

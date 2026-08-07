@@ -22,6 +22,7 @@ import {
   tidySaving, validateSavingProposal,
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
   NotificationInboxEntry, NotificationInboxKind, notificationEventId,
+  Workflow, WorkflowRun, WorkflowRunStep, WorkflowStepStatus,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
   isReceiptStage, isReceiptVerdict,
   RUN_LIMITS, redactForSharing, validateLiveSteps,
@@ -33,7 +34,7 @@ import {
   setMachineNames, shareableRun,
   extractMentions, nameKey, newId, validateAgentDefinition, validateAttachment, validateChannelText,
   validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji,
-  validateName, validateRepo, validateRunRecord, validateTaskSummary,
+  validateName, validateRepo, validateRunRecord, validateTaskSummary, validateWorkflow,
   WS_LIMITS,
 } from "@cloud9/shared";
 import os from "node:os";
@@ -214,10 +215,13 @@ export class Relay {
   ownerId: ID;
   bind: string;
   devMode: boolean;
+  // Approval cards stay live until the owner answers or stops the agent.
   // (A mid-run card used to stay answerable for ten minutes and then be swept
   // away by one-shot timers kept here. Removed 2026-08-07: a question put to the
   // owner is not rubbish to be cleared up while he thinks about it. It stays on
   // his screen, live, until he answers it or stops the agent.)
+  /** Startup-expired workflow approvals are re-broadcast once the owner arrives. */
+  private restartExpiredWorkflowApprovals: Approval[] = [];
   /** last sign-in request per user, and whether one is still running */
   private signInAt: Record<ID, number> = {};
   private signInFlight: Record<ID, number> = {};
@@ -259,6 +263,11 @@ export class Relay {
     // Owner exists from first boot; a default #general channel too.
     const owner = this.store.ensureOwner(this.ownerName, this.ownerToken);
     this.ownerId = owner.id;
+    const interrupted = this.store.interruptActiveWorkflowRuns(this.ownerId);
+    this.restartExpiredWorkflowApprovals = this.store.takeInterruptedWorkflowApprovals();
+    if (interrupted.length) {
+      console.warn(`[cloud9] marked ${interrupted.length} workflow run(s) interrupted after restart`);
+    }
     if (this.store.channels().length === 0) {
       const general: Channel = {
         id: newId("ch"), name: "general", kind: "channel",
@@ -474,6 +483,11 @@ export class Relay {
     const conn: Conn = { ws, userId: user.id, client: frame.client };
     this.conns.add(conn);
     send(ws, { type: "welcome", state: this.worldFor(user.id) });
+    if (conn.userId === this.ownerId && this.restartExpiredWorkflowApprovals.length) {
+      const expired = this.restartExpiredWorkflowApprovals;
+      this.restartExpiredWorkflowApprovals = [];
+      for (const approval of expired) this.sendApproval(approval);
+    }
     // An engine arriving changes the answer for every agent it can run, and
     // everyone in a room with those agents needs to hear it — not only the
     // owner. This is the other half of the disconnect rule above.
@@ -615,7 +629,17 @@ export class Relay {
       // including the ones nobody has ever reported a lamp for, which used to
       // be every agent on a hub that had just started.
       presence: this.presenceMap(),
-      tasks: this.store.tasks(),
+      tasks: this.store.tasks().filter(task => {
+        if (!task.workflowRunId) return true;
+        const agent = this.store.agents().find(a => a.id === task.agentId);
+        return agent?.ownerId === userId || this.visibleChannels(userId).some(channel => channel.id === task.channelId);
+      }),
+      ...(userId === this.ownerId
+        ? {
+            workflows: this.store.workflows(userId),
+            workflowRuns: this.store.workflowRuns(userId),
+          }
+        : { workflows: [], workflowRuns: [] }),
       // Swept FIRST, so nobody is ever handed a card that is already dead and
       // invited to click Approve on it.
       approvals: this.visibleApprovals(userId),
@@ -1543,6 +1567,316 @@ export class Relay {
     this.toUser(userId, { type: "channelLeft", channelId });
   }
 
+  /** The owner-only definition gate used by every workflow frame. */
+  private myWorkflow(userId: ID, workflowId: ID): Workflow {
+    const workflow = this.store.workflow(workflowId);
+    if (!workflow || workflow.ownerId !== userId) throw new Error("no such workflow");
+    return workflow;
+  }
+
+  /**
+   * Publish workflow changes to every owner window, while keeping a request
+   * correlation id on the originating socket only. A second desktop window
+   * has no ledger entry for the first window's request id; broadcasting that
+   * id made it drop the update entirely.
+   */
+  private tellWorkflow(userId: ID, workflow: Workflow, requestId?: ID, origin?: Conn): void {
+    const base: ServerFrame = { type: "workflow", workflow };
+    const correlated = Boolean(origin && requestId);
+    for (const conn of this.conns) {
+      if (conn.userId === userId && (!correlated || conn !== origin)) send(conn.ws, base);
+    }
+    if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
+  }
+
+  private tellWorkflowRun(userId: ID, run: WorkflowRun, requestId?: ID, origin?: Conn): void {
+    const base: ServerFrame = { type: "workflowRun", run };
+    const correlated = Boolean(origin && requestId);
+    for (const conn of this.conns) {
+      if (conn.userId === userId && (!correlated || conn !== origin)) send(conn.ws, base);
+    }
+    if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
+  }
+
+  /**
+   * The one task minting path. A workflow calls this same method as a normal
+   * task, so agent ownership, channel visibility and approval policy cannot
+   * drift between the two entry points.
+   */
+  private createTaskFor(
+    conn: Conn,
+    input: {
+      agentId: ID; channelId: ID; title: string; requesterId?: ID;
+      workflowId?: ID; workflowRunId?: ID; workflowStepId?: ID;
+    },
+  ): Task {
+    const agent = this.myAgent(conn.userId, input.agentId);
+    const channel = this.channelFor(conn.userId, input.channelId);
+    const requester = this.requesterFor(conn, input.requesterId, channel);
+    if (!mayDriveAgent(requester.id, agent)) {
+      throw new Error(agent.name + " isn't set up to take work from " + requester.name);
+    }
+    const now = Date.now();
+    const needsApproval = requiresApproval(agent, input.title);
+    const task: Task = {
+      id: newId("t"), title: input.title,
+      requesterId: requester.id, requesterName: requester.name,
+      agentId: agent.id, channelId: channel.id,
+      status: needsApproval ? "waiting_approval" : "not_started",
+      createdAt: now, updatedAt: now,
+      ...(input.workflowId ? { workflowId: input.workflowId } : {}),
+      ...(input.workflowRunId ? { workflowRunId: input.workflowRunId } : {}),
+      ...(input.workflowStepId ? { workflowStepId: input.workflowStepId } : {}),
+    };
+    let approval: Approval | undefined;
+    if (needsApproval) {
+      approval = {
+        id: newId("ap"), taskId: task.id, agentId: agent.id, ownerId: agent.ownerId,
+        action: describeApproval(task.title), status: "pending", createdAt: now,
+        ...(input.workflowRunId ? { channelId: channel.id } : {}),
+      };
+      task.approvalId = approval.id;
+      this.store.saveApproval(approval);
+      this.audit(conn, "approval_requested", approval.id,
+        agent.name + " requests approval: " + approval.action, { asUser: requester });
+    }
+    this.store.saveTask(task);
+    if (approval) this.sendApproval(approval);
+    this.audit(conn, "task_created", task.id, "task for " + agent.name + ": " + task.title,
+      { asUser: requester });
+    this.publishTask(task);
+    return task;
+  }
+
+  private persistWorkflowRun(run: WorkflowRun, requestId?: ID, origin?: Conn): void {
+    run.updatedAt = Date.now();
+    this.store.saveWorkflowRun(run);
+    this.tellWorkflowRun(run.ownerId, run, requestId, origin);
+  }
+
+  private runStep(run: WorkflowRun, stepId: ID): WorkflowRunStep {
+    const step = run.steps.find(s => s.id === stepId);
+    if (!step) throw new Error("that workflow step is no longer here");
+    return step;
+  }
+
+  /** A saved runbook cannot point at an agent that was removed or moved. */
+  private workflowAgents(userId: ID, workflow: Workflow): void {
+    for (const step of workflow.steps) {
+      const agent = this.store.agents().find(a => a.id === step.agentId);
+      if (!agent || agent.ownerId !== userId) {
+        throw new Error("workflow step agent is missing; choose an agent you own");
+      }
+    }
+  }
+
+  private startWorkflowStep(conn: Conn, run: WorkflowRun, workflow: Workflow, stepId: ID): void {
+    const step = this.runStep(run, stepId);
+    let task: Task;
+    try {
+      task = this.createTaskFor(conn, {
+        agentId: step.agentId, channelId: run.channelId, title: step.instruction,
+        workflowId: workflow.id, workflowRunId: run.id, workflowStepId: step.id,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "this workflow step could not start";
+      step.status = "failed";
+      step.error = message;
+      run.status = "failed";
+      run.error = message;
+      run.currentStepId = step.id;
+      run.finishedAt = Date.now();
+      this.persistWorkflowRun(run);
+      throw error;
+    }
+    const attempt = {
+      taskId: task.id,
+      status: task.status === "waiting_approval" ? "waiting_you" as const : "queued" as const,
+      createdAt: task.createdAt,
+    };
+    step.attempts = [...step.attempts, attempt];
+    step.status = attempt.status;
+    run.currentStepId = step.id;
+    run.status = attempt.status === "waiting_you" ? "waiting_you" : "queued";
+    this.persistWorkflowRun(run);
+  }
+
+  private workflowTaskChanged(conn: Conn, task: Task): void {
+    if (!task.workflowRunId || !task.workflowStepId) return;
+    const run = this.store.workflowRun(task.workflowRunId);
+    if (!run || run.ownerId !== conn.userId) return;
+    const workflow = this.store.workflow(run.workflowId);
+    if (!workflow) return;
+    const step = run.steps.find(s => s.id === task.workflowStepId);
+    if (!step) return;
+    const attempt = step.attempts.at(-1);
+    if (!attempt || attempt.taskId !== task.id) return;
+    // Task updates can be replayed by a reconnecting engine. Once this
+    // attempt has an ending, its result is immutable: a second "completed"
+    // must not start the next step twice, and a late "working" must not make
+    // a finished run look alive again.
+    if (attempt.status === "succeeded" || attempt.status === "failed" || attempt.status === "stopped" || attempt.status === "interrupted") return;
+    const now = task.updatedAt;
+    const status: WorkflowStepStatus =
+      task.status === "working" ? "running"
+      : task.status === "waiting_approval" || task.status === "waiting_user" || task.status === "blocked" ? "waiting_you"
+      : task.status === "completed" ? "succeeded"
+      : task.status === "failed" ? "failed"
+      : task.status === "cancelled" ? "stopped"
+      : "queued";
+    // A reconnect may replay an older queued/working frame. Keep the attempt
+    // moving forward; the one intentional exception is the approved
+    // waiting-for-you task becoming queued again for the engine.
+    if (attempt.status === "running" && status === "queued") return;
+    // A mid-run approval is recorded against the in-flight task. Only the
+    // engine's working receipt after that exact card is approved may release
+    // a waiting step; a replayed blocked receipt must not regress it.
+    if (attempt.status === "running" && status === "waiting_you") {
+      const approval = task.approvalId ? this.store.approval(task.approvalId) : undefined;
+      if (task.approvalId && approval?.status !== "pending") return;
+    }
+    // Waiting-for-you is a held state. A late working receipt from the same
+    // engine cannot claim the step resumed; only the explicit approval release
+    // below is allowed to move it through queued first.
+    if (attempt.status === "waiting_you" && status === "running") {
+      const approval = task.approvalId ? this.store.approval(task.approvalId) : undefined;
+      if (approval?.status !== "approved") return;
+    }
+    if (attempt.status === "waiting_you" && status === "queued") {
+      const approval = task.approvalId ? this.store.approval(task.approvalId) : undefined;
+      if (approval?.status !== "approved") return;
+    }
+    attempt.status = status;
+    attempt.result = task.result;
+    attempt.error = task.error;
+    if (status === "running" && !attempt.startedAt) attempt.startedAt = now;
+    if ((status === "succeeded" || status === "failed" || status === "stopped") && !attempt.finishedAt) {
+      attempt.finishedAt = now;
+    }
+    step.status = status;
+    step.result = task.result;
+    step.error = task.error;
+    if (status === "running" && !step.startedAt) step.startedAt = now;
+    if ((status === "succeeded" || status === "failed" || status === "stopped") && !step.finishedAt) {
+      step.finishedAt = now;
+    }
+    if (status === "waiting_you") {
+      run.status = "waiting_you";
+      run.error = task.error;
+      this.audit(conn, "workflow_run_state", run.id, "workflow waiting for you at " + step.id);
+      this.persistWorkflowRun(run);
+      return;
+    }
+    if (status === "queued" || status === "running") {
+      run.status = status === "running" ? "running" : "queued";
+      if (status === "running" && !run.startedAt) run.startedAt = now;
+      this.audit(conn, "workflow_run_state", run.id, "workflow " + run.status + " at " + step.id);
+      this.persistWorkflowRun(run);
+      return;
+    }
+    if (status === "failed" || status === "stopped") {
+      run.status = status;
+      run.error = task.error || (status === "stopped" ? "This workflow was stopped." : "This step failed.");
+      run.finishedAt = now;
+      this.audit(conn, "workflow_run_state", run.id, "workflow " + run.status + " at " + step.id);
+      this.persistWorkflowRun(run);
+      return;
+    }
+    // One completed step unlocks exactly one next step. There is no parallel
+    // branch and no hidden retry.
+    const next = run.steps[run.steps.findIndex(s => s.id === step.id) + 1];
+    if (!next) {
+      run.status = "succeeded";
+      run.finishedAt = now;
+      run.currentStepId = undefined;
+      this.audit(conn, "workflow_run_state", run.id, "workflow succeeded");
+      this.persistWorkflowRun(run);
+      return;
+    }
+    run.status = "queued";
+    run.currentStepId = next.id;
+    this.audit(conn, "workflow_run_state", run.id, "workflow advanced to " + next.id);
+    this.persistWorkflowRun(run);
+    this.startWorkflowStep(conn, run, workflow, next.id);
+  }
+
+  private stopWorkflowRun(conn: Conn, run: WorkflowRun, requestId?: ID): void {
+    const task = run.currentStepId
+      ? run.steps.find(s => s.id === run.currentStepId)?.attempts.at(-1)?.taskId
+      : undefined;
+    if (task) {
+      const current = this.store.task(task);
+      if (current && !["completed", "failed", "cancelled"].includes(current.status)) {
+        current.status = "cancelled";
+        current.updatedAt = Date.now();
+        this.store.saveTask(current);
+        this.publishTask(current);
+        if (current.approvalId) {
+          const approval = this.store.approval(current.approvalId);
+          if (approval?.status === "pending") {
+            approval.status = "expired";
+            approval.decidedAt = current.updatedAt;
+            this.store.saveApproval(approval);
+            this.sendApproval(approval);
+          }
+        }
+      }
+    }
+    run.status = "stopped";
+    run.error = "This workflow was stopped.";
+    run.finishedAt = Date.now();
+    if (run.currentStepId) {
+      const step = run.steps.find(s => s.id === run.currentStepId);
+      if (step) step.status = "stopped";
+      const attempt = step?.attempts.at(-1);
+      if (attempt) { attempt.status = "stopped"; attempt.finishedAt = run.finishedAt; }
+    }
+    this.persistWorkflowRun(run, requestId, conn);
+    this.audit(conn, "workflow_run_state", run.id, "workflow stopped");
+  }
+
+  private stopRunsForDeletedAgent(conn: Conn, agentId: ID): void {
+    for (const run of this.store.workflowRuns(conn.userId, undefined, 1000)) {
+      if (!["queued", "running", "waiting_you"].includes(run.status)) continue;
+      if (!run.steps.some(step => step.agentId === agentId)) continue;
+      run.status = "stopped";
+      run.error = "The agent for this workflow was removed; the workflow was stopped.";
+      run.finishedAt = Date.now();
+      run.updatedAt = run.finishedAt;
+      const current = run.currentStepId ? run.steps.find(step => step.id === run.currentStepId) : undefined;
+      if (current) {
+        current.status = "stopped";
+        current.error = run.error;
+        const attempt = current.attempts.at(-1);
+        if (attempt) {
+          attempt.status = "stopped";
+          attempt.error = run.error;
+          attempt.finishedAt = run.finishedAt;
+          const task = this.store.task(attempt.taskId);
+          if (task && !["completed", "failed", "cancelled"].includes(task.status)) {
+            task.status = "cancelled";
+            task.error = run.error;
+            task.updatedAt = run.finishedAt;
+            this.store.saveTask(task);
+            this.publishTask(task);
+          }
+          if (task?.approvalId) {
+            const approval = this.store.approval(task.approvalId);
+            if (approval?.status === "pending") {
+              approval.status = "expired";
+              approval.decidedAt = run.finishedAt;
+              this.store.saveApproval(approval);
+              this.sendApproval(approval);
+            }
+          }
+        }
+      }
+      this.store.saveWorkflowRun(run);
+      this.tellWorkflowRun(run.ownerId, run);
+      this.audit(conn, "workflow_run_state", run.id, "workflow stopped because its agent was removed");
+    }
+  }
+
   private handleFrame(conn: Conn, frame: ClientFrame): void {
     switch (frame.type) {
       case "send": {
@@ -1591,6 +1925,146 @@ export class Relay {
         // The lamp is what the engine SAID; presence is what the hub can back
         // up. One frame carries both, so nothing has to ask twice.
         this.announcePresence([agent]);
+        break;
+      }
+      case "listWorkflows": {
+        if (conn.userId !== this.ownerId) {
+          send(conn.ws, { type: "workflows", workflows: [], runs: [], requestId: frame.requestId });
+          break;
+        }
+        send(conn.ws, {
+          type: "workflows",
+          workflows: this.store.workflows(conn.userId),
+          runs: this.store.workflowRuns(conn.userId),
+          requestId: frame.requestId,
+        });
+        break;
+      }
+      case "createWorkflow": {
+        if (conn.userId !== this.ownerId) throw new Error("only the owner can create workflows");
+        const now = Date.now();
+        const workflow: Workflow = {
+          ...frame.workflow,
+          id: newId("wf"), ownerId: conn.userId, version: 1,
+          createdAt: now, updatedAt: now,
+        };
+        const bad = validateWorkflow(workflow);
+        if (bad) throw new Error(bad);
+        this.channelFor(conn.userId, workflow.channelId);
+        this.workflowAgents(conn.userId, workflow);
+        this.store.saveWorkflow(workflow);
+        this.audit(conn, "workflow_created", workflow.id, "created workflow " + workflow.name);
+        this.tellWorkflow(conn.userId, workflow, frame.requestId, conn);
+        break;
+      }
+      case "updateWorkflow": {
+        if (conn.userId !== this.ownerId) throw new Error("only the owner can edit workflows");
+        const current = this.myWorkflow(conn.userId, frame.workflowId);
+        // The wire patch is hostile input. Only builder-owned fields may change;
+        // identity, archive state, version, and timestamps always come from the
+        // stored row and this relay.
+        const patch = frame.patch as Partial<Workflow>;
+        const next: Workflow = {
+          ...current,
+          ...(typeof patch.name === "string" ? { name: patch.name } : {}),
+          ...(Object.prototype.hasOwnProperty.call(patch, "description")
+            ? { description: typeof patch.description === "string" ? patch.description : undefined }
+            : {}),
+          ...(typeof patch.channelId === "string" ? { channelId: patch.channelId } : {}),
+          ...(typeof patch.enabled === "boolean" ? { enabled: patch.enabled } : {}),
+          ...(Array.isArray(patch.steps) ? { steps: patch.steps } : {}),
+          id: current.id,
+          ownerId: current.ownerId,
+          archivedAt: current.archivedAt,
+          createdAt: current.createdAt,
+          version: current.version + 1,
+          updatedAt: Date.now(),
+        };
+        const bad = validateWorkflow(next);
+        if (bad) throw new Error(bad);
+        this.channelFor(conn.userId, next.channelId);
+        this.workflowAgents(conn.userId, next);
+        this.store.saveWorkflow(next);
+        this.audit(conn, "workflow_updated", next.id, "updated workflow " + next.name);
+        this.tellWorkflow(conn.userId, next, frame.requestId, conn);
+        break;
+      }
+      case "archiveWorkflow": {
+        if (conn.userId !== this.ownerId) throw new Error("only the owner can archive workflows");
+        const current = this.myWorkflow(conn.userId, frame.workflowId);
+        const runs = this.store.workflowRuns(conn.userId, current.id);
+        if (frame.archived && runs.some(run => ["queued", "running", "waiting_you"].includes(run.status))) {
+          throw new Error("stop active runs before archiving this workflow");
+        }
+        const next: Workflow = { ...current, archivedAt: frame.archived ? Date.now() : undefined, updatedAt: Date.now(), version: current.version + 1 };
+        this.store.saveWorkflow(next);
+        this.audit(conn, "workflow_archived", next.id, frame.archived ? "archived workflow " + next.name : "restored workflow " + next.name);
+        this.tellWorkflow(conn.userId, next, frame.requestId, conn);
+        break;
+      }
+      case "runWorkflow": {
+        if (conn.userId !== this.ownerId) throw new Error("only the owner can run workflows");
+        const workflow = this.myWorkflow(conn.userId, frame.workflowId);
+        if (workflow.archivedAt) throw new Error("this workflow is archived; restore it before running");
+        if (!workflow.enabled) throw new Error("this workflow is switched off; enable it before running");
+        if (!workflow.steps.length) throw new Error("add a step before running this workflow");
+        this.channelFor(conn.userId, workflow.channelId);
+        this.workflowAgents(conn.userId, workflow);
+        const now = Date.now();
+        const run: WorkflowRun = {
+          id: newId("wfr"), workflowId: workflow.id, workflowVersion: workflow.version,
+          ownerId: conn.userId, requestedBy: conn.userId, channelId: workflow.channelId,
+          status: "queued",
+          steps: workflow.steps.map(step => ({
+            ...step, status: "queued" as const, attempts: [],
+          })),
+          createdAt: now, updatedAt: now,
+        };
+        this.store.saveWorkflowRun(run);
+        this.audit(conn, "workflow_run_started", run.id, "started workflow " + workflow.name);
+        this.tellWorkflowRun(conn.userId, run, frame.requestId, conn);
+        this.startWorkflowStep(conn, run, workflow, run.steps[0].id);
+        break;
+      }
+      case "stopWorkflow": {
+        if (conn.userId !== this.ownerId) throw new Error("only the owner can stop workflows");
+        const run = this.store.workflowRun(frame.workflowRunId);
+        if (!run || run.ownerId !== conn.userId) throw new Error("no such workflow run");
+        if (["succeeded", "failed", "stopped", "interrupted"].includes(run.status)) {
+          this.tellWorkflowRun(conn.userId, run, frame.requestId, conn);
+          break;
+        }
+        this.stopWorkflowRun(conn, run, frame.requestId);
+        break;
+      }
+      case "retryWorkflow": {
+        if (conn.userId !== this.ownerId) throw new Error("only the owner can retry workflows");
+        const run = this.store.workflowRun(frame.workflowRunId);
+        if (!run || run.ownerId !== conn.userId) throw new Error("no such workflow run");
+        if (run.status !== "failed" && run.status !== "stopped" && run.status !== "interrupted") {
+          throw new Error("retry is available after a step fails or is stopped");
+        }
+        const workflow = this.myWorkflow(conn.userId, run.workflowId);
+        if (workflow.archivedAt) throw new Error("this workflow is archived; restore it before retrying");
+        this.workflowAgents(conn.userId, workflow);
+        const index = run.steps.findIndex(s => s.id === frame.stepId);
+        const failed = run.steps[index];
+        if (!failed || (failed.status !== "failed" && failed.status !== "stopped" && failed.status !== "interrupted")) {
+          throw new Error("choose the failed or stopped step to retry");
+        }
+        for (let i = index; i < run.steps.length; i++) {
+          run.steps[i].status = "queued";
+          run.steps[i].error = undefined;
+          run.steps[i].result = undefined;
+          run.steps[i].finishedAt = undefined;
+        }
+        run.status = "queued";
+        run.error = undefined;
+        run.finishedAt = undefined;
+        run.currentStepId = failed.id;
+        this.audit(conn, "workflow_run_state", run.id, "retrying workflow at " + failed.id);
+        this.persistWorkflowRun(run, frame.requestId, conn);
+        this.startWorkflowStep(conn, run, workflow, failed.id);
         break;
       }
       case "createChannel": {
@@ -1916,6 +2390,7 @@ export class Relay {
       }
       case "deleteAgent": {
         const existing = this.myAgent(conn.userId, frame.agentId);
+        this.stopRunsForDeletedAgent(conn, frame.agentId);
         this.store.deleteAgent(frame.agentId);
         // a deleted agent's lamp is not a fact about anything any more
         delete this.agentStatus[frame.agentId];
@@ -1988,6 +2463,12 @@ export class Relay {
         break;
       }
       case "createTask": {
+        this.createTaskFor(conn, {
+          agentId: frame.agentId, channelId: frame.channelId, title: frame.title,
+          requesterId: frame.requesterId,
+        });
+        break;
+        /*
         // Two questions, both answered from STORED state, never from the frame
         // (P1 #6): is this your agent, and is this your conversation? Without
         // them a guest could run background work on the owner's paid
@@ -2039,8 +2520,8 @@ export class Relay {
         // credited to WHO ASKED, not to whichever socket carried the request
         this.audit(conn, "task_created", task.id, `task for ${agent.name}: ${task.title}`,
           { asUser: requester });
-        this.broadcast({ type: "task", task });
-        break;
+        this.publishTask(task);
+        */
       }
       case "updateTask": {
         const task = this.store.task(frame.taskId);
@@ -2055,6 +2536,31 @@ export class Relay {
         const badSummary = validateTaskSummary(frame.summary);
         if (badSummary) throw new Error(badSummary);
         if (task.status === "cancelled") break; // FR-TS-005: cancelled stays cancelled
+        if (task.workflowRunId && (task.status === "completed" || task.status === "failed")) break;
+        if (task.workflowRunId) {
+          const run = this.store.workflowRun(task.workflowRunId);
+          const step = run?.steps.find(candidate => candidate.id === task.workflowStepId);
+          const attempt = step?.attempts.at(-1);
+          const incoming: WorkflowStepStatus =
+            frame.status === "working" ? "running"
+            : frame.status === "waiting_approval" || frame.status === "waiting_user" || frame.status === "blocked" ? "waiting_you"
+            : frame.status === "completed" ? "succeeded"
+            : frame.status === "failed" ? "failed"
+            : (frame.status as string) === "cancelled" ? "stopped"
+            : "queued";
+          if (attempt && (attempt.status === "succeeded" || attempt.status === "failed" || attempt.status === "stopped" || attempt.status === "interrupted")) break;
+          if (attempt && (attempt.status === "running" || attempt.status === "waiting_you") && incoming === "queued") break;
+          if (attempt?.status === "running" && incoming === "waiting_you") {
+            const approval = task.approvalId ? this.store.approval(task.approvalId) : undefined;
+            if (task.approvalId && approval?.status !== "pending") break;
+          }
+          if (attempt?.status === "waiting_you" && incoming === "running") {
+            const approval = task.approvalId ? this.store.approval(task.approvalId) : undefined;
+            if (approval?.status !== "approved") break;
+          }
+          if (attempt?.status === "waiting_you" && task.approvalId
+            && this.store.approval(task.approvalId)?.status === "pending" && incoming !== "waiting_you") break;
+        }
         task.status = frame.status;
         if (frame.result !== undefined) task.result = frame.result;
         if (frame.error !== undefined) task.error = frame.error;
@@ -2069,7 +2575,8 @@ export class Relay {
         task.updatedAt = Date.now();
         this.store.saveTask(task);
         this.audit(conn, "task_status", task.id, `task "${task.title}" → ${task.status}`, { asAgent: agent });
-        this.broadcast({ type: "task", task });
+        this.publishTask(task);
+        this.workflowTaskChanged(conn, task);
         break;
       }
       case "cancelTask": {
@@ -2086,7 +2593,17 @@ export class Relay {
         task.updatedAt = Date.now();
         this.store.saveTask(task);
         this.audit(conn, "task_status", task.id, `task "${task.title}" cancelled`);
-        this.broadcast({ type: "task", task });
+        this.publishTask(task);
+        if (task.workflowRunId && task.approvalId) {
+          const approval = this.store.approval(task.approvalId);
+          if (approval?.status === "pending") {
+            approval.status = "expired";
+            approval.decidedAt = task.updatedAt;
+            this.store.saveApproval(approval);
+            this.sendApproval(approval);
+          }
+        }
+        this.workflowTaskChanged(conn, task);
         break;
       }
       // ---- an agent is MID-RUN and has reached something that leaves this PC ----
@@ -2147,6 +2664,18 @@ export class Relay {
           ...(taskId ? { taskId } : {}),
           ...(detail ? { detail: detail.slice(0, APPROVAL_LIMITS.detail) } : {}),
         };
+        // Keep an in-flight workflow task tied to the exact card that parked
+        // it. The ordinary job gate already does this at creation time; a
+        // mid-run ask must establish the same correlation before the engine's
+        // blocked/working receipts arrive.
+        if (taskId) {
+          const task = this.store.task(taskId);
+          if (task) {
+            task.approvalId = approval.id;
+            task.updatedAt = now;
+            this.store.saveTask(task);
+          }
+        }
         this.store.saveApproval(approval);
         this.audit(conn, "approval_requested", approval.id,
           `${agent.name} asks to ${approval.action}`, { asAgent: agent });
@@ -2316,7 +2845,8 @@ export class Relay {
           task.updatedAt = Date.now();
           this.store.saveTask(task);
           this.audit(conn, "task_status", task.id, `task "${task.title}" → ${task.status}`);
-          this.broadcast({ type: "task", task });
+          this.publishTask(task);
+          this.workflowTaskChanged(conn, task);
         }
         this.sendApproval(approval);
         break;
@@ -3376,7 +3906,7 @@ export class Relay {
       task.runId = row.record.id;
       task.updatedAt = Date.now();
       this.store.saveTask(task);
-      this.broadcast({ type: "task", task });
+      this.publishTask(task);
     }
 
     this.tellAboutRun(row);
@@ -3555,6 +4085,25 @@ export class Relay {
     for (const conn of this.conns) send(conn.ws, frame);
   }
 
+  private publishTask(task: Task): void {
+    if (!task.workflowRunId) {
+      this.broadcast({ type: "task", task });
+      return;
+    }
+    const channel = this.store.channel(task.channelId);
+    const agents = this.store.agents();
+    const audience = new Set<ID>();
+    for (const memberId of channel?.memberIds ?? []) {
+      const memberAgent = agents.find(agent => agent.id === memberId);
+      audience.add(memberAgent?.ownerId ?? memberId);
+    }
+    const taskAgent = agents.find(agent => agent.id === task.agentId);
+    if (taskAgent) audience.add(taskAgent.ownerId);
+    for (const conn of this.conns) {
+      if (audience.has(conn.userId)) send(conn.ws, { type: "task", task });
+    }
+  }
+
   /**
    * A conversation is announced only to the people in it (P1 #7). Broadcasting
    * every channel to everyone told the whole house who was talking to whom —
@@ -3608,6 +4157,13 @@ export class Relay {
    * his phone and the engine that asked, all at once.
    */
   private sendApproval(approval: Approval): void {
+    if (this.isWorkflowApproval(approval)) {
+      const audience = this.workflowApprovalAudience(approval);
+      for (const conn of this.conns) {
+        if (audience.has(conn.userId)) send(conn.ws, { type: "approval", approval });
+      }
+      return;
+    }
     if (approval.kind === "action") this.toUser(approval.ownerId, { type: "approval", approval });
     else this.broadcast({ type: "approval", approval });
   }
@@ -3619,9 +4175,28 @@ export class Relay {
   // (@cloud9/shared, `ApprovalStatus`), but nothing produces a new one, and a
   // card only stops being pending because HE decided or he pressed Stop.
 
+  /** Saved runbook approvals follow the task's room, plus the owner who decides. */
+  private isWorkflowApproval(approval: Approval): boolean {
+    const task = approval.taskId ? this.store.task(approval.taskId) : undefined;
+    return Boolean(task?.workflowRunId);
+  }
+
+  private workflowApprovalAudience(approval: Approval): Set<ID> {
+    const audience = new Set<ID>([approval.ownerId]);
+    const channel = approval.channelId ? this.store.channel(approval.channelId) : undefined;
+    const agents = this.store.agents();
+    for (const memberId of channel?.memberIds ?? []) {
+      const memberAgent = agents.find(agent => agent.id === memberId);
+      audience.add(memberAgent?.ownerId ?? memberId);
+    }
+    return audience;
+  }
+
   /** The approvals this person may be shown. */
   private visibleApprovals(userId: ID): Approval[] {
-    return this.store.approvals().filter(a => a.kind !== "action" || a.ownerId === userId);
+    return this.store.approvals().filter(a => this.isWorkflowApproval(a)
+      ? this.workflowApprovalAudience(a).has(userId)
+      : a.kind !== "action" || a.ownerId === userId);
   }
 
   /** Send to one user's engine host connection(s) only. */
