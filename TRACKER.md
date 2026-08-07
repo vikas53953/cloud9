@@ -1,13 +1,15 @@
 # LIVE TRACKER — Cloud9
 
-## Current Hooks editor snapshot (2026-08-07)
+## Current Hooks editor snapshot (2026-08-08)
 
 Hooks editor is BUILDING on `feature/hooks-rules-editor` from `origin/master`
-`7329537`. PR is not opened yet; owner-only CRUD, existing event/action
-validation, durable SQLite/audit state, request correlation, accessible loading/
-error/test-result UI, and no shell/webhook credential fields are implemented.
-Evidence: shared+relay build pass, desktop tsc pass, relay hooks CRUD 1/1,
-desktop Hooks source 2/2, and diff-check clean. No package/install/QA/app walk.
+`daf851f`. PR #27 is OPEN and pending independent review; owner-only CRUD,
+existing event/action validation, durable SQLite/audit state, live engine sync,
+request correlation, accessible loading/error/test-result UI, and no
+shell/webhook credential fields are implemented. Stable source/test commit is
+`3be8716`. Evidence: shared, engine, and relay builds pass; engine host 17/17
+and hooks 25/25; relay Hooks CRUD 1/1; desktop typecheck and Hooks source 2/2;
+diff-check clean. No package/install/QA/app walk or performance comparison.
 
 **This file is the single source of truth. If it disagrees with a chat message,
 a commit, or an agent's report, THIS FILE WINS.**
@@ -80,8 +82,8 @@ is not there, say so and ask once.
 
 | # | Ask | Owner | Current stage | Evidence / boundary |
 |---|---|---|---|---|
-| 12 | **remove the timing** - *"agents are employees"* | Vikas Mittal | **MERGED - PR #13 (`7329537`) on `master`** | The no-clock turn/approval contract is merged. Retain focused no-expiry evidence and unknown gates from historical rows; this reconciliation does not claim a fresh installed walk. |
-| 17 | **Persistent mentions-and-replies notification inbox** | Vikas Mittal | **MERGED - PR #19 (`551b2f8`)** on `master`; reviewer `chatgpt-codex-connector` | Shared protocol contract, relay SQLite inbox with deterministic ids/idempotent writes, recipient-scoped read/dismiss, conservative age/count retention, current-access tombstone projection, edit/delete refresh, desktop rail/list/empty/loading/error/focus/live states, and source-level relay/desktop typechecks landed in the merged implementation. No runtime app walk is claimed here. Existing mention/thread recipient rules remain the authority; mute/quiet/OS toast rules are not used to suppress durable rows. PR: https://github.com/vikas53953/cloud9/pull/19 |
+| 12 | **remove the timing** — *"agents are employees"* | timing author | **MERGED — PR #13 on `origin/master` `daf851f`** | The no-timer source and tests are merged. This current row supersedes the dated PR13 snapshots below; those rows remain historical evidence only. |
+| 17 | **Persistent mentions-and-replies notification inbox** | notification author | **MERGED — PR #19 on `feature/persistent-notifications`, based on `origin/master` `551b2f8`** | Durable mention/thread-reply inbox shipped with deterministic ids, idempotent SQLite writes, recipient-scoped read/dismiss, retention, tombstone projection, edit/delete refresh, accessible rail/list/empty/loading/error/focus/live states, request correlation, and guarded navigation. PR #19 is merged; no package/install/QA/app-walk claim is added here. PR: https://github.com/vikas53953/cloud9/pull/19 |
 
 | 19 | **Saved/Later message queue** | master | **MERGED — PR #28 (`9429c48`)** | V1 saves and unsaves readable messages per account, stores note/reminder metadata without scheduling notifications, projects active/deleted/inaccessible source states, and mirrors correlated updates to the owner's windows. The merged Saved commit is `9429c48`, now included in master `c3519a6`; Saved migration is schema v8 after Workflow v7 and includes durable fingerprinted receipts (30-day/512 bounded retry ledger), deterministic pagination, access re-projection on membership changes, account cleanup, offline/lost request notices, pending detail-action guards, timezone-safe reminder dates, and draft retention until correlated success. Evidence on current source: shared build passed; relay focused Saved tests **5/5** and desktop Saved checks **3/3**; no package/install/app-walk claim. |
 
@@ -212,7 +214,7 @@ Workflow row metadata (2026-08-08): current review tip `773adb5`, rebased onto `
 
 The complete visual program map is [`docs/buzz-important-functions-2026-08-07.html`](docs/buzz-important-functions-2026-08-07.html). It uses the dated Buzz captures in `docs/qa/` and separates observed UI, installed-CLI/source capability, verified gaps, decisions, and fog. The installed Buzz binary is `0.5.5` by Windows file metadata; the in-app version was not observed. Computer Use could not be initialized in this session (`Windows Computer Use Sky runtime is unavailable`), so no new UI action or screenshot is claimed here. Existing captures remain the only visual evidence. CLI help is capability evidence, not visible UI evidence.
 
-| 15 | **hooks editor** | remove-the-timing agent | **BUILDING — owner-only CRUD/editor in progress; PR pending; not approved or merged** | Existing engine events/actions are exposed through shared validation and an owner-only relay SQLite rule store with durable audit, request-id idempotency/correlation, enable/disable/delete/test flows, and accessible Hooks rail/editor. Commands/shell and webhook credentials are intentionally absent. Evidence: shared+relay build pass, desktop tsc pass, relay hooks CRUD 1/1, desktop Hooks source 2/2, and diff-check clean. PR pending. |
+| 15 | **hooks editor** | remove-the-timing agent | **BUILDING — PR #27 OPEN; independent review pending; not approved or merged** | Existing engine events/actions are exposed through shared validation and an owner-only relay SQLite rule store with durable audit, request-id idempotency/correlation, live relay→engine sync/firing audit, enable/disable/delete/test flows, and accessible Hooks rail/editor. Commands/shell and webhook credentials are intentionally absent. Base `daf851f`; stable source/test commit `3be8716`. Evidence: shared, engine, and relay builds pass; engine host 17/17 and hooks 25/25; relay Hooks CRUD 1/1; desktop typecheck and Hooks source 2/2; diff-check clean. No package/install/QA/app walk or performance comparison. PR: https://github.com/vikas53953/cloud9/pull/27 |
 | 16 | **saved-key provider parity** | Vikas Mittal | **BUILDING — PR #30 (`fc65dbf`), independent review pending** | Stored-key `SdkProvider` now preserves capability-gated roots/MCP, Cloud9 MCP tools, SDK live trace/steps and session/run facts, owner Stop abort, credential isolation, and loud missing-final-output errors without a six-turn/no-response trap. Focused source checks passed; no package/install/app-walk claim. |
 
 | 17 | **queue visibility and fair concurrency** | nobody yet | **NOT STARTED — verified buildable harness gap; author/reviewer unassigned** | `packages/engine/src/engine.ts:808-825` drains a hard default of two turns at once; the queue is private. `packages/shared/src/agentactivity.ts:101-108` explicitly says ordinary chat turns waiting behind that cap have no wire field, so Activity can show the last completed job instead of queued work. Boundary: report queued/started/cancelled order and capacity in the same activity/task contract, with retry/stop semantics; do not add a timing foundation. Dependencies: run lifecycle state only; queue visibility is independent of saved-key provider parity (16). |
