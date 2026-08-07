@@ -1636,10 +1636,23 @@ export class Relay {
 
   private startWorkflowStep(conn: Conn, run: WorkflowRun, workflow: Workflow, stepId: ID): void {
     const step = this.runStep(run, stepId);
-    const task = this.createTaskFor(conn, {
-      agentId: step.agentId, channelId: workflow.channelId, title: step.instruction,
-      workflowId: workflow.id, workflowRunId: run.id, workflowStepId: step.id,
-    });
+    let task: Task;
+    try {
+      task = this.createTaskFor(conn, {
+        agentId: step.agentId, channelId: run.channelId, title: step.instruction,
+        workflowId: workflow.id, workflowRunId: run.id, workflowStepId: step.id,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "this workflow step could not start";
+      step.status = "failed";
+      step.error = message;
+      run.status = "failed";
+      run.error = message;
+      run.currentStepId = step.id;
+      run.finishedAt = Date.now();
+      this.persistWorkflowRun(run);
+      throw error;
+    }
     const attempt = {
       taskId: task.id,
       status: task.status === "waiting_approval" ? "waiting_you" as const : "queued" as const,
