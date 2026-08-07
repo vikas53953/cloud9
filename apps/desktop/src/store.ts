@@ -217,6 +217,8 @@ export interface World {
   activity: ActivityRecord[];
   /** Durable mention and thread-reply rows for this account. */
   notifications: NotificationInboxEntry[];
+  notificationsAsked: boolean;
+  notificationsLoading: boolean;
   /** status of the local Claude/Codex apps — booleans and labels, never secrets */
   harness?: HarnessState;
   /**
@@ -591,7 +593,7 @@ export class RelayClient {
   world: World = {
     connected: false, authFailed: false, users: [], agents: [], channels: [],
     messages: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
-    notifications: [],
+    notifications: [], notificationsAsked: false, notificationsLoading: false,
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
@@ -1245,6 +1247,9 @@ export class RelayClient {
 
   /** Fetch the relay-owned, durable mention/thread-reply inbox. */
   askNotifications(includeDismissed = false, limit = 100): void {
+    this.world.notificationsAsked = true;
+    this.world.notificationsLoading = true;
+    this.emit();
     this.send({ type: "notifications", includeDismissed, limit });
   }
 
@@ -2734,6 +2739,8 @@ export class RelayClient {
         w.tasks = frame.state.tasks;
         w.approvals = frame.state.approvals;
         w.notifications = frame.state.notifications ?? [];
+        w.notificationsAsked = true;
+        w.notificationsLoading = false;
         w.messages = {};
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
@@ -2795,6 +2802,8 @@ export class RelayClient {
       }
       case "notificationInbox":
         w.notifications = [...frame.entries];
+        w.notificationsAsked = true;
+        w.notificationsLoading = false;
         break;
       case "notificationUpdated": {
         const i = w.notifications.findIndex(entry => entry.id === frame.entry.id);
@@ -2966,6 +2975,7 @@ export class RelayClient {
       }
       case "error": {
         w.lastError = { text: frame.error, ts: Date.now() };
+        if (w.notificationsLoading) w.notificationsLoading = false;
         /* A direct refusal names its exact refusal-capable request. A legacy
            no-id refusal is shown here generally but cannot settle a modern row.
            Unrelated rows stay alive, including their timeout nets. */

@@ -2187,6 +2187,19 @@ function Workspace(): React.JSX.Element {
     });
   }, []);
 
+  const openInboxEntry = useCallback((entry: NotificationInboxEntry) => {
+    client.markNotificationRead(entry.id);
+    if (entry.sourceState !== "active" || !entry.channelId || !entry.messageId) return;
+    // A source jump is one atomic exit from the inbox. If an editor blocks the
+    // leave, neither the room nor the jump cursor changes underneath it.
+    attemptLeave(() => {
+      setActiveId(entry.channelId!);
+      setScreen("chat");
+      setJumpTo({ id: entry.messageId!, at: Date.now() });
+      if (entry.rootId) setOpenThreadFor({ id: entry.rootId, at: Date.now() });
+    });
+  }, []);
+
   /* ASKED ON THE WAY IN, the same way the Log and Projects are — and here the
      reason is the sharpest of the three: this is a running total, not a record.
      It moves with every turn any agent takes, so a figure held over from the
@@ -2799,16 +2812,7 @@ function Workspace(): React.JSX.Element {
           )}
           {screen === "spending" && <SpendingScreen />}
           {screen === "activity" && <ActivityScreen />}
-          {screen === "notifications" && (
-            <NotificationsScreen onOpen={entry => {
-              client.markNotificationRead(entry.id);
-              if (entry.sourceState === "active" && entry.channelId && entry.messageId) {
-                goChannel(entry.channelId);
-                setJumpTo({ id: entry.messageId, at: Date.now() });
-                if (entry.rootId) setOpenThreadFor({ id: entry.rootId, at: Date.now() });
-              }
-            }} />
-          )}
+          {screen === "notifications" && <NotificationsScreen onOpen={openInboxEntry} />}
           {screen === "settings" && <SettingsScreen />}
         </main>
       </div>
@@ -14261,23 +14265,13 @@ function NotificationsScreen({ onOpen }: {
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const listRef = useRef<HTMLDivElement>(null);
-  const [loading, setLoading] = useState(true);
   const [requestedAt, setRequestedAt] = useState(() => Date.now());
 
   useEffect(() => {
-    setLoading(true);
     const at = Date.now();
     setRequestedAt(at);
     client.askNotifications(false);
-    // The relay's response owns the rows; this only prevents a dead connection
-    // from leaving an endless spinner. A refusal is shown from lastError below.
-    const timer = setTimeout(() => setLoading(false), 700);
-    return () => clearTimeout(timer);
   }, []);
-
-  useEffect(() => {
-    if (world.connected && world.notifications.length >= 0) setLoading(false);
-  }, [world.connected, world.notifications]);
 
   useEffect(() => {
     listRef.current?.focus();
@@ -14286,6 +14280,7 @@ function NotificationsScreen({ onOpen }: {
   const problem = world.lastError && world.lastError.ts >= requestedAt
     ? world.lastError.text : undefined;
   const unread = world.notifications.filter(entry => entry.state === "unread").length;
+  const loading = !world.notificationsAsked || world.notificationsLoading;
 
   return (
     <div className="notifications" data-testid="notification-inbox">

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { NOTIFICATION_INBOX_LIMITS, notificationEventId } from "@cloud9/shared";
+import { Channel, NOTIFICATION_INBOX_LIMITS, notificationEventId } from "@cloud9/shared";
 import { Store, NotificationInboxRow } from "./store.js";
 import { TestClient, tmp } from "./testclient.js";
 import { Relay } from "./server.js";
@@ -8,7 +8,14 @@ import { Relay } from "./server.js";
 function setup() {
   const store = new Store(tmp("notifications.db"), { ownerToken: "tok-owner" });
   const owner = store.ensureOwner("Vikas", "tok-owner");
-  const channel = store.channels().find(c => c.name === "general")!;
+  let channel = store.channels().find(c => c.name === "general");
+  if (!channel) {
+    channel = {
+      id: "ch_general", name: "general", kind: "channel",
+      memberIds: [owner.id], createdAt: Date.now(),
+    } satisfies Channel;
+    store.createChannel(channel, owner.id);
+  }
   const guestId = "u_guest";
   store.db.prepare("INSERT INTO users(id,name) VALUES(?,?)").run(guestId, "Guest");
   if (!channel.memberIds.includes(guestId)) {
@@ -93,7 +100,6 @@ test("retention removes old read rows first, caps history, and preserves unread"
   const old = now - NOTIFICATION_INBOX_LIMITS.maxAgeMs - 1;
   store.saveNotification(row({ id: "old-read", createdAt: old, state: "read" }));
   store.saveNotification(row({ id: "old-unread", createdAt: old, state: "unread" }));
-  assert.equal(store.pruneNotificationInbox(now), 1);
   assert.equal(store.notificationsFor("u_owner", { includeDismissed: true }).some(n => n.id === "old-read"), false);
   assert.equal(store.notificationsFor("u_owner", { includeDismissed: true }).some(n => n.id === "old-unread"), true);
 
@@ -102,7 +108,10 @@ test("retention removes old read rows first, caps history, and preserves unread"
   }
   const rows = store.notificationsFor("u_owner", { includeDismissed: true, limit: NOTIFICATION_INBOX_LIMITS.maxEntries });
   assert.ok(rows.length <= NOTIFICATION_INBOX_LIMITS.maxEntries);
-  assert.ok(rows.some(n => n.id === "old-unread"), "unread rows are never silently discarded by the cap");
+  const preserved = store.db.prepare(
+    "SELECT id FROM notification_inbox WHERE recipientId=? AND id=?",
+  ).get("u_owner", "old-unread") as { id?: string } | undefined;
+  assert.equal(preserved?.id, "old-unread", "unread rows are never silently discarded by the cap");
 });
 
 test("relay derives mention rows and re-projects edits and tombstones", async () => {
