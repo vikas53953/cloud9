@@ -123,7 +123,9 @@ installed on your machine right now.</p>
   <code>check_token_use</code> and <code>propose_saving</code> 8× each, and
   <code>chat: 45 * 60_000</code> is in <code>timebudget.js</code>. The two commits after
   <code>2e83846</code> touched only <code>TRACKER.md</code> and a picture. So nothing below is
-  "true in the source but not in your app".</span>
+  "true in the source but not in your app" — <b class="stamp">as of 2026-08-07 06:00</b>, and this
+  one changes again the next time anybody builds and installs, which will happen when PR #13
+  lands.</span>
 </section>
 
 <section class="card" data-fb="How to read this page">
@@ -144,6 +146,13 @@ installed on your machine right now.</p>
   agent runs inside your real Claude Code world or in a bare one.</p>
   <p>Every row carries a file and line number, or a command that was run. Where nothing could be
   proved, the row says <b>not verified</b> instead of guessing.</p>
+  <p><b>This page is a photograph of one commit.</b> Every file and line number here was read at
+  <code>e08ba7f</code>, the commit installed on your machine when this was written. Line numbers
+  drift as soon as anyone edits those files. <b class="stamp">One specific case worth knowing:</b>
+  about fifteen of the citations below point at the clocks — <code>timebudget.ts</code>,
+  <code>approvaldesk.ts</code>, the card's deadline in the hub and on screen — and <b>PR #13 deletes
+  that code</b>. When it lands, those line numbers stop existing. The findings stay true; the
+  pointers go dead. That is the normal cost of a dated snapshot, not a mistake in it.</p>
   <p><b class="stamp">Anything marked "as of 2026-08-07 06:00" rots on its own.</b> Those few claims
   say who is or is not already working on something, and they come from asking GitHub what was open
   at that moment. <b>Nobody has to touch this page for them to go wrong</b> — a colleague opening or
@@ -174,8 +183,10 @@ installed on your machine right now.</p>
       <span class="ev"><b>Evidence</b> · <code>host.ts:184-189</code> prefers the key over the
       signed-in Claude app · refusal at <code>provider.ts:723-726</code>, proved by
       <code>packages/engine/src/sdkreach.test.ts:51-95</code> · 6-step cap at
-      <code>provider.ts:770</code> · today you are safe: there is no
-      <code>cloud9-credential-claude.bin</code> in your app folder, so you are on the good route.</span></li>
+      <code>provider.ts:770</code> · <b class="stamp">as of 2026-08-07 06:00 you are safe:</b> there
+      is no <code>cloud9-credential-claude.bin</code> in your app folder, so you are on the good
+      route — <b>and that stops being true the moment you save a key, which is the very thing this
+      row is warning you about.</b></span></li>
     <li data-fb="An agent asks your permission, then dies whi"><b>An agent asks your permission, then dies while you are still deciding.</b>
       The card that asks you sits there for ten minutes. But a turn waiting on a card prints
       nothing, and a chat turn that has printed nothing for <em>three</em> minutes is killed. So
@@ -246,8 +257,8 @@ installed on your machine right now.</p>
       <code>--append-system-prompt-file</code>; only the new part travels each turn. It
       <em>adds to</em> Claude Code's own instructions rather than replacing them.
       <span class="ev"><code>claude-cli.ts:676</code>, <code>:995</code>, <code>:1024</code>.
-      Real cache hits exist in your own records — 171 of your 185 saved runs carry a
-      <code>cachedInputTokens</code> figure.</span></td></tr>
+      Real cache hits exist in your own records — <b class="stamp">as of 2026-08-07 06:00</b>,
+      171 of your 185 saved runs carried a <code>cachedInputTokens</code> figure.</span></td></tr>
 
   <tr><td class="what">"Use my own setup" — your real Claude Code world</td>
     <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
@@ -365,7 +376,7 @@ installed on your machine right now.</p>
   skills become visible to the agent (0 and 0 with the switch off).</p>
   <span class="ev"><b>Who measured this, and when</b> · run by a Cloud9 agent working on this
   report, 2026-08-07, against the <code>claude</code> program installed here — which reports
-  version <b>2.1.224</b> today. The CLI was started with the exact arguments Cloud9 builds
+  version <b>2.1.224</b> <b class="stamp">as of 2026-08-07 06:00</b>. The CLI was started with the exact arguments Cloud9 builds
   (<code>claude-cli.ts:721-740</code>) against a live tool bridge, and its own opening
   <code>system/init</code> message was read back. It then really called Cloud9's own
   <code>search_conversation</code> tool and answered from what it found. <b>I did not re-run this
@@ -452,7 +463,7 @@ installed on your machine right now.</p>
       is absent from the Claude Code on this machine too, so there is nothing to close there.
       (<code>BashOutput</code> and <code>KillShell</code> are also absent, but that proves nothing:
       background work is a <em>setting</em> on <code>Bash</code>, not a separate tool — see the
-      agent loop section.) Measured at version 2.1.222; the program reports 2.1.224 today.
+      agent loop section.) Measured at version 2.1.222; the program reported 2.1.224 <b class="stamp">as of 2026-08-07 06:00</b>.
       <b>Ours:</b> <code>Skill</code> and <code>SlashCommand</code> are switched off
       on purpose and come back the moment "use my own setup" is on (0 → 100 skills, 0 → 147 commands,
       measured live). <code>ExitPlanMode</code> is replaced by our own plan gate.
@@ -530,7 +541,7 @@ installed on your machine right now.</p>
       <span class="ev">Tool at <code>cloud9tools.ts:491-531</code>, on the line at
       <code>claude-cli.ts:724, 739</code>; storage
       <code>&lt;app data&gt;\engine\agents\&lt;id&gt;\memory\</code> — and there is a real
-      <code>memory</code> folder on your machine today under
+      <code>memory</code> folder on your machine (<b class="stamp">as of 2026-08-07 06:00</b>) under
       <code>a_msc5yx6j77cn4j</code>. 80 memory/approval tests run, 80 passed.</span></td></tr>
 
   <tr><td class="what">It comes back next time</td>
@@ -558,7 +569,7 @@ installed on your machine right now.</p>
       transcript — and then sends only what is new. Guarded by folder, by what the agent is allowed
       to do, and by a 24-hour idle limit; a refused resume quietly starts fresh and still answers.
       <span class="ev"><code>claude-cli.ts:627-630</code>; <code>sessionresume.ts:82</code>.
-      There is a real <code>sessions.json</code> in two of your agents' folders.
+      There was a real <code>sessions.json</code> in two of your agents' folders <b class="stamp">as of 2026-08-07 06:00</b>.
       <b>Not on Codex</b> (it runs throwaway) and <b>not on the saved-key route</b>.</span></td></tr>
 
   <tr><td class="what">Squeezing a long conversation instead of dropping it</td>
@@ -606,7 +617,7 @@ installed on your machine right now.</p>
       <code>approvaldesk.ts:445-461</code>.</span></td></tr>
 
   <tr><td class="what">The 10-minute deadline on a card</td>
-    <td><span class="tag t-half">STILL ON</span><span class="notice">YOU'D NOTICE</span></td>
+    <td><span class="tag t-half">GOING</span><span class="notice">YOU'D NOTICE</span></td>
     <td>Claude Code has no such thing. <b>And the ten minutes is not really ten minutes:</b> an
       agent parked on a card prints nothing, and a chat turn that has printed nothing for
       <b>three</b> minutes is killed. So you believe you have ten minutes to think and in a chat you
@@ -700,14 +711,19 @@ installed on your machine right now.</p>
       (<code>engine.ts:131</code>) and the app never sets it. This is tracker row 8.</span></td></tr>
 
   <tr><td class="what">The 45-minute cut-off and the 3-minute silence cut-off</td>
-    <td><span class="tag t-half">STILL ON</span><span class="notice">YOU'D NOTICE</span></td>
-    <td>Claude Code has neither. The 45-minute one was <em>relaxed</em> today (from 3 and 30
-      minutes), not removed — it is still on master. The silence clock is a genuinely good Cloud9
-      idea, because our turns run unattended: it kills a turn that has printed nothing for 3 minutes
-      in chat, 10 in a job, and it says which clock it was.
+    <td><span class="tag t-half">BOTH GOING</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Claude Code has neither, and <b class="stamp">as of 2026-08-07 06:00</b> <b>neither will we —
+      PR #13 removes both</b>, along with the card deadline. Today they still bite: 45 minutes total,
+      and a turn killed after 3 minutes of printing nothing in chat, 10 in a job.
+      <b>An earlier draft of this page argued the silence clock was "a genuinely good Cloud9 idea"
+      and that the 45-minute one was a deliberate decision worth keeping. Both arguments are
+      withdrawn.</b> You ruled otherwise — "agents are employees so i don't want to implement a
+      timing foundation" — and whether an employee works to a stopwatch was your call to make, not
+      ours to defend with an engineering reason. Nothing to build here: review PR #13 and land it.
       <span class="ev"><code>timebudget.ts:108-112</code> and <code>:156-160</code>; enforced
-      <code>run.ts:443-467</code>. Proved on the real path: "a run that keeps talking is NOT killed"
-      (20.4s) and "a run that goes silent IS killed" (13.9s).</span></td></tr>
+      <code>run.ts:443-467</code>. Both constants are deleted by PR #13, so these line numbers stop
+      existing when it lands. Measured on the real path while they were still there: "a run that
+      keeps talking is NOT killed" (20.4s), "a run that goes silent IS killed" (13.9s).</span></td></tr>
 
   <tr><td class="what">Watching it work, live</td>
     <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
@@ -993,6 +1009,15 @@ installed on your machine right now.</p>
       trail here rather than tidying it away.</li>
     <li data-fb="How a Cloud9 agent invokes one of your 100"><b>How a Cloud9 agent invokes one of your 100 real skills</b> when the setup switch is on —
       not verified. They load; the tool that normally runs them is not on the line.</li>
+    <li data-fb="How the stale claims get found"><b>How the rotting claims get found, since this page kept getting them wrong.</b> Searching
+      for the words does not work — this page once said a clock was "still on master", which means
+      the same as "nobody is removing it" and shares not one word with it. Phrasings are endless.
+      <b>The coloured tags are not:</b> there are about fifteen, every one of them claiming something
+      about right now, and one command lists them all —
+      <code>grep "STILL ON\|DOESN'T WORK\|DEAD\|NEW FINDING\|NOT VERIFIED"</code>. Check that list
+      against what is open, and the class is closed by construction rather than by remembering.
+      That check found the last one: a row whose words had been fixed but whose tag still said
+      <em>STILL ON</em>.</li>
     <li data-fb="The claims that rot on their own"><b>One kind of claim here rots without anybody touching this page.</b> Anything about who is
       or is not already working on something comes from asking GitHub what was open at
       <b class="stamp">2026-08-07 06:00</b>, and a colleague opening or merging a pull request makes
