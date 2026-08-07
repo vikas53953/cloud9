@@ -12,7 +12,7 @@
 <main>
 <section data-fb="audit summary">
 <h1>Slack frontend and chat experience audit</h1>
-<p class="meta">Evidence snapshot: 7 August 2026 · worktree branch <code>slack-chat-audit</code> at clean base <code>38d6dbc</code> · report only, no product features implemented.</p>
+<p class="meta">Evidence snapshot: 7 August 2026 · worktree branch <code>slack-chat-audit</code> rebased onto clean base <code>551b2f8</code> · report only, no product features implemented.</p>
 <p class="lead">This map separates what was observed, what only proves a page exists, what Cloud9 has in source, and what remains fog. It does not turn an unavailable Slack screen into a parity claim.</p>
 <div class="callout boundary"><strong>Privacy boundary:</strong> no Slack messages, names, screenshots, cookies, storage, credentials, workspace identifiers, or private content were inspected.</div>
 <div class="grid">
@@ -43,10 +43,10 @@
 <section data-fb="source map">
 <h2>3 · Source map: existing thread work stays separate</h2>
 <table><thead><tr><th>Surface</th><th>What the source shows</th><th>Evidence and boundary</th></tr></thead><tbody>
-<tr><td>Existing thread feature</td><td>Cloud9 already has a thread route/state and message-to-thread navigation. This row is preserved; it is not one of the new gaps.</td><td class="source">apps/desktop/src/App.tsx:3458-3479, 3658-3673, 4771-4792; docs/threads-like-slack.html</td></tr>
-<tr><td>Activity and notifications</td><td>Activity is an explicit screen. Notifications are built into an in-memory toast stack; a toast can be dismissed or auto-dismisses after 9 seconds.</td><td class="source">apps/desktop/src/App.tsx:2712, 2785, 2879-3091 (NotifyToasts), 3104-3119 (NotifyToast); packages/shared/src/notify.ts:55-95, 188-256</td></tr>
-<tr><td>Later / Saved route</td><td>No persistent Later or Saved screen/model was found in the Cloud9 source map. This is a Cloud9 source gap, not a claim about Slack parity.</td><td class="source">apps/desktop/src/App.tsx:1969 (ScreenName union), 2692-2717 (rail), 2785 (screen switch)</td></tr>
-<tr><td>Message identity and read state</td><td>Messages, replies, and account-level unread/read markers already exist; a future durable queue must add its own identity, persistence, navigation, deletion/access, and retention contract.</td><td class="source">packages/shared/src/index.ts:2770-2807 (Message), 2865-2873 (UnreadEntry); apps/relay/src/store.ts:1390-1400 (saveMessage/message), 2717-2726 (SQLite reads)</td></tr>
+<tr><td>Existing thread feature</td><td>Cloud9 already has a thread state, message-to-thread opener, and rendered thread panel. This row is preserved; it is not one of the new gaps.</td><td class="source">apps/desktop/src/App.tsx:3442-3484 (state/focus), 3503-3524 (open/jump), 3679-3725 (panel/takeover), 5911-5967 (message actions); docs/threads-like-slack.html</td></tr>
+<tr><td>Activity and notifications</td><td>Activity is an explicit screen. Notifications are built into an in-memory toast stack; a toast can be dismissed or auto-dismisses after 9 seconds.</td><td class="source">apps/desktop/src/App.tsx:1976 (ScreenName), 2714-2756 (rail), 2829-2830 (screen switch), 2879-3091 and 3104-3119 (toast event processing), 3149-3167 (dismiss/9-second toast); packages/shared/src/notify.ts:55-95, 188-256</td></tr>
+<tr><td>Later / Saved route</td><td>No persistent Later or Saved route appears in the inspected desktop App route/rail/switch. This is a narrow Cloud9 UI-route finding, not a whole-repository model search and not a claim about Slack parity.</td><td class="source">apps/desktop/src/App.tsx:1976 (ScreenName union), 2714-2756 (rail), 2829-2830 (screen switch)</td></tr>
+<tr><td>Message identity and read state</td><td>Messages, replies, and account-level unread/read markers already exist; a future durable queue must add its own identity, persistence, navigation, deletion/access, and retention contract.</td><td class="source">packages/shared/src/index.ts:2770-2807 (Message), 2865-2873 (UnreadEntry); apps/relay/src/store.ts:1431-1435 (saveMessage), 2771-2794 (SQLite unread reads)</td></tr>
 </tbody></table>
 <p class="evidence">Existing threads evidence and the two new source gaps are intentionally different rows. The approved thread page records exact widths, persistence, and narrow behavior as <span class="fog">not verified for Slack</span>.</p>
 <p><a href="threads-like-slack.html">Open the existing threads evidence page</a> · its official Slack links and correction trail remain the source for that separate work.</p>
@@ -57,13 +57,13 @@
 <div class="flow">
 <div class="flow-step"><span class="tag verified">OBSERVED</span><h3>Chrome shell</h3><p>Generic Slack load error only. No private content.</p></div>
 <div class="flow-step"><span class="tag fog">UNRESOLVED</span><h3>Official references</h3><p>No current canonical Later or Activity help URL was verified.</p></div>
-<div class="flow-step"><span class="tag gap">SOURCE GAPS</span><h3>Cloud9 work</h3><p>Two durable per-user queues need a later author.</p></div>
+<div class="flow-step"><span class="tag gap">SOURCE GAP</span><h3>Cloud9 work</h3><p>Notifications are merged; the Saved/Later queue still needs a later author.</p></div>
 <div class="flow-step"><span class="tag fog">FOG</span><h3>Slack behavior</h3><p>Live UI and help bodies were unavailable.</p></div>
 </div>
 <table><thead><tr><th>Evidence class</th><th>Safe statement</th><th>Unsafe statement</th></tr></thead><tbody>
 <tr><td><span class="tag verified">Observed</span></td><td>The connected Chrome session showed a generic Slack load error.</td><td>Slack has no Later or Activity feature.</td></tr>
 <tr><td><span class="tag fog">Unresolved reference</span></td><td>Historical article IDs were supplied, but current canonical status and content were not verified.</td><td>A live help page, steps, layout, or screenshots were verified.</td></tr>
-<tr><td><span class="tag gap">Cloud9 source gap</span></td><td>No persistent Later/Saved route or model is present in the inspected Cloud9 source.</td><td>Cloud9 is being declared non-parity against a verified Slack implementation.</td></tr>
+<tr><td><span class="tag gap">Cloud9 source gap</span></td><td>No persistent Later/Saved route appears in the inspected desktop App route/rail/switch; model persistence was not inferred from that UI-only inspection.</td><td>Cloud9 is being declared non-parity against a verified Slack implementation.</td></tr>
 <tr><td><span class="tag fog">FOG</span></td><td>Slack behavior for the two proposed rows remains unverified.</td><td>Retention or exact interaction semantics are being guessed now.</td></tr>
 </tbody></table>
 </section>
@@ -71,10 +71,20 @@
 <section data-fb="proposed rows">
 <h2>5 · Proposed work — live delivery board status</h2>
 <div class="grid">
-<article class="card"><span class="tag gap">BUILDING</span><h3>Persistent mentions-and-replies notification inbox</h3><p>A separate durable per-user notification inbox for mention and thread-reply entries—not a second view of the existing agent Activity screen. Support read/dismiss; jump to the source room/thread; honest deleted or inaccessible state.</p><p><strong>Dependencies:</strong> notification event IDs + unread/read + navigation + persistence/storage + owner isolation/auth + retention + deleted/inaccessible handling + mute/quiet/OS preservation.</p><p class="evidence">As of 2026-08-07 19:27 +05:30: owner/reviewer unassigned; PR #17 defines the contract only. Slack behavior: <span class="fog">FOG</span>. Do not turn this source-gap row into a Slack-parity claim.</p></article>
-<article class="card"><span class="tag gap">READY NEXT</span><h3>Saved/Later message queue</h3><p>Save/unsave; durable per-user list; open the source message/thread; honest deleted or inaccessible state.</p><p><strong>Dependencies:</strong> message identity + persistence/storage + per-user ownership/auth isolation + navigation/read + deletion/access/retention semantics.</p><p class="evidence">As of 2026-08-07 19:27 +05:30: owner/reviewer unassigned. Slack behavior: <span class="fog">FOG</span>. Retention semantics are deliberately left for Terra/Luna to choose later.</p></article>
+<article class="card"><span class="tag verified">MERGED</span><h3>Persistent mentions-and-replies notification inbox</h3><p>A separate durable per-user notification inbox for mention and thread-reply entries—not a second view of the existing agent Activity screen. Support read/dismiss; jump to the source room/thread; honest deleted or inaccessible state.</p><p><strong>Dependencies:</strong> notification event IDs + unread/read + navigation + persistence/storage + owner isolation/auth + retention + deleted/inaccessible handling + mute/quiet/OS preservation.</p><p class="evidence">As of 2026-08-07 22:43 +05:30: PR #19 is merged to <code>master</code> at <code>551b2f8</code> (author Vikas Mittal; reviewer chatgpt-codex-connector). PR #17 remains this audit/contract only. Slack behavior: <span class="fog">FOG</span>. Do not turn this source-gap row into a Slack-parity claim.</p></article>
+<article class="card"><span class="tag gap">READY NEXT</span><h3>Saved/Later message queue</h3><p>Save/unsave; durable per-user list; open the source message/thread; honest deleted or inaccessible state.</p><p><strong>Dependencies:</strong> message identity + persistence/storage + per-user ownership/auth isolation + navigation/read + deletion/access/retention semantics.</p><p class="evidence">As of 2026-08-07 22:43 +05:30: implementation owner/reviewer unassigned; no implementation PR exists. Slack behavior: <span class="fog">FOG</span>. Retention semantics are deliberately left for Terra/Luna to choose later.</p></article>
 </div>
-<p class="callout boundary"><strong>Scope guard:</strong> this audit proposes no rows for rich-text parity, admin/account, or billing. Huddle presence/shared notes and Engineering Canvas are READY NEXT on the live Tracker, not Slack-parity claims in this page. The existing <strong>Workflow list / builder</strong> row is preserved exactly in <code>TRACKER.md</code>.</p>
+<h3>Live delivery board reconciliation</h3>
+<table><thead><tr><th>Feature</th><th>Status</th><th>Branch / PR / head</th><th>Author · reviewer</th></tr></thead><tbody>
+<tr><td>Manual workflows</td><td>IN REVIEW</td><td><code>workflow-list-builder</code> · PR #18 · <code>ded3a1c</code></td><td>Vikas Mittal · chatgpt-codex-connector</td></tr>
+<tr><td>Persistent mentions-and-replies notification inbox</td><td>MERGED</td><td><code>master</code> · PR #19 · <code>551b2f8</code></td><td>Vikas Mittal · chatgpt-codex-connector</td></tr>
+<tr><td>Internal team social feed</td><td>BUILDING</td><td><code>internal-team-social-feed</code> · PR #20 · <code>505d85e</code></td><td>Vikas Mittal · chatgpt-codex-connector</td></tr>
+<tr><td>Project forums/decision threads</td><td>BUILDING</td><td><code>project-forums-decision-threads</code> · PR #23 · <code>c314ad2</code></td><td>Vikas Mittal · chatgpt-codex-connector</td></tr>
+<tr><td>Huddle presence/shared notes</td><td>BUILDING</td><td><code>huddle-presence-shared-notes</code> · PR #24 · <code>9c8fbb9</code></td><td>Vikas Mittal · chatgpt-codex-connector</td></tr>
+<tr><td>Public project update publishing</td><td>BUILDING</td><td><code>public-project-updates</code> · PR #25 · <code>1f6efa3</code></td><td>Vikas Mittal · chatgpt-codex-connector</td></tr>
+</tbody></table>
+<p class="evidence">The board is a dated external-state snapshot read from GitHub on 7 August 2026 22:43 +05:30; open PR heads and review state can change without this file changing. PR #17 is the audit/contract branch, not the merged notification implementation.</p>
+<p class="callout boundary"><strong>Scope guard:</strong> this audit proposes no rows for rich-text parity, admin/account, or billing. Huddle presence/shared notes is BUILDING and Engineering Canvas is READY NEXT on the live Tracker; neither is a Slack-parity claim in this page. The existing <strong>Workflow list / builder</strong> row is preserved exactly in <code>TRACKER.md</code>.</p>
 </section>
 
 <section data-fb="privacy and handoff">
