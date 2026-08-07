@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Buzz vs Cloud9 - installed audit - 2026-08-07</title>
+<style>
+:root{color-scheme:dark;--bg:#10131a;--panel:#171c25;--line:#354154;--ink:#edf2f7;--muted:#aeb8c8;--good:#9de0b7;--warn:#ffd18f;--gap:#ffaaa8;--accent:#8fd3ff}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}main{max-width:1500px;margin:auto;padding:28px 34px 80px}h1{font-size:34px;margin:0 0 8px}h2{margin-top:34px}h3{margin:0 0 6px}.meta,.small{color:var(--muted)}.note{border-left:4px solid var(--accent);padding:12px 16px;background:#121e29}.counts,.cards{display:flex;gap:12px;flex-wrap:wrap}.count,.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px}.count{min-width:170px}.count b{display:block;font-size:24px}.good{color:var(--good)}.warn{color:var(--warn)}.gap{color:var(--gap)}.card{flex:1 1 300px}.shot{width:100%;border:1px solid var(--line);border-radius:8px}.evidence,.source{font-size:12px;color:var(--accent)}table{width:100%;border-collapse:collapse;font-size:13px;background:var(--panel)}th,td{border:1px solid var(--line);padding:9px;vertical-align:top;text-align:left}th{background:#202837;position:sticky;top:0}td:first-child{font-weight:650;min-width:145px}.source{font-family:ui-monospace,Consolas,monospace}a{color:var(--accent)}li{margin:3px 0}.footer{margin-top:34px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted)}
+</style></head><body><main>
+<section data-fb="audit-summary"><h1>Buzz vs Cloud9</h1>
+<p class="meta">Installed Buzz audit - 2026-08-07 - Buzz 0.5.5 (external executable metadata; unverified in the app) - Cloud9 source commit <code>6f4b7ea</code>.</p>
+<p class="note"><strong>Fresh evidence:</strong> Buzz was opened at <code>%LOCALAPPDATA%\Buzz\buzz-desktop.exe</code> and driven read-only. Cloud9 was compared from this worktree source and existing QA; its installed app was not launched in this lane. One first Buzz capture timed out in the UI tool, then a fresh capture succeeded. That timeout is a tool event, not an app failure.</p>
+<p>This is an audit, not a build. Unknown means unknown. Screenshots are dated under <code>docs/qa/</code>. Feedback returns by copy/paste.</p>
+<div class="counts"><div class="count"><b class="good">8</b>Cloud9 source capability rows (installed UI unverified)</div><div class="count"><b class="gap">1</b>Buzz has it; Cloud9 lacks it</div><div class="count"><b class="warn">2</b>Buzz has it; do not copy without a decision</div><div class="count"><b>6</b>Unverified feature rows</div><div class="count"><b>2</b>Partial behavior checks</div><div class="count"><b>1</b>Observed runtime state excluded from feature counts</div></div><p class="small">Feature classes total 17 rows (8 + 1 + 2 + 6); adding the two partial checks and one observed runtime state gives 20 audited checks.</p></section>
+
+<section data-fb="screens"><h2>Installed Buzz screens and navigation</h2><div class="cards">
+<article class="card"><h3>Inbox / home</h3><p>Left rail: Inbox, Pulse, Projects, Agents, Workflows. Channels: coding, general, locked Welcome, welcome-everyone. Forums and Direct messages headings. Inbox visibly showed Sol twice, luna and Fizz notifications, read/unread, open in channel and remind later. The red banner <strong>Some message context could not be loaded</strong> was also visible; it is recorded app state, not a Cloud9 gap or a proven Buzz defect.</p><p class="evidence">docs/qa/buzz-home-2026-08-07.jpg</p><img class="shot" src="qa/buzz-home-2026-08-07.jpg" alt="Buzz home"></article>
+<article class="card"><h3>#coding</h3><p>Header: member count 5, Start huddle, Manage channel. Body: Create agent, Add people, reactions, Reply, More actions, 23 replies and 36 replies. Composer: Mention someone, Attach image, emoji, formatting.</p><p class="evidence">docs/qa/buzz-coding-2026-08-07.jpg</p><img class="shot" src="qa/buzz-coding-2026-08-07.jpg" alt="Buzz coding channel"></article>
+<article class="card"><h3>Agents</h3><p>Fizz, Honey and Bumble had Start actions. claude, luna, Sol and terra were shown running. Welcome Team and New team were visible.</p><p class="evidence">docs/qa/buzz-agents-2026-08-07.jpg</p><img class="shot" src="qa/buzz-agents-2026-08-07.jpg" alt="Buzz agents"></article>
+<article class="card"><h3>Pulse</h3><p>Everyone, Following, Liked, Agents 7 and Mine; What's on your mind; No public notes yet.</p><p class="evidence">docs/qa/buzz-pulse-2026-08-07.jpg</p><img class="shot" src="qa/buzz-pulse-2026-08-07.jpg" alt="Buzz Pulse"></article>
+<article class="card"><h3>Projects</h3><p>No projects yet; Projects published to this relay will appear here.</p><p class="evidence">docs/qa/buzz-projects-2026-08-07.jpg</p><img class="shot" src="qa/buzz-projects-2026-08-07.jpg" alt="Buzz Projects"></article>
+<article class="card"><h3>Workflows</h3><p>Refresh workflows; Create Workflow; No workflows yet; Create your first workflow.</p><p class="evidence">docs/qa/buzz-workflows-2026-08-07.jpg</p><img class="shot" src="qa/buzz-workflows-2026-08-07.jpg" alt="Buzz Workflows"></article>
+</div></section>
+
+<section data-fb="observed-states"><h2>Observed states and controls</h2><p>The home screenshot contains the red <strong>Some message context could not be loaded</strong> banner. It is an observed Buzz state; this audit does not diagnose it or compare it to Cloud9. The same screenshot shows Sol twice, luna and Fizz in Inbox. In Agents, Start appears for Fizz, Honey and Bumble only; claude, luna, Sol and terra are shown running. These are visual observations from the dated screenshots, not source inferences.</p></section>
+
+<section data-fb="evidence-boundaries"><h2>Evidence boundaries</h2><p>The external executable metadata reported 0.5.5, but no About or settings version was observed, so the version is artifact-derived and unverified. Cloud9 source rows establish source capability only; installed Cloud9 UX was not driven in this lane. A first UI capture timed out, then a fresh capture succeeded. A timeout is recorded as unknown tool state, not recovery or a product defect. The Runtime errors row records visible Buzz setup state and is excluded from the six unverified feature rows.</p></section>
+
+<section data-fb="feature-map"><h2>Feature map</h2>
+<table><thead><tr><th>Feature</th><th>Buzz evidence</th><th>Cloud9 source / QA</th><th>Gap, confidence, copy fit</th></tr></thead><tbody>
+<tr><td>Navigation</td><td>Five left-rail screens; home screenshot.</td><td class="source">App.tsx:2668-2703 (Chat, Crew, Tasks, Files, Projects, Spending, Activity, Settings, hub)</td><td class="good">Cloud9 source defines this capability; installed UI was not walked here. Labels differ. High source confidence. Keep Cloud9 rail.</td></tr>
+<tr><td>Channels / members</td><td>coding, general, Welcome, welcome-everyone; #coding members and invites.</td><td class="source">App.tsx:2713-2726; relay/server.ts:644-702</td><td class="good">Cloud9 source defines channels, browse and membership; installed UI was not walked here. Fits current chat rules.</td></tr>
+<tr><td>DMs</td><td>Direct messages heading/New message only; no conversation opened.</td><td class="source">App.tsx:2470-2492, 2628-2632</td><td>Cloud9 has DMs; Buzz working DM is unverified. No work.</td></tr>
+<tr><td>Threads</td><td>Reply and 23/36 replies in #coding.</td><td class="source">App.tsx:2026-2033, 2076-2082, 2723-2726; engine/threads.ts</td><td class="good">Cloud9 source defines threads; installed Cloud9 layout was not walked here.</td></tr>
+<tr><td>Search</td><td>Search everything (Cmd-K) visible; result not tested.</td><td class="source">App.tsx:2026-2088, 2254-2260, 2766-2776; relay/server.ts:2712-2746</td><td class="good">Cloud9 source defines search and routing; installed UI was not walked here. Buzz execution unverified.</td></tr>
+<tr><td>Files / attachments</td><td>Attach image visible; no file sent or artifact card opened.</td><td class="source">App.tsx:2753-2755, 12307-12578; relay/server.ts:1055-1149, 3066-3139</td><td class="good">Cloud9 source defines Files/artifact plumbing; installed UI was not walked here. Buzz send/card unverified.</td></tr>
+<tr><td>Agent collaboration</td><td>7-agent roster; Start actions were visible only for Fizz, Honey and Bumble; claude, luna, Sol and terra were shown running; team controls.</td><td class="source">App.tsx:2728-2751, 7554-10595; shared/index.ts:1122-1154</td><td class="good">Cloud9 source defines Crew/editor/tasks; installed UI was not walked here. Buzz team semantics unverified.</td></tr>
+<tr><td>Activity / presence</td><td>Online profile, member avatars and agent additions.</td><td class="source">App.tsx:1948-1957, 2688-2703; relay/server.ts:569-631</td><td class="good">Cloud9 source defines presence and Activity; installed UI was not walked here. Buzz history unverified.</td></tr>
+<tr><td>Approvals</td><td>No Buzz approval card visited.</td><td class="source">App.tsx:2672, 2752; relay/server.ts:1920-2200, 3457-3525</td><td>Cloud9 has approval paths; Buzz approval behavior unverified.</td></tr>
+<tr><td>Notifications / inbox</td><td>Agent notifications, mentions/threads, read/unread, open channel, remind later.</td><td class="source">App.tsx:2617-2624, 2964-3057, 3063-3097</td><td class="good">Cloud9 source defines unread/toast rules; installed UI was not walked here. Exact remind-later parity unverified.</td></tr>
+<tr><td>Repos / PRs / projects</td><td>Projects empty state; no repo/PR visible.</td><td class="source">App.tsx:2757-2759, 13436-13654; relay/server.ts:2249-2462</td><td>Cloud9 source defines projects and GitHub PR/issue capability; installed UI was not walked here. Buzz project/PR details are unverified.</td></tr>
+<tr><td>Canvas</td><td>No Buzz Canvas button or surface found.</td><td class="source">App.tsx:1945-1946, 2668-2703 (no canvas route)</td><td>Neither side verified. Unverified; separate decision.</td></tr>
+<tr><td>Pulse / social feed</td><td>Public notes and audience filters; pulse screenshot.</td><td class="source">App.tsx:1945-1946 (no Pulse route)</td><td class="warn">Buzz has it; Cloud9 lacks it. Do not copy without Vikas deciding; it changes private-work scope.</td></tr>
+<tr><td>Workflow list / builder</td><td>Create Workflow and empty first-workflow state; workflow screenshot.</td><td class="source">App.tsx:1945-1946 (no route); engine/abilities.ts:65-83 (tool ability only)</td><td class="gap">Visible Buzz gap, high UI confidence. The smallest product spec still needs Vikas's decision: persistence model, trigger/schedule semantics, run status/history, permissions, and separation from the existing Workflow tool ability. Proposed only; no implementation.</td></tr>
+<tr><td>Forums</td><td>Forums heading only; no content opened.</td><td class="source">App.tsx:1945-1946 (channels, no forum route)</td><td>Unverified. Do not count as build gap.</td></tr>
+<tr><td>Huddles / calls</td><td>Start huddle visible; no call started.</td><td class="source">App.tsx:2668-2703 (no huddle route)</td><td class="warn">Buzz has it; Cloud9 lacks it. Do not copy without a decision; audio/video scope is not authorized.</td></tr>
+<tr><td>Settings / account</td><td>Settings not reached; profile action did not expose a settings view.</td><td class="source">App.tsx:2693, 2760-2762, 11304-12306</td><td>Cloud9 has Settings; Buzz settings/account unverified. Do not decide account/privacy parity.</td></tr>
+<tr data-observed-state="true"><td>Runtime errors</td><td>Inbox: Sol needs configuration; codex ACP adapter outdated; Open Agent runtimes.</td><td class="source">App.tsx:2728-2751; engine/provider.ts</td><td>Observed Buzz evidence state only; excluded from feature counts. Do not copy wording/assumptions.</td></tr>
+</tbody></table></section>
+
+<section data-fb="classes"><h2>Three classes</h2><div class="cards">
+<article class="card"><h3 class="good">Cloud9 source capability rows (8)</h3><p>Installed Cloud9 UI was not walked in this lane.</p><ul><li>Navigation</li><li>Channels/members</li><li>Threads</li><li>Search</li><li>Files/artifact plumbing</li><li>Agent collaboration</li><li>Activity/presence</li><li>Notifications/inbox</li></ul></article>
+<article class="card"><h3 class="gap">Buzz has it; Cloud9 lacks it (1)</h3><p><strong>Workflow list / builder</strong> - only proposed feature row.</p></article>
+<article class="card"><h3 class="warn">Buzz has it; do not copy without a decision (2)</h3><ul><li>Pulse public/social feed</li><li>Huddles/calls</li></ul></article>
+<article class="card"><h3>Unverified feature rows (6)</h3><ul><li>DMs</li><li>Approvals</li><li>Repos/PR/project details</li><li>Canvas</li><li>Forums</li><li>Settings/account</li></ul><p class="small">Partial behavior checks: Search execution and file send/artifact card. Runtime errors remain an observed evidence state, not a counted feature row.</p></article>
+</div></section>
+
+<section data-fb="decisions"><h2>Decisions needed</h2><ul><li>Whether Cloud9 should have a durable <strong>Workflow list / builder</strong>. The smallest spec decision covers persistence model, trigger/schedule semantics, run status/history, permissions, and separation from the existing Workflow tool ability. If yes, conductor can spawn one author and a different reviewer from TRACKER.md; neither is assigned here.</li><li>Whether Pulse public/social notes belong in Cloud9.</li><li>Whether huddles/calls belong in Cloud9.</li></ul><p class="note">This audit does not decide money defaults, McAfee, Tailscale, publishing, security/privacy, or account features.</p></section>
+<section data-fb="unverified"><h2>Unverified areas</h2><p>Buzz DM conversation, search execution, file upload/artifact card, approval card, project/PR details, forum content, settings/account, canvas, successful workflow creation, and installed Cloud9 visual behavior were not verified in this lane. Source evidence is not a substitute for a fresh visual walk.</p></section>
+<div class="footer"><p>Review this page visually. Feedback returns by copy/paste: click a labelled section, add a note or thumbs up/down, then use the feedback layer copy button and paste the result back.</p><p>Buzz paths: executable -> Inbox/home; left rail Pulse, Projects, Agents, Workflows; channel list -> double-click #coding. Screenshots are in <code>docs/qa/</code>.</p></div>
+</main>
+<script>
+/* ============================================================
+   Vikas review kit — feedback layer for every HTML review page.
+   Paste this <script> at the end of any artifact I hand him.
+
+   What it gives him:
+     - click any section marked data-fb="<label>" to attach a note
+     - thumbs up / down per section
+     - a floating panel listing everything he has said
+     - ONE button that copies it all as plain text to paste back
+
+   Why it exists: published artifacts cannot send data back into a
+   Claude session (no such capability). This turns "read a wall and
+   retype your thoughts" into "click, type, copy once".
+
+   Usage:
+     1. mark reviewable blocks:  <section data-fb="Option A — Slack True">
+     2. include this script once, at the end of the page.
+   ============================================================ */
+(function () {
+  "use strict";
+  var STORE = "vikas-fb-" + (document.title || location.pathname);
+  var notes = {};
+  try { notes = JSON.parse(localStorage.getItem(STORE) || "{}"); } catch (e) { notes = {}; }
+
+  function save() { try { localStorage.setItem(STORE, JSON.stringify(notes)); } catch (e) {} }
+
+  var css = document.createElement("style");
+  css.textContent = [
+    ':root{--fb-ink:#16232e;--fb-bg:#fff;--fb-line:#d8e0e8;--fb-accent:#2c7fc4;',
+    '--fb-yes:#1e7d4f;--fb-yes-bg:#e3f3ea;--fb-no:#b03535;--fb-no-bg:#fbe7e7;--fb-muted:#5a6b7a;}',
+    '@media (prefers-color-scheme:dark){:root{--fb-ink:#e6edf3;--fb-bg:#18232e;--fb-line:#2f3d4a;',
+    '--fb-accent:#5aa5dd;--fb-yes:#5cc78f;--fb-yes-bg:#14372a;--fb-no:#e07a7a;--fb-no-bg:#3d1d1d;--fb-muted:#93a4b3;}}',
+    '[data-fb]{position:relative;}',
+    '[data-fb].fb-has{outline:2px solid var(--fb-accent);outline-offset:3px;border-radius:8px;}',
+    '.fb-tools{position:absolute;top:.4rem;right:.4rem;display:flex;gap:.25rem;opacity:.45;',
+    'transition:opacity .15s;z-index:5;}',
+    '[data-fb]:hover .fb-tools,[data-fb]:focus-within .fb-tools{opacity:1;}',
+    '@media (prefers-reduced-motion:reduce){.fb-tools{transition:none;}}',
+    '.fb-tools button{font:600 .78rem/1 system-ui,sans-serif;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);border-radius:99px;padding:.3rem .6rem;cursor:pointer;}',
+    '.fb-tools button:hover{border-color:var(--fb-accent);color:var(--fb-accent);}',
+    '.fb-tools button.on-yes{background:var(--fb-yes-bg);color:var(--fb-yes);border-color:var(--fb-yes);}',
+    '.fb-tools button.on-no{background:var(--fb-no-bg);color:var(--fb-no);border-color:var(--fb-no);}',
+    '.fb-note{margin-top:.6rem;width:100%;box-sizing:border-box;font:.92rem/1.5 system-ui,sans-serif;',
+    'color:var(--fb-ink);background:var(--fb-bg);border:1px dashed var(--fb-line);border-radius:8px;',
+    'padding:.55rem .7rem;resize:vertical;min-height:2.6rem;}',
+    '.fb-note:focus{outline:2px solid var(--fb-accent);outline-offset:1px;border-style:solid;}',
+    '.fb-bar{position:fixed;right:1rem;bottom:1rem;z-index:9999;display:flex;flex-direction:column;',
+    'align-items:flex-end;gap:.5rem;font:14px/1.5 system-ui,sans-serif;}',
+    '.fb-bar button{cursor:pointer;border-radius:99px;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);padding:.55rem 1rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.14);}',
+    '.fb-bar .fb-copy{background:var(--fb-accent);color:#fff;border-color:transparent;}',
+    '.fb-panel{background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;',
+    'padding:.9rem 1rem;max-width:min(380px,90vw);max-height:50vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.2);display:none;}',
+    '.fb-panel.open{display:block;}',
+    '.fb-panel h4{margin:0 0 .5rem;font-size:.95rem;}',
+    '.fb-panel li{margin-bottom:.5rem;font-size:.88rem;}',
+    '.fb-panel .lbl{font-weight:600;}',
+    '.fb-empty{color:var(--fb-muted);font-size:.88rem;margin:0;}',
+    '@media print{.fb-bar,.fb-tools{display:none;}}'
+  ].join("");
+  document.head.appendChild(css);
+
+  // The floating bar is built FIRST: per-section wiring calls render(), which
+  // needs these to exist. (Building it after the loop threw on the first
+  // section and left every later section without its buttons.)
+  var bar = document.createElement("div");
+  bar.className = "fb-bar";
+  var panel = document.createElement("div");
+  panel.className = "fb-panel";
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  var copy = document.createElement("button");
+  copy.type = "button"; copy.className = "fb-copy"; copy.textContent = "📋 Copy my feedback";
+  bar.appendChild(panel); bar.appendChild(toggle); bar.appendChild(copy);
+  document.body.appendChild(bar);
+
+  var blocks = [].slice.call(document.querySelectorAll("[data-fb]"));
+
+  // Standalone mode: a page with no marked-up blocks (e.g. a full-screen
+  // prototype we did not author) still gets a working note box, so the layer
+  // can be injected into ANY page rather than only pages we wrote.
+  if (!blocks.length) {
+    var solo = document.createElement("div");
+    solo.setAttribute("data-fb", document.title || "this page");
+    solo.setAttribute("data-fb-solo", "");
+    solo.style.cssText = "position:fixed;left:1rem;bottom:1rem;z-index:9998;width:min(320px,80vw);" +
+      "background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;" +
+      "padding:2.2rem .8rem .8rem;box-shadow:0 8px 30px rgba(0,0,0,.2);font:14px/1.5 system-ui,sans-serif;";
+    var cap = document.createElement("div");
+    cap.textContent = "Notes on this page";
+    cap.style.cssText = "font-weight:600;font-size:.85rem;margin-bottom:.3rem;";
+    solo.appendChild(cap);
+    document.body.appendChild(solo);
+    blocks = [solo];
+  }
+  blocks.forEach(function (el) {
+    var key = el.getAttribute("data-fb");
+    if (!notes[key]) notes[key] = { verdict: "", text: "" };
+
+    var tools = document.createElement("div");
+    tools.className = "fb-tools";
+    var yes = document.createElement("button");
+    yes.type = "button"; yes.textContent = "👍 like"; yes.title = "I like this";
+    var no = document.createElement("button");
+    no.type = "button"; no.textContent = "👎 no"; no.title = "Not this";
+    var add = document.createElement("button");
+    add.type = "button"; add.textContent = "💬 note"; add.title = "Write a note";
+    tools.appendChild(yes); tools.appendChild(no); tools.appendChild(add);
+    el.appendChild(tools);
+
+    var note = document.createElement("textarea");
+    note.className = "fb-note";
+    note.placeholder = "Your note on “" + key + "”…";
+    note.value = notes[key].text || "";
+    // in standalone mode the box is the whole point — always show it
+    var solo = el.hasAttribute("data-fb-solo");
+    note.style.display = notes[key].text || solo ? "block" : "none";
+    el.appendChild(note);
+
+    function paint() {
+      yes.className = notes[key].verdict === "yes" ? "on-yes" : "";
+      no.className = notes[key].verdict === "no" ? "on-no" : "";
+      el.classList.toggle("fb-has", !!(notes[key].verdict || notes[key].text));
+      render();
+    }
+    yes.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "yes" ? "" : "yes"; save(); paint();
+    });
+    no.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "no" ? "" : "no"; save(); paint();
+    });
+    add.addEventListener("click", function () {
+      note.style.display = "block"; note.focus();
+    });
+    note.addEventListener("input", function () {
+      notes[key].text = note.value.trim(); save(); paint();
+    });
+    paint();
+  });
+
+  function collected() {
+    return Object.keys(notes)
+      .filter(function (k) { return notes[k].verdict || notes[k].text; })
+      .map(function (k) { return { key: k, v: notes[k].verdict, t: notes[k].text }; });
+  }
+
+  function asText() {
+    var items = collected();
+    if (!items.length) return "";
+    var out = ["FEEDBACK ON: " + (document.title || "this page"), ""];
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "LIKE" : i.v === "no" ? "NO" : "NOTE";
+      out.push("- [" + mark + "] " + i.key + (i.t ? " — " + i.t : ""));
+    });
+    return out.join("\n");
+  }
+
+  function render() {
+    var items = collected();
+    toggle.textContent = items.length ? "🗒 " + items.length + " marked" : "🗒 no marks yet";
+    if (!items.length) { panel.innerHTML = '<p class="fb-empty">Hover any section, then use 👍 / 👎 / 💬.</p>'; return; }
+    var html = "<h4>What you've said</h4><ul>";
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "👍" : i.v === "no" ? "👎" : "💬";
+      html += '<li>' + mark + ' <span class="lbl">' + escapeHtml(i.key) + "</span>" +
+        (i.t ? " — " + escapeHtml(i.t) : "") + "</li>";
+    });
+    panel.innerHTML = html + "</ul>";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  toggle.addEventListener("click", function () { panel.classList.toggle("open"); });
+  copy.addEventListener("click", function () {
+    var text = asText();
+    if (!text) { copy.textContent = "nothing marked yet"; setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 1600); return; }
+    var done = function () {
+      copy.textContent = "✅ copied — paste it to Claude";
+      setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 2600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { window.prompt("Copy this:", text); }
+      document.body.removeChild(ta);
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
