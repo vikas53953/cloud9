@@ -24,7 +24,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { AgentDef, Approval, ClientFrame, Message, WorldState } from "@cloud9/shared";
+import {
+  AgentDef, AgentHandoff, AgentSchedule, Approval, ClientFrame, Message, WorldState,
+} from "@cloud9/shared";
 import { ApprovalDesk } from "./approvaldesk.js";
 import { Engine } from "./engine.js";
 import { ClaudeProvider, RespondInput, TurnOutputTooBigError, sanitizeForChat } from "./provider.js";
@@ -41,6 +43,12 @@ const agent = (id: string, name: string): AgentDef => ({
 });
 
 const CREW = [agent("a1", "Scout"), agent("a2", "Ranger"), agent("a3", "Pilot")];
+
+function addCrewmate(engine: Engine, id: string, name: string): void {
+  const extra = agent(id, name);
+  engine.state!.agents.push(extra);
+  engine.state!.channels[0]!.memberIds.push(id);
+}
 
 function makeEngine(provider: ClaudeProvider, dataDir = tmp()) {
   const engine = new Engine({
@@ -110,6 +118,42 @@ class AsksHimSomething implements ClaudeProvider {
     this.answered.push(input.agent.id);
     return "done";
   }
+}
+
+/** Provider probe for entrypoints that bypassed the turn queue before review. */
+class EntryProbeProvider implements ClaudeProvider {
+  readonly calls: RespondInput[] = [];
+  readonly answered: string[] = [];
+  private releases = new Map<string, () => void>();
+
+  constructor(
+    private engine: () => Engine,
+    private park: (input: RespondInput) => boolean,
+    private active: Set<string>,
+  ) {}
+
+  async respond(input: RespondInput): Promise<string> {
+    this.calls.push(input);
+    if (this.active.has(input.agent.id)) {
+      await new Promise<void>(resolve => this.releases.set(input.agent.id, resolve));
+    }
+    if (this.park(input)) {
+      await this.engine().approvals.askPlan({
+        agent: input.agent, channelId: input.channelId!, plan: "1. do the thing",
+      });
+    }
+    this.answered.push(input.agent.id);
+    return "done";
+  }
+
+  release(agentId: string): void {
+    this.releases.get(agentId)?.();
+    this.releases.delete(agentId);
+  }
+}
+
+function pendingCall(provider: EntryProbeProvider, predicate: (input: RespondInput) => boolean): boolean {
+  return provider.calls.some(predicate);
 }
 
 test("TWO AGENTS PARKED ON CARDS DO NOT FREEZE THE REST OF THE CREW", async () => {
@@ -228,6 +272,90 @@ test("approve, reconnect, and cancel release only their own parked slot", async 
   await until(() => engine.approvals.pending === 0, "cancel to be idempotent");
   assert.ok((engine as unknown as { workingTurns(): number }).workingTurns() >= 0,
     "slot accounting went negative after cancel/reconnect");
+  engine.stop();
+});
+
+test("a scheduled approval turn is queued, owns its wait, and frees one slot", async () => {
+  let engine!: Engine;
+  const provider = new EntryProbeProvider(
+    () => engine,
+    input => input.kind === "schedule" && input.agent.id === "a3",
+    new Set(["a1", "a2"]),
+  );
+  const made = makeEngine(provider);
+  engine = made.engine;
+  addCrewmate(engine, "a4", "Echo");
+
+  void say(engine, says("a1", "@Scout keep working"));
+  void say(engine, says("a2", "@Ranger keep working"));
+  await until(() => (engine as unknown as { workingTurns(): number }).workingTurns() === 2,
+    "two ordinary turns to fill the cap");
+
+  const schedule: AgentSchedule = {
+    id: "s-review", agentId: "a3", channelId: "c1", when: "every 1m",
+    prompt: "check the queue", enabled: true,
+  };
+  void (engine as unknown as { fireSchedule(s: AgentSchedule): Promise<void> }).fireSchedule(schedule);
+  await new Promise(r => setTimeout(r, 100));
+  assert.equal(pendingCall(provider, input => input.kind === "schedule"), false,
+    "the scheduler bypassed the two-turn cap");
+
+  provider.release("a1");
+  await until(() => pendingCall(provider, input => input.kind === "schedule"),
+    "the queued schedule to start after one slot is released");
+  await until(() => engine.approvals.pending === 1, "the scheduled approval card");
+
+  void say(engine, says("a4", "@Echo are you there?"));
+  await until(() => provider.answered.includes("a4"),
+    "a queued chat to use the slot released by the scheduled wait");
+
+  engine.stopAgent("a3");
+  provider.release("a2");
+  await until(() => engine.approvals.pending === 0, "scheduled cancellation cleanup");
+  assert.ok((engine as unknown as { workingTurns(): number }).workingTurns() >= 0,
+    "scheduled cancellation released a slot twice");
+  engine.stop();
+});
+
+test("a handoff approval turn is queued, owns its wait, and frees one slot", async () => {
+  let engine!: Engine;
+  const provider = new EntryProbeProvider(
+    () => engine,
+    input => input.agent.id === "a3" && input.trigger.includes("handed this piece"),
+    new Set(["a1", "a2"]),
+  );
+  const made = makeEngine(provider);
+  engine = made.engine;
+  addCrewmate(engine, "a4", "Echo");
+
+  void say(engine, says("a1", "@Scout keep working"));
+  void say(engine, says("a2", "@Ranger keep working"));
+  await until(() => (engine as unknown as { workingTurns(): number }).workingTurns() === 2,
+    "two ordinary turns to fill the cap");
+
+  const handoff: AgentHandoff = {
+    id: "h-review", fromAgentId: "a1", toAgentId: "a3", task: "check the queue",
+    contextPointer: { kind: "channel", ref: "c1" }, createdAt: 0,
+  };
+  void engine.receiveHandoff(handoff);
+  await new Promise(r => setTimeout(r, 100));
+  assert.equal(pendingCall(provider, input => input.trigger.includes("handed this piece")), false,
+    "the handoff bypassed the two-turn cap");
+
+  provider.release("a1");
+  await until(() => pendingCall(provider, input => input.trigger.includes("handed this piece")),
+    "the queued handoff to start after one slot is released");
+  await until(() => engine.approvals.pending === 1, "the handoff approval card");
+
+  void say(engine, says("a4", "@Echo are you there?"));
+  await until(() => provider.answered.includes("a4"),
+    "a queued chat to use the slot released by the handoff wait");
+
+  engine.stopAgent("a3");
+  provider.release("a2");
+  await until(() => engine.approvals.pending === 0, "handoff cancellation cleanup");
+  assert.ok((engine as unknown as { workingTurns(): number }).workingTurns() >= 0,
+    "handoff cancellation released a slot twice");
   engine.stop();
 });
 

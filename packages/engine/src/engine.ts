@@ -366,7 +366,7 @@ export class Engine {
   private liveTurns = new Set<LiveTurn>();
   // ===== GAP C BLOCK — end =====
   /** queued work, each tagged with whose turn it is so a stop can drop it */
-  private queue: { job: () => Promise<void>; agentId?: ID }[] = [];
+  private queue: { job: () => Promise<void>; agentId?: ID; onDropped?: () => void }[] = [];
   private opts: EngineOptions;
   private stopped = false;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
@@ -828,12 +828,12 @@ export class Engine {
       // computer is behind the card, exactly as it was before.
       if (message.authorKind === "human" && /^!code\s+/i.test(bare)) {
         const what = bare.replace(/^!code\s+/i, "").trim();
-        this.enqueue(async () => {
+        void this.enqueueAgentTurn(agent.id, async () => {
           await this.workInRepository(agent, {
             channelId: channel.id, ask: what, triggerAuthor: message.authorName,
             ...(thread ? { replyTo: thread } : {}),
           });
-        }, agent.id);
+        });
         continue;
       }
       // A GITHUB WRITE, asked for in the room: "!issue <title>",
@@ -844,7 +844,8 @@ export class Engine {
       if (message.authorKind === "human") {
         const write = this.parseGitHubWriteCommand(bare);
         if (write) {
-          this.enqueue(() => this.workGitHubWriteInRoom(agent, channel.id, write, thread), agent.id);
+          void this.enqueueAgentTurn(agent.id,
+            () => this.workGitHubWriteInRoom(agent, channel.id, write, thread));
           continue;
         }
       }
@@ -863,11 +864,11 @@ export class Engine {
       // one plan gate — this line only decides that this message goes through it.
       if (message.authorKind === "human" && /^!plan\s+/i.test(bare)) {
         const what = bare.replace(/^!plan\s+/i, "").trim();
-        this.enqueue(() => this.takeTurn(
-          agent, channel.id, { ...message, text: what }, { planFirst: true }), agent.id);
+        void this.enqueueAgentTurn(agent.id, () => this.takeTurn(
+          agent, channel.id, { ...message, text: what }, { planFirst: true }));
         continue;
       }
-      this.enqueue(() => this.takeTurn(agent, channel.id, message), agent.id);
+      void this.enqueueAgentTurn(agent.id, () => this.takeTurn(agent, channel.id, message));
     }
   }
 
@@ -882,9 +883,31 @@ export class Engine {
    * Anonymous work (a handoff, a memory note) passes nothing and is never
    * dropped by a stop: those are not the agent taking a turn.
    */
-  private enqueue(job: () => Promise<void>, agentId?: ID): void {
-    this.queue.push({ job, ...(agentId ? { agentId } : {}) });
+  private enqueue(job: () => Promise<void>, agentId?: ID, onDropped?: () => void): void {
+    this.queue.push({ job, ...(agentId ? { agentId } : {}), ...(onDropped ? { onDropped } : {}) });
     void this.drain();
+  }
+
+  /**
+   * Queue one provider-backed turn with the owner ID that the drain token must
+   * carry. Every entrypoint that can reach `respondAs` goes through this seam:
+   * room messages, plans, tasks, repository/GitHub work, schedules and
+   * handoffs. The promise resolves when the queued job has finished; errors are
+   * still handled by the job's existing user-facing boundary and never escape
+   * the engine's queue.
+   */
+  private enqueueAgentTurn(agentId: ID, job: () => Promise<void>): Promise<void> {
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      this.enqueue(async () => {
+        try { await job(); } finally { finish(); }
+      }, agentId, finish);
+    });
   }
 
   /**
@@ -896,7 +919,12 @@ export class Engine {
    */
   private dropQueuedTurns(agentId: ID): number {
     const before = this.queue.length;
-    this.queue = this.queue.filter(q => q.agentId !== agentId);
+    const kept = [] as typeof this.queue;
+    for (const q of this.queue) {
+      if (q.agentId === agentId) q.onDropped?.();
+      else kept.push(q);
+    }
+    this.queue = kept;
     return before - this.queue.length;
   }
 
@@ -1936,7 +1964,7 @@ export class Engine {
       return;
     }
     this.claimed.add(task.id);
-    this.enqueue(() => this.runTask(agent, task), agent.id);
+    void this.enqueueAgentTurn(agent.id, () => this.runTask(agent, task));
   }
 
   private async runTask(agent: AgentDef, task: Task): Promise<void> {
@@ -2350,25 +2378,27 @@ export class Engine {
     const agent = this.myAgents.find(a => a.id === s.agentId);
     if (!agent) return;
     if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") return; // FR-AG-007
-    this.setStatus(agent.id, "working");
-    try {
-      const text = await this.respondAs(agent, {
+    await this.enqueueAgentTurn(agent.id, async () => {
+      this.setStatus(agent.id, "working");
+      try {
+        const text = await this.respondAs(agent, {
         // no thread: a schedule answers nothing, so there is no side
         // conversation to serve first — see `fireSchedule`'s own note.
-        context: this.renderContext(s.channelId, agent),
-        trigger: `Scheduled task fired: ${s.prompt}`,
-        triggerAuthor: "schedule",
-        kind: "schedule",
-        channelId: s.channelId,
-        requesterKind: "schedule",
-      });
+          context: this.renderContext(s.channelId, agent),
+          trigger: `Scheduled task fired: ${s.prompt}`,
+          triggerAuthor: "schedule",
+          kind: "schedule",
+          channelId: s.channelId,
+          requesterKind: "schedule",
+        });
       this.agentSend(agent.id, s.channelId, `⏰ ${text}`, { proactive: true });
-    } catch (err) {
-      this.agentSend(agent.id, s.channelId,
-        saidWhenTurnEnded(err, `scheduled check-in ${s.id} failed`));
-    } finally {
-      this.setStatus(agent.id, "idle");
-    }
+      } catch (err) {
+        this.agentSend(agent.id, s.channelId,
+          saidWhenTurnEnded(err, `scheduled check-in ${s.id} failed`));
+      } finally {
+        this.setStatus(agent.id, "idle");
+      }
+    });
   }
 
   /**
@@ -3428,25 +3458,27 @@ export class Engine {
     if (!channelId) return;
     const fromName = this.state?.agents.find(a => a.id === handoff.fromAgentId)?.name
       ?? handoff.fromAgentId;
-    this.setStatus(target.id, "working");
-    try {
-      const text = await this.respondAs(target, {
+    await this.enqueueAgentTurn(target.id, async () => {
+      this.setStatus(target.id, "working");
+      try {
+        const text = await this.respondAs(target, {
         // no thread: a handoff carries a channel pointer and nothing finer, as
         // the note above says, so there is no side conversation to serve first.
-        context: this.renderContext(channelId, target),
-        trigger: handoffTrigger(handoff, fromName),
-        triggerAuthor: fromName,
-        kind: "chat",
-        channelId,
-        requesterKind: "agent",
-      });
-      this.agentSend(target.id, channelId, text);
-    } catch (err) {
-      this.agentSend(target.id, channelId,
-        saidWhenTurnEnded(err, `${target.name} could not pick up a handoff`));
-    } finally {
-      this.setStatus(target.id, "idle");
-    }
+          context: this.renderContext(channelId, target),
+          trigger: handoffTrigger(handoff, fromName),
+          triggerAuthor: fromName,
+          kind: "chat",
+          channelId,
+          requesterKind: "agent",
+        });
+        this.agentSend(target.id, channelId, text);
+      } catch (err) {
+        this.agentSend(target.id, channelId,
+          saidWhenTurnEnded(err, `${target.name} could not pick up a handoff`));
+      } finally {
+        this.setStatus(target.id, "idle");
+      }
+    });
   }
 
   /**

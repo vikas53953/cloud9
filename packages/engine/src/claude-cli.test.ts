@@ -8,7 +8,7 @@ import {
   ClaudeCliProvider, CREDENTIAL_ENV_VARS, claudeArgs, envWithoutCredentials, parseClaudeJson,
 } from "./claude-cli.js";
 import { CLAUDE_BUILTIN_TOOLS, deniedClaudeTools } from "./abilities.js";
-import { HarnessUnavailableError } from "./provider.js";
+import { HarnessUnavailableError, TurnOutputTooBigError } from "./provider.js";
 import { EMPTY_ARG, RunOptions, RunResult, UnsafeArgumentError } from "./run.js";
 import { OpenTurn, ToolBridge } from "./toolbridge.js";
 import fs from "node:fs";
@@ -62,6 +62,38 @@ test("a failed turn is read from the envelope, not from what the model said", ()
 test("garbage from the CLI is reported, never guessed at", () => {
   assert.match(parseClaudeJson("").error ?? "", /returned nothing/);
   assert.match(parseClaudeJson("{not json}").error ?? "", /couldn't read/);
+});
+
+test("a truncated stream cannot promote an intermediate assistant block to the answer", async () => {
+  const stale = JSON.stringify({
+    type: "assistant", message: { content: [{ type: "text", text: "STALE-EARLY" }] },
+  });
+  const junk = "x".repeat(16 * 1024 * 1024);
+  const fake = fakeRunner({
+    stdout: `${"x".repeat(1024 * 1024)}\n${stale}\n${junk}`,
+    truncated: true,
+  });
+  await assert.rejects(
+    () => provider(fake.runner).respond({
+      agent: agent(), context: "", trigger: "h", triggerAuthor: "V", kind: "chat",
+    }),
+    (err: unknown) => err instanceof TurnOutputTooBigError,
+  );
+});
+
+test("a truncated stream with a terminal result still returns that final answer", async () => {
+  const fake = fakeRunner({
+    stdout: JSON.stringify({
+      type: "assistant", message: { content: [{ type: "text", text: "STALE-EARLY" }] },
+    }) + "\n" + JSON.stringify({
+      type: "result", subtype: "success", is_error: false, result: "FINAL-ANSWER",
+    }),
+    truncated: true,
+  });
+  const answer = await provider(fake.runner).respond({
+    agent: agent(), context: "", trigger: "h", triggerAuthor: "V", kind: "chat",
+  });
+  assert.equal(answer, "FINAL-ANSWER");
 });
 
 test("no credential variable survives into a CLI-login turn", () => {

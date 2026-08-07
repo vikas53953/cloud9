@@ -54,7 +54,7 @@ The dated snapshot rows below are preserved history; this current row is the liv
 | Open PRs | **1** — #13 (remove the timing), CONFLICTING on `TRACKER.md` after #11 and #12 landed. **As of 2026-08-07 11:00.** |
 | Merged today | **8** — #6 time limit · #7 threads width · #9 activity · #10 spending · **#11 harness inventory** · **#12 threads research** · plus #5 and #8, both reverts of code that reached master unreviewed (one the conductor's). |
 
-**Current live snapshot (2026-08-07 16:58 IST):** PR #13 is OPEN; review fixes
+**Current live snapshot (2026-08-07 17:38 IST):** PR #13 is OPEN; review fixes
 are in `42e1b3c`, and it is **CLEAN against `origin/master`**. It is not
 approved or merged;
 the older row below saying `CONFLICTING` is retained as dated review history.
@@ -161,19 +161,17 @@ the branch's additional measurements here rather than silently dropping them:
   the current `shared/src/index.ts:672-674` in row 5. The full four-blocker
   author narrative remains in PR #13's body.
 
-**Current author stage (2026-08-07, after merge reconciliation):** PR #13 is
-OPEN and pushed on `fix/agents-are-not-on-a-timer`; this branch is no longer
-conflicting with `origin/master`, but it is **not approved or merged**. The
-review-round targeted engine checks are **36/36** (`parkedwaits` + `run` 19/19;
-`notimers` + `approvaldesk` 17/17), including one-warning-per-approved-card
-replay/restart dedupe, a valid UTF-8 16 MiB byte tail, and exact approval-slot
-ownership. Relay build is green and the real-socket probe
-`apps/relay/src/reconnect.test.ts` is **2/2**: an actual close reconnects
-without answering for the owner, and an approved card after a real restart
-gets the plain "did not happen ... ask me again" message. The isolated relay
-no-deadline check is **2/2**; the full `midrun.test.ts` remains a harness hang
-here and is not claimed green. No fresh quiet-machine `taskstuck` control has
-been run, so that evidence remains pending review.
+**Current author stage (2026-08-07 17:38 +05:30, after reconciling
+`origin/master` 7ce7bcd):** PR #13 is OPEN on
+`fix/agents-are-not-on-a-timer`; it is **not approved or merged**. Focused
+engine checks are **44/44** (`claude-cli` 14/14; `parkedwaits` 12/12;
+`notimers` + `approvaldesk` 17/17; the new `!code` ownership regression 1/1).
+They cover terminal-envelope output honesty, shared ownership for room/plan,
+task, repository/GitHub-write, scheduled and handoff turns, and idempotent
+approval/cancel cleanup. Engine and relay builds are green; the real-socket
+probe `apps/relay/src/reconnect.test.ts` is **2/2**. No packaging/install/QA or
+quiet-machine `taskstuck` comparison was run; the full `midrun.test.ts` remains
+unclaimed because its harness hangs in this environment.
 | 13 | **Buzz vs Cloud9 — installed feature audit (2026-08-07)** | audit agent | **AUDIT COMPLETE · REPORT ONLY · no feature implementation** | Opened `%LOCALAPPDATA%\Buzz\buzz-desktop.exe` (external metadata reported **0.5.5; unverified in the app**) and walked Inbox/home, Pulse, Projects, Agents, Workflows and `#coding`. Dated screenshots are in `docs/qa/buzz-*-2026-08-07.jpg`; the visual report is `docs/buzz-vs-cloud9-2026-08-07.html`. Counts: **8 Cloud9 source capability rows (installed UI unverified) · 1 visible Buzz gap · 2 Buzz surfaces that need Vikas's decision before copying · 6 unverified feature rows · 2 partial behavior checks · 1 observed Runtime errors state excluded from feature counts.** Feature classes total **17 rows**; adding the two partial checks and one observed state gives **20 audited checks**. Unverified feature rows: **DMs, Approvals, Repos/PR/project details, Canvas, Forums, Settings/account.** Partial behavior checks: **Search execution and file send/artifact card.** Runtime errors remain observed Buzz state and are excluded from feature counts. Inbox visibly showed Sol twice, luna and Fizz; no Honey. The red “Some message context could not be loaded” banner is recorded as Buzz app state, not a Cloud9 gap or proven Buzz defect. Cloud9 was compared from source at commit `6f4b7ea`; its installed app was not launched in this lane. |
 | 14 | **Workflow list / builder** | nobody yet | **PROPOSED — not started; no author or reviewer chosen** | Installed Buzz visibly has a Workflows screen with **Create Workflow** and an empty first-workflow state (`docs/qa/buzz-workflows-2026-08-07.jpg`). Cloud9's `ScreenName`/rail has no workflow route (`apps/desktop/src/App.tsx:1945-1946, 2668-2703`), although the engine has a `Workflow` tool ability (`packages/engine/src/abilities.ts:65-83`). This is a verified visible-surface gap, but the smallest product spec still needs Vikas's decision: persistence model, trigger/schedule semantics, run status/history, permissions, and separation from the existing Workflow tool ability. Before the conductor spawns one author and a different reviewer, Vikas must approve that shape. |
 

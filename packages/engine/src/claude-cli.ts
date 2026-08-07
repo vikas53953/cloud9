@@ -130,7 +130,14 @@ export function claudeMapper(): EventMapper {
         const kind = String(block.type ?? "");
         if (kind === "text") {
           const said = str(block.text);
-          if (said) { t.setText(said); t.add({ kind: "message", label: "Said something", detail: said }); }
+          if (said) {
+            // Intermediate assistant blocks are useful trace text, but they
+            // are not the answer until Claude emits its terminal result
+            // envelope. A truncated stream must never promote one of these
+            // stale fragments into the turn's reply.
+            t.setText(said, false);
+            t.add({ kind: "message", label: "Said something", detail: said });
+          }
         } else if (kind === "thinking") {
           const thought = str(block.thinking);
           if (thought) t.add({ kind: "thinking", label: "Thought it through", detail: thought });
@@ -166,6 +173,7 @@ export function claudeMapper(): EventMapper {
       || (!type && ("result" in ev || "is_error" in ev || "subtype" in ev));
     if (isResult) {
       const said = str(ev.result);
+      t.setTerminal();
       if (said) t.setText(said);
       t.set({
         ...(typeof ev.duration_ms === "number" ? { cliDurationMs: ev.duration_ms } : {}),
@@ -1100,7 +1108,7 @@ export class ClaudeCliProvider implements ClaudeProvider {
     // fragment of somebody's tool output, not a reply. Returning it would be
     // the exact shape of lie this whole branch exists to remove: a turn the
     // owner watched work all night, recorded `ok`, answered with rubbish.
-    if (result.truncated && !trace.text) {
+    if (result.truncated && !trace.terminal) {
       throw new TurnOutputTooBigError();
     }
     if (trace.error && !trace.text) throw new Error(trace.error);

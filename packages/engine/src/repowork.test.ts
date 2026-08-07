@@ -76,6 +76,7 @@ const AGENT: AgentDef = {
 };
 
 const SECOND: AgentDef = { ...AGENT, id: "a2", name: "Mason" };
+const THIRD: AgentDef = { ...AGENT, id: "a3", name: "Pilot" };
 
 function world(agents: AgentDef[] = [AGENT]): WorldState {
   return {
@@ -277,6 +278,51 @@ test("THE CARD'S FACTS ARE COUNTED BY GIT, NOT QUOTED FROM THE AGENT", async t =
   assert.equal(facts.files, 2, "two files, whatever the agent called it");
   assert.equal(ask.agentId, "a1");
   assert.equal(ask.channelId, "c1", "the card belongs in the conversation it happened in");
+});
+
+test("a !code approval owns its turn slot, so a third queued chat can proceed", async t => {
+  const repoDir = await makeRepo();
+  let engine!: Engine;
+  const calls: string[] = [];
+  const provider: ClaudeProvider = {
+    async respond(input: RespondInput): Promise<string> {
+      calls.push(input.agent.id);
+      if (input.agent.id === "a1" || input.agent.id === "a2") {
+        await engine.approvals.askPlan({
+          agent: input.agent, channelId: input.channelId!, plan: "1. check the queue",
+        });
+      }
+      return "done";
+    },
+  };
+  const { runner } = fakeGitHub();
+  engine = new Engine({
+    relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: tmp("cloud9-repowork-ownership-"),
+    provider, repoDir, github: { runner, log: () => { /* quiet */ } },
+  });
+  const frames: ClientFrame[] = [];
+  (engine as unknown as { sendFrame: (f: ClientFrame) => void }).sendFrame = f => { frames.push(f); };
+  const feed = (f: ServerFrame): void =>
+    (engine as unknown as { onFrame: (f: ServerFrame) => void }).onFrame(f);
+  feed({ type: "welcome", state: world([AGENT, SECOND, THIRD]) });
+  t.after(() => { engine.stop(); });
+
+  feed({ type: "message", message: says("a1", "@Scout !code check one") });
+  feed({ type: "message", message: says("a2", "@Mason !code check two", "m2") });
+  await waitFor(() => engine.approvals.pending === 2 ? true : undefined,
+    "both repository turns to park on approval cards");
+
+  feed({ type: "message", message: says("a3", "@Pilot are you there?", "m3") });
+  await waitFor(() => calls.includes("a3") ? calls : undefined,
+    "the third chat to use a slot released by the two genuine waits");
+  assert.equal(calls.filter(id => id === "a3").length, 1);
+
+  engine.stopAgent("a1");
+  engine.stopAgent("a2");
+  await waitFor(() => engine.approvals.pending === 0 ? true : undefined,
+    "repository approval cancellation cleanup");
+  assert.ok((engine as unknown as { workingTurns(): number }).workingTurns() >= 0,
+    "repository cancellation released a slot twice");
 });
 
 test("APPROVED: the branch goes up and a pull request is opened, and only then", async t => {
