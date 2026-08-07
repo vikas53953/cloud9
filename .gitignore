@@ -27,3 +27,11 @@ docs/qa/*-results.json
 # Hand-written QA notes are NOT generated — keep them tracked.
 !docs/qa/*.md
 !docs/qa/*.txt
+
+# KEPT EVIDENCE is a different thing from the ~100 screenshots a run throws
+# away. A picture cited in a pull request has to still be there when somebody
+# opens the pull request — a path on one machine is no use to a reviewer who
+# was not sitting at it. A walk copies the few shots that prove a specific
+# claim into here, and only these are tracked.
+!docs/qa/kept/
+!docs/qa/kept/*.png

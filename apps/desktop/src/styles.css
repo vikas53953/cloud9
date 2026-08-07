@@ -3198,3 +3198,56 @@ button.chip{cursor:pointer;}
 @media (prefers-reduced-motion: reduce){
   .receipt.reading,.receipt.thinking,.receipt.verdict{animation:none;}
 }
+
+/* ---- Spending: what the crew costs, and which part of it is waste ----------
+ *
+ * Built out of the classes this app already has (`topbar`, `act-body`,
+ * `railempty`, `meta`, `eyebrow`) so a new screen looks like the rest of Cloud9
+ * rather than like a bolt-on. Only three things here are genuinely new, and
+ * each earns its place:
+ *
+ *  • `.splitbar` — the one picture on the screen. Marigold is this app's colour
+ *    for money, so the half of the bill that bought nothing is marigold and the
+ *    half that bought work is pine. He can see at a glance which agents are
+ *    mostly paying to be handed material.
+ *  • `.amt.unknown` — the shape "we were told nothing" takes. It is deliberately
+ *    NOT styled like a small amount: it is plain, quiet text, so it can never be
+ *    mistaken for a cheap agent at a glance.
+ *  • `.finding` — a named piece of waste with its counting under it, with a
+ *    marigold edge on the ones something can actually be done about.
+ */
+.spending{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;}
+.spendlead{max-width:820px;margin:0 0 20px;color:var(--ink-2);font-size:14px;line-height:1.55;}
+.spendfoot{max-width:820px;margin:26px 0 0;line-height:1.6;}
+.spendrow{max-width:820px;margin:0 0 22px;padding:16px 18px;
+  border:1px solid var(--line-soft);border-radius:14px;background:var(--card,transparent);}
+.spendrow > header{display:flex;align-items:center;gap:11px;margin-bottom:12px;}
+.spendrow > header .who{display:flex;flex-direction:column;gap:1px;min-width:0;}
+.spendrow > header .who b{font-size:15px;}
+.spendrow > header .who .meta{font-size:11.5px;}
+.spendrow > header .amt{font-family:var(--mono);font-size:13px;color:var(--marigold);
+  text-align:right;white-space:nowrap;}
+/* "nobody reported a cost" is a sentence, not a number, and it is never gold */
+.spendrow > header .amt.unknown{color:var(--ink-3);font-family:inherit;font-size:12px;
+  white-space:normal;max-width:270px;line-height:1.45;}
+.splitbar{display:flex;height:26px;border-radius:8px;overflow:hidden;border:1px solid var(--line-soft);}
+.splitbar > div{display:flex;align-items:center;justify-content:center;min-width:0;overflow:hidden;}
+.splitbar > div > span{font-size:10.5px;letter-spacing:.02em;white-space:nowrap;padding:0 6px;}
+.splitbar .sent{background:var(--marigold-soft);color:var(--marigold);}
+.splitbar .wrote{background:var(--pine-soft);color:var(--pine);}
+.spendrow .perturn{margin:7px 0 0;font-size:11.5px;}
+.finding{margin-top:14px;padding:11px 13px;border-radius:11px;
+  border:1px solid var(--line-soft);border-left:3px solid var(--line);}
+.finding.fixable{border-left-color:var(--marigold-hi);}
+.finding > b{display:block;font-size:13.5px;line-height:1.45;margin-bottom:7px;}
+.finding ul{margin:0;padding-left:17px;}
+.finding li{font-size:12.5px;line-height:1.6;color:var(--ink-2);margin-bottom:3px;}
+.finding li.worth{color:var(--marigold);}
+.finding .meta{margin:8px 0 0;font-size:11.5px;}
+/* A measurement borrowed from somewhere else — quieter than the counted facts
+   above it, and never mistaken for one of them. See `WasteFinding.reference`. */
+.finding .borrowed{margin:8px 0 0;font-size:11.5px;font-style:italic;color:var(--ink-3);
+  border-left:2px solid var(--line-soft);padding-left:9px;}
+/* A figure worked out from an older record rather than read off one total.
+   Quieter than the sentence it follows, and never absent when it applies. */
+.spendrow .perturn .rebuilt{color:var(--ink-3);}

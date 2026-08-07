@@ -25,7 +25,8 @@
 //     `mustAskBeforeActing` the first time.
 import {
   AgentDef, APPROVAL_LIMITS, Approval, ClientFrame, ID, RemoteAction, RemoteActionFacts,
-  decideAsking, describeRemoteAction, isRemoteAction, tidyPlan, trustLevel, trustOf,
+  SavingProposal, decideAsking, describeRemoteAction, isRemoteAction, tidyPlan, tidySaving,
+  trustLevel, trustOf, validateSavingProposal,
 } from "@cloud9/shared";
 
 
@@ -140,8 +141,8 @@ interface Waiting {
    */
   agentId: ID;
   approvalId?: ID;
-  /** what is being waited on: a row on the shared table, or a plan */
-  action: RemoteAction | "plan";
+  /** what is being waited on: a row on the shared table, a plan, or a saving */
+  action: RemoteAction | "plan" | "saving";
   /**
    * The counted facts the card carried — kept for the settled ledger.
    *
@@ -348,6 +349,85 @@ export class ApprovalDesk {
           // row that would say something untrue about GitHub
           plan: true,
         }));
+      }
+    });
+  }
+
+  /**
+   * "ONE OF YOUR AGENTS IS COSTING MORE THAN IT NEEDS TO — shall I change it?"
+   * — asked when an agent has looked at the crew's spending and found waste.
+   *
+   * IT IS THE SAME DESK AGAIN, for the same reasons `askPlan` is: same waiting
+   * list, same one timer per wait, same `maxWaiting` leash, same `onApproval`
+   * settle path, same `giveUpAll` and `giveUpFor`. The three properties at the
+   * top of this file hold for a saving exactly as they hold for a push.
+   *
+   * IT DOES NOT CONSULT THE TRUST SETTING, and here that matters more than
+   * anywhere else on this desk. `decideAsking` answers "may this agent do
+   * things outside this computer without stopping?" — an entirely different
+   * question from "may one agent change another agent's settings", which the
+   * owner has never been asked and which no existing setting means. There is no
+   * path through this method that goes ahead without a card. Whatever an agent
+   * is trusted with, a saving is always asked.
+   *
+   * AND APPROVING IT CHANGES NOTHING HERE. This desk hands back a yes or a no
+   * and never touches an agent. The change is made at the hub, in the same step
+   * as the owner's own decision, and only ever out of the closed two-member
+   * `SavingChange` — see @cloud9/shared. So the very most this whole path can
+   * do, even completely subverted, is put a sentence in front of him.
+   */
+  askSaving(input: {
+    agent: AgentDef;
+    channelId: ID;
+    taskId?: ID;
+    proposal: SavingProposal;
+  }): Promise<ApprovalOutcome> {
+    // JUDGED HERE AS WELL AS AT THE HUB. Not belt-and-braces: this is the side
+    // that can still say something useful to the AGENT, whereas a refusal at
+    // the hub is a card that never appears and an agent left wondering.
+    const problem = validateSavingProposal(input.proposal);
+    if (problem) {
+      return Promise.resolve({ approved: false, reason: problem });
+    }
+    if (this.waiting.length >= this.maxWaiting) {
+      return Promise.resolve({
+        approved: false,
+        reason: "too many agents are already waiting on an answer",
+      });
+    }
+    const proposal: SavingProposal = {
+      ...input.proposal,
+      because: tidySaving(input.proposal.because),
+    };
+    const askId = `ask-${(++asks).toString(36)}-${Date.now().toString(36)}`;
+    return new Promise<ApprovalOutcome>(resolve => {
+      const timer = setTimeout(() => {
+        this.finish(askId, {
+          approved: false,
+          reason: `nobody answered in ${howLong(this.waitMs)}, so nothing was changed`,
+        });
+      }, this.waitMs);
+      timer.unref?.();
+      this.waiting.push({
+        askId, agentId: input.agent.id, action: "saving", settle: resolve, timer,
+        ...(input.taskId ? { taskId: input.taskId } : {}),
+      });
+      this.opts.send({
+        type: "askSaving", askId,
+        agentId: input.agent.id, channelId: input.channelId,
+        ...(input.taskId ? { taskId: input.taskId } : {}),
+        proposal,
+      });
+      this.log(`asked whether to save money on ${proposal.aboutName}`);
+      // A JOB STANDING AT THIS GATE IS STUCK in the same sense as one standing
+      // at the push gate or the plan gate, so it is reported the same way and
+      // the jobs screen needs no third idea of "waiting". It reports `plan:
+      // true` because that is the desk's existing word for "this wait is about
+      // something the agent WROTE, and carries no counted facts about GitHub" —
+      // which is exactly true of a saving, and inventing a fourth word here
+      // would mean touching every screen that already reads this.
+      if (input.taskId) {
+        this.tell(() => this.opts.onWaitStart?.({ taskId: input.taskId!, plan: true }));
       }
     });
   }

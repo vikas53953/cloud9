@@ -20,6 +20,12 @@ import {
      cannot describe the same limit differently */
   AgentSpendCap, SPEND_CAP_LIMITS, FALLBACK_MODEL_LIMITS,
   fellBackWords, providerCanBeCapped, spendCapOf, validateSpendCap,
+  /* SPENDING BLOCK (2026-08-07) — what the crew costs and what is wasted. The
+     screen owns NO arithmetic and writes NO sentence about money of its own:
+     every figure and every word below comes out of these, which is what makes
+     the screen, the hub and an agent's own `check_token_use` say the same
+     thing about the same agent. */
+  AgentTokenUse, WasteFinding, dearestFirst, humanTextSize, moneyWords, sentVsWrote,
   /* THE SKILL LIBRARY — the same two lists the relay and the engine can read.
      The screen owns NO copy of a shelf or a skill: the filter bar, the group
      headings and the ordering are all computed from these, so adding a skill
@@ -1095,6 +1101,15 @@ const IconProjects = (): React.JSX.Element => (
 const IconLog = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12.5h4l2.2-6 3.4 12 2.5-7.5 1.6 3.5H21" /></svg>
 );
+/* Three bars of different heights — "what things cost, compared". Deliberately
+   NOT a coin or a dollar sign: this screen is about where the money went as
+   much as how much it was, and half the agents on it may report no money at
+   all. Drawn in the same one-stroke line style as every other rail icon. */
+const IconSpending = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M4 20h16" /><path d="M7.5 20v-6" /><path d="M12 20V6" /><path d="M16.5 20v-9" />
+  </svg>
+);
 const IconBolt = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 3 5 13.5h5.6L9.8 21l8.7-10.6h-5.7Z" /></svg>
 );
@@ -1893,7 +1908,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "files" | "projects" | "activity" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "files" | "projects" | "spending" | "activity" | "settings";
 type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -2087,6 +2102,19 @@ function Workspace(): React.JSX.Element {
     attemptLeave(() => {
       client.send({ type: "activity", limit: 100 });
       setScreen("activity");
+    });
+  }, []);
+
+  /* ASKED ON THE WAY IN, the same way the Log and Projects are — and here the
+     reason is the sharpest of the three: this is a running total, not a record.
+     It moves with every turn any agent takes, so a figure held over from the
+     last visit is out of date the moment anything happens, and a spending
+     number that is quietly an hour old is the one kind of stale figure that
+     could cost him money. `askSpending` skips only a request already in flight. */
+  const openSpending = useCallback(() => {
+    attemptLeave(() => {
+      client.askSpending();
+      setScreen("spending");
     });
   }, []);
 
@@ -2595,6 +2623,10 @@ function Workspace(): React.JSX.Element {
               otherwise unchanged. Everything the hub and the engine already
               hold about his repositories arrives through this one door. */}
           {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
+          {/* ADDED 2026-08-07. It sits beside the Log because it answers the
+              same shape of question — "what has been going on?" — about money
+              rather than about actions. */}
+          {railBtn("spending", "Spending", <IconSpending />, undefined, openSpending)}
           {railBtn("activity", "Log", <IconLog />, undefined, openActivity)}
           <div className="rail-spacer" />
           <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
@@ -2667,6 +2699,7 @@ function Workspace(): React.JSX.Element {
           {screen === "projects" && (
             <ProjectsScreen onOpenChannel={id => goChannel(id)} />
           )}
+          {screen === "spending" && <SpendingScreen />}
           {screen === "activity" && <ActivityScreen />}
           {screen === "settings" && <SettingsScreen />}
         </main>
@@ -4638,11 +4671,21 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
      done and nothing will be until he answers. It ticks down like an action
      card, because an agent is standing there waiting either way. */
   const plan = approval.kind === "plan";
-  const timed = action || plan;
+  /* THE FOURTH KIND OF THE SAME CARD (2026-08-07). One agent looked at what
+     the crew costs and wants to change ANOTHER agent's settings to spend less.
+     It is timed like the other two because an agent is standing there waiting,
+     and it is the same Approve/Not now — the difference is only what he is
+     being asked about, and which agent it would touch. */
+  const saving = approval.kind === "saving";
+  const timed = action || plan || saving;
   const now = useCountdown(timed && approval.status === "pending" && !!approval.expiresAt);
   const dead = approvalIsDead(approval, now);
 
   const rows: [string, string][] = [];
+  /* WHICH AGENT WOULD ACTUALLY CHANGE — the fact he most needs and the one the
+     rest of the card cannot carry, because on every other kind the agent asking
+     and the agent affected are the same one. On this kind they are usually not. */
+  if (saving && approval.saving) rows.push(["Would change", approval.saving.aboutName]);
   if (agent) {
     rows.push(["Agent", `${agent.name} · ${PROVIDER_LABEL[(agent.provider ?? "claude") as Provider]} · ${modelWords(agent.model)}`]);
   }
@@ -4663,7 +4706,12 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
      at the hub took it from the plan and bounded it, exactly as
      `describeRemoteAction` writes the line on an action card. The agent's own
      words appear below, as plain text, never as the sentence he judges by. */
-  const headline = action ? actionHeadline(approval) : (plan ? approval.action : (task?.title ?? approval.action));
+  /* A SAVING CARD LEADS WITH CLOUD9'S OWN QUESTION, for the same reason a plan
+     card does: `savingHeadline` at the hub built it from the CHANGE, which comes
+     out of a closed vocabulary of two, so nothing the agent phrased can become
+     the sentence he judges by. Its reasoning appears below, as plain text. */
+  const headline = action ? actionHeadline(approval)
+    : (plan || saving ? approval.action : (task?.title ?? approval.action));
 
   return (
     <div className="msg from-agent" data-approval={approval.id}
@@ -4683,13 +4731,17 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
             ? "I've stopped before doing something outside this computer. Nothing has left it."
             : plan
               ? "Here's what I intend to do. I haven't started — nothing has been changed."
-              : "I've stopped before doing this — it needs your go-ahead."}
+              : saving
+                ? "I've been looking at what your agents cost you, and I think one of them "
+                  + "is wasting money. I can't change it — only you can."
+                : "I've stopped before doing this — it needs your go-ahead."}
         </p>
         <AnswerCard
           tone="approval"
           title={action
             ? "Permission to act outside this computer"
-            : plan ? "What it intends to do" : "Permission to act"}
+            : plan ? "What it intends to do"
+              : saving ? "A way to spend less" : "Permission to act"}
           rows={rows}
           lead={
             <div className="spend">
@@ -4710,8 +4762,20 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
               {plan && approval.plan && (
                 <pre className="planbody" data-plan={approval.id}>{approval.plan}</pre>
               )}
+              {/* THE AGENT'S REASON, and the second place on any card where the
+                  agent writes what he reads — see `Approval.saving`. The hub has
+                  already bounded and stripped it (`tidySaving`); it is rendered
+                  as plain text in the same block a plan uses, so it looks like
+                  something an agent said and never like another line of the
+                  card. His decision rests on the headline above it, which is
+                  Cloud9's. */}
+              {saving && approval.saving?.because && (
+                <pre className="planbody" data-saving={approval.id}>{approval.saving.because}</pre>
+              )}
               <span className="per">
-                {dead ? "nothing happened" : "nothing runs until you say so"}
+                {dead ? "nothing happened"
+                  : saving ? "nothing changes until you say so — and you can undo it any time"
+                    : "nothing runs until you say so"}
               </span>
             </div>
           }
@@ -4721,7 +4785,7 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
                 Nobody answered in time — it didn't happen. Ask again and the agent will
                 stop here once more.
               </span>
-              {!action && !plan && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
+              {!timed && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
             </>
           ) : (
             <>
@@ -4729,9 +4793,9 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
                 onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "approved" })}>
                 Approve
               </button>
-              <button className={action || plan ? "btn" : "btn danger"}
+              <button className={timed ? "btn" : "btn danger"}
                 onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "rejected" })}>
-                {action || plan ? "Not now" : "Reject"}
+                {timed ? "Not now" : "Reject"}
               </button>
               {/* Only a job-shaped approval HAS a job to look at. */}
               {approval.taskId && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
@@ -4756,15 +4820,16 @@ function ApprovalTray({ approval, agent, task }: {
   approval: Approval; agent?: AgentDef; task?: Task;
 }): React.JSX.Element {
   const action = approval.kind === "action";
-  /* the same third kind as in `ApprovalMoment` — one card, three shapes */
+  /* the same third and fourth kinds as in `ApprovalMoment` — one card, four shapes */
   const plan = approval.kind === "plan";
-  const timed = action || plan;
+  const saving = approval.kind === "saving";
+  const timed = action || plan || saving;
   const now = useCountdown(timed && approval.status === "pending" && !!approval.expiresAt);
   const dead = approvalIsDead(approval, now);
   const rule = timed ? null : ruleWords(agent);
   const headline = action
     ? actionHeadline(approval)
-    : (plan ? approval.action : (task?.title ?? approval.action));
+    : (plan || saving ? approval.action : (task?.title ?? approval.action));
 
   return (
     <div className="approval" key={approval.id} data-appr={approval.id}
@@ -4781,11 +4846,22 @@ function ApprovalTray({ approval, agent, task }: {
       </div>
       {/* On an action card the headline IS the sentence, so repeating it below
           would be the same words twice. A job-shaped one still needs it. */}
-      {!action && !plan && <p className="ap-say">{approval.action}</p>}
+      {!timed && <p className="ap-say">{approval.action}</p>}
+      {/* WHICH AGENT WOULD ACTUALLY CHANGE. On every other kind of card the
+          agent asking and the agent affected are the same one; on this kind they
+          are usually not, and a card that does not say which would be asking him
+          to agree to something about an agent he has not been told the name of. */}
+      {saving && approval.saving && (
+        <p className="meta" style={{ margin: "0 0 6px" }}>Would change: {approval.saving.aboutName}</p>
+      )}
       {approval.detail && <p className="apdetail">{approval.detail}</p>}
       {/* the agent's own words, bounded at the hub — see `Approval.plan` */}
       {plan && approval.plan && (
         <pre className="planbody" data-plan={approval.id}>{approval.plan}</pre>
+      )}
+      {/* …and the same for a saving's reason — see `Approval.saving` */}
+      {saving && approval.saving?.because && (
+        <pre className="planbody" data-saving={approval.id}>{approval.saving.because}</pre>
       )}
       {rule && <p className="meta" style={{ margin: "0 0 10px" }}>Rule hit: {rule}</p>}
       {timed && approval.expiresAt && (
@@ -13336,6 +13412,213 @@ function ProjectsScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }):
 
           {picked && <ProjectDetail project={picked} onOpenChannel={onOpenChannel} />}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= 6b · SPENDING =================
+ *
+ * WHAT HIS CREW COSTS HIM, AND WHICH PART OF IT IS WASTE.
+ *
+ * THE WALL THIS CLOSES. Cloud9 has written down what every Claude turn cost
+ * since run records existed. Until today the only place any of it appeared was
+ * one line inside one run card — so answering "which of my agents is the
+ * expensive one" meant opening every agent, then every run, and adding it up by
+ * hand. He never did that, and nobody would.
+ *
+ * THE THREE RULES THIS SCREEN IS HELD TO, and each one is a way it could
+ * quietly start lying:
+ *
+ *  1. NO INVENTED ZERO. Codex reports no cost at all. This screen says so in
+ *     words where the money would go; it must never draw $0.00, because $0.00
+ *     reads as "this one is free" and he would move all his work onto it.
+ *  2. NO NUMBER WITHOUT ITS COUNT. A total is drawn beside how many turns
+ *     actually reported a figure, because "$12 over 40 turns" and "$12 over 3
+ *     of 40 turns" are different facts and only one of them is a bill.
+ *  3. NO JARGON, ANYWHERE. He is a network engineer. "Token", "context window"
+ *     and "prompt cache" do not appear. What appears is: what he was charged
+ *     for, how much of it was material handed to the agent rather than work it
+ *     did, and what stops if he does nothing.
+ *
+ * Every sentence and every figure comes out of `@cloud9/shared/tokenuse` — the
+ * same functions the hub used to answer, and the same ones an agent reads
+ * through `check_token_use`. A screen with its own arithmetic would be a second
+ * answer to the same question.
+ */
+
+/**
+ * The narrowest share of the bar that can still hold its own words.
+ *
+ * A fifth of the width fits "1% written back" at this font; below that the text
+ * is cut mid-word. Measured against the real case rather than guessed at — his
+ * dearest agent splits 99/1, so the clipped end is the normal case here, not an
+ * edge of it.
+ */
+const SPLIT_LABEL_FITS = 0.2;
+
+/** One agent's row: what it cost, how it splits, and what is wrong with it. */
+function SpendingRow({ row }: {
+  row: { use: AgentTokenUse; findings: WasteFinding[] };
+}): React.JSX.Element {
+  const { use, findings } = row;
+  const split = sentVsWrote(use);
+  return (
+    <section className="spendrow" data-spend-agent={use.agentId}>
+      <header>
+        <AgentFace name={use.agentName} size={30} lamp="idle" />
+        <div className="who">
+          <b>{use.agentName}</b>
+          <span className="meta">{PROVIDER_LABEL[(use.provider ?? "claude") as Provider]}</span>
+        </div>
+        <div className="grow" />
+        {/* RULE 1 AND RULE 2 IN ONE PLACE. `moneyWords` is the only thing on
+            this screen allowed to say an amount, so there is exactly one
+            function that decides what an agent nobody costed looks like. */}
+        <span className={use.reportsCost && use.costUsd !== undefined ? "amt" : "amt unknown"}>
+          {moneyWords(use)}
+        </span>
+      </header>
+
+      {/* WHERE THE MONEY WENT — the half of this screen he cannot get anywhere
+          else. A bill that is mostly what it WROTE is money buying work; a bill
+          that is mostly what it was SENT is money buying nothing. Drawn only
+          when the app reported both halves; there is no honest bar otherwise. */}
+      {split && (
+        <div className="splitbar" data-split={use.agentId}
+          title={`${Math.round(split.sentShare * 100)}% sent to it, `
+            + `${Math.round(split.wroteShare * 100)}% written back`}>
+          {/* A LABEL THAT DOES NOT FIT IS WORSE THAN NO LABEL. Caught on his
+              real data: the agent this feature exists to catch is 99%/1%, and
+              at 1% the segment drew the word "written" clipped to "ritten" —
+              which reads as a rendering fault and makes a person distrust the
+              number beside it. Below a width that can hold the words, the
+              segment carries none; the figure is in the sentence underneath and
+              in the bar's own hover text either way, so nothing is lost. */}
+          <div className="sent" style={{ width: `${Math.round(split.sentShare * 100)}%` }}>
+            {split.sentShare >= SPLIT_LABEL_FITS && (
+              <span>{Math.round(split.sentShare * 100)}% handed to it</span>
+            )}
+          </div>
+          <div className="wrote" style={{ width: `${Math.round(split.wroteShare * 100)}%` }}>
+            {split.wroteShare >= SPLIT_LABEL_FITS && (
+              <span>{Math.round(split.wroteShare * 100)}% written back</span>
+            )}
+          </div>
+        </div>
+      )}
+      {split && (
+        <p className="meta perturn">
+          Per turn: {humanTextSize((use.sentToIt ?? 0) / Math.max(1, use.runsWithSize))} handed
+          to it, {humanTextSize((use.wroteBack ?? 0) / Math.max(1, use.runsWithSize))} written back.
+          {/* WHERE THE FIGURE CAME FROM, when some of it had to be rebuilt from
+              records made before the app wrote this number down. Saying so is
+              cheap; letting him think every figure was reported at the time is
+              the kind of quiet overclaim that costs an app its credibility the
+              first time somebody checks. */}
+          {use.runsWithRebuiltSize > 0 && (
+            <span className="rebuilt">
+              {use.runsWithRebuiltSize === use.runsWithSize
+                ? " None of these turns"
+                : ` ${use.runsWithRebuiltSize} of these ${use.runsWithSize} turns`} recorded
+              a single total at the time, so the size above is added up from the separate
+              amounts the app did report. Nothing is estimated — but it is worked out
+              rather than read off.
+            </span>
+          )}
+        </p>
+      )}
+
+      {/* THE WASTE, NAMED. A number he cannot act on is not worth his time —
+          this is the part that tells him WHAT is wrong and shows the counting
+          behind it, so he never has to take Cloud9's word for anything. */}
+      {findings.map(f => (
+        <div className={f.change ? "finding fixable" : "finding"} key={f.id} data-finding={f.id}>
+          <b>{f.headline}</b>
+          <ul>
+            {f.evidence.map((e, i) => <li key={i}>{e}</li>)}
+            {f.worth && <li className="worth">{f.worth}</li>}
+          </ul>
+          {/* A MEASUREMENT FROM SOMEWHERE ELSE, drawn apart from the counted
+              facts above and saying whose it is. It used to sit in the list
+              with them, which made a figure from a different agent on a
+              different day read as something measured about THIS one. */}
+          {f.reference && <p className="meta borrowed">{f.reference}</p>}
+          {/* NO BUTTON HERE, AND THAT IS DELIBERATE. Everything on this screen
+              is a thing to READ. The change itself is made where every other
+              change to an agent is made — on the agent's own page — or by
+              accepting the card an agent raises. Putting a second "apply"
+              button here would be a second path to the same write, and this app
+              has spent a great deal of effort making sure there is only one of
+              anything that changes something. */}
+          {f.change && (
+            <p className="meta">
+              You can change this on {f.agentName}&rsquo;s own page. Your agents can also
+              offer it to you as a card — they can never change it themselves.
+            </p>
+          )}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function SpendingScreen(): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const { asked, loading, at, rows } = world.spending;
+  /* DEAREST FIRST, and the ones nobody costed at the bottom rather than looking
+     like the cheap ones — `dearestFirst` owns that ordering, not this screen. */
+  const ordered = dearestFirst(rows.map(r => r.use))
+    .map(u => rows.find(r => r.use.agentId === u.agentId)!)
+    .filter(Boolean);
+  const fixable = rows.reduce((n, r) => n + r.findings.filter(f => f.change).length, 0);
+
+  return (
+    <div className="spending">
+      <header className="topbar">
+        <h2>Spending</h2>
+        <span className="sub">What your agents cost you this month, and what is wasted</span>
+        <div className="grow" />
+        <button className="btn ghost small" data-spend-refresh
+          onClick={() => client.askSpending()} disabled={loading}>
+          {loading ? "Working it out…" : "Check again"}
+        </button>
+      </header>
+
+      <div className="act-body">
+        {!asked && <div className="railempty">Working out what everything has cost…</div>}
+
+        {asked && rows.length === 0 && (
+          <EmptyTray title="Nothing has been recorded yet this month"
+            line={<>
+              Once your agents start answering, this fills in on its own — what each one
+              cost you, how much of that was material handed to it rather than work it
+              did, and anything wasteful about the way it is set up.
+            </>} />
+        )}
+
+        {asked && rows.length > 0 && (
+          <>
+            <p className="spendlead" data-spend-lead>
+              {fixable > 0
+                ? <>There {fixable === 1 ? "is" : "are"} <b>{fixable}</b> thing{fixable === 1 ? "" : "s"} here
+                  you could change to spend less. Each one shows the counting behind it.</>
+                : <>Nothing here looks wasteful. Every figure below was reported by the app
+                  that ran the turn — none of it is estimated.</>}
+            </p>
+            {ordered.map(row => <SpendingRow key={row.use.agentId} row={row} />)}
+            {/* THE HONEST FOOTNOTE, and it belongs on the screen rather than in
+                a comment: he is entitled to know what this page CANNOT tell him
+                before he makes a decision on it. */}
+            <p className="meta spendfoot">
+              Only the Claude app tells Cloud9 what a turn cost — Codex reports nothing, so
+              an agent running on Codex shows no money here rather than showing zero.
+              Older turns drop off after a while, so a very busy month may show less than
+              it really spent.
+              {at ? ` Worked out ${clock(at)}.` : ""}
+            </p>
+          </>
+        )}
       </div>
     </div>
   );
