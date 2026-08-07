@@ -47,6 +47,8 @@ export interface ProviderTrace {
   text: string;
   /** the harness emitted its terminal/final envelope after this text */
   terminal?: boolean;
+  /** The provider explicitly marked a surviving answer as final. */
+  finalAnswer?: boolean;
   steps: RunStep[];
   usage?: RunUsage;
   /** the CLI's own conversation id, for matching against its logs */
@@ -181,7 +183,10 @@ export function traceWalker(provider: string, map: EventMapper): TraceWalker {
     setText(text, terminal = true) {
       const t = text.trim();
       if (t) trace.text = t;
-      if (terminal) trace.terminal = true;
+      if (terminal) {
+        trace.terminal = true;
+        trace.finalAnswer = true;
+      }
     },
     setTerminal() { trace.terminal = true; },
     setError(message) { const m = message.trim(); if (m) trace.error = clip(m, RUN_LIMITS.error); },

@@ -308,12 +308,41 @@ test("a truncated Codex stream with only an intermediate agent message fails lou
   );
 });
 
+test("a truncated Codex stream with turn.completed but no final answer fails loudly", async () => {
+  const intermediate = JSON.stringify({
+    type: "item.completed", item: { type: "agent_message", phase: "commentary", text: "STALE-EARLY" },
+  });
+  const done = JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } });
+  const overflow = "x".repeat(17 * 1024 * 1024);
+  const provider = new CodexProvider({
+    agentDataDir: () => "C:/data/a1",
+    runner: fakeRunner({ stdout: `${intermediate}\n${overflow}\n${done}`, truncated: true }),
+  });
+  await assert.rejects(
+    () => provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" }),
+    (err: unknown) => err instanceof TurnOutputTooBigError,
+  );
+});
+
+test("a truncated Codex stream with only a terminal envelope and no answer fails loudly", async () => {
+  const done = JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } });
+  const overflow = "x".repeat(17 * 1024 * 1024);
+  const provider = new CodexProvider({
+    agentDataDir: () => "C:/data/a1",
+    runner: fakeRunner({ stdout: `${overflow}\n${done}`, truncated: true }),
+  });
+  await assert.rejects(
+    () => provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" }),
+    (err: unknown) => err instanceof TurnOutputTooBigError,
+  );
+});
+
 test("a truncated Codex stream succeeds when a terminal turn envelope survives", async () => {
   const intermediate = JSON.stringify({
     type: "item.completed", item: { type: "agent_message", text: "STALE-EARLY" },
   });
   const final = JSON.stringify({
-    type: "item.completed", item: { type: "agent_message", text: "FINAL-ANSWER" },
+    type: "item.completed", item: { type: "agent_message", phase: "final_answer", text: "FINAL-ANSWER" },
   });
   const done = JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } });
   const overflow = "x".repeat(17 * 1024 * 1024);

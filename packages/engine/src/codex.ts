@@ -321,7 +321,13 @@ export function codexMapper(): EventMapper {
       if (!finished) return;
       const said = itemText(item);
       if (!said) return;
-      t.setText(said, false);
+      // Codex can emit commentary/intermediate agent_message items before the
+      // answer.  Only an explicit final-answer phase is safe to pair with a
+      // surviving turn.completed envelope after the byte cap; otherwise a
+      // stale early sentence could be mistaken for the answer.
+      const phase = String(item.phase ?? "").toLowerCase();
+      const finalAnswer = phase === "final_answer" || phase === "final";
+      t.setText(said, finalAnswer);
       t.add({ kind: "message", label: "Said something", detail: said });
       return;
     }
@@ -837,7 +843,7 @@ export class CodexProvider implements ClaudeProvider {
     // fragment of somebody's tool output, not a reply. Returning it would be
     // the exact shape of lie this whole branch exists to remove: a turn the
     // owner watched work all night, recorded `ok`, answered with rubbish.
-    if (result.truncated && !trace.terminal) {
+    if (result.truncated && (!trace.terminal || !trace.finalAnswer)) {
       throw new TurnOutputTooBigError();
     }
     if (trace.error && !trace.text) throw new Error(trace.error);
