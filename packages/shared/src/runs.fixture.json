@@ -16,5 +16,14 @@
     "durationMs": 15690,
     "ask": "count slowly from 1 to 500, writing out every single number in words",
     "summary": "Stopped before it got started — took 16 seconds."
+  },
+  {
+    "id": "r-0msibqum0-67rv",
+    "kind": "chat",
+    "outcome": "cancelled",
+    "startedAt": 1786069576787,
+    "durationMs": 58404,
+    "ask": "count slowly from 1 to 500, writing out every single number in words",
+    "summary": "Stopped before it got started — took 58 seconds."
   }
 ]

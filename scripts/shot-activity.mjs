@@ -141,8 +141,18 @@ async function captureRunFixture(page) {
     .catch(() => null);
   if (!entries || entries.length === 0) return 0;
   const file = path.join(REPO_ROOT, "packages", "shared", "src", "runs.fixture.json");
-  fs.writeFileSync(file, `${JSON.stringify(entries, null, 2)}\n`);
-  console.log(`  captured ${entries.length} real run record(s) → ${file}`);
+  /* ADDED TO WHAT IS ALREADY THERE, KEYED ON THE RECORD'S OWN ID — never
+     replacing it. A short targeted run holds one or two records, and writing
+     the file flat threw away the long job captured by a full walk, which is the
+     only record in there that catches the "measured from the start" clock bug.
+     A run that photographs one state must not narrow the evidence for another. */
+  let held = [];
+  try { held = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* first capture */ }
+  const byId = new Map(held.map(r => [r.id, r]));
+  for (const e of entries) byId.set(e.id, e);
+  const all = [...byId.values()].sort((a, b) => a.startedAt - b.startedAt);
+  fs.writeFileSync(file, `${JSON.stringify(all, null, 2)}\n`);
+  console.log(`  captured ${entries.length} real run record(s), ${all.length} held → ${file}`);
   return entries.length;
 }
 
