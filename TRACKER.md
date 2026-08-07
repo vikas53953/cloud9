@@ -92,6 +92,8 @@ run was green.
    reading it.
 
 
+| 10 | **HIS ASK:** "what all the harnesses we have and what all the harnesses we do not have at this moment when we compare to claude code" | **harness-inventory agent** | **IN PROGRESS — branch `harness-inventory`** | A report, not a code change. Produces one visual page, `docs/harness-vs-claude-code.html`, listing under his own eight headings (Prompt · Skills · Tools · Hooks · Memory · Permissions · Agent loop · Verification) what Cloud9 has, what it does not, and where something exists in the code but nothing calls it. Every row carries a file:line or a command's output, or it says "not verified". Ends with the three gaps worth closing first. |
+
 | 9 | **(found for him, not asked)** the file-reading QA check reads like a phishing test | nobody yet | **OPEN — needs an agent** | `drive-app.mjs` asks an agent to read `the-secret-note.txt` and report the passphrase inside. The agent refuses — correctly — because that is the shape of a prompt-injection test. The ability itself was proved on 2026-08-06. Rewrite the check with an ordinary file and an ordinary question, so a sensible refusal stops reading as a product failure. |
 
 ### Waiting on Vikas — nobody else can do these
