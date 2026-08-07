@@ -73,6 +73,8 @@ code,.ev{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12
 .rank{counter-reset:r;list-style:none;padding:0;margin:0}
 .rank li{counter-increment:r;position:relative;padding:14px 0 14px 46px;border-bottom:1px solid var(--line)}
 .rank li:last-child{border-bottom:none}
+.rank li[data-fb]{padding-top:46px}
+
 .rank li::before{content:counter(r);position:absolute;left:0;top:13px;width:30px;height:30px;
   line-height:30px;text-align:center;border-radius:8px;background:var(--noBg);color:var(--no);font-weight:800;font-size:14px}
 .rank.good li::before{background:var(--haveBg);color:var(--have)}
@@ -111,10 +113,16 @@ installed on your machine right now.</p>
   <code>packages/engine/src/run.ts:375</code>. Reached from the app you run:
   <code>apps/desktop/electron/main.cjs:648</code> → <code>packages/engine/src/host.ts:192</code>.
   Codex is the same shape: <code>packages/engine/src/codex.ts:654</code>.</span>
-  <span class="ev"><b>The installed app really is this code</b> — the file inside
-  <code>AppData\Local\Programs\Cloud9\resources\app\dist-web\assets\</code> is
-  <code>index-C13jspEO.js</code>, byte-for-byte the same name as the one built from master.
-  So nothing below is "true in the source but not in your app".</span>
+  <span class="ev"><b>The installed app really is this code</b> — and the proof is the engine
+  folder, not the screen. Almost everything on this page is about the engine, which installs
+  separately at
+  <code>…\Programs\Cloud9\resources\app\node_modules\@cloud9\engine\dist\</code>. Checked there
+  directly: <code>attachHooks</code> appears 3× in <code>host.js</code>,
+  <code>ELECTRON_RUN_AS_NODE</code> 2× in <code>cloud9tools.js</code>,
+  <code>check_token_use</code> and <code>propose_saving</code> 8× each, and
+  <code>chat: 45 * 60_000</code> is in <code>timebudget.js</code>. The two commits after
+  <code>2e83846</code> touched only <code>TRACKER.md</code> and a picture. So nothing below is
+  "true in the source but not in your app".</span>
 </section>
 
 <section class="card" data-fb="How to read this page">
@@ -126,16 +134,33 @@ installed on your machine right now.</p>
     <span class="tag t-unk">NOT VERIFIED</span>
   </div>
   <p><span class="notice">YOU'D NOTICE</span> = this changes what you see or what you can do.
-  <span class="plumb">PLUMBING</span> = invisible unless you go looking.</p>
+  <span class="plumb">PLUMBING</span> = invisible unless you go looking.
+  <b>If you read only the YOU'D NOTICE rows, you have read everything that affects you</b> — every
+  PLUMBING row is safe to skip.</p>
+  <p><b>Two words that keep coming up.</b> The <b>doorway</b> is the little local server Cloud9 runs
+  so an agent can reach Cloud9's own six tools — search the conversation, open an attachment, and so
+  on. <b>Your setup</b> means the "use my own setup" switch on each agent, which decides whether the
+  agent runs inside your real Claude Code world or in a bare one.</p>
   <p>Every row carries a file and line number, or a command that was run. Where nothing could be
   proved, the row says <b>not verified</b> instead of guessing.</p>
 </section>
 
-<section class="card" data-fb="The five things you would notice most">
-  <h2>The five things you would notice most</h2>
+<section class="card" data-fb="The seven things you would notice most">
+  <h2>The seven things you would notice most</h2>
   <p class="sub" style="margin-bottom:8px">Ranked by how much they change your day, not by how hard they are to fix.</p>
   <ol class="rank">
-    <li><b>Paste an API key into Settings and every agent you own stops working.</b>
+    <li data-fb="Every new agent starts expensive, no cap"><b>Every new agent starts expensive, with no money ceiling — and this one is costing you today.</b>
+      A brand-new agent starts with "use my own setup" <b>ON</b>, which is about <b>318× the cost</b>
+      of the same question with it off — $1.75 against half a penny. It also starts with <b>no
+      spending cap at all</b>, because no cap is the day-one default. And if it is a Codex agent it
+      <em>cannot be given one</em>, because only Claude reports what a turn cost. So the money guard
+      you think every agent has, none of them have.
+      <span class="ev"><b>Evidence</b> · setup on by default,
+      <code>shared/src/index.ts:258</code> <code>NEW_AGENT_USE_OWNER_SETUP = true</code> · the 318×
+      and the $1.75, measured by hand 2026-08-05 and recorded at <code>ownersetup.ts:36-38</code> ·
+      "no ceiling at all, which is the day-one default", <code>shared/src/index.ts:756</code> ·
+      Codex cannot be capped, <code>shared/src/index.ts:672-674</code> (board row 5, open).</span></li>
+    <li data-fb="Paste an API key and every agent stops"><b>Paste an API key into Settings and every agent you own stops working.</b>
       A saved key makes Cloud9 switch to a second, much weaker route. On that route a brand-new
       agent is <em>refused before it starts</em>, Stop no longer kills anything, there is no live
       view, no memory tools, and the agent is capped at 6 steps.
@@ -144,35 +169,46 @@ installed on your machine right now.</p>
       <code>packages/engine/src/sdkreach.test.ts:51-95</code> · 6-step cap at
       <code>provider.ts:770</code> · today you are safe: there is no
       <code>cloud9-credential-claude.bin</code> in your app folder, so you are on the good route.</span></li>
-    <li><b>The rules engine ("hooks") is finished, switched on — and there is no screen to write a rule.</b>
+    <li data-fb="An agent asks your permission, then dies whi"><b>An agent asks your permission, then dies while you are still deciding.</b>
+      The card that asks you sits there for ten minutes. But a turn waiting on a card prints
+      nothing, and a chat turn that has printed nothing for <em>three</em> minutes is killed. So
+      from minute three you are looking at a live-looking card attached to an agent that is already
+      dead — and you only find out when you press it.
+      <span class="ev"><b>Evidence</b> · card waits 10 minutes,
+      <code>shared/src/index.ts:487</code> · chat turn killed after 3 minutes of silence,
+      <code>timebudget.ts:156-160</code> · this is board row 6, open, nobody assigned. Neither
+      clock exists in Claude Code.</span></li>
+    <li data-fb="The rules engine (hooks) is finished, switch"><b>The rules engine ("hooks") is finished, switched on — and there is no screen to write a rule.</b>
       The only way to add one is to hand-write a JSON file containing internal ID codes the app
       never shows you.
       <span class="ev"><b>Evidence</b> · rules loaded from <code>hooks.json</code>
-      (<code>hooks.ts:380-383</code>) · the save/remove functions exist
+      (<code>hooks.ts:380 and :426</code>) · the save/remove functions exist
       (<code>hookwiring.ts:63-78</code>) and <b>nothing in the app calls them</b> —
       searching <code>apps/desktop</code> and <code>apps/relay</code> for
       <code>saveHooks|newHookId|HOOK_EVENTS</code> returns no results.</span></li>
-    <li><b>Only two agents can work at once, and the third one says nothing at all.</b>
+    <li data-fb="Only two agents can work at once, and the th"><b>Only two agents can work at once, and the third one says nothing at all.</b>
       Ask a third agent something and it is silent — no "queued", no tick — until a slot frees.
       <span class="ev"><b>Evidence</b> · <code>engine.ts:815</code> caps at 2 and the app never
       raises it · the queue is private and no message on the wire carries it · the first tick a
       person sees is sent at <code>engine.ts:917</code>, which is <em>after</em> the wait.</span></li>
-    <li><b>Three clocks that Claude Code does not have — all still switched on today.</b>
+    <li data-fb="Three clocks that Claude Code does not have "><b>Three clocks that Claude Code does not have — all still switched on today.</b>
       A 45-minute cut-off per turn, a 3-minute "gone quiet" cut-off in chat, and a 10-minute
       deadline on the card that asks your permission.
       <span class="ev"><b>Evidence</b> · <code>timebudget.ts:108-112</code> (45 min) ·
       <code>timebudget.ts:156-160</code> (3 min chat silence) ·
-      <code>shared/src/index.ts:487</code> <code>waitMs: 10 * 60_000</code>. Another agent is
-      removing the first and third right now — <b>as of this reading they are still on master</b>
-      (<code>gh pr list</code> shows no open PR), so treat them as present until that lands.</span></li>
-    <li><b>Nothing tells you how much room is left in the conversation.</b>
+      <code>shared/src/index.ts:487</code> <code>waitMs: 10 * 60_000</code>. <b>All three are live
+      on your machine and nobody is currently removing any of them</b> — <code>gh pr list</code>
+      shows only this report's own pull request. The 45-minute one is not leftover: it is the
+      deliberate result of the merged time-limit fix, and it replaced much shorter clocks. The
+      10-minute card deadline is the one with nobody's name against it (board row 6).</span></li>
+    <li data-fb="Nothing tells you how much room is left in"><b>Nothing tells you how much room is left in the conversation.</b>
       Claude Code shows context left; Cloud9 shows money spent instead. When a chat gets long the
       oldest messages are simply dropped with no summary and no warning.
       <span class="ev"><b>Evidence</b> · <code>shared/src/index.ts:4600</code>
       <code>contextWindowTokens()</code> has exactly one caller — deciding how much history to
       send — and is never put on screen · dropping happens at
-      <code>context.ts:236-273</code> · no summarising anywhere (searched
-      <code>compact|summaris|summariz</code>).</span></li>
+      <code>context.ts:236-273</code> · nothing anywhere summarises a <em>conversation</em> — the
+      only summarisers in the code are for a finished job.</span></li>
   </ol>
 </section>
 
@@ -187,7 +223,8 @@ installed on your machine right now.</p>
     <td><span class="tag t-have">HAVE</span><span class="plumb">PLUMBING</span></td>
     <td>Name, its persona, exactly what it can and cannot do, its tools, its skills.
       <span class="ev"><code>provider.ts:547-596</code> <code>splitAgentPrompt</code>. Measured on a real
-      run: 6,062 characters of standing brief, 716 characters for the turn itself.</span></td></tr>
+      run: 6,062 characters of standing brief, 716 for the turn itself — but that figure is
+      not written down anywhere in the repo, so it is one agent's word, not proof.</span></td></tr>
 
   <tr><td class="what">Split so you don't pay for it twice</td>
     <td><span class="tag t-have">HAVE</span><span class="plumb">PLUMBING</span></td>
@@ -221,7 +258,7 @@ installed on your machine right now.</p>
   <tr><td class="what">Output styles / chosen personality</td>
     <td><span class="tag t-no">DON'T HAVE</span><span class="plumb">PLUMBING</span></td>
     <td>The nearest thing is the free-text persona box plus a fixed 4-entry table of how to answer.
-      <span class="ev"><code>provider.ts:663-687</code>. No style files, no picker.</span></td></tr>
+      <span class="ev"><code>provider.ts:638</code>. No style files, no picker.</span></td></tr>
 
   <tr><td class="what">System reminders mid-conversation</td>
     <td><span class="tag t-no">DON'T HAVE</span><span class="plumb">PLUMBING</span></td>
@@ -250,7 +287,7 @@ installed on your machine right now.</p>
       tool. Why it matters: 25 skills in full were measured at 35,099 characters — 87% of the
       entire prompt.
       <span class="ev">list at <code>provider.ts:361-435</code>; tool at
-      <code>cloud9tools.ts:567-608</code>; measurement recorded at <code>provider.ts:397-402</code>.
+      <code>cloud9tools.ts:567-608</code>; measurement recorded at <code>provider.ts:384</code>.
       88 tests covering prompt and skills were run and all passed.</span></td></tr>
 
   <tr><td class="what">Reads real <code>SKILL.md</code> skills (yours, plugins', projects')</td>
@@ -267,9 +304,10 @@ installed on your machine right now.</p>
     <td>Claude Code invokes a skill through a tool called <code>Skill</code>. That name is not in the
       31-tool list Cloud9 measured off your CLI, and the list is an allow-list — so a Cloud9 agent
       never holds it. Measured live: with the setup switch OFF the CLI reported
-      <code>skills: 0</code>; with it ON, <code>skills: 100</code> — your real skills load, but the
-      built-in tool count stayed 31 both times, so <b>how a Cloud9 agent invokes one of those 100 is
-      not verified</b>.
+      <code>skills: 0</code>; with it ON, <code>skills: 100</code> — <b>and the built-in tool count
+      stayed 31 both times.</b> So with the switch on, your 100 skills are <em>listed</em> to the
+      agent and it has no tool to <em>open</em> them. That is worth knowing before you pay 318× for
+      the switch.
       <span class="ev">List at <code>abilities.ts:77-84</code>; put on the line as
       <code>--allowed-tools</code> at <code>claude-cli.ts:739-740</code>.</span></td></tr>
 
@@ -297,19 +335,23 @@ installed on your machine right now.</p>
     <div style="flex:1 1 180px;background:var(--haveBg);border:1px solid var(--line);border-radius:10px;padding:12px 14px">
       <div style="font-size:26px;font-weight:800;color:var(--have)">166</div>
       <div style="font-size:13px;color:var(--dim)">tools · the same agent, switch <b>ON</b><br>
-      + your 18 connected servers, 147 slash commands, 100 skills, 7 plugins</div></div>
+      the same 31 + the same 6 + <b>129</b> more from your 18 connected services</div></div>
     <div style="flex:1 1 180px;background:var(--unkBg);border:1px solid var(--line);border-radius:10px;padding:12px 14px">
       <div style="font-size:26px;font-weight:800">6</div>
       <div style="font-size:13px;color:var(--dim)">tools · a talk-only agent, every switch off<br>
       only Cloud9's own six</div></div>
   </div>
-  <span class="ev"><b>How this was measured</b> · the real CLI was started with the args
-  <code>claudeArgs</code> produces (<code>claude-cli.ts:721-740</code>) against a live tool bridge,
-  and its own <code>system/init</code> message was read. With the switch OFF it reported
-  <code>slash_commands: 0 · skills: 0</code>; with it ON, <code>147</code> and <code>100</code>.
-  It then really called <code>mcp__cloud9__search_conversation</code> and answered from what it
-  found. <b>The <code>--tools</code> line is byte-identical in both modes</b> — the switch does not
-  add built-in tools, it lets your own world in on top.</span>
+  <p style="margin:0 0 12px">166 is <b>31 + 6 + 129</b>. The switch adds <b>no new built-in
+  tools at all</b> — the tool line is identical either way. What it adds is your own world: 129
+  extra tools from your 18 connected services, and separately your 147 saved commands and 100
+  skills become visible to the agent (0 and 0 with the switch off).</p>
+  <span class="ev"><b>Who measured this, and when</b> · run by a Cloud9 agent working on this
+  report, 2026-08-07, against the <code>claude</code> program installed here — which reports
+  version <b>2.1.224</b> today. The CLI was started with the exact arguments Cloud9 builds
+  (<code>claude-cli.ts:721-740</code>) against a live tool bridge, and its own opening
+  <code>system/init</code> message was read back. It then really called Cloud9's own
+  <code>search_conversation</code> tool and answered from what it found. <b>I did not re-run this
+  myself.</b></span>
   <p style="margin-top:14px">The 31 built-in tools an agent can be granted, grouped behind 8
   plain-words switches:</p>
   <div style="margin:10px 0 4px">
@@ -352,8 +394,7 @@ installed on your machine right now.</p>
     <td>Drag, paste or pick a file. The type is worked out from the bytes, never the file name, and
       it goes across as a real picture, not a file path.
       <span class="ev"><code>attachmentreach.ts:128-153</code>; transport at
-      <code>cloud9tools.ts:248-283</code>. Live-measured 2026-08-05: a colour-band PNG was described
-      correctly and a compressed PDF returned a marker provably absent from its raw bytes.</span></td></tr>
+      <code>cloud9tools.ts:248-283</code>. <b>Where this evidence comes from:</b> a measurement written down in the code on 2026-08-05 — a colour-band PNG described correctly, and a compressed PDF returning a marker provably absent from its raw bytes. <b>Nobody re-ran it for this page.</b></span></td></tr>
 
   <tr><td class="what">The doorway that carries all six — fixed and proved, but unguarded</td>
     <td><span class="tag t-have">WORKS</span><span class="plumb">PLUMBING</span></td>
@@ -378,17 +419,19 @@ installed on your machine right now.</p>
 
   <tr><td class="what">Keeping an agent inside its own folder</td>
     <td><span class="tag t-half">A DIRECTION, NOT A LOCK</span><span class="notice">YOU'D NOTICE</span></td>
-    <td>On a Claude agent the folder limit is advice, not a wall — writes outside it were measured
-      succeeding in every permission mode. Only a Codex agent gets a real operating-system fence.
+    <td>On a Claude agent the folder limit is advice, not a wall — writes outside it were recorded as succeeding in every permission mode. <b>That is a measurement written down in the code, not one re-run for this page.</b> Only a Codex agent gets a real operating-system fence.
       The code says this out loud rather than pretending.
       <span class="ev"><code>abilities.ts:100-160</code> (<code>FILE_FENCE_WORDS</code>);
       Codex sandbox at <code>abilities.ts:789</code>.</span></td></tr>
 
   <tr><td class="what">Tools that are missing — and whose fault it is</td>
     <td><span class="tag t-half">MIXED</span><span class="plumb">PLUMBING</span></td>
-    <td><b>Not our doing:</b> <code>TodoWrite</code>, <code>BashOutput</code> and
-      <code>KillShell</code> are absent from the CLI's own set at version 2.1.222 as well — nothing
-      to close there. <b>Ours:</b> <code>Skill</code> and <code>SlashCommand</code> are switched off
+    <td><b>Not our doing:</b> <code>TodoWrite</code> — the running to-do list Claude Code keeps —
+      is absent from the Claude Code on this machine too, so there is nothing to close there.
+      (<code>BashOutput</code> and <code>KillShell</code> are also absent, but that proves nothing:
+      background work is a <em>setting</em> on <code>Bash</code>, not a separate tool — see the
+      agent loop section.) Measured at version 2.1.222; the program reports 2.1.224 today.
+      <b>Ours:</b> <code>Skill</code> and <code>SlashCommand</code> are switched off
       on purpose and come back the moment "use my own setup" is on (0 → 100 skills, 0 → 147 commands,
       measured live). <code>ExitPlanMode</code> is replaced by our own plan gate.
       <span class="ev">measured set <code>abilities.ts:77-84</code>; switched off at
@@ -444,7 +487,7 @@ installed on your machine right now.</p>
       All four of our moments fire <em>after</em> the fact, and whatever a rule returns is thrown
       away. Claude Code can refuse a tool call before it happens and can inject text into the
       agent's next thought. We cannot do either.
-      <span class="ev"><code>hooks.ts:205</code> returns a result that every caller discards;
+      <span class="ev"><code>hooks.ts:208</code> returns a result that every caller discards;
       <code>engine.ts:1213-1216</code> states the rule out loud — fire and forget, a hook must never
       cost a turn.</span></td></tr>
   </table></div>
@@ -492,7 +535,7 @@ installed on your machine right now.</p>
     <td>Cloud9 uses Claude Code's own <code>--resume &lt;session&gt;</code>, not a replay of the
       transcript — and then sends only what is new. Guarded by folder, by what the agent is allowed
       to do, and by a 24-hour idle limit; a refused resume quietly starts fresh and still answers.
-      <span class="ev"><code>claude-cli.ts:627-630</code>; <code>sessionresume.ts:82-137</code>.
+      <span class="ev"><code>claude-cli.ts:627-630</code>; <code>sessionresume.ts:82</code>.
       There is a real <code>sessions.json</code> in two of your agents' folders.
       <b>Not on Codex</b> (it runs throwaway) and <b>not on the saved-key route</b>.</span></td></tr>
 
@@ -501,8 +544,9 @@ installed on your machine right now.</p>
     <td>Claude Code summarises when a chat gets long. We keep the newest 24,000–120,000 characters
       and the rest is simply gone — no summary, no note that it happened.
       <span class="ev"><code>context.ts:52-58</code>, <code>:236-273</code>. Searching for
-      <code>compact|summaris</code> finds nothing of the kind. <code>tldr.ts</code> is a different
-      thing — a one-line summary of a finished job.</span></td></tr>
+      The only two summarisers in the whole codebase — <code>tldr.ts:40</code> and
+      <code>shared/src/index.ts:5425</code> — both summarise a <em>finished job</em>, never the
+      conversation.</span></td></tr>
 
   <tr><td class="what">Handing memory from one agent to another</td>
     <td><span class="tag t-half">DEAD</span><span class="plumb">PLUMBING</span></td>
@@ -541,13 +585,15 @@ installed on your machine right now.</p>
 
   <tr><td class="what">The 10-minute deadline on a card</td>
     <td><span class="tag t-half">STILL ON</span><span class="notice">YOU'D NOTICE</span></td>
-    <td>Claude Code has no such thing. Another agent is removing it right now. <b>I am reporting the
-      state I can see: it has not landed.</b> On master today the timer is live in three places, so
-      a partial removal will only half-work.
-      <span class="ev"><code>shared/src/index.ts:487</code>; armed at
-      <code>approvaldesk.ts:171</code> and three <code>setTimeout</code> sites; also in the hub
+    <td>Claude Code has no such thing. <b>And the ten minutes is not really ten minutes:</b> an
+      agent parked on a card prints nothing, and a chat turn that has printed nothing for
+      <b>three</b> minutes is killed. So you believe you have ten minutes to think and in a chat you
+      have three — after that the card is still on screen and the agent behind it is gone.
+      <b>Nobody is removing this — it is board row 6 with nobody's name against it.</b> The timer is
+      live in three places, so a partial removal will only half-work.
+      <span class="ev"><code>shared/src/index.ts:487</code>; the default is copied in at <code>approvaldesk.ts:171</code> and the timers set at <code>:260, :328, :409</code>; the 3-minute silence clock is <code>timebudget.ts:157</code> and three <code>setTimeout</code> sites; also in the hub
       (<code>server.ts:266, 2056, 3488</code>) and on screen (<code>App.tsx:4673, 4739, 4841</code>).
-      <code>gh pr list</code> shows no open pull request.</span></td></tr>
+      <code>gh pr list</code> returns only this report’s own pull request.</span></td></tr>
 
   <tr><td class="what">Rules with patterns, e.g. "always allow <code>npm test</code>"</td>
     <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
@@ -650,8 +696,11 @@ installed on your machine right now.</p>
     <td>The "get help from its own helper agents" switch grants <code>Task</code> and its whole
       family on the real command line.
       <span class="ev"><code>abilities.ts:404-418</code> → <code>claude-cli.ts:739</code>.
-      <b>Whether a helper can spawn its own helper: not verified</b> — that is inside Claude Code
-      and nothing here measures it.</span></td></tr>
+      <b>Can a helper spawn its own helper?</b> Observed in Claude Code directly rather than
+      guessed: each kind of helper is given its own named tool set — some kinds are granted every
+      tool <em>except</em> the one that spawns helpers — and a helper that is spawned is told not to
+      hand its whole job on again. So nesting is limited by what each helper is granted and by
+      policy. None of that is Cloud9's to control.</span></td></tr>
 
   <tr><td class="what">Choosing the model</td>
     <td><span class="tag t-have">HAVE per agent</span><span class="notice">YOU'D NOTICE</span></td>
@@ -665,14 +714,19 @@ installed on your machine right now.</p>
       <code>shared/src/effort.ts:66-101</code>; fallback note <code>engine.ts:1048</code>.</span></td></tr>
 
   <tr><td class="what">Start something in the background and check on it later</td>
-    <td><span class="tag t-unk">NOT VERIFIED — and unlikely</span><span class="plumb">PLUMBING</span></td>
-    <td><code>!bg</code> is a different thing: a whole delegated job, not a background command.
-      A real background shell probably cannot work here, for two structural reasons: every turn is a
-      fresh program that exits when the turn ends, and the 3-minute silence clock is built to kill
-      exactly the shape of a turn that waits quietly.
-      <span class="ev"><code>engine.ts:700-742</code> (<code>!bg</code>);
-      <code>claude-cli.ts:1033</code> (fresh program each turn). Nothing tests the background path
-      either way.</span></td></tr>
+    <td><span class="tag t-have">HAVE — I got this wrong first time</span><span class="plumb">PLUMBING</span></td>
+    <td><b>Correction.</b> An earlier draft of this page said background work was missing from Claude
+      Code itself so there was nothing to fix. That was wrong, and the page contradicted its own tool
+      table. Claude Code runs a command in the background through a <em>setting</em> on the
+      <code>Bash</code> tool, not a separate tool — so counting tools could never have found it — and
+      <code>Monitor</code>, <code>TaskOutput</code>, <code>TaskList</code> and <code>TaskStop</code>
+      are how it checks back. <b>A Cloud9 agent with "run programs" and "helper agents" both on holds
+      every one of those.</b> So the ability is there.
+      <span class="ev">granted at <code>abilities.ts:404-412</code> and <code>:474</code>; the names
+      are in the 31-tool list above. <b>What is still true:</b> <code>!bg</code> is a different
+      thing — a whole delegated job (<code>engine.ts:700-742</code>) — and nothing in this repo tests
+      an agent leaving a command running across turns, so how well it survives a fresh program each
+      turn (<code>claude-cli.ts:1033</code>) is <b>not verified</b>.</span></td></tr>
   </table></div>
 </section>
 
@@ -698,7 +752,7 @@ installed on your machine right now.</p>
     <td>It looks for four sentence shapes: I wrote a file · tests pass · I ran a command · it went
       out. An agent that just says "I fixed the bug" with no file, no test and no command is checked
       against nothing and passes silently.
-      <span class="ev"><code>verify.ts:33-37</code>; empty report at <code>verify.ts:90</code>.</span></td></tr>
+      <span class="ev"><code>verify.ts:33-37</code>; empty report at <code>verify.ts:93-94</code>.</span></td></tr>
 
   <tr><td class="what">Running the tests itself</td>
     <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
@@ -748,10 +802,41 @@ installed on your machine right now.</p>
 
   <tr><td class="what">Your own slash commands</td>
     <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
-    <td>Claude Code's are actively switched off (<code>--disable-slash-commands</code>). Cloud9 has
-      its own <code>/</code> menu but it is a fixed list of 8 built-ins you cannot add to. The real
-      stand-in is Skills.
-      <span class="ev"><code>ownersetup.ts:96</code>; fixed list <code>App.tsx:6038</code>.</span></td></tr>
+    <td>Yours are switched off. Cloud9 has its own <code>/</code> menu, but it is a fixed list of
+      <b>12</b> you cannot add to: <code>!issue !review !comment !code !bg !stop !plan !remember
+      !handoff !schedule !schedules !unschedule</code>. The real stand-in is Skills.
+      <span class="ev">counted in the list itself, <code>App.tsx:6038-6124</code>; switched off at
+      <code>ownersetup.ts:96</code>.</span></td></tr>
+
+  <tr><td class="what">Adding to an agent while it is already working</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>In Claude Code you can type while it works and it picks the message up. In Cloud9 there is no
+      way to add to a turn that is running — your only lever is Stop, which throws away everything
+      queued behind it. You would meet this daily.
+      <span class="ev">Stop drops the queue at <code>engine.ts:808</code>, called from
+      <code>engine.ts:1609</code>. No path anywhere feeds a new message into a running turn.</span></td></tr>
+
+  <tr><td class="what">Naming a helper agent with its own model, tools and instructions</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>Claude Code lets you define named helpers in files. A Cloud9 agent can call for helpers, but
+      it cannot be told <em>which</em> helper, with what model or what limits — that is Claude Code's
+      own business once the tool is granted.
+      <span class="ev">the switch grants the whole family and nothing narrows it,
+      <code>abilities.ts:404-418</code>.</span></td></tr>
+
+  <tr><td class="what">Managing connected services inside the app</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>You point an agent at a file you wrote yourself. There is no adding a service, no signing in
+      to one, no seeing whether one is connected — all of which Claude Code does in-session.
+      <span class="ev">the only door is a file picker, <code>App.tsx:8903-8936</code>.</span></td></tr>
+
+  <tr><td class="what">Changing how much it asks, just for right now</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Claude Code switches between asking, accepting edits, planning and skipping per session. In
+      Cloud9 the three trust settings belong to the <em>agent</em> — to change how much it asks for
+      one job you must go and edit the agent itself, then remember to change it back.
+      <span class="ev"><code>shared/src/index.ts:186-231</code>; editor
+      <code>App.tsx:9426</code>.</span></td></tr>
 
   <tr><td class="what">Undo — rewind the conversation and the files</td>
     <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
@@ -811,25 +896,30 @@ installed on your machine right now.</p>
   <div class="sec-head"><h2>Things we have that Claude Code does not</h2>
     <span class="why">Being fair — this is not a one-way list</span></div>
   <ul class="rank good">
-    <li><b>Several named agents living in chat rooms</b>, each with its own face, persona, skills and
+    <li data-fb="Several named agents living in chat rooms"><b>Several named agents living in chat rooms</b>, each with its own face, persona, skills and
       memory, all present at once. Claude Code is one assistant in one terminal.</li>
-    <li><b>Friends can join your Cloud9</b> over your private network, with per-room permissions —
+    <li data-fb="Friends can join your Cloud9"><b>Friends can join your Cloud9</b> over your private network, with per-room permissions —
       and never over the open internet, which is enforced in code, not just intended.
       <span class="ev"><code>apps/relay/src/joinhub.ts</code>;
       <code>shared/src/hubaddress.ts:30, 155</code>.</span></li>
-    <li><b>A spending cap per agent</b>, handed to the program as its own limit, with a plain-words
-      reason when it stops. <span class="ev"><code>claude-cli.ts:670</code>, <code>:206</code>.</span></li>
-    <li><b>A spending screen that names why an agent is expensive.</b>
+    <li data-fb="A spending cap per agent"><b>A spending cap per agent</b>, handed to the program as its own limit, with a plain-words
+      reason when it stops — <b>but read the warning below before you rely on it.</b>
+      <span class="ev"><code>claude-cli.ts:670</code>, <code>:206</code>. <b>No agent has a ceiling
+      unless you set one</b> — no cap at all is "the day-one default", said in those words at
+      <code>shared/src/index.ts:756</code> — <b>and a Codex agent cannot be given one at all</b>,
+      because only Claude reports what a turn cost (<code>providerCanBeCapped</code>,
+      <code>shared/src/index.ts:672-674</code>). Board row 5, open, nobody assigned.</span></li>
+    <li data-fb="A spending screen that names why an agent "><b>A spending screen that names why an agent is expensive.</b>
       <span class="ev"><code>App.tsx:13656</code>; <code>shared/src/tokenuse.ts</code>.</span></li>
-    <li><b>The approval card and the trust ladder</b> — one place where everything that leaves your
+    <li data-fb="The approval card and the trust ladder"><b>The approval card and the trust ladder</b> — one place where everything that leaves your
       computer stops and waits for you.</li>
-    <li><b>The "did it do what it said" check</b> — nothing in Claude Code does this.</li>
-    <li><b>Turn receipts worked out from facts</b>, never the agent grading its own homework.</li>
-    <li><b>An agent can propose spending less</b> and you approve it — and the change is a closed
+    <li data-fb="The did it do what it said check"><b>The "did it do what it said" check</b> — nothing in Claude Code does this.</li>
+    <li data-fb="Turn receipts worked out from facts"><b>Turn receipts worked out from facts</b>, never the agent grading its own homework.</li>
+    <li data-fb="An agent can propose spending less"><b>An agent can propose spending less</b> and you approve it — and the change is a closed
       two-item list, so an accidental yes can only ever make an agent cheaper or quieter.</li>
-    <li><b>The same agent can run on Claude or on Codex</b>, with the sandbox difference stated
+    <li data-fb="The same agent can run on Claude or on Cod"><b>The same agent can run on Claude or on Codex</b>, with the sandbox difference stated
       honestly rather than glossed over.</li>
-    <li><b>It re-checks whether the Claude and Codex programs are installed</b> on a backoff, so one
+    <li data-fb="It re-checks whether the Claude and Codex pr"><b>It re-checks whether the Claude and Codex programs are installed</b> on a backoff, so one
       slow answer never becomes a permanent "not installed".
       <span class="ev"><code>harness.ts:518</code>.</span></li>
   </ul>
@@ -840,23 +930,28 @@ installed on your machine right now.</p>
   <h3>What I could not prove</h3>
   <p>Said plainly, so nothing here reads as more certain than it is:</p>
   <ul>
-    <li><b>Two things were tested against the live program, and they are the two best rows on this
+    <li data-fb="Two things were tested against the live prog"><b>Two things were tested against the live program, and they are the two best rows on this
       page:</b> the real <code>claude</code> CLI was started with Cloud9's own command line and asked
       what it held (37 / 166 / 6 tools), and the installed <code>Cloud9.exe</code> was started as the
       tool doorway and really answered a search. Everything else is code read and traced, plus test
       suites run this session: 88 prompt/skills · 98 hooks/verify · 91 tools/attachments/fences ·
       80 memory/approvals · 20 stopping-a-turn · 12 relay.</li>
-    <li><b>Several "measured" figures are measurements recorded in code comments</b> dated
+    <li data-fb="Several measured figures are measurements re"><b>Several "measured" figures are measurements recorded in code comments</b> dated
       2026-07-29 to 2026-08-07 — the 318× cost, the file-fence probe, the picture and PDF test. They
       are unusually specific and consistent, but I did not re-run them.</li>
-    <li><b>No build, package or install was run</b> — another agent owns that slot. I checked the
+    <li data-fb="No build, package or install was run"><b>No build, package or install was run</b> — another agent owns that slot. I checked the
       already-installed app on disk instead, and its main file matches the one built from master.</li>
-    <li><b>Whether a helper agent can spawn its own helper</b> — not verified. That is inside Claude
-      Code and nothing in this repo measures it.</li>
-    <li><b>Whether a background command survives to the next turn</b> — not verified.</li>
-    <li><b>How a Cloud9 agent invokes one of your 100 real skills</b> when the setup switch is on —
+    <li data-fb="Whether a background command survives to t"><b>Whether a command left running in the background survives to the next turn</b> — not
+      verified. The tools for it are granted, but nothing in this repo tests it and every turn is a
+      fresh program.</li>
+    <li data-fb="One thing this page got wrong first time"><b>One thing this page got wrong the first time, and it is worth saying out loud.</b> An
+      earlier draft claimed background work was missing from Claude Code itself. It is not — it is a
+      setting on the command tool, which counting tools can never see. The page had the four
+      check-on-it tools in its own table and still said the opposite. Corrected in the agent loop
+      section.</li>
+    <li data-fb="How a Cloud9 agent invokes one of your 100"><b>How a Cloud9 agent invokes one of your 100 real skills</b> when the setup switch is on —
       not verified. They load; the tool that normally runs them is not on the line.</li>
-    <li><b>Small tidy-up spotted in passing:</b> three files ending <code>.test.ts.new</code> sit in
+    <li data-fb="Small tidy-up spotted in passing:"><b>Small tidy-up spotted in passing:</b> three files ending <code>.test.ts.new</code> sit in
       the engine folder — never compiled, never run, dead weight.</li>
   </ul>
 </section>
@@ -867,38 +962,61 @@ installed on your machine right now.</p>
   <p class="sub" style="margin-bottom:14px">One recommendation, not a menu. Chosen for damage done
   divided by work needed, and every one of them is something you would feel.</p>
   <ol class="rank">
-    <li><b class="big">Stop the saved API key from switching you onto the broken route.</b><br>
+    <li data-fb="FIX The money default"><b class="big">Change what a new agent starts on: setup OFF, and a cap.</b><br>
+      This is the only one of the three that is costing you money <em>today</em>, on every agent you
+      already own. A new agent starts with your own setup ON — about 318× the cost, $1.75 a question
+      against half a penny — and with no spending ceiling, because no ceiling is the day-one default.
+      A Codex agent cannot even be given one. Flip the default to OFF, give every new agent a cap,
+      and leave the switch one click away for when you want it. The board already lists this as
+      waiting on you; it should not be waiting on you, it should be the default.
+      <span class="ev"><b>Where</b> · <code>shared/src/index.ts:258</code> is the one line that sets
+      the setup default · the missing cap is <code>shared/src/index.ts:756</code> · the Codex half
+      needs <code>providerCanBeCapped</code> (<code>shared/src/index.ts:672-674</code>) to have an
+      answer for Codex, which is board row 5.
+      <b>Why first</b> · it is the only item here that is charging you while you read this, and the
+      first half of it is a one-word change.</span></li>
+
+    <li data-fb="FIX The saved API key trap"><b class="big">Stop the saved API key from switching you onto the broken route.</b><br>
       Right now you are on the good route only because you have never saved a key. The moment you do,
       every default agent you own refuses to answer at all, Stop stops working, the live view goes
       dark, memory and skills tools vanish and agents die after 6 steps. That is a one-line
       preference order making a booby trap out of a settings field. Either make the signed-in Claude
       app win, or refuse to accept a saved key until that route can do what the other one does.
-      <span class="ev"><b>Where</b> · <code>host.ts:184-189</code>. <b>Why first</b> · it is the
-      largest gap on this page, it is invisible until it bites, and it is the cheapest to fix.</span></li>
+      And one more thing about that route, which is board row 7: it runs under <b>no time limit and
+      no silence clock at all</b>, so a turn that hangs there hangs for ever.
+      <span class="ev"><b>Where</b> · <code>host.ts:184-189</code> is the whole preference order ·
+      no clocks on that route, <code>provider.ts:705</code> onward (board row 7).
+      <b>Why second</b> · it is the largest single gap on this page, it is invisible until it bites, and it
+      is the cheapest to fix — it is one line deciding which route wins.</span></li>
 
-    <li><b class="big">Give hooks a screen — or stop shipping them.</b><br>
-      A rules engine you cannot write a rule for is not a feature. It is finished, tested, switched
-      on and reachable, and the only way in is a JSON file with ID codes the app never shows you.
-      Four events, four actions, one agent picker: a small screen finishes a module that is otherwise
-      already done. This is also the heading on your own diagram with the least behind it.
-      <span class="ev"><b>Where</b> · <code>hookwiring.ts:63-78</code> already gives the app
-      <code>save</code> and <code>remove</code>; nothing calls them.
-      <b>Why second</b> · all the hard work exists; what is missing is the door.</span></li>
+    <li data-fb="FIX Stop an agent dying while you are decidi"><b class="big">Stop an agent dying while you are deciding.</b><br>
+      The card waits ten minutes; the agent behind it is killed after three. So for seven of those
+      ten minutes you are looking at a live card attached to a corpse. Take the ten-minute deadline
+      off the card entirely — Claude Code has no such thing and a question of yours should not
+      expire — and make a turn parked on a card exempt from the silence clock, because "waiting for
+      Vikas" is not "gone quiet". Remove it in all three places or it will only half-work.
+      <span class="ev"><b>Where</b> · <code>shared/src/index.ts:487</code>, plus the hub
+      (<code>server.ts:266, 2056, 3488</code>) and the screen (<code>App.tsx:4673, 4739</code>) ·
+      silence clock <code>timebudget.ts:156-160</code>. This is board row 6, open, nobody assigned.
+      <b>Why third</b> · it silently wastes work you already paid for, and it makes the one
+      safety feature you rely on untrustworthy.</span></li>
 
-    <li><b class="big">Make the waiting visible, and take off the clocks Claude Code does not have.</b><br>
-      Two things at once, because they are the same complaint: an agent goes quiet and you cannot
-      tell whether it is thinking, queued, or dead. Only two agents run at a time and the third says
-      nothing. A card you are still thinking about dies at ten minutes. A working turn is cut at
-      forty-five. Show "waiting its turn" on an agent that is queued, and finish removing the two
-      timers — remembering the ten-minute one lives in three places, so a partial removal will only
-      half-work.
-      <span class="ev"><b>Where</b> · queue <code>engine.ts:815</code> (tracker row 8) ·
-      card timer <code>shared/src/index.ts:487</code> plus <code>server.ts:266</code> and
-      <code>App.tsx:4673</code> · turn timer <code>timebudget.ts:108-112</code>.
-      <b>Why third</b> · it is the difference between an app that feels alive and one that feels
-      stuck.</span></li>
   </ol>
-  <p style="margin-top:18px"><b>What I would not do yet:</b> reading real <code>SKILL.md</code>
+  <p style="margin-top:18px"><b>Fourth: show an agent that is only waiting its turn.</b> Only two
+  turns run at once (<code>engine.ts:815</code>) and everything behind them is held in silence — no
+  "queued", no tick. It is fourth rather than third only because the hard half is already understood
+  and owned: board row 8 says nothing on the wire currently reports an agent's queue, so the engine
+  has to start saying it before any screen can show it.</p>
+  <p><b>Fifth: give hooks a screen — or stop shipping
+  them.</b> A rules engine you cannot write a rule for is not a feature, and all the hard work is
+  already done (<code>hookwiring.ts:63-78</code> hands the app <code>save</code> and
+  <code>remove</code>; nothing calls them). It is fifth and not higher only because it is a feature you have never asked for, while everything above it is costing you money or work today.</p>
+  <p><b>One thing that is not a harness gap but is worse than most of them:</b> a Codex agent
+  cannot be given a spending limit <em>at all</em> — only Claude reports what a turn cost, so
+  <code>providerCanBeCapped</code> (<code>shared/src/index.ts:672</code>) returns true for Claude
+  only. Its one remaining ceiling was the clock, and that just went from 10 minutes to 45. That is
+  board row 5, open, nobody assigned. It is real money, unbounded, today.</p>
+  <p><b>What I would not do yet:</b> reading real <code>SKILL.md</code>
   skills, squeezing a long conversation instead of dropping it, undo, transcript export, or a
   context-left gauge. They are real gaps, but every one of them is invisible next to the three
   above. And do not chase <code>TodoWrite</code> or background shells at all — those are missing
