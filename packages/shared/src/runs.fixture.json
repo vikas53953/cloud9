@@ -1,0 +1,20 @@
+[
+  {
+    "id": "r-0msi695ul-qlvr",
+    "kind": "chat",
+    "outcome": "ok",
+    "startedAt": 1786060242377,
+    "durationMs": 169491,
+    "ask": "say the word ok",
+    "summary": "Answered straight from what it knew — no tools used, took 2 minutes 49 seconds, cost 7 cents."
+  },
+  {
+    "id": "r-0msi69y4l-yfeg",
+    "kind": "chat",
+    "outcome": "cancelled",
+    "startedAt": 1786060413258,
+    "durationMs": 35259,
+    "ask": "count slowly from 1 to 500, writing out every single number in words",
+    "summary": "Stopped before it got started — took 35 seconds."
+  }
+]

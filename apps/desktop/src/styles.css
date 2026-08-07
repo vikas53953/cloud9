@@ -1177,6 +1177,9 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .rn-state.is-queued{color:var(--pine);border-color:var(--pine);}
 /* Something HE has to fix — it must not read as calm. */
 .rn-state.is-off{color:var(--madder);border-color:var(--madder);}
+/* A state this build does not understand. Deliberately not green: the whole
+   point of the row is that the app is NOT claiming anything went well. */
+.rn-state.is-unknown{color:var(--madder);border-color:var(--madder);}
 .rn-row[data-state="working"]{border-color:var(--pine);}
 .rn-row[data-state="waiting"]{border-color:var(--ultra);}
 

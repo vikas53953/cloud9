@@ -2432,6 +2432,15 @@ function Workspace(): React.JSX.Element {
         .map(([id, r]) => ({ id, outcome: r.outcome, taskId: r.taskId ?? null, steps: r.steps.length })),
       jobs: () => client.world.tasks
         .map(t => ({ id: t.id, status: t.status, runId: t.runId ?? null })),
+      /* THE HISTORY ENTRIES EXACTLY AS THE HUB SENT THEM, so a test can be
+         built from real records instead of hand-written ones. A fixture written
+         by the same person as the code agrees with the code by construction —
+         which is how a row that timed a job from its START instead of its END
+         passed every test it had. A real entry has no field to put that mistake
+         in. Ids and words are the owner's own and stay on his machine; this
+         hook only makes them readable to a harness he is running himself. */
+      history: () => Object.values(client.world.runLists)
+        .flatMap(l => l.entries),
     };
     return () => {
       delete (window as unknown as { cloud9Wire?: unknown }).cloud9Wire;
@@ -13777,16 +13786,12 @@ function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine }[] {
       awaitingOwner: !!asking,
       awaitingWhat: asking?.action,
       queuedWork: queued?.title,
-      last: last && {
-        outcome: last.outcome,
-        ask: last.ask,
-        summary: last.summary,
-        /* WHEN IT ENDED, not when it began — a record stores a start and a
-           length, so the end has to be added up. "3 minutes ago" over a job
-           that started three hours ago and finished seconds ago was the row
-           being confidently wrong about its only claim. */
-        finishedAt: last.startedAt + last.durationMs,
-      },
+      /* THE RECORD, PASSED STRAIGHT THROUGH. This screen used to do a small sum
+         here — "when did it end" — and got it wrong, reading a three-hour job
+         that ended seconds ago as three hours old. `agentActivityLine` now takes
+         the stored fields and does the arithmetic itself, so there is nothing
+         left here to get wrong. */
+      last,
     });
     return { agent, line };
     /* `world.runLists` IS IN THIS LIST BECAUSE THE ANSWER ARRIVES LATER.

@@ -21,13 +21,13 @@
 // PLAIN WORDS ONLY. No "turn", no "invocation", no "run". The owner is a
 // network engineer, not a developer: he reads "working now", "you stopped it",
 // "waiting for you".
-import { AgentPresence, AgentStatus, RunOutcome, WORK_REACTIONS } from "./index.js";
+import { AgentPresence, AgentStatus, RunListEntry, WORK_REACTIONS } from "./index.js";
 import { RECEIPT_EMOJI } from "./receipts.js";
 
 /**
- * The eight things an agent can be, from the owner's side of the screen.
+ * The eleven things an agent can be, from the owner's side of the screen.
  *
- * WHY EIGHT AND NOT FOUR. `AgentPresence` has four words and answers "can I use
+ * WHY ELEVEN AND NOT FOUR. `AgentPresence` has four words and answers "can I use
  * this agent". That is a different question from "what is it doing" — a ready
  * agent that just failed and a ready agent that just finished are the same
  * presence and must not look the same on this board. So the endings (`done`,
@@ -47,7 +47,16 @@ export type AgentActivityState =
   | "done"       // it ran and finished
   | "paused"     // paused by him
   | "off"        // switched off, or nothing can run it
-  | "ready";     // able to work, nothing to report yet
+  | "ready"      // able to work, nothing to report yet
+  /**
+   * THE STATE THAT EXISTS SO SILENCE CANNOT BECOME A CLAIM.
+   *
+   * An agent whose state this build does not understand — a hub newer than the
+   * app. It has a row of its own because the alternative is what shipped once
+   * already: an unhandled state falling through to "✅ Finished" and telling
+   * him a job succeeded that nobody knows anything about.
+   */
+  | "unknown";
 
 /** Everything the board is allowed to know about one agent. All observed. */
 export interface AgentActivityFacts {
@@ -89,23 +98,17 @@ export interface AgentActivityFacts {
    * BEFORE it. This is the title of the job that is waiting to start.
    */
   queuedWork?: string;
-  /** the most recent finished job we know about, if any */
-  last?: {
-    outcome: RunOutcome;
-    /** what it was asked to do */
-    ask: string;
-    /** the plain-words wrap-up — `summarizeRun` already builds this */
-    summary: string;
-    /**
-     * WHEN IT ENDED, not when it began.
-     *
-     * "3 minutes ago" for a job that started three hours ago and finished ten
-     * seconds ago is a lie about the only thing the row is claiming. Callers
-     * pass `startedAt + durationMs`, because a run record stores a start and a
-     * length and there is no stored end.
-     */
-    finishedAt: number;
-  };
+  /**
+   * The most recent finished job we know about, if any.
+   *
+   * THESE ARE THE RECORD'S OWN FIELDS, NOT A SUMMARY OF THEM. It briefly took a
+   * `finishedAt` that the caller worked out — and the caller worked it out from
+   * `startedAt`, so a three-hour job that ended ten seconds ago read as three
+   * hours old. Taking `startedAt` and `durationMs` exactly as a run record
+   * stores them means the only arithmetic happens in `endedAt`, once, where a
+   * test can reach it. A caller can pass a `RunListEntry` straight through.
+   */
+  last?: Pick<RunListEntry, "outcome" | "ask" | "summary" | "startedAt" | "durationMs">;
 }
 
 /** One row of the board: a tick, a state, and a sentence that is never empty. */
@@ -218,20 +221,21 @@ export function agentActivityLine(facts: AgentActivityFacts): AgentActivityLine 
     };
   }
 
-  if (facts.status === "braked") {
-    return {
-      state: "braked",
-      mark: "—",
-      headline: "Taking a break",
-      /* THE WORDS THE RAIL ALREADY USES for this same lamp ("taking a break"),
-         so one fact is not called two things on two screens. */
-      detail: "It stopped itself after your agents went back and forth too long. "
-        + "Say something and it picks up again.",
-    };
-  }
+  /* ===================================================================
+     THE GATE. Nothing below this line may be reached by an agent whose
+     state this build does not affirmatively understand.
+     =================================================================== */
+  const own = statusSpeaksForItself(facts.status);
+  if (own) return own;
 
   if (facts.last) {
-    const when = `${agoWords(facts.last.finishedAt)}, you asked it: ${facts.last.ask}`;
+    /* THE END IS COMPUTED HERE, FROM THE RECORD'S OWN TWO FIELDS, so no caller
+       can get it wrong. It used to take a `finishedAt` that the screen worked
+       out for itself, and the screen worked it out from `startedAt` — so a
+       three-hour job that ended ten seconds ago read as three hours old. A
+       number a caller has to derive is a number some caller will derive wrong;
+       taking the stored fields removes the chance rather than testing for it. */
+    const when = `${agoWords(endedAt(facts.last))}, you asked it: ${facts.last.ask}`;
     if (facts.last.outcome === "cancelled") {
       return {
         state: "stopped",
@@ -266,6 +270,79 @@ export function agentActivityLine(facts: AgentActivityFacts): AgentActivityLine 
   };
 }
 
+/** When a run really ended — the two stored fields, added up in ONE place. */
+function endedAt(last: { startedAt: number; durationMs: number }): number {
+  return last.startedAt + last.durationMs;
+}
+
+/** Every agent state this build understands. Anything else is not guessed at. */
+const KNOWN_STATUSES: readonly string[] = ["idle", "working", "braked"];
+
+/**
+ * WHAT THE AGENT'S OWN STATE SAYS — or `null` when it is quiet enough for the
+ * last finished job to be the news.
+ *
+ * ===================== WHY THIS IS A SWITCH AND NOT AN `if` =================
+ *
+ * A braked agent used to read "✅ Finished". Not because anyone decided it
+ * should, but because there was no branch for `braked` and the function simply
+ * carried on to the last job — the SAME lie the 🛑 tick was added to stop this
+ * app telling, brought back to life in a new screen.
+ *
+ * Adding a `braked` branch would fix that one case and leave the shape of the
+ * mistake intact: the default behaviour of an unhandled state would still be to
+ * claim success. So the default is inverted instead. Reaching the last job now
+ * requires an affirmative "this agent is quiet", and there are exactly two ways
+ * to fail to get one:
+ *
+ *   · A STATE THIS BUILD HAS NEVER HEARD OF — a hub newer than this app — is
+ *     caught at run time by `KNOWN_STATUSES` and gets an honest row saying so.
+ *   · A STATE ADDED TO `AgentStatus` LATER is caught at COMPILE time by the
+ *     `never` below: adding a fourth status and forgetting this screen is a
+ *     BUILD FAILURE. Nobody has to remember.
+ *
+ * "Working" returns null here only because it is decided further up the ladder;
+ * it is still listed so the switch stays exhaustive.
+ */
+function statusSpeaksForItself(status: AgentStatus | undefined): AgentActivityLine | null {
+  if (status !== undefined && !KNOWN_STATUSES.includes(status)) {
+    return {
+      state: "unknown",
+      mark: "—",
+      headline: "Not sure",
+      detail: "This copy of Cloud9 doesn't recognise what it's doing. "
+        + "That usually means it needs updating.",
+    };
+  }
+  switch (status) {
+    case undefined:
+    case "idle":
+    case "working":
+      return null;
+    case "braked":
+      return {
+        state: "braked",
+        mark: "—",
+        headline: "Taking a break",
+        /* THE WORDS THE RAIL ALREADY USES for this same lamp ("taking a
+           break"), so one fact is not called two things on two screens. */
+        detail: "It stopped itself after your agents went back and forth too long. "
+          + "Say something and it picks up again.",
+      };
+    default: {
+      /* If this line stops compiling, a new agent state was added and this
+         screen was not told. Give it a row above — do NOT delete this line. */
+      const unhandled: never = status;
+      return {
+        state: "unknown",
+        mark: "—",
+        headline: "Not sure",
+        detail: `This copy of Cloud9 doesn't recognise "${String(unhandled)}".`,
+      };
+    }
+  }
+}
+
 /**
  * Which rows go at the top.
  *
@@ -280,7 +357,7 @@ export const ACTIVITY_ORDER: readonly AgentActivityState[] = [
      burying it under three finished agents is how it stays unfixed for a day.
      It was below `done` and `ready` in the first version of this list, which
      contradicted this file's own stated rule. */
-  "waiting", "working", "queued", "off", "failed", "stopped", "braked",
+  "waiting", "working", "queued", "off", "unknown", "failed", "stopped", "braked",
   /* Nothing to do here. */
   "done", "ready", "paused",
 ];

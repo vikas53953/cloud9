@@ -48,6 +48,14 @@ const APP_EXE = process.argv.includes("--installed") ? INSTALLED_EXE : PACKAGED_
 const SHOTS = path.join(REPO_ROOT, "docs", "qa");
 const KEEP_OPEN = process.argv.includes("--keep-open");
 const DEMO = process.argv.includes("--demo");
+/**
+ * Photograph ONLY the stop, skipping the states already captured.
+ *
+ * A full walk asks real Claude for several real turns: it takes twenty minutes
+ * and costs real money, so iterating on the last state by re-running all of it
+ * is wasteful in both. This jumps to the stop with the crew already made.
+ */
+const ONLY_STOP = process.argv.includes("--only-stop");
 
 /** Wait on an observable condition, never on a guessed number of seconds. */
 async function until(what, test, { timeout = 60000, every = 400 } = {}) {
@@ -115,6 +123,27 @@ async function askFromBoard(page, agentName, text) {
   await page.keyboard.press("Escape").catch(() => {});
   await page.waitForSelector(".qc-input", { state: "detached", timeout: 15000 }).catch(() => {});
   console.log(`  asked ${agentName}: "${text}" (from quick chat, standing on the board)`);
+}
+
+/**
+ * CAPTURE THE REAL RUN RECORDS THE APP IS HOLDING, as a test fixture.
+ *
+ * WHY. A hand-written fixture agrees with the code because both came out of the
+ * same head. That is how the recency bug survived its own tests: the fixture had
+ * a `finishedAt` field because the function asked for one, and a REAL record has
+ * no such field — it stores a start and a length. A test built from a real
+ * record would have had nowhere to put the wrong answer.
+ *
+ * So the fixture is whatever the hub really sent this app, written out verbatim.
+ */
+async function captureRunFixture(page) {
+  const entries = await page.evaluate(() => window.cloud9Runs?.history?.() ?? null)
+    .catch(() => null);
+  if (!entries || entries.length === 0) return 0;
+  const file = path.join(REPO_ROOT, "packages", "shared", "src", "runs.fixture.json");
+  fs.writeFileSync(file, `${JSON.stringify(entries, null, 2)}\n`);
+  console.log(`  captured ${entries.length} real run record(s) → ${file}`);
+  return entries.length;
 }
 
 /** Read every row on the board, as a person would see it. */
@@ -245,9 +274,11 @@ async function main() {
     console.log("  (Claude never reported in — the turn below may not run)");
   });
 
+  let sawWorking = false;
+  let sawEnding = false;
+  if (!ONLY_STOP) {
   await askFromBoard(page, "Scout", "say the word ok");
 
-  let sawWorking = false;
   try {
     await until("the Activity board to show an agent working", async () => {
       sawWorking = await page.locator('.rn-row[data-state="working"]').count() > 0;
@@ -267,7 +298,6 @@ async function main() {
 
   /* ---- 4. AND WHAT IT JUST DID ------------------------------------------- */
 
-  let sawEnding = false;
   try {
     await until("the board to report a finished job", async () => {
       sawEnding = await page.locator('.rn-row[data-state="done"], .rn-row[data-state="failed"], ' +
@@ -289,6 +319,7 @@ async function main() {
   } else {
     console.log("  (no finished job reached the board within the wait)");
   }
+  } // end !ONLY_STOP
 
   /* ---- 5. YOU STOPPED IT -------------------------------------------------
      One of the two states the review named. 🛑 exists because a job the owner
@@ -316,9 +347,10 @@ async function main() {
      unproven. */
   const ledgerWorking = page.locator('.rn-row[data-state="working"]').filter({ hasText: "Ledger" });
   let ledgerRan = true;
-  await until("Ledger itself to start the long job",
-    async () => await ledgerWorking.count() > 0,
-    { timeout: 300000, every: 300 }).catch(() => {
+  await until("Ledger itself to start the long job", async () => {
+    await page.click('.rail .rail-btn[data-go="activity"]').catch(() => {});
+    return await ledgerWorking.count() > 0;
+  }, { timeout: 300000, every: 800 }).catch(() => {
       ledgerRan = false;
       console.log("  (Ledger never started the long job — cannot stop what is not running)");
     });
@@ -330,27 +362,83 @@ async function main() {
     await askFromBoard(page, "Ledger", "!stop");
   }
 
-  let sawStopped = false;
+  /* WATCH FOR *AN ENDING*, THEN SAY WHICH ONE IT WAS.
+     Waiting only for `stopped` meant that when the board settled on some other
+     ending the harness sat there for five minutes and then reported nothing at
+     all — a shrug, when what was actually on the screen was a fact worth
+     knowing. Now it waits for Ledger to stop working, reads what the row
+     actually says, and either photographs it or names exactly what it got
+     instead. A wrong answer is a finding; silence is not. */
+  let ledgerState = null;
   if (ledgerRan) {
+    const ledgerRow = page.locator(".rn-row").filter({ hasText: "Ledger" }).first();
+    /* WAIT FOR THE ROW TO SETTLE, NOT JUST FOR THE LAMP TO GO OUT.
+       Two facts arrive at different times: the lamp clears the moment the turn
+       ends, and the RECORD of what happened arrives afterwards, on its own
+       round trip. Watching only for "not working any more" photographed the gap
+       between them — the row read "Ready · hasn't been asked to do anything
+       yet" for a fraction of a second, and the harness believed it and reported
+       the feature unproven. (This is the same race, seen from the outside, that
+       the run-history dependency bug was on the inside.) */
+    const ENDED = ["stopped", "failed", "done"];
     try {
-      await until("the board to say HE stopped it", async () => {
-        sawStopped = await page.locator('.rn-row[data-state="stopped"]').count() > 0;
-        return sawStopped;
-      }, { timeout: 300000, every: 400 });
-    } catch { /* said out loud below */ }
-  }
-
-  if (sawStopped) {
-    const row = await page.locator('.rn-row[data-state="stopped"]').first().innerText();
-    console.log(`  STOPPED row: ${row.replace(/\s+/g, " ")}`);
-    /* THE WHOLE POINT OF 🛑: a job he stopped must never read as finished. */
-    if (/Finished/.test(row) || /✅/.test(row)) {
-      throw new Error(`a job HE stopped is wearing the finished tick: ${row}`);
+      await until("Ledger's row to settle on what happened", async () => {
+        /* MAKE SURE THE BOARD IS ACTUALLY ON SCREEN BEFORE BELIEVING IT IS
+           EMPTY. Sending a message can leave the app on the conversation, and
+           then there are no rows to read — which the harness recorded as "no
+           row for Ledger" for five minutes and reported as a missing feature.
+           An ending is written down and stays written down, so unlike the live
+           states there is no race here: re-opening the screen each time costs
+           nothing and removes the whole class of false negative. */
+        await page.click('.rail .rail-btn[data-go="activity"]').catch(() => {});
+        ledgerState = await ledgerRow.getAttribute("data-state").catch(() => null);
+        return ledgerState !== null && ENDED.includes(ledgerState);
+      }, { timeout: 300000, every: 1500 });
+    } catch {
+      /* WHAT THE ROW ACTUALLY SAID, not just its state word. The last run
+         reported only `null` and left nobody able to tell whether the row was
+         missing, still working, or sitting on a state nobody expected. */
+      const seen = await ledgerRow.innerText().catch(() => "(no row for Ledger at all)");
+      const board = await readBoard(page).catch(() => []);
+      console.log(`  (Ledger's row never settled on an ending — last state "${ledgerState}")`);
+      console.log(`    row said: ${seen.replace(/\s+/g, " ")}`);
+      for (const r of board) console.log(`    board: [${r.state}] ${JSON.stringify(r).slice(0, 160)}`);
     }
-    await shot(page, "5-you-stopped-it");
-  } else {
-    console.log("  (no stopped job reached the board within the wait)");
+
+    if (ledgerState && ENDED.includes(ledgerState)) {
+      const row = (await ledgerRow.innerText()).replace(/\s+/g, " ");
+      console.log(`  AFTER THE STOP, Ledger reads [${ledgerState}]: ${row}`);
+      /* THE WHOLE POINT OF 🛑, checked whatever the state turned out to be: a
+         job HE stopped must never wear the finished tick. */
+      if (/✅/.test(row) || /\bFinished\b/.test(row)) {
+        throw new Error(`a job HE stopped is wearing the finished tick: ${row}`);
+      }
+      await shot(page, "5-you-stopped-it");
+    } else {
+      /* WHY, NOT JUST "NO". The engine answers a stop out loud in the room —
+         "🛑 Stopping — pulling the plug" when it really killed something, or
+         "There was nothing running to stop" when the work had not started yet
+         and was simply dropped from the queue. A dropped turn writes no record
+         by design, so the board correctly has nothing to show. Reading the room
+         is what turns "the harness saw nothing" into a fact about which of
+         those two happened. */
+      console.log("  (Ledger's row never reached an ending — asking the room what the stop did)");
+      /* LEDGER'S OWN CONVERSATION, NOT WHATEVER ROOM WAS LAST OPEN. Clicking
+         the Chat button alone landed on #general — an empty room nobody had
+         spoken in — so the diagnosis printed nothing and photographed a blank
+         channel. The stop is answered in the DM with the agent, so that is the
+         conversation that has to be opened by name. */
+      await page.click('.rail .rail-btn[data-go="chat"]').catch(() => {});
+      await page.click('.agent-row[data-agent="Ledger"] .agentmain').catch(() => {});
+      await page.waitForTimeout(2500);
+      const said = await page.$$eval(".msg, .bubble, .msgrow",
+        ns => ns.slice(-8).map(n => n.innerText.replace(/\s+/g, " ").slice(0, 200)))
+        .catch(() => []);
+      for (const s of said) console.log(`    room: ${s}`);
+      await shot(page, "5-stop-diagnosis");
+    }
   }
+  const sawStopped = ledgerState === "stopped";
 
   /* ---- 6. WAITING FOR YOU ------------------------------------------------
      The other state the review named by hand, because three of its eight
@@ -360,9 +448,10 @@ async function main() {
      approval that really sits waiting on him.
      LAST, because it deliberately leaves an agent blocked. */
 
+  let sawWaiting = false;
+  if (!ONLY_STOP) {
   await askFromBoard(page, "Scout", "!plan tidy up my notes folder");
 
-  let sawWaiting = false;
   try {
     await until("the board to show an agent waiting on him", async () => {
       sawWaiting = await page.locator('.rn-row[data-state="waiting"]').count() > 0;
@@ -392,6 +481,9 @@ async function main() {
   } else {
     console.log("  (no go-ahead reached the board within the wait)");
   }
+  } // end !ONLY_STOP
+
+  await captureRunFixture(page);
 
   console.log("\n  Activity board is on screen, with words in every row.");
   console.log(`  photographed — working: ${sawWorking}  finished: ${sawEnding}  ` +

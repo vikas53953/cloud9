@@ -4,7 +4,10 @@
 // prevent is a row that looks confident and says nothing, so nearly every
 // assertion below is "the words a person reads are the right words".
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   ACTIVITY_ORDER, activityRank, agentActivityLine, agoWords, crewActivitySummary,
   workingCount, type AgentActivityFacts,
@@ -13,11 +16,16 @@ import { RECEIPT_EMOJI, WORK_REACTIONS } from "./index.js";
 
 const HOUR = 60 * 60 * 1000;
 
+/* THE RECORD'S OWN SHAPE — a start and a length, which is what a run record
+   really stores. There is deliberately no `finishedAt` to hand in: the end is
+   worked out inside `agentActivityLine`, so a test cannot accidentally agree
+   with a caller that computes it wrongly. */
 const lastDone = (over: Partial<NonNullable<AgentActivityFacts["last"]>> = {}) => ({
   outcome: "ok" as const,
   ask: "tidy the notes",
   summary: "Read 2 files, took 9 seconds.",
-  finishedAt: Date.now() - 5 * 60 * 1000,
+  startedAt: Date.now() - 5 * 60 * 1000 - 9000,
+  durationMs: 9000,
   ...over,
 });
 
@@ -298,6 +306,40 @@ test("braked outranks the last job even when that job failed", () => {
   assert.equal(line.state, "braked");
 });
 
+test("A STATE THIS BUILD HAS NEVER HEARD OF CANNOT COME OUT AS SUCCESS", () => {
+  /* The structural half of the braked fix, and the point of the whole exercise:
+     it is not that `braked` was missing, it is that a MISSING state defaulted to
+     claiming a job succeeded. A hub newer than this app can send a word this
+     build has never seen, and the row must say so rather than reach for the
+     last job's ✅. */
+  const line = agentActivityLine({
+    status: "hibernating" as never, presence: "ready", last: lastDone(),
+  });
+  assert.equal(line.state, "unknown");
+  assert.notEqual(line.mark, WORK_REACTIONS.done);
+  assert.notEqual(line.headline, "Finished");
+  assert.match(line.detail, /doesn't recognise/);
+});
+
+test("no unrecognised state anywhere can reach a finished tick", () => {
+  for (const bogus of ["", "  ", "done", "ok", "finished", "ACTIVE", "42", "null"]) {
+    const line = agentActivityLine({
+      status: bogus as never, presence: "ready", last: lastDone(),
+    });
+    assert.equal(line.state, "unknown", `"${bogus}" was not treated as unknown`);
+    assert.notEqual(line.headline, "Finished");
+  }
+});
+
+test("the three states this build DOES know still behave", () => {
+  assert.equal(agentActivityLine({ status: "idle", presence: "ready", last: lastDone() }).state, "done");
+  assert.equal(agentActivityLine({ status: "working" }).state, "working");
+  assert.equal(agentActivityLine({ status: "braked", presence: "ready" }).state, "braked");
+  /* No status at all is a real, common case — an agent no engine has reported
+     on yet — and it must stay quiet-and-truthful, not unknown. */
+  assert.equal(agentActivityLine({ presence: "ready", last: lastDone() }).state, "done");
+});
+
 // --- 3. work it is holding but has not started ------------------------------
 
 test("a job it has not started yet is VISIBLE, not the job before it", () => {
@@ -362,10 +404,75 @@ test("a long job that just finished reads as just finished, not as hours old", (
      claim, and visible in the very screenshot that shipped it. */
   const line = agentActivityLine({
     presence: "ready",
-    last: { outcome: "ok", ask: "the big one", summary: "Took a while.", finishedAt: now - 10_000 },
+    last: {
+      outcome: "ok", ask: "the big one", summary: "Took a while.",
+      startedAt: now - 3 * HOUR - 10_000, durationMs: 3 * HOUR,
+    },
   });
   assert.match(line.detail, /^Just now, you asked it: the big one/);
   assert.doesNotMatch(line.detail, /hours ago/);
+});
+
+/* ===========================================================================
+   AGAINST REAL RECORDS, NOT HAND-WRITTEN ONES.
+
+   `runs.fixture.json` is captured verbatim from a running Cloud9 by
+   `scripts/shot-activity.mjs` — the entries the hub really sent the app. A
+   fixture written by the same hand as the code agrees with the code by
+   construction, which is exactly how the recency bug passed its own tests: the
+   made-up record had a `finishedAt` because the function asked for one, and a
+   real record has no such field at all.
+   =========================================================================== */
+
+test("every real record the app has held produces a full, honest row", () => {
+  /* Read at run time, from the source tree, rather than imported: turning on
+     JSON module resolution changes the build for every other file in this
+     package, and other branches share it. */
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const file = path.resolve(here, "..", "src", "runs.fixture.json");
+  if (!fs.existsSync(file)) {
+    /* The fixture is captured by a walk of the packaged app. If it has not been
+       captured on this machine yet, say so plainly rather than passing quietly:
+       a test that silently skips is a test that stops being run. */
+    console.log("    (no runs.fixture.json captured yet — run scripts/shot-activity.mjs)");
+    return;
+  }
+  const entries = JSON.parse(fs.readFileSync(file, "utf8")) as
+    NonNullable<AgentActivityFacts["last"]>[];
+  assert.ok(entries.length > 0, "the captured fixture is empty");
+
+  for (const entry of entries) {
+    /* A REAL RECORD GOES STRAIGHT IN. If this stops type-checking or throwing,
+       the shape the screen expects has drifted from the shape the hub sends. */
+    const line = agentActivityLine({ presence: "ready", last: entry });
+    assert.ok(line.headline.trim().length > 0, `blank headline for ${entry.ask}`);
+    assert.ok(line.detail.trim().length > 0, `blank detail for ${entry.ask}`);
+    assert.ok(["done", "failed", "stopped"].includes(line.state),
+      `a finished record produced "${line.state}"`);
+    /* THE ENDING AND THE TICK MUST AGREE — on real data, not on my idea of it. */
+    if (entry.outcome === "cancelled") assert.equal(line.headline, "You stopped it");
+    if (entry.outcome === "failed") assert.equal(line.headline, "Didn't finish");
+    if (entry.outcome === "ok") assert.equal(line.headline, "Finished");
+    /* AND THE AGE MUST BE MEASURED FROM THE END.
+
+       SLID FORWARD SO IT ENDED TEN SECONDS AGO, keeping the REAL length. The
+       first version of this check compared the record where it sat, and a
+       record captured hours ago reads "3 hours ago" from either end — so the
+       check quietly agreed with the bug and skipped. A test that only fails
+       during the few minutes after a capture is a test that never fails.
+       Sliding the start keeps everything real about the record except the day
+       it happened, and makes the one claim being tested visible every time. */
+    if (entry.durationMs > 90_000) {
+      const justEnded = { ...entry, startedAt: Date.now() - entry.durationMs - 10_000 };
+      const row = agentActivityLine({ presence: "ready", last: justEnded });
+      assert.match(row.detail, /^Just now, you asked it: /,
+        `a ${Math.round(entry.durationMs / 1000)}s job that ended 10s ago reads as `
+        + `"${row.detail.slice(0, 40)}…" — it is being timed from its start`);
+      /* And the thing the old code actually printed, named, so the failure
+         message says which mistake was made rather than just "no match". */
+      assert.notEqual(row.detail.split(",")[0], agoWords(justEnded.startedAt));
+    }
+  }
 });
 
 // --- 6. things he must fix sort above things that are fine ------------------
@@ -387,10 +494,10 @@ test("the order is: act on it, then watch it, then everything quiet", () => {
   }
 });
 
-test("every state — including the two added by review — has exactly one place", () => {
+test("every state — including the ones added by review — has exactly one place", () => {
   const states = [
     "working", "waiting", "queued", "braked", "stopped", "failed", "done", "paused",
-    "off", "ready",
+    "off", "ready", "unknown",
   ] as const;
   for (const s of states) assert.ok(ACTIVITY_ORDER.includes(s), `${s} is not ordered`);
   assert.equal(new Set(ACTIVITY_ORDER).size, states.length);
