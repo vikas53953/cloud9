@@ -122,7 +122,6 @@ restart replay do not answer for the owner and explain how to ask again; the
 historical, non-quiet taskstuck comparison was paired with controls). That
 historical comparison is machine-sensitive evidence only; no fresh detached,
 rebuilt, quiet-machine taskstuck control has been run yet. Focused evidence is
-
 `notimers.test.ts` 7/7, `spendplanfallback` 28/28, shared 218/218, full build
 green, relay reconnect probe 2/2, and the targeted engine run 24/24.
 Boundaries remain explicit: the Codex provider has no spending cap, and Stop
