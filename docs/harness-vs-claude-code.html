@@ -1,0 +1,1314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud9 next to Claude Code — what we have, what we don't</title>
+<style>
+:root{
+  --bg:#f6f7f9; --card:#fff; --ink:#14181d; --dim:#5b6672; --line:#e2e6eb;
+  --have:#0e8a4f; --haveBg:#e8f6ee; --no:#b3261e; --noBg:#fbeceb;
+  --half:#a86400; --halfBg:#fdf3e2; --unk:#5b6672; --unkBg:#eef0f3;
+  --accent:#1f4fd8; --notice:#7a2fd0;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0e1116; --card:#161b22; --ink:#e7ecf2; --dim:#9aa6b4; --line:#262d36;
+    --have:#4ad98b; --haveBg:#12291d; --no:#ff8a80; --noBg:#2b1614;
+    --half:#f0b64a; --halfBg:#2c2213; --unk:#9aa6b4; --unkBg:#1c222a;
+    --accent:#7aa2ff; --notice:#c79cff;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e1116; --card:#161b22; --ink:#e7ecf2; --dim:#9aa6b4; --line:#262d36;
+  --have:#4ad98b; --haveBg:#12291d; --no:#ff8a80; --noBg:#2b1614;
+  --half:#f0b64a; --halfBg:#2c2213; --unk:#9aa6b4; --unkBg:#1c222a;
+  --accent:#7aa2ff; --notice:#c79cff;
+}
+:root[data-theme="light"]{
+  --bg:#f6f7f9; --card:#fff; --ink:#14181d; --dim:#5b6672; --line:#e2e6eb;
+  --have:#0e8a4f; --haveBg:#e8f6ee; --no:#b3261e; --noBg:#fbeceb;
+  --half:#a86400; --halfBg:#fdf3e2; --unk:#5b6672; --unkBg:#eef0f3;
+  --accent:#1f4fd8; --notice:#7a2fd0;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;}
+.wrap{max-width:1080px;margin:0 auto;padding:32px 20px 90px}
+h1{font-size:30px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+h2{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
+h3{font-size:16px;margin:22px 0 8px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em}
+p{margin:0 0 12px}
+.sub{color:var(--dim);margin:0 0 26px;font-size:15px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+  padding:20px 22px;margin:0 0 20px}
+.hero{border-left:5px solid var(--accent)}
+.num{display:inline-block;min-width:26px;height:26px;line-height:26px;text-align:center;
+  border-radius:50%;background:var(--accent);color:#fff;font-weight:700;font-size:14px;margin-right:8px}
+.sec-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  padding-bottom:12px;margin-bottom:4px;border-bottom:1px solid var(--line)}
+.sec-head .why{color:var(--dim);font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:14.5px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--dim);font-weight:700;padding:10px 10px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:12px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td.what{font-weight:600;min-width:190px}
+.tag{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;
+  font-weight:700;white-space:nowrap}
+.t-have{background:var(--haveBg);color:var(--have)}
+.t-no{background:var(--noBg);color:var(--no)}
+.t-half{background:var(--halfBg);color:var(--half)}
+.t-unk{background:var(--unkBg);color:var(--unk)}
+.notice{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.05em;
+  color:var(--notice);border:1px solid var(--notice);border-radius:5px;padding:1px 6px;margin-left:6px}
+.plumb{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.05em;
+  color:var(--dim);border:1px solid var(--line);border-radius:5px;padding:1px 6px;margin-left:6px}
+code,.ev{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12.5px}
+.ev{display:block;color:var(--dim);margin-top:6px;word-break:break-word}
+.ev b{color:var(--ink);font-weight:600}
+.legend{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 24px}
+.legend span{font-size:13px}
+.rank{counter-reset:r;list-style:none;padding:0;margin:0}
+.rank li{counter-increment:r;position:relative;padding:14px 0 14px 46px;border-bottom:1px solid var(--line)}
+.rank li:last-child{border-bottom:none}
+.rank li[data-fb]{padding-top:46px}
+
+.rank li::before{content:counter(r);position:absolute;left:0;top:13px;width:30px;height:30px;
+  line-height:30px;text-align:center;border-radius:8px;background:var(--noBg);color:var(--no);font-weight:800;font-size:14px}
+.rank.good li::before{background:var(--haveBg);color:var(--have)}
+.big{font-size:17px;font-weight:650;letter-spacing:-.01em}
+.stamp{color:var(--half);font-weight:700}
+.quote{border-left:3px solid var(--line);padding-left:14px;color:var(--dim);font-style:italic;margin:12px 0}
+.pill{display:inline-block;background:var(--unkBg);border:1px solid var(--line);
+  border-radius:8px;padding:3px 9px;font-size:12.5px;margin:0 6px 6px 0}
+footer{color:var(--dim);font-size:13px;margin-top:34px;text-align:center}
+@media(max-width:640px){
+  h1{font-size:24px}.wrap{padding:20px 14px 80px}.card{padding:16px 14px}
+  td.what{min-width:150px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Cloud9 next to Claude Code</h1>
+<p class="sub">What we have, what we don't, and where something looks like it works but doesn't.
+Checked against the code on <code>master</code> (<code>e08ba7f</code>) — which is the exact code
+installed on your machine right now.</p>
+
+<section class="card hero" data-fb="The one-line answer">
+  <h2>The one-line answer</h2>
+  <p class="big">Cloud9 does not have its own agent brain. It drives the real Claude Code that is
+  already on your computer — so you already have almost all of the harness. What is missing is
+  mostly things Cloud9 <em>switches off</em>, things it <em>never shows you</em>, and one second,
+  much weaker route that takes over the moment you paste an API key into Settings.</p>
+  <p>Proof: every turn runs the command
+  <code>claude -p --output-format stream-json --verbose --permission-mode dontAsk …</code>
+  as a real program on your PC. Cloud9 writes the instructions, hands them over, and reads back
+  what happened. The thinking, the tool calls, the try-again loop — all of that is Claude Code's,
+  not ours.</p>
+  <span class="ev"><b>Evidence</b> · command built at <code>packages/engine/src/claude-cli.ts:621</code>,
+  handed to the runner at <code>claude-cli.ts:1033</code>, actually started at
+  <code>packages/engine/src/run.ts:375</code>. Reached from the app you run:
+  <code>apps/desktop/electron/main.cjs:648</code> → <code>packages/engine/src/host.ts:192</code>.
+  Codex is the same shape: <code>packages/engine/src/codex.ts:654</code>.</span>
+  <span class="ev"><b>The installed app really is this code</b> — and the proof is the engine
+  folder, not the screen. Almost everything on this page is about the engine, which installs
+  separately at
+  <code>…\Programs\Cloud9\resources\app\node_modules\@cloud9\engine\dist\</code>. Checked there
+  directly: <code>attachHooks</code> appears 3× in <code>host.js</code>,
+  <code>ELECTRON_RUN_AS_NODE</code> 2× in <code>cloud9tools.js</code>,
+  <code>check_token_use</code> and <code>propose_saving</code> 8× each, and
+  <code>chat: 45 * 60_000</code> is in <code>timebudget.js</code>. The two commits after
+  <code>2e83846</code> touched only <code>TRACKER.md</code> and a picture. So nothing below is
+  "true in the source but not in your app" — <b class="stamp">as of 2026-08-07 06:00</b>, and this
+  one changes again the next time anybody builds and installs, which will happen when PR #13
+  lands.</span>
+</section>
+
+<section class="card" data-fb="How to read this page">
+  <h3>How to read this page</h3>
+  <div class="legend">
+    <span class="tag t-have">HAVE</span>
+    <span class="tag t-no">DON'T HAVE</span>
+    <span class="tag t-half">LOOKS LIKE WE HAVE IT — DOESN'T WORK</span>
+    <span class="tag t-unk">NOT VERIFIED</span>
+  </div>
+  <p><span class="notice">YOU'D NOTICE</span> = this changes what you see or what you can do.
+  <span class="plumb">PLUMBING</span> = invisible unless you go looking.
+  <b>If you read only the YOU'D NOTICE rows, you have read everything that affects you</b> — every
+  PLUMBING row is safe to skip.</p>
+  <p><b>Two words that keep coming up.</b> The <b>doorway</b> is the little local server Cloud9 runs
+  so an agent can reach Cloud9's own six tools — search the conversation, open an attachment, and so
+  on. <b>Your setup</b> means the "use my own setup" switch on each agent, which decides whether the
+  agent runs inside your real Claude Code world or in a bare one.</p>
+  <p>Every row carries a file and line number, or a command that was run. Where nothing could be
+  proved, the row says <b>not verified</b> instead of guessing.</p>
+  <p><b>This page is a photograph of one commit.</b> Every file and line number here was read at
+  <code>e08ba7f</code>, the commit installed on your machine when this was written. Line numbers
+  drift as soon as anyone edits those files. <b class="stamp">One specific case worth knowing:</b>
+  about fifteen of the citations below point at the clocks — <code>timebudget.ts</code>,
+  <code>approvaldesk.ts</code>, the card's deadline in the hub and on screen — and <b>PR #13 deletes
+  that code</b>. When it lands, those line numbers stop existing. The findings stay true; the
+  pointers go dead. That is the normal cost of a dated snapshot, not a mistake in it.</p>
+  <p><b class="stamp">Anything marked "as of 2026-08-07 06:00" rots on its own.</b> Those few claims
+  say who is or is not already working on something, and they come from asking GitHub what was open
+  at that moment. <b>Nobody has to touch this page for them to go wrong</b> — a colleague opening or
+  merging a pull request is enough. Every other line here is about code, and stays true until the
+  code changes. <b>Before acting on a stamped line, ask what is open now.</b>
+  This page has already been wrong in both directions on exactly this: it once said someone was
+  removing the clocks when nobody was, and then said nobody was when someone already had.</p>
+</section>
+
+<section class="card" data-fb="The seven things you would notice most">
+  <h2>The seven things you would notice most</h2>
+  <p class="sub" style="margin-bottom:8px">Ranked by how much they change your day, not by how hard they are to fix.</p>
+  <ol class="rank">
+    <li data-fb="Every new agent starts expensive, no cap"><b>Every new agent starts expensive, with no money ceiling — and this one is costing you today.</b>
+      A brand-new agent starts with "use my own setup" <b>ON</b>, which on a cold turn cost <b>318× as much</b>
+      as the same question with it off — $1.75 against half a penny. It also starts with <b>no
+      spending cap at all</b>, because no cap is the day-one default. And if it is a Codex agent it
+      <em>cannot be given one</em>, because only Claude reports what a turn cost. So the money guard
+      you think every agent has, none of them have.
+      <span class="ev"><b>Evidence</b> · setup on by default,
+      <code>shared/src/index.ts:258</code> <code>NEW_AGENT_USE_OWNER_SETUP = true</code> · the money figures, measured by hand 2026-08-05, recorded at <code>ownersetup.ts:34-35</code>. <b>Two different multipliers, both real, and one caveat that matters to the decision:</b> the prompt gets ~14.5× BIGGER (6,030 → 87,498 tokens) but ~318× DEARER ($0.0055 → $1.75), because the small prompt is nearly all cached while the big one is a fresh cache write. <b>That was measured on ONE COLD TURN.</b> If the cache stayed warm a repeat question would cost far less — and your own records show caching really happens, 171 of 185 saved runs carry a cached figure. But Cloud9 starts a fresh program for every turn, so <b>whether a warm cache is ever there when the next turn begins is NOT VERIFIED</b>. Treat 318× as the worst case and the cold-start price, not as a certainty on every question. The code records both numbers and explains neither. ·
+      "no ceiling at all, which is the day-one default", <code>shared/src/index.ts:756</code> ·
+      Codex cannot be capped, <code>shared/src/index.ts:672-674</code> (board row 5, open).</span></li>
+    <li data-fb="Paste an API key and every agent stops"><b>Paste an API key into Settings and every agent you own stops working.</b>
+      A saved key makes Cloud9 switch to a second, much weaker route. On that route a brand-new
+      agent is <em>refused before it starts</em>, Stop no longer kills anything, there is no live
+      view, no memory tools, and the agent is capped at 6 steps.
+      <span class="ev"><b>Evidence</b> · <code>host.ts:184-189</code> prefers the key over the
+      signed-in Claude app · refusal at <code>provider.ts:723-726</code>, proved by
+      <code>packages/engine/src/sdkreach.test.ts:51-95</code> · 6-step cap at
+      <code>provider.ts:770</code> · <b class="stamp">as of 2026-08-07 06:00 you are safe:</b> there
+      is no <code>cloud9-credential-claude.bin</code> in your app folder, so you are on the good
+      route — <b>and that stops being true the moment you save a key, which is the very thing this
+      row is warning you about.</b></span></li>
+    <li data-fb="An agent asks your permission, then dies whi"><b>An agent asks your permission, then dies while you are still deciding.</b>
+      The card that asks you sits there for ten minutes. But a turn waiting on a card prints
+      nothing, and a chat turn that has printed nothing for <em>three</em> minutes is killed. So
+      from minute three you are looking at a live-looking card attached to an agent that is already
+      dead — and you only find out when you press it.
+      <span class="ev"><b>Evidence</b> · card waits 10 minutes,
+      <code>shared/src/index.ts:487</code> · chat turn killed after 3 minutes of silence,
+      <code>timebudget.ts:156-160</code> · neither clock exists in Claude Code.
+      <b class="stamp">As of 2026-08-07 06:00:</b> this is board row 6, and it is <b>no longer
+      unassigned — PR #13 is open and removes both of these clocks.</b> Nothing to ask for here;
+      it needs reviewing and landing.</span></li>
+    <li data-fb="The rules engine (hooks) is finished, switch"><b>The rules engine ("hooks") is finished, switched on — and there is no screen to write a rule.</b>
+      The only way to add one is to hand-write a JSON file containing internal ID codes the app
+      never shows you.
+      <span class="ev"><b>Evidence</b> · rules loaded from <code>hooks.json</code>
+      (<code>hooks.ts:380 and :426</code>) · the save/remove functions exist
+      (<code>hookwiring.ts:63-78</code>) and <b>nothing in the app calls them</b> —
+      searching <code>apps/desktop</code> and <code>apps/relay</code> for
+      <code>saveHooks|newHookId|HOOK_EVENTS</code> returns no results.</span></li>
+    <li data-fb="Only two agents can work at once, and the th"><b>Only two agents can work at once, and the third one says nothing at all.</b>
+      Ask a third agent something and it is silent — no "queued", no tick — until a slot frees.
+      <span class="ev"><b>Evidence</b> · <code>engine.ts:815</code> caps at 2 and the app never
+      raises it · the queue is private and no message on the wire carries it · the first tick a
+      person sees is sent at <code>engine.ts:917</code>, which is <em>after</em> the wait.</span></li>
+    <li data-fb="Three clocks that Claude Code does not have "><b>Three clocks that Claude Code does not have — all still switched on today.</b>
+      A 45-minute cut-off per turn, a 3-minute "gone quiet" cut-off in chat, and the 10-minute card
+      deadline already described in item 3.
+      <span class="ev"><b>Evidence</b> · <code>timebudget.ts:108-112</code> (45 min) ·
+      <code>timebudget.ts:156-160</code> (3 min chat silence) ·
+      <code>shared/src/index.ts:487</code> <code>waitMs: 10 * 60_000</code>. <b>All three are live
+      on the machine — and all three are already being taken out.</b>
+      <b class="stamp">As of 2026-08-07 06:00:</b> <code>gh pr list</code> shows <b>PR #13, "just
+      remove the timing — an agent is not on a clock any more"</b>, open and ready to merge, and its
+      change removes <b>all three</b> — the 45-minute total, the silence clock, and the card's
+      deadline. <b>An earlier draft of this page defended the 45-minute one</b> as "the deliberate
+      result of the merged time-limit fix". <b>That defence is withdrawn.</b> You ruled otherwise —
+      "agents are employees so i don't want to implement a timing foundation" — and a clock on an
+      employee was a product decision that was yours, not an engineering one that was ours. Arguing
+      the backstop was the same mistake as inventing the clocks in the first place.</span></li>
+    <li data-fb="Nothing tells you how much room is left in"><b>Nothing tells you how much room is left in the conversation.</b>
+      Claude Code shows context left; Cloud9 shows money spent instead. When a chat gets long the
+      oldest messages are simply dropped with no summary and no warning.
+      <span class="ev"><b>Evidence</b> · <code>shared/src/index.ts:4600</code>
+      <code>contextWindowTokens()</code> has exactly one caller — deciding how much history to
+      send — and is never put on screen · dropping happens at
+      <code>context.ts:236-273</code> · nothing anywhere summarises a <em>conversation</em> — the
+      only summarisers in the code are for a finished job.</span></li>
+  </ol>
+</section>
+
+<!-- ============================ 1. PROMPT ============================ -->
+<section class="card" data-fb="1 Prompt">
+  <div class="sec-head"><h2><span class="num">1</span>Prompt</h2>
+    <span class="why">What the agent is told before it starts</span></div>
+  <div class="scroll"><table>
+  <tr><th>Thing</th><th>Us</th><th>Detail and evidence</th></tr>
+
+  <tr><td class="what">A real system prompt, built per agent</td>
+    <td><span class="tag t-have">HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>Name, its persona, exactly what it can and cannot do, its tools, its skills.
+      <span class="ev"><code>provider.ts:547-596</code> <code>splitAgentPrompt</code>. Measured on a real
+      run: 6,062 characters of standing brief, 716 for the turn itself — but that figure is
+      not written down anywhere in the repo, so it is one agent's word, not proof.</span></td></tr>
+
+  <tr><td class="what">Split so you don't pay for it twice</td>
+    <td><span class="tag t-have">HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>The unchanging half is written to a file and passed as
+      <code>--append-system-prompt-file</code>; only the new part travels each turn. It
+      <em>adds to</em> Claude Code's own instructions rather than replacing them.
+      <span class="ev"><code>claude-cli.ts:676</code>, <code>:995</code>, <code>:1024</code>.
+      Real cache hits exist in your own records — <b class="stamp">as of 2026-08-07 06:00</b>,
+      171 of your 185 saved runs carried a <code>cachedInputTokens</code> figure.</span></td></tr>
+
+  <tr><td class="what">"Use my own setup" — your real Claude Code world</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>ON: your CLAUDE.md, your ~100 skills, your slash commands, your MCP servers, your plugins,
+      your saved memory all load. OFF: Cloud9 adds <code>--strict-mcp-config</code>,
+      <code>--disable-slash-commands</code>, <code>--setting-sources ""</code> and blocks auto-memory.
+      There is no middle setting. <b>New agents start ON.</b>
+      <span class="ev"><code>ownersetup.ts:93-107</code> and <code>:128-133</code>; default at
+      <code>shared/src/index.ts:258</code> <code>NEW_AGENT_USE_OWNER_SETUP = true</code>, applied at
+      <code>App.tsx:8193</code>. Cost of ON, measured by hand 2026-08-05: same tiny turn goes
+      6,030 → 87,498 tokens (~14.5× bigger), <b>$0.0055 → $1.75</b> (~318× the money).
+      <b>Two half-truths worth knowing.</b> That figure lives only in code comments — searching
+      <code>docs/</code> for it returns nothing, so it cannot be re-checked from the repo. And it is
+      <b>one cold turn</b>: the money multiplies far faster than the size because the big prompt is a
+      fresh cache write, so a repeat question could cost much less — but every Cloud9 turn is a fresh
+      program, and whether a warm cache is ever there for the next one is <b>not verified</b>. Worst
+      case, not certainty.</span></td></tr>
+
+  <tr><td class="what">Cloud9 reads a project's CLAUDE.md itself</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>Nothing in the prompt builder opens a repo file. Your CLAUDE.md only reaches an agent by the
+      all-or-nothing switch above.
+      <span class="ev">A repo turn gets one generic line, <code>provider.ts:576</code>, plus a
+      worktree briefing at <code>repowork.ts:76-91</code>.</span></td></tr>
+
+  <tr><td class="what">Output styles / chosen personality</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>The nearest thing is the free-text persona box plus a fixed 4-entry table of how to answer.
+      <span class="ev"><code>provider.ts:638</code>. No style files, no picker.</span></td></tr>
+
+  <tr><td class="what">System reminders mid-conversation</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>Claude Code quietly re-injects standing rules as a conversation drifts. Cloud9 adds none.
+      <span class="ev">Searching all source for <code>system-reminder</code>: zero results.</span></td></tr>
+  </table></div>
+</section>
+
+<!-- ============================ 2. SKILLS ============================ -->
+<section class="card" data-fb="2 Skills">
+  <div class="sec-head"><h2><span class="num">2</span>Skills</h2>
+    <span class="why">Written instructions an agent can pull in when it needs them</span></div>
+  <div class="scroll"><table>
+  <tr><th>Thing</th><th>Us</th><th>Detail and evidence</th></tr>
+
+  <tr><td class="what">Skills you write per agent, with files</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Up to 20 per agent, written in the agent editor, plus a shipped library of ready-made ones.
+      Files upload alongside.
+      <span class="ev"><code>shared/src/index.ts:4458-4459</code>; editor at <code>App.tsx:8395</code>,
+      <code>:8460</code>; files written to the agent's folder at <code>engine.ts:1683-1710</code>.</span></td></tr>
+
+  <tr><td class="what">Skills loaded only when needed</td>
+    <td><span class="tag t-have">HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>The agent is shown a one-line list and fetches the full text with an <code>open_skill</code>
+      tool. Why it matters: 25 skills in full were measured at 35,099 characters — 87% of the
+      entire prompt.
+      <span class="ev">list at <code>provider.ts:361-435</code>; tool at
+      <code>cloud9tools.ts:567-608</code>; measurement recorded at <code>provider.ts:384</code>.
+      88 tests covering prompt and skills were run and all passed.</span></td></tr>
+
+  <tr><td class="what">Reads real <code>SKILL.md</code> skills (yours, plugins', projects')</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Cloud9 skills are its own separate thing. There is no reader for the folder format Claude
+      Code uses. Your real ~100 skills reach an agent only through the "use my own setup" switch,
+      and then Cloud9 knows nothing about them.
+      <span class="ev">Searching all source for <code>SKILL.md</code> / <code>.claude/skills</code>
+      finds only a test that plants such files <em>to prove they do not load</em>
+      (<code>codex.test.ts:234-236</code>).</span></td></tr>
+
+  <tr><td class="what">The <code>Skill</code> tool itself</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>Claude Code invokes a skill through a tool called <code>Skill</code>. That name is not in the
+      31-tool list Cloud9 measured off your CLI, and the list is an allow-list — so a Cloud9 agent
+      never holds it. Measured live: with the setup switch OFF the CLI reported
+      <code>skills: 0</code>; with it ON, <code>skills: 100</code> — <b>and the built-in tool count
+      stayed 31 both times.</b> So with the switch on, your 100 skills are <em>listed</em> to the
+      agent and it has no tool to <em>open</em> them. That is worth knowing before you pay for the
+      switch.
+      <span class="ev">List at <code>abilities.ts:77-84</code>; put on the line as
+      <code>--allowed-tools</code> at <code>claude-cli.ts:739-740</code>.</span></td></tr>
+
+  <tr><td class="what">On-demand skills when a key is saved</td>
+    <td><span class="tag t-half">DOESN'T WORK</span><span class="plumb">PLUMBING</span></td>
+    <td>On the saved-key route every skill's full text is jammed into the prompt and
+      <code>open_skill</code> does not exist — so the 87%-of-the-prompt problem comes straight back.
+      <span class="ev"><code>provider.ts:752</code> hard-codes <code>cloud9Tools: false</code>.</span></td></tr>
+  </table></div>
+</section>
+
+<!-- ============================ 3. TOOLS ============================ -->
+<section class="card" data-fb="3 Tools">
+  <div class="sec-head"><h2><span class="num">3</span>Tools</h2>
+    <span class="why">What the agent can actually reach out and do</span></div>
+
+  <p><b>The hard numbers — measured on the real thing, not read off the code.</b> The actual
+  <code>claude</code> program on your PC was started with exactly the command line Cloud9 builds,
+  and asked what it was holding. Its own answer:</p>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin:14px 0 12px">
+    <div style="flex:1 1 180px;background:var(--unkBg);border:1px solid var(--line);border-radius:10px;padding:12px 14px">
+      <div style="font-size:26px;font-weight:800">37</div>
+      <div style="font-size:13px;color:var(--dim)">tools · a normal agent, "use my own setup" <b>OFF</b><br>
+      31 Claude Code tools + 6 of ours</div></div>
+    <div style="flex:1 1 180px;background:var(--haveBg);border:1px solid var(--line);border-radius:10px;padding:12px 14px">
+      <div style="font-size:26px;font-weight:800;color:var(--have)">166</div>
+      <div style="font-size:13px;color:var(--dim)">tools · the same agent, switch <b>ON</b><br>
+      the same 31 + the same 6 + <b>129</b> more from your 18 connected services</div></div>
+    <div style="flex:1 1 180px;background:var(--unkBg);border:1px solid var(--line);border-radius:10px;padding:12px 14px">
+      <div style="font-size:26px;font-weight:800">6</div>
+      <div style="font-size:13px;color:var(--dim)">tools · a talk-only agent, every switch off<br>
+      only Cloud9's own six</div></div>
+  </div>
+  <p style="margin:0 0 12px">166 is <b>31 + 6 + 129</b>. The switch adds <b>no new built-in
+  tools at all</b> — the tool line is identical either way. What it adds is your own world: 129
+  extra tools from your 18 connected services, and separately your 147 saved commands and 100
+  skills become visible to the agent (0 and 0 with the switch off).</p>
+  <span class="ev"><b>Who measured this, and when</b> · run by a Cloud9 agent working on this
+  report, 2026-08-07, against the <code>claude</code> program installed here — which reports
+  version <b>2.1.224</b> <b class="stamp">as of 2026-08-07 06:00</b>. The CLI was started with the exact arguments Cloud9 builds
+  (<code>claude-cli.ts:721-740</code>) against a live tool bridge, and its own opening
+  <code>system/init</code> message was read back. It then really called Cloud9's own
+  <code>search_conversation</code> tool and answered from what it found. <b>I did not re-run this
+  myself.</b></span>
+  <p style="margin-top:14px">The 31 built-in tools an agent can be granted, grouped behind 8
+  plain-words switches:</p>
+  <div style="margin:10px 0 4px">
+    <span class="pill">WebSearch</span><span class="pill">WebFetch</span><span class="pill">Read</span>
+    <span class="pill">Write</span><span class="pill">Edit</span><span class="pill">NotebookEdit</span>
+    <span class="pill">Glob</span><span class="pill">Grep</span><span class="pill">Task</span>
+    <span class="pill">TaskCreate</span><span class="pill">TaskGet</span><span class="pill">TaskList</span>
+    <span class="pill">TaskOutput</span><span class="pill">TaskStop</span><span class="pill">TaskUpdate</span>
+    <span class="pill">ToolSearch</span><span class="pill">Workflow</span><span class="pill">Monitor</span>
+    <span class="pill">SendMessage</span><span class="pill">ReportFindings</span><span class="pill">DesignSync</span>
+    <span class="pill">ScheduleWakeup</span><span class="pill">CronCreate</span><span class="pill">CronList</span>
+    <span class="pill">CronDelete</span><span class="pill">EnterWorktree</span><span class="pill">ExitWorktree</span>
+    <span class="pill">RemoteTrigger</span><span class="pill">PushNotification</span><span class="pill">Bash</span>
+    <span class="pill">PowerShell</span>
+  </div>
+  <span class="ev"><b>Also run separately</b> ·
+  <code>node -e "…claudeToolsFor…"</code> against <code>packages/engine/dist/abilities.js</code>
+  → everything on: <b>31</b> · everything off: <b>0</b> built-ins. The switch table is
+  <code>abilities.ts:378-500</code>.</span>
+
+  <div class="scroll" style="margin-top:16px"><table>
+  <tr><th>Thing</th><th>Us</th><th>Detail and evidence</th></tr>
+
+  <tr><td class="what">Read, write, search files · run programs · web · helper agents</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>All present, all switched per agent in plain words, all enforced on the real command line
+      rather than only asked for in the prompt.
+      <span class="ev"><code>abilities.ts:378-500</code> → <code>claude-cli.ts:739-756</code>
+      (<code>--tools</code>, <code>--allowed-tools</code>, <code>--disallowed-tools</code>).</span></td></tr>
+
+  <tr><td class="what">Cloud9's own six tools</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td><code>search_conversation</code>, <code>open_attachment</code>, <code>remember_this</code>,
+      <code>open_skill</code>, <code>check_token_use</code>, <code>propose_saving</code>. These are
+      things Claude Code does not have.
+      <span class="ev"><code>cloud9tools.ts:387, 418, 491, 567, 643, 675</code>.</span></td></tr>
+
+  <tr><td class="what">Pictures and PDFs an agent can really see</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Drag, paste or pick a file. The type is worked out from the bytes, never the file name, and
+      it goes across as a real picture, not a file path.
+      <span class="ev"><code>attachmentreach.ts:128-153</code>; transport at
+      <code>cloud9tools.ts:248-283</code>. <b>Where this evidence comes from:</b> a measurement written down in the code on 2026-08-05 — a colour-band PNG described correctly, and a compressed PDF returning a marker provably absent from its raw bytes. <b>Nobody re-ran it for this page.</b></span></td></tr>
+
+  <tr><td class="what">The doorway that carries all six — fixed and proved, but unguarded</td>
+    <td><span class="tag t-have">WORKS</span><span class="plumb">PLUMBING</span></td>
+    <td><b>The old bug where the doorway launched the wrong program is fixed, and it was proved in
+      the app that is installed on your machine — not in development.</b> The installed
+      <code>Cloud9.exe</code> was started as the doorway, listed all six tools and really answered a
+      search. <b>The one worry:</b> the whole fix is a single line and nothing tests it. If it ever
+      breaks again, every Cloud9 tool and every attachment goes silently dead in the installed app
+      while development still looks perfect. That is exactly how it failed last time.
+      <span class="ev"><b>Who ran this, and how far it is confirmed</b> · the spawn was run by a
+      Cloud9 agent working on this report, 2026-08-07 — installed
+      <code>…\Programs\Cloud9\Cloud9.exe</code> started with the installed
+      <code>dist\cloud9mcp.js</code> and <code>ELECTRON_RUN_AS_NODE=1</code>, returning all 6 tools
+      and a real search result. <b>I did not re-run the spawn myself</b>, and neither did the
+      reviewer. What was independently confirmed on disk is that the installed
+      <code>cloud9mcp.js</code> exists and that <code>ELECTRON_RUN_AS_NODE</code> appears twice in
+      the installed engine — so the wiring is attested, the launch is one agent's word. Fix at <code>cloud9tools.ts:1195-1198</code>; searching all source
+      for <code>ELECTRON_RUN_AS_NODE</code> returns <b>only those two lines</b> — no test anywhere.
+      Related suites run: 91 pass, 0 fail.</span></td></tr>
+
+  <tr><td class="what">Your own MCP servers, per agent</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Pick a connections file in the agent editor; it becomes a real <code>--mcp-config</code>.
+      <span class="ev"><code>App.tsx:8903-8936</code>, <code>:9441</code> →
+      <code>claude-cli.ts:766</code>; checked by the hub at <code>server.ts:733</code>.</span></td></tr>
+
+  <tr><td class="what">Keeping an agent inside its own folder</td>
+    <td><span class="tag t-half">A DIRECTION, NOT A LOCK</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>On a Claude agent the folder limit is advice, not a wall — writes outside it were recorded as succeeding in every permission mode. <b>That is a measurement written down in the code, not one re-run for this page.</b> Only a Codex agent gets a real operating-system fence.
+      The code says this out loud rather than pretending.
+      <span class="ev"><code>abilities.ts:100-160</code> (<code>FILE_FENCE_WORDS</code>);
+      Codex sandbox at <code>abilities.ts:789</code>.</span></td></tr>
+
+  <tr><td class="what">Tools that are missing — and whose fault it is</td>
+    <td><span class="tag t-half">MIXED</span><span class="plumb">PLUMBING</span></td>
+    <td><b>Not our doing:</b> <code>TodoWrite</code> — the running to-do list Claude Code keeps —
+      is absent from the Claude Code on this machine too, so there is nothing to close there.
+      (<code>BashOutput</code> and <code>KillShell</code> are also absent, but that proves nothing:
+      background work is a <em>setting</em> on <code>Bash</code>, not a separate tool — see the
+      agent loop section.) Measured at version 2.1.222; the program reported 2.1.224 <b class="stamp">as of 2026-08-07 06:00</b>.
+      <b>Ours:</b> <code>Skill</code> and <code>SlashCommand</code> are switched off
+      on purpose and come back the moment "use my own setup" is on (0 → 100 skills, 0 → 147 commands,
+      measured live). <code>ExitPlanMode</code> is replaced by our own plan gate.
+      <span class="ev">measured set <code>abilities.ts:77-84</code>; switched off at
+      <code>ownersetup.ts:96-97</code>; our plan gate <code>claude-cli.ts:566-579</code>.</span></td></tr>
+
+  <tr><td class="what">Git and GitHub are not tools the agent can pick up</td>
+    <td><span class="tag t-half">WORTH KNOWING</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Opening an issue, commenting, requesting a review, working on a repo — all of it is started
+      by <em>you</em> typing a room command, never chosen by the agent. An agent can still do plain
+      git through <code>Bash</code>, with no card.
+      <span class="ev"><code>engine.ts:740, 750-751</code>, each guarded to human authors only.</span></td></tr>
+  </table></div>
+</section>
+
+<!-- ============================ 4. HOOKS ============================ -->
+<section class="card" data-fb="4 Hooks">
+  <div class="sec-head"><h2><span class="num">4</span>Hooks</h2>
+    <span class="why">"When this happens, do that" — rules you set once</span></div>
+  <div class="scroll"><table>
+  <tr><th>Thing</th><th>Us</th><th>Detail and evidence</th></tr>
+
+  <tr><td class="what">Rules are plugged into the running app</td>
+    <td><span class="tag t-have">HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td><b>Good news, and it corrects an old note:</b> the famous "finished but nothing calls it"
+      bug was fixed on 2026-08-06 and the fix is in your installed app.
+      <span class="ev"><code>host.ts:143</code> calls <code>attachHooks</code>, and
+      <code>host.ts</code> is the only place the engine is ever built outside tests. Confirmed in the
+      installed bundle too: <code>…\resources\app\node_modules\@cloud9\engine\dist\host.js</code>
+      contains the call. 98 of 99 hook/verify tests pass; the one red is a known timing-flaky test
+      that passes alone (22/22).</span></td></tr>
+
+  <tr><td class="what">A screen to write a rule</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>No screen, no button, no chat command. The save and remove functions exist and are handed to
+      the app — and the app never calls them. The only way in is to hand-write
+      <code>hooks.json</code> including internal ID codes the app never shows you.
+      <span class="ev">Searching <code>apps/desktop</code> + <code>apps/relay</code> for
+      <code>HOOK_EVENTS|saveHooks|newHookId|addHook</code>: <b>no results</b>. Every "hook" in
+      <code>App.tsx</code> is a React hook or a test hook. Claude Code has <code>/hooks</code> plus a
+      settings file; we have neither.</span></td></tr>
+
+  <tr><td class="what">Which moments can trigger a rule</td>
+    <td><span class="tag t-half">4, NOT 9</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Ours: an agent finished · a job finished · someone is waiting for your OK · what an agent
+      said doesn't match what it did (that last one Claude Code has no equal for).
+      Missing: before a tool runs, after a tool runs, when you send a message, session start,
+      session end, before the history is squeezed.
+      <span class="ev"><code>hooks.ts:52-62</code>.</span></td></tr>
+
+  <tr><td class="what">A rule that can stop an agent, or feed it extra information</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>This is the biggest difference in this section and it is structural, not a missing feature.
+      All four of our moments fire <em>after</em> the fact, and whatever a rule returns is thrown
+      away. Claude Code can refuse a tool call before it happens and can inject text into the
+      agent's next thought. We cannot do either.
+      <span class="ev"><code>hooks.ts:208</code> returns a result that every caller discards;
+      <code>engine.ts:1213-1216</code> states the rule out loud — fire and forget, a hook must never
+      cost a turn.</span></td></tr>
+  </table></div>
+</section>
+
+<!-- ============================ 5. MEMORY ============================ -->
+<section class="card" data-fb="5 Memory">
+  <div class="sec-head"><h2><span class="num">5</span>Memory</h2>
+    <span class="why">What an agent still knows tomorrow</span></div>
+  <div class="scroll"><table>
+  <tr><th>Thing</th><th>Us</th><th>Detail and evidence</th></tr>
+
+  <tr><td class="what">An agent can write itself a note</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td><code>remember_this</code> is a real tool on the real command line — not just a function
+      somewhere. One note per file in the agent's own folder, 3 notes a turn, 500 characters each,
+      1,000 kept. It can only write into its own memory: there is no way to name another agent.
+      <span class="ev">Tool at <code>cloud9tools.ts:491-531</code>, on the line at
+      <code>claude-cli.ts:724, 739</code>; storage
+      <code>&lt;app data&gt;\engine\agents\&lt;id&gt;\memory\</code> — and there is a real
+      <code>memory</code> folder on your machine (<b class="stamp">as of 2026-08-07 06:00</b>) under
+      <code>a_msc5yx6j77cn4j</code>. 80 memory/approval tests run, 80 passed.</span></td></tr>
+
+  <tr><td class="what">It comes back next time</td>
+    <td><span class="tag t-have">HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>Full path traced: <code>engine.ts:3089</code> → <code>engine.ts:972</code> →
+      <code>provider.ts:573</code>. Budget 8,000 characters, newest kept. Deliberately put in the
+      changing half of the prompt so it does not spoil the cheap cached half.</td></tr>
+
+  <tr><td class="what">Memory is per agent</td>
+    <td><span class="tag t-have">HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>Not per room, not shared. A note follows the agent into every conversation it joins.
+      <span class="ev"><code>agent-memory.ts:337</code>.</span></td></tr>
+
+  <tr><td class="what">You can write and edit memory yourself</td>
+    <td><span class="tag t-half">HALF</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>You can <em>add</em> with <code>@Agent !remember …</code> and you can <em>delete</em> or
+      clear from the agent editor. You <b>cannot edit</b> a note, and there is no file you can open
+      — Claude Code's CLAUDE.md is a plain file you own and rewrite whenever you like.
+      <span class="ev">add at <code>engine.ts:691</code>; panel is read-and-delete only,
+      <code>App.tsx:3922-3960</code>; no edit path exists anywhere.</span></td></tr>
+
+  <tr><td class="what">Picking up an old session properly</td>
+    <td><span class="tag t-have">HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>Cloud9 uses Claude Code's own <code>--resume &lt;session&gt;</code>, not a replay of the
+      transcript — and then sends only what is new. Guarded by folder, by what the agent is allowed
+      to do, and by a 24-hour idle limit; a refused resume quietly starts fresh and still answers.
+      <span class="ev"><code>claude-cli.ts:627-630</code>; <code>sessionresume.ts:82</code>.
+      There was a real <code>sessions.json</code> in two of your agents' folders <b class="stamp">as of 2026-08-07 06:00</b>.
+      <b>Not on Codex</b> (it runs throwaway) and <b>not on the saved-key route</b>.</span></td></tr>
+
+  <tr><td class="what">Squeezing a long conversation instead of dropping it</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Claude Code summarises when a chat gets long. We keep the newest 24,000–120,000 characters
+      and the rest is simply gone — no summary, no note that it happened.
+      <span class="ev"><code>context.ts:52-58</code>, <code>:236-273</code>. Searching for
+      The only two summarisers in the whole codebase — <code>tldr.ts:40</code> and
+      <code>shared/src/index.ts:5425</code> — both summarise a <em>finished job</em>, never the
+      conversation.</span></td></tr>
+
+  <tr><td class="what">Handing memory from one agent to another</td>
+    <td><span class="tag t-half">DEAD</span><span class="plumb">PLUMBING</span></td>
+    <td>A "pass this memory across" option is defined and checked — and the one place that reads it
+      handles only conversations and quietly ignores everything else.
+      <span class="ev">named and checked at <code>agent-handoff.ts:163-164</code>; ignored
+      <code>engine.ts:3284-3286</code>.</span></td></tr>
+  </table></div>
+</section>
+
+<!-- ============================ 6. PERMISSIONS ============================ -->
+<section class="card" data-fb="6 Permissions">
+  <div class="sec-head"><h2><span class="num">6</span>Permissions</h2>
+    <span class="why">What it may do without asking you</span></div>
+  <div class="scroll"><table>
+  <tr><th>Thing</th><th>Us</th><th>Detail and evidence</th></tr>
+
+  <tr><td class="what">Three trust settings per agent</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Ask me every time · get on with it but ask before anything leaves this computer (the default
+      for new agents) · never ask.
+      <span class="ev"><code>shared/src/index.ts:186-231</code>; default <code>:233</code>.
+      Three things always ask no matter what: running programs, reaching outside its folder,
+      using a connected account (<code>shared/src/index.ts:100</code>).
+      Eight things always produce a card unless trust is "never ask": push, pull request, new repo,
+      open issue, comment, request review, check out a PR branch, resolve a review thread
+      (<code>shared/src/index.ts:306-321</code>).</span></td></tr>
+
+  <tr><td class="what">The approval card, end to end</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Engine asks → hub mints the card (a screen cannot invent one) → you press → only "approved"
+      counts → the waiting agent is released. Pressing Stop turns a waiting card into a No.
+      <span class="ev"><code>approvaldesk.ts:205-278</code>; hub <code>server.ts:2006</code> and
+      <code>:2173</code>; card <code>App.tsx:4720-4865</code>; settle
+      <code>approvaldesk.ts:445-461</code>.</span></td></tr>
+
+  <tr><td class="what">The 10-minute deadline on a card</td>
+    <td><span class="tag t-half">GOING</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Claude Code has no such thing. <b>And the ten minutes is not really ten minutes:</b> an
+      agent parked on a card prints nothing, and a chat turn that has printed nothing for
+      <b>three</b> minutes is killed. So you believe you have ten minutes to think and in a chat you
+      have three — after that the card is still on screen and the agent behind it is gone.
+      <b class="stamp">As of 2026-08-07 06:00:</b> <b>this is already being removed — PR #13 is open
+      and ready to merge, and it takes out this deadline along with the other two clocks.</b> The
+      timer lives in three places, so the thing to check when reviewing that PR is that all three
+      go; a partial removal only half-works.
+      <span class="ev"><code>shared/src/index.ts:487</code>; the default is copied in at <code>approvaldesk.ts:171</code> and the timers set at <code>:260, :328, :409</code>; the 3-minute silence clock is <code>timebudget.ts:157</code> and three <code>setTimeout</code> sites; also in the hub
+      (<code>server.ts:266, 2056, 3488</code>) and on screen (<code>App.tsx:4673, 4739, 4841</code>).
+      <b>The PR-list facts on this page were read at 2026-08-07 06:00 and go stale on their own</b> —
+      nobody has to touch this page for them to become wrong. Re-run <code>gh pr list</code> before
+      acting on any of them.</span></td></tr>
+
+  <tr><td class="what">Rules with patterns, e.g. "always allow <code>npm test</code>"</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Our permissions are whole-tool only, from a fixed list. There is no way to say "this command
+      yes, that command no". Claude Code does this per pattern, per folder, in a settings file.
+      <span class="ev"><code>abilities.ts:767-786</code>.</span></td></tr>
+
+  <tr><td class="what">"Always allow this" on the card itself</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>The card offers Approve, Not now, and See the job. The only way to stop being asked is to
+      change the whole agent's trust setting in the editor.
+      <span class="ev"><code>App.tsx:4849-4860</code>.</span></td></tr>
+
+  <tr><td class="what">Per-project settings files</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>One flat settings file for the whole app; Claude Code's layered ones are deliberately
+      switched off with <code>--setting-sources ""</code>.
+      <span class="ev"><code>main.cjs:254</code>; <code>ownersetup.ts:96</code>.</span></td></tr>
+
+  <tr><td class="what">Extra folders an agent may reach</td>
+    <td><span class="tag t-have">HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>Same idea as Claude Code's additional directories — picked in the editor, becomes a real
+      <code>--add-dir</code>.
+      <span class="ev"><code>host.ts:219-221</code> → <code>claude-cli.ts:762</code>.</span></td></tr>
+
+  <tr><td class="what">Worth knowing: Claude Code itself never asks, inside Cloud9</td>
+    <td><span class="tag t-have">BY DESIGN</span><span class="plumb">PLUMBING</span></td>
+    <td>Every turn runs with <code>--permission-mode dontAsk</code> — the equivalent of skipping
+      Claude Code's own prompts entirely. Cloud9's own coarser gates replace them. That is a
+      deliberate trade: fewer interruptions, less fine-grained control.
+      <span class="ev"><code>claude-cli.ts:623</code>.</span></td></tr>
+  </table></div>
+</section>
+
+<!-- ============================ 7. AGENT LOOP ============================ -->
+<section class="card" data-fb="7 Agent loop">
+  <div class="sec-head"><h2><span class="num">7</span>Agent loop</h2>
+    <span class="why">Think, use a tool, look at the result, go again</span></div>
+  <div class="scroll"><table>
+  <tr><th>Thing</th><th>Us</th><th>Detail and evidence</th></tr>
+
+  <tr><td class="what">The loop itself</td>
+    <td><span class="tag t-have">HAVE — because it is Claude Code's</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>We do not write one and we should not. Cloud9 hands the job to the real
+      <code>claude</code> program and reads back what it did.
+      <span class="ev"><code>claude-cli.ts:1033</code> → <code>run.ts:375</code>.</span></td></tr>
+
+  <tr><td class="what">The Stop button</td>
+    <td><span class="tag t-have">HAVE — really kills it</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Pressing Stop sends <code>!stop</code>, which is matched before everything else and outside
+      the queue, kills the whole process tree with <code>taskkill /T /F</code>, releases a card the
+      agent was waiting on, and throws away work still queued. It is recorded as "you stopped it",
+      not "it failed".
+      <span class="ev"><code>App.tsx:4566</code> → <code>engine.ts:672</code> →
+      <code>engine.ts:1559</code> → <code>run.ts:604-614</code>.
+      <b>Run this session:</b> <code>node --test dist/stopping-a-turn.test.js</code> →
+      <b>20 pass, 0 fail</b>.</span></td></tr>
+
+  <tr><td class="what">Stop on the saved-key route</td>
+    <td><span class="tag t-half">DOESN'T WORK</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>That route starts its program a different way, so Stop finds nothing to kill. The room says
+      "pulling the plug" and the agent keeps working and keeps spending. Nothing tests this.
+      <span class="ev"><code>provider.ts:728-776</code> never goes through <code>run.ts</code>,
+      which is the only place a stoppable process is registered
+      (<code>run.ts:488</code>).</span></td></tr>
+
+  <tr><td class="what">A step limit</td>
+    <td><span class="tag t-half">6, AND IT SAYS NOTHING</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>The CLI routes have no step limit. The saved-key route stops at 6 steps and returns the words
+      <code>(no response)</code> — no error, no explanation, nothing written down.
+      <span class="ev"><code>provider.ts:770</code> and <code>:777-781</code>.</span></td></tr>
+
+  <tr><td class="what">Two at a time, and no queue on screen</td>
+    <td><span class="tag t-half">HALF</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Hard-wired to two. Everything goes through it — chats, jobs, handovers. A third agent is
+      completely silent while it waits.
+      <span class="ev"><code>engine.ts:815-816</code>; the setting exists
+      (<code>engine.ts:131</code>) and the app never sets it. This is tracker row 8.</span></td></tr>
+
+  <tr><td class="what">The 45-minute cut-off and the 3-minute silence cut-off</td>
+    <td><span class="tag t-half">BOTH GOING</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Claude Code has neither, and <b class="stamp">as of 2026-08-07 06:00</b> <b>neither will we —
+      PR #13 removes both</b>, along with the card deadline. Today they still bite: 45 minutes total,
+      and a turn killed after 3 minutes of printing nothing in chat, 10 in a job.
+      <b>An earlier draft of this page argued the silence clock was "a genuinely good Cloud9 idea"
+      and that the 45-minute one was a deliberate decision worth keeping. Both arguments are
+      withdrawn.</b> You ruled otherwise — "agents are employees so i don't want to implement a
+      timing foundation" — and whether an employee works to a stopwatch was your call to make, not
+      ours to defend with an engineering reason. Nothing to build here: review PR #13 and land it.
+      <span class="ev"><code>timebudget.ts:108-112</code> and <code>:156-160</code>; enforced
+      <code>run.ts:443-467</code>. Both constants are deleted by PR #13, so these line numbers stop
+      existing when it lands. Measured on the real path while they were still there: "a run that
+      keeps talking is NOT killed" (20.4s), "a run that goes silent IS killed" (13.9s).</span></td></tr>
+
+  <tr><td class="what">Watching it work, live</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>One line per tool call as it happens — better than nothing but not word-by-word; the answer
+      itself arrives whole at the end.
+      <span class="ev"><code>livesteps.ts</code> → <code>engine.ts:1163</code> →
+      <code>App.tsx:3696</code>. Two blind spots: scheduled check-ins stream nothing
+      (<code>engine.ts:901</code>), and the saved-key route streams nothing ever.</span></td></tr>
+
+  <tr><td class="what">Helper agents (Claude Code's Task tool)</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>The "get help from its own helper agents" switch grants <code>Task</code> and its whole
+      family on the real command line.
+      <span class="ev"><code>abilities.ts:404-418</code> → <code>claude-cli.ts:739</code>.
+      <b>Can a helper spawn its own helper?</b> Observed in Claude Code directly rather than
+      guessed: each kind of helper is given its own named tool set — some kinds are granted every
+      tool <em>except</em> the one that spawns helpers — and a helper that is spawned is told not to
+      hand its whole job on again. So nesting is limited by what each helper is granted and by
+      policy. None of that is Cloud9's to control.</span></td></tr>
+
+  <tr><td class="what">Choosing the model</td>
+    <td><span class="tag t-have">HAVE per agent</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>18 models read out of the real <code>claude</code> program and each one actually test-run
+      before it is offered. Plus a thinking-effort dial in four plain rungs. There is no
+      <code>/model</code> mid-chat, no short names, and no automatic "this looks hard, use a bigger
+      model" — the only automatic switch is <em>downward</em>, when your model is busy, and it says
+      so in the room.
+      <span class="ev">catalogue <code>shared/src/index.ts:4483</code>; probe
+      <code>models.ts:60-76</code>; picker <code>App.tsx:9916</code>; effort
+      <code>shared/src/effort.ts:66-101</code>; fallback note <code>engine.ts:1048</code>.</span></td></tr>
+
+  <tr><td class="what">Start something in the background and check on it later</td>
+    <td><span class="tag t-unk">NOT VERIFIED</span><span class="plumb">PLUMBING</span></td>
+    <td><b>Correction, and then a doubt.</b> An earlier draft said background work was missing from
+      Claude Code itself, so there was nothing to fix. That was wrong: running a command in the
+      background is a <em>setting</em> on the command tool, not a separate tool, which is why
+      counting tools never found it. On this machine a backgrounded command calls the agent back
+      when it finishes.
+      <b>But the doubt is about Cloud9, and it stands.</b> Reading a background command's output is
+      <code>BashOutput</code> and stopping one is <code>KillShell</code>, and <b>neither is in the 31
+      tools a Cloud9 agent can hold</b> — <b>absent from the CLI's own measured set, not withheld by
+      Cloud9</b>. On top of that, every Cloud9 turn is a fresh program
+      that exits when the turn ends, and the 3-minute silence clock is built to kill exactly the
+      shape of a turn that sits quietly waiting. So the honest answer is <b>not verified, and there
+      is reason to doubt it</b> — it needs somebody to try it, not to build it.
+      <span class="ev">the 31-tool list is <code>abilities.ts:77-84</code> — no
+      <code>BashOutput</code>, no <code>KillShell</code> · fresh program each turn,
+      <code>claude-cli.ts:1033</code> · silence clock <code>timebudget.ts:157</code> ·
+      <code>!bg</code> is a different thing again, a whole delegated job
+      (<code>engine.ts:700-742</code>). Nothing in this repo tests any of it.
+      <b>Correction to my own correction:</b> an earlier version of this row said
+      <code>Monitor</code>, <code>TaskOutput</code>, <code>TaskList</code> and <code>TaskStop</code>
+      were how it checks back. They are not — <code>abilities.ts:404-412</code> grants those under
+      "helper agents", and they are the helper-agent family.</span></td></tr>
+  </table></div>
+</section>
+
+<!-- ============================ 8. VERIFICATION ============================ -->
+<section class="card" data-fb="8 Verification">
+  <div class="sec-head"><h2><span class="num">8</span>Verification</h2>
+    <span class="why">Did it really do what it said it did</span></div>
+  <div class="scroll"><table>
+  <tr><th>Thing</th><th>Us</th><th>Detail and evidence</th></tr>
+
+  <tr><td class="what">Checking an agent's claims — switched on</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td><b>This corrects an old note too.</b> The check used to be off. It is now on by default in
+      the app you run. If an agent says it wrote a file, ran tests, ran a command, or sent something
+      out, that claim is checked against the record — and a mismatch is posted into the room.
+      <span class="ev">The decision lives at <code>host.ts:144</code>
+      (<code>verify: opts.verifyClaims !== false</code>) and nothing passes <code>false</code>
+      outside a test. Checked every turn at <code>engine.ts:1070</code>; mismatch posted at
+      <code>engine.ts:1298-1301</code>. Cloud9-only — Claude Code has nothing like it.</span></td></tr>
+
+  <tr><td class="what">It only catches four kinds of claim</td>
+    <td><span class="tag t-half">NARROWER THAN IT SOUNDS</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>It looks for four sentence shapes: I wrote a file · tests pass · I ran a command · it went
+      out. An agent that just says "I fixed the bug" with no file, no test and no command is checked
+      against nothing and passes silently.
+      <span class="ev"><code>verify.ts:33-37</code>; empty report at <code>verify.ts:93-94</code>.</span></td></tr>
+
+  <tr><td class="what">Running the tests itself</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Nothing runs a build or a test after a turn. If an agent claims tests pass and never ran
+      them, the answer is "no record of that" — correct, but Cloud9 never goes and checks.
+      <span class="ev"><code>verify.ts</code> starts no programs at all — no
+      <code>spawn</code> or <code>exec</code> in the file.</span></td></tr>
+
+  <tr><td class="what">Knowing the check is on</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>It is silent when everything is fine — which means "no complaint" looks identical to
+      "nothing is checking". Only a test script can tell the two apart. You cannot.
+      <span class="ev">the flag is published at <code>engine.ts:2760</code> and read only inside a
+      test-only object at <code>App.tsx:2337</code>. Nothing on screen.</span></td></tr>
+
+  <tr><td class="what">A tick per turn, from facts not opinion</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>The receipt on each answer is worked out from what actually happened, never from the agent
+      grading itself, and says nothing when there is nothing honest to say.
+      <span class="ev"><code>receipts.ts:44</code> → <code>engine.ts:917</code> →
+      <code>App.tsx:5735</code>.</span></td></tr>
+
+  <tr><td class="what">The record of what it did is trimmed in three places — one silently</td>
+    <td><span class="tag t-half">HALF</span><span class="plumb">PLUMBING</span></td>
+    <td>Two of the three trims flag themselves, and a flagged trim correctly downgrades every verdict
+      to "I could not check". The third drops steps out of the live view with no signal at all.
+      <span class="ev">silent one at <code>engine.ts:1171</code>; honest ones at
+      <code>shared/src/index.ts:1421</code> and <code>:5614</code>, feeding
+      <code>verify.ts:106</code>.</span></td></tr>
+  </table></div>
+</section>
+
+<!-- ============================ EXTRAS ============================ -->
+<section class="card" data-fb="Extra things Claude Code has">
+  <div class="sec-head"><h2>Extra things Claude Code has</h2>
+    <span class="why">Not on your diagram, but you would meet them</span></div>
+  <div class="scroll"><table>
+  <tr><th>Thing</th><th>Us</th><th>Detail and evidence</th></tr>
+
+  <tr><td class="what">Plan mode — show me the plan before you touch anything</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>A per-agent switch and a <code>!plan</code> command. It narrows the agent to reading and
+      searching only, then raises a card with the plan.
+      <span class="ev"><code>engine.ts:1346</code>; <code>claude-cli.ts:623</code>
+      (<code>--permission-mode plan</code>) and <code>:578</code> (tools narrowed); card
+      <code>App.tsx:4727</code>; switch <code>App.tsx:9963</code>.</span></td></tr>
+
+  <tr><td class="what">Your own slash commands</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Yours are switched off. Cloud9 has its own <code>/</code> menu, but it is a fixed list of
+      <b>12</b> you cannot add to: <code>!issue !review !comment !code !bg !stop !plan !remember
+      !handoff !schedule !schedules !unschedule</code>. The real stand-in is Skills.
+      <span class="ev">counted in the list itself, <code>App.tsx:6038-6124</code>; switched off at
+      <code>ownersetup.ts:96</code>.</span></td></tr>
+
+  <tr><td class="what">Adding to an agent while it is already working</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>In Claude Code you can type while it works and it picks the message up. In Cloud9 there is no
+      way to add to a turn that is running — your only lever is Stop, which throws away everything
+      queued behind it. You would meet this daily.
+      <span class="ev">Stop drops the queue at <code>engine.ts:808</code>, called from
+      <code>engine.ts:1609</code>. No path anywhere feeds a new message into a running turn.</span></td></tr>
+
+  <tr><td class="what">Naming a helper agent with its own model, tools and instructions</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>Claude Code lets you define named helpers in files. A Cloud9 agent can call for helpers, but
+      it cannot be told <em>which</em> helper, with what model or what limits — that is Claude Code's
+      own business once the tool is granted.
+      <span class="ev">the switch grants the whole family and nothing narrows it,
+      <code>abilities.ts:404-418</code>.</span></td></tr>
+
+  <tr><td class="what">Managing connected services inside the app</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>You point an agent at a file you wrote yourself. There is no adding a service, no signing in
+      to one, no seeing whether one is connected — all of which Claude Code does in-session.
+      <span class="ev">the only door is a file picker, <code>App.tsx:8903-8936</code>.</span></td></tr>
+
+  <tr><td class="what">Changing how much it asks, just for right now</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Claude Code switches between asking, accepting edits, planning and skipping per session. In
+      Cloud9 the three trust settings belong to the <em>agent</em> — to change how much it asks for
+      one job you must go and edit the agent itself, then remember to change it back.
+      <span class="ev"><code>shared/src/index.ts:186-231</code>; editor
+      <code>App.tsx:9426</code>.</span></td></tr>
+
+  <tr><td class="what">Undo — rewind the conversation and the files</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Nothing of the kind exists. The nearest thing is that repo jobs work on their own branch, so
+      damage is contained — but there is no going back.
+      <span class="ev">Searching all source for <code>rewind|checkpoint|snapshot|restore</code>
+      finds only scroll positions and help text.</span></td></tr>
+
+  <tr><td class="what">How much room is left in the conversation</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>We show money spent, not room left. The one function that knows the answer is used only to
+      decide how much history to send, and never put on screen. It is deliberate — the spending
+      screen bans the word "context" as jargon — but it means the gauge Claude Code users watch most
+      has no equal here.
+      <span class="ev"><code>shared/src/index.ts:4600</code>; its only caller
+      <code>context.ts:180</code>; rule <code>App.tsx:13529</code>.</span></td></tr>
+
+  <tr><td class="what">Saving or exporting a conversation, a list of past sessions</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>No export, no resume picker. Less needed here — conversations are permanent rooms and past
+      jobs are on the Activity screen — but if you want a transcript out of the app, there isn't one.
+      <span class="ev">Only per-message Copy buttons, <code>App.tsx:5672</code>.</span></td></tr>
+
+  <tr><td class="what">Statusline, keyboard shortcuts, settings by folder, environment variables</td>
+    <td><span class="tag t-no">DON'T HAVE</span><span class="plumb">PLUMBING</span></td>
+    <td>One global hotkey for the quick-chat window and nothing else configurable.
+      <span class="ev"><code>main.cjs:1266</code>.</span></td></tr>
+
+  <tr><td class="what">Being told when an agent finishes or needs you</td>
+    <td><span class="tag t-have">HAVE</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Real Windows notifications plus in-app toasts, with quiet hours and de-duplication.
+      <span class="ev"><code>main.cjs:938-956</code>; rules <code>shared/src/notify.ts</code>;
+      toasts <code>App.tsx:1840</code>.</span></td></tr>
+
+  <tr><td class="what">…but one notification file is wired to nothing</td>
+    <td><span class="tag t-half">NEW FINDING</span><span class="plumb">PLUMBING</span></td>
+    <td>The file that turns an event into plain notification words has <b>only a test as a caller</b>
+      and is not even exported from the package, so nothing outside could reach it if it wanted to.
+      This is the same class of failure as the two that were just fixed. Somebody should check what
+      wording is missing because of it.
+      <span class="ev">Searching all source for <code>notify-feed.js</code> outside
+      <code>dist/</code> returns one line — its own test. Not in
+      <code>packages/engine/src/index.ts</code>.</span></td></tr>
+
+  <tr><td class="what">Git and GitHub</td>
+    <td><span class="tag t-have">HAVE — richer than Claude Code's</span><span class="notice">YOU'D NOTICE</span></td>
+    <td>Branch, commit, push, open a PR, comment, request review, read CI status — each behind an
+      approval card, always on a branch, never straight to main. <code>gh</code> sign-in is a proper
+      settings card.
+      <span class="ev"><code>github.ts</code>, <code>github-ops.ts</code>,
+      <code>repowork.ts:166</code>, <code>harness.ts:701</code>.</span></td></tr>
+  </table></div>
+</section>
+
+<!-- ============================ OURS ONLY ============================ -->
+<section class="card" data-fb="Things we have that Claude Code does not">
+  <div class="sec-head"><h2>Things we have that Claude Code does not</h2>
+    <span class="why">Being fair — this is not a one-way list</span></div>
+  <ul class="rank good">
+    <li data-fb="Several named agents living in chat rooms"><b>Several named agents living in chat rooms</b>, each with its own face, persona, skills and
+      memory, all present at once. Claude Code is one assistant in one terminal.</li>
+    <li data-fb="Friends can join your Cloud9"><b>Friends can join your Cloud9</b> over your private network, with per-room permissions —
+      and never over the open internet, which is enforced in code, not just intended.
+      <span class="ev"><code>apps/relay/src/joinhub.ts</code>;
+      <code>shared/src/hubaddress.ts:30, 155</code>.</span></li>
+    <li data-fb="A spending cap per agent"><b>A spending cap per agent</b>, handed to the program as its own limit, with a plain-words
+      reason when it stops — <b>but read the warning below before you rely on it.</b>
+      <span class="ev"><code>claude-cli.ts:670</code>, <code>:206</code>. <b>No agent has a ceiling
+      unless you set one</b> — no cap at all is "the day-one default", said in those words at
+      <code>shared/src/index.ts:756</code> — <b>and a Codex agent cannot be given one at all</b>,
+      because only Claude reports what a turn cost (<code>providerCanBeCapped</code>,
+      <code>shared/src/index.ts:672-674</code>). Board row 5 — <b class="stamp">as of 2026-08-07 06:00</b>, open with nobody assigned.</span></li>
+    <li data-fb="A spending screen that names why an agent "><b>A spending screen that names why an agent is expensive.</b>
+      <span class="ev"><code>App.tsx:13656</code>; <code>shared/src/tokenuse.ts</code>.</span></li>
+    <li data-fb="The approval card and the trust ladder"><b>The approval card and the trust ladder</b> — one place where everything that leaves your
+      computer stops and waits for you.</li>
+    <li data-fb="The did it do what it said check"><b>The "did it do what it said" check</b> — nothing in Claude Code does this.</li>
+    <li data-fb="Turn receipts worked out from facts"><b>Turn receipts worked out from facts</b>, never the agent grading its own homework.</li>
+    <li data-fb="An agent can propose spending less"><b>An agent can propose spending less</b> and you approve it — and the change is a closed
+      two-item list, so an accidental yes can only ever make an agent cheaper or quieter.</li>
+    <li data-fb="The same agent can run on Claude or on Cod"><b>The same agent can run on Claude or on Codex</b>, with the sandbox difference stated
+      honestly rather than glossed over.</li>
+    <li data-fb="It re-checks whether the Claude and Codex pr"><b>It re-checks whether the Claude and Codex programs are installed</b> on a backoff, so one
+      slow answer never becomes a permanent "not installed".
+      <span class="ev"><code>harness.ts:518</code>.</span></li>
+  </ul>
+</section>
+
+<!-- ============================ HONESTY ============================ -->
+<section class="card" data-fb="What I could not prove">
+  <h3>What I could not prove</h3>
+  <p>Said plainly, so nothing here reads as more certain than it is:</p>
+  <ul>
+    <li data-fb="Two things were tested against the live prog"><b>Two things were tested against the live program</b> — the real <code>claude</code> CLI was
+      started with Cloud9's own command line and asked what it held (37 / 166 / 6 tools), and the
+      installed <code>Cloud9.exe</code> was started as the tool doorway and really answered a search.
+      <b>Neither was re-run by me, and neither by the reviewer</b>; both were run by a Cloud9 agent
+      working on this report. What the reviewer did confirm independently is the disk half of the
+      second one. Everything else is code read and traced, plus test suites run this session:
+      88 prompt/skills · 98 hooks/verify · 91 tools/attachments/fences · 80 memory/approvals ·
+      20 stopping-a-turn · 12 relay.</li>
+    <li data-fb="Several measured figures are measurements re"><b>Several "measured" figures are measurements recorded in code comments</b> dated
+      2026-07-29 to 2026-08-07 — the 318× cost, the file-fence probe, the picture and PDF test. They
+      are unusually specific and consistent, but I did not re-run them. <b>The 318× in particular is
+      one cold turn</b> — see the money row for why that matters.</li>
+    <li data-fb="No build, package or install was run"><b>No build, package or install was run</b> — another agent owns that slot. I checked the
+      already-installed app on disk instead, and its main file matches the one built from master.</li>
+    <li data-fb="Whether a background command survives to t"><b>Whether a command left running in the background survives to the next turn</b> — not
+      verified — and there is reason to doubt it. The two tools that read and stop such a command,
+      <code>BashOutput</code> and <code>KillShell</code>, are not in the 31 an agent can hold; every
+      turn is a fresh program that exits; and the silence clock kills a turn that waits quietly.
+      Nothing in this repo tests it either way. See the agent loop section.</li>
+    <li data-fb="Two things this page got wrong, both mine"><b>Two things this page got wrong, both mine, both corrected above.</b> First, an early
+      draft said background work was missing from Claude Code itself. It is not — it is a setting on
+      the command tool, which counting tools can never see. Second, the correction I wrote for that
+      was itself wrong: it named <code>Monitor</code>, <code>TaskOutput</code>, <code>TaskList</code>
+      and <code>TaskStop</code> as the tools that check on a background command. They are not — they
+      are the helper-agent family. Both are fixed in the agent loop section, and I am leaving the
+      trail here rather than tidying it away.</li>
+    <li data-fb="How a Cloud9 agent invokes one of your 100"><b>How a Cloud9 agent invokes one of your 100 real skills</b> when the setup switch is on —
+      not verified. They load; the tool that normally runs them is not on the line.</li>
+    <li data-fb="How the stale claims get found"><b>How the rotting claims get found, since this page kept getting them wrong.</b> Searching
+      for the words does not work — this page once said a clock was "still on master", which means
+      the same as "nobody is removing it" and shares not one word with it. Phrasings are endless.
+      <b>The coloured tags are not:</b> there are about fifteen, every one of them claiming something
+      about right now, and one command lists them all —
+      <code>grep "STILL ON\|DOESN'T WORK\|DEAD\|NEW FINDING\|NOT VERIFIED"</code>. Check that list
+      against what is open, and the class is closed by construction rather than by remembering.
+      That check found the last one: a row whose words had been fixed but whose tag still said
+      <em>STILL ON</em>.</li>
+    <li data-fb="The claims that rot on their own"><b>One kind of claim here rots without anybody touching this page.</b> Anything about who is
+      or is not already working on something comes from asking GitHub what was open at
+      <b class="stamp">2026-08-07 06:00</b>, and a colleague opening or merging a pull request makes
+      it wrong on its own. <b>This page has now been wrong in both directions on that one class</b> —
+      an early draft said someone was removing the clocks when nobody was; a later one said nobody
+      was when PR #13 already had. Those lines are stamped; ask what is open now before acting on
+      them. Everything else here is about code and holds until the code changes.</li>
+    <li data-fb="Small tidy-up spotted in passing:"><b>Small tidy-up spotted in passing:</b> three files ending <code>.test.ts.new</code> sit in
+      the engine folder — never compiled, never run, dead weight.</li>
+  </ul>
+</section>
+
+<!-- ============================ RECOMMENDATION ============================ -->
+<section class="card hero" data-fb="RECOMMENDATION — the three to close first">
+  <h2>Recommendation — the three to close first</h2>
+  <p class="sub" style="margin-bottom:14px">One recommendation, not a menu. Chosen for damage done
+  divided by work needed, and every one of them is something you would feel.</p>
+  <ol class="rank">
+    <li data-fb="FIX Settle the money default already on the board"><b class="big">Settle the money default that is already waiting on you — this report found the missing piece.</b><br>
+      You are not being asked this again. "The money default" is already on the board under
+      <em>Waiting on Vikas</em>, and the recommendation there stands: default OFF, plus a cap, switch
+      one click away. <b>What this report adds is the fact that should settle it:</b> a Codex agent
+      <em>cannot be given a spending limit at all</em>, because only Claude reports what a turn cost.
+      So "we'll add a cap later" does not cover every agent — for Codex there is nothing to add
+      until someone builds it, and its only other ceiling is a clock that just went from 10 minutes
+      to 45.
+      <span class="ev"><b>Where</b> · setup default <code>shared/src/index.ts:258</code> · no cap by
+      default <code>shared/src/index.ts:756</code> · <code>providerCanBeCapped</code>
+      <code>shared/src/index.ts:672-674</code>, which is board row 5, open and unassigned.
+      <b>Why first</b> · it is the only item on this page charging you while you read it, and the
+      decision is yours, not ours — everything else here is work we can do without you.</span></li>
+
+    <li data-fb="FIX The saved API key trap"><b class="big">Stop the saved API key from switching you onto the broken route.</b><br>
+      Right now you are on the good route only because you have never saved a key. The moment you do,
+      every default agent you own refuses to answer at all, Stop stops working, the live view goes
+      dark, memory and skills tools vanish and agents die after 6 steps. That is a one-line
+      preference order making a booby trap out of a settings field. Either make the signed-in Claude
+      app win, or refuse to accept a saved key until that route can do what the other one does.
+      And one more thing about that route, which is board row 7: it runs under <b>no time limit and
+      no silence clock at all</b>, so a turn that hangs there hangs for ever.
+      <span class="ev"><b>Where</b> · <code>host.ts:184-189</code> is the whole preference order ·
+      no clocks on that route, <code>provider.ts:705</code> onward (board row 7).
+      <b>Why second</b> · it is the largest single gap on this page, it is invisible until it bites, and it
+      is the cheapest to fix — it is one line deciding which route wins.</span></li>
+
+    <li data-fb="FIX Land PR 13 which already removes the clocks"><b class="big">Land PR #13 — this one is already built, it needs reviewing, not building.</b><br>
+      <b class="stamp">As of 2026-08-07 06:00.</b> The problem is real: the card waits ten minutes,
+      the agent behind it is killed after three, so for seven of those ten minutes you are looking at
+      a live card attached to a corpse. <b>But do not send anyone to build this.</b> PR #13, "just
+      remove the timing — an agent is not on a clock any more", is open and ready to merge and takes
+      out all three clocks. What it needs from us is a review, and the one thing to check is that the
+      card's deadline really goes in <b>all three</b> places — engine, hub and screen — because a
+      partial removal only half-works. Worth checking too that a turn parked on a card can no longer
+      be killed for going quiet, since "waiting for Vikas" was never "gone quiet".
+      <span class="ev"><b>Where</b> · <code>shared/src/index.ts:487</code>, plus the hub
+      (<code>server.ts:266, 2056, 3488</code>) and the screen (<code>App.tsx:4673, 4739</code>) ·
+      silence clock <code>timebudget.ts:156-160</code>. Board row 6 — <b>no longer unassigned</b>.
+      <b>Why third</b> · it silently wastes work you already paid for, and it makes the one
+      safety feature you rely on untrustworthy.</span></li>
+
+  </ol>
+  <p style="margin-top:18px"><b>Fourth: show an agent that is only waiting its turn.</b> Only two
+  turns run at once (<code>engine.ts:815</code>) and everything behind them is held in silence — no
+  "queued", no tick. It is fourth rather than third only because the hard half is already understood
+  and owned: board row 8 says nothing on the wire currently reports an agent's queue, so the engine
+  has to start saying it before any screen can show it.</p>
+  <p><b>Fifth: give hooks a screen — or stop shipping
+  them.</b> A rules engine you cannot write a rule for is not a feature, and all the hard work is
+  already done (<code>hookwiring.ts:63-78</code> hands the app <code>save</code> and
+  <code>remove</code>; nothing calls them). It is fifth and not higher only because it is a feature you have never asked for, while everything above it is costing you money or work today.</p>
+  <p><b>One thing that is not a harness gap but is worse than most of them:</b> a Codex agent
+  cannot be given a spending limit <em>at all</em> — only Claude reports what a turn cost, so
+  <code>providerCanBeCapped</code> (<code>shared/src/index.ts:672-674</code>) returns true for Claude
+  only. Its one remaining ceiling was the clock, and that just went from 10 minutes to 45. That is
+  board row 5 — <b class="stamp">as of 2026-08-07 06:00</b>, open with nobody assigned. It is real money, unbounded, today.</p>
+  <p><b>What I would not do yet:</b> reading real <code>SKILL.md</code>
+  skills, squeezing a long conversation instead of dropping it, undo, transcript export, or a
+  context-left gauge. They are real gaps, but every one of them is invisible next to the three
+  above. Do not chase <code>TodoWrite</code> at all — the running to-do list is missing from the
+  Claude Code on this machine too, so there is nothing on our side to fix. <b>Background work is
+  the opposite and I had it backwards at first:</b> the tools that would read and stop such a
+      command are not on the line at all, and nothing here proves
+  a command survives the end of a turn, so it needs <em>testing</em>, not building — see the agent
+  loop section.</p>
+</section>
+
+<footer data-fb="Footer">
+  Cloud9 · harness inventory · read against <code>master</code> <code>e08ba7f</code>,
+  the same code installed on this machine.<br>
+  Hover any block to leave a 👍 / 👎 / note, then press "Copy my feedback" and paste it back to me.
+</footer>
+
+</div>
+<script>/* ============================================================
+   Vikas review kit — feedback layer for every HTML review page.
+   Paste this <script> at the end of any artifact I hand him.
+
+   What it gives him:
+     - click any section marked data-fb="<label>" to attach a note
+     - thumbs up / down per section
+     - a floating panel listing everything he has said
+     - ONE button that copies it all as plain text to paste back
+
+   Why it exists: published artifacts cannot send data back into a
+   Claude session (no such capability). This turns "read a wall and
+   retype your thoughts" into "click, type, copy once".
+
+   Usage:
+     1. mark reviewable blocks:  <section data-fb="Option A — Slack True">
+     2. include this script once, at the end of the page.
+   ============================================================ */
+(function () {
+  "use strict";
+  var STORE = "vikas-fb-" + (document.title || location.pathname);
+  var notes = {};
+  try { notes = JSON.parse(localStorage.getItem(STORE) || "{}"); } catch (e) { notes = {}; }
+
+  function save() { try { localStorage.setItem(STORE, JSON.stringify(notes)); } catch (e) {} }
+
+  var css = document.createElement("style");
+  css.textContent = [
+    ':root{--fb-ink:#16232e;--fb-bg:#fff;--fb-line:#d8e0e8;--fb-accent:#2c7fc4;',
+    '--fb-yes:#1e7d4f;--fb-yes-bg:#e3f3ea;--fb-no:#b03535;--fb-no-bg:#fbe7e7;--fb-muted:#5a6b7a;}',
+    '@media (prefers-color-scheme:dark){:root{--fb-ink:#e6edf3;--fb-bg:#18232e;--fb-line:#2f3d4a;',
+    '--fb-accent:#5aa5dd;--fb-yes:#5cc78f;--fb-yes-bg:#14372a;--fb-no:#e07a7a;--fb-no-bg:#3d1d1d;--fb-muted:#93a4b3;}}',
+    '[data-fb]{position:relative;}',
+    '[data-fb].fb-has{outline:2px solid var(--fb-accent);outline-offset:3px;border-radius:8px;}',
+    '.fb-tools{position:absolute;top:.4rem;right:.4rem;display:flex;gap:.25rem;opacity:.45;',
+    'transition:opacity .15s;z-index:5;}',
+    '[data-fb]:hover .fb-tools,[data-fb]:focus-within .fb-tools{opacity:1;}',
+    '@media (prefers-reduced-motion:reduce){.fb-tools{transition:none;}}',
+    '.fb-tools button{font:600 .78rem/1 system-ui,sans-serif;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);border-radius:99px;padding:.3rem .6rem;cursor:pointer;}',
+    '.fb-tools button:hover{border-color:var(--fb-accent);color:var(--fb-accent);}',
+    '.fb-tools button.on-yes{background:var(--fb-yes-bg);color:var(--fb-yes);border-color:var(--fb-yes);}',
+    '.fb-tools button.on-no{background:var(--fb-no-bg);color:var(--fb-no);border-color:var(--fb-no);}',
+    '.fb-note{margin-top:.6rem;width:100%;box-sizing:border-box;font:.92rem/1.5 system-ui,sans-serif;',
+    'color:var(--fb-ink);background:var(--fb-bg);border:1px dashed var(--fb-line);border-radius:8px;',
+    'padding:.55rem .7rem;resize:vertical;min-height:2.6rem;}',
+    '.fb-note:focus{outline:2px solid var(--fb-accent);outline-offset:1px;border-style:solid;}',
+    '.fb-bar{position:fixed;right:1rem;bottom:1rem;z-index:9999;display:flex;flex-direction:column;',
+    'align-items:flex-end;gap:.5rem;font:14px/1.5 system-ui,sans-serif;}',
+    '.fb-bar button{cursor:pointer;border-radius:99px;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);padding:.55rem 1rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.14);}',
+    '.fb-bar .fb-copy{background:var(--fb-accent);color:#fff;border-color:transparent;}',
+    '.fb-panel{background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;',
+    'padding:.9rem 1rem;max-width:min(380px,90vw);max-height:50vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.2);display:none;}',
+    '.fb-panel.open{display:block;}',
+    '.fb-panel h4{margin:0 0 .5rem;font-size:.95rem;}',
+    '.fb-panel li{margin-bottom:.5rem;font-size:.88rem;}',
+    '.fb-panel .lbl{font-weight:600;}',
+    '.fb-empty{color:var(--fb-muted);font-size:.88rem;margin:0;}',
+    '@media print{.fb-bar,.fb-tools{display:none;}}'
+  ].join("");
+  document.head.appendChild(css);
+
+  // The floating bar is built FIRST: per-section wiring calls render(), which
+  // needs these to exist. (Building it after the loop threw on the first
+  // section and left every later section without its buttons.)
+  var bar = document.createElement("div");
+  bar.className = "fb-bar";
+  var panel = document.createElement("div");
+  panel.className = "fb-panel";
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  var copy = document.createElement("button");
+  copy.type = "button"; copy.className = "fb-copy"; copy.textContent = "📋 Copy my feedback";
+  bar.appendChild(panel); bar.appendChild(toggle); bar.appendChild(copy);
+  document.body.appendChild(bar);
+
+  var blocks = [].slice.call(document.querySelectorAll("[data-fb]"));
+
+  // Standalone mode: a page with no marked-up blocks (e.g. a full-screen
+  // prototype we did not author) still gets a working note box, so the layer
+  // can be injected into ANY page rather than only pages we wrote.
+  if (!blocks.length) {
+    var solo = document.createElement("div");
+    solo.setAttribute("data-fb", document.title || "this page");
+    solo.setAttribute("data-fb-solo", "");
+    solo.style.cssText = "position:fixed;left:1rem;bottom:1rem;z-index:9998;width:min(320px,80vw);" +
+      "background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;" +
+      "padding:2.2rem .8rem .8rem;box-shadow:0 8px 30px rgba(0,0,0,.2);font:14px/1.5 system-ui,sans-serif;";
+    var cap = document.createElement("div");
+    cap.textContent = "Notes on this page";
+    cap.style.cssText = "font-weight:600;font-size:.85rem;margin-bottom:.3rem;";
+    solo.appendChild(cap);
+    document.body.appendChild(solo);
+    blocks = [solo];
+  }
+  blocks.forEach(function (el) {
+    var key = el.getAttribute("data-fb");
+    if (!notes[key]) notes[key] = { verdict: "", text: "" };
+
+    var tools = document.createElement("div");
+    tools.className = "fb-tools";
+    var yes = document.createElement("button");
+    yes.type = "button"; yes.textContent = "👍 like"; yes.title = "I like this";
+    var no = document.createElement("button");
+    no.type = "button"; no.textContent = "👎 no"; no.title = "Not this";
+    var add = document.createElement("button");
+    add.type = "button"; add.textContent = "💬 note"; add.title = "Write a note";
+    tools.appendChild(yes); tools.appendChild(no); tools.appendChild(add);
+    el.appendChild(tools);
+
+    var note = document.createElement("textarea");
+    note.className = "fb-note";
+    note.placeholder = "Your note on “" + key + "”…";
+    note.value = notes[key].text || "";
+    // in standalone mode the box is the whole point — always show it
+    var solo = el.hasAttribute("data-fb-solo");
+    note.style.display = notes[key].text || solo ? "block" : "none";
+    el.appendChild(note);
+
+    function paint() {
+      yes.className = notes[key].verdict === "yes" ? "on-yes" : "";
+      no.className = notes[key].verdict === "no" ? "on-no" : "";
+      el.classList.toggle("fb-has", !!(notes[key].verdict || notes[key].text));
+      render();
+    }
+    yes.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "yes" ? "" : "yes"; save(); paint();
+    });
+    no.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "no" ? "" : "no"; save(); paint();
+    });
+    add.addEventListener("click", function () {
+      note.style.display = "block"; note.focus();
+    });
+    note.addEventListener("input", function () {
+      notes[key].text = note.value.trim(); save(); paint();
+    });
+    paint();
+  });
+
+  function collected() {
+    return Object.keys(notes)
+      .filter(function (k) { return notes[k].verdict || notes[k].text; })
+      .map(function (k) { return { key: k, v: notes[k].verdict, t: notes[k].text }; });
+  }
+
+  function asText() {
+    var items = collected();
+    if (!items.length) return "";
+    var out = ["FEEDBACK ON: " + (document.title || "this page"), ""];
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "LIKE" : i.v === "no" ? "NO" : "NOTE";
+      out.push("- [" + mark + "] " + i.key + (i.t ? " — " + i.t : ""));
+    });
+    return out.join("\n");
+  }
+
+  function render() {
+    var items = collected();
+    toggle.textContent = items.length ? "🗒 " + items.length + " marked" : "🗒 no marks yet";
+    if (!items.length) { panel.innerHTML = '<p class="fb-empty">Hover any section, then use 👍 / 👎 / 💬.</p>'; return; }
+    var html = "<h4>What you've said</h4><ul>";
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "👍" : i.v === "no" ? "👎" : "💬";
+      html += '<li>' + mark + ' <span class="lbl">' + escapeHtml(i.key) + "</span>" +
+        (i.t ? " — " + escapeHtml(i.t) : "") + "</li>";
+    });
+    panel.innerHTML = html + "</ul>";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  toggle.addEventListener("click", function () { panel.classList.toggle("open"); });
+  copy.addEventListener("click", function () {
+    var text = asText();
+    if (!text) { copy.textContent = "nothing marked yet"; setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 1600); return; }
+    var done = function () {
+      copy.textContent = "✅ copied — paste it to Claude";
+      setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 2600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { window.prompt("Copy this:", text); }
+      document.body.removeChild(ta);
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
