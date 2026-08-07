@@ -6,16 +6,16 @@ a commit, or an agent's report, THIS FILE WINS.**
 Anyone arriving — Vikas, a new session, a new agent — reads this first and
 needs nothing else. Anyone doing work updates it as they go, not at the end.
 
-Last updated: **2026-08-07 22:43 +05:30** · by: audit session · *live delivery board below is the current contract; external counts still rot and must be re-read before action*
+Last updated: **2026-08-07 23:26 +05:30** · by: audit session · *live delivery board below is the current contract; external counts still rot and must be re-read before action*
 
-## LIVE DELIVERY BOARD — 2026-08-07 22:43 +05:30
+## LIVE DELIVERY BOARD — 2026-08-07 23:26 +05:30
 
 This compact board is the live delivery contract. Allowed statuses are **MERGED**, **BUILDING**, **IN REVIEW**, **READY NEXT**, and **BLOCKED WITH REASON**. “Unassigned” is intentional until an author and a different reviewer are named.
 
 | Feature | Status | Branch-PR | Author | Reviewer | Next proof / software-team scope |
 |---|---|---|---|---|---|
 | Resizable threads | MERGED | `master` / PR #14 | Luna | unassigned | Verify the installed build still preserves draggable width, focus restoration, narrow takeover, and restart persistence. |
-| Remove timing | IN REVIEW | `remove-timing` / PR #13 | agent | unassigned | Review the no-clock turn/approval contract and prove Stop still owns the real process tree. |
+| Remove timing | IN REVIEW | `fix/agents-are-not-on-a-timer` / PR #13 (`97daeae`) | Vikas Mittal | unassigned | Review the no-clock turn/approval contract and prove Stop still owns the real process tree. |
 | Manual workflows | IN REVIEW | `workflow-list-builder` / PR #18 (`ded3a1c`) | Vikas Mittal | chatgpt-codex-connector | Keep manual list/builder work scoped; review the plain manual-v1 slice without implying triggers, schedules, run history, or permissions. |
 | Persistent mentions-and-replies notification inbox | MERGED | `master` / PR #19 (`551b2f8`) | Vikas Mittal | chatgpt-codex-connector | Re-read the merged durable per-user mention/reply contract and later prove read/dismiss, source navigation, ownership, retention, mute/quiet/OS, and deleted/inaccessible states. |
 | Saved/Later message queue | READY NEXT | unassigned / next PR | unassigned | unassigned | Prove per-user save/unsave, persistence, auth isolation, source navigation, retention, and deleted/inaccessible handling; PR #17 is audit/contract only. |
@@ -27,9 +27,9 @@ This compact board is the live delivery contract. Allowed statuses are **MERGED*
 | Richer handoff context | READY NEXT | unassigned / next PR | unassigned | unassigned | Deliver and render memory/run/artifact/thread pointers with owner and membership checks. |
 | Verification runner/status | READY NEXT | unassigned / next PR | unassigned | unassigned | Run an owner-approved recipe and persist visible checked/could-not-check/mismatch evidence. |
 | Engineering Pulse | READY NEXT | unassigned / next PR | unassigned | unassigned | Provide an internal engineering Pulse/feed surface only after its loading, error, membership, and moderation contract is explicit. |
-| Internal team social feed | BUILDING | `internal-team-social-feed` / PR #20 (`505d85e`) | Vikas Mittal | chatgpt-codex-connector | Review project-scoped chronological posts/comments/reactions by humans and agents with membership isolation, own edit/delete, durable links, unread, and accessible states. |
+| Internal team social feed | BUILDING | `internal-team-social-feed` / PR #20 (`c712bf0`) | Vikas Mittal | chatgpt-codex-connector | Review project-scoped chronological posts/comments/reactions by humans and agents with membership isolation, own edit/delete, durable links, unread, and accessible states. |
 | Project polls | READY NEXT | unassigned / next PR | unassigned | unassigned | Keep polls project-scoped with explicit ownership, close/edit rules, and accessible results; no public publishing. |
-| Engineering Canvas | READY NEXT | unassigned / next PR | unassigned | unassigned | Define an internal project Canvas with membership isolation and durable edits before implementation. |
+| Engineering Canvas | BUILDING | `feature/engineering-canvas` / PR #26 (`9890bcd`) | Vikas Mittal | unassigned | Review the internal project Canvas implementation for membership isolation, durable edits, and accessible loading/error states. |
 | Project forums/decision threads | BUILDING | `project-forums-decision-threads` / PR #23 (`c314ad2`) | Vikas Mittal | chatgpt-codex-connector | Review durable project discussion and decision records with membership, moderation, link-access, and audit boundaries. |
 | Huddle presence/shared notes | BUILDING | `huddle-presence-shared-notes` / PR #24 (`9c8fbb9`) | Vikas Mittal | chatgpt-codex-connector | Review project/channel-scoped presence and notes only; v1 excludes audio and video and must preserve membership boundaries. |
 | Public project update publishing | BUILDING | `public-project-updates` / PR #25 (`1f6efa3`) | Vikas Mittal | chatgpt-codex-connector | Review explicit human approval, immutable revisions, revocation, and audit trail; no autopublish or external posting. |
