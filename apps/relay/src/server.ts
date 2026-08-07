@@ -7,6 +7,7 @@ import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   AgentDef, AgentPresenceState, AgentStatus, Approval, StoredHook, HOOK_ACTIONS,
+  HOOK_EVENTS,
   ArtifactLink, ArtifactRelationView, Attachment,
   StoredArtifact, StoredArtifactVersion, artifactForPublic,
   Channel, ChannelMember,
@@ -33,7 +34,6 @@ import {
   isRemoteAction, mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
   setMachineNames, shareableRun,
   extractMentions, nameKey, newId, validateAgentDefinition, validateAttachment, validateChannelText,
-<<<<<<< HEAD
   validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji, validateHookInput,
   validateName, validateRepo, validateRunRecord, validateTaskSummary, validateWorkflow,
   WS_LIMITS,
@@ -409,7 +409,14 @@ export class Relay {
         // put the word "Error:" in front of every hand-written refusal and would
         // have shown a raw `TypeError` under a form in his app. `sendFrameError`
         // also owns safe request correlation before and after authentication.
-        sendFrameError(ws, refusalText(err, `frame "${frame.type}"`), frame);
+        const said = refusalText(err, `frame "${frame.type}"`);
+        if (conn && ["createHook", "updateHook", "setHookEnabled", "deleteHook", "testHook"].includes(frame.type)) {
+          const hookId = typeof (frame as unknown as { hookId?: unknown }).hookId === "string"
+            ? (frame as unknown as { hookId: string }).hookId : "new";
+          this.store.logHookAudit(conn.userId, hookId, `${frame.type}:refused`, false, said,
+            Date.now(), conn.userId, conn.client, frame.requestId, hookId);
+        }
+        sendFrameError(ws, said, frame);
       }
     });
     ws.on("close", () => {
@@ -492,6 +499,7 @@ export class Relay {
       this.restartExpiredWorkflowApprovals = [];
       for (const approval of expired) this.sendApproval(approval);
     }
+    if (conn.client === "engine") this.syncHooksToEngine(user.id);
     // An engine arriving changes the answer for every agent it can run, and
     // everyone in a room with those agents needs to hear it — not only the
     // owner. This is the other half of the disconnect rule above.
@@ -738,15 +746,36 @@ export class Relay {
     if (!hook) throw new Error("no such hook");
     return hook;
   }
+  private assertHookClient(conn: Conn): void {
+    if (conn.userId !== this.ownerId || conn.client !== "desktop") throw new Error("only the Cloud9 owner desktop can edit hooks");
+  }
   private validateHookOwner(userId: ID, hook: StoredHook): void {
     const bad = validateHookInput(hook); if (bad) throw new Error(bad);
+    if (hook.when?.agentId) this.myAgent(userId, hook.when.agentId);
     this.myAgent(userId, hook.action.agentId);
-    if (hook.action.do === "say") {
-      if (!hook.action.channelId) throw new Error("choose a conversation for a message hook");
+    if (hook.action.do === "say" || hook.action.do === "job") {
+      if (!hook.action.channelId) throw new Error("choose a conversation for this hook action");
       this.channelFor(userId, hook.action.channelId);
     }
   }
-
+  private validateHookPatch(value: unknown): asserts value is Partial<Pick<StoredHook, "name" | "event" | "when" | "action">> {
+    if (!value || typeof value !== "object") throw new Error("a hook update is required");
+    const allowed = new Set(["name", "event", "when", "action"]);
+    if (Object.keys(value).some(key => !allowed.has(key))) throw new Error("that hook update contains an unsupported field");
+  }
+  private validateHookCreate(value: unknown): void {
+    if (!value || typeof value !== "object") throw new Error("a hook rule is required");
+    const allowed = new Set(["name", "event", "enabled", "when", "action"]);
+    if (Object.keys(value).some(key => !allowed.has(key))) throw new Error("that hook contains an unsupported field");
+  }
+  private hookReceipt(conn: Conn, requestId: string | undefined, kind: string, target: string, payload: unknown) {
+    if (!requestId) return undefined;
+    const prior = this.store.hookRequest(conn.userId, requestId);
+    if (!prior) return undefined;
+    const encoded = JSON.stringify(payload);
+    if (prior.kind !== kind || prior.target !== target || prior.payload !== encoded) throw new Error("that request id was already used for a different hook operation");
+    return prior;
+  }
   /**
    * ONLY THE OWNER, FROM A WINDOW, MAY POINT AN AGENT AT A PLACE ON THIS DISK.
    *
@@ -3089,51 +3118,99 @@ export class Relay {
         break;
       }
       case "hooks": {
+        this.assertHookClient(conn);
         send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
         break;
       }
       case "createHook": {
+        this.assertHookClient(conn);
+        this.validateHookCreate(frame.hook);
         const requestId = frame.requestId;
-        if (requestId) {
-          const priorId = this.store.hookRequest(conn.userId, requestId);
-          if (priorId) { const prior = this.store.hook(conn.userId, priorId); if (prior) send(conn.ws, { type: "hook", hook: prior, requestId }); break; }
+        const priorReceipt = this.hookReceipt(conn, requestId, "create", "new", frame.hook);
+        if (priorReceipt) {
+          const prior = this.store.hook(conn.userId, priorReceipt.hookId);
+          if (prior) send(conn.ws, { type: "hook", hook: prior, requestId });
+          else send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(requestId ? { requestId } : {}) });
+          break;
         }
         const now = Date.now();
         const hook = { ...frame.hook, id: newId("hook"), ownerId: conn.userId, updatedAt: now } as StoredHook;
         this.validateHookOwner(conn.userId, hook);
-        this.store.saveHook(hook);
-        if (requestId) this.store.saveHookRequest(conn.userId, requestId, hook.id);
-        this.store.logHookAudit(conn.userId, hook.id, "created", true, "hook created");
+        this.store.saveHookWithRequest(hook, conn.userId, requestId, "create", "new", JSON.stringify(frame.hook));
+        this.store.logHookAudit(conn.userId, hook.id, "created", true, "hook created", Date.now(), conn.userId, conn.client, requestId, "new");
+        this.syncHooksToEngine(conn.userId);
         send(conn.ws, { type: "hook", hook, ...(requestId ? { requestId } : {}) });
         break;
       }
       case "updateHook": {
-        const old = this.myHook(conn.userId, frame.hookId);
+        this.assertHookClient(conn);
+        this.validateHookPatch(frame.hook);
         const requestId = frame.requestId;
-        if (requestId) { const priorId = this.store.hookRequest(conn.userId, requestId); if (priorId) { const prior = this.store.hook(conn.userId, priorId); if (prior) send(conn.ws, { type: "hook", hook: prior, requestId }); break; } }
+        const priorReceipt = this.hookReceipt(conn, requestId, "update", frame.hookId, frame.hook);
+        if (priorReceipt) {
+          const prior = this.store.hook(conn.userId, priorReceipt.hookId);
+          if (prior) send(conn.ws, { type: "hook", hook: prior, requestId });
+          else send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(requestId ? { requestId } : {}) });
+          break;
+        }
+        const old = this.myHook(conn.userId, frame.hookId);
         const hook = { ...old, ...frame.hook, action: frame.hook.action ? { ...old.action, ...frame.hook.action } : old.action, updatedAt: Date.now() } as StoredHook;
         this.validateHookOwner(conn.userId, hook);
-        this.store.saveHook(hook); if (requestId) this.store.saveHookRequest(conn.userId, requestId, hook.id);
-        this.store.logHookAudit(conn.userId, hook.id, "updated", true, "hook updated");
+        this.store.saveHookWithRequest(hook, conn.userId, requestId, "update", frame.hookId, JSON.stringify(frame.hook));
+        this.store.logHookAudit(conn.userId, hook.id, "updated", true, "hook updated", Date.now(), conn.userId, conn.client, requestId, frame.hookId);
+        this.syncHooksToEngine(conn.userId);
         send(conn.ws, { type: "hook", hook, ...(requestId ? { requestId } : {}) });
         break;
       }
       case "setHookEnabled": {
+        this.assertHookClient(conn);
+        if (typeof frame.enabled !== "boolean") throw new Error("a hook enabled value must be true or false");
+        const priorReceipt = this.hookReceipt(conn, frame.requestId, "enabled", frame.hookId, { enabled: frame.enabled });
+        if (priorReceipt) {
+          const prior = this.store.hook(conn.userId, priorReceipt.hookId);
+          if (prior) send(conn.ws, { type: "hook", hook: prior, requestId: frame.requestId });
+          else send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+          break;
+        }
         const hook = this.myHook(conn.userId, frame.hookId); hook.enabled = frame.enabled; hook.updatedAt = Date.now();
-        this.store.saveHook(hook); this.store.logHookAudit(conn.userId, hook.id, frame.enabled ? "enabled" : "disabled", true, frame.enabled ? "hook enabled" : "hook disabled");
+        this.validateHookOwner(conn.userId, hook);
+        this.store.saveHookWithRequest(hook, conn.userId, frame.requestId, "enabled", frame.hookId, JSON.stringify({ enabled: frame.enabled }));
+        this.store.logHookAudit(conn.userId, hook.id, frame.enabled ? "enabled" : "disabled", true, frame.enabled ? "hook enabled" : "hook disabled", Date.now(), conn.userId, conn.client, frame.requestId, frame.hookId);
+        this.syncHooksToEngine(conn.userId);
         send(conn.ws, { type: "hook", hook, ...(frame.requestId ? { requestId: frame.requestId } : {}) });
         break;
       }
       case "deleteHook": {
-        const hook = this.myHook(conn.userId, frame.hookId); this.store.deleteHook(conn.userId, hook.id);
-        this.store.logHookAudit(conn.userId, hook.id, "deleted", true, "hook deleted");
+        this.assertHookClient(conn);
+        const requestId = frame.requestId;
+        const priorReceipt = this.hookReceipt(conn, requestId, "delete", frame.hookId, {});
+        if (priorReceipt) {
+          send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(requestId ? { requestId } : {}) });
+          break;
+        }
+        const hook = this.myHook(conn.userId, frame.hookId);
+        this.store.deleteHookWithRequest(conn.userId, hook.id, requestId, "delete", frame.hookId, "{}");
+        this.store.logHookAudit(conn.userId, hook.id, "deleted", true, "hook deleted", Date.now(), conn.userId, conn.client, requestId, frame.hookId);
+        this.syncHooksToEngine(conn.userId);
         send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
         break;
       }
       case "testHook": {
+        this.assertHookClient(conn);
+        const requestId = frame.requestId;
+        const priorReceipt = this.hookReceipt(conn, requestId, "test", frame.hookId, {});
+        if (priorReceipt) {
+          const prior = this.store.hook(conn.userId, priorReceipt.hookId);
+          if (prior) {
+            const said = prior.enabled ? `“${prior.name}” is valid and ready for ${HOOK_ACTIONS[prior.action.do]}` : `“${prior.name}” is disabled; enable it before it can run`;
+            send(conn.ws, { type: "hookTest", hookId: prior.id, ok: prior.enabled, said, ...(requestId ? { requestId } : {}) });
+          }
+          break;
+        }
         const hook = this.myHook(conn.userId, frame.hookId);
         const said = hook.enabled ? `“${hook.name}” is valid and ready for ${HOOK_ACTIONS[hook.action.do]}` : `“${hook.name}” is disabled; enable it before it can run`;
-        this.store.logHookAudit(conn.userId, hook.id, "tested", hook.enabled, said);
+        if (requestId) this.store.saveHookRequest(conn.userId, requestId, hook.id, "test", frame.hookId, "{}");
+        this.store.logHookAudit(conn.userId, hook.id, "tested", hook.enabled, said, Date.now(), conn.userId, conn.client, requestId, frame.hookId);
         send(conn.ws, { type: "hookTest", hookId: hook.id, ok: hook.enabled, said, ...(frame.requestId ? { requestId: frame.requestId } : {}) });
         break;
       }
@@ -3310,6 +3387,16 @@ export class Relay {
         }
         const agent = this.myAgent(conn.userId, frame.agentId);
         this.toUser(agent.ownerId, { type: "memory", agentId: agent.id, notes: frame.notes });
+        break;
+      }
+      case "hookFired": {
+        if (conn.client !== "engine") throw new Error("only the engine reports hook firings");
+        if (!Object.prototype.hasOwnProperty.call(HOOK_EVENTS, frame.event)) throw new Error("that hook event is not supported");
+        const hook = this.myHook(conn.userId, frame.hookId);
+        this.store.logHookAudit(
+          conn.userId, hook.id, frame.ok ? "fired" : "refused", frame.ok, frame.said,
+          Date.now(), conn.userId, conn.client, undefined, hook.id,
+        );
         break;
       }
       // ENGINE-HOST ONLY: one of the owner's agents is handing work to another.
@@ -4359,6 +4446,11 @@ export class Relay {
     for (const conn of this.conns) {
       if (conn.userId === userId && conn.client === "engine") send(conn.ws, frame);
     }
+  }
+
+  /** The engine's HookBook is a live projection of this durable owner list. */
+  private syncHooksToEngine(userId: ID): void {
+    this.toEngines(userId, { type: "hooksUpdated", hooks: this.store.hooksOf(userId) });
   }
 
   private hasEngine(userId: ID): boolean {

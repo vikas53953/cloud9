@@ -3371,6 +3371,11 @@ type ClientFrameBase =
   | { type: "setHookEnabled"; hookId: ID; enabled: boolean }
   | { type: "deleteHook"; hookId: ID }
   | { type: "testHook"; hookId: ID }
+  /** ENGINE-HOST ONLY: report one owner's hook firing back to the hub audit. */
+  | {
+      type: "hookFired"; hookId: ID; event: HookEvent; ok: boolean;
+      said: string; at: number;
+    }
   /**
    * "LOOK AT GITHUB NOW." The owner asking for a fresh look at one project.
    *
@@ -3869,6 +3874,8 @@ export type ServerFrame =
   | { type: "hooks"; hooks: StoredHook[]; requestId?: ID }
   | { type: "hook"; hook: StoredHook; requestId?: ID }
   | { type: "hookTest"; hookId: ID; ok: boolean; said: string; requestId?: ID }
+  /** OWNER'S HOOKBOOK, sent only to that owner's engine host. */
+  | { type: "hooksUpdated"; hooks: StoredHook[] }
   /**
    * One run — pushed the moment it finishes to everyone who can see the
    * conversation it happened in, and sent back on its own to whoever asked for
@@ -4231,10 +4238,23 @@ export interface StoredHook {
 export function validateHookInput(value: unknown): string | null {
   if (!value || typeof value !== "object") return "a hook rule is required";
   const h = value as Partial<StoredHook>;
+  const allowed = new Set(["id", "ownerId", "name", "event", "enabled", "when", "action", "updatedAt"]);
+  if (Object.keys(value).some(key => !allowed.has(key))) return "that hook contains an unsupported field";
   if (typeof h.name !== "string" || !h.name.trim() || h.name.trim().length > 80) return "give the hook a name (max 80 characters)";
   if (typeof h.event !== "string" || !Object.prototype.hasOwnProperty.call(HOOK_EVENTS, h.event)) return "that hook event is not supported";
+  if (typeof h.enabled !== "boolean") return "a hook must say whether it is enabled";
+  if (h.when !== undefined) {
+    if (!h.when || typeof h.when !== "object" || Object.keys(h.when).some(key => key !== "agentId" && key !== "outcome")) return "that hook condition is invalid";
+    if (h.when.agentId !== undefined && (typeof h.when.agentId !== "string" || !h.when.agentId)) return "that hook condition needs an agent";
+    if (h.when.outcome !== undefined && !["ok", "failed", "cancelled"].includes(h.when.outcome)) return "that hook outcome is not supported";
+  }
   if (!h.action || typeof h.action !== "object" || !Object.prototype.hasOwnProperty.call(HOOK_ACTIONS, h.action.do)) return "that hook action is not supported";
+  const actionKeys = Object.keys(h.action);
+  const allowedActionKeys = h.action.do === "say" ? ["do", "agentId", "channelId", "text"] : h.action.do === "note" ? ["do", "agentId", "text"] : ["do", "agentId", "channelId", "title"];
+  if (actionKeys.some(key => !allowedActionKeys.includes(key))) return "that hook action contains an unsupported field";
   if (typeof h.action.agentId !== "string" || !h.action.agentId) return "choose an agent for this hook";
+  if ((h.action.do === "say" || h.action.do === "job")
+    && (typeof h.action.channelId !== "string" || !h.action.channelId)) return "choose a conversation for this hook action";
   const text = h.action.text ?? h.action.title;
   if (typeof text !== "string" || !text.trim() || text.length > 500) return "the hook action needs text (max 500 characters)";
   return null;

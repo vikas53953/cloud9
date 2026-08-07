@@ -10,7 +10,6 @@ import {
   SavedMessageEntry,
   EverywhereHit, SearchKind,
   ReachCatchup,
-<<<<<<< HEAD
   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook,
   Workflow, WorkflowRun,
   // SPENDING BLOCK (what the crew costs, 2026-08-07)
@@ -371,7 +370,7 @@ export interface World {
    * what says how old the answer is.
    */
   projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
-  hooks: { asked: boolean; requestId?: ID; list: StoredHook[]; problem?: string; test?: { hookId: ID; ok: boolean; said: string } };
+  hooks: { asked: boolean; requestId?: ID; mutationRequestId?: ID; list: StoredHook[]; problem?: string; test?: { hookId: ID; ok: boolean; said: string } };
   /**
    * THE REPOSITORIES HIS OWN GITHUB SIGN-IN CAN SEE — the picker's list.
    *
@@ -1977,11 +1976,17 @@ export class RelayClient {
     });
     if (!sent && this.world.hooks.requestId === requestId) { this.world.hooks = { asked: true, list: [], problem: "not connected to the hub yet" }; this.emit(); }
   }
-  createHook(hook: Omit<StoredHook, "id" | "ownerId" | "updatedAt">): void { this.send({ type: "createHook", hook, requestId: this.nextRequestId("createHook") }); }
-  updateHook(hookId: ID, hook: Partial<Pick<StoredHook, "name" | "event" | "when" | "action">>): void { this.send({ type: "updateHook", hookId, hook, requestId: this.nextRequestId("updateHook") }); }
-  setHookEnabled(hookId: ID, enabled: boolean): void { this.send({ type: "setHookEnabled", hookId, enabled, requestId: this.nextRequestId("setHookEnabled") }); }
-  deleteHook(hookId: ID): void { this.send({ type: "deleteHook", hookId, requestId: this.nextRequestId("deleteHook") }); }
-  testHook(hookId: ID): void { this.send({ type: "testHook", hookId, requestId: this.nextRequestId("testHook") }); }
+  private hookMutation(frame: ClientFrame, requestId: ID): void {
+    this.world.hooks = { ...this.world.hooks, mutationRequestId: requestId, problem: undefined };
+    const sent = this.send({ ...frame, requestId } as ClientFrame);
+    if (!sent) this.world.hooks = { ...this.world.hooks, mutationRequestId: undefined, problem: "not connected to the hub yet" };
+    this.emit();
+  }
+  createHook(hook: Omit<StoredHook, "id" | "ownerId" | "updatedAt">): void { const requestId = this.nextRequestId("createHook"); this.hookMutation({ type: "createHook", hook }, requestId); }
+  updateHook(hookId: ID, hook: Partial<Pick<StoredHook, "name" | "event" | "when" | "action">>): void { const requestId = this.nextRequestId("updateHook"); this.hookMutation({ type: "updateHook", hookId, hook }, requestId); }
+  setHookEnabled(hookId: ID, enabled: boolean): void { const requestId = this.nextRequestId("setHookEnabled"); this.hookMutation({ type: "setHookEnabled", hookId, enabled }, requestId); }
+  deleteHook(hookId: ID): void { const requestId = this.nextRequestId("deleteHook"); this.hookMutation({ type: "deleteHook", hookId }, requestId); }
+  testHook(hookId: ID): void { const requestId = this.nextRequestId("testHook"); this.hookMutation({ type: "testHook", hookId }, requestId); }
 
   /**
    * "LOOK AT GITHUB NOW" for one project.
@@ -3429,6 +3434,9 @@ export class RelayClient {
           w.notificationsLoading = false;
           w.notificationsProblem = frame.error;
         }
+        if (frame.requestId !== undefined && frame.requestId === w.hooks.mutationRequestId) {
+          w.hooks = { ...w.hooks, mutationRequestId: undefined, problem: frame.error };
+        }
         /* A direct refusal names its exact refusal-capable request. A legacy
            no-id refusal is shown here generally but cannot settle a modern row.
            Unrelated rows stay alive, including their timeout nets. */
@@ -3603,16 +3611,25 @@ export class RelayClient {
         };
         break;
       case "hooks":
-        if (frame.requestId === undefined || frame.requestId !== w.hooks.requestId) break;
-        w.hooks = { asked: true, list: frame.hooks };
+        {
+          const expected = w.hooks.requestId ?? w.hooks.mutationRequestId;
+          if (frame.requestId === undefined || frame.requestId !== expected) break;
+          w.hooks = { asked: true, list: frame.hooks };
+        }
         break;
       case "hook": {
+        if (frame.requestId !== undefined
+          && frame.requestId !== w.hooks.requestId
+          && frame.requestId !== w.hooks.mutationRequestId) break;
         const i = w.hooks.list.findIndex(h => h.id === frame.hook.id);
-        w.hooks = { ...w.hooks, asked: true, list: i < 0 ? [frame.hook, ...w.hooks.list] : w.hooks.list.map(h => h.id === frame.hook.id ? frame.hook : h) };
+        w.hooks = { ...w.hooks, asked: true, requestId: undefined, mutationRequestId: undefined, problem: undefined, list: i < 0 ? [frame.hook, ...w.hooks.list] : w.hooks.list.map(h => h.id === frame.hook.id ? frame.hook : h) };
         break;
       }
       case "hookTest":
-        w.hooks = { ...w.hooks, test: { hookId: frame.hookId, ok: frame.ok, said: frame.said } };
+        if (frame.requestId !== undefined
+          && frame.requestId !== w.hooks.requestId
+          && frame.requestId !== w.hooks.mutationRequestId) break;
+        w.hooks = { ...w.hooks, mutationRequestId: undefined, problem: undefined, test: { hookId: frame.hookId, ok: frame.ok, said: frame.said } };
         break;
       // ENGINE-ONLY RECEIPT, and it is right that the screen drops it. When an
       // agent asks mid-run "may I push this branch?", the hub answers the
@@ -3708,6 +3725,10 @@ export class RelayClient {
            dropped here. This is the same rule `searchResults` follows, and it
            is the rule because the alternative once brought a closed search back
            onto the screen with clickable hits. */
+        break;
+      case "hooksUpdated":
+        // Owner hook sync is engine-only; the desktop already owns the list
+        // through the correlated `hooks` responses above.
         break;
       default: {
         /**

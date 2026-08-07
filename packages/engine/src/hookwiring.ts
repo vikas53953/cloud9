@@ -33,6 +33,8 @@ export interface HookWiring {
   save: (hook: Hook) => boolean;
   /** take one away. Returns whether the change reached the disk. */
   remove: (id: string) => boolean;
+  /** replace the whole book from the owner's relay editor */
+  replace: (hooks: readonly Hook[]) => boolean;
 }
 
 /**
@@ -53,6 +55,11 @@ export function attachHooks(engine: Engine, opts: {
   const book = new HookBook({
     hooks: () => hooks,
     agent: (id: ID) => engine.agentById(id),
+    replace(next) {
+      if (!saveHooks(engine.dataDir, [...next], log)) return false;
+      hooks = [...next];
+      return true;
+    },
     log,
     actions: engineActions(engine, log),
   });
@@ -74,6 +81,11 @@ export function attachHooks(engine: Engine, opts: {
       if (next.length === hooks.length) return true;      // nothing to do
       if (!saveHooks(engine.dataDir, next, log)) return false;
       hooks = next;
+      return true;
+    },
+    replace(next) {
+      if (!saveHooks(engine.dataDir, [...next], log)) return false;
+      hooks = [...next];
       return true;
     },
   };

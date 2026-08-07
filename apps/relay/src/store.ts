@@ -552,10 +552,13 @@ export class Store implements JoinHubStore {
       CREATE INDEX IF NOT EXISTS hooks_owner ON hooks(ownerId, updatedAt DESC);
       CREATE TABLE IF NOT EXISTS hook_audit(
         id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, hookId TEXT NOT NULL,
-        action TEXT NOT NULL, ok INTEGER NOT NULL, said TEXT NOT NULL, at INTEGER NOT NULL
+        action TEXT NOT NULL, ok INTEGER NOT NULL, said TEXT NOT NULL, at INTEGER NOT NULL,
+        actorId TEXT NOT NULL DEFAULT '', client TEXT NOT NULL DEFAULT '',
+        requestId TEXT, target TEXT NOT NULL DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS hook_requests(
         ownerId TEXT NOT NULL, requestId TEXT NOT NULL, hookId TEXT NOT NULL,
+        kind TEXT NOT NULL, target TEXT NOT NULL, payload TEXT NOT NULL,
         PRIMARY KEY(ownerId, requestId)
       );
 
@@ -859,6 +862,13 @@ export class Store implements JoinHubStore {
     this.addColumn("activity", "seq", "INTEGER");
     this.addColumn("activity", "hash", "TEXT");
     this.addColumn("activity", "prevHash", "TEXT");
+    this.addColumn("hook_audit", "actorId", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("hook_audit", "client", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("hook_audit", "requestId", "TEXT");
+    this.addColumn("hook_audit", "target", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("hook_requests", "kind", "TEXT NOT NULL DEFAULT 'legacy'");
+    this.addColumn("hook_requests", "target", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("hook_requests", "payload", "TEXT NOT NULL DEFAULT '{}'");
     // AN INDEX CAN ONLY BE BUILT OVER A COLUMN THAT EXISTS, so it is built
     // here, after the ALTERs, and not up in the CREATE block with the others.
     //
@@ -3327,16 +3337,44 @@ export class Store implements JoinHubStore {
       .run(hook.id, hook.ownerId, hook.updatedAt, JSON.stringify(hook));
   }
   deleteHook(ownerId: ID, hookId: ID): void { this.db.prepare("DELETE FROM hooks WHERE ownerId=? AND id=?").run(ownerId, hookId); }
-  hookRequest(ownerId: ID, requestId: ID): ID | undefined {
-    const row = this.db.prepare("SELECT hookId FROM hook_requests WHERE ownerId=? AND requestId=?").get(ownerId, requestId) as { hookId: ID } | undefined;
-    return row?.hookId;
+  hookRequest(ownerId: ID, requestId: ID): { hookId: ID; kind: string; target: string; payload: string } | undefined {
+    const row = this.db.prepare("SELECT hookId,kind,target,payload FROM hook_requests WHERE ownerId=? AND requestId=?").get(ownerId, requestId) as { hookId: ID; kind: string; target: string; payload: string } | undefined;
+    return row;
   }
-  saveHookRequest(ownerId: ID, requestId: ID, hookId: ID): void {
-    this.db.prepare("INSERT INTO hook_requests(ownerId,requestId,hookId) VALUES(?,?,?)").run(ownerId, requestId, hookId);
+  saveHookRequest(ownerId: ID, requestId: ID, hookId: ID, kind: string, target: string, payload: string): void {
+    this.db.prepare("INSERT INTO hook_requests(ownerId,requestId,hookId,kind,target,payload) VALUES(?,?,?,?,?,?)").run(ownerId, requestId, hookId, kind, target, payload);
   }
-  logHookAudit(ownerId: ID, hookId: ID, action: string, ok: boolean, said: string, at = Date.now()): void {
-    this.db.prepare("INSERT INTO hook_audit(id,ownerId,hookId,action,ok,said,at) VALUES(?,?,?,?,?,?,?)")
-      .run(newId("hookaudit"), ownerId, hookId, action, ok ? 1 : 0, said, at);
+  /** Persist a rule and its receipt as one durable operation. */
+  saveHookWithRequest(
+    hook: StoredHook, ownerId: ID, requestId: ID | undefined,
+    kind: string, target: string, payload: string,
+  ): void {
+    this.tx(() => {
+      this.saveHook(hook);
+      if (requestId) this.saveHookRequest(ownerId, requestId, hook.id, kind, target, payload);
+    });
+  }
+  /** Delete a rule and remember that delete as one durable operation. */
+  deleteHookWithRequest(
+    ownerId: ID, hookId: ID, requestId: ID | undefined,
+    kind: string, target: string, payload: string,
+  ): void {
+    this.tx(() => {
+      this.deleteHook(ownerId, hookId);
+      if (requestId) this.saveHookRequest(ownerId, requestId, hookId, kind, target, payload);
+    });
+  }
+  logHookAudit(
+    ownerId: ID, hookId: ID, action: string, ok: boolean, said: string,
+    at = Date.now(), actorId = ownerId, client = "", requestId?: ID, target = hookId,
+  ): void {
+    this.db.prepare("INSERT INTO hook_audit(id,ownerId,hookId,action,ok,said,at,actorId,client,requestId,target) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run(newId("hookaudit"), ownerId, hookId, action, ok ? 1 : 0, said, at, actorId, client, requestId ?? null, target);
+  }
+  hookAuditOf(ownerId: ID): { hookId: ID; action: string; ok: boolean; actorId: ID; client: string; requestId?: ID; target: string }[] {
+    return (this.db.prepare("SELECT hookId,action,ok,actorId,client,requestId,target FROM hook_audit WHERE ownerId=? ORDER BY at ASC,id ASC")
+      .all(ownerId) as { hookId: ID; action: string; ok: number; actorId: ID; client: string; requestId: ID | null; target: string }[])
+      .map(row => ({ hookId: row.hookId, action: row.action, ok: row.ok === 1, actorId: row.actorId, client: row.client, ...(row.requestId ? { requestId: row.requestId } : {}), target: row.target }));
   }
 
   /** Forget our copy. THE REPOSITORY IS NOT TOUCHED — it is not ours to touch. */

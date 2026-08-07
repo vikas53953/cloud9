@@ -157,6 +157,8 @@ export interface HookBookOptions {
   hooks: () => readonly Hook[];
   /** how Cloud9 does things. A missing member means "this app cannot, here". */
   actions: Partial<HookActions>;
+  /** replace the live rules when the relay owner edits them in the window */
+  replace?: (hooks: readonly Hook[]) => boolean;
   /** who an agent id belongs to — law 2 cannot be checked without it */
   agent: (id: ID) => AgentDef | undefined;
   /** most times ONE hook may fire in a minute. A leash, not a policy. */
@@ -196,6 +198,15 @@ export class HookBook {
 
   /** Every firing we still remember, newest last. For a screen, and for tests. */
   get recent(): readonly HookFiring[] { return this.firings; }
+
+  /** Apply a relay-sourced owner edit without rebuilding the engine. */
+  replace(hooks: readonly Hook[]): boolean {
+    if (!this.opts.replace) return false;
+    try { return this.opts.replace(hooks); } catch (err) {
+      this.log(`could not replace the owner's hooks: ${String(err)}`);
+      return false;
+    }
+  }
 
   /**
    * SOMETHING HAPPENED. Tell every hook that was waiting for it.
