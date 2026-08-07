@@ -335,4 +335,4 @@ test("there is no deadline to share — only the lengths of the words he reads",
     "a deadline is back on the shared table — see timebudget.ts before adding one");
   assert.ok(APPROVAL_LIMITS.action >= 200);
 });
-
+// End of focused mid-run checks.

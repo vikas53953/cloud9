@@ -280,4 +280,4 @@ test("every row of the remote-actions table can be asked about", () => {
     d.giveUpAll("test over");
   }
 });
-
+// End of approval-desk checks.
