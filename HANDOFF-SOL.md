@@ -1,181 +1,340 @@
-# Cloud9 — mission plan for Sol (GPT-5.6 in Claude Code)
+# HANDOFF — Cloud9 · Claude Code → Sol (Codex)
 
-From the outgoing Fable 5 session, 2026-08-02. This is your build plan, not a
-rulebook: you are the conductor. Spawn worker agents (your Agent tool) for the
-heavy lifting, run several in parallel when their files don't overlap, and move
-through the feature queue one feature at a time until it's done. Vikas is
-watching results, not process — interrupt him only when a real product decision
-is his to make, and always with your recommendation attached.
+**Written 2026-08-07 ~11:30 by the Claude Code conductor session, because Vikas's
+weekly Claude quota is about to run out. It resets Monday.**
 
-Context to load first: `HANDOFF.md` (what the product is), `RESUME.md` (history),
-`implementation-notes.md` (the running ledger — append what you fix and find).
-Repo `github.com/vikas53953/cloud9`, branch `master`, start at commit `06eee71`.
+Sol, Terra or Luna: **you are the conductor now.** Read this file, then
+`TRACKER.md`, then start. Nothing else is required reading.
 
-## How to run each feature (the loop that has been working)
+On Monday the Claude session picks this back up and will read `TRACKER.md` to
+learn what you did. **So keep `TRACKER.md` current — that is the handover back.**
 
-0. **Never assume — check or ask.** When something is unclear, the order is:
-   read the code/docs/ledger (most answers are already written down); if it's
-   still open and it's a technical call, run a small experiment and let the
-   result decide; if it's a product call (what Vikas would want on his screen),
-   ask HIM — one question, with your recommendation. Any assumption you do have
-   to make gets said out loud, in the brief, the ledger and SOL-REPORT.md:
-   "assuming X — correct me." Silent assumptions are how every past loop on
-   this project started.
-1. **Scout inline** — read the code that's already there; half of Vikas's wish
-   list partly exists (see the map below). Never rebuild what exists.
-2. **Spawn workers** — one agent per independent slice, each with its own files
-   and its own ports; give each the exact acceptance checks it must add.
-3. **You verify, not the workers**: `npm run build` → `npm test` (1002/0 now) →
-   `npm run qa` (494/494 + 8/8 + 4/4 now — counts only grow) → `npm run dist` →
-   install `release\Cloud9-Setup-0.1.0.exe /S` → `npm run qa:app` (21/21 now).
-4. **Extend the checks** — every new feature gets permanent checks in
-   `scripts/qa.mjs` AND the installed-app walk `scripts/drive-app.mjs`, and you
-   break one once to prove it can fail.
-5. **Commit + push** with a plain-words message, append the ledger, publish an
-   HTML report page for Vikas (inline `~/.claude/review-kit/feedback-layer.js`,
-   mark sections `data-fb="…"`) ending with TEST IT steps.
-6. **Move to the next feature without waiting** — Vikas asked for the whole
-   queue; pause only on genuine product forks.
+---
 
-Traps already paid for — don't pay again:
-- QA runs against the last `npm run build`, never your working tree.
-- `qa:app` refuses a stale install on purpose (bundle byte-compare) — install
-  the fresh Setup exe silently before walking.
-- Capture exit codes explicitly and save full QA logs; a pipe once swallowed a
-  failure and cost a day of guessing.
-- Fake killed-write litter in tests only via `packages/engine/src/litter-for-tests.ts`.
-- The app never holds an API key or GitHub token — it spawns the CLIs on this
-  PC (`claude`, `codex`, `gh`). Keep it that way; it's the product's core promise.
-- Everything on screen says WHEN it was checked; empty states say why; approval
-  cards count facts from git/gh, never quote the agent.
-- All UI lives in `apps/desktop/src/App.tsx`; hub `apps/relay`; engine
-  `packages/engine`; frames `packages/shared`. His real data `%APPDATA%\cloud9`;
-  repo-root db is dev-only.
+## 0. YOUR ROLE — you orchestrate, you do not do the work yourself
 
-## What already exists (so workers extend, not rebuild)
+**Vikas's rule: one agent per issue. Always.** You are a workstator /
+orchestrator. For every issue and every feature:
 
-GitHub: Settings card (dated, signed in as vikas53953), repo picker with
-click-connect, per-project local folder link, `!issue`/`!comment`/`!review`/`!code`
-with counted approval cards, branch+PR always. Actions menu at the composer
-(one table, drift-tested against `engine.ts`). Notifications with quiet hours.
-Mentions, threads, reactions, unread, room chat search. `!bg` + `!schedule`.
-Agent memory (`!remember`) + handoff (`!handoff`). Presence with reasons. Codex
-un-removable switches render locked-ON (`effectiveAbilities()` in
-`packages/engine/src/abilities.ts` — the one owner). Join-a-hub address book.
-Skill library, marketplace, 13 discovered models.
+- spawn **one** agent that owns it end to end
+- spawn a **different** agent to adversarially review it
+- relay between them; **you never merge your own work**
+- **the review loop REPEATS until author and reviewer AGREE**, then it merges
 
-## The queue (his order — one at a time, each fully proven before the next)
+Do not carry two issues in one agent. Do not review work you wrote. Do not
+merge without a review. This is not a suggestion — he stated it as law and
+said he will not repeat it.
 
-**1. Shared artifact workspace.** Attribution, immutable versions, links between
-artifacts, permissions. Today agent files appear as chat cards
-(`packages/engine/src/artifacts.ts`, hub file store) — the workspace screen,
-version chain, and permissions are new. Design notes: versions are append-only
-(a new version never edits an old row); every artifact names who made it and in
-which turn; permissions default to room-visibility; links are typed references,
-not markdown strings. Give it its own icon-rail screen.
+**Name every agent with HIS words for the task**, verbatim — "threads",
+"remove the timing", "token consumption". Never a reworded label. A renamed
+request is an invisible request: on 2026-08-04 his ask "make Cloud9 fully
+agentic" was built under the name "chat experience round" and vanished as a
+thing he could ask about.
 
-**2. GitHub round 2.** After Vikas tests round 1, whatever he reports — likely
-on-screen diff review for PRs and per-repo rooms. Don't start until his feedback
-lands; skip ahead to 3 if none arrives.
+---
 
-**3. Search everywhere.** One search over chat, threads, artifacts (names +
-contents + versions), with filters (room, agent, date, kind). The relay already
-has FTS for messages — extend the same index rather than adding a second engine.
+## 1. WHO YOU ARE WORKING FOR
 
-**4. Turn coordination.** When two agents could answer, exactly one does:
-an owner per question, deduplicated replies, visible handoffs/dependencies
-("waiting on @Architect"), and richer failure states (blocked/failed + the
-error in plain words on the presence chip and the job record).
+**Vikas.** Network engineer by background, **not a developer**. He thinks in
+visual maps, not code walls. He is building Cloud9 as a product.
 
-**5. Notifications round 2 + integrations + mobile groundwork.** Digest
-options, per-room rules, webhooks in/out. The phone app is a scaffold that has
-NEVER run — any mobile claim must start from that honest fact.
+- **Plain words. No jargon.** Not in replies, not on screen, not in commit
+  messages. If he has to scroll to understand you, you failed.
+- **Anything he must review is a visual HTML page**, never a wall of text.
+- **One question at a time, always with a recommendation.** Never a menu.
+- **He confirms; he never discovers.** If he finds a bug you could have found,
+  that is the failure.
+- **Feedback is said once.** Check `TRACKER.md` before asking him anything.
 
-Open smaller items to weave in when nearby: skill-shelf ordering forgets the
-hiring template after save (needs a field on `AgentDef`); Codex model list
-lacks a provenance sentence (`packages/engine/src/harness.ts`); narrow window
-widths are untested. Vikas's own step, whenever he chooses: the Tailscale
-browser sign-in (`docs/plans/tailscale-steps.md`) that makes friends-over-
-internet real.
+---
 
-## Cost caps (feature 1 consumed a whole weekly quota — 2026-08-03; these are law)
+## 2. THE THREE REFERENCES — the rule that matters most
 
-Feature 1's spend went to unbounded review loops, gold-plated test tooling and
-oversized scope. The quality was real; the price was not necessary. Caps:
+He set this as a **strict rule** on 2026-08-07, in his words:
 
-1. **Two review rounds per slice, hard cap.** Round 1 returns the complete
-   findings list. Round 2 verifies fixes ONLY — anything NEW found in round 2
-   is logged as a follow-up in the ledger, not fixed now, unless it is a
-   genuine security or data-loss Critical. There is no round 3.
-2. **One reviewer per slice, judging a scoped diff package** — never the repo.
-3. **Test tooling gets one build + one RED/GREEN proof, then stops.** No
-   security reviews of test scripts, no probe redesign loops. If harness code
-   fights back twice, log it as follow-up and move on — the product's own
-   suites are the safety net.
-4. **Slice features to shippable-in-one-session value.** Feature 3 = "one
-   search box that finds things across chat and files" FIRST; filters,
-   ranking and polish are a later slice. When in doubt, ship the smaller
-   visible thing and iterate.
-5. **Cheap agents for mechanical work, one premium agent only where the
-   design is genuinely hard.** Diagnosis pairs (two parallel diagnosers) are
-   reserved for a bug that has already survived two fix attempts.
-6. **Git state is global — workers never touch it.** Agents get their own
-   FILES, but `git stash` / `checkout` / `reset` / `clean` affect the whole
-   tree and will sweep up another live worker's uncommitted work (this
-   happened 2026-08-03; nothing was lost only because the worker noticed).
-   Put this in every worker prompt: *no git state commands; if you need a
-   clean-tree comparison, ask the conductor.* The conductor owns git.
-7. **Only the conductor runs build/dist/install while workers are live.**
-   `qa:app` compares the current repo build against the packaged and installed
-   app, so one worker running `npm run build` blocks the walk for everyone and
-   looks exactly like a harness failure (2026-08-03). Workers may run targeted
-   `npm test -w <pkg>`; the full chain belongs to the conductor, after workers
-   have stopped.
-8. **Budget check every ~10 agent runs**: if the feature has consumed what
-   feels like a quarter of a weekly quota and is not near its evidence chain,
-   STOP, park on the branch, write SOL-REPORT.md, and end the session small
-   rather than big.
+> *"you are not going to assume or guess anything. if i am giving you the
+> reference of any product to you, you just have to **OPEN THAT AND SEE IT
+> FIRST** and then only implement. from now on you will **TELL ME FIRST what
+> you are implementing**."*
 
-## Context economy (a Sol session already died of a full context window — 2026-08-02)
+| What you are building | What you copy | How to check it |
+|---|---|---|
+| **The harness** — prompt, skills, tools, hooks, memory, permissions, agent loop, verification | **Claude Code / Codex** | You are running inside one. Observe your own harness. **If Claude Code does not do it, Cloud9 does not do it unless he asks.** |
+| **The front end** — chat, channels, threads, anything he looks at | **Slack** | Real docs, cited with links. Never a remembered feature list. |
+| **Other features** | **Buzz** — `github.com/block/buzz` | **Installed on this machine** at `%LOCALAPPDATA%\Buzz\buzz-desktop.exe`. Open it, drive it, measure it. |
 
-Your model holds less conversation than this plan assumes. Structure around it:
+**The gate: open the reference → say what you will build → wait → then build.**
 
-- **One session per feature.** When a feature is committed, pushed and reported,
-  END the session; a fresh one starts the next feature from SOL-REPORT.md.
-- **The conductor reads summaries, not files.** Never pull whole large files
-  (App.tsx is ~9,000 lines) into your own context — send an agent to read and
-  return only the relevant symbols/line numbers. Delegate reading the same way
-  you delegate writing.
-- **Write, don't remember.** Long outputs (logs, test results, plans) go to
-  files under `docs/qa/` or the ledger, and you keep only the verdict line.
-- **Resume-proof every hour of work**: push to `sol/<feature>` as you go, keep
-  SOL-REPORT.md current, so a dead session costs minutes, not a feature. The
-  first death lost nothing ONLY because the reviewing conductor parked the tree
-  by hand — do not rely on that again.
+Anything you cannot verify says **"not verified"**. Never fill a gap with a
+plausible answer.
 
-## Where to commit, and the hand-back (so the reviewing session picks up cold)
+**What ignoring this cost:** threads took **four attempts**. The first three
+never opened Slack, reasoned from his words, and shipped a panel that was
+*narrower and fixed* when he wanted it *draggable and big*. A reviewer wrote
+"there is no drag handle anywhere in the codebase — he may want control of that
+edge" and it was ignored in favour of tuning CSS numbers. The fourth attempt
+opened Slack's docs and drove Buzz, and got it right in one pass.
 
-- **Everything lands on `master` of `github.com/vikas53953/cloud9`, pushed to
-  `origin` immediately.** One commit per completed feature (plus small fix
-  commits as needed) — never one giant commit at the end, never work sitting
-  unpushed on this machine. Worker agents never commit; only you do, after
-  re-running the evidence yourself.
-- If a feature is interrupted half-done, park it on a branch named
-  `sol/<feature>` and push it — never leave loose uncommitted work, and say in
-  the ledger that it is UNVERIFIED.
-- **Append to `implementation-notes.md` in the same commit** as each feature:
-  what was built, the exact counts you ran, and anything you found or deviated
-  on. That file is how the next session knows what to believe.
-- **Write `SOL-REPORT.md` at the repo root and keep it current** — one section
-  per feature: status (DONE-PROVEN / UNVERIFIED / NOT STARTED), the commit
-  hash, the evidence counts from YOUR runs, the report-page URL you gave Vikas,
-  and open questions. This is the first file the reviewing Claude session reads.
-- **Leave the machine consistent at every stop**: working tree clean, the
-  installed app rebuilt and reinstalled to match your last commit
-  (`npm run dist` then `release\Cloud9-Setup-0.1.0.exe /S`), and the walk
-  (`npm run qa:app`) green against it. A commit whose evidence chain did not
-  finish is marked UNVERIFIED in both the ledger and SOL-REPORT.md — never
-  claimed as done.
-- The previous conductor will review your work by re-running the whole evidence
-  chain and reading SOL-REPORT.md + `git log 92af155..`. Write for that reader:
-  plain words, real counts, no claims you didn't watch happen.
+**Also: never invent a source.** On the same day the conductor claimed Vikas had
+pointed at a "creator.io blog". He never said it. When the fact is not there,
+say so and ask once.
+
+---
+
+## 3. HIS RULES — every one, in force
+
+1. **No "done" without evidence run in this session.** Not an agent's report,
+   not a green suite. Show the output.
+2. **A green build is NOT evidence for anything visual.** A screen change needs
+   a **before/after photograph from the INSTALLED app at his window size**
+   (1920 viewport). A change was rejected for exactly this on 2026-08-07.
+3. **Fix the class, not the case.** One principle or one structural change that
+   makes the whole category impossible. Never a rule for the one instance.
+4. **Never silent.** Anything the app cannot do must say what it cannot do
+   **and how he can allow it**. *A refusal with no door is the thing he hates
+   most.*
+5. **Plain words everywhere**, including commits.
+6. **Feedback is said once.** Check the board before asking.
+7. **Blaming the slow machine is not a diagnosis.** It explained away three real
+   bugs. **And it cuts both ways** — a red needs a number before it is called a
+   bug, not only before it is dismissed.
+8. **His words, never renamed** — agent names, board rows, PR titles.
+9. **Nothing reaches him before its review has finished.** A page was published
+   early on 2026-08-07 and two bad citations reached him as a result.
+10. **Anything drawn from "what is open right now" rots by itself.** Stamp it
+    with a date and say what would change it. The words never change; the world
+    does.
+11. **No invented guards.** He removed three clocks that Claude Code does not
+    have. *"What is the meaning of agents? agents are employees so i don't want
+    to implement a timing foundation."* Do not add safety machinery he did not
+    ask for.
+12. **Every project keeps a `TRACKER.md`** — the live dashboard, single source
+    of truth. If it disagrees with a chat message or a commit, **the file wins**.
+
+---
+
+## 4. THE PIPELINE — follow it exactly
+
+```
+his ask
+   ↓
+a row in TRACKER.md, in HIS words, created the moment he asks
+   ↓
+ONE agent, ONE issue, its OWN branch
+   ↓
+PR  (never straight to master)
+   ↓
+ADVERSARIAL review by a DIFFERENT agent
+   (briefed to find what is WRONG, not to approve; may not edit, may not merge)
+   ↓
+implement the feedback
+   ↓
+review AGAIN  ──repeat until author and reviewer AGREE──┐
+   ↓                                                     │
+merge  ←─────────────────────────────────────────────────┘
+   ↓
+build → install → walk → THEN tell him it is done
+```
+
+**How to brief a reviewer** (this is what made it work):
+- "Find what is WRONG. Do not approve to be agreeable."
+- Give it the specific lines to attack, with the evidence you already have.
+- Tell it **approving wrongly costs him another round on a complaint he has
+  already made; rejecting wrongly costs one iteration. Err toward rejecting.**
+- Tell it to **verify, not accept** — re-run the numbers itself.
+- **Verify the "we have it" claims, not the gaps.** A wrong "we have this" is
+  worse than a missing row, because a real gap goes unfixed.
+
+The loop found **26 real defects** across five PRs on 2026-08-07. Several were
+created by the fixes themselves. Two were created by reviewers. **Every one
+would have reached him.**
+
+---
+
+## 5. WHERE THINGS ARE
+
+| File | What it is |
+|---|---|
+| `TRACKER.md` | **The board. Read it second, keep it current.** Rules, process, every open row. |
+| `ASKS.md` | Historical board — the full story per ask. |
+| `docs/harness-vs-claude-code.html` | What Cloud9's harness has and hasn't got vs Claude Code. Merged, published to him. |
+| `docs/threads-like-slack.html` | The approved threads design. **This is the spec for the threads build.** |
+| `docs/qa/` | Screenshots. `scripts/drive-app.mjs` walks the installed app. |
+
+Repo: `github.com/vikas53953/cloud9` · branch `master` · npm workspaces:
+`apps/relay` (hub), `packages/engine` (spawns the real CLIs), `apps/desktop`
+(Electron + React), `packages/shared`.
+
+**The evidence chain:**
+```
+npm run build → npm test → npm run qa → npm run dist
+→ scripts/install-cloud9.ps1   (verifies the install landed)
+→ npm run qa:app               (walks the REAL installed app)
+```
+Only the walk has ever found the bugs that mattered. Unit tests and browser QA
+were both green while Stop was silently lying and agents could not read files.
+
+---
+
+## 6. WHAT IS OPEN RIGHT NOW — *as of 2026-08-07 11:30*
+
+### A. **threads** — build in progress, design approved by him
+Branch: a new one off master. Spec: `docs/threads-like-slack.html`.
+He answered **"i want both"** — the draggable divider AND the take-over mode.
+
+Nine points to build, all measured, all in the page:
+1. Draggable divider on the thread's left edge, live drag.
+2. **Default 388px** (Buzz's measured default), not today's 280.
+3. **Floors 300/300.** A floor on the ROOM, **never a cap on the thread.**
+4. **Keyboard resizing** — arrow keys on the focused strip. Slack ships this.
+5. **Width AND mode remembered across restarts** (`App.tsx:1550` `makeStore()`).
+6. Conditional tooltip: `"Drag to resize."` → `"Drag to resize. Double-click to
+   reset width."` only once he has set a width.
+7. **Take-over mode** — over a **dimmed** room; way back says
+   `show thread beside channel` (Buzz's own words).
+8. **Below 894px the take-over mode IS the narrow-window answer.** One
+   mechanism, not two. 894 = 78 rail + 216 sidebar + 300 + 300.
+9. **His width is never thrown away** — drawn clamped, stored intact, restored
+   when the window widens. *"The window never edits your choice — it only
+   borrows it for as long as it has to."*
+
+Today's rule: `clamp(232px, calc((100vw - var(--rail-w) - var(--side-w)) * 0.22),
+280px)` at `apps/desktop/src/styles.css:423`. `--rail-w` 78px; `--side-w` 250px
+above 1330px and **216px at or below** (`styles.css:82`, `:1576`).
+
+**Proof required:** photographs from the installed app — before/after, dragged
+wide, dragged narrow, keyboard, take-over and back, at 800px, at 894px, **and
+after a restart showing width and mode both came back.**
+
+### B. **PR #13 "remove the timing"** — REJECTED in review, four blockers
+`gh pr view 13`. Branch `fix/agents-are-not-on-a-timer`. **CONFLICTING on
+`TRACKER.md`** after #11 and #12 landed — resolve that first.
+
+It removes all three clocks (45-min turn, 3-min silence, 10-min card expiry),
+−1,027 lines. **He ruled the clocks must go.** But the reviewer proved the
+clocks were holding up three things nobody had noticed:
+
+1. **Two agents parked on approval cards freeze the entire crew, for ever.**
+   `engine.ts:808-813` caps at 2 turns; a parked turn holds a slot; the hub's
+   10-minute sweep used to release it. Measured: branch → third agent never
+   answers; master → it does. *He goes to bed, two agents hit a `!publish` gate,
+   every other agent is silent all night.*
+2. **The zombie card.** `engine.ts:443` gives up every wait on any websocket
+   close; the hub no longer sweeps; `App.tsx:4635-4637` keeps a live Approve
+   button on a `pending` card for ever. Laptop sleeps → he clicks Approve in the
+   morning → **no-op. Card goes green. Nothing pushed. Nobody told.**
+3. **A long turn silently loses its answer at 2 MB.** `run.ts:319` keeps the
+   **first** 2 MB. Measured: the final result line is dropped, `respond()`
+   returns a mid-session fragment, recorded `outcome: "ok"`.
+4. The author's control was wrong: master `taskstuck` is **11/11 twice**, so the
+   branch failures ARE a regression. (`repowork` is genuinely noise — 13/13.)
+
+Plus four to state in the PR body: the money question (below), `SdkProvider`
+runs under no clock and Stop cannot reach it, the blocker test does not test a
+process *tree*, and stale comments still describe the deadline as current.
+
+### C. Problems found FOR him, open, nobody assigned
+- **A Codex agent cannot be given a spending limit at all** —
+  `providerCanBeCapped`, `shared/src/index.ts:672-674`. Only Claude reports what
+  a turn cost. **Its only other ceiling was a clock that is being removed.**
+- **`SdkProvider` runs under no clock and Stop cannot reach it** —
+  `provider.ts:703-780`, and `host.ts:184-189` **prefers** it whenever a key is
+  stored.
+- **Saving an API key switches every agent to a broken route** — new agents
+  refused, Stop dead, no live view, 6-step cap.
+- **The rules engine (hooks) is finished and switched on with no screen to
+  write a rule** — `hookwiring.ts:63-78` exists, nothing calls it.
+- **Only two agents work at once and the third says nothing** —
+  `engine.ts:815`, and nothing on the wire reports a queue.
+- The file-reading QA check reads like a phishing test and the agent correctly
+  refuses it — rewrite the check, not the app.
+
+### D. **WAITING ON HIM — do not decide these for him**
+- **The money default.** New agents start with his own setup **ON** and **no
+  cap**: measured **$1.75 vs $0.0055 on one cold turn (318×)**. Recommendation
+  on the board: default OFF + a cap, switch one click away. **He has not
+  answered.**
+- **Uninstall McAfee** — every program start costs ~271ms instead of ~20ms.
+- **Tailscale sign-in** — ten minutes in his browser, lets friends connect.
+
+---
+
+## 7. MACHINE CONDITIONS — known, not bugs to chase
+
+- **Program start costs ~271ms instead of ~20ms.** McAfee real-time scanning is
+  on; **Windows Defender is OFF**. Everything is slow. This is not a bug.
+- **ONE build, ONE package, ONE install, ONE `qa:app` walk at a time.** Three
+  walks were destroyed by concurrent packaging.
+- **Never let an agent rewrite a whole shared file** — one overwrote `App.tsx`
+  mid-run and wiped another agent's work.
+- **The installer** takes ~19–35s via `scripts/install-cloud9.ps1`, which
+  verifies the install landed. It used to hang for 12 minutes.
+
+---
+
+## 8. TRAPS THAT COST REAL TIME — do not rediscover these
+
+1. **`git checkout` leaves the previous branch's compiled `dist/` behind**, and
+   `npm test -w @cloud9/engine` rebuilds only that workspace. **A "master
+   control" run can execute the branch's own code and fail.** Two agents were
+   caught; one nearly reported a false regression. **Delete both `dist/` folders
+   and build shared first, or the number is void.**
+2. **The shell eats backticks** inside a double-quoted `node -e` or `python -c`.
+   An agent's board update lost every file reference and reported success.
+   **Write updates through a script file, and read back what landed.**
+3. **A blank screenshot is a capture result, not a layout result.** An agent
+   diagnosed a layout bug from one; measuring showed the page was fine.
+   **Render headless and measure — height, sections, overflow, console errors.**
+4. **Screenshot rulers are ~15px out** — the width of a divider. **Measure real
+   element rects over a debug port.**
+5. **Stale copies in summary blocks.** A correction anywhere leaves a stale copy
+   in whatever block summarises it. Six rounds of careful reading missed it.
+   **The fix that worked: grep the bounded set of STATUS TAGS** (`STILL ON`,
+   `DOESN'T WORK`, `DEAD`, `NOT VERIFIED`, …) — *phrasings are unbounded, tags
+   are not.* It caught an instance on its first run.
+6. **`gh pr merge` can print `fatal: 'master' is already used by worktree`
+   while having actually succeeded.** Verify state before concluding anything.
+7. **Check base branches BEFORE `--delete-branch`** — one merge accidentally
+   closed another open PR.
+8. **A clean `git merge` is not proof.** `TRACKER.md` rows are single enormous
+   lines; a resolution can drop the other side's row and report success. **Diff
+   the merged file against both parents.**
+9. **Test fixtures written by hand agree with the code's own bug.** 59 tests
+   passed while the central number was inverted. **Build fixtures from his real
+   records** — 185 run records are committed for exactly this.
+
+---
+
+## 9. HOW TO REPORT BACK
+
+**Every agent, at the end of its work:** update its row in `TRACKER.md` — stage
+and evidence with real numbers — and commit it with the work. Report: root cause
+with evidence · what changed · fail-then-pass proof · the PR URL.
+
+**You, as conductor, every session:** move every open PR one stage forward, then
+update the board. **If the board is stale, that is the failure — not the code.**
+
+**To him:** short, plain, and a **visual HTML page** for anything he reviews.
+Give every reviewable block `data-fb="<short label>"` and inline
+`C:\Users\vikasmit\.claude\review-kit\feedback-layer.js` in a `<script>` at the
+end, so he can 👍/👎/note each block and press **Copy my feedback** once.
+
+**Honest limit, restate it rather than pretend:** a published page cannot send
+data back into a session. The copy-paste hand-back is the mechanism.
+
+---
+
+## 10. WHAT MONDAY'S CLAUDE SESSION NEEDS FROM YOU
+
+Just keep `TRACKER.md` true. It will read:
+- which rows moved, and what evidence closed them
+- what you added that nobody asked for, and why
+- what is still open and who had it
+- anything he decided while you had it
+
+**Do not write a second handoff.** The board is the handover.
+
+---
+
+*Written by the Claude Code conductor session, 2026-08-07. Everything in
+section 6 is stamped and rots on its own — run `gh pr list` before acting on it.*
