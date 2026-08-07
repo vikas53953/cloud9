@@ -3008,7 +3008,10 @@ export class RelayClient {
         break;
       }
       case "workflows":
-        if (frame.requestId) this.workflowRequests.delete(frame.requestId);
+        if (frame.requestId) {
+          if (!this.workflowRequests.has(frame.requestId)) break;
+          this.workflowRequests.delete(frame.requestId);
+        }
         w.workflowError = undefined;
         w.workflowRetry = undefined;
         w.workflows = [...frame.workflows].sort(workflowOrder);
@@ -3017,6 +3020,7 @@ export class RelayClient {
         break;
       case "workflow": {
         if (frame.requestId) {
+          if (!this.workflowRequests.has(frame.requestId)) break;
           this.workflowRequests.delete(frame.requestId);
           w.workflowError = undefined;
           w.workflowRetry = undefined;
@@ -3029,6 +3033,7 @@ export class RelayClient {
       }
       case "workflowRun": {
         if (frame.requestId) {
+          if (!this.workflowRequests.has(frame.requestId)) break;
           const request = this.workflowRequests.get(frame.requestId);
           this.workflowRequests.delete(frame.requestId);
           w.workflowError = undefined;
