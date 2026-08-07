@@ -6,6 +6,7 @@ import {
   Attachment, ATTACHMENT_LIMITS, Channel,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   MemoryNote,
+  NotificationInboxEntry,
   EverywhereHit, SearchKind,
   ReachCatchup,
   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
@@ -214,6 +215,14 @@ export interface World {
   tasks: Task[];
   approvals: Approval[];
   activity: ActivityRecord[];
+  /** Durable mention and thread-reply rows for this account. */
+  notifications: NotificationInboxEntry[];
+  notificationsAsked: boolean;
+  notificationsLoading: boolean;
+  /** The exact inbox request whose answer may replace this list. */
+  notificationsRequestId?: ID;
+  /** Refusal/loss for that request only; unrelated errors must not stop loading. */
+  notificationsProblem?: string;
   /** status of the local Claude/Codex apps — booleans and labels, never secrets */
   harness?: HarnessState;
   /**
@@ -588,6 +597,8 @@ export class RelayClient {
   world: World = {
     connected: false, authFailed: false, users: [], agents: [], channels: [],
     messages: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
+    notifications: [], notificationsAsked: false, notificationsLoading: false,
+    notificationsRequestId: undefined, notificationsProblem: undefined,
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
@@ -1237,6 +1248,55 @@ export class RelayClient {
   /** "I have read this conversation up to here." Kept on the account, not here. */
   markRead(channelId: ID, ts?: number): void {
     this.send({ type: "markRead", channelId, ts });
+  }
+
+  /** Fetch the relay-owned, durable mention/thread-reply inbox. */
+  askNotifications(includeDismissed = false, limit = 100): void {
+    const requestId = this.nextRequestId("notifications");
+    this.world.notificationsAsked = true;
+    this.world.notificationsLoading = true;
+    this.world.notificationsRequestId = requestId;
+    this.world.notificationsProblem = undefined;
+    this.emit();
+    const sent = this.ask({ type: "notifications", includeDismissed, limit, requestId }, {
+      answers: f => f.type === "notificationInbox" && f.requestId === requestId,
+      answered: f => {
+        if (f.type !== "notificationInbox" || this.world.notificationsRequestId !== requestId) return;
+        this.world.notifications = [...f.entries];
+        this.world.notificationsLoading = false;
+        this.world.notificationsProblem = undefined;
+        this.world.notificationsRequestId = undefined;
+        this.emit();
+      },
+      refused: error => {
+        if (this.world.notificationsRequestId !== requestId) return;
+        this.world.notificationsLoading = false;
+        this.world.notificationsProblem = error;
+        this.world.notificationsRequestId = undefined;
+        this.emit();
+      },
+      lost: () => {
+        if (this.world.notificationsRequestId !== requestId) return;
+        this.world.notificationsLoading = false;
+        this.world.notificationsProblem = "The relay did not answer. Try loading notifications again.";
+        this.world.notificationsRequestId = undefined;
+        this.emit();
+      },
+    });
+    if (!sent && this.world.notificationsRequestId === requestId) {
+      this.world.notificationsRequestId = undefined;
+      this.world.notificationsLoading = false;
+      this.world.notificationsProblem = "Cloud9 is reconnecting. Notifications will return when the relay answers.";
+      this.emit();
+    }
+  }
+
+  markNotificationRead(notificationId: ID): void {
+    this.send({ type: "markNotificationRead", notificationId });
+  }
+
+  dismissNotification(notificationId: ID): void {
+    this.send({ type: "dismissNotification", notificationId });
   }
 
   /* ---------------- search ---------------- */
@@ -2716,6 +2776,11 @@ export class RelayClient {
         w.presence = frame.state.presence ?? {};
         w.tasks = frame.state.tasks;
         w.approvals = frame.state.approvals;
+        w.notifications = frame.state.notifications ?? [];
+        w.notificationsAsked = true;
+        w.notificationsLoading = false;
+        w.notificationsRequestId = undefined;
+        w.notificationsProblem = undefined;
         w.messages = {};
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
@@ -2773,6 +2838,30 @@ export class RelayClient {
         // to a hub that has nothing to say clears it rather than leaving a
         // notice on screen about something that has already been told.
         w.reachCatchup = frame.state.reachCatchup;
+        break;
+      }
+      case "notificationInbox":
+        /* An inbox answer is a projection of one exact request. A response
+           from an older request (or an old relay with no id) must not regress
+           a newer list or clear its loading state. */
+        if (frame.requestId === undefined || frame.requestId !== w.notificationsRequestId) break;
+        w.notifications = [...frame.entries];
+        w.notificationsAsked = true;
+        w.notificationsLoading = false;
+        w.notificationsProblem = undefined;
+        break;
+      case "notificationUpdated": {
+        // The normal inbox view does not request dismissed rows.  Remove one
+        // immediately when the relay confirms dismissal; keeping it visible
+        // until reconnect would make the Dismiss action look ineffective.
+        if (frame.entry.state === "dismissed") {
+          w.notifications = w.notifications.filter(entry => entry.id !== frame.entry.id);
+          break;
+        }
+        const i = w.notifications.findIndex(entry => entry.id === frame.entry.id);
+        w.notifications = i < 0
+          ? [frame.entry, ...w.notifications]
+          : w.notifications.map((entry, index) => index === i ? frame.entry : entry);
         break;
       }
       case "token":
@@ -2938,6 +3027,10 @@ export class RelayClient {
       }
       case "error": {
         w.lastError = { text: frame.error, ts: Date.now() };
+        if (frame.requestId !== undefined && frame.requestId === w.notificationsRequestId) {
+          w.notificationsLoading = false;
+          w.notificationsProblem = frame.error;
+        }
         /* A direct refusal names its exact refusal-capable request. A legacy
            no-id refusal is shown here generally but cannot settle a modern row.
            Unrelated rows stay alive, including their timeout nets. */

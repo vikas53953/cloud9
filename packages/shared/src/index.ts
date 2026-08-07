@@ -26,6 +26,7 @@ import { isAgentEffort } from "./effort.js";
 // so neither module can be caught half-built by the other. A `type` import
 // costs nothing at runtime at all.
 import type { AgentTokenUse, SavingProposal, UsePeriod, WasteFinding } from "./tokenuse.js";
+import type { NotificationInboxEntry } from "./notification-inbox.js";
 
 export type ID = string;
 
@@ -3007,6 +3008,12 @@ type ClientFrameBase =
   | { type: "artifactTicket"; artifactId: ID; version?: number }
   /** "I have read this conversation up to here" — kept on the account, not the machine. */
   | { type: "markRead"; channelId: ID; ts?: number }
+  /** Ask for this person's durable mention/thread-reply inbox. */
+  | { type: "notifications"; includeDismissed?: boolean; limit?: number }
+  /** Mark one durable inbox row read; the relay checks recipient ownership. */
+  | { type: "markNotificationRead"; notificationId: ID }
+  /** Hide one durable inbox row. */
+  | { type: "dismissNotification"; notificationId: ID }
   // engine-host only: post a message authored by one of the owner's agents
   | { type: "agentSend"; agentId: ID; channelId: ID; text: string; proactive?: boolean; replyTo?: ID }
   /**
@@ -3454,6 +3461,8 @@ export interface WorldState {
   presence?: Record<ID, AgentPresenceState>;
   tasks: Task[];
   approvals: Approval[];
+  /** Durable mention and thread-reply rows for this person only. */
+  notifications?: NotificationInboxEntry[];
   /**
    * Where this person has read up to, per conversation — from the RELAY, so it
    * follows them between machines (absent on a relay older than this round).
@@ -3635,6 +3644,10 @@ export type ServerFrame =
   | { type: "channelLeft"; channelId: ID }
   /** Read state for one conversation — sent to EVERY machine this person is on. */
   | { type: "read"; entry: UnreadEntry }
+  /** Durable inbox answer, scoped to the authenticated person. */
+  | { type: "notificationInbox"; entries: NotificationInboxEntry[]; requestId?: ID }
+  /** One inbox row changed state, echoed to that person's machines. */
+  | { type: "notificationUpdated"; entry: NotificationInboxEntry }
   | { type: "userJoined"; user: User }
   | { type: "userRemoved"; userId: ID }
   | { type: "token"; token: string } // durable token issued after invite redemption
@@ -5776,3 +5789,12 @@ export {
   sidebarWidth, spaceToShare, widestThread, cannotSplit,
   widthToDraw, widthHeChose, dividerWords, dividerSpokenWords,
 } from "./threadwidth.js";
+
+// ---------------------------------------------------------------------------
+// DURABLE MENTIONS + THREAD REPLIES — distinct from the Activity trail and
+// projected by the relay against current membership/message tombstones.
+export {
+  NOTIFICATION_INBOX_LIMITS, notificationEventId,
+  type NotificationInboxEntry, type NotificationInboxKind,
+  type NotificationInboxState, type NotificationSourceState,
+} from "./notification-inbox.js";
