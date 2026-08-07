@@ -55,7 +55,7 @@ The dated snapshot rows below are preserved history; this current row is the liv
 | Merged today | **8** — #6 time limit · #7 threads width · #9 activity · #10 spending · **#11 harness inventory** · **#12 threads research** · plus #5 and #8, both reverts of code that reached master unreviewed (one the conductor's). |
 
 **Current live snapshot (2026-08-07 16:58 IST):** PR #13 is OPEN, pushed at
-`d541c14`, and **CLEAN against `origin/master`**. It is not approved or merged;
+`9d85cbe`, and **CLEAN against `origin/master`**. It is not approved or merged;
 the older row below saying `CONFLICTING` is retained as dated review history.
 
 | # | HIS ASK (his words — never renamed) | Who has it | Stage | Evidence so far |
