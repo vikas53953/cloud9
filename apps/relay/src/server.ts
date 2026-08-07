@@ -1660,6 +1660,29 @@ export class Relay {
     if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
   }
 
+  /** Hook mutations mirror to every owner desktop while keeping the request
+   * receipt on the originating socket only. An engine receives the durable
+   * projection separately through `syncHooksToEngine` above. */
+  private tellHook(userId: ID, hook: StoredHook, requestId?: ID, origin?: Conn): void {
+    const base: ServerFrame = { type: "hook", hook };
+    const correlated = Boolean(origin && requestId);
+    for (const conn of this.conns) {
+      if (conn.userId === userId && conn.client === "desktop"
+        && (!correlated || conn !== origin)) send(conn.ws, base);
+    }
+    if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
+  }
+
+  private tellHooks(userId: ID, requestId?: ID, origin?: Conn): void {
+    const base: ServerFrame = { type: "hooks", hooks: this.store.hooksOf(userId) };
+    const correlated = Boolean(origin && requestId);
+    for (const conn of this.conns) {
+      if (conn.userId === userId && conn.client === "desktop"
+        && (!correlated || conn !== origin)) send(conn.ws, base);
+    }
+    if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
+  }
+
   /** Saved queue updates are private to the account, but mirror to its windows. */
   private tellSaved(userId: ID, requestId?: ID, origin?: Conn, opts: { limit?: number; beforeSavedAt?: number; beforeMessageId?: ID } = {}): void {
     const page = this.store.savedMessagesPage(userId, opts.limit, opts.beforeSavedAt, opts.beforeMessageId);
@@ -3132,8 +3155,8 @@ export class Relay {
         const priorReceipt = this.hookReceipt(conn, requestId, "create", "new", frame.hook);
         if (priorReceipt) {
           const prior = this.store.hook(conn.userId, priorReceipt.hookId);
-          if (prior) send(conn.ws, { type: "hook", hook: prior, requestId });
-          else send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(requestId ? { requestId } : {}) });
+          if (prior) this.tellHook(conn.userId, prior, requestId, conn);
+          else this.tellHooks(conn.userId, requestId, conn);
           break;
         }
         if (this.store.hooksOf(conn.userId).length >= HOOK_DEFAULTS.maxHooks) {
@@ -3145,7 +3168,7 @@ export class Relay {
         this.store.saveHookWithRequest(hook, conn.userId, requestId, "create", "new", JSON.stringify(frame.hook));
         this.store.logHookAudit(conn.userId, hook.id, "created", true, "hook created", Date.now(), conn.userId, conn.client, requestId, "new");
         this.syncHooksToEngine(conn.userId);
-        send(conn.ws, { type: "hook", hook, ...(requestId ? { requestId } : {}) });
+        this.tellHook(conn.userId, hook, requestId, conn);
         break;
       }
       case "updateHook": {
@@ -3155,8 +3178,8 @@ export class Relay {
         const priorReceipt = this.hookReceipt(conn, requestId, "update", frame.hookId, frame.hook);
         if (priorReceipt) {
           const prior = this.store.hook(conn.userId, priorReceipt.hookId);
-          if (prior) send(conn.ws, { type: "hook", hook: prior, requestId });
-          else send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(requestId ? { requestId } : {}) });
+          if (prior) this.tellHook(conn.userId, prior, requestId, conn);
+          else this.tellHooks(conn.userId, requestId, conn);
           break;
         }
         const old = this.myHook(conn.userId, frame.hookId);
@@ -3165,7 +3188,7 @@ export class Relay {
         this.store.saveHookWithRequest(hook, conn.userId, requestId, "update", frame.hookId, JSON.stringify(frame.hook));
         this.store.logHookAudit(conn.userId, hook.id, "updated", true, "hook updated", Date.now(), conn.userId, conn.client, requestId, frame.hookId);
         this.syncHooksToEngine(conn.userId);
-        send(conn.ws, { type: "hook", hook, ...(requestId ? { requestId } : {}) });
+        this.tellHook(conn.userId, hook, requestId, conn);
         break;
       }
       case "setHookEnabled": {
@@ -3174,8 +3197,8 @@ export class Relay {
         const priorReceipt = this.hookReceipt(conn, frame.requestId, "enabled", frame.hookId, { enabled: frame.enabled });
         if (priorReceipt) {
           const prior = this.store.hook(conn.userId, priorReceipt.hookId);
-          if (prior) send(conn.ws, { type: "hook", hook: prior, requestId: frame.requestId });
-          else send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+          if (prior) this.tellHook(conn.userId, prior, frame.requestId, conn);
+          else this.tellHooks(conn.userId, frame.requestId, conn);
           break;
         }
         const hook = this.myHook(conn.userId, frame.hookId); hook.enabled = frame.enabled; hook.updatedAt = Date.now();
@@ -3183,7 +3206,7 @@ export class Relay {
         this.store.saveHookWithRequest(hook, conn.userId, frame.requestId, "enabled", frame.hookId, JSON.stringify({ enabled: frame.enabled }));
         this.store.logHookAudit(conn.userId, hook.id, frame.enabled ? "enabled" : "disabled", true, frame.enabled ? "hook enabled" : "hook disabled", Date.now(), conn.userId, conn.client, frame.requestId, frame.hookId);
         this.syncHooksToEngine(conn.userId);
-        send(conn.ws, { type: "hook", hook, ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        this.tellHook(conn.userId, hook, frame.requestId, conn);
         break;
       }
       case "deleteHook": {
@@ -3191,14 +3214,14 @@ export class Relay {
         const requestId = frame.requestId;
         const priorReceipt = this.hookReceipt(conn, requestId, "delete", frame.hookId, {});
         if (priorReceipt) {
-          send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(requestId ? { requestId } : {}) });
+          this.tellHooks(conn.userId, requestId, conn);
           break;
         }
         const hook = this.myHook(conn.userId, frame.hookId);
         this.store.deleteHookWithRequest(conn.userId, hook.id, requestId, "delete", frame.hookId, "{}");
         this.store.logHookAudit(conn.userId, hook.id, "deleted", true, "hook deleted", Date.now(), conn.userId, conn.client, requestId, frame.hookId);
         this.syncHooksToEngine(conn.userId);
-        send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        this.tellHooks(conn.userId, frame.requestId, conn);
         break;
       }
       case "testHook": {

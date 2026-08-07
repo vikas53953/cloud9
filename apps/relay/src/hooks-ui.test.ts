@@ -8,8 +8,9 @@ test("owner hook CRUD is durable, correlated, validated, and idempotent", async 
   const relay = new Relay({ dbPath: tmp("hooks-ui.db"), ownerToken: "owner", ownerName: "Owner" });
   const port = await relay.listen(0); const url = `ws://127.0.0.1:${port}`;
   const owner = new TestClient(url, "owner"); await owner.wait(f => f.type === "welcome");
+  const otherWindow = new TestClient(url, "owner"); await otherWindow.wait(f => f.type === "welcome");
   const engine = new TestClient(url, "owner", "engine"); await engine.wait(f => f.type === "hooksUpdated");
-  t.after(() => { owner.close(); engine.close(); relay.close(); });
+  t.after(() => { owner.close(); otherWindow.close(); engine.close(); relay.close(); });
   owner.send({ type: "createAgent", agent: { name: "Hook bot", emoji: "🤖", persona: "Does hook work", abilities: { webSearch: false, files: false, schedules: false, background: false } } as never });
   const agent = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent" && f.agent.name === "Hook bot");
   owner.send({ type: "hooks", requestId: "list-1" });
@@ -18,6 +19,8 @@ test("owner hook CRUD is durable, correlated, validated, and idempotent", async 
   const hook = { name: "Finished note", event: "turn.finished" as const, enabled: true, action: { do: "note" as const, agentId: agent.agent.id, text: "Review the result" } };
   owner.send({ type: "createHook", hook, requestId: "create-1" });
   const created = await owner.wait<Extract<ServerFrame, { type: "hook" }>>(f => f.type === "hook" && f.requestId === "create-1");
+  const mirroredCreate = await otherWindow.wait<Extract<ServerFrame, { type: "hook" }>>(f => f.type === "hook" && !f.requestId && f.hook.id === created.hook.id);
+  assert.equal(mirroredCreate.hook.id, created.hook.id);
   const synced = await engine.wait<Extract<ServerFrame, { type: "hooksUpdated" }>>(f => f.type === "hooksUpdated" && f.hooks.some(h => h.id === created.hook.id));
   assert.equal(synced.hooks[0]?.id, created.hook.id);
   owner.send({ type: "createHook", hook, requestId: "create-1" });
@@ -26,6 +29,8 @@ test("owner hook CRUD is durable, correlated, validated, and idempotent", async 
   owner.send({ type: "setHookEnabled", hookId: created.hook.id, enabled: false, requestId: "disable-1" });
   const disabled = await owner.wait<Extract<ServerFrame, { type: "hook" }>>(f => f.type === "hook" && f.requestId === "disable-1" && f.hook.id === created.hook.id && !f.hook.enabled);
   assert.equal(disabled.requestId, "disable-1");
+  const mirroredDisable = await otherWindow.wait<Extract<ServerFrame, { type: "hook" }>>(f => f.type === "hook" && !f.requestId && f.hook.id === created.hook.id && !f.hook.enabled);
+  assert.equal(mirroredDisable.hook.enabled, false);
   owner.send({ type: "setHookEnabled", hookId: created.hook.id, enabled: false, requestId: "disable-1" });
   await owner.wait(f => f.type === "hook" && f.requestId === "disable-1" && !f.hook.enabled);
   owner.send({ type: "testHook", hookId: created.hook.id, requestId: "test-1" });
@@ -62,6 +67,8 @@ test("owner hook CRUD is durable, correlated, validated, and idempotent", async 
   owner.send({ type: "deleteHook", hookId: created.hook.id, requestId: "delete-1" });
   const gone = await owner.wait<Extract<ServerFrame, { type: "hooks" }>>(f => f.type === "hooks" && f.requestId === "delete-1");
   assert.deepEqual(gone.hooks, []);
+  const mirroredDelete = await otherWindow.wait<Extract<ServerFrame, { type: "hooks" }>>(f => f.type === "hooks" && !f.requestId && f.hooks.length === 0);
+  assert.deepEqual(mirroredDelete.hooks, []);
   owner.send({ type: "deleteHook", hookId: created.hook.id, requestId: "delete-1" });
   const replayDelete = await owner.wait<Extract<ServerFrame, { type: "hooks" }>>(f => f.type === "hooks" && f.requestId === "delete-1");
   assert.deepEqual(replayDelete.hooks, []);
