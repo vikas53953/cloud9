@@ -6,13 +6,13 @@ a commit, or an agent's report, THIS FILE WINS.**
 Anyone arriving — Vikas, a new session, a new agent — reads this first and
 needs nothing else. Anyone doing work updates it as they go, not at the end.
 
-Last updated: **2026-08-08 00:52 +05:30** · by: audit session · *live delivery board below is the current contract; external counts still rot and must be re-read before action*
+Last verified at: **2026-08-08 00:52 +05:30** · by: audit session · *the live delivery board below is a dated snapshot; external counts and open heads can change without this file changing*
 
-## LIVE DELIVERY BOARD — 2026-08-08 00:52 +05:30 (exact-as-of snapshot)
+## LIVE DELIVERY BOARD — 2026-08-08 00:52 +05:30 (last-verified snapshot)
 
-This compact board is the live delivery contract. Allowed statuses are **MERGED**, **BUILDING**, **IN REVIEW**, **READY NEXT**, and **BLOCKED WITH REASON**. “Unassigned” is intentional until an author and a different reviewer are named.
+This compact board is the delivery contract for this last-verified snapshot. Allowed statuses are **MERGED**, **BUILDING**, **IN REVIEW**, **READY NEXT**, and **BLOCKED WITH REASON**. “Unassigned” is intentional until an author and a different reviewer are named.
 
-This board is an exact-as-of GitHub snapshot at **2026-08-08 00:52 +05:30** against current `master` **`daf851f`**. External PR heads and review state can change without this file changing; the Slack audit report's source line citations remain pinned to inspected commit `7329537`.
+This board was last verified against GitHub at **2026-08-08 00:52 +05:30** and `master` **`daf851f`**. External PR heads and review state can change without this file changing; the Slack audit report's source line citations remain pinned to inspected commit `7329537`.
 
 | Feature | Status | Branch-PR | Author | Reviewer | Next proof / software-team scope |
 |---|---|---|---|---|---|
@@ -20,7 +20,7 @@ This board is an exact-as-of GitHub snapshot at **2026-08-08 00:52 +05:30** agai
 | Remove timing | MERGED | `fix/agents-are-not-on-a-timer` / PR #13 (`97daeae`) | Vikas Mittal | unassigned | Re-read the merged no-clock turn/approval contract; retain the focused Stop/process-tree proof and unknown installed-build gates. |
 | Manual workflows | MERGED | `master` / PR #18 (`daf851f`) | Vikas Mittal | chatgpt-codex-connector | Re-read the merged plain manual-v1 list/builder slice without implying triggers, schedules, run history, or permissions. |
 | Persistent mentions-and-replies notification inbox | MERGED | `master` / PR #19 (`551b2f8`) | Vikas Mittal | chatgpt-codex-connector | Re-read the merged durable per-user mention/reply contract and later prove read/dismiss, source navigation, ownership, retention, mute/quiet/OS, and deleted/inaccessible states. |
-| Saved/Later message queue | READY NEXT | unassigned / next PR | unassigned | unassigned | Prove per-user save/unsave, persistence, auth isolation, source navigation, retention, and deleted/inaccessible handling; PR #17 is audit/contract only. |
+| Saved/Later message queue | IN REVIEW | `saved-later-message-queue` / PR #28 (`0f585a2`) | Vikas Mittal | unassigned | Review per-user save/unsave, persistence, auth isolation, source navigation, retention, and deleted/inaccessible handling; PR #17 remains audit/contract only. |
 | Hooks editor | BUILDING | `feature/hooks-rules-editor` / PR #27 (`ab25e85`) | Vikas Mittal | unassigned | Review owner-only create/list/edit/delete for existing hook events/actions with visible refusal/firing history. |
 | Saved-key provider parity | READY NEXT | unassigned / next PR | unassigned | unassigned | Align streaming, Stop/process ownership, Cloud9 tools, and honest outcomes without making credential or paid-account decisions. |
 | Visible queue/fair concurrency | READY NEXT | unassigned / next PR | unassigned | unassigned | Expose queued/started/cancelled order and capacity in Activity without adding a timing foundation. |
@@ -214,7 +214,7 @@ The complete visual program map is [`docs/buzz-important-functions-2026-08-07.ht
  
 
 | 22 | **Persistent mentions-and-replies notification inbox** | Vikas Mittal; reviewer `chatgpt-codex-connector` | **MERGED — PR #19 (`551b2f8`)** | The separate durable per-user notification inbox for mention/thread-reply entries—not a second view of the existing agent Activity screen—landed in PR #19 with read/dismiss, source navigation, persistence/storage, owner isolation/auth, retention, deleted/inaccessible handling, and mute/quiet/OS-preservation dependencies. Slack behavior remains **FOG** because the live UI and current canonical help-page status/content were unavailable; this is not a Slack-parity claim. |
-| 23 | **Saved/Later message queue** | owner/reviewer unassigned as of 2026-08-07 22:43 +05:30 | **READY NEXT** | Proposed Cloud9 source gap: save/unsave; durable per-user list; open the source message/thread; honest deleted or inaccessible state. Dependencies: message identity + persistence/storage + per-user ownership/auth isolation + navigation/read + deletion/access/retention semantics. Slack behavior remains **FOG** because the live UI and current canonical help-page status/content were unavailable; Terra/Luna choose retention semantics later. PR #17 remains the audit/contract only; implementation awaits a future PR. |
+| 23 | **Saved/Later message queue** | Vikas Mittal; reviewer unassigned as of 2026-08-08 00:52 +05:30 | **IN REVIEW — PR #28 (`0f585a2`)** | Proposed Cloud9 source gap: save/unsave; durable per-user list; open the source message/thread; honest deleted or inaccessible state. Dependencies: message identity + persistence/storage + per-user ownership/auth isolation + navigation/read + deletion/access/retention semantics. Slack behavior remains **FOG** because the live UI and current canonical help-page status/content were unavailable; Terra/Luna choose retention semantics later. PR #17 remains the audit/contract only; PR #28 is the open implementation under separate review. |
 
 ### Waiting on Vikas — nobody else can do these
 
