@@ -6,7 +6,33 @@ a commit, or an agent's report, THIS FILE WINS.**
 Anyone arriving — Vikas, a new session, a new agent — reads this first and
 needs nothing else. Anyone doing work updates it as they go, not at the end.
 
-Last updated: **2026-08-07 ~11:00** · by: conductor session · *counts below are from `gh pr list` run at that moment — see rule 10, they rot on their own*
+Last updated: **2026-08-07 19:27 +05:30** · by: audit session · *live delivery board below is the current contract; external counts still rot and must be re-read before action*
+
+## LIVE DELIVERY BOARD — 2026-08-07 19:27 +05:30
+
+This compact board is the live delivery contract. Allowed statuses are **MERGED**, **BUILDING**, **IN REVIEW**, **READY NEXT**, and **BLOCKED WITH REASON**. “Unassigned” is intentional until an author and a different reviewer are named.
+
+| Feature | Status | Branch-PR | Author | Reviewer | Next proof / software-team scope |
+|---|---|---|---|---|---|
+| Resizable threads | MERGED | `master` / PR #14 | Luna | unassigned | Verify the installed build still preserves draggable width, focus restoration, narrow takeover, and restart persistence. |
+| Remove timing | IN REVIEW | `remove-timing` / PR #13 | agent | unassigned | Review the no-clock turn/approval contract and prove Stop still owns the real process tree. |
+| Manual workflows | BUILDING | `buzz-deep-audit` / PR #16 | unassigned | unassigned | Keep manual list/builder work scoped; do not imply triggers, schedules, run history, or permissions. |
+| Persistent mentions-and-replies notification inbox | BUILDING | `slack-chat-audit` / PR #17 | unassigned | unassigned | Build durable per-user mention/reply notifications separate from agent Activity, with read/dismiss, navigation, ownership, retention, mute/quiet/OS, and deleted/inaccessible states. |
+| Saved/Later message queue | READY NEXT | `slack-chat-audit` / PR #17 | unassigned | unassigned | Prove per-user save/unsave, persistence, auth isolation, source navigation, retention, and deleted/inaccessible handling. |
+| Hooks editor | READY NEXT | unassigned / next PR | unassigned | unassigned | Add owner-only create/list/edit/delete for existing hook events/actions with visible refusal/firing history. |
+| Saved-key provider parity | READY NEXT | unassigned / next PR | unassigned | unassigned | Align streaming, Stop/process ownership, Cloud9 tools, and honest outcomes without making credential or paid-account decisions. |
+| Visible queue/fair concurrency | READY NEXT | unassigned / next PR | unassigned | unassigned | Expose queued/started/cancelled order and capacity in Activity without adding a timing foundation. |
+| Context compaction/remaining visibility | READY NEXT | unassigned / next PR | unassigned | unassigned | Show what was compacted and honest remaining-room state while preserving thread-first routing. |
+| Real SKILL/project skills | READY NEXT | unassigned / next PR | unassigned | unassigned | Add an explicit allow-list and on-demand loading with an owner security boundary; never read arbitrary folders silently. |
+| Richer handoff context | READY NEXT | unassigned / next PR | unassigned | unassigned | Deliver and render memory/run/artifact/thread pointers with owner and membership checks. |
+| Verification runner/status | READY NEXT | unassigned / next PR | unassigned | unassigned | Run an owner-approved recipe and persist visible checked/could-not-check/mismatch evidence. |
+| Engineering Pulse | READY NEXT | unassigned / next PR | unassigned | unassigned | Provide an internal engineering Pulse/feed surface only after its loading, error, membership, and moderation contract is explicit. |
+| Internal team social feed | READY NEXT | unassigned / next PR | unassigned | unassigned | Project-scoped chronological posts/comments/reactions by humans and agents with membership isolation, own edit/delete, durable links, unread, and accessible states. |
+| Project polls | READY NEXT | unassigned / next PR | unassigned | unassigned | Keep polls project-scoped with explicit ownership, close/edit rules, and accessible results; no public publishing. |
+| Engineering Canvas | READY NEXT | unassigned / next PR | unassigned | unassigned | Define an internal project Canvas with membership isolation and durable edits before implementation. |
+| Project forums/decision threads | READY NEXT | unassigned / next PR | unassigned | unassigned | Support durable project discussion and decision records with membership, moderation, and audit boundaries. |
+| Huddle presence/shared notes | READY NEXT | unassigned / next PR | unassigned | unassigned | Share live presence and notes only; v1 excludes audio and video. |
+| Public project update publishing | READY NEXT | unassigned / next PR | unassigned | unassigned | Add explicit human approval and an audit trail; no autopublish. |
 
 ## 0. THE THREE REFERENCES — read this before designing anything
 
@@ -181,6 +207,11 @@ The complete visual program map is [`docs/buzz-important-functions-2026-08-07.ht
 | 19 | **real project and plugin skill instructions** | nobody yet | **NOT STARTED — verified buildable harness gap; author/reviewer unassigned** | Cloud9's own skills and `open_skill` are present (`packages/engine/src/cloud9tools.ts:556-608`, `provider.ts:361-435`), but the Codex isolation test creates owner `SKILL.md` fixtures and an isolated environment (`packages/engine/src/codex.test.ts:227-243`), then asserts owner skill directories are absent and skill paths are disabled (`:255-264`). Boundary: an explicit, inspectable allow-list for project/plugin skill discovery and on-demand loading; no silent access to arbitrary owner folders. Dependencies: owner-setup/security decision outside this audit. |
 | 20 | **handoff context beyond a channel** | nobody yet | **NOT STARTED — verified buildable harness gap; author/reviewer unassigned** | The wire allows context pointers to `memory`, `run`, `channel`, or `artifact` (`packages/shared/src/index.ts:4361-4365`), but `packages/engine/src/engine.ts:3260-3305` only delivers room-channel pointers; other pointers are dropped, and thread context is not represented. Boundary: deliver and render memory/run/artifact/thread pointers with owner/membership checks, preserving the existing channel handoff behavior. Dependencies: artifact/memory access contracts, then queue/run lifecycle (17). |
 | 21 | **verification runner and visible check status** | nobody yet | **NOT STARTED — verified buildable harness gap; author/reviewer unassigned** | `packages/engine/src/verify.ts:1-367` checks only four claim shapes against recorded steps; `apps/desktop/src/App.tsx:2361` exposes `verifyClaims`, but no build/test runner or positive checked state is present. Boundary: an explicit owner-approved verification recipe per project/worktree, durable run evidence, and visible “checked / could not check / mismatch” status; no blanket auto-publish or hidden command execution. Dependencies: repo/worktree action model and run records only; verification is independent of saved-key provider parity (16) and queue visibility (17). |
+ 
+
+| 22 | **Persistent mentions-and-replies notification inbox** | owner/reviewer unassigned as of 2026-08-07 19:27 +05:30 | **BUILDING** | Proposed Cloud9 source gap: a separate durable per-user notification inbox for mention/thread-reply entries—not a second view of the existing agent Activity screen; read/dismiss; jump to the source room/thread; honest deleted or inaccessible state. Dependencies: notification event IDs + unread/read + navigation + persistence/storage + owner isolation/auth + retention + deleted/inaccessible handling + mute/quiet/OS preservation. PR #17 defines the contract only; implementation ownership remains unassigned. Slack behavior remains **FOG** because the live UI and current canonical help-page status/content were unavailable; this is not a Slack-parity claim. |
+| 23 | **Saved/Later message queue** | owner/reviewer unassigned as of 2026-08-07 19:27 +05:30 | **READY NEXT** | Proposed Cloud9 source gap: save/unsave; durable per-user list; open the source message/thread; honest deleted or inaccessible state. Dependencies: message identity + persistence/storage + per-user ownership/auth isolation + navigation/read + deletion/access/retention semantics. Slack behavior remains **FOG** because the live UI and current canonical help-page status/content were unavailable; Terra/Luna choose retention semantics later. |
+
 ### Waiting on Vikas — nobody else can do these
 
 - **Uninstall McAfee.** Every program start costs **~271ms instead of ~20ms**. Windows Defender is OFF; McAfee is the only scanner. This is why everything takes ten minutes.
