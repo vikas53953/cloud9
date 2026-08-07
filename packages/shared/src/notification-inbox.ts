@@ -25,7 +25,6 @@ export function notificationEventId(
 ): string {
   return `notification:${kind}:${recipientId}:${messageId}`;
 }
-
 /** A projected row safe for a client to render and optionally jump into. */
 export interface NotificationInboxEntry {
   id: string;

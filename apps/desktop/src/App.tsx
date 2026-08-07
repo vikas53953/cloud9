@@ -2267,9 +2267,7 @@ function Workspace(): React.JSX.Element {
     });
     if (!target) return;
     if (target.go === "tasks") { goScreen("tasks"); return; }
-    goChannel(target.channelId);
     if (target.go === "message") {
-      setJumpTo({ id: target.messageId, at: Date.now() });
       /* A REPLY IS ONLY HALF A PLACE. `notifyTarget` points at the message,
          because a message id is all a notification carries. A reply's real home
          is the thread it is in, and this screen already has ONE owner for
@@ -2278,9 +2276,14 @@ function Workspace(): React.JSX.Element {
          threads turned off there is no panel to open and the jump alone is the
          whole answer; `openThreadFor` already knows that. */
       const reply = (world.messages[target.channelId] ?? []).find(m => m.id === target.messageId);
-      if (reply?.replyTo) setOpenThreadFor({ id: reply.replyTo, at: Date.now() });
+      attemptLeave(() => {
+        setActiveId(target.channelId);
+        setScreen("chat");
+        setJumpTo({ id: target.messageId, at: Date.now() });
+        if (reply?.replyTo) setOpenThreadFor({ id: reply.replyTo, at: Date.now() });
+      });
     }
-  }, [goScreen, goChannel, world.messages]);
+  }, [goScreen, world.messages]);
 
   useEffect(() => {
     const bridge = desktop();
