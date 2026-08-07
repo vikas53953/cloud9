@@ -476,7 +476,21 @@ export function detailRemoteAction(f: RemoteActionFacts): string | undefined {
   return bits.length ? bits.join(", ") : undefined;
 }
 
-/** How long a mid-run request waits before it is dead. Ten minutes, one owner. */
+/**
+ * The most a request may be. LENGTHS ONLY — THERE IS NO CLOCK HERE ANY MORE.
+ *
+ * REMOVED 2026-08-07: `waitMs`, ten minutes, after which a card the owner had
+ * not answered was killed and the agent told "nobody answered in time". Nobody
+ * asked for that and it was never true of the thing this app copies: Claude Code
+ * and Codex ask a permission question and then WAIT. If the person is at lunch,
+ * the question is still there when he gets back.
+ *
+ * The rule it was invented to defend — SILENCE IS NEVER A YES — did not need it
+ * and never did. That rule is satisfied by never acting without his yes, which
+ * is exactly what this gate does; throwing the question away is not a stricter
+ * version of it, just a ruder one. His words: "agents are employees, so I don't
+ * want to implement a timing foundation."
+ */
 export const APPROVAL_LIMITS = {
   /** the sentence the owner reads */
   action: 300,
@@ -484,8 +498,6 @@ export const APPROVAL_LIMITS = {
   detail: 300,
   /** the engine's own correlation token */
   askId: 64,
-  /** nobody answered — the request expires and the agent is told so */
-  waitMs: 10 * 60_000,
 } as const;
 
 /**
@@ -2121,10 +2133,15 @@ export function validateCiCheckView(v: unknown): string | null {
 }
 
 /**
- * `expired` is not a decision — it is the honest record that NOBODY MADE ONE.
- * An agent that waited and was never answered must not read that as a yes, and
- * the owner must not come back to a card that has been quietly cancelled or
- * quietly still live. It is its own word for its own reason.
+ * `expired` IS NO LONGER PRODUCED BY ANYTHING (2026-08-07). Nothing in Cloud9
+ * kills a card any more — see `APPROVAL_LIMITS`. It stays in this list, and only
+ * for this reason: cards that ran out under the old ten-minute sweep are already
+ * written down on his machine with that word, and a record that can no longer be
+ * read is a worse lie than a record of a mistake we have stopped making. His
+ * screen still knows how to draw one; nothing creates a new one.
+ *
+ * DO NOT WIRE A NEW EXPIRY TO IT. If a question needs to stop being answerable,
+ * that is the owner's decision (Stop), not a clock's.
  */
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
 
@@ -2141,15 +2158,15 @@ export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
  *    intends to do. Nothing has been done yet and nothing will be until he
  *    answers. Added 2026-08-05 as a THIRD KIND OF THE SAME THING rather than a
  *    second approval mechanism — it stores an `Approval`, it is answered by the
- *    same `decideApproval` frame, it is drawn by the same card, and it is swept
- *    by the same expiry sweep. A parallel gate would be a parallel place for
+ *    same `decideApproval` frame and it is drawn by the same card. A parallel
+ *    gate would be a parallel place for
  *    "did we ask?" to be answered, which is the exact split that bit us before.
  *  • `saving` — asked when one agent has looked at what the crew costs, found
  *    waste, and wants to suggest ONE narrowing change to ANOTHER agent's
  *    settings: *shall I stop Scout loading your whole Claude Code setup on
  *    every turn?* Added 2026-08-07, and added as a FOURTH KIND OF THE SAME
  *    THING for exactly the reason `plan` was — same stored `Approval`, same
- *    `decideApproval`, same card, same sweep.
+ *    `decideApproval`, same card.
  *
  *    IT IS THE ONLY THING AN AGENT MAY DO ABOUT ANOTHER AGENT'S SETTINGS, and
  *    even approving it grants nobody a write: the owner's own screen makes the
@@ -2185,9 +2202,10 @@ export interface Approval {
   /** the smaller line under the sentence — "3 files changed" */
   detail?: string;
   /**
-   * When this stops being answerable. Only an `action` or a `plan` approval has
-   * one: an agent is standing there waiting, so a request nobody answers has to
-   * die rather than be approved next Tuesday against a branch that has moved on.
+   * WHEN THIS USED TO STOP BEING ANSWERABLE. Nothing sets it any more
+   * (2026-08-07) — no card expires, because the app this one copies does not
+   * expire its permission prompts either. Kept only so a card written down
+   * before that date still reads back with the deadline it really had.
    */
   expiresAt?: number;
   /**

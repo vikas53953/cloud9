@@ -24,7 +24,6 @@ import { ProviderTrace, traceFromStream, traceWalker } from "./runrecord.js";
 import { claudeMapper, ClaudeCliProvider, traceClaude } from "./claude-cli.js";
 import { codexMapper, CodexProvider, traceCodex } from "./codex.js";
 import { liveStepWatcher } from "./livesteps.js";
-import { TurnTimedOutError } from "./timebudget.js";
 import { Engine } from "./engine.js";
 
 /** Real `claude -p --output-format stream-json --verbose` output, 2026-07-29. */
@@ -345,22 +344,6 @@ test("an old-style runner that ignores the option costs nothing but the live vie
   const text = await provider.respond({ ...aTurn(), onStep: s => live.push(...s) });
   assert.equal(live.length, 0, "no live steps — and that is the honest outcome");
   assert.equal(text, "Contents: hello from cloud9 probe", "the answer still arrived");
-});
-
-test("a timed-out WATCHED turn still reports the clock, not a live-view failure", async () => {
-  const runner = async (_c: string, _a: string[], opts: RunOptions = {}): Promise<RunResult> => {
-    opts.onStdoutLine?.(CLAUDE_LINES[1]); // it got as far as one tool call
-    return { code: null, stdout: "", stderr: "", timedOut: true, notFound: false };
-  };
-  const provider = new ClaudeCliProvider({
-    agentDataDir: () => process.cwd(), runner, models: () => ["claude-sonnet-5"], timeoutMs: 1000,
-  });
-  const live: RunStep[] = [];
-  await assert.rejects(
-    () => provider.respond({ ...aTurn(), onStep: s => live.push(...s) }),
-    (err: unknown) => err instanceof TurnTimedOutError,
-  );
-  assert.equal(live.length, 1, "what it did get done was still shown");
 });
 
 // ===========================================================================

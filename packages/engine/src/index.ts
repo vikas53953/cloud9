@@ -10,13 +10,9 @@ export {
   type ClaudeProvider, type SdkCredentials, type RespondInput,
   type TurnBrief, type PromptTurnKind,
 } from "./provider.js";
-// HOW LONG A TURN MAY TAKE — one named budget per kind of work, with its
-// justification written down. It replaced two hard-coded numbers in two
-// constructors that killed every background job after two or three minutes.
-export {
-  TURN_TIME_BUDGET_MS, MAX_TURN_TIME_BUDGET_MS, TurnTimedOutError,
-  describeBudget, timedOutSentence, turnTimeBudgetMs,
-} from "./timebudget.js";
+// (HOW LONG A TURN MAY TAKE used to be exported from here. There is no such
+// thing any more — a turn runs until it finishes, fails, or the owner stops it.
+// `timebudget.ts` is the note explaining why, and it exports nothing.)
 // HOW MUCH CONVERSATION AN AGENT SEES — one budget, in characters, DERIVED FROM
 // THE MODEL, with its justification and its measurements written down. It
 // replaced a `slice(-20)` nobody had chosen, and then a flat 24,000 that could

@@ -115,11 +115,11 @@ test("a request the builder refuses (malformed) runs nothing and does not lie", 
 // ----- the SAME no-paths, driven through the real ApprovalDesk (yes/no/expiry/disconnect)
 
 /** Wire a real ApprovalDesk to the executor and hand back the levers the hub pulls. */
-function withDesk(waitMs = 60_000) {
+function withDesk() {
   let asked: { askId: string } | undefined;
   const desk = new ApprovalDesk({
     send: frame => { if (frame.type === "askApproval") asked = { askId: frame.askId }; },
-    waitMs, log: quiet,
+    log: quiet,
   });
   const ask = async (facts: RemoteActionFacts) => {
     const o = await desk.ask({ agent, channelId: "c1", facts });
@@ -150,15 +150,6 @@ test("desk NO: the executor runs NOTHING", async () => {
   const outcome = await p;
   assert.equal(outcome.ran, false);
   assert.match(outcome.reason, /said no/);
-  assert.equal(calls.length, 0);
-});
-
-test("desk EXPIRY: nobody answered, the executor runs NOTHING", async () => {
-  const { calls, runner } = spyRunner();
-  const { ask } = withDesk(20); // a 20ms leash
-  const outcome = await runGitHubWrite({ request: issueReq, run: runner, ask });
-  assert.equal(outcome.ran, false);
-  assert.match(outcome.reason, /nobody answered/);
   assert.equal(calls.length, 0);
 });
 

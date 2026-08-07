@@ -30,10 +30,16 @@ function agent(over: Partial<AgentDef> = {}): AgentDef {
   } as AgentDef;
 }
 
-/** A desk with the wire replaced by a list, so what it SAYS can be read. */
-function desk(waitMs = 50) {
+/**
+ * A desk with the wire replaced by a list, so what it SAYS can be read.
+ *
+ * It takes no waiting time, because there is no waiting time (2026-08-07): a
+ * card is answered, refused, stopped or dropped, and until one of those happens
+ * it just waits. See `timebudget.ts` for the whole story.
+ */
+function desk() {
   const sent: ClientFrame[] = [];
-  const d = new ApprovalDesk({ send: f => sent.push(f), waitMs, log: quiet });
+  const d = new ApprovalDesk({ send: f => sent.push(f), log: quiet });
   return { d, sent };
 }
 
@@ -56,7 +62,7 @@ function receipt(d: ApprovalDesk, sent: ClientFrame[], approvalId: ID = "ap1"): 
 // ------------------------------------------------------------- the round trip
 
 test("an agent asks, he says yes, and the agent carries on", async () => {
-  const { d, sent } = desk(5_000);
+  const { d, sent } = desk();
   const answer = d.ask({
     agent: agent(), channelId: "ch1",
     facts: { action: "push", repo: "vikas53953/cloud9", branch: "cloud9/a1-x", commits: 3 },
@@ -82,9 +88,12 @@ test("an agent asks, he says yes, and the agent carries on", async () => {
 test("a no is a no, and it says which kind of no it was", async () => {
   for (const [status, words] of [
     ["rejected", /said no/],
+    // `expired` is not produced by anything any more (nothing kills a card), but
+    // cards that ran out under the old ten-minute sweep are still written down
+    // on his machine, and one of those read back must still say what it was.
     ["expired", /nobody answered/],
   ] as const) {
-    const { d, sent } = desk(5_000);
+    const { d, sent } = desk();
     const answer = d.ask({
       agent: agent(), channelId: "ch1",
       facts: { action: "pullRequest", branch: "cloud9/a1-x", base: "master" },
@@ -99,19 +108,34 @@ test("a no is a no, and it says which kind of no it was", async () => {
 
 // -------------------------------------------------------- silence is never yes
 
-test("nobody answers, so it times out and says so — it never proceeds on silence", async () => {
-  const { d } = desk(30);
-  const out = await d.ask({
-    agent: agent(), channelId: "ch1",
-    facts: { action: "push", branch: "cloud9/a1-x", commits: 1 },
-  });
-  assert.equal(out.approved, false);
-  assert.match(out.reason, /nobody answered/);
-  assert.equal(d.pending, 0, "the waiter was cleaned up, not left behind");
+test("nobody has answered yet, so it is STILL WAITING — a card does not die of old age", async t => {
+  // THE BUG THIS REPLACES. A card used to be killed after ten minutes and the
+  // agent behind it told "nobody answered in time, so it did not happen". He
+  // asked for that to go: the tools this app is a front end for ask a permission
+  // question and then wait, and so does this now. His question survives lunch.
+  //
+  // Clock-driven rather than wall-clock: the fake timer below runs an HOUR past
+  // the old ten-minute leash in no real time at all.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { d } = desk();
+  let settled: unknown;
+  void d.ask({
+    agent: agent(), channelId: "ch1", facts: { action: "push", branch: "cloud9/a1-x", commits: 1 },
+  }).then(out => { settled = out; });
+
+  t.mock.timers.tick(60 * 60_000);            // an hour: six times the old leash
+  await Promise.resolve();
+  assert.equal(settled, undefined, "his question was thrown away while he was thinking");
+  assert.equal(d.pending, 1, "the agent is no longer standing at its own card");
+
+  // AND SILENCE IS STILL NEVER A YES — the point the old deadline was invented
+  // to protect, which never needed it: nothing has been approved, because
+  // nothing can be approved without him.
+  d.giveUpAll("test over");
 });
 
 test("the hub going away is a no for everyone still waiting", async () => {
-  const { d } = desk(60_000);
+  const { d } = desk();
   const a = d.ask({ agent: agent(), channelId: "ch1", facts: { action: "push", branch: "b1" } });
   const b = d.ask({ agent: agent({ id: "a2" }), channelId: "ch1", facts: { action: "push", branch: "b2" } });
   assert.equal(d.pending, 2);
@@ -127,29 +151,35 @@ test("a decision for a card nobody here is waiting on changes nothing", async ()
   // A card the owner decided on his phone for a DIFFERENT agent must not
   // release this one. Verified failing with the `approvalId` match removed:
   // the first waiter in the list is freed by somebody else's yes.
-  const { d, sent } = desk(40);
-  const answer = d.ask({ agent: agent(), channelId: "ch1", facts: { action: "push", branch: "b1" } });
+  const { d, sent } = desk();
+  let settled: unknown;
+  void d.ask({ agent: agent(), channelId: "ch1", facts: { action: "push", branch: "b1" } })
+    .then(out => { settled = out; });
   receipt(d, sent, "ap-mine");
   d.onApproval(card({ id: "ap-somebody-elses", status: "approved" }));
-  const out = await answer;
-  assert.equal(out.approved, false, "it timed out instead — it did not borrow the other yes");
-  assert.match(out.reason, /nobody answered/);
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(settled, undefined, "it borrowed somebody else's yes");
+  assert.equal(d.pending, 1, "it is still waiting on ITS OWN card, as it should be");
+  d.giveUpAll("test over");
 });
 
 test("a card that is still pending is not an answer", async () => {
-  const { d, sent } = desk(40);
-  const answer = d.ask({ agent: agent(), channelId: "ch1", facts: { action: "push", branch: "b1" } });
+  const { d, sent } = desk();
+  let settled: unknown;
+  void d.ask({ agent: agent(), channelId: "ch1", facts: { action: "push", branch: "b1" } })
+    .then(out => { settled = out; });
   receipt(d, sent);
   d.onApproval(card({ status: "pending" }));
+  await new Promise(r => setTimeout(r, 20));
   assert.equal(d.pending, 1);
-  const out = await answer;
-  assert.equal(out.approved, false);
+  assert.equal(settled, undefined, "'still thinking about it' was read as a decision");
+  d.giveUpAll("test over");
 });
 
 // ------------------------------------------------- it does not block or spin
 
 test("several agents wait at once and the engine keeps going", async () => {
-  const { d, sent } = desk(5_000);
+  const { d, sent } = desk();
   const answers = ["a1", "a2", "a3"].map((id, i) => d.ask({
     agent: agent({ id }), channelId: "ch1",
     facts: { action: "push", branch: `cloud9/${id}-x`, commits: i + 1 },
@@ -173,7 +203,7 @@ test("several agents wait at once and the engine keeps going", async () => {
 
 test("the desk has a leash — it cannot fill up with waiters for ever", async () => {
   const sent: ClientFrame[] = [];
-  const d = new ApprovalDesk({ send: f => sent.push(f), waitMs: 60_000, maxWaiting: 2, log: quiet });
+  const d = new ApprovalDesk({ send: f => sent.push(f), maxWaiting: 2, log: quiet });
   void d.ask({ agent: agent(), channelId: "ch1", facts: { action: "push", branch: "b1" } });
   void d.ask({ agent: agent(), channelId: "ch1", facts: { action: "push", branch: "b2" } });
   const third = await d.ask({ agent: agent(), channelId: "ch1", facts: { action: "push", branch: "b3" } });
@@ -197,7 +227,7 @@ test("the GitHub gate, wired to the desk, really is answerable now", async () =>
     return Promise.resolve({ code: 0, stdout, stderr: "", timedOut: false, notFound: false });
   }) as never;
 
-  const { d, sent } = desk(5_000);
+  const { d, sent } = desk();
   const wt = {
     repoDir: "/repo", path: "/work/x", branch: "cloud9/a1-x", base: "master", agentId: "a1",
   };
@@ -226,7 +256,7 @@ test("the GitHub gate, wired to the desk, really is answerable now", async () =>
   assert.deepEqual(calls.at(-1), { cmd: "git", args: ["push", "-u", "origin", "cloud9/a1-x"] });
 
   // and the same client with a NO still refuses, loudly
-  const { d: d2, sent: s2 } = desk(5_000);
+  const { d: d2, sent: s2 } = desk();
   const gh2 = new GitHubClient({
     runner, log: quiet,
     approve: async (_a, _detail, facts) => (await d2.ask({
@@ -244,7 +274,7 @@ test("every row of the remote-actions table can be asked about", () => {
   // CLASS, NOT CASE — walking the table means a fourth row is covered the day
   // it is added.
   for (const action of Object.keys(REMOTE_ACTIONS) as RemoteAction[]) {
-    const { d, sent } = desk(60_000);
+    const { d, sent } = desk();
     void d.ask({ agent: agent(), channelId: "ch1", facts: { action } });
     const ask = sent[0];
     assert.ok(ask && ask.type === "askApproval" && ask.facts.action === action);
@@ -252,17 +282,3 @@ test("every row of the remote-actions table can be asked about", () => {
   }
 });
 
-test("the waiting time is said in words that are true at any length", async () => {
-  // Caught by the REAL end-to-end run: a 20-second leash produced "nobody
-  // answered in 0 minutes", which reads like a bug in the one sentence whose
-  // job is to be believed.
-  for (const [waitMs, words] of [[20, /1 second/], [30_000, /30 seconds/]] as const) {
-    const { d } = desk(waitMs);
-    const out = await d.ask({
-      agent: agent(), channelId: "ch1", facts: { action: "push", branch: "b1" },
-    });
-    assert.equal(out.approved, false);
-    assert.match(out.reason, words);
-    assert.doesNotMatch(out.reason, /\b0 (seconds|minutes)\b/);
-  }
-});

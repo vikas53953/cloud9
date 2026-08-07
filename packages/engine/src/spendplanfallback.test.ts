@@ -489,14 +489,21 @@ test("GAP B: the plan goes on the ORDINARY approval card, and nothing runs until
   // very first call is the real turn, with no card and no chance to say no.
 });
 
-test("GAP B: SAYING NO REALLY STOPS IT — and so does saying nothing at all", async () => {
+test("GAP B: SAYING NO REALLY STOPS IT — and saying nothing at all never becomes a yes", async () => {
+  // WHAT CHANGED HERE ON 2026-08-07. The "silence" half of this used to lean on
+  // the card expiring after 30 milliseconds, and then checked that the work did
+  // not happen. There is no expiry any more — his question waits for him — so
+  // silence is now tested as what it actually is: NOTHING HAPPENS. The work does
+  // not run, the card does not resolve itself, and the turn is still standing
+  // there. It ends when he decides, or when he presses Stop.
+  // (Pressing Stop is the other way a wait ends. It is not exercised here —
+  // `stopping-a-turn.test.ts` owns it end to end, against a real engine with a
+  // real crew, which is the only place `stopAgent` can find an agent to stop.)
   for (const answer of ["rejected", "silence"] as const) {
     const spy = new SpyProvider({ reply: "1. Delete everything" });
     const { engine, sent, frames } = makeEngine(spy);
-    // a very short deadline so "nobody answered" is testable
-    // a very short deadline, through the SAME desk class the engine uses
     engine.approvals = new ApprovalDesk({
-      send: (f: ClientFrame) => { frames.push(f); }, waitMs: 30, log: () => { /* quiet */ },
+      send: (f: ClientFrame) => { frames.push(f); }, log: () => { /* quiet */ },
     });
 
     const turn = engine.takeTurn(agent({ planFirst: true }), "c1", trigger);
@@ -511,12 +518,24 @@ test("GAP B: SAYING NO REALLY STOPS IT — and so does saying nothing at all", a
         id: "ap1", agentId: "a1", ownerId: "u1", action: "the plan", status: "rejected",
         createdAt: Date.now(), kind: "plan",
       });
+    } else if (answer === "silence") {
+      // HE HAS NOT ANSWERED. Wait far longer than a card used to live for, and
+      // check the two things that matter: the work has not happened, and his
+      // question is still there to answer.
+      await new Promise(r => setTimeout(r, 300));
+      assert.equal(spy.seen.length, 1,
+        "SILENCE IS NEVER A YES: the real turn ran without him saying anything");
+      assert.equal(engine.approvals.pending, 1,
+        "his question was thrown away while he was thinking about it");
+      // and it is released the only way silence ever is now — by him
+      engine.approvals.giveUpAll("you stopped this run, so it did not happen");
     }
     await turn;
 
     assert.equal(spy.seen.length, 1,
       `SILENCE IS NEVER A YES: only the read-only plan turn ever ran (${answer})`);
     assert.match(sent.join("\n"), /haven't done any of it/i);
+    engine.stop();
   }
 });
 

@@ -123,11 +123,14 @@ test("a no comes back as a no, and it never becomes a maybe", async () => {
 
 // ------------------------------------------------------------- silence is not yes
 
-test("nobody answers, so the card EXPIRES — and expired is its own word, not a quiet no", async () => {
-  // The clock is the thing under test, so it is moved rather than waited on.
-  // Verified failing with `sweepExpiredApprovals` removed: the card is still
-  // `pending` ten minutes later and an agent waiting on it would be told
-  // nothing at all.
+test("NOBODY ANSWERS, so the card is STILL THERE — it does not die while he thinks", async () => {
+  // WHAT THIS REPLACES. A card used to be swept away ten minutes after it was
+  // raised and marked `expired`, and the agent behind it told nobody answered.
+  // Removed 2026-08-07 at the owner's word: the tools this app is a front end
+  // for ask a permission question and then wait. His question survives lunch.
+  //
+  // Verified failing against the old hub: the card came back `expired` and the
+  // yes below did nothing.
   const { relay, url, owner, engine, channel } = await stand("expire.db");
   const agent = await makeAgent(owner, "Architect");
   engine.send({
@@ -138,22 +141,22 @@ test("nobody answers, so the card EXPIRES — and expired is its own word, not a
     f => f.type === "approvalAsked");
   await waitApproval(owner, a => a.id === receipt.approvalId);
 
-  // wind the stored card back past its own deadline
+  // the card is OLD — older than the ten minutes that used to kill it
   const stored = relay.store.approval(receipt.approvalId)!;
-  stored.expiresAt = Date.now() - 1;
+  stored.createdAt = Date.now() - 60 * 60_000;
   relay.store.saveApproval(stored);
 
-  // any read of the approvals sweeps first — a fresh client is the honest way
-  // to ask, because it is exactly what his phone does when it reconnects
+  // a fresh client is the honest way to ask, because it is exactly what his
+  // phone does when he picks it up again an hour later
   const second = new TestClient(url, "tok-owner");
   const hello = await second.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
   const seen = hello.state.approvals.find(a => a.id === receipt.approvalId)!;
-  assert.equal(seen.status, "expired", "nobody answered, and the card says so");
+  assert.equal(seen.status, "pending", "his question was thrown away while he was thinking");
 
-  // and it is DEAD: approving it afterwards changes nothing
+  // AND IT IS STILL ANSWERABLE — the whole point. An hour late is still an answer.
   owner.send({ type: "decideApproval", approvalId: receipt.approvalId, decision: "approved" });
   await new Promise(r => setTimeout(r, 200));
-  assert.equal(relay.store.approval(receipt.approvalId)!.status, "expired");
+  assert.equal(relay.store.approval(receipt.approvalId)!.status, "approved");
 
   second.close(); owner.close(); engine.close(); await relay.close();
 });
@@ -325,44 +328,12 @@ test("EVERY remote action must be asked about — whatever the agent's switches 
   assert.equal(mustAskBeforeActing(everything), true);
 });
 
-test("the deadline is a shared number, so the hub and the engine cannot disagree about it", () => {
-  assert.ok(APPROVAL_LIMITS.waitMs > 0);
+test("there is no deadline to share — only the lengths of the words he reads", () => {
+  // The shared table used to carry `waitMs`, the ten minutes a card lived. It is
+  // gone (2026-08-07) and nothing may put one back: a card ends because HE
+  // decided or he pressed Stop, never because a clock did.
+  assert.equal((APPROVAL_LIMITS as Record<string, unknown>).waitMs, undefined,
+    "a deadline is back on the shared table — see timebudget.ts before adding one");
   assert.ok(APPROVAL_LIMITS.action >= 200);
 });
 
-test("the card dies ON THE CLOCK, not the next time somebody happens to look", async () => {
-  // CAUGHT BY THE REAL END-TO-END RUN, not by a unit test. The sweep was lazy —
-  // it only ran when something read the approvals — so after an agent gave up,
-  // the card sat on his screen looking live and answerable. That is exactly the
-  // moment he would click Approve on something that had already been abandoned.
-  //
-  // Verified failing with `scheduleExpiry` removed: the card is still `pending`
-  // a second after its deadline, and no `approval` frame is ever pushed.
-  const relay = new Relay({
-    dbPath: tmp("clock.db"), ownerToken: "tok-owner", ownerName: "Vikas",
-    approvalWaitMs: 200,
-  });
-  const port = await relay.listen(0);
-  const url = `ws://127.0.0.1:${port}`;
-  const owner = new TestClient(url, "tok-owner");
-  const hello = await owner.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
-  const engine = new TestClient(url, "tok-owner", "engine");
-  await engine.wait(f => f.type === "welcome");
-  const agent = await makeAgent(owner, "Architect");
-
-  engine.send({
-    type: "askApproval", askId: "ask-clock", agentId: agent.id,
-    channelId: hello.state.channels[0]!.id,
-    facts: { action: "push", repo: "vikas53953/cloud9", branch: "cloud9/architect-1", commits: 1 },
-  });
-  const receipt = await engine.wait<Extract<ServerFrame, { type: "approvalAsked" }>>(
-    f => f.type === "approvalAsked");
-
-  // nobody does anything at all — and the card still flips, and still says so
-  const dead = await waitApproval(owner, a => a.id === receipt.approvalId && a.status === "expired");
-  assert.equal(dead.approval.status, "expired");
-  assert.notEqual(dead.approval.status, "rejected", "nobody said no — nobody said anything");
-  assert.equal(dead.approval.decidedBy, undefined, "an expiry has no decider");
-
-  owner.close(); engine.close(); await relay.close();
-});

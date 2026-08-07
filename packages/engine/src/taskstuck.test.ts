@@ -112,7 +112,6 @@ async function rig(t: TestContext, input: {
   reply: string;
   writes?: Record<string, string>;
   fail?: boolean;
-  approvalWaitMs?: number;
 }): Promise<Rig> {
   const repoDir = await makeRepo();
   const { runner } = fakeGitHub();
@@ -121,7 +120,6 @@ async function rig(t: TestContext, input: {
     provider: new Worker(input.reply, input.writes ?? {}, input.fail ?? false),
     repoDir,
     github: { runner, log: () => { /* quiet */ } },
-    ...(input.approvalWaitMs ? { approvalWaitMs: input.approvalWaitMs } : {}),
   });
   const frames: ClientFrame[] = [];
   (engine as unknown as { sendFrame: (f: ClientFrame) => void }).sendFrame = f => { frames.push(f); };
@@ -181,7 +179,6 @@ async function untilStuck(frames: ClientFrame[]): Promise<{ askId: string; stuck
 test("a job waiting on a permission card reads stuck, with a plain-words reason", async t => {
   const { frames, feed } = await rig(t, {
     reply: "Fixed the build.\n!publish", writes: { "fix.txt": "patched\n" },
-    approvalWaitMs: 5_000,
   });
   feed({ type: "task", task: job("!code fix the build") });
 
@@ -201,7 +198,6 @@ test("a job waiting on a permission card reads stuck, with a plain-words reason"
 test("the reason carries no folder, no command line and no environment value", async t => {
   const { frames, feed, repoDir } = await rig(t, {
     reply: "Fixed the build.\n!publish", writes: { "fix.txt": "patched\n" },
-    approvalWaitMs: 5_000,
   });
   feed({ type: "task", task: job("!code fix the build") });
   const { stuck } = await untilStuck(frames);
@@ -220,7 +216,6 @@ test("the reason carries no folder, no command line and no environment value", a
 test("saying yes puts the job back to working, and it finishes", async t => {
   const { frames, feed } = await rig(t, {
     reply: "Fixed the build.\n!publish", writes: { "fix.txt": "patched\n" },
-    approvalWaitMs: 5_000,
   });
   feed({ type: "task", task: job("!code fix the build") });
   const { askId } = await untilStuck(frames);
@@ -251,7 +246,6 @@ test("saying yes puts the job back to working, and it finishes", async t => {
 test("saying no does not leave the job stuck — it finishes, saying nothing left the computer", async t => {
   const { frames, feed } = await rig(t, {
     reply: "Fixed the build.\n!publish", writes: { "fix.txt": "patched\n" },
-    approvalWaitMs: 5_000,
   });
   feed({ type: "task", task: job("!code fix the build") });
   const { askId } = await untilStuck(frames);
@@ -266,18 +260,23 @@ test("saying no does not leave the job stuck — it finishes, saying nothing lef
   assert.ok(!updates(frames).slice(-1)[0].error, "a refusal is not an error on the job");
 });
 
-test("nobody answering ends the wait too — silence is never a yes, and never for ever", async t => {
+test("nobody has answered yet, so the job is STILL STUCK — it never un-sticks itself", async t => {
+  // THE OTHER HALF OF THE SAME REMOVAL (2026-08-07). This test used to prove
+  // that a card nobody answered died on its own and the job carried on with
+  // "nobody answered". That was the app throwing his question away while he was
+  // thinking about it. Now the job stands there, visibly stuck ON HIM, until he
+  // answers or presses Stop — and nothing has been pushed in the meantime.
   const { frames, feed } = await rig(t, {
     reply: "Fixed the build.\n!publish", writes: { "fix.txt": "patched\n" },
-    approvalWaitMs: 120,          // the real leash is ten minutes
   });
   feed({ type: "task", task: job("!code fix the build") });
   await untilStuck(frames);
 
-  const done = await waitFor(() => updates(frames).find(u => u.status === "completed"),
-    "the job to reach an end after nobody answered");
-  assert.match(done.result ?? "", /nobody answered/i);
-  assert.deepEqual(statuses(frames), ["working", "blocked", "working", "completed"]);
+  await new Promise(r => setTimeout(r, 500));
+  assert.deepEqual(statuses(frames), ["working", "blocked"],
+    "the job moved on without him — his question was answered by a clock");
+  assert.ok(!updates(frames).some(u => u.status === "completed" || u.status === "failed"),
+    "nothing finished: it is waiting on a person and it says so");
 });
 
 // ====================================== a real failure is never dressed up as stuck
@@ -317,12 +316,12 @@ test("a job that never had to ask anybody anything never says it is stuck", asyn
 // ============================================ the desk reports waits, and only waits
 
 /** A desk with the wire replaced by a list and the two reports written down. */
-function desk(waitMs = 5_000, maxWaiting = 20) {
+function desk(maxWaiting = 20) {
   const sent: ClientFrame[] = [];
   const started: ID[] = [];
   const ended: { taskId: ID; approved: boolean }[] = [];
   const d = new ApprovalDesk({
-    send: f => sent.push(f), waitMs, maxWaiting, log: () => { /* quiet */ },
+    send: f => sent.push(f), maxWaiting, log: () => { /* quiet */ },
     onWaitStart: w => { started.push(w.taskId); },
     onWaitEnd: e => { ended.push({ taskId: e.taskId, approved: e.outcome.approved }); },
   });
@@ -332,7 +331,7 @@ function desk(waitMs = 5_000, maxWaiting = 20) {
 test("an ask that never waits never reports a job as stuck", async t => {
   void t;
   // no room at the desk: the ask is refused on the spot, so nothing ever waits
-  const { d, started, ended } = desk(5_000, 0);
+  const { d, started, ended } = desk(0);
   const out = await d.ask({
     agent: AGENT, channelId: "c1", taskId: "t1",
     facts: { action: "push", repo: "vikas53953/cloud9", branch: "cloud9/a1-x", commits: 1 },

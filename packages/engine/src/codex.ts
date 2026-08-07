@@ -9,9 +9,8 @@ import path from "node:path";
 import { AgentDef, effortLevelFor, MODEL_ID_RE, validateAgentInput } from "@cloud9/shared";
 import {
   buildAgentPrompt, ClaudeProvider, HarnessAbilityBoundaryError, HarnessUnavailableError,
-  promptTurnKind, RespondInput,
+  RespondInput,
 } from "./provider.js";
-import { TurnTimedOutError, turnQuietBudgetMs, turnTimeBudgetMs } from "./timebudget.js";
 import {
   CAPABILITIES, codexSandboxFor, codexUnavoidableCapabilities, codexWebSearchFor,
   effectiveAbilities, grantedSupply, reachesBeyondOwnFolder, withEffectiveAbilities,
@@ -22,7 +21,7 @@ import { envWithoutCredentials } from "./env.js";
 import {
   codexDisabledBySetup, codexSetupFlags, codexUsesDisposableHome, SetupChoice,
 } from "./ownersetup.js";
-import { run, Runner, safeArg } from "./run.js";
+import { NO_TIME_LIMIT, run, Runner, safeArg } from "./run.js";
 import {
   baseName, EventMapper, ProviderTrace, RunStepKind, traceFromStream,
 } from "./runrecord.js";
@@ -34,14 +33,6 @@ export interface CodexProviderOptions {
   agentDataDir: (agentId: string) => string;
   /** command name — overridden by tests with a shim */
   command?: string;
-  /**
-   * FORCE ONE wall-clock leash for every turn, whatever kind of work it is.
-   * The CLI has no turn-limit flag of its own, so a leash is how a runaway is
-   * stopped — but it used to be a single 2-minute number for chat replies and
-   * background jobs alike. Leave it out (the app does) and each turn gets the
-   * budget for its own kind of work; see `timebudget.ts`.
-   */
-  timeoutMs?: number;
   /**
    * Fallback Codex API key, read fresh each turn so a settings change takes
    * effect immediately. It is passed to the CLI as CODEX_API_KEY and MUST NOT
@@ -733,29 +724,14 @@ export function codexArgs(
 export class CodexProvider implements ClaudeProvider {
   private runner: Runner;
   private command: string;
-  /** set only when a caller pinned one leash for every kind — normally undefined */
-  private fixedTimeoutMs: number | undefined;
 
   constructor(private opts: CodexProviderOptions) {
     this.runner = opts.runner ?? run;
     this.command = opts.command ?? "codex";
-    this.fixedTimeoutMs = opts.timeoutMs;
-  }
-
-  /** HOW LONG THIS TURN GETS — per turn, from the one table. See the twin in claude-cli.ts. */
-  private budgetFor(input: RespondInput): number {
-    return this.fixedTimeoutMs ?? turnTimeBudgetMs(promptTurnKind(input));
   }
 
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir, onTrace, onStep } = input;
-    const timeoutMs = this.budgetFor(input);
-    // ===== GAP A BLOCK (the silence clock, 2026-08-05) — start =====
-    // The same two clocks the Claude path reads, from the same table — a second
-    // idea of "is this stuck?" per harness is exactly what `timebudget.ts` exists
-    // to prevent.
-    const quietMs = this.fixedTimeoutMs ?? turnQuietBudgetMs(promptTurnKind(input));
-    // ===== GAP A BLOCK — end =====
     // its own git worktree when it is working in a repository (`repowork.ts`),
     // its own folder otherwise. `codexArgs` puts the same folder in `-C`, so
     // the sandbox root and the working folder cannot drift apart.
@@ -811,10 +787,9 @@ export class CodexProvider implements ClaudeProvider {
     try {
       result = await this.runner(this.command, args, {
         cwd,
-        timeoutMs,
-        // ===== GAP A BLOCK (the silence clock, 2026-08-05) — start =====
-        quietMs,
-        // ===== GAP A BLOCK — end =====
+        // NO CLOCK — the same as the Claude path, for the same reason. A turn
+        // ends when it finishes, fails, or the owner stops it (`timebudget.ts`).
+        timeoutMs: NO_TIME_LIMIT,
         stdin: prompt,
         ...(watchLine ? { onStdoutLine: watchLine } : {}),
         // The child gets a disposable CODEX_HOME and user home. Only Codex's
@@ -831,16 +806,6 @@ export class CodexProvider implements ClaudeProvider {
 
     if (result.notFound) {
       throw new HarnessUnavailableError("codex", "the Codex app isn't installed on this machine");
-    }
-    // The leash fired; `run()` has already killed the whole process tree. The
-    // error names the CLOCK, in minutes, so this does not reach the room as a
-    // generic "something went wrong".
-    if (result.timedOut) {
-      // ===== GAP A BLOCK (the silence clock, 2026-08-05) — start =====
-      const quiet = result.wentQuiet === true;
-      throw new TurnTimedOutError(
-        "codex", promptTurnKind(input), quiet ? quietMs : timeoutMs, quiet);
-      // ===== GAP A BLOCK — end =====
     }
     // Only the CLI's OWN complaint counts. Scanning stdout would let a model
     // that merely *talks about* logging in fake a signed-out harness.

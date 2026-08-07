@@ -168,7 +168,6 @@ async function rig(t: TestContext, input: {
   writes?: Record<string, string>;
   agents?: AgentDef[];
   repoDir?: string;
-  approvalWaitMs?: number;
 }): Promise<Rig> {
   const repoDir = input.repoDir ?? await makeRepo();
   const worker = new Worker(input.reply, input.writes ?? {});
@@ -178,7 +177,6 @@ async function rig(t: TestContext, input: {
     provider: worker,
     repoDir,
     github: { runner, log: () => { /* quiet */ } },
-    ...(input.approvalWaitMs ? { approvalWaitMs: input.approvalWaitMs } : {}),
   });
   const frames: ClientFrame[] = [];
   (engine as unknown as { sendFrame: (f: ClientFrame) => void }).sendFrame = f => { frames.push(f); };
@@ -329,21 +327,26 @@ test("REFUSED: he said no, and GitHub never hears about the branch", async t => 
   assert.equal(asks(frames).length, 1, "and it did not go on to ask for a pull request anyway");
 });
 
-test("SILENCE IS NOT REFUSAL, and it is not a yes either", async t => {
+test("SILENCE IS NOT REFUSAL, AND IT IS NOT A YES — the question simply stays open", async t => {
+  // IT USED TO BE A THIRD THING: after ten minutes the card died and the agent
+  // said "nobody answered in 60 seconds, so it did not happen". Removed
+  // 2026-08-07 — his question is not rubbish to be thrown out while he thinks.
+  // What is left is the half that was always the point: NOTHING LEAVES THIS
+  // COMPUTER until he says yes.
   const { frames, feed, left } = await rig(t, {
     reply: "Added the module.\n!publish",
     writes: { "a.ts": "export const a = 1;\n" },
-    approvalWaitMs: 60,
   });
   feed({ type: "message", message: says("a1", "@Scout !code add a module") });
 
-  const text = await waitFor(
-    () => said(frames).includes("nobody answered") ? said(frames) : undefined,
-    "the agent to say nobody answered");
-  assert.match(text, /nobody answered in \d+ seconds?, so it did not happen/,
-    "a different sentence from 'the owner said no' — they are different events");
-  assert.doesNotMatch(text, /said no/);
-  assert.equal(left.length, 0, "and, like a refusal, nothing left this computer");
+  await waitFor(() => asks(frames).length > 0 ? true : undefined, "the agent to ask");
+  // long past the old ten-minute leash in this test's terms: nothing resolves it
+  await new Promise(r => setTimeout(r, 500));
+  assert.equal(left.length, 0, "something left this computer without him saying yes");
+  assert.equal(asks(frames).length, 1, "it asked twice, or gave up and carried on");
+  assert.doesNotMatch(said(frames), /nobody answered/,
+    "his unanswered question was thrown away instead of waiting for him");
+  assert.doesNotMatch(said(frames), /said no/, "silence was read as a refusal");
 });
 
 test("TWO AGENTS work one repository at the same time, each on its own branch", async t => {

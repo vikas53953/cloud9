@@ -134,12 +134,6 @@ export interface EngineOptions {
   /** how many memory notes to keep per agent on disk before the oldest are pruned */
   keepMemoryPerAgent?: number;
   /**
-   * How long an agent waits for a mid-run "may I push this?" before giving up.
-   * Defaults to the shared ten minutes; tests shorten it. Shortening it can
-   * only ever produce MORE refusals, never a yes nobody gave.
-   */
-  approvalWaitMs?: number;
-  /**
    * How the read-only half of GitHub is reached — the `gh` command and the
    * runner. Only ever used WITHOUT an approver, so nothing built from it can
    * change anything on GitHub. Tests point it at a fake runner.
@@ -408,7 +402,6 @@ export class Engine {
     });
     this.approvals = new ApprovalDesk({
       send: frame => this.sendFrame(frame),
-      ...(opts.approvalWaitMs ? { waitMs: opts.approvalWaitMs } : {}),
       // THE ONE PLACE A JOB IS REALLY STUCK. See `jobIsStuck` below.
       // AND the one place a hook can hear that somebody is waiting on HIM: the
       // sentence handed over is `describeRemoteAction`'s — counted facts, never

@@ -11,7 +11,6 @@ import {
   createCodexIsolatedEnvironment, parseCodexJsonl,
 } from "./codex.js";
 import { HarnessAbilityBoundaryError, HarnessUnavailableError, sanitizeForChat } from "./provider.js";
-import { TurnTimedOutError } from "./timebudget.js";
 import { codexUnavoidableCapabilities, effectiveAbilities } from "./abilities.js";
 import { RunOptions, RunResult, UnsafeArgumentError, run } from "./run.js";
 
@@ -313,15 +312,3 @@ test("a signed-out codex is a harness problem", async () => {
   );
 });
 
-test("a timeout is reported in plain words", async () => {
-  const provider = new CodexProvider({
-    agentDataDir: () => "C:/data/a1",
-    timeoutMs: 120_000,
-    runner: fakeRunner({ code: null, timedOut: true }),
-  });
-  await assert.rejects(
-    () => provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" }),
-    // minutes, not seconds, and it names the clock — see timebudget.ts
-    (err: unknown) => err instanceof TurnTimedOutError && /2 minutes/.test(err.message),
-  );
-});
