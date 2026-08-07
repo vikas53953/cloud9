@@ -3271,6 +3271,7 @@ export class Relay {
       case "notifications": {
         send(conn.ws, {
           type: "notificationInbox",
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
           entries: this.notificationInboxFor(conn.userId, {
             includeDismissed: frame.includeDismissed,
             limit: frame.limit,

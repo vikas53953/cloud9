@@ -3645,7 +3645,7 @@ export type ServerFrame =
   /** Read state for one conversation — sent to EVERY machine this person is on. */
   | { type: "read"; entry: UnreadEntry }
   /** Durable inbox answer, scoped to the authenticated person. */
-  | { type: "notificationInbox"; entries: NotificationInboxEntry[] }
+  | { type: "notificationInbox"; entries: NotificationInboxEntry[]; requestId?: ID }
   /** One inbox row changed state, echoed to that person's machines. */
   | { type: "notificationUpdated"; entry: NotificationInboxEntry }
   | { type: "userJoined"; user: User }

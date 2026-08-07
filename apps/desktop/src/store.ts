@@ -219,6 +219,10 @@ export interface World {
   notifications: NotificationInboxEntry[];
   notificationsAsked: boolean;
   notificationsLoading: boolean;
+  /** The exact inbox request whose answer may replace this list. */
+  notificationsRequestId?: ID;
+  /** Refusal/loss for that request only; unrelated errors must not stop loading. */
+  notificationsProblem?: string;
   /** status of the local Claude/Codex apps — booleans and labels, never secrets */
   harness?: HarnessState;
   /**
@@ -594,6 +598,7 @@ export class RelayClient {
     connected: false, authFailed: false, users: [], agents: [], channels: [],
     messages: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
     notifications: [], notificationsAsked: false, notificationsLoading: false,
+    notificationsRequestId: undefined, notificationsProblem: undefined,
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
@@ -1247,10 +1252,37 @@ export class RelayClient {
 
   /** Fetch the relay-owned, durable mention/thread-reply inbox. */
   askNotifications(includeDismissed = false, limit = 100): void {
+    const requestId = this.nextRequestId("notifications");
     this.world.notificationsAsked = true;
     this.world.notificationsLoading = true;
+    this.world.notificationsRequestId = requestId;
+    this.world.notificationsProblem = undefined;
     this.emit();
-    this.send({ type: "notifications", includeDismissed, limit });
+    this.ask({ type: "notifications", includeDismissed, limit, requestId }, {
+      answers: f => f.type === "notificationInbox" && f.requestId === requestId,
+      answered: f => {
+        if (f.type !== "notificationInbox" || this.world.notificationsRequestId !== requestId) return;
+        this.world.notifications = [...f.entries];
+        this.world.notificationsLoading = false;
+        this.world.notificationsProblem = undefined;
+        this.world.notificationsRequestId = undefined;
+        this.emit();
+      },
+      refused: error => {
+        if (this.world.notificationsRequestId !== requestId) return;
+        this.world.notificationsLoading = false;
+        this.world.notificationsProblem = error;
+        this.world.notificationsRequestId = undefined;
+        this.emit();
+      },
+      lost: () => {
+        if (this.world.notificationsRequestId !== requestId) return;
+        this.world.notificationsLoading = false;
+        this.world.notificationsProblem = "The relay did not answer. Try loading notifications again.";
+        this.world.notificationsRequestId = undefined;
+        this.emit();
+      },
+    });
   }
 
   markNotificationRead(notificationId: ID): void {
@@ -2741,6 +2773,8 @@ export class RelayClient {
         w.notifications = frame.state.notifications ?? [];
         w.notificationsAsked = true;
         w.notificationsLoading = false;
+        w.notificationsRequestId = undefined;
+        w.notificationsProblem = undefined;
         w.messages = {};
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
@@ -2801,9 +2835,14 @@ export class RelayClient {
         break;
       }
       case "notificationInbox":
+        /* An inbox answer is a projection of one exact request. A response
+           from an older request (or an old relay with no id) must not regress
+           a newer list or clear its loading state. */
+        if (frame.requestId === undefined || frame.requestId !== w.notificationsRequestId) break;
         w.notifications = [...frame.entries];
         w.notificationsAsked = true;
         w.notificationsLoading = false;
+        w.notificationsProblem = undefined;
         break;
       case "notificationUpdated": {
         // The normal inbox view does not request dismissed rows.  Remove one
@@ -2982,7 +3021,10 @@ export class RelayClient {
       }
       case "error": {
         w.lastError = { text: frame.error, ts: Date.now() };
-        if (w.notificationsLoading) w.notificationsLoading = false;
+        if (frame.requestId !== undefined && frame.requestId === w.notificationsRequestId) {
+          w.notificationsLoading = false;
+          w.notificationsProblem = frame.error;
+        }
         /* A direct refusal names its exact refusal-capable request. A legacy
            no-id refusal is shown here generally but cannot settle a modern row.
            Unrelated rows stay alive, including their timeout nets. */

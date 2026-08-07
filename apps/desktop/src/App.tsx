@@ -2182,7 +2182,6 @@ function Workspace(): React.JSX.Element {
 
   const openNotifications = useCallback(() => {
     attemptLeave(() => {
-      client.askNotifications(false);
       setScreen("notifications");
     });
   }, []);
@@ -14281,11 +14280,8 @@ function NotificationsScreen({ onOpen }: {
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const listRef = useRef<HTMLDivElement>(null);
-  const [requestedAt, setRequestedAt] = useState(() => Date.now());
 
   useEffect(() => {
-    const at = Date.now();
-    setRequestedAt(at);
     client.askNotifications(false);
   }, []);
 
@@ -14293,8 +14289,7 @@ function NotificationsScreen({ onOpen }: {
     listRef.current?.focus();
   }, []);
 
-  const problem = world.lastError && world.lastError.ts >= requestedAt
-    ? world.lastError.text : undefined;
+  const problem = world.notificationsProblem;
   const unread = world.notifications.filter(entry => entry.state === "unread").length;
   const loading = !world.notificationsAsked || world.notificationsLoading;
 

@@ -39,3 +39,24 @@ test("OS notification jumps keep room and thread state inside the leave guard", 
       `${setter} must stay inside the guarded artifact branch`);
   }
 });
+
+test("notification inbox answers are request-correlated and fetched once on mount", () => {
+  const store = fs.readFileSync(path.join(__dirname, "..", "src", "store.ts"), "utf8");
+  const askStart = store.indexOf("askNotifications(includeDismissed");
+  const askEnd = store.indexOf("markNotificationRead", askStart);
+  assert.ok(askStart >= 0 && askEnd > askStart, "notification ask method is present");
+  const askBlock = store.slice(askStart, askEnd);
+  assert.match(askBlock, /requestId/);
+  assert.match(askBlock, /f\.requestId === requestId/,
+    "out-of-order inbox answers must match the active request id");
+  assert.match(askBlock, /notificationsRequestId = undefined/,
+    "late answers after refusal/loss must be invalidated");
+  assert.match(askBlock, /notificationsProblem/,
+    "loading/error state belongs to the active inbox request");
+  const app = fs.readFileSync(path.join(__dirname, "..", "src", "App.tsx"), "utf8");
+  const openStart = app.indexOf("const openNotifications = useCallback");
+  const openEnd = app.indexOf("/* Asked on the way in", openStart);
+  assert.ok(openStart >= 0 && openEnd > openStart);
+  assert.equal(app.slice(openStart, openEnd).includes("askNotifications"), false,
+    "opening the screen must not issue a duplicate fetch before its mount effect");
+});
