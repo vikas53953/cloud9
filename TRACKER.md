@@ -46,7 +46,9 @@ is not there, say so and ask once.
 | 12 | **remove the timing** — *"agents are employees"* | timing author | **MERGED — PR #13 on `origin/master` `7329537`** | The no-timer source and tests are merged. This current row supersedes the dated PR13 snapshots below; those rows remain historical evidence only. |
 | 17 | **Persistent mentions-and-replies notification inbox** | notification author | **MERGED — PR #19 on `feature/persistent-notifications`, based on `origin/master` `551b2f8`** | Durable mention/thread-reply inbox shipped with deterministic ids, idempotent SQLite writes, recipient-scoped read/dismiss, retention, tombstone projection, edit/delete refresh, accessible rail/list/empty/loading/error/focus/live states, request correlation, and guarded navigation. PR #19 is merged; no package/install/QA/app-walk claim is added here. PR: https://github.com/vikas53953/cloud9/pull/19 |
 
-The dated snapshot rows below are preserved history; the rows above are the current live stages for PR13 and PR17.
+| 19 | **Saved/Later message queue** | saved-later-message-queue | **BUILDING — durable owner-scoped saves, relay/store/desktop in progress** | V1 saves and unsaves readable messages per account, stores note/reminder metadata without scheduling notifications, projects active/deleted/inaccessible source states, and mirrors correlated updates to the owner's windows. Relay migration is reserved as schema v8 after Workflow v7; source tests/build and PR evidence pending; no package/install/app-walk claim. |
+
+The dated snapshot rows below are preserved history; the rows above are the current live stages for PR13, PR17, and Saved/Later.
 
 ### Historical tracker rows (preserved snapshots)
 

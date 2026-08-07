@@ -7,6 +7,7 @@ import {
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   MemoryNote,
   NotificationInboxEntry,
+  SavedMessageEntry,
   EverywhereHit, SearchKind,
   ReachCatchup,
   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
@@ -39,6 +40,10 @@ type WorkflowRequestFrame = Extract<ClientFrame, {
 function workflowOrder(a: Workflow, b: Workflow): number {
   return (b.updatedAt - a.updatedAt) || b.id.localeCompare(a.id);
 }
+
+type SavedRequestFrame = Extract<ClientFrame, {
+  type: "listSaved" | "saveMessage" | "unsaveMessage"
+}>;
 
 /**
  * Pull a join token (`join_…`) off the end of a pasted link, however it was
@@ -239,6 +244,17 @@ export interface World {
   notificationsRequestId?: ID;
   /** Refusal/loss for that request only; unrelated errors must not stop loading. */
   notificationsProblem?: string;
+  /** Durable saved-message queue, independent from read/unread state. */
+  savedMessages: SavedMessageEntry[];
+  savedLoading: boolean;
+  savedAsked: boolean;
+  savedRequestId?: ID;
+  savedRevision: number;
+  savedProblem?: string;
+  savedNotice?: { text: string; ts: number };
+  savedPending: ID[];
+  /** Set when a save arrives while the Saved screen is not open. */
+  savedNew: boolean;
   /** status of the local Claude/Codex apps — booleans and labels, never secrets */
   harness?: HarnessState;
   /**
@@ -616,6 +632,9 @@ export class RelayClient {
     notifications: [], notificationsAsked: false, notificationsLoading: false,
     notificationsRequestId: undefined, notificationsProblem: undefined,
     workflows: [], workflowRuns: [], workflowLoading: false,
+    savedMessages: [], savedLoading: false, savedAsked: false,
+    savedRequestId: undefined, savedProblem: undefined, savedNotice: undefined,
+    savedRevision: 0, savedPending: [], savedNew: false,
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
@@ -793,6 +812,16 @@ export class RelayClient {
       // request after reconnect; those mutations are durable and the welcome
       // snapshot is the source of truth for the next epoch.
       this.workflowRequests.clear();
+      this.savedRequests.clear();
+      // Do not present a disconnected copy as the current queue. Welcome
+      // seeds this again, and SavedScreen will ask for the canonical list.
+      this.world.savedMessages = [];
+      this.world.savedAsked = false;
+      this.world.savedLoading = false;
+      this.world.savedRequestId = undefined;
+      this.world.savedProblem = undefined;
+      this.world.savedRevision = 0;
+      this.world.savedPending = [];
       // A credential the hub REFUSED must not spin: the reason is on screen and
       // retrying it would only overwrite it with the same refusal.
       if (this.world.authFailed) { this.syncHubWorld(); this.emit(); return; }
@@ -1060,6 +1089,7 @@ export class RelayClient {
    */
   private asked: Asked[] = [];
   private workflowRequests = new Map<ID, WorkflowRequestFrame>();
+  private savedRequests = new Map<ID, SavedRequestFrame>();
 
   /** Give every outgoing frame one identity without changing its caller's object. */
   private identify(frame: ClientFrame): ClientFrame & { requestId: ID } {
@@ -1373,6 +1403,112 @@ export class RelayClient {
 
   dismissNotification(notificationId: ID): void {
     this.send({ type: "dismissNotification", notificationId });
+  }
+
+  /** Fetch saved messages with a loading/error boundary scoped to this route. */
+  askSaved(): void {
+    const requestId = this.nextRequestId("listSaved");
+    this.world.savedNew = false;
+    this.world.savedAsked = true;
+    this.world.savedLoading = true;
+    this.world.savedRequestId = requestId;
+    this.world.savedProblem = undefined;
+    this.emit();
+    const frame: SavedRequestFrame = { type: "listSaved" };
+    this.savedRequests.set(requestId, frame);
+    const sent = this.ask({ ...frame, requestId }, {
+      answers: f => f.type === "savedMessages" && f.requestId === requestId,
+      answered: f => {
+        if (f.type !== "savedMessages" || this.world.savedRequestId !== requestId) return;
+        this.savedRequests.delete(requestId);
+        this.world.savedMessages = [...f.entries];
+        this.world.savedRevision = f.revision ?? this.world.savedRevision;
+        this.world.savedLoading = false;
+        this.world.savedProblem = undefined;
+        this.world.savedRequestId = undefined;
+        this.world.savedNew = false;
+        this.emit();
+      },
+      refused: error => {
+        this.savedRequests.delete(requestId);
+        if (this.world.savedRequestId !== requestId) return;
+        this.world.savedLoading = false;
+        this.world.savedProblem = error;
+        this.world.savedRequestId = undefined;
+        this.emit();
+      },
+      lost: () => {
+        this.savedRequests.delete(requestId);
+        if (this.world.savedRequestId !== requestId) return;
+        this.world.savedLoading = false;
+        this.world.savedProblem = "The relay did not answer. Try loading saved messages again.";
+        this.world.savedRequestId = undefined;
+        this.emit();
+      },
+    });
+    if (!sent && this.world.savedRequestId === requestId) {
+      this.savedRequests.delete(requestId);
+      this.world.savedRequestId = undefined;
+      this.world.savedLoading = false;
+      this.world.savedProblem = "Cloud9 is reconnecting. Saved messages will return when the relay answers.";
+      this.emit();
+    }
+  }
+
+  saveForLater(messageId: ID, note?: string, remindAt?: number, onLost?: () => void): ID | undefined {
+    this.world.savedNotice = undefined;
+    const frame: SavedRequestFrame = { type: "saveMessage", messageId, ...(note ? { note } : {}), ...(remindAt !== undefined ? { remindAt } : {}) };
+    return this.sendSaved(frame, onLost);
+  }
+
+  unsaveForLater(messageId: ID, onLost?: () => void): ID | undefined {
+    this.world.savedNotice = undefined;
+    return this.sendSaved({ type: "unsaveMessage", messageId }, onLost);
+  }
+
+  private sendSaved(frame: Exclude<SavedRequestFrame, { type: "listSaved" }>, onLost?: () => void): ID | undefined {
+    const requestId = this.nextRequestId(frame.type);
+    this.savedRequests.set(requestId, frame);
+    const id = this.transmit({ ...frame, requestId }, {
+      answers: f => f.type === "savedMessages" && f.requestId === requestId,
+      answered: f => {
+        this.savedRequests.delete(requestId);
+        this.finishSavedPending(requestId, frame.messageId);
+        if (f.type !== "savedMessages") return;
+        this.world.savedMessages = [...f.entries];
+        this.world.savedRevision = f.revision ?? this.world.savedRevision;
+        this.world.savedProblem = undefined;
+        this.world.savedNotice = { text: frame.type === "saveMessage" ? "Saved for later" : "Removed from saved", ts: Date.now() };
+        this.emit();
+      },
+      refused: error => {
+        this.savedRequests.delete(requestId);
+        this.finishSavedPending(requestId, frame.messageId);
+        this.world.savedNotice = undefined;
+        this.world.savedProblem = error;
+        this.emit();
+      },
+      lost: () => {
+        this.savedRequests.delete(requestId);
+        this.finishSavedPending(requestId, frame.messageId);
+        onLost?.();
+        this.world.savedNotice = undefined;
+        this.world.savedProblem = "The relay did not answer. Try again.";
+        this.emit();
+      },
+    });
+    if (!id) this.savedRequests.delete(requestId);
+    else {
+      this.world.savedPending = [...new Set([...this.world.savedPending, frame.messageId])];
+      this.emit();
+    }
+    return id;
+  }
+
+  private finishSavedPending(requestId: ID, messageId: ID): void {
+    const stillWaiting = [...this.savedRequests.values()].some(frame =>
+      frame.type !== "listSaved" && frame.messageId === messageId);
+    if (!stillWaiting) this.world.savedPending = this.world.savedPending.filter(id => id !== messageId);
   }
 
   /* ---------------- search ---------------- */
@@ -2866,6 +3002,15 @@ export class RelayClient {
         // the canonical workflow list. Keep the route in loading until that
         // correlated answer arrives so an empty seed never flashes as truth.
         w.workflowLoading = true;
+        w.savedMessages = frame.state.savedMessages ?? [];
+        w.savedLoading = false;
+        w.savedAsked = false;
+        w.savedRequestId = undefined;
+        w.savedProblem = undefined;
+        w.savedNotice = undefined;
+        w.savedRevision = 0;
+        w.savedPending = [];
+        w.savedNew = false;
         w.messages = {};
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
@@ -2949,6 +3094,35 @@ export class RelayClient {
           : w.notifications.map((entry, index) => index === i ? frame.entry : entry);
         break;
       }
+      case "savedMessages": {
+        const previous = w.savedMessages;
+        if (frame.requestId !== undefined) {
+          if (!this.savedRequests.has(frame.requestId)) break;
+          this.savedRequests.delete(frame.requestId);
+          if (w.savedRequestId === frame.requestId) {
+            w.savedLoading = false;
+            w.savedRequestId = undefined;
+            w.savedProblem = undefined;
+          }
+        } else if (w.savedRequestId !== undefined) {
+          // A no-id mirror arriving while this window is asking cannot outrank
+          // the correlated answer; leave ordering to that request.
+          break;
+        } else if (frame.revision !== undefined && frame.revision < w.savedRevision) {
+          // A late push from the same socket must not regress a newer snapshot.
+          break;
+        } else if (previous.length !== frame.entries.length || frame.entries.some((entry, index) => {
+          const old = previous[index];
+          return !old || old.id !== entry.id || old.state !== entry.state || old.savedAt !== entry.savedAt;
+        })) {
+          // A same-count replacement (save A after unsaving B) is still new.
+          // Compare stable row identity/state rather than only the list length.
+          w.savedNew = true;
+        }
+        w.savedRevision = frame.revision ?? w.savedRevision;
+        w.savedMessages = [...frame.entries];
+        break;
+      }
       case "token":
         // HELD, NOT WRITTEN. The hub has minted a credential for this attempt,
         // but the attempt is not a session until `welcome` arrives — and until
@@ -2985,6 +3159,14 @@ export class RelayClient {
         // stale. Only on arrival: a topic change must not reset it.
         if (i < 0) w.directory = { asked: false, channels: [] };
         w.lastChannel = { id: frame.channel.id, ts: Date.now() };
+        const stillVisible = frame.channel.memberIds.includes(w.me?.id ?? "")
+          || frame.channel.memberIds.some(memberId =>
+            w.agents.some(agent => agent.id === memberId && agent.ownerId === w.me?.id));
+        if (!stillVisible) {
+          w.savedMessages = w.savedMessages.map(entry => entry.channelId === frame.channel.id
+            ? { ...entry, state: "inaccessible", message: undefined }
+            : entry);
+        }
         break;
       }
       case "agent": {
@@ -3127,6 +3309,15 @@ export class RelayClient {
         break;
       case "messageUpdated":
         this.replaceMessage(frame.message);
+        if (frame.message.deletedAt) {
+          w.savedMessages = w.savedMessages.map(entry => entry.messageId === frame.message.id
+            ? { ...entry, state: "deleted", message: frame.message }
+            : entry);
+        } else {
+          w.savedMessages = w.savedMessages.map(entry => entry.messageId === frame.message.id
+            ? { ...entry, state: "active", message: frame.message }
+            : entry);
+        }
         break;
       case "thread":
         w.threads = { ...w.threads, [frame.parentId]: frame.messages };
@@ -3162,6 +3353,15 @@ export class RelayClient {
             if (workflowFrame.type === "listWorkflows") w.workflowLoading = false;
             w.workflowError = { text: frame.error, ts: Date.now(), requestId: frame.requestId };
             w.workflowRetry = workflowFrame;
+          }
+        }
+        if (frame.requestId !== undefined && this.savedRequests.has(frame.requestId)) {
+          const savedFrame = this.savedRequests.get(frame.requestId)!;
+          this.savedRequests.delete(frame.requestId);
+          w.savedProblem = frame.error;
+          if (savedFrame.type === "listSaved" && w.savedRequestId === frame.requestId) {
+            w.savedLoading = false;
+            w.savedRequestId = undefined;
           }
         }
         w.lastError = { text: frame.error, ts: Date.now() };
@@ -3293,6 +3493,9 @@ export class RelayClient {
         // A room you just left may now be one you could join, so the browser's
         // list is no longer an answer to anything.
         w.directory = { asked: false, channels: [] };
+        w.savedMessages = w.savedMessages.map(entry => entry.channelId === frame.channelId
+          ? { ...entry, state: "inaccessible", message: undefined }
+          : entry);
         break;
       }
       /* Projects. These four used to be dropped with a comment saying the
