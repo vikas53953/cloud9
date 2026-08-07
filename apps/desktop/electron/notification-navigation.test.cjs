@@ -30,4 +30,12 @@ test("OS notification jumps keep room and thread state inside the leave guard", 
   }
   assert.equal(block.includes("goChannel(target.channelId)"), false,
     "notification navigation must not leave guarded state outside the callback");
+  const room = block.indexOf('target.go === "room"');
+  assert.ok(room >= 0, "artifact notifications restore their room destination");
+  const roomLeave = block.indexOf("attemptLeave(() => {", room);
+  assert.ok(roomLeave > room, "artifact room destination is guarded");
+  for (const setter of ["setActiveId(target.channelId)", "setScreen(\"chat\")"]) {
+    assert.ok(block.indexOf(setter, roomLeave) > roomLeave,
+      `${setter} must stay inside the guarded artifact branch`);
+  }
 });

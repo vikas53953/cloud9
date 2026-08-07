@@ -2267,6 +2267,16 @@ function Workspace(): React.JSX.Element {
     });
     if (!target) return;
     if (target.go === "tasks") { goScreen("tasks"); return; }
+    if (target.go === "room") {
+      /* An artifact notification names the room where its card is visible.
+         Keep the whole destination behind the same leave guard as message
+         jumps: a dirty editor must not be left half-navigated. */
+      attemptLeave(() => {
+        setActiveId(target.channelId);
+        setScreen("chat");
+      });
+      return;
+    }
     if (target.go === "message") {
       /* A REPLY IS ONLY HALF A PLACE. `notifyTarget` points at the message,
          because a message id is all a notification carries. A reply's real home
