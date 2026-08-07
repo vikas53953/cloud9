@@ -43,9 +43,12 @@ is not there, say so and ask once.
 
 | # | Ask | Owner | Current stage | Evidence / boundary |
 |---|---|---|---|---|
-| 17 | **Persistent mentions-and-replies notification inbox** | notification author | **IN PROGRESS — BUILDING — PR #19 OPEN** on `feature/persistent-notifications` (rebased onto origin/master `38d6dbc`; latest pushed commit is reported in PR #19; independent review pending) | Shared protocol contract, relay SQLite inbox with deterministic ids/idempotent writes, recipient-scoped read/dismiss, conservative age/count retention, current-access tombstone projection, edit/delete refresh, desktop rail/list/empty/loading/error/focus/live states, and source-level relay/desktop typechecks are in the worktree. The normal multi-workspace build is currently blocked by the fresh worktree's missing workspace aliases/dependencies (no install/package/QA run); no runtime app walk is claimed. Existing mention/thread recipient rules remain the authority; mute/quiet/OS toast rules are not used to suppress durable rows. PR: https://github.com/vikas53953/cloud9/pull/19 |
+| 12 | **remove the timing** — *"agents are employees"* | timing author | **PR #13 OPEN — MERGEABLE/CLEAN against `origin/master` `551b2f8`; source and hygiene approved; tracker-only final check pending** | Current head `d7776cc` is rebased on `551b2f8`; the timing source and final hygiene checks are complete, and this tracker-only correction is the remaining author action. PR #13 is not approved or merged. |
+| 17 | **Persistent mentions-and-replies notification inbox** | notification author | **MERGED — PR #19 on `feature/persistent-notifications`, based on `origin/master` `551b2f8`** | Durable mention/thread-reply inbox shipped with deterministic ids, idempotent SQLite writes, recipient-scoped read/dismiss, retention, tombstone projection, edit/delete refresh, accessible rail/list/empty/loading/error/focus/live states, request correlation, and guarded navigation. PR #19 is merged; no package/install/QA/app-walk claim is added here. PR: https://github.com/vikas53953/cloud9/pull/19 |
 
-The dated snapshot rows below are preserved history; this current row is the live stage for the notification work.
+The dated snapshot rows below are preserved history; the rows above are the current live stages for PR12 and PR17.
+
+### Historical tracker rows (preserved snapshots)
 
 Historical PR13 snapshot (2026-08-07 17:43 IST): PR #13 was OPEN and
 MERGEABLE/CLEAN against `origin/master` (`7ce7bcd`) at head `6fc1c5f`.
@@ -74,10 +77,11 @@ dated history, including its earlier CONFLICTING state.
 
 ### CURRENT RECONCILIATION — PR #13 (2026-08-07)
 
-The timing branch was rebased onto current `origin/master` `38d6dbc`. All
+The timing branch was rebased onto current `origin/master` `551b2f8`. All
 master tracker rows and the branch-only timing evidence are retained. PR #13
-remains **OPEN and not approved or merged**; the branch status is clean and
-review-ready, with the latest pushed commit reported in the PR.
+is currently **OPEN and MERGEABLE/CLEAN** against that base; source and hygiene
+are approved pending this tracker-only final check. It is not approved or
+merged, and the branch status is clean and review-ready.
 
 Evidence carried forward from the timing branch: the four review blockers were
 addressed (parked approval waits release execution slots; websocket close and

@@ -84,7 +84,7 @@ test("an agent asks mid-run, the owner says yes, and the engine is told which ca
   assert.equal(card.approval.action, "push 3 commits to a new branch cloud9/architect-1 on vikas53953/cloud9");
   assert.equal(card.approval.detail, "2 files changed");
   assert.equal(card.approval.channelId, channel.id);
-  assert.ok(typeof card.approval.expiresAt === "number", "a mid-run card has to be able to die");
+  assert.equal(card.approval.expiresAt, undefined, "a mid-run card has no expiry clock");
   assert.equal(card.approval.taskId, undefined, "there was no job — and it does not invent one");
 
   owner.send({ type: "decideApproval", approvalId: receipt.approvalId, decision: "approved" });

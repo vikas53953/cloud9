@@ -116,7 +116,7 @@ test("one agent suggests, the owner says yes, and the OTHER agent really changes
   assert.equal(card.action, "Stop Scout loading your own Claude Code setup on every turn?");
   assert.match(String(card.detail), /switch it back on any time/);
   assert.match(String(card.saving?.because), /\$1\.75/);
-  assert.ok(typeof card.expiresAt === "number", "an agent is standing there, so it can die");
+  assert.equal(card.expiresAt, undefined, "a saving card has no expiry clock");
   for (const words of [card.action, String(card.detail)]) {
     assert.doesNotMatch(words, /token|context window|useOwnerSetup/i,
       "no jargon and no field names on his card");
