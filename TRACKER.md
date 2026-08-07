@@ -6,7 +6,7 @@ a commit, or an agent's report, THIS FILE WINS.**
 Anyone arriving — Vikas, a new session, a new agent — reads this first and
 needs nothing else. Anyone doing work updates it as they go, not at the end.
 
-Last updated: **2026-08-07, ~09:10 — #9 rebased on the merged spending change, re-walked, back with the reviewer** · by: the activity agent
+Last updated: **2026-08-07 09:30 — ALL FOUR ASKS MERGED, BUILT AND INSTALLED** · by: conductor session
 
 ---
 
@@ -15,9 +15,9 @@ Last updated: **2026-08-07, ~09:10 — #9 rebased on the merged spending change,
 | Count | |
 |---|---|
 | Things Vikas has asked for and are open | **4** |
-| Agents working right now | **4** |
-| Open PRs | **1** — #9 activity. It has been rebased on top of the merged spending change and re-photographed; it is waiting on its reviewer, who merges it. |
-| Merged today | **5** — #10 spending, #7 threads (the real fix), #6 the time limit, and #5 and #8, both reverts of code that reached master without review (one of them mine). |
+| Agents working right now | **0** — all finished. |
+| Open PRs | **0** — verified with `gh pr list`. |
+| Merged today | **6** — #6 time limit, #7 threads, #9 activity, #10 spending, plus #5 and #8, both reverts of code that reached master unreviewed (one of them the conductor's). |
 
 | # | HIS ASK (his words — never renamed) | Who has it | Stage | Evidence so far |
 |---|---|---|---|---|
@@ -47,6 +47,52 @@ currently runs the spending branch's build, because that agent installed to take
 a screenshot. Nobody may say threads is done until a build from master is
 installed, the files compared, and it is walked.
 
+
+
+### INSTALLED AND WALKED — 2026-08-07 09:30
+
+Built from master `2e83846`, packaged, installed, and the files compared rather
+than trusted:
+
+```
+installed: index-C13jspEO.js   index-D5Epe0JS.css
+built:     index-C13jspEO.js   index-D5Epe0JS.css
+```
+
+Installer took **34 seconds** (it used to hang for twelve minutes doing nothing)
+and checked its own work.
+
+**Walk of the real installed app: 41 pass, 1 fail.**
+
+The single failure is NOT a bug and must not be recorded as one: the check asks
+an agent to read a file called `the-secret-note.txt` and report the passphrase
+inside. The agent REFUSED, saying that is the shape of a prompt-injection test
+rather than a real task. The file-reading ability itself was proved repeatedly
+on 2026-08-06. **The test is written like a phishing attempt and the agent
+correctly declined.** The honest fix is to rewrite the check with an ordinary
+file and an ordinary question — logged as row 9, not closed by pretending the
+run was green.
+
+### What the four asks actually became
+
+1. **threads** — the panel can no longer grow when he pulls the window, and the
+   conversation is the wider of the two at every size the app allows. Reviewer
+   swept 700→2560px in 2px steps: 931 measurements.
+2. **agent time bug** — a working agent is no longer killed by a stopwatch. The
+   rule that came out of it: **pass no verdict at all** — say only that a clock
+   ran out and which one. Tests fail if a verdict phrase is put back.
+3. **agent activity and details** — one screen showing what every agent is doing
+   now. Reaching "✅ Finished" requires an affirmative "this agent is quiet" on
+   all four fields that arrive over the wire; 38 unrecognised inputs were fed in
+   and **none** produced a tick. A new state that this screen does not handle is
+   a compile error.
+4. **token consumption** — what each agent costs and what is wasted, with agents
+   able to propose savings he approves. Its central figure was INVERTED in
+   review — caught by running the code against his 185 real records, not by
+   reading it.
+
+
+| 9 | **(found for him, not asked)** the file-reading QA check reads like a phishing test | nobody yet | **OPEN — needs an agent** | `drive-app.mjs` asks an agent to read `the-secret-note.txt` and report the passphrase inside. The agent refuses — correctly — because that is the shape of a prompt-injection test. The ability itself was proved on 2026-08-06. Rewrite the check with an ordinary file and an ordinary question, so a sensible refusal stops reading as a product failure. |
 
 ### Waiting on Vikas — nobody else can do these
 
