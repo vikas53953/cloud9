@@ -3365,6 +3365,12 @@ type ClientFrameBase =
   | { type: "projects" }
   /** One project's pull requests and issues, as of the last time we looked. */
   | { type: "projectItems"; projectId: ID }
+  | { type: "hooks" }
+  | { type: "createHook"; hook: Omit<StoredHook, "id" | "ownerId" | "updatedAt"> }
+  | { type: "updateHook"; hookId: ID; hook: Partial<Pick<StoredHook, "name" | "event" | "when" | "action">> }
+  | { type: "setHookEnabled"; hookId: ID; enabled: boolean }
+  | { type: "deleteHook"; hookId: ID }
+  | { type: "testHook"; hookId: ID }
   /**
    * "LOOK AT GITHUB NOW." The owner asking for a fresh look at one project.
    *
@@ -3860,6 +3866,9 @@ export type ServerFrame =
   | { type: "projectForgotten"; projectId: ID }
   /** Answers `projectItems`, and pushed again whenever the engine re-syncs. */
   | { type: "projectItems"; projectId: ID; items: ProjectItem[] }
+  | { type: "hooks"; hooks: StoredHook[]; requestId?: ID }
+  | { type: "hook"; hook: StoredHook; requestId?: ID }
+  | { type: "hookTest"; hookId: ID; ok: boolean; said: string; requestId?: ID }
   /**
    * One run — pushed the moment it finishes to everyone who can see the
    * conversation it happened in, and sent back on its own to whoever asked for
@@ -4199,6 +4208,38 @@ export const ATTACHMENT_LIMITS = {
  * around it — deliberately derived from `ATTACHMENT_LIMITS.bytes` so the two
  * can never drift into a state where a legal upload is dropped by the socket.
  */
+// ---------- Owner hook rules (the existing engine hook vocabulary) ----------
+export const HOOK_EVENTS = {
+  "turn.finished": "when an agent finishes answering",
+  "job.finished": "when a job finishes",
+  "approval.waiting": "when an agent waits for approval",
+  "check.mismatch": "when verification finds a mismatch",
+} as const;
+export type HookEvent = keyof typeof HOOK_EVENTS;
+export const HOOK_ACTIONS = {
+  say: "post a message in a conversation",
+  note: "write a note into agent memory",
+  job: "start a job",
+} as const;
+export type HookActionKind = keyof typeof HOOK_ACTIONS;
+export interface StoredHook {
+  id: ID; ownerId: ID; name: string; event: HookEvent; enabled: boolean;
+  when?: { agentId?: ID; outcome?: RunOutcome };
+  action: { do: HookActionKind; agentId: ID; channelId?: ID; text?: string; title?: string };
+  updatedAt: number;
+}
+export function validateHookInput(value: unknown): string | null {
+  if (!value || typeof value !== "object") return "a hook rule is required";
+  const h = value as Partial<StoredHook>;
+  if (typeof h.name !== "string" || !h.name.trim() || h.name.trim().length > 80) return "give the hook a name (max 80 characters)";
+  if (typeof h.event !== "string" || !Object.prototype.hasOwnProperty.call(HOOK_EVENTS, h.event)) return "that hook event is not supported";
+  if (!h.action || typeof h.action !== "object" || !Object.prototype.hasOwnProperty.call(HOOK_ACTIONS, h.action.do)) return "that hook action is not supported";
+  if (typeof h.action.agentId !== "string" || !h.action.agentId) return "choose an agent for this hook";
+  const text = h.action.text ?? h.action.title;
+  if (typeof text !== "string" || !text.trim() || text.length > 500) return "the hook action needs text (max 500 characters)";
+  return null;
+}
+
 export const WS_LIMITS = {
   maxPayloadBytes: Math.ceil(ATTACHMENT_LIMITS.bytes * 4 / 3) + 64 * 1024,
 } as const;

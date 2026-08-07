@@ -6,7 +6,7 @@ import http from "node:http";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import {
-  AgentDef, AgentPresenceState, AgentStatus, Approval,
+  AgentDef, AgentPresenceState, AgentStatus, Approval, StoredHook, HOOK_ACTIONS,
   ArtifactLink, ArtifactRelationView, Attachment,
   StoredArtifact, StoredArtifactVersion, artifactForPublic,
   Channel, ChannelMember,
@@ -33,7 +33,8 @@ import {
   isRemoteAction, mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
   setMachineNames, shareableRun,
   extractMentions, nameKey, newId, validateAgentDefinition, validateAttachment, validateChannelText,
-  validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji,
+<<<<<<< HEAD
+  validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji, validateHookInput,
   validateName, validateRepo, validateRunRecord, validateTaskSummary, validateWorkflow,
   WS_LIMITS,
 } from "@cloud9/shared";
@@ -731,6 +732,19 @@ export class Relay {
     const agent = this.store.agents().find(a => a.id === agentId);
     if (!agent || agent.ownerId !== userId) throw new Error("not your agent");
     return agent;
+  }
+  private myHook(userId: ID, hookId: ID): StoredHook {
+    const hook = this.store.hook(userId, hookId);
+    if (!hook) throw new Error("no such hook");
+    return hook;
+  }
+  private validateHookOwner(userId: ID, hook: StoredHook): void {
+    const bad = validateHookInput(hook); if (bad) throw new Error(bad);
+    this.myAgent(userId, hook.action.agentId);
+    if (hook.action.do === "say") {
+      if (!hook.action.channelId) throw new Error("choose a conversation for a message hook");
+      this.channelFor(userId, hook.action.channelId);
+    }
   }
 
   /**
@@ -3072,6 +3086,55 @@ export class Relay {
           type: "projects",
           projects: this.store.projectsOf(conn.userId).map(p => this.viewProject(p)),
         });
+        break;
+      }
+      case "hooks": {
+        send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        break;
+      }
+      case "createHook": {
+        const requestId = frame.requestId;
+        if (requestId) {
+          const priorId = this.store.hookRequest(conn.userId, requestId);
+          if (priorId) { const prior = this.store.hook(conn.userId, priorId); if (prior) send(conn.ws, { type: "hook", hook: prior, requestId }); break; }
+        }
+        const now = Date.now();
+        const hook = { ...frame.hook, id: newId("hook"), ownerId: conn.userId, updatedAt: now } as StoredHook;
+        this.validateHookOwner(conn.userId, hook);
+        this.store.saveHook(hook);
+        if (requestId) this.store.saveHookRequest(conn.userId, requestId, hook.id);
+        this.store.logHookAudit(conn.userId, hook.id, "created", true, "hook created");
+        send(conn.ws, { type: "hook", hook, ...(requestId ? { requestId } : {}) });
+        break;
+      }
+      case "updateHook": {
+        const old = this.myHook(conn.userId, frame.hookId);
+        const requestId = frame.requestId;
+        if (requestId) { const priorId = this.store.hookRequest(conn.userId, requestId); if (priorId) { const prior = this.store.hook(conn.userId, priorId); if (prior) send(conn.ws, { type: "hook", hook: prior, requestId }); break; } }
+        const hook = { ...old, ...frame.hook, action: frame.hook.action ? { ...old.action, ...frame.hook.action } : old.action, updatedAt: Date.now() } as StoredHook;
+        this.validateHookOwner(conn.userId, hook);
+        this.store.saveHook(hook); if (requestId) this.store.saveHookRequest(conn.userId, requestId, hook.id);
+        this.store.logHookAudit(conn.userId, hook.id, "updated", true, "hook updated");
+        send(conn.ws, { type: "hook", hook, ...(requestId ? { requestId } : {}) });
+        break;
+      }
+      case "setHookEnabled": {
+        const hook = this.myHook(conn.userId, frame.hookId); hook.enabled = frame.enabled; hook.updatedAt = Date.now();
+        this.store.saveHook(hook); this.store.logHookAudit(conn.userId, hook.id, frame.enabled ? "enabled" : "disabled", true, frame.enabled ? "hook enabled" : "hook disabled");
+        send(conn.ws, { type: "hook", hook, ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        break;
+      }
+      case "deleteHook": {
+        const hook = this.myHook(conn.userId, frame.hookId); this.store.deleteHook(conn.userId, hook.id);
+        this.store.logHookAudit(conn.userId, hook.id, "deleted", true, "hook deleted");
+        send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        break;
+      }
+      case "testHook": {
+        const hook = this.myHook(conn.userId, frame.hookId);
+        const said = hook.enabled ? `“${hook.name}” is valid and ready for ${HOOK_ACTIONS[hook.action.do]}` : `“${hook.name}” is disabled; enable it before it can run`;
+        this.store.logHookAudit(conn.userId, hook.id, "tested", hook.enabled, said);
+        send(conn.ws, { type: "hookTest", hookId: hook.id, ok: hook.enabled, said, ...(frame.requestId ? { requestId: frame.requestId } : {}) });
         break;
       }
       case "projectItems": {

@@ -14,6 +14,7 @@ import {
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
   EverywhereHit, SearchKind,
   SearchHit, ServerFrame, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
+  StoredHook, HOOK_EVENTS, HOOK_ACTIONS,
   NotificationInboxEntry,
   Workflow, WorkflowRun,
   validateMessageText, validateName,
@@ -1983,7 +1984,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "spending" | "activity" | "notifications" | "saved" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "hooks" | "spending" | "activity" | "notifications" | "saved" | "settings";
 type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -2770,6 +2771,7 @@ function Workspace(): React.JSX.Element {
               otherwise unchanged. Everything the hub and the engine already
               hold about his repositories arrives through this one door. */}
           {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
+          {railBtn("hooks", "Hooks", <IconGear />)}
           {/* ADDED 2026-08-07. It sits beside the Activity button because it
               answers the same shape of question — "what has been going on?" —
               about money rather than about actions. */}
@@ -2855,6 +2857,7 @@ function Workspace(): React.JSX.Element {
           {screen === "projects" && (
             <ProjectsScreen onOpenChannel={id => goChannel(id)} />
           )}
+          {screen === "hooks" && <HooksScreen />}
           {screen === "spending" && <SpendingScreen />}
           {screen === "activity" && <ActivityScreen />}
           {screen === "notifications" && <NotificationsScreen onOpen={openInboxEntry} />}
@@ -14290,6 +14293,51 @@ function SpendingRow({ row }: {
       ))}
     </section>
   );
+}
+
+function HooksScreen(): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [name, setName] = useState("");
+  const [event, setEvent] = useState<StoredHook["event"]>("turn.finished");
+  const [action, setAction] = useState<StoredHook["action"]["do"]>("say");
+  const [agentId, setAgentId] = useState("");
+  const [channelId, setChannelId] = useState("");
+  const [text, setText] = useState("");
+  useEffect(() => { if (world.connected) client.askHooks(); }, [world.connected]);
+  const create = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim() || !agentId || !text.trim()) return;
+    const hook: Omit<StoredHook, "id" | "ownerId" | "updatedAt"> = {
+      name: name.trim(), event, enabled: true,
+      action: action === "say" ? { do: action, agentId, channelId: channelId || undefined, text: text.trim() }
+        : action === "job" ? { do: action, agentId, title: text.trim() } : { do: action, agentId, text: text.trim() },
+    };
+    client.createHook(hook);
+    setName(""); setText("");
+  };
+  return <div className="hooks-screen">
+    <header className="topbar"><h2>Hooks</h2><span className="sub">Owner rules for events Cloud9 already knows about</span></header>
+    <div className="hooks-body">
+      {!world.hooks.asked && <div className="runwait" role="status">Loading hooks…</div>}
+      {world.hooks.problem && <p className="problem" role="alert">{world.hooks.problem}</p>}
+      <form className="hook-editor" onSubmit={create} aria-label="Create hook rule">
+        <label className="field"><span>Name</span><input value={name} maxLength={80} onChange={e => setName(e.target.value)} placeholder="Tell me when a turn finishes" /></label>
+        <label className="field"><span>When</span><select value={event} onChange={e => setEvent(e.target.value as StoredHook["event"])}>{Object.entries(HOOK_EVENTS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+        <label className="field"><span>Agent</span><select value={agentId} onChange={e => setAgentId(e.target.value)}><option value="">Choose an owned agent</option>{world.agents.filter(a => a.ownerId === world.me?.id).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+        <label className="field"><span>Action</span><select value={action} onChange={e => setAction(e.target.value as StoredHook["action"]["do"])}>{Object.entries(HOOK_ACTIONS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+        {action === "say" && <label className="field"><span>Conversation (optional)</span><select value={channelId} onChange={e => setChannelId(e.target.value)}><option value="">Choose a conversation</option>{world.channels.filter(c => c.kind !== "dm").map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>}
+        <label className="field"><span>{action === "job" ? "Job title" : action === "note" ? "Memory note" : "Message"}</span><textarea value={text} maxLength={500} onChange={e => setText(e.target.value)} /></label>
+        <button className="btn primary" type="submit">Save hook</button>
+      </form>
+      {world.hooks.test && <p className="problem" role="status">{world.hooks.test.said}</p>}
+      <div className="hook-list" aria-live="polite">{world.hooks.list.map(hook => <article className="hook-card" key={hook.id}>
+        <header><h3>{hook.name}</h3><span className="meta">{hook.enabled ? "Enabled" : "Disabled"}</span></header>
+        <p className="meta">{HOOK_EVENTS[hook.event]} · {HOOK_ACTIONS[hook.action.do]}</p>
+        <div className="hook-actions"><button className="btn" onClick={() => client.setHookEnabled(hook.id, !hook.enabled)}>{hook.enabled ? "Disable" : "Enable"}</button><button className="btn" onClick={() => client.testHook(hook.id)}>Test rule</button><button className="btn danger" onClick={() => client.deleteHook(hook.id)}>Delete</button></div>
+      </article>)}</div>
+      {world.hooks.asked && world.hooks.list.length === 0 && <EmptyTray title="No hook rules" line="Create a rule for a turn, job, approval, or verification event." />}
+    </div>
+  </div>;
 }
 
 function SpendingScreen(): React.JSX.Element {

@@ -1,0 +1,31 @@
+import test, { TestContext } from "node:test";
+import assert from "node:assert/strict";
+import { ServerFrame } from "@cloud9/shared";
+import { Relay } from "./server.js";
+import { TestClient, tmp } from "./testclient.js";
+
+test("owner hook CRUD is durable, correlated, validated, and idempotent", async t => {
+  const relay = new Relay({ dbPath: tmp("hooks-ui.db"), ownerToken: "owner", ownerName: "Owner" });
+  const port = await relay.listen(0); const url = `ws://127.0.0.1:${port}`;
+  const owner = new TestClient(url, "owner"); await owner.wait(f => f.type === "welcome");
+  t.after(() => { owner.close(); relay.close(); });
+  owner.send({ type: "createAgent", agent: { name: "Hook bot", emoji: "🤖", persona: "Does hook work", abilities: { webSearch: false, files: false, schedules: false, background: false } } as never });
+  const agent = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent" && f.agent.name === "Hook bot");
+  owner.send({ type: "hooks", requestId: "list-1" });
+  const listed = await owner.wait<Extract<ServerFrame, { type: "hooks" }>>(f => f.type === "hooks" && f.requestId === "list-1");
+  assert.deepEqual(listed.hooks, []);
+  const hook = { name: "Finished note", event: "turn.finished" as const, enabled: true, action: { do: "note" as const, agentId: agent.agent.id, text: "Review the result" } };
+  owner.send({ type: "createHook", hook, requestId: "create-1" });
+  const created = await owner.wait<Extract<ServerFrame, { type: "hook" }>>(f => f.type === "hook" && f.requestId === "create-1");
+  owner.send({ type: "createHook", hook, requestId: "create-1" });
+  const replay = await owner.wait<Extract<ServerFrame, { type: "hook" }>>(f => f.type === "hook" && f.requestId === "create-1");
+  assert.equal(replay.hook.id, created.hook.id);
+  owner.send({ type: "setHookEnabled", hookId: created.hook.id, enabled: false, requestId: "disable-1" });
+  await owner.wait(f => f.type === "hook" && f.hook.id === created.hook.id && !f.hook.enabled);
+  owner.send({ type: "testHook", hookId: created.hook.id, requestId: "test-1" });
+  const refused = await owner.wait<Extract<ServerFrame, { type: "hookTest" }>>(f => f.type === "hookTest" && f.requestId === "test-1");
+  assert.equal(refused.ok, false);
+  owner.send({ type: "deleteHook", hookId: created.hook.id, requestId: "delete-1" });
+  const gone = await owner.wait<Extract<ServerFrame, { type: "hooks" }>>(f => f.type === "hooks" && f.requestId === "delete-1");
+  assert.deepEqual(gone.hooks, []);
+});

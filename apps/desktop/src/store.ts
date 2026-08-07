@@ -10,7 +10,8 @@ import {
   SavedMessageEntry,
   EverywhereHit, SearchKind,
   ReachCatchup,
-  Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
+<<<<<<< HEAD
+  Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook,
   Workflow, WorkflowRun,
   // SPENDING BLOCK (what the crew costs, 2026-08-07)
   AgentTokenUse, WasteFinding,
@@ -370,6 +371,7 @@ export interface World {
    * what says how old the answer is.
    */
   projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
+  hooks: { asked: boolean; requestId?: ID; list: StoredHook[]; problem?: string; test?: { hookId: ID; ok: boolean; said: string } };
   /**
    * THE REPOSITORIES HIS OWN GITHUB SIGN-IN CAN SEE — the picker's list.
    *
@@ -643,7 +645,7 @@ export class RelayClient {
     runs: {}, runLists: {}, runsGone: {},
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
-    projects: { asked: false, list: [] }, projectItems: {},
+    projects: { asked: false, list: [] }, projectItems: {}, hooks: { asked: false, list: [] },
     repoChoices: { asked: false, asking: false },
     artifacts: {}, artifactsGone: {}, channelArtifacts: {},
     artifactWorkspace: emptyArtifactWorkspace(),
@@ -1964,6 +1966,22 @@ export class RelayClient {
       lost: settled,
     });
   }
+  askHooks(): void {
+    const requestId = this.nextRequestId("hooks");
+    this.world.hooks = { asked: false, requestId, list: [] };
+    const sent = this.ask({ type: "hooks", requestId }, {
+      answers: f => f.type === "hooks" && f.requestId === requestId,
+      answered: f => { if (f.type === "hooks" && this.world.hooks.requestId === requestId) this.world.hooks = { asked: true, list: f.hooks }; },
+      refused: why => { if (this.world.hooks.requestId === requestId) this.world.hooks = { asked: true, list: [], problem: why }; this.emit(); },
+      lost: () => { if (this.world.hooks.requestId === requestId) this.world.hooks = { asked: true, list: [], problem: "the hub did not answer" }; this.emit(); },
+    });
+    if (!sent && this.world.hooks.requestId === requestId) { this.world.hooks = { asked: true, list: [], problem: "not connected to the hub yet" }; this.emit(); }
+  }
+  createHook(hook: Omit<StoredHook, "id" | "ownerId" | "updatedAt">): void { this.send({ type: "createHook", hook, requestId: this.nextRequestId("createHook") }); }
+  updateHook(hookId: ID, hook: Partial<Pick<StoredHook, "name" | "event" | "when" | "action">>): void { this.send({ type: "updateHook", hookId, hook, requestId: this.nextRequestId("updateHook") }); }
+  setHookEnabled(hookId: ID, enabled: boolean): void { this.send({ type: "setHookEnabled", hookId, enabled, requestId: this.nextRequestId("setHookEnabled") }); }
+  deleteHook(hookId: ID): void { this.send({ type: "deleteHook", hookId, requestId: this.nextRequestId("deleteHook") }); }
+  testHook(hookId: ID): void { this.send({ type: "testHook", hookId, requestId: this.nextRequestId("testHook") }); }
 
   /**
    * "LOOK AT GITHUB NOW" for one project.
@@ -3079,6 +3097,7 @@ export class RelayClient {
         // screen must say "looking" rather than "you have none".
         w.projects = { asked: false, list: [] };
         w.projectItems = {};
+        w.hooks = { asked: false, list: [] };
         // Files agents made belonged to the last connection too, and `asked`
         // goes back to false with them: this world has not asked anything yet,
         // so a room's file list says "looking" rather than "there are none".
@@ -3582,6 +3601,18 @@ export class RelayClient {
           ...w.projectItems,
           [frame.projectId]: { asked: true, items: frame.items },
         };
+        break;
+      case "hooks":
+        if (frame.requestId === undefined || frame.requestId !== w.hooks.requestId) break;
+        w.hooks = { asked: true, list: frame.hooks };
+        break;
+      case "hook": {
+        const i = w.hooks.list.findIndex(h => h.id === frame.hook.id);
+        w.hooks = { ...w.hooks, asked: true, list: i < 0 ? [frame.hook, ...w.hooks.list] : w.hooks.list.map(h => h.id === frame.hook.id ? frame.hook : h) };
+        break;
+      }
+      case "hookTest":
+        w.hooks = { ...w.hooks, test: { hookId: frame.hookId, ok: frame.ok, said: frame.said } };
         break;
       // ENGINE-ONLY RECEIPT, and it is right that the screen drops it. When an
       // agent asks mid-run "may I push this branch?", the hub answers the

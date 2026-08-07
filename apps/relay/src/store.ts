@@ -9,7 +9,7 @@ import {
   StoredArtifact, StoredArtifactVersion, artifactVersionForPublic,
   ChannelRole, EverywhereHit, ID, Message, SearchKind,
   MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
-  RunRecord, RUN_RETENTION, Task, User, isSafeStoredId, nameKey, newId,
+  RunRecord, RUN_RETENTION, Task, User, StoredHook, isSafeStoredId, nameKey, newId,
   NOTIFICATION_INBOX_LIMITS,
   type NotificationInboxKind, type NotificationInboxState,
   Workflow, WorkflowRun, validateArtifactLinks, validateWorkflow,
@@ -546,6 +546,18 @@ export class Store implements JoinHubStore {
       -- one person may connect one repository once; connecting it again finds
       -- the project they already have rather than making a second one
       CREATE UNIQUE INDEX IF NOT EXISTS proj_owner_repo ON projects(ownerId, repo);
+      CREATE TABLE IF NOT EXISTS hooks(
+        id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, updatedAt INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS hooks_owner ON hooks(ownerId, updatedAt DESC);
+      CREATE TABLE IF NOT EXISTS hook_audit(
+        id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, hookId TEXT NOT NULL,
+        action TEXT NOT NULL, ok INTEGER NOT NULL, said TEXT NOT NULL, at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS hook_requests(
+        ownerId TEXT NOT NULL, requestId TEXT NOT NULL, hookId TEXT NOT NULL,
+        PRIMARY KEY(ownerId, requestId)
+      );
 
       -- ITS PULL REQUESTS AND ITS ISSUES — a cache of GitHub's truth, never
       -- ours. The key is (project, kind, number) because that is what GitHub
@@ -3300,6 +3312,31 @@ export class Store implements JoinHubStore {
     const row = this.db.prepare("SELECT json FROM projects WHERE ownerId=? AND repo=?")
       .get(ownerId, repo) as { json: string } | undefined;
     return row ? (JSON.parse(row.json) as Project) : undefined;
+  }
+
+  hooksOf(ownerId: ID): StoredHook[] {
+    return (this.db.prepare("SELECT json FROM hooks WHERE ownerId=? ORDER BY updatedAt DESC, id DESC").all(ownerId) as { json: string }[])
+      .map(r => JSON.parse(r.json) as StoredHook);
+  }
+  hook(ownerId: ID, hookId: ID): StoredHook | undefined {
+    const row = this.db.prepare("SELECT json FROM hooks WHERE ownerId=? AND id=?").get(ownerId, hookId) as { json: string } | undefined;
+    return row ? JSON.parse(row.json) as StoredHook : undefined;
+  }
+  saveHook(hook: StoredHook): void {
+    this.db.prepare("INSERT INTO hooks(id,ownerId,updatedAt,json) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET updatedAt=excluded.updatedAt,json=excluded.json")
+      .run(hook.id, hook.ownerId, hook.updatedAt, JSON.stringify(hook));
+  }
+  deleteHook(ownerId: ID, hookId: ID): void { this.db.prepare("DELETE FROM hooks WHERE ownerId=? AND id=?").run(ownerId, hookId); }
+  hookRequest(ownerId: ID, requestId: ID): ID | undefined {
+    const row = this.db.prepare("SELECT hookId FROM hook_requests WHERE ownerId=? AND requestId=?").get(ownerId, requestId) as { hookId: ID } | undefined;
+    return row?.hookId;
+  }
+  saveHookRequest(ownerId: ID, requestId: ID, hookId: ID): void {
+    this.db.prepare("INSERT INTO hook_requests(ownerId,requestId,hookId) VALUES(?,?,?)").run(ownerId, requestId, hookId);
+  }
+  logHookAudit(ownerId: ID, hookId: ID, action: string, ok: boolean, said: string, at = Date.now()): void {
+    this.db.prepare("INSERT INTO hook_audit(id,ownerId,hookId,action,ok,said,at) VALUES(?,?,?,?,?,?,?)")
+      .run(newId("hookaudit"), ownerId, hookId, action, ok ? 1 : 0, said, at);
   }
 
   /** Forget our copy. THE REPOSITORY IS NOT TOUCHED — it is not ours to touch. */
