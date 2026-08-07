@@ -41,3 +41,16 @@ test("Saved/Later mutations use request correlation and scoped errors", () => {
   assert.match(block, /saveForLater/);
   assert.match(block, /unsaveForLater/);
 });
+
+test("Saved/Later mutations remain honest offline and guard detail actions while pending", () => {
+  const store = fs.readFileSync(path.join(__dirname, "..", "src", "store.ts"), "utf8");
+  const send = store.slice(store.indexOf("private sendSaved("), store.indexOf("private finishSavedPending("));
+  assert.match(send, /if \(!id\)/);
+  assert.match(send, /Cloud9 is reconnecting\. Try again when the relay answers/);
+  const app = fs.readFileSync(path.join(__dirname, "..", "src", "App.tsx"), "utf8");
+  const detail = app.slice(app.indexOf("function SavedScreen"), app.indexOf("function ActivityScreen"));
+  assert.match(detail, /const pending = world\.savedPending\.includes\(entry\.messageId\)/);
+  assert.match(detail, /Saving details/);
+  assert.match(detail, /disabled=\{pending\}/);
+  assert.match(detail, /Removing…/);
+});

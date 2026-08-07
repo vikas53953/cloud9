@@ -14661,6 +14661,12 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
 
   const entries = world.savedMessages.filter(entry =>
     filter === "all" || (filter === "active" ? entry.state === "active" : entry.state !== "active"));
+  const detailsDirty = Object.entries(editing).some(([id, draft]) => {
+    const entry = world.savedMessages.find(item => item.id === id);
+    if (!entry) return false;
+    return draft.note !== (entry.note ?? "") || draft.remindAt !== safeReminderDate(entry.remindAt);
+  });
+  useUnsavedWork("Saved message details", detailsDirty);
   const loading = !world.savedAsked || world.savedLoading;
   return (
     <div className="notifications saved-screen" data-testid="saved-screen">
@@ -14693,6 +14699,7 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
           <div className="notification-list">
             {entries.map(entry => {
               const available = entry.state === "active" && !!entry.message;
+              const pending = world.savedPending.includes(entry.messageId);
               const source = entry.state === "deleted" ? "Source deleted" : entry.state === "inaccessible" ? "Source unavailable" : "Open source";
               const draft = editing[entry.id] ?? { note: entry.note ?? "", remindAt: safeReminderDate(entry.remindAt) };
               return <article key={entry.id} className={`notification-row source-${entry.state}`}>
@@ -14711,16 +14718,28 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
                     <form onSubmit={event => {
                       event.preventDefault();
                       const remindAt = draft.remindAt ? Date.parse(`${draft.remindAt}T00:00:00`) : undefined;
-                      client.saveForLater(entry.messageId, draft.note, remindAt);
+                      const requestId = client.saveForLater(entry.messageId, draft.note, remindAt);
+                      if (requestId) setEditing(previous => {
+                        const next = { ...previous };
+                        delete next[entry.id];
+                        return next;
+                      });
                     }}>
                       <label>Note<input value={draft.note} maxLength={2000}
                         onChange={event => setEditing(previous => ({ ...previous, [entry.id]: { ...draft, note: event.target.value } }))} /></label>
                       <label>Reminder date (no notification)<input type="date" value={draft.remindAt}
                         onChange={event => setEditing(previous => ({ ...previous, [entry.id]: { ...draft, remindAt: event.target.value } }))} /></label>
-                      <button type="submit" className="linkish">Save details</button>
+                      <button type="submit" className="linkish" disabled={pending}
+                        aria-busy={pending}>{pending ? "Saving details…" : "Save details"}</button>
+                      <button type="button" className="linkish" onClick={() => setEditing(previous => {
+                        const next = { ...previous };
+                        delete next[entry.id];
+                        return next;
+                      })}>Cancel</button>
                     </form>
                   </details>}
-                  <button type="button" className="linkish" onClick={() => client.unsaveForLater(entry.messageId)}>Remove</button>
+                  <button type="button" className="linkish" disabled={pending} aria-busy={pending}
+                    onClick={() => client.unsaveForLater(entry.messageId)}>{pending ? "Removing…" : "Remove"}</button>
                 </div>
               </article>;
             })}

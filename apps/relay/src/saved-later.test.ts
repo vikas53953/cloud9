@@ -70,6 +70,10 @@ test("saved mutation receipts are owner-scoped, bounded, and expire conservative
   assert.equal(store.savedMessages(friend.id)[0].note, "friend");
   store.db.prepare("UPDATE saved_mutation_receipts SET createdAt=0 WHERE userId=? AND requestId=?")
     .run(owner.id, "same-request");
+  assert.equal(store.savedMutationStatus(owner.id, "same-request", "saveMessage", "m-owner", undefined, "private"), undefined,
+    "an expired receipt is retired when it is looked up, before any new write");
+  assert.equal((store.db.prepare("SELECT COUNT(*) AS n FROM saved_mutation_receipts WHERE userId=? AND requestId=?")
+    .get(owner.id, "same-request") as { n: number }).n, 0);
   store.saveSavedMessage(owner.id, "m-new", "ch-general", undefined, undefined, "new-request");
   assert.equal((store.db.prepare("SELECT COUNT(*) AS n FROM saved_mutation_receipts WHERE userId=? AND requestId=?")
     .get(owner.id, "same-request") as { n: number }).n, 0, "old receipts are outside the 30-day retry window");
@@ -126,6 +130,19 @@ test("saved queue is owner-scoped, idempotent, ordered, and projects deleted tom
   assert.equal(saved.entries[0].note, "follow up");
   assert.equal(saved.entries[0].remindAt, 123);
   assert.equal(saved.entries[0].message?.id, first.id);
+  // A canonical replay is resolved before the moving five-year validation
+  // window, so a retry remains idempotent after time has advanced.
+  const originalNow = Date.now;
+  Date.now = () => originalNow() + 6 * 365 * 24 * 60 * 60 * 1000;
+  try {
+    owner.send({ type: "saveMessage", messageId: first.id, note: "follow up", remindAt: 123, requestId: saveRequest });
+    const replayAfterHorizon = await owner.wait<Extract<ServerFrame, { type: "savedMessages" }>>(
+      f => f.type === "savedMessages" && f.requestId === saveRequest,
+    );
+    assert.equal(replayAfterHorizon.entries.find(e => e.messageId === first.id)?.remindAt, 123);
+  } finally {
+    Date.now = originalNow;
+  }
   owner.send({ type: "saveMessage", messageId: second.id, remindAt: Number.MAX_VALUE, requestId: "bad-reminder" });
   const badReminder = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
     f => f.type === "error" && f.requestId === "bad-reminder",

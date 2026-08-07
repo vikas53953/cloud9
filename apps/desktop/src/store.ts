@@ -1514,7 +1514,14 @@ export class RelayClient {
         this.emit();
       },
     });
-    if (!id) this.savedRequests.delete(requestId);
+    if (!id) {
+      this.savedRequests.delete(requestId);
+      // transmit() refuses while offline. Keep the mutation visible instead
+      // of silently dropping the user's save/unsave intent.
+      this.world.savedProblem = "Cloud9 is reconnecting. Try again when the relay answers.";
+      this.world.savedNotice = undefined;
+      this.emit();
+    }
     else {
       this.world.savedPending = [...new Set([...this.world.savedPending, frame.messageId])];
       this.emit();

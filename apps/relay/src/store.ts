@@ -167,6 +167,8 @@ export interface SavedMessagePage {
 
 export type SavedMutationKind = "saveMessage" | "unsaveMessage";
 
+const SAVED_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 interface SavedMutationReceipt {
   userId: ID;
   requestId: ID;
@@ -1576,9 +1578,14 @@ export class Store implements JoinHubStore {
   }
 
   private savedReceipt(userId: ID, requestId: ID): SavedMutationReceipt | undefined {
-    return this.db.prepare(
+    const row = this.db.prepare(
       "SELECT userId,requestId,kind,payloadHash,createdAt FROM saved_mutation_receipts WHERE userId=? AND requestId=?",
     ).get(userId, requestId) as SavedMutationReceipt | undefined;
+    if (row && row.createdAt < Date.now() - SAVED_RECEIPT_RETENTION_MS) {
+      this.db.prepare("DELETE FROM saved_mutation_receipts WHERE userId=? AND requestId=?").run(userId, requestId);
+      return undefined;
+    }
+    return row;
   }
 
   /** Check a retry before the caller re-authorises a source message. */
@@ -1599,7 +1606,7 @@ export class Store implements JoinHubStore {
     // Keep the retry ledger finite without touching durable saved rows. A
     // 30-day window and 512 receipts per account covers reconnects and human
     // retries while making the retention boundary explicit.
-    this.db.prepare("DELETE FROM saved_mutation_receipts WHERE createdAt < ?").run(now - 30 * 24 * 60 * 60 * 1000);
+    this.db.prepare("DELETE FROM saved_mutation_receipts WHERE createdAt < ?").run(now - SAVED_RECEIPT_RETENTION_MS);
     this.db.prepare(
       "DELETE FROM saved_mutation_receipts WHERE userId=? AND requestId NOT IN "
       + "(SELECT requestId FROM saved_mutation_receipts WHERE userId=? ORDER BY createdAt DESC,requestId DESC LIMIT 512)",

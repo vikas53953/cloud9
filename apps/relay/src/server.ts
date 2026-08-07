@@ -3834,10 +3834,6 @@ export class Relay {
       case "saveMessage": {
         const note = frame.note === undefined ? undefined : String(frame.note).trim();
         if (note !== undefined && note.length > 2000) throw new Error("that note is too long (max 2000 characters)");
-        if (frame.remindAt !== undefined && (!Number.isSafeInteger(frame.remindAt) || frame.remindAt < 0
-          || frame.remindAt > Date.now() + SAVED_REMINDER_HORIZON_MS)) {
-          throw new Error("that reminder date is not valid or is more than five years away");
-        }
         if (frame.requestId) {
           const status = this.store.savedMutationStatus(conn.userId, frame.requestId, "saveMessage", frame.messageId, undefined, note, frame.remindAt);
           if (status === "conflict") throw new Error("that saved request id was already used for a different save");
@@ -3845,6 +3841,12 @@ export class Relay {
             this.tellSaved(conn.userId, frame.requestId, conn);
             break;
           }
+        }
+        // Validate only a new mutation. A canonical replay must remain a
+        // replay even after time moves past its reminder horizon.
+        if (frame.remindAt !== undefined && (!Number.isSafeInteger(frame.remindAt) || frame.remindAt < 0
+          || frame.remindAt > Date.now() + SAVED_REMINDER_HORIZON_MS)) {
+          throw new Error("that reminder date is not valid or is more than five years away");
         }
         const message = this.messageFor(conn.userId, frame.messageId);
         if (message.deletedAt) throw new Error("that message was deleted");
