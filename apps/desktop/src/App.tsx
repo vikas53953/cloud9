@@ -464,8 +464,12 @@ const clock = (ts: number): string =>
  *
  * Four seconds is chosen to be slower than a person notices and far slower than
  * anything the app does per keystroke, and the timer only runs while the screen
- * is actually open. The LIVE half of this screen does not use it at all — every
- * fact on the Right now board is already pushed as it changes.
+ * is actually open.
+ *
+ * THE RIGHT NOW BOARD USES IT TOO, for one half of itself. What each agent is
+ * DOING is pushed as it changes; what it LAST DID is not — a finished job only
+ * becomes a fact this app holds when the hub is asked again. See
+ * `useRunHistoryWhileWatching`, and the six-minute stale row that proved it.
  */
 const ACTIVITY_REFRESH_MS = 4000;
 
@@ -13841,9 +13845,41 @@ function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine }[] {
  * It lives on the BOARD and not in `useAgentActivity` because that hook is now
  * read by the rail button too, which is on screen always — a fetch in there
  * would go out for every agent every time any lamp moved, for ever.
+ *
+ * ============ AND IT KEEPS ASKING, BECAUSE THE LAMP GOES OUT FIRST ==========
+ *
+ * Asking ONLY when a lamp moves was still not enough, and the walk of the
+ * packaged app on 2026-08-07 caught it: he stopped Ledger mid-job, and the row
+ * read "Ready · it hasn't been asked to do anything yet" for SIX MINUTES before
+ * it turned into "🛑 You stopped it". The lamp clears the instant the turn ends
+ * and the record of what happened is written a moment later, so the one ask the
+ * lamp triggered went out too early and came back empty — and nothing asked
+ * again until some OTHER agent happened to start or stop.
+ *
+ * A row that is wrong for six minutes about a thing he did himself is the
+ * failure this whole screen exists to prevent. So it asks on the lamp AND on
+ * the same slow beat the trail below already uses, for as long as he is
+ * standing here. The timer stops when he leaves the screen.
  */
 function useRunHistoryWhileWatching(agentIds: readonly ID[], statuses: Record<ID, AgentStatus>): void {
   const lampKey = agentIds.map(id => `${id}:${statuses[id] ?? "idle"}`).join(" ");
+  /* The ids alone, so the repeating timer is not rebuilt every time a lamp
+     moves — only when the crew itself changes. */
+  const idKey = agentIds.join(" ");
+  useEffect(() => {
+    const ask = (): void => {
+      for (const id of idKey ? idKey.split(" ") : []) {
+        client.askRuns("agent", id, RUN_HISTORY_LIMIT);
+      }
+    };
+    ask();
+    const t = setInterval(ask, ACTIVITY_REFRESH_MS);
+    return () => clearInterval(t);
+  }, [idKey]);
+  /* Still asked the moment a lamp moves as well — the beat above is the
+     backstop, not the mechanism. Waiting up to four seconds to notice a job
+     that finished in front of him would be the stale row all over again, just
+     shorter. */
   useEffect(() => {
     for (const pair of lampKey ? lampKey.split(" ") : []) {
       client.askRuns("agent", pair.slice(0, pair.lastIndexOf(":")), RUN_HISTORY_LIMIT);

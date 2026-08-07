@@ -355,10 +355,20 @@ async function main() {
       console.log("  (Ledger never started the long job — cannot stop what is not running)");
     });
   if (ledgerRan) {
-    /* Let the turn get properly underway. Stopping the instant the lamp lights
-       can still land between "slot taken" and "process running", which is the
-       same nothing-to-kill case one step later. */
-    await page.waitForTimeout(10000);
+    /* LET THE TURN GET PROPERLY UNDERWAY — three quarters of a minute, not ten
+       seconds, and the number is the finding.
+
+       At ten seconds the stop landed on a turn that had taken a slot but not
+       yet produced anything, so the engine dropped it rather than killing it —
+       deliberately, so his money is not spent on work he has cancelled — and a
+       dropped turn writes NO RECORD. The board then correctly had nothing to
+       show and read "Ready · it hasn't been asked to do anything yet", which
+       looks exactly like a broken feature and is not one. The one run that DID
+       produce a stopped record had been going 35 seconds first.
+
+       So the wait is now long enough that there is really something to kill.
+       This is the harness catching up with the engine, not a change to it. */
+    await page.waitForTimeout(45000);
     await askFromBoard(page, "Ledger", "!stop");
   }
 
@@ -454,9 +464,14 @@ async function main() {
 
   try {
     await until("the board to show an agent waiting on him", async () => {
+      /* THE BOARD HAS TO BE ON SCREEN TO BE READ. Sending from quick chat can
+         leave the app on the conversation, and a screen that is not mounted has
+         no rows — which the harness recorded as "no go-ahead" for seven minutes
+         and reported as a missing feature. */
+      await page.click('.rail .rail-btn[data-go="activity"]').catch(() => {});
       sawWaiting = await page.locator('.rn-row[data-state="waiting"]').count() > 0;
       return sawWaiting;
-    }, { timeout: 420000, every: 400 });
+    }, { timeout: 420000, every: 1500 });
   } catch { /* said out loud below */ }
 
   if (sawWaiting) {
@@ -479,7 +494,24 @@ async function main() {
     }
     await shot(page, "6-waiting-for-you");
   } else {
-    console.log("  (no go-ahead reached the board within the wait)");
+    /* WHY, NOT JUST "NO" — the same rule as the stop above. A go-ahead that
+       never appears could be an agent that never got going, a plan gate that
+       did not fire, or a board that is not redrawing. Those look identical from
+       a bare "false", and telling them apart is the whole job. */
+    console.log("  (no go-ahead reached the board within the wait — here is what was there)");
+    const board = await readBoard(page).catch(() => []);
+    for (const r of board) console.log(`    board: [${r.state}] ${JSON.stringify(r).slice(0, 200)}`);
+    const badge = await page.locator('.rail .rail-btn[data-go="activity"] .rail-count')
+      .innerText().catch(() => "0");
+    console.log(`    rail badge: "${(badge || "0").trim()}"`);
+    await page.click('.rail .rail-btn[data-go="chat"]').catch(() => {});
+    await page.click('.agent-row[data-agent="Scout"] .agentmain').catch(() => {});
+    await page.waitForTimeout(2500);
+    const said = await page.$$eval(".msg, .bubble, .msgrow",
+      ns => ns.slice(-8).map(n => n.innerText.replace(/\s+/g, " ").slice(0, 220)))
+      .catch(() => []);
+    for (const s of said) console.log(`    room: ${s}`);
+    await shot(page, "6-waiting-diagnosis");
   }
   } // end !ONLY_STOP
 
