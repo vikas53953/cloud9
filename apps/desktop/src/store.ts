@@ -254,7 +254,7 @@ export interface World {
   savedNextSavedAt?: number;
   savedNextMessageId?: ID;
   savedProblem?: string;
-  savedNotice?: { text: string; ts: number };
+  savedNotice?: { text: string; ts: number; requestId?: ID; messageId?: ID };
   savedPending: ID[];
   /** Set when a save arrives while the Saved screen is not open. */
   savedNew: boolean;
@@ -810,6 +810,12 @@ export class RelayClient {
       // belongs to a connection nobody is on any more.
       if (this.ws !== ws) return;
       this.world.connected = false;
+      // Settle every lifecycle row before dropping request maps. Mutation
+      // callbacks clear their own pending IDs and leave a scoped retry notice;
+      // simply clearing the maps used to lose that intent silently.
+      const orphaned = this.asked;
+      this.asked = [];
+      for (const a of orphaned) a.lost?.();
       // Request ids belong to this socket epoch. A late workflow response from
       // the dropped socket must never settle a new window's run/archive/stop
       // request after reconnect; those mutations are durable and the welcome
@@ -822,12 +828,14 @@ export class RelayClient {
       this.world.savedAsked = false;
       this.world.savedLoading = false;
       this.world.savedRequestId = undefined;
-      this.world.savedProblem = undefined;
       this.world.savedRevision = 0;
       this.world.savedHasMore = false;
       this.world.savedNextSavedAt = undefined;
       this.world.savedNextMessageId = undefined;
-      this.world.savedPending = [];
+      // lost callbacks above own pending cleanup; this fallback only covers a
+      // fire-and-forget row that never entered the lifecycle ledger.
+      this.world.savedPending = this.world.savedPending.filter(messageId =>
+        [...this.savedRequests.values()].some(frame => frame.type !== "listSaved" && frame.messageId === messageId));
       // A credential the hub REFUSED must not spin: the reason is on screen and
       // retrying it would only overwrite it with the same refusal.
       if (this.world.authFailed) { this.syncHubWorld(); this.emit(); return; }
@@ -1495,7 +1503,10 @@ export class RelayClient {
         this.world.savedNextSavedAt = f.nextSavedAt;
         this.world.savedNextMessageId = f.nextMessageId;
         this.world.savedProblem = undefined;
-        this.world.savedNotice = { text: frame.type === "saveMessage" ? "Saved for later" : "Removed from saved", ts: Date.now() };
+        this.world.savedNotice = {
+          text: frame.type === "saveMessage" ? "Saved for later" : "Removed from saved",
+          ts: Date.now(), requestId, messageId: frame.messageId,
+        };
         this.emit();
       },
       refused: error => {

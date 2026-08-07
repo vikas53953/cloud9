@@ -14645,7 +14645,21 @@ function NotificationsScreen({ onOpen }: {
 
 function safeReminderDate(ms?: number): string {
   if (ms === undefined || !Number.isSafeInteger(ms) || ms < 0 || ms > 8_640_000_000_000_000) return "";
-  try { return new Date(ms).toISOString().slice(0, 10); } catch { return ""; }
+  try {
+    const date = new Date(ms);
+    const pad = (value: number): string => String(value).padStart(2, "0");
+    return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+  } catch { return ""; }
+}
+
+function reminderDateMs(value: string): number | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const [year, month, day] = value.split("-").map(Number);
+  const ms = Date.UTC(year, month - 1, day);
+  const date = new Date(ms);
+  if (!Number.isSafeInteger(ms) || date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return undefined;
+  return ms;
 }
 
 function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").SavedMessageEntry) => void }): React.JSX.Element {
@@ -14658,6 +14672,20 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
     if (world.connected && !world.savedAsked) client.askSaved();
   }, [world.connected, world.savedAsked]);
   useEffect(() => { listRef.current?.focus(); }, []);
+  useEffect(() => {
+    const notice = world.savedNotice;
+    if (!notice?.requestId || !notice.messageId) return;
+    const saved = world.savedMessages.find(entry => entry.messageId === notice.messageId);
+    if (!saved) return;
+    // Only a correlated success clears the draft. Refusal/lost leaves it in
+    // place so a reconnect or retry cannot discard typed note/date text.
+    setEditing(previous => {
+      if (!(saved.id in previous)) return previous;
+      const next = { ...previous };
+      delete next[saved.id];
+      return next;
+    });
+  }, [world.savedNotice?.requestId, world.savedNotice?.messageId, world.savedMessages]);
 
   const entries = world.savedMessages.filter(entry =>
     filter === "all" || (filter === "active" ? entry.state === "active" : entry.state !== "active"));
@@ -14717,13 +14745,8 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
                     <summary className="linkish">Add note or date</summary>
                     <form onSubmit={event => {
                       event.preventDefault();
-                      const remindAt = draft.remindAt ? Date.parse(`${draft.remindAt}T00:00:00`) : undefined;
-                      const requestId = client.saveForLater(entry.messageId, draft.note, remindAt);
-                      if (requestId) setEditing(previous => {
-                        const next = { ...previous };
-                        delete next[entry.id];
-                        return next;
-                      });
+                      const remindAt = reminderDateMs(draft.remindAt);
+                      client.saveForLater(entry.messageId, draft.note, remindAt);
                     }}>
                       <label>Note<input value={draft.note} maxLength={2000}
                         onChange={event => setEditing(previous => ({ ...previous, [entry.id]: { ...draft, note: event.target.value } }))} /></label>

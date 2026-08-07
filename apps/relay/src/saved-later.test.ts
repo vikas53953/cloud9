@@ -111,7 +111,7 @@ test("saved v8 migration runs after Workflow v7 from a v6 database", () => {
 });
 
 test("saved queue is owner-scoped, idempotent, ordered, and projects deleted tombstones", async t => {
-  const { owner, open, channelId } = await stand(t, "saved-queue.db");
+  const { relay, owner, open, channelId } = await stand(t, "saved-queue.db");
   const mirror = open("tok-owner");
   await mirror.wait(f => f.type === "welcome");
   const first = await post(owner, channelId, "First saved note");
@@ -163,6 +163,7 @@ test("saved queue is owner-scoped, idempotent, ordered, and projects deleted tom
 
   owner.send({ type: "deleteMessage", messageId: first.id });
   await owner.wait(f => f.type === "messageUpdated" && f.message.id === first.id && !!f.message.deletedAt);
+  assert.ok(relay.store.message(first.id)?.deletedAt, "the source tombstone is durable before replay");
   owner.send({ type: "listSaved", requestId: "list-after-delete" });
   const deleted = await owner.wait<Extract<ServerFrame, { type: "savedMessages" }>>(
     f => f.type === "savedMessages" && f.requestId === "list-after-delete",
@@ -170,8 +171,10 @@ test("saved queue is owner-scoped, idempotent, ordered, and projects deleted tom
   assert.equal(deleted.entries.find(e => e.messageId === first.id)?.state, "deleted");
   owner.send({ type: "saveMessage", messageId: first.id, note: "follow up", remindAt: 123, requestId: saveRequest });
   const replayAfterDelete = await owner.wait<Extract<ServerFrame, { type: "savedMessages" }>>(
-    f => f.type === "savedMessages" && f.requestId === saveRequest,
+    f => f.type === "savedMessages" && f.requestId === saveRequest
+      && f.entries.some(entry => entry.messageId === first.id && entry.state === "deleted"),
   );
+  assert.ok(relay.store.message(first.id)?.deletedAt, "the source tombstone remains after replay");
   assert.equal(replayAfterDelete.entries.find(e => e.messageId === first.id)?.state, "deleted", "a replay does not re-authorise deleted content");
 
   owner.send({ type: "createInvite" });

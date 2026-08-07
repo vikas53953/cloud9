@@ -1596,7 +1596,8 @@ export class Store implements JoinHubStore {
     const prior = this.savedReceipt(userId, requestId);
     if (!prior) return undefined;
     const hash = this.savedMutationHash(kind, messageId, channelId, note, remindAt);
-    return prior.kind === kind && prior.payloadHash === hash ? "replay" : "conflict";
+    const metadataOmittedReplay = kind === "saveMessage" && note === undefined && remindAt === undefined;
+    return prior.kind === kind && (prior.payloadHash === hash || metadataOmittedReplay) ? "replay" : "conflict";
   }
 
   private saveReceipt(userId: ID, requestId: ID, kind: SavedMutationKind, payloadHash: string, now: number): void {
@@ -1619,7 +1620,8 @@ export class Store implements JoinHubStore {
       const hash = this.savedMutationHash("saveMessage", messageId, channelId, note, remindAt);
       const prior = requestId ? this.savedReceipt(userId, requestId) : undefined;
       if (prior) {
-        if (prior.kind !== "saveMessage" || prior.payloadHash !== hash) {
+        const metadataOmittedReplay = note === undefined && remindAt === undefined;
+        if (prior.kind !== "saveMessage" || (prior.payloadHash !== hash && !metadataOmittedReplay)) {
           throw new Error("that saved request id was already used for a different save");
         }
         return this.savedMessage(userId, messageId);
