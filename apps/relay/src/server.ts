@@ -20,7 +20,7 @@ import {
   planHeadline, tidyPlan, validatePlanAsk,
   SavingProposal, applySaving, findWaste, rollUpTokenUse, savingDetail, savingHeadline,
   tidySaving, validateSavingProposal,
-  SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
+  SearchHit, SavedMessageEntry, ServerFrame, Task, UnreadEntry, User, WorldState,
   NotificationInboxEntry, NotificationInboxKind, notificationEventId,
   Workflow, WorkflowRun, WorkflowRunStep, WorkflowStepStatus,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
@@ -81,6 +81,9 @@ interface Conn {
   userId: ID;
   client: "desktop" | "mobile" | "engine";
 }
+
+/** Reminder dates are metadata only: no scheduler or notification exists in v1. */
+const SAVED_REMINDER_HORIZON_MS = 5 * 365 * 24 * 60 * 60 * 1000;
 
 type ArtifactFrame = Extract<ServerFrame, { type: "artifact" }>;
 interface ArtifactProjection {
@@ -644,6 +647,7 @@ export class Relay {
       // invited to click Approve on it.
       approvals: this.visibleApprovals(userId),
       notifications: this.notificationInboxFor(userId),
+      savedMessages: this.savedMessageProjection(userId),
       // read state comes from the RELAY now, not from one browser's storage, so
       // reading on the laptop is read on the phone too
       unread: this.unreadFor(userId, channels),
@@ -1012,6 +1016,29 @@ export class Relay {
       messageId: row.messageId,
       ...(row.rootId ? { rootId: row.rootId } : {}),
     };
+  }
+
+  /** Project saves against current membership and current message tombstones. */
+  private savedMessageProjection(userId: ID, opts: { limit?: number; beforeSavedAt?: number; beforeMessageId?: ID } = {}): SavedMessageEntry[] {
+    return this.store.savedMessagesPage(userId, opts.limit, opts.beforeSavedAt, opts.beforeMessageId).entries.map(row => {
+      const base: SavedMessageEntry = {
+        id: row.id, messageId: row.messageId, channelId: row.channelId,
+        savedAt: row.savedAt, state: "inaccessible",
+        ...(row.note ? { note: row.note } : {}),
+        ...(row.remindAt !== undefined ? { remindAt: row.remindAt } : {}),
+      };
+      let channel: Channel | undefined;
+      try { channel = this.channelFor(userId, row.channelId); } catch { return base; }
+      const message = this.store.message(row.messageId);
+      if (!message || message.channelId !== channel.id) return base;
+      if (message.deletedAt) {
+        return { ...base, state: "deleted" };
+      }
+      return {
+        ...base, state: "active", message: this.hydrate([message])[0],
+        ...(message.replyTo ? { threadParentId: message.replyTo } : {}),
+      };
+    });
   }
 
   private notificationInboxFor(
@@ -1582,6 +1609,24 @@ export class Relay {
    */
   private tellWorkflow(userId: ID, workflow: Workflow, requestId?: ID, origin?: Conn): void {
     const base: ServerFrame = { type: "workflow", workflow };
+
+    const correlated = Boolean(origin && requestId);
+    for (const conn of this.conns) {
+      if (conn.userId === userId && (!correlated || conn !== origin)) send(conn.ws, base);
+    }
+    if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
+  }
+
+  /** Saved queue updates are private to the account, but mirror to its windows. */
+  private tellSaved(userId: ID, requestId?: ID, origin?: Conn, opts: { limit?: number; beforeSavedAt?: number; beforeMessageId?: ID } = {}): void {
+    const page = this.store.savedMessagesPage(userId, opts.limit, opts.beforeSavedAt, opts.beforeMessageId);
+    const base: ServerFrame = {
+      type: "savedMessages", entries: this.savedMessageProjection(userId, opts),
+      revision: this.store.savedMessagesRevision(userId),
+      hasMore: page.hasMore,
+      ...(page.nextSavedAt !== undefined ? { nextSavedAt: page.nextSavedAt } : {}),
+      ...(page.nextMessageId !== undefined ? { nextMessageId: page.nextMessageId } : {}),
+    };
     const correlated = Boolean(origin && requestId);
     for (const conn of this.conns) {
       if (conn.userId === userId && (!correlated || conn !== origin)) send(conn.ws, base);
@@ -2143,6 +2188,10 @@ export class Relay {
         this.audit(conn, "member_added", ch.id, `added ${frame.memberIds.length} member(s) to ${ch.name}`);
         this.broadcastChannel(this.store.channel(ch.id)!);
         this.refreshNotificationRows(this.store.notificationsForChannel(ch.id));
+        for (const memberId of frame.memberIds) {
+          const agent = this.store.agents().find(a => a.id === memberId);
+          this.tellSaved(agent?.ownerId ?? memberId);
+        }
         break;
       }
       // ---- §7: a room is a thing that can be described, opened and retired ----
@@ -2217,6 +2266,7 @@ export class Relay {
         // member list; the newcomer then asks for scrollback the ordinary way
         this.broadcastChannel(this.store.channel(ch.id)!);
         this.refreshNotificationRows(this.store.notificationsForChannel(ch.id));
+        this.tellSaved(conn.userId);
         break;
       }
       case "leaveChannel": {
@@ -2228,6 +2278,7 @@ export class Relay {
         this.store.removeChannelMember(ch.id, conn.userId, conn.userId);
         this.audit(conn, "member_removed", ch.id, `left ${ch.name}`);
         this.tellLeft(conn.userId, ch.id);
+        this.tellSaved(conn.userId);
         this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.broadcastChannel(this.store.channel(ch.id)!);
         this.refreshNotificationRows(this.store.notificationsForChannel(ch.id));
@@ -2248,6 +2299,7 @@ export class Relay {
         // an agent's place in a room belongs to its owner's screen
         const agent = this.store.agents().find(a => a.id === frame.memberId);
         this.tellLeft(agent ? agent.ownerId : frame.memberId, ch.id);
+        this.tellSaved(agent ? agent.ownerId : frame.memberId);
         this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.broadcastChannel(this.store.channel(ch.id)!);
         this.refreshNotificationRows(this.store.notificationsForChannel(ch.id));
@@ -3773,6 +3825,46 @@ export class Relay {
         };
         // EVERY machine this person is signed in on, which is the whole point
         this.toUser(conn.userId, { type: "read", entry });
+        break;
+      }
+      case "listSaved": {
+        this.tellSaved(conn.userId, frame.requestId, conn, frame);
+        break;
+      }
+      case "saveMessage": {
+        const note = frame.note === undefined ? undefined : String(frame.note).trim();
+        if (note !== undefined && note.length > 2000) throw new Error("that note is too long (max 2000 characters)");
+        if (frame.requestId) {
+          const status = this.store.savedMutationStatus(conn.userId, frame.requestId, "saveMessage", frame.messageId, undefined, note, frame.remindAt);
+          if (status === "conflict") throw new Error("that saved request id was already used for a different save");
+          if (status === "replay") {
+            this.tellSaved(conn.userId, frame.requestId, conn);
+            break;
+          }
+        }
+        // Validate only a new mutation. A canonical replay must remain a
+        // replay even after time moves past its reminder horizon.
+        if (frame.remindAt !== undefined && (!Number.isSafeInteger(frame.remindAt) || frame.remindAt < 0
+          || frame.remindAt > Date.now() + SAVED_REMINDER_HORIZON_MS)) {
+          throw new Error("that reminder date is not valid or is more than five years away");
+        }
+        const message = this.messageFor(conn.userId, frame.messageId);
+        if (message.deletedAt) throw new Error("that message was deleted");
+        this.store.saveSavedMessage(conn.userId, message.id, message.channelId, note, frame.remindAt, frame.requestId);
+        this.tellSaved(conn.userId, frame.requestId, conn);
+        break;
+      }
+      case "unsaveMessage": {
+        if (frame.requestId) {
+          const status = this.store.savedMutationStatus(conn.userId, frame.requestId, "unsaveMessage", frame.messageId);
+          if (status === "conflict") throw new Error("that saved request id was already used for a different removal");
+          if (status === "replay") {
+            this.tellSaved(conn.userId, frame.requestId, conn);
+            break;
+          }
+        }
+        this.store.unsaveMessage(conn.userId, frame.messageId, frame.requestId);
+        this.tellSaved(conn.userId, frame.requestId, conn);
         break;
       }
       case "notifications": {

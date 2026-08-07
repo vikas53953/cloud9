@@ -1157,6 +1157,9 @@ const IconBell = (): React.JSX.Element => (
     <path d="M10 19a2.2 2.2 0 0 0 4 0" />
   </svg>
 );
+const IconSave = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5h12v15l-6-3.6-6 3.6Z" /></svg>
+);
 /* Three bars of different heights — "what things cost, compared". Deliberately
    NOT a coin or a dollar sign: this screen is about where the money went as
    much as how much it was, and half the agents on it may report no money at
@@ -1980,7 +1983,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "spending" | "activity" | "notifications" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "spending" | "activity" | "notifications" | "saved" | "settings";
 type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -2191,6 +2194,12 @@ function Workspace(): React.JSX.Element {
   const openNotifications = useCallback(() => {
     attemptLeave(() => {
       setScreen("notifications");
+    });
+  }, []);
+
+  const openSaved = useCallback(() => {
+    attemptLeave(() => {
+      setScreen("saved");
     });
   }, []);
 
@@ -2732,6 +2741,16 @@ function Workspace(): React.JSX.Element {
 
   return (
     <div className="shell">
+      {screen !== "saved" && world.savedNotice && (
+        <div role="status" aria-live="polite" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
+          {world.savedNotice.text}
+        </div>
+      )}
+      {screen !== "saved" && world.savedProblem && (
+        <div role="alert" aria-live="assertive" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
+          {world.savedProblem}
+        </div>
+      )}
       {/* Demo answers are made up. If the engine is handing them out, the app
           says so across the top — a canned reply must never pass for a real
           one just because nobody looked at the launcher. */}
@@ -2763,6 +2782,7 @@ function Workspace(): React.JSX.Element {
               the version of this feature that does not get used. */}
           {railBtn("activity", "Activity", <IconLog />, workingNow, openActivity)}
           {railBtn("notifications", "Notifications", <IconBell />, unreadNotifications, openNotifications)}
+          {railBtn("saved", "Saved for later", <IconSave />, world.savedNew ? 1 : undefined, openSaved)}
           <div className="rail-spacer" />
           <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
             <IconBolt />Ctrl K
@@ -2838,6 +2858,13 @@ function Workspace(): React.JSX.Element {
           {screen === "spending" && <SpendingScreen />}
           {screen === "activity" && <ActivityScreen />}
           {screen === "notifications" && <NotificationsScreen onOpen={openInboxEntry} />}
+          {screen === "saved" && <SavedScreen onOpen={entry => attemptLeave(() => {
+            if (entry.state !== "active" || !entry.message) return;
+            setActiveId(entry.channelId);
+            setScreen("chat");
+            setJumpTo({ id: entry.messageId, at: Date.now() });
+            if (entry.threadParentId) setOpenThreadFor({ id: entry.threadParentId, at: Date.now() });
+          })} />}
           {screen === "settings" && <SettingsScreen />}
         </main>
       </div>
@@ -3446,6 +3473,7 @@ function ChatScreen({
     presence: w.presence,
     tasks: w.tasks,
     me: w.me,
+    savedMessages: w.savedMessages,
   }));
   const isDm = active?.kind === "dm";
   /** the message whose thread is open on the right, if any */
@@ -4291,6 +4319,8 @@ function ChatView({
     presence: w.presence,
     tasks: w.tasks,
     approvals: w.approvals,
+    savedMessages: w.savedMessages,
+    savedPending: w.savedPending,
   }));
   const all = useMemo(() => world.messages ?? [], [world.messages]);
   const threading = !!onOpenThread;
@@ -4844,6 +4874,8 @@ function ChatView({
                  way rather than each keeping its own idea of it. */
               newSince={openedAt}
               threadSeen={openedThreads.has(r.m.id)}
+              saved={world.savedMessages.some(entry => entry.messageId === r.m.id)}
+              savedPending={world.savedPending.includes(r.m.id)}
               litUp={litUp === r.m.id} />
           </React.Fragment>
         ))}
@@ -5685,7 +5717,7 @@ function RoomFiles({ channel }: { channel: Channel }): React.JSX.Element {
 const MessageRow = React.memo(function MessageRow({
   m, cont, ask, me, agents, users, answered, doneRunId,
   agent, working, onOpenThread, onInlineReply, onGoToMessage,
-  inOpenThread, litUp, variant, archived, newSince, threadSeen,
+  inOpenThread, litUp, variant, archived, newSince, threadSeen, saved, savedPending,
 }: {
   /** the message itself, straight out of the store — never a copy */
   m: Message;
@@ -5717,6 +5749,8 @@ const MessageRow = React.memo(function MessageRow({
   /** walk to another message in this same conversation */
   onGoToMessage?: (messageId: ID) => void;
   inOpenThread?: boolean;
+  saved?: boolean;
+  savedPending?: boolean;
   litUp?: boolean;
   /** "thread" drops the affordances that would open a thread inside a thread */
   variant?: "channel" | "thread";
@@ -5939,6 +5973,11 @@ const MessageRow = React.memo(function MessageRow({
       <button className="ma" title={`Write back to ${m.authorName}`}
         onClick={() => composerInsert?.(`@${m.authorName} `)}>↩</button>
       <button className="ma" title="Copy this message" onClick={copy}>{copied ? "✓" : "⧉"}</button>
+      <button className="ma" title={savedPending ? "Updating saved message" : saved ? "Remove from saved" : "Save for later"}
+        aria-pressed={saved} aria-busy={savedPending} disabled={savedPending}
+        onClick={() => saved ? client.unsaveForLater(m.id) : client.saveForLater(m.id)}>
+        {saved ? "★" : "☆"}
+      </button>
       {mine && (
         <button className="ma edit" title="Change what this says"
           onClick={() => { setDraft(m.text); setEditing(true); }}>✎</button>
@@ -14598,6 +14637,144 @@ function NotificationsScreen({ onOpen }: {
               </article>
             ))}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function safeReminderDate(ms?: number): string {
+  if (ms === undefined || !Number.isSafeInteger(ms) || ms < 0 || ms > 8_640_000_000_000_000) return "";
+  try {
+    const date = new Date(ms);
+    const pad = (value: number): string => String(value).padStart(2, "0");
+    return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+  } catch { return ""; }
+}
+
+function reminderDateMs(value: string): number | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const [year, month, day] = value.split("-").map(Number);
+  const ms = Date.UTC(year, month - 1, day);
+  const date = new Date(ms);
+  if (!Number.isSafeInteger(ms) || date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return undefined;
+  return ms;
+}
+
+function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").SavedMessageEntry) => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [filter, setFilter] = useState<"all" | "active" | "unavailable">("all");
+  const [editing, setEditing] = useState<Record<string, { note: string; remindAt: string }>>({});
+  const consumedSavedSuccess = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (world.connected && !world.savedAsked) client.askSaved();
+  }, [world.connected, world.savedAsked]);
+  useEffect(() => { listRef.current?.focus(); }, []);
+  useEffect(() => {
+    const notice = world.savedNotice;
+    if (!notice?.requestId || !notice.messageId) return;
+    const token = `${notice.requestId}:${notice.messageId}`;
+    if (consumedSavedSuccess.current === token) return;
+    consumedSavedSuccess.current = token;
+    const savedId = `${world.me?.id ?? ""}:${notice.messageId}`;
+    // Consume one exact correlated success token. Refusal/lost leaves the
+    // draft in place, and later mirrored list pushes cannot consume it again.
+    setEditing(previous => {
+      if (!(savedId in previous)) return previous;
+      const next = { ...previous };
+      delete next[savedId];
+      return next;
+    });
+  }, [world.savedNotice?.requestId, world.savedNotice?.messageId, world.me?.id]);
+
+  const entries = world.savedMessages.filter(entry =>
+    filter === "all" || (filter === "active" ? entry.state === "active" : entry.state !== "active"));
+  const detailsDirty = Object.entries(editing).some(([id, draft]) => {
+    const entry = world.savedMessages.find(item => item.id === id);
+    if (!entry) return false;
+    return draft.note !== (entry.note ?? "") || draft.remindAt !== safeReminderDate(entry.remindAt);
+  });
+  useUnsavedWork("Saved message details", detailsDirty);
+  const loading = !world.savedAsked || world.savedLoading;
+  return (
+    <div className="notifications saved-screen" data-testid="saved-screen">
+      <header className="topbar">
+        <h2>Saved for later</h2>
+        <span className="sub">Private notes you kept from rooms and threads</span>
+        <div className="grow" />
+        <div className="filters" aria-label="Saved message filter">
+          {(["all", "active", "unavailable"] as const).map(value => (
+            <button key={value} className="chip" aria-pressed={filter === value}
+              onClick={() => setFilter(value)}>{value === "all" ? "All" : value === "active" ? "Available" : "Unavailable"}</button>
+          ))}
+        </div>
+      </header>
+      {(world.savedNotice || world.savedProblem) && (
+        <p className="workflow-announcement" role="status" aria-live="polite">
+          {world.savedProblem ?? world.savedNotice?.text}
+          {world.savedProblem && <button className="linkbtn" onClick={() => client.askSaved()}>Try again</button>}
+        </p>
+      )}
+      <div className="notifications-body" ref={listRef} tabIndex={-1}
+        aria-live="polite" aria-label="Saved messages">
+        {!world.connected && <Problem tone="notice" text="Cloud9 is reconnecting. Saved messages will return when the relay answers." />}
+        {loading && world.connected && <div className="notification-loading" role="status">Loading saved messagesâ€¦</div>}
+        {!loading && !world.savedProblem && world.connected && entries.length === 0 && (
+          <EmptyTray title={filter === "all" ? "Nothing saved yet" : "No saved messages here"}
+            line="Save a message from any room when you want to come back to it." />
+        )}
+        {!loading && entries.length > 0 && (
+          <div className="notification-list">
+            {entries.map(entry => {
+              const available = entry.state === "active" && !!entry.message;
+              const pending = world.savedPending.includes(entry.messageId);
+              const source = entry.state === "deleted" ? "Source deleted" : entry.state === "inaccessible" ? "Source unavailable" : "Open source";
+              const draft = editing[entry.id] ?? { note: entry.note ?? "", remindAt: safeReminderDate(entry.remindAt) };
+              return <article key={entry.id} className={`notification-row source-${entry.state}`}>
+                <button className="notification-main" type="button" disabled={!available}
+                  aria-label={available ? `Open saved message from ${entry.message!.authorName}` : `Saved message: ${source}`}
+                  onClick={() => onOpen(entry)}>
+                  <span className="notification-copy">
+                    <strong>{available ? entry.message!.authorName : source}</strong>
+                    <span>{available ? (entry.message!.text || "(no message)") : "The original message is no longer available."}</span>
+                    <small>{clock(entry.savedAt)} Â· {source}{entry.note ? ` Â· Note: ${entry.note}` : ""}</small>
+                  </span>
+                </button>
+                <div className="notification-actions">
+                  {available && <details className="saved-details">
+                    <summary className="linkish">Add note or date</summary>
+                    <form onSubmit={event => {
+                      event.preventDefault();
+                      const remindAt = reminderDateMs(draft.remindAt);
+                      client.saveForLater(entry.messageId, draft.note, remindAt);
+                    }}>
+                      <label>Note<input value={draft.note} maxLength={2000}
+                        onChange={event => setEditing(previous => ({ ...previous, [entry.id]: { ...draft, note: event.target.value } }))} /></label>
+                      <label>Reminder date (no notification)<input type="date" value={draft.remindAt}
+                        onChange={event => setEditing(previous => ({ ...previous, [entry.id]: { ...draft, remindAt: event.target.value } }))} /></label>
+                      <button type="submit" className="linkish" disabled={pending}
+                        aria-busy={pending}>{pending ? "Saving details…" : "Save details"}</button>
+                      <button type="button" className="linkish" onClick={() => setEditing(previous => {
+                        const next = { ...previous };
+                        delete next[entry.id];
+                        return next;
+                      })}>Cancel</button>
+                    </form>
+                  </details>}
+                  <button type="button" className="linkish" disabled={pending} aria-busy={pending}
+                    onClick={() => client.unsaveForLater(entry.messageId)}>{pending ? "Removing…" : "Remove"}</button>
+                </div>
+              </article>;
+            })}
+          </div>
+        )}
+        {!loading && world.savedHasMore && world.savedNextSavedAt !== undefined && world.savedNextMessageId && (
+          <button type="button" className="btn small ghost" onClick={() => client.askSaved(world.savedNextSavedAt, world.savedNextMessageId)}>
+            Load more saved messages
+          </button>
         )}
       </div>
     </div>

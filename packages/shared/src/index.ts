@@ -2950,6 +2950,22 @@ export interface Message {
   reactions?: MessageReaction[];
 }
 
+/** A person's durable save of one message. The source is re-authorised on each read. */
+export interface SavedMessageEntry {
+  id: ID;
+  messageId: ID;
+  channelId: ID;
+  savedAt: number;
+  note?: string;
+  /** Optional reminder date only; v1 never schedules or notifies. */
+  remindAt?: number;
+  state: "active" | "deleted" | "inaccessible";
+  /** Present only while the owner can still read the source message. */
+  message?: Message;
+  /** Source thread root, when the saved message is a reply. */
+  threadParentId?: ID;
+}
+
 /** One search result, with enough around it to draw a row without asking again. */
 export interface SearchHit {
   message: Message;
@@ -3095,6 +3111,12 @@ type ClientFrameBase =
   | { type: "deleteMessage"; messageId: ID }
   /** The whole of one thread: the message that started it and every reply. */
   | { type: "thread"; messageId: ID; limit?: number }
+  /** Ask for this person's durable saved-message queue. */
+  | { type: "listSaved"; limit?: number; beforeSavedAt?: number; beforeMessageId?: ID }
+  /** Save one readable message; repeating the request is idempotent. */
+  | { type: "saveMessage"; messageId: ID; note?: string; remindAt?: number }
+  /** Remove one of this person's saves; repeating the request is idempotent. */
+  | { type: "unsaveMessage"; messageId: ID }
   /** Park a file on the hub. Answered with an `attachment` frame carrying its id. */
   | { type: "uploadAttachment"; channelId: ID; name: string; dataBase64: string; mime?: string }
   /**
@@ -3624,6 +3646,8 @@ export interface WorldState {
   /** Saved manual runbooks and their runs; only the owner receives these. */
   workflows?: Workflow[];
   workflowRuns?: WorkflowRun[];
+  /** Saved queue seed; clients still request the canonical list after welcome. */
+  savedMessages?: SavedMessageEntry[];
   /**
    * Where this person has read up to, per conversation — from the RELAY, so it
    * follows them between machines (absent on a relay older than this round).
@@ -3809,6 +3833,8 @@ export type ServerFrame =
   | { type: "notificationInbox"; entries: NotificationInboxEntry[]; requestId?: ID }
   /** One inbox row changed state, echoed to that person's machines. */
   | { type: "notificationUpdated"; entry: NotificationInboxEntry }
+  /** Durable saved-message answer/push, scoped to the authenticated person. */
+  | { type: "savedMessages"; entries: SavedMessageEntry[]; revision?: number; hasMore?: boolean; nextSavedAt?: number; nextMessageId?: ID; requestId?: ID }
   | { type: "userJoined"; user: User }
   | { type: "userRemoved"; userId: ID }
   | { type: "token"; token: string } // durable token issued after invite redemption
