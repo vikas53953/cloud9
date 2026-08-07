@@ -84,6 +84,55 @@ test("read and dismiss are recipient-scoped, monotonic, and reconnect-safe", () 
   assert.equal(store.notificationsFor("u_owner", { includeDismissed: true })[0].state, "dismissed");
 });
 
+test("read and dismiss survive a real relay reconnect", async () => {
+  const { relay, url, owner, general } = await stand("notifications-reconnect.db");
+  const { guest, me } = await inviteGuest(owner, url);
+  let reconnect: TestClient | undefined;
+  try {
+    const token = guest.frames.find(
+      (frame): frame is Extract<import("@cloud9/shared").ServerFrame, { type: "token" }> => frame.type === "token",
+    )?.token;
+    assert.ok(token, "invite redemption must return a durable token");
+
+    const posted = await say(owner, general.id, `@${me.name} survives reconnect`);
+    const notice = await guest.wait<Extract<import("@cloud9/shared").ServerFrame, { type: "notificationUpdated" }>>(
+      frame => frame.type === "notificationUpdated" && frame.entry.messageId === posted.message.id,
+    );
+    guest.send({ type: "markNotificationRead", notificationId: notice.entry.id });
+    await guest.wait<Extract<import("@cloud9/shared").ServerFrame, { type: "notificationUpdated" }>>(
+      frame => frame.type === "notificationUpdated" && frame.entry.id === notice.entry.id && frame.entry.state === "read",
+    );
+    guest.close();
+
+    reconnect = new TestClient(url, token);
+    const welcome = await reconnect.wait<Extract<import("@cloud9/shared").ServerFrame, { type: "welcome" }>>(
+      frame => frame.type === "welcome",
+    );
+    assert.equal(
+      (welcome.state.notifications ?? []).find(entry => entry.id === notice.entry.id)?.state,
+      "read",
+      "read state must survive reconnect",
+    );
+
+    reconnect.send({ type: "dismissNotification", notificationId: notice.entry.id });
+    await reconnect.wait<Extract<import("@cloud9/shared").ServerFrame, { type: "notificationUpdated" }>>(
+      frame => frame.type === "notificationUpdated" && frame.entry.id === notice.entry.id && frame.entry.state === "dismissed",
+    );
+    reconnect.close();
+    reconnect = new TestClient(url, token);
+    const dismissedWelcome = await reconnect.wait<Extract<import("@cloud9/shared").ServerFrame, { type: "welcome" }>>(
+      frame => frame.type === "welcome",
+    );
+    assert.equal(
+      (dismissedWelcome.state.notifications ?? []).some(entry => entry.id === notice.entry.id),
+      false,
+      "dismissed rows stay out of the default reconnect inbox",
+    );
+  } finally {
+    guest.close(); reconnect?.close(); owner.close(); relay.close();
+  }
+});
+
 test("recipient and source indexes do not leak rows across inboxes", () => {
   const { store } = setup();
   store.saveNotification(row({ id: "n-owner", recipientId: "u_owner" }));
@@ -108,6 +157,15 @@ test("retention removes old read rows first, caps history, and preserves unread"
   }
   const rows = store.notificationsFor("u_owner", { includeDismissed: true, limit: NOTIFICATION_INBOX_LIMITS.maxEntries });
   assert.ok(rows.length <= NOTIFICATION_INBOX_LIMITS.maxEntries);
+  const retainedRead = store.db.prepare(
+    "SELECT COUNT(*) n FROM notification_inbox WHERE recipientId=? AND state<>'unread'",
+  ).get("u_owner") as { n: number };
+  assert.ok(retainedRead.n <= NOTIFICATION_INBOX_LIMITS.maxEntries,
+    "the per-recipient cap applies to retained read/dismissed history");
+  assert.equal(store.db.prepare(
+    "SELECT id FROM notification_inbox WHERE recipientId=? AND id=?",
+  ).get("u_owner", "history-0"), undefined,
+  "oldest retained history is pruned first");
   const preserved = store.db.prepare(
     "SELECT id FROM notification_inbox WHERE recipientId=? AND id=?",
   ).get("u_owner", "old-unread") as { id?: string } | undefined;
