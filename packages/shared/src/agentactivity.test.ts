@@ -10,7 +10,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   ACTIVITY_ORDER, activityRank, agentActivityLine, agoWords, crewActivitySummary,
-  workingCount, type AgentActivityFacts,
+  workingCount, type AgentActivityFacts, type AgentActivityState,
 } from "./agentactivity.js";
 import { RECEIPT_EMOJI, WORK_REACTIONS } from "./index.js";
 
@@ -213,6 +213,46 @@ test("a crew that cannot work at all does not get told it is ready", () => {
   );
 });
 
+test("ONE agent that needs him is not papered over by a cheerful top line", () => {
+  /* Found in the second review. The all-or-nothing branch above only fired when
+     EVERY agent was stuck, so one signed-out agent beside two happy ones got
+     "Nothing is being worked on. Your 3 agents are ready when you are." — a
+     sentence contradicting a red row three inches below it, and read first. */
+  const summary = crewActivitySummary([
+    agentActivityLine({ presence: "offline", presenceReason: "Claude isn't signed in" }),
+    agentActivityLine({ presence: "ready", last: lastDone() }),
+    agentActivityLine({ presence: "ready", last: lastDone() }),
+  ]);
+  assert.doesNotMatch(summary, /ready when you are/);
+  assert.match(summary, /needs a look/);
+});
+
+test("a state this build cannot read is named in the top line too, not just the row", () => {
+  /* "Not sure — this copy needs updating" is a job for him in exactly the way
+     "Claude isn't signed in" is, so it is counted the same way. */
+  const summary = crewActivitySummary([
+    agentActivityLine({ status: "hibernating" as never }),
+    agentActivityLine({ presence: "ready", last: lastDone() }),
+  ]);
+  assert.doesNotMatch(summary, /ready when you are/);
+  assert.match(summary, /needs a look/);
+  /* And a crew where every single row is unreadable says so outright. */
+  assert.match(
+    crewActivitySummary([agentActivityLine({ status: "hibernating" as never })]),
+    /can't work at the moment/,
+  );
+});
+
+test("a quiet, healthy crew still gets the calm sentence — the guard is not a blanket", () => {
+  assert.match(
+    crewActivitySummary([
+      agentActivityLine({ presence: "ready", last: lastDone() }),
+      agentActivityLine({ presence: "ready" }),
+    ]),
+    /ready when you are/,
+  );
+});
+
 test("one agent is spoken about in the singular", () => {
   assert.equal(
     crewActivitySummary([agentActivityLine({ status: "working" })]),
@@ -331,6 +371,62 @@ test("no unrecognised state anywhere can reach a finished tick", () => {
   }
 });
 
+test("EVERY WORD THAT ARRIVES OVER THE WIRE IS GUARDED, NOT JUST THE LAMP", () => {
+  /* THE GATE WAS ONLY A THIRD OF A GATE.
+
+     The first version guarded `status` alone, and the second review ran the
+     shipped build to prove it: `outcome: "timeout"`, `presence: "starting"` and
+     `lifecycle: "archived"` all still came out as ✅ Finished. `outcome` is the
+     worst of the three — it is the field that decides 🛑 from ✅ in the first
+     place, it arrives over the wire, and it had no guard at all.
+
+     So each field gets the same two-sided treatment, and this test walks all
+     four together. Adding a fifth field that can reach an ending and not adding
+     it here is the mistake this test exists to make loud. */
+  const cases: { what: string; facts: Parameters<typeof agentActivityLine>[0] }[] = [
+    // how the last job ended — a newer hub's fourth kind of ending
+    ...["timeout", "killed", "stopped", "", "expired", "OK"].map(o => ({
+      what: `outcome "${o}"`,
+      facts: { presence: "ready" as const, last: lastDone({ outcome: o as never }) },
+    })),
+    // whether it can work at all
+    ...["starting", "unreachable", "Ready", "ready "].map(p => ({
+      what: `presence "${p}"`,
+      facts: { presence: p as never, last: lastDone() },
+    })),
+    // whether its owner has it switched on
+    ...["archived", "retired", "Enabled"].map(l => ({
+      what: `lifecycle "${l}"`,
+      facts: { presence: "ready" as const, lifecycle: l as never, last: lastDone() },
+    })),
+    // and the lamp, which was the only one guarded before
+    ...["hibernating", "starting", "Idle", "idle "].map(s => ({
+      what: `status "${s}"`,
+      facts: { status: s as never, presence: "ready" as const, last: lastDone() },
+    })),
+  ];
+  for (const { what, facts } of cases) {
+    const line = agentActivityLine(facts);
+    assert.equal(line.state, "unknown", `${what} did not land on "Not sure"`);
+    assert.notEqual(line.headline, "Finished", `${what} claimed the job finished`);
+    assert.notEqual(line.mark, WORK_REACTIONS.done, `${what} wore the finished tick`);
+    assert.match(line.detail, /doesn't recognise/, `${what} said nothing about not knowing`);
+  }
+});
+
+test("the row NAMES which of the four it does not understand", () => {
+  /* "Not sure" with no noun sends him hunting. Each guard finishes the sentence
+     in his words, so the row tells him WHICH fact is the one nobody can read. */
+  assert.match(agentActivityLine({ status: "hibernating" as never }).detail,
+    /what it's doing/);
+  assert.match(agentActivityLine({ presence: "starting" as never }).detail,
+    /whether it can work/);
+  assert.match(agentActivityLine({ lifecycle: "archived" as never }).detail,
+    /whether it's switched on/);
+  assert.match(agentActivityLine({ presence: "ready", last: lastDone({ outcome: "timeout" as never }) }).detail,
+    /how its last job ended/);
+});
+
 test("the three states this build DOES know still behave", () => {
   assert.equal(agentActivityLine({ status: "idle", presence: "ready", last: lastDone() }).state, "done");
   assert.equal(agentActivityLine({ status: "working" }).state, "working");
@@ -377,21 +473,71 @@ test("waiting-for-you wears ❓, the tick that already means the next move is hi
   assert.notEqual(line.mark, WORK_REACTIONS.picked);
 });
 
+/**
+ * ONE SET OF FACTS THAT REALLY PRODUCES EACH STATE — driven off `ACTIVITY_ORDER`
+ * so it cannot go stale.
+ *
+ * WHY THIS IS A MAP AND NOT A LIST OF EXAMPLES. The first version of the
+ * tick-uniqueness test walked six hand-written cases out of eleven states, so
+ * the five it did not think of — including every state the review itself added —
+ * were never checked at all, and a clash in one of them would have passed. That
+ * is the same disease as a hand-written fixture: the test agrees with whatever
+ * the author had in mind, and the author's mind is where the gap was.
+ *
+ * Keyed by state and asserted complete below, so ADDING A STATE AND NOT ADDING
+ * AN EXAMPLE FAILS. There is nowhere left to forget.
+ */
+const FACTS_FOR: Record<AgentActivityState, Parameters<typeof agentActivityLine>[0]> = {
+  waiting: { awaitingOwner: true },
+  working: { status: "working" },
+  queued: { queuedWork: "a job" },
+  off: { presence: "offline", presenceReason: "Claude isn't signed in" },
+  unknown: { status: "hibernating" as never },
+  failed: { presence: "ready", last: lastDone({ outcome: "failed" }) },
+  stopped: { presence: "ready", last: lastDone({ outcome: "cancelled" }) },
+  braked: { status: "braked", presence: "ready" },
+  done: { presence: "ready", last: lastDone() },
+  ready: { presence: "ready" },
+  paused: { lifecycle: "paused" },
+};
+
+test("every state on the board has an example here, and it really produces that state", () => {
+  for (const state of ACTIVITY_ORDER) {
+    const facts = FACTS_FOR[state];
+    assert.ok(facts, `${state} has no example — add one to FACTS_FOR`);
+    assert.equal(agentActivityLine(facts).state, state,
+      `the example for "${state}" does not actually produce it`);
+  }
+  assert.equal(Object.keys(FACTS_FOR).length, ACTIVITY_ORDER.length,
+    "FACTS_FOR and ACTIVITY_ORDER have drifted apart");
+});
+
 test("no two states on one board share a tick", () => {
   const byMark = new Map<string, string[]>();
-  for (const facts of [
-    { awaitingOwner: true },
-    { status: "working" as const },
-    { queuedWork: "a job" },
-    { presence: "ready" as const, last: lastDone() },
-    { presence: "ready" as const, last: lastDone({ outcome: "failed" as const }) },
-    { presence: "ready" as const, last: lastDone({ outcome: "cancelled" as const }) },
-  ]) {
-    const line = agentActivityLine(facts);
+  /* EVERY state, walked off the board's own order — not a list somebody typed.
+     States that deliberately have no tick are skipped: the row draws nothing at
+     all for those, so they cannot collide with anything. */
+  for (const state of ACTIVITY_ORDER) {
+    const line = agentActivityLine(FACTS_FOR[state]);
+    if (line.mark === "—") continue;
     byMark.set(line.mark, [...(byMark.get(line.mark) ?? []), line.state]);
   }
   for (const [mark, states] of byMark) {
     assert.equal(states.length, 1, `${mark} is used by ${states.join(" and ")}`);
+  }
+});
+
+test("every state says something, and says it without jargon", () => {
+  /* Rolled onto the same complete list for the same reason: the emptiness and
+     plain-words checks were also walking hand-picked examples. */
+  for (const state of ACTIVITY_ORDER) {
+    const line = agentActivityLine(FACTS_FOR[state]);
+    assert.ok(line.headline.trim().length > 0, `${state} has no headline`);
+    assert.ok(line.detail.trim().length > 0, `${state} has no sentence under it`);
+    for (const word of [/\bturn\b/i, /\binvocation\b/i, /\bAPI\b/, /\bnull\b/, /undefined/]) {
+      assert.doesNotMatch(`${line.headline} ${line.detail}`, word,
+        `${state} says a developer word`);
+    }
   }
 });
 
@@ -495,13 +641,15 @@ test("the order is: act on it, then watch it, then everything quiet", () => {
 });
 
 test("every state — including the ones added by review — has exactly one place", () => {
-  const states = [
-    "working", "waiting", "queued", "braked", "stopped", "failed", "done", "paused",
-    "off", "ready", "unknown",
-  ] as const;
+  /* TAKEN FROM THE TYPE, NOT TYPED OUT AGAIN. `FACTS_FOR` is keyed by
+     `AgentActivityState`, so the compiler refuses to build it with a state
+     missing — which makes this the one list that cannot go stale. Writing the
+     eleven words out here a second time is what let the tick test check six of
+     them for a fortnight. */
+  const states = Object.keys(FACTS_FOR) as AgentActivityState[];
   for (const s of states) assert.ok(ACTIVITY_ORDER.includes(s), `${s} is not ordered`);
-  assert.equal(new Set(ACTIVITY_ORDER).size, states.length);
-  assert.equal(ACTIVITY_ORDER.length, states.length);
+  assert.equal(new Set(ACTIVITY_ORDER).size, states.length, "a state is ordered twice");
+  assert.equal(ACTIVITY_ORDER.length, states.length, "a state has no place in the order");
 });
 
 test("the new states are not silent either", () => {

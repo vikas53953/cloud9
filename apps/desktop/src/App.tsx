@@ -13792,10 +13792,15 @@ function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine }[] {
     const presence = world.presence[agent.id];
     const work = liveWork[agent.id];
     const asking = liveApprovals.find(ap => ap.agentId === agent.id);
-    /* A JOB IT IS HOLDING BUT HAS NOT STARTED. The engine queues turns and runs
-       two at once, and its working lamp only lights when a turn really begins —
-       so an agent sitting on his job was drawn as idle, still wearing the tick
-       from the job before. `not_started` is the hub's own word for that gap. */
+    /* A HANDED-OVER JOB IT IS HOLDING BUT HAS NOT STARTED. `not_started` is the
+       hub's own word for a job in the tray that has not begun, and without this
+       an agent sitting on one was drawn as idle, still wearing the tick from the
+       job before it.
+       THIS IS THE JOB QUEUE, NOT THE ENGINE'S TURN QUEUE. An ordinary
+       `@Agent do X` in a room makes no job, so a chat turn waiting behind the
+       engine's two-at-a-time limit is not covered by this and its row still
+       shows the last thing that agent finished. Open item on the board; it needs
+       the engine to report its queue, which nothing on the wire does today. */
     const queued = world.tasks.find(t => t.agentId === agent.id && t.status === "not_started");
     const last = client.runsFor("agent", agent.id).entries[0];
     const line = agentActivityLine({

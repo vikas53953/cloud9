@@ -1,0 +1,34 @@
+WHAT THE BOARD SAID AFTER HE STOPPED A JOB — before the fix, and after.
+
+Not a picture. The stale row could not be photographed: the harness only
+takes a picture once it has an ENDING to photograph, and the whole fault was
+that no ending ever arrived. So this is what the harness read off the board
+itself, straight out of its own run log. The picture that used to sit here
+claiming to be the "before" was the chat screen with !stop in it — no board
+on it at all — and the second review was right to throw it out.
+
+Both runs: the SAME script, the SAME 45-second wait before the stop, the same
+packaged Cloud9 out of this worktree. The only difference is the fix.
+
+==============================================================================
+BEFORE — build without the fix (07:48). Five minutes after the stop, the row
+still says the agent has never been asked to do anything.
+==============================================================================
+  asked Ledger: "!stop" (from quick chat, standing on the board)
+  (Ledger's row never settled on an ending — last state "ready")
+    row said: Ledger Signed in to Claude. It hasn't been asked to do anything yet. Ready
+    board: [ready] {"state":"ready","name":"Scout","headline":"Ready","detail":"Signed in to Claude. It hasn't been asked to do anything yet."}
+    board: [ready] {"state":"ready","name":"Ledger","headline":"Ready","detail":"Signed in to Claude. It hasn't been asked to do anything yet."}
+  (Ledger's row never reached an ending — asking the room what the stop did)
+
+==============================================================================
+AFTER — build with the fix (07:57). The row settles at once, and reads
+"Just now", which is also the clock fix showing its work.
+==============================================================================
+  asked Ledger: "!stop" (from quick chat, standing on the board)
+  AFTER THE STOP, Ledger reads [stopped]: Ledger Just now, you asked it: count slowly from 1 to 500, writing out every single number in words. Stopped before it got started — took 58 seconds. 🛑 You stopped it
+  shot  C:\Users\vikasmit\cloud9-activity\docs\qa\activity-5-you-stopped-it.png
+  captured 1 real run record(s) → C:\Users\vikasmit\cloud9-activity\packages\shared\src\runs.fixture.json
+
+  Activity board is on screen, with words in every row.
+  photographed — working: false  finished: false  waiting-for-you: false  you-stopped-it: true
