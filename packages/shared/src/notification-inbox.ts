@@ -42,4 +42,3 @@ export interface NotificationInboxEntry {
   messageId?: string;
   rootId?: string;
 }
-
