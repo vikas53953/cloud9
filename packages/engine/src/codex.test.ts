@@ -10,7 +10,10 @@ import {
   CODEX_ISOLATION_PROFILE, CodexProvider, codexAbilityBoundaryProblems, codexArgs,
   createCodexIsolatedEnvironment, parseCodexJsonl,
 } from "./codex.js";
-import { HarnessAbilityBoundaryError, HarnessUnavailableError, sanitizeForChat } from "./provider.js";
+import {
+  HarnessAbilityBoundaryError, HarnessUnavailableError, TurnOutputTooBigError,
+  sanitizeForChat,
+} from "./provider.js";
 import { codexUnavoidableCapabilities, effectiveAbilities } from "./abilities.js";
 import { RunOptions, RunResult, UnsafeArgumentError, run } from "./run.js";
 
@@ -290,6 +293,40 @@ test("provider sends the prompt on stdin and returns the reply", async () => {
   }
 });
 
+test("a truncated Codex stream with only an intermediate agent message fails loudly", async () => {
+  const intermediate = JSON.stringify({
+    type: "item.completed", item: { type: "agent_message", text: "STALE-EARLY" },
+  });
+  const overflow = "x".repeat(17 * 1024 * 1024);
+  const provider = new CodexProvider({
+    agentDataDir: () => "C:/data/a1",
+    runner: fakeRunner({ stdout: `${intermediate}\n${overflow}`, truncated: true }),
+  });
+  await assert.rejects(
+    () => provider.respond({ agent: agent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat" }),
+    (err: unknown) => err instanceof TurnOutputTooBigError,
+  );
+});
+
+test("a truncated Codex stream succeeds when a terminal turn envelope survives", async () => {
+  const intermediate = JSON.stringify({
+    type: "item.completed", item: { type: "agent_message", text: "STALE-EARLY" },
+  });
+  const final = JSON.stringify({
+    type: "item.completed", item: { type: "agent_message", text: "FINAL-ANSWER" },
+  });
+  const done = JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } });
+  const overflow = "x".repeat(17 * 1024 * 1024);
+  const provider = new CodexProvider({
+    agentDataDir: () => "C:/data/a1",
+    runner: fakeRunner({ stdout: `${intermediate}\n${overflow}\n${final}\n${done}`, truncated: true }),
+  });
+  const text = await provider.respond({
+    agent: agent(), context: "", trigger: "hi", triggerAuthor: "V", kind: "chat",
+  });
+  assert.equal(text, "FINAL-ANSWER");
+});
+
 test("a missing codex CLI is a harness problem, not a crash", async () => {
   const provider = new CodexProvider({
     agentDataDir: () => "C:/data/a1",
@@ -311,4 +348,3 @@ test("a signed-out codex is a harness problem", async () => {
     (err: unknown) => err instanceof HarnessUnavailableError,
   );
 });
-

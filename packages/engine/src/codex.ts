@@ -274,6 +274,10 @@ export function codexMapper(): EventMapper {
       return;
     }
     if (type === "turn.completed") {
+      // An agent_message is only an intermediate item.  The turn envelope is
+      // the provider's terminal/final claim; without it a capped stream may
+      // leave us with stale text from an earlier item and no honest answer.
+      t.setTerminal();
       const u = ev.usage as Record<string, unknown> | undefined;
       if (u) {
         t.set({
@@ -317,7 +321,7 @@ export function codexMapper(): EventMapper {
       if (!finished) return;
       const said = itemText(item);
       if (!said) return;
-      t.setText(said);
+      t.setText(said, false);
       t.add({ kind: "message", label: "Said something", detail: said });
       return;
     }
@@ -833,7 +837,7 @@ export class CodexProvider implements ClaudeProvider {
     // fragment of somebody's tool output, not a reply. Returning it would be
     // the exact shape of lie this whole branch exists to remove: a turn the
     // owner watched work all night, recorded `ok`, answered with rubbish.
-    if (result.truncated && !trace.text) {
+    if (result.truncated && !trace.terminal) {
       throw new TurnOutputTooBigError();
     }
     if (trace.error && !trace.text) throw new Error(trace.error);
