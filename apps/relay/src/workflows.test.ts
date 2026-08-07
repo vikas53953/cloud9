@@ -1,6 +1,6 @@
 import test, { TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { ServerFrame, Workflow, WorkflowRun } from "@cloud9/shared";
+import { ClientFrame, ServerFrame, Workflow, WorkflowRun } from "@cloud9/shared";
 import { Relay } from "./server.js";
 import { Store } from "./store.js";
 import { TestClient, tmp } from "./testclient.js";
@@ -432,6 +432,40 @@ test("owner-only workflow gates reject a friend and missing agents stay explicit
   const missing = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
   assert.match(missing.error, /workflow step agent is missing/);
   friend.close();
+});
+
+test("raw workflow update patches cannot rewrite identity or archive state", async t => {
+  const { owner, channelId, relay } = await stand(t, "workflow-raw-patch.db");
+  const agent = await makeAgent(owner, "Patch scout");
+  const workflow = await saveWorkflow(owner, channelId, [agent.id], "Patch-safe workflow");
+  const requestId = "raw-workflow-patch";
+  owner.send({
+    type: "updateWorkflow",
+    workflowId: workflow.id,
+    requestId,
+    patch: {
+      name: "Safe renamed workflow",
+      id: "wf-attacker",
+      ownerId: "u-attacker",
+      archivedAt: 123,
+      createdAt: 1,
+      updatedAt: 2,
+      version: 99,
+      evil: "unexpected",
+    },
+  } as unknown as ClientFrame);
+  const updated = await owner.wait<Extract<ServerFrame, { type: "workflow" }>>(
+    frame => frame.type === "workflow" && frame.requestId === requestId,
+  );
+  assert.equal(updated.workflow.id, workflow.id);
+  assert.equal(updated.workflow.ownerId, workflow.ownerId);
+  assert.equal(updated.workflow.name, "Safe renamed workflow");
+  assert.equal(updated.workflow.archivedAt, undefined);
+  assert.equal(updated.workflow.createdAt, workflow.createdAt);
+  assert.equal(updated.workflow.version, workflow.version + 1);
+  assert.equal((updated.workflow as Workflow & { evil?: string }).evil, undefined);
+  assert.deepEqual(relay.store.workflow(workflow.id), updated.workflow);
+  assert.equal(relay.store.workflow("wf-attacker"), undefined);
 });
 
 test("workflow tasks stay out of an unrelated friend's initial world and live feed", async t => {

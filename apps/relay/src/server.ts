@@ -1944,8 +1944,24 @@ export class Relay {
       case "updateWorkflow": {
         if (conn.userId !== this.ownerId) throw new Error("only the owner can edit workflows");
         const current = this.myWorkflow(conn.userId, frame.workflowId);
+        // The wire patch is hostile input. Only builder-owned fields may change;
+        // identity, archive state, version, and timestamps always come from the
+        // stored row and this relay.
+        const patch = frame.patch as Partial<Workflow>;
         const next: Workflow = {
-          ...current, ...frame.patch, version: current.version + 1,
+          ...current,
+          ...(typeof patch.name === "string" ? { name: patch.name } : {}),
+          ...(Object.prototype.hasOwnProperty.call(patch, "description")
+            ? { description: typeof patch.description === "string" ? patch.description : undefined }
+            : {}),
+          ...(typeof patch.channelId === "string" ? { channelId: patch.channelId } : {}),
+          ...(typeof patch.enabled === "boolean" ? { enabled: patch.enabled } : {}),
+          ...(Array.isArray(patch.steps) ? { steps: patch.steps } : {}),
+          id: current.id,
+          ownerId: current.ownerId,
+          archivedAt: current.archivedAt,
+          createdAt: current.createdAt,
+          version: current.version + 1,
           updatedAt: Date.now(),
         };
         const bad = validateWorkflow(next);
