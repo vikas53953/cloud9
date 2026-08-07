@@ -55,7 +55,10 @@ test("Saved/Later mutations remain honest offline and guard detail actions while
   assert.match(detail, /Removing…/);
   assert.match(detail, /useUnsavedWork\("Saved message details", detailsDirty\)/);
   assert.match(detail, /reminderDateMs/);
-  assert.match(detail, /Only a correlated success clears the draft/);
+  assert.match(detail, /Consume one exact correlated success token/);
+  assert.match(detail, /consumedSavedSuccess/);
+  assert.match(detail, /const token = `\$\{notice\.requestId\}:\$\{notice\.messageId\}`/);
+  assert.match(detail, /world\.savedNotice\?\.requestId, world\.savedNotice\?\.messageId, world\.me\?\.id/);
   assert.match(store, /requestId, messageId: frame\.messageId/);
   assert.match(store, /The relay did not answer/);
   assert.match(store, /const orphaned = this\.asked/);

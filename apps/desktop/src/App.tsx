@@ -14667,6 +14667,7 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
   const listRef = useRef<HTMLDivElement>(null);
   const [filter, setFilter] = useState<"all" | "active" | "unavailable">("all");
   const [editing, setEditing] = useState<Record<string, { note: string; remindAt: string }>>({});
+  const consumedSavedSuccess = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     if (world.connected && !world.savedAsked) client.askSaved();
@@ -14675,17 +14676,19 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
   useEffect(() => {
     const notice = world.savedNotice;
     if (!notice?.requestId || !notice.messageId) return;
-    const saved = world.savedMessages.find(entry => entry.messageId === notice.messageId);
-    if (!saved) return;
-    // Only a correlated success clears the draft. Refusal/lost leaves it in
-    // place so a reconnect or retry cannot discard typed note/date text.
+    const token = `${notice.requestId}:${notice.messageId}`;
+    if (consumedSavedSuccess.current === token) return;
+    consumedSavedSuccess.current = token;
+    const savedId = `${world.me?.id ?? ""}:${notice.messageId}`;
+    // Consume one exact correlated success token. Refusal/lost leaves the
+    // draft in place, and later mirrored list pushes cannot consume it again.
     setEditing(previous => {
-      if (!(saved.id in previous)) return previous;
+      if (!(savedId in previous)) return previous;
       const next = { ...previous };
-      delete next[saved.id];
+      delete next[savedId];
       return next;
     });
-  }, [world.savedNotice?.requestId, world.savedNotice?.messageId, world.savedMessages]);
+  }, [world.savedNotice?.requestId, world.savedNotice?.messageId, world.me?.id]);
 
   const entries = world.savedMessages.filter(entry =>
     filter === "all" || (filter === "active" ? entry.state === "active" : entry.state !== "active"));
