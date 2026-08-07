@@ -14654,7 +14654,9 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
   const [filter, setFilter] = useState<"all" | "active" | "unavailable">("all");
   const [editing, setEditing] = useState<Record<string, { note: string; remindAt: string }>>({});
 
-  useEffect(() => { client.askSaved(); }, []);
+  useEffect(() => {
+    if (world.connected && !world.savedAsked) client.askSaved();
+  }, [world.connected, world.savedAsked]);
   useEffect(() => { listRef.current?.focus(); }, []);
 
   const entries = world.savedMessages.filter(entry =>

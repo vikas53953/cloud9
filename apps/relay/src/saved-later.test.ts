@@ -78,6 +78,12 @@ test("saved mutation receipts are owner-scoped, bounded, and expire conservative
   }
   assert.ok((store.db.prepare("SELECT COUNT(*) AS n FROM saved_mutation_receipts WHERE userId=?")
     .get(owner.id) as { n: number }).n <= 512, "retry receipts stay bounded per account");
+  const page1 = store.savedMessagesPage(owner.id, 2);
+  assert.equal(page1.entries.length, 2);
+  assert.equal(page1.hasMore, true);
+  const page2 = store.savedMessagesPage(owner.id, 2, page1.nextSavedAt, page1.nextMessageId);
+  assert.equal(page2.entries.length, 2);
+  assert.ok(!page1.entries.some(a => page2.entries.some(b => b.id === a.id)), "saved pagination has no duplicate cursor row");
   store.removeUser(friend.id);
   assert.equal((store.db.prepare("SELECT COUNT(*) AS n FROM saved_mutation_receipts WHERE userId=?")
     .get(friend.id) as { n: number }).n, 0, "account removal purges retry receipts");

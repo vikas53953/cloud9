@@ -13,6 +13,7 @@ test("Saved/Later screen has honest loading, tombstone, retry, and guarded sourc
   assert.match(app, /Load more saved messages/);
   assert.match(app, /safeReminderDate/);
   assert.match(app, /aria-busy=\{savedPending\}/);
+  assert.match(app, /world\.connected && !world\.savedAsked/);
   assert.match(app, /Source unavailable/);
   assert.match(app, /Try again/);
   const start = app.indexOf("screen === \"saved\"");

@@ -1032,7 +1032,7 @@ export class Relay {
       const message = this.store.message(row.messageId);
       if (!message || message.channelId !== channel.id) return base;
       if (message.deletedAt) {
-        return { ...base, state: "deleted", message: this.hydrate([message])[0] };
+        return { ...base, state: "deleted" };
       }
       return {
         ...base, state: "active", message: this.hydrate([message])[0],

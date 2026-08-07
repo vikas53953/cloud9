@@ -1491,6 +1491,9 @@ export class RelayClient {
         if (f.type !== "savedMessages") return;
         this.world.savedMessages = [...f.entries];
         this.world.savedRevision = f.revision ?? this.world.savedRevision;
+        this.world.savedHasMore = f.hasMore ?? false;
+        this.world.savedNextSavedAt = f.nextSavedAt;
+        this.world.savedNextMessageId = f.nextMessageId;
         this.world.savedProblem = undefined;
         this.world.savedNotice = { text: frame.type === "saveMessage" ? "Saved for later" : "Removed from saved", ts: Date.now() };
         this.emit();
@@ -3331,7 +3334,7 @@ export class RelayClient {
         this.replaceMessage(frame.message);
         if (frame.message.deletedAt) {
           w.savedMessages = w.savedMessages.map(entry => entry.messageId === frame.message.id
-            ? { ...entry, state: "deleted", message: frame.message }
+            ? { ...entry, state: "deleted", message: undefined }
             : entry);
         } else {
           w.savedMessages = w.savedMessages.map(entry => entry.messageId === frame.message.id
