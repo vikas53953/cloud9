@@ -68,14 +68,35 @@ test("a real Claude transcript becomes the steps the agent took", () => {
   assert.equal(t.error, undefined);
 });
 
-test("Claude's own token and money figures are carried through untouched", () => {
+test("Claude's figures are carried through, and 'handed over' is DERIVED from all three", () => {
+  // THE NAME OF THIS TEST USED TO SAY "carried through untouched", and that
+  // stopped being true the day the mapper started deriving a field. A test
+  // whose name contradicts what it checks is how the next person inherits the
+  // wrong idea — so it says what it does now, and it checks the derivation
+  // rather than only the copying.
+  //
+  // THIS IS THE SEAM WHERE THE BUG WOULD COME BACK. Claude reports material in
+  // THREE separate piles and `input_tokens` is the smallest of them by orders
+  // of magnitude. Reading that field as "the prompt" is what drew his dearest
+  // agent as "0% handed to it" while 1,120,105 tokens really went up the wire.
   const usage: RunUsage | undefined = traceClaude(CLAUDE_STREAM).usage;
   // Claude does not report reasoning tokens in this envelope. Absent, not zero.
   assert.equal(usage?.reasoningTokens, undefined);
   assert.deepEqual(usage, {
-    inputTokens: 4, outputTokens: 289, cachedInputTokens: 35267,
+    inputTokens: 4, outputTokens: 289, cachedInputTokens: 35267, cacheWriteTokens: 35418,
+    handedToIt: 70689,
     costUsd: 0.7581169999999999,
   });
+
+  // …and the same claim as a RELATIONSHIP, so that changing the captured
+  // transcript above cannot quietly make the numbers agree with each other for
+  // the wrong reason.
+  assert.equal(usage!.handedToIt,
+    usage!.inputTokens! + usage!.cachedInputTokens! + usage!.cacheWriteTokens!,
+    "all three piles, added — that is what Claude actually handed over");
+  assert.ok(usage!.handedToIt! > usage!.inputTokens! * 1000,
+    "`input_tokens` alone is 4 against 70,689. Anything reading it as the prompt "
+    + "is wrong by four orders of magnitude, and that was the shipped bug.");
 });
 
 test("a tool call and its result are ONE step, not two", () => {
@@ -127,13 +148,32 @@ test("an item-level Codex error is a note, not a failed turn", () => {
   assert.equal(traceCodex(`{"type":"turn.failed","message":"model refused"}`).error, "model refused");
 });
 
-test("Codex's token figures are carried through, and no cost is invented", () => {
+test("Codex's figures are carried through, its cache is NOT added on, and no cost is invented", () => {
+  // THE MIRROR IMAGE OF THE TEST ABOVE, AND THE REASON THIS FIGURE IS COMPUTED
+  // IN EACH PROVIDER'S OWN MAPPER rather than once in shared.
+  //
+  // Codex counts the way OpenAI does: `input_tokens` is the TOTAL and
+  // `cached_input_tokens` is a PART OF IT. So the fix that is correct for
+  // Claude — add the piles together — would double-count the cache here. Two
+  // apps, opposite conventions, one field name. Only the mapper knows which
+  // house it is counting in, which is exactly why it is the mapper's job.
   const t = traceCodex(CODEX_STREAM);
   const usage: RunUsage | undefined = t.usage;
   assert.equal(usage?.costUsd, undefined, "Codex reports no money figure — we must not make one up");
   assert.deepEqual(usage, {
-    inputTokens: 50710, outputTokens: 249, cachedInputTokens: 24320, reasoningTokens: 125,
+    inputTokens: 50710, outputTokens: 249, cachedInputTokens: 24320,
+    cacheWriteTokens: 0, reasoningTokens: 125,
+    handedToIt: 50710,
   });
+
+  // THE DOUBLE-COUNT GUARD, stated as the thing it forbids. If someone ever
+  // "fixes" this mapper the way the Claude one had to be fixed, this fails.
+  assert.equal(usage!.handedToIt, usage!.inputTokens,
+    "Codex's own total, once — its cache is already inside it");
+  assert.notEqual(usage!.handedToIt, usage!.inputTokens! + usage!.cachedInputTokens!,
+    "adding the cache on would inflate this turn by 24,320 tokens, and his Sol agent "
+    + "by 148,992 across its stored runs");
+
   assert.equal(t.cliDurationMs, undefined, "Codex reports no duration either");
   assert.equal(t.model, undefined, "Codex never names the model it used");
 });
