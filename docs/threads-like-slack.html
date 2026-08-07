@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Threads — what Slack and Buzz actually do, and what I want to build</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#161a23; --panel2:#1c212c; --line:#2a313f;
+    --ink:#e8ecf3; --dim:#98a2b3; --accent:#7aa2ff; --good:#4ade80;
+    --bad:#f87171; --warn:#fbbf24;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f6f7fa; --panel:#fff; --panel2:#f0f2f7; --line:#dde1ea;
+           --ink:#151a22; --dim:#5b6577; --accent:#2f5fd0; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.65 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1100px;margin:0 auto;padding:40px 22px 120px}
+  h1{font-size:31px;line-height:1.25;margin:0 0 10px;letter-spacing:-.02em}
+  h2{font-size:22px;margin:0 0 14px;letter-spacing:-.01em}
+  h3{font-size:16px;margin:22px 0 8px;color:var(--accent);letter-spacing:.02em;text-transform:uppercase}
+  p{margin:0 0 13px}
+  .lede{color:var(--dim);font-size:17px;max-width:74ch}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:26px 28px;margin:22px 0}
+  .tag{display:inline-block;font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+    padding:4px 10px;border-radius:99px;border:1px solid var(--line);color:var(--dim);
+    background:var(--panel2);margin-bottom:14px}
+  .verified{color:var(--good);border-color:var(--good)}
+  .notverified{color:var(--warn);border-color:var(--warn)}
+  ul{margin:0 0 13px;padding-left:20px} li{margin:0 0 7px}
+  figure{margin:18px 0;background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:12px;overflow:hidden}
+  figure img{width:100%;height:auto;display:block;border-radius:6px}
+  figcaption{color:var(--dim);font-size:13.5px;margin-top:10px}
+  .scroll{overflow-x:auto}
+  table{border-collapse:collapse;width:100%;min-width:560px;font-size:14.5px;margin:6px 0 14px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.05em;text-transform:uppercase}
+  .num{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .src{font-size:13.5px;color:var(--dim);border-left:3px solid var(--line);
+    padding:2px 0 2px 14px;margin:10px 0}
+  .src a{color:var(--accent)}
+  q{font-style:italic;color:var(--ink)}
+  .bars{margin:16px 0}
+  .barrow{display:flex;align-items:center;gap:12px;margin:9px 0}
+  .barlab{width:190px;flex:none;font-size:13.5px;color:var(--dim)}
+  .bartrack{flex:1;background:var(--panel2);border-radius:5px;height:26px;position:relative;
+    border:1px solid var(--line);min-width:120px}
+  .barfill{height:100%;border-radius:4px;display:flex;align-items:center;
+    padding-left:9px;font-size:12.5px;font-weight:600;color:#08101f;white-space:nowrap}
+  .cmp{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px;margin:16px 0}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+  .card h4{margin:0 0 8px;font-size:15px}
+  .big{font-size:27px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  .ask{background:linear-gradient(180deg,var(--panel2),var(--panel));
+    border:1px solid var(--accent);border-radius:14px;padding:26px 28px;margin:26px 0}
+  code{background:var(--panel2);border:1px solid var(--line);border-radius:5px;
+    padding:1px 6px;font-size:13.5px;font-family:ui-monospace,Consolas,monospace}
+  hr{border:0;border-top:1px solid var(--line);margin:26px 0}
+  .foot{color:var(--dim);font-size:13.5px;text-align:center;margin-top:34px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Threads: what Slack and Buzz actually do — and what I want to build</h1>
+<p class="lede">Three earlier attempts at this failed because nobody opened the real
+products and looked. This time Buzz was opened on your machine and driven, and Slack's own
+words were read. Every number below is either measured here or a quote with a link. Where
+something could not be checked, it says <b>not verified</b> — no gap is filled with a guess.</p>
+
+<section data-fb="Corrections since the version you read">
+  <span class="tag notverified">Read this first — corrections</span>
+  <h2>What changed since the page you marked up</h2>
+  <p>You saw an earlier version of this page. It was published before the review came back,
+  which was a mistake, and <b>two of the quotes on it were wrong</b>. Both are fixed here and
+  named out loud rather than quietly swapped:</p>
+  <ul>
+    <li><b>The "click and drag the edge of your sidebar" quote was about Slack's LEFT
+    sidebar, not the thread pane.</b> It sat under a heading that said the thread pane can be
+    dragged. That article never mentions the thread pane or the right-hand side at all. It is
+    now labelled for what it is.</li>
+    <li><b>The quote "In the top right-hand corner, click the window icon" is not in Slack's
+    article.</b> It has been deleted. The three-dots → <b>Open in new window</b> route is real
+    and stays.</li>
+  </ul>
+  <p>A better source was also missing, and it is the strongest one on the page — Slack's own
+  accessibility changelog, which names the thread pane directly. See section 1.</p>
+  <p>Every measured number was re-taken by driving Buzz over a debug port and reading the real
+  element sizes, instead of measuring off screenshots. The old numbers were all short by about
+  15 px — the width of the divider itself.</p>
+  <p><b>One figure escaped that first correction pass, and it is worth telling you rather than
+  quietly mending.</b> The width of the expanded thread was left at 1470 px because nobody had
+  re-taken it. Measured properly it is <b>1691 px</b> — out by 221 px, fifteen times the slop
+  this page complains about everywhere else. It is corrected in section 3, and it makes the
+  case for the take-over mode stronger, not weaker. So rather than claim every figure is
+  right: <b>every figure on this page has now been taken from the real elements, and the one
+  that had not been is named above.</b></p>
+</section>
+
+<section data-fb="The short answer">
+  <span class="tag">The short answer</span>
+  <h2>You were right, and what shipped went the wrong way</h2>
+  <p>You asked to <b>drag the thread's edge and make it big, and have it stay</b>. That is
+  exactly what Slack advertises and exactly what Buzz does on this machine.</p>
+  <p>What Cloud9 has today is a fixed slab with a <b>hard ceiling of 280 pixels</b> and no
+  handle to grab at all. The clearest way to say how far off that is:</p>
+  <div class="cmp">
+    <div class="card">
+      <h4>Buzz — smallest the thread can ever get</h4>
+      <div class="big" style="color:var(--good)">308 px</div>
+      <p style="margin:6px 0 0;color:var(--dim);font-size:14px">and it goes up to 1399 px</p>
+    </div>
+    <div class="card">
+      <h4>Cloud9 — biggest it can ever get</h4>
+      <div class="big" style="color:var(--bad)">280 px</div>
+      <p style="margin:6px 0 0;color:var(--dim);font-size:14px">and that is what you get on your own screen</p>
+    </div>
+  </div>
+  <p><b>Buzz's smallest thread is wider than Cloud9's biggest.</b> That is the whole
+  complaint in one line.</p>
+</section>
+
+<section data-fb="What Slack actually does">
+  <span class="tag verified">Checked — Slack's own words</span>
+  <h2>1 · What Slack actually does</h2>
+
+  <h3>The strongest source, and it is current: Slack's own accessibility changelog</h3>
+  <p>This one names the thread pane in Slack's own words, and it is from <b>two months
+  ago</b>, not from 2020:</p>
+  <div class="src">
+    <q>You can now resize the secondary view panel and thread pane with arrow keys.</q><br>
+    — Slack, <a href="https://slack.com/help/articles/50668520513939-Accessibility-changelog">Accessibility
+    changelog</a>, June 2026, under <b>Desktop</b>. Fetched from the page today.
+  </div>
+  <p>Two things follow from it. First, <b>Slack's thread pane is resizable and Slack says so
+  in the present tense</b> — the resizing story is not a six-year-old announcement, it is a
+  live feature they are still improving. Second, and this is a gap it exposed in my own plan:
+  <b>Slack lets you resize it from the keyboard.</b> My earlier proposal had no keyboard way
+  to do it at all. That is now part of what I want to build.</p>
+
+  <h3>Slack's 2020 announcement, which also names the thread view</h3>
+  <div class="src">
+    <q>You can now resize both sidebars within Slack! Expand the thread view, collapse the
+    channel sidebar entirely, or fine-tune it so the balance is just right.</q><br>
+    — Slack (@SlackHQ) ·
+    <a href="https://www.facebook.com/slackhq/posts/2974152609348992/">Slack's Facebook page</a>,
+    where the wording was fetched verbatim ·
+    also posted on <a href="https://x.com/slackhq/status/1271472468310532097">x.com/slackhq</a>
+  </div>
+  <p style="color:var(--dim);font-size:14px">Small honesty note on that one: the wording is
+  real and was fetched. The <b>date, 12 June 2020, is corroborated by search results only</b>
+  — x.com refuses to serve the post to a fetcher, so I could not read the date off the post
+  itself.</p>
+
+  <h3 style="color:var(--warn)">A quote that was on this page and should not have been</h3>
+  <p>The earlier version quoted Slack's help centre saying <q>Click and drag the edge of your
+  sidebar to adjust it to your preferred width</q> — and put it under a heading about the
+  thread pane. <b>That was wrong and I am sorry.</b> That sentence lives in
+  <a href="https://slack.com/help/articles/212596808-Adjust-your-sidebar-preferences">Adjust
+  your sidebar preferences</a>, an article which is <b>entirely about the left-hand navigation
+  sidebar and never mentions the thread pane or the right-hand side once</b>. Re-fetched today
+  to be sure. It is evidence that <em>the left sidebar</em> can be dragged, nothing more, and
+  it is kept here only so the record shows what it actually says.</p>
+
+  <h3>The other ways Slack lets you look at a thread</h3>
+  <div class="scroll"><table>
+    <tr><th>Way</th><th>How you get there</th><th>Source</th></tr>
+    <tr>
+      <td><b>Side pane</b> (the default)</td>
+      <td>Click a thread. It opens down the right-hand edge. Resizable — by dragging
+      (2020 announcement) and by arrow keys (June 2026 changelog).</td>
+      <td>The two Slack sources above</td>
+    </tr>
+    <tr>
+      <td><b>Its own window</b></td>
+      <td>Verbatim from Slack: <q>From your desktop, open a thread. Click the three dots
+      icon. Select Open in new window.</q> You can have several windows and move them around
+      your screen.</td>
+      <td><a href="https://slack.com/help/articles/4403608802963-Open-separate-windows-in-Slack">Open separate windows in Slack</a>
+      — re-fetched today</td>
+    </tr>
+    <tr>
+      <td><b>Split view</b><br><span style="color:var(--dim);font-size:13px">channels and DMs
+      only — not threads</span></td>
+      <td>Right-click a conversation in the sidebar → <b>Open in split view</b>, or hold
+      Ctrl and click it. Slack's own scope sentence: <q>You can open any channel or direct
+      message (DM) in Slack in split view</q>, plus canvases and lists.
+      <b>Threads are not in that list.</b></td>
+      <td><a href="https://slack.com/help/articles/47144721728275-Use-split-view-in-Slack">Use split view in Slack</a> ·
+      the drag-the-separator sentence is second-hand, from
+      <a href="https://www.makeuseof.com/use-slack-split-view-function/">MakeUseOf</a>, not
+      from Slack</td>
+    </tr>
+  </table></div>
+</section>
+
+<section data-fb="What I could not verify about Slack">
+  <span class="tag notverified">Not verified — saying so rather than guessing</span>
+  <h2>2 · What I could <em>not</em> check about Slack</h2>
+  <p>These are listed instead of inventing answers, because inventing answers is what wasted
+  the last three rounds. Two things that used to sit on this list have now been settled, and
+  they are shown here so it is clear which way each one went.</p>
+  <h3>Genuinely undocumented — nobody should put a number here</h3>
+  <ul>
+    <li><b>Exact width limits in pixels.</b> Slack publishes no numbers for how narrow or
+    how wide the thread pane may go. <b>Not verified, and there is nothing to find.</b> If a
+    Slack pixel figure ever appears on this page, it was invented.</li>
+    <li><b>Whether Slack remembers the width</b> between threads or after you quit and
+    reopen. No Slack page says either way. <b>Not verified.</b></li>
+    <li><b>What Slack does on a narrow window.</b> There is a "simplified layout mode", but
+    Slack describes it as being for focus and assistive technology, not for small screens. No
+    Slack page describes narrow-window behaviour. <b>Not verified.</b></li>
+  </ul>
+  <h3>Settled since the last version</h3>
+  <ul>
+    <li><b>Can a thread go into split view? Almost certainly no.</b> This used to say "not
+    verified" and that stopped one step too early. Slack's split-view article gives a
+    positive list that is otherwise exhaustive — <q>any channel or direct message (DM)</q>,
+    plus canvases and lists — and threads are absent from it, while the separate-windows
+    article names threads explicitly for the other route. An exhaustive list that leaves
+    threads out, next to an article that puts threads in, is strong evidence of <b>no</b>.
+    It is still an absence rather than a Slack sentence saying "not threads", so it is
+    written as strong evidence, not as proof.</li>
+    <li><b>The drag-the-separator sentence for split view is second-hand</b> and stays that
+    way. Slack's own page covers opening and closing split view, not resizing it.</li>
+  </ul>
+</section>
+
+<section data-fb="What Buzz actually does">
+  <span class="tag verified">Checked — I drove the real app on your machine</span>
+  <h2>3 · What Buzz actually does — I opened it and used it</h2>
+  <p>Buzz 0.5.5, the copy installed on this machine at
+  <code>%LOCALAPPDATA%\Buzz\buzz-desktop.exe</code>. It was opened, driven into
+  <code>#coding</code>, and the divider dragged with real mouse events — and this time
+  <b>the sizes were read off the elements themselves over a debug port, not measured off a
+  screenshot</b>. That is why every number below is 15 px or so bigger than the version you
+  read: the old method kept losing the width of the divider.</p>
+
+  <h3>Yes — the divider is draggable, and Buzz says so out loud</h3>
+  <p>Put the pointer on the divider and Buzz shows its own tooltip. This is the single most
+  useful thing found all morning — and the detail worth copying is not the words but
+  <b>when it says them</b>:</p>
+  <figure>
+    <img src="threads-like-slack/buzz-dragging-tooltip.png" alt="Buzz mid-drag showing a tooltip reading Drag to resize. Double-click to reset width.">
+    <figcaption><b>The tooltip is conditional.</b> At the default width it reads
+    <b>"Drag to resize."</b> and nothing more. It only gains <b>"Double-click to reset
+    width."</b> once you have actually set a custom width — that is, it only offers the reset
+    when there is something to reset. The thread is mid-drag here, and the red "Sol needs
+    configuration" card has gone from a squeezed stack of single words to one clean
+    line.</figcaption>
+  </figure>
+
+  <h3>How far it goes — both directions, measured</h3>
+  <div class="bars">
+    <div class="barrow"><div class="barlab">Buzz — narrowest</div>
+      <div class="bartrack"><div class="barfill" style="width:22%;background:#7aa2ff">308 px</div></div></div>
+    <div class="barrow"><div class="barlab">Buzz — the default</div>
+      <div class="bartrack"><div class="barfill" style="width:28%;background:#7aa2ff">388 px</div></div></div>
+    <div class="barrow"><div class="barlab">Buzz — widest</div>
+      <div class="bartrack"><div class="barfill" style="width:100%;background:#4ade80">1399 px</div></div></div>
+    <div class="barrow"><div class="barlab">Cloud9 — today, all it does</div>
+      <div class="bartrack"><div class="barfill" style="width:20%;background:#f87171">280 px</div></div></div>
+  </div>
+  <p style="color:var(--dim);font-size:14px">Measured on your maximised window, whose usable
+  <b>viewport is 1920 px</b>. The earlier version of this page said 1936 — that is the outer
+  window frame, not the area the app can actually draw in, and using it threw the arithmetic
+  out.</p>
+
+  <figure>
+    <img src="threads-like-slack/buzz-max-width.png" alt="Buzz with the thread dragged to its maximum width, the channel squeezed to a narrow strip">
+    <figcaption><b>Dragged as far as it goes: the thread takes 1399 px and the channel is
+    squeezed down to 301 px</b> — the channel title is cut to "# codi…". Buzz does not
+    protect the channel. Whichever side you want gets the room, and the other one takes
+    the squeeze. This is the opposite of what Cloud9 does today.</figcaption>
+  </figure>
+
+  <p><b>The rule Buzz follows, and the number matters:</b> the two sides are
+  <b>symmetric at about 300 px each</b> — thread floor <b>308</b>, channel floor
+  <b>301</b>. Neither side has a ceiling. You decide which one is big. There is no
+  bigger floor on the room; the earlier version of this page invented one.</p>
+
+  <h3>Does it stay where you put it?</h3>
+  <div class="scroll"><table>
+    <tr><th>Test I ran</th><th>Result</th><th>Measured</th></tr>
+    <tr><td>Set the thread wide, switch to <code>#general</code>, come back, reopen the thread</td>
+        <td style="color:var(--good)"><b>Stays</b> — same width, to the pixel</td><td class="num">unchanged</td></tr>
+    <tr><td>Double-click the divider</td>
+        <td style="color:var(--accent)"><b>Resets to the default</b>, exactly as the tooltip promises</td>
+        <td class="num">→ 388 px</td></tr>
+    <tr><td>Quit Buzz completely, start it again, open the same thread</td>
+        <td style="color:var(--bad)"><b>Forgotten</b> — back to the default</td>
+        <td class="num">→ 388 px</td></tr>
+    <tr><td>Quit and restart after switching to the expanded mode</td>
+        <td style="color:var(--good)">The <b>mode</b> is remembered even though the width is not</td>
+        <td>—</td></tr>
+  </table></div>
+  <p>So Buzz remembers your width for as long as the app is open, but loses it when you
+  quit. <b>I think that part is a weakness, not a feature</b>, and I would rather Cloud9
+  remembered it properly — see my proposal below.</p>
+
+  <h3>Buzz has a second mode: make the thread take over — and you have asked for this one</h3>
+  <figure>
+    <img src="threads-like-slack/buzz-expanded.png" alt="Buzz with the thread expanded over the dimmed channel behind it">
+    <figcaption><b>A control beside the "Thread" heading expands it</b> — in Buzz's own
+    markup it is labelled <code>Expand thread</code>. The thread floats out over the room,
+    and <b>the room dims behind it</b> rather than disappearing. <b>1691 px of reading
+    width</b> — the overlay runs from 221 px to 1912 px across your 1920 px viewport. One
+    click there, one click back.</figcaption>
+  </figure>
+  <p style="color:var(--dim);font-size:14px">That 1691 replaces 1470 on the earlier version.
+  1470 was the last figure still coming off a screenshot, and it was 221 px short. The real
+  comparison is therefore <b>280 px today against 1691 px expanded</b>.</p>
+  <p>Two details easy to miss and worth copying. <b>The expanded mode survives a restart even
+  though the width does not</b> — set expanded, kill the process, start it again, and it
+  comes back expanded with no divider at all. That was asserted on the earlier version with
+  nothing behind it; it has now actually been done. And <b>the way back out is not a back
+  arrow at this size</b> — the control is labelled, in Buzz's own markup,
+  <code>Show thread beside channel</code>. Cloud9 will use those words too, for the same
+  reason it uses Buzz's tooltip words: they explain themselves.</p>
+
+  <h3>And on a narrow window it stops splitting altogether — same idea, different trigger</h3>
+  <figure>
+    <img src="threads-like-slack/buzz-800px.png" alt="Buzz at an 800 pixel window, the thread filling the whole area with a back arrow">
+    <figcaption><b>At an 800-pixel window Buzz gives up on side-by-side.</b> The thread
+    takes the entire area and a back arrow (←) appears next to "Thread" to get you back to
+    the channel. The channel is not shown at all. Re-measured this round by driving the real
+    app: <b>it still splits and still drags at 900 px and at 850 px</b>. Only at 800 does it
+    hand the whole area to the thread.</figcaption>
+  </figure>
+  <p>Look at those two pictures together. <b>Buzz's take-over mode and Buzz's narrow-window
+  behaviour are the same thing</b> — the thread gets the whole area and there is one obvious
+  way back. One you ask for, the other the window forces. That matters a great deal for what
+  Cloud9 should do, and it is the heart of the fix in section 6.</p>
+  <p>It matters because <b>Cloud9's window cannot go below 800 pixels</b>, so that corner
+  needs a real answer rather than a shrug.</p>
+</section>
+
+<section data-fb="What Cloud9 does today">
+  <span class="tag verified">Checked — measured in your installed app</span>
+  <h2>4 · What Cloud9 does today</h2>
+  <figure>
+    <img src="threads-like-slack/cloud9-today.png" alt="Cloud9 maximised with a thread open, the thread a narrow strip on the right">
+    <figcaption><b>Your installed Cloud9, maximised, thread open.</b> The thread gets
+    <b>280 px</b> — its absolute maximum — and the room gets the rest. The reply text breaks
+    after five or six words a line. There is no handle on that edge to grab.</figcaption>
+  </figure>
+  <p>Underneath, the width is decided by one line that leaves you no say in it
+  (<code>styles.css:423</code>):</p>
+  <p><code>clamp(232px, (viewport − 78 − 250) × 0.22, 280px)</code></p>
+  <ul>
+    <li><b>At your 1920 px viewport that sum comes out at 280 px</b>, the ceiling — not the
+    268 px this page said last time. 1592 × 0.22 is 350, which the ceiling cuts back to 280.
+    268 px only happens on a window of about 1546 px. The old figure was the right number for
+    the wrong screen, and it contradicted the formula printed four paragraphs below it.</li>
+    <li>The <b>280 px</b> at the end is a hard ceiling. Making your window bigger cannot push
+    past it — which is why the last two attempts at "tuning the width" moved it by about
+    4 pixels and looked identical to you.</li>
+    <li>The whole app was searched for anything that responds to dragging — pointer handlers,
+    pointer capture, splitters, resizers — across <code>apps/desktop/src</code> and
+    <code>apps/relay/src</code>. <b>There is nothing.</b> The only near-misses are an
+    unrelated size-watcher and the @-mention list. The panel was never draggable; there was
+    never a handle to find. This has now been checked twice, independently.</li>
+  </ul>
+</section>
+
+<section data-fb="Side by side">
+  <span class="tag">Side by side</span>
+  <h2>5 · The three of them, together</h2>
+  <div class="scroll"><table>
+    <tr><th>&nbsp;</th><th>Slack</th><th>Buzz (measured here)</th><th>Cloud9 today</th></tr>
+    <tr><td><b>Drag the thread's edge</b></td>
+        <td style="color:var(--good)">Yes — Slack's own announcement</td>
+        <td style="color:var(--good)">Yes — tooltip says so, and it was done</td>
+        <td style="color:var(--bad)">No handle exists</td></tr>
+    <tr><td><b>Resize from the keyboard</b></td>
+        <td style="color:var(--good)">Yes — arrow keys, June 2026 changelog</td>
+        <td>Not checked</td><td style="color:var(--bad)">Nothing to resize</td></tr>
+    <tr><td><b>How wide it can get</b></td>
+        <td>Not verified — no published figure</td><td class="num">1399 px</td><td class="num">280 px ceiling</td></tr>
+    <tr><td><b>How narrow it can get</b></td>
+        <td>Not verified — no published figure</td><td class="num">308 px</td><td class="num">232 px</td></tr>
+    <tr><td><b>Stays put between threads</b></td>
+        <td>Not verified</td><td style="color:var(--good)">Yes</td><td>Nothing to remember</td></tr>
+    <tr><td><b>Stays put after a restart</b></td>
+        <td>Not verified</td><td style="color:var(--bad)">No — forgets</td><td>Nothing to remember</td></tr>
+    <tr><td><b>Reset to normal</b></td>
+        <td>Not verified</td><td style="color:var(--good)">Double-click the divider</td><td>—</td></tr>
+    <tr><td><b>A bigger mode</b></td>
+        <td>Own window (threads named); <b>split view — threads not included</b></td>
+        <td style="color:var(--good)">Expand over the dimmed room</td><td style="color:var(--bad)">None</td></tr>
+    <tr><td><b>Narrow window</b></td>
+        <td>Not verified</td>
+        <td>Still splits at 900 and 850; at 800 the thread takes the lot, with a back arrow</td>
+        <td>Keeps splitting; both get cramped</td></tr>
+  </table></div>
+</section>
+
+<section data-fb="What I propose to build">
+  <span class="tag">The proposal</span>
+  <h2>6 · What I want to build — please read this bit closely</h2>
+
+  <p style="color:var(--dim)">You marked this section 👍 on the earlier version. The plan
+  below is the same plan with four things corrected and two things added — the take-over
+  mode you asked for, and keyboard resizing, which Slack ships and I had missed. Nothing
+  that you approved has been quietly removed.</p>
+
+  <h3>1. A divider you can grab</h3>
+  <p>A grab strip on the thread panel's left edge. The pointer changes to the
+  left-right arrows when you are over it, and it lights up so you can see it is a handle.
+  You drag; the thread follows your pointer live.</p>
+
+  <h3>2. It opens bigger than it does now, before you touch anything</h3>
+  <p>Default <b>388 px</b> instead of today's 280 px — the same as Buzz's measured default.
+  So even if you never drag it, it is noticeably better the first time you open it.</p>
+
+  <h3>3. The limits — corrected to what Buzz really does</h3>
+  <p>The earlier version said the room could never go below <b>380 px</b>. <b>That number
+  was invented.</b> The shape was Buzz's, the figure was not. Measured properly, Buzz is
+  <b>symmetric at about 300 px on both sides</b>. A 380 px room floor would have quietly
+  cost you 80 px of maximum thread width for no reason anyone could state — which is the
+  softest possible re-run of "we capped your thread". So:</p>
+  <ul>
+    <li><b>The thread never goes below 300 px</b>, matching Buzz's 308.</li>
+    <li><b>The room never goes below 300 px</b>, matching Buzz's 301. That is the only
+    limit, and it is a floor on the <em>room</em>, not a cap on the thread.</li>
+    <li>On your maximised screen the app has <b>1592 px</b> to divide (1920 viewport, less
+    the 78 px rail and the 250 px sidebar), so <b>you can drag the thread anywhere from
+    300 px up to about 1292 px</b> — less the few pixels the grab strip itself occupies,
+    which is not chosen yet. Today's fixed 280 px becomes a range over four times as wide
+    at the top.</li>
+  </ul>
+  <p style="color:var(--dim);font-size:14px">The earlier version said "300 to about 1230 px".
+  That was wrong twice over: 1230 was not even right for the 380 floor it was based on
+  (1592 − 380 = 1212), and it was computed from 1936, the outer window frame, rather than the
+  1920 px the app can draw in.</p>
+  <p style="color:var(--dim);font-size:14px">One more correction, because the reason given
+  was false even though the number was fine. The 300 px thread floor was justified by saying
+  your composer's button row wraps at about 260 px and the floor exists to stop that. It is
+  not true: <code>styles.css:1948</code> tells that row to wrap on purpose, everywhere, and
+  the comment beside it says why — <q>a row that cannot wrap is a row that eventually scrolls
+  sideways</q> — and <code>styles.css:1703</code> says it again for the thread's own
+  composer. <b>The wrapping is a deliberate feature, not a defect a floor has to prevent.</b>
+  The real reason for 300 is simply that it is what Buzz uses and it reads well.</p>
+
+  <h3>4. You can resize it from the keyboard too — this is new</h3>
+  <p>Slack's accessibility changelog, June 2026: <q>You can now resize the secondary view
+  panel and thread pane with arrow keys.</q> My earlier plan had <b>no keyboard way to
+  resize at all</b>, which would have shipped a control you can only reach with a mouse.
+  So: the grab strip takes keyboard focus, and left/right arrows move it. It will say what
+  it is and what it is for when focused, so it is usable without seeing it.</p>
+
+  <h3>5. It stays where you put it — properly</h3>
+  <p>Buzz forgets your width when you quit. I do not want to copy that. Cloud9 already keeps
+  your theme in a small settings store on this machine (<code>App.tsx:1550</code> writes it
+  to the browser's own storage, and the settings record already carries your theme). The
+  width — <b>and which mode you were in</b> — go in the same place, so both survive closing
+  the app and are still there tomorrow morning. Buzz remembers the mode but not the width;
+  we will remember both.</p>
+
+  <h3>6. Double-click to put it back — with Buzz's own manners</h3>
+  <p>Same as Buzz, including a detail worth copying exactly: <b>the tooltip is
+  conditional.</b> At the default width it says only <b>"Drag to resize."</b> Once you have
+  set a width of your own it becomes <b>"Drag to resize. Double-click to reset width."</b>
+  It never offers you a reset when there is nothing to reset.</p>
+
+  <h3>7. The take-over mode — you asked for it, and it also fixes the worst hole in this plan</h3>
+  <p>You said you want both, so both get built. Copying what was measured in Buzz rather
+  than inventing it: a control beside the <b>Thread</b> heading, labelled so a screen reader
+  says <b>"expand thread"</b>; the thread floats out over the room; <b>the room dims behind
+  it</b> rather than vanishing; and the way back out says <b>"show thread beside channel"</b>
+  — Buzz's own words, not a bare arrow. One click there and one click back. It is a big
+  jump: <b>280 px today against 1691 px expanded</b>. And unlike Buzz, the mode <em>and</em>
+  your width are both remembered after a restart.</p>
+
+  <h3 style="color:var(--warn)">8. The narrow window — this was a dead handle, and that is a fault, not wording</h3>
+  <p>The earlier version said: when the window is too narrow for both floors, "share
+  proportionally as today and keep your width for when there is room again". <b>Read plainly,
+  that is today's complaint with a handle bolted on top.</b> Here is what it would really
+  have done to you:</p>
+  <div class="scroll"><table>
+    <tr><th>Your window</th><th>Space beside the rail and sidebar</th><th>What the old plan did</th></tr>
+    <tr><td class="num">800 px</td><td class="num">506 px<br><span style="color:var(--dim)">800 − 78 rail − 216 sidebar</span></td>
+        <td style="color:var(--bad)">Both floors need 600 px. They do not fit. Thread pinned at
+        <b>232 px</b> — <b>below its own 300 px floor</b> — and <b>the handle does nothing at
+        all when you drag it, with nothing on screen saying why.</b></td></tr>
+    <tr><td class="num">894 px</td><td class="num">600 px</td>
+        <td>The first width at which 300 + 300 both fit. Dragging starts working here.</td></tr>
+  </table></div>
+  <p>So across the whole band from <b>800 px to 894 px</b> you would have had a handle that
+  refuses you and never says so. A refusal with no door is the thing you like least, and it
+  would have been shipped inside the very feature meant to fix it. <b>The fix is not better
+  wording. It is that the band should not exist.</b></p>
+  <p><b>What I propose instead — and it costs nothing extra, because you have already asked
+  for the mechanism.</b> Buzz's narrow-window behaviour and Buzz's take-over mode are the
+  same thing wearing two hats: the thread gets the whole area and there is one obvious way
+  back. So below 894 px, Cloud9 does exactly that — <b>the thread takes over the whole area
+  with one obvious way back to the room</b> — drawn as a back arrow at this size, and saying
+  "show thread beside channel" for anyone who cannot see it, which is Buzz's own wording.
+  That is Buzz's own answer at 800 px, and it reuses the
+  take-over mode from point 7 rather than being a second thing to build. Above 894 px it
+  splits and drags — though honestly, <b>only barely at first</b>: at 894 px the handle has
+  <b>nowhere to travel at all</b>, about 6 px at 900, roughly 56 px at 950, and it only feels
+  like a real control from about 1000 px up. That is not a fault to fix, it is just what two
+  300 px floors in a small window add up to, and <b>Buzz tapers off in exactly the same
+  way</b>. Your width is waiting for you when you widen the window again.
+  <b>Nothing on screen ever refuses you in silence.</b></p>
+
+  <h3>9. Your width is never thrown away — including the case that would have caught you out</h3>
+  <p>This one is not in the earlier version and it is the likeliest way the finished thing
+  would have quietly disappointed you. Say you drag the thread to <b>1200 px</b> on your big
+  screen, then make the window smaller — at 1330 px there is only 1036 px to divide, so the
+  widest the thread can be is 736 px. <b>What happens to your 1200?</b></p>
+  <ul>
+    <li><b>It is kept, not overwritten.</b> The thread is drawn at whatever the window can
+    actually give it — 736 px in that example — but the 1200 you chose is what is stored.</li>
+    <li>Widen the window again and <b>you get your 1200 back</b>, without touching anything.
+    The same is true coming back up out of the take-over mode below 894 px.</li>
+    <li>Only dragging the handle yourself, or double-clicking it to reset, ever changes the
+    number that is remembered. <b>The window never edits your choice — it only borrows it
+    for as long as it has to.</b></li>
+  </ul>
+  <p style="color:var(--dim);font-size:14px">For comparison, Buzz's own switch-over is
+  between 800 and 850 px — it still splits and drags at 850. Ours falls at 894 because
+  Cloud9's sidebar takes 216 px at these sizes. Same rule, different furniture.</p>
+
+  <hr>
+  <h3>How I will prove it</h3>
+  <p>Not a green build — a green build proves nothing about a screen, and that is exactly
+  why a change got rejected this week. <b>Before and after photographs from the installed
+  app at your own window size</b>, plus the thread dragged wide, dragged narrow, resized with
+  the arrow keys, taken over the room, at 800 px, at 894 px, and after a restart to show both
+  the width and the mode came back.</p>
+</section>
+
+<section class="ask" data-fb="What you have already settled">
+  <h2>Nothing is waiting on you — here is what you already settled</h2>
+  <p>Both of the open questions are closed by what you sent back, so this page is not asking
+  you anything. It is written down here so that nobody later thinks either of them was
+  assumed.</p>
+  <ul>
+    <li><b>You want both.</b> You wrote <q>i want both</q> against the one question. My
+    recommendation was "just the divider, for now", and <b>you overruled it</b>. Both get
+    built: the draggable divider <em>and</em> the take-over mode. It will not be asked
+    again.</li>
+    <li><b>The room gives way when you widen the thread — and here is exactly how much of
+    that is your word and how much is mine.</b> You marked the proposal block 👍, and the
+    room-gives-way rule lives inside that block, so the <em>direction</em> is genuinely
+    yours. But I have to be straight about one thing: <b>the version of that block you
+    marked said the room never goes below 380 px. This version says 300 px. It is not the
+    same block any more.</b> Carrying your tick across a changed number and calling it a
+    confirmation would be me inferring your answer on the single axis all three previous
+    attempts died on — the shipped code kept protecting the room, and you wanted the thread.
+    So, plainly:
+    <div class="src" style="border-left-color:var(--accent)"><q>You marked the earlier
+    version of this block 👍. That version let the room shrink to 380 px; this one lets it
+    shrink to 300 px — same direction, more room for the thread. If that is not what you
+    meant, say so before I start.</q></div>
+    I am treating that as settled and I am not asking you again — but the door is there, and
+    you have not been quietly counted as having said something you did not.</li>
+  </ul>
+</section>
+
+<section data-fb="Anything I have got wrong">
+  <span class="tag">Last thing</span>
+  <h2>Where I might still be wrong</h2>
+  <ul>
+    <li>Slack's <b>exact pixel limits</b> and <b>whether Slack remembers the width</b> are
+    not published anywhere and are not measured here. The numbers in the plan come from Buzz,
+    which could be driven and measured directly. If Slack behaves differently on your
+    machine, that beats anything here — say so.</li>
+    <li>The <b>894 px</b> switch-over point is arithmetic from Cloud9's own layout, not
+    something anyone has watched happen yet. It will be photographed at that exact size
+    before I say the work is done.</li>
+    <li>Buzz's <b>keyboard behaviour was not checked</b> — only Slack's is quoted. If Buzz
+    does it differently, the design here follows Slack, which is the reference for the front
+    end anyway.</li>
+  </ul>
+</section>
+
+<p class="foot">Written 7 August 2026, corrected the same day after review · Slack sources
+re-fetched today · Buzz 0.5.5 driven with real mouse events and measured from the elements
+themselves, not from screenshots · Cloud9's own figure taken from
+<code>styles.css:423</code> at your 1920&nbsp;px viewport</p>
+
+</div>
+<script>
+/* ============================================================
+   Vikas review kit — feedback layer for every HTML review page.
+   Paste this <script> at the end of any artifact I hand him.
+
+   What it gives him:
+     - click any section marked data-fb="<label>" to attach a note
+     - thumbs up / down per section
+     - a floating panel listing everything he has said
+     - ONE button that copies it all as plain text to paste back
+
+   Why it exists: published artifacts cannot send data back into a
+   Claude session (no such capability). This turns "read a wall and
+   retype your thoughts" into "click, type, copy once".
+
+   Usage:
+     1. mark reviewable blocks:  <section data-fb="Option A — Slack True">
+     2. include this script once, at the end of the page.
+   ============================================================ */
+(function () {
+  "use strict";
+  var STORE = "vikas-fb-" + (document.title || location.pathname);
+  var notes = {};
+  try { notes = JSON.parse(localStorage.getItem(STORE) || "{}"); } catch (e) { notes = {}; }
+
+  function save() { try { localStorage.setItem(STORE, JSON.stringify(notes)); } catch (e) {} }
+
+  var css = document.createElement("style");
+  css.textContent = [
+    ':root{--fb-ink:#16232e;--fb-bg:#fff;--fb-line:#d8e0e8;--fb-accent:#2c7fc4;',
+    '--fb-yes:#1e7d4f;--fb-yes-bg:#e3f3ea;--fb-no:#b03535;--fb-no-bg:#fbe7e7;--fb-muted:#5a6b7a;}',
+    '@media (prefers-color-scheme:dark){:root{--fb-ink:#e6edf3;--fb-bg:#18232e;--fb-line:#2f3d4a;',
+    '--fb-accent:#5aa5dd;--fb-yes:#5cc78f;--fb-yes-bg:#14372a;--fb-no:#e07a7a;--fb-no-bg:#3d1d1d;--fb-muted:#93a4b3;}}',
+    '[data-fb]{position:relative;}',
+    '[data-fb].fb-has{outline:2px solid var(--fb-accent);outline-offset:3px;border-radius:8px;}',
+    '.fb-tools{position:absolute;top:.4rem;right:.4rem;display:flex;gap:.25rem;opacity:.45;',
+    'transition:opacity .15s;z-index:5;}',
+    '[data-fb]:hover .fb-tools,[data-fb]:focus-within .fb-tools{opacity:1;}',
+    '@media (prefers-reduced-motion:reduce){.fb-tools{transition:none;}}',
+    '.fb-tools button{font:600 .78rem/1 system-ui,sans-serif;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);border-radius:99px;padding:.3rem .6rem;cursor:pointer;}',
+    '.fb-tools button:hover{border-color:var(--fb-accent);color:var(--fb-accent);}',
+    '.fb-tools button.on-yes{background:var(--fb-yes-bg);color:var(--fb-yes);border-color:var(--fb-yes);}',
+    '.fb-tools button.on-no{background:var(--fb-no-bg);color:var(--fb-no);border-color:var(--fb-no);}',
+    '.fb-note{margin-top:.6rem;width:100%;box-sizing:border-box;font:.92rem/1.5 system-ui,sans-serif;',
+    'color:var(--fb-ink);background:var(--fb-bg);border:1px dashed var(--fb-line);border-radius:8px;',
+    'padding:.55rem .7rem;resize:vertical;min-height:2.6rem;}',
+    '.fb-note:focus{outline:2px solid var(--fb-accent);outline-offset:1px;border-style:solid;}',
+    '.fb-bar{position:fixed;right:1rem;bottom:1rem;z-index:9999;display:flex;flex-direction:column;',
+    'align-items:flex-end;gap:.5rem;font:14px/1.5 system-ui,sans-serif;}',
+    '.fb-bar button{cursor:pointer;border-radius:99px;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);padding:.55rem 1rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.14);}',
+    '.fb-bar .fb-copy{background:var(--fb-accent);color:#fff;border-color:transparent;}',
+    '.fb-panel{background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;',
+    'padding:.9rem 1rem;max-width:min(380px,90vw);max-height:50vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.2);display:none;}',
+    '.fb-panel.open{display:block;}',
+    '.fb-panel h4{margin:0 0 .5rem;font-size:.95rem;}',
+    '.fb-panel li{margin-bottom:.5rem;font-size:.88rem;}',
+    '.fb-panel .lbl{font-weight:600;}',
+    '.fb-empty{color:var(--fb-muted);font-size:.88rem;margin:0;}',
+    '@media print{.fb-bar,.fb-tools{display:none;}}'
+  ].join("");
+  document.head.appendChild(css);
+
+  // The floating bar is built FIRST: per-section wiring calls render(), which
+  // needs these to exist. (Building it after the loop threw on the first
+  // section and left every later section without its buttons.)
+  var bar = document.createElement("div");
+  bar.className = "fb-bar";
+  var panel = document.createElement("div");
+  panel.className = "fb-panel";
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  var copy = document.createElement("button");
+  copy.type = "button"; copy.className = "fb-copy"; copy.textContent = "📋 Copy my feedback";
+  bar.appendChild(panel); bar.appendChild(toggle); bar.appendChild(copy);
+  document.body.appendChild(bar);
+
+  var blocks = [].slice.call(document.querySelectorAll("[data-fb]"));
+
+  // Standalone mode: a page with no marked-up blocks (e.g. a full-screen
+  // prototype we did not author) still gets a working note box, so the layer
+  // can be injected into ANY page rather than only pages we wrote.
+  if (!blocks.length) {
+    var solo = document.createElement("div");
+    solo.setAttribute("data-fb", document.title || "this page");
+    solo.setAttribute("data-fb-solo", "");
+    solo.style.cssText = "position:fixed;left:1rem;bottom:1rem;z-index:9998;width:min(320px,80vw);" +
+      "background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;" +
+      "padding:2.2rem .8rem .8rem;box-shadow:0 8px 30px rgba(0,0,0,.2);font:14px/1.5 system-ui,sans-serif;";
+    var cap = document.createElement("div");
+    cap.textContent = "Notes on this page";
+    cap.style.cssText = "font-weight:600;font-size:.85rem;margin-bottom:.3rem;";
+    solo.appendChild(cap);
+    document.body.appendChild(solo);
+    blocks = [solo];
+  }
+  blocks.forEach(function (el) {
+    var key = el.getAttribute("data-fb");
+    if (!notes[key]) notes[key] = { verdict: "", text: "" };
+
+    var tools = document.createElement("div");
+    tools.className = "fb-tools";
+    var yes = document.createElement("button");
+    yes.type = "button"; yes.textContent = "👍 like"; yes.title = "I like this";
+    var no = document.createElement("button");
+    no.type = "button"; no.textContent = "👎 no"; no.title = "Not this";
+    var add = document.createElement("button");
+    add.type = "button"; add.textContent = "💬 note"; add.title = "Write a note";
+    tools.appendChild(yes); tools.appendChild(no); tools.appendChild(add);
+    el.appendChild(tools);
+
+    var note = document.createElement("textarea");
+    note.className = "fb-note";
+    note.placeholder = "Your note on “" + key + "”…";
+    note.value = notes[key].text || "";
+    // in standalone mode the box is the whole point — always show it
+    var solo = el.hasAttribute("data-fb-solo");
+    note.style.display = notes[key].text || solo ? "block" : "none";
+    el.appendChild(note);
+
+    function paint() {
+      yes.className = notes[key].verdict === "yes" ? "on-yes" : "";
+      no.className = notes[key].verdict === "no" ? "on-no" : "";
+      el.classList.toggle("fb-has", !!(notes[key].verdict || notes[key].text));
+      render();
+    }
+    yes.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "yes" ? "" : "yes"; save(); paint();
+    });
+    no.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "no" ? "" : "no"; save(); paint();
+    });
+    add.addEventListener("click", function () {
+      note.style.display = "block"; note.focus();
+    });
+    note.addEventListener("input", function () {
+      notes[key].text = note.value.trim(); save(); paint();
+    });
+    paint();
+  });
+
+  function collected() {
+    return Object.keys(notes)
+      .filter(function (k) { return notes[k].verdict || notes[k].text; })
+      .map(function (k) { return { key: k, v: notes[k].verdict, t: notes[k].text }; });
+  }
+
+  function asText() {
+    var items = collected();
+    if (!items.length) return "";
+    var out = ["FEEDBACK ON: " + (document.title || "this page"), ""];
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "LIKE" : i.v === "no" ? "NO" : "NOTE";
+      out.push("- [" + mark + "] " + i.key + (i.t ? " — " + i.t : ""));
+    });
+    return out.join("\n");
+  }
+
+  function render() {
+    var items = collected();
+    toggle.textContent = items.length ? "🗒 " + items.length + " marked" : "🗒 no marks yet";
+    if (!items.length) { panel.innerHTML = '<p class="fb-empty">Hover any section, then use 👍 / 👎 / 💬.</p>'; return; }
+    var html = "<h4>What you've said</h4><ul>";
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "👍" : i.v === "no" ? "👎" : "💬";
+      html += '<li>' + mark + ' <span class="lbl">' + escapeHtml(i.key) + "</span>" +
+        (i.t ? " — " + escapeHtml(i.t) : "") + "</li>";
+    });
+    panel.innerHTML = html + "</ul>";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  toggle.addEventListener("click", function () { panel.classList.toggle("open"); });
+  copy.addEventListener("click", function () {
+    var text = asText();
+    if (!text) { copy.textContent = "nothing marked yet"; setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 1600); return; }
+    var done = function () {
+      copy.textContent = "✅ copied — paste it to Claude";
+      setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 2600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { window.prompt("Copy this:", text); }
+      document.body.removeChild(ta);
+    }
+  });
+
+  render();
+})();
+
+</script>
+</body>
+</html>
