@@ -6,13 +6,13 @@ a commit, or an agent's report, THIS FILE WINS.**
 Anyone arriving — Vikas, a new session, a new agent — reads this first and
 needs nothing else. Anyone doing work updates it as they go, not at the end.
 
-Last verified at: **2026-08-08 01:24 +05:30** · by: audit session · *the live delivery board below is a dated snapshot; external counts and open heads can change without this file changing*
+Last verified at: **2026-08-08 01:34 +05:30** · by: audit session · *the live delivery board below is a dated snapshot; external counts and open heads can change without this file changing*
 
-## LIVE DELIVERY BOARD — 2026-08-08 01:24 +05:30 (last-verified snapshot)
+## LIVE DELIVERY BOARD — 2026-08-08 01:34 +05:30 (last-verified snapshot)
 
 This compact board is the delivery contract for this last-verified snapshot. Allowed statuses are **MERGED**, **BUILDING**, **IN REVIEW**, **READY NEXT**, and **BLOCKED WITH REASON**. “Unassigned” is intentional until an author and a different reviewer are named.
 
-This board was last verified against GitHub at **2026-08-08 01:24 +05:30** and `master` **`9429c48`**. External PR heads and review state can change without this file changing; the Slack audit report's source line citations remain pinned to inspected commit `7329537`.
+This board was last verified against GitHub at **2026-08-08 01:34 +05:30** and `master` **`c3519a6`**. External PR heads and review state can change without this file changing; the Slack audit report's source line citations remain pinned to inspected commit `7329537`.
 
 | Feature | Status | Branch-PR | Author | Reviewer | Next proof / software-team scope |
 |---|---|---|---|---|---|
@@ -67,14 +67,14 @@ is not there, say so and ask once.
 
 ## 1. WHERE WE ARE RIGHT NOW
 
-### CURRENT SNAPSHOT — 2026-08-08 01:24 +05:30
+### CURRENT SNAPSHOT — 2026-08-08 01:34 +05:30
 
 | # | Ask | Owner | Current stage | Evidence / boundary |
 |---|---|---|---|---|
 | 12 | **remove the timing** - *"agents are employees"* | Vikas Mittal | **MERGED - PR #13 (`7329537`) on `master`** | The no-clock turn/approval contract is merged. Retain focused no-expiry evidence and unknown gates from historical rows; this reconciliation does not claim a fresh installed walk. |
 | 17 | **Persistent mentions-and-replies notification inbox** | Vikas Mittal | **MERGED - PR #19 (`551b2f8`)** on `master`; reviewer `chatgpt-codex-connector` | Shared protocol contract, relay SQLite inbox with deterministic ids/idempotent writes, recipient-scoped read/dismiss, conservative age/count retention, current-access tombstone projection, edit/delete refresh, desktop rail/list/empty/loading/error/focus/live states, and source-level relay/desktop typechecks landed in the merged implementation. No runtime app walk is claimed here. Existing mention/thread recipient rules remain the authority; mute/quiet/OS toast rules are not used to suppress durable rows. PR: https://github.com/vikas53953/cloud9/pull/19 |
 
-| 19 | **Saved/Later message queue** | master | **MERGED — PR #28 (`9429c48`)** | V1 saves and unsaves readable messages per account, stores note/reminder metadata without scheduling notifications, projects active/deleted/inaccessible source states, and mirrors correlated updates to the owner's windows. Rebased onto master `9429c48`; Saved migration is schema v8 after Workflow v7 and includes durable fingerprinted receipts (30-day/512 bounded retry ledger), deterministic pagination, access re-projection on membership changes, account cleanup, offline/lost request notices, pending detail-action guards, timezone-safe reminder dates, and draft retention until correlated success. Evidence on current source: shared build passed; relay focused Saved tests **5/5** and desktop Saved checks **3/3**; no package/install/app-walk claim. |
+| 19 | **Saved/Later message queue** | master | **MERGED — PR #28 (`9429c48`)** | V1 saves and unsaves readable messages per account, stores note/reminder metadata without scheduling notifications, projects active/deleted/inaccessible source states, and mirrors correlated updates to the owner's windows. The merged Saved commit is `9429c48`, now included in master `c3519a6`; Saved migration is schema v8 after Workflow v7 and includes durable fingerprinted receipts (30-day/512 bounded retry ledger), deterministic pagination, access re-projection on membership changes, account cleanup, offline/lost request notices, pending detail-action guards, timezone-safe reminder dates, and draft retention until correlated success. Evidence on current source: shared build passed; relay focused Saved tests **5/5** and desktop Saved checks **3/3**; no package/install/app-walk claim. |
 
 The dated snapshot rows below are preserved history; the rows above are the current live stages for PR13, PR17, and Saved/Later.
 
@@ -213,7 +213,7 @@ The complete visual program map is [`docs/buzz-important-functions-2026-08-07.ht
 
 
 | 22 | **Persistent mentions-and-replies notification inbox** | Vikas Mittal; reviewer `chatgpt-codex-connector` | **MERGED — PR #19 (`551b2f8`)** | The separate durable per-user notification inbox for mention/thread-reply entries—not a second view of the existing agent Activity screen—landed in PR #19 with read/dismiss, source navigation, persistence/storage, owner isolation/auth, retention, deleted/inaccessible handling, and mute/quiet/OS-preservation dependencies. Slack behavior remains **FOG** because the live UI and current canonical help-page status/content were unavailable; this is not a Slack-parity claim. |
-| 23 | **Saved/Later message queue** | Vikas Mittal; reviewer unassigned as of 2026-08-08 01:24 +05:30 | **MERGED — PR #28 (`9429c48`)** | Cloud9 contract: save/unsave; durable per-user list; open the source message/thread; honest deleted or inaccessible state. Dependencies: message identity + persistence/storage + per-user ownership/auth isolation + navigation/read + deletion/access/retention semantics. Slack behavior remains **FOG** because the live UI and current canonical help-page status/content were unavailable; Terra/Luna chose retention semantics in the implementation. PR #17 remains the audit/contract only; PR #28 is merged in master. |
+| 23 | **Saved/Later message queue** | Vikas Mittal; reviewer unassigned as of 2026-08-08 01:34 +05:30 | **MERGED — PR #28 (`9429c48`)** | Cloud9 contract: save/unsave; durable per-user list; open the source message/thread; honest deleted or inaccessible state. Dependencies: message identity + persistence/storage + per-user ownership/auth isolation + navigation/read + deletion/access/retention semantics. Slack behavior remains **FOG** because the live UI and current canonical help-page status/content were unavailable; Terra/Luna chose retention semantics in the implementation. PR #17 remains the audit/contract only; PR #28 is merged in master. |
 
 ### Waiting on Vikas — nobody else can do these
 
