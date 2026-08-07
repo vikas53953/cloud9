@@ -2806,6 +2806,13 @@ export class RelayClient {
         w.notificationsLoading = false;
         break;
       case "notificationUpdated": {
+        // The normal inbox view does not request dismissed rows.  Remove one
+        // immediately when the relay confirms dismissal; keeping it visible
+        // until reconnect would make the Dismiss action look ineffective.
+        if (frame.entry.state === "dismissed") {
+          w.notifications = w.notifications.filter(entry => entry.id !== frame.entry.id);
+          break;
+        }
         const i = w.notifications.findIndex(entry => entry.id === frame.entry.id);
         w.notifications = i < 0
           ? [frame.entry, ...w.notifications]
