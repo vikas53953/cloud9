@@ -13081,12 +13081,12 @@ function WorkflowEditor({ draft, setDraft, titleRef, announce, setAnnounce, save
       <button className="ghost" onClick={onCancel}>Cancel</button></div>
     <div className="workflow-form">
       <label>Workflow name<input id="workflow-name" ref={titleRef} value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })}
-        placeholder="e.g. Weekly release notes" aria-required="true" aria-describedby="workflow-name-error" />
+        placeholder="e.g. Weekly release notes" aria-required="true" aria-describedby={validation?.field === "workflow-name" ? "workflow-name-error" : undefined} />
         {validation?.field === "workflow-name" && <span id="workflow-name-error" className="field-error" role="alert">{validation.message}</span>}</label>
       <label>Description <span className="optional">(optional)</span><textarea value={draft.description}
         onChange={e => setDraft({ ...draft, description: e.target.value })} placeholder="What does this runbook do?" rows={2} /></label>
       <label>Channel<select id="workflow-channel" value={draft.channelId} onChange={e => setDraft({ ...draft, channelId: e.target.value })}
-        aria-describedby="workflow-channel-help workflow-channel-error"><option value="">Choose a channel</option>
+        aria-describedby={validation?.field === "workflow-channel" ? "workflow-channel-help workflow-channel-error" : "workflow-channel-help"}><option value="">Choose a channel</option>
         {world.channels.filter(c => c.kind === "channel").map(c => <option key={c.id} value={c.id}>#{c.name}</option>)}</select>
         <span id="workflow-channel-help" className="field-help">Steps use this room for context and task history.</span>
         {validation?.field === "workflow-channel" && <span id="workflow-channel-error" className="field-error" role="alert">{validation.message}</span>}</label>
@@ -13096,14 +13096,14 @@ function WorkflowEditor({ draft, setDraft, titleRef, announce, setAnnounce, save
         <button className="secondary small" onClick={() => setDraft({ ...draft, steps: [...draft.steps,
           { id: workflowStepId(), agentId: world.agents.find(a => a.ownerId === world.me?.id)?.id ?? "", instruction: "" }] })}>＋ Add step</button></div>
       <ol className="workflow-steps">
-        {draft.steps.length === 0 && <li id="workflow-empty-steps" tabIndex={-1} className="workflow-no-steps" aria-describedby="workflow-empty-steps-error">No steps yet. Add one to get started.
+        {draft.steps.length === 0 && <li id="workflow-empty-steps" tabIndex={-1} className="workflow-no-steps" aria-describedby={validation?.field === "workflow-empty-steps" ? "workflow-empty-steps-error" : undefined}>No steps yet. Add one to get started.
           {validation?.field === "workflow-empty-steps" && <span id="workflow-empty-steps-error" className="field-error" role="alert">{validation.message}</span>}</li>}
         {draft.steps.map((step, index) => <li className="workflow-step" key={step.id}><span className="step-number" aria-hidden="true">{index + 1}</span>
-          <div className="step-fields"><label>Agent<select id={"workflow-step-" + step.id + "-agent"} aria-describedby={"workflow-step-" + step.id + "-agent-error"} value={step.agentId} onChange={e => updateStep(step.id, { agentId: e.target.value })}>
+          <div className="step-fields"><label>Agent<select id={"workflow-step-" + step.id + "-agent"} aria-describedby={validation?.field === "workflow-step-" + step.id + "-agent" ? "workflow-step-" + step.id + "-agent-error" : undefined} value={step.agentId} onChange={e => updateStep(step.id, { agentId: e.target.value })}>
             <option value="">Choose an agent</option>{world.agents.filter(a => a.ownerId === world.me?.id).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
             {validation?.field === "workflow-step-" + step.id + "-agent" && <span id={"workflow-step-" + step.id + "-agent-error"} className="field-error" role="alert">{validation.message}</span>}</label>
             <label>Instruction<textarea id={"workflow-step-" + step.id + "-instruction"} value={step.instruction} onChange={e => updateStep(step.id, { instruction: e.target.value })}
-              aria-describedby={"workflow-step-" + step.id + "-instruction-error"} placeholder="Describe the work in plain words." rows={3} />
+              aria-describedby={validation?.field === "workflow-step-" + step.id + "-instruction" ? "workflow-step-" + step.id + "-instruction-error" : undefined} placeholder="Describe the work in plain words." rows={3} />
               {validation?.field === "workflow-step-" + step.id + "-instruction" && <span id={"workflow-step-" + step.id + "-instruction-error"} className="field-error" role="alert">{validation.message}</span>}</label></div>
           <div className="step-actions"><button className="iconbtn" title="Move step up" aria-label={"Move step " + (index + 1) + " up"}
             disabled={index === 0} onClick={() => moveStep(index, -1)}>↑</button>
