@@ -51,6 +51,8 @@ test("notification inbox answers are request-correlated and fetched once on moun
     "out-of-order inbox answers must match the active request id");
   assert.match(askBlock, /notificationsRequestId = undefined/,
     "late answers after refusal/loss must be invalidated");
+  assert.match(askBlock, /if \(!sent &&/,
+    "a request attempted while disconnected must not leave an eternal spinner");
   assert.match(askBlock, /notificationsProblem/,
     "loading/error state belongs to the active inbox request");
   const app = fs.readFileSync(path.join(__dirname, "..", "src", "App.tsx"), "utf8");

@@ -1258,7 +1258,7 @@ export class RelayClient {
     this.world.notificationsRequestId = requestId;
     this.world.notificationsProblem = undefined;
     this.emit();
-    this.ask({ type: "notifications", includeDismissed, limit, requestId }, {
+    const sent = this.ask({ type: "notifications", includeDismissed, limit, requestId }, {
       answers: f => f.type === "notificationInbox" && f.requestId === requestId,
       answered: f => {
         if (f.type !== "notificationInbox" || this.world.notificationsRequestId !== requestId) return;
@@ -1283,6 +1283,12 @@ export class RelayClient {
         this.emit();
       },
     });
+    if (!sent && this.world.notificationsRequestId === requestId) {
+      this.world.notificationsRequestId = undefined;
+      this.world.notificationsLoading = false;
+      this.world.notificationsProblem = "Cloud9 is reconnecting. Notifications will return when the relay answers.";
+      this.emit();
+    }
   }
 
   markNotificationRead(notificationId: ID): void {
