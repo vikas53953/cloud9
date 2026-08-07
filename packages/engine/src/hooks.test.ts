@@ -99,6 +99,7 @@ test("a hook fires its action when its event happens", () => {
   const firings = b.fire(fact());
   assert.equal(firings.length, 1);
   assert.equal(firings[0]?.ok, true);
+  assert.match(firings[0]?.firingId ?? "", /^hookfiring_/);
   assert.deepEqual(said, [{ agentId: "a_scout", channelId: "c1", text: "Scout: Scout finished answering" }]);
 });
 

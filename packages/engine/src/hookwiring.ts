@@ -118,7 +118,12 @@ export function engineActions(
         id: newMemoryId(), agentId, kind: "fact",
         text: text.trim().slice(0, 500), createdAt: Date.now(), source: "owner",
       };
-      if (!engine.memory.save(note)) log(`could not store a hook's note for agent ${agentId}`);
+      // A local memory failure is a failed action, not a successful dispatch.
+      // Throw so HookBook records a refusal and the relay never presents this
+      // hook as having completed work it could not persist.
+      if (!engine.memory.save(note)) {
+        throw new Error(`could not store a hook's note for agent ${agentId}`);
+      }
     },
 
     // START A JOB THE WAY A PERSON DOES. `requestJob` puts a card in front of
@@ -126,7 +131,7 @@ export function engineActions(
     job({ agentId, channelId, title }) {
       const agent: AgentDef | undefined = engine.agentById(agentId);
       if (!agent) throw new Error("that agent is gone");
-      engine.requestJob(agent, channelId, title);
+      engine.requestJob(agent, channelId, title, undefined, { causedByHook: true });
     },
 
     // RUN A PROGRAM — in the agent's OWN folder, on a one-minute leash, through

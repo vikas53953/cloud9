@@ -42,14 +42,52 @@ test("owner hook CRUD is durable, correlated, validated, and idempotent", async 
   owner.send({ type: "createHook", hook: { ...hook, when: { agentId: "not-owned" } }, requestId: "bad-when" });
   const badWhen = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error" && f.requestId === "bad-when");
   assert.match(badWhen.error, /agent/);
-  engine.send({ type: "hookFired", hookId: created.hook.id, event: "turn.finished", ok: false, said: "disabled", at: Date.now() });
+  engine.send({ type: "hookFired", hookId: created.hook.id, event: "turn.finished", ok: false, said: "disabled", at: Date.now(), firingId: "hookfiring_test-1" });
   await new Promise(resolve => setTimeout(resolve, 50));
   const audit = relay.store.hookAuditOf(relay.ownerId);
   assert.ok(audit.some(row => row.action === "refused" && row.client === "engine" && row.hookId === created.hook.id));
+  const auditCount = audit.length;
+  // The same engine report may be retried after a reconnect, but it is one
+  // firing and therefore one audit row.
+  engine.send({ type: "hookFired", hookId: created.hook.id, event: "turn.finished", ok: false, said: "disabled", at: Date.now(), firingId: "hookfiring_test-1" });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(relay.store.hookAuditOf(relay.ownerId).length, auditCount);
+  engine.send({ type: "hookFired", hookId: created.hook.id, event: "job.finished", ok: true, said: "wrong event", at: Date.now(), firingId: "hookfiring_test-2" });
+  const wrongEvent = await engine.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(wrongEvent.error, /does not match/);
+  engine.send({ type: "hookFired", hookId: created.hook.id, event: "turn.finished", ok: true, said: "queued to relay", at: Date.now(), firingId: "hookfiring_test-3" });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const dispatched = relay.store.hookAuditOf(relay.ownerId).find(row => row.requestId === "hookfiring_test-3");
+  assert.deepEqual(dispatched && { action: dispatched.action, ok: dispatched.ok }, { action: "dispatched", ok: false });
   owner.send({ type: "deleteHook", hookId: created.hook.id, requestId: "delete-1" });
   const gone = await owner.wait<Extract<ServerFrame, { type: "hooks" }>>(f => f.type === "hooks" && f.requestId === "delete-1");
   assert.deepEqual(gone.hooks, []);
   owner.send({ type: "deleteHook", hookId: created.hook.id, requestId: "delete-1" });
   const replayDelete = await owner.wait<Extract<ServerFrame, { type: "hooks" }>>(f => f.type === "hooks" && f.requestId === "delete-1");
   assert.deepEqual(replayDelete.hooks, []);
+});
+
+test("relay enforces the fifty-hook owner limit", async t => {
+  const relay = new Relay({ dbPath: tmp("hooks-limit.db"), ownerToken: "owner", ownerName: "Owner" });
+  const port = await relay.listen(0); const url = `ws://127.0.0.1:${port}`;
+  const owner = new TestClient(url, "owner"); await owner.wait(f => f.type === "welcome");
+  t.after(() => { owner.close(); relay.close(); });
+  owner.send({ type: "createAgent", agent: { name: "Limit bot", emoji: "🤖", persona: "Does hook work", abilities: { webSearch: false, files: false, schedules: false, background: false } } as never });
+  const agent = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent" && f.agent.name === "Limit bot");
+  for (let i = 0; i < 50; i++) {
+    const requestId = `limit-${i}`;
+    owner.send({
+      type: "createHook", requestId,
+      hook: { name: `Hook ${i}`, event: "turn.finished", enabled: true,
+        action: { do: "note", agentId: agent.agent.id, text: "ok" } },
+    });
+    await owner.wait(f => f.type === "hook" && f.requestId === requestId);
+  }
+  owner.send({
+    type: "createHook", requestId: "limit-51",
+    hook: { name: "Hook 51", event: "turn.finished", enabled: true,
+      action: { do: "note", agentId: agent.agent.id, text: "no" } },
+  });
+  const refused = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error" && f.requestId === "limit-51");
+  assert.match(refused.error, /at most 50/);
 });

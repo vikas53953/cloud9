@@ -1429,12 +1429,12 @@ export class Engine {
         // screen: a hook's message can end up in a room, so a path, an argument
         // list or an environment value must not be able to ride out on it.
         what: redactForSharing(seed.what, 300),
-        ...(seed.causedByHook ? { causedByHook: true } : {}),
+        ...(seed.causedByHook || task?.causedByHook ? { causedByHook: true } : {}),
       });
       for (const firing of firings) {
         this.sendFrame({
           type: "hookFired", hookId: firing.hookId, event: firing.event,
-          ok: firing.ok, said: firing.said, at: firing.at,
+          ok: firing.ok, said: firing.said, at: firing.at, firingId: firing.firingId,
         });
       }
     } catch (err) {
@@ -3532,12 +3532,16 @@ export class Engine {
    * wanted to be asked about produces a card, exactly as he asked; it does not
    * produce a running job with nobody told.
    */
-  requestJob(agent: AgentDef, channelId: ID, title: string, requesterId?: ID): void {
+  requestJob(
+    agent: AgentDef, channelId: ID, title: string, requesterId?: ID,
+    opts: { causedByHook?: boolean } = {},
+  ): void {
     const mustAsk = approvalsFor(agent).background || needsApprovalToRun(agent);
     this.sendFrame({
       type: "createTask", agentId: agent.id, channelId,
       title: title.slice(0, 200),
       ...(requesterId ? { requesterId } : {}),
+      ...(opts.causedByHook ? { causedByHook: true } : {}),
       ...(mustAsk ? { needsApproval: true, action: `Start a job: ${title.slice(0, 150)}` } : {}),
     });
   }

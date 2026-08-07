@@ -3371,6 +3371,12 @@ export class Store implements JoinHubStore {
     this.db.prepare("INSERT INTO hook_audit(id,ownerId,hookId,action,ok,said,at,actorId,client,requestId,target) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
       .run(newId("hookaudit"), ownerId, hookId, action, ok ? 1 : 0, said, at, actorId, client, requestId ?? null, target);
   }
+  /** Whether a hook firing receipt was already written (transport retry safe). */
+  hookAuditHasRequest(ownerId: ID, requestId: ID): boolean {
+    return Boolean(this.db.prepare(
+      "SELECT 1 FROM hook_audit WHERE ownerId=? AND requestId=? LIMIT 1",
+    ).get(ownerId, requestId));
+  }
   hookAuditOf(ownerId: ID): { hookId: ID; action: string; ok: boolean; actorId: ID; client: string; requestId?: ID; target: string }[] {
     return (this.db.prepare("SELECT hookId,action,ok,actorId,client,requestId,target FROM hook_audit WHERE ownerId=? ORDER BY at ASC,id ASC")
       .all(ownerId) as { hookId: ID; action: string; ok: number; actorId: ID; client: string; requestId: ID | null; target: string }[])

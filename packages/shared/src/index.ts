@@ -1178,6 +1178,8 @@ export interface Task {
   workflowId?: ID;
   workflowRunId?: ID;
   workflowStepId?: ID;
+  /** A task started by a hook must not feed its own completion back into hooks. */
+  causedByHook?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -3234,7 +3236,7 @@ type ClientFrameBase =
   // engine's own account (the owner) for a friend's request. Only an engine
   // connection may set it, and the relay still checks that person is real and
   // can see the channel — it is a claim, not a permission.
-  | { type: "createTask"; agentId: ID; channelId: ID; title: string; requesterId?: ID; needsApproval?: boolean; action?: string }
+  | { type: "createTask"; agentId: ID; channelId: ID; title: string; requesterId?: ID; needsApproval?: boolean; action?: string; causedByHook?: boolean }
   /**
    * engine (agent owner) only. `summary` follows the same sentence-vs-silence
    * rule as every other optional field in this protocol: ABSENT means "I am not
@@ -3374,7 +3376,7 @@ type ClientFrameBase =
   /** ENGINE-HOST ONLY: report one owner's hook firing back to the hub audit. */
   | {
       type: "hookFired"; hookId: ID; event: HookEvent; ok: boolean;
-      said: string; at: number;
+      said: string; at: number; firingId: ID;
     }
   /**
    * "LOOK AT GITHUB NOW." The owner asking for a fresh look at one project.

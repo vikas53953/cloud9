@@ -43,7 +43,7 @@ import os from "node:os";
 // over the wire is asked the same question `buildHandoff` asked, by the same
 // rule (docs/plans/agent-memory-handoff.md §9.2). The relay already depends on
 // `@cloud9/engine`, so there is one owner of "is this a real handoff".
-import { validateHandoff } from "@cloud9/engine";
+import { HOOK_DEFAULTS, validateHandoff } from "@cloud9/engine";
 import { mentionEvent, type NotifyViewer } from "@cloud9/engine/dist/notify-feed.js";
 import { threadReplyEvent, type ThreadReplyFacts } from "@cloud9/shared/dist/notify.js";
 import { RunRow, Store, searchTerms } from "./store.js";
@@ -1695,6 +1695,7 @@ export class Relay {
     conn: Conn,
     input: {
       agentId: ID; channelId: ID; title: string; requesterId?: ID;
+      causedByHook?: boolean;
       workflowId?: ID; workflowRunId?: ID; workflowStepId?: ID;
     },
   ): Task {
@@ -1715,6 +1716,7 @@ export class Relay {
       ...(input.workflowId ? { workflowId: input.workflowId } : {}),
       ...(input.workflowRunId ? { workflowRunId: input.workflowRunId } : {}),
       ...(input.workflowStepId ? { workflowStepId: input.workflowStepId } : {}),
+      ...(input.causedByHook ? { causedByHook: true } : {}),
     };
     let approval: Approval | undefined;
     if (needsApproval) {
@@ -2561,6 +2563,7 @@ export class Relay {
         this.createTaskFor(conn, {
           agentId: frame.agentId, channelId: frame.channelId, title: frame.title,
           requesterId: frame.requesterId,
+          ...(frame.causedByHook ? { causedByHook: true } : {}),
         });
         break;
         /*
@@ -3125,6 +3128,9 @@ export class Relay {
       case "createHook": {
         this.assertHookClient(conn);
         this.validateHookCreate(frame.hook);
+        if (this.store.hooksOf(conn.userId).length >= HOOK_DEFAULTS.maxHooks) {
+          throw new Error(`Cloud9 keeps at most ${HOOK_DEFAULTS.maxHooks} hooks`);
+        }
         const requestId = frame.requestId;
         const priorReceipt = this.hookReceipt(conn, requestId, "create", "new", frame.hook);
         if (priorReceipt) {
@@ -3392,10 +3398,19 @@ export class Relay {
       case "hookFired": {
         if (conn.client !== "engine") throw new Error("only the engine reports hook firings");
         if (!Object.prototype.hasOwnProperty.call(HOOK_EVENTS, frame.event)) throw new Error("that hook event is not supported");
+        if (!isSafeStoredId(frame.firingId)) throw new Error("that hook firing has no valid receipt id");
+        if (typeof frame.ok !== "boolean") throw new Error("that hook firing has no valid result");
+        if (typeof frame.said !== "string" || frame.said.length > 2_000) throw new Error("that hook firing has no valid explanation");
+        if (!Number.isFinite(frame.at)) throw new Error("that hook firing has no valid time");
         const hook = this.myHook(conn.userId, frame.hookId);
+        if (hook.event !== frame.event) throw new Error("that hook firing does not match the stored event");
+        // A reconnect or engine retry may report the same fire again. The
+        // firing id is the receipt boundary, so the audit trail stays one row
+        // per real action rather than counting transport retries as work.
+        if (this.store.hookAuditHasRequest(conn.userId, frame.firingId)) break;
         this.store.logHookAudit(
-          conn.userId, hook.id, frame.ok ? "fired" : "refused", frame.ok, frame.said,
-          Date.now(), conn.userId, conn.client, undefined, hook.id,
+          conn.userId, hook.id, frame.ok ? "dispatched" : "refused", false, frame.said,
+          Date.now(), conn.userId, conn.client, frame.firingId, `${hook.id}:${frame.event}`,
         );
         break;
       }

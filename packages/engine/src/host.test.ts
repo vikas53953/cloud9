@@ -291,3 +291,13 @@ test("a relay HookBook sync is live: an edited rule fires through the engine", (
   assert.ok(h.engine.memory.list(a.id).some(note => note.text === "the relay rule fired"));
   h.stop();
 });
+
+test("a job started by a hook carries recursion provenance to the relay", () => {
+  const h = host();
+  const sent: unknown[] = [];
+  (h.engine as unknown as { sendFrame: (f: unknown) => void }).sendFrame = f => { sent.push(f); };
+  h.engine.requestJob(agent(), "c1", "follow up", undefined, { causedByHook: true });
+  assert.equal((sent[0] as { type: string; causedByHook?: boolean }).type, "createTask");
+  assert.equal((sent[0] as { causedByHook?: boolean }).causedByHook, true);
+  h.stop();
+});

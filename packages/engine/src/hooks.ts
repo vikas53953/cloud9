@@ -36,7 +36,7 @@
 //  5. A HOOK IS VISIBLE AND REMOVABLE. Every hook has plain words describing it
 //     (`describeHook`), lives in one file the owner can be shown, and every
 //     firing — done, refused, failed — is kept where it can be listed.
-import type { AgentDef, ID, RunOutcome } from "@cloud9/shared";
+import { newId, type AgentDef, type ID, type RunOutcome } from "@cloud9/shared";
 import path from "node:path";
 import fs from "node:fs";
 import { needsApprovalToRun } from "./abilities.js";
@@ -142,6 +142,8 @@ export interface HookActions {
 
 /** What happened when one hook met one fact. Kept, so it can be shown. */
 export interface HookFiring {
+  /** Stable per-fire receipt used by the relay to bind and deduplicate reports. */
+  firingId: ID;
   hookId: string;
   hookName: string;
   event: HookEvent;
@@ -249,6 +251,7 @@ export class HookBook {
 
   private runOne(hook: Hook, fact: HookFact): HookFiring {
     const refuse = (why: string): HookFiring => this.remember({
+      firingId: newId("hookfiring"),
       hookId: hook.id, hookName: hook.name, event: hook.event,
       at: this.now(), ok: false, said: why,
     });
@@ -331,6 +334,7 @@ export class HookBook {
 
   private done(hook: Hook, said: string): HookFiring {
     return this.remember({
+      firingId: newId("hookfiring"),
       hookId: hook.id, hookName: hook.name, event: hook.event,
       at: this.now(), ok: true, said: `“${hook.name}” ${said}`,
     });
