@@ -54,9 +54,9 @@ The dated snapshot rows below are preserved history; this current row is the liv
 | Open PRs | **1** — #13 (remove the timing), CONFLICTING on `TRACKER.md` after #11 and #12 landed. **As of 2026-08-07 11:00.** |
 | Merged today | **8** — #6 time limit · #7 threads width · #9 activity · #10 spending · **#11 harness inventory** · **#12 threads research** · plus #5 and #8, both reverts of code that reached master unreviewed (one the conductor's). |
 
-**Current live snapshot (2026-08-07 16:58 IST):** PR #13 is OPEN, pushed at
-review fixes at `42e1b3c` (tracker tip follows), and **CLEAN against
-`origin/master`**. It is not approved or merged;
+**Current live snapshot (2026-08-07 16:58 IST):** PR #13 is OPEN; review fixes
+are in `42e1b3c`, and it is **CLEAN against `origin/master`**. It is not
+approved or merged;
 the older row below saying `CONFLICTING` is retained as dated review history.
 
 | # | HIS ASK (his words — never renamed) | Who has it | Stage | Evidence so far |
