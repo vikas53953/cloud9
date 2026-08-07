@@ -12,7 +12,7 @@ import {
   RunRecord, RUN_RETENTION, Task, User, isSafeStoredId, nameKey, newId,
   NOTIFICATION_INBOX_LIMITS,
   type NotificationInboxKind, type NotificationInboxState,
-  validateArtifactLinks,
+  Workflow, WorkflowRun, validateArtifactLinks, validateWorkflow,
 } from "@cloud9/shared";
 // THE ONE OWNER of "write a file this app will later believe" — write next
 // door, flush it down to the disk, rename it into place. It lives in the engine
@@ -313,6 +313,16 @@ export class Store implements JoinHubStore {
       CREATE TABLE IF NOT EXISTS tasks(
         id TEXT PRIMARY KEY, updatedAt INTEGER NOT NULL, json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS workflows(
+        id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, updatedAt INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS workflow_owner ON workflows(ownerId, updatedAt);
+      CREATE TABLE IF NOT EXISTS workflow_runs(
+        id TEXT PRIMARY KEY, workflowId TEXT NOT NULL, ownerId TEXT NOT NULL,
+        updatedAt INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS workflow_run_owner ON workflow_runs(ownerId, updatedAt);
+      CREATE INDEX IF NOT EXISTS workflow_run_workflow ON workflow_runs(workflowId, updatedAt);
       CREATE TABLE IF NOT EXISTS approvals(
         id TEXT PRIMARY KEY, json TEXT NOT NULL
       );
@@ -826,6 +836,11 @@ export class Store implements JoinHubStore {
     // immutable rows and throw the other away.
     this.step(6, () => this.addArtifactWorkspaceSchema());
 
+    // v6 → v7: saved manual workflow definitions and their durable run history.
+    // The tables are also created in the guarded open above, so an interrupted
+    // or older database can safely retry this idempotent step.
+    this.step(7, () => this.addWorkflowSchema());
+
     // The one thing that still says a person can only be in a room once at a
     // time, now that the primary key no longer does. It lives here, below the
     // step that reshapes the table, for the same reason act_seq does.
@@ -858,6 +873,19 @@ export class Store implements JoinHubStore {
    * reported instead of guessed at: renumbering one would change a stable exact
    * reference, and deleting one would destroy retained bytes.
    */
+  private addWorkflowSchema(): void {
+    this.db.exec(
+      "CREATE TABLE IF NOT EXISTS workflows(" +
+      "id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, updatedAt INTEGER NOT NULL, json TEXT NOT NULL);" +
+      "CREATE INDEX IF NOT EXISTS workflow_owner ON workflows(ownerId, updatedAt);" +
+      "CREATE TABLE IF NOT EXISTS workflow_runs(" +
+      "id TEXT PRIMARY KEY, workflowId TEXT NOT NULL, ownerId TEXT NOT NULL," +
+      "updatedAt INTEGER NOT NULL, json TEXT NOT NULL);" +
+      "CREATE INDEX IF NOT EXISTS workflow_run_owner ON workflow_runs(ownerId, updatedAt);" +
+      "CREATE INDEX IF NOT EXISTS workflow_run_workflow ON workflow_runs(workflowId, updatedAt);",
+    );
+  }
+
   private addArtifactWorkspaceSchema(): void {
     const duplicate = this.db.prepare(
       "SELECT artifactId,version,COUNT(*) n FROM artifact_versions " +
@@ -2910,6 +2938,43 @@ export class Store implements JoinHubStore {
     return (this.db.prepare("SELECT json FROM tasks ORDER BY updatedAt DESC LIMIT ?").all(limit) as { json: string }[])
       .map(r => JSON.parse(r.json) as Task);
   }
+  saveWorkflow(w: Workflow): void {
+    const bad = validateWorkflow(w);
+    if (bad) throw new Error(bad);
+    this.db.prepare(
+      "INSERT OR REPLACE INTO workflows(id,ownerId,updatedAt,json) VALUES(?,?,?,?)",
+    ).run(w.id, w.ownerId, w.updatedAt, JSON.stringify(w));
+  }
+  workflow(id: ID): Workflow | undefined {
+    const row = this.db.prepare("SELECT json FROM workflows WHERE id=?").get(id) as
+      { json: string } | undefined;
+    return row ? JSON.parse(row.json) as Workflow : undefined;
+  }
+  workflows(ownerId: ID, limit = 200): Workflow[] {
+    return (this.db.prepare(
+      "SELECT json FROM workflows WHERE ownerId=? ORDER BY updatedAt DESC LIMIT ?",
+    ).all(ownerId, limit) as { json: string }[]).map(r => JSON.parse(r.json) as Workflow);
+  }
+  saveWorkflowRun(run: WorkflowRun): void {
+    this.db.prepare(
+      "INSERT OR REPLACE INTO workflow_runs(id,workflowId,ownerId,updatedAt,json) VALUES(?,?,?,?,?)",
+    ).run(run.id, run.workflowId, run.ownerId, run.finishedAt ?? run.createdAt, JSON.stringify(run));
+  }
+  workflowRun(id: ID): WorkflowRun | undefined {
+    const row = this.db.prepare("SELECT json FROM workflow_runs WHERE id=?").get(id) as
+      { json: string } | undefined;
+    return row ? JSON.parse(row.json) as WorkflowRun : undefined;
+  }
+  workflowRuns(ownerId: ID, workflowId?: ID, limit = 200): WorkflowRun[] {
+    const rows = workflowId
+      ? this.db.prepare(
+        "SELECT json FROM workflow_runs WHERE ownerId=? AND workflowId=? ORDER BY updatedAt DESC LIMIT ?",
+      ).all(ownerId, workflowId, limit)
+      : this.db.prepare(
+        "SELECT json FROM workflow_runs WHERE ownerId=? ORDER BY updatedAt DESC LIMIT ?",
+      ).all(ownerId, limit);
+    return (rows as { json: string }[]).map(r => JSON.parse(r.json) as WorkflowRun);
+  }
   saveApproval(a: Approval): void {
     this.db.prepare("INSERT OR REPLACE INTO approvals(id,json) VALUES(?,?)").run(a.id, JSON.stringify(a));
   }
@@ -3165,8 +3230,9 @@ export const ARTIFACT_STAGE_GRACE_MS = 60_000;
  * 5 = a membership row per spell in a room, so a rejoin cannot overwrite a
  *     first arrival.
  * 6 = artifact chain access, exact-version links, and immutable version keys.
+ * 7 = saved manual workflow definitions and durable workflow-run records.
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /**
  * The fingerprint of one line of the trail.

@@ -10,6 +10,7 @@ import {
   EverywhereHit, SearchKind,
   ReachCatchup,
   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
+  Workflow, WorkflowRun,
   // SPENDING BLOCK (what the crew costs, 2026-08-07)
   AgentTokenUse, WasteFinding,
   UnreadEntry, User,
@@ -214,6 +215,8 @@ export interface World {
   hubConn: { phase: ConnState["phase"]; line: string };
   tasks: Task[];
   approvals: Approval[];
+  workflows: Workflow[];
+  workflowRuns: WorkflowRun[];
   activity: ActivityRecord[];
   /** Durable mention and thread-reply rows for this account. */
   notifications: NotificationInboxEntry[];
@@ -599,6 +602,7 @@ export class RelayClient {
     messages: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
     notifications: [], notificationsAsked: false, notificationsLoading: false,
     notificationsRequestId: undefined, notificationsProblem: undefined,
+    workflows: [], workflowRuns: [],
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
@@ -2781,6 +2785,8 @@ export class RelayClient {
         w.notificationsLoading = false;
         w.notificationsRequestId = undefined;
         w.notificationsProblem = undefined;
+        w.workflows = frame.state.workflows ?? [];
+        w.workflowRuns = frame.state.workflowRuns ?? [];
         w.messages = {};
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
@@ -2941,6 +2947,22 @@ export class RelayClient {
         const i = w.approvals.findIndex(a => a.id === frame.approval.id);
         if (i >= 0) w.approvals[i] = frame.approval; else w.approvals.push(frame.approval);
         w.approvals = [...w.approvals];
+        break;
+      }
+      case "workflows":
+        w.workflows = frame.workflows;
+        w.workflowRuns = frame.runs;
+        break;
+      case "workflow": {
+        const i = w.workflows.findIndex(x => x.id === frame.workflow.id);
+        if (i >= 0) w.workflows[i] = frame.workflow; else w.workflows.unshift(frame.workflow);
+        w.workflows = [...w.workflows];
+        break;
+      }
+      case "workflowRun": {
+        const i = w.workflowRuns.findIndex(x => x.id === frame.run.id);
+        if (i >= 0) w.workflowRuns[i] = frame.run; else w.workflowRuns.unshift(frame.run);
+        w.workflowRuns = [...w.workflowRuns];
         break;
       }
       case "activity":
