@@ -6,6 +6,7 @@ import {
   Attachment, ATTACHMENT_LIMITS, Channel,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   MemoryNote,
+  NotificationInboxEntry,
   EverywhereHit, SearchKind,
   ReachCatchup,
   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
@@ -214,6 +215,8 @@ export interface World {
   tasks: Task[];
   approvals: Approval[];
   activity: ActivityRecord[];
+  /** Durable mention and thread-reply rows for this account. */
+  notifications: NotificationInboxEntry[];
   /** status of the local Claude/Codex apps — booleans and labels, never secrets */
   harness?: HarnessState;
   /**
@@ -588,6 +591,7 @@ export class RelayClient {
   world: World = {
     connected: false, authFailed: false, users: [], agents: [], channels: [],
     messages: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
+    notifications: [],
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
@@ -1237,6 +1241,19 @@ export class RelayClient {
   /** "I have read this conversation up to here." Kept on the account, not here. */
   markRead(channelId: ID, ts?: number): void {
     this.send({ type: "markRead", channelId, ts });
+  }
+
+  /** Fetch the relay-owned, durable mention/thread-reply inbox. */
+  askNotifications(includeDismissed = false, limit = 100): void {
+    this.send({ type: "notifications", includeDismissed, limit });
+  }
+
+  markNotificationRead(notificationId: ID): void {
+    this.send({ type: "markNotificationRead", notificationId });
+  }
+
+  dismissNotification(notificationId: ID): void {
+    this.send({ type: "dismissNotification", notificationId });
   }
 
   /* ---------------- search ---------------- */
@@ -2716,6 +2733,7 @@ export class RelayClient {
         w.presence = frame.state.presence ?? {};
         w.tasks = frame.state.tasks;
         w.approvals = frame.state.approvals;
+        w.notifications = frame.state.notifications ?? [];
         w.messages = {};
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
@@ -2773,6 +2791,16 @@ export class RelayClient {
         // to a hub that has nothing to say clears it rather than leaving a
         // notice on screen about something that has already been told.
         w.reachCatchup = frame.state.reachCatchup;
+        break;
+      }
+      case "notificationInbox":
+        w.notifications = [...frame.entries];
+        break;
+      case "notificationUpdated": {
+        const i = w.notifications.findIndex(entry => entry.id === frame.entry.id);
+        w.notifications = i < 0
+          ? [frame.entry, ...w.notifications]
+          : w.notifications.map((entry, index) => index === i ? frame.entry : entry);
         break;
       }
       case "token":

@@ -14,6 +14,7 @@ import {
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
   EverywhereHit, SearchKind,
   SearchHit, ServerFrame, SKILL_LIMITS, summarizeRun, Task, User, humanDuration, humanMoney,
+  NotificationInboxEntry,
   validateMessageText, validateName,
   /* spending limits, "show me the plan first", stand-in models (2026-08-05) —
      the words and the rules come from shared, so the screen and the engine
@@ -1143,6 +1144,12 @@ const IconProjects = (): React.JSX.Element => (
 const IconLog = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12.5h4l2.2-6 3.4 12 2.5-7.5 1.6 3.5H21" /></svg>
 );
+const IconBell = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M6.5 16.5h11l-1.5-2v-4a4 4 0 0 0-8 0v4Z" />
+    <path d="M10 19a2.2 2.2 0 0 0 4 0" />
+  </svg>
+);
 /* Three bars of different heights — "what things cost, compared". Deliberately
    NOT a coin or a dollar sign: this screen is about where the money went as
    much as how much it was, and half the agents on it may report no money at
@@ -1966,7 +1973,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "files" | "projects" | "spending" | "activity" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "files" | "projects" | "spending" | "activity" | "notifications" | "settings";
 type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -2129,6 +2136,7 @@ function Workspace(): React.JSX.Element {
      "1" and the board said "Nothing is being worked on" — both visible at once,
      one of them lying. `workingCount` is now the only answer either can give. */
   const workingNow = workingCount(useAgentActivity().map(r => r.line));
+  const unreadNotifications = world.notifications.filter(n => n.state === "unread").length;
 
   /* ---- EVERY WAY OUT OF A SCREEN GOES THROUGH ONE DOOR ----
    *
@@ -2169,6 +2177,13 @@ function Workspace(): React.JSX.Element {
     attemptLeave(() => {
       client.send({ type: "activity", limit: 100 });
       setScreen("activity");
+    });
+  }, []);
+
+  const openNotifications = useCallback(() => {
+    attemptLeave(() => {
+      client.askNotifications(false);
+      setScreen("notifications");
     });
   }, []);
 
@@ -2710,6 +2725,7 @@ function Workspace(): React.JSX.Element {
               needs to look — a rail that stays quiet while an agent works is
               the version of this feature that does not get used. */}
           {railBtn("activity", "Activity", <IconLog />, workingNow, openActivity)}
+          {railBtn("notifications", "Notifications", <IconBell />, unreadNotifications, openNotifications)}
           <div className="rail-spacer" />
           <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
             <IconBolt />Ctrl K
@@ -2783,6 +2799,16 @@ function Workspace(): React.JSX.Element {
           )}
           {screen === "spending" && <SpendingScreen />}
           {screen === "activity" && <ActivityScreen />}
+          {screen === "notifications" && (
+            <NotificationsScreen onOpen={entry => {
+              client.markNotificationRead(entry.id);
+              if (entry.sourceState === "active" && entry.channelId && entry.messageId) {
+                goChannel(entry.channelId);
+                setJumpTo({ id: entry.messageId, at: Date.now() });
+                if (entry.rootId) setOpenThreadFor({ id: entry.rootId, at: Date.now() });
+              }
+            }} />
+          )}
           {screen === "settings" && <SettingsScreen />}
         </main>
       </div>
@@ -14227,6 +14253,81 @@ function RightNowBoard(): React.JSX.Element {
         </div>
       )}
     </section>
+  );
+}
+
+function NotificationsScreen({ onOpen }: {
+  onOpen: (entry: NotificationInboxEntry) => void;
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [loading, setLoading] = useState(true);
+  const [requestedAt, setRequestedAt] = useState(() => Date.now());
+
+  useEffect(() => {
+    setLoading(true);
+    const at = Date.now();
+    setRequestedAt(at);
+    client.askNotifications(false);
+    // The relay's response owns the rows; this only prevents a dead connection
+    // from leaving an endless spinner. A refusal is shown from lastError below.
+    const timer = setTimeout(() => setLoading(false), 700);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (world.connected && world.notifications.length >= 0) setLoading(false);
+  }, [world.connected, world.notifications]);
+
+  useEffect(() => {
+    listRef.current?.focus();
+  }, []);
+
+  const problem = world.lastError && world.lastError.ts >= requestedAt
+    ? world.lastError.text : undefined;
+  const unread = world.notifications.filter(entry => entry.state === "unread").length;
+
+  return (
+    <div className="notifications" data-testid="notification-inbox">
+      <header className="topbar">
+        <h2>Notifications</h2>
+        <span className="sub">Mentions and thread replies that belong to you</span>
+        <div className="grow" />
+        <span className="eyebrow" aria-live="polite">{unread} unread</span>
+      </header>
+      <div className="notifications-body" ref={listRef} tabIndex={-1}
+        aria-live="polite" aria-label="Mentions and thread replies">
+        {!world.connected && <Problem tone="notice" text="Cloud9 is reconnecting. Notifications will return when the relay answers." />}
+        {problem && <Problem tone="notice" text={problem} />}
+        {loading && world.connected && <div className="notification-loading" role="status">Loading notifications…</div>}
+        {!loading && !problem && world.connected && world.notifications.length === 0 && (
+          <EmptyTray title="Nothing needs your attention" line="Mentions and replies will stay here until you read or dismiss them." />
+        )}
+        {!loading && world.notifications.length > 0 && (
+          <div className="notification-list">
+            {world.notifications.map(entry => (
+              <article key={entry.id} className={`notification-row is-${entry.state} source-${entry.sourceState}`}>
+                <button className="notification-main" type="button"
+                  disabled={entry.sourceState !== "active"}
+                  aria-label={entry.sourceState === "active" ? `Open ${entry.title}` : `${entry.title}: source unavailable`}
+                  onClick={() => onOpen(entry)}>
+                  <span className="notification-copy">
+                    <strong>{entry.title}</strong>
+                    <span>{entry.body}</span>
+                    <small>{clock(entry.createdAt)} · {entry.sourceState === "active" ? "Open source" : entry.sourceState === "deleted" ? "Source deleted" : "Source unavailable"}</small>
+                  </span>
+                  {entry.state === "unread" && <span className="notification-dot" aria-label="Unread" />}
+                </button>
+                <div className="notification-actions">
+                  {entry.state === "unread" && <button type="button" className="linkish" onClick={() => client.markNotificationRead(entry.id)}>Mark read</button>}
+                  {entry.state !== "dismissed" && <button type="button" className="linkish" onClick={() => client.dismissNotification(entry.id)}>Dismiss</button>}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

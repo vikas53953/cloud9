@@ -39,6 +39,14 @@ is not there, say so and ask once.
 
 ## 1. WHERE WE ARE RIGHT NOW
 
+### CURRENT SNAPSHOT — 2026-08-07 18:21 +05:30
+
+| # | Ask | Owner | Current stage | Evidence / boundary |
+|---|---|---|---|---|
+| 17 | **Persistent mentions-and-replies notification inbox** | notification author | **IN PROGRESS — BUILDING** on `feature/persistent-notifications` (based on origin/master `7ce7bcd`; PR not opened yet) | Shared protocol contract, relay SQLite inbox with deterministic ids/idempotent writes, recipient-scoped read/dismiss, conservative age/count retention, current-access tombstone projection, edit/delete refresh, desktop rail/list/empty/loading/error/focus/live states, and source-level relay/desktop typechecks are in the worktree. The normal multi-workspace build is currently blocked by the fresh worktree's missing workspace aliases/dependencies (no install/package/QA run); no runtime app walk is claimed. Existing mention/thread recipient rules remain the authority; mute/quiet/OS toast rules are not used to suppress durable rows. |
+
+The dated snapshot rows below are preserved history; this current row is the live stage for the notification work.
+
 | Count | |
 |---|---|
 | Things Vikas has asked for and are open | **2** - **threads** (author verified, PR #14 open; review not done) and **remove the timing** (PR #13, rejected in review). **As of 2026-08-07 15:27 +05:30.** |

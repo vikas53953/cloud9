@@ -21,6 +21,7 @@ import {
   SavingProposal, applySaving, findWaste, rollUpTokenUse, savingDetail, savingHeadline,
   tidySaving, validateSavingProposal,
   SearchHit, ServerFrame, Task, UnreadEntry, User, WorldState,
+  NotificationInboxEntry, NotificationInboxKind, notificationEventId,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
   isReceiptStage, isReceiptVerdict,
   RUN_LIMITS, redactForSharing, validateLiveSteps,
@@ -41,6 +42,8 @@ import os from "node:os";
 // rule (docs/plans/agent-memory-handoff.md §9.2). The relay already depends on
 // `@cloud9/engine`, so there is one owner of "is this a real handoff".
 import { validateHandoff } from "@cloud9/engine";
+import { mentionEvent, type NotifyViewer } from "@cloud9/engine/dist/notify-feed.js";
+import { threadReplyEvent, type ThreadReplyFacts } from "@cloud9/shared/dist/notify.js";
 import { RunRow, Store, searchTerms } from "./store.js";
 import { runReachCatchup } from "./reachcatchup.js";
 
@@ -629,6 +632,7 @@ export class Relay {
       // Swept FIRST, so nobody is ever handed a card that is already dead and
       // invited to click Approve on it.
       approvals: this.visibleApprovals(userId),
+      notifications: this.notificationInboxFor(userId),
       // read state comes from the RELAY now, not from one browser's storage, so
       // reading on the laptop is read on the phone too
       unread: this.unreadFor(userId, channels),
@@ -961,6 +965,103 @@ export class Relay {
       lastReadTs: this.store.lastRead(userId, c.id),
       ...this.store.unreadFor(userId, c.id, mine),
     }));
+  }
+
+  /** Project one durable row against the recipient's CURRENT access/message. */
+  private notificationProjection(userId: ID, row: import("./store.js").NotificationInboxRow): NotificationInboxEntry {
+    const base = {
+      id: row.id, recipientId: row.recipientId, kind: row.kind,
+      state: row.state, createdAt: row.createdAt, actorId: "unknown",
+      actorName: "Cloud9", title: row.kind === "mention" ? "You were mentioned" : "A thread moved",
+      body: "The source message is no longer available.",
+    } as NotificationInboxEntry;
+    const channel = this.visibleChannels(userId).find(c => c.id === row.channelId);
+    const message = this.store.message(row.messageId);
+    if (!channel || !message || message.channelId !== row.channelId) {
+      return { ...base, sourceState: "inaccessible" };
+    }
+    if (message.deletedAt) {
+      return {
+        ...base,
+        actorName: message.authorName,
+        actorId: row.actorId,
+        title: message.authorName + (row.kind === "mention" ? " mentioned you" : " replied in a thread"),
+        body: "This message was deleted.",
+        sourceState: "deleted",
+      };
+    }
+    return {
+      ...base,
+      actorName: message.authorName,
+      actorId: row.actorId,
+      title: message.authorName + (row.kind === "mention" ? " mentioned you" : " replied in a thread"),
+      body: message.text.trim() || "(no message)",
+      sourceState: "active",
+      channelId: row.channelId,
+      messageId: row.messageId,
+      ...(row.rootId ? { rootId: row.rootId } : {}),
+    };
+  }
+
+  private notificationInboxFor(
+    userId: ID,
+    opts: { includeDismissed?: boolean; limit?: number } = {},
+  ): NotificationInboxEntry[] {
+    return this.store.notificationsFor(userId, opts).map(row => this.notificationProjection(userId, row));
+  }
+
+  /** Re-project rows after an edit/delete or membership change. */
+  private refreshNotificationRows(rows: import("./store.js").NotificationInboxRow[]): void {
+    for (const row of rows) {
+      this.toUser(row.recipientId, {
+        type: "notificationUpdated",
+        entry: this.notificationProjection(row.recipientId, row),
+      });
+    }
+  }
+
+  /** Rebuild authoritative recipients from relay facts, never client claims. */
+  private recordMessageNotifications(channel: Channel, message: Message, priorReplies: Message[]): void {
+    const ownerId = message.authorKind === "agent"
+      ? this.store.agents().find(a => a.id === message.authorId)?.ownerId
+      : message.authorId;
+    if (!ownerId) return;
+    const authoritative: Message = {
+      ...message,
+      mentions: this.mentionsFor(ownerId, message.text),
+    };
+    const root = authoritative.replyTo ? this.store.message(authoritative.replyTo) : undefined;
+    for (const userId of this.audienceFor(channel)) {
+      const viewer: NotifyViewer = {
+        id: userId,
+        agentIds: this.store.agents().filter(a => a.ownerId === userId).map(a => a.id),
+      };
+      const mention = mentionEvent(authoritative, viewer);
+      let event = mention;
+      if (!event && root) {
+        const facts: ThreadReplyFacts = {
+          replyId: authoritative.id, channelId: authoritative.channelId,
+          authorId: authoritative.authorId, authorName: authoritative.authorName,
+          text: authoritative.text, at: authoritative.ts, rootId: root.id,
+          rootAuthorId: root.authorId,
+          threadAuthorIds: priorReplies.map(reply => reply.authorId),
+          mentions: authoritative.mentions,
+        };
+        event = threadReplyEvent(facts, viewer);
+      }
+      if (!event || (event.kind !== "mention" && event.kind !== "thread_reply")) continue;
+      const id = notificationEventId(event.kind, authoritative.id, userId);
+      const inserted = this.store.saveNotification({
+        id, recipientId: userId, kind: event.kind as NotificationInboxKind,
+        channelId: authoritative.channelId, messageId: authoritative.id,
+        ...(root ? { rootId: root.id } : {}), actorId: authoritative.authorId,
+        createdAt: authoritative.ts, state: "unread",
+      });
+      if (inserted) {
+        const row = this.store.notificationsForMessage(authoritative.id).find(r => r.id === id);
+        if (row) this.toUser(userId, { type: "notificationUpdated", entry: this.notificationProjection(userId, row) });
+      }
+    }
   }
 
   /**
@@ -1580,6 +1681,7 @@ export class Relay {
         this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.audit(conn, "member_added", ch.id, `added ${frame.memberIds.length} member(s) to ${ch.name}`);
         this.broadcastChannel(this.store.channel(ch.id)!);
+        this.refreshNotificationRows(this.store.notificationsForChannel(ch.id));
         break;
       }
       // ---- §7: a room is a thing that can be described, opened and retired ----
@@ -1653,6 +1755,7 @@ export class Relay {
         // everyone in the room, including the new arrival, learns the new
         // member list; the newcomer then asks for scrollback the ordinary way
         this.broadcastChannel(this.store.channel(ch.id)!);
+        this.refreshNotificationRows(this.store.notificationsForChannel(ch.id));
         break;
       }
       case "leaveChannel": {
@@ -1666,6 +1769,7 @@ export class Relay {
         this.tellLeft(conn.userId, ch.id);
         this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.broadcastChannel(this.store.channel(ch.id)!);
+        this.refreshNotificationRows(this.store.notificationsForChannel(ch.id));
         break;
       }
       case "removeMember": {
@@ -1685,6 +1789,7 @@ export class Relay {
         this.tellLeft(agent ? agent.ownerId : frame.memberId, ch.id);
         this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.broadcastChannel(this.store.channel(ch.id)!);
+        this.refreshNotificationRows(this.store.notificationsForChannel(ch.id));
         break;
       }
       case "setMemberRole": {
@@ -2865,6 +2970,9 @@ export class Relay {
         this.writableChannel(conn.userId, message.channelId);
         this.assertAuthor(conn.userId, message);
         if (message.deletedAt) throw new Error("that message was deleted");
+        const priorReplies = message.replyTo
+          ? this.store.thread(message.replyTo).filter(m => m.id !== message.id)
+          : [];
         const bad = validateMessageText(frame.text, (message.attachments?.length ?? 0) > 0);
         if (bad) throw new Error(bad);
         message.text = frame.text;
@@ -2873,8 +2981,14 @@ export class Relay {
         // back — otherwise editing would leave the old names notifying forever
         message.mentions = this.mentionsFor(conn.userId, frame.text);
         this.store.saveMessage(message);
+        // An edit can add a new @mention. The relay recomputes recipients from
+        // stored facts and the same deterministic event id keeps repeats
+        // idempotent while still creating a row for a newly named person.
+        const ch = this.store.channel(message.channelId);
+        if (ch) this.recordMessageNotifications(ch, message, priorReplies);
         this.auditMessage(conn, message, "message_edited", "edited a message");
         this.broadcastMessageUpdate(message);
+        this.refreshNotificationRows(this.store.notificationsForMessage(message.id));
         break;
       }
       case "deleteMessage": {
@@ -2897,6 +3011,7 @@ export class Relay {
         this.store.saveMessage(message);
         this.auditMessage(conn, message, "message_deleted", "deleted a message");
         this.broadcastMessageUpdate(message);
+        this.refreshNotificationRows(this.store.notificationsForMessage(message.id));
         break;
       }
       case "thread": {
@@ -3153,6 +3268,40 @@ export class Relay {
         this.toUser(conn.userId, { type: "read", entry });
         break;
       }
+      case "notifications": {
+        send(conn.ws, {
+          type: "notificationInbox",
+          entries: this.notificationInboxFor(conn.userId, {
+            includeDismissed: frame.includeDismissed,
+            limit: frame.limit,
+          }),
+        });
+        break;
+      }
+      case "markNotificationRead": {
+        const row = this.store.setNotificationState(
+          conn.userId, frame.notificationId, "read",
+        );
+        if (row) {
+          this.toUser(conn.userId, {
+            type: "notificationUpdated",
+            entry: this.notificationProjection(conn.userId, row),
+          });
+        }
+        break;
+      }
+      case "dismissNotification": {
+        const row = this.store.setNotificationState(
+          conn.userId, frame.notificationId, "dismissed",
+        );
+        if (row) {
+          this.toUser(conn.userId, {
+            type: "notificationUpdated",
+            entry: this.notificationProjection(conn.userId, row),
+          });
+        }
+        break;
+      }
     }
   }
 
@@ -3384,7 +3533,14 @@ export class Relay {
   private postMessage(message: Message, tempId?: string): void {
     const ch = this.store.channel(message.channelId);
     if (!ch) throw new Error("no such channel");
+    // Capture the thread as it stood BEFORE this reply landed. That timing is
+    // part of the recipient rule: a newly participating reply must not notify
+    // every older message retroactively.
+    const priorReplies = message.replyTo
+      ? this.store.thread(message.replyTo).filter(m => m.id !== message.id)
+      : [];
     this.store.saveMessage(message);
+    this.recordMessageNotifications(ch, message, priorReplies);
     // A reply bumps the CACHED count on the message that started the thread, and
     // everyone watching is told the root changed — otherwise "12 replies" would
     // only appear after a reload.
