@@ -1,0 +1,13 @@
+BINARY: C:\Users\vikasmit\cloud9-threadsbefore\release\win-unpacked\Cloud9.exe
+  built 2026-08-07T08:29:41.920Z
+  web bundle: index-C13jspEO.js  index-D5Epe0JS.css
+
+1 · HIS OWN WINDOW, thread just opened
+  as it opens                        viewport 1920  thread   280px  room  1312px  [beside the room]  kept: nullpx
+    photo  docs\qa\threads-drag-2026-08-07\before-1-his-window-as-it-opens.png
+  at 1330px                          viewport 1330  thread   232px  room   804px  [beside the room]  kept: nullpx
+    photo  docs\qa\threads-drag-2026-08-07\before-at-1330.png
+  at 894px                           viewport 894  thread   232px  room   368px  [beside the room]  kept: nullpx
+    photo  docs\qa\threads-drag-2026-08-07\before-at-894.png
+  at 800px                           viewport 800  thread   232px  room   274px  [beside the room]  kept: nullpx
+    photo  docs\qa\threads-drag-2026-08-07\before-at-800.png

@@ -5759,3 +5759,20 @@ export {
   workingCount,
   type AgentActivityFacts, type AgentActivityLine, type AgentActivityState,
 } from "./agentactivity.js";
+
+// ---------------------------------------------------------------------------
+// HOW WIDE THE THREAD IS — the divider he can grab, and the rule underneath it.
+//
+// Out here rather than in the screen for the same reason as the board above:
+// the arithmetic is the part that can be wrong, and three earlier attempts got
+// it wrong while looking fine in a browser. In particular there is a FLOOR ON
+// THE ROOM and no cap on the thread, and the width HE CHOSE is never edited by
+// the window — both are checked by `threadwidth.test.ts` rather than trusted.
+export {
+  THREAD_DEFAULT, THREAD_FLOOR, ROOM_FLOOR, THREAD_STEP,
+  RAIL_W, SIDEBAR_W_WIDE, SIDEBAR_W_NARROW, SIDEBAR_BREAKPOINT,
+  SPLIT_NEEDS, SPLIT_NEEDS_WINDOW,
+  EXPAND_LABEL, BESIDE_LABEL,
+  sidebarWidth, spaceToShare, widestThread, cannotSplit,
+  widthToDraw, widthHeChose, dividerWords, dividerSpokenWords,
+} from "./threadwidth.js";

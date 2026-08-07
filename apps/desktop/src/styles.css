@@ -359,69 +359,94 @@ a{color:var(--ultra);}
 
 /* ---------------- CHAT + DM ---------------- */
 .chatgrid{
-  flex:1;min-height:0;display:grid;
+  flex:1;min-height:0;display:grid;position:relative;
   grid-template-columns:var(--side-w) minmax(0,1fr) var(--aside-w);min-width:0;overflow:hidden;
 }
 .chatgrid.no-aside{grid-template-columns:var(--side-w) minmax(0,1fr);}
 
 /* ------------------------------------------------------------------
-   THE ROOM IS ALWAYS THE WIDER OF THE TWO (2026-08-07). His words, five
-   times: "i am still able to pull thread intersection to make it big".
+   HE DECIDES HOW WIDE THE THREAD IS (2026-08-07). His words: "in slack
+   there is a kind of choice or a free form where i can move the threads to
+   the left-hand side according to my preferences... that window should not
+   be looking like a very small window for me".
 
-   MEASURED IN THE INSTALLED APP, thread open, before this change:
+   WHAT USED TO BE HERE, and why it was wrong. This line:
 
-     window 1920   thread 292px = 15% of the screen, room 4.5x wider
-     window 1440   thread 292px = 20%,               room 2.8x wider
-     window 1184   thread 268px = 23%,               room 2.3x wider
-     window 1000   thread 268px = 27%,               room 1.6x wider
-     window  800   thread 268px = 34%,               room 238px  <-- SMALLER
+     clamp(232px, calc((100vw - var(--rail-w) - var(--side-w)) * 0.22), 280px)
 
-   So at the window he screenshotted, the thread was already a fifth of the
-   screen. Shaving pixels off THAT is invisible — one earlier attempt moved
-   it by four pixels and the before/after pictures were indistinguishable.
+   gave him no say at all. The 280px on the end was a HARD CEILING: making
+   his window bigger could not push past it, which is why two attempts at
+   "tuning the width" moved it about four pixels and looked identical to
+   him. He was never dragging our divider, because there was no divider —
+   the whole app was searched for a pointer handler and there was nothing.
 
-   The real fault is the last line. The thread was a fixed slab and the room
-   was written `minmax(0,1fr)` — "give way to nothing". So the room was the
-   only thing that yielded, and every time he PULLED his window narrower the
-   thread took more of the screen, until at the smallest window the app
-   allows the thread was WIDER than the conversation. That is exactly the
-   thing he can do with his mouse, and exactly what he described.
+   WHAT DECIDES IT NOW: he does. `--thread-w` is the width he chose, drawn
+   by the screen; the arithmetic lives in `packages/shared/threadwidth.ts`
+   where a test can read it, not in this file and not in a component.
 
-   THE RULE NOW: the thread is a share of the space beside it, never below
-   what it needs to stay readable and never above a cap:
-
-     the space beside it = the window, minus the icon rail, minus the
-     studio-floor list. Those are subtracted by hand on purpose. An earlier
-     attempt reached for a container query here, and an element is never its
-     own container, so the percentage silently measured the whole window
-     instead — 78px more than the space it was dividing. A number that
-     quietly means something else is how this went round twice.
-
-   AFTER, measured the same way:
-
-     window 1920   thread 280px = 15%, room 4.7x wider
-     window 1440   thread 245px = 17%, room 3.5x wider   (was 292)
-     window 1184   thread 232px = 20%, room 2.8x wider   (was 268)
-     window 1000   thread 232px = 23%, room 2.0x wider
-     window  800   thread 232px = 29%, room 274px  <-- BIGGER, as it should be
-
-   WHAT THIS DOES AND DOES NOT PROMISE. It does not promise the panel never
-   grows: between about 1383 and 1601 the thread goes 232px -> 280px as he
-   widens the window, because that is the band where the share is doing the
-   deciding rather than the floor or the cap. It promises two things that can
-   be checked at any size:
-
-     • it is never wider than 280px, ever;
-     • the conversation is always the wider of the two — checked at 800,
-       1000, 1184, 1330, 1440, 1920 and 2560. It never was before: at 800
-       the thread was 268px against a 238px room.
+     • DEFAULT 388px, which is Buzz's own measured default, against 280.
+     • A FLOOR ON THE ROOM (300px) and NO CAP ON THE THREAD. On his 1920
+       screen that is 300 -> 1292px, a range four and a half times wider at
+       the top than the single fixed number it replaces. If a maximum ever
+       reappears here, the mistake this task exists to undo is back.
+     • Below 894px (78 rail + 216 sidebar + 300 + 300) there is not room
+       for both floors, so the app stops splitting and the thread takes
+       over the whole area with one obvious way back. Same mechanism as the
+       take-over button, not a second thing — and no dead handle that
+       refuses him in silence, which is the thing he likes least.
    ------------------------------------------------------------------ */
 .chatgrid.withthread{
   grid-template-columns:
     var(--side-w)
     minmax(0,1fr)
-    clamp(232px, calc((100vw - var(--rail-w) - var(--side-w)) * 0.22), 280px);
+    var(--thread-w,388px);
 }
+
+/* THE THREAD OVER THE ROOM — he asked for this as well as the divider
+   ("i want both"). Copied from Buzz rather than invented: the thread floats
+   out over the room and THE ROOM DIMS BEHIND IT rather than vanishing, so he
+   can still see where he is. In take-over the thread is out of the grid
+   flow, so the grid goes back to two columns. */
+.chatgrid.withthread.takeover{grid-template-columns:var(--side-w) minmax(0,1fr);}
+
+/* ---- the strip he grabs -------------------------------------------------
+   Laid over the boundary rather than given a column of its own, so the width
+   he chose is the width the thread really is — no few-pixels-out to explain.
+   It is a real <button>, so it takes keyboard focus and Slack's own arrow-key
+   resizing (accessibility changelog, June 2026) works without a mouse. */
+.threadgrip{
+  position:absolute;top:0;bottom:0;z-index:30;
+  right:calc(var(--thread-w,388px) - 6px);width:13px;
+  padding:0;border:0;background:transparent;cursor:col-resize;
+  display:flex;align-items:stretch;justify-content:center;
+  touch-action:none;
+}
+.threadgrip::before{
+  content:"";width:1px;background:var(--line);
+  transition:width .12s var(--ease),background .12s var(--ease);
+}
+.threadgrip:hover::before,
+.threadgrip:focus-visible::before,
+.threadgrip.dragging::before{width:3px;background:var(--ultra);}
+.threadgrip:focus-visible{outline:none;}
+/* While he is dragging, nothing else on the screen should be selecting text
+   or fighting him for the pointer. */
+.chatgrid.dragging-thread{user-select:none;cursor:col-resize;}
+.chatgrid.dragging-thread *{cursor:col-resize !important;}
+
+/* ---- the room, dimmed behind the thread --------------------------------- */
+.threadscrim{
+  position:absolute;top:0;right:0;bottom:0;left:var(--side-w);z-index:40;
+  border:0;padding:0;background:var(--scrim);cursor:pointer;
+}
+.threadpanel.takeover{
+  position:absolute;top:0;right:0;bottom:0;left:calc(var(--side-w) + 118px);
+  z-index:41;box-shadow:var(--shadow-lg);background:var(--bg-2);
+}
+/* When the window itself is too narrow to split, the thread takes the LOT and
+   there is nothing behind it worth dimming. */
+.threadpanel.takeover.forced{left:var(--side-w);box-shadow:none;}
+.threadhead .threadmode{flex:none;}
 
 .sidebar{
   border-right:1px solid var(--line);background:var(--bg-2);

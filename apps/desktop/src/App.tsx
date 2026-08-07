@@ -60,6 +60,14 @@ import {
      test can read it — the screen below only draws what comes back. */
   activityRank, agentActivityLine, crewActivitySummary, workingCount,
   type AgentActivityLine, type AgentStatus,
+  /* HOW WIDE THE THREAD IS — he asked three times to be able to drag its edge
+     and make it big and have it stay. The floors, the default, the point where
+     the window is too narrow to split, the conditional tooltip and the rule
+     that HIS width is never edited by the window all live in shared, where a
+     test reads them. This screen owns no thread arithmetic of its own — that
+     is exactly where the last three attempts went wrong. */
+  BESIDE_LABEL, EXPAND_LABEL, THREAD_DEFAULT, THREAD_STEP,
+  cannotSplit, dividerSpokenWords, dividerWords, widthHeChose, widthToDraw,
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -1597,6 +1605,20 @@ export interface Prefs {
    * from before this setting behaves.
    */
   mutedChannelIds: string[];
+  /**
+   * HOW WIDE HE PULLED THE THREAD, and which way he is looking at it.
+   *
+   * Both live here, in the same little store as his theme, because Buzz loses
+   * the width the moment you quit and that is a weakness rather than a feature.
+   * Cloud9 remembers BOTH across a restart.
+   *
+   * `threadWidth` is HIS number, not the drawn one. A window too narrow to
+   * honour it borrows a smaller number for as long as it has to and gives this
+   * one straight back — only his own drag, arrow key or double-click ever
+   * writes here. Absent (an install from before this) means the default.
+   */
+  threadWidth: number;
+  threadTakeover: boolean;
 }
 
 const prefs = makeStore<Prefs>("cloud9.prefs", {
@@ -1611,6 +1633,8 @@ const prefs = makeStore<Prefs>("cloud9.prefs", {
   collapsed: {},
   replies: "thread",
   mutedChannelIds: [],
+  threadWidth: THREAD_DEFAULT,
+  threadTakeover: false,
 });
 
 const usePrefs = (): Prefs => useSyncExternalStore(prefs.subscribe, prefs.get);
@@ -3186,6 +3210,116 @@ function MutedMark({ channelId }: { channelId?: ID }): React.JSX.Element | null 
   );
 }
 
+/* ==================== THE THREAD'S EDGE, WHICH HE OWNS ====================
+   His words, three times over three failed attempts: "in slack there is a kind
+   of choice or a free form where i can move the threads to the left-hand side
+   according to my preferences... that window should not be looking like a very
+   small window for me". `docs/threads-like-slack.html` is the design, measured
+   out of the real Slack and the real Buzz rather than remembered.
+
+   Everything that can be got WRONG about it — the floors, the default, the
+   point where the window is too narrow to split, the conditional tooltip, and
+   the rule that a small window borrows his width rather than editing it — is in
+   `packages/shared/threadwidth.ts` under test. What is below is only the
+   pointer, the keyboard and the drawing. */
+
+/**
+ * HOW MUCH SPACE THE ROOM AND THE THREAD HAVE TO SHARE, watched live.
+ *
+ * Measured off the grid ITSELF rather than computed from `window.innerWidth`.
+ * An earlier attempt at this feature did the arithmetic by hand, got the icon
+ * rail wrong, and the number quietly meant something else — so here the element
+ * that is actually being divided is asked how wide it is, and only the channel
+ * list is subtracted, read from the very custom property that draws it.
+ */
+function useSpaceToShare(gridRef: React.RefObject<HTMLDivElement | null>): number {
+  const [space, setSpace] = useState(0);
+  useEffect(() => {
+    const grid = gridRef.current;
+    if (!grid) return;
+    const read = (): void => {
+      const side = parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue("--side-w")) || 0;
+      setSpace(Math.max(0, Math.round(grid.clientWidth - side)));
+    };
+    read();
+    const watch = new ResizeObserver(read);
+    watch.observe(grid);
+    /* The channel list steps 250 -> 216 at 1330px, which changes the answer
+       without changing the grid's width at all. */
+    window.addEventListener("resize", read);
+    return () => { watch.disconnect(); window.removeEventListener("resize", read); };
+  }, [gridRef]);
+  return space;
+}
+
+/**
+ * THE STRIP HE GRABS. A real button, so it takes keyboard focus and says what
+ * it is — Slack ships arrow-key resizing (accessibility changelog, June 2026)
+ * and a control only a mouse can reach is not something to hand him.
+ */
+function ThreadDivider({ stored, drawn, space, onChoose, onReset }: {
+  stored: number; drawn: number; space: number;
+  onChoose: (px: number) => void; onReset: () => void;
+}): React.JSX.Element {
+  const [dragging, setDragging] = useState(false);
+  const grip = useRef<HTMLButtonElement>(null);
+
+  /* The thread follows the pointer live — measured from the grid's own right
+     edge, so it is the distance from the edge of the window to his cursor and
+     nothing has to be guessed about what is outside the grid. */
+  const widthAt = useCallback((clientX: number): number => {
+    const box = grip.current?.parentElement?.getBoundingClientRect();
+    if (!box) return drawn;
+    return widthHeChose(box.right - clientX, space);
+  }, [drawn, space]);
+
+  const onPointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    grip.current?.setPointerCapture(e.pointerId);
+    setDragging(true);
+  }, []);
+
+  const onPointerMove = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    if (!dragging) return;
+    onChoose(widthAt(e.clientX));
+  }, [dragging, onChoose, widthAt]);
+
+  const stopDragging = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    if (!dragging) return;
+    setDragging(false);
+    try { grip.current?.releasePointerCapture(e.pointerId); } catch { /* already gone */ }
+  }, [dragging]);
+
+  const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLButtonElement>) => {
+    /* Left widens the thread because left is the direction the edge moves. */
+    if (e.key === "ArrowLeft") { e.preventDefault(); onChoose(widthHeChose(drawn + THREAD_STEP, space)); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); onChoose(widthHeChose(drawn - THREAD_STEP, space)); }
+    /* A keyboard has no double-click, so it gets Home — and only when there is
+       something to put back, exactly like the tooltip. */
+    else if (e.key === "Home" && stored !== THREAD_DEFAULT) { e.preventDefault(); onReset(); }
+  }, [drawn, space, stored, onChoose, onReset]);
+
+  return (
+    <button type="button"
+      ref={grip}
+      className={`threadgrip${dragging ? " dragging" : ""}`}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={dividerSpokenWords(stored)}
+      aria-valuenow={drawn} aria-valuemin={300} aria-valuemax={Math.max(300, space - 300)}
+      title={dividerWords(stored)}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={stopDragging}
+      onPointerCancel={stopDragging}
+      onLostPointerCapture={() => setDragging(false)}
+      onDoubleClick={onReset}
+      onKeyDown={onKeyDown} />
+  );
+}
+
 function ChatScreen({
   active, setActiveId, channels, humanDms, agents, people, unreadFor, peerOf, owner,
   onNewChannel, onBrowseRooms, onNewAgent, onBrowseMarket, onInvite, onEditAgent, onOpenDm,
@@ -3224,7 +3358,28 @@ function ChatScreen({
   /** the room-details panel, which shares the right-hand slot with a thread */
   const [detailsOpen, setDetailsOpen] = useState(false);
   /* THREADS OR NOT — his setting, read in the one place that opens them. */
-  const threading = usePrefs().replies !== "inline";
+  const p = usePrefs();
+  const threading = p.replies !== "inline";
+
+  /* ---- how wide the thread is, and which way he is looking at it ---------
+     `p.threadWidth` is HIS number and nothing here ever writes it except his
+     own drag, arrow key or double-click. `widthToDraw` gives back what the
+     window can actually honour, which on a smaller window is a smaller number
+     — borrowed, not saved. Widen the window and his own is back untouched. */
+  const gridRef = useRef<HTMLDivElement>(null);
+  const space = useSpaceToShare(gridRef);
+  const tooNarrowToSplit = space > 0 && cannotSplit(space);
+  const takeover = !!threadRoot && (tooNarrowToSplit || p.threadTakeover);
+  const drawnWidth = widthToDraw(p.threadWidth, space);
+  const chooseWidth = useCallback((px: number) => { prefs.set({ threadWidth: px }); }, []);
+  const resetWidth = useCallback(() => { prefs.set({ threadWidth: THREAD_DEFAULT }); }, []);
+  /* The way back out of the take-over. When the WINDOW forced it there is no
+     "beside" to go back to, so the way back is the room itself — which is what
+     Buzz's back arrow does at that size. */
+  const leaveTakeover = useCallback(() => {
+    if (tooNarrowToSplit) setThreadRoot(null);
+    else prefs.set({ threadTakeover: false });
+  }, [tooNarrowToSplit]);
 
   // a thread — and a details panel — belong to the conversation they were
   // opened from, and go when it changes
@@ -3263,8 +3418,10 @@ function ChatScreen({
     world.channels.find(c => c.kind === "dm" && c.memberIds.includes(a.id));
 
   return (
-    <div className={`chatgrid${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}${
-      threadRoot ? " withthread" : ""}`}>
+    <div ref={gridRef}
+      className={`chatgrid${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}${
+        threadRoot ? " withthread" : ""}${takeover ? " takeover" : ""}`}
+      style={{ "--thread-w": `${drawnWidth}px` } as React.CSSProperties}>
       <aside className="sidebar" aria-label="Studio floor">
         <div className="sidebar-head">
           <h2>Studio floor</h2>
@@ -3420,9 +3577,30 @@ Open your chat with ${a.name}`}>
         </div>
       )}
 
+      {/* THE ROOM, DIMMED BEHIND THE THREAD — Buzz's own manners: it dims
+          rather than vanishing, so he can still see where he is, and clicking
+          it is the same as saying "show thread beside channel". Not offered
+          when the WINDOW forced the take-over, because then the thread covers
+          the lot and there is nothing behind it to click. */}
+      {active && threading && threadRoot && takeover && !tooNarrowToSplit && (
+        <button type="button" className="threadscrim" tabIndex={-1} aria-hidden="true"
+          onClick={leaveTakeover} />
+      )}
       {active && threading && threadRoot && (
         <ThreadPanel key={threadRoot} channel={active} rootId={threadRoot}
+          takeover={takeover} forced={tooNarrowToSplit}
+          onToggleTakeover={takeover
+            ? leaveTakeover
+            : () => prefs.set({ threadTakeover: true })}
           onClose={() => setThreadRoot(null)} />
+      )}
+      {/* THE STRIP HE GRABS. There is deliberately no handle at all when the
+          window cannot split — a handle that refuses him in silence is the
+          thing he likes least, and the take-over above is the real answer at
+          that size rather than a dead control with an explanation bolted on. */}
+      {active && threading && threadRoot && !takeover && space > 0 && (
+        <ThreadDivider stored={p.threadWidth} drawn={drawnWidth} space={space}
+          onChoose={chooseWidth} onReset={resetWidth} />
       )}
       {active && !threadRoot && detailsOpen && (
         <RoomPanel key={`details-${active.id}`} channel={active}
@@ -5827,8 +6005,16 @@ const MessageRow = React.memo(function MessageRow({
 
 /* ---- one thread, in the right-hand rail ---- */
 
-function ThreadPanel({ channel, rootId, onClose }: {
+function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeover }: {
   channel: Channel; rootId: ID; onClose: () => void;
+  /** the thread is over the room rather than beside it */
+  takeover: boolean;
+  /** ...and it is there because the WINDOW is too narrow to split, not because
+      he asked. At that size the way back is drawn as a back arrow, which is
+      what Buzz draws, and the ✕ goes — two controls doing the same thing on a
+      small screen is how a way out gets missed. */
+  forced: boolean;
+  onToggleTakeover: () => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const held = world.threads[rootId];
@@ -5864,11 +6050,27 @@ function ThreadPanel({ channel, rootId, onClose }: {
   }, [messages.length, follow, atBottom]);
 
   return (
-    <aside className="aside threadpanel" aria-label="Thread">
+    <aside className={`aside threadpanel${takeover ? " takeover" : ""}${forced ? " forced" : ""}`}
+      aria-label="Thread">
       <div className="threadhead">
+        {/* THE WAY BACK, when the thread is over the room. At a narrow window
+            it is a back arrow — Buzz's own drawing — and it says Buzz's own
+            words for anyone who cannot see it. */}
+        {takeover && (
+          <button className="iconbtn threadmode" aria-label={BESIDE_LABEL}
+            title={forced ? "Back to the room" : "Show thread beside channel"}
+            onClick={onToggleTakeover}>{forced ? "←" : "⇥"}</button>
+        )}
         <span className="eyebrow">Thread</span>
         <div className="grow" />
-        <button className="iconbtn threadclose" aria-label="Close the thread" onClick={onClose}>✕</button>
+        {!takeover && (
+          <button className="iconbtn threadmode" aria-label={EXPAND_LABEL}
+            title="Expand thread — let it take over the room"
+            onClick={onToggleTakeover}>⤢</button>
+        )}
+        {!forced && (
+          <button className="iconbtn threadclose" aria-label="Close the thread" onClick={onClose}>✕</button>
+        )}
       </div>
       <div className="threadbody" ref={bodyRef} onScroll={noteScrolled}>
         {!root && <div className="d-empty">Fetching this thread…</div>}
