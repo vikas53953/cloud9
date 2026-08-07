@@ -514,7 +514,9 @@ export class Engine {
         // exactly as if the decision had arrived over the wire. `onApproval`
         // ignores anything still pending and anything it is not waiting on, so
         // this is a replay, never a second decision mechanism.
-        for (const a of frame.state.approvals) this.approvals.onApproval(a);
+        for (const a of frame.state.approvals) {
+          if (!this.approvals.onApproval(a)) this.sayApprovalArrivedTooLate(a);
+        }
         for (const m of frame.state.messages) this.pushHistory(m);
         for (const t of frame.state.tasks) this.tasks.set(t.id, t);
         this.scheduler.start();
