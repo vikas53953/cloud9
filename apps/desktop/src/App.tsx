@@ -12914,6 +12914,7 @@ function WorkflowsScreen(): React.JSX.Element {
   const titleRef = useRef<HTMLInputElement>(null);
   const newWorkflowRef = useRef<HTMLButtonElement>(null);
   const hadDraft = useRef(false);
+  const focusSavedWorkflow = useRef<ID | null>(null);
 
   useEffect(() => {
     if (world.connected && owner) client.listWorkflows();
@@ -12923,7 +12924,7 @@ function WorkflowsScreen(): React.JSX.Element {
     if (selectedId && !workflows.some(w => w.id === selectedId)) setSelectedId(workflows[0]?.id ?? null);
   }, [selectedId, workflows]);
   useEffect(() => {
-    if (hadDraft.current && !draft) {
+    if (hadDraft.current && !draft && !pendingDraft) {
       requestAnimationFrame(() => {
         const row = selectedId
           ? document.querySelector<HTMLButtonElement>(`[data-workflow-row="${selectedId}"]`)
@@ -12932,7 +12933,7 @@ function WorkflowsScreen(): React.JSX.Element {
       });
     }
     hadDraft.current = Boolean(draft);
-  }, [draft, selectedId]);
+  }, [draft, pendingDraft, selectedId]);
   const openDraft = (workflow?: Workflow): void => {
     const channelId = workflow?.channelId
       ?? world.channels.find(c => c.kind === "channel")?.id ?? world.channels[0]?.id ?? "";
@@ -12993,10 +12994,20 @@ function WorkflowsScreen(): React.JSX.Element {
   }, [pendingDraft, world.workflowError]);
   useEffect(() => {
     if (!pendingDraft || world.workflowNotice?.text !== "Workflow saved") return;
-    if (world.workflowNotice.workflowId) setSelectedId(world.workflowNotice.workflowId);
+    if (world.workflowNotice.workflowId) {
+      focusSavedWorkflow.current = world.workflowNotice.workflowId;
+      setSelectedId(world.workflowNotice.workflowId);
+    }
     setPendingDraft(null);
     setAnnounce("Workflow saved");
   }, [pendingDraft, world.workflowNotice]);
+  useEffect(() => {
+    const id = focusSavedWorkflow.current;
+    if (!id || !workflows.some(workflow => workflow.id === id)) return;
+    focusSavedWorkflow.current = null;
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLButtonElement>(`[data-workflow-row="${id}"]`)?.focus());
+  }, [selectedId, workflows]);
   const updateStep = (id: ID, patch: Partial<WorkflowDraft["steps"][number]>): void =>
     setDraft(d => d ? { ...d, steps: d.steps.map(s => s.id === id ? { ...s, ...patch } : s) } : d);
   const moveStep = (index: number, delta: number): void => {

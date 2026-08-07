@@ -298,6 +298,58 @@ test("workflow uses the existing approval gate and waits without claiming active
   assert.equal(done.type, "workflowRun");
 });
 
+test("a mid-run approval resumes its workflow task once and rejects stale replay", async t => {
+  const { owner, engine, channelId, relay } = await stand(t, "workflow-midrun-approval.db");
+  const agent = await makeAgent(owner, "Builder");
+  const workflow = await saveWorkflow(owner, channelId, [agent.id], "Mid-run approval");
+  const created = await run(owner, workflow);
+  const task = await engine.wait<Extract<ServerFrame, { type: "task" }>>(
+    f => f.type === "task" && f.task.workflowRunId === created.id,
+  );
+
+  engine.send({ type: "updateTask", taskId: task.task.id, status: "working" });
+  await owner.wait(f => f.type === "workflowRun" && f.run.id === created.id && f.run.status === "running");
+  engine.send({ type: "updateTask", taskId: task.task.id, status: "blocked", error: "Waiting for your approval" });
+  await owner.wait(f => f.type === "workflowRun" && f.run.id === created.id && f.run.status === "waiting_you");
+
+  engine.send({
+    type: "askApproval", askId: "workflow-midrun-ask", agentId: agent.id, channelId,
+    taskId: task.task.id,
+    facts: { action: "push", repo: "vikas53953/cloud9", branch: "cloud9/workflow", commits: 1, files: 1 },
+  });
+  const receipt = await engine.wait<Extract<ServerFrame, { type: "approvalAsked" }>>(
+    f => f.type === "approvalAsked" && f.askId === "workflow-midrun-ask",
+  );
+  assert.equal(relay.store.task(task.task.id)?.approvalId, receipt.approvalId);
+  await owner.wait<Extract<ServerFrame, { type: "approval" }>>(
+    f => f.type === "approval" && f.approval.id === receipt.approvalId && f.approval.taskId === task.task.id,
+  );
+  // A working replay while the exact card is still pending cannot release the
+  // step; only the owner's decision can do that.
+  engine.send({ type: "updateTask", taskId: task.task.id, status: "working" });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(relay.store.workflowRun(created.id)?.status, "waiting_you");
+  assert.equal(relay.store.task(task.task.id)?.status, "blocked");
+
+  owner.send({ type: "decideApproval", approvalId: receipt.approvalId, decision: "approved" });
+  await engine.wait<Extract<ServerFrame, { type: "approval" }>>(
+    f => f.type === "approval" && f.approval.id === receipt.approvalId && f.approval.status === "approved",
+  );
+  engine.send({ type: "updateTask", taskId: task.task.id, status: "working", error: "" });
+  await owner.wait(f => f.type === "workflowRun" && f.run.id === created.id && f.run.status === "running");
+
+  // This is an old blocked receipt from before the approved card. It must not
+  // put the run back into waiting_you after the one allowed resume transition.
+  engine.send({ type: "updateTask", taskId: task.task.id, status: "blocked", error: "stale replay" });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(relay.store.workflowRun(created.id)?.status, "running");
+  assert.equal(relay.store.task(task.task.id)?.status, "working");
+
+  engine.send({ type: "updateTask", taskId: task.task.id, status: "completed", result: "done" });
+  const done = await owner.wait(f => f.type === "workflowRun" && f.run.id === created.id && f.run.status === "succeeded");
+  assert.equal(done.type, "workflowRun");
+});
+
 test("failure stops at the failed step and retry creates a new attempt", async t => {
   const { owner, engine, channelId } = await stand(t, "workflow-retry.db");
   const agent = await makeAgent(owner, "Scout");

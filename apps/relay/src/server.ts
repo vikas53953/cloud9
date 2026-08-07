@@ -1712,10 +1712,20 @@ export class Relay {
     // moving forward; the one intentional exception is the approved
     // waiting-for-you task becoming queued again for the engine.
     if (attempt.status === "running" && status === "queued") return;
+    // A mid-run approval is recorded against the in-flight task. Only the
+    // engine's working receipt after that exact card is approved may release
+    // a waiting step; a replayed blocked receipt must not regress it.
+    if (attempt.status === "running" && status === "waiting_you") {
+      const approval = task.approvalId ? this.store.approval(task.approvalId) : undefined;
+      if (task.approvalId && approval?.status !== "pending") return;
+    }
     // Waiting-for-you is a held state. A late working receipt from the same
     // engine cannot claim the step resumed; only the explicit approval release
     // below is allowed to move it through queued first.
-    if (attempt.status === "waiting_you" && status === "running") return;
+    if (attempt.status === "waiting_you" && status === "running") {
+      const approval = task.approvalId ? this.store.approval(task.approvalId) : undefined;
+      if (approval?.status !== "approved") return;
+    }
     if (attempt.status === "waiting_you" && status === "queued") {
       const approval = task.approvalId ? this.store.approval(task.approvalId) : undefined;
       if (approval?.status !== "approved") return;
@@ -2508,7 +2518,14 @@ export class Relay {
             : "queued";
           if (attempt && (attempt.status === "succeeded" || attempt.status === "failed" || attempt.status === "stopped" || attempt.status === "interrupted")) break;
           if (attempt && (attempt.status === "running" || attempt.status === "waiting_you") && incoming === "queued") break;
-          if (attempt?.status === "waiting_you" && incoming === "running") break;
+          if (attempt?.status === "running" && incoming === "waiting_you") {
+            const approval = task.approvalId ? this.store.approval(task.approvalId) : undefined;
+            if (task.approvalId && approval?.status !== "pending") break;
+          }
+          if (attempt?.status === "waiting_you" && incoming === "running") {
+            const approval = task.approvalId ? this.store.approval(task.approvalId) : undefined;
+            if (approval?.status !== "approved") break;
+          }
           if (attempt?.status === "waiting_you" && task.approvalId
             && this.store.approval(task.approvalId)?.status === "pending" && incoming !== "waiting_you") break;
         }
@@ -2615,6 +2632,18 @@ export class Relay {
           ...(taskId ? { taskId } : {}),
           ...(detail ? { detail: detail.slice(0, APPROVAL_LIMITS.detail) } : {}),
         };
+        // Keep an in-flight workflow task tied to the exact card that parked
+        // it. The ordinary job gate already does this at creation time; a
+        // mid-run ask must establish the same correlation before the engine's
+        // blocked/working receipts arrive.
+        if (taskId) {
+          const task = this.store.task(taskId);
+          if (task) {
+            task.approvalId = approval.id;
+            task.updatedAt = now;
+            this.store.saveTask(task);
+          }
+        }
         this.store.saveApproval(approval);
         this.audit(conn, "approval_requested", approval.id,
           `${agent.name} asks to ${approval.action}`, { asAgent: agent });
