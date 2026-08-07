@@ -84,7 +84,6 @@ test("an agent asks, he says yes, and the agent carries on", async () => {
   assert.equal(out.approvalId, "ap1");
   assert.equal(d.pending, 0);
 });
-
 test("a no is a no, and it says which kind of no it was", async () => {
   for (const [status, words] of [
     ["rejected", /said no/],
@@ -114,7 +113,7 @@ test("nobody has answered yet, so it is STILL WAITING — a card does not die of
   // asked for that to go: the tools this app is a front end for ask a permission
   // question and then wait, and so does this now. His question survives lunch.
   //
-  // Clock-driven rather than wall-clock: the fake timer below runs an HOUR past
+  // Fake-timer driven rather than real elapsed time: the timer below runs an HOUR past
   // the old ten-minute leash in no real time at all.
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { d } = desk();

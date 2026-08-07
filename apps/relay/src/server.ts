@@ -2154,7 +2154,7 @@ export class Relay {
         // owner's screens (and to that same engine, which is one of them)
         send(conn.ws, { type: "approvalAsked", askId, approvalId: approval.id });
         this.sendApproval(approval);
-        // and it dies on the clock, not on the next person to look
+        // and it remains pending until the owner decides or stops the agent
         break;
       }
       case "askPlan": {

@@ -340,7 +340,7 @@ export function sanitizeForChat(err: unknown, where: string): string {
   // the owner must hear, because the alternative is a fragment presented as his
   // answer. See `TurnOutputTooBigError`.
   if (err instanceof TurnOutputTooBigError) return err.message;
-  // A SPENDING LIMIT STOPPED IT, and — exactly like the clock above — the limit
+  // A SPENDING LIMIT STOPPED IT; the limit
   // and the amount are the whole of what the person needs to hear. The message
   // is written by `spendCapStopWords` / `decideSpend` in @cloud9/shared out of
   // fixed words and a figure in dollars: no path, no argv, no CLI text. Without

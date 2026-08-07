@@ -8,8 +8,8 @@
 // in the shell — if it runs, it runs on the app's own sign-in.
 //
 // Same seam and same hardening as CodexProvider: the prompt goes on STDIN
-// (never argv), every argument is allowlist-checked, and there is a wall-clock
-// leash with a process-tree kill.
+// (never argv), every argument is allowlist-checked, and Stop owns a
+// process-tree kill.
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";

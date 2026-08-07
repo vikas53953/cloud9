@@ -93,7 +93,6 @@ test("an agent asks mid-run, the owner says yes, and the engine is told which ca
 
   owner.close(); engine.close(); await relay.close();
 });
-
 test("a no comes back as a no, and it never becomes a maybe", async () => {
   const { relay, owner, engine, channel } = await stand("no.db");
   const agent = await makeAgent(owner, "Architect");

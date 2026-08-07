@@ -1,5 +1,5 @@
 import { tempDir } from "./tmp-for-tests.js";
-// Command-line safety and the wall-clock leash.
+// Command-line safety and process-tree stopping.
 //
 // Everything here runs through `shell: true`, so an argument that escapes its
 // quoting is a remote-code-execution bug. These tests assert the module REFUSES

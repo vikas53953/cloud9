@@ -1277,8 +1277,8 @@ export class Engine {
       // ===== GAP C BLOCK — end =====
       // THE PREVIEW ENDS WHEN THE TURN DOES — worked, failed, refused, threw.
       // In a `finally` because there is no ending that should leave a live box
-      // spinning; the screen's stale timer is the backstop for an engine that
-      // dies, not the normal way this stops. From here on the stored record is
+      // spinning; lifecycle cleanup is the backstop for an engine that dies,
+      // not a deadline on the turn. From here on the stored record is
       // the only thing that speaks for this turn.
       if (streamed) this.endLiveSteps(agent.id, input);
     }
@@ -1792,9 +1792,8 @@ export class Engine {
    * WHAT THE RECORD SAYS. `outcome: "cancelled"`, which is a different outcome
    * from `failed` — so a stop can never be mistaken for a crash in the run list,
    * and the summary reads "Stopped after …" instead of "Didn't finish". A
-   * TIMEOUT stays `failed` with the clock named in its error, so the three
-   * endings a turn can have — it worked, the clock beat it, he stopped it — are
-   * three different things on the record and not one blurred one.
+   * A turn has no timeout outcome: it works, fails, or the owner stops it.
+   * Those three endings remain distinct on the record rather than blurred.
    *
    * WHAT THE ROOM SAYS is the sentence returned here: the caller posts it as the
    * agent's own reply, so the conversation says plainly that the work stopped
@@ -3783,10 +3782,9 @@ export const SCHEDULE_NOT_SAVED =
 /**
  * How long an agent's search may wait on the hub before it gives up.
  *
- * Short on purpose. The agent is mid-turn on a wall-clock leash of its own, and
- * a search that hangs would spend that leash on nothing. Giving up says so — the
- * agent is told the search did not run and to carry on without guessing, which
- * is the honest answer and takes four seconds rather than three minutes.
+ * Short on purpose. A search that hangs must not hold the agent's turn forever.
+ * Giving up says so — the agent is told the search did not run and to carry on
+ * without guessing, which is the honest answer and takes four seconds.
  */
 const SEARCH_WAIT_MS = 4_000;
 
