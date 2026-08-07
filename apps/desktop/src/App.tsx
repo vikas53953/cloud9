@@ -2188,11 +2188,14 @@ function Workspace(): React.JSX.Element {
   }, []);
 
   const openInboxEntry = useCallback((entry: NotificationInboxEntry) => {
-    client.markNotificationRead(entry.id);
+    // Deleted/inaccessible sources are intentionally not navigable. Their
+    // explicit Mark read action remains available, but clicking the disabled
+    // source control must not mutate read state.
     if (entry.sourceState !== "active" || !entry.channelId || !entry.messageId) return;
     // A source jump is one atomic exit from the inbox. If an editor blocks the
-    // leave, neither the room nor the jump cursor changes underneath it.
+    // leave, neither the room, jump cursor, nor read state changes underneath it.
     attemptLeave(() => {
+      client.markNotificationRead(entry.id);
       setActiveId(entry.channelId!);
       setScreen("chat");
       setJumpTo({ id: entry.messageId!, at: Date.now() });
