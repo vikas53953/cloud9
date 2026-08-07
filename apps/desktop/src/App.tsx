@@ -13096,7 +13096,7 @@ function WorkflowEditor({ draft, setDraft, titleRef, announce, setAnnounce, save
         <button className="secondary small" onClick={() => setDraft({ ...draft, steps: [...draft.steps,
           { id: workflowStepId(), agentId: world.agents.find(a => a.ownerId === world.me?.id)?.id ?? "", instruction: "" }] })}>＋ Add step</button></div>
       <ol className="workflow-steps">
-        {draft.steps.length === 0 && <li id="workflow-empty-steps" className="workflow-no-steps" aria-describedby="workflow-empty-steps-error">No steps yet. Add one to get started.
+        {draft.steps.length === 0 && <li id="workflow-empty-steps" tabIndex={-1} className="workflow-no-steps" aria-describedby="workflow-empty-steps-error">No steps yet. Add one to get started.
           {validation?.field === "workflow-empty-steps" && <span id="workflow-empty-steps-error" className="field-error" role="alert">{validation.message}</span>}</li>}
         {draft.steps.map((step, index) => <li className="workflow-step" key={step.id}><span className="step-number" aria-hidden="true">{index + 1}</span>
           <div className="step-fields"><label>Agent<select id={"workflow-step-" + step.id + "-agent"} aria-describedby={"workflow-step-" + step.id + "-agent-error"} value={step.agentId} onChange={e => updateStep(step.id, { agentId: e.target.value })}>
