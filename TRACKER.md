@@ -7,15 +7,6 @@ Anyone arriving — Vikas, a new session, a new agent — reads this first and
 needs nothing else. Anyone doing work updates it as they go, not at the end.
 
 Last updated: **2026-08-07 ~11:00** · by: conductor session · *counts below are from `gh pr list` run at that moment — see rule 10, they rot on their own*
-page was rejected on nine items; all nine are fixed and it is back with the reviewer. Code
-starts once the reviewer agrees.** · by: threads-drag-to-resize agent
-
-**New written rule, from what went wrong this round:** a review page is published to Vikas
-**only after the reviewer has agreed**, never before. Publishing early this round put two
-wrong quotes in front of him.
-
----
-
 
 ## 0. THE THREE REFERENCES — read this before designing anything
 
@@ -50,8 +41,8 @@ is not there, say so and ask once.
 
 | Count | |
 |---|---|
-| Things Vikas has asked for and are open | **0 of his 4** — all four merged, installed and walked. 5 problems found FOR him stay open below. |
-| Agents working right now | **0** — all finished. |
+| Things Vikas has asked for and are open | **2** — **threads** (design approved, build in progress) and **remove the timing** (PR #13, rejected in review). The other four are merged, installed and walked. 5 problems found FOR him stay open below. |
+| Agents working right now | **2** — the threads build, and the timing agent fixing four blockers. **As of 2026-08-07 11:00.** |
 | Open PRs | **1** — #13 (remove the timing), CONFLICTING on `TRACKER.md` after #11 and #12 landed. **As of 2026-08-07 11:00.** |
 | Merged today | **8** — #6 time limit · #7 threads width · #9 activity · #10 spending · **#11 harness inventory** · **#12 threads research** · plus #5 and #8, both reverts of code that reached master unreviewed (one the conductor's). |
 
