@@ -2408,6 +2408,15 @@ export class Relay {
         this.store.saveTask(task);
         this.audit(conn, "task_status", task.id, `task "${task.title}" cancelled`);
         this.broadcast({ type: "task", task });
+        if (task.workflowRunId && task.approvalId) {
+          const approval = this.store.approval(task.approvalId);
+          if (approval?.status === "pending") {
+            approval.status = "expired";
+            approval.decidedAt = task.updatedAt;
+            this.store.saveApproval(approval);
+            this.sendApproval(approval);
+          }
+        }
         this.workflowTaskChanged(conn, task);
         break;
       }
