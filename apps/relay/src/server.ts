@@ -1574,12 +1574,28 @@ export class Relay {
     return workflow;
   }
 
-  private tellWorkflow(userId: ID, workflow: Workflow, requestId?: ID): void {
-    this.toUser(userId, { type: "workflow", workflow, ...(requestId ? { requestId } : {}) });
+  /**
+   * Publish workflow changes to every owner window, while keeping a request
+   * correlation id on the originating socket only. A second desktop window
+   * has no ledger entry for the first window's request id; broadcasting that
+   * id made it drop the update entirely.
+   */
+  private tellWorkflow(userId: ID, workflow: Workflow, requestId?: ID, origin?: Conn): void {
+    const base: ServerFrame = { type: "workflow", workflow };
+    const correlated = Boolean(origin && requestId);
+    for (const conn of this.conns) {
+      if (conn.userId === userId && (!correlated || conn !== origin)) send(conn.ws, base);
+    }
+    if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
   }
 
-  private tellWorkflowRun(userId: ID, run: WorkflowRun, requestId?: ID): void {
-    this.toUser(userId, { type: "workflowRun", run, ...(requestId ? { requestId } : {}) });
+  private tellWorkflowRun(userId: ID, run: WorkflowRun, requestId?: ID, origin?: Conn): void {
+    const base: ServerFrame = { type: "workflowRun", run };
+    const correlated = Boolean(origin && requestId);
+    for (const conn of this.conns) {
+      if (conn.userId === userId && (!correlated || conn !== origin)) send(conn.ws, base);
+    }
+    if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
   }
 
   /**
@@ -1632,10 +1648,10 @@ export class Relay {
     return task;
   }
 
-  private persistWorkflowRun(run: WorkflowRun, requestId?: ID): void {
+  private persistWorkflowRun(run: WorkflowRun, requestId?: ID, origin?: Conn): void {
     run.updatedAt = Date.now();
     this.store.saveWorkflowRun(run);
-    this.tellWorkflowRun(run.ownerId, run, requestId);
+    this.tellWorkflowRun(run.ownerId, run, requestId, origin);
   }
 
   private runStep(run: WorkflowRun, stepId: ID): WorkflowRunStep {
@@ -1815,7 +1831,7 @@ export class Relay {
       const attempt = step?.attempts.at(-1);
       if (attempt) { attempt.status = "stopped"; attempt.finishedAt = run.finishedAt; }
     }
-    this.persistWorkflowRun(run, requestId);
+    this.persistWorkflowRun(run, requestId, conn);
     this.audit(conn, "workflow_run_state", run.id, "workflow stopped");
   }
 
@@ -1938,7 +1954,7 @@ export class Relay {
         this.workflowAgents(conn.userId, workflow);
         this.store.saveWorkflow(workflow);
         this.audit(conn, "workflow_created", workflow.id, "created workflow " + workflow.name);
-        this.tellWorkflow(conn.userId, workflow, frame.requestId);
+        this.tellWorkflow(conn.userId, workflow, frame.requestId, conn);
         break;
       }
       case "updateWorkflow": {
@@ -1970,7 +1986,7 @@ export class Relay {
         this.workflowAgents(conn.userId, next);
         this.store.saveWorkflow(next);
         this.audit(conn, "workflow_updated", next.id, "updated workflow " + next.name);
-        this.tellWorkflow(conn.userId, next, frame.requestId);
+        this.tellWorkflow(conn.userId, next, frame.requestId, conn);
         break;
       }
       case "archiveWorkflow": {
@@ -1983,7 +1999,7 @@ export class Relay {
         const next: Workflow = { ...current, archivedAt: frame.archived ? Date.now() : undefined, updatedAt: Date.now(), version: current.version + 1 };
         this.store.saveWorkflow(next);
         this.audit(conn, "workflow_archived", next.id, frame.archived ? "archived workflow " + next.name : "restored workflow " + next.name);
-        this.tellWorkflow(conn.userId, next, frame.requestId);
+        this.tellWorkflow(conn.userId, next, frame.requestId, conn);
         break;
       }
       case "runWorkflow": {
@@ -2006,7 +2022,7 @@ export class Relay {
         };
         this.store.saveWorkflowRun(run);
         this.audit(conn, "workflow_run_started", run.id, "started workflow " + workflow.name);
-        this.tellWorkflowRun(conn.userId, run, frame.requestId);
+        this.tellWorkflowRun(conn.userId, run, frame.requestId, conn);
         this.startWorkflowStep(conn, run, workflow, run.steps[0].id);
         break;
       }
@@ -2015,7 +2031,7 @@ export class Relay {
         const run = this.store.workflowRun(frame.workflowRunId);
         if (!run || run.ownerId !== conn.userId) throw new Error("no such workflow run");
         if (["succeeded", "failed", "stopped", "interrupted"].includes(run.status)) {
-          this.tellWorkflowRun(conn.userId, run, frame.requestId);
+          this.tellWorkflowRun(conn.userId, run, frame.requestId, conn);
           break;
         }
         this.stopWorkflowRun(conn, run, frame.requestId);
@@ -2047,7 +2063,7 @@ export class Relay {
         run.finishedAt = undefined;
         run.currentStepId = failed.id;
         this.audit(conn, "workflow_run_state", run.id, "retrying workflow at " + failed.id);
-        this.persistWorkflowRun(run, frame.requestId);
+        this.persistWorkflowRun(run, frame.requestId, conn);
         this.startWorkflowStep(conn, run, workflow, failed.id);
         break;
       }

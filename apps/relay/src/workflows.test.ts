@@ -468,6 +468,54 @@ test("raw workflow update patches cannot rewrite identity or archive state", asy
   assert.equal(relay.store.workflow("wf-attacker"), undefined);
 });
 
+test("workflow mutations correlate only on the origin window and mirror to the owner", async t => {
+  const { owner, open, channelId } = await stand(t, "workflow-two-windows.db");
+  const mirror = open("tok-owner");
+  await mirror.wait(frame => frame.type === "welcome");
+  const agent = await makeAgent(owner, "Two-window scout");
+
+  const createRequest = "two-window-create";
+  owner.send({
+    type: "createWorkflow", requestId: createRequest,
+    workflow: {
+      channelId, name: "Two-window runbook", description: "Mirror updates.", enabled: true,
+      steps: [{ id: "step-1", agentId: agent.id, instruction: "Report one finding" }],
+    },
+  });
+  const created = await owner.wait<Extract<ServerFrame, { type: "workflow" }>>(
+    frame => frame.type === "workflow" && frame.requestId === createRequest,
+  );
+  const mirroredCreate = await mirror.wait<Extract<ServerFrame, { type: "workflow" }>>(
+    frame => frame.type === "workflow" && frame.workflow.id === created.workflow.id,
+  );
+  assert.equal(mirroredCreate.requestId, undefined);
+
+  mirror.frames.length = 0;
+  const archiveRequest = "two-window-archive";
+  owner.send({ type: "archiveWorkflow", workflowId: created.workflow.id, archived: true, requestId: archiveRequest });
+  const archived = await owner.wait<Extract<ServerFrame, { type: "workflow" }>>(
+    frame => frame.type === "workflow" && frame.requestId === archiveRequest,
+  );
+  const mirroredArchive = await mirror.wait<Extract<ServerFrame, { type: "workflow" }>>(
+    frame => frame.type === "workflow" && frame.workflow.id === created.workflow.id && frame.workflow.archivedAt !== undefined,
+  );
+  assert.equal(archived.workflow.archivedAt !== undefined, true);
+  assert.equal(mirroredArchive.requestId, undefined);
+
+  owner.send({ type: "archiveWorkflow", workflowId: created.workflow.id, archived: false });
+  await owner.wait(frame => frame.type === "workflow" && frame.workflow.id === created.workflow.id && frame.workflow.archivedAt === undefined);
+  mirror.frames.length = 0;
+  const runRequest = "two-window-run";
+  owner.send({ type: "runWorkflow", workflowId: created.workflow.id, requestId: runRequest });
+  const started = await owner.wait<Extract<ServerFrame, { type: "workflowRun" }>>(
+    frame => frame.type === "workflowRun" && frame.requestId === runRequest,
+  );
+  const mirroredRun = await mirror.wait<Extract<ServerFrame, { type: "workflowRun" }>>(
+    frame => frame.type === "workflowRun" && frame.run.id === started.run.id,
+  );
+  assert.equal(mirroredRun.requestId, undefined);
+});
+
 test("workflow tasks stay out of an unrelated friend's initial world and live feed", async t => {
   const { owner, engine, open } = await stand(t, "workflow-private-task.db");
   const agent = await makeAgent(owner, "Scout");

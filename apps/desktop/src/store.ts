@@ -785,6 +785,11 @@ export class RelayClient {
       // belongs to a connection nobody is on any more.
       if (this.ws !== ws) return;
       this.world.connected = false;
+      // Request ids belong to this socket epoch. A late workflow response from
+      // the dropped socket must never settle a new window's run/archive/stop
+      // request after reconnect; those mutations are durable and the welcome
+      // snapshot is the source of truth for the next epoch.
+      this.workflowRequests.clear();
       // A credential the hub REFUSED must not spin: the reason is on screen and
       // retrying it would only overwrite it with the same refusal.
       if (this.world.authFailed) { this.syncHubWorld(); this.emit(); return; }
@@ -2841,6 +2846,9 @@ export class RelayClient {
         w.notificationsProblem = undefined;
         w.workflows = [...(frame.state.workflows ?? [])].sort(workflowOrder);
         w.workflowRuns = frame.state.workflowRuns ?? [];
+        // A reconnect starts a new request epoch. Do not let a stale response
+        // from the old socket match run/archive/stop/retry bookkeeping.
+        this.workflowRequests.clear();
         // The welcome snapshot is a useful seed, but the owner still asks for
         // the canonical workflow list. Keep the route in loading until that
         // correlated answer arrives so an empty seed never flashes as truth.
