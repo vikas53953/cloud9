@@ -150,13 +150,13 @@ installed on your machine right now.</p>
   <p class="sub" style="margin-bottom:8px">Ranked by how much they change your day, not by how hard they are to fix.</p>
   <ol class="rank">
     <li data-fb="Every new agent starts expensive, no cap"><b>Every new agent starts expensive, with no money ceiling — and this one is costing you today.</b>
-      A brand-new agent starts with "use my own setup" <b>ON</b>, which is about <b>318× the cost</b>
-      of the same question with it off — $1.75 against half a penny. It also starts with <b>no
+      A brand-new agent starts with "use my own setup" <b>ON</b>, which on a cold turn cost <b>318× as much</b>
+      as the same question with it off — $1.75 against half a penny. It also starts with <b>no
       spending cap at all</b>, because no cap is the day-one default. And if it is a Codex agent it
       <em>cannot be given one</em>, because only Claude reports what a turn cost. So the money guard
       you think every agent has, none of them have.
       <span class="ev"><b>Evidence</b> · setup on by default,
-      <code>shared/src/index.ts:258</code> <code>NEW_AGENT_USE_OWNER_SETUP = true</code> · the money figures, measured by hand 2026-08-05, recorded at <code>ownersetup.ts:34-35</code>. <b>Two different multipliers, and they are both real:</b> the prompt gets ~14.5× BIGGER (6,030 → 87,498 tokens) but ~318× DEARER ($0.0055 → $1.75), because the small prompt is nearly all cached and cached words are billed at a fraction. The code records both numbers and does not explain the gap. ·
+      <code>shared/src/index.ts:258</code> <code>NEW_AGENT_USE_OWNER_SETUP = true</code> · the money figures, measured by hand 2026-08-05, recorded at <code>ownersetup.ts:34-35</code>. <b>Two different multipliers, both real, and one caveat that matters to the decision:</b> the prompt gets ~14.5× BIGGER (6,030 → 87,498 tokens) but ~318× DEARER ($0.0055 → $1.75), because the small prompt is nearly all cached while the big one is a fresh cache write. <b>That was measured on ONE COLD TURN.</b> If the cache stayed warm a repeat question would cost far less — and your own records show caching really happens, 171 of 185 saved runs carry a cached figure. But Cloud9 starts a fresh program for every turn, so <b>whether a warm cache is ever there when the next turn begins is NOT VERIFIED</b>. Treat 318× as the worst case and the cold-start price, not as a certainty on every question. The code records both numbers and explains neither. ·
       "no ceiling at all, which is the day-one default", <code>shared/src/index.ts:756</code> ·
       Codex cannot be capped, <code>shared/src/index.ts:672-674</code> (board row 5, open).</span></li>
     <li data-fb="Paste an API key and every agent stops"><b>Paste an API key into Settings and every agent you own stops working.</b>
@@ -243,9 +243,13 @@ installed on your machine right now.</p>
       <span class="ev"><code>ownersetup.ts:93-107</code> and <code>:128-133</code>; default at
       <code>shared/src/index.ts:258</code> <code>NEW_AGENT_USE_OWNER_SETUP = true</code>, applied at
       <code>App.tsx:8193</code>. Cost of ON, measured by hand 2026-08-05: same tiny turn goes
-      6,030 → 87,498 tokens, <b>$0.0055 → $1.75</b> (~318× the money).
-      <b>Half-truth worth knowing:</b> that 318× figure lives only in code comments —
-      searching <code>docs/</code> for it returns nothing, so it cannot be re-checked from the repo.</span></td></tr>
+      6,030 → 87,498 tokens (~14.5× bigger), <b>$0.0055 → $1.75</b> (~318× the money).
+      <b>Two half-truths worth knowing.</b> That figure lives only in code comments — searching
+      <code>docs/</code> for it returns nothing, so it cannot be re-checked from the repo. And it is
+      <b>one cold turn</b>: the money multiplies far faster than the size because the big prompt is a
+      fresh cache write, so a repeat question could cost much less — but every Cloud9 turn is a fresh
+      program, and whether a warm cache is ever there for the next one is <b>not verified</b>. Worst
+      case, not certainty.</span></td></tr>
 
   <tr><td class="what">Cloud9 reads a project's CLAUDE.md itself</td>
     <td><span class="tag t-no">DON'T HAVE</span><span class="plumb">PLUMBING</span></td>
@@ -305,8 +309,8 @@ installed on your machine right now.</p>
       never holds it. Measured live: with the setup switch OFF the CLI reported
       <code>skills: 0</code>; with it ON, <code>skills: 100</code> — <b>and the built-in tool count
       stayed 31 both times.</b> So with the switch on, your 100 skills are <em>listed</em> to the
-      agent and it has no tool to <em>open</em> them. That is worth knowing before you pay 318× for
-      the switch.
+      agent and it has no tool to <em>open</em> them. That is worth knowing before you pay for the
+      switch.
       <span class="ev">List at <code>abilities.ts:77-84</code>; put on the line as
       <code>--allowed-tools</code> at <code>claude-cli.ts:739-740</code>.</span></td></tr>
 
@@ -724,8 +728,9 @@ installed on your machine right now.</p>
       counting tools never found it. On this machine a backgrounded command calls the agent back
       when it finishes.
       <b>But the doubt is about Cloud9, and it stands.</b> Reading a background command's output is
-      <code>BashOutput</code> and stopping one is <code>KillShell</code>, and <b>both are absent from
-      the 31 tools a Cloud9 agent can hold</b>. On top of that, every Cloud9 turn is a fresh program
+      <code>BashOutput</code> and stopping one is <code>KillShell</code>, and <b>neither is in the 31
+      tools a Cloud9 agent can hold</b> — <b>absent from the CLI's own measured set, not withheld by
+      Cloud9</b>. On top of that, every Cloud9 turn is a fresh program
       that exits when the turn ends, and the 3-minute silence clock is built to kill exactly the
       shape of a turn that sits quietly waiting. So the honest answer is <b>not verified, and there
       is reason to doubt it</b> — it needs somebody to try it, not to build it.
@@ -941,25 +946,32 @@ installed on your machine right now.</p>
   <h3>What I could not prove</h3>
   <p>Said plainly, so nothing here reads as more certain than it is:</p>
   <ul>
-    <li data-fb="Two things were tested against the live prog"><b>Two things were tested against the live program, and they are the two best rows on this
-      page:</b> the real <code>claude</code> CLI was started with Cloud9's own command line and asked
-      what it held (37 / 166 / 6 tools), and the installed <code>Cloud9.exe</code> was started as the
-      tool doorway and really answered a search. Everything else is code read and traced, plus test
-      suites run this session: 88 prompt/skills · 98 hooks/verify · 91 tools/attachments/fences ·
-      80 memory/approvals · 20 stopping-a-turn · 12 relay.</li>
+    <li data-fb="Two things were tested against the live prog"><b>Two things were tested against the live program</b> — the real <code>claude</code> CLI was
+      started with Cloud9's own command line and asked what it held (37 / 166 / 6 tools), and the
+      installed <code>Cloud9.exe</code> was started as the tool doorway and really answered a search.
+      <b>Neither was re-run by me, and neither by the reviewer</b>; both were run by a Cloud9 agent
+      working on this report. What the reviewer did confirm independently is the disk half of the
+      second one. Everything else is code read and traced, plus test suites run this session:
+      88 prompt/skills · 98 hooks/verify · 91 tools/attachments/fences · 80 memory/approvals ·
+      20 stopping-a-turn · 12 relay.</li>
     <li data-fb="Several measured figures are measurements re"><b>Several "measured" figures are measurements recorded in code comments</b> dated
       2026-07-29 to 2026-08-07 — the 318× cost, the file-fence probe, the picture and PDF test. They
-      are unusually specific and consistent, but I did not re-run them.</li>
+      are unusually specific and consistent, but I did not re-run them. <b>The 318× in particular is
+      one cold turn</b> — see the money row for why that matters.</li>
     <li data-fb="No build, package or install was run"><b>No build, package or install was run</b> — another agent owns that slot. I checked the
       already-installed app on disk instead, and its main file matches the one built from master.</li>
     <li data-fb="Whether a background command survives to t"><b>Whether a command left running in the background survives to the next turn</b> — not
-      verified. The tools for it are granted, but nothing in this repo tests it and every turn is a
-      fresh program.</li>
-    <li data-fb="One thing this page got wrong first time"><b>One thing this page got wrong the first time, and it is worth saying out loud.</b> An
-      earlier draft claimed background work was missing from Claude Code itself. It is not — it is a
-      setting on the command tool, which counting tools can never see. The page had the four
-      check-on-it tools in its own table and still said the opposite. Corrected in the agent loop
-      section.</li>
+      verified — and there is reason to doubt it. The two tools that read and stop such a command,
+      <code>BashOutput</code> and <code>KillShell</code>, are not in the 31 an agent can hold; every
+      turn is a fresh program that exits; and the silence clock kills a turn that waits quietly.
+      Nothing in this repo tests it either way. See the agent loop section.</li>
+    <li data-fb="Two things this page got wrong, both mine"><b>Two things this page got wrong, both mine, both corrected above.</b> First, an early
+      draft said background work was missing from Claude Code itself. It is not — it is a setting on
+      the command tool, which counting tools can never see. Second, the correction I wrote for that
+      was itself wrong: it named <code>Monitor</code>, <code>TaskOutput</code>, <code>TaskList</code>
+      and <code>TaskStop</code> as the tools that check on a background command. They are not — they
+      are the helper-agent family. Both are fixed in the agent loop section, and I am leaving the
+      trail here rather than tidying it away.</li>
     <li data-fb="How a Cloud9 agent invokes one of your 100"><b>How a Cloud9 agent invokes one of your 100 real skills</b> when the setup switch is on —
       not verified. They load; the tool that normally runs them is not on the line.</li>
     <li data-fb="Small tidy-up spotted in passing:"><b>Small tidy-up spotted in passing:</b> three files ending <code>.test.ts.new</code> sit in
@@ -1024,7 +1036,7 @@ installed on your machine right now.</p>
   <code>remove</code>; nothing calls them). It is fifth and not higher only because it is a feature you have never asked for, while everything above it is costing you money or work today.</p>
   <p><b>One thing that is not a harness gap but is worse than most of them:</b> a Codex agent
   cannot be given a spending limit <em>at all</em> — only Claude reports what a turn cost, so
-  <code>providerCanBeCapped</code> (<code>shared/src/index.ts:672</code>) returns true for Claude
+  <code>providerCanBeCapped</code> (<code>shared/src/index.ts:672-674</code>) returns true for Claude
   only. Its one remaining ceiling was the clock, and that just went from 10 minutes to 45. That is
   board row 5, open, nobody assigned. It is real money, unbounded, today.</p>
   <p><b>What I would not do yet:</b> reading real <code>SKILL.md</code>
