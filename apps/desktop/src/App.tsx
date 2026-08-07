@@ -12967,14 +12967,15 @@ function WorkflowsScreen(): React.JSX.Element {
   };
   const updateStep = (id: ID, patch: Partial<WorkflowDraft["steps"][number]>): void =>
     setDraft(d => d ? { ...d, steps: d.steps.map(s => s.id === id ? { ...s, ...patch } : s) } : d);
-  const moveStep = (index: number, delta: number): void => setDraft(d => {
-    if (!d) return d;
+  const moveStep = (index: number, delta: number): void => {
+    if (!draft) return;
+    const d = draft;
     const next = index + delta;
-    if (next < 0 || next >= d.steps.length) return d;
+    if (next < 0 || next >= d.steps.length) return;
     const steps = [...d.steps]; [steps[index], steps[next]] = [steps[next], steps[index]];
     setAnnounce("Moved step " + (index + 1) + (delta < 0 ? " up" : " down"));
-    return { ...d, steps };
-  });
+    setDraft({ ...d, steps });
+  };
 
   if (!owner) return <section className="workspace-screen workflow-screen" aria-labelledby="workflows-heading">
     <div className="screen-head"><div><span className="eyebrow">Runbooks</span><h1 id="workflows-heading">Workflows</h1></div></div>
