@@ -630,6 +630,8 @@ export class RelayClient {
     hubs: [], activeHubId: "self", hubConn: { phase: "idle", line: "" },
   };
   private ws?: WebSocket;
+  /** Frames from a socket that has been replaced never reach the new world. */
+  private socketEpoch = 0;
   private listeners = new Set<Listener>();
   private snapshotCache: World = { ...this.world };
 
@@ -772,6 +774,7 @@ export class RelayClient {
 
   private openSocketTo(url: string): void {
     this.ws?.close();
+    const epoch = ++this.socketEpoch;
     const ws = new WebSocket(url);
     this.ws = ws;
     let opened = false;
@@ -795,7 +798,10 @@ export class RelayClient {
       if (this.world.authFailed) { this.syncHubWorld(); this.emit(); return; }
       this.applyConn(reduceConn(this.conn, { t: opened ? "dropped" : "failed" }));
     };
-    ws.onmessage = ev => this.onFrame(JSON.parse(ev.data) as ServerFrame);
+    ws.onmessage = ev => {
+      if (this.ws !== ws || this.socketEpoch !== epoch) return;
+      this.onFrame(JSON.parse(ev.data) as ServerFrame);
+    };
   }
 
   /** Prove who we are to the active hub — the right credential for THIS hub. */
@@ -1150,15 +1156,22 @@ export class RelayClient {
     this.world.workflowNotice = undefined;
     const requestId = this.nextRequestId(frame.type);
     const outgoing = { ...frame, requestId };
-    const id = this.transmit(outgoing, onLost ? {
+    const id = this.transmit(outgoing, {
       answers: response => (response as { requestId?: ID }).requestId === requestId
         && (response.type === "workflow" || response.type === "workflowRun"),
       refused: () => { /* the correlated workflow error restores the draft */ },
       lost: () => {
         this.workflowRequests.delete(requestId);
-        onLost();
+        this.world.workflowError = {
+          text: "Cloud9 disconnected before it confirmed that workflow action. Try again.",
+          ts: Date.now(), requestId,
+        };
+        this.world.workflowRetry = frame;
+        this.world.workflowNotice = undefined;
+        this.emit();
+        onLost?.();
       },
-    } : {});
+    });
     if (id) this.workflowRequests.set(id, frame);
     return id;
   }

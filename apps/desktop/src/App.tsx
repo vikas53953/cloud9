@@ -13075,15 +13075,26 @@ function WorkflowsScreen(): React.JSX.Element {
           : selected ? <WorkflowDetail workflow={selected} runs={selectedRuns}
             onEdit={() => openDraft(selected)}
             agents={world.agents}
-            onRun={() => { client.sendWorkflow({ type: "runWorkflow", workflowId: selected.id }); setAnnounce("Run requested"); }}
+            onRun={() => {
+              const requestId = client.sendWorkflow({ type: "runWorkflow", workflowId: selected.id });
+              setAnnounce(requestId ? "Run requested; waiting for Cloud9" : "Cloud9 is offline; run was not sent");
+            }}
             onArchive={() => {
               const archived = !selected.archivedAt;
               if (archived && !window.confirm("Archive this workflow? Its run history will stay.")) return;
-              client.sendWorkflow({ type: "archiveWorkflow", workflowId: selected.id, archived });
-              setAnnounce(archived ? "Archive requested" : "Restore requested");
+              const requestId = client.sendWorkflow({ type: "archiveWorkflow", workflowId: selected.id, archived });
+              setAnnounce(requestId
+                ? (archived ? "Archive requested; waiting for Cloud9" : "Restore requested; waiting for Cloud9")
+                : "Cloud9 is offline; archive was not sent");
             }}
-            onStop={run => client.sendWorkflow({ type: "stopWorkflow", workflowRunId: run.id })}
-            onRetry={(run, stepId) => client.sendWorkflow({ type: "retryWorkflow", workflowRunId: run.id, stepId })} />
+            onStop={run => {
+              const requestId = client.sendWorkflow({ type: "stopWorkflow", workflowRunId: run.id });
+              setAnnounce(requestId ? "Stop requested; waiting for Cloud9" : "Cloud9 is offline; stop was not sent");
+            }}
+            onRetry={(run, stepId) => {
+              const requestId = client.sendWorkflow({ type: "retryWorkflow", workflowRunId: run.id, stepId });
+              setAnnounce(requestId ? "Retry requested; waiting for Cloud9" : "Cloud9 is offline; retry was not sent");
+            }} />
           : <div className="workflow-state" role="status">Choose a workflow to see its steps and run history.</div>}
       </div>
     </div>
