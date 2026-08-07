@@ -2257,6 +2257,18 @@ function Workspace(): React.JSX.Element {
     });
   }, []);
 
+  const openSocialLink = useCallback((link: SocialLink) => {
+    // The relay has already projected only links this viewer may access. The
+    // destination still goes through the workspace leave guard, so a dirty
+    // editor cannot be abandoned by an untrusted feed click.
+    attemptLeave(() => {
+      if (link.kind === "task") setScreen("tasks");
+      else if (link.kind === "run") setScreen("activity");
+      else if (link.kind === "artifact") setScreen("files");
+      else setScreen("projects");
+    });
+  }, []);
+
   /* ---- keyboard ---- */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -2872,7 +2884,7 @@ function Workspace(): React.JSX.Element {
             <ProjectsScreen onOpenChannel={id => goChannel(id)} />
           )}
           {screen === "hooks" && <HooksScreen />}
-          {screen === "social" && <SocialFeedScreen />}
+          {screen === "social" && <SocialFeedScreen onOpenLink={openSocialLink} />}
           {screen === "spending" && <SpendingScreen />}
           {screen === "activity" && <ActivityScreen />}
           {screen === "notifications" && <NotificationsScreen onOpen={openInboxEntry} />}
@@ -14097,7 +14109,7 @@ function ProjectsScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }):
 
   useEffect(() => { client.askProjects(); }, []);
 
-  const projects = world.socialProjects.list;
+  const projects = world.projects.list;
   const picked = projects.find(p => p.id === pickedId) ?? projects[0];
 
   /* A repository just connected is the one he wants to look at. Matched on the
@@ -14728,7 +14740,7 @@ function socialLinkLabel(link: SocialLink): string {
   return `${link.kind} ${link.id}`;
 }
 
-function SocialFeedScreen(): React.JSX.Element {
+function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => void }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [projectId, setProjectId] = useState<ID | "">("");
   const [text, setText] = useState("");
@@ -14739,7 +14751,7 @@ function SocialFeedScreen(): React.JSX.Element {
   const [linkId, setLinkId] = useState("");
   const [itemKind, setItemKind] = useState<"pull" | "issue">("pull");
   const [itemNumber, setItemNumber] = useState("");
-  const projects = world.projects.list;
+  const projects = world.socialProjects.list;
   const selectedId = projectId || projects[0]?.id || "";
   const feed = selectedId ? client.socialFor(selectedId) : undefined;
   const newest = feed?.posts.reduce((n, post) => Math.max(n, post.createdAt), 0) ?? 0;
@@ -14802,7 +14814,7 @@ function SocialFeedScreen(): React.JSX.Element {
                 <div className="social-post-body">
                   <div className="social-post-meta"><strong>{post.authorName}</strong><span>{post.authorKind === "agent" ? "agent" : "human"}</span><time dateTime={new Date(post.createdAt).toISOString()}>{new Date(post.createdAt).toLocaleString()}</time>{post.editedAt ? <em>edited</em> : null}</div>
                   {post.deletedAt ? <p className="social-tombstone">This post was deleted.</p> : editing === post.id ? <div className="social-edit"><label htmlFor={`social-edit-${post.id}`}>Edit post</label><textarea id={`social-edit-${post.id}`} value={editText} onChange={e => setEditText(e.target.value)} /><button className="primary" onClick={() => submitEdit(post.id)}>Save</button><button onClick={() => setEditing(undefined)}>Cancel</button></div> : <p className="social-post-text">{post.text}</p>}
-                  {post.links?.length ? <div className="social-links" aria-label="Linked Cloud9 records">{post.links.map((link, i) => <span className="social-link" key={`${link.kind}-${link.id}-${i}`}>{socialLinkLabel(link)}</span>)}</div> : null}
+                   {post.links?.length ? <div className="social-links" aria-label="Linked Cloud9 records">{post.links.map((link, i) => <button type="button" className="social-link" key={`${link.kind}-${link.id}-${i}`} onClick={() => onOpenLink(link)} aria-label={`Open ${socialLinkLabel(link)}`}>{socialLinkLabel(link)}</button>)}</div> : null}
                   {post.reactions?.length ? <div className="social-reactions" aria-label="Reactions">{post.reactions.map(reaction => <button key={reaction.emoji} aria-label={`Reacted ${reaction.emoji} by ${reaction.actorIds.length} people`} onClick={() => client.reactSocialPost(post.id, reaction.emoji, !reaction.actorIds.includes(world.me?.id ?? ""))}>{reaction.emoji} {reaction.actorIds.length}</button>)}</div> : null}
                   <div className="social-actions">{!post.deletedAt ? <><button onClick={() => { setReplyTo(post.id); setText(""); }}>Comment</button><button onClick={() => client.reactSocialPost(post.id, "👍", !(post.reactions ?? []).find(r => r.emoji === "👍")?.actorIds.includes(world.me?.id ?? ""))}>React</button></> : null}{own(post) && !post.deletedAt ? <><button onClick={() => { setEditing(post.id); setEditText(post.text); }}>Edit</button><button onClick={() => client.deleteSocialPost(post.id)}>Delete</button></> : null}</div>
                 </div>

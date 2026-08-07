@@ -599,6 +599,12 @@ export class Store implements JoinHubStore {
         removedAt INTEGER, PRIMARY KEY(projectId, userId)
       );
       CREATE INDEX IF NOT EXISTS social_member_user ON social_members(userId);
+      CREATE TABLE IF NOT EXISTS social_ops(
+        userId TEXT NOT NULL, requestId TEXT NOT NULL, kind TEXT NOT NULL,
+        resultJson TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        PRIMARY KEY(userId, requestId, kind)
+      );
+      CREATE INDEX IF NOT EXISTS social_ops_created ON social_ops(createdAt);
     `);
       this.migrate();
       this.sweepArtifactOrphans();
@@ -964,13 +970,23 @@ export class Store implements JoinHubStore {
     // or older database can safely retry this idempotent step.
     this.step(7, () => this.addWorkflowSchema());
     this.step(8, () => this.addSavedMessagesSchema());
-
     // The one thing that still says a person can only be in a room once at a
     // time, now that the primary key no longer does. It lives here, below the
     // step that reshapes the table, for the same reason act_seq does.
     this.db.exec(
       "CREATE UNIQUE INDEX IF NOT EXISTS cm_live ON channel_members(channelId,memberId) WHERE removedAt IS NULL",
     );
+  }
+
+  private addSocialOperationSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS social_ops(
+        userId TEXT NOT NULL, requestId TEXT NOT NULL, kind TEXT NOT NULL,
+        resultJson TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        PRIMARY KEY(userId, requestId, kind)
+      );
+      CREATE INDEX IF NOT EXISTS social_ops_created ON social_ops(createdAt);
+    `);
   }
 
   /**
@@ -3551,6 +3567,20 @@ export class Store implements JoinHubStore {
   removeSocialMember(projectId: ID, userId: ID, at = Date.now()): void {
     this.db.prepare("UPDATE social_members SET removedAt=? WHERE projectId=? AND userId=?")
       .run(at, projectId, userId);
+  }
+
+  /** Durable receipt for one user's retried social operation. */
+  socialOperation(userId: ID, requestId: ID, kind: string): unknown | undefined {
+    const row = this.db.prepare(
+      "SELECT resultJson FROM social_ops WHERE userId=? AND requestId=? AND kind=?",
+    ).get(userId, requestId, kind) as { resultJson: string } | undefined;
+    return row ? JSON.parse(row.resultJson) as unknown : undefined;
+  }
+
+  saveSocialOperation(userId: ID, requestId: ID, kind: string, result: unknown): void {
+    this.db.prepare(
+      "INSERT OR IGNORE INTO social_ops(userId,requestId,kind,resultJson,createdAt) VALUES(?,?,?,?,?)",
+    ).run(userId, requestId, kind, JSON.stringify(result), Date.now());
   }
 
   saveSocialPost(post: SocialPost): void {

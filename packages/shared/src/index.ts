@@ -3476,8 +3476,8 @@ type ClientFrameBase =
   | { type: "socialCreate"; projectId: ID; text: string; parentId?: ID; links?: SocialLink[] }
   /** An engine-authored project post or comment, owned by this connection's agent. */
   | { type: "socialAgentCreate"; agentId: ID; projectId: ID; text: string; parentId?: ID; links?: SocialLink[] }
-  | { type: "socialEdit"; postId: ID; text: string }
-  | { type: "socialDelete"; postId: ID }
+  | { type: "socialEdit"; postId: ID; text: string; agentId?: ID }
+  | { type: "socialDelete"; postId: ID; agentId?: ID }
   | { type: "socialReact"; postId: ID; emoji: string; on?: boolean }
   | { type: "socialMarkRead"; projectId: ID; at?: number }
   /** Owner-only membership changes; the feed itself never widens visibility. */
@@ -3991,12 +3991,12 @@ export type ServerFrame =
       nextBefore?: number; nextBeforeId?: ID; unread: number; requestId?: ID;
     }
   | { type: "socialProjects"; projects: Project[]; requestId?: ID }
-  | { type: "socialPost"; post: SocialPost }
-  | { type: "socialUpdated"; post: SocialPost }
-  | { type: "socialReaction"; projectId: ID; postId: ID; emoji: string; actorIds: ID[] }
-  | { type: "socialRead"; entry: SocialReadEntry }
+  | { type: "socialPost"; post: SocialPost; requestId?: ID }
+  | { type: "socialUpdated"; post: SocialPost; requestId?: ID }
+  | { type: "socialReaction"; projectId: ID; postId: ID; emoji: string; actorIds: ID[]; requestId?: ID }
+  | { type: "socialRead"; entry: SocialReadEntry; requestId?: ID }
   | { type: "socialMembers"; projectId: ID; userIds: ID[]; requestId?: ID }
-  | { type: "socialUnavailable"; projectId: ID }
+  | { type: "socialUnavailable"; projectId: ID; requestId?: ID }
   /**
    * One run — pushed the moment it finishes to everyone who can see the
    * conversation it happened in, and sent back on its own to whoever asked for
