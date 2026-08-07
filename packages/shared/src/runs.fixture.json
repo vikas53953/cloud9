@@ -34,5 +34,32 @@
     "durationMs": 51259,
     "ask": "count slowly from 1 to 500, writing out every single number in words",
     "summary": "Stopped before it got started — took 51 seconds."
+  },
+  {
+    "id": "r-0msidxcbd-zb1z",
+    "kind": "chat",
+    "outcome": "ok",
+    "startedAt": 1786073146720,
+    "durationMs": 150585,
+    "ask": "say the word ok",
+    "summary": "Answered straight from what it knew — no tools used, took 2 minutes 31 seconds, cost 26 cents."
+  },
+  {
+    "id": "r-0msidyi4z-z333",
+    "kind": "chat",
+    "outcome": "cancelled",
+    "startedAt": 1786073298542,
+    "durationMs": 52965,
+    "ask": "count slowly from 1 to 500, writing out every single number in words",
+    "summary": "Stopped before it got started — took 53 seconds."
+  },
+  {
+    "id": "r-0msie2m6o-hcx7",
+    "kind": "chat",
+    "outcome": "ok",
+    "startedAt": 1786073353330,
+    "durationMs": 190046,
+    "ask": "tidy up my notes folder Do NOT do any of this yet, and do not try to save a plan file or leave plan mode — those tools are deliberately not yours this turn, and their absence is not a problem to report. YOUR REPLY IS THE PLAN. Write it as a short numbered list someone who is not a programmer can judge: which files or places you would touch, what you would change, and anything you would deliberately leave alone. You are running read-only, so nothing you describe has happened. Your owner will rea…",
+    "summary": "Ran 3 searches, took 3 minutes 10 seconds, cost 24 cents."
   }
 ]
