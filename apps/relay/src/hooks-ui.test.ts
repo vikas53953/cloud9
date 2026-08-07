@@ -90,4 +90,13 @@ test("relay enforces the fifty-hook owner limit", async t => {
   });
   const refused = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error" && f.requestId === "limit-51");
   assert.match(refused.error, /at most 50/);
+  // Cap enforcement must not break idempotent replay of an already-accepted
+  // request once the owner is full.
+  owner.send({
+    type: "createHook", requestId: "limit-49",
+    hook: { name: "Hook 49", event: "turn.finished", enabled: true,
+      action: { do: "note", agentId: agent.agent.id, text: "ok" } },
+  });
+  const replay = await owner.wait<Extract<ServerFrame, { type: "hook" }>>(f => f.type === "hook" && f.requestId === "limit-49");
+  assert.equal(replay.hook.name, "Hook 49");
 });

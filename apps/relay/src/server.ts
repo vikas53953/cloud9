@@ -3128,9 +3128,6 @@ export class Relay {
       case "createHook": {
         this.assertHookClient(conn);
         this.validateHookCreate(frame.hook);
-        if (this.store.hooksOf(conn.userId).length >= HOOK_DEFAULTS.maxHooks) {
-          throw new Error(`Cloud9 keeps at most ${HOOK_DEFAULTS.maxHooks} hooks`);
-        }
         const requestId = frame.requestId;
         const priorReceipt = this.hookReceipt(conn, requestId, "create", "new", frame.hook);
         if (priorReceipt) {
@@ -3138,6 +3135,9 @@ export class Relay {
           if (prior) send(conn.ws, { type: "hook", hook: prior, requestId });
           else send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(requestId ? { requestId } : {}) });
           break;
+        }
+        if (this.store.hooksOf(conn.userId).length >= HOOK_DEFAULTS.maxHooks) {
+          throw new Error(`Cloud9 keeps at most ${HOOK_DEFAULTS.maxHooks} hooks`);
         }
         const now = Date.now();
         const hook = { ...frame.hook, id: newId("hook"), ownerId: conn.userId, updatedAt: now } as StoredHook;
