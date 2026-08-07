@@ -12992,6 +12992,7 @@ function WorkflowsScreen(): React.JSX.Element {
         <p className="screen-note">A saved list of agent steps. Nothing starts until you press Run.</p></div>
       <button ref={newWorkflowRef} className="primary" onClick={() => openDraft()}><span aria-hidden="true">＋</span> New workflow</button>
     </header>
+    {announce !== "Workflows" && <p className="workflow-announcement" role="status">{announce}</p>}
     <div className="workflow-layout">
       <aside className="workflow-list" aria-label="Saved workflows">
         {workflows.length === 0 ? <div className="workflow-empty"><span className="workflow-empty-mark" aria-hidden="true">↗</span>

@@ -1143,6 +1143,7 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .screen-note{margin:0;color:var(--ink-3);font-size:13px;}
 .workflow-layout{flex:1;min-height:0;display:grid;grid-template-columns:300px minmax(0,1fr);overflow:hidden;}
 .workflow-list{overflow-y:auto;border-right:1px solid var(--line);background:var(--bg-2);padding:14px;}
+.workflow-announcement{margin:0;padding:8px 30px;border-bottom:1px solid var(--line-soft);color:var(--ink-2);font-size:12px;}
 .workflow-row{display:grid;gap:5px;width:100%;text-align:left;padding:12px;border:1px solid transparent;border-radius:var(--radius);background:transparent;color:var(--ink);cursor:pointer;margin-bottom:6px;}
 .workflow-row:hover{background:var(--surface-2);border-color:var(--line-soft);}
 .workflow-row.selected{background:var(--surface);border-color:var(--pine);}
