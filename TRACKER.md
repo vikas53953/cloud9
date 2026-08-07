@@ -10,6 +10,36 @@ Last updated: **2026-08-07 09:30 — ALL FOUR ASKS MERGED, BUILT AND INSTALLED**
 
 ---
 
+
+## 0. THE THREE REFERENCES — read this before designing anything
+
+**Strict rule, 2026-08-07, his words:** *"you are not going to assume or guess
+anything. if i am giving you the reference of any product to you, you just have
+to OPEN THAT AND SEE IT FIRST and then only implement. from now on you will TELL
+ME FIRST what you are implementing."*
+
+| What you are building | What you copy | How to check it |
+|---|---|---|
+| **The harness** — prompt, skills, tools, hooks, memory, permissions, agent loop, verification | **Claude Code / Codex** | You are running inside Claude Code. Observe your own harness. If Claude Code does not do it, Cloud9 does not do it unless he asks. |
+| **The front end** — chat, channels, threads, anything he looks at | **Slack** | Real docs, cited. Never a remembered feature list. |
+| **Other features** | **Buzz** (`github.com/block/buzz`) | **Installed on this machine.** Open it and watch it. |
+
+**The gate: open the reference → say what you will build → wait → then build.**
+
+Anything you cannot verify says **"not verified"**. Never fill a gap with a
+plausible answer.
+
+**What ignoring this cost:** threads took THREE attempts and all three were
+aimed the wrong way, because nobody ever looked at Slack. The shipped result
+made the panel *narrower and fixed* when he wanted it *draggable and big*. A
+reviewer even wrote "there is no drag handle anywhere in the codebase — he may
+want control of that edge", and it was ignored in favour of tuning CSS numbers.
+On the same day the conductor invented a reference he had never given
+("creator.io"), which is the same failure wearing a different hat: when the fact
+is not there, say so and ask once.
+
+---
+
 ## 1. WHERE WE ARE RIGHT NOW
 
 | Count | |
