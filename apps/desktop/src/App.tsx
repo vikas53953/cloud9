@@ -14304,7 +14304,7 @@ function HooksScreen(): React.JSX.Element {
   const [channelId, setChannelId] = useState("");
   const [text, setText] = useState("");
   const [editingHookId, setEditingHookId] = useState<ID>();
-  useEffect(() => { if (world.connected) client.askHooks(); }, [world.connected]);
+  useEffect(() => { if (world.connected) { client.askHooks(); client.askHooksAudit(); } }, [world.connected]);
   const save = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !agentId || !text.trim() || ((action === "say" || action === "job") && !channelId)) return;
@@ -14340,6 +14340,13 @@ function HooksScreen(): React.JSX.Element {
         {editingHookId && <button className="btn" type="button" onClick={cancelEdit}>Cancel edit</button>}
       </form>
       {world.hooks.test && <p className="problem" role="status">{world.hooks.test.said}</p>}
+      <section className="hook-audit" aria-labelledby="hook-audit-title">
+        <h3 id="hook-audit-title">Recent hook activity</h3>
+        {world.hooks.auditLoading && <div className="runwait" role="status">Loading hook activity…</div>}
+        {world.hooks.auditProblem && <p className="problem" role="alert">{world.hooks.auditProblem}</p>}
+        {world.hooks.auditAsked && !world.hooks.auditLoading && !world.hooks.auditProblem && (world.hooks.audit ?? []).length === 0 && <p className="meta" role="status">No hook activity has been recorded yet.</p>}
+        {(world.hooks.audit ?? []).length > 0 && <ol aria-live="polite">{world.hooks.audit!.slice(-20).reverse().map((entry, index) => <li key={`${entry.requestId ?? entry.action}-${entry.at}-${index}`}><span className="meta">{new Date(entry.at).toLocaleString()} · {entry.action}</span> — {entry.said}</li>)}</ol>}
+      </section>
       <div className="hook-list" aria-live="polite">{world.hooks.list.map(hook => <article className="hook-card" key={hook.id}>
         <header><h3>{hook.name}</h3><span className="meta">{hook.enabled ? "Enabled" : "Disabled"}</span></header>
         <p className="meta">{HOOK_EVENTS[hook.event]} · {HOOK_ACTIONS[hook.action.do]}</p>

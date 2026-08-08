@@ -64,6 +64,17 @@ test("owner hook CRUD is durable, correlated, validated, and idempotent", async 
   await new Promise(resolve => setTimeout(resolve, 50));
   const dispatched = relay.store.hookAuditOf(relay.ownerId).find(row => row.requestId === "hookfiring_test-3");
   assert.deepEqual(dispatched && { action: dispatched.action, ok: dispatched.ok }, { action: "dispatched", ok: false });
+  owner.send({ type: "hooksAudit", requestId: "audit-1" });
+  const auditFrame = await owner.wait<Extract<ServerFrame, { type: "hookAudit" }>>(f => f.type === "hookAudit" && f.requestId === "audit-1");
+  assert.ok(auditFrame.entries.some(row => row.requestId === "hookfiring_test-3" && row.said === "queued to relay"));
+  // A CRUD request id may equal a firing id without suppressing the distinct
+  // firing namespace; dedupe is bound to the firing target, not id alone.
+  owner.send({ type: "updateHook", hookId: created.hook.id, hook: { name: "Collision" }, requestId: "same-id" });
+  await owner.wait(f => f.type === "hook" && f.requestId === "same-id");
+  const beforeCollision = relay.store.hookAuditOf(relay.ownerId).length;
+  engine.send({ type: "hookFired", hookId: created.hook.id, event: "turn.finished", ok: false, said: "collision fire", at: Date.now(), firingId: "same-id" });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(relay.store.hookAuditOf(relay.ownerId).length, beforeCollision + 1);
   owner.send({ type: "deleteHook", hookId: created.hook.id, requestId: "delete-1" });
   const gone = await owner.wait<Extract<ServerFrame, { type: "hooks" }>>(f => f.type === "hooks" && f.requestId === "delete-1");
   assert.deepEqual(gone.hooks, []);

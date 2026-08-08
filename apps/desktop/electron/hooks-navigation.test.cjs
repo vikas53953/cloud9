@@ -20,3 +20,10 @@ test("Hooks store uses correlated request ids and CRUD actions", () => {
   assert.match(store, /requestId.*createHook/);
   assert.match(store, /case "hookTest"/);
 });
+
+test("Hooks keeps concurrent pending mutations and mirrors audit/delete pushes", () => {
+  assert.match(store, /pending\?: Record<ID, true>/);
+  assert.match(store, /frame\.requestId === undefined/);
+  assert.match(store, /case "hookAudit"/);
+  assert.match(store, /auditLoading/);
+});

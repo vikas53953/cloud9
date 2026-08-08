@@ -10,7 +10,7 @@ import {
   SavedMessageEntry,
   EverywhereHit, SearchKind,
   ReachCatchup,
-  Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook,
+  Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
   Workflow, WorkflowRun,
   // SPENDING BLOCK (what the crew costs, 2026-08-07)
   AgentTokenUse, WasteFinding,
@@ -370,7 +370,7 @@ export interface World {
    * what says how old the answer is.
    */
   projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
-  hooks: { asked: boolean; requestId?: ID; mutationRequestId?: ID; list: StoredHook[]; problem?: string; test?: { hookId: ID; ok: boolean; said: string } };
+  hooks: { asked: boolean; requestId?: ID; mutationRequestId?: ID; pending?: Record<ID, true>; auditRequestId?: ID; auditAsked?: boolean; auditLoading?: boolean; audit?: HookAuditEntry[]; auditProblem?: string; list: StoredHook[]; problem?: string; test?: { hookId: ID; ok: boolean; said: string } };
   /**
    * THE REPOSITORIES HIS OWN GITHUB SIGN-IN CAN SEE — the picker's list.
    *
@@ -1976,10 +1976,25 @@ export class RelayClient {
     });
     if (!sent && this.world.hooks.requestId === requestId) { this.world.hooks = { asked: true, list: [], problem: "not connected to the hub yet" }; this.emit(); }
   }
+  askHooksAudit(): void {
+    const requestId = this.nextRequestId("hooksAudit");
+    this.world.hooks = { ...this.world.hooks, auditRequestId: requestId, auditAsked: true, auditLoading: true, auditProblem: undefined };
+    const sent = this.ask({ type: "hooksAudit", requestId }, {
+      answers: f => f.type === "hookAudit" && f.requestId === requestId,
+      answered: f => { if (f.type === "hookAudit" && this.world.hooks.auditRequestId === requestId) this.world.hooks = { ...this.world.hooks, auditRequestId: undefined, auditLoading: false, audit: f.entries, auditProblem: undefined }; },
+      refused: why => { if (this.world.hooks.auditRequestId === requestId) this.world.hooks = { ...this.world.hooks, auditRequestId: undefined, auditLoading: false, auditProblem: why }; this.emit(); },
+      lost: () => { if (this.world.hooks.auditRequestId === requestId) this.world.hooks = { ...this.world.hooks, auditRequestId: undefined, auditLoading: false, auditProblem: "the hub did not answer" }; this.emit(); },
+    });
+    if (!sent && this.world.hooks.auditRequestId === requestId) this.world.hooks = { ...this.world.hooks, auditRequestId: undefined, auditLoading: false, auditProblem: "not connected to the hub yet" };
+    this.emit();
+  }
   private hookMutation(frame: ClientFrame, requestId: ID): void {
-    this.world.hooks = { ...this.world.hooks, mutationRequestId: requestId, problem: undefined };
+    this.world.hooks = { ...this.world.hooks, mutationRequestId: requestId, pending: { ...this.world.hooks.pending, [requestId]: true }, problem: undefined };
     const sent = this.send({ ...frame, requestId } as ClientFrame);
-    if (!sent) this.world.hooks = { ...this.world.hooks, mutationRequestId: undefined, problem: "not connected to the hub yet" };
+    if (!sent) {
+      const pending = { ...this.world.hooks.pending }; delete pending[requestId];
+      this.world.hooks = { ...this.world.hooks, mutationRequestId: Object.keys(pending).at(-1), pending, problem: "not connected to the hub yet" };
+    }
     this.emit();
   }
   createHook(hook: Omit<StoredHook, "id" | "ownerId" | "updatedAt">): void { const requestId = this.nextRequestId("createHook"); this.hookMutation({ type: "createHook", hook }, requestId); }
@@ -3434,8 +3449,12 @@ export class RelayClient {
           w.notificationsLoading = false;
           w.notificationsProblem = frame.error;
         }
-        if (frame.requestId !== undefined && frame.requestId === w.hooks.mutationRequestId) {
-          w.hooks = { ...w.hooks, mutationRequestId: undefined, problem: frame.error };
+        if (frame.requestId !== undefined && w.hooks.pending?.[frame.requestId]) {
+          const pending = { ...w.hooks.pending }; delete pending[frame.requestId];
+          w.hooks = { ...w.hooks, mutationRequestId: Object.keys(pending).at(-1), pending, problem: frame.error };
+        }
+        if (frame.requestId !== undefined && frame.requestId === w.hooks.auditRequestId) {
+          w.hooks = { ...w.hooks, auditRequestId: undefined, auditLoading: false, auditProblem: frame.error, audit: [] };
         }
         /* A direct refusal names its exact refusal-capable request. A legacy
            no-id refusal is shown here generally but cannot settle a modern row.
@@ -3612,24 +3631,38 @@ export class RelayClient {
         break;
       case "hooks":
         {
+          if (frame.requestId === undefined) {
+            // Live mirror from another owner window. It must not clear this
+            // window's pending mutation ledger or request spinner.
+            w.hooks = { ...w.hooks, asked: true, list: frame.hooks, problem: undefined };
+            break;
+          }
           const expected = w.hooks.requestId ?? w.hooks.mutationRequestId;
-          if (frame.requestId === undefined || frame.requestId !== expected) break;
-          w.hooks = { asked: true, list: frame.hooks };
+          if (frame.requestId !== expected) break;
+          w.hooks = { ...w.hooks, asked: true, requestId: undefined, list: frame.hooks };
         }
         break;
       case "hook": {
-        if (frame.requestId !== undefined
-          && frame.requestId !== w.hooks.requestId
-          && frame.requestId !== w.hooks.mutationRequestId) break;
+        if (frame.requestId === undefined) {
+          const i = w.hooks.list.findIndex(h => h.id === frame.hook.id);
+          w.hooks = { ...w.hooks, asked: true, list: i < 0 ? [frame.hook, ...w.hooks.list] : w.hooks.list.map(h => h.id === frame.hook.id ? frame.hook : h) };
+          break;
+        }
+        if (frame.requestId !== w.hooks.requestId && !w.hooks.pending?.[frame.requestId]) break;
         const i = w.hooks.list.findIndex(h => h.id === frame.hook.id);
-        w.hooks = { ...w.hooks, asked: true, requestId: undefined, mutationRequestId: undefined, problem: undefined, list: i < 0 ? [frame.hook, ...w.hooks.list] : w.hooks.list.map(h => h.id === frame.hook.id ? frame.hook : h) };
+        const pending = { ...w.hooks.pending }; delete pending[frame.requestId];
+        w.hooks = { ...w.hooks, asked: true, requestId: undefined, mutationRequestId: Object.keys(pending).at(-1), pending, problem: undefined, list: i < 0 ? [frame.hook, ...w.hooks.list] : w.hooks.list.map(h => h.id === frame.hook.id ? frame.hook : h) };
         break;
       }
       case "hookTest":
-        if (frame.requestId !== undefined
-          && frame.requestId !== w.hooks.requestId
-          && frame.requestId !== w.hooks.mutationRequestId) break;
-        w.hooks = { ...w.hooks, mutationRequestId: undefined, problem: undefined, test: { hookId: frame.hookId, ok: frame.ok, said: frame.said } };
+        if (frame.requestId === undefined) break;
+        if (frame.requestId !== w.hooks.requestId && !w.hooks.pending?.[frame.requestId]) break;
+        { const pending = { ...w.hooks.pending }; delete pending[frame.requestId];
+          w.hooks = { ...w.hooks, mutationRequestId: Object.keys(pending).at(-1), pending, problem: undefined, test: { hookId: frame.hookId, ok: frame.ok, said: frame.said } }; }
+        break;
+      case "hookAudit":
+        if (frame.requestId === undefined || frame.requestId !== w.hooks.auditRequestId) break;
+        w.hooks = { ...w.hooks, auditRequestId: undefined, auditLoading: false, audit: frame.entries, auditProblem: undefined };
         break;
       // ENGINE-ONLY RECEIPT, and it is right that the screen drops it. When an
       // agent asks mid-run "may I push this branch?", the hub answers the

@@ -3372,15 +3372,15 @@ export class Store implements JoinHubStore {
       .run(newId("hookaudit"), ownerId, hookId, action, ok ? 1 : 0, said, at, actorId, client, requestId ?? null, target);
   }
   /** Whether a hook firing receipt was already written (transport retry safe). */
-  hookAuditHasRequest(ownerId: ID, requestId: ID): boolean {
+  hookAuditHasRequest(ownerId: ID, requestId: ID, target?: string): boolean {
     return Boolean(this.db.prepare(
-      "SELECT 1 FROM hook_audit WHERE ownerId=? AND requestId=? LIMIT 1",
-    ).get(ownerId, requestId));
+      "SELECT 1 FROM hook_audit WHERE ownerId=? AND requestId=? AND (? IS NULL OR target=?) LIMIT 1",
+    ).get(ownerId, requestId, target ?? null, target ?? null));
   }
-  hookAuditOf(ownerId: ID): { hookId: ID; action: string; ok: boolean; actorId: ID; client: string; requestId?: ID; target: string }[] {
-    return (this.db.prepare("SELECT hookId,action,ok,actorId,client,requestId,target FROM hook_audit WHERE ownerId=? ORDER BY at ASC,id ASC")
-      .all(ownerId) as { hookId: ID; action: string; ok: number; actorId: ID; client: string; requestId: ID | null; target: string }[])
-      .map(row => ({ hookId: row.hookId, action: row.action, ok: row.ok === 1, actorId: row.actorId, client: row.client, ...(row.requestId ? { requestId: row.requestId } : {}), target: row.target }));
+  hookAuditOf(ownerId: ID): { hookId: ID; action: string; ok: boolean; said: string; at: number; actorId: ID; client: string; requestId?: ID; target: string }[] {
+    return (this.db.prepare("SELECT hookId,action,ok,said,at,actorId,client,requestId,target FROM hook_audit WHERE ownerId=? ORDER BY at ASC,id ASC")
+      .all(ownerId) as { hookId: ID; action: string; ok: number; said: string; at: number; actorId: ID; client: string; requestId: ID | null; target: string }[])
+      .map(row => ({ hookId: row.hookId, action: row.action, ok: row.ok === 1, said: row.said, at: row.at, actorId: row.actorId, client: row.client, ...(row.requestId ? { requestId: row.requestId } : {}), target: row.target }));
   }
 
   /** Forget our copy. THE REPOSITORY IS NOT TOUCHED — it is not ours to touch. */

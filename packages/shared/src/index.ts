@@ -3368,6 +3368,7 @@ type ClientFrameBase =
   /** One project's pull requests and issues, as of the last time we looked. */
   | { type: "projectItems"; projectId: ID }
   | { type: "hooks" }
+  | { type: "hooksAudit" }
   | { type: "createHook"; hook: Omit<StoredHook, "id" | "ownerId" | "updatedAt"> }
   | { type: "updateHook"; hookId: ID; hook: Partial<Pick<StoredHook, "name" | "event" | "when" | "action">> }
   | { type: "setHookEnabled"; hookId: ID; enabled: boolean }
@@ -3876,6 +3877,7 @@ export type ServerFrame =
   | { type: "hooks"; hooks: StoredHook[]; requestId?: ID }
   | { type: "hook"; hook: StoredHook; requestId?: ID }
   | { type: "hookTest"; hookId: ID; ok: boolean; said: string; requestId?: ID }
+  | { type: "hookAudit"; entries: HookAuditEntry[]; requestId?: ID }
   /** OWNER'S HOOKBOOK, sent only to that owner's engine host. */
   | { type: "hooksUpdated"; hooks: StoredHook[] }
   /**
@@ -4236,6 +4238,10 @@ export interface StoredHook {
   when?: { agentId?: ID; outcome?: RunOutcome };
   action: { do: HookActionKind; agentId: ID; channelId?: ID; text?: string; title?: string };
   updatedAt: number;
+}
+export interface HookAuditEntry {
+  hookId: ID; action: string; ok: boolean; said: string; at: number;
+  actorId: ID; client: string; requestId?: ID; target: string;
 }
 export function validateHookInput(value: unknown): string | null {
   if (!value || typeof value !== "object") return "a hook rule is required";

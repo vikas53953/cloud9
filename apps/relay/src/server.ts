@@ -3148,6 +3148,11 @@ export class Relay {
         send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
         break;
       }
+      case "hooksAudit": {
+        this.assertHookClient(conn);
+        send(conn.ws, { type: "hookAudit", entries: this.store.hookAuditOf(conn.userId), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        break;
+      }
       case "createHook": {
         this.assertHookClient(conn);
         this.validateHookCreate(frame.hook);
@@ -3430,10 +3435,11 @@ export class Relay {
         // A reconnect or engine retry may report the same fire again. The
         // firing id is the receipt boundary, so the audit trail stays one row
         // per real action rather than counting transport retries as work.
-        if (this.store.hookAuditHasRequest(conn.userId, frame.firingId)) break;
+        const firingTarget = `firing:${hook.id}:${frame.event}`;
+        if (this.store.hookAuditHasRequest(conn.userId, frame.firingId, firingTarget)) break;
         this.store.logHookAudit(
           conn.userId, hook.id, frame.ok ? "dispatched" : "refused", false, frame.said,
-          Date.now(), conn.userId, conn.client, frame.firingId, `${hook.id}:${frame.event}`,
+          Date.now(), conn.userId, conn.client, frame.firingId, firingTarget,
         );
         break;
       }
