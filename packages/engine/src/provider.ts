@@ -3,16 +3,24 @@
 //  - SdkProvider: Claude Agent SDK (query()), billing to the user's own
 //    credential (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN).
 import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   AgentDef, DEMO_REPLY_PREFIX, RunKind, SpendCapWhich, setMachineNames,
 } from "@cloud9/shared";
 import {
-  claudeToolsFor, deniedClaudeTools, renderCapabilities, switchesNeedingSupply, Supply,
+  claudeToolsFor, deniedClaudeTools, grantedSupply, renderCapabilities, Supply,
 } from "./abilities.js";
-import { renderCloud9Tools } from "./cloud9tools.js";
+import { cloud9McpConfig, cloud9ToolNames, renderCloud9Tools } from "./cloud9tools.js";
+import type { OpenTurn } from "./toolbridge.js";
+import { envWithoutCredentials } from "./env.js";
+import { claudeSetupEnv, claudeSetupSdkOptions } from "./ownersetup.js";
+import { traceWalker, type EventMapper, type ProviderTrace, type RunUsage } from "./runrecord.js";
+import type { SessionBook } from "./sessionresume.js";
 // type-only: erased at compile time, so runrecord.ts may import this file back
 // without creating a runtime import cycle.
-import type { ProviderTrace, RunStep } from "./runrecord.js";
+import type { RunStep } from "./runrecord.js";
 
 /**
  * WHAT KIND OF TURN THIS IS — the difference between "write your next chat
@@ -142,6 +150,8 @@ export interface RespondInput extends TurnBrief {
    * asks `canPlan` below before it ever promises the owner a plan.
    */
   planOnly?: boolean;
+  /** Abort the provider's own session when the owner presses Stop. */
+  abortController?: AbortController;
 }
 
 /** What the engine can tell a provider about the thread this turn is in. */
@@ -231,6 +241,14 @@ export class TurnOutputTooBigError extends Error {
   }
 }
 
+/** The harness ended without a final answer, so a partial/stale trace is not a reply. */
+export class ProviderOutputMissingError extends Error {
+  constructor() {
+    super("the provider finished without a final answer, so I have nothing honest to show you. Ask me again.");
+    this.name = "ProviderOutputMissingError";
+  }
+}
+
 /**
  * The agent's harness (Claude or Codex) is missing, signed out, or refused the
  * turn. The engine turns this into a plain-words chat reply rather than a stack
@@ -243,38 +261,13 @@ export class HarnessUnavailableError extends Error {
   }
 }
 
-/**
- * A SWITCH THIS WAY OF RUNNING THE AGENT CANNOT KEEP — so the turn did not run.
- *
- * THE TRAP THIS EXISTS TO CLOSE (gap 2, 2026-08-05). `SdkProvider` — the path
- * taken when the owner stores an API key instead of using the signed-in Claude
- * app — hardcoded `supply: {}` and passed no folders at all. So an owner could
- * switch on "Reach files outside its own folder", choose a folder, watch the
- * agent editor say "In use", and get an agent that silently could not reach it.
- * Today he is on the signed-in-app path, so nothing is lying to him yet; the
- * moment he pastes an API key it would be, and nothing would say so.
- *
- * WHY THE ANSWER IS "REFUSE" RATHER THAN "WIRE IT UP". The SDK really does have
- * an `additionalDirectories` option, so passing the folders was possible — and
- * it would have been the wrong thing to do. The command-line path does not carry
- * `--add-dir` on its own: it carries it alongside `--strict-mcp-config`,
- * `--disable-slash-commands` and `--setting-sources ""`, the flags
- * `claude-cli.ts` measured and that keep the OWNER'S own Claude Code setup — his
- * CLAUDE.md, his plugins, his hooks, his MCP servers, his slash commands — out
- * of his agents. This path has no equivalent of any of them, and it hands the
- * child `process.env` whole. Quietly widening an un-isolated agent from its own
- * folder to whatever folder the owner picked — his entire C: drive is an
- * explicitly offered choice, in `abilities.ts` — is the one direction we must
- * not take by accident. So it stops, and it says why in words he can act on.
- */
+/** A capability mix that a provider cannot safely honor; the turn did not run. */
 export class AbilityNotSupportedHereError extends Error {
   constructor(public readonly switches: readonly string[]) {
     super(`I did not run this because ${switches.join(", ")} ` +
-      `${switches.length === 1 ? "is" : "are"} switched on, and that only works when ` +
-      `Cloud9 is using the Claude app you are signed in to. This computer is running me ` +
-      `from a stored API key instead, and on that route I have no way to reach outside my ` +
-      `own folder — so rather than pretend, I stopped. Open Settings and sign in to Claude, ` +
-      `or switch that off.`);
+      `${switches.length === 1 ? "is" : "are"} switched on, and this provider cannot ` +
+      `honor that capability mix safely. Choose a provider that supports these switches, ` +
+      `or switch them off.`);
     this.name = "AbilityNotSupportedHereError";
   }
 }
@@ -340,6 +333,7 @@ export function sanitizeForChat(err: unknown, where: string): string {
   // the owner must hear, because the alternative is a fragment presented as his
   // answer. See `TurnOutputTooBigError`.
   if (err instanceof TurnOutputTooBigError) return err.message;
+  if (err instanceof ProviderOutputMissingError) return err.message;
   // A SPENDING LIMIT STOPPED IT; the limit
   // and the amount are the whole of what the person needs to hear. The message
   // is written by `spendCapStopWords` / `decideSpend` in @cloud9/shared out of
@@ -729,82 +723,212 @@ export interface SdkCredentials {
   oauthToken?: string;
 }
 
+export interface SdkProviderOptions {
+  wholeComputerRoots?: (agentId: string) => string[];
+  mcpConfigPath?: (agentId: string) => string | undefined;
+  cloud9Tools?: (turn: { channelId: string; agentId?: string }) => OpenTurn | undefined;
+  sessions?: SessionBook;
+}
+
+export type SdkQuery = (input: { prompt: string; options: Record<string, unknown> }) => AsyncIterable<unknown>;
+
+function sdkText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function sdkBlocks(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((b): b is Record<string, unknown> => !!b && typeof b === "object");
+}
+
+function sdkUsage(value: unknown): RunUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const u = value as Record<string, unknown>;
+  const out: RunUsage = {};
+  if (typeof u.input_tokens === "number") out.inputTokens = u.input_tokens;
+  if (typeof u.output_tokens === "number") out.outputTokens = u.output_tokens;
+  if (typeof u.cache_read_input_tokens === "number") out.cachedInputTokens = u.cache_read_input_tokens;
+  if (typeof u.cache_creation_input_tokens === "number") out.cacheWriteTokens = u.cache_creation_input_tokens;
+  const handed = [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens]
+    .filter((n): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0);
+  if (handed.length > 0) out.handedToIt = handed.reduce((a, b) => a + b, 0);
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function sdkMapper(): EventMapper {
+  let partial = "";
+  return (event, t) => {
+    const type = String(event.type ?? "");
+    if (type === "system") {
+      const id = sdkText(event.session_id);
+      const model = sdkText(event.model);
+      t.set({ ...(id ? { sessionId: id } : {}), ...(model ? { model } : {}) });
+      return;
+    }
+    if (type === "assistant") {
+      const message = event.message as Record<string, unknown> | undefined;
+      if (!message) return;
+      const model = sdkText(message.model);
+      if (model) t.set({ model });
+      for (const block of sdkBlocks(message.content)) {
+        const kind = String(block.type ?? "");
+        if (kind === "text") {
+          const text = sdkText(block.text);
+          if (text) {
+            partial = text;
+            t.setText(text, false);
+            t.add({ kind: "message", label: "Said something", detail: text });
+          }
+        } else if (kind === "thinking") {
+          const thought = sdkText(block.thinking);
+          if (thought) t.add({ kind: "thinking", label: "Thought it through", detail: thought });
+        } else if (kind === "tool_use") {
+          t.add({ kind: "tool", label: `Used ${sdkText(block.name) ?? "a tool"}` });
+        }
+      }
+      return;
+    }
+    if (type === "stream_event") {
+      const raw = event.event as Record<string, unknown> | undefined;
+      const delta = raw?.delta as Record<string, unknown> | undefined;
+      const text = sdkText(delta?.text);
+      if (text) {
+        partial += text;
+        t.setText(partial, false);
+        t.add({ kind: "message", label: "Said something", detail: text });
+      }
+      return;
+    }
+    if (type === "tool_progress") {
+      t.add({ kind: "tool", label: `Used ${sdkText(event.tool_name) ?? "a tool"}` });
+      return;
+    }
+    if (type !== "result") return;
+    t.setTerminal();
+    const id = sdkText(event.session_id);
+    const usage = sdkUsage(event.usage);
+    t.set({
+      ...(id ? { sessionId: id } : {}),
+      ...(typeof event.duration_ms === "number" ? { cliDurationMs: event.duration_ms } : {}),
+      ...(typeof event.num_turns === "number" ? { numTurns: event.num_turns } : {}),
+      ...(usage ? { usage } : {}),
+    });
+    const result = sdkText(event.result);
+    if (event.subtype === "success") {
+      if (result) t.setText(result, true);
+      return;
+    }
+    const errors = Array.isArray(event.errors)
+      ? event.errors.find((x): x is string => typeof x === "string") : undefined;
+    t.setError(errors ?? `Claude SDK ended with ${String(event.subtype ?? "an error")}`);
+  };
+}
+
+function mcpServersFromFile(file: string | undefined): Record<string, unknown> {
+  if (!file) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    const servers = parsed?.mcpServers;
+    return servers && typeof servers === "object" ? servers as Record<string, unknown> : {};
+  } catch (err) {
+    console.error("[engine] could not read the selected MCP config for the SDK turn:", err);
+    return {};
+  }
+}
+
+function cloud9McpServer(doorway: OpenTurn): Record<string, unknown> {
+  const entry = path.join(path.dirname(fileURLToPath(import.meta.url)), "cloud9mcp.js");
+  const parsed = JSON.parse(cloud9McpConfig(entry, doorway)) as Record<string, unknown>;
+  const servers = parsed.mcpServers;
+  return servers && typeof servers === "object" ? servers as Record<string, unknown> : {};
+}
+
+/** Stored-key Claude Agent SDK route without a turn-count/no-response trap. */
 export class SdkProvider implements ClaudeProvider {
   constructor(
     private creds: SdkCredentials,
     private agentDataDir: (agentId: string) => string,
+    private opts: SdkProviderOptions = {},
+    private queryOverride?: SdkQuery,
   ) {}
 
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir } = input;
-    // A SWITCH THIS PATH CANNOT KEEP STOPS THE TURN, BEFORE ANYTHING RUNS.
-    //
-    // This path supplies no folders and no connections file, so every switch
-    // that needs one is inert here — and inert is invisible from the editor,
-    // which reads the switch and says "In use". Refusing is the only answer
-    // that cannot become a lie: the owner is told, in his own words, that this
-    // is the stored-API-key route and the switch needs the signed-in app.
-    //
-    // It is asked from the TABLE, so it covers `connections` as well as
-    // `wholeComputer` and covers the next such row the day it is written.
-    const cannotKeep = switchesNeedingSupply(agent);
-    if (cannotKeep.length > 0) {
-      throw new AbilityNotSupportedHereError(cannotKeep.map(c => `“${c.label}”`));
-    }
-    // Lazy import so mock mode never loads the SDK.
-    const { query } = await import("@anthropic-ai/claude-agent-sdk");
-    // the same table the CLI path and the prompt read — no third copy
-    const allowedTools = claudeToolsFor(agent);
-
-    const env: Record<string, string> = { ...process.env } as Record<string, string>;
-    if (this.creds.apiKey) env.ANTHROPIC_API_KEY = this.creds.apiKey;
-    if (this.creds.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = this.creds.oauthToken;
-
-    // THE WHOLE BRIEF, not just the conversation. This path supplies neither
-    // `--add-dir` nor an MCP config and hands out no Cloud9 tool, so the supply
-    // it declares is empty — and the prompt says so instead of promising them.
-    //
-    // Empty is now also PROVABLY empty rather than merely written empty: any
-    // switch that would have needed something in here has already stopped the
-    // turn above. What is left is the set of switches this path can genuinely
-    // keep, and `supply: {}` is the truth about them.
-    //
-    // CUT IN TWO HERE TOO (gap A). The SDK's own options carry
-    // `systemPrompt: { type: "preset", preset: "claude_code", append }` — the
-    // exact twin of the command line's `--append-system-prompt`, and it was read
-    // off the installed SDK's types rather than remembered. APPEND, never
-    // replace: replacing Claude Code's preset would take the harness's own
-    // tool-use instructions away with it, which is a much bigger change than
-    // anybody asked for.
-    const parts = splitAgentPrompt(agent, { ...input, supply: {}, cloud9Tools: false });
-
-    let result = "";
-    for await (const message of query({
-      prompt: parts.turn,
-      options: {
-        model: agent.model,
-        systemPrompt: { type: "preset", preset: "claude_code", append: parts.standing },
-        // NO THINKING-TIME DIAL ON THIS ROUTE, AND IT IS NOT FAKED (gap B).
-        // The installed Claude Agent SDK's options were read in full: there is
-        // no effort field of any kind on them. `effortSupportedBy("sdk")` in
-        // @cloud9/shared says so in one place, so a screen can tell the truth
-        // about this route instead of this file quietly dropping the setting.
-        allowedTools,
-        // derived from the same table, so the SDK path denies exactly what the
-        // command-line path denies — never a shorter hand-written list
-        disallowedTools: deniedClaudeTools(agent),
-        permissionMode: "dontAsk",
-        maxTurns: 6,
-        // the agent's own worktree when it is working in a repository, its own
-        // folder otherwise — never anywhere else, and never the app's folder
-        cwd: workdir ?? this.agentDataDir(agent.id),
-        env,
+    const offeredRoots = this.opts.wholeComputerRoots?.(agent.id) ?? [];
+    const offeredMcpConfigPath = this.opts.mcpConfigPath?.(agent.id);
+    const granted = grantedSupply(agent, {
+      wholeComputerRoots: offeredRoots,
+      mcpConfigPath: offeredMcpConfigPath,
+    });
+    const roots = granted.wholeComputerRoots ?? [];
+    const mcpConfigPath = granted.mcpConfigPath;
+    const doorway = input.channelId
+      ? this.opts.cloud9Tools?.({ channelId: input.channelId, agentId: agent.id })
+      : undefined;
+    const parts = splitAgentPrompt(agent, {
+      ...input,
+      supply: {
+        ...(roots.length > 0 ? { wholeComputerRoots: roots } : {}),
+        ...(mcpConfigPath ? { mcpConfigPath } : {}),
       },
-    })) {
-      if (message.type === "result" && message.subtype === "success") {
-        result = message.result;
+      cloud9Tools: !!doorway,
+    });
+    const mcpServers = {
+      ...mcpServersFromFile(mcpConfigPath),
+      ...(doorway ? cloud9McpServer(doorway) : {}),
+    };
+    const tools = [...claudeToolsFor(agent), ...(doorway ? cloud9ToolNames() : [])];
+    // SAME ISOLATION AS THE CLI PATH for this agent's setup mode: auto-memory
+    // env from claudeSetupEnv, slash-commands / settings / strict MCP from
+    // claudeSetupSdkOptions (maps claudeSetupFlags). Empty when the switch is
+    // ON so his setup loads the way the CLI path would.
+    const isolation = claudeSetupSdkOptions(agent);
+    const env = envWithoutCredentials(process.env, {
+      ...claudeSetupEnv(agent),
+      ...(this.creds.apiKey ? { ANTHROPIC_API_KEY: this.creds.apiKey } : {}),
+      ...(this.creds.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: this.creds.oauthToken } : {}),
+    });
+    const options: Record<string, unknown> = {
+      model: agent.model,
+      systemPrompt: { type: "preset", preset: "claude_code", append: parts.standing },
+      tools,
+      allowedTools: tools,
+      disallowedTools: deniedClaudeTools(agent),
+      permissionMode: "dontAsk",
+      ...(isolation.settingSources ? { settingSources: [...isolation.settingSources] } : {}),
+      ...(isolation.strictMcpConfig ? { strictMcpConfig: true } : {}),
+      ...(isolation.extraArgs ? { extraArgs: { ...isolation.extraArgs } } : {}),
+      cwd: workdir ?? this.agentDataDir(agent.id),
+      env,
+      includePartialMessages: true,
+      ...(roots.length > 0 ? { additionalDirectories: roots } : {}),
+      ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+      ...(input.maxBudgetUsd !== undefined ? { maxBudgetUsd: input.maxBudgetUsd } : {}),
+      ...(input.abortController ? { abortController: input.abortController } : {}),
+    };
+    const query = this.queryOverride
+      ?? ((await import("@anthropic-ai/claude-agent-sdk")).query as unknown as SdkQuery);
+    const walker = traceWalker("claude-sdk", sdkMapper());
+    let sawResult = false;
+    try {
+      for await (const message of query({ prompt: parts.turn, options })) {
+        const event = message as Record<string, unknown>;
+        if (event.type === "result") sawResult = true;
+        const steps = walker.feed(JSON.stringify(event));
+        if (steps.length) {
+          try { input.onStep?.(steps); }
+          catch (err) { console.error("[engine] SDK live-step watcher failed:", err); }
+        }
       }
+    } finally {
+      doorway?.close();
     }
-    return result || "(no response)";
+    const trace = { ...walker.done(), resumed: false };
+    try { input.onTrace?.(trace); }
+    catch (err) { console.error("[engine] SDK trace recorder failed:", err); }
+    if (!sawResult || !trace.terminal || !trace.finalAnswer || !trace.text) {
+      throw new ProviderOutputMissingError();
+    }
+    return trace.text;
   }
 }

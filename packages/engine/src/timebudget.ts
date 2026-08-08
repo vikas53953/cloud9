@@ -48,15 +48,12 @@
 // sense of completeness — this is the same warning the old version of this file
 // carried about its own clocks, and it is still owed:
 //
-//   · `SdkProvider` (provider.ts) runs no child process and takes no abort
-//     signal, so `withStopScope` reaches nothing inside it: Stop reports success
-//     and the work carries on, and carries on billing. `host.ts` PREFERS that
-//     route whenever a stored key or sign-in token exists, so it can be the one
-//     most turns actually take. Removing the clocks did not cause that and does
-//     not make it worse — the SDK path never had a clock either — but it does
-//     mean "a turn ends when it finishes, fails, or he presses Stop" is a claim
-//     about the two COMMAND-LINE harnesses and not yet about every turn. It is
-//     tracked as its own row and it needs an abort signal, not a clock.
+//   · The stored-key `SdkProvider` receives the owner's Stop through an abort
+//     signal, so its SDK query is cancelled together with command-line children.
+//     The provider stops promptly. `host.ts` uses that route whenever a
+//     stored key or sign-in token exists, so it can be the one most turns take.
+//     Removing the clocks leaves the same no-clock
+//     ending law for every provider, with Stop as the sole deliberate early end.
 //
 //   · MONEY IS THE OTHER CEILING, and for one harness there is now none at all.
 //     A turn is bounded by the agent's spending limit (`spendCapOf` /

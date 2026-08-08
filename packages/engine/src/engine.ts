@@ -168,6 +168,7 @@ export interface LiveTurn {
   startedAt: number;
   /** kills every child process this turn started — `run.ts` owns the killing */
   scope: { stop(): void; readonly stopped: boolean };
+  abortController?: AbortController;
 }
 // ===== GAP C BLOCK — end =====
 
@@ -1073,6 +1074,7 @@ export class Engine {
     // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
     /** the handle that stops this turn; absent until the harness is actually run */
     let stop: ReturnType<typeof newStopScope> | undefined;
+    let providerAbortController: AbortController | undefined;
     /** this turn's row in `liveTurns`, so the `finally` can take it out again */
     let stopRegistration: LiveTurn | undefined;
     // ===== GAP C BLOCK — end =====
@@ -1125,8 +1127,10 @@ export class Engine {
       // any depth — is stoppable because the scope travels with the turn rather
       // than being handed down through each layer (`run.ts`).
       stop = newStopScope();
+      providerAbortController = new AbortController();
       const live: LiveTurn = {
         agentId: agent.id, agentName: agent.name, scope: stop, startedAt: seed.startedAt,
+        abortController: providerAbortController,
         ...(input.channelId ? { channelId: input.channelId } : {}),
       };
       this.liveTurns.add(live);
@@ -1161,6 +1165,7 @@ export class Engine {
           ? { maxBudgetUsd: spendVerdict.turnCapUsd } : {}),
         // SAY WHAT YOU INTEND, AND DO NOTHING. Only ever set by `planFirstTurn`.
         ...(input.planOnly ? { planOnly: true } : {}),
+        ...(providerAbortController ? { abortController: providerAbortController } : {}),
         onTrace: t => { trace = t; },
         // WHAT IT IS DOING, AS IT DOES IT. Only offered when there is a message
         // and a room to show it against — the same gate `sendReceipt` uses, in
@@ -1730,6 +1735,7 @@ export class Engine {
       if (live.agentId !== agentId) continue;
       try {
         live.scope.stop();
+        try { live.abortController?.abort(); } catch { /* best effort */ }
         count++;
       } catch (err) {
         console.error(`[engine] could not stop a turn for agent ${agentId}:`, err);

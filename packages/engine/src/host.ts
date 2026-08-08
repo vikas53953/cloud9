@@ -186,6 +186,14 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
       engine.provider = new SdkProvider(
         claude.kind === "apiKey" ? { apiKey: claude.value } : { oauthToken: claude.value },
         engine.agentDataDir,
+        {
+          cloud9Tools: engine.openToolTurn,
+          mcpConfigPath: (agentId: string) =>
+            mcpConfigPathFor(engine.agentById(agentId), isFileOnDisk),
+          wholeComputerRoots: (agentId: string) =>
+            addDirRootsFor(engine.agentById(agentId), isFolderOnDisk),
+          sessions: new SessionBook({ agentDataDir: engine.agentDataDir }),
+        },
       );
     } else if (lastState?.claude.installed && lastState.claude.signedIn) {
       // the Claude app on this computer is signed in and owns its credential
