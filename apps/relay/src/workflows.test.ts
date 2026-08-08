@@ -2,7 +2,7 @@ import test, { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { ClientFrame, ServerFrame, Workflow, WorkflowRun } from "@cloud9/shared";
 import { Relay } from "./server.js";
-import { Store } from "./store.js";
+import { SCHEMA_VERSION, Store } from "./store.js";
 import { TestClient, tmp } from "./testclient.js";
 
 const BASE_AGENT = {
@@ -92,13 +92,13 @@ test("workflow definitions and runs survive a Store reopen at schema 9", () => {
   };
   first.saveWorkflow(workflow);
   first.saveWorkflowRun(run);
-  assert.equal(first.schemaVersion(), 9);
+  assert.equal(first.schemaVersion(), SCHEMA_VERSION);
   first.db.close();
 
   const second = new Store(dbPath, { ownerToken: "tok-owner" });
   assert.deepEqual(second.workflow(workflow.id), workflow);
   assert.deepEqual(second.workflowRun(run.id), run);
-  assert.equal(second.schemaVersion(), 9);
+  assert.equal(second.schemaVersion(), SCHEMA_VERSION);
   second.db.close();
 });
 
@@ -109,7 +109,7 @@ test("opening a schema 6 database applies the workflow migration idempotently", 
   old.db.close();
 
   const migrated = new Store(dbPath, { ownerToken: "tok-owner" });
-  assert.equal(migrated.schemaVersion(), 9);
+  assert.equal(migrated.schemaVersion(), SCHEMA_VERSION);
   const tables = migrated.db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('saved_messages','workflows','workflow_runs') ORDER BY name",
   ).all() as { name: string }[];

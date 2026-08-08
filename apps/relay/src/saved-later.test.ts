@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { TestContext } from "node:test";
 import { Message, ServerFrame } from "@cloud9/shared";
 import { Relay } from "./server.js";
-import { Store } from "./store.js";
+import { SCHEMA_VERSION, Store } from "./store.js";
 import { TestClient, tmp } from "./testclient.js";
 
 async function stand(t: TestContext, name: string) {
@@ -46,14 +46,14 @@ test("saved rows survive reopen and unsave is a durable soft removal", () => {
     /already used/,
   );
   first.saveSavedMessage(owner.id, "m-active", "ch-general", "keep after restart", undefined, "active-save");
-  assert.equal(first.schemaVersion(), 9);
+  assert.equal(first.schemaVersion(), SCHEMA_VERSION);
   assert.ok(first.savedMessages(owner.id).some(entry => entry.note === "bring it up"));
   first.unsaveMessage(owner.id, "m-saved");
   assert.ok(!first.savedMessages(owner.id).some(entry => entry.messageId === "m-saved"));
   first.db.close();
 
   const reopened = new Store(dbPath, { ownerToken: "tok-owner" });
-  assert.equal(reopened.schemaVersion(), 9);
+  assert.equal(reopened.schemaVersion(), SCHEMA_VERSION);
   assert.ok(reopened.savedMessages(owner.id).some(entry => entry.messageId === "m-active"), "active saves survive restart");
   reopened.db.close();
 });
@@ -102,7 +102,7 @@ test("saved v8 migration runs after Workflow v7 and Pulse v9", () => {
   assert.equal(old.schemaVersion(), 6);
   old.db.close();
   const migrated = new Store(dbPath, { ownerToken: "tok-owner" });
-  assert.equal(migrated.schemaVersion(), 9);
+  assert.equal(migrated.schemaVersion(), SCHEMA_VERSION);
   const tables = migrated.db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('saved_messages','workflows') ORDER BY name",
   ).all() as { name: string }[];

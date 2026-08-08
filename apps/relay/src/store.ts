@@ -17,6 +17,7 @@ import {
   type NotificationInboxKind, type NotificationInboxState,
   Workflow, WorkflowRun, validateArtifactLinks, validateWorkflow,
   HuddleSession, HuddleNote, HuddleReadEntry,
+  ForumTopic, ForumReply, ForumReadEntry, ForumPage,
 } from "@cloud9/shared";
 // THE ONE OWNER of "write a file this app will later believe" — write next
 // door, flush it down to the disk, rename it into place. It lives in the engine
@@ -681,6 +682,34 @@ export class Store implements JoinHubStore {
         pollId TEXT NOT NULL, createdAt INTEGER NOT NULL,
         PRIMARY KEY (ownerId, requestId)
       );
+
+      -- Project forums / decision threads. Tables are created here so a fresh
+      -- file and an older one both get them; owner membership is backfilled in
+      -- the dedicated schema step (v10) so hubs already at Pulse v9 still run it.
+      CREATE TABLE IF NOT EXISTS forum_members(
+        projectId TEXT NOT NULL, userId TEXT NOT NULL, addedAt INTEGER NOT NULL,
+        removedAt INTEGER, PRIMARY KEY(projectId,userId)
+      );
+      CREATE INDEX IF NOT EXISTS forum_member_user ON forum_members(userId,removedAt);
+      CREATE TABLE IF NOT EXISTS forum_topics(
+        id TEXT PRIMARY KEY, projectId TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS forum_topic_project ON forum_topics(projectId,createdAt,id);
+      CREATE TABLE IF NOT EXISTS forum_replies(
+        id TEXT PRIMARY KEY, topicId TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS forum_reply_topic ON forum_replies(topicId,createdAt,id);
+      CREATE TABLE IF NOT EXISTS forum_reads(
+        userId TEXT NOT NULL, projectId TEXT NOT NULL, lastReadAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL, PRIMARY KEY(userId,projectId)
+      );
+      CREATE TABLE IF NOT EXISTS forum_ops(
+        userId TEXT NOT NULL, requestId TEXT NOT NULL, projectId TEXT NOT NULL DEFAULT '', targetId TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL, resultId TEXT NOT NULL, payloadHash TEXT NOT NULL DEFAULT '', createdAt INTEGER NOT NULL,
+        PRIMARY KEY(userId,requestId)
+      );
       CREATE INDEX IF NOT EXISTS poll_request_project ON project_poll_requests(projectId);
     `);
       this.migrate();
@@ -1056,6 +1085,10 @@ export class Store implements JoinHubStore {
     // v8 -> v9: Engineering Pulse. Workflow owns v7 and Saved/Later owns v8;
     // Pulse remains the next migration when those features are present.
     this.step(9, () => this.addEngineeringPulseSchema());
+    // v9 -> v10: project forums / decision threads. Pulse already owns v9;
+    // forums take the next free step so hubs upgraded to Pulse still run
+    // the owner backfill and receipt-binding repair.
+    this.step(10, () => this.addForumSchema());
 
     // The one thing that still says a person can only be in a room once at a
     // time, now that the primary key no longer does. It lives here, below the
@@ -3539,6 +3572,11 @@ export class Store implements JoinHubStore {
       "INSERT INTO projects(id,ownerId,repo,createdAt,json) VALUES(?,?,?,?,?) " +
       "ON CONFLICT(id) DO UPDATE SET repo=excluded.repo, json=excluded.json",
     ).run(p.id, p.ownerId, p.repo, p.createdAt, JSON.stringify(p));
+    // Project owner is always a forum member; soft-rejoin if previously removed.
+    this.db.prepare(
+      "INSERT INTO forum_members(projectId,userId,addedAt,removedAt) VALUES(?,?,?,NULL) " +
+      "ON CONFLICT(projectId,userId) DO UPDATE SET removedAt=NULL",
+    ).run(p.id, p.ownerId, p.createdAt);
   }
 
   project(id: ID): Project | undefined {
@@ -3712,8 +3750,227 @@ export class Store implements JoinHubStore {
         .run(id, id);
       this.db.prepare("DELETE FROM pulse_updates WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM pulse_reads WHERE projectId=?").run(id);
+      // Project forums / decision threads — topics, replies, membership, reads, receipts.
+      this.db.prepare("DELETE FROM forum_ops WHERE projectId=?").run(id);
+      this.db.prepare("DELETE FROM forum_replies WHERE topicId IN (SELECT id FROM forum_topics WHERE projectId=?)").run(id);
+      this.db.prepare("DELETE FROM forum_topics WHERE projectId=?").run(id);
+      this.db.prepare("DELETE FROM forum_members WHERE projectId=?").run(id);
+      this.db.prepare("DELETE FROM forum_reads WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM projects WHERE id=?").run(id);
     });
+  }
+
+
+  private backfillForumOwners(): void {
+    this.db.prepare(
+      "INSERT OR IGNORE INTO forum_members(projectId,userId,addedAt,removedAt) SELECT id,ownerId,createdAt,NULL FROM projects",
+    ).run();
+  }
+
+  /**
+   * v9 (Pulse) → v10 (forums). Idempotent: owner backfill always runs, and
+   * forum_ops columns are only added when missing. Hubs already at Pulse v9
+   * must still execute this step — forums must never steal the Pulse step number.
+   */
+  private addForumSchema(): void {
+    const cols = this.db.prepare("PRAGMA table_info(forum_ops)").all() as { name: string }[];
+    if (!cols.some(c => c.name === "projectId")) {
+      this.db.exec("ALTER TABLE forum_ops ADD COLUMN projectId TEXT NOT NULL DEFAULT ''");
+    }
+    const nextCols = this.db.prepare("PRAGMA table_info(forum_ops)").all() as { name: string }[];
+    if (!nextCols.some(c => c.name === "targetId")) {
+      this.db.exec("ALTER TABLE forum_ops ADD COLUMN targetId TEXT NOT NULL DEFAULT ''");
+    }
+    const finalCols = this.db.prepare("PRAGMA table_info(forum_ops)").all() as { name: string }[];
+    if (!finalCols.some(c => c.name === "payloadHash")) {
+      this.db.exec("ALTER TABLE forum_ops ADD COLUMN payloadHash TEXT NOT NULL DEFAULT ''");
+    }
+    this.backfillForumOwners();
+    // Receipts written by an early forum build may lack project/target binding.
+    // Resolve them while the old rows still exist; unresolved receipts stay
+    // non-replayable rather than guessing.
+    const receipts = this.db.prepare(
+      "SELECT userId,requestId,kind,resultId FROM forum_ops WHERE projectId='' OR targetId=''",
+    ).all() as { userId: ID; requestId: ID; kind: string; resultId: ID }[];
+    const update = this.db.prepare(
+      "UPDATE forum_ops SET projectId=?,targetId=? WHERE userId=? AND requestId=?",
+    );
+    for (const receipt of receipts) {
+      let projectId = "";
+      let targetId = "";
+      if (["topic", "edit-topic", "delete-topic", "status", "accept"].includes(receipt.kind)) {
+        const row = this.db.prepare("SELECT projectId FROM forum_topics WHERE id=?")
+          .get(receipt.resultId) as { projectId: ID } | undefined;
+        projectId = row?.projectId ?? "";
+        targetId = receipt.kind === "topic" ? projectId : receipt.resultId;
+      } else if (["reply", "edit-reply", "delete-reply"].includes(receipt.kind)) {
+        const row = this.db.prepare(
+          "SELECT t.projectId,r.topicId FROM forum_replies r JOIN forum_topics t ON t.id=r.topicId WHERE r.id=?",
+        ).get(receipt.resultId) as { projectId: ID; topicId: ID } | undefined;
+        projectId = row?.projectId ?? "";
+        targetId = receipt.kind === "reply" ? row?.topicId ?? "" : receipt.resultId;
+      } else if (["read", "list-members", "add-member", "remove-member", "members"].includes(receipt.kind)) {
+        projectId = receipt.resultId;
+        targetId = receipt.resultId;
+      }
+      if (projectId && targetId) update.run(projectId, targetId, receipt.userId, receipt.requestId);
+    }
+  }
+
+  // ---- durable project forums / decision threads ----
+  forumIsMember(projectId: ID, userId: ID): boolean {
+    return !!this.db.prepare(
+      "SELECT 1 FROM forum_members WHERE projectId=? AND userId=? AND removedAt IS NULL",
+    ).get(projectId, userId);
+  }
+  forumMembers(projectId: ID): ID[] {
+    return (this.db.prepare(
+      "SELECT userId FROM forum_members WHERE projectId=? AND removedAt IS NULL ORDER BY addedAt,userId",
+    ).all(projectId) as { userId: string }[]).map(r => r.userId);
+  }
+  addForumMember(projectId: ID, userId: ID): void {
+    this.db.prepare(
+      "INSERT INTO forum_members(projectId,userId,addedAt,removedAt) VALUES(?,?,?,NULL) " +
+      "ON CONFLICT(projectId,userId) DO UPDATE SET removedAt=NULL, addedAt=excluded.addedAt",
+    ).run(projectId, userId, Date.now());
+  }
+  removeForumMember(projectId: ID, userId: ID): void {
+    this.db.prepare("UPDATE forum_members SET removedAt=? WHERE projectId=? AND userId=?")
+      .run(Date.now(), projectId, userId);
+  }
+  forumProjectsOf(userId: ID): Project[] {
+    return (this.db.prepare(
+      "SELECT p.json FROM projects p JOIN forum_members m ON m.projectId=p.id " +
+      "WHERE m.userId=? AND m.removedAt IS NULL ORDER BY p.createdAt DESC,p.id DESC",
+    ).all(userId) as { json: string }[]).map(r => JSON.parse(r.json) as Project);
+  }
+  forumRequestInfo(userId: ID, requestId: ID):
+    { projectId: ID; targetId: ID; kind: string; resultId: ID; payloadHash: string } | undefined {
+    return this.db.prepare(
+      "SELECT projectId,targetId,kind,resultId,payloadHash FROM forum_ops WHERE userId=? AND requestId=?",
+    ).get(userId, requestId) as
+      { projectId: ID; targetId: ID; kind: string; resultId: ID; payloadHash: string } | undefined;
+  }
+  rememberForumRequest(
+    userId: ID, requestId: ID, projectId: ID, targetId: ID,
+    kind: string, resultId: ID, payloadHash = "",
+  ): void {
+    this.db.prepare(
+      "INSERT OR IGNORE INTO forum_ops(userId,requestId,projectId,targetId,kind,resultId,payloadHash,createdAt) " +
+      "VALUES(?,?,?,?,?,?,?,?)",
+    ).run(userId, requestId, projectId, targetId, kind, resultId, payloadHash, Date.now());
+  }
+  forumMutation<T>(
+    work: () => T,
+    receipt?: {
+      userId: ID; requestId?: ID; projectId: ID; targetId: ID;
+      kind: string; resultId: ID; payloadHash?: string;
+    },
+  ): T {
+    return this.tx(() => {
+      const out = work();
+      if (receipt?.requestId) {
+        this.rememberForumRequest(
+          receipt.userId, receipt.requestId, receipt.projectId, receipt.targetId,
+          receipt.kind, receipt.resultId, receipt.payloadHash,
+        );
+      }
+      return out;
+    });
+  }
+  saveForumTopic(topic: ForumTopic): void {
+    const old = this.forumTopic(topic.id);
+    if (old?.deletedAt) topic = old;
+    this.db.prepare(
+      "INSERT OR REPLACE INTO forum_topics(id,projectId,createdAt,updatedAt,json) VALUES(?,?,?,?,?)",
+    ).run(topic.id, topic.projectId, topic.createdAt, topic.updatedAt, JSON.stringify(topic));
+  }
+  forumTopic(id: ID): ForumTopic | undefined {
+    const r = this.db.prepare("SELECT json FROM forum_topics WHERE id=?").get(id) as
+      { json: string } | undefined;
+    return r ? JSON.parse(r.json) as ForumTopic : undefined;
+  }
+  forumTopicFor(userId: ID, id: ID): ForumTopic | undefined {
+    const r = this.db.prepare(
+      "SELECT t.json FROM forum_topics t JOIN forum_members m ON m.projectId=t.projectId " +
+      "AND m.userId=? AND m.removedAt IS NULL WHERE t.id=?",
+    ).get(userId, id) as { json: string } | undefined;
+    return r ? JSON.parse(r.json) as ForumTopic : undefined;
+  }
+  forumTopics(projectId: ID, before?: number, beforeId?: ID, limit = 50): ForumPage<ForumTopic> {
+    const cap = Math.min(Math.max(limit, 1), 100);
+    const rows = before === undefined
+      ? this.db.prepare(
+        "SELECT json FROM forum_topics WHERE projectId=? ORDER BY createdAt DESC,id DESC LIMIT ?",
+      ).all(projectId, cap + 1)
+      : this.db.prepare(
+        "SELECT json FROM forum_topics WHERE projectId=? AND (createdAt<? OR (createdAt=? AND id<?)) " +
+        "ORDER BY createdAt DESC,id DESC LIMIT ?",
+      ).all(projectId, before, before, beforeId ?? "", cap + 1);
+    const items = (rows as { json: string }[]).map(r => JSON.parse(r.json) as ForumTopic);
+    const hasMore = items.length > cap;
+    if (hasMore) items.pop();
+    const last = items[items.length - 1];
+    return { items, hasMore, ...(last ? { nextBefore: last.createdAt, nextBeforeId: last.id } : {}) };
+  }
+  saveForumReply(reply: ForumReply): void {
+    const old = this.forumReply(reply.id);
+    if (old?.deletedAt) reply = old;
+    this.db.prepare(
+      "INSERT OR REPLACE INTO forum_replies(id,topicId,createdAt,updatedAt,json) VALUES(?,?,?,?,?)",
+    ).run(reply.id, reply.topicId, reply.createdAt, reply.updatedAt, JSON.stringify(reply));
+  }
+  forumReply(id: ID): ForumReply | undefined {
+    const r = this.db.prepare("SELECT json FROM forum_replies WHERE id=?").get(id) as
+      { json: string } | undefined;
+    return r ? JSON.parse(r.json) as ForumReply : undefined;
+  }
+  forumReplyFor(userId: ID, id: ID): ForumReply | undefined {
+    const r = this.db.prepare(
+      "SELECT r.json FROM forum_replies r JOIN forum_topics t ON t.id=r.topicId " +
+      "JOIN forum_members m ON m.projectId=t.projectId AND m.userId=? AND m.removedAt IS NULL WHERE r.id=?",
+    ).get(userId, id) as { json: string } | undefined;
+    return r ? JSON.parse(r.json) as ForumReply : undefined;
+  }
+  forumReplies(topicId: ID): ForumReply[] {
+    return (this.db.prepare(
+      "SELECT json FROM forum_replies WHERE topicId=? ORDER BY createdAt ASC,id ASC",
+    ).all(topicId) as { json: string }[]).map(r => JSON.parse(r.json) as ForumReply);
+  }
+  forumRead(userId: ID, projectId: ID): number {
+    const r = this.db.prepare(
+      "SELECT lastReadAt FROM forum_reads WHERE userId=? AND projectId=?",
+    ).get(userId, projectId) as { lastReadAt: number } | undefined;
+    return r?.lastReadAt ?? 0;
+  }
+  markForumRead(userId: ID, projectId: ID, at: number): ForumReadEntry {
+    const next = Math.max(this.forumRead(userId, projectId), at);
+    this.db.prepare(
+      "INSERT INTO forum_reads(userId,projectId,lastReadAt,updatedAt) VALUES(?,?,?,?) " +
+      "ON CONFLICT(userId,projectId) DO UPDATE SET lastReadAt=excluded.lastReadAt,updatedAt=excluded.updatedAt",
+    ).run(userId, projectId, next, Date.now());
+    return { projectId, lastReadAt: next, unread: this.forumUnread(userId, projectId) };
+  }
+  /**
+   * Unread counts topics and replies by their own clocks. A reply on an older
+   * topic must still bump the count after mark-read (class fix: do not filter
+   * topics by createdAt before inspecting replies).
+   */
+  forumUnread(userId: ID, projectId: ID): number {
+    const since = this.forumRead(userId, projectId);
+    let n = 0;
+    const topics = this.db.prepare(
+      "SELECT json FROM forum_topics WHERE projectId=?",
+    ).all(projectId) as { json: string }[];
+    for (const row of topics) {
+      const t = JSON.parse(row.json) as ForumTopic;
+      if (t.deletedAt) continue;
+      if (t.createdAt > since && t.authorId !== userId) n++;
+      for (const x of this.forumReplies(t.id)) {
+        if (x.createdAt > since && !x.deletedAt && x.authorId !== userId) n++;
+      }
+    }
+    return n;
   }
 
   saveProjectPoll(poll: ProjectPoll): void {
@@ -4408,8 +4665,9 @@ export const ARTIFACT_STAGE_GRACE_MS = 60_000;
  * 7 = saved workflow runbooks (owned by the Workflow delivery slice).
  * 8 = Saved/Later durable message queue.
  * 9 = Engineering Pulse project updates.
+ * 10 = Project forums / decision threads (membership, topics, replies, receipts).
  */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * The fingerprint of one line of the trail.

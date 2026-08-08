@@ -2,6 +2,7 @@ import test, { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { AgentDef, ServerFrame, Task } from "@cloud9/shared";
 import { Relay } from "./server.js";
+import { SCHEMA_VERSION } from "./store.js";
 import { TestClient, tmp } from "./testclient.js";
 
 async function stand(t: TestContext, name: string) {
@@ -154,7 +155,7 @@ test("social feed is project-membership isolated and removed members lose access
 
 test("social operations are schema-versioned, idempotent, and engine identity-scoped", async t => {
   const { relay, owner, engine: actualEngine, welcome } = await stand(t, "social-hardening.db");
-  assert.equal(relay.store.schemaVersion(), 8);
+  assert.equal(relay.store.schemaVersion(), SCHEMA_VERSION);
   const projectId = await makeProject(owner);
   const channelId = welcome.state.channels[0]?.id;
   assert.ok(channelId);

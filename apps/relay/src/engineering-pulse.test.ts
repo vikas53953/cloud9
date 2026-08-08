@@ -2,7 +2,7 @@ import test, { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { Channel, EngineeringPulseDraft, Project, ProjectItem, RunRecord, ServerFrame, Task, newId, validateEngineeringPulseDraft } from "@cloud9/shared";
 import { Relay } from "./server.js";
-import { Store } from "./store.js";
+import { SCHEMA_VERSION, Store } from "./store.js";
 import { TestClient, tmp } from "./testclient.js";
 
 const draft: EngineeringPulseDraft = {
@@ -51,7 +51,7 @@ test("Pulse updates persist across Store reopen and keep a deletion tombstone", 
   first.markPulseRead("u-owner", p.id, 10);
   first.db.close();
   const second = new Store(db);
-  assert.equal(second.schemaVersion(), 9);
+  assert.equal(second.schemaVersion(), SCHEMA_VERSION);
   assert.equal(second.pulses(p.id)[0].id, "pulse-1");
   const row = second.pulse("pulse-1")!; row.deletedAt = 20; row.updatedAt = 20; second.savePulse(row);
   const tombstone = second.pulses(p.id)[0];
@@ -78,7 +78,7 @@ test("v6 migration runs Workflow v7, Saved v8, then Pulse v9 without collision",
   assert.equal(first.schemaVersion(), 6);
   first.db.close();
   const second = new Store(db);
-  assert.equal(second.schemaVersion(), 9);
+  assert.equal(second.schemaVersion(), SCHEMA_VERSION);
   const tables = second.db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('workflows','workflow_runs','saved_messages','saved_mutation_receipts','pulse_updates','pulse_reads','pulse_mutation_receipts') ORDER BY name",
   ).all() as { name: string }[];
