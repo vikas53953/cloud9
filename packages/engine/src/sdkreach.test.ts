@@ -1,30 +1,9 @@
-// GAP 2: A SWITCH THE STORED-API-KEY PATH COULD NEVER KEEP.
-//
-// `SdkProvider` is what runs an agent when the owner has stored an API key
-// instead of using the Claude app he is signed in to. It hardcoded `supply: {}`
-// and passed no folders — so "Reach files outside its own folder" was
-// permanently inert on that path. The agent editor would still read the switch
-// and say "In use". Nothing anywhere said otherwise.
-//
-// He is on the signed-in-app path today, so nothing is lying to him yet. That is
-// exactly what makes it a trap rather than a bug: the day he pastes an API key,
-// a switch he set and a folder he chose stop working, silently, and the agent's
-// own answer ("I cannot reach outside my folder — ask your owner to switch it
-// on") is the most confusing possible reply, because he HAS.
-//
-// THE ANSWER IS TO REFUSE, NOT TO WIRE IT UP, and the reason is in this file's
-// first test: the command-line path does not carry `--add-dir` on its own. It
-// carries it alongside the three isolation flags that keep the owner's OWN
-// Claude Code setup out of his agents. This path has none of them. Widening an
-// un-isolated agent to a folder of his choosing — the whole C: drive is an
-// offered choice — is not a thing to do by accident.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AgentAbilities, AgentDef } from "@cloud9/shared";
 import {
-  AbilityNotSupportedHereError, SdkProvider, sanitizeForChat,
+  ProviderOutputMissingError, SdkProvider,
 } from "./provider.js";
-import { CAPABILITIES, switchesNeedingSupply } from "./abilities.js";
 
 const ALL_OFF: AgentAbilities = {
   webSearch: false, files: false, schedules: false, background: false,
@@ -35,6 +14,7 @@ const agent = (abilities: Partial<AgentAbilities> = {}): AgentDef => ({
   persona: "You help with the accounts",
   abilities: { ...ALL_OFF, ...abilities } as AgentAbilities,
   createdAt: 0,
+  model: "claude-sonnet-4-6",
 });
 
 const turn = (a: AgentDef) => ({
@@ -42,79 +22,84 @@ const turn = (a: AgentDef) => ({
   kind: "chat" as const,
 });
 
-function sdk(): SdkProvider {
-  return new SdkProvider({ apiKey: "sk-not-a-real-key" }, () => "C:\\agents\\a1");
+type Event = Record<string, unknown>;
+function fakeQuery(events: Event[], seen?: (options: Record<string, unknown>) => void) {
+  return async function* ({ options }: { prompt: string; options: Record<string, unknown> }) {
+    seen?.(options);
+    for (const event of events) yield event;
+  };
 }
 
-// -------------------------------------------------- the refusal
-
-test("gap 2: the stored-API-key path REFUSES 'reach files outside its own folder'", async () => {
-  const reaching = agent({ wholeComputer: true } as Partial<AgentAbilities>);
-  await assert.rejects(
-    () => sdk().respond(turn(reaching)),
-    (err: unknown) => {
-      assert.ok(err instanceof AbilityNotSupportedHereError,
-        "the turn ran anyway, with the switch silently doing nothing");
-      return true;
-    });
+const system = { type: "system", subtype: "init", session_id: "sess-1", model: "claude-sonnet-4-6" };
+const success = (result = "final answer") => ({
+  type: "result", subtype: "success", session_id: "sess-1", result,
+  duration_ms: 12, num_turns: 2, usage: { input_tokens: 3, output_tokens: 4 },
 });
 
-test("gap 2: it refuses BEFORE anything runs — no model is called, nothing is spent", async () => {
-  // The SDK is imported lazily inside `respond`. A refusal that happened after
-  // the import would still have started a billable turn; this one cannot,
-  // because the throw is the first statement in the method. Proven by the fact
-  // that a deliberately impossible credential never gets as far as being used.
-  const reaching = agent({ wholeComputer: true } as Partial<AgentAbilities>);
-  const started = Date.now();
-  await assert.rejects(() => sdk().respond(turn(reaching)), AbilityNotSupportedHereError);
-  assert.ok(Date.now() - started < 2_000, "the refusal waited on something");
+test("stored-key SDK keeps supplied folders and does not impose a six-turn trap", async () => {
+  let options: Record<string, unknown> | undefined;
+  const provider = new SdkProvider(
+    { apiKey: "saved-key" }, () => "C:\\agents\\a1",
+    { wholeComputerRoots: () => ["C:\\shared"], mcpConfigPath: () => undefined },
+    fakeQuery([system, success()], o => { options = o; }),
+  );
+  const answer = await provider.respond(turn(agent({ wholeComputer: true })));
+  assert.equal(answer, "final answer");
+  assert.deepEqual(options?.additionalDirectories, ["C:\\shared"]);
+  assert.equal("maxTurns" in (options ?? {}), false);
+  const env = options?.env as Record<string, string | undefined>;
+  assert.equal(env.ANTHROPIC_API_KEY, "saved-key");
+  assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
 });
 
-test("gap 2: the refusal says which switch, and what to do — never a flag name", () => {
-  const said = sanitizeForChat(
-    new AbilityNotSupportedHereError(["“Reach files outside its own folder”"]), "test");
-  assert.match(said, /Reach files outside its own folder/);
-  assert.match(said, /sign in to Claude/);
-  assert.match(said, /or switch that off/);
-  // plain words: no flag, no path, no class name, no jargon
-  assert.doesNotMatch(said, /--add-dir|additionalDirectories|SdkProvider|supply|API key is/i);
+test("SDK exposes live steps, trace/session/run facts, Cloud9 tools, and closes its doorway", async () => {
+  let options: Record<string, unknown> | undefined;
+  let closed = false;
+  const steps: unknown[] = [];
+  let trace: Record<string, unknown> | undefined;
+  const provider = new SdkProvider(
+    { oauthToken: "oauth" }, () => "C:\\agents\\a1",
+    { cloud9Tools: () => ({ id: "t1", url: "http://127.0.0.1/tool", secret: "s", close: () => { closed = true; } }) },
+    fakeQuery([
+      system,
+      { type: "assistant", session_id: "sess-1", message: { content: [{ type: "tool_use", name: "Read" }, { type: "text", text: "intermediate" }] } },
+      success("surviving final"),
+    ], o => { options = o; }),
+  );
+  const answer = await provider.respond({ ...turn(agent()), channelId: "c1", onStep: s => steps.push(...s), onTrace: t => { trace = t as unknown as Record<string, unknown>; } });
+  assert.equal(answer, "surviving final");
+  assert.ok(steps.length >= 1);
+  assert.equal(trace?.sessionId, "sess-1");
+  assert.equal(trace?.resumed, false);
+  assert.equal(trace?.finalAnswer, true);
+  assert.equal(closed, true);
+  const servers = options?.mcpServers as Record<string, unknown>;
+  assert.ok(servers.cloud9);
+  assert.ok((options?.tools as string[]).some(name => name.startsWith("mcp__cloud9__")));
 });
 
-// -------------------------------------------------- the class, not the case
-
-test("it is derived from the capability table, so it covers every such switch", async () => {
-  // The trap was FOUND on `wholeComputer`. `connections` had exactly the same
-  // shape — a switch that grants nothing until something is supplied — and would
-  // have been fixed separately or not at all. Both are covered because neither
-  // is named: the rule reads the table.
-  const needSupply = CAPABILITIES.filter(c => c.needsSupply).map(c => c.ability);
-  assert.ok(needSupply.length >= 2, "the table no longer has the rows this rule is about");
-  for (const ability of needSupply) {
-    const a = agent({ [ability]: true } as Partial<AgentAbilities>);
-    assert.deepEqual(switchesNeedingSupply(a).map(c => c.ability), [ability]);
-    await assert.rejects(() => sdk().respond(turn(a)), AbilityNotSupportedHereError,
-      `"${ability}" is switched on and this path would have run anyway`);
-  }
+test("Stop's abort controller reaches the SDK query", async () => {
+  const controller = new AbortController();
+  let seen: AbortController | undefined;
+  const provider = new SdkProvider(
+    { apiKey: "saved-key" }, () => "C:\\agents\\a1", {},
+    fakeQuery([system, success()], options => { seen = options.abortController as AbortController; }),
+  );
+  await provider.respond({ ...turn(agent()), abortController: controller });
+  assert.equal(seen, controller);
 });
 
-test("a switch this path CAN keep is not refused", () => {
-  // The refusal must not become "the SDK path is broken". Everything that is a
-  // declared tool works there exactly as before, so nothing is stopped.
-  const ordinary = agent({ webSearch: true, files: true, helpers: true } as Partial<AgentAbilities>);
-  assert.deepEqual(switchesNeedingSupply(ordinary), []);
+test("intermediate assistant text without a final result fails loudly", async () => {
+  const provider = new SdkProvider(
+    { apiKey: "saved-key" }, () => "C:\\agents\\a1", {},
+    fakeQuery([system, { type: "assistant", message: { content: [{ type: "text", text: "stale" }] } }]),
+  );
+  await assert.rejects(() => provider.respond(turn(agent())), ProviderOutputMissingError);
 });
 
-test("an agent with nothing switched on is not refused either", () => {
-  assert.deepEqual(switchesNeedingSupply(agent()), []);
-});
-
-// -------------------------------------------------- the approval gate is untouched
-
-test("refusing here does not weaken the gate — those switches still always ask", () => {
-  // `wholeComputer` and `connections` both carry `alwaysAsk`. Refusing a turn on
-  // one path must not be mistaken for a reason to relax the other side.
-  for (const cap of CAPABILITIES.filter(c => c.needsSupply)) {
-    assert.equal(cap.alwaysAsk, true,
-      `${cap.ability} needs something supplied but no longer asks the owner first`);
-  }
+test("terminal result without a surviving final answer is not success", async () => {
+  const provider = new SdkProvider(
+    { apiKey: "saved-key" }, () => "C:\\agents\\a1", {}, fakeQuery([system, success("")]),
+  );
+  await assert.rejects(() => provider.respond(turn(agent())), ProviderOutputMissingError);
 });

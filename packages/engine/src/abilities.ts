@@ -762,7 +762,8 @@ export function grantedCapabilities(agent: AgentDef): Capability[] {
 
 /**
  * The Claude tool names this agent's switches grant, in table order.
- * `claudeArgs` and `SdkProvider` both call this — there is no second list.
+ * `claudeArgs` and the stored-key SDK provider both call this — there is no
+ * second list.
  */
 export function claudeToolsFor(agent: AgentDef): string[] {
   return grantedCapabilities(agent).flatMap(c => [...c.claudeTools]);
@@ -868,8 +869,8 @@ export function withEffectiveAbilities<T extends Pick<AgentDef, "provider" | "ab
  * MAY hand something over. A way of running an agent that can never hand it over
  * is a way of running that agent in which the switch is permanently inert — and
  * the owner cannot see that from the editor, which reads the switch and says
- * "In use". `SdkProvider` asks this and refuses the turn rather than running one
- * that quietly cannot do what he set it to do (see the class comment there).
+ * "In use". Each provider asks this before building its prompt and grants only
+ * the roots/configuration that are actually supplied for this turn.
  *
  * DERIVED FROM THE TABLE, so it is a CLASS and not a case. The trap was found on
  * `wholeComputer`; `connections` had it too and would have been fixed separately

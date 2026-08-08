@@ -2,13 +2,14 @@ export { Engine, type EngineOptions, type TurnInput } from "./engine.js";
 export {
   MockProvider, SdkProvider, HarnessUnavailableError, InstructionsNotSavedError,
   AbilityNotSupportedHereError,
+  ProviderOutputMissingError,
   HARNESS_DISCONNECTED_REPLY,
   buildAgentPrompt, promptTurnKind, renderSkills, sanitizeForChat, redactForSharing,
   // THE PROMPT, CUT IN TWO (gap A) — the standing half a harness can send as a
   // real system prompt, and the half that is only about this turn.
   splitAgentPrompt, type AgentPromptParts,
   type ClaudeProvider, type SdkCredentials, type RespondInput,
-  type TurnBrief, type PromptTurnKind,
+  type TurnBrief, type PromptTurnKind, type SdkProviderOptions,
 } from "./provider.js";
 // (HOW LONG A TURN MAY TAKE used to be exported from here. There is no such
 // thing any more — a turn runs until it finishes, fails, or the owner stops it.

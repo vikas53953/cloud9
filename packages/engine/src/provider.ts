@@ -3,16 +3,23 @@
 //  - SdkProvider: Claude Agent SDK (query()), billing to the user's own
 //    credential (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN).
 import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   AgentDef, DEMO_REPLY_PREFIX, RunKind, SpendCapWhich, setMachineNames,
 } from "@cloud9/shared";
 import {
-  claudeToolsFor, deniedClaudeTools, renderCapabilities, switchesNeedingSupply, Supply,
+  claudeToolsFor, deniedClaudeTools, grantedSupply, renderCapabilities, switchesNeedingSupply, Supply,
 } from "./abilities.js";
-import { renderCloud9Tools } from "./cloud9tools.js";
+import { cloud9McpConfig, cloud9ToolNames, renderCloud9Tools } from "./cloud9tools.js";
+import type { OpenTurn } from "./toolbridge.js";
+import { envWithoutCredentials } from "./env.js";
+import { traceWalker, type EventMapper, type ProviderTrace, type RunUsage } from "./runrecord.js";
+import type { SessionBook } from "./sessionresume.js";
 // type-only: erased at compile time, so runrecord.ts may import this file back
 // without creating a runtime import cycle.
-import type { ProviderTrace, RunStep } from "./runrecord.js";
+import type { RunStep } from "./runrecord.js";
 
 /**
  * WHAT KIND OF TURN THIS IS — the difference between "write your next chat
@@ -142,6 +149,8 @@ export interface RespondInput extends TurnBrief {
    * asks `canPlan` below before it ever promises the owner a plan.
    */
   planOnly?: boolean;
+  /** Abort the provider's own session when the owner presses Stop. */
+  abortController?: AbortController;
 }
 
 /** What the engine can tell a provider about the thread this turn is in. */
@@ -228,6 +237,14 @@ export class TurnOutputTooBigError extends Error {
       "lost in what had to be dropped, so I have nothing honest to show you. Nothing was " +
       "left running. Ask me again, and if it does the same, ask for a smaller piece of it.");
     this.name = "TurnOutputTooBigError";
+  }
+}
+
+/** The harness ended without a final answer, so a partial/stale trace is not a reply. */
+export class ProviderOutputMissingError extends Error {
+  constructor() {
+    super("the provider finished without a final answer, so I have nothing honest to show you. Ask me again.");
+    this.name = "ProviderOutputMissingError";
   }
 }
 
@@ -340,6 +357,7 @@ export function sanitizeForChat(err: unknown, where: string): string {
   // the owner must hear, because the alternative is a fragment presented as his
   // answer. See `TurnOutputTooBigError`.
   if (err instanceof TurnOutputTooBigError) return err.message;
+  if (err instanceof ProviderOutputMissingError) return err.message;
   // A SPENDING LIMIT STOPPED IT; the limit
   // and the amount are the whole of what the person needs to hear. The message
   // is written by `spendCapStopWords` / `decideSpend` in @cloud9/shared out of
@@ -729,7 +747,127 @@ export interface SdkCredentials {
   oauthToken?: string;
 }
 
-export class SdkProvider implements ClaudeProvider {
+export interface SdkProviderOptions {
+  wholeComputerRoots?: (agentId: string) => string[];
+  mcpConfigPath?: (agentId: string) => string | undefined;
+  cloud9Tools?: (turn: { channelId: string; agentId?: string }) => OpenTurn | undefined;
+  sessions?: SessionBook;
+}
+
+type SdkQuery = (input: { prompt: string; options: Record<string, unknown> }) => AsyncIterable<unknown>;
+
+function sdkText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function sdkBlocks(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((b): b is Record<string, unknown> => !!b && typeof b === "object");
+}
+
+function sdkUsage(value: unknown): RunUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const u = value as Record<string, unknown>;
+  const out: RunUsage = {};
+  if (typeof u.input_tokens === "number") out.inputTokens = u.input_tokens;
+  if (typeof u.output_tokens === "number") out.outputTokens = u.output_tokens;
+  if (typeof u.cache_read_input_tokens === "number") out.cachedInputTokens = u.cache_read_input_tokens;
+  if (typeof u.cache_creation_input_tokens === "number") out.cacheWriteTokens = u.cache_creation_input_tokens;
+  const handed = [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens]
+    .filter((n): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0);
+  if (handed.length > 0) out.handedToIt = handed.reduce((a, b) => a + b, 0);
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function sdkMapper(): EventMapper {
+  let partial = "";
+  return (event, t) => {
+    const type = String(event.type ?? "");
+    if (type === "system") {
+      const id = sdkText(event.session_id);
+      const model = sdkText(event.model);
+      t.set({ ...(id ? { sessionId: id } : {}), ...(model ? { model } : {}) });
+      return;
+    }
+    if (type === "assistant") {
+      const message = event.message as Record<string, unknown> | undefined;
+      if (!message) return;
+      const model = sdkText(message.model);
+      if (model) t.set({ model });
+      for (const block of sdkBlocks(message.content)) {
+        const kind = String(block.type ?? "");
+        if (kind === "text") {
+          const text = sdkText(block.text);
+          if (text) {
+            partial = text;
+            t.setText(text, false);
+            t.add({ kind: "message", label: "Said something", detail: text });
+          }
+        } else if (kind === "thinking") {
+          const thought = sdkText(block.thinking);
+          if (thought) t.add({ kind: "thinking", label: "Thought it through", detail: thought });
+        } else if (kind === "tool_use") {
+          t.add({ kind: "tool", label: `Used ${sdkText(block.name) ?? "a tool"}` });
+        }
+      }
+      return;
+    }
+    if (type === "stream_event") {
+      const raw = event.event as Record<string, unknown> | undefined;
+      const delta = raw?.delta as Record<string, unknown> | undefined;
+      const text = sdkText(delta?.text);
+      if (text) {
+        partial += text;
+        t.setText(partial, false);
+        t.add({ kind: "message", label: "Said something", detail: text });
+      }
+      return;
+    }
+    if (type === "tool_progress") {
+      t.add({ kind: "tool", label: `Used ${sdkText(event.tool_name) ?? "a tool"}` });
+      return;
+    }
+    if (type !== "result") return;
+    t.setTerminal();
+    const id = sdkText(event.session_id);
+    const usage = sdkUsage(event.usage);
+    t.set({
+      ...(id ? { sessionId: id } : {}),
+      ...(typeof event.duration_ms === "number" ? { cliDurationMs: event.duration_ms } : {}),
+      ...(typeof event.num_turns === "number" ? { numTurns: event.num_turns } : {}),
+      ...(usage ? { usage } : {}),
+    });
+    const result = sdkText(event.result);
+    if (event.subtype === "success") {
+      if (result) t.setText(result, true);
+      return;
+    }
+    const errors = Array.isArray(event.errors)
+      ? event.errors.find((x): x is string => typeof x === "string") : undefined;
+    t.setError(errors ?? `Claude SDK ended with ${String(event.subtype ?? "an error")}`);
+  };
+}
+
+function mcpServersFromFile(file: string | undefined): Record<string, unknown> {
+  if (!file) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    const servers = parsed?.mcpServers;
+    return servers && typeof servers === "object" ? servers as Record<string, unknown> : {};
+  } catch (err) {
+    console.error("[engine] could not read the selected MCP config for the SDK turn:", err);
+    return {};
+  }
+}
+
+function cloud9McpServer(doorway: OpenTurn): Record<string, unknown> {
+  const entry = path.join(path.dirname(fileURLToPath(import.meta.url)), "cloud9mcp.js");
+  const parsed = JSON.parse(cloud9McpConfig(entry, doorway)) as Record<string, unknown>;
+  const servers = parsed.mcpServers;
+  return servers && typeof servers === "object" ? servers as Record<string, unknown> : {};
+}
+
+class LegacySdkProvider implements ClaudeProvider {
   constructor(
     private creds: SdkCredentials,
     private agentDataDir: (agentId: string) => string,
@@ -794,7 +932,8 @@ export class SdkProvider implements ClaudeProvider {
         // command-line path denies — never a shorter hand-written list
         disallowedTools: deniedClaudeTools(agent),
         permissionMode: "dontAsk",
-        maxTurns: 6,
+        // No max-turns cap: a stored-key turn runs until the SDK finishes or
+        // the owner stops it, just like the signed-in Claude route.
         // the agent's own worktree when it is working in a repository, its own
         // folder otherwise — never anywhere else, and never the app's folder
         cwd: workdir ?? this.agentDataDir(agent.id),
@@ -805,6 +944,88 @@ export class SdkProvider implements ClaudeProvider {
         result = message.result;
       }
     }
-    return result || "(no response)";
+    if (!result) throw new ProviderOutputMissingError();
+    return result;
+  }
+}
+
+/** Stored-key Claude Agent SDK route without a turn-count/no-response trap. */
+export class SdkProvider implements ClaudeProvider {
+  constructor(
+    private creds: SdkCredentials,
+    private agentDataDir: (agentId: string) => string,
+    private opts: SdkProviderOptions = {},
+    private queryOverride?: SdkQuery,
+  ) {}
+
+  async respond(input: RespondInput): Promise<string> {
+    const { agent, workdir } = input;
+    const offeredRoots = this.opts.wholeComputerRoots?.(agent.id) ?? [];
+    const offeredMcpConfigPath = this.opts.mcpConfigPath?.(agent.id);
+    const granted = grantedSupply(agent, {
+      wholeComputerRoots: offeredRoots,
+      mcpConfigPath: offeredMcpConfigPath,
+    });
+    const roots = granted.wholeComputerRoots ?? [];
+    const mcpConfigPath = granted.mcpConfigPath;
+    const doorway = input.channelId
+      ? this.opts.cloud9Tools?.({ channelId: input.channelId, agentId: agent.id })
+      : undefined;
+    const parts = splitAgentPrompt(agent, {
+      ...input,
+      supply: {
+        ...(roots.length > 0 ? { wholeComputerRoots: roots } : {}),
+        ...(mcpConfigPath ? { mcpConfigPath } : {}),
+      },
+      cloud9Tools: !!doorway,
+    });
+    const mcpServers = {
+      ...mcpServersFromFile(mcpConfigPath),
+      ...(doorway ? cloud9McpServer(doorway) : {}),
+    };
+    const tools = [...claudeToolsFor(agent), ...(doorway ? cloud9ToolNames() : [])];
+    const env = envWithoutCredentials(process.env, {
+      ...(this.creds.apiKey ? { ANTHROPIC_API_KEY: this.creds.apiKey } : {}),
+      ...(this.creds.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: this.creds.oauthToken } : {}),
+    });
+    const options: Record<string, unknown> = {
+      model: agent.model,
+      systemPrompt: { type: "preset", preset: "claude_code", append: parts.standing },
+      tools,
+      allowedTools: tools,
+      disallowedTools: deniedClaudeTools(agent),
+      permissionMode: "dontAsk",
+      cwd: workdir ?? this.agentDataDir(agent.id),
+      env,
+      includePartialMessages: true,
+      ...(roots.length > 0 ? { additionalDirectories: roots } : {}),
+      ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+      ...(input.maxBudgetUsd !== undefined ? { maxBudgetUsd: input.maxBudgetUsd } : {}),
+      ...(input.abortController ? { abortController: input.abortController } : {}),
+    };
+    const query = this.queryOverride
+      ?? ((await import("@anthropic-ai/claude-agent-sdk")).query as unknown as SdkQuery);
+    const walker = traceWalker("claude-sdk", sdkMapper());
+    let sawResult = false;
+    try {
+      for await (const message of query({ prompt: parts.turn, options })) {
+        const event = message as Record<string, unknown>;
+        if (event.type === "result") sawResult = true;
+        const steps = walker.feed(JSON.stringify(event));
+        if (steps.length) {
+          try { input.onStep?.(steps); }
+          catch (err) { console.error("[engine] SDK live-step watcher failed:", err); }
+        }
+      }
+    } finally {
+      doorway?.close();
+    }
+    const trace = { ...walker.done(), resumed: false };
+    try { input.onTrace?.(trace); }
+    catch (err) { console.error("[engine] SDK trace recorder failed:", err); }
+    if (!sawResult || !trace.terminal || !trace.finalAnswer || !trace.text) {
+      throw new ProviderOutputMissingError();
+    }
+    return trace.text;
   }
 }
