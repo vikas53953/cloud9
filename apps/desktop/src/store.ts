@@ -10,7 +10,7 @@ import {
   SavedMessageEntry,
   EverywhereHit, SearchKind,
   ReachCatchup,
-  Project, ProjectItem, ProjectPollView, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
+  Project, ForumTopic, ForumReply, ForumReadEntry, ForumLink, ForumStatus, ProjectItem, ProjectPollView, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject, validateEngineeringPulseDraft,
   Workflow, WorkflowRun,
   HuddleSession, HuddleNote, HuddleReadEntry, HuddleParticipant, HuddleNoteKind, HuddleLink,
@@ -399,6 +399,13 @@ export interface World {
     /** Set after a successful publish so the screen can show the public link. */
     lastPublished?: { draftId: ID; token: string; publicPath: string };
   };
+  forumProjects: { asked: boolean; projects: Project[]; requestId?: ID };
+  forumFeeds: Record<ID, { asked: boolean; loading: boolean; topics: ForumTopic[]; unread: number; selected?: ID; problem?: string; requestId?: ID }>;
+  forumTopicRequests: Record<ID, ID>;
+  forumReplies: Record<ID, ForumReply[]>;
+  forumUnavailableProjects: Record<ID, true>;
+  forumMutations: Record<ID, { kind: ClientFrame["type"]; projectId?: ID; topicId?: ID; state: "pending" | "succeeded" | "refused" | "lost"; problem?: string; draft?: { title?: string; body?: string; reply?: string; tags?: string; links?: string; summary?: string } }>;
+  forumMembersByProject: Record<ID, ID[]>;
 
   huddles: { asked: boolean; sessions: HuddleSession[] };
   huddleProjects: { asked: boolean; list: Project[] };
@@ -704,6 +711,8 @@ export class RelayClient {
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
     projects: { asked: false, list: [] }, projectItems: {}, publicUpdates: { asked: false, drafts: [], revisions: [], audit: [] }, polls: { asked: false, list: [] },
+    forumProjects: { asked: false, projects: [] }, forumFeeds: {}, forumTopicRequests: {}, forumReplies: {}, forumUnavailableProjects: {}, forumMutations: {}, forumMembersByProject: {},
+
     huddles: { asked: false, sessions: [] }, huddleProjects: { asked: false, list: [] }, huddleMutations: {}, huddleNotes: {}, huddleNavigation: undefined,
     hooks: { asked: false, list: [] },
     socialProjects: { asked: false, list: [] }, socialUnread: {}, socialPending: {}, socialCompleted: undefined, socialFeeds: {},
@@ -806,6 +815,7 @@ export class RelayClient {
     // questions asked of the last connection will never be answered by this one
     const orphaned = this.asked;
     this.asked = [];
+      this.loseForumRequests();
     for (const a of orphaned) a.lost?.();
     this.syncHubWorld();
     this.emit();
@@ -1172,6 +1182,12 @@ export class RelayClient {
   private workflowRequests = new Map<ID, WorkflowRequestFrame>();
   private savedRequests = new Map<ID, SavedRequestFrame>();
   /** Mutation receipts currently expected; late direct frames are ignored. */
+  private loseForumRequests(): void {
+    const live = this.asked;
+    this.asked = live.filter(entry => !entry.kind.startsWith("forum") && !entry.kind.startsWith("agentForum"));
+    live.filter(entry => entry.kind.startsWith("forum") || entry.kind.startsWith("agentForum")).forEach(entry => entry.lost?.());
+  }
+
   private socialRequests = new Set<ID>();
 
   private rememberSocialRequest(requestId: ID): void {
@@ -2041,6 +2057,74 @@ export class RelayClient {
    * engine looks at GitHub, so a list cached from the last visit would show a
    * repository as never-looked-at long after it had been.
    */
+  forumFeed(projectId: ID): { asked: boolean; loading: boolean; topics: ForumTopic[]; unread: number; selected?: ID; problem?: string } {
+    return this.world.forumFeeds[projectId] ?? { asked: false, loading: false, topics: [], unread: 0 };
+  }
+  askForumProjects(): void {
+    const requestId = this.nextRequestId("forumProjects");
+    this.world.forumProjects = { ...this.world.forumProjects, requestId };
+    this.ask({ type: "forumProjects", requestId }, {
+      answers: f => f.type === "forumProjects" && f.requestId === requestId,
+      answered: f => { if (f.type === "forumProjects" && f.requestId === requestId && this.world.forumProjects.requestId === requestId) this.world.forumProjects = { asked: true, projects: f.projects, requestId: undefined }; this.emit(); },
+      refused: _why => { if (this.world.forumProjects.requestId === requestId) this.world.forumProjects = { ...this.world.forumProjects, asked: true, requestId: undefined }; this.emit(); },
+      lost: () => { if (this.world.forumProjects.requestId === requestId) this.world.forumProjects = { ...this.world.forumProjects, asked: true, requestId: undefined }; this.emit(); },
+    });
+  }
+  askForumFeed(projectId: ID): void {
+    const old=this.forumFeed(projectId); const requestId=this.nextRequestId("forumList"); this.world.forumFeeds={...this.world.forumFeeds,[projectId]:{...old,loading:true,problem:undefined,requestId}}; this.emit();
+    this.ask({type:"forumList",projectId,requestId},{answers:f=>f.type==="forumFeed"&&f.projectId===projectId&&f.requestId===requestId,answered:f=>{if(f.type!=="forumFeed"||f.requestId!==requestId||this.world.forumFeeds[projectId]?.requestId!==requestId)return;this.world.forumFeeds={...this.world.forumFeeds,[projectId]:{asked:true,loading:false,topics:f.topics,unread:f.unread,selected:f.topics[0]?.id,requestId:undefined}};this.emit();},refused:e=>{if(this.world.forumFeeds[projectId]?.requestId!==requestId)return;this.world.forumFeeds={...this.world.forumFeeds,[projectId]:{...old,asked:true,loading:false,problem:e,requestId:undefined}};this.emit();},lost:()=>{if(this.world.forumFeeds[projectId]?.requestId!==requestId)return;this.world.forumFeeds={...this.world.forumFeeds,[projectId]:{...old,asked:true,loading:false,problem:"the forum did not answer",requestId:undefined}};this.emit();}});
+  }
+  forumMutation(requestId: ID): World["forumMutations"][ID] | undefined { return this.world.forumMutations[requestId]; }
+  private forumAnswer(frame: ClientFrame, requestId: ID, response: ServerFrame): boolean {
+    if (!("requestId" in response) || response.requestId !== requestId) return false;
+    if (frame.type === "forumTopic" || frame.type === "agentForumTopic") return response.type === "forumTopic";
+    if (frame.type === "forumReply" || frame.type === "agentForumReply" || frame.type === "forumEditTopic" || frame.type === "forumEditReply" || frame.type === "forumDeleteTopic" || frame.type === "forumDeleteReply" || frame.type === "forumSetStatus" || frame.type === "forumAcceptReply") return response.type === "forumChanged" || response.type === "forumTopic";
+    if (frame.type === "forumMarkRead") return response.type === "forumRead";
+    if (frame.type === "forumMembers" || frame.type === "forumAddMember" || frame.type === "forumRemoveMember") return response.type === "forumMembers" || response.type === "forumProjects" || response.type === "forumUnavailable";
+    return false;
+  }
+  forumSend(frame: ClientFrame, draft?: World["forumMutations"][ID]["draft"]): ID | undefined {
+    const requestId = frame.requestId ?? this.nextRequestId(frame.type);
+    const outgoing = { ...frame, requestId } as ClientFrame;
+    const withIds = outgoing as ClientFrame & { projectId?: ID; topicId?: ID };
+    const projectId = withIds.projectId;
+    const topicId = withIds.topicId;
+    const mark = (state: World["forumMutations"][ID]["state"], problem?: string): void => {
+      const current = this.world.forumMutations[requestId];
+      if (!current) return;
+      this.world.forumMutations = { ...this.world.forumMutations, [requestId]: { ...current, state, ...(problem ? { problem } : {}) } };
+      this.emit();
+    };
+    this.world.forumMutations = { ...this.world.forumMutations, [requestId]: { kind: outgoing.type, projectId, topicId, state: "pending", ...(draft ? { draft } : {}) } };
+    this.emit();
+    const sent = this.transmit(outgoing, {
+      answers: response => this.forumAnswer(outgoing, requestId, response),
+      answered: () => mark("succeeded"),
+      refused: problem => mark("refused", problem),
+      lost: () => mark("lost", "Cloud9 disconnected before it confirmed that forum action. Your draft is still open.") ,
+    });
+    if (!sent) mark("lost", "Cloud9 is offline. Your draft is still open.");
+    return sent;
+  }
+  askForumTopic(topicId: ID): void {
+    const requestId=this.nextRequestId("forumOpen");
+    this.world.forumTopicRequests={...this.world.forumTopicRequests,[topicId]:requestId};
+    this.ask({type:"forumOpen",topicId,requestId},{answers:f=>f.type==="forumTopic"&&f.topic.id===topicId&&f.requestId===requestId,answered:f=>{if(f.type!=="forumTopic"||f.requestId!==requestId||this.world.forumTopicRequests[topicId]!==requestId)return;this.world.forumReplies={...this.world.forumReplies,[topicId]:f.replies};this.emit();},refused:()=>{if(this.world.forumTopicRequests[topicId]===requestId){const {[topicId]:_gone,...rest}=this.world.forumTopicRequests;void _gone;this.world.forumTopicRequests=rest;}this.emit();},lost:()=>{if(this.world.forumTopicRequests[topicId]===requestId){const {[topicId]:_gone,...rest}=this.world.forumTopicRequests;void _gone;this.world.forumTopicRequests=rest;}this.emit();}});
+  }
+  askForumMembers(projectId: ID): void {
+    const requestId = this.nextRequestId("forumMembers");
+    this.ask({ type: "forumMembers", projectId, requestId }, {
+      answers: f => f.type === "forumMembers" && f.projectId === projectId && f.requestId === requestId,
+      answered: f => {
+        if (f.type !== "forumMembers" || f.requestId !== requestId) return;
+        this.world.forumMembersByProject = { ...this.world.forumMembersByProject, [projectId]: f.userIds };
+        this.emit();
+      },
+      refused: () => this.emit(),
+      lost: () => this.emit(),
+    });
+  }
+
   askProjects(): void {
     this.ask({ type: "projects" }, {
       answers: f => f.type === "projects",
@@ -3578,6 +3662,12 @@ export class RelayClient {
         // to false with them: this world has not asked anything yet, so the
         // screen must say "looking" rather than "you have none".
         w.projects = { asked: false, list: [] };
+        w.forumProjects = { asked: false, projects: [] };
+        w.forumFeeds = {};
+        w.forumTopicRequests = {};
+        w.forumReplies = {};
+        w.forumUnavailableProjects = {};
+        w.forumMembersByProject = {};
         w.projectItems = {};
         w.publicUpdates = { asked: false, drafts: [], revisions: [], audit: [] };
         w.huddles = { asked: false, sessions: [] };
@@ -3899,6 +3989,35 @@ export class RelayClient {
           c => !(c.kind === "dm" && c.memberIds.includes(frame.userId)));
         break;
       }
+      case "forumProjects": {
+        const projects = [...frame.projects].sort((a,b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id));
+        const visible = new Set(projects.map(p => p.id));
+        const unavailable = { ...w.forumUnavailableProjects };
+        Object.keys(unavailable).forEach(id => { if (visible.has(id)) delete unavailable[id]; });
+        w.forumUnavailableProjects = unavailable;
+        const feeds = Object.fromEntries(Object.entries(w.forumFeeds).filter(([id]) => visible.has(id)));
+        const replies = { ...w.forumReplies };
+        for (const [id, feed] of Object.entries(w.forumFeeds)) if (!visible.has(id)) for (const topic of feed.topics) delete replies[topic.id];
+        w.forumProjects={asked:true,projects}; w.forumFeeds=feeds; w.forumReplies=replies; break;
+      }
+      case "forumFeed": {
+        const old=w.forumFeeds[frame.projectId]??{asked:false,loading:false,topics:[],unread:0};
+        const topics = [...frame.topics].sort((a,b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id));
+        w.forumFeeds={...w.forumFeeds,[frame.projectId]:{...old,asked:true,loading:false,topics,unread:frame.unread,selected:topics.some(t=>t.id===old.selected)?old.selected:topics[0]?.id}}; break;
+      }
+      case "forumTopic": {
+        const projectId=frame.topic.projectId; const old=w.forumFeeds[projectId]??{asked:false,loading:false,topics:[],unread:0}; const i=old.topics.findIndex(t=>t.id===frame.topic.id); const topics=(i<0?[frame.topic,...old.topics]:old.topics.map(t=>t.id===frame.topic.id?frame.topic:t)).sort((a,b)=>b.createdAt-a.createdAt||b.id.localeCompare(a.id)); w.forumFeeds={...w.forumFeeds,[projectId]:{...old,topics,selected:frame.topic.id}}; w.forumReplies={...w.forumReplies,[frame.topic.id]:frame.replies.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))}; break;
+      }
+      case "forumChanged": {
+        const old=w.forumFeeds[frame.projectId]??{asked:true,loading:false,topics:[],unread:0}; let topics=old.topics; if(frame.topic){const i=topics.findIndex(t=>t.id===frame.topic!.id);topics=i<0?[frame.topic,...topics]:topics.map(t=>t.id===frame.topic!.id?frame.topic!:t);topics=[...topics].sort((a,b)=>b.createdAt-a.createdAt||b.id.localeCompare(a.id));} if(frame.reply){const list=w.forumReplies[frame.reply.topicId]??[]; const i=list.findIndex(r=>r.id===frame.reply!.id); const replies=i<0?[...list,frame.reply]:list.map(r=>r.id===frame.reply!.id?frame.reply!:r); w.forumReplies={...w.forumReplies,[frame.reply.topicId]:replies.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))};} w.forumFeeds={...w.forumFeeds,[frame.projectId]:{...old,topics}}; break;
+      }
+      case "forumRead": { const old=w.forumFeeds[frame.entry.projectId]; if(old)w.forumFeeds={...w.forumFeeds,[frame.entry.projectId]:{...old,unread:frame.entry.unread}}; break; }
+      case "forumUnavailable": { const old=w.forumFeeds[frame.projectId]; const ids=old?.topics.map(t=>t.id)??[]; const {[frame.projectId]:gone,...rest}=w.forumFeeds; void gone; const replies={...w.forumReplies}; ids.forEach(id=>delete replies[id]); w.forumFeeds=rest; w.forumReplies=replies; w.forumProjects={...w.forumProjects,projects:w.forumProjects.projects.filter(p=>p.id!==frame.projectId)}; break; }
+      case "forumMembers": {
+        w.forumMembersByProject = { ...w.forumMembersByProject, [frame.projectId]: frame.userIds };
+        break;
+      }
+
       case "error": {
         if (frame.requestId) {
           const workflowFrame = this.workflowRequests.get(frame.requestId);

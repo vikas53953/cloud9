@@ -73,6 +73,7 @@ import {
      is exactly where the last three attempts went wrong. */
   BESIDE_LABEL, EXPAND_LABEL, THREAD_DEFAULT, THREAD_FLOOR, THREAD_STEP,
   cannotSplit, dividerSpokenWords, dividerWords, widestThread, widthHeChose, widthToDraw,
+  ForumTopic, ForumReply, ForumStatus, ForumLink, ClientFrame,
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -1159,6 +1160,13 @@ const IconPolls = (): React.JSX.Element => (
     <path d="M4 19V5"/><path d="M10 19V9"/><path d="M16 19v-6"/><path d="M22 19H2"/>
   </svg>
 );
+
+const IconForum = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+    <path fill="currentColor" d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm2 4v2h12V8H6zm0 4v2h8v-2H6z" />
+  </svg>
+);
+
 const IconHuddle = (): React.JSX.Element => (<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M3.5 19c.6-3 2.1-4.5 4.5-4.5S11.9 16 12.5 19M11.5 19c.6-3 2.1-4.5 4.5-4.5s3.9 1.5 4.5 4.5"/></svg>);
 const IconSocial = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -2005,7 +2013,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "huddles" | "pulse" | "polls" | "updates" | "hooks" | "social" | "spending" | "activity" | "notifications" | "saved" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "forums" | "huddles" | "pulse" | "polls" | "updates" | "hooks" | "social" | "spending" | "activity" | "notifications" | "saved" | "settings";
 type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -2066,6 +2074,9 @@ function Workspace(): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const p = usePrefs();
   const [screen, setScreen] = useState<ScreenName>("chat");
+  const [forumTaskTarget, setForumTaskTarget] = useState<ID>();
+  const [forumRunTarget, setForumRunTarget] = useState<ID>();
+  const [forumProjectItemTarget, setForumProjectItemTarget] = useState<{ projectId: ID; kind: "pull" | "issue"; number: number }>();
   const [activeId, setActiveId] = useState<ID | null>(null);
   const [modal, setModal] = useState<null | ModalName>(null);
   /** null = not editing. "new" = hiring. An agent = editing that one. */
@@ -2378,6 +2389,18 @@ function Workspace(): React.JSX.Element {
     openHuddleLink(link);
   }, [world.huddleNavigation, openHuddleLink]);
 
+  const openForums = useCallback(() => {
+    attemptLeave(() => { client.askForumProjects(); setScreen("forums"); });
+  }, []);
+  const openForumLink = useCallback((link: ForumLink) => {
+    if (link.kind === "task") { setForumTaskTarget(link.id); setScreen("tasks"); }
+    else if (link.kind === "run") { setForumRunTarget(link.id); client.send({ type: "activity", limit: 100 }); setScreen("activity"); }
+    else if (link.kind === "artifact") { setScreen("files"); }
+    else if (link.projectId && link.projectItemKind && link.projectItemNumber) {
+      setForumProjectItemTarget({ projectId: link.projectId, kind: link.projectItemKind, number: link.projectItemNumber });
+      client.askProjects(); setScreen("projects");
+    }
+  }, []);
   const openHuddles = useCallback(() => { attemptLeave(() => { client.askHuddles(); setScreen("huddles"); }); }, []);
 
   const openPulse = useCallback(() => {
@@ -2915,6 +2938,7 @@ function Workspace(): React.JSX.Element {
               otherwise unchanged. Everything the hub and the engine already
               hold about his repositories arrives through this one door. */}
           {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
+          {railBtn("forums", "Decision threads", <IconForum />, undefined, openForums)}
           {railBtn("huddles", "Huddles", <IconHuddle />, undefined, openHuddles)}
           {railBtn("pulse", "Engineering Pulse", <IconPulse />,
             Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
@@ -3012,6 +3036,7 @@ function Workspace(): React.JSX.Element {
               onOpened={clearProjectOpen} />
           )}
           {screen === "huddles" && <HuddlesScreen onLink={openHuddleLink} />}
+          {screen === "forums" && <ForumScreen onOpenLink={openForumLink} />}
           {screen === "pulse" && <EngineeringPulseScreen
             onOpenTask={id => attemptLeave(() => {
               setTaskOpenAt({ taskId: id, at: Date.now() });
@@ -9549,7 +9574,7 @@ function WholeComputerPick({ agentName, agentDraft, roots, onChange }: {
 }): React.JSX.Element | null {
   const [here, setHere] = useState<{ here: string[]; checkedAt: number } | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
-  const key = roots.join(" ");
+  const key = roots.join("");
 
   /* ASKED FRESH, NEVER REMEMBERED — a folder that was there when he chose it can
      be moved, renamed or sit on a drive that is unplugged. The engine asks the
@@ -14502,7 +14527,7 @@ const SPLIT_LABEL_FITS = 0.2;
 
 /** Public project updates — draft, approve, publish on Cloud9's own read path. */
 function PublicUpdatesScreen(): React.JSX.Element {
-  const world = useWorld();
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [projectId, setProjectId] = useState<ID | "">(world.projects.list[0]?.id ?? "");
   const project = world.projects.list.find(p => p.id === projectId) ?? world.projects.list[0];
   const [selected, setSelected] = useState<ID | "">("");
@@ -15487,6 +15512,329 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
         )}
       </div>
     </div>
+  );
+}
+
+
+type ForumMutationDraft = { title?: string; body?: string; reply?: string; tags?: string; links?: string; summary?: string; memberUserId?: string };
+function ForumScreen({ onOpenLink }: { onOpenLink: (link: ForumLink) => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const projects = world.forumProjects.projects;
+  const [projectId, setProjectId] = useState<ID>(projects[0]?.id ?? "");
+  const [topicId, setTopicId] = useState<ID | undefined>();
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [reply, setReply] = useState("");
+  const [tags, setTags] = useState("");
+  const [links, setLinks] = useState("");
+  const [summary, setSummary] = useState("");
+  const [replyParent, setReplyParent] = useState<ID>();
+  const [editingReplyId, setEditingReplyId] = useState<ID>();
+  const [editing, setEditing] = useState(false);
+  const [pendingTopicRequest, setPendingTopicRequest] = useState<ID>();
+  const [pendingReplyRequest, setPendingReplyRequest] = useState<ID>();
+  const [activeMutation, setActiveMutation] = useState<ID>();
+  const [memberUserId, setMemberUserId] = useState("");
+  useEffect(() => {
+    if (!projects.some(p => p.id === projectId)) {
+      setProjectId(projects[0]?.id ?? "");
+      setTopicId(undefined);
+    }
+  }, [projectId, projects]);
+  useEffect(() => { if (projectId) client.askForumFeed(projectId); }, [projectId]);
+  useEffect(() => {
+    if (projectId && projects.find(p => p.id === projectId)?.ownerId === world.me?.id) {
+      client.askForumMembers(projectId);
+    }
+  }, [projectId, projects, world.me?.id]);
+  const feed = projectId ? client.forumFeed(projectId) : { asked: false, loading: false, topics: [], unread: 0 };
+  const selected = feed.topics.find(t => t.id === topicId) ?? feed.topics[0];
+  useEffect(() => { if (selected && selected.id !== topicId) setTopicId(selected.id); }, [selected?.id]);
+  useEffect(() => {
+    if (selected) {
+      client.askForumTopic(selected.id);
+      sendMutation({ type: "forumMarkRead", projectId: selected.projectId, requestId: `read-${selected.projectId}-${Date.now()}` });
+    }
+  }, [selected?.id]);
+  const replies = selected ? world.forumReplies[selected.id] ?? [] : [];
+  const activeProject = projects.find(p => p.id === projectId);
+  const isOwner = activeProject?.ownerId === world.me?.id;
+  const members = projectId ? world.forumMembersByProject[projectId] ?? [] : [];
+  const topicMutation = pendingTopicRequest ? world.forumMutations[pendingTopicRequest] : undefined;
+  const replyMutation = pendingReplyRequest ? world.forumMutations[pendingReplyRequest] : undefined;
+  const mutation = activeMutation ? world.forumMutations[activeMutation] : undefined;
+  const sendMutation = (frame: ClientFrame, draft?: ForumMutationDraft): ID | undefined => {
+    const id = client.forumSend(frame, draft);
+    if (id) setActiveMutation(id);
+    return id;
+  };
+  useEffect(() => {
+    if (topicMutation?.state !== "succeeded") return;
+    setTitle(""); setBody(""); setTags(""); setLinks(""); setEditing(false); setPendingTopicRequest(undefined);
+  }, [topicMutation?.state]);
+  useEffect(() => {
+    if (replyMutation?.state !== "succeeded") return;
+    setReply(""); setReplyParent(undefined); setEditingReplyId(undefined); setPendingReplyRequest(undefined);
+  }, [replyMutation?.state]);
+  const parseLinks = (raw: string): ForumLink[] => raw.split(",").map(x => x.trim()).filter(Boolean).flatMap((x): ForumLink[] => {
+    const [kind, id] = x.split(":", 2);
+    if (!kind || !id) return [];
+    if (["task", "run", "artifact"].includes(kind)) return [{ kind: kind as ForumLink["kind"], id }];
+    if (kind === "pr" || kind === "issue") {
+      const n = Number(id);
+      if (Number.isInteger(n) && n > 0) {
+        return [{ kind: "projectItem", projectId, projectItemKind: kind === "pr" ? "pull" : "issue", projectItemNumber: n }];
+      }
+    }
+    return [];
+  });
+  const submitTopic = (e: React.FormEvent): void => {
+    e.preventDefault();
+    if (!projectId || !title.trim() || !body.trim()) return;
+    const requestId = `topic-${projectId}-${Date.now()}`;
+    if (sendMutation({
+      type: "forumTopic", projectId, title, body,
+      tags: tags.split(",").map(t => t.trim()).filter(Boolean),
+      links: parseLinks(links), requestId,
+    }, { title, body, tags, links })) setPendingTopicRequest(requestId);
+  };
+  const submitReply = (e: React.FormEvent): void => {
+    e.preventDefault();
+    if (!selected || !reply.trim()) return;
+    const requestId = editingReplyId ? `edit-reply-${editingReplyId}` : `reply-${selected.id}-${Date.now()}`;
+    const frame = editingReplyId
+      ? { type: "forumEditReply" as const, replyId: editingReplyId, body: reply, requestId }
+      : { type: "forumReply" as const, topicId: selected.id, body: reply, ...(replyParent ? { parentId: replyParent } : {}), requestId };
+    if (sendMutation(frame, { reply })) setPendingReplyRequest(requestId);
+  };
+  const moderate = (status: ForumStatus): void => {
+    if (selected) sendMutation({ type: "forumSetStatus", topicId: selected.id, status, requestId: `status-${selected.id}-${status}` });
+  };
+  const accept = (replyId: ID): void => {
+    if (selected && summary.trim()) {
+      sendMutation({ type: "forumAcceptReply", topicId: selected.id, replyId, summary, requestId: `accept-${replyId}` }, { summary });
+    }
+  };
+  const saveEdit = (e: React.FormEvent): void => {
+    e.preventDefault();
+    if (selected && title.trim() && body.trim()) {
+      const requestId = `edit-topic-${selected.id}`;
+      if (sendMutation({ type: "forumEditTopic", topicId: selected.id, title, body, requestId }, { title, body })) {
+        setPendingTopicRequest(requestId);
+      }
+    }
+  };
+  const addMember = (e: React.FormEvent): void => {
+    e.preventDefault();
+    if (!projectId || !memberUserId.trim()) return;
+    sendMutation({
+      type: "forumAddMember", projectId, userId: memberUserId.trim(),
+      requestId: `add-member-${memberUserId.trim()}-${Date.now()}`,
+    }, { memberUserId });
+    setMemberUserId("");
+    setTimeout(() => client.askForumMembers(projectId), 50);
+  };
+  const removeMember = (userId: ID): void => {
+    if (!projectId) return;
+    sendMutation({
+      type: "forumRemoveMember", projectId, userId,
+      requestId: `remove-member-${userId}-${Date.now()}`,
+    });
+    setTimeout(() => client.askForumMembers(projectId), 50);
+  };
+  const canModerate = !!selected && (selected.authorId === world.me?.id || isOwner);
+  const people = world.users ?? [];
+  return (
+    <section className="forum-screen" aria-labelledby="forums-heading">
+      <header className="screen-head">
+        <div>
+          <span className="eyebrow">Project knowledge</span>
+          <h1 id="forums-heading">Decision threads</h1>
+          <p className="muted">Durable, project-scoped questions and accepted answers. Chronological only.</p>
+        </div>
+        <span className="status-pill">{feed.unread ? `${feed.unread} unread` : "All read"}</span>
+      </header>
+      {mutation?.state === "refused" && <div className="error-banner" role="alert">{mutation.problem ?? "that forum action was refused"}</div>}
+      {mutation?.state === "lost" && <div className="error-banner" role="alert">{mutation.problem ?? "Cloud9 disconnected before confirming that forum action"}</div>}
+      {(topicMutation?.state === "pending" || replyMutation?.state === "pending") && <div className="empty-state" role="status">Saving…</div>}
+      {!world.forumProjects.asked ? (
+        <div className="empty-state" role="status">Loading project forums…</div>
+      ) : projects.length === 0 ? (
+        <div className="empty-state" role="status">
+          <strong>No project forums yet</strong>
+          <span>Connect a project or ask its owner to add you.</span>
+        </div>
+      ) : (
+        <>
+          <label className="field-label" htmlFor="forum-project">Project</label>
+          <select id="forum-project" className="input" value={projectId} onChange={e => setProjectId(e.target.value)}>
+            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          {isOwner && (
+            <div className="forum-members" aria-label="Forum members">
+              <h2>Members</h2>
+              <p className="muted">Who can read and write decision threads for this project. Only you can change this list.</p>
+              <ul className="forum-member-list">
+                {members.map(id => {
+                  const person = people.find(u => u.id === id);
+                  const label = person?.name ?? id;
+                  const isProjectOwner = id === activeProject?.ownerId;
+                  return (
+                    <li key={id}>
+                      <span>{label}{isProjectOwner ? " (owner)" : ""}</span>
+                      {!isProjectOwner && (
+                        <button className="btn small" type="button" onClick={() => removeMember(id)}>Remove</button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              <form className="forum-add-member" onSubmit={addMember}>
+                <label className="field-label" htmlFor="forum-add-member">Add person</label>
+                <select id="forum-add-member" className="input" value={memberUserId} onChange={e => setMemberUserId(e.target.value)}>
+                  <option value="">Choose someone…</option>
+                  {people.filter(u => !members.includes(u.id)).map(u => (
+                    <option key={u.id} value={u.id}>{u.name}</option>
+                  ))}
+                </select>
+                <button className="btn primary" type="submit" disabled={!memberUserId}>Add to forum</button>
+              </form>
+            </div>
+          )}
+          {feed.problem && <div className="error-banner" role="alert">{feed.problem}</div>}
+          <div className="forum-layout">
+            <aside className="forum-list" aria-label="Decision threads" role="feed">
+              {feed.loading && !feed.asked ? (
+                <div className="empty-state">Loading…</div>
+              ) : feed.topics.length === 0 ? (
+                <div className="empty-state">No topics yet.</div>
+              ) : feed.topics.map(t => (
+                <button key={t.id} className={`forum-topic-row${selected?.id === t.id ? " selected" : ""}`} onClick={() => setTopicId(t.id)}>
+                  <strong>{t.deletedAt ? "Deleted topic" : t.title}</strong>
+                  <span>{t.status} · {t.replyCount} replies</span>
+                  <small>{t.authorName} · {new Date(t.createdAt).toLocaleString()}</small>
+                </button>
+              ))}
+            </aside>
+            <div className="forum-detail" aria-live="polite">
+              {selected ? (
+                <>
+                  <div className="forum-topic-head">
+                    <span className={`status-pill status-${selected.status}`}>{selected.status}</span>
+                    <h2>{selected.title}</h2>
+                    <p className="muted">{selected.authorName} ({selected.authorKind}) · {new Date(selected.updatedAt).toLocaleString()}</p>
+                    {canModerate && !selected.deletedAt && (
+                      <div className="forum-actions">
+                        <button className="btn small" type="button" onClick={() => { setTitle(selected.title); setBody(selected.body); setEditing(true); }}>Edit topic</button>
+                        <button className="btn small" type="button" onClick={() => sendMutation({ type: "forumDeleteTopic", topicId: selected.id, requestId: `delete-topic-${selected.id}` })}>Delete topic</button>
+                      </div>
+                    )}
+                    {isOwner && !selected.deletedAt && (
+                      <div className="forum-moderation">
+                        <label className="field-label" htmlFor="forum-status">Status</label>
+                        <select id="forum-status" className="input" value={selected.status} onChange={e => moderate(e.target.value as ForumStatus)}>
+                          <option value="open">Open</option>
+                          <option value="resolved">Resolved</option>
+                          <option value="archived">Archived</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                  {editing ? (
+                    <form className="forum-edit" onSubmit={saveEdit}>
+                      <label className="field-label" htmlFor="forum-edit-title">Edit title</label>
+                      <input id="forum-edit-title" className="input" value={title} onChange={e => setTitle(e.target.value)} />
+                      <label className="field-label" htmlFor="forum-edit-body">Edit body</label>
+                      <textarea id="forum-edit-body" className="input" value={body} onChange={e => setBody(e.target.value)} />
+                      <button className="btn primary" type="submit">Save edit</button>
+                    </form>
+                  ) : (
+                    <p className="forum-body">{selected.body}</p>
+                  )}
+                  {selected.decisionSummary && (
+                    <div className="forum-decision" role="status">
+                      <strong>Accepted decision</strong>
+                      <p>{selected.decisionSummary}</p>
+                    </div>
+                  )}
+                  {selected.links.length > 0 && (
+                    <div className="forum-links" aria-label="Authorized linked work">
+                      <span className="field-label">Linked work</span>
+                      {selected.links.map((link, i) => (
+                        <button className="linkish" type="button" key={`${link.kind}-${link.id ?? link.artifactId ?? i}`} onClick={() => onOpenLink(link)}>
+                          {link.label ?? `${link.kind} ${link.id ?? link.artifactId ?? link.projectItemNumber ?? ""}`}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="forum-replies" aria-label="Replies">
+                    {replies.map(r => (
+                      <article key={r.id} className={`forum-reply${r.deletedAt ? " deleted" : ""}`}>
+                        <header>
+                          <strong>{r.authorName}</strong>
+                          <span className="muted">{new Date(r.createdAt).toLocaleString()}</span>
+                          {selected.acceptedReplyId === r.id && <span className="status-pill">Accepted</span>}
+                        </header>
+                        <p>{r.body}</p>
+                        {!r.deletedAt && (
+                          <div className="forum-reply-actions">
+                            <button className="linkish" type="button" onClick={() => setReplyParent(r.id)}>Reply</button>
+                            {(r.authorId === world.me?.id || isOwner) && (
+                              <>
+                                <button className="linkish" type="button" onClick={() => { setEditingReplyId(r.id); setReply(r.body); }}>Edit</button>
+                                <button className="linkish" type="button" onClick={() => sendMutation({ type: "forumDeleteReply", replyId: r.id, requestId: `delete-reply-${r.id}` })}>Delete</button>
+                              </>
+                            )}
+                            {isOwner && selected.status !== "archived" && (
+                              <button className="linkish" type="button" onClick={() => accept(r.id)}>Accept as decision</button>
+                            )}
+                          </div>
+                        )}
+                        {r.links.length > 0 && r.links.map((link, i) => (
+                          <button className="linkish" type="button" key={`${r.id}-${i}`} onClick={() => onOpenLink(link)}>
+                            {link.label ?? `${link.kind} ${link.id ?? link.artifactId ?? link.projectItemNumber ?? ""}`}
+                          </button>
+                        ))}
+                      </article>
+                    ))}
+                  </div>
+                  {isOwner && (
+                    <label className="field-label" htmlFor="forum-summary">Decision summary (for accept)</label>
+                  )}
+                  {isOwner && (
+                    <input id="forum-summary" className="input" value={summary} onChange={e => setSummary(e.target.value)} maxLength={4000} />
+                  )}
+                  {!selected.deletedAt && (
+                    <form className="forum-reply-composer" onSubmit={submitReply}>
+                      <label className="field-label" htmlFor="forum-reply">{editingReplyId ? "Edit reply" : replyParent ? "Reply in thread" : "Reply"}</label>
+                      <textarea id="forum-reply" className="input" value={reply} onChange={e => setReply(e.target.value)} maxLength={12000} required />
+                      <button className="btn primary" type="submit">{editingReplyId ? "Save reply" : "Post reply"}</button>
+                      {(editingReplyId || replyParent) && (
+                        <button className="btn" type="button" onClick={() => { setEditingReplyId(undefined); setReplyParent(undefined); setReply(""); }}>Cancel</button>
+                      )}
+                    </form>
+                  )}
+                </>
+              ) : (
+                <div className="empty-state">Pick a topic or start one below.</div>
+              )}
+            </div>
+          </div>
+          <form className="forum-composer" onSubmit={submitTopic}>
+            <h2>Start a topic</h2>
+            <label className="field-label" htmlFor="forum-title">Title</label>
+            <input id="forum-title" className="input" value={title} onChange={e => setTitle(e.target.value)} maxLength={160} required />
+            <label className="field-label" htmlFor="forum-body">Question or proposal</label>
+            <textarea id="forum-body" className="input" value={body} onChange={e => setBody(e.target.value)} maxLength={12000} required />
+            <label className="field-label" htmlFor="forum-tags">Tags <span className="muted">comma separated</span></label>
+            <input id="forum-tags" className="input" value={tags} onChange={e => setTags(e.target.value)} />
+            <label className="field-label" htmlFor="forum-links">Links <span className="muted">task:id, run:id, artifact:id, pr:12</span></label>
+            <input id="forum-links" className="input" value={links} onChange={e => setLinks(e.target.value)} />
+            <button className="btn primary" type="submit">Publish to project forum</button>
+          </form>
+        </>
+      )}
+    </section>
   );
 }
 

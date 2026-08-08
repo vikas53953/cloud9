@@ -45,6 +45,8 @@ import {
   validateSocialLinks,
   validateName, validateRepo, validateRunRecord, validateTaskSummary, validateWorkflow,
   HuddleSession, HuddleNote, HuddleParticipant, HuddleLink, HuddleNoteKind, validateHuddleText, validateHuddleLinks,
+  ForumTopic, ForumReply, ForumLink, ForumStatus,
+  validateForumText, validateForumTags, validateForumLinks,
   WS_LIMITS,
 } from "@cloud9/shared";
 import os from "node:os";
@@ -890,6 +892,219 @@ export class Relay {
     }
     if (conn.client !== "desktop") {
       throw new Error(`only the desktop app can ${action}`);
+    }
+  }
+
+  private forumProject(userId: ID, projectId: ID): Project {
+    const project = this.store.project(projectId);
+    if (!project || !this.store.forumIsMember(projectId, userId)) throw new Error("no such forum project");
+    return project;
+  }
+  private forumProjectView(project: Project): Project {
+    const { localPath, ...safe } = project;
+    void localPath;
+    return safe;
+  }
+  /**
+   * Write-time link binding. Same class as social feed: when the project has no
+   * room, task/run/artifact links are refused rather than skipping the check.
+   */
+  private validateForumLinks(userId: ID, project: Project, links: ForumLink[]): void {
+    for (const link of links) {
+      if (link.kind === "projectItem") {
+        const item = this.store.projectItems(project.id).find(
+          i => i.kind === link.projectItemKind && i.number === link.projectItemNumber,
+        );
+        if (!item) throw new Error("that project item is unavailable");
+        continue;
+      }
+      if (!project.channelId) {
+        throw new Error("this project has no room, so that kind of link cannot be attached");
+      }
+      if (link.kind === "task") {
+        const task = this.store.task(link.id!);
+        if (!task) throw new Error("that task is unavailable");
+        try { this.channelFor(userId, task.channelId); } catch { throw new Error("that task is unavailable"); }
+        if (task.channelId !== project.channelId) throw new Error("that task is outside this project");
+      } else if (link.kind === "run") {
+        const run = this.store.run(link.id!);
+        if (!run) throw new Error("that run is unavailable");
+        if (!run.channelId) throw new Error("that run is outside this project");
+        try { this.channelFor(userId, run.channelId); } catch { throw new Error("that run is unavailable"); }
+        if (run.channelId !== project.channelId) throw new Error("that run is outside this project");
+      } else if (link.kind === "artifact") {
+        const artifact = this.artifactFor(userId, link.artifactId ?? link.id!);
+        if (artifact.channelId !== project.channelId) throw new Error("that file is outside this project");
+      }
+    }
+  }
+  private forumTopicView(userId: ID, topic: ForumTopic): ForumTopic {
+    const project = this.store.project(topic.projectId);
+    if (!project) return { ...topic, links: [] };
+    return {
+      ...topic,
+      links: (topic.links ?? []).filter(l => {
+        try { this.validateForumLinks(userId, project, [l]); return true; } catch { return false; }
+      }),
+    };
+  }
+  private forumReplyView(userId: ID, reply: ForumReply): ForumReply {
+    const topic = this.store.forumTopic(reply.topicId);
+    const project = topic ? this.store.project(topic.projectId) : undefined;
+    if (!project) return { ...reply, links: [] };
+    return {
+      ...reply,
+      links: (reply.links ?? []).filter(l => {
+        try { this.validateForumLinks(userId, project, [l]); return true; } catch { return false; }
+      }),
+    };
+  }
+  private forumSnapshot(conn: Conn, topic: ForumTopic, requestId?: ID): void {
+    this.forumProject(conn.userId, topic.projectId);
+    send(conn.ws, {
+      type: "forumTopic",
+      topic: this.forumTopicView(conn.userId, topic),
+      replies: this.store.forumReplies(topic.id).map(r => this.forumReplyView(conn.userId, r)),
+      unread: this.store.forumUnread(conn.userId, topic.projectId),
+      ...(requestId ? { requestId } : {}),
+    });
+  }
+  private forumPayloadHash(frame: ClientFrame): string {
+    const canonical = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(canonical);
+      if (value && typeof value === "object") {
+        return Object.fromEntries(
+          Object.entries(value as Record<string, unknown>)
+            .filter(([key]) => key !== "requestId")
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([key, item]) => [key, canonical(item)]),
+        );
+      }
+      return value;
+    };
+    return createHash("sha256").update(JSON.stringify(canonical(frame))).digest("hex");
+  }
+  private forumReceipt(
+    conn: Conn,
+    frame: ClientFrame,
+    receipt: { projectId: ID; targetId: ID; kind: string; resultId: ID },
+  ): {
+    userId: ID; requestId?: ID; projectId: ID; targetId: ID;
+    kind: string; resultId: ID; payloadHash?: string;
+  } | undefined {
+    return frame.requestId
+      ? { userId: conn.userId, requestId: frame.requestId, ...receipt, payloadHash: this.forumPayloadHash(frame) }
+      : undefined;
+  }
+  /**
+   * Replay is not an authorization token. Every path re-checks current forum
+   * membership first, then the operation's owner/author gate. A removed member
+   * cannot re-read a decision thread by replaying a prior requestId.
+   */
+  private forumReplay(
+    conn: Conn, requestId: ID | undefined, kind: string,
+    projectId: ID, targetId: ID, payloadHash: string,
+  ): boolean {
+    if (!requestId) return false;
+    const info = this.store.forumRequestInfo(conn.userId, requestId);
+    if (!info) return false;
+    if (
+      info.projectId !== projectId || info.kind !== kind || info.targetId !== targetId
+      || !info.payloadHash || info.payloadHash !== payloadHash
+    ) {
+      throw new Error("that request id was already used for another forum operation");
+    }
+    // Membership first — fail closed for every kind, including edit/delete/status/accept.
+    if (!this.store.forumIsMember(projectId, conn.userId)) {
+      throw new Error("no such forum project");
+    }
+    const project = this.store.project(projectId);
+    if (!project) throw new Error("no such forum project");
+    if (["edit-topic", "delete-topic", "status", "accept"].includes(info.kind)) {
+      const topic = this.store.forumTopic(info.resultId);
+      if (!topic) throw new Error("no such forum topic");
+      if (
+        ["edit-topic", "delete-topic"].includes(info.kind)
+        && topic.authorId !== conn.userId && project.ownerId !== conn.userId
+      ) {
+        throw new Error("only the author or project owner can edit this");
+      }
+      if (["status", "accept"].includes(info.kind) && project.ownerId !== conn.userId) {
+        throw new Error("only the project owner can change this forum decision");
+      }
+    } else if (["edit-reply", "delete-reply"].includes(info.kind)) {
+      const reply = this.store.forumReply(info.resultId);
+      if (!reply) throw new Error("no such forum reply");
+      if (reply.authorId !== conn.userId && project.ownerId !== conn.userId) {
+        throw new Error("only the author or project owner can edit this");
+      }
+    } else if (["add-member", "remove-member"].includes(info.kind) && project.ownerId !== conn.userId) {
+      throw new Error("only the project owner can manage forum members");
+    } else if (info.kind === "list-members") {
+      // Any current member may re-list; owner-only gate does not apply.
+    } else if (info.kind === "members" && project.ownerId !== conn.userId) {
+      // Legacy receipts stamped before list/manage split — treat as manage.
+      throw new Error("only the project owner can manage forum members");
+    }
+    if (info.kind === "topic" || info.kind === "reply") {
+      const topic = info.kind === "topic"
+        ? this.store.forumTopic(info.resultId)
+        : (() => {
+          const reply = this.store.forumReply(info.resultId);
+          return reply ? this.store.forumTopic(reply.topicId) : undefined;
+        })();
+      if (topic) this.forumSnapshot(conn, topic, requestId);
+    } else if (["edit-topic", "delete-topic", "status", "accept"].includes(info.kind)) {
+      const topic = this.store.forumTopic(info.resultId);
+      if (topic) {
+        send(conn.ws, {
+          type: "forumChanged", projectId: topic.projectId,
+          topic: this.forumTopicView(conn.userId, topic), requestId,
+        });
+      }
+    } else if (["edit-reply", "delete-reply"].includes(info.kind)) {
+      const reply = this.store.forumReply(info.resultId);
+      const topic = reply && this.store.forumTopic(reply.topicId);
+      if (reply && topic) {
+        send(conn.ws, {
+          type: "forumChanged", projectId: topic.projectId,
+          reply: this.forumReplyView(conn.userId, reply), requestId,
+        });
+      }
+    } else if (info.kind === "read") {
+      const p = this.forumProject(conn.userId, info.resultId);
+      send(conn.ws, {
+        type: "forumRead",
+        entry: {
+          projectId: p.id,
+          lastReadAt: this.store.forumRead(conn.userId, p.id),
+          unread: this.store.forumUnread(conn.userId, p.id),
+        },
+        requestId,
+      });
+    } else if (["list-members", "add-member", "remove-member", "members"].includes(info.kind)) {
+      const p = this.forumProject(conn.userId, info.resultId);
+      send(conn.ws, {
+        type: "forumMembers", projectId: p.id,
+        userIds: this.store.forumMembers(p.id), requestId,
+      });
+    }
+    return true;
+  }
+
+  private validForumStatus(value: unknown): value is ForumStatus {
+    return value === "open" || value === "resolved" || value === "archived";
+  }
+  private broadcastForum(projectId: ID, frame: ServerFrame): void {
+    for (const member of this.store.forumMembers(projectId)) {
+      const view = frame.type === "forumChanged"
+        ? {
+          ...frame,
+          ...(frame.topic ? { topic: this.forumTopicView(member, frame.topic) } : {}),
+          ...(frame.reply ? { reply: this.forumReplyView(member, frame.reply) } : {}),
+        }
+        : frame;
+      this.toUser(member, view);
     }
   }
 
@@ -4003,6 +4218,424 @@ export class Relay {
         send(conn.ws, revision
           ? { type: "publicRoute", revision }
           : { type: "publicRoute", problem: "that public update is unavailable" });
+        break;
+      }
+
+      // ---- project forums / decision threads ----
+      case "forumProjects": {
+        send(conn.ws, {
+          type: "forumProjects",
+          projects: this.store.forumProjectsOf(conn.userId).map(p => this.forumProjectView(p)),
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "forumList": {
+        const project = this.forumProject(conn.userId, frame.projectId);
+        const page = this.store.forumTopics(project.id, frame.before, frame.beforeId, frame.limit ?? 50);
+        send(conn.ws, {
+          type: "forumFeed", projectId: project.id,
+          topics: page.items.map(t => this.forumTopicView(conn.userId, t)),
+          hasMore: page.hasMore, nextBefore: page.nextBefore, nextBeforeId: page.nextBeforeId,
+          unread: this.store.forumUnread(conn.userId, project.id),
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "forumOpen": {
+        const topic = this.store.forumTopicFor(conn.userId, frame.topicId);
+        if (!topic) throw new Error("no such forum topic");
+        this.forumSnapshot(conn, topic, frame.requestId);
+        break;
+      }
+      case "forumTopic": {
+        const project = this.forumProject(conn.userId, frame.projectId);
+        if (this.forumReplay(conn, frame.requestId, "topic", project.id, project.id, this.forumPayloadHash(frame))) break;
+        const badT = validateForumText(frame.title, "title") || validateForumText(frame.body, "body")
+          || validateForumTags(frame.tags ?? []) || validateForumLinks(frame.links ?? []);
+        if (badT) throw new Error(badT);
+        this.validateForumLinks(conn.userId, project, frame.links ?? []);
+        const user = this.store.users().find(u => u.id === conn.userId)!;
+        const now = Date.now();
+        const topic: ForumTopic = {
+          id: newId("forum"), projectId: project.id, title: frame.title.trim(), body: frame.body.trim(),
+          authorId: user.id, authorName: user.name, authorKind: "human",
+          createdAt: now, updatedAt: now, status: "open",
+          tags: (frame.tags ?? []).map(t => t.trim()), links: frame.links ?? [], replyCount: 0,
+        };
+        this.store.forumMutation(
+          () => { this.store.saveForumTopic(topic); },
+          this.forumReceipt(conn, frame, { projectId: project.id, targetId: project.id, kind: "topic", resultId: topic.id }),
+        );
+        this.broadcastForum(project.id, {
+          type: "forumChanged", projectId: project.id, topic,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        this.forumSnapshot(conn, topic, frame.requestId);
+        break;
+      }
+      case "agentForumTopic": {
+        if (conn.client !== "engine") throw new Error("only an agent host can write as an agent");
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        const project = this.forumProject(conn.userId, frame.projectId);
+        if (this.forumReplay(conn, frame.requestId, "topic", project.id, project.id, this.forumPayloadHash(frame))) break;
+        const badT = validateForumText(frame.title, "title") || validateForumText(frame.body, "body")
+          || validateForumTags(frame.tags ?? []) || validateForumLinks(frame.links ?? []);
+        if (badT) throw new Error(badT);
+        this.validateForumLinks(conn.userId, project, frame.links ?? []);
+        const now = Date.now();
+        const topic: ForumTopic = {
+          id: newId("forum"), projectId: project.id, title: frame.title.trim(), body: frame.body.trim(),
+          authorId: agent.id, authorName: agent.name, authorKind: "agent",
+          createdAt: now, updatedAt: now, status: "open",
+          tags: (frame.tags ?? []).map(t => t.trim()), links: frame.links ?? [], replyCount: 0,
+        };
+        this.store.forumMutation(
+          () => { this.store.saveForumTopic(topic); },
+          this.forumReceipt(conn, frame, { projectId: project.id, targetId: project.id, kind: "topic", resultId: topic.id }),
+        );
+        this.broadcastForum(project.id, {
+          type: "forumChanged", projectId: project.id, topic,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        this.forumSnapshot(conn, topic, frame.requestId);
+        break;
+      }
+      case "forumReply": {
+        const topic = this.store.forumTopicFor(conn.userId, frame.topicId);
+        if (!topic) throw new Error("no such forum topic");
+        if (topic.deletedAt) throw new Error("that forum topic was deleted");
+        const project = this.forumProject(conn.userId, topic.projectId);
+        if (this.forumReplay(conn, frame.requestId, "reply", project.id, topic.id, this.forumPayloadHash(frame))) break;
+        const badT = validateForumText(frame.body, "body") || validateForumLinks(frame.links ?? []);
+        if (badT) throw new Error(badT);
+        this.validateForumLinks(conn.userId, project, frame.links ?? []);
+        if (frame.parentId) {
+          const parent = this.store.forumReply(frame.parentId);
+          if (!parent || parent.topicId !== topic.id || parent.deletedAt) throw new Error("that reply is outside this topic");
+        }
+        const user = this.store.users().find(u => u.id === conn.userId)!;
+        const now = Date.now();
+        const reply: ForumReply = {
+          id: newId("freply"), topicId: topic.id, ...(frame.parentId ? { parentId: frame.parentId } : {}),
+          body: frame.body.trim(), authorId: user.id, authorName: user.name, authorKind: "human",
+          createdAt: now, updatedAt: now, links: frame.links ?? [],
+        };
+        const updatedTopic: ForumTopic = {
+          ...topic, replyCount: topic.replyCount + 1, updatedAt: now,
+        };
+        this.store.forumMutation(() => {
+          this.store.saveForumReply(reply);
+          this.store.saveForumTopic(updatedTopic);
+        }, this.forumReceipt(conn, frame, { projectId: project.id, targetId: topic.id, kind: "reply", resultId: reply.id }));
+        this.broadcastForum(project.id, {
+          type: "forumChanged", projectId: project.id, topic: updatedTopic, reply,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        this.forumSnapshot(conn, updatedTopic, frame.requestId);
+        break;
+      }
+      case "agentForumReply": {
+        if (conn.client !== "engine") throw new Error("only an agent host can write as an agent");
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        const topic = this.store.forumTopicFor(conn.userId, frame.topicId);
+        if (!topic) throw new Error("no such forum topic");
+        if (topic.deletedAt) throw new Error("that forum topic was deleted");
+        const project = this.forumProject(conn.userId, topic.projectId);
+        if (this.forumReplay(conn, frame.requestId, "reply", project.id, topic.id, this.forumPayloadHash(frame))) break;
+        const badT = validateForumText(frame.body, "body") || validateForumLinks(frame.links ?? []);
+        if (badT) throw new Error(badT);
+        this.validateForumLinks(conn.userId, project, frame.links ?? []);
+        if (frame.parentId) {
+          const parent = this.store.forumReply(frame.parentId);
+          if (!parent || parent.topicId !== topic.id || parent.deletedAt) throw new Error("that reply is outside this topic");
+        }
+        const now = Date.now();
+        const reply: ForumReply = {
+          id: newId("freply"), topicId: topic.id, ...(frame.parentId ? { parentId: frame.parentId } : {}),
+          body: frame.body.trim(), authorId: agent.id, authorName: agent.name, authorKind: "agent",
+          createdAt: now, updatedAt: now, links: frame.links ?? [],
+        };
+        const updatedTopic: ForumTopic = { ...topic, replyCount: topic.replyCount + 1, updatedAt: now };
+        this.store.forumMutation(() => {
+          this.store.saveForumReply(reply);
+          this.store.saveForumTopic(updatedTopic);
+        }, this.forumReceipt(conn, frame, { projectId: project.id, targetId: topic.id, kind: "reply", resultId: reply.id }));
+        this.broadcastForum(project.id, {
+          type: "forumChanged", projectId: project.id, topic: updatedTopic, reply,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        this.forumSnapshot(conn, updatedTopic, frame.requestId);
+        break;
+      }
+      case "forumEditTopic": {
+        const topic = this.store.forumTopicFor(conn.userId, frame.topicId);
+        if (!topic) throw new Error("no such forum topic");
+        if (topic.deletedAt) throw new Error("that forum topic was deleted");
+        const project = this.forumProject(conn.userId, topic.projectId);
+        if (this.forumReplay(conn, frame.requestId, "edit-topic", project.id, topic.id, this.forumPayloadHash(frame))) break;
+        if (topic.authorId !== conn.userId && project.ownerId !== conn.userId) {
+          throw new Error("only the author or project owner can edit this");
+        }
+        const badT = (frame.title !== undefined ? validateForumText(frame.title, "title") : null)
+          || (frame.body !== undefined ? validateForumText(frame.body, "body") : null)
+          || (frame.tags !== undefined ? validateForumTags(frame.tags) : null)
+          || (frame.links !== undefined ? validateForumLinks(frame.links) : null);
+        if (badT) throw new Error(badT);
+        if (frame.links) this.validateForumLinks(conn.userId, project, frame.links);
+        const updated: ForumTopic = {
+          ...topic,
+          ...(frame.title !== undefined ? { title: frame.title.trim() } : {}),
+          ...(frame.body !== undefined ? { body: frame.body.trim() } : {}),
+          ...(frame.tags !== undefined ? { tags: frame.tags.map(t => t.trim()) } : {}),
+          ...(frame.links !== undefined ? { links: frame.links } : {}),
+          updatedAt: Date.now(),
+        };
+        this.store.forumMutation(
+          () => { this.store.saveForumTopic(updated); },
+          this.forumReceipt(conn, frame, { projectId: project.id, targetId: topic.id, kind: "edit-topic", resultId: topic.id }),
+        );
+        this.broadcastForum(project.id, {
+          type: "forumChanged", projectId: project.id, topic: updated,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "forumEditReply": {
+        const reply = this.store.forumReplyFor(conn.userId, frame.replyId);
+        if (!reply) throw new Error("no such forum reply");
+        if (reply.deletedAt) throw new Error("that forum reply was deleted");
+        const topic = this.store.forumTopicFor(conn.userId, reply.topicId);
+        if (!topic) throw new Error("no such forum topic");
+        if (topic.deletedAt) throw new Error("that forum topic was deleted");
+        const project = this.forumProject(conn.userId, topic.projectId);
+        if (this.forumReplay(conn, frame.requestId, "edit-reply", project.id, reply.id, this.forumPayloadHash(frame))) break;
+        if (reply.authorId !== conn.userId && project.ownerId !== conn.userId) {
+          throw new Error("only the author or project owner can edit this");
+        }
+        const badT = validateForumText(frame.body, "body") || validateForumLinks(frame.links ?? []);
+        if (badT) throw new Error(badT);
+        if (frame.links) this.validateForumLinks(conn.userId, project, frame.links);
+        const updated = {
+          ...reply, body: frame.body.trim(),
+          links: frame.links ?? reply.links, updatedAt: Date.now(),
+        };
+        this.store.forumMutation(
+          () => { this.store.saveForumReply(updated); },
+          this.forumReceipt(conn, frame, { projectId: project.id, targetId: reply.id, kind: "edit-reply", resultId: reply.id }),
+        );
+        this.broadcastForum(project.id, {
+          type: "forumChanged", projectId: project.id, reply: updated,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "forumDeleteTopic": {
+        const topic = this.store.forumTopicFor(conn.userId, frame.topicId);
+        if (!topic) throw new Error("no such forum topic");
+        const project = this.forumProject(conn.userId, topic.projectId);
+        if (this.forumReplay(conn, frame.requestId, "delete-topic", project.id, topic.id, this.forumPayloadHash(frame))) break;
+        if (topic.deletedAt) {
+          if (frame.requestId) {
+            this.store.forumMutation(
+              () => undefined,
+              this.forumReceipt(conn, frame, { projectId: project.id, targetId: topic.id, kind: "delete-topic", resultId: topic.id }),
+            );
+          }
+          break;
+        }
+        if (topic.authorId !== conn.userId && project.ownerId !== conn.userId) {
+          throw new Error("only the author or project owner can delete this");
+        }
+        // Soft-delete redacts the decision residue too: summary, tags, links.
+        const deleted: ForumTopic = {
+          ...topic,
+          title: "Deleted topic",
+          body: "This topic was deleted.",
+          tags: [],
+          links: [],
+          decisionSummary: undefined,
+          acceptedReplyId: undefined,
+          deletedAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        this.store.forumMutation(
+          () => { this.store.saveForumTopic(deleted); },
+          this.forumReceipt(conn, frame, { projectId: project.id, targetId: topic.id, kind: "delete-topic", resultId: topic.id }),
+        );
+        this.audit(conn, "forum_topic_deleted", topic.id, `deleted forum topic in ${project.name}`);
+        this.broadcastForum(project.id, {
+          type: "forumChanged", projectId: project.id, topic: deleted,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "forumDeleteReply": {
+        const reply = this.store.forumReplyFor(conn.userId, frame.replyId);
+        if (!reply) throw new Error("no such forum reply");
+        const topic = this.store.forumTopicFor(conn.userId, reply.topicId);
+        if (!topic) throw new Error("no such forum topic");
+        if (topic.deletedAt) throw new Error("that forum topic was deleted");
+        const project = this.forumProject(conn.userId, topic.projectId);
+        if (this.forumReplay(conn, frame.requestId, "delete-reply", project.id, reply.id, this.forumPayloadHash(frame))) break;
+        if (reply.deletedAt) {
+          if (frame.requestId) {
+            this.store.forumMutation(
+              () => undefined,
+              this.forumReceipt(conn, frame, { projectId: project.id, targetId: reply.id, kind: "delete-reply", resultId: reply.id }),
+            );
+          }
+          break;
+        }
+        if (reply.authorId !== conn.userId && project.ownerId !== conn.userId) {
+          throw new Error("only the author or project owner can delete this");
+        }
+        const deleted = {
+          ...reply, body: "This reply was deleted.", links: [],
+          deletedAt: Date.now(), updatedAt: Date.now(),
+        };
+        this.store.forumMutation(
+          () => { this.store.saveForumReply(deleted); },
+          this.forumReceipt(conn, frame, { projectId: project.id, targetId: reply.id, kind: "delete-reply", resultId: reply.id }),
+        );
+        this.audit(conn, "forum_reply_deleted", reply.id, `deleted forum reply in ${project.name}`);
+        this.broadcastForum(project.id, {
+          type: "forumChanged", projectId: project.id, reply: deleted,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "forumSetStatus": {
+        const topic = this.store.forumTopicFor(conn.userId, frame.topicId);
+        if (!topic) throw new Error("no such forum topic");
+        const project = this.forumProject(conn.userId, topic.projectId);
+        if (this.forumReplay(conn, frame.requestId, "status", project.id, topic.id, this.forumPayloadHash(frame))) break;
+        if (topic.deletedAt) throw new Error("that forum topic was deleted");
+        if (!this.validForumStatus(frame.status)) throw new Error("that forum status is invalid");
+        if (project.ownerId !== conn.userId) throw new Error("only the project owner can change status");
+        const updated = { ...topic, status: frame.status, updatedAt: Date.now() };
+        this.store.forumMutation(
+          () => { this.store.saveForumTopic(updated); },
+          this.forumReceipt(conn, frame, { projectId: project.id, targetId: topic.id, kind: "status", resultId: topic.id }),
+        );
+        this.audit(conn, "forum_status_changed", topic.id, `forum topic status → ${frame.status} in ${project.name}`);
+        this.broadcastForum(project.id, {
+          type: "forumChanged", projectId: project.id, topic: updated,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "forumAcceptReply": {
+        const topic = this.store.forumTopicFor(conn.userId, frame.topicId);
+        const reply = this.store.forumReplyFor(conn.userId, frame.replyId);
+        if (!topic || !reply || reply.topicId !== topic.id || reply.deletedAt) {
+          throw new Error("that reply cannot be accepted");
+        }
+        const project = this.forumProject(conn.userId, topic.projectId);
+        if (this.forumReplay(conn, frame.requestId, "accept", project.id, topic.id, this.forumPayloadHash(frame))) break;
+        if (topic.deletedAt) throw new Error("that forum topic was deleted");
+        if (project.ownerId !== conn.userId) throw new Error("only the project owner can accept an answer");
+        const bad = validateForumText(frame.summary, "summary");
+        if (bad) throw new Error(bad);
+        const updated = {
+          ...topic, acceptedReplyId: reply.id, decisionSummary: frame.summary.trim(),
+          status: "resolved" as const, updatedAt: Date.now(),
+        };
+        this.store.forumMutation(
+          () => { this.store.saveForumTopic(updated); },
+          this.forumReceipt(conn, frame, { projectId: project.id, targetId: topic.id, kind: "accept", resultId: topic.id }),
+        );
+        this.audit(
+          conn, "forum_decision_accepted", topic.id,
+          `accepted forum decision in ${project.name}: ${frame.summary.trim().slice(0, 120)}`,
+        );
+        this.broadcastForum(project.id, {
+          type: "forumChanged", projectId: project.id, topic: updated,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "forumMarkRead": {
+        const project = this.forumProject(conn.userId, frame.projectId);
+        if (this.forumReplay(conn, frame.requestId, "read", project.id, project.id, this.forumPayloadHash(frame))) break;
+        const requested = typeof frame.ts === "number" && Number.isFinite(frame.ts)
+          ? Math.min(Math.max(0, frame.ts), Date.now())
+          : Date.now();
+        const entry = this.store.forumMutation(
+          () => this.store.markForumRead(conn.userId, project.id, requested),
+          this.forumReceipt(conn, frame, { projectId: project.id, targetId: project.id, kind: "read", resultId: project.id }),
+        );
+        this.toUser(conn.userId, {
+          type: "forumRead", entry,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "forumMembers": {
+        // Any current member may list; receipt kind is list-members (not manage).
+        const project = this.forumProject(conn.userId, frame.projectId);
+        if (this.forumReplay(conn, frame.requestId, "list-members", project.id, project.id, this.forumPayloadHash(frame))) break;
+        if (frame.requestId) {
+          this.store.forumMutation(
+            () => undefined,
+            this.forumReceipt(conn, frame, {
+              projectId: project.id, targetId: project.id, kind: "list-members", resultId: project.id,
+            }),
+          );
+        }
+        send(conn.ws, {
+          type: "forumMembers", projectId: project.id,
+          userIds: this.store.forumMembers(project.id),
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "forumAddMember": {
+        const project = this.myProject(conn.userId, frame.projectId);
+        if (this.forumReplay(conn, frame.requestId, "add-member", project.id, project.id, this.forumPayloadHash(frame))) break;
+        if (project.ownerId !== conn.userId) throw new Error("only the project owner can manage forum members");
+        if (!this.store.users().some(u => u.id === frame.userId)) throw new Error("no such user");
+        this.store.forumMutation(
+          () => { this.store.addForumMember(project.id, frame.userId); },
+          this.forumReceipt(conn, frame, {
+            projectId: project.id, targetId: project.id, kind: "add-member", resultId: project.id,
+          }),
+        );
+        this.audit(conn, "forum_member_added", project.id, `added a member to the forum for ${project.name}`);
+        this.toUser(frame.userId, {
+          type: "forumProjects",
+          projects: this.store.forumProjectsOf(frame.userId).map(p => this.forumProjectView(p)),
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        send(conn.ws, {
+          type: "forumMembers", projectId: project.id,
+          userIds: this.store.forumMembers(project.id),
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "forumRemoveMember": {
+        const project = this.myProject(conn.userId, frame.projectId);
+        if (this.forumReplay(conn, frame.requestId, "remove-member", project.id, project.id, this.forumPayloadHash(frame))) break;
+        if (project.ownerId !== conn.userId) throw new Error("only the project owner can manage forum members");
+        if (frame.userId === project.ownerId) throw new Error("the project owner must remain a member");
+        this.store.forumMutation(
+          () => { this.store.removeForumMember(project.id, frame.userId); },
+          this.forumReceipt(conn, frame, {
+            projectId: project.id, targetId: project.id, kind: "remove-member", resultId: project.id,
+          }),
+        );
+        this.audit(conn, "forum_member_removed", project.id, `removed a member from the forum for ${project.name}`);
+        this.toUser(frame.userId, {
+          type: "forumUnavailable", projectId: project.id,
+          problem: "you are no longer a member of this project forum",
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        send(conn.ws, {
+          type: "forumMembers", projectId: project.id,
+          userIds: this.store.forumMembers(project.id),
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
         break;
       }
 

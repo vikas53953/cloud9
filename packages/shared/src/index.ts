@@ -1934,7 +1934,6 @@ export function validateEngineeringPulseDraft(value: unknown): string | null {
   return null;
 }
 
-
 // ---------- public project updates (Cloud9-owned read-only publishing) ----------
 export type PublicUpdateState = "draft" | "approved" | "published" | "revoked";
 export interface PublicUpdateLink {
@@ -1995,6 +1994,58 @@ export function validatePublicUpdateLinks(value: unknown): string | null {
   for (const l of value as PublicUpdateLink[]) {
     if (!l || !["changelog", "task", "run", "projectItem", "artifact"].includes(l.kind)) return "invalid update link";
     if (l.kind === "changelog" && typeof l.url !== "string") return "changelog link needs a URL";
+  }
+  return null;
+}
+
+// ---------- project forums / decision threads ----------
+export type ForumAuthorKind = "human" | "agent";
+export type ForumStatus = "open" | "resolved" | "archived";
+export type ForumLinkKind = "task" | "run" | "artifact" | "projectItem";
+export interface ForumLink {
+  kind: ForumLinkKind;
+  projectId?: ID;
+  id?: ID;
+  artifactId?: ID;
+  projectItemKind?: ProjectItemKind;
+  projectItemNumber?: number;
+  label?: string;
+}
+export interface ForumTopic {
+  id: ID; projectId: ID; title: string; body: string;
+  authorId: ID; authorName: string; authorKind: ForumAuthorKind;
+  createdAt: number; updatedAt: number; status: ForumStatus;
+  tags: string[]; links: ForumLink[]; replyCount: number;
+  acceptedReplyId?: ID; decisionSummary?: string; deletedAt?: number;
+}
+export interface ForumReply {
+  id: ID; topicId: ID; parentId?: ID; body: string;
+  authorId: ID; authorName: string; authorKind: ForumAuthorKind;
+  createdAt: number; updatedAt: number; links: ForumLink[]; deletedAt?: number;
+}
+export interface ForumReadEntry { projectId: ID; lastReadAt: number; unread: number; }
+export interface ForumPage<T> { items: T[]; hasMore: boolean; nextBefore?: number; nextBeforeId?: ID; }
+export const FORUM_LIMITS = {
+  title: 160, body: 12000, summary: 4000, tags: 20, tag: 40, links: 20, page: 100,
+} as const;
+export function validateForumText(value: unknown, what: "title" | "body" | "summary"): string | null {
+  if (typeof value !== "string") return `${what} is words`;
+  const max = FORUM_LIMITS[what];
+  if (value.trim().length === 0) return `${what} cannot be empty`;
+  if (value.length > max) return `${what} is too long (max ${max} characters)`;
+  return null;
+}
+export function validateForumTags(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length > FORUM_LIMITS.tags) return "there are too many tags";
+  if (value.some(t => typeof t !== "string" || t.trim().length === 0 || t.length > FORUM_LIMITS.tag)) return "a tag is invalid";
+  return null;
+}
+export function validateForumLinks(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length > FORUM_LIMITS.links) return "there are too many links";
+  for (const l of value as ForumLink[]) {
+    if (!l || !["task", "run", "artifact", "projectItem"].includes(l.kind)) return "a forum link is invalid";
+    if (l.kind === "projectItem" && (l.projectItemKind !== "pull" && l.projectItemKind !== "issue" || !Number.isInteger(l.projectItemNumber) || (l.projectItemNumber ?? 0) <= 0)) return "a project link is invalid";
+    if (l.kind !== "projectItem" && typeof (l.id ?? l.artifactId) !== "string") return "a forum link needs an id";
   }
   return null;
 }
@@ -2731,7 +2782,10 @@ export type ActivityKind =
   | "artifact_access_changed"
   // Engineering Pulse is a durable team record, so its own actions are
   // distinguishable from chat and project mutations in the activity ledger.
-  | "pulse_created" | "pulse_updated" | "pulse_deleted";
+  | "pulse_created" | "pulse_updated" | "pulse_deleted"
+  // Project forums / decision threads: membership, moderation, and accept.
+  | "forum_topic_deleted" | "forum_reply_deleted" | "forum_status_changed"
+  | "forum_decision_accepted" | "forum_member_added" | "forum_member_removed";
 
 /**
  * One line of the trail.
@@ -3679,6 +3733,24 @@ type ClientFrameBase =
     proposal: SavingProposal;
   }
   | { type: "activity"; before?: number; limit?: number }
+// ---- project forums / decision threads ----
+  | { type: "forumProjects"; requestId?: ID }
+  | { type: "forumList"; projectId: ID; before?: number; beforeId?: ID; limit?: number; requestId?: ID }
+  | { type: "forumOpen"; topicId: ID; requestId?: ID }
+  | { type: "forumTopic"; projectId: ID; title: string; body: string; tags?: string[]; links?: ForumLink[]; requestId?: ID }
+  | { type: "forumReply"; topicId: ID; body: string; parentId?: ID; links?: ForumLink[]; requestId?: ID }
+  | { type: "agentForumTopic"; agentId: ID; projectId: ID; title: string; body: string; tags?: string[]; links?: ForumLink[]; requestId?: ID }
+  | { type: "agentForumReply"; agentId: ID; topicId: ID; body: string; parentId?: ID; links?: ForumLink[]; requestId?: ID }
+  | { type: "forumEditTopic"; topicId: ID; title?: string; body?: string; tags?: string[]; links?: ForumLink[]; requestId?: ID }
+  | { type: "forumEditReply"; replyId: ID; body: string; links?: ForumLink[]; requestId?: ID }
+  | { type: "forumDeleteTopic"; topicId: ID; requestId?: ID }
+  | { type: "forumDeleteReply"; replyId: ID; requestId?: ID }
+  | { type: "forumSetStatus"; topicId: ID; status: ForumStatus; requestId?: ID }
+  | { type: "forumAcceptReply"; topicId: ID; replyId: ID; summary: string; requestId?: ID }
+  | { type: "forumMarkRead"; projectId: ID; ts?: number; requestId?: ID }
+  | { type: "forumMembers"; projectId: ID; requestId?: ID }
+  | { type: "forumAddMember"; projectId: ID; userId: ID; requestId?: ID }
+  | { type: "forumRemoveMember"; projectId: ID; userId: ID; requestId?: ID }
   // ---- huddle presence and shared notes (no calls/audio/video in v1) ----
   | { type: "huddleList"; projectId?: ID; requestId?: ID }
   | { type: "huddleProjects"; requestId?: ID }
@@ -4277,6 +4349,13 @@ export type ServerFrame =
    */
   | { type: "approvalAsked"; askId: string; approvalId: ID }
   | { type: "activity"; records: ActivityRecord[] }
+| { type: "forumProjects"; projects: Project[]; requestId?: ID }
+| { type: "forumFeed"; projectId: ID; topics: ForumTopic[]; hasMore: boolean; nextBefore?: number; nextBeforeId?: ID; unread: number; requestId?: ID }
+| { type: "forumTopic"; topic: ForumTopic; replies: ForumReply[]; unread?: number; requestId?: ID }
+| { type: "forumChanged"; projectId: ID; topic?: ForumTopic; reply?: ForumReply; requestId?: ID }
+| { type: "forumRead"; entry: ForumReadEntry; requestId?: ID }
+| { type: "forumMembers"; projectId: ID; userIds: ID[]; requestId?: ID }
+| { type: "forumUnavailable"; projectId: ID; problem: string; requestId?: ID }
   | { type: "huddleList"; sessions: HuddleSession[]; requestId?: ID }
   | { type: "huddleProjects"; projects: Project[]; requestId?: ID }
   | { type: "huddleSession"; session: HuddleSession; notes: HuddleNote[]; requestId?: ID }
