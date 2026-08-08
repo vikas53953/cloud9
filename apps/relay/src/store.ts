@@ -3842,6 +3842,8 @@ export class Store implements JoinHubStore {
     return (this.db.prepare(
       "SELECT actorId FROM social_reactions WHERE postId=? AND emoji=? AND removedAt IS NULL ORDER BY actorId",
     ).all(postId, emoji) as { actorId: string }[]).map(r => r.actorId);
+  }
+
   /** Every connected project, for authorization-filtered features such as Pulse. */
   projects(): Project[] {
     return (this.db.prepare("SELECT json FROM projects ORDER BY createdAt DESC")

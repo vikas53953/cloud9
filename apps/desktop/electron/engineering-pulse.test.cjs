@@ -69,8 +69,12 @@ test("Engineering Pulse relay client scopes mutation and read answers", () => {
 
 test("related project links preserve kind and number for exact item focus", () => {
   const app = read("App.tsx");
-  assert.match(app, /focusProjectItem/);
+  // After social-feed keep-both, Pulse and Team feed share openAt navigation:
+  // projectOpenAt carries itemKind + number, ProjectsScreen focuses that row.
+  assert.match(app, /projectOpenAt/);
+  assert.match(app, /itemKind: item\.kind, number: item\.number/);
   assert.match(app, /data-item=\{key\}/);
   assert.match(app, /onOpenProject\(update\.projectId, related\)/);
-  assert.match(app, /setTab\(focusItem\.kind\)/);
+  assert.match(app, /setTab\(openItem\.kind\)/);
+  assert.match(app, /setFocusItem\(\{ kind: openAt\.itemKind, number: openAt\.number, at: openAt\.at \}\)/);
 });

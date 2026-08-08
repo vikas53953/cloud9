@@ -1819,6 +1819,9 @@ export function validateSocialText(text: unknown, allowEmpty = false): string | 
   if (text.length > SOCIAL_LIMITS.text) {
     return `that project post is too long (max ${SOCIAL_LIMITS.text} characters)`;
   }
+  return null;
+}
+
 /**
  * One durable Engineering Pulse update.  The five sections are deliberately
  * plain words rather than a rich editor: a team can scan what is done, next,
