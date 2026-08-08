@@ -9,6 +9,7 @@ import {
   StoredArtifact, StoredArtifactVersion, artifactVersionForPublic,
   ChannelRole, EverywhereHit, ID, Message, SearchKind,
   MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, ProjectItem, PROJECT_LIMITS,
+  EngineeringCanvas, EngineeringCanvasRevision, CanvasBlock, CANVAS_LIMITS,
   ProjectPoll, ProjectPollDecision, ProjectPollOption,
   SocialPost, SocialReaction, SocialReadEntry, SocialLink, SOCIAL_LIMITS,
   EngineeringPulseUpdate, redactDeletedPulseUpdate,
@@ -585,6 +586,28 @@ export class Store implements JoinHubStore {
       );
       CREATE INDEX IF NOT EXISTS proj_item_updated ON project_items(projectId, updatedAt);
 
+      -- Engineering Canvas documents and immutable revision snapshots.
+      CREATE TABLE IF NOT EXISTS engineering_canvases(
+        id TEXT PRIMARY KEY, projectId TEXT NOT NULL, ownerId TEXT NOT NULL,
+        title TEXT NOT NULL, revision INTEGER NOT NULL, createdAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL, deletedAt INTEGER, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS canvas_project ON engineering_canvases(projectId, updatedAt);
+      CREATE TABLE IF NOT EXISTS engineering_canvas_revisions(
+        canvasId TEXT NOT NULL, revision INTEGER NOT NULL, changedAt INTEGER NOT NULL,
+        changedBy TEXT NOT NULL, summary TEXT NOT NULL, json TEXT NOT NULL,
+        PRIMARY KEY(canvasId, revision)
+      );
+      CREATE TABLE IF NOT EXISTS engineering_canvas_reads(
+        canvasId TEXT NOT NULL, userId TEXT NOT NULL, revision INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL, PRIMARY KEY(canvasId,userId)
+      );
+      CREATE TABLE IF NOT EXISTS engineering_canvas_requests(
+        ownerId TEXT NOT NULL, requestId TEXT NOT NULL, canvasId TEXT NOT NULL,
+        action TEXT NOT NULL, target TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL DEFAULT '{}', createdAt INTEGER NOT NULL,
+        PRIMARY KEY(ownerId, requestId)
+      );
+
       CREATE TABLE IF NOT EXISTS public_updates(
         id TEXT PRIMARY KEY, projectId TEXT NOT NULL, updatedAt INTEGER NOT NULL,
         publicToken TEXT, json TEXT NOT NULL
@@ -1089,6 +1112,9 @@ export class Store implements JoinHubStore {
     // forums take the next free step so hubs upgraded to Pulse still run
     // the owner backfill and receipt-binding repair.
     this.step(10, () => this.addForumSchema());
+    // v10 -> v11: Engineering Canvas. Forums already own v10 on master;
+    // canvas takes the next free step so hubs upgraded to forums still run.
+    this.step(11, () => this.addEngineeringCanvasSchema());
 
     // The one thing that still says a person can only be in a room once at a
     // time, now that the primary key no longer does. It lives here, below the
@@ -1222,6 +1248,33 @@ export class Store implements JoinHubStore {
   }
 
   /** Keep receipt cleanup scoped to the project even on an already-v9 file. */
+  private addEngineeringCanvasSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS engineering_canvases(
+        id TEXT PRIMARY KEY, projectId TEXT NOT NULL, ownerId TEXT NOT NULL,
+        title TEXT NOT NULL, revision INTEGER NOT NULL, createdAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL, deletedAt INTEGER, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS canvas_project ON engineering_canvases(projectId, updatedAt);
+      CREATE TABLE IF NOT EXISTS engineering_canvas_revisions(
+        canvasId TEXT NOT NULL, revision INTEGER NOT NULL, changedAt INTEGER NOT NULL,
+        changedBy TEXT NOT NULL, summary TEXT NOT NULL, json TEXT NOT NULL,
+        PRIMARY KEY(canvasId, revision)
+      );
+      CREATE TABLE IF NOT EXISTS engineering_canvas_reads(
+        canvasId TEXT NOT NULL, userId TEXT NOT NULL, revision INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL, PRIMARY KEY(canvasId,userId)
+      );
+      CREATE TABLE IF NOT EXISTS engineering_canvas_requests(
+        ownerId TEXT NOT NULL, requestId TEXT NOT NULL, canvasId TEXT NOT NULL,
+        action TEXT NOT NULL, target TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL DEFAULT '{}', createdAt INTEGER NOT NULL,
+        PRIMARY KEY(ownerId, requestId)
+      );
+    `);
+    this.addColumn("engineering_canvas_requests", "target", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("engineering_canvas_requests", "payload", "TEXT NOT NULL DEFAULT '{}'");
+  }
+
   private ensurePulseReceiptProjectColumn(): void {
     this.addColumn("pulse_mutation_receipts", "projectId", "TEXT NOT NULL DEFAULT ''");
     this.db.exec(
@@ -3733,6 +3786,10 @@ export class Store implements JoinHubStore {
   /** Forget our copy. THE REPOSITORY IS NOT TOUCHED — it is not ours to touch. */
   forgetProject(id: ID): void {
     this.tx(() => {
+      this.db.prepare("DELETE FROM engineering_canvas_requests WHERE canvasId IN (SELECT id FROM engineering_canvases WHERE projectId=? )").run(id);
+      this.db.prepare("DELETE FROM engineering_canvas_reads WHERE canvasId IN (SELECT id FROM engineering_canvases WHERE projectId=? )").run(id);
+      this.db.prepare("DELETE FROM engineering_canvas_revisions WHERE canvasId IN (SELECT id FROM engineering_canvases WHERE projectId=? )").run(id);
+      this.db.prepare("DELETE FROM engineering_canvases WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM project_poll_votes WHERE pollId IN (SELECT id FROM project_polls WHERE projectId=?)").run(id);
       this.db.prepare("DELETE FROM project_poll_requests WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM project_polls WHERE projectId=?").run(id);
@@ -4643,6 +4700,80 @@ export class Store implements JoinHubStore {
     this.db.prepare("INSERT INTO pushlog(id,userId,messageId,ts) VALUES(?,?,?,?)")
       .run(newId("push"), userId, messageId, Date.now());
   }
+
+  // ---- Engineering Canvas ----
+  saveCanvas(canvas: EngineeringCanvas): void {
+    this.db.prepare(
+      "INSERT INTO engineering_canvases(id,projectId,ownerId,title,revision,createdAt,updatedAt,deletedAt,json) VALUES(?,?,?,?,?,?,?,?,?) " +
+      "ON CONFLICT(id) DO UPDATE SET title=excluded.title, revision=excluded.revision, updatedAt=excluded.updatedAt, deletedAt=excluded.deletedAt, json=excluded.json",
+    ).run(canvas.id, canvas.projectId, canvas.ownerId, canvas.title, canvas.revision,
+      canvas.createdAt, canvas.updatedAt, canvas.deletedAt ?? null, JSON.stringify(canvas));
+  }
+  /** Snapshot and immutable revision are one SQLite transaction. */
+  saveCanvasChange(canvas: EngineeringCanvas, revision: EngineeringCanvasRevision,
+    request?: { ownerId: ID; requestId: ID; action: string; target: ID; payload: string }): void {
+    this.tx(() => {
+      this.saveCanvas(canvas);
+      this.db.prepare("INSERT INTO engineering_canvas_revisions(canvasId,revision,changedAt,changedBy,summary,json) VALUES(?,?,?,?,?,?)")
+        .run(revision.canvasId, revision.revision, revision.changedAt, revision.changedBy, revision.summary, JSON.stringify(revision));
+      this.db.prepare(
+        "DELETE FROM engineering_canvas_revisions WHERE canvasId=? AND revision NOT IN " +
+        "(SELECT revision FROM engineering_canvas_revisions WHERE canvasId=? ORDER BY revision DESC LIMIT ?)",
+      ).run(revision.canvasId, revision.canvasId, CANVAS_LIMITS.history);
+      if (request) this.saveCanvasRequest(request.ownerId, request.requestId, canvas.id, request.action, request.target, request.payload);
+    });
+  }
+  canvas(id: ID): EngineeringCanvas | undefined {
+    const row = this.db.prepare("SELECT json FROM engineering_canvases WHERE id=?").get(id) as { json: string } | undefined;
+    return row ? (JSON.parse(row.json) as EngineeringCanvas) : undefined;
+  }
+  canvasesForProject(projectId: ID): EngineeringCanvas[] {
+    return (this.db.prepare("SELECT json FROM engineering_canvases WHERE projectId=? AND deletedAt IS NULL ORDER BY updatedAt DESC, id DESC")
+      .all(projectId) as { json: string }[]).map(r => JSON.parse(r.json) as EngineeringCanvas);
+  }
+  canvasCount(projectId: ID): number {
+    return (this.db.prepare("SELECT COUNT(*) n FROM engineering_canvases WHERE projectId=? AND deletedAt IS NULL").get(projectId) as { n: number }).n;
+  }
+  saveCanvasRevision(revision: EngineeringCanvasRevision): void {
+    this.tx(() => {
+      this.db.prepare("INSERT INTO engineering_canvas_revisions(canvasId,revision,changedAt,changedBy,summary,json) VALUES(?,?,?,?,?,?)")
+        .run(revision.canvasId, revision.revision, revision.changedAt, revision.changedBy, revision.summary, JSON.stringify(revision));
+      this.db.prepare(
+        "DELETE FROM engineering_canvas_revisions WHERE canvasId=? AND revision NOT IN " +
+        "(SELECT revision FROM engineering_canvas_revisions WHERE canvasId=? ORDER BY revision DESC LIMIT ?)",
+      ).run(revision.canvasId, revision.canvasId, CANVAS_LIMITS.history);
+    });
+  }
+  canvasRequest(ownerId: ID, requestId: ID): { canvasId: ID; action: string; target: ID; payload: string } | undefined {
+    const row = this.db.prepare("SELECT canvasId,action,target,payload FROM engineering_canvas_requests WHERE ownerId=? AND requestId=?")
+      .get(ownerId, requestId) as { canvasId: ID; action: string; target: ID; payload: string } | undefined;
+    return row;
+  }
+  saveCanvasRequest(ownerId: ID, requestId: ID, canvasId: ID, action: string, target: ID, payload: string): void {
+    const now = Date.now();
+    this.db.prepare("INSERT INTO engineering_canvas_requests(ownerId,requestId,canvasId,action,target,payload,createdAt) VALUES(?,?,?,?,?,?,?)")
+      .run(ownerId, requestId, canvasId, action, target, payload, now);
+    this.db.prepare("DELETE FROM engineering_canvas_requests WHERE createdAt < ?").run(now - 30 * 24 * 60 * 60 * 1000);
+    this.db.prepare(
+      "DELETE FROM engineering_canvas_requests WHERE ownerId=? AND requestId NOT IN "
+      + "(SELECT requestId FROM engineering_canvas_requests WHERE ownerId=? ORDER BY createdAt DESC,requestId DESC LIMIT 512)",
+    ).run(ownerId, ownerId);
+  }
+  canvasRevisions(canvasId: ID, limit: number = CANVAS_LIMITS.history): EngineeringCanvasRevision[] {
+    return (this.db.prepare("SELECT json FROM engineering_canvas_revisions WHERE canvasId=? ORDER BY revision DESC LIMIT ?")
+      .all(canvasId, Math.max(1, Math.min(limit, CANVAS_LIMITS.history))) as { json: string }[])
+      .map(r => JSON.parse(r.json) as EngineeringCanvasRevision);
+  }
+  canvasRead(canvasId: ID, userId: ID): number {
+    const row = this.db.prepare("SELECT revision FROM engineering_canvas_reads WHERE canvasId=? AND userId=?")
+      .get(canvasId, userId) as { revision: number } | undefined;
+    return row?.revision ?? 0;
+  }
+  markCanvasRead(canvasId: ID, userId: ID, revision: number): void {
+    this.db.prepare("INSERT INTO engineering_canvas_reads(canvasId,userId,revision,updatedAt) VALUES(?,?,?,?) " +
+      "ON CONFLICT(canvasId,userId) DO UPDATE SET revision=MAX(revision,excluded.revision), updatedAt=excluded.updatedAt")
+      .run(canvasId, userId, revision, Date.now());
+  }
 }
 
 /**
@@ -4666,8 +4797,9 @@ export const ARTIFACT_STAGE_GRACE_MS = 60_000;
  * 8 = Saved/Later durable message queue.
  * 9 = Engineering Pulse project updates.
  * 10 = Project forums / decision threads (membership, topics, replies, receipts).
+ * 11 = Engineering Canvas documents and revisions.
  */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /**
  * The fingerprint of one line of the trail.
