@@ -11,6 +11,7 @@ import {
   EverywhereHit, SearchKind,
   ReachCatchup,
   Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
+  EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject, validateEngineeringPulseDraft,
   Workflow, WorkflowRun,
   SocialLink, SocialPost,
   // SPENDING BLOCK (what the crew costs, 2026-08-07)
@@ -180,6 +181,20 @@ export interface ArtifactWorkspacePage extends Page {
   /** How many rows the pages explicitly opened; live pushes may not grow past it. */
   capacity: number;
   checkedAt?: number;
+  problem?: string;
+}
+
+export interface PulseState {
+  asked: boolean;
+  loading: boolean;
+  updates: EngineeringPulseUpdate[];
+  unreadByProject: Record<ID, number>;
+  projects: EngineeringPulseProject[];
+  projectId?: ID;
+  /** The one list request whose correlated answer may replace this view. */
+  requestId?: ID;
+  /** Exact mutation acknowledged by the relay; peer pushes never set this. */
+  mutationSuccessId?: ID;
   problem?: string;
 }
 
@@ -384,6 +399,7 @@ export interface World {
     asked: boolean; loading: boolean; posts: SocialPost[]; hasMore: boolean;
     nextBefore?: number; nextBeforeId?: ID; unread: number; problem?: string; requestId?: ID;
   }>;
+  pulse: PulseState;
   /**
    * THE REPOSITORIES HIS OWN GITHUB SIGN-IN CAN SEE — the picker's list.
    *
@@ -671,6 +687,7 @@ export class RelayClient {
     spending: { asked: false, loading: false, rows: [] },
     projects: { asked: false, list: [] }, projectItems: {}, hooks: { asked: false, list: [] },
     socialProjects: { asked: false, list: [] }, socialUnread: {}, socialPending: {}, socialCompleted: undefined, socialFeeds: {},
+    pulse: { asked: false, loading: false, updates: [], unreadByProject: {}, projects: [] },
     repoChoices: { asked: false, asking: false },
     artifacts: {}, artifactsGone: {}, channelArtifacts: {},
     artifactWorkspace: emptyArtifactWorkspace(),
@@ -849,6 +866,9 @@ export class RelayClient {
       // snapshot is the source of truth for the next epoch.
       this.workflowRequests.clear();
       this.savedRequests.clear();
+      this.pulseMutationRequestId = undefined;
+      this.pulseAcceptedRequestId = undefined;
+      this.pulseReadRequests.clear();
       // Do not present a disconnected copy as the current queue. Welcome
       // seeds this again, and SavedScreen will ask for the canonical list.
       this.world.savedMessages = [];
@@ -1175,6 +1195,9 @@ export class RelayClient {
     this.world.socialCompleted = requestId;
     this.world.socialProblem = undefined;
   }
+  private pulseMutationRequestId?: ID;
+  private pulseAcceptedRequestId?: ID;
+  private pulseReadRequests = new Set<ID>();
 
   /** Give every outgoing frame one identity without changing its caller's object. */
   private identify(frame: ClientFrame): ClientFrame & { requestId: ID } {
@@ -2170,6 +2193,157 @@ export class RelayClient {
 
   markSocialRead(projectId: ID, at?: number): void {
     this.socialMutation({ type: "socialMarkRead", projectId, ...(at !== undefined ? { at } : {}) });
+  /* ---------------- Engineering Pulse ---------------- */
+
+  askPulse(projectId?: ID): void {
+    // A newer list supersedes the older one. Its late answer may still settle
+    // its timer, but it must not replace the newer projection.
+    this.world.pulse = { ...this.world.pulse, requestId: undefined,
+      loading: true, problem: undefined,
+      ...(projectId ? { projectId } : {}) };
+    this.emit();
+    const requestId = this.nextRequestId("pulseList");
+    this.world.pulse = { ...this.world.pulse, requestId };
+    const sent = this.ask({ type: "pulseList", ...(projectId ? { projectId } : {}), requestId }, {
+      answers: f => f.type === "pulse" && f.requestId === requestId
+        && (projectId === undefined || f.projectId === projectId),
+      answered: f => {
+        if (f.type !== "pulse" || this.world.pulse.requestId !== requestId) return;
+        this.world.pulse = {
+          asked: true, loading: false, updates: f.updates,
+          unreadByProject: f.unreadByProject, projects: f.projects,
+          requestId,
+          ...(f.projectId ? { projectId: f.projectId } : {}),
+        };
+      },
+      refused: why => {
+        if (this.world.pulse.requestId !== requestId) return;
+        this.world.pulse = { ...this.world.pulse, asked: true, loading: false, requestId: undefined, problem: why };
+        this.emit();
+      },
+      lost: () => {
+        if (this.world.pulse.requestId !== requestId) return;
+        this.world.pulse = { ...this.world.pulse, asked: true, loading: false, requestId: undefined,
+          problem: "the hub did not answer - is it still running?" };
+        this.emit();
+      },
+    });
+    if (!sent) {
+      this.world.pulse = { ...this.world.pulse, asked: true, loading: false, requestId: undefined,
+        problem: "connect to Cloud9 before loading Engineering Pulse updates" };
+      this.emit();
+    }
+  }
+
+  createPulse(projectId: ID, draft: EngineeringPulseDraft, agentId?: ID, onRefused?: (why: string) => void): ID | undefined {
+    const bad = validateEngineeringPulseDraft(draft);
+    if (this.refused(bad, onRefused)) return undefined;
+    this.world.pulse = { ...this.world.pulse, loading: true, problem: undefined };
+    this.emit();
+    const requestId = this.nextRequestId("pulseCreate");
+    this.pulseMutationRequestId = requestId;
+    const sent = this.ask({ type: "pulseCreate", projectId, draft, ...(agentId ? { agentId } : {}), requestId }, {
+      answers: f => f.type === "pulseChanged" && f.requestId === requestId
+        && f.update.projectId === projectId && f.update.authorId === (agentId ?? this.world.me?.id),
+      answered: () => {
+        if (this.pulseMutationRequestId !== requestId) return;
+        this.pulseAcceptedRequestId = requestId;
+        this.pulseMutationRequestId = undefined;
+        this.world.pulse = { ...this.world.pulse, loading: false, asked: true, problem: undefined, mutationSuccessId: requestId }; this.emit();
+      },
+      refused: why => {
+        if (this.pulseMutationRequestId !== requestId) return;
+        this.pulseMutationRequestId = undefined;
+        this.world.pulse = { ...this.world.pulse, loading: false, problem: why }; onRefused?.(why); this.emit();
+      },
+      lost: () => { const why = "the hub did not answer - is it still running?";
+        if (this.pulseMutationRequestId !== requestId) return;
+        this.pulseMutationRequestId = undefined;
+        this.world.pulse = { ...this.world.pulse, loading: false, problem: why }; onRefused?.(why); this.emit(); },
+    });
+    if (!sent) {
+      if (this.pulseMutationRequestId === requestId) this.pulseMutationRequestId = undefined;
+      this.world.pulse = { ...this.world.pulse, loading: false,
+        problem: "connect to Cloud9 before saving this update" };
+      this.emit();
+    }
+    return sent ? requestId : undefined;
+  }
+
+  updatePulse(updateId: ID, patch: Partial<EngineeringPulseDraft>, onRefused?: (why: string) => void): ID | undefined {
+    this.world.pulse = { ...this.world.pulse, loading: true, problem: undefined };
+    this.emit();
+    const requestId = this.nextRequestId("pulseUpdate");
+    this.pulseMutationRequestId = requestId;
+    // Related links: when the editor touches a key, send value-or-null so
+    // JSON.stringify cannot drop a clear. Untouched keys stay omitted (keep).
+    const safePatch: Partial<EngineeringPulseDraft> = { ...patch };
+    if ("relatedTaskId" in patch) safePatch.relatedTaskId = patch.relatedTaskId ?? null;
+    if ("relatedRunId" in patch) safePatch.relatedRunId = patch.relatedRunId ?? null;
+    if ("relatedProjectItem" in patch) safePatch.relatedProjectItem = patch.relatedProjectItem ?? null;
+    const sent = this.ask({ type: "pulseUpdate", updateId, patch: safePatch, requestId }, {
+      answers: f => f.type === "pulseChanged" && f.requestId === requestId && f.update.id === updateId,
+      answered: () => {
+        if (this.pulseMutationRequestId !== requestId) return;
+        this.pulseAcceptedRequestId = requestId;
+        this.pulseMutationRequestId = undefined;
+        this.world.pulse = { ...this.world.pulse, loading: false, problem: undefined, mutationSuccessId: requestId }; this.emit();
+      },
+      refused: why => {
+        if (this.pulseMutationRequestId !== requestId) return;
+        this.pulseMutationRequestId = undefined;
+        this.world.pulse = { ...this.world.pulse, loading: false, problem: why }; onRefused?.(why); this.emit();
+      },
+      lost: () => { const why = "the hub did not answer - is it still running?";
+        if (this.pulseMutationRequestId !== requestId) return;
+        this.pulseMutationRequestId = undefined;
+        this.world.pulse = { ...this.world.pulse, loading: false, problem: why }; onRefused?.(why); this.emit(); },
+    });
+    if (!sent) {
+      if (this.pulseMutationRequestId === requestId) this.pulseMutationRequestId = undefined;
+      this.world.pulse = { ...this.world.pulse, loading: false,
+        problem: "connect to Cloud9 before saving this update" };
+      this.emit();
+    }
+    return sent ? requestId : undefined;
+  }
+
+  deletePulse(updateId: ID, onRefused?: (why: string) => void): ID | undefined {
+    this.world.pulse = { ...this.world.pulse, loading: true, problem: undefined };
+    this.emit();
+    const requestId = this.nextRequestId("pulseDelete");
+    this.pulseMutationRequestId = requestId;
+    const sent = this.ask({ type: "pulseDelete", updateId, requestId }, {
+      answers: f => f.type === "pulseChanged" && f.requestId === requestId && f.update.id === updateId,
+      answered: () => {
+        if (this.pulseMutationRequestId !== requestId) return;
+        this.pulseAcceptedRequestId = requestId;
+        this.pulseMutationRequestId = undefined;
+        this.world.pulse = { ...this.world.pulse, loading: false, problem: undefined, mutationSuccessId: requestId }; this.emit();
+      },
+      refused: why => {
+        if (this.pulseMutationRequestId !== requestId) return;
+        this.pulseMutationRequestId = undefined;
+        this.world.pulse = { ...this.world.pulse, loading: false, problem: why }; onRefused?.(why); this.emit();
+      },
+      lost: () => { const why = "the hub did not answer - is it still running?";
+        if (this.pulseMutationRequestId !== requestId) return;
+        this.pulseMutationRequestId = undefined;
+        this.world.pulse = { ...this.world.pulse, loading: false, problem: why }; onRefused?.(why); this.emit(); },
+    });
+    if (!sent) {
+      if (this.pulseMutationRequestId === requestId) this.pulseMutationRequestId = undefined;
+      this.world.pulse = { ...this.world.pulse, loading: false,
+        problem: "connect to Cloud9 before deleting this update" };
+      this.emit();
+    }
+    return sent ? requestId : undefined;
+  }
+
+  markPulseRead(projectId: ID, at = Date.now()): void {
+    const safeAt = Number.isFinite(at) ? Math.min(Math.max(0, Math.floor(at)), Date.now()) : Date.now();
+    const requestId = this.send({ type: "pulseRead", projectId, at: safeAt });
+    if (requestId) this.pulseReadRequests.add(requestId);
   }
 
   /**
@@ -3240,6 +3414,9 @@ export class RelayClient {
         // A reconnect starts a new request epoch. Do not let a stale response
         // from the old socket match run/archive/stop/retry bookkeeping.
         this.workflowRequests.clear();
+        this.pulseMutationRequestId = undefined;
+        this.pulseAcceptedRequestId = undefined;
+        this.pulseReadRequests.clear();
         // The welcome snapshot is a useful seed, but the owner still asks for
         // the canonical workflow list. Keep the route in loading until that
         // correlated answer arrives so an empty seed never flashes as truth.
@@ -3256,6 +3433,11 @@ export class RelayClient {
         w.savedNextMessageId = undefined;
         w.savedPending = [];
         w.savedNew = false;
+        w.pulse = {
+          asked: true, loading: false, updates: frame.state.pulse?.updates ?? [],
+          unreadByProject: frame.state.pulse?.unreadByProject ?? {}, projects: frame.state.pulse?.projects ?? [],
+          requestId: undefined,
+        };
         w.messages = {};
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
@@ -3734,6 +3916,16 @@ export class RelayClient {
         const { [frame.channelId]: goneUnread, ...restUnread } = w.unread;
         void goneUnread;
         w.unread = restUnread;
+        const pulseProjects = new Set(w.pulse.projects.filter(p => p.id &&
+          w.projects.list.some(project => project.id === p.id && project.channelId === frame.channelId)).map(p => p.id));
+        if (pulseProjects.size > 0) {
+          w.pulse = {
+            ...w.pulse,
+            updates: w.pulse.updates.filter(update => !pulseProjects.has(update.projectId)),
+            unreadByProject: Object.fromEntries(Object.entries(w.pulse.unreadByProject)
+              .filter(([id]) => !pulseProjects.has(id))),
+          };
+        }
         const { [frame.channelId]: goneMembers, ...restMembers } = w.members;
         void goneMembers;
         w.members = restMembers;
@@ -3792,6 +3984,13 @@ export class RelayClient {
         const { [frame.projectId]: goneItems, ...restItems } = w.projectItems;
         void goneItems;
         w.projectItems = restItems;
+        w.pulse = {
+          ...w.pulse,
+          projects: w.pulse.projects.filter(p => p.id !== frame.projectId),
+          updates: w.pulse.updates.filter(update => update.projectId !== frame.projectId),
+          unreadByProject: Object.fromEntries(Object.entries(w.pulse.unreadByProject)
+            .filter(([id]) => id !== frame.projectId)),
+        };
         break;
       }
       case "projectItems":
@@ -3946,6 +4145,49 @@ export class RelayClient {
       }
       case "socialMembers":
         break;
+      case "pulse":
+        // Correlated answers belong only to the active list/read request. A
+        // no-id frame is an access push and may still refresh every open
+        // window. A read acknowledgement must not cancel a list still in
+        // flight, but it is otherwise a canonical snapshot.
+        const readAck = frame.requestId !== undefined && this.pulseReadRequests.delete(frame.requestId);
+        if (frame.requestId !== undefined && !readAck && frame.requestId !== w.pulse.requestId) break;
+        w.pulse = {
+          asked: true, loading: readAck ? w.pulse.loading : false, updates: frame.updates,
+          unreadByProject: frame.unreadByProject, projects: frame.projects,
+          requestId: readAck ? w.pulse.requestId : undefined,
+          problem: undefined,
+          ...(frame.projectId ? { projectId: frame.projectId } : {}),
+        };
+        break;
+      case "pulseChanged": {
+        if (frame.requestId !== undefined) {
+          if (frame.requestId !== this.pulseAcceptedRequestId) break;
+          this.pulseAcceptedRequestId = undefined;
+        }
+        // A peer window's no-id push is useful while a local save is pending,
+        // but it is not that save's acknowledgement. Keep the spinner and
+        // draft guard until the matching request (or refusal/lost callback)
+        // settles it; otherwise another window can make a local save look done.
+        const mutationPending = this.pulseMutationRequestId !== undefined;
+        const authorized = new Set(frame.projects.map(project => project.id));
+        if (!authorized.has(frame.update.projectId)) {
+          w.pulse = { ...w.pulse,
+            updates: w.pulse.updates.filter(update => authorized.has(update.projectId)),
+            unreadByProject: Object.fromEntries(Object.entries(frame.unreadByProject)
+              .filter(([id]) => authorized.has(id))), projects: frame.projects };
+          break;
+        }
+        const i = w.pulse.updates.findIndex(u => u.id === frame.update.id);
+        const retained = w.pulse.updates.filter(update => authorized.has(update.projectId));
+        const retainedIndex = retained.findIndex(u => u.id === frame.update.id);
+        const updates = retainedIndex >= 0
+          ? retained.map(u => u.id === frame.update.id ? frame.update : u)
+          : [frame.update, ...retained];
+        w.pulse = { ...w.pulse, asked: true, loading: mutationPending ? w.pulse.loading : false, updates,
+          unreadByProject: frame.unreadByProject, projects: frame.projects };
+        break;
+      }
       // ENGINE-ONLY RECEIPT, and it is right that the screen drops it. When an
       // agent asks mid-run "may I push this branch?", the hub answers the
       // ENGINE with the id of the card it just minted, so the engine knows

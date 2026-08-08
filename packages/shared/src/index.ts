@@ -1822,6 +1822,107 @@ export function validateSocialText(text: unknown, allowEmpty = false): string | 
   return null;
 }
 
+/**
+ * One durable Engineering Pulse update.  The five sections are deliberately
+ * plain words rather than a rich editor: a team can scan what is done, next,
+ * blocked, decided, or needs help without guessing at a status vocabulary.
+ */
+export interface EngineeringPulseUpdate {
+  id: ID;
+  projectId: ID;
+  authorId: ID;
+  authorKind: AuthorKind;
+  authorName: string;
+  createdAt: number;
+  updatedAt: number;
+  done: string;
+  doing: string;
+  blocked: string;
+  decisions: string;
+  helpNeeded: string;
+  relatedTaskId?: ID;
+  relatedRunId?: ID;
+  relatedProjectItem?: { kind: ProjectItemKind; number: number };
+  /** Soft deletion keeps the chronological feed honest after a user removes a post. */
+  deletedAt?: number;
+}
+
+/** Project label safe to show to a room member (no repository or local path). */
+export interface EngineeringPulseProject {
+  id: ID;
+  name: string;
+  description?: string;
+}
+
+export const ENGINEERING_PULSE_LIMITS = {
+  section: 2000,
+  authorName: 120,
+  updatesPerProject: 500,
+} as const;
+
+/**
+ * Draft for create, or a patch for edit. Related links accept `null` as an
+ * explicit clear: JSON drops `undefined`, so clearing a link must send null
+ * end-to-end or the hub keeps the previous value.
+ */
+export type EngineeringPulseDraft = {
+  done: string;
+  doing: string;
+  blocked: string;
+  decisions: string;
+  helpNeeded: string;
+  relatedTaskId?: ID | null;
+  relatedRunId?: ID | null;
+  relatedProjectItem?: { kind: ProjectItemKind; number: number } | null;
+};
+
+/** Strip section bodies and related links from a deleted Pulse row. */
+export function redactDeletedPulseUpdate(update: EngineeringPulseUpdate): EngineeringPulseUpdate {
+  if (!update.deletedAt) return update;
+  const {
+    relatedTaskId: _task, relatedRunId: _run, relatedProjectItem: _item,
+    ...rest
+  } = update;
+  return {
+    ...rest,
+    done: "", doing: "", blocked: "", decisions: "", helpNeeded: "",
+  };
+}
+
+/** Validate the bounded plain-word sections and optional related links. */
+export function validateEngineeringPulseDraft(value: unknown): string | null {
+  if (!value || typeof value !== "object") return "write the update in the five sections";
+  const draft = value as Partial<EngineeringPulseDraft>;
+  for (const [label, section] of [
+    ["Done", draft.done], ["Doing", draft.doing], ["Blocked", draft.blocked],
+    ["Decisions", draft.decisions], ["Help needed", draft.helpNeeded],
+  ] as const) {
+    if (typeof section !== "string") return `${label} is words`;
+    if (section.length > ENGINEERING_PULSE_LIMITS.section) {
+      return `${label} is too long (max ${ENGINEERING_PULSE_LIMITS.section} characters)`;
+    }
+  }
+  // `null` means "clear this link" on edit and is always valid.
+  if (draft.relatedTaskId !== undefined && draft.relatedTaskId !== null &&
+      (typeof draft.relatedTaskId !== "string" || draft.relatedTaskId.length > 200)) {
+    return "the related task is not valid";
+  }
+  if (draft.relatedRunId !== undefined && draft.relatedRunId !== null &&
+      (typeof draft.relatedRunId !== "string" || draft.relatedRunId.length > 200)) {
+    return "the related run is not valid";
+  }
+  if (draft.relatedProjectItem !== undefined && draft.relatedProjectItem !== null) {
+    const item = draft.relatedProjectItem;
+    if (!item || (item.kind !== "pull" && item.kind !== "issue") ||
+        !Number.isInteger(item.number) || item.number <= 0) {
+      return "the related pull request or issue is not valid";
+    }
+  }
+  if ([draft.done, draft.doing, draft.blocked, draft.decisions, draft.helpNeeded]
+    .every(section => (section ?? "").trim() === "")) return "write something in at least one section";
+  return null;
+}
+
 export const PROJECT_LIMITS = {
   /** how many repositories one person may connect */
   perUser: 50,
@@ -2484,7 +2585,10 @@ export type ActivityKind =
   // GitHub — these three lines are about OUR copy.
   | "project_connected" | "project_updated" | "project_forgotten"
   // narrowing or restoring who may read a file changes a permission wall
-  | "artifact_access_changed";
+  | "artifact_access_changed"
+  // Engineering Pulse is a durable team record, so its own actions are
+  // distinguishable from chat and project mutations in the activity ledger.
+  | "pulse_created" | "pulse_updated" | "pulse_deleted";
 
 /**
  * One line of the trail.
@@ -3528,6 +3632,13 @@ type ClientFrameBase =
    * that reads like "no open work".
    */
   | { type: "projectSynced"; projectId: ID; defaultBranch?: string; items?: ProjectItem[]; problem?: string }
+  // Engineering Pulse: project-scoped daily updates. Human writes come from a
+  // window; an owner's engine may name one of its own agents as the author.
+  | { type: "pulseList"; projectId?: ID }
+  | { type: "pulseCreate"; projectId: ID; draft: EngineeringPulseDraft; agentId?: ID }
+  | { type: "pulseUpdate"; updateId: ID; patch: Partial<EngineeringPulseDraft>; agentId?: ID }
+  | { type: "pulseDelete"; updateId: ID; agentId?: ID }
+  | { type: "pulseRead"; projectId: ID; at?: number }
   // ---- what an agent actually did (FR-TL-003) ----
   /**
    * ENGINE-HOST ONLY: one turn finished, here is what it did.
@@ -3778,6 +3889,8 @@ export interface WorldState {
    */
   presence?: Record<ID, AgentPresenceState>;
   tasks: Task[];
+  /** The updates and durable unread counts visible to this person. */
+  pulse?: { updates: EngineeringPulseUpdate[]; unreadByProject: Record<ID, number>; projects: EngineeringPulseProject[] };
   approvals: Approval[];
   /** Durable mention and thread-reply rows for this person only. */
   notifications?: NotificationInboxEntry[];
@@ -4017,6 +4130,10 @@ export type ServerFrame =
   | { type: "socialUnread"; projectId: ID; unread: number }
   | { type: "socialMembers"; projectId: ID; userIds: ID[]; requestId?: ID }
   | { type: "socialUnavailable"; projectId: ID; requestId?: ID }
+  /** Answers `pulseList`; updates are newest first and unread counts are durable. */
+  | { type: "pulse"; projectId?: ID; updates: EngineeringPulseUpdate[]; unreadByProject: Record<ID, number>; projects: EngineeringPulseProject[]; requestId?: ID }
+  /** A single update changed, pushed only to its project's authorized audience. */
+  | { type: "pulseChanged"; update: EngineeringPulseUpdate; unreadByProject: Record<ID, number>; projects: EngineeringPulseProject[]; requestId?: ID }
   /**
    * One run — pushed the moment it finishes to everyone who can see the
    * conversation it happened in, and sent back on its own to whoever asked for

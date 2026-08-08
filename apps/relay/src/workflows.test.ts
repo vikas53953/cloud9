@@ -74,7 +74,7 @@ async function run(owner: TestClient, workflow: Workflow): Promise<WorkflowRun> 
   return frame.run;
 }
 
-test("workflow definitions and runs survive a Store reopen at schema 8", () => {
+test("workflow definitions and runs survive a Store reopen at schema 9", () => {
   const dbPath = tmp("workflow-restart.db");
   const first = new Store(dbPath, { ownerToken: "tok-owner" });
   const owner = first.ensureOwner("Vikas", "tok-owner");
@@ -92,13 +92,13 @@ test("workflow definitions and runs survive a Store reopen at schema 8", () => {
   };
   first.saveWorkflow(workflow);
   first.saveWorkflowRun(run);
-  assert.equal(first.schemaVersion(), 8);
+  assert.equal(first.schemaVersion(), 9);
   first.db.close();
 
   const second = new Store(dbPath, { ownerToken: "tok-owner" });
   assert.deepEqual(second.workflow(workflow.id), workflow);
   assert.deepEqual(second.workflowRun(run.id), run);
-  assert.equal(second.schemaVersion(), 8);
+  assert.equal(second.schemaVersion(), 9);
   second.db.close();
 });
 
@@ -109,7 +109,7 @@ test("opening a schema 6 database applies the workflow migration idempotently", 
   old.db.close();
 
   const migrated = new Store(dbPath, { ownerToken: "tok-owner" });
-  assert.equal(migrated.schemaVersion(), 8);
+  assert.equal(migrated.schemaVersion(), 9);
   const tables = migrated.db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('saved_messages','workflows','workflow_runs') ORDER BY name",
   ).all() as { name: string }[];

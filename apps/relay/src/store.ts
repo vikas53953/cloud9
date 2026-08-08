@@ -10,6 +10,7 @@ import {
   ChannelRole, EverywhereHit, ID, Message, SearchKind,
   MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
   SocialPost, SocialReaction, SocialReadEntry, SocialLink, SOCIAL_LIMITS,
+  EngineeringPulseUpdate, redactDeletedPulseUpdate,
   RunRecord, RUN_RETENTION, Task, User, StoredHook, isSafeStoredId, nameKey, newId,
   NOTIFICATION_INBOX_LIMITS,
   type NotificationInboxKind, type NotificationInboxState,
@@ -135,6 +136,12 @@ export interface ArtifactByteStage {
 interface RawRun {
   id: string; agentId: string; ownerId: string;
   channelId: string | null; taskId: string | null; startedAt: number; json: string;
+}
+
+type PulseMutationKind = "pulseCreate" | "pulseUpdate" | "pulseDelete";
+interface PulseMutationReceipt {
+  userId: ID; requestId: ID; kind: PulseMutationKind;
+  payloadHash: string; updateId: ID; projectId: ID; createdAt: number;
 }
 
 export interface NotificationInboxRow {
@@ -605,8 +612,35 @@ export class Store implements JoinHubStore {
         PRIMARY KEY(userId, requestId, kind)
       );
       CREATE INDEX IF NOT EXISTS social_ops_created ON social_ops(createdAt);
+      -- Durable Engineering Pulse updates.  Deletion is a tombstone in JSON,
+      -- so the chronological feed can honestly say an entry was removed.
+      CREATE TABLE IF NOT EXISTS pulse_updates(
+        id TEXT PRIMARY KEY, projectId TEXT NOT NULL, authorId TEXT NOT NULL,
+        createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL,
+        deletedAt INTEGER, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS pulse_project_created
+        ON pulse_updates(projectId, createdAt DESC, id DESC);
+      CREATE TABLE IF NOT EXISTS pulse_reads(
+        userId TEXT NOT NULL, projectId TEXT NOT NULL,
+        lastReadAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL,
+        PRIMARY KEY(userId, projectId)
+      );
+      CREATE TABLE IF NOT EXISTS pulse_mutation_receipts(
+        userId TEXT NOT NULL, requestId TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('pulseCreate','pulseUpdate','pulseDelete')),
+        payloadHash TEXT NOT NULL, updateId TEXT NOT NULL, projectId TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        PRIMARY KEY(userId, requestId)
+      );
+      CREATE INDEX IF NOT EXISTS pulse_receipt_order
+        ON pulse_mutation_receipts(userId, createdAt DESC);
     `);
       this.migrate();
+      // v9 files created by the first Pulse build may already report the
+      // current version while lacking the receipt's project binding. Repair
+      // that shape before any request can read or write a receipt.
+      this.tx(() => this.ensurePulseReceiptProjectColumn());
       this.sweepArtifactOrphans();
       this.initSearch();
     } catch (e) {
@@ -972,6 +1006,10 @@ export class Store implements JoinHubStore {
     // or older database can safely retry this idempotent step.
     this.step(7, () => this.addWorkflowSchema());
     this.step(8, () => this.addSavedMessagesSchema());
+    // v8 -> v9: Engineering Pulse. Workflow owns v7 and Saved/Later owns v8;
+    // Pulse remains the next migration when those features are present.
+    this.step(9, () => this.addEngineeringPulseSchema());
+
     // The one thing that still says a person can only be in a room once at a
     // time, now that the primary key no longer does. It lives here, below the
     // step that reshapes the table, for the same reason act_seq does.
@@ -1072,6 +1110,54 @@ export class Store implements JoinHubStore {
         ON artifact_links(targetArtifactId, targetVersion, sourceArtifactId, sourceVersion);
     `);
     this.addColumn("artifact_access_users", "position", "INTEGER NOT NULL DEFAULT 0");
+  }
+
+  private addEngineeringPulseSchema(): void {
+    // Older files may have received the CREATE block from a partially upgraded
+    // process without its indexes. CREATE IF NOT EXISTS is safe to replay.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS pulse_updates(
+        id TEXT PRIMARY KEY, projectId TEXT NOT NULL, authorId TEXT NOT NULL,
+        createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL,
+        deletedAt INTEGER, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS pulse_project_created
+        ON pulse_updates(projectId, createdAt DESC, id DESC);
+      CREATE TABLE IF NOT EXISTS pulse_reads(
+        userId TEXT NOT NULL, projectId TEXT NOT NULL,
+        lastReadAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL,
+        PRIMARY KEY(userId, projectId)
+      );
+      CREATE TABLE IF NOT EXISTS pulse_mutation_receipts(
+        userId TEXT NOT NULL, requestId TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('pulseCreate','pulseUpdate','pulseDelete')),
+        payloadHash TEXT NOT NULL, updateId TEXT NOT NULL, projectId TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        PRIMARY KEY(userId, requestId)
+      );
+      CREATE INDEX IF NOT EXISTS pulse_receipt_order
+        ON pulse_mutation_receipts(userId, createdAt DESC);
+    `);
+    this.ensurePulseReceiptProjectColumn();
+  }
+
+  /** Keep receipt cleanup scoped to the project even on an already-v9 file. */
+  private ensurePulseReceiptProjectColumn(): void {
+    this.addColumn("pulse_mutation_receipts", "projectId", "TEXT NOT NULL DEFAULT ''");
+    this.db.exec(
+      "UPDATE pulse_mutation_receipts SET projectId="
+      + "(SELECT projectId FROM pulse_updates WHERE id=pulse_mutation_receipts.updateId) "
+      + "WHERE projectId='' AND EXISTS "
+      + "(SELECT 1 FROM pulse_updates WHERE id=pulse_mutation_receipts.updateId)",
+    );
+    // A receipt was written in the same transaction as its update, so an old
+    // row with neither binding nor update is only a torn/forgotten orphan.
+    // Retire it instead of trying to write NULL into the new NOT NULL column.
+    this.db.exec(
+      "DELETE FROM pulse_mutation_receipts WHERE projectId='' AND NOT EXISTS "
+      + "(SELECT 1 FROM pulse_updates WHERE id=pulse_mutation_receipts.updateId)",
+    );
+    this.db.exec("CREATE INDEX IF NOT EXISTS pulse_receipt_project ON pulse_mutation_receipts(projectId, updateId)");
   }
 
   /**
@@ -1382,6 +1468,8 @@ export class Store implements JoinHubStore {
       this.db.prepare("DELETE FROM social_reactions WHERE actorId=?").run(id);
     });
     this.db.prepare("DELETE FROM tokens WHERE userId=?").run(id);
+    this.db.prepare("DELETE FROM pulse_mutation_receipts WHERE userId=?").run(id);
+    this.db.prepare("DELETE FROM pulse_reads WHERE userId=?").run(id);
     this.db.prepare("UPDATE invites SET revoked=1 WHERE usedBy=? OR createdBy=?").run(id, id);
     this.db.prepare("DELETE FROM users WHERE id=?").run(id);
   }
@@ -3543,6 +3631,13 @@ export class Store implements JoinHubStore {
       this.db.prepare("DELETE FROM social_reads WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM social_members WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM social_ops WHERE projectId=?").run(id);
+      // Receipts are private retry state, but they still name an update. They
+      // must disappear with the project so a later request cannot replay a
+      // forgotten record (or retain its id after access is revoked).
+      this.db.prepare("DELETE FROM pulse_mutation_receipts WHERE projectId=? OR updateId IN (SELECT id FROM pulse_updates WHERE projectId=?)")
+        .run(id, id);
+      this.db.prepare("DELETE FROM pulse_updates WHERE projectId=?").run(id);
+      this.db.prepare("DELETE FROM pulse_reads WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM projects WHERE id=?").run(id);
     });
   }
@@ -3749,6 +3844,132 @@ export class Store implements JoinHubStore {
     ).all(postId, emoji) as { actorId: string }[]).map(r => r.actorId);
   }
 
+  /** Every connected project, for authorization-filtered features such as Pulse. */
+  projects(): Project[] {
+    return (this.db.prepare("SELECT json FROM projects ORDER BY createdAt DESC")
+      .all() as { json: string }[]).map(r => JSON.parse(r.json) as Project);
+  }
+
+  // ---- Engineering Pulse: durable project-scoped daily updates ----
+
+  pulseMutationHash(kind: PulseMutationKind, payload: unknown): string {
+    return createHash("sha256").update(JSON.stringify([kind, payload])).digest("hex");
+  }
+
+  private pulseReceipt(userId: ID, requestId: ID): PulseMutationReceipt | undefined {
+    const row = this.db.prepare(
+      "SELECT userId,requestId,kind,payloadHash,updateId,projectId,createdAt FROM pulse_mutation_receipts WHERE userId=? AND requestId=?",
+    ).get(userId, requestId) as PulseMutationReceipt | undefined;
+    if (row && row.createdAt < Date.now() - 30 * 24 * 60 * 60 * 1000) {
+      this.db.prepare("DELETE FROM pulse_mutation_receipts WHERE userId=? AND requestId=?").run(userId, requestId);
+      return undefined;
+    }
+    return row;
+  }
+
+  pulseMutationStatus(userId: ID, requestId: ID, kind: PulseMutationKind, payloadHash: string):
+    { status: "replay" | "conflict"; updateId: ID } | undefined {
+    const prior = this.pulseReceipt(userId, requestId);
+    if (!prior) return undefined;
+    return prior.kind === kind && prior.payloadHash === payloadHash
+      ? { status: "replay", updateId: prior.updateId }
+      : { status: "conflict", updateId: prior.updateId };
+  }
+
+  /** Save an update and its retry receipt in one transaction. */
+  savePulseMutation(userId: ID, requestId: ID, kind: PulseMutationKind,
+    payloadHash: string, update: EngineeringPulseUpdate): EngineeringPulseUpdate {
+    return this.tx(() => {
+      const prior = this.pulseReceipt(userId, requestId);
+      if (prior) {
+        if (prior.kind !== kind || prior.payloadHash !== payloadHash) {
+          throw new Error("that Pulse request id was already used for a different update");
+        }
+        return this.pulse(prior.updateId) ?? update;
+      }
+      this.savePulse(update);
+      const now = Date.now();
+      this.db.prepare(
+        "INSERT INTO pulse_mutation_receipts(userId,requestId,kind,payloadHash,updateId,projectId,createdAt) VALUES(?,?,?,?,?,?,?)",
+      ).run(userId, requestId, kind, payloadHash, update.id, update.projectId, now);
+      this.db.prepare("DELETE FROM pulse_mutation_receipts WHERE createdAt < ?")
+        .run(now - 30 * 24 * 60 * 60 * 1000);
+      this.db.prepare(
+        "DELETE FROM pulse_mutation_receipts WHERE userId=? AND requestId NOT IN "
+        + "(SELECT requestId FROM pulse_mutation_receipts WHERE userId=? ORDER BY createdAt DESC,requestId DESC LIMIT 512)",
+      ).run(userId, userId);
+      return update;
+    });
+  }
+
+  savePulse(update: EngineeringPulseUpdate): void {
+    // Delete is a moderation control: never keep section bodies or related
+    // links once deletedAt is set. The tombstone row stays for the feed.
+    const stored = redactDeletedPulseUpdate(update);
+    this.db.prepare(
+      "INSERT INTO pulse_updates(id,projectId,authorId,createdAt,updatedAt,deletedAt,json) " +
+      "VALUES(?,?,?,?,?,?,?) " +
+      "ON CONFLICT(id) DO UPDATE SET projectId=excluded.projectId, authorId=excluded.authorId, " +
+      "createdAt=excluded.createdAt, updatedAt=excluded.updatedAt, deletedAt=excluded.deletedAt, json=excluded.json",
+    ).run(
+      stored.id, stored.projectId, stored.authorId, stored.createdAt, stored.updatedAt,
+      stored.deletedAt ?? null, JSON.stringify(stored),
+    );
+    this.prunePulse(stored.projectId);
+  }
+
+  pulse(id: ID): EngineeringPulseUpdate | undefined {
+    const row = this.db.prepare("SELECT json FROM pulse_updates WHERE id=?").get(id) as
+      { json: string } | undefined;
+    // Re-redact on read so older pre-fix rows cannot ship deleted content.
+    return row ? redactDeletedPulseUpdate(JSON.parse(row.json) as EngineeringPulseUpdate) : undefined;
+  }
+
+  /** Newest first; tombstones remain so deletion is visible in the feed. */
+  pulses(projectId?: ID, limit = 500): EngineeringPulseUpdate[] {
+    const rows = projectId
+      ? this.db.prepare("SELECT json FROM pulse_updates WHERE projectId=? ORDER BY createdAt DESC,id DESC LIMIT ?")
+        .all(projectId, Math.max(1, Math.min(limit, 500)))
+      : this.db.prepare("SELECT json FROM pulse_updates ORDER BY createdAt DESC,id DESC LIMIT ?")
+        .all(Math.max(1, Math.min(limit, 500)));
+    return (rows as { json: string }[]).map(r =>
+      redactDeletedPulseUpdate(JSON.parse(r.json) as EngineeringPulseUpdate));
+  }
+
+  private prunePulse(projectId: ID): void {
+    this.db.prepare(
+      "DELETE FROM pulse_updates WHERE projectId=? AND id NOT IN " +
+      "(SELECT id FROM pulse_updates WHERE projectId=? ORDER BY createdAt DESC,id DESC LIMIT ?)",
+    ).run(projectId, projectId, 500);
+  }
+
+  pulseReadAt(userId: ID, projectId: ID): number {
+    const row = this.db.prepare("SELECT lastReadAt FROM pulse_reads WHERE userId=? AND projectId=?")
+      .get(userId, projectId) as { lastReadAt: number } | undefined;
+    return row?.lastReadAt ?? 0;
+  }
+
+  markPulseRead(userId: ID, projectId: ID, at: number): void {
+    const now = Date.now();
+    this.db.prepare(
+      "INSERT INTO pulse_reads(userId,projectId,lastReadAt,updatedAt) VALUES(?,?,?,?) " +
+      "ON CONFLICT(userId,projectId) DO UPDATE SET lastReadAt=MAX(lastReadAt,excluded.lastReadAt), updatedAt=excluded.updatedAt",
+    ).run(userId, projectId, Math.min(Math.max(0, Math.floor(at)), now), now);
+  }
+
+  pulseUnread(userId: ID, projectId: ID): number {
+    return (this.db.prepare(
+      "SELECT COUNT(*) n FROM pulse_updates WHERE projectId=? AND deletedAt IS NULL " +
+      "AND createdAt>? AND authorId<>?",
+    ).get(projectId, this.pulseReadAt(userId, projectId), userId) as { n: number }).n;
+  }
+
+  pulseUnreadByProject(userId: ID, projectIds: ID[]): Record<ID, number> {
+    const out: Record<ID, number> = {};
+    for (const projectId of projectIds) out[projectId] = this.pulseUnread(userId, projectId);
+    return out;
+  }
+
   /**
    * Append one line to the trail — and to the CHAIN.
    *
@@ -3923,11 +4144,11 @@ export const ARTIFACT_STAGE_GRACE_MS = 60_000;
  * 5 = a membership row per spell in a room, so a rejoin cannot overwrite a
  *     first arrival.
  * 6 = artifact chain access, exact-version links, and immutable version keys.
- * 7 = Workflow definitions and durable workflow runs (owned by the Workflow
- *     migration on the coordinated master).
- * 8 = per-user saved-message rows, with source access rechecked on read.
+ * 7 = saved workflow runbooks (owned by the Workflow delivery slice).
+ * 8 = Saved/Later durable message queue.
+ * 9 = Engineering Pulse project updates.
  */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /**
  * The fingerprint of one line of the trail.

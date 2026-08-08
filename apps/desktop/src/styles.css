@@ -3446,3 +3446,51 @@ button.chip{cursor:pointer;}
 .social-composer>label,.social-edit label{font-size:11px;color:var(--ink-3);}.social-link-fields{display:flex;gap:9px;align-items:end;flex-wrap:wrap;}.social-link-fields label{display:flex;flex-direction:column;gap:5px;font-size:10px;color:var(--ink-3);min-width:100px;}.social-link-fields label:last-child{flex:1;}
 .state{padding:25px;border:1px dashed var(--line);border-radius:12px;color:var(--ink-3);line-height:1.5;text-align:center;}.state.error{color:var(--marigold);border-color:var(--marigold);}
 @media (max-width:720px){.social-screen{padding:22px 15px 40px;}.social-head{flex-direction:column;gap:15px;}.social-project-picker{width:100%;}.social-comment{margin-left:18px;}.social-post-meta time{margin-left:0;flex-basis:100%;}}
+/* ---- Engineering Pulse --------------------------------------------------- */
+.pulse-screen{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;}
+.pulse-topbar{height:auto;min-height:var(--top-h);gap:18px;align-items:flex-start;padding-top:19px;padding-bottom:15px;}
+.pulse-topbar h2{margin:0 0 4px;}
+.pulse-topbar .sub{margin:0;}
+.pulse-filter{margin-left:auto;display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--ink-3);min-width:190px;}
+.pulse-filter select,.pulse-composer select,.pulse-composer input,.pulse-composer textarea{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0;}
+.pulse-body{min-height:0;overflow:auto;padding:0 28px 48px;max-width:1050px;width:100%;margin:0 auto;}
+.pulse-composer{border:1px solid var(--line-soft);background:var(--card,transparent);border-radius:14px;padding:17px;margin:8px 0 22px;display:flex;flex-direction:column;gap:12px;}
+.pulse-compose-head{display:flex;align-items:center;gap:12px;}
+.pulse-compose-head h3{margin:0;font-size:16px;}
+.pulse-compose-head .quiet{margin-left:auto;}
+.pulse-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px;}
+.pulse-grid label,.pulse-links label,.pulse-composer>label{display:flex;flex-direction:column;gap:5px;font-size:11.5px;color:var(--ink-2);}
+.pulse-grid textarea{resize:vertical;line-height:1.45;min-height:66px;}
+.pulse-links{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;}
+.pulse-compose-foot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+.pulse-compose-foot .primary{margin-left:auto;}
+.pulse-feed{display:flex;flex-direction:column;gap:13px;}
+.pulse-card{border:1px solid var(--line-soft);border-radius:13px;padding:15px 17px;background:var(--card,transparent);}
+.pulse-card.is-deleted{opacity:.75;background:var(--surface-2);}
+.pulse-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px;}
+.pulse-card-head>div{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.pulse-card-head time{font-size:11px;color:var(--ink-3);white-space:nowrap;}
+.pulse-author-kind,.pulse-project{font-size:10px;color:var(--ink-3);border:1px solid var(--line-soft);border-radius:999px;padding:2px 7px;}
+.pulse-sections{margin:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 16px;}
+.pulse-sections div{min-width:0;}
+.pulse-sections dt{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--pine);font-weight:700;margin-bottom:3px;}
+.pulse-sections dd{margin:0;font-size:13px;color:var(--ink-2);line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;}
+.pulse-related{font-size:11.5px;color:var(--ink-3);margin:13px 0 0;}
+.pulse-actions{display:flex;gap:8px;margin-top:12px;}
+.pulse-actions .danger{color:var(--marigold);}
+.pulse-error{display:flex;gap:12px;align-items:center;border:1px solid color-mix(in srgb,var(--marigold) 42%,var(--line));background:var(--marigold-soft);padding:11px 13px;border-radius:9px;margin:8px 0 14px;color:var(--ink-2);}
+.pulse-error .secondary{margin-left:auto;}
+.pulse-skeleton{border:1px solid var(--line-soft);border-radius:12px;padding:18px;color:var(--ink-3);margin:8px 0 18px;}
+.pulse-form-error{margin:0;}
+@media (max-width:780px){
+  .pulse-body{padding-left:16px;padding-right:16px;}
+  .pulse-topbar{flex-wrap:wrap;padding-left:16px;padding-right:16px;}
+  .pulse-filter{margin-left:0;min-width:0;width:100%;}
+  .pulse-grid,.pulse-links{grid-template-columns:minmax(0,1fr);}
+  .pulse-card-head{flex-direction:column;gap:5px;}
+  .pulse-card-head time{white-space:normal;}
+}
+@media (max-width:380px){
+  .pulse-body{padding-left:10px;padding-right:10px;}
+  .pulse-composer,.pulse-card{padding:12px;}
+}

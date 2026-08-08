@@ -46,14 +46,14 @@ test("saved rows survive reopen and unsave is a durable soft removal", () => {
     /already used/,
   );
   first.saveSavedMessage(owner.id, "m-active", "ch-general", "keep after restart", undefined, "active-save");
-  assert.equal(first.schemaVersion(), 8);
+  assert.equal(first.schemaVersion(), 9);
   assert.ok(first.savedMessages(owner.id).some(entry => entry.note === "bring it up"));
   first.unsaveMessage(owner.id, "m-saved");
   assert.ok(!first.savedMessages(owner.id).some(entry => entry.messageId === "m-saved"));
   first.db.close();
 
   const reopened = new Store(dbPath, { ownerToken: "tok-owner" });
-  assert.equal(reopened.schemaVersion(), 8);
+  assert.equal(reopened.schemaVersion(), 9);
   assert.ok(reopened.savedMessages(owner.id).some(entry => entry.messageId === "m-active"), "active saves survive restart");
   reopened.db.close();
 });
@@ -95,14 +95,14 @@ test("saved mutation receipts are owner-scoped, bounded, and expire conservative
   store.db.close();
 });
 
-test("saved v8 migration runs after Workflow v7 from a v6 database", () => {
+test("saved v8 migration runs after Workflow v7 and Pulse v9", () => {
   const dbPath = tmp("saved-after-workflow-v7.db");
   const old = new Store(dbPath, { ownerToken: "tok-owner" });
   old.db.exec("UPDATE meta SET value='6' WHERE key='schemaVersion'");
   assert.equal(old.schemaVersion(), 6);
   old.db.close();
   const migrated = new Store(dbPath, { ownerToken: "tok-owner" });
-  assert.equal(migrated.schemaVersion(), 8);
+  assert.equal(migrated.schemaVersion(), 9);
   const tables = migrated.db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('saved_messages','workflows') ORDER BY name",
   ).all() as { name: string }[];

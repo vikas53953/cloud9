@@ -14,6 +14,8 @@ import {
   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
   MESSAGE_LIMITS, ARTIFACT_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
   ReachCatchup,
+  EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject,
+  redactDeletedPulseUpdate, validateEngineeringPulseDraft,
   RepoChoice, REPO_LIST_LIMITS, validateRepoChoice, validateLocalFolder,
   RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
   // "show me the plan first" (2026-08-05) — the hub still writes the line the
@@ -654,6 +656,12 @@ export class Relay {
             workflowRuns: this.store.workflowRuns(userId),
           }
         : { workflows: [], workflowRuns: [] }),
+      pulse: {
+        updates: this.pulseProjectIdsFor(userId).flatMap(projectId => this.store.pulses(projectId))
+          .map(update => this.pulseProjection(userId, update)),
+        unreadByProject: this.pulseUnreadFrame(userId),
+        projects: this.pulseProjectsFor(userId),
+      },
       // Swept FIRST, so nobody is ever handed a card that is already dead and
       // invited to click Approve on it.
       approvals: this.visibleApprovals(userId),
@@ -992,6 +1000,169 @@ export class Relay {
     } catch {
       throw new Error("no such post");
     }
+  }
+
+  /** A Pulse project may be read by its owner or a member of its linked room. */
+  private pulseProject(userId: ID, projectId: ID): Project {
+    const project = this.store.project(projectId);
+    if (!project) throw new Error("no such project");
+    if (project.ownerId === userId) return project;
+    if (project.channelId && this.visibleChannels(userId).some(c => c.id === project.channelId)) {
+      return project;
+    }
+    // Do not reveal whether an unshared project exists to an outsider.
+    throw new Error("no such project");
+  }
+
+  /** Resolve an update and its project without letting an outsider probe ids. */
+  private pulseUpdateFor(userId: ID, updateId: ID): { update: EngineeringPulseUpdate; project: Project } {
+    const update = this.store.pulse(updateId);
+    if (!update) throw new Error("no such update");
+    try {
+      return { update, project: this.pulseProject(userId, update.projectId) };
+    } catch {
+      // An existing id in somebody else's project is indistinguishable from a
+      // made-up id. Keep this sentence identical for edit and delete probes.
+      throw new Error("no such update");
+    }
+  }
+
+  private pulseProjectIdsFor(userId: ID): ID[] {
+    return this.store.projects().filter(project => {
+      if (project.ownerId === userId) return true;
+      return !!project.channelId && this.visibleChannels(userId).some(c => c.id === project.channelId);
+    }).map(project => project.id);
+  }
+
+  private pulseProjectsFor(userId: ID): EngineeringPulseProject[] {
+    return this.store.projects().filter(project => this.pulseProjectIdsFor(userId).includes(project.id))
+      .map(project => ({ id: project.id, name: project.name, ...(project.description ? { description: project.description } : {}) }));
+  }
+
+  private pulseAudience(project: Project): Set<ID> {
+    const audience = new Set<ID>([project.ownerId]);
+    if (project.channelId) {
+      const channel = this.store.channel(project.channelId);
+      if (channel) for (const userId of this.audienceFor(channel)) audience.add(userId);
+    }
+    return audience;
+  }
+
+  /** Remove related identifiers the reader can no longer open; purge deleted bodies. */
+  private pulseProjection(userId: ID, update: EngineeringPulseUpdate): EngineeringPulseUpdate {
+    // Soft-delete is content moderation: list, welcome, and replay must never
+    // re-ship the deleted section text (storage also purges; this is the wire).
+    const redacted = redactDeletedPulseUpdate(update);
+    if (redacted.deletedAt) return redacted;
+    const project = this.store.project(redacted.projectId);
+    const task = redacted.relatedTaskId ? this.store.task(redacted.relatedTaskId) : undefined;
+    const run = redacted.relatedRunId ? this.store.run(redacted.relatedRunId) : undefined;
+    const canTask = !!task && this.canSeeTask(userId, task)
+      && (!project?.channelId || task.channelId === project.channelId);
+    const canRun = !!run && this.canSeeRun(userId, run)
+      && (!project?.channelId || run.channelId === project.channelId);
+    const canItem = !!project && !!redacted.relatedProjectItem
+      && this.store.projectItems(project.id).some(item =>
+        item.kind === redacted.relatedProjectItem!.kind && item.number === redacted.relatedProjectItem!.number);
+    const { relatedTaskId, relatedRunId, relatedProjectItem, ...base } = redacted;
+    return {
+      ...base,
+      ...(canTask ? { relatedTaskId } : {}),
+      ...(canRun ? { relatedRunId } : {}),
+      ...(canItem ? { relatedProjectItem } : {}),
+    };
+  }
+
+  private pulseAuthor(conn: Conn, agentId?: ID): { id: ID; kind: "human" | "agent"; name: string; agent?: AgentDef } {
+    if (agentId) {
+      if (conn.client !== "engine") throw new Error("only your agent engine can post as an agent");
+      const agent = this.myAgent(conn.userId, agentId);
+      return { id: agent.id, kind: "agent", name: agent.name, agent };
+    }
+    if (conn.client === "engine") throw new Error("an engine must name the agent posting this update");
+    const user = this.store.user(conn.userId);
+    if (!user) throw new Error("no such person");
+    return { id: user.id, kind: "human", name: user.name };
+  }
+
+  /** Related links are references, not free-form labels: prove they exist and are readable. */
+  private validatePulseLinks(userId: ID, project: Project, draft: EngineeringPulseDraft): void {
+    // null means "clear this link" and needs no existence check.
+    if (draft.relatedTaskId) {
+      const task = this.store.task(draft.relatedTaskId);
+      if (!task || !this.canSeeTask(userId, task)) throw new Error("that related task is not available");
+      if (project.channelId && task.channelId !== project.channelId) {
+        throw new Error("that related task is in a different project room");
+      }
+    }
+    if (draft.relatedRunId) {
+      const run = this.store.run(draft.relatedRunId);
+      if (!run || !this.canSeeRun(userId, run)) throw new Error("that related run is not available");
+      if (project.channelId && run.channelId !== project.channelId) {
+        throw new Error("that related run is in a different project room");
+      }
+    }
+    if (draft.relatedProjectItem) {
+      const item = this.store.projectItems(project.id).find(i =>
+        i.kind === draft.relatedProjectItem!.kind && i.number === draft.relatedProjectItem!.number);
+      if (!item) throw new Error("that pull request or issue is not in this project");
+    }
+  }
+
+  /** Task links use the same owner-or-room rule as the task tray. */
+  private canSeeTask(userId: ID, task: Task): boolean {
+    if (task.requesterId === userId) return true;
+    const agent = this.store.agents().find(candidate => candidate.id === task.agentId);
+    if (agent?.ownerId === userId) return true;
+    try { this.channelFor(userId, task.channelId); return true; } catch { return false; }
+  }
+
+  private sendPulseToAudience(project: Project, frame: ServerFrame): void {
+    const audience = this.pulseAudience(project);
+    for (const conn of this.conns) if (audience.has(conn.userId)) send(conn.ws, frame);
+  }
+
+  private sendPulseChanged(projectId: ID, update: EngineeringPulseUpdate,
+    origin?: Conn, requestId?: ID): void {
+    const project = this.store.project(projectId);
+    if (!project) return;
+    const audience = this.pulseAudience(project);
+    for (const recipient of this.conns) {
+      if (!audience.has(recipient.userId)) continue;
+      send(recipient.ws, {
+        type: "pulseChanged", update: this.pulseProjection(recipient.userId, update),
+        unreadByProject: this.pulseUnreadFrame(recipient.userId),
+        projects: this.pulseProjectsFor(recipient.userId),
+        ...(recipient === origin && requestId ? { requestId } : {}),
+      });
+    }
+  }
+
+  /** Re-send the complete authorized Pulse snapshot after an access change or read. */
+  private sendPulseSnapshot(userId: ID, origin?: Conn, requestId?: ID, projectId?: ID): void {
+    const projectIds = projectId ? [this.pulseProject(userId, projectId).id] : this.pulseProjectIdsFor(userId);
+    const base = {
+      type: "pulse" as const,
+      ...(projectId ? { projectId } : {}),
+        updates: projectIds.flatMap(id => this.store.pulses(id))
+          .map(update => this.pulseProjection(userId, update)),
+      unreadByProject: this.pulseUnreadFrame(userId), projects: this.pulseProjectsFor(userId),
+    };
+    for (const recipient of this.conns) {
+      if (recipient.userId !== userId) continue;
+      send(recipient.ws, {
+        ...base,
+        ...(recipient === origin && requestId ? { requestId } : {}),
+      });
+    }
+  }
+
+  private sendPulseSnapshotTo(users: Iterable<ID>): void {
+    for (const userId of new Set(users)) this.sendPulseSnapshot(userId);
+  }
+
+  private pulseUnreadFrame(userId: ID): Record<ID, number> {
+    return this.store.pulseUnreadByProject(userId, this.pulseProjectIdsFor(userId));
   }
 
   /* ---------------- looking at GitHub, and knowing when we are ----------------
@@ -1799,6 +1970,9 @@ export class Relay {
   /** Tell one person's machines they are out of a room, so they stop drawing it. */
   private tellLeft(userId: ID, channelId: ID): void {
     this.toUser(userId, { type: "channelLeft", channelId });
+    // Leaving a project room also changes Pulse visibility. Refresh the scoped
+    // feed immediately so a removed member cannot keep a cached update alive.
+    this.sendPulseSnapshot(userId);
   }
 
   /** The owner-only definition gate used by every workflow frame. */
@@ -2408,6 +2582,7 @@ export class Relay {
 
         const artifactIds = this.artifactIdsInChannel(ch.id);
         const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
+        const pulseUsers = new Set<ID>();
         const live = new Set(this.store.channel(ch.id)!.memberIds);
         for (const memberId of new Set(frame.memberIds)) {
           // AN AGENT CARRIES ITS OWNER IN WITH IT — the same rule creating a
@@ -2415,6 +2590,8 @@ export class Relay {
           this.assertMayAdd(conn.userId, [memberId], live);
           this.store.addChannelMember(ch.id, memberId, { role: "member", invitedBy: conn.userId });
           live.add(memberId);
+          const agent = this.store.agents().find(candidate => candidate.id === memberId);
+          pulseUsers.add(agent?.ownerId ?? memberId);
         }
         this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.audit(conn, "member_added", ch.id, `added ${frame.memberIds.length} member(s) to ${ch.name}`);
@@ -2424,6 +2601,7 @@ export class Relay {
           const agent = this.store.agents().find(a => a.id === memberId);
           this.tellSaved(agent?.ownerId ?? memberId);
         }
+        this.sendPulseSnapshotTo(pulseUsers);
         break;
       }
       // ---- §7: a room is a thing that can be described, opened and retired ----
@@ -2499,6 +2677,7 @@ export class Relay {
         this.broadcastChannel(this.store.channel(ch.id)!);
         this.refreshNotificationRows(this.store.notificationsForChannel(ch.id));
         this.tellSaved(conn.userId);
+        this.sendPulseSnapshot(conn.userId);
         break;
       }
       case "leaveChannel": {
@@ -3176,7 +3355,11 @@ export class Relay {
         // projects over one repository would be two lists of the same pull
         // requests, disagreeing.
         const already = this.store.projectByRepo(conn.userId, frame.repo);
-        if (already) { send(conn.ws, { type: "project", project: this.viewProject(already) }); break; }
+        if (already) {
+          send(conn.ws, { type: "project", project: this.viewProject(already) });
+          this.sendPulseSnapshotTo(this.pulseAudience(already));
+          break;
+        }
         if (this.store.projectsOf(conn.userId).length >= PROJECT_LIMITS.perUser) {
           throw new Error(`that's too many projects (max ${PROJECT_LIMITS.perUser})`);
         }
@@ -3192,6 +3375,10 @@ export class Relay {
         this.store.saveProject(project);
         this.audit(conn, "project_connected", project.id, `connected ${project.repo}`);
         this.toUser(conn.userId, { type: "project", project: this.viewProject(project) });
+        // A second owner window may already be on Pulse. The project picker in
+        // that window is a durable access projection, so refresh it now rather
+        // than waiting for the screen to be reopened or manually re-asked.
+        this.sendPulseSnapshotTo(this.pulseAudience(project));
         // AND LOOK AT IT NOW, so a mistyped repository is not indistinguishable
         // from a good one for ever. Before this, `definitely-not-a-real-owner/
         // nope` joined the list and sat there saying "Not looked at GitHub yet"
@@ -3201,6 +3388,7 @@ export class Relay {
       }
       case "updateProject": {
         const project = this.myProject(conn.userId, frame.projectId);
+        const beforePulseAudience = this.pulseAudience(project);
         // renaming a project to what it is already called is not a clash, and a
         // name that clashed before this rule existed must not become unsavable
         const renamingIt = typeof frame.name === "string" && frame.name.trim()
@@ -3224,6 +3412,7 @@ export class Relay {
         this.store.saveProject(project);
         this.audit(conn, "project_updated", project.id, `updated ${project.repo}`);
         this.toUser(conn.userId, { type: "project", project: this.viewProject(project) });
+        this.sendPulseSnapshotTo(new Set([...beforePulseAudience, ...this.pulseAudience(project)]));
         break;
       }
       /* "THE CODE FOR THIS PROJECT IS IN THIS FOLDER."
@@ -3309,6 +3498,7 @@ export class Relay {
         for (const userId of this.store.socialMembers(project.id, project.ownerId)) {
           this.toUser(userId, { type: "socialUnavailable", projectId: project.id });
         }
+        const pulseAudience = this.pulseAudience(project);
         // FORGETS OUR COPY. The repository is untouched — the hub has no way to
         // reach GitHub at all, and that is the design, not an omission.
         // a look still in flight has nothing left to report into
@@ -3316,6 +3506,7 @@ export class Relay {
         this.store.forgetProject(project.id);
         this.audit(conn, "project_forgotten", project.id, `disconnected ${project.repo}`);
         this.toUser(conn.userId, { type: "projectForgotten", projectId: project.id });
+        this.sendPulseSnapshotTo(pulseAudience);
         break;
       }
       case "projects": {
@@ -3780,6 +3971,189 @@ export class Relay {
         }
         this.store.saveProject(project);
         this.toUser(conn.userId, { type: "project", project: this.viewProject(project) });
+        break;
+      }
+      // ---- Engineering Pulse: project-scoped daily updates ----
+      case "pulseList": {
+        if (frame.projectId) this.pulseProject(conn.userId, frame.projectId);
+        this.sendPulseSnapshot(conn.userId, conn, frame.requestId, frame.projectId);
+        break;
+      }
+      case "pulseCreate": {
+        const project = this.pulseProject(conn.userId, frame.projectId);
+        const pulseHash = frame.requestId
+          ? this.store.pulseMutationHash("pulseCreate", {
+              projectId: frame.projectId, draft: frame.draft, agentId: frame.agentId ?? null,
+            }) : undefined;
+        if (frame.requestId && pulseHash) {
+          const prior = this.store.pulseMutationStatus(conn.userId, frame.requestId, "pulseCreate", pulseHash);
+          if (prior?.status === "conflict") throw new Error("that Pulse request id was already used for a different update");
+          if (prior?.status === "replay") {
+            const replay = this.store.pulse(prior.updateId);
+            if (!replay) throw new Error("that Pulse update is no longer available");
+            this.sendPulseChanged(replay.projectId, replay, conn, frame.requestId);
+            break;
+          }
+        }
+        const bad = validateEngineeringPulseDraft(frame.draft);
+        if (bad) throw new Error(bad);
+        this.validatePulseLinks(conn.userId, project, frame.draft);
+        const author = this.pulseAuthor(conn, frame.agentId);
+        const now = Date.now();
+        const update: EngineeringPulseUpdate = {
+          id: newId("pulse"), projectId: project.id,
+          authorId: author.id, authorKind: author.kind, authorName: author.name,
+          createdAt: now, updatedAt: now,
+          done: frame.draft.done.trim(), doing: frame.draft.doing.trim(),
+          blocked: frame.draft.blocked.trim(), decisions: frame.draft.decisions.trim(),
+          helpNeeded: frame.draft.helpNeeded.trim(),
+          ...(frame.draft.relatedTaskId ? { relatedTaskId: frame.draft.relatedTaskId } : {}),
+          ...(frame.draft.relatedRunId ? { relatedRunId: frame.draft.relatedRunId } : {}),
+          ...(frame.draft.relatedProjectItem ? { relatedProjectItem: frame.draft.relatedProjectItem } : {}),
+        };
+        if (frame.requestId && pulseHash) this.store.savePulseMutation(conn.userId, frame.requestId, "pulseCreate", pulseHash, update);
+        else this.store.savePulse(update);
+        this.audit(conn, "pulse_created", update.id, `posted an Engineering Pulse update for ${project.name}`,
+          author.agent ? { asAgent: author.agent } : {});
+        for (const recipient of this.conns) {
+          if (!this.pulseAudience(project).has(recipient.userId)) continue;
+          send(recipient.ws, {
+            type: "pulseChanged", update: this.pulseProjection(recipient.userId, update),
+            unreadByProject: this.pulseUnreadFrame(recipient.userId), projects: this.pulseProjectsFor(recipient.userId),
+            ...(recipient === conn && frame.requestId ? { requestId: frame.requestId } : {}),
+          });
+        }
+        break;
+      }
+      case "pulseUpdate": {
+        const { update: existing, project } = this.pulseUpdateFor(conn.userId, frame.updateId);
+        const pulseHash = frame.requestId
+          ? this.store.pulseMutationHash("pulseUpdate", {
+              updateId: frame.updateId, patch: frame.patch, agentId: frame.agentId ?? null,
+            }) : undefined;
+        if (frame.requestId && pulseHash) {
+          const prior = this.store.pulseMutationStatus(conn.userId, frame.requestId, "pulseUpdate", pulseHash);
+          if (prior?.status === "conflict") throw new Error("that Pulse request id was already used for a different update");
+          if (prior?.status === "replay") {
+            const replay = this.store.pulse(prior.updateId);
+            if (!replay) throw new Error("that Pulse update is no longer available");
+            this.sendPulseChanged(replay.projectId, replay, conn, frame.requestId);
+            break;
+          }
+        }
+        if (existing.deletedAt) throw new Error("that update was deleted and cannot be edited");
+        const author = this.pulseAuthor(conn, frame.agentId);
+        if (existing.authorId !== author.id || existing.authorKind !== author.kind) {
+          throw new Error("you may only edit your own update");
+        }
+        const patch = { ...frame.patch };
+        // Related links: undefined = keep existing, null = clear, value = set.
+        // JSON.stringify drops undefined, so clients must send null to clear.
+        const relatedTaskId = patch.relatedTaskId !== undefined
+          ? (patch.relatedTaskId || undefined)
+          : existing.relatedTaskId;
+        const relatedRunId = patch.relatedRunId !== undefined
+          ? (patch.relatedRunId || undefined)
+          : existing.relatedRunId;
+        const relatedProjectItem = patch.relatedProjectItem !== undefined
+          ? (patch.relatedProjectItem || undefined)
+          : existing.relatedProjectItem;
+        const merged: EngineeringPulseDraft = {
+          done: patch.done ?? existing.done, doing: patch.doing ?? existing.doing,
+          blocked: patch.blocked ?? existing.blocked, decisions: patch.decisions ?? existing.decisions,
+          helpNeeded: patch.helpNeeded ?? existing.helpNeeded,
+          ...(relatedTaskId ? { relatedTaskId } : {}),
+          ...(relatedRunId ? { relatedRunId } : {}),
+          ...(relatedProjectItem ? { relatedProjectItem } : {}),
+        };
+        const bad = validateEngineeringPulseDraft(merged);
+        if (bad) throw new Error(bad);
+        this.validatePulseLinks(conn.userId, project, merged);
+        // Do not spread existing related* fields - merged is the sole source.
+        const {
+          relatedTaskId: _oldTask, relatedRunId: _oldRun, relatedProjectItem: _oldItem,
+          ...baseExisting
+        } = existing;
+        const update: EngineeringPulseUpdate = {
+          ...baseExisting,
+          done: merged.done.trim(), doing: merged.doing.trim(), blocked: merged.blocked.trim(),
+          decisions: merged.decisions.trim(), helpNeeded: merged.helpNeeded.trim(),
+          updatedAt: Date.now(),
+          ...(merged.relatedTaskId ? { relatedTaskId: merged.relatedTaskId } : {}),
+          ...(merged.relatedRunId ? { relatedRunId: merged.relatedRunId } : {}),
+          ...(merged.relatedProjectItem ? { relatedProjectItem: merged.relatedProjectItem } : {}),
+        };
+        if (frame.requestId && pulseHash) this.store.savePulseMutation(conn.userId, frame.requestId, "pulseUpdate", pulseHash, update);
+        else this.store.savePulse(update);
+        this.audit(conn, "pulse_updated", update.id, `edited an Engineering Pulse update for ${project.name}`,
+          author.agent ? { asAgent: author.agent } : {});
+        for (const recipient of this.conns) {
+          if (!this.pulseAudience(project).has(recipient.userId)) continue;
+          send(recipient.ws, {
+            type: "pulseChanged", update: this.pulseProjection(recipient.userId, update),
+            unreadByProject: this.pulseUnreadFrame(recipient.userId), projects: this.pulseProjectsFor(recipient.userId),
+            ...(recipient === conn && frame.requestId ? { requestId: frame.requestId } : {}),
+          });
+        }
+        break;
+      }
+      case "pulseDelete": {
+        const { update: existing, project } = this.pulseUpdateFor(conn.userId, frame.updateId);
+        const pulseHash = frame.requestId
+          ? this.store.pulseMutationHash("pulseDelete", {
+              updateId: frame.updateId, agentId: frame.agentId ?? null,
+            }) : undefined;
+        if (frame.requestId && pulseHash) {
+          const prior = this.store.pulseMutationStatus(conn.userId, frame.requestId, "pulseDelete", pulseHash);
+          if (prior?.status === "conflict") throw new Error("that Pulse request id was already used for a different update");
+          if (prior?.status === "replay") {
+            const replay = this.store.pulse(prior.updateId);
+            if (!replay) throw new Error("that Pulse update is no longer available");
+            this.sendPulseChanged(replay.projectId, replay, conn, frame.requestId);
+            break;
+          }
+        }
+        const author = this.pulseAuthor(conn, frame.agentId);
+        if (existing.authorId !== author.id || existing.authorKind !== author.kind) {
+          throw new Error("you may only delete your own update");
+        }
+        let tombstone = existing;
+        if (!existing.deletedAt) {
+          // Purge bodies at the moment of delete so storage and every wire
+          // projection lose the secret text (author-only delete for v1).
+          tombstone = redactDeletedPulseUpdate({
+            ...existing,
+            deletedAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+          if (frame.requestId && pulseHash) this.store.savePulseMutation(conn.userId, frame.requestId, "pulseDelete", pulseHash, tombstone);
+          else this.store.savePulse(tombstone);
+          this.audit(conn, "pulse_deleted", tombstone.id, `deleted an Engineering Pulse update for ${project.name}`,
+          author.agent ? { asAgent: author.agent } : {});
+        } else if (frame.requestId && pulseHash) {
+          // A first delete of an already-deleted tombstone is still an
+          // idempotent mutation and gets its durable receipt.
+          tombstone = redactDeletedPulseUpdate(existing);
+          this.store.savePulseMutation(conn.userId, frame.requestId, "pulseDelete", pulseHash, tombstone);
+        } else {
+          tombstone = redactDeletedPulseUpdate(existing);
+        }
+        for (const recipient of this.conns) {
+          if (!this.pulseAudience(project).has(recipient.userId)) continue;
+          send(recipient.ws, {
+            type: "pulseChanged", update: this.pulseProjection(recipient.userId, tombstone),
+            unreadByProject: this.pulseUnreadFrame(recipient.userId), projects: this.pulseProjectsFor(recipient.userId),
+            ...(recipient === conn && frame.requestId ? { requestId: frame.requestId } : {}),
+          });
+        }
+        break;
+      }
+      case "pulseRead": {
+        const project = this.pulseProject(conn.userId, frame.projectId);
+        const rawAt = typeof frame.at === "number" && Number.isFinite(frame.at) ? frame.at : Date.now();
+        const at = Math.min(Math.max(0, Math.floor(rawAt)), Date.now());
+        this.store.markPulseRead(conn.userId, project.id, at);
+        this.sendPulseSnapshot(conn.userId, conn, frame.requestId, project.id);
         break;
       }
       // ---- what an agent actually did (FR-TL-003) ----
