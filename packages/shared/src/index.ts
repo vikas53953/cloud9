@@ -1807,6 +1807,21 @@ export function validateSocialLinks(links: unknown): string | null {
   return null;
 }
 
+/**
+ * Words on a project social post or comment.
+ *
+ * Uses the feed's own size bound (`SOCIAL_LIMITS.text`), not the chat message
+ * bound — a 40k chat limit is not permission to put 40k into a team feed.
+ */
+export function validateSocialText(text: unknown, allowEmpty = false): string | null {
+  if (typeof text !== "string") return "a project post needs some words";
+  if (!allowEmpty && text.trim().length === 0) return "a project post needs some words";
+  if (text.length > SOCIAL_LIMITS.text) {
+    return `that project post is too long (max ${SOCIAL_LIMITS.text} characters)`;
+  }
+  return null;
+}
+
 export const PROJECT_LIMITS = {
   /** how many repositories one person may connect */
   perUser: 50,

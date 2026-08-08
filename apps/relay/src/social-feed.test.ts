@@ -39,6 +39,10 @@ test("project social feed persists posts/comments, reactions, edits, tombstones,
   const projectId = await makeProject(owner);
   const channelId = welcome.state.channels[0]?.id;
   assert.ok(channelId);
+  // Task links bind through the project's room — default connectProject has none.
+  const project = relay.store.project(projectId)!;
+  project.channelId = channelId;
+  relay.store.saveProject(project);
   const task: Task = {
     id: "task-social-1", title: "Review the social feed", requesterId: relay.ownerId,
     requesterName: "Vikas", agentId: "agent-social-1", channelId, status: "completed",
@@ -207,4 +211,118 @@ test("social unread/read state synchronizes across windows and list request ids"
   const current = await owner.wait<Extract<ServerFrame, { type: "socialFeed" }>>(
     f => f.type === "socialFeed" && f.requestId === "current-list");
   assert.equal(current.requestId, "current-list");
+});
+
+test("social post ids are not an existence oracle across membership", async t => {
+  // Same class as runs/files: missing and unauthorized must share one refusal.
+  const { relay, owner, open } = await stand(t, "social-oracle.db");
+  const projectId = await makeProject(owner);
+  owner.send({ type: "socialCreate", projectId, text: "members only" });
+  const post = await owner.wait<Extract<ServerFrame, { type: "socialPost" }>>(f => f.type === "socialPost");
+
+  owner.send({ type: "createInvite" });
+  const invite = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
+  const outsider = open(`invite:${invite.code}:Neha`);
+  await outsider.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
+
+  outsider.send({ type: "socialEdit", postId: post.post.id, text: "probe real", requestId: "oracle-real" });
+  const real = await outsider.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error" && f.requestId === "oracle-real");
+  outsider.send({ type: "socialEdit", postId: "sp-invented-missing", text: "probe fake", requestId: "oracle-fake" });
+  const fake = await outsider.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error" && f.requestId === "oracle-fake");
+  assert.equal(real.error, fake.error, "real and invented post ids must refuse with the same words");
+  assert.match(real.error, /no such post$/);
+
+  outsider.send({ type: "socialReact", postId: post.post.id, emoji: "👍", requestId: "oracle-react-real" });
+  const reactReal = await outsider.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error" && f.requestId === "oracle-react-real");
+  outsider.send({ type: "socialReact", postId: "sp-invented-missing", emoji: "👍", requestId: "oracle-react-fake" });
+  const reactFake = await outsider.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error" && f.requestId === "oracle-react-fake");
+  assert.equal(reactReal.error, reactFake.error);
+  assert.match(reactReal.error, /no such post$/);
+  void relay;
+});
+
+test("task/run/artifact links require a project room binding (no default unscoped attach)", async t => {
+  const { relay, owner, welcome } = await stand(t, "social-link-scope.db");
+  const projectId = await makeProject(owner);
+  const project = relay.store.project(projectId)!;
+  assert.equal(project.channelId, undefined, "fresh connectProject has no room");
+
+  const generalId = welcome.state.channels[0]?.id;
+  assert.ok(generalId);
+  owner.send({ type: "createChannel", name: "secret-room", memberIds: [] });
+  const secret = await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.name === "secret-room");
+  const privateTask: Task = {
+    id: "task-secret-xyz", title: "Private work", requesterId: relay.ownerId,
+    requesterName: "Vikas", agentId: "agent-social-1", channelId: secret.channel.id,
+    status: "completed", createdAt: Date.now(), updatedAt: Date.now(),
+  };
+  relay.store.saveTask(privateTask);
+
+  // No project.channelId → refuse (do not store private-room work on the feed).
+  owner.send({
+    type: "socialCreate", projectId, text: "should not stick",
+    links: [{ kind: "task", id: privateTask.id }], requestId: "link-no-room",
+  });
+  const noRoom = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error" && f.requestId === "link-no-room");
+  assert.match(noRoom.error, /no room|cannot be attached/i);
+
+  // Project bound to general, private-room task is outside.
+  project.channelId = generalId;
+  relay.store.saveProject(project);
+  owner.send({
+    type: "socialCreate", projectId, text: "still outside",
+    links: [{ kind: "task", id: privateTask.id }], requestId: "link-outside",
+  });
+  const outside = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error" && f.requestId === "link-outside");
+  assert.match(outside.error, /outside this project/);
+
+  // Same-room task is accepted and stays available to the author.
+  const inRoom: Task = {
+    id: "task-in-project-room", title: "In-room work", requesterId: relay.ownerId,
+    requesterName: "Vikas", agentId: "agent-social-1", channelId: generalId,
+    status: "completed", createdAt: Date.now(), updatedAt: Date.now(),
+  };
+  relay.store.saveTask(inRoom);
+  owner.send({
+    type: "socialCreate", projectId, text: "bound correctly",
+    links: [{ kind: "task", id: inRoom.id }], requestId: "link-ok",
+  });
+  const ok = await owner.wait<Extract<ServerFrame, { type: "socialPost" }>>(
+    f => f.type === "socialPost" && f.requestId === "link-ok");
+  assert.equal(ok.post.links?.[0]?.id, inRoom.id);
+  assert.equal(ok.post.links?.[0]?.available, true);
+  assert.equal(ok.post.links?.[0]?.channelId, generalId);
+});
+
+test("removing a person tombstones their project posts for remaining open feeds", async t => {
+  const { relay, owner, open } = await stand(t, "social-remove-user.db");
+  const projectId = await makeProject(owner);
+  owner.send({ type: "createInvite" });
+  const invite = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
+  const friend = open(`invite:${invite.code}:Priya`);
+  const friendWelcome = await friend.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
+  const friendId = friendWelcome.state.me.id;
+  owner.send({ type: "socialAddMember", projectId, userId: friendId });
+  await friend.wait<Extract<ServerFrame, { type: "socialMembers" }>>(f => f.type === "socialMembers");
+
+  friend.send({ type: "socialCreate", projectId, text: "I will be removed", requestId: "friend-post" });
+  const post = await friend.wait<Extract<ServerFrame, { type: "socialPost" }>>(
+    f => f.type === "socialPost" && f.requestId === "friend-post");
+  await owner.wait<Extract<ServerFrame, { type: "socialPost" }>>(
+    f => f.type === "socialPost" && f.post.id === post.post.id);
+
+  owner.send({ type: "removeUser", userId: friendId });
+  const tombstone = await owner.wait<Extract<ServerFrame, { type: "socialUpdated" }>>(
+    f => f.type === "socialUpdated" && f.post.id === post.post.id);
+  assert.ok(tombstone.post.deletedAt, "account removal pushes a live tombstone");
+  assert.equal(tombstone.post.text, "");
+  assert.equal(relay.store.socialPost(post.post.id)?.deletedAt !== undefined, true,
+    "post row remains as a chronological tombstone, not a hard delete");
 });

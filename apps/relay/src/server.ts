@@ -24,7 +24,7 @@ import {
   SearchHit, SavedMessageEntry, ServerFrame, Task, UnreadEntry, User, WorldState,
   NotificationInboxEntry, NotificationInboxKind, notificationEventId,
   Workflow, WorkflowRun, WorkflowRunStep, WorkflowStepStatus,
-  SocialLink, SocialPost, SOCIAL_LIMITS,
+  SocialLink, SocialPost, SOCIAL_LIMITS, validateSocialText,
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
   isReceiptStage, isReceiptVerdict,
   RUN_LIMITS, redactForSharing, validateLiveSteps,
@@ -862,11 +862,17 @@ export class Relay {
         checked.push({ ...link, projectId: project.id, available: true });
         continue;
       }
+      // Task/run/artifact links bind through the project's room. A project with
+      // no room has no hard project binding for those records — refusing here
+      // (instead of skipping the check) keeps private-room work out of a feed.
+      if (!project.channelId) {
+        throw new Error("this project has no room, so that kind of link cannot be attached");
+      }
       if (link.kind === "task") {
         const task = this.store.task(link.id);
         if (!task) throw new Error("that task is not available");
         this.channelFor(userId, task.channelId);
-        if (project.channelId && task.channelId !== project.channelId) {
+        if (task.channelId !== project.channelId) {
           throw new Error("that task is outside this project");
         }
         checked.push({ ...link, channelId: task.channelId, available: true });
@@ -874,16 +880,16 @@ export class Relay {
       } else if (link.kind === "run") {
         const run = this.store.run(link.id);
         if (!run) throw new Error("that run is not available");
-        if (run.channelId) this.channelFor(userId, run.channelId);
-        else if (run.ownerId !== userId) throw new Error("that run is not available");
-        if (project.channelId && run.channelId !== project.channelId) {
+        if (!run.channelId) throw new Error("that run is outside this project");
+        this.channelFor(userId, run.channelId);
+        if (run.channelId !== project.channelId) {
           throw new Error("that run is outside this project");
         }
-        checked.push({ ...link, ...(run.channelId ? { channelId: run.channelId } : {}), available: true });
+        checked.push({ ...link, channelId: run.channelId, available: true });
         continue;
       } else {
         const artifact = this.artifactFor(userId, link.id);
-        if (project.channelId && artifact.channelId !== project.channelId) {
+        if (artifact.channelId !== project.channelId) {
           throw new Error("that artifact is outside this project");
         }
         checked.push({ ...link, channelId: artifact.channelId, available: true });
@@ -972,11 +978,20 @@ export class Relay {
     this.store.saveSocialOperation(conn.userId, requestId, kind, frame, payloadHash, projectId);
   }
 
+  /**
+   * One refusal for a missing post and for a post the caller may not see.
+   * Same class as `artifactFor` / `myProject`: an id must not be probeable
+   * across a membership boundary ("no such project" would confirm the post).
+   */
   private socialPostFor(userId: ID, postId: ID): { project: Project; post: SocialPost } {
     const post = this.store.socialPost(postId);
     if (!post) throw new Error("no such post");
-    const project = this.socialProject(userId, post.projectId);
-    return { project, post };
+    try {
+      const project = this.socialProject(userId, post.projectId);
+      return { project, post };
+    } catch {
+      throw new Error("no such post");
+    }
   }
 
   /* ---------------- looking at GitHub, and knowing when we are ----------------
@@ -2715,6 +2730,11 @@ export class Relay {
             const ids = this.artifactIdsInChannel(ch.id);
             return { ids, before: this.snapshotArtifactProjections(ids) };
           });
+        // Tombstone their project posts BEFORE the account row goes, and push
+        // each tombstone to remaining members — same live-feed discipline as
+        // socialUnavailable on project leave. Hard-delete would leave open
+        // Team feed windows showing words by a person who is already gone.
+        const socialTombstones = this.store.tombstoneSocialForRemovedUser(target.id);
         this.store.removeUser(target.id);
         this.toEngines(target.id, { type: "hooksUpdated", hooks: [] });
         this.audit(conn, "agent_deleted", target.id, `removed ${target.name} from this Cloud9`);
@@ -2727,6 +2747,14 @@ export class Relay {
         }
         for (const c of this.store.channels()) this.broadcastChannel(c);
         this.broadcast({ type: "userRemoved", userId: target.id });
+        for (const post of socialTombstones) {
+          const project = this.store.project(post.projectId);
+          if (!project) continue;
+          this.broadcastSocialView(project.id, userId => ({
+            type: "socialUpdated", post: this.socialPostView(userId, project, post),
+          }));
+          this.broadcastSocialUnread(project.id);
+        }
         // and close whatever they still have open — their tokens are gone
         for (const c of [...this.conns]) {
           if (c.userId === target.id) { c.ws.close(); this.conns.delete(c); }
@@ -3450,7 +3478,7 @@ export class Relay {
           conn, "socialCreate", frame.requestId, this.socialPayloadHash(frame), project.id,
         );
         if (prior) { send(conn.ws, prior); break; }
-        const bad = validateMessageText(frame.text);
+        const bad = validateSocialText(frame.text);
         if (bad) throw new Error(bad);
         const links = this.socialLinks(conn.userId, project, frame.links);
         let parentId: ID | undefined;
@@ -3493,7 +3521,7 @@ export class Relay {
           conn, "socialAgentCreate", frame.requestId, this.socialPayloadHash(frame), project.id,
         );
         if (prior) { send(conn.ws, prior); break; }
-        const bad = validateMessageText(frame.text);
+        const bad = validateSocialText(frame.text);
         if (bad) throw new Error(bad);
         const links = this.socialLinks(conn.userId, project, frame.links);
         let parentId: ID | undefined;
@@ -3540,7 +3568,7 @@ export class Relay {
         );
         if (prior) { send(conn.ws, prior); break; }
         if (post.deletedAt) throw new Error("you can only edit your own live post");
-        const bad = validateMessageText(frame.text);
+        const bad = validateSocialText(frame.text);
         if (bad) throw new Error(bad);
         const updated: SocialPost = {
           ...post, text: frame.text, editedAt: Date.now(),

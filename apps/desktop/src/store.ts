@@ -18,7 +18,7 @@ import {
   UnreadEntry, User,
   effectiveArtifactAccess, latestVersion,
   validateAttachment, validateLocalFolder, validateMessageText, validateProjectText, validateRepo,
-  validateSocialLinks,
+  validateSocialLinks, validateSocialText,
   // Joining a friend's Cloud9 — the address, the address book, the connection
   // lifecycle. All three are the shared modules the handoff says to build ON,
   // never reimplement (docs/plans/join-hub-handoff.md).
@@ -2150,13 +2150,13 @@ export class RelayClient {
   }
 
   createSocialPost(projectId: ID, text: string, parentId?: ID, links?: SocialLink[]): ID | false {
-    const bad = validateMessageText(text) ?? validateSocialLinks(links);
+    const bad = validateSocialText(text) ?? validateSocialLinks(links);
     if (this.refused(bad)) return false;
     return this.socialMutation({ type: "socialCreate", projectId, text, ...(parentId ? { parentId } : {}), ...(links?.length ? { links } : {}) });
   }
 
   editSocialPost(postId: ID, text: string): boolean {
-    if (this.refused(validateMessageText(text))) return false;
+    if (this.refused(validateSocialText(text))) return false;
     return this.socialMutation({ type: "socialEdit", postId, text }) !== false;
   }
 

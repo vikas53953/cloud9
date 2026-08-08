@@ -13,7 +13,7 @@ import {
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectItemKind, ProjectItemState,
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
   EverywhereHit, SearchKind,
-  SearchHit, ServerFrame, SKILL_LIMITS, SocialLink, SocialPost, summarizeRun, Task, User, humanDuration, humanMoney,
+  SearchHit, ServerFrame, SKILL_LIMITS, SOCIAL_LIMITS, SocialLink, SocialPost, summarizeRun, Task, User, humanDuration, humanMoney,
   StoredHook, HOOK_EVENTS, HOOK_ACTIONS,
   NotificationInboxEntry,
   Workflow, WorkflowRun,
@@ -2078,12 +2078,24 @@ function Workspace(): React.JSX.Element {
   /** a file — and, for an old-version hit, the exact version — Files must open */
   const [fileOpenAt, setFileOpenAt] =
     useState<{ artifactId: ID; version?: number; at: number } | null>(null);
+  /** a task (and optional run) the Team feed asked Tasks to open */
+  const [taskOpenAt, setTaskOpenAt] =
+    useState<{ taskId: ID; runId?: ID; at: number } | null>(null);
+  /** a run record with no owning task row — Activity opens the concrete run */
+  const [runOpenAt, setRunOpenAt] =
+    useState<{ runId: ID; at: number } | null>(null);
+  /** a project (and optional PR/issue) the Team feed asked Projects to open */
+  const [projectOpenAt, setProjectOpenAt] =
+    useState<{ projectId: ID; itemKind?: ProjectItemKind; number?: number; at: number } | null>(null);
   /* ...and the one owner that puts it back down again. A request like this is
      an ERRAND, not a setting: `jumpTo` and `openThreadFor` are both handed back
      the moment the screen has done as it was asked, and this is the same. Left
      standing, it made every later visit to Files re-open the last search hit —
      the newest-first list the screen is for became unreachable. */
   const clearFileOpen = useCallback(() => setFileOpenAt(null), []);
+  const clearTaskOpen = useCallback(() => setTaskOpenAt(null), []);
+  const clearRunOpen = useCallback(() => setRunOpenAt(null), []);
+  const clearProjectOpen = useCallback(() => setProjectOpenAt(null), []);
 
   const active = world.channels.find(c => c.id === activeId) ?? world.channels[0];
   const owner = isOwner(world.me);
@@ -2261,18 +2273,43 @@ function Workspace(): React.JSX.Element {
     // The relay has already projected only links this viewer may access. The
     // destination still goes through the workspace leave guard, so a dirty
     // editor cannot be abandoned by an untrusted feed click.
+    //
+    // Navigation is PER KIND to the concrete record — never "has channelId →
+    // open chat". A task/run/artifact link that only switched screens without
+    // selecting the id was not a durable link.
     attemptLeave(() => {
       if (link.available === false) return;
-      if (link.channelId) {
-        setActiveId(link.channelId);
-        setScreen("chat");
-      } else if (link.kind === "task") setScreen("tasks");
-      else if (link.kind === "run") setScreen("activity");
-      else if (link.kind === "artifact") {
-        setFileOpenAt({ artifactId: link.id, at: Date.now() });
-        setScreen("files");
+      const now = Date.now();
+      if (link.kind === "task") {
+        setTaskOpenAt({ taskId: link.id, at: now });
+        setScreen("tasks");
+        return;
       }
-      else setScreen("projects");
+      if (link.kind === "run") {
+        const ownerTask = client.getSnapshot().tasks.find(t => t.runId === link.id);
+        if (ownerTask) {
+          setTaskOpenAt({ taskId: ownerTask.id, runId: link.id, at: now });
+          setScreen("tasks");
+        } else {
+          setRunOpenAt({ runId: link.id, at: now });
+          setScreen("activity");
+        }
+        return;
+      }
+      if (link.kind === "artifact") {
+        setFileOpenAt({ artifactId: link.id, at: now });
+        setScreen("files");
+        return;
+      }
+      if (link.kind === "projectItem") {
+        setProjectOpenAt({
+          projectId: link.projectId ?? link.id,
+          ...(link.itemKind ? { itemKind: link.itemKind } : {}),
+          ...(link.number !== undefined ? { number: link.number } : {}),
+          at: now,
+        });
+        setScreen("projects");
+      }
     });
   }, []);
 
@@ -2881,19 +2918,25 @@ function Workspace(): React.JSX.Element {
               onMarket={() => leaveThen(() => { setEditorFor(null); setScreen("market"); })}
             />
           )}
-          {screen === "tasks" && <TasksScreen onOpenChannel={id => goChannel(id)} />}
+          {screen === "tasks" && (
+            <TasksScreen onOpenChannel={id => goChannel(id)} openAt={taskOpenAt}
+              onOpened={clearTaskOpen} />
+          )}
           {screen === "workflows" && <WorkflowsScreen />}
           {screen === "files" && (
             <FilesScreen onOpenChannel={id => goChannel(id)} openAt={fileOpenAt}
               onOpened={clearFileOpen} />
           )}
           {screen === "projects" && (
-            <ProjectsScreen onOpenChannel={id => goChannel(id)} />
+            <ProjectsScreen onOpenChannel={id => goChannel(id)} openAt={projectOpenAt}
+              onOpened={clearProjectOpen} />
           )}
           {screen === "hooks" && <HooksScreen />}
           {screen === "social" && <SocialFeedScreen onOpenLink={openSocialLink} />}
           {screen === "spending" && <SpendingScreen />}
-          {screen === "activity" && <ActivityScreen />}
+          {screen === "activity" && (
+            <ActivityScreen openAt={runOpenAt} onOpened={clearRunOpen} />
+          )}
           {screen === "notifications" && <NotificationsScreen onOpen={openInboxEntry} />}
           {screen === "saved" && <SavedScreen onOpen={entry => attemptLeave(() => {
             if (entry.state !== "active" || !entry.message) return;
@@ -13255,9 +13298,31 @@ function WorkflowDetail({ workflow, runs, onEdit, onRun, onArchive, onStop, onRe
   </div>;
 }
 
-function TasksScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): React.JSX.Element {
+function TasksScreen({ onOpenChannel, openAt, onOpened }: {
+  onOpenChannel: (id: ID) => void;
+  /**
+   * A task (and optional run) another screen has sent here. `at` makes a second
+   * click for the same id still scroll — a bare id would compare equal and sit.
+   */
+  openAt?: { taskId: ID; runId?: ID; at: number } | null;
+  onOpened?: () => void;
+}): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [filter, setFilter] = useState<"all" | "running" | "done" | "failed">("all");
+  const [focusTaskId, setFocusTaskId] = useState<ID | null>(null);
+
+  useEffect(() => {
+    if (!openAt) return;
+    setFilter("all");
+    setFocusTaskId(openAt.taskId);
+    if (openAt.runId) client.askRun(openAt.runId);
+    // Wait a frame so the "all" filter has drawn the row before we scroll.
+    requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLElement>(`[data-task="${CSS.escape(openAt.taskId)}"]`);
+      el?.scrollIntoView({ block: "center" });
+      onOpened?.();
+    });
+  }, [openAt?.at, openAt?.taskId, openAt?.runId, onOpened]);
 
   /* Waiting, and — separately — the ones that ran out under the old ten-minute
      sweep, before it was removed on 2026-08-07. Nothing new can land in the
@@ -13290,7 +13355,10 @@ function TasksScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): Re
     const cancellable = RUNNING_STATES.includes(t.status);
     const provider = agent ? PROVIDER_LABEL[(agent.provider ?? "claude") as Provider] : null;
     return (
-      <div key={t.id} className="taskrow" data-task={t.id} data-status={t.status}>
+      <div key={t.id}
+        className={"taskrow" + (focusTaskId === t.id ? " is-focused" : "")}
+        data-task={t.id} data-status={t.status}
+        aria-current={focusTaskId === t.id ? "true" : undefined}>
         <span className="taskportrait">
           {agent
             ? <AgentFace name={agent.name} size={40} lamp={t.status === "working" ? "run" : "live"} />
@@ -13806,8 +13874,10 @@ function ProjectFolder({ project }: { project: Project }): React.JSX.Element {
 }
 
 /** One project's pull requests and issues, and the crew standing on its branches. */
-function ProjectDetail({ project, onOpenChannel }: {
+function ProjectDetail({ project, onOpenChannel, openItem }: {
   project: Project; onOpenChannel: (id: ID) => void;
+  /** concrete PR/issue a durable social link asked to open */
+  openItem?: { kind: ProjectItemKind; number: number; at: number } | null;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [tab, setTab] = useState<ProjectItemKind>("pull");
@@ -13832,6 +13902,16 @@ function ProjectDetail({ project, onOpenChannel }: {
     setJustAsked(false);
     setLookRefusal(null);
   }, [project.id]);
+  useEffect(() => {
+    if (!openItem) return;
+    setTab(openItem.kind);
+    const key = `${openItem.kind}-${openItem.number}`;
+    setOpen(key);
+    requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLElement>(`[data-item="${CSS.escape(key)}"]`);
+      el?.scrollIntoView({ block: "center" });
+    });
+  }, [openItem?.at, openItem?.kind, openItem?.number, project.id]);
   /* The hub has spoken about this project — it is either looking, or it has
      finished. Either way this app is no longer the one holding the spinner. */
   useEffect(() => {
@@ -14109,10 +14189,15 @@ function ProjectDetail({ project, onOpenChannel }: {
   );
 }
 
-function ProjectsScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }): React.JSX.Element {
+function ProjectsScreen({ onOpenChannel, openAt, onOpened }: {
+  onOpenChannel: (id: ID) => void;
+  openAt?: { projectId: ID; itemKind?: ProjectItemKind; number?: number; at: number } | null;
+  onOpened?: () => void;
+}): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [pickedId, setPickedId] = useState<ID | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [focusItem, setFocusItem] = useState<{ kind: ProjectItemKind; number: number; at: number } | null>(null);
 
   useEffect(() => { client.askProjects(); }, []);
 
@@ -14130,6 +14215,18 @@ function ProjectsScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }):
     setPickedId(made.id);
     setConnecting(false);
   }, [projects]);
+
+  useEffect(() => {
+    if (!openAt) return;
+    setPickedId(openAt.projectId);
+    setConnecting(false);
+    if (openAt.itemKind && openAt.number !== undefined) {
+      setFocusItem({ kind: openAt.itemKind, number: openAt.number, at: openAt.at });
+    } else {
+      setFocusItem(null);
+    }
+    onOpened?.();
+  }, [openAt?.at, openAt?.projectId, openAt?.itemKind, openAt?.number, onOpened]);
 
   return (
     <div className="projects">
@@ -14176,7 +14273,10 @@ function ProjectsScreen({ onOpenChannel }: { onOpenChannel: (id: ID) => void }):
               </>} />
           )}
 
-          {picked && <ProjectDetail project={picked} onOpenChannel={onOpenChannel} />}
+          {picked && (
+            <ProjectDetail project={picked} onOpenChannel={onOpenChannel}
+              openItem={focusItem} />
+          )}
         </div>
       </div>
     </div>
@@ -14834,7 +14934,7 @@ function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => vo
                 <div className="social-avatar" aria-hidden="true">{post.authorName.slice(0, 1).toUpperCase()}</div>
                 <div className="social-post-body">
                   <div className="social-post-meta"><strong>{post.authorName}</strong><span>{post.authorKind === "agent" ? "agent" : "human"}</span><time dateTime={new Date(post.createdAt).toISOString()}>{new Date(post.createdAt).toLocaleString()}</time>{post.editedAt ? <em>edited</em> : null}</div>
-                  {post.deletedAt ? <p className="social-tombstone">This post was deleted.</p> : editing === post.id ? <div className="social-edit"><label htmlFor={`social-edit-${post.id}`}>Edit post</label><textarea id={`social-edit-${post.id}`} value={editText} onChange={e => setEditText(e.target.value)} /><button className="primary" onClick={() => submitEdit(post.id)}>Save</button><button onClick={() => setEditing(undefined)}>Cancel</button></div> : <p className="social-post-text">{post.text}</p>}
+                  {post.deletedAt ? <p className="social-tombstone">This post was deleted.</p> : editing === post.id ? <div className="social-edit"><label htmlFor={`social-edit-${post.id}`}>Edit post</label><textarea id={`social-edit-${post.id}`} value={editText} onChange={e => setEditText(e.target.value)} maxLength={SOCIAL_LIMITS.text} /><button className="primary" onClick={() => submitEdit(post.id)}>Save</button><button onClick={() => setEditing(undefined)}>Cancel</button></div> : <p className="social-post-text">{post.text}</p>}
                    {post.links?.length ? <div className="social-links" aria-label="Linked Cloud9 records">{post.links.map((link, i) => <button type="button" className="social-link" key={`${link.kind}-${link.id}-${i}`} disabled={link.available === false} onClick={() => onOpenLink(link)} aria-label={link.available === false ? "Unavailable linked record" : `Open ${socialLinkLabel(link)}`}>{socialLinkLabel(link)}</button>)}</div> : null}
                   {post.reactions?.length ? <div className="social-reactions" aria-label="Reactions">{post.reactions.map(reaction => <button key={reaction.emoji} aria-label={`Reacted ${reaction.emoji} by ${reaction.actorIds.length} people`} onClick={() => client.reactSocialPost(post.id, reaction.emoji, !reaction.actorIds.includes(world.me?.id ?? ""))}>{reaction.emoji} {reaction.actorIds.length}</button>)}</div> : null}
                   <div className="social-actions">{!post.deletedAt ? <><button onClick={() => { setReplyTo(post.id); setText(""); }}>Comment</button><button onClick={() => client.reactSocialPost(post.id, "👍", !(post.reactions ?? []).find(r => r.emoji === "👍")?.actorIds.includes(world.me?.id ?? ""))}>React</button></> : null}{own(post) && !post.deletedAt ? <><button onClick={() => { setEditing(post.id); setEditText(post.text); }}>Edit</button><button onClick={() => client.deleteSocialPost(post.id)}>Delete</button></> : null}</div>
@@ -14845,7 +14945,7 @@ function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => vo
           {feed.hasMore ? <button className="social-more" onClick={() => client.askSocialFeed(selectedId, true)} disabled={feed.loading}>Load older posts</button> : null}
           <form className="social-composer" onSubmit={e => { e.preventDefault(); submit(); }} aria-label={replyTo ? "Write a comment" : "Write a project post"}>
             <div className="social-composer-heading">{replyTo ? <><span>Commenting on a post</span><button type="button" onClick={() => setReplyTo(undefined)}>Cancel comment</button></> : <span>Share with this project</span>}</div>
-            <label htmlFor="social-composer-text">{replyTo ? "Comment" : "Post"}</label><textarea id="social-composer-text" value={text} onChange={e => setText(e.target.value)} placeholder={replyTo ? "Add a useful follow-up…" : "What should the team know?"} rows={4} />
+            <label htmlFor="social-composer-text">{replyTo ? "Comment" : "Post"}</label><textarea id="social-composer-text" value={text} onChange={e => setText(e.target.value)} placeholder={replyTo ? "Add a useful follow-up…" : "What should the team know?"} rows={4} maxLength={SOCIAL_LIMITS.text} />
             <div className="social-link-fields"><label>Link<select aria-label="Linked record type" value={linkKind} onChange={e => setLinkKind(e.target.value as SocialLink["kind"])}><option value="task">Task</option><option value="run">Run</option><option value="artifact">Artifact</option><option value="projectItem">PR or issue</option></select></label>{linkKind === "projectItem" ? <><label>Kind<select aria-label="Work item kind" value={itemKind} onChange={e => setItemKind(e.target.value as "pull" | "issue")}><option value="pull">PR</option><option value="issue">Issue</option></select></label><label>Number<input aria-label="Work item number" inputMode="numeric" value={itemNumber} onChange={e => setItemNumber(e.target.value)} /></label></> : <label>ID<input aria-label={`Linked ${linkKind} ID`} value={linkId} onChange={e => setLinkId(e.target.value)} /></label>}</div>
             <button className="primary" type="submit" disabled={!text.trim() || !selectedId || !!pendingPostId} aria-busy={!!pendingPostId}>{pendingPostId ? "Publishing…" : "Publish to project"}</button>
           </form>
@@ -14992,10 +15092,14 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
   );
 }
 
-function ActivityScreen(): React.JSX.Element {
+function ActivityScreen({ openAt, onOpened }: {
+  openAt?: { runId: ID; at: number } | null;
+  onOpened?: () => void;
+} = {}): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [showAgents, setShowAgents] = useState(true);
   const [showPeople, setShowPeople] = useState(true);
+  const [focusRunId, setFocusRunId] = useState<ID | null>(null);
 
   /* THE TRAIL USED TO FREEZE THE MOMENT IT WAS OPENED.
      The hub only ever sends the trail when it is ASKED for it — there is one
@@ -15009,6 +15113,16 @@ function ActivityScreen(): React.JSX.Element {
     const timer = setInterval(again, ACTIVITY_REFRESH_MS);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!openAt) return;
+    setFocusRunId(openAt.runId);
+    client.askRun(openAt.runId);
+    onOpened?.();
+  }, [openAt?.at, openAt?.runId, onOpened]);
+
+  const focusRun = focusRunId ? world.runs[focusRunId] : undefined;
+  const focusGone = focusRunId ? !!world.runsGone[focusRunId] : false;
 
   const rows = [...world.activity].reverse().filter(r =>
     r.actorKind === "agent" ? showAgents : showPeople);
@@ -15036,6 +15150,18 @@ function ActivityScreen(): React.JSX.Element {
       </header>
 
       <div className="act-body">
+        {focusRunId && (
+          <div className="act-focused-run" data-run={focusRunId} aria-label="Opened run">
+            <span className="eyebrow">Opened from Team feed</span>
+            {focusGone ? (
+              <div className="runmissing" data-run={focusRunId}>That record isn't there any more.</div>
+            ) : focusRun ? (
+              <RunCard record={focusRun} />
+            ) : (
+              <div className="runwait" data-run={focusRunId}>Fetching what it did…</div>
+            )}
+          </div>
+        )}
         <RightNowBoard />
 
         <div className="act-day"><span className="eyebrow">Before now</span></div>

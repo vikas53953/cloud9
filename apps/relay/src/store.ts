@@ -1366,6 +1366,10 @@ export class Store implements JoinHubStore {
     // Saved notes/reminder dates are private account data. Account removal
     // purges them and their retry receipts together; no tombstone survives a
     // deliberate account deletion.
+    // Social posts are NOT hard-deleted here — `tombstoneSocialForRemovedUser`
+    // leaves moderation-safe placeholders so remaining members' open feeds stay
+    // honest. Membership, reactions-by-actor, reads, and ops still leave with
+    // the account.
     this.tx(() => {
       this.db.prepare("DELETE FROM saved_mutation_receipts WHERE userId=?").run(id);
       this.db.prepare("DELETE FROM saved_messages WHERE userId=?").run(id);
@@ -1376,11 +1380,39 @@ export class Store implements JoinHubStore {
       this.db.prepare("DELETE FROM social_reads WHERE userId=?").run(id);
       this.db.prepare("DELETE FROM social_members WHERE userId=?").run(id);
       this.db.prepare("DELETE FROM social_reactions WHERE actorId=?").run(id);
-      this.db.prepare("DELETE FROM social_posts WHERE ownerId=? OR authorId=?").run(id, id);
     });
     this.db.prepare("DELETE FROM tokens WHERE userId=?").run(id);
     this.db.prepare("UPDATE invites SET revoked=1 WHERE usedBy=? OR createdBy=?").run(id, id);
     this.db.prepare("DELETE FROM users WHERE id=?").run(id);
+  }
+
+  /**
+   * Account removal is a moderation event for every project feed that person
+   * (or their agents) wrote in. Live posts become chronological tombstones —
+   * words cleared, links and reactions gone — so open Team feed windows can
+   * receive a real `socialUpdated` instead of silently showing gone authors.
+   *
+   * Call this BEFORE `removeUser` so the posts still resolve while we write.
+   */
+  tombstoneSocialForRemovedUser(userId: ID, at = Date.now()): SocialPost[] {
+    const rows = this.db.prepare(
+      "SELECT json FROM social_posts WHERE (ownerId=? OR authorId=?) AND deletedAt IS NULL",
+    ).all(userId, userId) as { json: string }[];
+    if (rows.length === 0) return [];
+    const tombstones: SocialPost[] = [];
+    this.tx(() => {
+      for (const row of rows) {
+        const post = JSON.parse(row.json) as SocialPost;
+        const tombstone: SocialPost = {
+          ...post, text: "", deletedAt: at, links: undefined, reactions: undefined,
+        };
+        this.saveSocialPost(tombstone);
+        this.db.prepare("DELETE FROM social_reactions WHERE postId=?").run(post.id);
+        const saved = this.socialPost(post.id);
+        if (saved) tombstones.push(saved);
+      }
+    });
+    return tombstones;
   }
 
   users(): User[] {
