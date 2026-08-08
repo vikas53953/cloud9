@@ -1728,6 +1728,10 @@ export type SocialLinkKind = "task" | "run" | "artifact" | "projectItem";
 export interface SocialLink {
   kind: SocialLinkKind;
   id: ID;
+  /** Set only on a reader projection; false is an honest inaccessible tombstone. */
+  available?: boolean;
+  /** Authorized Cloud9 room target used for guarded navigation. */
+  channelId?: ID;
   /** project-item links identify the cached GitHub row without trusting a URL */
   projectId?: ID;
   itemKind?: ProjectItemKind;
@@ -3990,11 +3994,12 @@ export type ServerFrame =
       type: "socialFeed"; projectId: ID; posts: SocialPost[]; hasMore: boolean;
       nextBefore?: number; nextBeforeId?: ID; unread: number; requestId?: ID;
     }
-  | { type: "socialProjects"; projects: Project[]; requestId?: ID }
+  | { type: "socialProjects"; projects: Project[]; unread?: SocialReadEntry[]; requestId?: ID }
   | { type: "socialPost"; post: SocialPost; requestId?: ID }
   | { type: "socialUpdated"; post: SocialPost; requestId?: ID }
   | { type: "socialReaction"; projectId: ID; postId: ID; emoji: string; actorIds: ID[]; requestId?: ID }
   | { type: "socialRead"; entry: SocialReadEntry; requestId?: ID }
+  | { type: "socialUnread"; projectId: ID; unread: number }
   | { type: "socialMembers"; projectId: ID; userIds: ID[]; requestId?: ID }
   | { type: "socialUnavailable"; projectId: ID; requestId?: ID }
   /**

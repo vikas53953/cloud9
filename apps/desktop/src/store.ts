@@ -374,6 +374,10 @@ export interface World {
   projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
   hooks: { asked: boolean; requestId?: ID; mutationRequestId?: ID; pending?: Record<ID, true>; auditRequestId?: ID; auditAsked?: boolean; auditLoading?: boolean; audit?: HookAuditEntry[]; auditProblem?: string; list: StoredHook[]; problem?: string; test?: { hookId: ID; ok: boolean; said: string } };
   socialProjects: { asked: boolean; list: Project[]; requestId?: ID };
+  /** Unread counts for every member project, not just the currently open feed. */
+  socialUnread: Record<ID, number>;
+  socialPending: Record<ID, true>;
+  socialProblem?: string;
   /** Project-scoped social feeds, loaded only when the Social screen asks. */
   socialFeeds: Record<ID, {
     asked: boolean; loading: boolean; posts: SocialPost[]; hasMore: boolean;
@@ -665,7 +669,7 @@ export class RelayClient {
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
     projects: { asked: false, list: [] }, projectItems: {}, hooks: { asked: false, list: [] },
-    socialProjects: { asked: false, list: [] }, socialFeeds: {},
+    socialProjects: { asked: false, list: [] }, socialUnread: {}, socialPending: {}, socialFeeds: {},
     repoChoices: { asked: false, asking: false },
     artifacts: {}, artifactsGone: {}, channelArtifacts: {},
     artifactWorkspace: emptyArtifactWorkspace(),
@@ -1132,6 +1136,40 @@ export class RelayClient {
   private rememberSocialRequest(requestId: ID): void {
     this.socialRequests.add(requestId);
     setTimeout(() => this.socialRequests.delete(requestId), ANSWER_WINDOW_MS);
+  }
+
+  private socialMutation(frame: ClientFrame): boolean {
+    const requestId = this.nextRequestId(frame.type);
+    const outgoing = { ...frame, requestId } as ClientFrame;
+    const settle = (problem?: string): void => {
+      const { [requestId]: pending, ...rest } = this.world.socialPending;
+      void pending;
+      this.world.socialPending = rest;
+      this.world.socialProblem = problem;
+      this.emit();
+    };
+    const sent = this.transmit(outgoing, {
+      refused: why => settle(why),
+      lost: () => settle("the hub did not answer — your draft is still here"),
+    });
+    if (!sent) {
+      settle("not connected to the hub yet");
+      return false;
+    }
+    this.rememberSocialRequest(requestId);
+    this.world.socialPending = { ...this.world.socialPending, [requestId]: true };
+    this.world.socialProblem = undefined;
+    this.emit();
+    return true;
+  }
+
+  private settleSocialSuccess(requestId?: ID): void {
+    if (!requestId) return;
+    this.socialRequests.delete(requestId);
+    const { [requestId]: pending, ...rest } = this.world.socialPending;
+    void pending;
+    this.world.socialPending = rest;
+    this.world.socialProblem = undefined;
   }
 
   /** Give every outgoing frame one identity without changing its caller's object. */
@@ -2110,36 +2148,24 @@ export class RelayClient {
   createSocialPost(projectId: ID, text: string, parentId?: ID, links?: SocialLink[]): boolean {
     const bad = validateMessageText(text) ?? validateSocialLinks(links);
     if (this.refused(bad)) return false;
-    const requestId = this.nextRequestId("socialCreate");
-    this.rememberSocialRequest(requestId);
-    this.send({ type: "socialCreate", projectId, text, requestId, ...(parentId ? { parentId } : {}), ...(links?.length ? { links } : {}) });
-    return true;
+    return this.socialMutation({ type: "socialCreate", projectId, text, ...(parentId ? { parentId } : {}), ...(links?.length ? { links } : {}) });
   }
 
   editSocialPost(postId: ID, text: string): boolean {
     if (this.refused(validateMessageText(text))) return false;
-    const requestId = this.nextRequestId("socialEdit");
-    this.rememberSocialRequest(requestId);
-    this.send({ type: "socialEdit", postId, text, requestId });
-    return true;
+    return this.socialMutation({ type: "socialEdit", postId, text });
   }
 
   deleteSocialPost(postId: ID): void {
-    const requestId = this.nextRequestId("socialDelete");
-    this.rememberSocialRequest(requestId);
-    this.send({ type: "socialDelete", postId, requestId });
+    this.socialMutation({ type: "socialDelete", postId });
   }
 
   reactSocialPost(postId: ID, emoji: string, on = true): void {
-    const requestId = this.nextRequestId("socialReact");
-    this.rememberSocialRequest(requestId);
-    this.send({ type: "socialReact", postId, emoji, on, requestId });
+    this.socialMutation({ type: "socialReact", postId, emoji, on });
   }
 
   markSocialRead(projectId: ID, at?: number): void {
-    const requestId = this.nextRequestId("socialMarkRead");
-    this.rememberSocialRequest(requestId);
-    this.send({ type: "socialMarkRead", projectId, requestId, ...(at !== undefined ? { at } : {}) });
+    this.socialMutation({ type: "socialMarkRead", projectId, ...(at !== undefined ? { at } : {}) });
   }
 
   /**
@@ -3258,6 +3284,9 @@ export class RelayClient {
         w.projectItems = {};
         w.hooks = { asked: false, list: [] };
         w.socialProjects = { asked: false, list: [] };
+        w.socialUnread = {};
+        w.socialPending = {};
+        w.socialProblem = undefined;
         w.socialFeeds = {};
         // Files agents made belonged to the last connection too, and `asked`
         // goes back to false with them: this world has not asked anything yet,
@@ -3810,6 +3839,7 @@ export class RelayClient {
       case "socialProjects":
         if (frame.requestId && w.socialProjects.requestId && frame.requestId !== w.socialProjects.requestId) break;
         w.socialProjects = { asked: true, list: frame.projects, requestId: undefined };
+        w.socialUnread = Object.fromEntries((frame.unread ?? []).map(entry => [entry.projectId, entry.unread]));
         break;
       case "socialFeed": {
         const current = w.socialFeeds[frame.projectId] ?? {
@@ -3818,9 +3848,9 @@ export class RelayClient {
         if (frame.requestId && current.requestId && frame.requestId !== current.requestId) break;
         const known = new Set(current.posts.map(post => post.id));
         const incoming = frame.posts.filter(post => !known.has(post.id));
-        const posts = current.posts.length > 0 && current.nextBeforeId
+        const posts = (current.posts.length > 0 && current.nextBeforeId
           ? [...incoming, ...current.posts]
-          : frame.posts;
+          : frame.posts).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
         w.socialFeeds = {
           ...w.socialFeeds,
           [frame.projectId]: {
@@ -3835,30 +3865,37 @@ export class RelayClient {
       }
       case "socialPost": {
         if (frame.requestId && !this.socialRequests.delete(frame.requestId)) break;
+        this.settleSocialSuccess(frame.requestId);
         const current = w.socialFeeds[frame.post.projectId];
         if (!current) break;
         if (current.posts.some(post => post.id === frame.post.id)) break;
         w.socialFeeds = {
           ...w.socialFeeds,
-          [frame.post.projectId]: { ...current, posts: [...current.posts, frame.post] },
+          [frame.post.projectId]: {
+            ...current,
+            posts: [...current.posts, frame.post].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
+          },
         };
         break;
       }
       case "socialUpdated": {
         if (frame.requestId && !this.socialRequests.delete(frame.requestId)) break;
+        this.settleSocialSuccess(frame.requestId);
         const current = w.socialFeeds[frame.post.projectId];
         if (!current) break;
         w.socialFeeds = {
           ...w.socialFeeds,
           [frame.post.projectId]: {
             ...current,
-            posts: current.posts.map(post => post.id === frame.post.id ? frame.post : post),
+            posts: current.posts.map(post => post.id === frame.post.id ? frame.post : post)
+              .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
           },
         };
         break;
       }
       case "socialReaction": {
         if (frame.requestId && !this.socialRequests.delete(frame.requestId)) break;
+        this.settleSocialSuccess(frame.requestId);
         const current = w.socialFeeds[frame.projectId];
         if (!current) break;
         const posts = current.posts.map(post => {
@@ -3872,6 +3909,7 @@ export class RelayClient {
       }
       case "socialRead": {
         if (frame.requestId && !this.socialRequests.delete(frame.requestId)) break;
+        this.settleSocialSuccess(frame.requestId);
         const current = w.socialFeeds[frame.entry.projectId];
         if (current) {
           w.socialFeeds = {
@@ -3879,6 +3917,13 @@ export class RelayClient {
             [frame.entry.projectId]: { ...current, unread: frame.entry.unread },
           };
         }
+        w.socialUnread = { ...w.socialUnread, [frame.entry.projectId]: frame.entry.unread };
+        break;
+      }
+      case "socialUnread": {
+        w.socialUnread = { ...w.socialUnread, [frame.projectId]: frame.unread };
+        const current = w.socialFeeds[frame.projectId];
+        if (current) w.socialFeeds = { ...w.socialFeeds, [frame.projectId]: { ...current, unread: frame.unread } };
         break;
       }
       case "socialUnavailable": {
@@ -3889,6 +3934,9 @@ export class RelayClient {
           ...w.socialProjects,
           list: w.socialProjects.list.filter(project => project.id !== frame.projectId),
         };
+        const { [frame.projectId]: unreadGone, ...unreadRest } = w.socialUnread;
+        void unreadGone;
+        w.socialUnread = unreadRest;
         break;
       }
       case "socialMembers":

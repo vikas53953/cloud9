@@ -859,7 +859,7 @@ export class Relay {
         const item = this.store.projectItems(project.id).find(i =>
           i.kind === link.itemKind && i.number === link.number);
         if (!item) throw new Error("that work item is not available in this project");
-        checked.push({ ...link, projectId: project.id });
+        checked.push({ ...link, projectId: project.id, available: true });
         continue;
       }
       if (link.kind === "task") {
@@ -869,6 +869,8 @@ export class Relay {
         if (project.channelId && task.channelId !== project.channelId) {
           throw new Error("that task is outside this project");
         }
+        checked.push({ ...link, channelId: task.channelId, available: true });
+        continue;
       } else if (link.kind === "run") {
         const run = this.store.run(link.id);
         if (!run) throw new Error("that run is not available");
@@ -877,13 +879,16 @@ export class Relay {
         if (project.channelId && run.channelId !== project.channelId) {
           throw new Error("that run is outside this project");
         }
+        checked.push({ ...link, ...(run.channelId ? { channelId: run.channelId } : {}), available: true });
+        continue;
       } else {
         const artifact = this.artifactFor(userId, link.id);
         if (project.channelId && artifact.channelId !== project.channelId) {
           throw new Error("that artifact is outside this project");
         }
+        checked.push({ ...link, channelId: artifact.channelId, available: true });
+        continue;
       }
-      checked.push({ ...link });
     }
     return checked;
   }
@@ -891,7 +896,11 @@ export class Relay {
   /** Project posts are durable, but each reader gets only links they may open. */
   private socialPostView(userId: ID, project: Project, post: SocialPost): SocialPost {
     const links = post.links?.flatMap(link => {
-      try { return this.socialLinks(userId, project, [link]) ?? []; } catch { return []; }
+      try { return this.socialLinks(userId, project, [link]) ?? []; } catch {
+        // Keep a non-clickable placeholder so a reader can tell a link was
+        // deliberately redacted without learning its identifier.
+        return [{ kind: link.kind, id: "unavailable", available: false } as SocialLink];
+      }
     });
     return {
       ...post,
@@ -917,13 +926,50 @@ export class Relay {
     }
   }
 
-  private priorSocialOperation<T extends ServerFrame>(conn: Conn, kind: string, requestId?: ID): T | undefined {
-    if (!requestId) return undefined;
-    return this.store.socialOperation(conn.userId, requestId, kind) as T | undefined;
+  private broadcastSocialUnread(projectId: ID): void {
+    const project = this.store.project(projectId);
+    if (!project) return;
+    for (const conn of this.conns) {
+      if (this.store.socialIsMember(projectId, conn.userId, project.ownerId)) {
+        send(conn.ws, { type: "socialUnread", projectId, unread: this.store.socialUnread(conn.userId, projectId).unread });
+      }
+    }
   }
 
-  private rememberSocialOperation(conn: Conn, kind: string, requestId: ID | undefined, frame: ServerFrame): void {
-    if (requestId) this.store.saveSocialOperation(conn.userId, requestId, kind, frame);
+  private socialPayloadHash(frame: ClientFrame): string {
+    const stable = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(stable);
+      if (!value || typeof value !== "object") return value;
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => key !== "requestId")
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, item]) => [key, stable(item)]));
+    };
+    return createHash("sha256").update(JSON.stringify(stable(frame))).digest("hex");
+  }
+
+  private priorSocialOperation<T extends ServerFrame>(conn: Conn, kind: string, requestId?: ID, payloadHash?: string, projectId?: ID): T | undefined {
+    if (!requestId) return undefined;
+    const prior = this.store.socialOperation(conn.userId, requestId, kind);
+    if (!prior) return undefined;
+    if (projectId && prior.projectId && prior.projectId !== projectId) {
+      throw new Error("that request id belongs to another project");
+    }
+    if (payloadHash && prior.payloadHash !== payloadHash) {
+      throw new Error("that request id was already used for different work");
+    }
+    return prior.result as T;
+  }
+
+  private rememberSocialOperation(conn: Conn, kind: string, requestId: ID | undefined, frame: ServerFrame, payloadHash = ""): void {
+    if (!requestId) return;
+    const projectId = frame.type === "socialPost" || frame.type === "socialUpdated"
+      ? frame.post.projectId
+      : frame.type === "socialReaction" || frame.type === "socialUnread"
+        ? frame.projectId
+        : frame.type === "socialRead" ? frame.entry.projectId
+          : frame.type === "socialMembers" ? frame.projectId : undefined;
+    this.store.saveSocialOperation(conn.userId, requestId, kind, frame, payloadHash, projectId);
   }
 
   private socialPostFor(userId: ID, postId: ID): { project: Project; post: SocialPost } {
@@ -3374,9 +3420,10 @@ export class Relay {
       // project owner may add invited users, and every read/write below asks
       // the stored membership table again so a stale client cannot widen scope.
       case "socialProjects": {
+        const projects = this.store.socialProjectsOf(conn.userId);
         send(conn.ws, {
-          type: "socialProjects", projects: this.store.socialProjectsOf(conn.userId)
-            .map(project => this.socialProjectView(project)),
+          type: "socialProjects", projects: projects.map(project => this.socialProjectView(project)),
+          unread: projects.map(project => this.store.socialUnread(conn.userId, project.id)),
           ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
         });
         break;
@@ -3398,11 +3445,11 @@ export class Relay {
         break;
       }
       case "socialCreate": {
+        const project = this.socialProject(conn.userId, frame.projectId);
         const prior = this.priorSocialOperation<Extract<ServerFrame, { type: "socialPost" }>>(
-          conn, "socialCreate", frame.requestId,
+          conn, "socialCreate", frame.requestId, this.socialPayloadHash(frame), project.id,
         );
         if (prior) { send(conn.ws, prior); break; }
-        const project = this.socialProject(conn.userId, frame.projectId);
         const bad = validateMessageText(frame.text);
         if (bad) throw new Error(bad);
         const links = this.socialLinks(conn.userId, project, frame.links);
@@ -3421,27 +3468,31 @@ export class Relay {
           text: frame.text, createdAt: Date.now(),
           ...(links ? { links } : {}),
         };
-        this.store.saveSocialPost(post);
-        const stored = this.store.socialPost(post.id)!;
-        const result: Extract<ServerFrame, { type: "socialPost" }> = {
-          type: "socialPost", post: this.socialPostView(conn.userId, project, stored),
-          ...(frame.requestId ? { requestId: frame.requestId } : {}),
-        };
-        this.rememberSocialOperation(conn, "socialCreate", frame.requestId, result);
+        const { stored, result } = this.store.socialMutation(() => {
+          this.store.saveSocialPost(post);
+          const saved = this.store.socialPost(post.id)!;
+          const response: Extract<ServerFrame, { type: "socialPost" }> = {
+            type: "socialPost", post: this.socialPostView(conn.userId, project, saved),
+            ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          };
+          this.rememberSocialOperation(conn, "socialCreate", frame.requestId, response, this.socialPayloadHash(frame));
+          return { stored: saved, result: response };
+        });
         this.broadcastSocialView(project.id, userId => ({
           type: "socialPost", post: this.socialPostView(userId, project, stored),
         }));
+        this.broadcastSocialUnread(project.id);
         send(conn.ws, result);
         break;
       }
       case "socialAgentCreate": {
-        const prior = this.priorSocialOperation<Extract<ServerFrame, { type: "socialPost" }>>(
-          conn, "socialAgentCreate", frame.requestId,
-        );
-        if (prior) { send(conn.ws, prior); break; }
         if (conn.client !== "engine") throw new Error("only an agent engine can post as an agent");
         const agent = this.myAgent(conn.userId, frame.agentId);
         const project = this.socialProject(conn.userId, frame.projectId);
+        const prior = this.priorSocialOperation<Extract<ServerFrame, { type: "socialPost" }>>(
+          conn, "socialAgentCreate", frame.requestId, this.socialPayloadHash(frame), project.id,
+        );
+        if (prior) { send(conn.ws, prior); break; }
         const bad = validateMessageText(frame.text);
         if (bad) throw new Error(bad);
         const links = this.socialLinks(conn.userId, project, frame.links);
@@ -3459,114 +3510,138 @@ export class Relay {
           text: frame.text, createdAt: Date.now(),
           ...(links ? { links } : {}),
         };
-        this.store.saveSocialPost(post);
-        const stored = this.store.socialPost(post.id)!;
-        const result: Extract<ServerFrame, { type: "socialPost" }> = {
-          type: "socialPost", post: this.socialPostView(conn.userId, project, stored),
-          ...(frame.requestId ? { requestId: frame.requestId } : {}),
-        };
-        this.rememberSocialOperation(conn, "socialAgentCreate", frame.requestId, result);
+        const { stored, result } = this.store.socialMutation(() => {
+          this.store.saveSocialPost(post);
+          const saved = this.store.socialPost(post.id)!;
+          const response: Extract<ServerFrame, { type: "socialPost" }> = {
+            type: "socialPost", post: this.socialPostView(conn.userId, project, saved),
+            ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          };
+          this.rememberSocialOperation(conn, "socialAgentCreate", frame.requestId, response, this.socialPayloadHash(frame));
+          return { stored: saved, result: response };
+        });
         this.broadcastSocialView(project.id, userId => ({
           type: "socialPost", post: this.socialPostView(userId, project, stored),
         }));
+        this.broadcastSocialUnread(project.id);
         send(conn.ws, result);
         break;
       }
       case "socialEdit": {
-        const prior = this.priorSocialOperation<Extract<ServerFrame, { type: "socialUpdated" }>>(
-          conn, "socialEdit", frame.requestId,
-        );
-        if (prior) { send(conn.ws, prior); break; }
         const { project, post } = this.socialPostFor(conn.userId, frame.postId);
         const canEdit = post.ownerId === conn.userId && (
           (post.authorKind === "human" && conn.client !== "engine" && post.authorId === conn.userId)
           || (post.authorKind === "agent" && conn.client === "engine" && frame.agentId === post.authorId
             && this.myAgent(conn.userId, frame.agentId).id === post.authorId)
         );
-        if (!canEdit || post.deletedAt) throw new Error("you can only edit your own live post");
+        if (!canEdit) throw new Error("you can only edit your own live post");
+        const prior = this.priorSocialOperation<Extract<ServerFrame, { type: "socialUpdated" }>>(
+          conn, "socialEdit", frame.requestId, this.socialPayloadHash(frame), project.id,
+        );
+        if (prior) { send(conn.ws, prior); break; }
+        if (post.deletedAt) throw new Error("you can only edit your own live post");
         const bad = validateMessageText(frame.text);
         if (bad) throw new Error(bad);
         const updated: SocialPost = {
           ...post, text: frame.text, editedAt: Date.now(),
           ...(post.reactions ? { reactions: post.reactions } : {}),
         };
-        this.store.saveSocialPost(updated);
-        const stored = this.store.socialPost(post.id)!;
-        const result: Extract<ServerFrame, { type: "socialUpdated" }> = {
-          type: "socialUpdated", post: this.socialPostView(conn.userId, project, stored),
-          ...(frame.requestId ? { requestId: frame.requestId } : {}),
-        };
-        this.rememberSocialOperation(conn, "socialEdit", frame.requestId, result);
+        const { stored, result } = this.store.socialMutation(() => {
+          this.store.saveSocialPost(updated);
+          const saved = this.store.socialPost(post.id)!;
+          const response: Extract<ServerFrame, { type: "socialUpdated" }> = {
+            type: "socialUpdated", post: this.socialPostView(conn.userId, project, saved),
+            ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          };
+          this.rememberSocialOperation(conn, "socialEdit", frame.requestId, response, this.socialPayloadHash(frame));
+          return { stored: saved, result: response };
+        });
         this.broadcastSocialView(project.id, userId => ({
           type: "socialUpdated", post: this.socialPostView(userId, project, stored),
         }));
+        this.broadcastSocialUnread(project.id);
         send(conn.ws, result);
         break;
       }
       case "socialDelete": {
-        const prior = this.priorSocialOperation<Extract<ServerFrame, { type: "socialUpdated" }>>(
-          conn, "socialDelete", frame.requestId,
-        );
-        if (prior) { send(conn.ws, prior); break; }
         const { project, post } = this.socialPostFor(conn.userId, frame.postId);
         const canDelete = post.ownerId === conn.userId && (
           (post.authorKind === "human" && conn.client !== "engine" && post.authorId === conn.userId)
           || (post.authorKind === "agent" && conn.client === "engine" && frame.agentId === post.authorId
             && this.myAgent(conn.userId, frame.agentId).id === post.authorId)
         );
-        if (!canDelete || post.deletedAt) throw new Error("you can only delete your own live post");
+        if (!canDelete) throw new Error("you can only delete your own live post");
+        const prior = this.priorSocialOperation<Extract<ServerFrame, { type: "socialUpdated" }>>(
+          conn, "socialDelete", frame.requestId, this.socialPayloadHash(frame), project.id,
+        );
+        if (prior) { send(conn.ws, prior); break; }
+        if (post.deletedAt) throw new Error("you can only delete your own live post");
         const tombstone: SocialPost = {
           ...post, text: "", deletedAt: Date.now(), links: undefined,
           reactions: undefined,
         };
-        this.store.saveSocialPost(tombstone);
-        const stored = this.store.socialPost(post.id)!;
-        const result: Extract<ServerFrame, { type: "socialUpdated" }> = {
-          type: "socialUpdated", post: this.socialPostView(conn.userId, project, stored),
-          ...(frame.requestId ? { requestId: frame.requestId } : {}),
-        };
-        this.rememberSocialOperation(conn, "socialDelete", frame.requestId, result);
+        const { stored, result } = this.store.socialMutation(() => {
+          this.store.saveSocialPost(tombstone);
+          const saved = this.store.socialPost(post.id)!;
+          const response: Extract<ServerFrame, { type: "socialUpdated" }> = {
+            type: "socialUpdated", post: this.socialPostView(conn.userId, project, saved),
+            ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          };
+          this.rememberSocialOperation(conn, "socialDelete", frame.requestId, response, this.socialPayloadHash(frame));
+          return { stored: saved, result: response };
+        });
         this.broadcastSocialView(project.id, userId => ({
           type: "socialUpdated", post: this.socialPostView(userId, project, stored),
         }));
+        this.broadcastSocialUnread(project.id);
         send(conn.ws, result);
         break;
       }
       case "socialReact": {
+        const { project, post } = this.socialPostFor(conn.userId, frame.postId);
         const prior = this.priorSocialOperation<Extract<ServerFrame, { type: "socialReaction" }>>(
-          conn, "socialReact", frame.requestId,
+          conn, "socialReact", frame.requestId, this.socialPayloadHash(frame), project.id,
         );
         if (prior) { send(conn.ws, prior); break; }
-        const { project, post } = this.socialPostFor(conn.userId, frame.postId);
         if (post.deletedAt) throw new Error("deleted posts cannot receive reactions");
         const bad = validateReactionEmoji(frame.emoji);
         if (bad) throw new Error(bad);
-        const actorIds = this.store.setSocialReaction(project.id, post.id, conn.userId, frame.emoji, frame.on !== false);
-        const result: Extract<ServerFrame, { type: "socialReaction" }> = {
-          type: "socialReaction", projectId: project.id, postId: post.id,
-          emoji: frame.emoji, actorIds,
-          ...(frame.requestId ? { requestId: frame.requestId } : {}),
-        };
-        this.rememberSocialOperation(conn, "socialReact", frame.requestId, result);
+        const { actorIds, result } = this.store.socialMutation(() => {
+          const ids = this.store.setSocialReaction(project.id, post.id, conn.userId, frame.emoji, frame.on !== false);
+          const response: Extract<ServerFrame, { type: "socialReaction" }> = {
+            type: "socialReaction", projectId: project.id, postId: post.id,
+            emoji: frame.emoji, actorIds: ids,
+            ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          };
+          this.rememberSocialOperation(conn, "socialReact", frame.requestId, response, this.socialPayloadHash(frame));
+          return { actorIds: ids, result: response };
+        });
         this.broadcastSocial(project.id, {
           type: "socialReaction", projectId: project.id, postId: post.id,
           emoji: frame.emoji, actorIds,
         });
+        this.broadcastSocialUnread(project.id);
         send(conn.ws, result);
         break;
       }
       case "socialMarkRead": {
+        const project = this.socialProject(conn.userId, frame.projectId);
         const prior = this.priorSocialOperation<Extract<ServerFrame, { type: "socialRead" }>>(
-          conn, "socialMarkRead", frame.requestId,
+          conn, "socialMarkRead", frame.requestId, this.socialPayloadHash(frame), project.id,
         );
         if (prior) { send(conn.ws, prior); break; }
-        const project = this.socialProject(conn.userId, frame.projectId);
-        const read = this.store.markSocialRead(conn.userId, project.id, frame.at ?? Date.now());
-        const result: Extract<ServerFrame, { type: "socialRead" }> = {
-          type: "socialRead", entry: read, ...(frame.requestId ? { requestId: frame.requestId } : {}),
-        };
-        this.rememberSocialOperation(conn, "socialMarkRead", frame.requestId, result);
-        this.toUser(conn.userId, result);
+        const requestedAt = Number.isFinite(frame.at) ? Math.floor(frame.at ?? Date.now()) : Date.now();
+        const result = this.store.socialMutation(() => {
+          const read = this.store.markSocialRead(conn.userId, project.id, Math.min(Date.now(), Math.max(0, requestedAt)));
+          const response: Extract<ServerFrame, { type: "socialRead" }> = {
+            type: "socialRead", entry: read, ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          };
+          this.rememberSocialOperation(conn, "socialMarkRead", frame.requestId, response, this.socialPayloadHash(frame));
+          return response;
+        });
+        this.toUserExcept(conn.userId, conn, { ...result, requestId: undefined });
+        send(conn.ws, result);
+        this.broadcastSocialUnread(project.id);
         break;
       }
       case "socialMembers": {
@@ -3579,19 +3654,22 @@ export class Relay {
         break;
       }
       case "socialAddMember": {
+        const project = this.myProject(conn.userId, frame.projectId);
         const prior = this.priorSocialOperation<Extract<ServerFrame, { type: "socialMembers" }>>(
-          conn, "socialAddMember", frame.requestId,
+          conn, "socialAddMember", frame.requestId, this.socialPayloadHash(frame), project.id,
         );
         if (prior) { send(conn.ws, prior); break; }
-        const project = this.myProject(conn.userId, frame.projectId);
         if (!this.store.user(frame.userId)) throw new Error("that person is not in this Cloud9");
-        this.store.addSocialMember(project.id, frame.userId);
-        const result: Extract<ServerFrame, { type: "socialMembers" }> = {
-          type: "socialMembers", projectId: project.id,
-          userIds: this.store.socialMembers(project.id, project.ownerId),
-          ...(frame.requestId ? { requestId: frame.requestId } : {}),
-        };
-        this.rememberSocialOperation(conn, "socialAddMember", frame.requestId, result);
+        const result = this.store.socialMutation(() => {
+          this.store.addSocialMember(project.id, frame.userId);
+          const response: Extract<ServerFrame, { type: "socialMembers" }> = {
+            type: "socialMembers", projectId: project.id,
+            userIds: this.store.socialMembers(project.id, project.ownerId),
+            ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          };
+          this.rememberSocialOperation(conn, "socialAddMember", frame.requestId, response, this.socialPayloadHash(frame));
+          return response;
+        });
         this.broadcastSocial(project.id, {
           type: "socialMembers", projectId: project.id,
           userIds: result.userIds,
@@ -3600,20 +3678,23 @@ export class Relay {
         break;
       }
       case "socialRemoveMember": {
+        const project = this.myProject(conn.userId, frame.projectId);
         const prior = this.priorSocialOperation<Extract<ServerFrame, { type: "socialMembers" }>>(
-          conn, "socialRemoveMember", frame.requestId,
+          conn, "socialRemoveMember", frame.requestId, this.socialPayloadHash(frame), project.id,
         );
         if (prior) { send(conn.ws, prior); break; }
-        const project = this.myProject(conn.userId, frame.projectId);
         if (frame.userId === project.ownerId) throw new Error("the project owner must remain a member");
-        this.store.removeSocialMember(project.id, frame.userId);
         this.toUser(frame.userId, { type: "socialUnavailable", projectId: project.id });
-        const result: Extract<ServerFrame, { type: "socialMembers" }> = {
-          type: "socialMembers", projectId: project.id,
-          userIds: this.store.socialMembers(project.id, project.ownerId),
-          ...(frame.requestId ? { requestId: frame.requestId } : {}),
-        };
-        this.rememberSocialOperation(conn, "socialRemoveMember", frame.requestId, result);
+        const result = this.store.socialMutation(() => {
+          this.store.removeSocialMember(project.id, frame.userId);
+          const response: Extract<ServerFrame, { type: "socialMembers" }> = {
+            type: "socialMembers", projectId: project.id,
+            userIds: this.store.socialMembers(project.id, project.ownerId),
+            ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          };
+          this.rememberSocialOperation(conn, "socialRemoveMember", frame.requestId, response, this.socialPayloadHash(frame));
+          return response;
+        });
         this.broadcastSocial(project.id, {
           type: "socialMembers", projectId: project.id, userIds: result.userIds,
         });
@@ -4870,6 +4951,12 @@ export class Relay {
   private toUser(userId: ID, frame: ServerFrame): void {
     for (const conn of this.conns) {
       if (conn.userId === userId) send(conn.ws, frame);
+    }
+  }
+
+  private toUserExcept(userId: ID, except: Conn, frame: ServerFrame): void {
+    for (const conn of this.conns) {
+      if (conn !== except && conn.userId === userId) send(conn.ws, frame);
     }
   }
 }

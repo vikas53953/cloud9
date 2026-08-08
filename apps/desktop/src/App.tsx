@@ -2153,7 +2153,7 @@ function Workspace(): React.JSX.Element {
      "1" and the board said "Nothing is being worked on" — both visible at once,
      one of them lying. `workingCount` is now the only answer either can give. */
   const workingNow = workingCount(useAgentActivity().map(r => r.line));
-  const socialUnread = Object.values(world.socialFeeds).reduce((total, feed) => total + feed.unread, 0);
+  const socialUnread = Object.values(world.socialUnread).reduce((total, count) => total + count, 0);
   const unreadNotifications = world.notifications.filter(n => n.state === "unread").length;
 
   /* ---- EVERY WAY OUT OF A SCREEN GOES THROUGH ONE DOOR ----
@@ -2262,9 +2262,16 @@ function Workspace(): React.JSX.Element {
     // destination still goes through the workspace leave guard, so a dirty
     // editor cannot be abandoned by an untrusted feed click.
     attemptLeave(() => {
-      if (link.kind === "task") setScreen("tasks");
+      if (link.available === false) return;
+      if (link.channelId) {
+        setActiveId(link.channelId);
+        setScreen("chat");
+      } else if (link.kind === "task") setScreen("tasks");
       else if (link.kind === "run") setScreen("activity");
-      else if (link.kind === "artifact") setScreen("files");
+      else if (link.kind === "artifact") {
+        setFileOpenAt({ artifactId: link.id, at: Date.now() });
+        setScreen("files");
+      }
       else setScreen("projects");
     });
   }, []);
@@ -14736,6 +14743,7 @@ function NotificationsScreen({ onOpen }: {
  }
 
 function socialLinkLabel(link: SocialLink): string {
+  if (link.available === false) return "Unavailable link";
   if (link.kind === "projectItem") return `${link.itemKind === "pull" ? "PR" : "Issue"} #${link.number ?? "?"}`;
   return `${link.kind} ${link.id}`;
 }
@@ -14800,6 +14808,8 @@ function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => vo
           </select>
         </label>
       </header>
+      {world.socialProblem ? <p className="state error" role="alert">{world.socialProblem}</p> : null}
+      {Object.keys(world.socialPending).length ? <p className="state loading" role="status" aria-live="polite">Saving your project update…</p> : null}
       {!world.socialProjects.asked ? <div className="state loading" role="status">Loading projects…</div>
         : projects.length === 0 ? <div className="state empty">No project is connected yet. Connect one in Projects to start an internal feed.</div>
         : !feed ? <div className="state loading" role="status">Loading feed…</div>
@@ -14814,7 +14824,7 @@ function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => vo
                 <div className="social-post-body">
                   <div className="social-post-meta"><strong>{post.authorName}</strong><span>{post.authorKind === "agent" ? "agent" : "human"}</span><time dateTime={new Date(post.createdAt).toISOString()}>{new Date(post.createdAt).toLocaleString()}</time>{post.editedAt ? <em>edited</em> : null}</div>
                   {post.deletedAt ? <p className="social-tombstone">This post was deleted.</p> : editing === post.id ? <div className="social-edit"><label htmlFor={`social-edit-${post.id}`}>Edit post</label><textarea id={`social-edit-${post.id}`} value={editText} onChange={e => setEditText(e.target.value)} /><button className="primary" onClick={() => submitEdit(post.id)}>Save</button><button onClick={() => setEditing(undefined)}>Cancel</button></div> : <p className="social-post-text">{post.text}</p>}
-                   {post.links?.length ? <div className="social-links" aria-label="Linked Cloud9 records">{post.links.map((link, i) => <button type="button" className="social-link" key={`${link.kind}-${link.id}-${i}`} onClick={() => onOpenLink(link)} aria-label={`Open ${socialLinkLabel(link)}`}>{socialLinkLabel(link)}</button>)}</div> : null}
+                   {post.links?.length ? <div className="social-links" aria-label="Linked Cloud9 records">{post.links.map((link, i) => <button type="button" className="social-link" key={`${link.kind}-${link.id}-${i}`} disabled={link.available === false} onClick={() => onOpenLink(link)} aria-label={link.available === false ? "Unavailable linked record" : `Open ${socialLinkLabel(link)}`}>{socialLinkLabel(link)}</button>)}</div> : null}
                   {post.reactions?.length ? <div className="social-reactions" aria-label="Reactions">{post.reactions.map(reaction => <button key={reaction.emoji} aria-label={`Reacted ${reaction.emoji} by ${reaction.actorIds.length} people`} onClick={() => client.reactSocialPost(post.id, reaction.emoji, !reaction.actorIds.includes(world.me?.id ?? ""))}>{reaction.emoji} {reaction.actorIds.length}</button>)}</div> : null}
                   <div className="social-actions">{!post.deletedAt ? <><button onClick={() => { setReplyTo(post.id); setText(""); }}>Comment</button><button onClick={() => client.reactSocialPost(post.id, "👍", !(post.reactions ?? []).find(r => r.emoji === "👍")?.actorIds.includes(world.me?.id ?? ""))}>React</button></> : null}{own(post) && !post.deletedAt ? <><button onClick={() => { setEditing(post.id); setEditText(post.text); }}>Edit</button><button onClick={() => client.deleteSocialPost(post.id)}>Delete</button></> : null}</div>
                 </div>

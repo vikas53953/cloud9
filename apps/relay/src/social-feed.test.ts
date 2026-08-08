@@ -137,8 +137,9 @@ test("social feed is project-membership isolated and removed members lose access
   friend.send({ type: "socialList", projectId });
   const memberView = await friend.wait<Extract<ServerFrame, { type: "socialFeed" }>>(
     f => f.type === "socialFeed" && f.posts.some(p => p.id === privatePost.post.id));
-  assert.equal(memberView.posts.find(p => p.id === privatePost.post.id)?.links, undefined,
-    "inaccessible task links are redacted per reader");
+  const redacted = memberView.posts.find(p => p.id === privatePost.post.id)?.links;
+  assert.equal(redacted?.[0]?.available, false, "inaccessible task links remain an honest placeholder");
+  assert.equal(redacted?.[0]?.id, "unavailable", "redaction never leaks the private task id");
 
   owner.send({ type: "socialRemoveMember", projectId, userId: friendId });
   await friend.wait<Extract<ServerFrame, { type: "socialUnavailable" }>>(f => f.type === "socialUnavailable");
@@ -175,6 +176,10 @@ test("social operations are schema-versioned, idempotent, and engine identity-sc
     f => f.type === "socialPost" && f.requestId === "social-create-dup" && f.post.id === first.post.id);
   const rows = relay.store.socialPosts(projectId, {}).items.filter(p => p.text === "one");
   assert.equal(rows.length, 1, "retrying one request cannot create a second post");
+  owner.send({ type: "socialCreate", projectId, text: "changed", requestId: "social-create-dup" });
+  const conflict = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
+    f => f.type === "error" && f.requestId === "social-create-dup");
+  assert.match(conflict.error, /different work/);
 });
 
 test("social unread/read state synchronizes across windows and list request ids", async t => {
@@ -193,7 +198,7 @@ test("social unread/read state synchronizes across windows and list request ids"
   const secondRead = await second.wait<Extract<ServerFrame, { type: "socialRead" }>>(
     f => f.type === "socialRead" && f.requestId === "window-read");
   const ownerRead = await owner.wait<Extract<ServerFrame, { type: "socialRead" }>>(
-    f => f.type === "socialRead" && f.requestId === "window-read");
+    f => f.type === "socialRead" && f.requestId === undefined);
   assert.equal(secondRead.entry.unread, 0);
   assert.equal(ownerRead.entry.unread, 0, "a read in one window reaches the other");
 

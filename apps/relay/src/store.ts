@@ -601,7 +601,7 @@ export class Store implements JoinHubStore {
       CREATE INDEX IF NOT EXISTS social_member_user ON social_members(userId);
       CREATE TABLE IF NOT EXISTS social_ops(
         userId TEXT NOT NULL, requestId TEXT NOT NULL, kind TEXT NOT NULL,
-        resultJson TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        projectId TEXT, payloadHash TEXT NOT NULL DEFAULT '', resultJson TEXT NOT NULL, createdAt INTEGER NOT NULL,
         PRIMARY KEY(userId, requestId, kind)
       );
       CREATE INDEX IF NOT EXISTS social_ops_created ON social_ops(createdAt);
@@ -903,6 +903,8 @@ export class Store implements JoinHubStore {
     this.addColumn("hook_requests", "target", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("hook_requests", "payload", "TEXT NOT NULL DEFAULT '{}'");
     this.addColumn("hook_requests", "createdAt", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("social_ops", "payloadHash", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("social_ops", "projectId", "TEXT");
     // AN INDEX CAN ONLY BE BUILT OVER A COLUMN THAT EXISTS, so it is built
     // here, after the ALTERs, and not up in the CREATE block with the others.
     //
@@ -982,7 +984,7 @@ export class Store implements JoinHubStore {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS social_ops(
         userId TEXT NOT NULL, requestId TEXT NOT NULL, kind TEXT NOT NULL,
-        resultJson TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        projectId TEXT, payloadHash TEXT NOT NULL DEFAULT '', resultJson TEXT NOT NULL, createdAt INTEGER NOT NULL,
         PRIMARY KEY(userId, requestId, kind)
       );
       CREATE INDEX IF NOT EXISTS social_ops_created ON social_ops(createdAt);
@@ -1370,6 +1372,11 @@ export class Store implements JoinHubStore {
       this.db.prepare("DELETE FROM hook_requests WHERE ownerId=?").run(id);
       this.db.prepare("DELETE FROM hook_audit WHERE ownerId=?").run(id);
       this.db.prepare("DELETE FROM hooks WHERE ownerId=?").run(id);
+      this.db.prepare("DELETE FROM social_ops WHERE userId=?").run(id);
+      this.db.prepare("DELETE FROM social_reads WHERE userId=?").run(id);
+      this.db.prepare("DELETE FROM social_members WHERE userId=?").run(id);
+      this.db.prepare("DELETE FROM social_reactions WHERE actorId=?").run(id);
+      this.db.prepare("DELETE FROM social_posts WHERE ownerId=? OR authorId=?").run(id, id);
     });
     this.db.prepare("DELETE FROM tokens WHERE userId=?").run(id);
     this.db.prepare("UPDATE invites SET revoked=1 WHERE usedBy=? OR createdBy=?").run(id, id);
@@ -3497,12 +3504,15 @@ export class Store implements JoinHubStore {
 
   /** Forget our copy. THE REPOSITORY IS NOT TOUCHED — it is not ours to touch. */
   forgetProject(id: ID): void {
-    this.db.prepare("DELETE FROM project_items WHERE projectId=?").run(id);
-    this.db.prepare("DELETE FROM social_reactions WHERE projectId=?").run(id);
-    this.db.prepare("DELETE FROM social_posts WHERE projectId=?").run(id);
-    this.db.prepare("DELETE FROM social_reads WHERE projectId=?").run(id);
-    this.db.prepare("DELETE FROM social_members WHERE projectId=?").run(id);
-    this.db.prepare("DELETE FROM projects WHERE id=?").run(id);
+    this.tx(() => {
+      this.db.prepare("DELETE FROM project_items WHERE projectId=?").run(id);
+      this.db.prepare("DELETE FROM social_reactions WHERE projectId=?").run(id);
+      this.db.prepare("DELETE FROM social_posts WHERE projectId=?").run(id);
+      this.db.prepare("DELETE FROM social_reads WHERE projectId=?").run(id);
+      this.db.prepare("DELETE FROM social_members WHERE projectId=?").run(id);
+      this.db.prepare("DELETE FROM social_ops WHERE projectId=?").run(id);
+      this.db.prepare("DELETE FROM projects WHERE id=?").run(id);
+    });
   }
 
   /**
@@ -3570,18 +3580,21 @@ export class Store implements JoinHubStore {
   }
 
   /** Durable receipt for one user's retried social operation. */
-  socialOperation(userId: ID, requestId: ID, kind: string): unknown | undefined {
+  socialOperation(userId: ID, requestId: ID, kind: string): { result: unknown; payloadHash: string; projectId?: ID } | undefined {
     const row = this.db.prepare(
-      "SELECT resultJson FROM social_ops WHERE userId=? AND requestId=? AND kind=?",
-    ).get(userId, requestId, kind) as { resultJson: string } | undefined;
-    return row ? JSON.parse(row.resultJson) as unknown : undefined;
+      "SELECT resultJson,payloadHash,projectId FROM social_ops WHERE userId=? AND requestId=? AND kind=?",
+    ).get(userId, requestId, kind) as { resultJson: string; payloadHash?: string; projectId?: string | null } | undefined;
+    return row ? { result: JSON.parse(row.resultJson) as unknown, payloadHash: row.payloadHash ?? "", ...(row.projectId ? { projectId: row.projectId } : {}) } : undefined;
   }
 
-  saveSocialOperation(userId: ID, requestId: ID, kind: string, result: unknown): void {
+  saveSocialOperation(userId: ID, requestId: ID, kind: string, result: unknown, payloadHash = "", projectId?: ID): void {
     this.db.prepare(
-      "INSERT OR IGNORE INTO social_ops(userId,requestId,kind,resultJson,createdAt) VALUES(?,?,?,?,?)",
-    ).run(userId, requestId, kind, JSON.stringify(result), Date.now());
+      "INSERT OR IGNORE INTO social_ops(userId,requestId,kind,projectId,payloadHash,resultJson,createdAt) VALUES(?,?,?,?,?,?,?)",
+    ).run(userId, requestId, kind, projectId ?? null, payloadHash, JSON.stringify(result), Date.now());
   }
+
+  /** Effect and its retry receipt commit together; a crash cannot create a ghost success. */
+  socialMutation<T>(work: () => T): T { return this.tx(work); }
 
   saveSocialPost(post: SocialPost): void {
     const { reactions: _reactions, replyCount: _replyCount, ...stored } = post;
