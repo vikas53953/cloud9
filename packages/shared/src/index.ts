@@ -1714,6 +1714,114 @@ export interface ProjectItem {
   updatedAt: number;
 }
 
+// ---------- internal team social feed ----------
+//
+// A project feed is deliberately separate from channel messages. It is a
+// durable project-scoped conversation for humans and agents, with no public
+// publishing, ranking, direct messages, polls, or Pulse fields. Comments are
+// posts with a parentId; a tombstone keeps their place without retaining words
+// for a reader after deletion.
+
+export type SocialAuthorKind = "human" | "agent";
+export type SocialLinkKind = "task" | "run" | "artifact" | "projectItem";
+
+export interface SocialLink {
+  kind: SocialLinkKind;
+  id: ID;
+  /** Set only on a reader projection; false is an honest inaccessible tombstone. */
+  available?: boolean;
+  /** Authorized Cloud9 room target used for guarded navigation. */
+  channelId?: ID;
+  /** project-item links identify the cached GitHub row without trusting a URL */
+  projectId?: ID;
+  itemKind?: ProjectItemKind;
+  number?: number;
+}
+
+export interface SocialReaction {
+  emoji: string;
+  actorIds: ID[];
+}
+
+export interface SocialPost {
+  id: ID;
+  projectId: ID;
+  /** absent for a top-level post; present for a one-level comment */
+  parentId?: ID;
+  authorId: ID;
+  authorName: string;
+  authorKind: SocialAuthorKind;
+  /** owner of an agent author, or the human author itself */
+  ownerId: ID;
+  text: string;
+  createdAt: number;
+  editedAt?: number;
+  /** deletion is a tombstone, never a hole in chronological order */
+  deletedAt?: number;
+  links?: SocialLink[];
+  reactions?: SocialReaction[];
+  replyCount?: number;
+}
+
+export interface SocialReadEntry {
+  projectId: ID;
+  lastReadAt: number;
+  unread: number;
+}
+
+export const SOCIAL_LIMITS = {
+  text: 4_000,
+  links: 8,
+  feedPage: 50,
+  emoji: 32,
+  members: 500,
+} as const;
+
+export function validateSocialLink(link: unknown): string | null {
+  if (!link || typeof link !== "object") return "that project link is not valid";
+  const value = link as Partial<SocialLink>;
+  if (value.kind !== "task" && value.kind !== "run" && value.kind !== "artifact" && value.kind !== "projectItem") {
+    return "that project link type is not supported";
+  }
+  if (typeof value.id !== "string" || !isSafeStoredId(value.id)) return "that project link has no safe id";
+  if (value.kind === "projectItem") {
+    if (value.itemKind !== "pull" && value.itemKind !== "issue") return "that project link has no work type";
+    if (typeof value.number !== "number" || !Number.isInteger(value.number) || value.number <= 0) {
+      return "that project link has no work number";
+    }
+    if (value.projectId !== undefined && (typeof value.projectId !== "string" || !isSafeStoredId(value.projectId))) {
+      return "that project link has no safe project id";
+    }
+  }
+  return null;
+}
+
+export function validateSocialLinks(links: unknown): string | null {
+  if (links === undefined) return null;
+  if (!Array.isArray(links)) return "project links must be a list";
+  if (links.length > SOCIAL_LIMITS.links) return `that's too many project links (max ${SOCIAL_LIMITS.links})`;
+  for (const link of links) {
+    const bad = validateSocialLink(link);
+    if (bad) return bad;
+  }
+  return null;
+}
+
+/**
+ * Words on a project social post or comment.
+ *
+ * Uses the feed's own size bound (`SOCIAL_LIMITS.text`), not the chat message
+ * bound — a 40k chat limit is not permission to put 40k into a team feed.
+ */
+export function validateSocialText(text: unknown, allowEmpty = false): string | null {
+  if (typeof text !== "string") return "a project post needs some words";
+  if (!allowEmpty && text.trim().length === 0) return "a project post needs some words";
+  if (text.length > SOCIAL_LIMITS.text) {
+    return `that project post is too long (max ${SOCIAL_LIMITS.text} characters)`;
+  }
+  return null;
+}
+
 export const PROJECT_LIMITS = {
   /** how many repositories one person may connect */
   perUser: 50,
@@ -3379,6 +3487,22 @@ type ClientFrameBase =
       type: "hookFired"; hookId: ID; event: HookEvent; ok: boolean;
       said: string; at: number; firingId: ID;
     }
+  // ---- internal team social feed ----
+  /** A durable, chronological page of one project feed. */
+  | { type: "socialList"; projectId: ID; before?: number; beforeId?: ID; limit?: number }
+  | { type: "socialProjects" }
+  /** A human-authored project post or one-level comment. */
+  | { type: "socialCreate"; projectId: ID; text: string; parentId?: ID; links?: SocialLink[] }
+  /** An engine-authored project post or comment, owned by this connection's agent. */
+  | { type: "socialAgentCreate"; agentId: ID; projectId: ID; text: string; parentId?: ID; links?: SocialLink[] }
+  | { type: "socialEdit"; postId: ID; text: string; agentId?: ID }
+  | { type: "socialDelete"; postId: ID; agentId?: ID }
+  | { type: "socialReact"; postId: ID; emoji: string; on?: boolean }
+  | { type: "socialMarkRead"; projectId: ID; at?: number }
+  /** Owner-only membership changes; the feed itself never widens visibility. */
+  | { type: "socialAddMember"; projectId: ID; userId: ID }
+  | { type: "socialRemoveMember"; projectId: ID; userId: ID }
+  | { type: "socialMembers"; projectId: ID }
   /**
    * "LOOK AT GITHUB NOW." The owner asking for a fresh look at one project.
    *
@@ -3880,6 +4004,19 @@ export type ServerFrame =
   | { type: "hookAudit"; entries: HookAuditEntry[]; requestId?: ID }
   /** OWNER'S HOOKBOOK, sent only to that owner's engine host. */
   | { type: "hooksUpdated"; hooks: StoredHook[] }
+  // ---- internal team social feed ----
+  | {
+      type: "socialFeed"; projectId: ID; posts: SocialPost[]; hasMore: boolean;
+      nextBefore?: number; nextBeforeId?: ID; unread: number; requestId?: ID;
+    }
+  | { type: "socialProjects"; projects: Project[]; unread?: SocialReadEntry[]; requestId?: ID }
+  | { type: "socialPost"; post: SocialPost; requestId?: ID }
+  | { type: "socialUpdated"; post: SocialPost; requestId?: ID }
+  | { type: "socialReaction"; projectId: ID; postId: ID; emoji: string; actorIds: ID[]; requestId?: ID }
+  | { type: "socialRead"; entry: SocialReadEntry; requestId?: ID }
+  | { type: "socialUnread"; projectId: ID; unread: number }
+  | { type: "socialMembers"; projectId: ID; userIds: ID[]; requestId?: ID }
+  | { type: "socialUnavailable"; projectId: ID; requestId?: ID }
   /**
    * One run — pushed the moment it finishes to everyone who can see the
    * conversation it happened in, and sent back on its own to whoever asked for
