@@ -118,3 +118,51 @@ test("relay enforces the fifty-hook owner limit", async t => {
   const replay = await owner.wait<Extract<ServerFrame, { type: "hook" }>>(f => f.type === "hook" && f.requestId === "limit-49");
   assert.equal(replay.hook.name, "Hook 49");
 });
+
+test("hook action replacement drops fields from the previous action kind", async t => {
+  const relay = new Relay({ dbPath: tmp("hooks-action-replace.db"), ownerToken: "owner", ownerName: "Owner" });
+  const port = await relay.listen(0); const url = `ws://127.0.0.1:${port}`;
+  const owner = new TestClient(url, "owner"); await owner.wait(f => f.type === "welcome");
+  t.after(() => { owner.close(); relay.close(); });
+  owner.send({ type: "createAgent", agent: { name: "Action bot", emoji: "🤖", persona: "Does hook work", abilities: { webSearch: false, files: false, schedules: false, background: false } } as never });
+  const agent = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent" && f.agent.name === "Action bot");
+  owner.send({ type: "createChannel", name: "action-room", memberIds: [agent.agent.id] });
+  const channel = await owner.wait<Extract<ServerFrame, { type: "channel" }>>(f => f.type === "channel" && f.channel.name === "action-room");
+  owner.send({ type: "createHook", requestId: "replace-create", hook: { name: "Replace me", event: "turn.finished", enabled: true, action: { do: "note", agentId: agent.agent.id, text: "old note" } } });
+  const created = await owner.wait<Extract<ServerFrame, { type: "hook" }>>(f => f.type === "hook" && f.requestId === "replace-create");
+  owner.send({ type: "updateHook", hookId: created.hook.id, requestId: "replace-update", hook: { action: { do: "job", agentId: agent.agent.id, channelId: channel.channel.id, title: "new job" } } });
+  const updated = await owner.wait<Extract<ServerFrame, { type: "hook" }>>(f => f.type === "hook" && f.requestId === "replace-update");
+  assert.deepEqual(updated.hook.action, { do: "job", agentId: agent.agent.id, channelId: channel.channel.id, title: "new job" });
+});
+
+test("replaying a test receipt after hook deletion answers with a refusal", async t => {
+  const relay = new Relay({ dbPath: tmp("hooks-test-replay.db"), ownerToken: "owner", ownerName: "Owner" });
+  const port = await relay.listen(0); const url = `ws://127.0.0.1:${port}`;
+  const owner = new TestClient(url, "owner"); await owner.wait(f => f.type === "welcome");
+  t.after(() => { owner.close(); relay.close(); });
+  owner.send({ type: "createAgent", agent: { name: "Replay bot", emoji: "🤖", persona: "Does hook work", abilities: { webSearch: false, files: false, schedules: false, background: false } } as never });
+  const agent = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent" && f.agent.name === "Replay bot");
+  owner.send({ type: "createHook", requestId: "replay-create", hook: { name: "Replay", event: "turn.finished", enabled: true, action: { do: "note", agentId: agent.agent.id, text: "note" } } });
+  const created = await owner.wait<Extract<ServerFrame, { type: "hook" }>>(f => f.type === "hook" && f.requestId === "replay-create");
+  owner.send({ type: "testHook", hookId: created.hook.id, requestId: "replay-test" });
+  await owner.wait(f => f.type === "hookTest" && f.requestId === "replay-test");
+  owner.send({ type: "deleteHook", hookId: created.hook.id, requestId: "replay-delete" });
+  await owner.wait(f => f.type === "hooks" && f.requestId === "replay-delete");
+  owner.send({ type: "testHook", hookId: created.hook.id, requestId: "replay-test" });
+  const refused = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error" && f.requestId === "replay-test");
+  assert.match(refused.error, /no longer exists/);
+});
+
+test("hook request and audit ledgers stay bounded", async t => {
+  const relay = new Relay({ dbPath: tmp("hooks-retention.db"), ownerToken: "owner", ownerName: "Owner" });
+  t.after(() => relay.store.db.close());
+  for (let i = 0; i < 520; i++) {
+    relay.store.saveHookRequest(relay.ownerId, `request-${i}`, `hook-${i}`, "test", `hook-${i}`, "{}");
+    relay.store.logHookAudit(relay.ownerId, `hook-${i}`, "tested", true, "ok", Date.now(), relay.ownerId, "desktop", `audit-${i}`, `hook-${i}`);
+  }
+  const requestCount = (relay.store.db.prepare("SELECT COUNT(*) AS n FROM hook_requests WHERE ownerId=?").get(relay.ownerId) as { n: number }).n;
+  const auditCount = (relay.store.db.prepare("SELECT COUNT(*) AS n FROM hook_audit WHERE ownerId=?").get(relay.ownerId) as { n: number }).n;
+  assert.equal(requestCount, 512);
+  assert.equal(auditCount, 512);
+  assert.equal(relay.store.hookAuditOf(relay.ownerId).length, 512);
+});

@@ -2512,6 +2512,7 @@ export class Relay {
         const existing = this.myAgent(conn.userId, frame.agentId);
         this.stopRunsForDeletedAgent(conn, frame.agentId);
         this.store.deleteAgent(frame.agentId);
+        this.syncHooksToEngine(conn.userId);
         // a deleted agent's lamp is not a fact about anything any more
         delete this.agentStatus[frame.agentId];
         this.audit(conn, "agent_deleted", frame.agentId, `deleted agent ${existing.name}`);
@@ -2566,6 +2567,7 @@ export class Relay {
             return { ids, before: this.snapshotArtifactProjections(ids) };
           });
         this.store.removeUser(target.id);
+        this.toEngines(target.id, { type: "hooksUpdated", hooks: [] });
         this.audit(conn, "agent_deleted", target.id, `removed ${target.name} from this Cloud9`);
         for (const a of theirAgents) {
           delete this.agentStatus[a.id];
@@ -3188,7 +3190,9 @@ export class Relay {
           break;
         }
         const old = this.myHook(conn.userId, frame.hookId);
-        const hook = { ...old, ...frame.hook, action: frame.hook.action ? { ...old.action, ...frame.hook.action } : old.action, updatedAt: Date.now() } as StoredHook;
+        // An action is a discriminated union, not a patchable bag. Replacing it
+        // wholesale prevents stale text/title fields surviving an action-kind change.
+        const hook = { ...old, ...frame.hook, action: frame.hook.action ?? old.action, updatedAt: Date.now() } as StoredHook;
         this.validateHookOwner(conn.userId, hook);
         this.store.saveHookWithRequest(hook, conn.userId, requestId, "update", frame.hookId, JSON.stringify(frame.hook));
         this.store.logHookAudit(conn.userId, hook.id, "updated", true, "hook updated", Date.now(), conn.userId, conn.client, requestId, frame.hookId);
@@ -3235,16 +3239,18 @@ export class Relay {
         const priorReceipt = this.hookReceipt(conn, requestId, "test", frame.hookId, {});
         if (priorReceipt) {
           const prior = this.store.hook(conn.userId, priorReceipt.hookId);
+          if (!prior) throw new Error("that hook no longer exists");
           if (prior) {
+            this.validateHookOwner(conn.userId, prior);
             const said = prior.enabled ? `“${prior.name}” is valid and ready for ${HOOK_ACTIONS[prior.action.do]}` : `“${prior.name}” is disabled; enable it before it can run`;
             send(conn.ws, { type: "hookTest", hookId: prior.id, ok: prior.enabled, said, ...(requestId ? { requestId } : {}) });
           }
           break;
         }
         const hook = this.myHook(conn.userId, frame.hookId);
+        this.validateHookOwner(conn.userId, hook);
         const said = hook.enabled ? `“${hook.name}” is valid and ready for ${HOOK_ACTIONS[hook.action.do]}` : `“${hook.name}” is disabled; enable it before it can run`;
-        if (requestId) this.store.saveHookRequest(conn.userId, requestId, hook.id, "test", frame.hookId, "{}");
-        this.store.logHookAudit(conn.userId, hook.id, "tested", hook.enabled, said, Date.now(), conn.userId, conn.client, requestId, frame.hookId);
+        this.store.recordHookTest(conn.userId, hook, requestId, hook.enabled, said, Date.now(), conn.client);
         send(conn.ws, { type: "hookTest", hookId: hook.id, ok: hook.enabled, said, ...(frame.requestId ? { requestId: frame.requestId } : {}) });
         break;
       }

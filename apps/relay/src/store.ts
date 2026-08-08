@@ -559,6 +559,7 @@ export class Store implements JoinHubStore {
       CREATE TABLE IF NOT EXISTS hook_requests(
         ownerId TEXT NOT NULL, requestId TEXT NOT NULL, hookId TEXT NOT NULL,
         kind TEXT NOT NULL, target TEXT NOT NULL, payload TEXT NOT NULL,
+        createdAt INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(ownerId, requestId)
       );
 
@@ -869,6 +870,7 @@ export class Store implements JoinHubStore {
     this.addColumn("hook_requests", "kind", "TEXT NOT NULL DEFAULT 'legacy'");
     this.addColumn("hook_requests", "target", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("hook_requests", "payload", "TEXT NOT NULL DEFAULT '{}'");
+    this.addColumn("hook_requests", "createdAt", "INTEGER NOT NULL DEFAULT 0");
     // AN INDEX CAN ONLY BE BUILT OVER A COLUMN THAT EXISTS, so it is built
     // here, after the ALTERs, and not up in the CREATE block with the others.
     //
@@ -883,6 +885,8 @@ export class Store implements JoinHubStore {
     // belongs here, below the ALTERs. Nothing in the CREATE block may name a
     // column that any migration step is responsible for.
     this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS act_seq ON activity(seq)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS hook_requests_owner_created ON hook_requests(ownerId, createdAt DESC, requestId DESC)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS hook_audit_owner_at ON hook_audit(ownerId, at DESC, id DESC)");
 
     // THE STEPPER. Each step is a function of the version it starts from, runs
     // once, and is written so that running it AGAIN on an already-migrated
@@ -1321,6 +1325,9 @@ export class Store implements JoinHubStore {
     this.tx(() => {
       this.db.prepare("DELETE FROM saved_mutation_receipts WHERE userId=?").run(id);
       this.db.prepare("DELETE FROM saved_messages WHERE userId=?").run(id);
+      this.db.prepare("DELETE FROM hook_requests WHERE ownerId=?").run(id);
+      this.db.prepare("DELETE FROM hook_audit WHERE ownerId=?").run(id);
+      this.db.prepare("DELETE FROM hooks WHERE ownerId=?").run(id);
     });
     this.db.prepare("DELETE FROM tokens WHERE userId=?").run(id);
     this.db.prepare("UPDATE invites SET revoked=1 WHERE usedBy=? OR createdBy=?").run(id, id);
@@ -3341,8 +3348,24 @@ export class Store implements JoinHubStore {
     const row = this.db.prepare("SELECT hookId,kind,target,payload FROM hook_requests WHERE ownerId=? AND requestId=?").get(ownerId, requestId) as { hookId: ID; kind: string; target: string; payload: string } | undefined;
     return row;
   }
+  private insertHookRequest(ownerId: ID, requestId: ID, hookId: ID, kind: string, target: string, payload: string, createdAt = Date.now()): void {
+    this.db.prepare("INSERT INTO hook_requests(ownerId,requestId,hookId,kind,target,payload,createdAt) VALUES(?,?,?,?,?,?,?)")
+      .run(ownerId, requestId, hookId, kind, target, payload, createdAt);
+  }
+  private pruneHookRequests(ownerId: ID, now = Date.now()): void {
+    const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+    this.db.prepare("DELETE FROM hook_requests WHERE ownerId=? AND createdAt < ?").run(ownerId, cutoff);
+    this.db.prepare(
+      "DELETE FROM hook_requests WHERE ownerId=? AND requestId NOT IN " +
+      "(SELECT requestId FROM hook_requests WHERE ownerId=? ORDER BY createdAt DESC,requestId DESC LIMIT 512)",
+    ).run(ownerId, ownerId);
+  }
   saveHookRequest(ownerId: ID, requestId: ID, hookId: ID, kind: string, target: string, payload: string): void {
-    this.db.prepare("INSERT INTO hook_requests(ownerId,requestId,hookId,kind,target,payload) VALUES(?,?,?,?,?,?)").run(ownerId, requestId, hookId, kind, target, payload);
+    this.tx(() => {
+      const now = Date.now();
+      this.insertHookRequest(ownerId, requestId, hookId, kind, target, payload, now);
+      this.pruneHookRequests(ownerId, now);
+    });
   }
   /** Persist a rule and its receipt as one durable operation. */
   saveHookWithRequest(
@@ -3351,7 +3374,11 @@ export class Store implements JoinHubStore {
   ): void {
     this.tx(() => {
       this.saveHook(hook);
-      if (requestId) this.saveHookRequest(ownerId, requestId, hook.id, kind, target, payload);
+      if (requestId) {
+        const now = Date.now();
+        this.insertHookRequest(ownerId, requestId, hook.id, kind, target, payload, now);
+        this.pruneHookRequests(ownerId, now);
+      }
     });
   }
   /** Delete a rule and remember that delete as one durable operation. */
@@ -3361,15 +3388,50 @@ export class Store implements JoinHubStore {
   ): void {
     this.tx(() => {
       this.deleteHook(ownerId, hookId);
-      if (requestId) this.saveHookRequest(ownerId, requestId, hookId, kind, target, payload);
+      if (requestId) {
+        const now = Date.now();
+        this.insertHookRequest(ownerId, requestId, hookId, kind, target, payload, now);
+        this.pruneHookRequests(ownerId, now);
+      }
     });
+  }
+  private insertHookAudit(
+    ownerId: ID, hookId: ID, action: string, ok: boolean, said: string,
+    at: number, actorId: ID, client: string, requestId?: ID, target = hookId,
+  ): void {
+    this.db.prepare("INSERT INTO hook_audit(id,ownerId,hookId,action,ok,said,at,actorId,client,requestId,target) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run(newId("hookaudit"), ownerId, hookId, action, ok ? 1 : 0, said, at, actorId, client, requestId ?? null, target);
+  }
+  private pruneHookAudit(ownerId: ID, now = Date.now()): void {
+    const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+    this.db.prepare("DELETE FROM hook_audit WHERE ownerId=? AND at < ?").run(ownerId, cutoff);
+    this.db.prepare(
+      "DELETE FROM hook_audit WHERE ownerId=? AND id NOT IN " +
+      "(SELECT id FROM hook_audit WHERE ownerId=? ORDER BY at DESC,id DESC LIMIT 512)",
+    ).run(ownerId, ownerId);
   }
   logHookAudit(
     ownerId: ID, hookId: ID, action: string, ok: boolean, said: string,
     at = Date.now(), actorId = ownerId, client = "", requestId?: ID, target = hookId,
   ): void {
-    this.db.prepare("INSERT INTO hook_audit(id,ownerId,hookId,action,ok,said,at,actorId,client,requestId,target) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-      .run(newId("hookaudit"), ownerId, hookId, action, ok ? 1 : 0, said, at, actorId, client, requestId ?? null, target);
+    this.tx(() => {
+      this.insertHookAudit(ownerId, hookId, action, ok, said, at, actorId, client, requestId, target);
+      this.pruneHookAudit(ownerId, at);
+    });
+  }
+  /** Test receipt and its visible audit row are one durable operation. */
+  recordHookTest(
+    ownerId: ID, hook: StoredHook, requestId: ID | undefined, ok: boolean, said: string,
+    at = Date.now(), client = "desktop",
+  ): void {
+    this.tx(() => {
+      if (requestId) {
+        this.insertHookRequest(ownerId, requestId, hook.id, "test", hook.id, "{}", at);
+        this.pruneHookRequests(ownerId, at);
+      }
+      this.insertHookAudit(ownerId, hook.id, "tested", ok, said, at, ownerId, client, requestId, hook.id);
+      this.pruneHookAudit(ownerId, at);
+    });
   }
   /** Whether a hook firing receipt was already written (transport retry safe). */
   hookAuditHasRequest(ownerId: ID, requestId: ID, target?: string): boolean {
@@ -3378,8 +3440,8 @@ export class Store implements JoinHubStore {
     ).get(ownerId, requestId, target ?? null, target ?? null));
   }
   hookAuditOf(ownerId: ID): { hookId: ID; action: string; ok: boolean; said: string; at: number; actorId: ID; client: string; requestId?: ID; target: string }[] {
-    return (this.db.prepare("SELECT hookId,action,ok,said,at,actorId,client,requestId,target FROM hook_audit WHERE ownerId=? ORDER BY at ASC,id ASC")
-      .all(ownerId) as { hookId: ID; action: string; ok: number; said: string; at: number; actorId: ID; client: string; requestId: ID | null; target: string }[])
+    return (this.db.prepare("SELECT hookId,action,ok,said,at,actorId,client,requestId,target FROM hook_audit WHERE ownerId=? ORDER BY at DESC,id DESC LIMIT 512")
+      .all(ownerId) as { hookId: ID; action: string; ok: number; said: string; at: number; actorId: ID; client: string; requestId: ID | null; target: string }[]).reverse()
       .map(row => ({ hookId: row.hookId, action: row.action, ok: row.ok === 1, said: row.said, at: row.at, actorId: row.actorId, client: row.client, ...(row.requestId ? { requestId: row.requestId } : {}), target: row.target }));
   }
 

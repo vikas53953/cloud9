@@ -3637,9 +3637,11 @@ export class RelayClient {
             w.hooks = { ...w.hooks, asked: true, list: frame.hooks, problem: undefined };
             break;
           }
-          const expected = w.hooks.requestId ?? w.hooks.mutationRequestId;
+          const expected = w.hooks.requestId ?? (w.hooks.pending?.[frame.requestId] ? frame.requestId : w.hooks.mutationRequestId);
           if (frame.requestId !== expected) break;
-          w.hooks = { ...w.hooks, asked: true, requestId: undefined, list: frame.hooks };
+          const pending = { ...w.hooks.pending };
+          if (frame.requestId && pending[frame.requestId]) delete pending[frame.requestId];
+          w.hooks = { ...w.hooks, asked: true, requestId: undefined, mutationRequestId: Object.keys(pending).at(-1), pending, list: frame.hooks };
         }
         break;
       case "hook": {
