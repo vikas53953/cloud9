@@ -377,6 +377,7 @@ export interface World {
   /** Unread counts for every member project, not just the currently open feed. */
   socialUnread: Record<ID, number>;
   socialPending: Record<ID, true>;
+  socialCompleted?: ID;
   socialProblem?: string;
   /** Project-scoped social feeds, loaded only when the Social screen asks. */
   socialFeeds: Record<ID, {
@@ -669,7 +670,7 @@ export class RelayClient {
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
     projects: { asked: false, list: [] }, projectItems: {}, hooks: { asked: false, list: [] },
-    socialProjects: { asked: false, list: [] }, socialUnread: {}, socialPending: {}, socialFeeds: {},
+    socialProjects: { asked: false, list: [] }, socialUnread: {}, socialPending: {}, socialCompleted: undefined, socialFeeds: {},
     repoChoices: { asked: false, asking: false },
     artifacts: {}, artifactsGone: {}, channelArtifacts: {},
     artifactWorkspace: emptyArtifactWorkspace(),
@@ -1138,7 +1139,7 @@ export class RelayClient {
     setTimeout(() => this.socialRequests.delete(requestId), ANSWER_WINDOW_MS);
   }
 
-  private socialMutation(frame: ClientFrame): boolean {
+  private socialMutation(frame: ClientFrame): ID | false {
     const requestId = this.nextRequestId(frame.type);
     const outgoing = { ...frame, requestId } as ClientFrame;
     const settle = (problem?: string): void => {
@@ -1159,9 +1160,10 @@ export class RelayClient {
     }
     this.rememberSocialRequest(requestId);
     this.world.socialPending = { ...this.world.socialPending, [requestId]: true };
+    this.world.socialCompleted = undefined;
     this.world.socialProblem = undefined;
     this.emit();
-    return true;
+    return requestId;
   }
 
   private settleSocialSuccess(requestId?: ID): void {
@@ -1170,6 +1172,7 @@ export class RelayClient {
     const { [requestId]: pending, ...rest } = this.world.socialPending;
     void pending;
     this.world.socialPending = rest;
+    this.world.socialCompleted = requestId;
     this.world.socialProblem = undefined;
   }
 
@@ -2146,7 +2149,7 @@ export class RelayClient {
     if (!sent) settle("not connected to the hub yet");
   }
 
-  createSocialPost(projectId: ID, text: string, parentId?: ID, links?: SocialLink[]): boolean {
+  createSocialPost(projectId: ID, text: string, parentId?: ID, links?: SocialLink[]): ID | false {
     const bad = validateMessageText(text) ?? validateSocialLinks(links);
     if (this.refused(bad)) return false;
     return this.socialMutation({ type: "socialCreate", projectId, text, ...(parentId ? { parentId } : {}), ...(links?.length ? { links } : {}) });
@@ -2154,7 +2157,7 @@ export class RelayClient {
 
   editSocialPost(postId: ID, text: string): boolean {
     if (this.refused(validateMessageText(text))) return false;
-    return this.socialMutation({ type: "socialEdit", postId, text });
+    return this.socialMutation({ type: "socialEdit", postId, text }) !== false;
   }
 
   deleteSocialPost(postId: ID): void {
@@ -3287,6 +3290,7 @@ export class RelayClient {
         w.socialProjects = { asked: false, list: [] };
         w.socialUnread = {};
         w.socialPending = {};
+        w.socialCompleted = undefined;
         w.socialProblem = undefined;
         w.socialFeeds = {};
         // Files agents made belonged to the last connection too, and `asked`

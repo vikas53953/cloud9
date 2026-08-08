@@ -14753,6 +14753,7 @@ function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => vo
   const [projectId, setProjectId] = useState<ID | "">("");
   const [text, setText] = useState("");
   const [replyTo, setReplyTo] = useState<ID | undefined>();
+  const [pendingPostId, setPendingPostId] = useState<ID | undefined>();
   const [editing, setEditing] = useState<ID | undefined>();
   const [editText, setEditText] = useState("");
   const [linkKind, setLinkKind] = useState<SocialLink["kind"]>("task");
@@ -14775,6 +14776,15 @@ function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => vo
     if (!selectedId || !newest || !world.connected) return;
     client.markSocialRead(selectedId, newest);
   }, [selectedId, newest, world.connected]);
+  useEffect(() => {
+    if (!pendingPostId) return;
+    if (world.socialCompleted === pendingPostId) {
+      setText(""); setReplyTo(undefined); setLinkId(""); setItemNumber(""); setPendingPostId(undefined);
+    } else if (!world.socialPending[pendingPostId] && world.socialProblem) {
+      // Refused/lost mutations leave the draft visible for correction/retry.
+      setPendingPostId(undefined);
+    }
+  }, [pendingPostId, world.socialCompleted, world.socialPending, world.socialProblem]);
 
   const submit = () => {
     if (!selectedId) return;
@@ -14787,8 +14797,9 @@ function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => vo
     } else if (linkId.trim()) {
       links.push({ kind: linkKind, id: linkId.trim() });
     }
-    if (!client.createSocialPost(selectedId, text, replyTo, links)) return;
-    setText(""); setReplyTo(undefined); setLinkId(""); setItemNumber("");
+    const requestId = client.createSocialPost(selectedId, text, replyTo, links);
+    if (!requestId) return;
+    setPendingPostId(requestId);
   };
   const submitEdit = (postId: ID) => {
     if (!client.editSocialPost(postId, editText)) return;
@@ -14836,7 +14847,7 @@ function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => vo
             <div className="social-composer-heading">{replyTo ? <><span>Commenting on a post</span><button type="button" onClick={() => setReplyTo(undefined)}>Cancel comment</button></> : <span>Share with this project</span>}</div>
             <label htmlFor="social-composer-text">{replyTo ? "Comment" : "Post"}</label><textarea id="social-composer-text" value={text} onChange={e => setText(e.target.value)} placeholder={replyTo ? "Add a useful follow-up…" : "What should the team know?"} rows={4} />
             <div className="social-link-fields"><label>Link<select aria-label="Linked record type" value={linkKind} onChange={e => setLinkKind(e.target.value as SocialLink["kind"])}><option value="task">Task</option><option value="run">Run</option><option value="artifact">Artifact</option><option value="projectItem">PR or issue</option></select></label>{linkKind === "projectItem" ? <><label>Kind<select aria-label="Work item kind" value={itemKind} onChange={e => setItemKind(e.target.value as "pull" | "issue")}><option value="pull">PR</option><option value="issue">Issue</option></select></label><label>Number<input aria-label="Work item number" inputMode="numeric" value={itemNumber} onChange={e => setItemNumber(e.target.value)} /></label></> : <label>ID<input aria-label={`Linked ${linkKind} ID`} value={linkId} onChange={e => setLinkId(e.target.value)} /></label>}</div>
-            <button className="primary" type="submit" disabled={!text.trim() || !selectedId}>Publish to project</button>
+            <button className="primary" type="submit" disabled={!text.trim() || !selectedId || !!pendingPostId} aria-busy={!!pendingPostId}>{pendingPostId ? "Publishing…" : "Publish to project"}</button>
           </form>
         </>}
     </section>
