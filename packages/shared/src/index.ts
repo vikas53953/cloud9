@@ -1948,6 +1948,72 @@ export const PROJECT_LIMITS = {
   path: 400,
 } as const;
 
+// ---------- project polls ----------
+// Polls are deliberately project-scoped.  They never carry a public/anonymous
+// flag: the relay authorises every read, write, and vote against the stored
+// project/channel membership.
+export type ProjectPollStatus = "open" | "closed";
+export type ProjectPollAuthorKind = "human" | "agent";
+export interface ProjectPollOption { id: ID; label: string; }
+export interface ProjectPollResult { optionId: ID; votes: number; }
+export interface ProjectPollDecision {
+  closedAt: number;
+  closedBy: ID;
+  reason: "manual" | "deadline";
+  summary?: string;
+  results: ProjectPollResult[];
+}
+export interface ProjectPoll {
+  id: ID;
+  projectId: ID;
+  authorId: ID;
+  authorKind: ProjectPollAuthorKind;
+  question: string;
+  options: ProjectPollOption[];
+  deadlineAt?: number;
+  createdAt: number;
+  status: ProjectPollStatus;
+  decision?: ProjectPollDecision;
+}
+export interface ProjectPollView extends ProjectPoll {
+  totalVotes: number;
+  myOptionId?: ID;
+  canClose: boolean;
+  /**
+   * Live option tallies for open and closed polls. Closed polls also carry
+   * `decision.results` (the recorded decision); screens should prefer this
+   * field so open polls never render every option as 0.
+   */
+  results: ProjectPollResult[];
+}
+export const POLL_LIMITS = {
+  perProject: 100,
+  question: 240,
+  option: 120,
+  optionsMin: 2,
+  optionsMax: 10,
+  summary: 500,
+} as const;
+export function validatePollQuestion(question: unknown): string | null {
+  if (typeof question !== "string" || !question.trim()) return "a poll question is required";
+  if (question.trim().length > POLL_LIMITS.question) return `that question is too long (max ${POLL_LIMITS.question} characters)`;
+  return null;
+}
+export function validatePollOptions(options: unknown): string | null {
+  if (!Array.isArray(options) || options.length < POLL_LIMITS.optionsMin || options.length > POLL_LIMITS.optionsMax) {
+    return `a poll needs ${POLL_LIMITS.optionsMin}-${POLL_LIMITS.optionsMax} options`;
+  }
+  const seen = new Set<string>();
+  for (const option of options) {
+    if (typeof option !== "string" || !option.trim()) return "poll options cannot be empty";
+    if (option.trim().length > POLL_LIMITS.option) return `that option is too long (max ${POLL_LIMITS.option} characters)`;
+    const key = option.trim().toLocaleLowerCase();
+    if (seen.has(key)) return "poll options must be distinct";
+    seen.add(key);
+  }
+  return null;
+}
+
 /**
  * IS THIS A FOLDER ON THIS COMPUTER, said the whole way from the drive?
  *
@@ -2584,6 +2650,7 @@ export type ActivityKind =
   // so it belongs in the trail like every other one. Nothing here touches
   // GitHub — these three lines are about OUR copy.
   | "project_connected" | "project_updated" | "project_forgotten"
+  | "project_poll_created" | "project_poll_voted" | "project_poll_closed"
   // narrowing or restoring who may read a file changes a permission wall
   | "artifact_access_changed"
   // Engineering Pulse is a durable team record, so its own actions are
@@ -3579,6 +3646,11 @@ type ClientFrameBase =
   | { type: "projects" }
   /** One project's pull requests and issues, as of the last time we looked. */
   | { type: "projectItems"; projectId: ID }
+  /** Project-scoped decision records. Every request is membership-authorised. */
+  | { type: "polls"; projectId: ID }
+  | { type: "createPoll"; projectId: ID; question: string; options: string[]; deadlineAt?: number; authorAgentId?: ID }
+  | { type: "votePoll"; pollId: ID; optionId: ID }
+  | { type: "closePoll"; pollId: ID; summary?: string }
   | { type: "hooks" }
   | { type: "hooksAudit" }
   | { type: "createHook"; hook: Omit<StoredHook, "id" | "ownerId" | "updatedAt"> }
@@ -3899,6 +3971,8 @@ export interface WorldState {
   workflowRuns?: WorkflowRun[];
   /** Saved queue seed; clients still request the canonical list after welcome. */
   savedMessages?: SavedMessageEntry[];
+  /** Project-scoped polls visible to this authenticated member. */
+  polls?: ProjectPollView[];
   /**
    * Where this person has read up to, per conversation — from the RELAY, so it
    * follows them between machines (absent on a relay older than this round).
@@ -4111,6 +4185,10 @@ export type ServerFrame =
   | { type: "projectForgotten"; projectId: ID }
   /** Answers `projectItems`, and pushed again whenever the engine re-syncs. */
   | { type: "projectItems"; projectId: ID; items: ProjectItem[] }
+  | { type: "polls"; projectId: ID; polls: ProjectPollView[]; requestId?: ID }
+  | { type: "poll"; poll: ProjectPollView; requestId?: ID }
+  /** A shared project was removed from this user's membership; discard cached polls. */
+  | { type: "projectAccessRevoked"; projectId: ID }
   | { type: "hooks"; hooks: StoredHook[]; requestId?: ID }
   | { type: "hook"; hook: StoredHook; requestId?: ID }
   | { type: "hookTest"; hookId: ID; ok: boolean; said: string; requestId?: ID }

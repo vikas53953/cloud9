@@ -13,6 +13,8 @@ import {
   Channel, ChannelMember,
   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
   MESSAGE_LIMITS, ARTIFACT_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
+  ProjectPoll, ProjectPollView, POLL_LIMITS, validatePollQuestion, validatePollOptions,
+  ActivityRecord,
   ReachCatchup,
   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject,
   redactDeletedPulseUpdate, validateEngineeringPulseDraft,
@@ -230,6 +232,8 @@ export class Relay {
   // his screen, live, until he answers it or stops the agent.)
   /** Startup-expired workflow approvals are re-broadcast once the owner arrives. */
   private restartExpiredWorkflowApprovals: Approval[] = [];
+  /** One persisted poll deadline is enough to wake the relay; the next one is rescheduled after each sweep. */
+  private pollExpiryTimer?: ReturnType<typeof setTimeout>;
   /** last sign-in request per user, and whether one is still running */
   private signInAt: Record<ID, number> = {};
   private signInFlight: Record<ID, number> = {};
@@ -319,6 +323,10 @@ export class Relay {
     // uploader's, so nothing was ever going to reclaim them. Swept at every
     // start, and again on each upload, so the disk cannot fill with drafts.
     this.store.sweepParkedAttachments(Date.now() - ATTACHMENT_LIMITS.parkedTtlMs);
+    // Poll deadlines survive a relay restart in SQLite. Schedule the earliest
+    // one now so closure is pushed to every currently connected window rather
+    // than waiting for somebody to request the poll list.
+    this.scheduleProjectPollExpiry();
     // THE AGENTS HE ALREADY HAD, CAUGHT UP — once, here, before anybody is let
     // in, so the first world he is handed is already the true one and no client
     // ever sees the old state and then a change arriving behind it. It only
@@ -374,6 +382,8 @@ export class Relay {
   }
 
   close(): void {
+    if (this.pollExpiryTimer) clearTimeout(this.pollExpiryTimer);
+    this.pollExpiryTimer = undefined;
     for (const t of this.looking.values()) clearTimeout(t);
     this.looking.clear();
     for (const c of this.conns) c.ws.close();
@@ -1181,9 +1191,132 @@ export class Relay {
   /** the projects an engine has been asked about and has not answered for yet */
   private looking = new Map<ID, ReturnType<typeof setTimeout>>();
 
-  /** Every project leaves the hub through here, so "looking" cannot be forgotten. */
-  private viewProject(project: Project): Project {
-    return this.looking.has(project.id) ? { ...project, looking: true } : project;
+  /**
+   * Project membership for polls and member-facing project lists.
+   * Owner always; channel members when the project is linked to a room they can see.
+   */
+  private projectForMember(userId: ID, projectId: ID): Project {
+    const project = this.store.project(projectId);
+    if (!project) throw new Error("no such project");
+    if (project.ownerId === userId) return project;
+    if (project.channelId) { this.channelFor(userId, project.channelId); return project; }
+    throw new Error("no such project");
+  }
+
+  private projectsForMember(userId: ID): Project[] {
+    return this.store.projectsAll().filter(project => {
+      if (project.ownerId === userId) return true;
+      if (!project.channelId) return false;
+      try { this.channelFor(userId, project.channelId); return true; } catch { return false; }
+    });
+  }
+
+  private pollView(userId: ID, poll: ProjectPoll): ProjectPollView {
+    const results = this.store.pollResults(poll.id, poll.options);
+    return {
+      ...poll,
+      totalVotes: results.reduce((n, v) => n + v.votes, 0),
+      results,
+      ...(this.store.pollVote(poll.id, userId) ? { myOptionId: this.store.pollVote(poll.id, userId) } : {}),
+      canClose: this.store.project(poll.projectId)?.ownerId === userId,
+    };
+  }
+
+  private pollAudience(project: Project): Set<ID> {
+    const out = new Set<ID>([project.ownerId]);
+    if (project.channelId) {
+      const channel = this.store.channel(project.channelId);
+      if (channel) for (const id of this.audienceFor(channel)) out.add(id);
+    }
+    return out;
+  }
+
+  /** Every window that could currently see a shared project projection. */
+  private projectAudience(project: Project): Set<ID> {
+    return this.pollAudience(project);
+  }
+
+  private pushPoll(poll: ProjectPoll, requestId?: ID, requesterId?: ID): void {
+    const project = this.store.project(poll.projectId);
+    if (!project) return;
+    for (const userId of this.projectAudience(project)) {
+      this.toUser(userId, {
+        type: "poll", poll: this.pollView(userId, poll),
+        ...(requestId && requesterId === userId ? { requestId } : {}),
+      });
+    }
+  }
+
+  /** Close due polls and publish the changed projection to every project member. */
+  private sweepExpiredProjectPolls(now = Date.now()): void {
+    for (const poll of this.store.expireProjectPolls(now)) {
+      // No private repo string — activity is hub-wide and membership-scoped below.
+      this.store.logActivity({
+        actorKind: "system", actorId: "system", actorName: "Cloud9",
+        kind: "project_poll_closed", refId: poll.id,
+        detail: "closed when its deadline was reached",
+      });
+      this.pushPoll(poll);
+    }
+    this.scheduleProjectPollExpiry();
+  }
+
+  /** Schedule the earliest stored deadline, including deadlines restored on restart. */
+  private scheduleProjectPollExpiry(): void {
+    if (this.pollExpiryTimer) clearTimeout(this.pollExpiryTimer);
+    this.pollExpiryTimer = undefined;
+    const at = this.store.nextProjectPollDeadline();
+    if (at === undefined) return;
+    // Node clamps delays above 2^31-1ms to 1ms. Keep the durable deadline
+    // intact and wake in bounded chunks for far-future polls instead of
+    // accidentally closing them immediately after creation/restart.
+    const delay = Math.max(0, at - Date.now()) + 10;
+    const boundedDelay = Math.min(delay, 24 * 60 * 60 * 1000);
+    const timer = setTimeout(() => {
+      if (this.pollExpiryTimer === timer) this.pollExpiryTimer = undefined;
+      if (Date.now() < at) this.scheduleProjectPollExpiry();
+      else this.sweepExpiredProjectPolls();
+    }, boundedDelay);
+    timer.unref?.();
+    this.pollExpiryTimer = timer;
+  }
+
+  /**
+   * Poll activity rows are membership-scoped. A hub guest who cannot open the
+   * project must not learn that a poll was created, voted, or closed.
+   */
+  private canSeeActivity(userId: ID, record: ActivityRecord): boolean {
+    if (record.kind !== "project_poll_created"
+      && record.kind !== "project_poll_voted"
+      && record.kind !== "project_poll_closed") {
+      return true;
+    }
+    const poll = record.refId ? this.store.projectPoll(record.refId) : undefined;
+    if (!poll) return false;
+    try { this.projectForMember(userId, poll.projectId); return true; }
+    catch { return false; }
+  }
+
+  /**
+   * Every project leaves the hub through here, so "looking" cannot be forgotten.
+   *
+   * CLASS: member-facing projections never carry the owner's disk path or
+   * private repo string. Polls only need id + name for the picker; owners still
+   * get the full row (including looking/localPath/repo).
+   */
+  private viewProject(project: Project, viewerId?: ID): Project {
+    const base = this.looking.has(project.id) ? { ...project, looking: true } : { ...project };
+    if (viewerId === undefined || project.ownerId === viewerId) return base;
+    // Member-safe: id + name (+ room linkage). Never localPath or repo.
+    return {
+      id: base.id,
+      ownerId: base.ownerId,
+      name: base.name,
+      repo: "",
+      createdAt: base.createdAt,
+      ...(base.channelId ? { channelId: base.channelId } : {}),
+      ...(base.description ? { description: base.description } : {}),
+    };
   }
 
   /**
@@ -1969,10 +2102,25 @@ export class Relay {
 
   /** Tell one person's machines they are out of a room, so they stop drawing it. */
   private tellLeft(userId: ID, channelId: ID): void {
+    // A person's sight of a room survives removing/leaving one membership when
+    // one of their owned agents is still in it. Do not evict the human's
+    // channel/project cache in that case; visibleChannels is the single
+    // membership rule used everywhere else in the relay.
+    const stillVisible = this.visibleChannels(userId).some(c => c.id === channelId);
+    if (stillVisible) return;
     this.toUser(userId, { type: "channelLeft", channelId });
     // Leaving a project room also changes Pulse visibility. Refresh the scoped
     // feed immediately so a removed member cannot keep a cached update alive.
     this.sendPulseSnapshot(userId);
+    // Projects linked to this room derive membership from the room. A real
+    // leave/remove must therefore revoke their cached projections immediately;
+    // waiting for a later updateProject or reconnect leaves poll data visible
+    // in another window after the member has lost access.
+    for (const project of this.store.projectsAll()) {
+      if (project.channelId === channelId && project.ownerId !== userId) {
+        this.toUser(userId, { type: "projectAccessRevoked", projectId: project.id });
+      }
+    }
   }
 
   /** The owner-only definition gate used by every workflow frame. */
@@ -3331,10 +3479,9 @@ export class Relay {
         break;
       }
       case "activity": {
-        send(conn.ws, {
-          type: "activity",
-          records: this.store.activity(frame.before ?? Date.now() + 1, frame.limit ?? 100),
-        });
+        const records = this.store.activity(frame.before ?? Date.now() + 1, frame.limit ?? 100)
+          .filter(r => this.canSeeActivity(conn.userId, r));
+        send(conn.ws, { type: "activity", records });
         break;
       }
       // ---- projects: a GitHub repository connected to Cloud9 (his item 7) ----
@@ -3389,6 +3536,7 @@ export class Relay {
       case "updateProject": {
         const project = this.myProject(conn.userId, frame.projectId);
         const beforePulseAudience = this.pulseAudience(project);
+        const beforeAudience = this.projectAudience(project);
         // renaming a project to what it is already called is not a clash, and a
         // name that clashed before this rule existed must not become unsavable
         const renamingIt = typeof frame.name === "string" && frame.name.trim()
@@ -3411,7 +3559,16 @@ export class Relay {
         }
         this.store.saveProject(project);
         this.audit(conn, "project_updated", project.id, `updated ${project.repo}`);
-        this.toUser(conn.userId, { type: "project", project: this.viewProject(project) });
+        const afterAudience = this.projectAudience(project);
+        for (const userId of beforeAudience) {
+          if (!afterAudience.has(userId)) {
+            this.toUser(userId, { type: "projectAccessRevoked", projectId: project.id });
+          }
+        }
+        // Member windows get a redacted projection (id+name); owners get full.
+        for (const userId of afterAudience) {
+          this.toUser(userId, { type: "project", project: this.viewProject(project, userId) });
+        }
         this.sendPulseSnapshotTo(new Set([...beforePulseAudience, ...this.pulseAudience(project)]));
         break;
       }
@@ -3495,6 +3652,7 @@ export class Relay {
       }
       case "forgetProject": {
         const project = this.myProject(conn.userId, frame.projectId);
+        const audience = this.projectAudience(project);
         for (const userId of this.store.socialMembers(project.id, project.ownerId)) {
           this.toUser(userId, { type: "socialUnavailable", projectId: project.id });
         }
@@ -3505,15 +3663,110 @@ export class Relay {
         this.endLook(project.id);
         this.store.forgetProject(project.id);
         this.audit(conn, "project_forgotten", project.id, `disconnected ${project.repo}`);
-        this.toUser(conn.userId, { type: "projectForgotten", projectId: project.id });
+        for (const userId of audience) {
+          this.toUser(userId, { type: "projectForgotten", projectId: project.id });
+        }
         this.sendPulseSnapshotTo(pulseAudience);
         break;
       }
       case "projects": {
+        // Member-facing list: owners get full rows; channel members get id+name only.
         send(conn.ws, {
           type: "projects",
-          projects: this.store.projectsOf(conn.userId).map(p => this.viewProject(p)),
+          projects: this.projectsForMember(conn.userId).map(p => this.viewProject(p, conn.userId)),
         });
+        break;
+      }
+      case "polls": {
+        const project = this.projectForMember(conn.userId, frame.projectId);
+        this.sweepExpiredProjectPolls();
+        send(conn.ws, {
+          type: "polls", projectId: project.id,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          polls: this.store.projectPolls(project.id).map(p => this.pollView(conn.userId, p)),
+        });
+        break;
+      }
+      case "createPoll": {
+        const project = this.projectForMember(conn.userId, frame.projectId);
+        const requestId = typeof frame.requestId === "string" && frame.requestId.trim()
+          ? frame.requestId.trim() : undefined;
+        if (requestId) {
+          const prior = this.store.projectPollRequest(conn.userId, requestId);
+          if (prior && prior.projectId !== project.id) {
+            throw new Error("that poll request id was already used for another project");
+          }
+          if (prior) {
+            const existing = this.store.projectPoll(prior.pollId);
+            if (existing) this.pushPoll(existing, requestId, conn.userId);
+            break;
+          }
+        }
+        const badQuestion = validatePollQuestion(frame.question);
+        if (badQuestion) throw new Error(badQuestion);
+        const badOptions = validatePollOptions(frame.options);
+        if (badOptions) throw new Error(badOptions);
+        if (this.store.projectPollCount(project.id) >= POLL_LIMITS.perProject) {
+          throw new Error(`that's too many polls for this project (max ${POLL_LIMITS.perProject})`);
+        }
+        if (frame.deadlineAt !== undefined && (!Number.isFinite(frame.deadlineAt) || frame.deadlineAt <= Date.now())) {
+          throw new Error("a poll deadline must be in the future");
+        }
+        if (conn.client === "engine" && frame.authorAgentId === undefined) {
+          throw new Error("engine-created polls must name the author agent");
+        }
+        let authorId = conn.userId;
+        let authorKind: ProjectPoll["authorKind"] = "human";
+        if (frame.authorAgentId !== undefined) {
+          if (conn.client !== "engine") throw new Error("only the engine can author a poll for an agent");
+          const agent = this.myAgent(conn.userId, frame.authorAgentId);
+          if (agent.ownerId !== project.ownerId) throw new Error("that agent does not own this project");
+          authorId = agent.id; authorKind = "agent";
+        }
+        const poll: ProjectPoll = {
+          id: newId("poll"), projectId: project.id, authorId, authorKind,
+          question: frame.question.trim(),
+          options: frame.options.map(label => ({ id: newId("opt"), label: label.trim() })),
+          ...(frame.deadlineAt !== undefined ? { deadlineAt: frame.deadlineAt } : {}),
+          createdAt: Date.now(), status: "open",
+        };
+        this.store.createProjectPoll(poll, conn.userId, requestId);
+        this.scheduleProjectPollExpiry();
+        // Detail never names the private repo — activity is filtered by membership.
+        this.audit(conn, "project_poll_created", poll.id, "created a project poll");
+        this.pushPoll(poll, requestId, conn.userId);
+        break;
+      }
+      case "votePoll": {
+        this.sweepExpiredProjectPolls();
+        const poll = this.store.projectPoll(frame.pollId);
+        if (!poll) throw new Error("no such poll");
+        this.projectForMember(conn.userId, poll.projectId);
+        if (poll.status !== "open") throw new Error("that poll is closed");
+        if (!poll.options.some(option => option.id === frame.optionId)) throw new Error("that is not a poll option");
+        this.store.voteProjectPoll(poll.id, conn.userId, frame.optionId);
+        this.audit(conn, "project_poll_voted", poll.id, "voted in a project poll");
+        this.pushPoll(poll);
+        break;
+      }
+      case "closePoll": {
+        this.sweepExpiredProjectPolls();
+        const poll = this.store.projectPoll(frame.pollId);
+        if (!poll) throw new Error("no such poll");
+        // Owner-only: myProject, not projectForMember.
+        this.myProject(conn.userId, poll.projectId);
+        if (poll.status === "closed") { this.pushPoll(poll); break; }
+        const summary = frame.summary?.trim();
+        if (summary && summary.length > POLL_LIMITS.summary) throw new Error(`that decision is too long (max ${POLL_LIMITS.summary} characters)`);
+        const decision = {
+          closedAt: Date.now(), closedBy: conn.userId, reason: "manual" as const,
+          ...(summary ? { summary } : {}), results: this.store.pollResults(poll.id, poll.options),
+        };
+        const closed = this.store.closeProjectPoll(poll.id, decision);
+        if (!closed) throw new Error("that poll is closed");
+        this.audit(conn, "project_poll_closed", poll.id, "closed a project poll");
+        this.pushPoll(closed);
+        this.scheduleProjectPollExpiry();
         break;
       }
       case "hooks": {
