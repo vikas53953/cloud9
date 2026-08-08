@@ -888,6 +888,8 @@ export class SdkProvider implements ClaudeProvider {
       allowedTools: tools,
       disallowedTools: deniedClaudeTools(agent),
       permissionMode: "dontAsk",
+      settingSources: [],
+      strictMcpConfig: true,
       cwd: workdir ?? this.agentDataDir(agent.id),
       env,
       includePartialMessages: true,

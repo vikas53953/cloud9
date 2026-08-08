@@ -47,6 +47,8 @@ test("stored-key SDK keeps supplied folders and does not impose a six-turn trap"
   assert.equal(answer, "final answer");
   assert.deepEqual(options?.additionalDirectories, ["C:\\shared"]);
   assert.equal("maxTurns" in (options ?? {}), false);
+  assert.deepEqual(options?.settingSources, []);
+  assert.equal(options?.strictMcpConfig, true);
   const env = options?.env as Record<string, string | undefined>;
   assert.equal(env.ANTHROPIC_API_KEY, "saved-key");
   assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
