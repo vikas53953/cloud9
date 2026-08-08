@@ -1142,6 +1142,7 @@ export class RelayClient {
     const requestId = this.nextRequestId(frame.type);
     const outgoing = { ...frame, requestId } as ClientFrame;
     const settle = (problem?: string): void => {
+      this.socialRequests.delete(requestId);
       const { [requestId]: pending, ...rest } = this.world.socialPending;
       void pending;
       this.world.socialPending = rest;
