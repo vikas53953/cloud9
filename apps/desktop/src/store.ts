@@ -11,6 +11,7 @@ import {
   EverywhereHit, SearchKind,
   ReachCatchup,
   Project, ForumTopic, ForumReply, ForumReadEntry, ForumLink, ForumStatus, ProjectItem, ProjectPollView, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
+  EngineeringCanvasView, EngineeringCanvasRevision, CanvasBlockKind, CanvasLink,
   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject, validateEngineeringPulseDraft,
   Workflow, WorkflowRun,
   HuddleSession, HuddleNote, HuddleReadEntry, HuddleParticipant, HuddleNoteKind, HuddleLink,
@@ -390,6 +391,7 @@ export interface World {
   projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
   /** Poll list is tied to both its active project and its latest request. */
   polls: { asked: boolean; projectId?: ID; requestId?: ID; list: ProjectPollView[] };
+  canvases: { asked: boolean; projectId?: ID; requestId?: ID; mutationRequestId?: ID; historyAsked?: boolean; historyRequestId?: ID; historyCanvasId?: ID; historyLoading?: boolean; historyProblem?: string; list: EngineeringCanvasView[]; history: EngineeringCanvasRevision[]; problem?: string };
   publicUpdates: {
     asked: boolean;
     drafts: PublicUpdateDraft[];
@@ -710,7 +712,7 @@ export class RelayClient {
     runs: {}, runLists: {}, runsGone: {},
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
-    projects: { asked: false, list: [] }, projectItems: {}, publicUpdates: { asked: false, drafts: [], revisions: [], audit: [] }, polls: { asked: false, list: [] },
+    projects: { asked: false, list: [] }, projectItems: {}, publicUpdates: { asked: false, drafts: [], revisions: [], audit: [] }, polls: { asked: false, list: [] }, canvases: { asked: false, list: [], history: [] },
     forumProjects: { asked: false, projects: [] }, forumFeeds: {}, forumTopicRequests: {}, forumReplies: {}, forumUnavailableProjects: {}, forumMutations: {}, forumMembersByProject: {},
 
     huddles: { asked: false, sessions: [] }, huddleProjects: { asked: false, list: [] }, huddleMutations: {}, huddleNotes: {}, huddleNavigation: undefined,
@@ -2141,7 +2143,80 @@ export class RelayClient {
   }
 
   /** Ask for one project's pull requests and issues, as of the last look. */
-  askPolls(projectId: ID): void {
+  
+  askCanvases(projectId: ID): void {
+    const requestId = this.nextRequestId("canvases");
+    this.world.canvases = { asked: false, projectId, requestId, historyAsked: false, list: [], history: [] };
+    const sent = this.ask({ type: "canvases", projectId, requestId }, {
+      answers: f => f.type === "canvases" && f.projectId === projectId && f.requestId === requestId,
+      answered: f => { if (f.type === "canvases" && this.world.canvases.requestId === requestId) this.world.canvases = { asked: true, projectId, list: f.canvases, historyAsked: false, history: [] }; },
+      refused: why => { if (this.world.canvases.requestId === requestId) this.world.canvases = { asked: true, projectId, list: [], history: [], problem: why }; this.emit(); },
+      lost: () => { if (this.world.canvases.requestId === requestId) this.world.canvases = { asked: true, projectId, list: [], history: [], problem: "the hub did not answer" }; this.emit(); },
+    });
+    if (!sent && this.world.canvases.requestId === requestId) { this.world.canvases = { asked: true, projectId, list: [], history: [], problem: "not connected to the hub yet" }; this.emit(); }
+  }
+  private canvasMutation(frame: ClientFrame, requestId: ID, hooks: { onSaved?: () => void; onLost?: () => void } = {}): void {
+    this.world.canvases = { ...this.world.canvases, mutationRequestId: requestId, problem: undefined };
+    const sent = this.ask({ ...frame, requestId } as ClientFrame, {
+      answers: f => f.type === "canvas" && f.requestId === requestId,
+      answered: () => {
+        if (this.world.canvases.mutationRequestId === requestId) {
+          this.world.canvases = { ...this.world.canvases, mutationRequestId: undefined };
+        }
+        hooks.onSaved?.();
+      },
+      refused: why => {
+        if (this.world.canvases.mutationRequestId === requestId) {
+          this.world.canvases = { ...this.world.canvases, mutationRequestId: undefined, problem: why };
+        }
+        this.emit();
+      },
+      lost: () => {
+        if (this.world.canvases.mutationRequestId === requestId) {
+          this.world.canvases = { ...this.world.canvases, mutationRequestId: undefined, problem: "the hub did not confirm that Canvas change" };
+        }
+        hooks.onLost?.();
+        this.emit();
+      },
+    });
+    if (!sent && this.world.canvases.mutationRequestId === requestId) {
+      this.world.canvases = { ...this.world.canvases, mutationRequestId: undefined, problem: "not connected to the hub yet" };
+      this.emit();
+    }
+  }
+  createCanvas(projectId: ID, title: string, hooks?: { onSaved?: () => void; onLost?: () => void }): void { const requestId = this.nextRequestId("createCanvas"); this.canvasMutation({ type: "createCanvas", projectId, title }, requestId, hooks); }
+  updateCanvas(canvasId: ID, title: string): void { const revision = this.world.canvases.list.find(c => c.id === canvasId)?.revision; const requestId = this.nextRequestId("updateCanvas"); this.canvasMutation({ type: "updateCanvas", canvasId, title, ...(revision !== undefined ? { expectedRevision: revision } : {}) }, requestId); }
+  addCanvasBlock(canvasId: ID, kind: CanvasBlockKind, text: string, link?: CanvasLink, hooks?: { onSaved?: () => void; onLost?: () => void }): void { const revision = this.world.canvases.list.find(c => c.id === canvasId)?.revision; const requestId = this.nextRequestId("addCanvasBlock"); this.canvasMutation({ type: "addCanvasBlock", canvasId, kind, text, ...(link ? { link } : {}), ...(revision !== undefined ? { expectedRevision: revision } : {}) }, requestId, hooks); }
+  editCanvasBlock(canvasId: ID, blockId: ID, text: string, kind?: CanvasBlockKind, hooks?: { onSaved?: () => void; onLost?: () => void }): void { const revision = this.world.canvases.list.find(c => c.id === canvasId)?.revision; const requestId = this.nextRequestId("editCanvasBlock"); this.canvasMutation({ type: "editCanvasBlock", canvasId, blockId, text, ...(kind ? { kind } : {}), ...(revision !== undefined ? { expectedRevision: revision } : {}) }, requestId, hooks); }
+  tombstoneCanvasBlock(canvasId: ID, blockId: ID): void { const revision = this.world.canvases.list.find(c => c.id === canvasId)?.revision; const requestId = this.nextRequestId("tombstoneCanvasBlock"); this.canvasMutation({ type: "tombstoneCanvasBlock", canvasId, blockId, ...(revision !== undefined ? { expectedRevision: revision } : {}) }, requestId); }
+  askCanvasHistory(canvasId: ID): void {
+    const requestId = this.nextRequestId("canvasHistory");
+    this.world.canvases = { ...this.world.canvases, historyAsked: true, historyRequestId: requestId, historyCanvasId: canvasId, historyLoading: true, historyProblem: undefined, history: [] };
+    const sent = this.ask({ type: "canvasHistory", canvasId, limit: 50, requestId }, {
+      answers: f => f.type === "canvasHistory" && f.canvasId === canvasId && f.requestId === requestId,
+      answered: f => {
+        if (f.type !== "canvasHistory" || this.world.canvases.historyRequestId !== requestId) return;
+        this.world.canvases = { ...this.world.canvases, history: f.revisions, historyRequestId: undefined, historyLoading: false, historyProblem: undefined };
+      },
+      refused: why => {
+        if (this.world.canvases.historyRequestId !== requestId) return;
+        this.world.canvases = { ...this.world.canvases, historyRequestId: undefined, historyLoading: false, historyProblem: why };
+        this.emit();
+      },
+      lost: () => {
+        if (this.world.canvases.historyRequestId !== requestId) return;
+        this.world.canvases = { ...this.world.canvases, historyRequestId: undefined, historyLoading: false, historyProblem: "the hub did not answer" };
+        this.emit();
+      },
+    });
+    if (!sent && this.world.canvases.historyRequestId === requestId) {
+      this.world.canvases = { ...this.world.canvases, historyRequestId: undefined, historyLoading: false, historyProblem: "not connected to the hub yet" };
+      this.emit();
+    }
+  }
+  markCanvasRead(canvasId: ID, revision: number): void { this.send({ type: "markCanvasRead", canvasId, revision }); }
+
+askPolls(projectId: ID): void {
     const requestId = this.nextRequestId("polls");
     this.world.polls = { asked: false, projectId, requestId, list: [] };
     const sent = this.ask({ type: "polls", projectId, requestId }, {
@@ -4262,6 +4337,9 @@ export class RelayClient {
             .filter(([id]) => id !== frame.projectId)),
         };
         if (w.polls.projectId === frame.projectId) w.polls = { asked: true, list: [] };
+        if (w.canvases.projectId === frame.projectId) {
+          w.canvases = { asked: true, list: [], history: [], problem: "this project is no longer connected" };
+        }
         const removed = w.huddles.sessions.filter(s => s.projectId === frame.projectId);
         w.huddles = { ...w.huddles, sessions: w.huddles.sessions.filter(s => s.projectId !== frame.projectId) };
         for (const session of removed) { const { [session.id]: gone, ...rest } = w.huddleNotes; void gone; w.huddleNotes = rest; }
@@ -4336,12 +4414,38 @@ export class RelayClient {
         };
         break;
       }
+
+      case "canvases":
+        if ((frame.requestId !== undefined && frame.requestId !== w.canvases.requestId)
+          || (frame.requestId === undefined && w.canvases.projectId !== frame.projectId)) break;
+        w.canvases = { asked: true, projectId: frame.projectId, list: frame.canvases, historyAsked: false, history: [] };
+        break;
+      case "canvas": {
+        const currentProject = w.canvases.projectId;
+        const correlated = frame.requestId !== undefined && frame.requestId === w.canvases.mutationRequestId;
+        if (frame.requestId !== undefined && !correlated && currentProject !== frame.canvas.projectId) break;
+        if (frame.requestId === undefined && currentProject !== frame.canvas.projectId) break;
+        const list = w.canvases.list;
+        const i = list.findIndex(c => c.id === frame.canvas.id);
+        w.canvases = { ...w.canvases, asked: true,
+          ...(currentProject ? { projectId: currentProject } : { projectId: frame.canvas.projectId }),
+          list: i < 0 ? [frame.canvas, ...list] : list.map(c => c.id === frame.canvas.id ? frame.canvas : c) };
+        if (correlated) w.canvases = { ...w.canvases, mutationRequestId: undefined, problem: undefined };
+        break;
+      }
+      case "canvasHistory":
+        if (frame.requestId === undefined || frame.requestId !== w.canvases.historyRequestId || w.canvases.historyCanvasId !== frame.canvasId) break;
+        w.canvases = { ...w.canvases, history: frame.revisions, historyRequestId: undefined, historyLoading: false, historyProblem: undefined };
+        break;
       case "projectAccessRevoked": {
         w.projects = { ...w.projects, list: w.projects.list.filter(p => p.id !== frame.projectId) };
         const { [frame.projectId]: goneItems, ...restItems } = w.projectItems;
         void goneItems;
         w.projectItems = restItems;
         if (w.polls.projectId === frame.projectId) w.polls = { asked: true, list: [] };
+        if (w.canvases.projectId === frame.projectId) {
+          w.canvases = { asked: true, list: [], history: [], problem: "this project is no longer accessible" };
+        }
         if (w.publicUpdates.selected?.projectId === frame.projectId || w.publicUpdates.drafts.some(d => d.projectId === frame.projectId)) {
           w.publicUpdates = {
             ...w.publicUpdates,

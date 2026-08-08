@@ -16,6 +16,8 @@ import {
   PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, PublicUpdateLink,
   validatePublicUpdateText, validatePublicUpdateLinks,
   ProjectPoll, ProjectPollView, POLL_LIMITS, validatePollQuestion, validatePollOptions,
+  EngineeringCanvas, EngineeringCanvasView, EngineeringCanvasRevision, CanvasBlock, CanvasLink,
+  CANVAS_LIMITS, validateCanvasTitle, validateCanvasBlock, validateCanvasLink,
   ActivityRecord,
   ReachCatchup,
   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject,
@@ -1751,7 +1753,128 @@ export class Relay {
    * private repo string. Polls only need id + name for the picker; owners still
    * get the full row (including looking/localPath/repo).
    */
-  private viewProject(project: Project, viewerId?: ID): Project {
+  
+  private projectForCanvas(userId: ID, projectId: ID): Project {
+    return this.projectForMember(userId, projectId);
+  }
+  private canvasForMember(userId: ID, canvasId: ID): { project: Project; canvas: EngineeringCanvas } {
+    const canvas = this.store.canvas(canvasId);
+    if (!canvas) throw new Error("no such canvas");
+    return { canvas, project: this.projectForCanvas(userId, canvas.projectId) };
+  }
+  /**
+   * Canvas authorship is explicit at the engine boundary. An engine socket is
+   * authenticated as the owner account, but it is not a human keyboard: an
+   * omitted agent id must never silently turn an engine mutation into a human
+   * edit. Desktop sockets may write as the signed-in human only; engine
+   * sockets must name one of the owner's stored agents for every mutation.
+   */
+  private canvasAuthor(conn: Conn, project: Project, authorAgentId: ID | undefined): { id: ID; kind: CanvasBlock["authorKind"] } {
+    if (conn.client === "engine") {
+      if (!authorAgentId) throw new Error("engine Canvas mutations must name an agent");
+      const agent = this.myAgent(conn.userId, authorAgentId);
+      if (agent.ownerId !== project.ownerId) throw new Error("that agent does not own this project");
+      return { id: agent.id, kind: "agent" };
+    }
+    if (authorAgentId !== undefined) throw new Error("only the engine can author a Canvas for an agent");
+    return { id: conn.userId, kind: "human" };
+  }
+  /** A request id is a receipt for one exact Canvas operation, not a reusable nonce. */
+  private canvasReceipt(conn: Conn, requestId: ID | undefined, action: string, target: ID, payload: unknown) {
+    if (!requestId) return undefined;
+    const prior = this.store.canvasRequest(conn.userId, requestId);
+    if (!prior) return undefined;
+    const encoded = JSON.stringify(payload);
+    const fingerprint = this.canvasPayloadFingerprint(payload);
+    if (prior.action !== action || prior.target !== target || (prior.payload !== encoded && prior.payload !== fingerprint)) {
+      throw new Error("that Canvas request id was already used for a different operation");
+    }
+    return prior;
+  }
+  private canvasPayloadFingerprint(payload: unknown): string {
+    const canonical = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(canonical);
+      if (value && typeof value === "object") {
+        return Object.fromEntries(Object.keys(value as object).sort().map(k => [k, canonical((value as Record<string, unknown>)[k])]));
+      }
+      return value;
+    };
+    return createHash("sha256").update(JSON.stringify(canonical(payload))).digest("hex");
+  }
+  private canvasView(userId: ID, canvas: EngineeringCanvas): EngineeringCanvasView {
+    const project = this.store.project(canvas.projectId);
+    const displayName = (id: ID, kind: CanvasBlock["authorKind"] = "human"): string | undefined => {
+      if (kind === "agent") return this.store.agents().find(a => a.id === id)?.name;
+      return this.store.users().find(u => u.id === id)?.name
+        ?? this.store.agents().find(a => a.id === id)?.name;
+    };
+    const blocks = canvas.blocks.map(block => {
+      const link = block.link;
+      const visible = !link || (!!project && this.canvasLinkAllowed(userId, project, link));
+      return {
+        ...block,
+        ...(block.authorName ? {} : (displayName(block.authorId, block.authorKind) ? { authorName: displayName(block.authorId, block.authorKind) } : {})),
+        ...(block.deletedBy && !block.deletedByName && displayName(block.deletedBy)
+          ? { deletedByName: displayName(block.deletedBy) } : {}),
+        ...(link && !visible ? { link: undefined, linkUnavailable: true } : {}),
+      };
+    });
+    return {
+      ...canvas, blocks,
+      unread: this.store.canvasRead(canvas.id, userId) < canvas.revision,
+      canEdit: !!project && (project.ownerId === userId || (!!project.channelId && (() => { try { this.channelFor(userId, project.channelId!); return true; } catch { return false; } })())),
+      canModerate: !!project && project.ownerId === userId,
+    };
+  }
+  private canvasAudience(project: Project): Set<ID> {
+    return this.projectAudience(project);
+  }
+  private pushCanvas(canvas: EngineeringCanvas, origin?: Conn, requestId?: ID): void {
+    const project = this.store.project(canvas.projectId);
+    if (!project) return;
+    const audience = this.canvasAudience(project);
+    for (const userId of audience) {
+      const view = this.canvasView(userId, canvas);
+      const frame: ServerFrame = {
+        type: "canvas", canvas: view,
+        ...(requestId && origin && origin.userId === userId ? { requestId } : {}),
+      };
+      this.toUser(userId, frame);
+    }
+  }
+  /** Re-project a project's Canvas list whenever membership/access changes. */
+  private pushCanvasProject(project: Project): void {
+    const canvases = this.store.canvasesForProject(project.id);
+    for (const userId of this.canvasAudience(project)) {
+      // B2: every member-facing project projection is redacted per viewer.
+      this.toUser(userId, { type: "project", project: this.viewProject(project, userId) });
+      this.toUser(userId, { type: "canvases", projectId: project.id,
+        canvases: canvases.map(canvas => this.canvasView(userId, canvas)) });
+    }
+  }
+  private canvasLinkAllowed(userId: ID, project: Project, link: CanvasLink): boolean {
+    if (link.kind === "task") {
+      const task = this.store.task(link.id);
+      if (!task) return false;
+      try { this.channelFor(userId, task.channelId); return true; } catch { return false; }
+    }
+    if (link.kind === "run") {
+      const row = this.store.run(link.id);
+      if (!row) return false;
+      if (row.ownerId !== project.ownerId) return false;
+      if (row.channelId) { try { this.channelFor(userId, row.channelId); return true; } catch { return false; } }
+      return userId === project.ownerId;
+    }
+    if (link.kind === "artifact") {
+      try { this.artifactFor(userId, link.id); return true; } catch { return false; }
+    }
+    if (link.kind === "pullRequest") {
+      return this.store.projectItems(project.id).some(item => item.kind === "pull" && String(item.number) === link.id);
+    }
+    return false;
+  }
+
+private viewProject(project: Project, viewerId?: ID): Project {
     const base = this.looking.has(project.id) ? { ...project, looking: true } : { ...project };
     if (viewerId === undefined || project.ownerId === viewerId) return base;
     // Member-safe: id + name (+ room linkage). Never localPath or repo.
@@ -3450,6 +3573,13 @@ export class Relay {
       }
       case "deleteAgent": {
         const existing = this.myAgent(conn.userId, frame.agentId);
+        // Deleting an agent also forgets its run rows. Re-project any durable
+        // Canvas blocks that linked those runs so readers see the honest
+        // unavailable state instead of a stale owner-only id forever.
+        const deletedRunIds = new Set(this.store.runsForAgent(frame.agentId, RUN_RETENTION.perAgent).map(row => row.record.id));
+        const affectedCanvasProjects = this.store.projectsAll().filter(project =>
+          this.store.canvasesForProject(project.id).some(canvas => canvas.blocks.some(block =>
+            block.link?.kind === "run" && deletedRunIds.has(block.link.id))));
         const affectedHuddles = this.store.huddles().filter(h => h.participants.some(p => p.id === frame.agentId));
         this.stopRunsForDeletedAgent(conn, frame.agentId);
         this.store.deleteAgent(frame.agentId);
@@ -3465,6 +3595,9 @@ export class Relay {
         delete this.agentStatus[frame.agentId];
         this.audit(conn, "agent_deleted", frame.agentId, `deleted agent ${existing.name}`);
         this.broadcast({ type: "agentDeleted", agentId: frame.agentId });
+        for (const project of affectedCanvasProjects) {
+          for (const canvas of this.store.canvasesForProject(project.id)) this.pushCanvas(canvas);
+        }
         break;
       }
       case "createInvite": {
@@ -4731,6 +4864,7 @@ export class Relay {
           this.toUser(userId, { type: "project", project: this.viewProject(project, userId) });
         }
         this.sendPulseSnapshotTo(new Set([...beforePulseAudience, ...this.pulseAudience(project)]));
+        this.pushCanvasProject(project);
         break;
       }
       /* "THE CODE FOR THIS PROJECT IS IN THIS FOLDER."
@@ -4843,6 +4977,117 @@ export class Relay {
           projects: this.projectsForMember(conn.userId).map(p => this.viewProject(p, conn.userId)),
         });
         break;
+      }
+
+      case "canvases": {
+        const project = this.projectForCanvas(conn.userId, frame.projectId);
+        send(conn.ws, { type: "canvases", projectId: project.id,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+          canvases: this.store.canvasesForProject(project.id).map(c => this.canvasView(conn.userId, c)) });
+        break;
+      }
+      case "createCanvas": {
+        const project = this.projectForCanvas(conn.userId, frame.projectId);
+        const requestId = frame.requestId;
+        const payload = { projectId: project.id, title: frame.title, authorAgentId: frame.authorAgentId ?? null };
+        const prior = this.canvasReceipt(conn, requestId, "create", project.id, payload);
+        if (prior) { const existing = this.store.canvas(prior.canvasId); if (existing) this.pushCanvas(existing, conn, requestId); break; }
+        const bad = validateCanvasTitle(frame.title);
+        if (bad) throw new Error(bad);
+        if (this.store.canvasCount(project.id) >= CANVAS_LIMITS.perProject) throw new Error(`that's too many canvases for this project (max ${CANVAS_LIMITS.perProject})`);
+        const author = this.canvasAuthor(conn, project, frame.authorAgentId);
+        const now = Date.now();
+        const canvas: EngineeringCanvas = { id: newId("canvas"), projectId: project.id, ownerId: project.ownerId,
+          title: frame.title.trim(), blocks: [], revision: 1, createdAt: now, updatedAt: now };
+        this.store.saveCanvasChange(canvas, { canvasId: canvas.id, revision: 1, changedAt: now, changedBy: author.id, summary: "created canvas", canvas },
+          requestId ? { ownerId: conn.userId, requestId, action: "create", target: project.id, payload: this.canvasPayloadFingerprint(payload) } : undefined);
+        this.audit(conn, "canvas_created", canvas.id, `created canvas in ${project.repo}`);
+        this.pushCanvas(canvas, conn, requestId);
+        break;
+      }
+      case "updateCanvas": {
+        const { project, canvas } = this.canvasForMember(conn.userId, frame.canvasId);
+        if (project.ownerId !== conn.userId) throw new Error("only the project owner can rename a canvas");
+        const author = this.canvasAuthor(conn, project, frame.authorAgentId);
+        const requestId = frame.requestId;
+        const payload = { canvasId: canvas.id, title: frame.title ?? null, authorAgentId: frame.authorAgentId ?? null, expectedRevision: frame.expectedRevision ?? null };
+        const prior = this.canvasReceipt(conn, requestId, "update", canvas.id, payload);
+        if (prior) { this.pushCanvas(canvas, conn, requestId); break; }
+        if (frame.expectedRevision !== undefined && frame.expectedRevision !== canvas.revision) throw new Error("that canvas changed — reload before saving");
+        if (frame.title !== undefined) { const bad = validateCanvasTitle(frame.title); if (bad) throw new Error(bad); canvas.title = frame.title.trim(); }
+        canvas.revision++; canvas.updatedAt = Date.now();
+        this.store.saveCanvasChange(canvas, { canvasId: canvas.id, revision: canvas.revision, changedAt: canvas.updatedAt, changedBy: author.id, summary: "renamed canvas", canvas },
+          requestId ? { ownerId: conn.userId, requestId, action: "update", target: canvas.id, payload: this.canvasPayloadFingerprint(payload) } : undefined);
+        this.pushCanvas(canvas, conn, requestId);
+        break;
+      }
+      case "addCanvasBlock": {
+        const { project, canvas } = this.canvasForMember(conn.userId, frame.canvasId);
+        const requestId = frame.requestId;
+        const payload = { canvasId: canvas.id, kind: frame.kind, text: frame.text, link: frame.link ?? null, authorAgentId: frame.authorAgentId ?? null, expectedRevision: frame.expectedRevision ?? null };
+        const prior = this.canvasReceipt(conn, requestId, "add", canvas.id, payload);
+        if (prior) { this.pushCanvas(canvas, conn, requestId); break; }
+        if (frame.expectedRevision !== undefined && frame.expectedRevision !== canvas.revision) throw new Error("that canvas changed — reload before saving");
+        const bad = validateCanvasBlock(frame.kind, frame.text); if (bad) throw new Error(bad);
+        if (canvas.blocks.length >= CANVAS_LIMITS.blocks) throw new Error(`that's too many blocks (max ${CANVAS_LIMITS.blocks})`);
+        const badLink = validateCanvasLink(frame.link); if (badLink) throw new Error(badLink);
+        if (frame.link && !this.canvasLinkAllowed(conn.userId, project, frame.link)) throw new Error("that linked item is not accessible from this project");
+        const author = this.canvasAuthor(conn, project, frame.authorAgentId);
+        const now = Date.now();
+        canvas.blocks.push({ id: newId("block"), canvasId: canvas.id, kind: frame.kind, text: frame.text.trim(), authorId: author.id, authorKind: author.kind,
+          createdAt: now, updatedAt: now, order: canvas.blocks.length, ...(frame.link ? { link: frame.link } : {}) });
+        canvas.revision++; canvas.updatedAt = now;
+        this.store.saveCanvasChange(canvas, { canvasId: canvas.id, revision: canvas.revision, changedAt: now, changedBy: author.id, summary: `added ${frame.kind} block`, canvas },
+          requestId ? { ownerId: conn.userId, requestId, action: "add", target: canvas.id, payload: this.canvasPayloadFingerprint(payload) } : undefined);
+        this.audit(conn, "canvas_block_added", canvas.id, `added a ${frame.kind} block`); this.pushCanvas(canvas, conn, requestId); break;
+      }
+      case "editCanvasBlock": {
+        const { project, canvas } = this.canvasForMember(conn.userId, frame.canvasId);
+        const requestId = frame.requestId;
+        const author = this.canvasAuthor(conn, project, frame.authorAgentId);
+        const payload = { canvasId: canvas.id, blockId: frame.blockId, kind: frame.kind ?? null, text: frame.text ?? null, link: frame.link ?? null, authorAgentId: frame.authorAgentId ?? null, expectedRevision: frame.expectedRevision ?? null };
+        const prior = this.canvasReceipt(conn, requestId, "edit", canvas.id, payload);
+        if (prior) { this.pushCanvas(canvas, conn, requestId); break; }
+        if (frame.expectedRevision !== undefined && frame.expectedRevision !== canvas.revision) throw new Error("that canvas changed — reload before saving");
+        const block = canvas.blocks.find(b => b.id === frame.blockId); if (!block || block.deletedAt) throw new Error("no such canvas block");
+        if (block.authorId !== author.id && project.ownerId !== conn.userId) throw new Error("you may only edit your own canvas block");
+        if (frame.kind !== undefined || frame.text !== undefined) { const bad = validateCanvasBlock(frame.kind ?? block.kind, frame.text ?? block.text); if (bad) throw new Error(bad); }
+        const badLink = validateCanvasLink(frame.link); if (badLink) throw new Error(badLink);
+        if (frame.link !== undefined && !this.canvasLinkAllowed(conn.userId, project, frame.link)) throw new Error("that linked item is not accessible from this project");
+        if (frame.kind !== undefined) block.kind = frame.kind; if (frame.text !== undefined) block.text = frame.text.trim(); if (frame.link !== undefined) block.link = frame.link;
+        block.updatedAt = Date.now(); canvas.revision++; canvas.updatedAt = block.updatedAt;
+        this.store.saveCanvasChange(canvas, { canvasId: canvas.id, revision: canvas.revision, changedAt: canvas.updatedAt, changedBy: author.id, summary: "edited canvas block", canvas },
+          requestId ? { ownerId: conn.userId, requestId, action: "edit", target: canvas.id, payload: this.canvasPayloadFingerprint(payload) } : undefined); this.pushCanvas(canvas, conn, requestId); break;
+      }
+      case "tombstoneCanvasBlock": {
+        const { project, canvas } = this.canvasForMember(conn.userId, frame.canvasId);
+        const requestId = frame.requestId;
+        const author = this.canvasAuthor(conn, project, frame.authorAgentId);
+        const payload = { canvasId: canvas.id, blockId: frame.blockId, authorAgentId: frame.authorAgentId ?? null, expectedRevision: frame.expectedRevision ?? null };
+        const prior = this.canvasReceipt(conn, requestId, "tombstone", canvas.id, payload);
+        if (prior) { this.pushCanvas(canvas, conn, requestId); break; }
+        if (frame.expectedRevision !== undefined && frame.expectedRevision !== canvas.revision) throw new Error("that canvas changed — reload before saving");
+        const block = canvas.blocks.find(b => b.id === frame.blockId); if (!block || block.deletedAt) throw new Error("no such canvas block");
+        if (block.authorId !== author.id && project.ownerId !== conn.userId) throw new Error("you may only remove your own canvas block");
+        const now = Date.now(); block.deletedAt = now; block.deletedBy = author.id; block.updatedAt = now; canvas.revision++; canvas.updatedAt = now;
+        this.store.saveCanvasChange(canvas, { canvasId: canvas.id, revision: canvas.revision, changedAt: now, changedBy: author.id, summary: "tombstoned canvas block", canvas },
+          requestId ? { ownerId: conn.userId, requestId, action: "tombstone", target: canvas.id, payload: this.canvasPayloadFingerprint(payload) } : undefined); this.pushCanvas(canvas, conn, requestId); break;
+      }
+      case "canvasHistory": {
+        const { canvas } = this.canvasForMember(conn.userId, frame.canvasId);
+        send(conn.ws, { type: "canvasHistory", canvasId: canvas.id, ...(frame.requestId ? { requestId: frame.requestId } : {}), revisions: this.store.canvasRevisions(canvas.id, frame.limit).map(revision => ({
+          ...revision, changedByName: this.store.users().find(u => u.id === revision.changedBy)?.name
+            ?? this.store.agents().find(a => a.id === revision.changedBy)?.name,
+          canvas: this.canvasView(conn.userId, revision.canvas),
+        })) }); break;
+      }
+      case "markCanvasRead": {
+        const { canvas } = this.canvasForMember(conn.userId, frame.canvasId);
+        if (!Number.isSafeInteger(frame.revision) || frame.revision < 0) {
+          throw new Error("a canvas read revision must be a finite integer");
+        }
+        this.store.markCanvasRead(canvas.id, conn.userId, Math.min(frame.revision, canvas.revision));
+        this.toUser(conn.userId, { type: "canvas", canvas: this.canvasView(conn.userId, canvas) }); break;
       }
       case "polls": {
         const project = this.projectForMember(conn.userId, frame.projectId);
@@ -5370,6 +5615,7 @@ export class Relay {
           const items = frame.items.map(i => ({ ...i, projectId: project.id }));
           const stored = this.store.syncProjectItems(project.id, items);
           this.toUser(conn.userId, { type: "projectItems", projectId: project.id, items: stored });
+          this.pushCanvasProject(project);
         }
         if (frame.defaultBranch !== undefined) {
           // it becomes part of "nothing lands here without him", so it is
@@ -6252,6 +6498,9 @@ export class Relay {
         // caches travel through the no-request-id projection diff below.
         send(conn.ws, this.artifactFrame(conn.userId, artifact.id, frame.requestId));
         this.pushArtifactProjectionDiff(beforeArtifacts, affectedArtifacts, conn);
+        // Canvas artifact links use the same per-reader ACL. Re-project every
+        // affected project after the access decision changes.
+        for (const project of this.store.projectsAll()) this.pushCanvasProject(project);
         break;
       }
       case "artifactTicket": {
@@ -6671,6 +6920,12 @@ export class Relay {
     }
     for (const conn of this.conns) {
       if (audience.has(conn.userId)) send(conn.ws, { type: "channel", channel });
+    }
+    // Channel membership is also the access boundary for linked Canvases.
+    // Re-project them after every add/join/remove/leave broadcast so a window
+    // never keeps an old list after its room visibility changes.
+    for (const project of this.store.projectsAll()) {
+      if (project.channelId === channel.id) this.pushCanvasProject(project);
     }
   }
 

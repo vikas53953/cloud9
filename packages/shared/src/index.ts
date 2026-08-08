@@ -2079,6 +2079,61 @@ export const PROJECT_LIMITS = {
 // Polls are deliberately project-scoped.  They never carry a public/anonymous
 // flag: the relay authorises every read, write, and vote against the stored
 // project/channel membership.
+
+// ---------- Engineering Canvas: durable project documents/boards ----------
+export type CanvasBlockKind = "markdown" | "architecture" | "requirements" | "decision" | "link" | "task" | "run" | "pullRequest" | "artifact";
+export type CanvasLinkKind = "task" | "run" | "pullRequest" | "artifact";
+export interface CanvasLink { kind: CanvasLinkKind; id: ID; label?: string; }
+export interface CanvasBlock {
+  id: ID; canvasId: ID; kind: CanvasBlockKind; text: string;
+  authorId: ID; authorKind: "human" | "agent";
+  createdAt: number; updatedAt: number; order: number;
+  link?: CanvasLink; linkUnavailable?: boolean; deletedAt?: number; deletedBy?: ID;
+  authorName?: string; deletedByName?: string;
+}
+export interface EngineeringCanvas {
+  id: ID; projectId: ID; ownerId: ID; title: string;
+  blocks: CanvasBlock[]; revision: number; createdAt: number; updatedAt: number;
+  deletedAt?: number;
+}
+export interface EngineeringCanvasRevision {
+  canvasId: ID; revision: number; changedAt: number; changedBy: ID;
+  summary: string; canvas: EngineeringCanvas; changedByName?: string;
+}
+export interface EngineeringCanvasView extends EngineeringCanvas {
+  unread: boolean; canEdit: boolean; canModerate: boolean;
+}
+export const CANVAS_LIMITS = {
+  perProject: 20, title: 160, blockText: 20_000, blocks: 500, history: 100,
+  linkId: 200, linkLabel: 300,
+} as const;
+export function validateCanvasTitle(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return "a canvas title is required";
+  if (value.trim().length > CANVAS_LIMITS.title) return `that canvas title is too long (max ${CANVAS_LIMITS.title} characters)`;
+  return null;
+}
+export function validateCanvasBlock(kind: unknown, text: unknown): string | null {
+  const kinds: CanvasBlockKind[] = ["markdown", "architecture", "requirements", "decision", "link", "task", "run", "pullRequest", "artifact"];
+  if (!kinds.includes(kind as CanvasBlockKind)) return "that canvas block type is not supported";
+  if (typeof text !== "string" || !text.trim()) return "a canvas block needs text";
+  if (text.length > CANVAS_LIMITS.blockText) return `that canvas block is too long (max ${CANVAS_LIMITS.blockText} characters)`;
+  return null;
+}
+export function validateCanvasLink(link: unknown): string | null {
+  if (link === undefined) return null;
+  if (!link || typeof link !== "object") return "that canvas link is invalid";
+  const value = link as { kind?: unknown; id?: unknown; label?: unknown };
+  const kinds: CanvasLinkKind[] = ["task", "run", "pullRequest", "artifact"];
+  if (!kinds.includes(value.kind as CanvasLinkKind)) return "that canvas link type is not supported";
+  if (typeof value.id !== "string" || !value.id.trim() || value.id.length > CANVAS_LIMITS.linkId) {
+    return `that canvas link id is invalid (max ${CANVAS_LIMITS.linkId} characters)`;
+  }
+  if (value.label !== undefined && (typeof value.label !== "string" || value.label.length > CANVAS_LIMITS.linkLabel)) {
+    return `that canvas link label is too long (max ${CANVAS_LIMITS.linkLabel} characters)`;
+  }
+  return null;
+}
+
 export type ProjectPollStatus = "open" | "closed";
 export type ProjectPollAuthorKind = "human" | "agent";
 export interface ProjectPollOption { id: ID; label: string; }
@@ -2777,6 +2832,7 @@ export type ActivityKind =
   // so it belongs in the trail like every other one. Nothing here touches
   // GitHub — these three lines are about OUR copy.
   | "project_connected" | "project_updated" | "project_forgotten"
+  | "canvas_created" | "canvas_block_added"
   | "project_poll_created" | "project_poll_voted" | "project_poll_closed"
   // narrowing or restoring who may read a file changes a permission wall
   | "artifact_access_changed"
@@ -3818,6 +3874,14 @@ type ClientFrameBase =
   /** One project's pull requests and issues, as of the last time we looked. */
   | { type: "projectItems"; projectId: ID }
   /** Project-scoped decision records. Every request is membership-authorised. */
+  | { type: "canvases"; projectId: ID }
+  | { type: "createCanvas"; projectId: ID; title: string; authorAgentId?: ID }
+  | { type: "updateCanvas"; canvasId: ID; title?: string; authorAgentId?: ID; expectedRevision?: number }
+  | { type: "addCanvasBlock"; canvasId: ID; kind: CanvasBlockKind; text: string; link?: CanvasLink; authorAgentId?: ID; expectedRevision?: number }
+  | { type: "editCanvasBlock"; canvasId: ID; blockId: ID; kind?: CanvasBlockKind; text?: string; link?: CanvasLink; authorAgentId?: ID; expectedRevision?: number }
+  | { type: "tombstoneCanvasBlock"; canvasId: ID; blockId: ID; authorAgentId?: ID; expectedRevision?: number }
+  | { type: "canvasHistory"; canvasId: ID; limit?: number }
+  | { type: "markCanvasRead"; canvasId: ID; revision: number }
   | { type: "polls"; projectId: ID }
   | { type: "createPoll"; projectId: ID; question: string; options: string[]; deadlineAt?: number; authorAgentId?: ID }
   | { type: "votePoll"; pollId: ID; optionId: ID }
@@ -4378,6 +4442,9 @@ export type ServerFrame =
   | { type: "poll"; poll: ProjectPollView; requestId?: ID }
   /** A shared project was removed from this user's membership; discard cached polls. */
   | { type: "projectAccessRevoked"; projectId: ID }
+  | { type: "canvases"; projectId: ID; canvases: EngineeringCanvasView[]; requestId?: ID }
+  | { type: "canvas"; canvas: EngineeringCanvasView; requestId?: ID }
+  | { type: "canvasHistory"; canvasId: ID; revisions: EngineeringCanvasRevision[]; requestId?: ID }
   | { type: "hooks"; hooks: StoredHook[]; requestId?: ID }
   | { type: "hook"; hook: StoredHook; requestId?: ID }
   | { type: "hookTest"; hookId: ID; ok: boolean; said: string; requestId?: ID }

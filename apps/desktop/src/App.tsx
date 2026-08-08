@@ -17,7 +17,7 @@ import {
   HuddleSession, HuddleNote, HuddleNoteKind, HuddleLink,
   StoredHook, HOOK_EVENTS, HOOK_ACTIONS,
   NotificationInboxEntry,
-   EngineeringPulseUpdate, EngineeringPulseDraft,
+   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringCanvasView, CanvasBlockKind, CanvasLink,
   Workflow, WorkflowRun,
   validateMessageText, validateName,
   /* spending limits, "show me the plan first", stand-in models (2026-08-05) —
@@ -1155,6 +1155,9 @@ const IconProjects = (): React.JSX.Element => (
 const IconUpdates = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v12H4z"/><path d="M7 9h10M7 12h7M8 21l4-4 4 4"/></svg>
 );
+const IconCanvas = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h14v15H5Z" /><path d="M8 8h8M8 11.5h8M8 15h5" /><path d="M16.5 19.5 20 16" /></svg>
+);
 const IconPolls = (): React.JSX.Element => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
     <path d="M4 19V5"/><path d="M10 19V9"/><path d="M16 19v-6"/><path d="M22 19H2"/>
@@ -2013,7 +2016,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "forums" | "huddles" | "pulse" | "polls" | "updates" | "hooks" | "social" | "spending" | "activity" | "notifications" | "saved" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "forums" | "huddles" | "pulse" | "polls" | "updates" | "hooks" | "social" | "canvas" | "spending" | "activity" | "notifications" | "saved" | "settings";
 type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -2402,6 +2405,43 @@ function Workspace(): React.JSX.Element {
     }
   }, []);
   const openHuddles = useCallback(() => { attemptLeave(() => { client.askHuddles(); setScreen("huddles"); }); }, []);
+
+  
+  const openCanvas = useCallback(() => {
+    attemptLeave(() => { client.askProjects(); setScreen("canvas"); });
+  }, []);
+
+  const openCanvasLink = useCallback((link: CanvasLink, projectId: ID) => {
+    attemptLeave(() => {
+      const now = Date.now();
+      if (link.kind === "artifact") {
+        setFileOpenAt({ artifactId: link.id, at: now });
+        setScreen("files");
+      } else if (link.kind === "task") {
+        setTaskOpenAt({ taskId: link.id, at: now });
+        setScreen("tasks");
+      } else if (link.kind === "run") {
+        // Same openAt path Team feed / Pulse already use — no second focus API.
+        setRunOpenAt({ runId: link.id, at: now });
+        client.askRun(link.id);
+        setScreen("activity");
+      } else if (link.kind === "pullRequest") {
+        const n = Number(link.id);
+        setProjectOpenAt({
+          projectId,
+          itemKind: "pull",
+          ...(Number.isFinite(n) ? { number: n } : {}),
+          at: now,
+        });
+        client.askProjects();
+        setScreen("projects");
+      } else {
+        setProjectOpenAt({ projectId, at: now });
+        client.askProjects();
+        setScreen("projects");
+      }
+    });
+  }, []);
 
   const openPulse = useCallback(() => {
     attemptLeave(() => {
@@ -2943,6 +2983,7 @@ function Workspace(): React.JSX.Element {
           {railBtn("pulse", "Engineering Pulse", <IconPulse />,
             Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
           {railBtn("polls", "Polls", <IconPolls />, undefined, openPolls)}
+          {railBtn("canvas", "Canvas", <IconCanvas />, world.canvases.list.some(c => c.unread) ? 1 : undefined, openCanvas)}
           {railBtn("updates", "Public updates", <IconUpdates />, undefined, openUpdates)}
           {railBtn("hooks", "Hooks", <IconGear />)}
           {railBtn("social", "Team feed", <IconSocial />, socialUnread, openSocial)}
@@ -3063,6 +3104,7 @@ function Workspace(): React.JSX.Element {
             })}
           />}
           {screen === "polls" && <PollsScreen />}
+          {screen === "canvas" && <CanvasScreen onOpenLink={openCanvasLink} />}
           {screen === "updates" && <PublicUpdatesScreen />}
           {screen === "hooks" && <HooksScreen />}
           {screen === "social" && <SocialFeedScreen onOpenLink={openSocialLink} />}
@@ -14481,6 +14523,63 @@ function PollCard({ poll, summary, onSummary }: { poll: ProjectPollView; summary
     </p>}
     <p className="meta">{poll.status === "closed" ? `${poll.totalVotes} vote${poll.totalVotes === 1 ? "" : "s"}` : `${poll.totalVotes} vote${poll.totalVotes === 1 ? "" : "s"} · open until ${poll.deadlineAt ? new Date(poll.deadlineAt).toLocaleString() : "closed by owner"}`}</p>
   </article>;
+}
+
+
+const CANVAS_BLOCK_KINDS: CanvasBlockKind[] = ["markdown", "architecture", "requirements", "decision", "link", "task", "run", "pullRequest", "artifact"];
+
+function CanvasScreen({ onOpenLink }: { onOpenLink: (link: CanvasLink, projectId: ID) => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [projectId, setProjectId] = useState<ID | "">("");
+  const [canvasId, setCanvasId] = useState<ID | "">("");
+  const [newTitle, setNewTitle] = useState("");
+  const [kind, setKind] = useState<CanvasBlockKind>("markdown");
+  const [text, setText] = useState("");
+  const [linkKind, setLinkKind] = useState<"" | "task" | "run" | "pullRequest" | "artifact">("");
+  const [linkId, setLinkId] = useState("");
+  const [editing, setEditing] = useState<Record<ID, string>>({});
+  const dirtyCanvas = newTitle.trim().length > 0 || text.trim().length > 0 || Object.keys(editing).length > 0;
+  useUnsavedWork("the Canvas draft", dirtyCanvas);
+  useEffect(() => { if (world.connected) client.askProjects(); }, [world.connected]);
+  const projects = world.projects.list;
+  const project = projects.find(p => p.id === projectId) ?? projects[0];
+  useEffect(() => { if (project?.id && world.connected) { setProjectId(project.id); client.askCanvases(project.id); } }, [project?.id, world.connected]);
+  const canvases = world.canvases.projectId === project?.id ? world.canvases.list : [];
+  const canvas = canvases.find(c => c.id === canvasId) ?? canvases[0];
+  useEffect(() => { if (canvas) { setCanvasId(canvas.id); client.markCanvasRead(canvas.id, canvas.revision); } }, [canvas?.id, canvas?.revision]);
+  const create = (e: React.FormEvent) => { e.preventDefault(); if (project && newTitle.trim()) client.createCanvas(project.id, newTitle, { onSaved: () => setNewTitle("") }); };
+  const add = (e: React.FormEvent) => {
+    e.preventDefault(); if (!canvas || !text.trim()) return;
+    const link = linkKind && linkId.trim() ? { kind: linkKind as "task" | "run" | "pullRequest" | "artifact", id: linkId.trim() } : undefined;
+    client.addCanvasBlock(canvas.id, kind, text, link, { onSaved: () => { setText(""); setLinkId(""); setLinkKind(""); } });
+  };
+  return <div className="canvas-screen">
+    <header className="topbar"><h2>Engineering Canvas</h2><span className="sub">Durable project architecture, requirements, and decisions</span></header>
+    <div className="canvas-body">
+      <label className="field"><span>Project</span><select aria-label="Canvas project" value={project?.id ?? ""} onChange={e => { setProjectId(e.target.value); if (e.target.value) client.askCanvases(e.target.value); }}><option value="">Choose a project</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+      {!world.projects.asked && <div className="runwait" role="status">Loading projects…</div>}
+      {world.projects.asked && !project && <EmptyTray title="No project available" line="Connect a project before opening a canvas." />}
+      {project && <>
+        <form className="canvas-create" onSubmit={create}><label className="field"><span>New canvas title</span><input value={newTitle} maxLength={160} onChange={e => setNewTitle(e.target.value)} placeholder="Service architecture" /></label><button className="btn primary" type="submit">Create canvas</button></form>
+        {!world.canvases.asked && <div className="runwait" role="status">Loading canvases…</div>}
+        {world.canvases.mutationRequestId && <div className="runwait" role="status" aria-live="polite">Saving Canvas change…</div>}
+        {world.canvases.problem && <p className="problem" role="alert">{world.canvases.problem}</p>}
+        {world.canvases.asked && canvases.length === 0 && <EmptyTray title="No canvas yet" line="Create a durable project document or board for the team." />}
+        {canvases.length > 0 && <div className="canvas-layout">
+          <aside className="canvas-list" aria-label="Canvas list">{canvases.map(c => <button className="side-item" key={c.id} aria-current={canvas?.id === c.id ? "true" : "false"} onClick={() => setCanvasId(c.id)}><span className="txt">{c.title}</span>{c.unread && <span className="cnt hot" aria-label="unread updates">•</span>}</button>)}</aside>
+          {canvas && <section className="canvas-editor" aria-live="polite">
+            <header><div><h3>{canvas.title}</h3><span className="meta">Revision {canvas.revision} · {canvas.blocks.filter(b => !b.deletedAt).length} active blocks · recent 100 revisions retained</span></div><button className="btn" onClick={() => client.askCanvasHistory(canvas.id)}>History (recent 100)</button></header>
+            <form className="canvas-add" onSubmit={add} aria-label="Add canvas block"><label className="field"><span>Block type</span><select value={kind} onChange={e => setKind(e.target.value as CanvasBlockKind)}>{CANVAS_BLOCK_KINDS.map(k => <option key={k} value={k}>{k}</option>)}</select></label><label className="field"><span>Content</span><textarea value={text} maxLength={20000} onChange={e => setText(e.target.value)} placeholder="Write the decision or requirement…" /></label><div className="canvas-link"><label className="field"><span>Link type (optional)</span><select value={linkKind} onChange={e => setLinkKind(e.target.value as typeof linkKind)}><option value="">No linked record</option><option value="task">Task</option><option value="run">Run</option><option value="pullRequest">Pull request</option><option value="artifact">Artifact</option></select></label><label className="field"><span>Link id</span><input value={linkId} onChange={e => setLinkId(e.target.value)} placeholder="Only an accessible id is accepted" /></label></div><button className="btn primary" type="submit">Add block</button></form>
+            <div className="canvas-blocks">{canvas.blocks.map(block => block.deletedAt ? <article className="canvas-block tombstone" key={block.id}><span className="meta">Tombstoned block · retained in history</span></article> : <article className="canvas-block" key={block.id}><header><span className="eyebrow">{block.kind}</span><span className="meta">{block.authorKind === "agent" ? "Agent" : "Human"}</span></header><textarea aria-label={`${block.kind} block`} value={editing[block.id] ?? block.text} onChange={e => setEditing(s => ({ ...s, [block.id]: e.target.value }))} /><div className="canvas-actions"><button className="btn" disabled={editing[block.id] === undefined || editing[block.id] === block.text} onClick={() => { const draft = editing[block.id] ?? block.text; client.editCanvasBlock(canvas.id, block.id, draft, block.kind, { onSaved: () => setEditing(s => { const n = { ...s }; delete n[block.id]; return n; }) }); }}>Save edit</button><button className="btn danger" onClick={() => client.tombstoneCanvasBlock(canvas.id, block.id)}>Remove (keep history)</button>{block.link && <button className="btn linkbtn" onClick={() => onOpenLink(block.link!, canvas.projectId)}>Open linked {block.link.kind}</button>}{block.linkUnavailable && <span className="meta">Linked record unavailable to you</span>}</div></article>)}</div>
+            {world.canvases.historyCanvasId === canvas.id && world.canvases.historyLoading && <div className="runwait" role="status">Loading revision history…</div>}
+            {world.canvases.historyCanvasId === canvas.id && world.canvases.historyProblem && <p className="problem" role="alert">{world.canvases.historyProblem}</p>}
+            {world.canvases.historyCanvasId === canvas.id && world.canvases.historyAsked && !world.canvases.historyLoading && !world.canvases.historyProblem && world.canvases.historyRequestId === undefined && world.canvases.history.length === 0 && <p className="meta" role="status">No revision history has been recorded yet.</p>}
+            {world.canvases.historyCanvasId === canvas.id && world.canvases.history.length > 0 && <details className="canvas-history"><summary>Recent revision history ({world.canvases.history.length} of 100 max)</summary>{world.canvases.history.map(r => <div key={r.revision} className="meta">Revision {r.revision} · {r.summary} · {new Date(r.changedAt).toLocaleString()}</div>)}</details>}
+          </section>}
+        </div>}
+      </>}
+    </div>
+  </div>;
 }
 
 /* ================= 6b · SPENDING =================
