@@ -729,7 +729,7 @@ export interface SdkProviderOptions {
   sessions?: SessionBook;
 }
 
-type SdkQuery = (input: { prompt: string; options: Record<string, unknown> }) => AsyncIterable<unknown>;
+export type SdkQuery = (input: { prompt: string; options: Record<string, unknown> }) => AsyncIterable<unknown>;
 
 function sdkText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
