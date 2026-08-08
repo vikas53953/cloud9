@@ -10,7 +10,7 @@ import {
   SavedMessageEntry,
   EverywhereHit, SearchKind,
   ReachCatchup,
-  Project, ProjectItem, ProjectPollView, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
+  Project, ProjectItem, ProjectPollView, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject, validateEngineeringPulseDraft,
   Workflow, WorkflowRun,
   HuddleSession, HuddleNote, HuddleReadEntry, HuddleParticipant, HuddleNoteKind, HuddleLink,
@@ -390,6 +390,16 @@ export interface World {
   projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
   /** Poll list is tied to both its active project and its latest request. */
   polls: { asked: boolean; projectId?: ID; requestId?: ID; list: ProjectPollView[] };
+  publicUpdates: {
+    asked: boolean;
+    drafts: PublicUpdateDraft[];
+    selected?: PublicUpdateDraft;
+    revisions: PublicUpdateRevision[];
+    audit: PublicUpdateAudit[];
+    /** Set after a successful publish so the screen can show the public link. */
+    lastPublished?: { draftId: ID; token: string; publicPath: string };
+  };
+
   huddles: { asked: boolean; sessions: HuddleSession[] };
   huddleProjects: { asked: boolean; list: Project[] };
   huddleMutations: Record<ID, { kind: ClientFrame["type"]; state: "pending" | "succeeded" | "refused" | "lost"; problem?: string }>;
@@ -693,7 +703,7 @@ export class RelayClient {
     runs: {}, runLists: {}, runsGone: {},
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
-    projects: { asked: false, list: [] }, projectItems: {}, polls: { asked: false, list: [] },
+    projects: { asked: false, list: [] }, projectItems: {}, publicUpdates: { asked: false, drafts: [], revisions: [], audit: [] }, polls: { asked: false, list: [] },
     huddles: { asked: false, sessions: [] }, huddleProjects: { asked: false, list: [] }, huddleMutations: {}, huddleNotes: {}, huddleNavigation: undefined,
     hooks: { asked: false, list: [] },
     socialProjects: { asked: false, list: [] }, socialUnread: {}, socialPending: {}, socialCompleted: undefined, socialFeeds: {},
@@ -2074,6 +2084,42 @@ export class RelayClient {
   }
   votePoll(pollId: ID, optionId: ID): void { this.send({ type: "votePoll", pollId, optionId }); }
   closePoll(pollId: ID, summary?: string): void { this.send({ type: "closePoll", pollId, ...(summary ? { summary } : {}) }); }
+
+
+  askPublicUpdates(projectId?: ID): void {
+    this.ask({ type: "publicUpdates", ...(projectId ? { projectId } : {}) }, {
+      answers: f => f.type === "publicUpdates",
+      answered: f => {
+        if (f.type !== "publicUpdates") return;
+        this.world.publicUpdates = {
+          ...this.world.publicUpdates, asked: true, drafts: f.drafts,
+        };
+        this.emit();
+      },
+    });
+  }
+  askPublicUpdate(draftId: ID): void {
+    this.ask({ type: "publicUpdate", draftId }, {
+      answers: f => f.type === "publicUpdate" && f.draft.id === draftId,
+      answered: f => {
+        if (f.type !== "publicUpdate") return;
+        const drafts = this.world.publicUpdates.drafts;
+        this.world.publicUpdates = {
+          ...this.world.publicUpdates,
+          asked: true,
+          selected: f.draft,
+          revisions: f.revisions,
+          audit: f.audit,
+          drafts: drafts.some(d => d.id === f.draft.id)
+            ? drafts.map(d => d.id === f.draft.id ? f.draft : d)
+            : [f.draft, ...drafts],
+        };
+        this.emit();
+      },
+    });
+  }
+  publicSend(frame: ClientFrame): void { this.send(frame); }
+
 
 
   askProjectItems(projectId: ID): void {
@@ -3533,6 +3579,7 @@ export class RelayClient {
         // screen must say "looking" rather than "you have none".
         w.projects = { asked: false, list: [] };
         w.projectItems = {};
+        w.publicUpdates = { asked: false, drafts: [], revisions: [], audit: [] };
         w.huddles = { asked: false, sessions: [] };
         w.huddleProjects = { asked: false, list: [] };
         w.huddleMutations = {};
@@ -4113,6 +4160,49 @@ export class RelayClient {
         };
         break;
 
+
+      case "publicUpdates":
+        w.publicUpdates = { ...w.publicUpdates, asked: true, drafts: frame.drafts };
+        break;
+      case "publicUpdate": {
+        const drafts = w.publicUpdates.drafts;
+        w.publicUpdates = {
+          ...w.publicUpdates,
+          asked: true,
+          selected: frame.draft,
+          revisions: frame.revisions,
+          audit: frame.audit,
+          drafts: drafts.some(d => d.id === frame.draft.id)
+            ? drafts.map(d => d.id === frame.draft.id ? frame.draft : d)
+            : [frame.draft, ...drafts],
+        };
+        break;
+      }
+      case "publicPublished": {
+        // Keep the token so the screen can show the Cloud9 public link.
+        const drafts = w.publicUpdates.drafts.map(d =>
+          d.id === frame.revision.draftId
+            ? { ...d, state: "published" as const, publicToken: frame.token, revision: frame.revision.revision, publishedAt: frame.revision.publishedAt }
+            : d,
+        );
+        const selected = w.publicUpdates.selected?.id === frame.revision.draftId
+          ? { ...w.publicUpdates.selected, state: "published" as const, publicToken: frame.token, revision: frame.revision.revision, publishedAt: frame.revision.publishedAt }
+          : w.publicUpdates.selected;
+        w.publicUpdates = {
+          ...w.publicUpdates,
+          drafts,
+          selected,
+          lastPublished: { draftId: frame.revision.draftId, token: frame.token, publicPath: frame.publicPath },
+          revisions: w.publicUpdates.revisions.some(r => r.id === frame.revision.id)
+            ? w.publicUpdates.revisions.map(r => r.id === frame.revision.id ? frame.revision : r)
+            : [...w.publicUpdates.revisions, frame.revision],
+        };
+        break;
+      }
+      case "publicRoute":
+        // Internal diagnostic frame — the real public surface is HTTP.
+        break;
+
       case "polls":
         if (frame.requestId === undefined || frame.requestId !== w.polls.requestId) break;
         w.polls = { asked: true, projectId: frame.projectId, requestId: undefined, list: frame.polls };
@@ -4133,6 +4223,17 @@ export class RelayClient {
         void goneItems;
         w.projectItems = restItems;
         if (w.polls.projectId === frame.projectId) w.polls = { asked: true, list: [] };
+        if (w.publicUpdates.selected?.projectId === frame.projectId || w.publicUpdates.drafts.some(d => d.projectId === frame.projectId)) {
+          w.publicUpdates = {
+            ...w.publicUpdates,
+            drafts: w.publicUpdates.drafts.filter(d => d.projectId !== frame.projectId),
+            selected: w.publicUpdates.selected?.projectId === frame.projectId ? undefined : w.publicUpdates.selected,
+            revisions: w.publicUpdates.selected?.projectId === frame.projectId ? [] : w.publicUpdates.revisions,
+            audit: w.publicUpdates.selected?.projectId === frame.projectId ? [] : w.publicUpdates.audit,
+            lastPublished: w.publicUpdates.lastPublished && w.publicUpdates.drafts.every(d => d.projectId === frame.projectId)
+              ? undefined : w.publicUpdates.lastPublished,
+          };
+        }
         break;
       }
       case "hooks":

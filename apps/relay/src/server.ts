@@ -13,6 +13,8 @@ import {
   Channel, ChannelMember,
   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
   MESSAGE_LIMITS, ARTIFACT_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
+  PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, PublicUpdateLink,
+  validatePublicUpdateText, validatePublicUpdateLinks,
   ProjectPoll, ProjectPollView, POLL_LIMITS, validatePollQuestion, validatePollOptions,
   ActivityRecord,
   ReachCatchup,
@@ -65,7 +67,7 @@ import { runReachCatchup } from "./reachcatchup.js";
 try {
   setMachineNames([os.homedir(), os.userInfo().username, os.hostname()]);
 } catch { /* best effort — a locked-down machine still gets the path rules */ }
-import { secureId } from "./secureid.js";
+import { secureId, secureToken } from "./secureid.js";
 import { Refusal, refusalText } from "./refusal.js";
 import {
   mintJoinToken, checkJoinToken, redeemJoinToken, resolveJoinBind,
@@ -294,6 +296,9 @@ export class Relay {
     }
     this.server = http.createServer((req, res) => {
       if (req.url === "/health") { res.writeHead(200); res.end("ok"); return; }
+      // Cloud9-owned public read surface for published project updates.
+      // No sign-in: the secret is the token in the path. Revoked/missing → gone.
+      if (this.servePublicUpdate(req, res)) return;
       const at = attachmentTicketFrom(req);
       if (at !== undefined) { this.serveAttachment(at, req, res); return; }
       res.writeHead(404); res.end();
@@ -877,6 +882,82 @@ export class Relay {
     if (!project || project.ownerId !== userId) throw new Error("no such project");
     return project;
   }
+
+  /** Public-update mutate path: human desktop only. Agents may only draft. */
+  private requirePublicHumanDesktop(conn: Conn, action: string): void {
+    if (conn.client === "engine") {
+      throw new Error(`only you can ${action} — an agent cannot`);
+    }
+    if (conn.client !== "desktop") {
+      throw new Error(`only the desktop app can ${action}`);
+    }
+  }
+
+  private publicDraft(userId: ID, draftId: ID): { draft: PublicUpdateDraft; project: Project } {
+    const d = this.store.publicDraft(draftId);
+    const p = d ? this.store.project(d.projectId) : undefined;
+    if (!d || !p || p.ownerId !== userId) throw new Error("no such public update");
+    return { draft: d, project: p };
+  }
+
+  private publicLinks(userId: ID, project: Project, links: PublicUpdateLink[]): void {
+    for (const l of links) {
+      if (l.kind === "changelog") {
+        if (!/^https:\/\/(github\.com|gitlab\.com|bitbucket\.org)\//.test(l.url ?? "")) {
+          throw new Error("changelog link must be a trusted repository address");
+        }
+      } else if (l.kind === "task") {
+        const t = this.store.task(l.id!);
+        if (!t) throw new Error("that task is unavailable");
+        this.channelFor(userId, t.channelId);
+      } else if (l.kind === "run") {
+        const r = this.store.run(l.id!);
+        if (!r) throw new Error("that run is unavailable");
+        if (r.channelId) this.channelFor(userId, r.channelId);
+      } else if (l.kind === "artifact") {
+        this.artifactFor(userId, l.artifactId ?? l.id!);
+      } else if (!this.store.projectItems(project.id).some(i => i.number === Number(l.id))) {
+        throw new Error("that project item is unavailable");
+      }
+    }
+  }
+
+  /** Unauthenticated HTTP read for a published update. Returns true if handled. */
+  private servePublicUpdate(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+    const raw = req.url ?? "";
+    const pathOnly = raw.split("?")[0] ?? "";
+    const m = pathOnly.match(/^\/public\/update\/([^/]+)$/);
+    if (!m) return false;
+    if (req.method && req.method !== "GET" && req.method !== "HEAD") {
+      res.writeHead(405, { "content-type": "text/plain; charset=utf-8", allow: "GET, HEAD" });
+      res.end("only GET");
+      return true;
+    }
+    let token = m[1];
+    try { token = decodeURIComponent(token); } catch { /* keep raw */ }
+    const revision = this.store.publicByToken(token);
+    if (!revision) {
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+      res.end("that public update is unavailable");
+      return true;
+    }
+    const body = JSON.stringify({
+      title: revision.title,
+      summary: revision.summary,
+      body: revision.body,
+      changelogLinks: revision.changelogLinks,
+      revision: revision.revision,
+      publishedAt: revision.publishedAt,
+    });
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    });
+    if (req.method === "HEAD") res.end();
+    else res.end(body);
+    return true;
+  }
+
   private huddleFor(userId: ID, sessionId: ID): { session: HuddleSession; project: Project } {
     const session = this.store.huddle(sessionId);
     const project = session ? this.store.project(session.projectId) : undefined;
@@ -3749,6 +3830,182 @@ export class Relay {
         const entry = this.store.huddleMutation(() => undefined, this.huddleReceipt(conn, frame, "members", session.id, session.id));
         void entry; send(conn.ws, { type: "huddleMembers", sessionId: session.id, participants: session.participants, ...(frame.requestId ? { requestId: frame.requestId } : {}) }); break;
       }
+
+      // ---- public project updates: Cloud9-owned route only, explicit owner publish ----
+      // Law: humans on desktop approve/publish/create/edit/revoke. Agents may only draft.
+      // Actor is gated (engine refused), not content authorKind — agent drafts need human approval.
+      case "publicUpdates": {
+        const drafts = this.store.publicDrafts(frame.projectId).filter(d => {
+          try { this.myProject(conn.userId, d.projectId); return true; } catch { return false; }
+        });
+        send(conn.ws, { type: "publicUpdates", drafts });
+        break;
+      }
+      case "publicUpdate": {
+        const { draft } = this.publicDraft(conn.userId, frame.draftId);
+        send(conn.ws, {
+          type: "publicUpdate", draft,
+          revisions: this.store.publicRevisions(draft.id),
+          audit: this.store.publicAudit(draft.id),
+        });
+        break;
+      }
+      case "publicCreate": {
+        this.requirePublicHumanDesktop(conn, "create a public update");
+        const project = this.myProject(conn.userId, frame.projectId);
+        const bad = validatePublicUpdateText(frame.title, "title")
+          || validatePublicUpdateText(frame.summary, "summary")
+          || validatePublicUpdateText(frame.body, "body")
+          || validatePublicUpdateLinks(frame.changelogLinks ?? []);
+        if (bad) throw new Error(bad);
+        this.publicLinks(conn.userId, project, frame.changelogLinks ?? []);
+        const user = this.store.users().find(u => u.id === conn.userId)!;
+        const now = Date.now();
+        const draft: PublicUpdateDraft = {
+          id: newId("pub"), projectId: project.id,
+          title: frame.title.trim(), summary: frame.summary.trim(), body: frame.body.trim(),
+          changelogLinks: frame.changelogLinks ?? [],
+          authorId: user.id, authorName: user.name, authorKind: "human",
+          state: "draft", createdAt: now, updatedAt: now,
+        };
+        this.store.savePublicDraft(draft);
+        this.store.savePublicAudit({ id: newId("paudit"), draftId: draft.id, action: "created", actorId: conn.userId, at: now });
+        send(conn.ws, { type: "publicUpdate", draft, revisions: [], audit: this.store.publicAudit(draft.id) });
+        break;
+      }
+      case "agentPublicDraft": {
+        if (conn.client !== "engine") throw new Error("only an agent host can draft");
+        const agent = this.myAgent(conn.userId, frame.agentId);
+        const project = this.myProject(conn.userId, frame.projectId);
+        const bad = validatePublicUpdateText(frame.title, "title")
+          || validatePublicUpdateText(frame.summary, "summary")
+          || validatePublicUpdateText(frame.body, "body")
+          || validatePublicUpdateLinks(frame.changelogLinks ?? []);
+        if (bad) throw new Error(bad);
+        this.publicLinks(conn.userId, project, frame.changelogLinks ?? []);
+        const now = Date.now();
+        const draft: PublicUpdateDraft = {
+          id: newId("pub"), projectId: project.id,
+          title: frame.title.trim(), summary: frame.summary.trim(), body: frame.body.trim(),
+          changelogLinks: frame.changelogLinks ?? [],
+          authorId: agent.id, authorName: agent.name, authorKind: "agent",
+          state: "draft", createdAt: now, updatedAt: now,
+        };
+        this.store.savePublicDraft(draft);
+        this.store.savePublicAudit({ id: newId("paudit"), draftId: draft.id, action: "created", actorId: agent.id, at: now });
+        this.toUser(conn.userId, { type: "publicUpdate", draft, revisions: [], audit: this.store.publicAudit(draft.id) });
+        break;
+      }
+      case "publicEdit": {
+        this.requirePublicHumanDesktop(conn, "edit a public update");
+        const { draft, project } = this.publicDraft(conn.userId, frame.draftId);
+        if (draft.state === "published" || draft.state === "revoked") {
+          throw new Error("published updates cannot be edited");
+        }
+        const bad = validatePublicUpdateText(frame.title, "title")
+          || validatePublicUpdateText(frame.summary, "summary")
+          || validatePublicUpdateText(frame.body, "body")
+          || validatePublicUpdateLinks(frame.changelogLinks ?? []);
+        if (bad) throw new Error(bad);
+        this.publicLinks(conn.userId, project, frame.changelogLinks ?? []);
+        // Edit always returns to draft and clears approval — re-approve required.
+        const updated: PublicUpdateDraft = {
+          ...draft,
+          title: frame.title.trim(), summary: frame.summary.trim(), body: frame.body.trim(),
+          changelogLinks: frame.changelogLinks ?? [],
+          state: "draft",
+          updatedAt: Date.now(),
+          approvedAt: undefined,
+          approvedBy: undefined,
+        };
+        this.store.savePublicDraft(updated);
+        this.store.savePublicAudit({ id: newId("paudit"), draftId: updated.id, action: "edited", actorId: conn.userId, at: updated.updatedAt });
+        send(conn.ws, {
+          type: "publicUpdate", draft: updated,
+          revisions: this.store.publicRevisions(updated.id),
+          audit: this.store.publicAudit(updated.id),
+        });
+        break;
+      }
+      case "publicApprove": {
+        this.requirePublicHumanDesktop(conn, "approve a public update");
+        const { draft } = this.publicDraft(conn.userId, frame.draftId);
+        // Gate the ACTOR (engine refused above), not authorKind — agent drafts are human-approvable.
+        if (draft.state !== "draft") throw new Error("only a draft can be approved");
+        const now = Date.now();
+        const updated: PublicUpdateDraft = {
+          ...draft, state: "approved", approvedAt: now, approvedBy: conn.userId, updatedAt: now,
+        };
+        this.store.savePublicDraft(updated);
+        this.store.savePublicAudit({ id: newId("paudit"), draftId: updated.id, action: "approved", actorId: conn.userId, at: now });
+        send(conn.ws, {
+          type: "publicUpdate", draft: updated,
+          revisions: this.store.publicRevisions(updated.id),
+          audit: this.store.publicAudit(updated.id),
+        });
+        break;
+      }
+      case "publicPublish": {
+        this.requirePublicHumanDesktop(conn, "publish a public update");
+        const { draft } = this.publicDraft(conn.userId, frame.draftId);
+        if (draft.state !== "approved" || draft.approvedBy !== conn.userId) {
+          throw new Error("owner approval is required before publish");
+        }
+        const now = Date.now();
+        const revision = (draft.revision ?? 0) + 1;
+        const rev: PublicUpdateRevision = {
+          id: newId("pubrev"), draftId: draft.id, revision,
+          title: draft.title, summary: draft.summary, body: draft.body,
+          changelogLinks: draft.changelogLinks,
+          publishedAt: now, publishedBy: conn.userId, immutable: true,
+        };
+        this.store.savePublicRevision(rev);
+        const token = draft.publicToken ?? secureToken();
+        const updated: PublicUpdateDraft = {
+          ...draft, state: "published", publishedAt: now, publicToken: token,
+          revision, updatedAt: now,
+        };
+        this.store.savePublicDraft(updated);
+        this.store.savePublicAudit({
+          id: newId("paudit"), draftId: draft.id, action: "published",
+          actorId: conn.userId, at: now, revision,
+        });
+        const publicPath = `/public/update/${encodeURIComponent(token)}`;
+        send(conn.ws, { type: "publicPublished", revision: rev, token, publicPath });
+        send(conn.ws, {
+          type: "publicUpdate", draft: updated,
+          revisions: this.store.publicRevisions(updated.id),
+          audit: this.store.publicAudit(updated.id),
+        });
+        break;
+      }
+      case "publicRevoke": {
+        this.requirePublicHumanDesktop(conn, "revoke a public update");
+        const { draft } = this.publicDraft(conn.userId, frame.draftId);
+        if (draft.state !== "published") throw new Error("only a published update can be revoked");
+        const now = Date.now();
+        const updated: PublicUpdateDraft = {
+          ...draft, state: "revoked", revokedAt: now, updatedAt: now,
+        };
+        this.store.savePublicDraft(updated);
+        this.store.savePublicAudit({ id: newId("paudit"), draftId: draft.id, action: "revoked", actorId: conn.userId, at: now });
+        send(conn.ws, {
+          type: "publicUpdate", draft: updated,
+          revisions: this.store.publicRevisions(updated.id),
+          audit: this.store.publicAudit(updated.id),
+        });
+        break;
+      }
+      case "publicRoute": {
+        // Authenticated echo of the public surface (for internal checks).
+        // Real public readers use GET /public/update/:token — no sign-in.
+        const revision = this.store.publicByToken(frame.token);
+        send(conn.ws, revision
+          ? { type: "publicRoute", revision }
+          : { type: "publicRoute", problem: "that public update is unavailable" });
+        break;
+      }
+
       // ---- projects: a GitHub repository connected to Cloud9 (his item 7) ----
       //
       // ONE GATE, `myProject`, on stored state — the same law `myAgent` follows

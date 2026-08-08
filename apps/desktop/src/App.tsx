@@ -10,7 +10,7 @@ import {
   normaliseArtifactAccess, validateArtifactAccess, versionOf,
   Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
   GitHubAccountInfo, HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
-  MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectPollView, ProjectItemKind, ProjectItemState,
+  MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectPollView, PublicUpdateDraft, ProjectItemKind, ProjectItemState,
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
   EverywhereHit, SearchKind,
   SearchHit, ServerFrame, SKILL_LIMITS, SOCIAL_LIMITS, SocialLink, SocialPost, summarizeRun, Task, User, humanDuration, humanMoney,
@@ -1151,6 +1151,9 @@ const IconProjects = (): React.JSX.Element => (
     <path d="M7 7.7v8.6" /><path d="M17.5 11.3v.8a3.2 3.2 0 0 1-3.2 3.2h-2.1a3.2 3.2 0 0 0-3.2 3.1" />
   </svg>
 );
+const IconUpdates = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v12H4z"/><path d="M7 9h10M7 12h7M8 21l4-4 4 4"/></svg>
+);
 const IconPolls = (): React.JSX.Element => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
     <path d="M4 19V5"/><path d="M10 19V9"/><path d="M16 19v-6"/><path d="M22 19H2"/>
@@ -2002,7 +2005,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "huddles" | "pulse" | "polls" | "hooks" | "social" | "spending" | "activity" | "notifications" | "saved" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "huddles" | "pulse" | "polls" | "updates" | "hooks" | "social" | "spending" | "activity" | "notifications" | "saved" | "settings";
 type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -2273,6 +2276,9 @@ function Workspace(): React.JSX.Element {
       client.askProjects();
       setScreen("projects");
     });
+  }, []);
+  const openUpdates = useCallback(() => {
+    attemptLeave(() => { client.askPublicUpdates(); setScreen("updates"); });
   }, []);
   const openPolls = useCallback(() => {
     setScreen("polls");
@@ -2913,6 +2919,7 @@ function Workspace(): React.JSX.Element {
           {railBtn("pulse", "Engineering Pulse", <IconPulse />,
             Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
           {railBtn("polls", "Polls", <IconPolls />, undefined, openPolls)}
+          {railBtn("updates", "Public updates", <IconUpdates />, undefined, openUpdates)}
           {railBtn("hooks", "Hooks", <IconGear />)}
           {railBtn("social", "Team feed", <IconSocial />, socialUnread, openSocial)}
           {/* ADDED 2026-08-07. It sits beside the Activity button because it
@@ -3031,6 +3038,7 @@ function Workspace(): React.JSX.Element {
             })}
           />}
           {screen === "polls" && <PollsScreen />}
+          {screen === "updates" && <PublicUpdatesScreen />}
           {screen === "hooks" && <HooksScreen />}
           {screen === "social" && <SocialFeedScreen onOpenLink={openSocialLink} />}
           {screen === "spending" && <SpendingScreen />}
@@ -14491,6 +14499,189 @@ function PollCard({ poll, summary, onSummary }: { poll: ProjectPollView; summary
 const SPLIT_LABEL_FITS = 0.2;
 
 /** One agent's row: what it cost, how it splits, and what is wrong with it. */
+
+/** Public project updates — draft, approve, publish on Cloud9's own read path. */
+function PublicUpdatesScreen(): React.JSX.Element {
+  const world = useWorld();
+  const [projectId, setProjectId] = useState<ID | "">(world.projects.list[0]?.id ?? "");
+  const project = world.projects.list.find(p => p.id === projectId) ?? world.projects.list[0];
+  const [selected, setSelected] = useState<ID | "">("");
+  const [title, setTitle] = useState("");
+  const [summary, setSummary] = useState("");
+  const [body, setBody] = useState("");
+  const [links, setLinks] = useState("");
+  const drafts = world.publicUpdates.drafts.filter(d => !project || d.projectId === project.id);
+  const draft = (selected && drafts.find(d => d.id === selected))
+    || world.publicUpdates.selected
+    || drafts[0];
+
+  useEffect(() => {
+    if (!world.projects.asked && world.connected) client.askProjects();
+  }, [world.connected, world.projects.asked]);
+
+  useEffect(() => {
+    if (project?.id && world.connected) {
+      setProjectId(project.id);
+      client.askPublicUpdates(project.id);
+    }
+  }, [project?.id, world.connected]);
+
+  useEffect(() => {
+    if (draft) {
+      setSelected(draft.id);
+      setTitle(draft.title);
+      setSummary(draft.summary);
+      setBody(draft.body);
+      setLinks((draft.changelogLinks ?? []).map(l => l.url ?? "").filter(Boolean).join(", "));
+      if (world.publicUpdates.selected?.id !== draft.id) client.askPublicUpdate(draft.id);
+    } else {
+      setSelected("");
+      setTitle(""); setSummary(""); setBody(""); setLinks("");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft?.id]);
+
+  const parseLinks = () => links.split(",").map(s => s.trim()).filter(Boolean)
+    .map(url => ({ kind: "changelog" as const, url }));
+
+  const create = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!project || !title.trim() || !summary.trim() || !body.trim()) return;
+    client.publicSend({
+      type: "publicCreate", projectId: project.id,
+      title, summary, body, changelogLinks: parseLinks(),
+    });
+  };
+  const edit = () => {
+    if (!draft) return;
+    client.publicSend({
+      type: "publicEdit", draftId: draft.id,
+      title, summary, body, changelogLinks: parseLinks(),
+    });
+  };
+
+  const publishedToken = draft?.state === "published"
+    ? (draft.publicToken ?? (world.publicUpdates.lastPublished?.draftId === draft.id
+      ? world.publicUpdates.lastPublished.token : undefined))
+    : undefined;
+  const publicPath = draft?.state === "published"
+    ? (world.publicUpdates.lastPublished?.draftId === draft.id
+      ? world.publicUpdates.lastPublished.publicPath
+      : publishedToken ? `/public/update/${encodeURIComponent(publishedToken)}` : undefined)
+    : undefined;
+  const publicUrl = publicPath ? `${RELAY_URL.replace(/^ws/, "http")}${publicPath}` : undefined;
+
+  return (
+    <section className="public-updates-screen" aria-labelledby="updates-heading">
+      <header className="screen-head">
+        <div>
+          <span className="eyebrow">Approved publishing</span>
+          <h1 id="updates-heading">Public project updates</h1>
+          <p className="muted">
+            Draft here, approve yourself, then publish on Cloud9's own read-only link.
+            Agents may draft; only you can approve or publish. Cloud9 never posts elsewhere.
+          </p>
+        </div>
+      </header>
+      {!world.publicUpdates.asked ? (
+        <div className="empty-state" role="status">Loading updates…</div>
+      ) : (
+        <div className="public-layout">
+          <aside className="public-list" aria-label="Update drafts">
+            <label className="field">
+              <span>Project</span>
+              <select
+                value={project?.id ?? ""}
+                onChange={e => {
+                  setProjectId(e.target.value);
+                  if (e.target.value) client.askPublicUpdates(e.target.value);
+                }}
+                aria-label="Public updates project"
+              >
+                {world.projects.list.map(p => (
+                  <option key={p.id} value={p.id}>{p.name || p.repo}</option>
+                ))}
+              </select>
+            </label>
+            {drafts.length === 0 ? (
+              <div className="empty-state">No drafts yet.</div>
+            ) : drafts.map(d => (
+              <button
+                className={`public-row${d.id === draft?.id ? " selected" : ""}`}
+                key={d.id}
+                type="button"
+                onClick={() => { setSelected(d.id); client.askPublicUpdate(d.id); }}
+              >
+                <strong>{d.title}</strong>
+                <span>{d.state} · {d.authorKind}</span>
+                <small>{new Date(d.updatedAt).toLocaleString()}</small>
+              </button>
+            ))}
+          </aside>
+          <div className="public-editor" aria-live="polite">
+            <form onSubmit={draft ? (e => { e.preventDefault(); edit(); }) : create}>
+              <h2>{draft ? "Internal editor and preview" : "Create a draft"}</h2>
+              <label className="field-label" htmlFor="public-title">Title</label>
+              <input id="public-title" className="input" value={title} onChange={e => setTitle(e.target.value)} required />
+              <label className="field-label" htmlFor="public-summary">Summary</label>
+              <textarea id="public-summary" className="input" value={summary} onChange={e => setSummary(e.target.value)} required />
+              <label className="field-label" htmlFor="public-body">Body</label>
+              <textarea id="public-body" className="input public-body" value={body} onChange={e => setBody(e.target.value)} required />
+              <label className="field-label" htmlFor="public-links">
+                Changelog links <span className="muted">comma-separated trusted URLs</span>
+              </label>
+              <input id="public-links" className="input" value={links} onChange={e => setLinks(e.target.value)} />
+              <div className="public-preview">
+                <span className="eyebrow">Internal preview</span>
+                <h3>{title || "Untitled update"}</h3>
+                <p>{summary}</p>
+                <div>{body}</div>
+              </div>
+              <button className="btn primary" type="submit" disabled={!project}>
+                {draft ? "Save draft" : "Create draft"}
+              </button>
+            </form>
+            {draft && (
+              <div className="public-actions">
+                {draft.state === "draft" && (
+                  <button className="btn" type="button" onClick={() => client.publicSend({ type: "publicApprove", draftId: draft.id })}>
+                    Approve for publishing
+                  </button>
+                )}
+                {draft.state === "approved" && (
+                  <button className="btn primary" type="button" onClick={() => client.publicSend({ type: "publicPublish", draftId: draft.id })}>
+                    Publish read-only update
+                  </button>
+                )}
+                {draft.state === "published" && (
+                  <button className="btn" type="button" onClick={() => client.publicSend({ type: "publicRevoke", draftId: draft.id })}>
+                    Revoke public update
+                  </button>
+                )}
+              </div>
+            )}
+            {draft?.state === "published" && publicUrl && (
+              <div className="public-token" role="status">
+                <span className="eyebrow">Public link (Cloud9 only)</span>
+                <code className="public-token-value">{publicUrl}</code>
+                <p className="muted">Anyone with this link can read the published update. Revoke to kill it.</p>
+              </div>
+            )}
+            {draft && (
+              <div className="public-audit" aria-label="Audit trail">
+                {world.publicUpdates.audit.map(a => (
+                  <div key={a.id}>{a.action} · {new Date(a.at).toLocaleString()}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+
 function SpendingRow({ row }: {
   row: { use: AgentTokenUse; findings: WasteFinding[] };
 }): React.JSX.Element {

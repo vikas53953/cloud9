@@ -31,7 +31,7 @@ This board was last verified against GitHub at **2026-08-08 01:34 +05:30** and `
 | Engineering Canvas | BUILDING | `feature/engineering-canvas` / PR #26 (`83ebc26`) | Vikas Mittal | unassigned | Review the internal project Canvas implementation for membership isolation, durable edits, and accessible loading/error states. |
 | Project forums/decision threads | BUILDING | `project-forums-decision-threads` / PR #23 (`6a76fbf`) | Vikas Mittal | chatgpt-codex-connector | Review durable project discussion and decision records with membership, moderation, link-access, and audit boundaries. |
 | Huddle presence/shared notes | BUILDING | `huddle-presence-shared-notes` / PR #24 (`8722312`) | Vikas Mittal | chatgpt-codex-connector | Review project/channel-scoped presence and notes only; v1 excludes audio and video and must preserve membership boundaries; current checkpoint adds correlated mutations, membership invalidation, link guards/navigation, and disconnect cleanup. |
-| Public project update publishing | BUILDING | `public-project-updates` / PR #25 (`1f6efa3`) | Vikas Mittal | chatgpt-codex-connector | Review explicit human approval, immutable revisions, revocation, and audit trail; no autopublish or external posting. |
+| Public project update publishing | BUILDING | `public-project-updates` / PR #25 (rebased; B1-B5 class fix) | Vikas Mittal | unassigned | Re-review after human-desktop-only gates, agent-draft approve, HTTP public token route, minimal App patch, adversarial tests. |
 
 ## 0. THE THREE REFERENCES — read this before designing anything
 

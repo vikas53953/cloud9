@@ -3512,3 +3512,24 @@ button.chip{cursor:pointer;}
 .poll-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .poll-actions input{min-height:32px;padding:5px 8px;}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
+
+
+/* ---- Public project updates --------------------------------------------- */
+.public-updates-screen{max-width:1180px;margin:0 auto;padding:32px 34px 56px;overflow:auto;flex:1;min-height:0}
+.public-layout{display:grid;grid-template-columns:minmax(220px,30%) 1fr;gap:18px;margin-top:18px}
+.public-list,.public-editor{background:var(--paper,#fff);border:1px solid var(--line-soft,#ddd);border-radius:14px}
+.public-list{padding:8px;max-height:620px;overflow:auto;display:grid;gap:6px;align-content:start}
+.public-list .field{padding:8px;display:grid;gap:4px}
+.public-list select{min-height:34px;padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:inherit}
+.public-row{display:flex;flex-direction:column;align-items:flex-start;gap:5px;width:100%;padding:13px;border:0;background:transparent;border-radius:10px;text-align:left;cursor:pointer;color:inherit}
+.public-row:hover,.public-row.selected{background:var(--wash,#f3f4f6)}
+.public-row span,.public-row small{color:var(--ink-3,#667085);font-size:12px}
+.public-editor{padding:24px}
+.public-editor form{display:grid;gap:8px}
+.public-body{min-height:180px}
+.public-preview{margin-top:12px;padding:16px;border:1px dashed var(--line,#d0d5dd);background:var(--wash,#f8f9fb);white-space:pre-wrap}
+.public-actions{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
+.public-token{margin-top:16px;padding:14px;border:1px solid var(--line-soft);border-radius:10px;background:var(--wash);display:grid;gap:6px}
+.public-token-value{font-family:var(--mono,ui-monospace,monospace);font-size:12px;word-break:break-all}
+.public-audit{margin-top:18px;padding-top:12px;border-top:1px solid var(--line,#ddd);font-size:12px;color:var(--ink-3,#667085)}
+@media(max-width:760px){.public-updates-screen{padding:20px 16px}.public-layout{grid-template-columns:1fr}.public-list{max-height:240px}}
