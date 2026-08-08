@@ -8,7 +8,7 @@ import {
   ArtifactWorkspaceEntry, Attachment, Channel, ChannelMember,
   StoredArtifact, StoredArtifactVersion, artifactVersionForPublic,
   ChannelRole, EverywhereHit, ID, Message, SearchKind,
-  MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
+  MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, ProjectItem, PROJECT_LIMITS,
   ProjectPoll, ProjectPollDecision, ProjectPollOption,
   SocialPost, SocialReaction, SocialReadEntry, SocialLink, SOCIAL_LIMITS,
   EngineeringPulseUpdate, redactDeletedPulseUpdate,
@@ -583,6 +583,22 @@ export class Store implements JoinHubStore {
         PRIMARY KEY (projectId, kind, number)
       );
       CREATE INDEX IF NOT EXISTS proj_item_updated ON project_items(projectId, updatedAt);
+
+      CREATE TABLE IF NOT EXISTS public_updates(
+        id TEXT PRIMARY KEY, projectId TEXT NOT NULL, updatedAt INTEGER NOT NULL,
+        publicToken TEXT, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS public_update_project ON public_updates(projectId, updatedAt);
+      CREATE UNIQUE INDEX IF NOT EXISTS public_update_token ON public_updates(publicToken) WHERE publicToken IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS public_revisions(
+        id TEXT PRIMARY KEY, draftId TEXT NOT NULL, revision INTEGER NOT NULL,
+        publishedAt INTEGER NOT NULL, json TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS public_revision_number ON public_revisions(draftId, revision);
+      CREATE TABLE IF NOT EXISTS public_audit(
+        id TEXT PRIMARY KEY, draftId TEXT NOT NULL, at INTEGER NOT NULL, json TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS huddles(id TEXT PRIMARY KEY, projectId TEXT NOT NULL, startedAt INTEGER NOT NULL, json TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS huddle_project ON huddles(projectId,startedAt);
       CREATE TABLE IF NOT EXISTS huddle_notes(id TEXT PRIMARY KEY, sessionId TEXT NOT NULL, createdAt INTEGER NOT NULL, json TEXT NOT NULL);
@@ -3836,6 +3852,63 @@ export class Store implements JoinHubStore {
       "SELECT json FROM project_items WHERE projectId=? ORDER BY updatedAt DESC",
     ).all(projectId) as { json: string }[]).map(r => JSON.parse(r.json) as ProjectItem);
   }
+
+  // ---- public project updates (immutable revisions; token-keyed public read) ----
+  savePublicDraft(d: PublicUpdateDraft): void {
+    this.db.prepare(
+      "INSERT OR REPLACE INTO public_updates(id, projectId, updatedAt, publicToken, json) VALUES(?,?,?,?,?)",
+    ).run(d.id, d.projectId, d.updatedAt, d.publicToken ?? null, JSON.stringify(d));
+  }
+  publicDraft(id: ID): PublicUpdateDraft | undefined {
+    const r = this.db.prepare("SELECT json FROM public_updates WHERE id=?").get(id) as { json: string } | undefined;
+    return r ? JSON.parse(r.json) as PublicUpdateDraft : undefined;
+  }
+  publicDrafts(projectId?: ID): PublicUpdateDraft[] {
+    const q = projectId
+      ? this.db.prepare("SELECT json FROM public_updates WHERE projectId=? ORDER BY updatedAt DESC, id DESC")
+      : this.db.prepare("SELECT json FROM public_updates ORDER BY updatedAt DESC, id DESC");
+    const rows = (projectId ? q.all(projectId) : q.all()) as { json: string }[];
+    return rows.map(r => JSON.parse(r.json) as PublicUpdateDraft);
+  }
+  savePublicRevision(r: PublicUpdateRevision): void {
+    if (this.publicRevision(r.draftId, r.revision)) throw new Error("published revisions are immutable");
+    this.db.prepare(
+      "INSERT INTO public_revisions(id, draftId, revision, publishedAt, json) VALUES(?,?,?,?,?)",
+    ).run(r.id, r.draftId, r.revision, r.publishedAt, JSON.stringify(r));
+  }
+  publicRevision(draftId: ID, revision: number): PublicUpdateRevision | undefined {
+    const r = this.db.prepare(
+      "SELECT json FROM public_revisions WHERE draftId=? AND revision=?",
+    ).get(draftId, revision) as { json: string } | undefined;
+    return r ? JSON.parse(r.json) as PublicUpdateRevision : undefined;
+  }
+  publicRevisions(draftId: ID): PublicUpdateRevision[] {
+    return (this.db.prepare(
+      "SELECT json FROM public_revisions WHERE draftId=? ORDER BY revision ASC",
+    ).all(draftId) as { json: string }[]).map(r => JSON.parse(r.json) as PublicUpdateRevision);
+  }
+  savePublicAudit(a: PublicUpdateAudit): void {
+    this.db.prepare("INSERT INTO public_audit(id, draftId, at, json) VALUES(?,?,?,?)")
+      .run(a.id, a.draftId, a.at, JSON.stringify(a));
+  }
+  publicAudit(draftId: ID): PublicUpdateAudit[] {
+    return (this.db.prepare(
+      "SELECT json FROM public_audit WHERE draftId=? ORDER BY at ASC, id ASC",
+    ).all(draftId) as { json: string }[]).map(r => JSON.parse(r.json) as PublicUpdateAudit);
+  }
+  /** Latest published revision for a live public token, or nothing. */
+  publicByToken(token: string): PublicUpdateRevision | undefined {
+    if (!token || typeof token !== "string") return undefined;
+    const row = this.db.prepare(
+      "SELECT json FROM public_updates WHERE publicToken=?",
+    ).get(token) as { json: string } | undefined;
+    if (!row) return undefined;
+    const draft = JSON.parse(row.json) as PublicUpdateDraft;
+    if (draft.state !== "published" || draft.revokedAt) return undefined;
+    const revs = this.publicRevisions(draft.id);
+    return revs.length ? revs[revs.length - 1] : undefined;
+  }
+
   // ---- huddles: durable presence and chronological notes ----
   saveHuddle(s: HuddleSession): void { const p=this.project(s.projectId); if(!p||s.channelId!==p.channelId)throw new Error("huddle channel must match project channel"); this.db.prepare("INSERT OR REPLACE INTO huddles(id,projectId,startedAt,json) VALUES(?,?,?,?)").run(s.id,s.projectId,s.startedAt,JSON.stringify(s)); }
   huddle(id: ID): HuddleSession|undefined { const r=this.db.prepare("SELECT json FROM huddles WHERE id=?").get(id) as {json:string}|undefined; return r?JSON.parse(r.json) as HuddleSession:undefined; }

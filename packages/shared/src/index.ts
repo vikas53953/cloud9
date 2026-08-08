@@ -1934,6 +1934,71 @@ export function validateEngineeringPulseDraft(value: unknown): string | null {
   return null;
 }
 
+
+// ---------- public project updates (Cloud9-owned read-only publishing) ----------
+export type PublicUpdateState = "draft" | "approved" | "published" | "revoked";
+export interface PublicUpdateLink {
+  kind: "changelog" | "task" | "run" | "projectItem" | "artifact";
+  url?: string;
+  id?: ID;
+  artifactId?: ID;
+  label?: string;
+}
+export interface PublicUpdateDraft {
+  id: ID;
+  projectId: ID;
+  title: string;
+  summary: string;
+  body: string;
+  changelogLinks: PublicUpdateLink[];
+  authorId: ID;
+  authorName: string;
+  authorKind: "human" | "agent";
+  state: PublicUpdateState;
+  createdAt: number;
+  updatedAt: number;
+  approvedAt?: number;
+  approvedBy?: ID;
+  publishedAt?: number;
+  revokedAt?: number;
+  publicToken?: string;
+  revision?: number;
+}
+export interface PublicUpdateRevision {
+  id: ID;
+  draftId: ID;
+  revision: number;
+  title: string;
+  summary: string;
+  body: string;
+  changelogLinks: PublicUpdateLink[];
+  publishedAt: number;
+  publishedBy: ID;
+  immutable: true;
+}
+export interface PublicUpdateAudit {
+  id: ID;
+  draftId: ID;
+  action: "created" | "edited" | "approved" | "published" | "revoked";
+  actorId: ID;
+  at: number;
+  revision?: number;
+}
+export const PUBLIC_UPDATE_LIMITS = { title: 160, summary: 800, body: 12000, links: 30 } as const;
+export function validatePublicUpdateText(value: unknown, what: "title" | "summary" | "body"): string | null {
+  if (typeof value !== "string" || !value.trim()) return `${what} cannot be empty`;
+  if (value.length > PUBLIC_UPDATE_LIMITS[what]) return `${what} is too long`;
+  return null;
+}
+export function validatePublicUpdateLinks(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length > PUBLIC_UPDATE_LIMITS.links) return "too many update links";
+  for (const l of value as PublicUpdateLink[]) {
+    if (!l || !["changelog", "task", "run", "projectItem", "artifact"].includes(l.kind)) return "invalid update link";
+    if (l.kind === "changelog" && typeof l.url !== "string") return "changelog link needs a URL";
+  }
+  return null;
+}
+
 export const PROJECT_LIMITS = {
   /** how many repositories one person may connect */
   perUser: 50,
@@ -3627,6 +3692,16 @@ type ClientFrameBase =
   | { type: "huddleMarkRead"; sessionId: ID; ts?: number; requestId?: ID }
   | { type: "huddleMembers"; sessionId: ID; requestId?: ID }
   | { type: "agentHuddleNote"; agentId: ID; sessionId: ID; kind: HuddleNoteKind; body: string; links?: HuddleLink[]; requestId?: ID }
+  // ---- public project updates: owner desktop only for mutate; agents may draft ----
+  | { type: "publicUpdates"; projectId?: ID }
+  | { type: "publicUpdate"; draftId: ID }
+  | { type: "publicCreate"; projectId: ID; title: string; summary: string; body: string; changelogLinks?: PublicUpdateLink[] }
+  | { type: "publicEdit"; draftId: ID; title: string; summary: string; body: string; changelogLinks?: PublicUpdateLink[] }
+  | { type: "agentPublicDraft"; agentId: ID; projectId: ID; title: string; summary: string; body: string; changelogLinks?: PublicUpdateLink[] }
+  | { type: "publicApprove"; draftId: ID }
+  | { type: "publicPublish"; draftId: ID }
+  | { type: "publicRevoke"; draftId: ID }
+  | { type: "publicRoute"; token: string }
   // ---- projects: a GitHub repository connected to Cloud9 (his item 7) ----
   /** Connect a repository. Yours: it runs through YOUR machine and YOUR `gh`. */
   | { type: "connectProject"; repo: string; name?: string; description?: string; channelId?: ID }
@@ -4209,6 +4284,10 @@ export type ServerFrame =
   | { type: "huddleRead"; entry: HuddleReadEntry; requestId?: ID }
   | { type: "huddleMembers"; sessionId: ID; participants: HuddleParticipant[]; requestId?: ID }
   | { type: "huddleUnavailable"; sessionId: ID; problem: string; requestId?: ID }
+  | { type: "publicUpdates"; drafts: PublicUpdateDraft[] }
+  | { type: "publicUpdate"; draft: PublicUpdateDraft; revisions: PublicUpdateRevision[]; audit: PublicUpdateAudit[] }
+  | { type: "publicPublished"; revision: PublicUpdateRevision; token: string; publicPath: string }
+  | { type: "publicRoute"; revision?: PublicUpdateRevision; problem?: string }
   /** One project changed — connected, renamed, or freshly looked at. */
   | { type: "project"; project: Project }
   /** Answers `projects`. Only ever the asker's own. */
