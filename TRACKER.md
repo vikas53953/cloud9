@@ -9,7 +9,7 @@ request correlation, accessible loading/error/test-result UI, and no
 shell/webhook credential fields are implemented. Stable source/test commit is
 `6e27436`. Evidence: shared, engine, and relay builds pass; engine host 18/18
 and hooks 26/26; relay Hooks CRUD/action replacement/test replay/ledger retention 5/5; desktop typecheck and
-Hooks source 3/3; diff-check clean. Hook firing reports now carry a receipt id,
+Hooks source 3/3; combined focused engine/relay coverage 48/48; diff-check clean. Hook firing reports now carry a receipt id,
 are event-bound and deduplicated, successful actions audit as `dispatched`
 with `ok=false` because no relay acknowledgement protocol exists, note-save failures are refused, hook
 jobs carry recursion provenance, relay caps an owner at 50 hooks while
