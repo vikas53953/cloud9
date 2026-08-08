@@ -1178,6 +1178,8 @@ export interface Task {
   workflowId?: ID;
   workflowRunId?: ID;
   workflowStepId?: ID;
+  /** A task started by a hook must not feed its own completion back into hooks. */
+  causedByHook?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -3234,7 +3236,7 @@ type ClientFrameBase =
   // engine's own account (the owner) for a friend's request. Only an engine
   // connection may set it, and the relay still checks that person is real and
   // can see the channel — it is a claim, not a permission.
-  | { type: "createTask"; agentId: ID; channelId: ID; title: string; requesterId?: ID; needsApproval?: boolean; action?: string }
+  | { type: "createTask"; agentId: ID; channelId: ID; title: string; requesterId?: ID; needsApproval?: boolean; action?: string; causedByHook?: boolean }
   /**
    * engine (agent owner) only. `summary` follows the same sentence-vs-silence
    * rule as every other optional field in this protocol: ABSENT means "I am not
@@ -3365,6 +3367,18 @@ type ClientFrameBase =
   | { type: "projects" }
   /** One project's pull requests and issues, as of the last time we looked. */
   | { type: "projectItems"; projectId: ID }
+  | { type: "hooks" }
+  | { type: "hooksAudit" }
+  | { type: "createHook"; hook: Omit<StoredHook, "id" | "ownerId" | "updatedAt"> }
+  | { type: "updateHook"; hookId: ID; hook: Partial<Pick<StoredHook, "name" | "event" | "when" | "action">> }
+  | { type: "setHookEnabled"; hookId: ID; enabled: boolean }
+  | { type: "deleteHook"; hookId: ID }
+  | { type: "testHook"; hookId: ID }
+  /** ENGINE-HOST ONLY: report one owner's hook firing back to the hub audit. */
+  | {
+      type: "hookFired"; hookId: ID; event: HookEvent; ok: boolean;
+      said: string; at: number; firingId: ID;
+    }
   /**
    * "LOOK AT GITHUB NOW." The owner asking for a fresh look at one project.
    *
@@ -3860,6 +3874,12 @@ export type ServerFrame =
   | { type: "projectForgotten"; projectId: ID }
   /** Answers `projectItems`, and pushed again whenever the engine re-syncs. */
   | { type: "projectItems"; projectId: ID; items: ProjectItem[] }
+  | { type: "hooks"; hooks: StoredHook[]; requestId?: ID }
+  | { type: "hook"; hook: StoredHook; requestId?: ID }
+  | { type: "hookTest"; hookId: ID; ok: boolean; said: string; requestId?: ID }
+  | { type: "hookAudit"; entries: HookAuditEntry[]; requestId?: ID }
+  /** OWNER'S HOOKBOOK, sent only to that owner's engine host. */
+  | { type: "hooksUpdated"; hooks: StoredHook[] }
   /**
    * One run — pushed the moment it finishes to everyone who can see the
    * conversation it happened in, and sent back on its own to whoever asked for
@@ -4199,6 +4219,55 @@ export const ATTACHMENT_LIMITS = {
  * around it — deliberately derived from `ATTACHMENT_LIMITS.bytes` so the two
  * can never drift into a state where a legal upload is dropped by the socket.
  */
+// ---------- Owner hook rules (the existing engine hook vocabulary) ----------
+export const HOOK_EVENTS = {
+  "turn.finished": "when an agent finishes answering",
+  "job.finished": "when a job finishes",
+  "approval.waiting": "when an agent waits for approval",
+  "check.mismatch": "when verification finds a mismatch",
+} as const;
+export type HookEvent = keyof typeof HOOK_EVENTS;
+export const HOOK_ACTIONS = {
+  say: "post a message in a conversation",
+  note: "write a note into agent memory",
+  job: "start a job",
+} as const;
+export type HookActionKind = keyof typeof HOOK_ACTIONS;
+export interface StoredHook {
+  id: ID; ownerId: ID; name: string; event: HookEvent; enabled: boolean;
+  when?: { agentId?: ID; outcome?: RunOutcome };
+  action: { do: HookActionKind; agentId: ID; channelId?: ID; text?: string; title?: string };
+  updatedAt: number;
+}
+export interface HookAuditEntry {
+  hookId: ID; action: string; ok: boolean; said: string; at: number;
+  actorId: ID; client: string; requestId?: ID; target: string;
+}
+export function validateHookInput(value: unknown): string | null {
+  if (!value || typeof value !== "object") return "a hook rule is required";
+  const h = value as Partial<StoredHook>;
+  const allowed = new Set(["id", "ownerId", "name", "event", "enabled", "when", "action", "updatedAt"]);
+  if (Object.keys(value).some(key => !allowed.has(key))) return "that hook contains an unsupported field";
+  if (typeof h.name !== "string" || !h.name.trim() || h.name.trim().length > 80) return "give the hook a name (max 80 characters)";
+  if (typeof h.event !== "string" || !Object.prototype.hasOwnProperty.call(HOOK_EVENTS, h.event)) return "that hook event is not supported";
+  if (typeof h.enabled !== "boolean") return "a hook must say whether it is enabled";
+  if (h.when !== undefined) {
+    if (!h.when || typeof h.when !== "object" || Object.keys(h.when).some(key => key !== "agentId" && key !== "outcome")) return "that hook condition is invalid";
+    if (h.when.agentId !== undefined && (typeof h.when.agentId !== "string" || !h.when.agentId)) return "that hook condition needs an agent";
+    if (h.when.outcome !== undefined && !["ok", "failed", "cancelled"].includes(h.when.outcome)) return "that hook outcome is not supported";
+  }
+  if (!h.action || typeof h.action !== "object" || !Object.prototype.hasOwnProperty.call(HOOK_ACTIONS, h.action.do)) return "that hook action is not supported";
+  const actionKeys = Object.keys(h.action);
+  const allowedActionKeys = h.action.do === "say" ? ["do", "agentId", "channelId", "text"] : h.action.do === "note" ? ["do", "agentId", "text"] : ["do", "agentId", "channelId", "title"];
+  if (actionKeys.some(key => !allowedActionKeys.includes(key))) return "that hook action contains an unsupported field";
+  if (typeof h.action.agentId !== "string" || !h.action.agentId) return "choose an agent for this hook";
+  if ((h.action.do === "say" || h.action.do === "job")
+    && (typeof h.action.channelId !== "string" || !h.action.channelId)) return "choose a conversation for this hook action";
+  const text = h.action.text ?? h.action.title;
+  if (typeof text !== "string" || !text.trim() || text.length > 500) return "the hook action needs text (max 500 characters)";
+  return null;
+}
+
 export const WS_LIMITS = {
   maxPayloadBytes: Math.ceil(ATTACHMENT_LIMITS.bytes * 4 / 3) + 64 * 1024,
 } as const;

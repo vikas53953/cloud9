@@ -17,7 +17,10 @@
 // There is no path here that does something an agent could not have done.
 import type { AgentDef, ID } from "@cloud9/shared";
 import type { Engine } from "./engine.js";
-import { HookBook, loadHooks, saveHooks, type Hook, type HookActions } from "./hooks.js";
+import {
+  HookBook, loadHooks, loadHooksHubOwned, markHooksHubOwned, mayReplaceHooksFromHub,
+  saveHooks, type Hook, type HookActions,
+} from "./hooks.js";
 import { MemoryNote, newMemoryId } from "./agent-memory.js";
 import { run, safeArg, shellQuote } from "./run.js";
 
@@ -33,6 +36,8 @@ export interface HookWiring {
   save: (hook: Hook) => boolean;
   /** take one away. Returns whether the change reached the disk. */
   remove: (id: string) => boolean;
+  /** replace the whole book from the owner's relay editor */
+  replace: (hooks: readonly Hook[]) => boolean;
 }
 
 /**
@@ -49,10 +54,29 @@ export function attachHooks(engine: Engine, opts: {
 } = {}): HookWiring {
   const log = opts.log ?? ((m: string) => console.error(`[hooks] ${m}`));
   let hooks: Hook[] = loadHooks(engine.dataDir, log);
+  // Explicit cutover: until the hub has owned this book, an empty push must not
+  // silently destroy durable local rules that pre-date the relay editor.
+  let hubOwned = loadHooksHubOwned(engine.dataDir);
+
+  const applyReplace = (next: readonly Hook[]): boolean => {
+    const decision = mayReplaceHooksFromHub({ incoming: next, current: hooks, hubOwned });
+    if (!decision.allow) {
+      log(decision.reason);
+      return false;
+    }
+    if (!saveHooks(engine.dataDir, [...next], log)) return false;
+    hooks = [...next];
+    if (decision.markOwned && !hubOwned) {
+      hubOwned = true;
+      markHooksHubOwned(engine.dataDir, log);
+    }
+    return true;
+  };
 
   const book = new HookBook({
     hooks: () => hooks,
     agent: (id: ID) => engine.agentById(id),
+    replace: applyReplace,
     log,
     actions: engineActions(engine, log),
   });
@@ -76,6 +100,7 @@ export function attachHooks(engine: Engine, opts: {
       hooks = next;
       return true;
     },
+    replace: applyReplace,
   };
 }
 
@@ -106,7 +131,12 @@ export function engineActions(
         id: newMemoryId(), agentId, kind: "fact",
         text: text.trim().slice(0, 500), createdAt: Date.now(), source: "owner",
       };
-      if (!engine.memory.save(note)) log(`could not store a hook's note for agent ${agentId}`);
+      // A local memory failure is a failed action, not a successful dispatch.
+      // Throw so HookBook records a refusal and the relay never presents this
+      // hook as having completed work it could not persist.
+      if (!engine.memory.save(note)) {
+        throw new Error(`could not store a hook's note for agent ${agentId}`);
+      }
     },
 
     // START A JOB THE WAY A PERSON DOES. `requestJob` puts a card in front of
@@ -114,7 +144,7 @@ export function engineActions(
     job({ agentId, channelId, title }) {
       const agent: AgentDef | undefined = engine.agentById(agentId);
       if (!agent) throw new Error("that agent is gone");
-      engine.requestJob(agent, channelId, title);
+      engine.requestJob(agent, channelId, title, undefined, { causedByHook: true });
     },
 
     // RUN A PROGRAM — in the agent's OWN folder, on a one-minute leash, through

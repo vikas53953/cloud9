@@ -10,7 +10,7 @@ import {
   SavedMessageEntry,
   EverywhereHit, SearchKind,
   ReachCatchup,
-  Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task,
+  Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
   Workflow, WorkflowRun,
   // SPENDING BLOCK (what the crew costs, 2026-08-07)
   AgentTokenUse, WasteFinding,
@@ -370,6 +370,7 @@ export interface World {
    * what says how old the answer is.
    */
   projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
+  hooks: { asked: boolean; requestId?: ID; mutationRequestId?: ID; pending?: Record<ID, true>; auditRequestId?: ID; auditAsked?: boolean; auditLoading?: boolean; audit?: HookAuditEntry[]; auditProblem?: string; list: StoredHook[]; problem?: string; test?: { hookId: ID; ok: boolean; said: string } };
   /**
    * THE REPOSITORIES HIS OWN GITHUB SIGN-IN CAN SEE — the picker's list.
    *
@@ -442,6 +443,18 @@ export interface World {
    * hub's answer about it, refreshed whenever a note is saved or cleared.
    */
   memory: Record<ID, { asked: boolean; loading: boolean; notes: MemoryNote[] }>;
+}
+
+/** The whole hooks bag on the desktop — list, audit, pending, test, problems. */
+export type HooksBag = World["hooks"];
+
+/**
+ * CLASS RULE for every hooks answer and refusal: spread the prior bag, never
+ * replace it with a two-field `{ asked, list }` object. Co-asking the list and
+ * the audit must leave audit, pending, and test fields intact when the list settles.
+ */
+export function keepHooksBag(prior: HooksBag, patch: Partial<HooksBag> & Pick<HooksBag, "asked" | "list">): HooksBag {
+  return { ...prior, ...patch };
 }
 
 type Listener = () => void;
@@ -643,7 +656,7 @@ export class RelayClient {
     runs: {}, runLists: {}, runsGone: {},
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
-    projects: { asked: false, list: [] }, projectItems: {},
+    projects: { asked: false, list: [] }, projectItems: {}, hooks: { asked: false, list: [] },
     repoChoices: { asked: false, asking: false },
     artifacts: {}, artifactsGone: {}, channelArtifacts: {},
     artifactWorkspace: emptyArtifactWorkspace(),
@@ -1964,6 +1977,62 @@ export class RelayClient {
       lost: settled,
     });
   }
+  askHooks(): void {
+    const requestId = this.nextRequestId("hooks");
+    // Class rule: always spread the prior hooks bag. A list answer must never
+    // replace world.hooks with a two-field object and wipe audit/pending/test.
+    this.world.hooks = { ...this.world.hooks, asked: false, requestId, list: [], problem: undefined };
+    const sent = this.ask({ type: "hooks", requestId }, {
+      answers: f => f.type === "hooks" && f.requestId === requestId,
+      answered: f => {
+        if (f.type === "hooks" && this.world.hooks.requestId === requestId) {
+          this.world.hooks = keepHooksBag(this.world.hooks, { asked: true, list: f.hooks, problem: undefined });
+        }
+      },
+      refused: why => {
+        if (this.world.hooks.requestId === requestId) {
+          this.world.hooks = keepHooksBag(this.world.hooks, { asked: true, list: [], problem: why });
+          this.emit();
+        }
+      },
+      lost: () => {
+        if (this.world.hooks.requestId === requestId) {
+          this.world.hooks = keepHooksBag(this.world.hooks, { asked: true, list: [], problem: "the hub did not answer" });
+          this.emit();
+        }
+      },
+    });
+    if (!sent && this.world.hooks.requestId === requestId) {
+      this.world.hooks = keepHooksBag(this.world.hooks, { asked: true, list: [], problem: "not connected to the hub yet" });
+      this.emit();
+    }
+  }
+  askHooksAudit(): void {
+    const requestId = this.nextRequestId("hooksAudit");
+    this.world.hooks = { ...this.world.hooks, auditRequestId: requestId, auditAsked: true, auditLoading: true, auditProblem: undefined };
+    const sent = this.ask({ type: "hooksAudit", requestId }, {
+      answers: f => f.type === "hookAudit" && f.requestId === requestId,
+      answered: f => { if (f.type === "hookAudit" && this.world.hooks.auditRequestId === requestId) this.world.hooks = { ...this.world.hooks, auditRequestId: undefined, auditLoading: false, audit: f.entries, auditProblem: undefined }; },
+      refused: why => { if (this.world.hooks.auditRequestId === requestId) this.world.hooks = { ...this.world.hooks, auditRequestId: undefined, auditLoading: false, auditProblem: why }; this.emit(); },
+      lost: () => { if (this.world.hooks.auditRequestId === requestId) this.world.hooks = { ...this.world.hooks, auditRequestId: undefined, auditLoading: false, auditProblem: "the hub did not answer" }; this.emit(); },
+    });
+    if (!sent && this.world.hooks.auditRequestId === requestId) this.world.hooks = { ...this.world.hooks, auditRequestId: undefined, auditLoading: false, auditProblem: "not connected to the hub yet" };
+    this.emit();
+  }
+  private hookMutation(frame: ClientFrame, requestId: ID): void {
+    this.world.hooks = { ...this.world.hooks, mutationRequestId: requestId, pending: { ...this.world.hooks.pending, [requestId]: true }, problem: undefined };
+    const sent = this.send({ ...frame, requestId } as ClientFrame);
+    if (!sent) {
+      const pending = { ...this.world.hooks.pending }; delete pending[requestId];
+      this.world.hooks = { ...this.world.hooks, mutationRequestId: Object.keys(pending).at(-1), pending, problem: "not connected to the hub yet" };
+    }
+    this.emit();
+  }
+  createHook(hook: Omit<StoredHook, "id" | "ownerId" | "updatedAt">): void { const requestId = this.nextRequestId("createHook"); this.hookMutation({ type: "createHook", hook }, requestId); }
+  updateHook(hookId: ID, hook: Partial<Pick<StoredHook, "name" | "event" | "when" | "action">>): void { const requestId = this.nextRequestId("updateHook"); this.hookMutation({ type: "updateHook", hookId, hook }, requestId); }
+  setHookEnabled(hookId: ID, enabled: boolean): void { const requestId = this.nextRequestId("setHookEnabled"); this.hookMutation({ type: "setHookEnabled", hookId, enabled }, requestId); }
+  deleteHook(hookId: ID): void { const requestId = this.nextRequestId("deleteHook"); this.hookMutation({ type: "deleteHook", hookId }, requestId); }
+  testHook(hookId: ID): void { const requestId = this.nextRequestId("testHook"); this.hookMutation({ type: "testHook", hookId }, requestId); }
 
   /**
    * "LOOK AT GITHUB NOW" for one project.
@@ -3079,6 +3148,7 @@ export class RelayClient {
         // screen must say "looking" rather than "you have none".
         w.projects = { asked: false, list: [] };
         w.projectItems = {};
+        w.hooks = { asked: false, list: [] };
         // Files agents made belonged to the last connection too, and `asked`
         // goes back to false with them: this world has not asked anything yet,
         // so a room's file list says "looking" rather than "there are none".
@@ -3410,6 +3480,13 @@ export class RelayClient {
           w.notificationsLoading = false;
           w.notificationsProblem = frame.error;
         }
+        if (frame.requestId !== undefined && w.hooks.pending?.[frame.requestId]) {
+          const pending = { ...w.hooks.pending }; delete pending[frame.requestId];
+          w.hooks = { ...w.hooks, mutationRequestId: Object.keys(pending).at(-1), pending, problem: frame.error };
+        }
+        if (frame.requestId !== undefined && frame.requestId === w.hooks.auditRequestId) {
+          w.hooks = { ...w.hooks, auditRequestId: undefined, auditLoading: false, auditProblem: frame.error, audit: [] };
+        }
         /* A direct refusal names its exact refusal-capable request. A legacy
            no-id refusal is shown here generally but cannot settle a modern row.
            Unrelated rows stay alive, including their timeout nets. */
@@ -3583,6 +3660,43 @@ export class RelayClient {
           [frame.projectId]: { asked: true, items: frame.items },
         };
         break;
+      case "hooks":
+        {
+          if (frame.requestId === undefined) {
+            // Live mirror from another owner window. It must not clear this
+            // window's pending mutation ledger or request spinner.
+            w.hooks = { ...w.hooks, asked: true, list: frame.hooks, problem: undefined };
+            break;
+          }
+          const expected = w.hooks.requestId ?? (w.hooks.pending?.[frame.requestId] ? frame.requestId : w.hooks.mutationRequestId);
+          if (frame.requestId !== expected) break;
+          const pending = { ...w.hooks.pending };
+          if (frame.requestId && pending[frame.requestId]) delete pending[frame.requestId];
+          w.hooks = { ...w.hooks, asked: true, requestId: undefined, mutationRequestId: Object.keys(pending).at(-1), pending, list: frame.hooks };
+        }
+        break;
+      case "hook": {
+        if (frame.requestId === undefined) {
+          const i = w.hooks.list.findIndex(h => h.id === frame.hook.id);
+          w.hooks = { ...w.hooks, asked: true, list: i < 0 ? [frame.hook, ...w.hooks.list] : w.hooks.list.map(h => h.id === frame.hook.id ? frame.hook : h) };
+          break;
+        }
+        if (frame.requestId !== w.hooks.requestId && !w.hooks.pending?.[frame.requestId]) break;
+        const i = w.hooks.list.findIndex(h => h.id === frame.hook.id);
+        const pending = { ...w.hooks.pending }; delete pending[frame.requestId];
+        w.hooks = { ...w.hooks, asked: true, requestId: undefined, mutationRequestId: Object.keys(pending).at(-1), pending, problem: undefined, list: i < 0 ? [frame.hook, ...w.hooks.list] : w.hooks.list.map(h => h.id === frame.hook.id ? frame.hook : h) };
+        break;
+      }
+      case "hookTest":
+        if (frame.requestId === undefined) break;
+        if (frame.requestId !== w.hooks.requestId && !w.hooks.pending?.[frame.requestId]) break;
+        { const pending = { ...w.hooks.pending }; delete pending[frame.requestId];
+          w.hooks = { ...w.hooks, mutationRequestId: Object.keys(pending).at(-1), pending, problem: undefined, test: { hookId: frame.hookId, ok: frame.ok, said: frame.said } }; }
+        break;
+      case "hookAudit":
+        if (frame.requestId === undefined || frame.requestId !== w.hooks.auditRequestId) break;
+        w.hooks = { ...w.hooks, auditRequestId: undefined, auditLoading: false, audit: frame.entries, auditProblem: undefined };
+        break;
       // ENGINE-ONLY RECEIPT, and it is right that the screen drops it. When an
       // agent asks mid-run "may I push this branch?", the hub answers the
       // ENGINE with the id of the card it just minted, so the engine knows
@@ -3677,6 +3791,10 @@ export class RelayClient {
            dropped here. This is the same rule `searchResults` follows, and it
            is the rule because the alternative once brought a closed search back
            onto the screen with clickable hits. */
+        break;
+      case "hooksUpdated":
+        // Owner hook sync is engine-only; the desktop already owns the list
+        // through the correlated `hooks` responses above.
         break;
       default: {
         /**

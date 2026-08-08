@@ -6,7 +6,8 @@ import http from "node:http";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import {
-  AgentDef, AgentPresenceState, AgentStatus, Approval,
+  AgentDef, AgentPresenceState, AgentStatus, Approval, StoredHook, HOOK_ACTIONS,
+  HOOK_EVENTS,
   ArtifactLink, ArtifactRelationView, Attachment,
   StoredArtifact, StoredArtifactVersion, artifactForPublic,
   Channel, ChannelMember,
@@ -33,7 +34,7 @@ import {
   isRemoteAction, mayAdministerChannel, mayDriveAgent, mustAskBeforeActing, runListEntry,
   setMachineNames, shareableRun,
   extractMentions, nameKey, newId, validateAgentDefinition, validateAttachment, validateChannelText,
-  validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji,
+  validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji, validateHookInput,
   validateName, validateRepo, validateRunRecord, validateTaskSummary, validateWorkflow,
   WS_LIMITS,
 } from "@cloud9/shared";
@@ -42,7 +43,7 @@ import os from "node:os";
 // over the wire is asked the same question `buildHandoff` asked, by the same
 // rule (docs/plans/agent-memory-handoff.md §9.2). The relay already depends on
 // `@cloud9/engine`, so there is one owner of "is this a real handoff".
-import { validateHandoff } from "@cloud9/engine";
+import { HOOK_DEFAULTS, validateHandoff } from "@cloud9/engine";
 import { mentionEvent, type NotifyViewer } from "@cloud9/engine/dist/notify-feed.js";
 import { threadReplyEvent, type ThreadReplyFacts } from "@cloud9/shared/dist/notify.js";
 import { RunRow, Store, searchTerms } from "./store.js";
@@ -408,7 +409,14 @@ export class Relay {
         // put the word "Error:" in front of every hand-written refusal and would
         // have shown a raw `TypeError` under a form in his app. `sendFrameError`
         // also owns safe request correlation before and after authentication.
-        sendFrameError(ws, refusalText(err, `frame "${frame.type}"`), frame);
+        const said = refusalText(err, `frame "${frame.type}"`);
+        if (conn && ["createHook", "updateHook", "setHookEnabled", "deleteHook", "testHook"].includes(frame.type)) {
+          const hookId = typeof (frame as unknown as { hookId?: unknown }).hookId === "string"
+            ? (frame as unknown as { hookId: string }).hookId : "new";
+          this.store.logHookAudit(conn.userId, hookId, `${frame.type}:refused`, false, said,
+            Date.now(), conn.userId, conn.client, frame.requestId, hookId);
+        }
+        sendFrameError(ws, said, frame);
       }
     });
     ws.on("close", () => {
@@ -491,6 +499,7 @@ export class Relay {
       this.restartExpiredWorkflowApprovals = [];
       for (const approval of expired) this.sendApproval(approval);
     }
+    if (conn.client === "engine") this.syncHooksToEngine(user.id);
     // An engine arriving changes the answer for every agent it can run, and
     // everyone in a room with those agents needs to hear it — not only the
     // owner. This is the other half of the disconnect rule above.
@@ -732,7 +741,41 @@ export class Relay {
     if (!agent || agent.ownerId !== userId) throw new Error("not your agent");
     return agent;
   }
-
+  private myHook(userId: ID, hookId: ID): StoredHook {
+    const hook = this.store.hook(userId, hookId);
+    if (!hook) throw new Error("no such hook");
+    return hook;
+  }
+  private assertHookClient(conn: Conn): void {
+    if (conn.userId !== this.ownerId || conn.client !== "desktop") throw new Error("only the Cloud9 owner desktop can edit hooks");
+  }
+  private validateHookOwner(userId: ID, hook: StoredHook): void {
+    const bad = validateHookInput(hook); if (bad) throw new Error(bad);
+    if (hook.when?.agentId) this.myAgent(userId, hook.when.agentId);
+    this.myAgent(userId, hook.action.agentId);
+    if (hook.action.do === "say" || hook.action.do === "job") {
+      if (!hook.action.channelId) throw new Error("choose a conversation for this hook action");
+      this.channelFor(userId, hook.action.channelId);
+    }
+  }
+  private validateHookPatch(value: unknown): asserts value is Partial<Pick<StoredHook, "name" | "event" | "when" | "action">> {
+    if (!value || typeof value !== "object") throw new Error("a hook update is required");
+    const allowed = new Set(["name", "event", "when", "action"]);
+    if (Object.keys(value).some(key => !allowed.has(key))) throw new Error("that hook update contains an unsupported field");
+  }
+  private validateHookCreate(value: unknown): void {
+    if (!value || typeof value !== "object") throw new Error("a hook rule is required");
+    const allowed = new Set(["name", "event", "enabled", "when", "action"]);
+    if (Object.keys(value).some(key => !allowed.has(key))) throw new Error("that hook contains an unsupported field");
+  }
+  private hookReceipt(conn: Conn, requestId: string | undefined, kind: string, target: string, payload: unknown) {
+    if (!requestId) return undefined;
+    const prior = this.store.hookRequest(conn.userId, requestId);
+    if (!prior) return undefined;
+    const encoded = JSON.stringify(payload);
+    if (prior.kind !== kind || prior.target !== target || prior.payload !== encoded) throw new Error("that request id was already used for a different hook operation");
+    return prior;
+  }
   /**
    * ONLY THE OWNER, FROM A WINDOW, MAY POINT AN AGENT AT A PLACE ON THIS DISK.
    *
@@ -1617,6 +1660,29 @@ export class Relay {
     if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
   }
 
+  /** Hook mutations mirror to every owner desktop while keeping the request
+   * receipt on the originating socket only. An engine receives the durable
+   * projection separately through `syncHooksToEngine` above. */
+  private tellHook(userId: ID, hook: StoredHook, requestId?: ID, origin?: Conn): void {
+    const base: ServerFrame = { type: "hook", hook };
+    const correlated = Boolean(origin && requestId);
+    for (const conn of this.conns) {
+      if (conn.userId === userId && conn.client === "desktop"
+        && (!correlated || conn !== origin)) send(conn.ws, base);
+    }
+    if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
+  }
+
+  private tellHooks(userId: ID, requestId?: ID, origin?: Conn): void {
+    const base: ServerFrame = { type: "hooks", hooks: this.store.hooksOf(userId) };
+    const correlated = Boolean(origin && requestId);
+    for (const conn of this.conns) {
+      if (conn.userId === userId && conn.client === "desktop"
+        && (!correlated || conn !== origin)) send(conn.ws, base);
+    }
+    if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
+  }
+
   /** Saved queue updates are private to the account, but mirror to its windows. */
   private tellSaved(userId: ID, requestId?: ID, origin?: Conn, opts: { limit?: number; beforeSavedAt?: number; beforeMessageId?: ID } = {}): void {
     const page = this.store.savedMessagesPage(userId, opts.limit, opts.beforeSavedAt, opts.beforeMessageId);
@@ -1652,6 +1718,7 @@ export class Relay {
     conn: Conn,
     input: {
       agentId: ID; channelId: ID; title: string; requesterId?: ID;
+      causedByHook?: boolean;
       workflowId?: ID; workflowRunId?: ID; workflowStepId?: ID;
     },
   ): Task {
@@ -1672,6 +1739,7 @@ export class Relay {
       ...(input.workflowId ? { workflowId: input.workflowId } : {}),
       ...(input.workflowRunId ? { workflowRunId: input.workflowRunId } : {}),
       ...(input.workflowStepId ? { workflowStepId: input.workflowStepId } : {}),
+      ...(input.causedByHook ? { causedByHook: true } : {}),
     };
     let approval: Approval | undefined;
     if (needsApproval) {
@@ -2444,6 +2512,7 @@ export class Relay {
         const existing = this.myAgent(conn.userId, frame.agentId);
         this.stopRunsForDeletedAgent(conn, frame.agentId);
         this.store.deleteAgent(frame.agentId);
+        this.syncHooksToEngine(conn.userId);
         // a deleted agent's lamp is not a fact about anything any more
         delete this.agentStatus[frame.agentId];
         this.audit(conn, "agent_deleted", frame.agentId, `deleted agent ${existing.name}`);
@@ -2498,6 +2567,7 @@ export class Relay {
             return { ids, before: this.snapshotArtifactProjections(ids) };
           });
         this.store.removeUser(target.id);
+        this.toEngines(target.id, { type: "hooksUpdated", hooks: [] });
         this.audit(conn, "agent_deleted", target.id, `removed ${target.name} from this Cloud9`);
         for (const a of theirAgents) {
           delete this.agentStatus[a.id];
@@ -2518,6 +2588,7 @@ export class Relay {
         this.createTaskFor(conn, {
           agentId: frame.agentId, channelId: frame.channelId, title: frame.title,
           requesterId: frame.requesterId,
+          ...(frame.causedByHook ? { causedByHook: true } : {}),
         });
         break;
         /*
@@ -3074,6 +3145,115 @@ export class Relay {
         });
         break;
       }
+      case "hooks": {
+        this.assertHookClient(conn);
+        send(conn.ws, { type: "hooks", hooks: this.store.hooksOf(conn.userId), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        break;
+      }
+      case "hooksAudit": {
+        this.assertHookClient(conn);
+        send(conn.ws, { type: "hookAudit", entries: this.store.hookAuditOf(conn.userId), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        break;
+      }
+      case "createHook": {
+        this.assertHookClient(conn);
+        this.validateHookCreate(frame.hook);
+        const requestId = frame.requestId;
+        const priorReceipt = this.hookReceipt(conn, requestId, "create", "new", frame.hook);
+        if (priorReceipt) {
+          const prior = this.store.hook(conn.userId, priorReceipt.hookId);
+          if (prior) this.tellHook(conn.userId, prior, requestId, conn);
+          else this.tellHooks(conn.userId, requestId, conn);
+          break;
+        }
+        if (this.store.hooksOf(conn.userId).length >= HOOK_DEFAULTS.maxHooks) {
+          throw new Error(`Cloud9 keeps at most ${HOOK_DEFAULTS.maxHooks} hooks`);
+        }
+        const now = Date.now();
+        const hook = { ...frame.hook, id: newId("hook"), ownerId: conn.userId, updatedAt: now } as StoredHook;
+        this.validateHookOwner(conn.userId, hook);
+        this.store.saveHookWithRequest(hook, conn.userId, requestId, "create", "new", JSON.stringify(frame.hook));
+        this.store.logHookAudit(conn.userId, hook.id, "created", true, "hook created", Date.now(), conn.userId, conn.client, requestId, "new");
+        this.syncHooksToEngine(conn.userId);
+        this.tellHook(conn.userId, hook, requestId, conn);
+        break;
+      }
+      case "updateHook": {
+        this.assertHookClient(conn);
+        this.validateHookPatch(frame.hook);
+        const requestId = frame.requestId;
+        const priorReceipt = this.hookReceipt(conn, requestId, "update", frame.hookId, frame.hook);
+        if (priorReceipt) {
+          const prior = this.store.hook(conn.userId, priorReceipt.hookId);
+          if (prior) this.tellHook(conn.userId, prior, requestId, conn);
+          else this.tellHooks(conn.userId, requestId, conn);
+          break;
+        }
+        const old = this.myHook(conn.userId, frame.hookId);
+        // An action is a discriminated union, not a patchable bag. Replacing it
+        // wholesale prevents stale text/title fields surviving an action-kind change.
+        const hook = { ...old, ...frame.hook, action: frame.hook.action ?? old.action, updatedAt: Date.now() } as StoredHook;
+        this.validateHookOwner(conn.userId, hook);
+        this.store.saveHookWithRequest(hook, conn.userId, requestId, "update", frame.hookId, JSON.stringify(frame.hook));
+        this.store.logHookAudit(conn.userId, hook.id, "updated", true, "hook updated", Date.now(), conn.userId, conn.client, requestId, frame.hookId);
+        this.syncHooksToEngine(conn.userId);
+        this.tellHook(conn.userId, hook, requestId, conn);
+        break;
+      }
+      case "setHookEnabled": {
+        this.assertHookClient(conn);
+        if (typeof frame.enabled !== "boolean") throw new Error("a hook enabled value must be true or false");
+        const priorReceipt = this.hookReceipt(conn, frame.requestId, "enabled", frame.hookId, { enabled: frame.enabled });
+        if (priorReceipt) {
+          const prior = this.store.hook(conn.userId, priorReceipt.hookId);
+          if (prior) this.tellHook(conn.userId, prior, frame.requestId, conn);
+          else this.tellHooks(conn.userId, frame.requestId, conn);
+          break;
+        }
+        const hook = this.myHook(conn.userId, frame.hookId); hook.enabled = frame.enabled; hook.updatedAt = Date.now();
+        this.validateHookOwner(conn.userId, hook);
+        this.store.saveHookWithRequest(hook, conn.userId, frame.requestId, "enabled", frame.hookId, JSON.stringify({ enabled: frame.enabled }));
+        this.store.logHookAudit(conn.userId, hook.id, frame.enabled ? "enabled" : "disabled", true, frame.enabled ? "hook enabled" : "hook disabled", Date.now(), conn.userId, conn.client, frame.requestId, frame.hookId);
+        this.syncHooksToEngine(conn.userId);
+        this.tellHook(conn.userId, hook, frame.requestId, conn);
+        break;
+      }
+      case "deleteHook": {
+        this.assertHookClient(conn);
+        const requestId = frame.requestId;
+        const priorReceipt = this.hookReceipt(conn, requestId, "delete", frame.hookId, {});
+        if (priorReceipt) {
+          this.tellHooks(conn.userId, requestId, conn);
+          break;
+        }
+        const hook = this.myHook(conn.userId, frame.hookId);
+        this.store.deleteHookWithRequest(conn.userId, hook.id, requestId, "delete", frame.hookId, "{}");
+        this.store.logHookAudit(conn.userId, hook.id, "deleted", true, "hook deleted", Date.now(), conn.userId, conn.client, requestId, frame.hookId);
+        this.syncHooksToEngine(conn.userId);
+        this.tellHooks(conn.userId, frame.requestId, conn);
+        break;
+      }
+      case "testHook": {
+        this.assertHookClient(conn);
+        const requestId = frame.requestId;
+        const priorReceipt = this.hookReceipt(conn, requestId, "test", frame.hookId, {});
+        if (priorReceipt) {
+          const prior = this.store.hook(conn.userId, priorReceipt.hookId);
+          if (!prior) throw new Error("that hook no longer exists");
+          if (prior) {
+            this.validateHookOwner(conn.userId, prior);
+            const said = prior.enabled ? `“${prior.name}” is valid and ready for ${HOOK_ACTIONS[prior.action.do]}` : `“${prior.name}” is disabled; enable it before it can run`;
+            send(conn.ws, { type: "hookTest", hookId: prior.id, ok: prior.enabled, said, ...(requestId ? { requestId } : {}) });
+          }
+          break;
+        }
+        const hook = this.myHook(conn.userId, frame.hookId);
+        this.validateHookOwner(conn.userId, hook);
+        const said = hook.enabled ? `“${hook.name}” is valid and ready for ${HOOK_ACTIONS[hook.action.do]}` : `“${hook.name}” is disabled; enable it before it can run`;
+        this.store.recordHookTest(conn.userId, hook, requestId, hook.enabled, said, Date.now(), conn.client);
+        send(conn.ws, { type: "hookTest", hookId: hook.id, ok: hook.enabled, said, ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        break;
+      }
       case "projectItems": {
         const project = this.myProject(conn.userId, frame.projectId);
         send(conn.ws, {
@@ -3247,6 +3427,26 @@ export class Relay {
         }
         const agent = this.myAgent(conn.userId, frame.agentId);
         this.toUser(agent.ownerId, { type: "memory", agentId: agent.id, notes: frame.notes });
+        break;
+      }
+      case "hookFired": {
+        if (conn.client !== "engine") throw new Error("only the engine reports hook firings");
+        if (!Object.prototype.hasOwnProperty.call(HOOK_EVENTS, frame.event)) throw new Error("that hook event is not supported");
+        if (!isSafeStoredId(frame.firingId)) throw new Error("that hook firing has no valid receipt id");
+        if (typeof frame.ok !== "boolean") throw new Error("that hook firing has no valid result");
+        if (typeof frame.said !== "string" || frame.said.length > 2_000) throw new Error("that hook firing has no valid explanation");
+        if (!Number.isFinite(frame.at)) throw new Error("that hook firing has no valid time");
+        const hook = this.myHook(conn.userId, frame.hookId);
+        if (hook.event !== frame.event) throw new Error("that hook firing does not match the stored event");
+        // A reconnect or engine retry may report the same fire again. The
+        // firing id is the receipt boundary, so the audit trail stays one row
+        // per real action rather than counting transport retries as work.
+        const firingTarget = `firing:${hook.id}:${frame.event}`;
+        if (this.store.hookAuditHasRequest(conn.userId, frame.firingId, firingTarget)) break;
+        this.store.logHookAudit(
+          conn.userId, hook.id, frame.ok ? "dispatched" : "refused", false, frame.said,
+          Date.now(), conn.userId, conn.client, frame.firingId, firingTarget,
+        );
         break;
       }
       // ENGINE-HOST ONLY: one of the owner's agents is handing work to another.
@@ -4296,6 +4496,11 @@ export class Relay {
     for (const conn of this.conns) {
       if (conn.userId === userId && conn.client === "engine") send(conn.ws, frame);
     }
+  }
+
+  /** The engine's HookBook is a live projection of this durable owner list. */
+  private syncHooksToEngine(userId: ID): void {
+    this.toEngines(userId, { type: "hooksUpdated", hooks: this.store.hooksOf(userId) });
   }
 
   private hasEngine(userId: ID): boolean {

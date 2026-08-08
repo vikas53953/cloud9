@@ -36,7 +36,7 @@
 //  5. A HOOK IS VISIBLE AND REMOVABLE. Every hook has plain words describing it
 //     (`describeHook`), lives in one file the owner can be shown, and every
 //     firing — done, refused, failed — is kept where it can be listed.
-import type { AgentDef, ID, RunOutcome } from "@cloud9/shared";
+import { newId, type AgentDef, type ID, type RunOutcome } from "@cloud9/shared";
 import path from "node:path";
 import fs from "node:fs";
 import { needsApprovalToRun } from "./abilities.js";
@@ -142,6 +142,8 @@ export interface HookActions {
 
 /** What happened when one hook met one fact. Kept, so it can be shown. */
 export interface HookFiring {
+  /** Stable per-fire receipt used by the relay to bind and deduplicate reports. */
+  firingId: ID;
   hookId: string;
   hookName: string;
   event: HookEvent;
@@ -157,6 +159,8 @@ export interface HookBookOptions {
   hooks: () => readonly Hook[];
   /** how Cloud9 does things. A missing member means "this app cannot, here". */
   actions: Partial<HookActions>;
+  /** replace the live rules when the relay owner edits them in the window */
+  replace?: (hooks: readonly Hook[]) => boolean;
   /** who an agent id belongs to — law 2 cannot be checked without it */
   agent: (id: ID) => AgentDef | undefined;
   /** most times ONE hook may fire in a minute. A leash, not a policy. */
@@ -196,6 +200,15 @@ export class HookBook {
 
   /** Every firing we still remember, newest last. For a screen, and for tests. */
   get recent(): readonly HookFiring[] { return this.firings; }
+
+  /** Apply a relay-sourced owner edit without rebuilding the engine. */
+  replace(hooks: readonly Hook[]): boolean {
+    if (!this.opts.replace) return false;
+    try { return this.opts.replace(hooks); } catch (err) {
+      this.log(`could not replace the owner's hooks: ${String(err)}`);
+      return false;
+    }
+  }
 
   /**
    * SOMETHING HAPPENED. Tell every hook that was waiting for it.
@@ -238,6 +251,7 @@ export class HookBook {
 
   private runOne(hook: Hook, fact: HookFact): HookFiring {
     const refuse = (why: string): HookFiring => this.remember({
+      firingId: newId("hookfiring"),
       hookId: hook.id, hookName: hook.name, event: hook.event,
       at: this.now(), ok: false, said: why,
     });
@@ -320,6 +334,7 @@ export class HookBook {
 
   private done(hook: Hook, said: string): HookFiring {
     return this.remember({
+      firingId: newId("hookfiring"),
       hookId: hook.id, hookName: hook.name, event: hook.event,
       at: this.now(), ok: true, said: `“${hook.name}” ${said}`,
     });
@@ -378,9 +393,55 @@ function plainOutcome(outcome: RunOutcome): string {
 // automation failure a person cannot debug.
 
 export const HOOKS_FILE = "hooks.json";
+/** Marker written once the hub has successfully owned this machine's hook book. */
+export const HOOKS_HUB_OWNED_FILE = "hooks.hub-owned";
 
 export function hooksPath(dataDir: string): string {
   return path.join(dataDir, HOOKS_FILE);
+}
+
+export function hooksHubOwnedPath(dataDir: string): string {
+  return path.join(dataDir, HOOKS_HUB_OWNED_FILE);
+}
+
+/** Has the hub cut over as the owner of truth for this data dir? */
+export function loadHooksHubOwned(dataDir: string): boolean {
+  try { return fs.existsSync(hooksHubOwnedPath(dataDir)); }
+  catch { return false; }
+}
+
+/** Record that the hub now owns this book's truth. Failures are said, not thrown. */
+export function markHooksHubOwned(
+  dataDir: string, log: (m: string) => void = m => console.error(`[hooks] ${m}`),
+): boolean {
+  try {
+    fs.writeFileSync(hooksHubOwnedPath(dataDir), "1\n", "utf8");
+    return true;
+  } catch (err) {
+    log(`could not mark the hub as owner of the hooks book: ${String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * CLASS RULE: empty hub must not silently destroy durable local hooks until
+ * the hub has claimed this book. After cutover, empty is a real owner delete.
+ *
+ * Pure decision — the wiring applies it, the tests hold it.
+ */
+export function mayReplaceHooksFromHub(args: {
+  incoming: readonly Hook[];
+  current: readonly Hook[];
+  hubOwned: boolean;
+}): { allow: true; markOwned: true } | { allow: false; markOwned: false; reason: string } {
+  if (args.incoming.length === 0 && args.current.length > 0 && !args.hubOwned) {
+    return {
+      allow: false,
+      markOwned: false,
+      reason: "keeping local hooks — the hub has none and has never owned this book",
+    };
+  }
+  return { allow: true, markOwned: true };
 }
 
 export function newHookId(now = Date.now(), rand = Math.random): string {

@@ -55,7 +55,7 @@ import { TurnFacts, turnVerdict } from "./receipts.js";
 // `hooks.ts` decides WHETHER an owner's rule may act; this file is only ever
 // the thing that reports a fact to it and does the four actions. `verify.ts` is
 // a pure function over the run record — no model, no second opinion.
-import { HookBook, type HookFact } from "./hooks.js";
+import { HookBook, type Hook, type HookFact } from "./hooks.js";
 import { verifyTurn } from "./verify.js";
 import { describeRepoTurn, repoTurn, RepoTurnResult } from "./repowork.js";
 import { GitWorkspace, Worktree } from "./worktree.js";
@@ -622,6 +622,15 @@ export class Engine {
         this.projects.clear();
         for (const p of frame.projects) this.projects.set(p.id, p);
         break;
+      case "hooksUpdated": {
+        if (!this.hooks) break;
+        // The relay has already applied the owner/client gate and agent checks.
+        // Strip the desktop-only timestamp before handing the same vocabulary
+        // to HookBook; the engine still validates ownership when a fact fires.
+        const hooks = frame.hooks.map(({ updatedAt: _updatedAt, ...hook }) => hook as Hook);
+        this.hooks.replace(hooks);
+        break;
+      }
       case "projectForgotten":
         this.projects.delete(frame.projectId);
         break;
@@ -1406,7 +1415,7 @@ export class Engine {
       // the world the thing happened in; a fact with nobody's name on it would
       // be a fact every owner's rules could see.
       if (!agent) return;
-      this.hooks.fire({
+      const firings = this.hooks.fire({
         event: seed.event,
         at: Date.now(),
         ownerId: agent.ownerId,
@@ -1420,8 +1429,14 @@ export class Engine {
         // screen: a hook's message can end up in a room, so a path, an argument
         // list or an environment value must not be able to ride out on it.
         what: redactForSharing(seed.what, 300),
-        ...(seed.causedByHook ? { causedByHook: true } : {}),
+        ...(seed.causedByHook || task?.causedByHook ? { causedByHook: true } : {}),
       });
+      for (const firing of firings) {
+        this.sendFrame({
+          type: "hookFired", hookId: firing.hookId, event: firing.event,
+          ok: firing.ok, said: firing.said, at: firing.at, firingId: firing.firingId,
+        });
+      }
     } catch (err) {
       console.error("[engine] could not run the owner's hooks:", err);
     }
@@ -3517,12 +3532,16 @@ export class Engine {
    * wanted to be asked about produces a card, exactly as he asked; it does not
    * produce a running job with nobody told.
    */
-  requestJob(agent: AgentDef, channelId: ID, title: string, requesterId?: ID): void {
+  requestJob(
+    agent: AgentDef, channelId: ID, title: string, requesterId?: ID,
+    opts: { causedByHook?: boolean } = {},
+  ): void {
     const mustAsk = approvalsFor(agent).background || needsApprovalToRun(agent);
     this.sendFrame({
       type: "createTask", agentId: agent.id, channelId,
       title: title.slice(0, 200),
       ...(requesterId ? { requesterId } : {}),
+      ...(opts.causedByHook ? { causedByHook: true } : {}),
       ...(mustAsk ? { needsApproval: true, action: `Start a job: ${title.slice(0, 150)}` } : {}),
     });
   }

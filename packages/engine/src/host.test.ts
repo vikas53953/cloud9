@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AgentDef, HarnessState } from "@cloud9/shared";
+import { AgentDef, HarnessState, ServerFrame, User, WorldState } from "@cloud9/shared";
 import { ClaudeCliProvider, CREDENTIAL_ENV_VARS } from "./claude-cli.js";
 import { EngineHostOptions, startEngineHost } from "./host.js";
 import { MockProvider, SdkProvider } from "./provider.js";
@@ -266,5 +266,38 @@ test("and it can still be turned off, deliberately, by whoever starts the engine
   // hooks are NOT tied to it: they are two different promises and one switch
   // must never quietly decide both
   assert.ok(h.engine.hooks, "turning verification off must not take the owner's hooks with it");
+  h.stop();
+});
+
+test("a relay HookBook sync is live: an edited rule fires through the engine", () => {
+  const h = host();
+  const a = agent();
+  const me = { id: "u1", name: "Owner", createdAt: 0 } as User;
+  h.engine.state = {
+    me, users: [me], agents: [a], channels: [], messages: [], agentStatus: {},
+    presence: {}, tasks: [], approvals: [], notifications: [], unread: [],
+  } as unknown as WorldState;
+  const frame: ServerFrame = {
+    type: "hooksUpdated",
+    hooks: [{
+      id: "relay-hook", ownerId: "u1", name: "Remember completion", event: "turn.finished",
+      enabled: true, action: { do: "note", agentId: a.id, text: "the relay rule fired" }, updatedAt: Date.now(),
+    }],
+  };
+  (h.engine as unknown as { onFrame: (f: ServerFrame) => void }).onFrame(frame);
+  (h.engine as unknown as { fireHook: (seed: unknown) => void }).fireHook({
+    event: "turn.finished", agentId: a.id, outcome: "ok", what: "finished",
+  });
+  assert.ok(h.engine.memory.list(a.id).some(note => note.text === "the relay rule fired"));
+  h.stop();
+});
+
+test("a job started by a hook carries recursion provenance to the relay", () => {
+  const h = host();
+  const sent: unknown[] = [];
+  (h.engine as unknown as { sendFrame: (f: unknown) => void }).sendFrame = f => { sent.push(f); };
+  h.engine.requestJob(agent(), "c1", "follow up", undefined, { causedByHook: true });
+  assert.equal((sent[0] as { type: string; causedByHook?: boolean }).type, "createTask");
+  assert.equal((sent[0] as { causedByHook?: boolean }).causedByHook, true);
   h.stop();
 });

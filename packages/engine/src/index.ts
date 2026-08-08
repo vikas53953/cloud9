@@ -242,8 +242,10 @@ export {
 // Four events Cloud9 already knew about, four things Cloud9 already knew how to
 // do, and five laws that stop a hook being a way round anything. See hooks.ts.
 export {
-  HOOK_EVENTS, HOOK_ACTIONS, HOOK_DEFAULTS, HOOKS_FILE, HookBook,
-  describeHook, fill, hookProblem, hooksPath, isHookEvent, loadHooks, newHookId, saveHooks,
+  HOOK_EVENTS, HOOK_ACTIONS, HOOK_DEFAULTS, HOOKS_FILE, HOOKS_HUB_OWNED_FILE, HookBook,
+  describeHook, fill, hookProblem, hooksHubOwnedPath, hooksPath, isHookEvent,
+  loadHooks, loadHooksHubOwned, markHooksHubOwned, mayReplaceHooksFromHub,
+  newHookId, saveHooks,
   type Hook, type HookAction, type HookActionKind, type HookActions,
   type HookBookOptions, type HookEvent, type HookFact, type HookFiring,
 } from "./hooks.js";
