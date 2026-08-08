@@ -16,6 +16,7 @@ import {
   NOTIFICATION_INBOX_LIMITS,
   type NotificationInboxKind, type NotificationInboxState,
   Workflow, WorkflowRun, validateArtifactLinks, validateWorkflow,
+  HuddleSession, HuddleNote, HuddleReadEntry,
 } from "@cloud9/shared";
 // THE ONE OWNER of "write a file this app will later believe" — write next
 // door, flush it down to the disk, rename it into place. It lives in the engine
@@ -582,6 +583,14 @@ export class Store implements JoinHubStore {
         PRIMARY KEY (projectId, kind, number)
       );
       CREATE INDEX IF NOT EXISTS proj_item_updated ON project_items(projectId, updatedAt);
+      CREATE TABLE IF NOT EXISTS huddles(id TEXT PRIMARY KEY, projectId TEXT NOT NULL, startedAt INTEGER NOT NULL, json TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS huddle_project ON huddles(projectId,startedAt);
+      CREATE TABLE IF NOT EXISTS huddle_notes(id TEXT PRIMARY KEY, sessionId TEXT NOT NULL, createdAt INTEGER NOT NULL, json TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS huddle_note_session ON huddle_notes(sessionId,createdAt);
+      CREATE TABLE IF NOT EXISTS huddle_members(sessionId TEXT NOT NULL,userId TEXT NOT NULL,joinedAt INTEGER NOT NULL,leftAt INTEGER,PRIMARY KEY(sessionId,userId,joinedAt));
+      CREATE TABLE IF NOT EXISTS huddle_reads(userId TEXT NOT NULL,sessionId TEXT NOT NULL,lastReadAt INTEGER NOT NULL,updatedAt INTEGER NOT NULL,PRIMARY KEY(userId,sessionId));
+      CREATE TABLE IF NOT EXISTS huddle_ops(userId TEXT NOT NULL,requestId TEXT NOT NULL,kind TEXT NOT NULL,targetId TEXT NOT NULL,payloadHash TEXT NOT NULL,resultId TEXT NOT NULL,createdAt INTEGER NOT NULL,PRIMARY KEY(userId,requestId));
+      CREATE INDEX IF NOT EXISTS huddle_ops_target ON huddle_ops(targetId,createdAt);
 
       -- Internal project social feed. Posts and comments share one durable
       -- table; parentId makes comments chronological without a second tree.
@@ -1461,6 +1470,13 @@ export class Store implements JoinHubStore {
    * away, is retired here.
    */
   removeUser(id: ID): void {
+    const owned = this.projectsOf(id);
+    this.tx(() => {
+      for (const project of owned) this.deleteHuddleRows(project.id);
+      this.db.prepare("DELETE FROM huddle_members WHERE userId=?").run(id);
+      this.db.prepare("DELETE FROM huddle_reads WHERE userId=?").run(id);
+      this.db.prepare("DELETE FROM huddle_ops WHERE userId=?").run(id);
+    });
     for (const agent of this.agents()) {
       if (agent.ownerId === id) this.deleteAgent(agent.id);
     }
@@ -1536,6 +1552,12 @@ export class Store implements JoinHubStore {
     this.db.prepare("INSERT OR REPLACE INTO agents(id,json) VALUES(?,?)").run(agent.id, JSON.stringify(agent));
   }
   deleteAgent(id: ID): void {
+    for (const session of this.huddles()) {
+      if (session.state !== "active" || !session.participants.some(p => p.id === id && p.present)) continue;
+      const at = Date.now();
+      this.huddleLeave(session.id, id, at);
+      this.saveHuddle({ ...session, participants: session.participants.map(p => p.id === id && p.present ? { ...p, present: false, leftAt: at } : p) });
+    }
     this.db.prepare("DELETE FROM agents WHERE id=?").run(id);
     // An agent's runs go with it. Leaving them behind would be a pile of
     // records about an agent nobody can see any more, and the `ownerId` on
@@ -3514,6 +3536,10 @@ export class Store implements JoinHubStore {
     return (this.db.prepare("SELECT json FROM projects WHERE ownerId=? ORDER BY createdAt DESC")
       .all(ownerId) as { json: string }[]).map(r => JSON.parse(r.json) as Project);
   }
+  huddleProjects(userId: ID): Project[] {
+    const all = (this.db.prepare("SELECT json FROM projects ORDER BY createdAt DESC,id ASC").all() as { json: string }[]).map(r => JSON.parse(r.json) as Project);
+    return all.filter(p => p.ownerId === userId || (!!p.channelId && this.channelMembers(p.channelId).some(m => m.memberId === userId)));
+  }
 
   /** Every connected project — membership gates decide who may see each row. */
   projectsAll(): Project[] {
@@ -3656,6 +3682,7 @@ export class Store implements JoinHubStore {
       this.db.prepare("DELETE FROM project_poll_votes WHERE pollId IN (SELECT id FROM project_polls WHERE projectId=?)").run(id);
       this.db.prepare("DELETE FROM project_poll_requests WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM project_polls WHERE projectId=?").run(id);
+      this.deleteHuddleRows(id);
       this.db.prepare("DELETE FROM project_items WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM social_reactions WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM social_posts WHERE projectId=?").run(id);
@@ -3766,6 +3793,18 @@ export class Store implements JoinHubStore {
     return row.deadline ?? undefined;
   }
 
+  private deleteHuddleRows(projectId: ID): void {
+    this.db.prepare("DELETE FROM huddle_ops WHERE targetId=?").run(projectId);
+    const sessions = this.db.prepare("SELECT id FROM huddles WHERE projectId=?").all(projectId) as { id: ID }[];
+    for (const { id } of sessions) {
+      this.db.prepare("DELETE FROM huddle_notes WHERE sessionId=?").run(id);
+      this.db.prepare("DELETE FROM huddle_members WHERE sessionId=?").run(id);
+      this.db.prepare("DELETE FROM huddle_reads WHERE sessionId=?").run(id);
+      this.db.prepare("DELETE FROM huddle_ops WHERE targetId=?").run(id);
+    }
+    this.db.prepare("DELETE FROM huddles WHERE projectId=?").run(projectId);
+  }
+
   /**
    * Replace what we hold for one project with what the engine just found, as
    * ALL OF IT OR NONE OF IT.
@@ -3796,6 +3835,31 @@ export class Store implements JoinHubStore {
     return (this.db.prepare(
       "SELECT json FROM project_items WHERE projectId=? ORDER BY updatedAt DESC",
     ).all(projectId) as { json: string }[]).map(r => JSON.parse(r.json) as ProjectItem);
+  }
+  // ---- huddles: durable presence and chronological notes ----
+  saveHuddle(s: HuddleSession): void { const p=this.project(s.projectId); if(!p||s.channelId!==p.channelId)throw new Error("huddle channel must match project channel"); this.db.prepare("INSERT OR REPLACE INTO huddles(id,projectId,startedAt,json) VALUES(?,?,?,?)").run(s.id,s.projectId,s.startedAt,JSON.stringify(s)); }
+  huddle(id: ID): HuddleSession|undefined { const r=this.db.prepare("SELECT json FROM huddles WHERE id=?").get(id) as {json:string}|undefined; return r?JSON.parse(r.json) as HuddleSession:undefined; }
+  huddles(projectId?: ID): HuddleSession[] { const q=projectId?this.db.prepare("SELECT json FROM huddles WHERE projectId=? ORDER BY startedAt DESC,id DESC"):this.db.prepare("SELECT json FROM huddles ORDER BY startedAt DESC,id DESC"); const rows=(projectId?q.all(projectId):q.all()) as {json:string}[]; return rows.map(r=>JSON.parse(r.json) as HuddleSession); }
+  saveHuddleNote(n: HuddleNote, allowDeleted = false): void { const session=this.huddle(n.sessionId); if(session?.state==="ended" && !(allowDeleted && n.deletedAt))throw new Error("this huddle has ended"); const old=this.huddleNote(n.id); if(old?.deletedAt)n=old; this.db.prepare("INSERT OR REPLACE INTO huddle_notes(id,sessionId,createdAt,json) VALUES(?,?,?,?)").run(n.id,n.sessionId,n.createdAt,JSON.stringify(n)); }
+  huddleNote(id: ID): HuddleNote|undefined { const r=this.db.prepare("SELECT json FROM huddle_notes WHERE id=?").get(id) as {json:string}|undefined; return r?JSON.parse(r.json) as HuddleNote:undefined; }
+  huddleNotes(sessionId: ID): HuddleNote[] { return (this.db.prepare("SELECT json FROM huddle_notes WHERE sessionId=? ORDER BY createdAt ASC,id ASC").all(sessionId) as {json:string}[]).map(r=>JSON.parse(r.json) as HuddleNote); }
+  huddleMembers(sessionId: ID): { userId: ID; joinedAt: number; leftAt?: number }[] { return (this.db.prepare("SELECT userId,joinedAt,leftAt FROM huddle_members WHERE sessionId=? ORDER BY joinedAt ASC,userId ASC").all(sessionId) as { userId: ID; joinedAt: number; leftAt: number | null }[]).map(r => ({ userId: r.userId, joinedAt: r.joinedAt, ...(r.leftAt === null ? {} : { leftAt: r.leftAt }) })); }
+  huddleJoin(sessionId: ID,userId: ID,at=Date.now()): void { const active=this.db.prepare("SELECT 1 FROM huddle_members WHERE sessionId=? AND userId=? AND leftAt IS NULL LIMIT 1").get(sessionId,userId); if(active)return; this.db.prepare("INSERT INTO huddle_members(sessionId,userId,joinedAt,leftAt) VALUES(?,?,?,NULL)").run(sessionId,userId,at); }
+  huddleLeave(sessionId: ID,userId: ID,at=Date.now()): void { this.db.prepare("UPDATE huddle_members SET leftAt=? WHERE sessionId=? AND userId=? AND leftAt IS NULL").run(at,sessionId,userId); }
+  huddleRead(userId: ID,sessionId: ID): number { const r=this.db.prepare("SELECT lastReadAt FROM huddle_reads WHERE userId=? AND sessionId=?").get(userId,sessionId) as {lastReadAt:number}|undefined; return r?.lastReadAt??0; }
+  huddleMarkRead(userId: ID,sessionId: ID,at: number): HuddleReadEntry { const next=Math.max(this.huddleRead(userId,sessionId),at); this.db.prepare("INSERT INTO huddle_reads(userId,sessionId,lastReadAt,updatedAt) VALUES(?,?,?,?) ON CONFLICT(userId,sessionId) DO UPDATE SET lastReadAt=excluded.lastReadAt,updatedAt=excluded.updatedAt").run(userId,sessionId,next,Date.now()); return {sessionId,lastReadAt:next,unread:this.huddleUnread(userId,sessionId)}; }
+  huddleUnread(userId: ID,sessionId: ID): number { const since=this.huddleRead(userId,sessionId); const mine=new Set([userId,...this.agents().filter(a=>a.ownerId===userId).map(a=>a.id)]); return this.huddleNotes(sessionId).filter(n=>n.createdAt>since&&!n.deletedAt&&!mine.has(n.authorId)).length; }
+  huddleRequestInfo(userId: ID, requestId: ID): { kind: string; targetId: ID; payloadHash: string; resultId: ID } | undefined {
+    return this.db.prepare("SELECT kind,targetId,payloadHash,resultId FROM huddle_ops WHERE userId=? AND requestId=?")
+      .get(userId, requestId) as { kind: string; targetId: ID; payloadHash: string; resultId: ID } | undefined;
+  }
+  huddleMutation<T>(work: () => T, receipt?: { userId: ID; requestId?: ID; kind: string; targetId: ID; payloadHash: string; resultId: ID }): T {
+    return this.tx(() => {
+      const out = work();
+      if (receipt?.requestId) this.db.prepare("INSERT OR IGNORE INTO huddle_ops(userId,requestId,kind,targetId,payloadHash,resultId,createdAt) VALUES(?,?,?,?,?,?,?)")
+        .run(receipt.userId, receipt.requestId, receipt.kind, receipt.targetId, receipt.payloadHash, receipt.resultId, Date.now());
+      return out;
+    });
   }
 
   // ---- internal project social feed ----
