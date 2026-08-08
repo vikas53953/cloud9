@@ -16,6 +16,7 @@ import {
   SearchHit, ServerFrame, SKILL_LIMITS, SOCIAL_LIMITS, SocialLink, SocialPost, summarizeRun, Task, User, humanDuration, humanMoney,
   StoredHook, HOOK_EVENTS, HOOK_ACTIONS,
   NotificationInboxEntry,
+   EngineeringPulseUpdate, EngineeringPulseDraft,
   Workflow, WorkflowRun,
   validateMessageText, validateName,
   /* spending limits, "show me the plan first", stand-in models (2026-08-05) —
@@ -1154,6 +1155,11 @@ const IconSocial = (): React.JSX.Element => (
     <path d="M5 5.5h14v10H9l-4 3v-13Z" /><path d="M8 9h8M8 12h5" />
   </svg>
 );
+const IconPulse = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3.5 12h3l2-5 3.3 10 2.3-6 1.6 3h4.8" />
+  </svg>
+);
 const IconLog = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12.5h4l2.2-6 3.4 12 2.5-7.5 1.6 3.5H21" /></svg>
 );
@@ -1989,7 +1995,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "hooks" | "social" | "spending" | "activity" | "notifications" | "saved" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "pulse" | "hooks" | "social" | "spending" | "activity" | "notifications" | "saved" | "settings";
 type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -2078,13 +2084,13 @@ function Workspace(): React.JSX.Element {
   /** a file — and, for an old-version hit, the exact version — Files must open */
   const [fileOpenAt, setFileOpenAt] =
     useState<{ artifactId: ID; version?: number; at: number } | null>(null);
-  /** a task (and optional run) the Team feed asked Tasks to open */
+  /** a task (and optional run) Team feed / Pulse asked Tasks to open */
   const [taskOpenAt, setTaskOpenAt] =
     useState<{ taskId: ID; runId?: ID; at: number } | null>(null);
   /** a run record with no owning task row — Activity opens the concrete run */
   const [runOpenAt, setRunOpenAt] =
     useState<{ runId: ID; at: number } | null>(null);
-  /** a project (and optional PR/issue) the Team feed asked Projects to open */
+  /** a project (and optional PR/issue) Team feed / Pulse asked Projects to open */
   const [projectOpenAt, setProjectOpenAt] =
     useState<{ projectId: ID; itemKind?: ProjectItemKind; number?: number; at: number } | null>(null);
   /* ...and the one owner that puts it back down again. A request like this is
@@ -2310,6 +2316,14 @@ function Workspace(): React.JSX.Element {
         });
         setScreen("projects");
       }
+    });
+  }, []);
+
+  const openPulse = useCallback(() => {
+    attemptLeave(() => {
+      client.askProjects();
+      client.askPulse();
+      setScreen("pulse");
     });
   }, []);
 
@@ -2840,6 +2854,8 @@ function Workspace(): React.JSX.Element {
               otherwise unchanged. Everything the hub and the engine already
               hold about his repositories arrives through this one door. */}
           {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
+          {railBtn("pulse", "Engineering Pulse", <IconPulse />,
+            Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
           {railBtn("hooks", "Hooks", <IconGear />)}
           {railBtn("social", "Team feed", <IconSocial />, socialUnread, openSocial)}
           {/* ADDED 2026-08-07. It sits beside the Activity button because it
@@ -2931,6 +2947,31 @@ function Workspace(): React.JSX.Element {
             <ProjectsScreen onOpenChannel={id => goChannel(id)} openAt={projectOpenAt}
               onOpened={clearProjectOpen} />
           )}
+          {screen === "pulse" && <EngineeringPulseScreen
+            onOpenTask={id => attemptLeave(() => {
+              setTaskOpenAt({ taskId: id, at: Date.now() });
+              setScreen("tasks");
+            })}
+            onOpenRun={id => attemptLeave(() => {
+              const ownerTask = client.getSnapshot().tasks.find(t => t.runId === id);
+              const now = Date.now();
+              if (ownerTask) {
+                setTaskOpenAt({ taskId: ownerTask.id, runId: id, at: now });
+                setScreen("tasks");
+              } else {
+                setRunOpenAt({ runId: id, at: now });
+                setScreen("activity");
+              }
+            })}
+            onOpenProject={(id, item) => attemptLeave(() => {
+              setProjectOpenAt({
+                projectId: id,
+                ...(item ? { itemKind: item.kind, number: item.number } : {}),
+                at: Date.now(),
+              });
+              setScreen("projects");
+            })}
+          />}
           {screen === "hooks" && <HooksScreen />}
           {screen === "social" && <SocialFeedScreen onOpenLink={openSocialLink} />}
           {screen === "spending" && <SpendingScreen />}
@@ -15187,6 +15228,241 @@ function ActivityScreen({ openAt, onOpened }: {
             </div>
           </React.Fragment>
         ))}
+      </div>
+    </div>
+  );
+}
+
+const blankPulseDraft = (): EngineeringPulseDraft => ({
+  done: "", doing: "", blocked: "", decisions: "", helpNeeded: "",
+});
+
+function pulseDate(ts: number): string {
+  return new Date(ts).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+/**
+ * A small, plain-word daily update board. The relay owns permissions and
+ * persistence; this screen owns only draft focus, loading, and honest states.
+ */
+function EngineeringPulseScreen({
+  onOpenTask, onOpenRun, onOpenProject,
+}: {
+  onOpenTask: (id: ID) => void;
+  onOpenRun: (id: ID) => void;
+  onOpenProject: (id: ID, item?: { kind: ProjectItemKind; number: number }) => void;
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [projectId, setProjectId] = useState<ID>("");
+  const [filterProjectId, setFilterProjectId] = useState<ID>("");
+  const [draft, setDraft] = useState<EngineeringPulseDraft>(blankPulseDraft);
+  const [editing, setEditing] = useState<ID | null>(null);
+  const [pendingSaveRequest, setPendingSaveRequest] = useState<ID>();
+  const [pendingDelete, setPendingDelete] = useState<ID | null>(null);
+  const [pendingDeleteRequest, setPendingDeleteRequest] = useState<ID>();
+  const [announcement, setAnnouncement] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+  const firstField = useRef<HTMLTextAreaElement>(null);
+  const projectField = useRef<HTMLSelectElement>(null);
+  const projects = world.pulse.projects;
+
+  useEffect(() => {
+    if (!projectId && projects[0]) setProjectId(projects[0].id);
+  }, [projectId, projects]);
+  useEffect(() => {
+    if (projectId) {
+      client.markPulseRead(projectId);
+      client.askProjectItems(projectId);
+    }
+  }, [projectId]);
+
+  const visible = useMemo(() => {
+    const rows = filterProjectId
+      ? world.pulse.updates.filter(update => update.projectId === filterProjectId)
+      : world.pulse.updates;
+    return [...rows].sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id));
+  }, [filterProjectId, world.pulse.updates]);
+
+  const projectName = (id: ID): string => projects.find(p => p.id === id)?.name ?? "Project unavailable";
+  const updateDraft = (key: keyof EngineeringPulseDraft, value: string): void => {
+    setDraft(old => ({ ...old, [key]: value }));
+  };
+
+  const submit = (event: React.FormEvent): void => {
+    event.preventDefault();
+    if (!projectId) {
+      setFormError("Choose a project before posting an update.");
+      projectField.current?.focus();
+      return;
+    }
+    const text = [draft.done, draft.doing, draft.blocked, draft.decisions, draft.helpNeeded]
+      .map(value => value?.trim() ?? "").join("");
+    if (!text) {
+      setFormError("Write something in at least one section.");
+      firstField.current?.focus();
+      return;
+    }
+    setFormError(null);
+    setAnnouncement("");
+    const refused = (why: string): void => setFormError(why);
+    const sent = editing
+      ? client.updatePulse(editing, draft, refused)
+      : client.createPulse(projectId, draft, undefined, refused);
+    if (!sent) setFormError("Connect to Cloud9 before saving this update.");
+    else setPendingSaveRequest(sent);
+  };
+
+  const consumedPulseMutation = useRef<ID>();
+  useEffect(() => {
+    const acknowledged = world.pulse.mutationSuccessId;
+    if (acknowledged && consumedPulseMutation.current !== acknowledged && pendingSaveRequest === acknowledged) {
+      consumedPulseMutation.current = acknowledged;
+      setEditing(null);
+      setDraft(blankPulseDraft());
+      setPendingSaveRequest(undefined);
+      setAnnouncement("Engineering Pulse update saved.");
+    }
+    if (acknowledged && consumedPulseMutation.current !== acknowledged && pendingDeleteRequest === acknowledged) {
+      consumedPulseMutation.current = acknowledged;
+      setPendingDelete(null);
+      setPendingDeleteRequest(undefined);
+      setAnnouncement("Engineering Pulse update deleted.");
+    }
+  }, [pendingSaveRequest, pendingDeleteRequest, world.pulse.mutationSuccessId]);
+  useEffect(() => {
+    if (world.pulse.problem && pendingSaveRequest) {
+      setPendingSaveRequest(undefined);
+    }
+    if (world.pulse.problem && pendingDeleteRequest) {
+      setPendingDelete(null);
+      setPendingDeleteRequest(undefined);
+    }
+  }, [pendingSaveRequest, pendingDeleteRequest, world.pulse.problem]);
+
+  const beginEdit = (update: EngineeringPulseUpdate): void => {
+    setEditing(update.id);
+    setProjectId(update.projectId);
+    setDraft({
+      done: update.done, doing: update.doing, blocked: update.blocked,
+      decisions: update.decisions, helpNeeded: update.helpNeeded,
+      ...(update.relatedTaskId ? { relatedTaskId: update.relatedTaskId } : {}),
+      ...(update.relatedRunId ? { relatedRunId: update.relatedRunId } : {}),
+      ...(update.relatedProjectItem ? { relatedProjectItem: update.relatedProjectItem } : {}),
+    });
+    window.requestAnimationFrame(() => firstField.current?.focus());
+  };
+
+  return (
+    <div className="pulse-screen">
+      <header className="topbar pulse-topbar">
+        <div>
+          <h2>Engineering Pulse</h2>
+          <p className="sub">Daily updates for the people and agents on a project.</p>
+        </div>
+        <label className="pulse-filter">Project
+          <select aria-label="Filter Engineering Pulse by project" value={filterProjectId}
+            onChange={e => setFilterProjectId(e.target.value)}>
+            <option value="">All projects</option>
+            {projects.map(project => <option value={project.id} key={project.id}>{project.name}</option>)}
+          </select>
+        </label>
+      </header>
+
+      <div className="pulse-body">
+        {!world.connected && <div className="notice" role="status">Connecting to Cloud9â€¦</div>}
+        {world.pulse.loading && !pendingSaveRequest && !pendingDeleteRequest && (
+          <div className="pulse-skeleton" role="status" aria-live="polite">Loading Engineering Pulse updatesâ€¦</div>
+        )}
+        {world.pulse.problem && (
+          <div className="pulse-error" role="alert">
+            <span>{world.pulse.problem}</span>
+            <button className="secondary" onClick={() => client.askPulse(filterProjectId || undefined)}>Try again</button>
+          </div>
+        )}
+        {world.pulse.asked && projects.length === 0 && !world.pulse.loading && (
+          <EmptyTray title="No projects yet" line="Connect a project in Projects before posting a Pulse update." />
+        )}
+        {projects.length > 0 && (
+          <form className="pulse-composer" onSubmit={submit} aria-label="Write an Engineering Pulse update">
+            <div className="pulse-compose-head">
+              <h3>{editing ? "Edit your update" : "Post today’s update"}</h3>
+              {editing && <button type="button" className="quiet" onClick={() => { setEditing(null); setDraft(blankPulseDraft()); }}>Cancel edit</button>}
+            </div>
+            <label>Project
+              <select ref={projectField} value={projectId} onChange={e => setProjectId(e.target.value)} required
+                aria-describedby={formError ? "pulse-form-error" : undefined}>
+                <option value="" disabled>Choose a project</option>
+                {projects.map(project => <option value={project.id} key={project.id}>{project.name}</option>)}
+              </select>
+            </label>
+            <div className="pulse-grid">
+              {(["done", "doing", "blocked", "decisions", "helpNeeded"] as const).map((key, index) => {
+                const labels = { done: "Done", doing: "Doing", blocked: "Blocked", decisions: "Decisions", helpNeeded: "Help needed" };
+                return <label key={key}>{labels[key]}
+                  <textarea ref={index === 0 ? firstField : undefined} rows={3} value={draft[key] ?? ""}
+                    onChange={e => updateDraft(key, e.target.value)}
+                    aria-describedby={formError ? "pulse-form-error" : undefined}
+                    placeholder={key === "done" ? "What moved forward?" : "Optional"} />
+                </label>;
+              })}
+            </div>
+            <div className="pulse-links">
+              <label>Related task (optional)<input value={draft.relatedTaskId ?? ""}
+                onChange={e => setDraft(d => ({ ...d, relatedTaskId: e.target.value || undefined }))} /></label>
+              <label>Related run (optional)<input value={draft.relatedRunId ?? ""}
+                onChange={e => setDraft(d => ({ ...d, relatedRunId: e.target.value || undefined }))} /></label>
+              <label>Pull request or issue number (optional)<input inputMode="numeric"
+                value={draft.relatedProjectItem?.number ?? ""}
+                onChange={e => { const number = Number(e.target.value); setDraft(d => ({ ...d,
+                  relatedProjectItem: number > 0 ? { kind: d.relatedProjectItem?.kind ?? "pull", number } : undefined })); }} /></label>
+              <label>Link type<select value={draft.relatedProjectItem?.kind ?? "pull"}
+                onChange={e => setDraft(d => ({ ...d, relatedProjectItem: d.relatedProjectItem
+                  ? { kind: e.target.value as ProjectItemKind, number: d.relatedProjectItem.number } : undefined }))}>
+                <option value="pull">Pull request</option><option value="issue">Issue</option>
+              </select></label>
+            </div>
+            {formError && <p id="pulse-form-error" className="field-error" role="alert">{formError}</p>}
+            <div className="pulse-compose-foot">
+              <span className="muted">Updates are visible to this project’s owner and room members.</span>
+              <button className="primary" type="submit" disabled={world.pulse.loading || !!pendingSaveRequest}>{editing ? "Save changes" : "Post update"}</button>
+            </div>
+            <div className="sr-only" role="status" aria-live="polite">{world.pulse.loading ? "Saving Engineering Pulse updateâ€¦" : announcement}</div>
+          </form>
+        )}
+
+        {world.pulse.asked && projects.length > 0 && !world.pulse.loading && visible.length === 0 && (
+          <EmptyTray title="No updates yet" line="Post the first update when the team has something to share." />
+        )}
+        <div className="pulse-feed" aria-label="Engineering Pulse updates">
+          {visible.map(update => {
+            const mine = update.authorId === world.me?.id;
+            const related = update.relatedProjectItem;
+            const item = related ? world.projectItems[update.projectId]?.items.find(i => i.kind === related.kind && i.number === related.number) : undefined;
+            return <article className={`pulse-card${update.deletedAt ? " is-deleted" : ""}`} key={update.id}>
+              <header className="pulse-card-head">
+                <div><strong>{update.deletedAt ? "Deleted update" : update.authorName}</strong>
+                  {!update.deletedAt && <span className="pulse-author-kind">{update.authorKind === "agent" ? "Agent" : "Human"}</span>}
+                  <span className="pulse-project">{projectName(update.projectId)}</span></div>
+                <time dateTime={new Date(update.createdAt).toISOString()}>{pulseDate(update.createdAt)}</time>
+              </header>
+              {update.deletedAt ? <p className="muted">This update was deleted, but its place in the feed remains.</p> : <>
+                <dl className="pulse-sections">
+                  {(["done", "doing", "blocked", "decisions", "helpNeeded"] as const).map(key => update[key] && <div key={key}><dt>{{ done: "Done", doing: "Doing", blocked: "Blocked", decisions: "Decisions", helpNeeded: "Help needed" }[key]}</dt><dd>{update[key]}</dd></div>)}
+                </dl>
+                {(update.relatedTaskId || update.relatedRunId || related) && <p className="pulse-related">Related: {update.relatedTaskId && <button type="button" className="linkbtn" onClick={() => onOpenTask(update.relatedTaskId!)} aria-label={`Open related task ${update.relatedTaskId}`}>task {update.relatedTaskId}</button>}{update.relatedRunId && <button type="button" className="linkbtn" onClick={() => onOpenRun(update.relatedRunId!)} aria-label={`Open related run ${update.relatedRunId}`}>run {update.relatedRunId}</button>}{related && <button type="button" className="linkbtn" onClick={() => onOpenProject(update.projectId, related)} aria-label={`Open related ${related.kind === "pull" ? "pull request" : "issue"} ${related.number}`}>{item ? `${item.kind === "pull" ? "PR" : "issue"} #${item.number}` : `${related.kind === "pull" ? "PR" : "issue"} #${related.number} (not loaded)`}</button>}</p>}
+                {mine && <div className="pulse-actions"><button className="quiet" onClick={() => beginEdit(update)} disabled={!!pendingSaveRequest || !!pendingDeleteRequest}>Edit</button><button className="quiet danger" disabled={pendingDelete === update.id} onClick={() => {
+                  if (!window.confirm("Delete this update? It will stay in the feed as a deleted update.")) return;
+                  setAnnouncement("Deleting Engineering Pulse updateâ€¦");
+                  const sent = client.deletePulse(update.id, why => setFormError(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
       </div>
     </div>
   );
