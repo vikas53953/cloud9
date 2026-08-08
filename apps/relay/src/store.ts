@@ -9,6 +9,7 @@ import {
   StoredArtifact, StoredArtifactVersion, artifactVersionForPublic,
   ChannelRole, EverywhereHit, ID, Message, SearchKind,
   MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
+  ProjectPoll, ProjectPollDecision, ProjectPollOption,
   SocialPost, SocialReaction, SocialReadEntry, SocialLink, SOCIAL_LIMITS,
   EngineeringPulseUpdate, redactDeletedPulseUpdate,
   RunRecord, RUN_RETENTION, Task, User, StoredHook, isSafeStoredId, nameKey, newId,
@@ -635,6 +636,27 @@ export class Store implements JoinHubStore {
       );
       CREATE INDEX IF NOT EXISTS pulse_receipt_order
         ON pulse_mutation_receipts(userId, createdAt DESC);
+
+      -- Durable project decisions. Poll rows carry projectId beside JSON so
+      -- access checks never trust a client-provided projection.
+      CREATE TABLE IF NOT EXISTS project_polls(
+        id TEXT PRIMARY KEY, projectId TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        status TEXT NOT NULL, deadlineAt INTEGER, json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS poll_project ON project_polls(projectId, createdAt);
+      CREATE TABLE IF NOT EXISTS project_poll_votes(
+        pollId TEXT NOT NULL, voterId TEXT NOT NULL, optionId TEXT NOT NULL,
+        votedAt INTEGER NOT NULL, PRIMARY KEY (pollId, voterId)
+      );
+      CREATE INDEX IF NOT EXISTS poll_vote_poll ON project_poll_votes(pollId);
+      -- A desktop retry reuses its request id. This row is the durable
+      -- idempotency receipt, scoped to the authenticated owner and project.
+      CREATE TABLE IF NOT EXISTS project_poll_requests(
+        ownerId TEXT NOT NULL, requestId TEXT NOT NULL, projectId TEXT NOT NULL,
+        pollId TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        PRIMARY KEY (ownerId, requestId)
+      );
+      CREATE INDEX IF NOT EXISTS poll_request_project ON project_poll_requests(projectId);
     `);
       this.migrate();
       // v9 files created by the first Pulse build may already report the
@@ -3493,6 +3515,12 @@ export class Store implements JoinHubStore {
       .all(ownerId) as { json: string }[]).map(r => JSON.parse(r.json) as Project);
   }
 
+  /** Every connected project — membership gates decide who may see each row. */
+  projectsAll(): Project[] {
+    return (this.db.prepare("SELECT json FROM projects ORDER BY createdAt DESC").all() as { json: string }[])
+      .map(r => JSON.parse(r.json) as Project);
+  }
+
   /** Projects a person may use as a social-feed member, including ownership. */
   socialProjectsOf(userId: ID): Project[] {
     return (this.db.prepare(
@@ -3625,6 +3653,9 @@ export class Store implements JoinHubStore {
   /** Forget our copy. THE REPOSITORY IS NOT TOUCHED — it is not ours to touch. */
   forgetProject(id: ID): void {
     this.tx(() => {
+      this.db.prepare("DELETE FROM project_poll_votes WHERE pollId IN (SELECT id FROM project_polls WHERE projectId=?)").run(id);
+      this.db.prepare("DELETE FROM project_poll_requests WHERE projectId=?").run(id);
+      this.db.prepare("DELETE FROM project_polls WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM project_items WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM social_reactions WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM social_posts WHERE projectId=?").run(id);
@@ -3640,6 +3671,99 @@ export class Store implements JoinHubStore {
       this.db.prepare("DELETE FROM pulse_reads WHERE projectId=?").run(id);
       this.db.prepare("DELETE FROM projects WHERE id=?").run(id);
     });
+  }
+
+  saveProjectPoll(poll: ProjectPoll): void {
+    this.db.prepare(
+      "INSERT INTO project_polls(id,projectId,createdAt,status,deadlineAt,json) VALUES(?,?,?,?,?,?) " +
+      "ON CONFLICT(id) DO UPDATE SET status=excluded.status, deadlineAt=excluded.deadlineAt, json=excluded.json",
+    ).run(poll.id, poll.projectId, poll.createdAt, poll.status, poll.deadlineAt ?? null, JSON.stringify(poll));
+  }
+  projectPoll(id: ID): ProjectPoll | undefined {
+    const row = this.db.prepare("SELECT json FROM project_polls WHERE id=?").get(id) as { json: string } | undefined;
+    return row ? (JSON.parse(row.json) as ProjectPoll) : undefined;
+  }
+  projectPolls(projectId: ID): ProjectPoll[] {
+    return (this.db.prepare("SELECT json FROM project_polls WHERE projectId=? ORDER BY createdAt DESC, id DESC")
+      .all(projectId) as { json: string }[]).map(r => JSON.parse(r.json) as ProjectPoll);
+  }
+  projectPollCount(projectId: ID): number {
+    return (this.db.prepare("SELECT COUNT(*) n FROM project_polls WHERE projectId=?").get(projectId) as { n: number }).n;
+  }
+  voteProjectPoll(pollId: ID, voterId: ID, optionId: ID, votedAt = Date.now()): void {
+    this.db.prepare(
+      "INSERT INTO project_poll_votes(pollId,voterId,optionId,votedAt) VALUES(?,?,?,?) " +
+      "ON CONFLICT(pollId,voterId) DO UPDATE SET optionId=excluded.optionId, votedAt=excluded.votedAt",
+    ).run(pollId, voterId, optionId, votedAt);
+  }
+  pollVotes(pollId: ID, options?: readonly ProjectPollOption[]): { optionId: ID; votes: number }[] {
+    const rows = (this.db.prepare("SELECT optionId, COUNT(*) votes FROM project_poll_votes WHERE pollId=? GROUP BY optionId")
+      .all(pollId) as { optionId: ID; votes: number }[]);
+    const order = new Map((options ?? []).map((option, index) => [option.id, index]));
+    return rows.sort((a, b) =>
+      (order.get(a.optionId) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.optionId) ?? Number.MAX_SAFE_INTEGER)
+      || a.optionId.localeCompare(b.optionId));
+  }
+  /** Full option tallies in option order, including zero-vote options. */
+  pollResults(pollId: ID, options: readonly ProjectPollOption[]): { optionId: ID; votes: number }[] {
+    const counted = new Map(this.pollVotes(pollId).map(r => [r.optionId, r.votes]));
+    return options.map(option => ({ optionId: option.id, votes: counted.get(option.id) ?? 0 }));
+  }
+  projectPollRequest(ownerId: ID, requestId: ID): { projectId: ID; pollId: ID } | undefined {
+    const row = this.db.prepare(
+      "SELECT projectId, pollId FROM project_poll_requests WHERE ownerId=? AND requestId=?",
+    ).get(ownerId, requestId) as { projectId: ID; pollId: ID } | undefined;
+    return row;
+  }
+  saveProjectPollRequest(ownerId: ID, requestId: ID, projectId: ID, pollId: ID, createdAt = Date.now()): void {
+    this.db.prepare(
+      "INSERT INTO project_poll_requests(ownerId,requestId,projectId,pollId,createdAt) VALUES(?,?,?,?,?)",
+    ).run(ownerId, requestId, projectId, pollId, createdAt);
+  }
+  pollVote(pollId: ID, voterId: ID): ID | undefined {
+    const row = this.db.prepare("SELECT optionId FROM project_poll_votes WHERE pollId=? AND voterId=?")
+      .get(pollId, voterId) as { optionId: ID } | undefined;
+    return row?.optionId;
+  }
+  closeProjectPoll(id: ID, decision: ProjectPollDecision): ProjectPoll | undefined {
+    const poll = this.projectPoll(id);
+    if (!poll || poll.status === "closed") return poll;
+    const closed = { ...poll, status: "closed" as const, decision };
+    this.saveProjectPoll(closed);
+    return closed;
+  }
+  /** Close every expired open poll and return the changed rows. */
+  expireProjectPolls(now = Date.now()): ProjectPoll[] {
+    const changed: ProjectPoll[] = [];
+    for (const poll of this.projectPollsAllOpen()) {
+      if (poll.deadlineAt !== undefined && poll.deadlineAt <= now) {
+        const decision: ProjectPollDecision = {
+          closedAt: now, closedBy: "system", reason: "deadline",
+          results: this.pollResults(poll.id, poll.options),
+        };
+        const closed = this.closeProjectPoll(poll.id, decision);
+        if (closed) changed.push(closed);
+      }
+    }
+    return changed;
+  }
+  private projectPollsAllOpen(): ProjectPoll[] {
+    return (this.db.prepare("SELECT json FROM project_polls WHERE status='open' ORDER BY deadlineAt ASC, id ASC").all() as { json: string }[])
+      .map(r => JSON.parse(r.json) as ProjectPoll);
+  }
+  /** Persist a newly-created poll and its retry receipt atomically. */
+  createProjectPoll(poll: ProjectPoll, ownerId: ID, requestId?: ID): void {
+    this.tx(() => {
+      this.saveProjectPoll(poll);
+      if (requestId) this.saveProjectPollRequest(ownerId, requestId, poll.projectId, poll.id);
+    });
+  }
+  /** The next persisted deadline, used to reschedule expiry after a restart. */
+  nextProjectPollDeadline(): number | undefined {
+    const row = this.db.prepare(
+      "SELECT MIN(deadlineAt) deadline FROM project_polls WHERE status='open' AND deadlineAt IS NOT NULL",
+    ).get() as { deadline: number | null };
+    return row.deadline ?? undefined;
   }
 
   /**

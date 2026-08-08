@@ -10,7 +10,7 @@ import {
   normaliseArtifactAccess, validateArtifactAccess, versionOf,
   Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
   GitHubAccountInfo, HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
-  MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectItemKind, ProjectItemState,
+  MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectPollView, ProjectItemKind, ProjectItemState,
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
   EverywhereHit, SearchKind,
   SearchHit, ServerFrame, SKILL_LIMITS, SOCIAL_LIMITS, SocialLink, SocialPost, summarizeRun, Task, User, humanDuration, humanMoney,
@@ -1150,6 +1150,12 @@ const IconProjects = (): React.JSX.Element => (
     <path d="M7 7.7v8.6" /><path d="M17.5 11.3v.8a3.2 3.2 0 0 1-3.2 3.2h-2.1a3.2 3.2 0 0 0-3.2 3.1" />
   </svg>
 );
+const IconPolls = (): React.JSX.Element => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+    <path d="M4 19V5"/><path d="M10 19V9"/><path d="M16 19v-6"/><path d="M22 19H2"/>
+  </svg>
+);
+
 const IconSocial = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <path d="M5 5.5h14v10H9l-4 3v-13Z" /><path d="M8 9h8M8 12h5" />
@@ -1995,7 +2001,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "pulse" | "hooks" | "social" | "spending" | "activity" | "notifications" | "saved" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "pulse" | "polls" | "hooks" | "social" | "spending" | "activity" | "notifications" | "saved" | "settings";
 type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -2267,6 +2273,10 @@ function Workspace(): React.JSX.Element {
       setScreen("projects");
     });
   }, []);
+  const openPolls = useCallback(() => {
+    setScreen("polls");
+  }, []);
+
 
   const openSocial = useCallback(() => {
     attemptLeave(() => {
@@ -2856,6 +2866,7 @@ function Workspace(): React.JSX.Element {
           {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
           {railBtn("pulse", "Engineering Pulse", <IconPulse />,
             Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
+          {railBtn("polls", "Polls", <IconPolls />, undefined, openPolls)}
           {railBtn("hooks", "Hooks", <IconGear />)}
           {railBtn("social", "Team feed", <IconSocial />, socialUnread, openSocial)}
           {/* ADDED 2026-08-07. It sits beside the Activity button because it
@@ -2972,6 +2983,7 @@ function Workspace(): React.JSX.Element {
               setScreen("projects");
             })}
           />}
+          {screen === "polls" && <PollsScreen />}
           {screen === "hooks" && <HooksScreen />}
           {screen === "social" && <SocialFeedScreen onOpenLink={openSocialLink} />}
           {screen === "spending" && <SpendingScreen />}
@@ -14322,6 +14334,73 @@ function ProjectsScreen({ onOpenChannel, openAt, onOpened }: {
       </div>
     </div>
   );
+}
+
+
+function PollsScreen(): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [projectId, setProjectId] = useState<ID | "">("");
+  const [question, setQuestion] = useState("");
+  const [options, setOptions] = useState(["", ""]);
+  const [deadline, setDeadline] = useState("");
+  const [summary, setSummary] = useState<Record<ID, string>>({});
+  // Re-ask after reconnect: disconnect clears projects/polls; mount-only ask leaves this screen empty forever.
+  useEffect(() => { if (world.connected) client.askProjects(); }, [world.connected]);
+  const project = world.projects.list.find(p => p.id === projectId) ?? world.projects.list[0];
+  useEffect(() => { if (project?.id && world.connected) { setProjectId(project.id); client.askPolls(project.id); } }, [project?.id, world.connected]);
+  const polls = world.polls.projectId === project?.id ? world.polls.list : [];
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!project) return;
+    const clean = options.map(v => v.trim()).filter(Boolean);
+    if (clean.length < 2 || !question.trim()) return;
+    const deadlineAt = deadline ? new Date(deadline).getTime() : undefined;
+    client.createPoll(project.id, question, clean, deadlineAt);
+    setQuestion(""); setOptions(["", ""]); setDeadline("");
+  };
+  return (
+    <div className="polls">
+      <header className="topbar"><h2>Project polls</h2><span className="sub">Decisions for signed-in project members</span></header>
+      <div className="polls-body">
+        <label className="field"><span>Project</span><select value={project?.id ?? ""} onChange={e => { setProjectId(e.target.value); if (e.target.value) client.askPolls(e.target.value); }} aria-label="Poll project">
+          <option value="">Choose a project</option>{world.projects.list.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select></label>
+        {!world.projects.asked && <div className="runwait" role="status">Loading projects…</div>}
+        {world.projects.asked && !project && <EmptyTray title="No project available" line="Connect a project before creating a poll." />}
+        {project && <>
+          <form className="poll-create" onSubmit={submit} aria-label="Create project poll">
+            <h3>New decision</h3>
+            <label className="field"><span>Question</span><input value={question} maxLength={240} onChange={e => setQuestion(e.target.value)} placeholder="What should we ship next?" /></label>
+            {options.map((value, i) => <label className="field" key={i}><span>Option {i + 1}</span><input value={value} maxLength={120} onChange={e => setOptions(xs => xs.map((x, j) => j === i ? e.target.value : x))} /></label>)}
+            {options.length < 10 && <button type="button" className="btn" onClick={() => setOptions(xs => [...xs, ""])}>Add option</button>}
+            <label className="field"><span>Deadline (optional)</span><input type="datetime-local" value={deadline} onChange={e => setDeadline(e.target.value)} /></label>
+            <button className="btn primary" type="submit">Create poll</button>
+            <p className="meta">Only signed-in project members can view or vote. Votes can change until the poll closes.</p>
+          </form>
+          <div className="poll-list" aria-live="polite">
+            {!world.polls.asked && <div className="runwait" role="status">Loading polls…</div>}
+            {world.polls.asked && polls.length === 0 && <EmptyTray title="No decisions yet" line="Create a poll when your project needs a recorded choice." />}
+            {polls.map(poll => <PollCard key={poll.id} poll={poll} summary={summary[poll.id] ?? ""} onSummary={v => setSummary(s => ({ ...s, [poll.id]: v }))} />)}
+          </div>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+function PollCard({ poll, summary, onSummary }: { poll: ProjectPollView; summary: string; onSummary: (v: string) => void }): React.JSX.Element {
+  const [choice, setChoice] = useState(poll.myOptionId ?? "");
+  useEffect(() => setChoice(poll.myOptionId ?? ""), [poll.myOptionId]);
+  return <article className="poll-card" data-poll={poll.id}>
+    <header><h3>{poll.question}</h3><span className="meta">{poll.authorKind === "agent" ? "Agent" : "Human"} · {poll.status}</span></header>
+    <fieldset disabled={poll.status !== "open"}><legend className="sr-only">Options</legend>{poll.options.map(option => <label key={option.id} className="poll-option"><input type="radio" name={`poll-${poll.id}`} checked={choice === option.id} onChange={() => setChoice(option.id)} /> <span>{option.label}</span><b>{poll.results.find(r => r.optionId === option.id)?.votes ?? 0}</b></label>)}</fieldset>
+    <div className="poll-actions">{poll.status === "open" && <button className="btn" disabled={!choice} onClick={() => client.votePoll(poll.id, choice)}>Vote / change vote</button>}{poll.canClose && poll.status === "open" && <><input aria-label="Decision note" maxLength={500} value={summary} onChange={e => onSummary(e.target.value)} placeholder="Decision note (optional)" /><button className="btn" onClick={() => client.closePoll(poll.id, summary)}>Close and record result</button></>}</div>
+    {poll.status === "closed" && poll.decision && <p className="meta poll-decision" data-reason={poll.decision.reason} data-closed-at={poll.decision.closedAt}>
+      Decision recorded: {poll.decision.reason === "deadline" ? "deadline reached" : "closed by owner"} · {new Date(poll.decision.closedAt).toLocaleString()}
+      {poll.decision.summary ? ` · ${poll.decision.summary}` : ""}
+    </p>}
+    <p className="meta">{poll.status === "closed" ? `${poll.totalVotes} vote${poll.totalVotes === 1 ? "" : "s"}` : `${poll.totalVotes} vote${poll.totalVotes === 1 ? "" : "s"} · open until ${poll.deadlineAt ? new Date(poll.deadlineAt).toLocaleString() : "closed by owner"}`}</p>
+  </article>;
 }
 
 /* ================= 6b · SPENDING =================

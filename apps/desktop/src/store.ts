@@ -10,7 +10,7 @@ import {
   SavedMessageEntry,
   EverywhereHit, SearchKind,
   ReachCatchup,
-  Project, ProjectItem, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
+  Project, ProjectItem, ProjectPollView, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject, validateEngineeringPulseDraft,
   Workflow, WorkflowRun,
   SocialLink, SocialPost,
@@ -387,6 +387,8 @@ export interface World {
    * what says how old the answer is.
    */
   projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
+  /** Poll list is tied to both its active project and its latest request. */
+  polls: { asked: boolean; projectId?: ID; requestId?: ID; list: ProjectPollView[] };
   hooks: { asked: boolean; requestId?: ID; mutationRequestId?: ID; pending?: Record<ID, true>; auditRequestId?: ID; auditAsked?: boolean; auditLoading?: boolean; audit?: HookAuditEntry[]; auditProblem?: string; list: StoredHook[]; problem?: string; test?: { hookId: ID; ok: boolean; said: string } };
   socialProjects: { asked: boolean; list: Project[]; requestId?: ID };
   /** Unread counts for every member project, not just the currently open feed. */
@@ -685,7 +687,7 @@ export class RelayClient {
     runs: {}, runLists: {}, runsGone: {},
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
-    projects: { asked: false, list: [] }, projectItems: {}, hooks: { asked: false, list: [] },
+    projects: { asked: false, list: [] }, projectItems: {}, polls: { asked: false, list: [] }, hooks: { asked: false, list: [] },
     socialProjects: { asked: false, list: [] }, socialUnread: {}, socialPending: {}, socialCompleted: undefined, socialFeeds: {},
     pulse: { asked: false, loading: false, updates: [], unreadByProject: {}, projects: [] },
     repoChoices: { asked: false, asking: false },
@@ -2037,6 +2039,35 @@ export class RelayClient {
   }
 
   /** Ask for one project's pull requests and issues, as of the last look. */
+  askPolls(projectId: ID): void {
+    const requestId = this.nextRequestId("polls");
+    this.world.polls = { asked: false, projectId, requestId, list: [] };
+    const sent = this.ask({ type: "polls", projectId, requestId }, {
+      answers: f => f.type === "polls" && f.projectId === projectId && f.requestId === requestId,
+      answered: f => {
+        if (f.type !== "polls" || this.world.polls.requestId !== requestId) return;
+        this.world.polls = { asked: true, projectId, requestId: undefined, list: f.polls };
+      },
+      refused: () => {
+        if (this.world.polls.requestId !== requestId) return;
+        this.world.polls = { asked: true, projectId, requestId: undefined, list: [] }; this.emit();
+      },
+      lost: () => {
+        if (this.world.polls.requestId !== requestId) return;
+        this.world.polls = { asked: true, projectId, requestId: undefined, list: [] }; this.emit();
+      },
+    });
+    if (!sent && this.world.polls.requestId === requestId) {
+      this.world.polls = { asked: true, projectId, requestId: undefined, list: [] }; this.emit();
+    }
+  }
+  createPoll(projectId: ID, question: string, options: string[], deadlineAt?: number, requestId = this.nextRequestId("createPoll")): void {
+    this.send({ type: "createPoll", projectId, question, options, requestId, ...(deadlineAt ? { deadlineAt } : {}) });
+  }
+  votePoll(pollId: ID, optionId: ID): void { this.send({ type: "votePoll", pollId, optionId }); }
+  closePoll(pollId: ID, summary?: string): void { this.send({ type: "closePoll", pollId, ...(summary ? { summary } : {}) }); }
+
+
   askProjectItems(projectId: ID): void {
     const settled = (): void => {
       this.world.projectItems = {
@@ -3950,7 +3981,28 @@ export class RelayClient {
         w.savedMessages = w.savedMessages.map(entry => entry.channelId === frame.channelId
           ? { ...entry, state: "inaccessible", message: undefined }
           : entry);
-        break;
+        
+        // Projects linked to the room derive access from its membership. The
+        // relay sends a revocation too, but purge by channel here so a window
+        // cannot keep drawing a poll if the two frames arrive out of order.
+        const linkedProjectIds = new Set(
+          w.projects.list
+            .filter(project => project.channelId === frame.channelId && project.ownerId !== w.me?.id)
+            .map(project => project.id),
+        );
+        if (linkedProjectIds.size) {
+          w.projects = {
+            ...w.projects,
+            list: w.projects.list.filter(project => !linkedProjectIds.has(project.id)),
+          };
+          const remainingItems = { ...w.projectItems };
+          for (const projectId of linkedProjectIds) delete remainingItems[projectId];
+          w.projectItems = remainingItems;
+          if (w.polls.projectId && linkedProjectIds.has(w.polls.projectId)) {
+            w.polls = { asked: true, list: [] };
+          }
+        }
+break;
       }
       /* Projects. These four used to be dropped with a comment saying the
          Projects screen would claim them one day. It has. */
@@ -3991,6 +4043,7 @@ export class RelayClient {
           unreadByProject: Object.fromEntries(Object.entries(w.pulse.unreadByProject)
             .filter(([id]) => id !== frame.projectId)),
         };
+        if (w.polls.projectId === frame.projectId) w.polls = { asked: true, list: [] };
         break;
       }
       case "projectItems":
@@ -4003,6 +4056,29 @@ export class RelayClient {
           [frame.projectId]: { asked: true, items: frame.items },
         };
         break;
+
+      case "polls":
+        if (frame.requestId === undefined || frame.requestId !== w.polls.requestId) break;
+        w.polls = { asked: true, projectId: frame.projectId, requestId: undefined, list: frame.polls };
+        break;
+      case "poll": {
+        if (w.polls.projectId !== frame.poll.projectId) break;
+        const list = w.polls.list;
+        const i = list.findIndex(p => p.id === frame.poll.id);
+        w.polls = {
+          ...w.polls, asked: true,
+          list: i < 0 ? [frame.poll, ...list] : list.map(p => p.id === frame.poll.id ? frame.poll : p),
+        };
+        break;
+      }
+      case "projectAccessRevoked": {
+        w.projects = { ...w.projects, list: w.projects.list.filter(p => p.id !== frame.projectId) };
+        const { [frame.projectId]: goneItems, ...restItems } = w.projectItems;
+        void goneItems;
+        w.projectItems = restItems;
+        if (w.polls.projectId === frame.projectId) w.polls = { asked: true, list: [] };
+        break;
+      }
       case "hooks":
         {
           if (frame.requestId === undefined) {
