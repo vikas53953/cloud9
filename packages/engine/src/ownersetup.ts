@@ -133,6 +133,68 @@ export function claudeSetupEnv(agent: SetupChoice): Readonly<Record<string, stri
   return usesOwnerSetup(agent) ? {} : CLAUDE_ISOLATION_ENV;
 }
 
+/**
+ * THE SAME CLAUDE ISOLATION, SHAPED FOR THE AGENT SDK.
+ *
+ * The stored-key path talks to Claude through `query()`, not `claude -p`. The
+ * SDK has typed fields for setting sources and strict MCP, and passes other CLI
+ * flags through `extraArgs`. This maps `claudeSetupFlags` so the two paths
+ * cannot drift: a flag added to CLAUDE_ISOLATION_FLAGS lands here too, and the
+ * SDK path either uses its typed field or forwards the flag by name.
+ *
+ * Auto-memory is NOT here — it has no flag and rides in `claudeSetupEnv`, the
+ * same owner the CLI path uses.
+ *
+ * Empty when this agent runs in his setup (switch ON), matching the CLI path.
+ */
+export function claudeSetupSdkOptions(agent: SetupChoice): Readonly<{
+  settingSources?: readonly [];
+  strictMcpConfig?: true;
+  extraArgs?: Readonly<Record<string, string | null>>;
+}> {
+  const flags = claudeSetupFlags(agent);
+  if (flags.length === 0) return {};
+
+  const out: {
+    settingSources?: readonly [];
+    strictMcpConfig?: true;
+    extraArgs?: Record<string, string | null>;
+  } = {};
+  const extraArgs: Record<string, string | null> = {};
+
+  for (let i = 0; i < flags.length; i++) {
+    const flag = flags[i]!;
+    if (!flag.startsWith("--")) continue;
+    const name = flag.slice(2);
+    const next = flags[i + 1];
+    const nextIsValue = next !== undefined && !next.startsWith("--");
+
+    // Typed SDK fields for the two isolation knobs the SDK documents.
+    if (name === "setting-sources") {
+      // CLI: --setting-sources ""  →  SDK: settingSources: []
+      out.settingSources = [];
+      if (nextIsValue) i++;
+      continue;
+    }
+    if (name === "strict-mcp-config" && !nextIsValue) {
+      out.strictMcpConfig = true;
+      continue;
+    }
+
+    // Everything else (today: --disable-slash-commands) rides as a CLI flag
+    // the SDK process still accepts. null = boolean flag, no value.
+    if (nextIsValue && next !== EMPTY_ARG) {
+      extraArgs[name] = next;
+      i++;
+    } else {
+      extraArgs[name] = null;
+      if (nextIsValue) i++;
+    }
+  }
+  if (Object.keys(extraArgs).length > 0) out.extraArgs = extraArgs;
+  return out;
+}
+
 // -------------------------------------------------------------------- Codex
 
 /**

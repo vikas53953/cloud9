@@ -49,9 +49,32 @@ test("stored-key SDK keeps supplied folders and does not impose a six-turn trap"
   assert.equal("maxTurns" in (options ?? {}), false);
   assert.deepEqual(options?.settingSources, []);
   assert.equal(options?.strictMcpConfig, true);
+  // Same isolation class as the CLI path when the agent is NOT in his setup:
+  // auto-memory env + slash-commands shut (via extraArgs), not only settings/MCP.
   const env = options?.env as Record<string, string | undefined>;
   assert.equal(env.ANTHROPIC_API_KEY, "saved-key");
   assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+  assert.equal(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1",
+    "stored-key SDK must close auto-memory the same way the CLI path does");
+  const extraArgs = options?.extraArgs as Record<string, string | null> | undefined;
+  assert.equal(extraArgs?.["disable-slash-commands"], null,
+    "stored-key SDK must disable slash commands when isolation is required");
+});
+
+test("stored-key SDK drops isolation when the agent runs in his own setup", async () => {
+  let options: Record<string, unknown> | undefined;
+  const provider = new SdkProvider(
+    { apiKey: "saved-key" }, () => "C:\\agents\\a1", {},
+    fakeQuery([system, success()], o => { options = o; }),
+  );
+  const who = { ...agent(), useOwnerSetup: true };
+  await provider.respond(turn(who));
+  const env = options?.env as Record<string, string | undefined>;
+  assert.equal(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, undefined,
+    "his setup must keep auto-memory open, matching the CLI path");
+  assert.equal(options?.settingSources, undefined);
+  assert.equal(options?.strictMcpConfig, undefined);
+  assert.equal(options?.extraArgs, undefined);
 });
 
 test("SDK exposes live steps, trace/session/run facts, Cloud9 tools, and closes its doorway", async () => {

@@ -15,6 +15,7 @@ import {
 import { cloud9McpConfig, cloud9ToolNames, renderCloud9Tools } from "./cloud9tools.js";
 import type { OpenTurn } from "./toolbridge.js";
 import { envWithoutCredentials } from "./env.js";
+import { claudeSetupEnv, claudeSetupSdkOptions } from "./ownersetup.js";
 import { traceWalker, type EventMapper, type ProviderTrace, type RunUsage } from "./runrecord.js";
 import type { SessionBook } from "./sessionresume.js";
 // type-only: erased at compile time, so runrecord.ts may import this file back
@@ -877,7 +878,13 @@ export class SdkProvider implements ClaudeProvider {
       ...(doorway ? cloud9McpServer(doorway) : {}),
     };
     const tools = [...claudeToolsFor(agent), ...(doorway ? cloud9ToolNames() : [])];
+    // SAME ISOLATION AS THE CLI PATH for this agent's setup mode: auto-memory
+    // env from claudeSetupEnv, slash-commands / settings / strict MCP from
+    // claudeSetupSdkOptions (maps claudeSetupFlags). Empty when the switch is
+    // ON so his setup loads the way the CLI path would.
+    const isolation = claudeSetupSdkOptions(agent);
     const env = envWithoutCredentials(process.env, {
+      ...claudeSetupEnv(agent),
       ...(this.creds.apiKey ? { ANTHROPIC_API_KEY: this.creds.apiKey } : {}),
       ...(this.creds.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: this.creds.oauthToken } : {}),
     });
@@ -888,8 +895,9 @@ export class SdkProvider implements ClaudeProvider {
       allowedTools: tools,
       disallowedTools: deniedClaudeTools(agent),
       permissionMode: "dontAsk",
-      settingSources: [],
-      strictMcpConfig: true,
+      ...(isolation.settingSources ? { settingSources: [...isolation.settingSources] } : {}),
+      ...(isolation.strictMcpConfig ? { strictMcpConfig: true } : {}),
+      ...(isolation.extraArgs ? { extraArgs: { ...isolation.extraArgs } } : {}),
       cwd: workdir ?? this.agentDataDir(agent.id),
       env,
       includePartialMessages: true,

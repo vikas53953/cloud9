@@ -68,7 +68,7 @@ export {
 // WHOSE SETUP AN AGENT RUNS IN — the ONE owner of "isolated, or his own Claude
 // Code / Codex setup", read by both harnesses so they can never drift apart.
 export {
-  usesOwnerSetup, setupModeFor, claudeSetupFlags, claudeSetupEnv,
+  usesOwnerSetup, setupModeFor, claudeSetupFlags, claudeSetupEnv, claudeSetupSdkOptions,
   codexSetupFlags, codexDisabledBySetup, codexUsesDisposableHome,
   CODEX_OWNER_SETUP_FEATURES, CODEX_NEVER_ENABLED,
   OWNER_SETUP_WORDS, NEVER_INHERITED,

@@ -31,7 +31,8 @@ import {
   createCodexIsolatedEnvironment,
 } from "./codex.js";
 import {
-  claudeSetupEnv, claudeSetupFlags, CODEX_NEVER_ENABLED, CODEX_OWNER_SETUP_FEATURES,
+  claudeSetupEnv, claudeSetupFlags, claudeSetupSdkOptions,
+  CODEX_NEVER_ENABLED, CODEX_OWNER_SETUP_FEATURES,
   codexSetupFlags, codexUsesDisposableHome, NEVER_INHERITED, OWNER_SETUP_WORDS, setupModeFor,
   usesOwnerSetup,
 } from "./ownersetup.js";
@@ -98,6 +99,18 @@ test("switch OFF: today's exact Claude flag set, flag for flag", () => {
     "the owner's auto-memory folder, which has no flag");
 });
 
+test("switch OFF: SDK isolation matches the CLI flag set for the same agent", () => {
+  // Stored-key path must not be a softer door. Same policy as claudeSetupFlags,
+  // shaped for query() — settings empty, MCP strict, slash commands off.
+  const sdk = claudeSetupSdkOptions(DECLARED());
+  assert.deepEqual(sdk.settingSources, []);
+  assert.equal(sdk.strictMcpConfig, true);
+  assert.equal(sdk.extraArgs?.["disable-slash-commands"], null,
+    "SDK must forward --disable-slash-commands when isolation is required");
+  // And the env half is still the same owner the CLI path uses.
+  assert.equal(claudeSetupEnv(DECLARED()).CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
+});
+
 test("switch ON: not one isolation flag survives on the Claude line", () => {
   const args = claudeArgs(HIS({ webSearch: true }));
   for (const flag of CLAUDE_ISOLATION_FLAGS) {
@@ -107,6 +120,8 @@ test("switch ON: not one isolation flag survives on the Claude line", () => {
   // …and the environment half of the boundary goes with them, or his saved
   // memory would still be missing while everything else loaded.
   assert.deepEqual(claudeSetupEnv(HIS()), {});
+  assert.deepEqual(claudeSetupSdkOptions(HIS()), {},
+    "SDK path must also drop isolation when the switch is ON");
   // WHAT DOES NOT CHANGE: the ability toggles. Measured live on 2026-08-05 with
   // the switch ON — the built-in tool set was still exactly what --tools said.
   const his = claudeArgs(HIS({ webSearch: true }));
