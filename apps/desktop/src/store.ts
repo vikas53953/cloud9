@@ -445,6 +445,18 @@ export interface World {
   memory: Record<ID, { asked: boolean; loading: boolean; notes: MemoryNote[] }>;
 }
 
+/** The whole hooks bag on the desktop — list, audit, pending, test, problems. */
+export type HooksBag = World["hooks"];
+
+/**
+ * CLASS RULE for every hooks answer and refusal: spread the prior bag, never
+ * replace it with a two-field `{ asked, list }` object. Co-asking the list and
+ * the audit must leave audit, pending, and test fields intact when the list settles.
+ */
+export function keepHooksBag(prior: HooksBag, patch: Partial<HooksBag> & Pick<HooksBag, "asked" | "list">): HooksBag {
+  return { ...prior, ...patch };
+}
+
 type Listener = () => void;
 
 /**
@@ -1967,14 +1979,33 @@ export class RelayClient {
   }
   askHooks(): void {
     const requestId = this.nextRequestId("hooks");
-    this.world.hooks = { asked: false, requestId, list: [] };
+    // Class rule: always spread the prior hooks bag. A list answer must never
+    // replace world.hooks with a two-field object and wipe audit/pending/test.
+    this.world.hooks = { ...this.world.hooks, asked: false, requestId, list: [], problem: undefined };
     const sent = this.ask({ type: "hooks", requestId }, {
       answers: f => f.type === "hooks" && f.requestId === requestId,
-      answered: f => { if (f.type === "hooks" && this.world.hooks.requestId === requestId) this.world.hooks = { asked: true, list: f.hooks }; },
-      refused: why => { if (this.world.hooks.requestId === requestId) this.world.hooks = { asked: true, list: [], problem: why }; this.emit(); },
-      lost: () => { if (this.world.hooks.requestId === requestId) this.world.hooks = { asked: true, list: [], problem: "the hub did not answer" }; this.emit(); },
+      answered: f => {
+        if (f.type === "hooks" && this.world.hooks.requestId === requestId) {
+          this.world.hooks = keepHooksBag(this.world.hooks, { asked: true, list: f.hooks, problem: undefined });
+        }
+      },
+      refused: why => {
+        if (this.world.hooks.requestId === requestId) {
+          this.world.hooks = keepHooksBag(this.world.hooks, { asked: true, list: [], problem: why });
+          this.emit();
+        }
+      },
+      lost: () => {
+        if (this.world.hooks.requestId === requestId) {
+          this.world.hooks = keepHooksBag(this.world.hooks, { asked: true, list: [], problem: "the hub did not answer" });
+          this.emit();
+        }
+      },
     });
-    if (!sent && this.world.hooks.requestId === requestId) { this.world.hooks = { asked: true, list: [], problem: "not connected to the hub yet" }; this.emit(); }
+    if (!sent && this.world.hooks.requestId === requestId) {
+      this.world.hooks = keepHooksBag(this.world.hooks, { asked: true, list: [], problem: "not connected to the hub yet" });
+      this.emit();
+    }
   }
   askHooksAudit(): void {
     const requestId = this.nextRequestId("hooksAudit");

@@ -166,3 +166,57 @@ test("hook request and audit ledgers stay bounded", async t => {
   assert.equal(auditCount, 512);
   assert.equal(relay.store.hookAuditOf(relay.ownerId).length, 512);
 });
+
+test("invited friend is refused on every hooks frame type", async t => {
+  const relay = new Relay({ dbPath: tmp("hooks-friend-gate.db"), ownerToken: "owner", ownerName: "Owner" });
+  const port = await relay.listen(0); const url = `ws://127.0.0.1:${port}`;
+  const owner = new TestClient(url, "owner"); await owner.wait(f => f.type === "welcome");
+  t.after(() => { owner.close(); relay.close(); });
+  owner.send({ type: "createInvite" });
+  const inv = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
+  const friend = new TestClient(url, `invite:${inv.code}:Priya`);
+  await friend.wait(f => f.type === "welcome");
+  t.after(() => friend.close());
+
+  const frames: Array<{ type: string; requestId: string } & Record<string, unknown>> = [
+    { type: "hooks", requestId: "friend-list" },
+    { type: "hooksAudit", requestId: "friend-audit" },
+    { type: "createHook", requestId: "friend-create", hook: { name: "x", event: "turn.finished", enabled: true, action: { do: "note", agentId: "a1", text: "no" } } },
+    { type: "updateHook", requestId: "friend-update", hookId: "h1", hook: { name: "y" } },
+    { type: "deleteHook", requestId: "friend-delete", hookId: "h1" },
+    { type: "testHook", requestId: "friend-test", hookId: "h1" },
+    { type: "setHookEnabled", requestId: "friend-enable", hookId: "h1", enabled: true },
+  ];
+  for (const frame of frames) {
+    friend.send(frame as never);
+    const denied = await friend.wait<Extract<ServerFrame, { type: "error" }>>(
+      f => f.type === "error" && f.requestId === frame.requestId,
+    );
+    assert.match(denied.error, /only the Cloud9 owner desktop/, `${frame.type} must refuse a friend`);
+  }
+});
+
+test("owner mobile is refused on every hooks frame type", async t => {
+  const relay = new Relay({ dbPath: tmp("hooks-mobile-gate.db"), ownerToken: "owner", ownerName: "Owner" });
+  const port = await relay.listen(0); const url = `ws://127.0.0.1:${port}`;
+  const mobile = new TestClient(url, "owner", "mobile");
+  await mobile.wait(f => f.type === "welcome");
+  t.after(() => { mobile.close(); relay.close(); });
+
+  const frames: Array<{ type: string; requestId: string } & Record<string, unknown>> = [
+    { type: "hooks", requestId: "mobile-list" },
+    { type: "hooksAudit", requestId: "mobile-audit" },
+    { type: "createHook", requestId: "mobile-create", hook: { name: "x", event: "turn.finished", enabled: true, action: { do: "note", agentId: "a1", text: "no" } } },
+    { type: "updateHook", requestId: "mobile-update", hookId: "h1", hook: { name: "y" } },
+    { type: "deleteHook", requestId: "mobile-delete", hookId: "h1" },
+    { type: "testHook", requestId: "mobile-test", hookId: "h1" },
+    { type: "setHookEnabled", requestId: "mobile-enable", hookId: "h1", enabled: false },
+  ];
+  for (const frame of frames) {
+    mobile.send(frame as never);
+    const denied = await mobile.wait<Extract<ServerFrame, { type: "error" }>>(
+      f => f.type === "error" && f.requestId === frame.requestId,
+    );
+    assert.match(denied.error, /only the Cloud9 owner desktop/, `${frame.type} must refuse owner mobile`);
+  }
+});

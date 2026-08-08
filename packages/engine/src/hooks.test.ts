@@ -11,10 +11,13 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentDef } from "@cloud9/shared";
 import {
-  HOOK_ACTIONS, HOOK_EVENTS, HookBook, describeHook, fill, hookProblem, hooksPath,
-  isHookEvent, loadHooks, newHookId, saveHooks,
+  HOOK_ACTIONS, HOOK_EVENTS, HookBook, describeHook, fill, hookProblem,
+  hooksHubOwnedPath, hooksPath, isHookEvent, loadHooks, loadHooksHubOwned,
+  markHooksHubOwned, mayReplaceHooksFromHub, newHookId, saveHooks,
   type Hook, type HookActions, type HookFact,
 } from "./hooks.js";
+import { attachHooks } from "./hookwiring.js";
+import type { Engine } from "./engine.js";
 import { tempDir } from "./tmp-for-tests.js";
 
 const tmp = (): string => tempDir("cloud9-hooks-");
@@ -320,4 +323,63 @@ test("hookProblem names the problem in plain words", () => {
     String(hookProblem({ ...hook(), action: { do: "command", agentId: "a", command: "x".repeat(600) } })),
     /too long/);
   assert.equal(hookProblem(null), "that isn't a rule");
+});
+
+// ===================================================================
+// HUB CUTOVER — empty relay must not silently destroy local hooks.json
+// ===================================================================
+
+test("empty hub replace is refused while local rules exist and hub never owned the book", () => {
+  const local = [hook({ id: "local-1" })];
+  const decision = mayReplaceHooksFromHub({ incoming: [], current: local, hubOwned: false });
+  assert.equal(decision.allow, false);
+  assert.match(decision.reason ?? "", /keeping local hooks/);
+});
+
+test("empty hub replace is allowed after the hub has owned the book", () => {
+  const decision = mayReplaceHooksFromHub({
+    incoming: [], current: [hook({ id: "local-1" })], hubOwned: true,
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.markOwned, true);
+});
+
+test("non-empty hub replace claims ownership even when local rules already exist", () => {
+  const decision = mayReplaceHooksFromHub({
+    incoming: [hook({ id: "hub-1" })], current: [hook({ id: "local-1" })], hubOwned: false,
+  });
+  assert.equal(decision.allow, true);
+  assert.equal(decision.markOwned, true);
+});
+
+test("wiring refuses empty hub sync and leaves durable local hooks.json intact", () => {
+  const dir = tmp();
+  const local = hook({ id: "local-keep" });
+  assert.equal(saveHooks(dir, [local]), true);
+  const heard: string[] = [];
+  const wiring = attachHooks({ dataDir: dir, agentById: () => undefined } as unknown as Engine, {
+    log: m => heard.push(m),
+  });
+  assert.deepEqual(wiring.hooks().map(h => h.id), ["local-keep"]);
+  assert.equal(wiring.replace([]), false);
+  assert.deepEqual(wiring.hooks().map(h => h.id), ["local-keep"]);
+  assert.deepEqual(loadHooks(dir, () => {}).map(h => h.id), ["local-keep"]);
+  assert.equal(loadHooksHubOwned(dir), false);
+  assert.match(heard.join("\n"), /keeping local hooks/);
+});
+
+test("after hub claims the book, empty sync clears local hooks and writes the cutover mark", () => {
+  const dir = tmp();
+  const local = hook({ id: "local-then-clear" });
+  assert.equal(saveHooks(dir, [local]), true);
+  const wiring = attachHooks({ dataDir: dir, agentById: () => undefined } as unknown as Engine, {
+    log: () => {},
+  });
+  assert.equal(wiring.replace([hook({ id: "from-hub" })]), true);
+  assert.equal(loadHooksHubOwned(dir), true);
+  assert.ok(fs.existsSync(hooksHubOwnedPath(dir)));
+  assert.equal(wiring.replace([]), true);
+  assert.deepEqual(wiring.hooks(), []);
+  assert.deepEqual(loadHooks(dir, () => {}), []);
+  assert.equal(markHooksHubOwned(dir), true);
 });

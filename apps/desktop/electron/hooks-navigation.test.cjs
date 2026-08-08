@@ -29,3 +29,13 @@ test("Hooks keeps concurrent pending mutations and mirrors audit/delete pushes",
   assert.match(store, /case "hookAudit"/);
   assert.match(store, /auditLoading/);
 });
+
+test("askHooks list settle preserves the prior hooks bag via keepHooksBag", () => {
+  assert.match(store, /export function keepHooksBag/);
+  const askStart = store.indexOf("askHooks(): void");
+  const askEnd = store.indexOf("askHooksAudit(): void");
+  const body = store.slice(askStart, askEnd);
+  assert.match(body, /keepHooksBag\(this\.world\.hooks/);
+  assert.match(body, /\.\.\.this\.world\.hooks/);
+  assert.doesNotMatch(body, /this\.world\.hooks = \{ asked: true, list: f\.hooks \}/);
+});

@@ -393,9 +393,55 @@ function plainOutcome(outcome: RunOutcome): string {
 // automation failure a person cannot debug.
 
 export const HOOKS_FILE = "hooks.json";
+/** Marker written once the hub has successfully owned this machine's hook book. */
+export const HOOKS_HUB_OWNED_FILE = "hooks.hub-owned";
 
 export function hooksPath(dataDir: string): string {
   return path.join(dataDir, HOOKS_FILE);
+}
+
+export function hooksHubOwnedPath(dataDir: string): string {
+  return path.join(dataDir, HOOKS_HUB_OWNED_FILE);
+}
+
+/** Has the hub cut over as the owner of truth for this data dir? */
+export function loadHooksHubOwned(dataDir: string): boolean {
+  try { return fs.existsSync(hooksHubOwnedPath(dataDir)); }
+  catch { return false; }
+}
+
+/** Record that the hub now owns this book's truth. Failures are said, not thrown. */
+export function markHooksHubOwned(
+  dataDir: string, log: (m: string) => void = m => console.error(`[hooks] ${m}`),
+): boolean {
+  try {
+    fs.writeFileSync(hooksHubOwnedPath(dataDir), "1\n", "utf8");
+    return true;
+  } catch (err) {
+    log(`could not mark the hub as owner of the hooks book: ${String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * CLASS RULE: empty hub must not silently destroy durable local hooks until
+ * the hub has claimed this book. After cutover, empty is a real owner delete.
+ *
+ * Pure decision — the wiring applies it, the tests hold it.
+ */
+export function mayReplaceHooksFromHub(args: {
+  incoming: readonly Hook[];
+  current: readonly Hook[];
+  hubOwned: boolean;
+}): { allow: true; markOwned: true } | { allow: false; markOwned: false; reason: string } {
+  if (args.incoming.length === 0 && args.current.length > 0 && !args.hubOwned) {
+    return {
+      allow: false,
+      markOwned: false,
+      reason: "keeping local hooks — the hub has none and has never owned this book",
+    };
+  }
+  return { allow: true, markOwned: true };
 }
 
 export function newHookId(now = Date.now(), rand = Math.random): string {

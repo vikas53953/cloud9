@@ -17,7 +17,10 @@
 // There is no path here that does something an agent could not have done.
 import type { AgentDef, ID } from "@cloud9/shared";
 import type { Engine } from "./engine.js";
-import { HookBook, loadHooks, saveHooks, type Hook, type HookActions } from "./hooks.js";
+import {
+  HookBook, loadHooks, loadHooksHubOwned, markHooksHubOwned, mayReplaceHooksFromHub,
+  saveHooks, type Hook, type HookActions,
+} from "./hooks.js";
 import { MemoryNote, newMemoryId } from "./agent-memory.js";
 import { run, safeArg, shellQuote } from "./run.js";
 
@@ -51,15 +54,29 @@ export function attachHooks(engine: Engine, opts: {
 } = {}): HookWiring {
   const log = opts.log ?? ((m: string) => console.error(`[hooks] ${m}`));
   let hooks: Hook[] = loadHooks(engine.dataDir, log);
+  // Explicit cutover: until the hub has owned this book, an empty push must not
+  // silently destroy durable local rules that pre-date the relay editor.
+  let hubOwned = loadHooksHubOwned(engine.dataDir);
+
+  const applyReplace = (next: readonly Hook[]): boolean => {
+    const decision = mayReplaceHooksFromHub({ incoming: next, current: hooks, hubOwned });
+    if (!decision.allow) {
+      log(decision.reason);
+      return false;
+    }
+    if (!saveHooks(engine.dataDir, [...next], log)) return false;
+    hooks = [...next];
+    if (decision.markOwned && !hubOwned) {
+      hubOwned = true;
+      markHooksHubOwned(engine.dataDir, log);
+    }
+    return true;
+  };
 
   const book = new HookBook({
     hooks: () => hooks,
     agent: (id: ID) => engine.agentById(id),
-    replace(next) {
-      if (!saveHooks(engine.dataDir, [...next], log)) return false;
-      hooks = [...next];
-      return true;
-    },
+    replace: applyReplace,
     log,
     actions: engineActions(engine, log),
   });
@@ -83,11 +100,7 @@ export function attachHooks(engine: Engine, opts: {
       hooks = next;
       return true;
     },
-    replace(next) {
-      if (!saveHooks(engine.dataDir, [...next], log)) return false;
-      hooks = [...next];
-      return true;
-    },
+    replace: applyReplace,
   };
 }
 
