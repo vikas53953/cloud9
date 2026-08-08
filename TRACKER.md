@@ -7,8 +7,8 @@ Hooks editor is BUILDING on `feature/hooks-rules-editor` from `origin/master`
 existing event/action validation, durable SQLite/audit state, live engine sync,
 request correlation, accessible loading/error/test-result UI, and no
 shell/webhook credential fields are implemented. Stable source/test commit is
-`014a972`. Evidence: shared, engine, and relay builds pass; engine host 18/18
-and hooks 26/26; relay Hooks CRUD/receipt-limit/audit namespace 3/3; desktop typecheck and
+`6e27436`. Evidence: shared, engine, and relay builds pass; engine host 18/18
+and hooks 26/26; relay Hooks CRUD/action replacement/test replay/ledger retention 5/5; desktop typecheck and
 Hooks source 3/3; diff-check clean. Hook firing reports now carry a receipt id,
 are event-bound and deduplicated, successful actions audit as `dispatched`
 with `ok=false` because no relay acknowledgement protocol exists, note-save failures are refused, hook
@@ -38,8 +38,7 @@ This board was last verified against GitHub at **2026-08-08 01:34 +05:30** and `
 | Manual workflows | MERGED | `master` / PR #18 (`daf851f`) | Vikas Mittal | chatgpt-codex-connector | Re-read the merged plain manual-v1 list/builder slice without implying triggers, schedules, run history, or permissions. |
 | Persistent mentions-and-replies notification inbox | MERGED | `master` / PR #19 (`551b2f8`) | Vikas Mittal | chatgpt-codex-connector | Re-read the merged durable per-user mention/reply contract and later prove read/dismiss, source navigation, ownership, retention, mute/quiet/OS, and deleted/inaccessible states. |
 | Saved/Later message queue | MERGED | `master` / PR #28 (`9429c48`) | Vikas Mittal | unassigned | Re-read the merged per-user save/unsave contract and later prove persistence, auth isolation, source navigation, retention, and deleted/inaccessible handling; PR #17 remains audit/contract only. |
-| Hooks editor | BUILDING | `feature/hooks-rules-editor` / PR #27 (`ab25e85`) | Vikas Mittal | unassigned | Review owner-only create/list/edit/delete for existing hook events/actions with visible refusal/firing history. |
-| Saved-key provider parity | BUILDING | `feature/saved-key-provider-parity-current` / PR #30 (`fbe8a90`) | Vikas Mittal | unassigned | Preserve normal saved-key Claude behavior: capability-gated folders/connections, Cloud9 MCP tools, SDK streaming/live trace and session/run facts, owner Stop abort, credential isolation, and loud missing-final-output errors; focused source tests only, no package/install/app walk yet. |
+
 | Visible queue/fair concurrency | READY NEXT | unassigned / next PR | unassigned | unassigned | Expose queued/started/cancelled order and capacity in Activity without adding a timing foundation. |
 | Context compaction/remaining visibility | READY NEXT | unassigned / next PR | unassigned | unassigned | Show what was compacted and honest remaining-room state while preserving thread-first routing. |
 | Real SKILL/project skills | READY NEXT | unassigned / next PR | unassigned | unassigned | Add an explicit allow-list and on-demand loading with an owner security boundary; never read arbitrary folders silently. |
