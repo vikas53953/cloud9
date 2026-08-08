@@ -10,7 +10,7 @@ import {
   AgentDef, DEMO_REPLY_PREFIX, RunKind, SpendCapWhich, setMachineNames,
 } from "@cloud9/shared";
 import {
-  claudeToolsFor, deniedClaudeTools, grantedSupply, renderCapabilities, switchesNeedingSupply, Supply,
+  claudeToolsFor, deniedClaudeTools, grantedSupply, renderCapabilities, Supply,
 } from "./abilities.js";
 import { cloud9McpConfig, cloud9ToolNames, renderCloud9Tools } from "./cloud9tools.js";
 import type { OpenTurn } from "./toolbridge.js";
@@ -260,38 +260,13 @@ export class HarnessUnavailableError extends Error {
   }
 }
 
-/**
- * A SWITCH THIS WAY OF RUNNING THE AGENT CANNOT KEEP — so the turn did not run.
- *
- * THE TRAP THIS EXISTS TO CLOSE (gap 2, 2026-08-05). `SdkProvider` — the path
- * taken when the owner stores an API key instead of using the signed-in Claude
- * app — hardcoded `supply: {}` and passed no folders at all. So an owner could
- * switch on "Reach files outside its own folder", choose a folder, watch the
- * agent editor say "In use", and get an agent that silently could not reach it.
- * Today he is on the signed-in-app path, so nothing is lying to him yet; the
- * moment he pastes an API key it would be, and nothing would say so.
- *
- * WHY THE ANSWER IS "REFUSE" RATHER THAN "WIRE IT UP". The SDK really does have
- * an `additionalDirectories` option, so passing the folders was possible — and
- * it would have been the wrong thing to do. The command-line path does not carry
- * `--add-dir` on its own: it carries it alongside `--strict-mcp-config`,
- * `--disable-slash-commands` and `--setting-sources ""`, the flags
- * `claude-cli.ts` measured and that keep the OWNER'S own Claude Code setup — his
- * CLAUDE.md, his plugins, his hooks, his MCP servers, his slash commands — out
- * of his agents. This path has no equivalent of any of them, and it hands the
- * child `process.env` whole. Quietly widening an un-isolated agent from its own
- * folder to whatever folder the owner picked — his entire C: drive is an
- * explicitly offered choice, in `abilities.ts` — is the one direction we must
- * not take by accident. So it stops, and it says why in words he can act on.
- */
+/** A capability mix that a provider cannot safely honor; the turn did not run. */
 export class AbilityNotSupportedHereError extends Error {
   constructor(public readonly switches: readonly string[]) {
     super(`I did not run this because ${switches.join(", ")} ` +
-      `${switches.length === 1 ? "is" : "are"} switched on, and that only works when ` +
-      `Cloud9 is using the Claude app you are signed in to. This computer is running me ` +
-      `from a stored API key instead, and on that route I have no way to reach outside my ` +
-      `own folder — so rather than pretend, I stopped. Open Settings and sign in to Claude, ` +
-      `or switch that off.`);
+      `${switches.length === 1 ? "is" : "are"} switched on, and this provider cannot ` +
+      `honor that capability mix safely. Choose a provider that supports these switches, ` +
+      `or switch them off.`);
     this.name = "AbilityNotSupportedHereError";
   }
 }
@@ -865,88 +840,6 @@ function cloud9McpServer(doorway: OpenTurn): Record<string, unknown> {
   const parsed = JSON.parse(cloud9McpConfig(entry, doorway)) as Record<string, unknown>;
   const servers = parsed.mcpServers;
   return servers && typeof servers === "object" ? servers as Record<string, unknown> : {};
-}
-
-class LegacySdkProvider implements ClaudeProvider {
-  constructor(
-    private creds: SdkCredentials,
-    private agentDataDir: (agentId: string) => string,
-  ) {}
-
-  async respond(input: RespondInput): Promise<string> {
-    const { agent, workdir } = input;
-    // A SWITCH THIS PATH CANNOT KEEP STOPS THE TURN, BEFORE ANYTHING RUNS.
-    //
-    // This path supplies no folders and no connections file, so every switch
-    // that needs one is inert here — and inert is invisible from the editor,
-    // which reads the switch and says "In use". Refusing is the only answer
-    // that cannot become a lie: the owner is told, in his own words, that this
-    // is the stored-API-key route and the switch needs the signed-in app.
-    //
-    // It is asked from the TABLE, so it covers `connections` as well as
-    // `wholeComputer` and covers the next such row the day it is written.
-    const cannotKeep = switchesNeedingSupply(agent);
-    if (cannotKeep.length > 0) {
-      throw new AbilityNotSupportedHereError(cannotKeep.map(c => `“${c.label}”`));
-    }
-    // Lazy import so mock mode never loads the SDK.
-    const { query } = await import("@anthropic-ai/claude-agent-sdk");
-    // the same table the CLI path and the prompt read — no third copy
-    const allowedTools = claudeToolsFor(agent);
-
-    const env: Record<string, string> = { ...process.env } as Record<string, string>;
-    if (this.creds.apiKey) env.ANTHROPIC_API_KEY = this.creds.apiKey;
-    if (this.creds.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = this.creds.oauthToken;
-
-    // THE WHOLE BRIEF, not just the conversation. This path supplies neither
-    // `--add-dir` nor an MCP config and hands out no Cloud9 tool, so the supply
-    // it declares is empty — and the prompt says so instead of promising them.
-    //
-    // Empty is now also PROVABLY empty rather than merely written empty: any
-    // switch that would have needed something in here has already stopped the
-    // turn above. What is left is the set of switches this path can genuinely
-    // keep, and `supply: {}` is the truth about them.
-    //
-    // CUT IN TWO HERE TOO (gap A). The SDK's own options carry
-    // `systemPrompt: { type: "preset", preset: "claude_code", append }` — the
-    // exact twin of the command line's `--append-system-prompt`, and it was read
-    // off the installed SDK's types rather than remembered. APPEND, never
-    // replace: replacing Claude Code's preset would take the harness's own
-    // tool-use instructions away with it, which is a much bigger change than
-    // anybody asked for.
-    const parts = splitAgentPrompt(agent, { ...input, supply: {}, cloud9Tools: false });
-
-    let result = "";
-    for await (const message of query({
-      prompt: parts.turn,
-      options: {
-        model: agent.model,
-        systemPrompt: { type: "preset", preset: "claude_code", append: parts.standing },
-        // NO THINKING-TIME DIAL ON THIS ROUTE, AND IT IS NOT FAKED (gap B).
-        // The installed Claude Agent SDK's options were read in full: there is
-        // no effort field of any kind on them. `effortSupportedBy("sdk")` in
-        // @cloud9/shared says so in one place, so a screen can tell the truth
-        // about this route instead of this file quietly dropping the setting.
-        allowedTools,
-        // derived from the same table, so the SDK path denies exactly what the
-        // command-line path denies — never a shorter hand-written list
-        disallowedTools: deniedClaudeTools(agent),
-        permissionMode: "dontAsk",
-        // No max-turns cap: a stored-key turn runs until the SDK finishes or
-        // the owner stops it, just like the signed-in Claude route.
-        // the agent's own worktree when it is working in a repository, its own
-        // folder otherwise — never anywhere else, and never the app's folder
-        cwd: workdir ?? this.agentDataDir(agent.id),
-        env,
-      },
-    })) {
-      if (message.type === "result" && message.subtype === "success") {
-        result = message.result;
-      }
-    }
-    if (!result) throw new ProviderOutputMissingError();
-    return result;
-  }
 }
 
 /** Stored-key Claude Agent SDK route without a turn-count/no-response trap. */
