@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cloud9 — Where we are (2026-08-08)</title>
+<style>
+  :root {
+    --ink: #16232e;
+    --muted: #5a6b7a;
+    --line: #d8e0e8;
+    --bg: #f6f8fa;
+    --card: #fff;
+    --accent: #2c7fc4;
+    --good: #1e7d4f;
+    --good-bg: #e3f3ea;
+    --warn: #9a6b12;
+    --warn-bg: #fbf0d6;
+    --build: #1a5f9e;
+    --build-bg: #e3f0fb;
+    --block: #8a3a3a;
+    --block-bg: #fbe7e7;
+    --next: #5a4a8a;
+    --next-bg: #eeeaf8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 16px/1.55 system-ui, Segoe UI, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+  }
+  header {
+    background: linear-gradient(135deg, #0f2a3d 0%, #1a4a6e 55%, #2c7fc4 100%);
+    color: #fff;
+    padding: 2rem 1.5rem 1.6rem;
+  }
+  header h1 { margin: 0 0 .35rem; font-size: 1.65rem; font-weight: 700; }
+  header p { margin: 0; opacity: .9; max-width: 52rem; }
+  .meta { margin-top: .85rem; font-size: .9rem; opacity: .8; }
+  main { max-width: 960px; margin: 0 auto; padding: 1.25rem 1rem 5rem; }
+  section {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 1.1rem 1.2rem 1.2rem;
+    margin-bottom: 1rem;
+  }
+  h2 { margin: 0 0 .7rem; font-size: 1.15rem; }
+  h3 { margin: 1rem 0 .4rem; font-size: 1rem; color: var(--muted); font-weight: 600; }
+  p, li { color: var(--ink); }
+  .lead { font-size: 1.05rem; margin: 0 0 .6rem; }
+  .muted { color: var(--muted); }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: .7rem;
+    margin: .8rem 0 0;
+  }
+  .stat {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: .75rem .85rem;
+    background: #fafcfe;
+  }
+  .stat b { display: block; font-size: 1.35rem; line-height: 1.2; }
+  .stat span { font-size: .85rem; color: var(--muted); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .92rem;
+  }
+  th, td {
+    text-align: left;
+    padding: .55rem .45rem;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  th { color: var(--muted); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .02em; }
+  .pill {
+    display: inline-block;
+    font: 600 .75rem/1 system-ui, sans-serif;
+    padding: .28rem .55rem;
+    border-radius: 99px;
+    white-space: nowrap;
+  }
+  .pill.merged { background: var(--good-bg); color: var(--good); }
+  .pill.building { background: var(--build-bg); color: var(--build); }
+  .pill.next { background: var(--next-bg); color: var(--next); }
+  .pill.blocked { background: var(--block-bg); color: var(--block); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.done { background: var(--good-bg); color: var(--good); }
+  .pill.part { background: var(--warn-bg); color: var(--warn); }
+  .map {
+    display: grid;
+    gap: .55rem;
+    margin-top: .5rem;
+  }
+  .map-row {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: .75rem;
+    align-items: start;
+    padding: .65rem .7rem;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fafcfe;
+  }
+  .map-row strong { font-size: .92rem; }
+  .map-row span { font-size: .9rem; color: var(--muted); }
+  ul.clean { margin: .35rem 0 0; padding-left: 1.15rem; }
+  ul.clean li { margin: .25rem 0; }
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: #eef6fc;
+    padding: .75rem .9rem;
+    border-radius: 0 10px 10px 0;
+    margin: .7rem 0 0;
+  }
+  .warnbox {
+    border-left: 4px solid var(--warn);
+    background: var(--warn-bg);
+    padding: .75rem .9rem;
+    border-radius: 0 10px 10px 0;
+    margin: .7rem 0 0;
+  }
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: .85rem;
+    padding: 1rem;
+  }
+  a { color: var(--accent); }
+  @media (max-width: 640px) {
+    .map-row { grid-template-columns: 1fr; gap: .25rem; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cloud9 — where we are</h1>
+  <p>Plain-language snapshot of the product, the code, and what is open. Built from the repo, <code>TRACKER.md</code>, and live GitHub PRs — not from memory.</p>
+  <div class="meta">Checked 2026-08-08 · master at <code>f555ed1</code> · board last stamped 2026-08-08 01:34</div>
+</header>
+
+<main>
+
+<section data-fb="One sentence">
+  <h2>One sentence</h2>
+  <p class="lead"><strong>Cloud9 is a working Windows chat app where you and AI agents (and friends) share rooms.</strong> Agents run on the real Claude Code / Codex tools on your PC. The core chat product is solid and installable. A large “make agents more like Claude Code” push is partly built; a second wave of Buzz-style team surfaces sits in open pull requests waiting for review.</p>
+</section>
+
+<section data-fb="What the product is">
+  <h2>What the product is</h2>
+  <p>Chat with your crew — friends and AI agents in the same channels. Create agents with personalities and abilities, put them in rooms, reach them fast, and get work done on your machine.</p>
+  <div class="map">
+    <div class="map-row">
+      <strong>Hub (relay)</strong>
+      <span>The post office. Holds people, channels, messages, jobs. Always on inside the app. Lives in <code>apps/relay</code>.</span>
+    </div>
+    <div class="map-row">
+      <strong>Engine</strong>
+      <span>Runs each agent turn by starting the real Claude or Codex program on your PC. Lives in <code>packages/engine</code>.</span>
+    </div>
+    <div class="map-row">
+      <strong>Desktop app</strong>
+      <span>What you look at and click. Electron + React. Lives in <code>apps/desktop</code>. Installer: <code>release/Cloud9-Setup-0.1.0.exe</code>.</span>
+    </div>
+    <div class="map-row">
+      <strong>Shared dictionary</strong>
+      <span>Message shapes both sides speak. Lives in <code>packages/shared</code>.</span>
+    </div>
+    <div class="map-row">
+      <strong>Phone app</strong>
+      <span>Early Expo shell only — not a real product yet. Lives in <code>apps/mobile</code>.</span>
+    </div>
+  </div>
+  <div class="callout">
+    <strong>How you run it:</strong> double-click <code>Install Cloud9.cmd</code> for the real app, or <code>Start Cloud9.cmd</code> when changing code.
+  </div>
+</section>
+
+<section data-fb="How mature is it">
+  <h2>How mature is it?</h2>
+  <div class="grid">
+    <div class="stat">
+      <b>v0.1.0</b>
+      <span>Version on master</span>
+    </div>
+    <div class="stat">
+      <b>Desktop first</b>
+      <span>Windows installer ships</span>
+    </div>
+    <div class="stat">
+      <b>~1,600+</b>
+      <span>Unit tests in the suite (last full green-ish run Aug 6)</span>
+    </div>
+    <div class="stat">
+      <b>9 open PRs</b>
+      <span>Features waiting on review</span>
+    </div>
+  </div>
+  <p class="muted" style="margin-top:.9rem;margin-bottom:0">This is a real usable desktop product for you + a few friends — not a sketch. Phone, public sharing, and some “agentic” depth still have gaps.</p>
+</section>
+
+<section data-fb="What already works">
+  <h2>What already works on master</h2>
+  <p>These are in the main branch (merged). Some still need a fresh install walk to prove they feel right on your machine.</p>
+  <table>
+    <thead>
+      <tr><th>Area</th><th>Status</th><th>In plain words</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Chat + channels + agents</td>
+        <td><span class="pill merged">MERGED</span></td>
+        <td>Core product from the first overnight build</td>
+      </tr>
+      <tr>
+        <td>Sign-in with Claude / Codex</td>
+        <td><span class="pill done">DONE</span></td>
+        <td>Uses tools already on your PC; greyed-out bug was fixed and walked</td>
+      </tr>
+      <tr>
+        <td>Threads (drag to resize)</td>
+        <td><span class="pill merged">PR #14</span></td>
+        <td>Pull the thread edge like Slack; measured and installed once</td>
+      </tr>
+      <tr>
+        <td>Remove agent clocks</td>
+        <td><span class="pill merged">PR #13</span></td>
+        <td>“Agents are employees” — turn ends when done, failed, or Stop</td>
+      </tr>
+      <tr>
+        <td>Activity board + spending</td>
+        <td><span class="pill merged">PR #9/#10</span></td>
+        <td>What agents are doing now, and what they cost</td>
+      </tr>
+      <tr>
+        <td>Search everywhere</td>
+        <td><span class="pill done">DONE</span></td>
+        <td>Find messages across the hub</td>
+      </tr>
+      <tr>
+        <td>Shared Files workspace</td>
+        <td><span class="pill done">DONE</span></td>
+        <td>Project files agents and people can use</td>
+      </tr>
+      <tr>
+        <td>Notifications (mentions/replies inbox)</td>
+        <td><span class="pill merged">PR #19</span></td>
+        <td>Durable per-person inbox for mentions and replies</td>
+      </tr>
+      <tr>
+        <td>Saved / Later queue</td>
+        <td><span class="pill merged">PR #28</span></td>
+        <td>Save a message for later with optional note/reminder metadata</td>
+      </tr>
+      <tr>
+        <td>Manual workflows</td>
+        <td><span class="pill merged">PR #18</span></td>
+        <td>Owner-only runbooks: list, build steps, run, retry — no schedules yet</td>
+      </tr>
+      <tr>
+        <td>Smooth chat + receipts</td>
+        <td><span class="pill done">DONE</span></td>
+        <td>Less redraw thrash; work emoji receipts</td>
+      </tr>
+      <tr>
+        <td>Harness inventory vs Claude Code</td>
+        <td><span class="pill done">DONE</span></td>
+        <td>Report published: Cloud9 drives Claude Code; gaps are documented</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section data-fb="Your open asks">
+  <h2>Your open asks (from ASKS.md)</h2>
+  <table>
+    <thead>
+      <tr><th>#</th><th>What you said</th><th>Where it is</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>14 / 11</td>
+        <td>“Make Cloud9 fully agentic” (prompt, skills, tools, memory, hooks…)</td>
+        <td><span class="pill part">PART DONE / BUILDING</span> — several harness pieces built under the hood; not all proven on your screen</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>GitHub round 2</td>
+        <td><span class="pill next">NOT STARTED</span> — waiting on your feedback after round 1</td>
+      </tr>
+      <tr>
+        <td>1</td>
+        <td>Tailscale so friends can connect</td>
+        <td><span class="pill blocked">BLOCKED ON YOU</span> — ~10 minutes in your browser</td>
+      </tr>
+      <tr>
+        <td>12</td>
+        <td>Security holes found for you</td>
+        <td><span class="pill part">PART DONE</span> — invited friend can still read whole activity log; no DB backup before migrations</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="warnbox">
+    <strong>Biggest product truth from the harness report:</strong> Cloud9 does not have its own agent brain — it starts the real Claude Code / Codex on your machine. Most power is already there. Gaps are what Cloud9 turns off, never shows, or routes through a weaker “saved API key” path.
+  </div>
+</section>
+
+<section data-fb="Open PRs">
+  <h2>Open pull requests right now (9)</h2>
+  <p class="muted">Live from GitHub as of this check. Review process: one agent builds, a different agent reviews, nobody merges their own work.</p>
+  <table>
+    <thead>
+      <tr><th>PR</th><th>What</th><th>Board status</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><a href="https://github.com/vikas53953/cloud9/pull/30">#30</a></td>
+        <td>Restore saved-key Claude path parity (Stop, tools, honest outcomes)</td>
+        <td><span class="pill next">READY / OPEN</span></td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/vikas53953/cloud9/pull/27">#27</a></td>
+        <td>Hooks / rules editor (screen to write rules the engine already has)</td>
+        <td><span class="pill building">BUILDING</span></td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/vikas53953/cloud9/pull/26">#26</a></td>
+        <td>Engineering Canvas</td>
+        <td><span class="pill building">BUILDING</span></td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/vikas53953/cloud9/pull/25">#25</a></td>
+        <td>Public project updates (with your approval, not auto-post)</td>
+        <td><span class="pill building">BUILDING</span></td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/vikas53953/cloud9/pull/24">#24</a></td>
+        <td>Huddle presence + shared notes (no audio/video in v1)</td>
+        <td><span class="pill building">BUILDING</span></td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/vikas53953/cloud9/pull/23">#23</a></td>
+        <td>Project forums / decision threads</td>
+        <td><span class="pill building">BUILDING</span></td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/vikas53953/cloud9/pull/22">#22</a></td>
+        <td>Project polls</td>
+        <td><span class="pill building">BUILDING</span></td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/vikas53953/cloud9/pull/21">#21</a></td>
+        <td>Engineering Pulse</td>
+        <td><span class="pill building">BUILDING</span></td>
+      </tr>
+      <tr>
+        <td><a href="https://github.com/vikas53953/cloud9/pull/20">#20</a></td>
+        <td>Internal team social feed</td>
+        <td><span class="pill building">BUILDING</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="muted" style="margin-bottom:0">PRs #20–#26 look like a Buzz-inspired “team engineering surfaces” wave (Pulse, feed, polls, forums, canvas, huddle, public updates). #27 and #30 close harness gaps you would feel day to day.</p>
+</section>
+
+<section data-fb="Ready next harness">
+  <h2>Queued next (not started as PRs yet)</h2>
+  <p>From the live delivery board — these close more of “fully agentic”:</p>
+  <ul class="clean">
+    <li><strong>Saved-key provider parity</strong> — API-key path should not be a weaker dead end (also open as PR #30)</li>
+    <li><strong>Visible queue / fair concurrency</strong> — show “waiting its turn” on Activity without inventing clocks</li>
+    <li><strong>Context compaction visibility</strong> — show what was dropped and how much room remains</li>
+    <li><strong>Real skills loading</strong> — load on demand with an allow-list; never read random folders silently</li>
+    <li><strong>Richer handoff context</strong> — memory / run / file pointers with ownership checks</li>
+    <li><strong>Verification runner status</strong> — run a check recipe and show checked / could-not-check / mismatch</li>
+  </ul>
+</section>
+
+<section data-fb="Known gaps">
+  <h2>Known gaps and rough edges (honest)</h2>
+  <ul class="clean">
+    <li><strong>Codex agents cannot get a spend cap</strong> — only Claude reports cost per turn today.</li>
+    <li><strong>Saved API-key route is weaker</strong> than “use the tools on my PC” — Stop, live view, and Cloud9 tools can break or cap oddly. PR #30 is about this.</li>
+    <li><strong>Hooks engine exists without a finished screen</strong> — PR #27 is the editor.</li>
+    <li><strong>Ordinary chat turns do not show “queued”</strong> on Activity yet — engine holds extras in memory, board is never told.</li>
+    <li><strong>Phone app is a scaffold</strong> — not ready for daily use.</li>
+    <li><strong>Friends connecting over the internet</strong> still needs your Tailscale sign-in.</li>
+    <li><strong>Some “built” harness pieces</strong> (memory notes, stop button, verification, own hooks) were marked built-but-unproven; trust the install walk, not the flag.</li>
+  </ul>
+</section>
+
+<section data-fb="How work is run">
+  <h2>How work is run here</h2>
+  <ul class="clean">
+    <li><strong>Single board:</strong> <code>TRACKER.md</code> wins if anything disagrees.</li>
+    <li><strong>Your words, never renamed</strong> — rows and PR titles keep your phrasing.</li>
+    <li><strong>One agent per issue · different agent reviews · nobody merges their own work.</strong></li>
+    <li><strong>References first:</strong> harness → Claude Code/Codex; chat UI → Slack; other product ideas → Buzz (installed on this machine).</li>
+    <li><strong>Evidence chain:</strong> build → tests → browser QA → installer → install check → walk the real installed app.</li>
+  </ul>
+</section>
+
+<section data-fb="Where to look">
+  <h2>Where to look in the repo</h2>
+  <div class="map">
+    <div class="map-row">
+      <strong>TRACKER.md</strong>
+      <span>Live status board — start here every session</span>
+    </div>
+    <div class="map-row">
+      <strong>ASKS.md</strong>
+      <span>What you asked for, in your words, with proof status</span>
+    </div>
+    <div class="map-row">
+      <strong>HANDOFF-SOL.md</strong>
+      <span>Conductor handoff when Claude quota ran out (Aug 7)</span>
+    </div>
+    <div class="map-row">
+      <strong>docs/USER-GUIDE.md</strong>
+      <span>Plain-words guide of what works today</span>
+    </div>
+    <div class="map-row">
+      <strong>docs/harness-vs-claude-code.html</strong>
+      <span>What Cloud9 has vs Claude Code (you already read this)</span>
+    </div>
+    <div class="map-row">
+      <strong>docs/buzz-vs-cloud9-2026-08-07.html</strong>
+      <span>Buzz vs Cloud9 feature audit</span>
+    </div>
+  </div>
+</section>
+
+<section data-fb="Recommended next">
+  <h2>Recommended next focus</h2>
+  <p class="lead">If you want the product to feel more “agentic” day to day (not more social surfaces), finish the harness gaps first:</p>
+  <ol>
+    <li><strong>PR #30</strong> — fix the weak saved-key path so Stop and tools work the same way everywhere.</li>
+    <li><strong>PR #27</strong> — give you a screen to write hooks/rules the engine already supports.</li>
+    <li><strong>Visible queue</strong> — so Activity tells the truth when an agent is holding work.</li>
+  </ol>
+  <p class="muted" style="margin-bottom:0">PRs #20–#26 (Pulse, feed, polls, forums, canvas, huddle, public updates) are a separate product bet — closer to Buzz’s team surfaces. Worth reviewing only if that is the direction you want next.</p>
+  <div class="callout">
+    <strong>My recommendation:</strong> harness truth (#30, #27, queue visibility) before Buzz surfaces. You feel broken agent paths every day; social surfaces are optional until agents are trustworthy.
+  </div>
+</section>
+
+</main>
+
+<footer>
+  Snapshot for review · master <code>f555ed1</code> · open in browser · use 👍 / 👎 / 💬 on each block · Copy my feedback
+</footer>
+
+<script>
+/* ============================================================
+   Vikas review kit — feedback layer for every HTML review page.
+   Paste this <script> at the end of any artifact I hand him.
+
+   What it gives him:
+     - click any section marked data-fb="<label>" to attach a note
+     - thumbs up / down per section
+     - a floating panel listing everything he has said
+     - ONE button that copies it all as plain text to paste back
+
+   Why it exists: published artifacts cannot send data back into a
+   Claude session (no such capability). This turns "read a wall and
+   retype your thoughts" into "click, type, copy once".
+
+   Usage:
+     1. mark reviewable blocks:  <section data-fb="Option A — Slack True">
+     2. include this script once, at the end of the page.
+   ============================================================ */
+(function () {
+  "use strict";
+  var STORE = "vikas-fb-" + (document.title || location.pathname);
+  var notes = {};
+  try { notes = JSON.parse(localStorage.getItem(STORE) || "{}"); } catch (e) { notes = {}; }
+
+  function save() { try { localStorage.setItem(STORE, JSON.stringify(notes)); } catch (e) {} }
+
+  var css = document.createElement("style");
+  css.textContent = [
+    ':root{--fb-ink:#16232e;--fb-bg:#fff;--fb-line:#d8e0e8;--fb-accent:#2c7fc4;',
+    '--fb-yes:#1e7d4f;--fb-yes-bg:#e3f3ea;--fb-no:#b03535;--fb-no-bg:#fbe7e7;--fb-muted:#5a6b7a;}',
+    '@media (prefers-color-scheme:dark){:root{--fb-ink:#e6edf3;--fb-bg:#18232e;--fb-line:#2f3d4a;',
+    '--fb-accent:#5aa5dd;--fb-yes:#5cc78f;--fb-yes-bg:#14372a;--fb-no:#e07a7a;--fb-no-bg:#3d1d1d;--fb-muted:#93a4b3;}}',
+    '[data-fb]{position:relative;}',
+    '[data-fb].fb-has{outline:2px solid var(--fb-accent);outline-offset:3px;border-radius:8px;}',
+    '.fb-tools{position:absolute;top:.4rem;right:.4rem;display:flex;gap:.25rem;opacity:.45;',
+    'transition:opacity .15s;z-index:5;}',
+    '[data-fb]:hover .fb-tools,[data-fb]:focus-within .fb-tools{opacity:1;}',
+    '@media (prefers-reduced-motion:reduce){.fb-tools{transition:none;}}',
+    '.fb-tools button{font:600 .78rem/1 system-ui,sans-serif;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);border-radius:99px;padding:.3rem .6rem;cursor:pointer;}',
+    '.fb-tools button:hover{border-color:var(--fb-accent);color:var(--fb-accent);}',
+    '.fb-tools button.on-yes{background:var(--fb-yes-bg);color:var(--fb-yes);border-color:var(--fb-yes);}',
+    '.fb-tools button.on-no{background:var(--fb-no-bg);color:var(--fb-no);border-color:var(--fb-no);}',
+    '.fb-note{margin-top:.6rem;width:100%;box-sizing:border-box;font:.92rem/1.5 system-ui,sans-serif;',
+    'color:var(--fb-ink);background:var(--fb-bg);border:1px dashed var(--fb-line);border-radius:8px;',
+    'padding:.55rem .7rem;resize:vertical;min-height:2.6rem;}',
+    '.fb-note:focus{outline:2px solid var(--fb-accent);outline-offset:1px;border-style:solid;}',
+    '.fb-bar{position:fixed;right:1rem;bottom:1rem;z-index:9999;display:flex;flex-direction:column;',
+    'align-items:flex-end;gap:.5rem;font:14px/1.5 system-ui,sans-serif;}',
+    '.fb-bar button{cursor:pointer;border-radius:99px;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);padding:.55rem 1rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.14);}',
+    '.fb-bar .fb-copy{background:var(--fb-accent);color:#fff;border-color:transparent;}',
+    '.fb-panel{background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;',
+    'padding:.9rem 1rem;max-width:min(380px,90vw);max-height:50vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.2);display:none;}',
+    '.fb-panel.open{display:block;}',
+    '.fb-panel h4{margin:0 0 .5rem;font-size:.95rem;}',
+    '.fb-panel li{margin-bottom:.5rem;font-size:.88rem;}',
+    '.fb-panel .lbl{font-weight:600;}',
+    '.fb-empty{color:var(--fb-muted);font-size:.88rem;margin:0;}',
+    '@media print{.fb-bar,.fb-tools{display:none;}}'
+  ].join("");
+  document.head.appendChild(css);
+
+  var bar = document.createElement("div");
+  bar.className = "fb-bar";
+  var panel = document.createElement("div");
+  panel.className = "fb-panel";
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  var copy = document.createElement("button");
+  copy.type = "button"; copy.className = "fb-copy"; copy.textContent = "📋 Copy my feedback";
+  bar.appendChild(panel); bar.appendChild(toggle); bar.appendChild(copy);
+  document.body.appendChild(bar);
+
+  var blocks = [].slice.call(document.querySelectorAll("[data-fb]"));
+
+  if (!blocks.length) {
+    var solo = document.createElement("div");
+    solo.setAttribute("data-fb", document.title || "this page");
+    solo.setAttribute("data-fb-solo", "");
+    solo.style.cssText = "position:fixed;left:1rem;bottom:1rem;z-index:9998;width:min(320px,80vw);" +
+      "background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;" +
+      "padding:2.2rem .8rem .8rem;box-shadow:0 8px 30px rgba(0,0,0,.2);font:14px/1.5 system-ui,sans-serif;";
+    var cap = document.createElement("div");
+    cap.textContent = "Notes on this page";
+    cap.style.cssText = "font-weight:600;font-size:.85rem;margin-bottom:.3rem;";
+    solo.appendChild(cap);
+    document.body.appendChild(solo);
+    blocks = [solo];
+  }
+  blocks.forEach(function (el) {
+    var key = el.getAttribute("data-fb");
+    if (!notes[key]) notes[key] = { verdict: "", text: "" };
+
+    var tools = document.createElement("div");
+    tools.className = "fb-tools";
+    var yes = document.createElement("button");
+    yes.type = "button"; yes.textContent = "👍 like"; yes.title = "I like this";
+    var no = document.createElement("button");
+    no.type = "button"; no.textContent = "👎 no"; no.title = "Not this";
+    var add = document.createElement("button");
+    add.type = "button"; add.textContent = "💬 note"; add.title = "Write a note";
+    tools.appendChild(yes); tools.appendChild(no); tools.appendChild(add);
+    el.appendChild(tools);
+
+    var note = document.createElement("textarea");
+    note.className = "fb-note";
+    note.placeholder = "Your note on “" + key + "”…";
+    note.value = notes[key].text || "";
+    var solo = el.hasAttribute("data-fb-solo");
+    note.style.display = notes[key].text || solo ? "block" : "none";
+    el.appendChild(note);
+
+    function paint() {
+      yes.className = notes[key].verdict === "yes" ? "on-yes" : "";
+      no.className = notes[key].verdict === "no" ? "on-no" : "";
+      el.classList.toggle("fb-has", !!(notes[key].verdict || notes[key].text));
+      render();
+    }
+    yes.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "yes" ? "" : "yes"; save(); paint();
+    });
+    no.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "no" ? "" : "no"; save(); paint();
+    });
+    add.addEventListener("click", function () {
+      note.style.display = "block"; note.focus();
+    });
+    note.addEventListener("input", function () {
+      notes[key].text = note.value.trim(); save(); paint();
+    });
+    paint();
+  });
+
+  function collected() {
+    return Object.keys(notes)
+      .filter(function (k) { return notes[k].verdict || notes[k].text; })
+      .map(function (k) { return { key: k, v: notes[k].verdict, t: notes[k].text }; });
+  }
+
+  function asText() {
+    var items = collected();
+    if (!items.length) return "";
+    var out = ["FEEDBACK ON: " + (document.title || "this page"), ""];
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "LIKE" : i.v === "no" ? "NO" : "NOTE";
+      out.push("- [" + mark + "] " + i.key + (i.t ? " — " + i.t : ""));
+    });
+    return out.join("\n");
+  }
+
+  function render() {
+    var items = collected();
+    toggle.textContent = items.length ? "🗒 " + items.length + " marked" : "🗒 no marks yet";
+    if (!items.length) { panel.innerHTML = '<p class="fb-empty">Hover any section, then use 👍 / 👎 / 💬.</p>'; return; }
+    var html = "<h4>What you've said</h4><ul>";
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "👍" : i.v === "no" ? "👎" : "💬";
+      html += '<li>' + mark + ' <span class="lbl">' + escapeHtml(i.key) + "</span>" +
+        (i.t ? " — " + escapeHtml(i.t) : "") + "</li>";
+    });
+    panel.innerHTML = html + "</ul>";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  toggle.addEventListener("click", function () { panel.classList.toggle("open"); });
+  copy.addEventListener("click", function () {
+    var text = asText();
+    if (!text) { copy.textContent = "nothing marked yet"; setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 1600); return; }
+    var done = function () {
+      copy.textContent = "✅ copied — paste it to Claude";
+      setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 2600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { window.prompt("Copy this:", text); }
+      document.body.removeChild(ta);
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

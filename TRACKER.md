@@ -255,21 +255,58 @@ The complete visual program map is [`docs/buzz-important-functions-2026-08-07.ht
 
 ## 3. THE PROCESS — how work is done
 
+**Law locked 2026-08-08** (Vikas approved). Visual: `docs/gates/pipeline-loop-2026-08-08.html`.
+This is a **pure agentic loop**. The main agent is the **Conductor** (orchestrator).
+Author and reviewer are always **different** agents. Builder never reviews own work.
+You (Vikas) name the ask and settle escalations — you do not sit every review round.
+
+### The room
+
+| Role | Does |
+|---|---|
+| **Conductor** | Spawns one agent per free role; relays author↔reviewer; keeps this board honest; escalates after 2 reject rounds; never builds and reviews the same work |
+| **Author** | Writes the plan, or builds on one branch · one issue |
+| **Reviewer** | Different agent · finds what is wrong · verdict only: Blockers / Out of scope / Agree |
+| **You** | Name the ask · settle escalations · approve direction when brought a clean page |
+
 ```
-his ask  →  a row here  →  ONE agent, ONE issue, its OWN branch
-         →  PR (never straight to master)
-         →  ADVERSARIAL review by a DIFFERENT agent  (find what is wrong, not approve)
-         →  implement the feedback
-         →  review AGAIN
-         →  merge
+0  ASK
+   you name it → board row (your words) → conductor assigns author + reviewer
+
+1  PLAN  (cheap · no product code)
+   Author writes plan  ⇄  Reviewer attacks it
+   verdict: Blockers | Out of scope | Agree
+   max 2 reject rounds → conductor escalates
+   Big work only: light program design (files · signatures · test names · least confident)
+   Optional when fuzzy: brainstorm / grill / throwaway prototype (never ships)
+   Compact decisions to docs before leaving the stage
+   ↓ only when plan AGREED
+
+2  BUILD  (expensive · vertical slices)
+   Author: own branch → thin end-to-end slices (not all-backend-then-UI)
+   ⇄ Reviewer per slice/PR (never the builder)
+   same verdict shape · max 2 rejects → escalate
+   Logic prefers TDD; screens need install walk when visual
+   If “branch broke X”: control-check master first
+   Compact status to docs after every slice
+   ↓ builder + reviewer AGREE
+
+3  MERGE
+   only after agreement · nobody merges their own work · board gets real evidence
 ```
 
+### Standing laws
+
 - **Nobody merges their own work.** Ever.
+- **Nobody reviews their own work.** Ever.
 - The reviewer is briefed to REJECT. Approving wrongly costs Vikas another
   round on a complaint he has already made; rejecting wrongly costs one
   iteration. Err toward rejecting.
 - A row is created the moment he asks — before any code, never at delivery.
 - A commit cannot close a row. Only a finished evidence run can.
+- **One artifact per stage** — reviewer judges only that plan file or PR.
+- **Dex upgrades inside this loop** (not a second pipeline): vertical slices,
+  light program design for big work, compact to docs at stage/slice boundaries.
 
 ## 4. HOW TO REPORT AND UPDATE
 
