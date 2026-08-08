@@ -1714,6 +1714,17 @@ export interface ProjectItem {
   updatedAt: number;
 }
 
+// ---------- huddle presence and shared notes (v1: no audio/video) ----------
+export type HuddleState = "active" | "ended";
+export type HuddleNoteKind = "note" | "decision" | "action";
+export interface HuddleLink { kind: "task"|"run"|"artifact"|"projectItem"; id?: ID; artifactId?: ID; projectItemKind?: ProjectItemKind; projectItemNumber?: number; label?: string; available?: boolean; }
+export interface HuddleParticipant { id: ID; name: string; kind: "human"|"agent"; joinedAt: number; leftAt?: number; present: boolean; }
+export interface HuddleSession { id: ID; projectId: ID; channelId?: ID; title: string; agenda: string; ownerId: ID; state: HuddleState; startedAt: number; endedAt?: number; participants: HuddleParticipant[]; unread: number; }
+export interface HuddleNote { id: ID; sessionId: ID; kind: HuddleNoteKind; body: string; authorId: ID; authorName: string; authorKind: "human"|"agent"; createdAt: number; links: HuddleLink[]; deletedAt?: number; }
+export interface HuddleReadEntry { sessionId: ID; lastReadAt: number; unread: number; }
+export const HUDDLE_LIMITS = { title: 160, agenda: 4000, note: 12000, links: 20 } as const;
+export function validateHuddleText(value: unknown, what: "title"|"agenda"|"note"): string|null { if(typeof value!=="string"||!value.trim())return `${what} cannot be empty`; if(value.length>HUDDLE_LIMITS[what])return `${what} is too long`; return null; }
+export function validateHuddleLinks(value: unknown): string|null { if(!Array.isArray(value)||value.length>HUDDLE_LIMITS.links)return "too many huddle links"; for(const l of value as HuddleLink[]){if(!l||!["task","run","artifact","projectItem"].includes(l.kind))return "invalid huddle link"; if(l.label!==undefined&&(typeof l.label!=="string"||!l.label.trim()||l.label.length>240))return "invalid huddle link label"; if((l.kind==="task"||l.kind==="run")&&!l.id)return "invalid huddle link id"; if(l.kind==="artifact"&&!((l.artifactId??l.id)))return "invalid artifact link id"; if(l.kind==="projectItem"&&(!["pull","issue"].includes(l.projectItemKind??"")||!Number.isSafeInteger(l.projectItemNumber)||l.projectItemNumber! <= 0))return "invalid project item link";} return null; }
 // ---------- internal team social feed ----------
 //
 // A project feed is deliberately separate from channel messages. It is a
@@ -3603,6 +3614,19 @@ type ClientFrameBase =
     proposal: SavingProposal;
   }
   | { type: "activity"; before?: number; limit?: number }
+  // ---- huddle presence and shared notes (no calls/audio/video in v1) ----
+  | { type: "huddleList"; projectId?: ID; requestId?: ID }
+  | { type: "huddleProjects"; requestId?: ID }
+  | { type: "huddleOpen"; sessionId: ID; requestId?: ID }
+  | { type: "huddleStart"; projectId: ID; channelId?: ID; title: string; agenda: string; requestId?: ID }
+  | { type: "huddleJoin"; sessionId: ID; requestId?: ID }
+  | { type: "huddleLeave"; sessionId: ID; requestId?: ID }
+  | { type: "huddleEnd"; sessionId: ID; requestId?: ID }
+  | { type: "huddleNote"; sessionId: ID; kind: HuddleNoteKind; body: string; links?: HuddleLink[]; requestId?: ID }
+  | { type: "huddleDeleteNote"; noteId: ID; requestId?: ID }
+  | { type: "huddleMarkRead"; sessionId: ID; ts?: number; requestId?: ID }
+  | { type: "huddleMembers"; sessionId: ID; requestId?: ID }
+  | { type: "agentHuddleNote"; agentId: ID; sessionId: ID; kind: HuddleNoteKind; body: string; links?: HuddleLink[]; requestId?: ID }
   // ---- projects: a GitHub repository connected to Cloud9 (his item 7) ----
   /** Connect a repository. Yours: it runs through YOUR machine and YOUR `gh`. */
   | { type: "connectProject"; repo: string; name?: string; description?: string; channelId?: ID }
@@ -4178,6 +4202,13 @@ export type ServerFrame =
    */
   | { type: "approvalAsked"; askId: string; approvalId: ID }
   | { type: "activity"; records: ActivityRecord[] }
+  | { type: "huddleList"; sessions: HuddleSession[]; requestId?: ID }
+  | { type: "huddleProjects"; projects: Project[]; requestId?: ID }
+  | { type: "huddleSession"; session: HuddleSession; notes: HuddleNote[]; requestId?: ID }
+  | { type: "huddleChanged"; session: HuddleSession; note?: HuddleNote; requestId?: ID }
+  | { type: "huddleRead"; entry: HuddleReadEntry; requestId?: ID }
+  | { type: "huddleMembers"; sessionId: ID; participants: HuddleParticipant[]; requestId?: ID }
+  | { type: "huddleUnavailable"; sessionId: ID; problem: string; requestId?: ID }
   /** One project changed — connected, renamed, or freshly looked at. */
   | { type: "project"; project: Project }
   /** Answers `projects`. Only ever the asker's own. */

@@ -42,6 +42,7 @@ import {
   validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji, validateHookInput,
   validateSocialLinks,
   validateName, validateRepo, validateRunRecord, validateTaskSummary, validateWorkflow,
+  HuddleSession, HuddleNote, HuddleParticipant, HuddleLink, HuddleNoteKind, validateHuddleText, validateHuddleLinks,
   WS_LIMITS,
 } from "@cloud9/shared";
 import os from "node:os";
@@ -247,6 +248,8 @@ export class Relay {
    * with the clock, and with their first use — whichever comes first.
    */
   private tickets = new Map<string, { target: TicketTarget; userId: ID; expiresAt: number }>();
+  /** Agent ids currently represented by each engine socket for huddle presence cleanup. */
+  private huddleEngineAgents = new Map<WebSocket, Set<ID>>();
 
   /**
    * The receipt for the one-time catch-up, when this start is the one that ran
@@ -435,7 +438,32 @@ export class Relay {
     });
     ws.on("close", () => {
       if (!conn) return;
+      const closed = conn;
       this.conns.delete(conn);
+      // A dropped socket is a leave, not a still-present participant. Persist
+      // it and tell only the remaining authorized audience.
+      const stillConnected = [...this.conns].some(c => c.userId === closed.userId && c.client === "desktop");
+      for (const session of stillConnected ? [] : this.store.huddles()) {
+        if (session.state !== "active" || !session.participants.some(p => p.id === closed.userId && p.present)) continue;
+        const at = Date.now();
+        const updated = { ...session, participants: session.participants.map(p => p.id === closed.userId && p.present ? { ...p, present: false, leftAt: at } : p) };
+        this.store.huddleLeave(session.id, closed.userId, at); this.store.saveHuddle(updated);
+        this.broadcastHuddle(updated, { type: "huddleChanged", session: updated });
+      }
+      const disconnectedAgents = this.huddleEngineAgents.get(closed.ws) ?? new Set<ID>();
+      this.huddleEngineAgents.delete(closed.ws);
+      for (const session of this.store.huddles()) {
+        if (session.state !== "active" || !session.participants.some(p => disconnectedAgents.has(p.id) && p.present)) continue;
+        const affected = [...disconnectedAgents].filter(agentId => ![...this.huddleEngineAgents.values()].some(ids => ids.has(agentId)));
+        if (!affected.length) continue;
+        const at = Date.now();
+        const updated = { ...session, participants: session.participants.map(p => affected.includes(p.id) && p.present ? { ...p, present: false, leftAt: at } : p) };
+        for (const agentId of affected) if (session.participants.some(p => p.id === agentId && p.present)) this.store.huddleLeave(session.id, agentId, at);
+        this.store.saveHuddle(updated);
+        this.broadcastHuddle(updated, { type: "huddleChanged", session: updated });
+        const project = this.store.project(updated.projectId);
+        if (project) this.toUser(project.ownerId, { type: "huddleChanged", session: this.huddleSessionView(project.ownerId, updated, project) });
+      }
       // The engine host owns the CLIs. Once it's gone, its last status report is
       // a stale claim about a machine nobody is watching — drop it and say so.
       if (conn.client === "engine" && !this.hasEngine(conn.userId)) {
@@ -848,6 +876,129 @@ export class Relay {
     const project = this.store.project(projectId);
     if (!project || project.ownerId !== userId) throw new Error("no such project");
     return project;
+  }
+  private huddleFor(userId: ID, sessionId: ID): { session: HuddleSession; project: Project } {
+    const session = this.store.huddle(sessionId);
+    const project = session ? this.store.project(session.projectId) : undefined;
+    if (!session || !project) throw new Error("no such huddle");
+    if (project.ownerId !== userId && (!project.channelId || !this.store.channelMembers(project.channelId).some(m => m.memberId === userId))) throw new Error("no such huddle");
+    if (session.channelId && project.channelId !== session.channelId) throw new Error("no such huddle");
+    return { session, project };
+  }
+  private huddleProject(userId: ID, projectId: ID): Project {
+    const p = this.store.project(projectId);
+    if (!p) throw new Error("no such project");
+    if (p.ownerId !== userId && (!p.channelId || !this.visibleChannels(userId).some(c => c.id === p.channelId))) throw new Error("no such project");
+    return p;
+  }
+  private huddleLinks(userId: ID, project: Project, links: HuddleLink[]): void {
+    for (const l of links) {
+      if (l.kind === "task") {
+        const t = this.store.task(l.id!); if (!t) throw new Error("that task is unavailable");
+        this.channelFor(userId, t.channelId); if (project.channelId && t.channelId !== project.channelId) throw new Error("that task is outside this project");
+      } else if (l.kind === "run") {
+        const r = this.store.run(l.id!); if (!r) throw new Error("that run is unavailable");
+        if (r.channelId) this.channelFor(userId, r.channelId); else if (r.ownerId !== userId) throw new Error("that run is unavailable");
+        if (project.channelId && r.channelId && r.channelId !== project.channelId) throw new Error("that run is outside this project");
+      } else if (l.kind === "artifact") {
+        const a = this.artifactFor(userId, l.artifactId ?? l.id!); if (project.channelId && a.channelId !== project.channelId) throw new Error("that file is outside this project");
+      } else if (!this.store.projectItems(project.id).some(i => i.kind === l.projectItemKind && i.number === l.projectItemNumber)) throw new Error("that project item is unavailable");
+    }
+  }
+  private huddleLinkView(userId: ID, project: Project, links: HuddleLink[]): HuddleLink[] {
+    return links.map(link => {
+      try { this.huddleLinks(userId, project, [link]); return { ...link, available: true }; }
+      catch { return { kind: link.kind, label: link.label ?? "Unavailable", available: false }; }
+    });
+  }
+  private huddleSessionView(userId: ID, session: HuddleSession, project: Project): HuddleSession {
+    return { ...session, participants: [...session.participants].sort((a, b) => a.joinedAt - b.joinedAt || a.id.localeCompare(b.id)), unread: this.store.huddleUnread(userId, session.id) };
+  }
+  private huddleNoteView(userId: ID, project: Project, note: HuddleNote): HuddleNote {
+    return { ...note, links: this.huddleLinkView(userId, project, note.links ?? []) };
+  }
+  private huddlePayloadHash(frame: ClientFrame): string {
+    const clean = (value: unknown): unknown => Array.isArray(value) ? value.map(clean) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([key]) => key !== "requestId").sort(([a], [b]) => a.localeCompare(b)).map(([key, v]) => [key, clean(v)])) : value;
+    return createHash("sha256").update(JSON.stringify(clean(frame))).digest("hex");
+  }
+  private huddleReceipt(conn: Conn, frame: ClientFrame, kind: string, targetId: ID, resultId: ID): { userId: ID; requestId: ID; kind: string; targetId: ID; payloadHash: string; resultId: ID } | undefined {
+    return frame.requestId ? { userId: conn.userId, requestId: frame.requestId, kind, targetId, payloadHash: this.huddlePayloadHash(frame), resultId } : undefined;
+  }
+  private huddleReplay(conn: Conn, frame: ClientFrame, kind: string, targetId: ID): boolean {
+    if (!frame.requestId) return false;
+    const info = this.store.huddleRequestInfo(conn.userId, frame.requestId);
+    if (!info) return false;
+    if (info.kind !== kind || info.targetId !== targetId || info.payloadHash !== this.huddlePayloadHash(frame)) throw new Error("that huddle request id was already used for different work");
+    if (kind === "read") {
+      send(conn.ws, { type: "huddleRead", entry: { sessionId: targetId, lastReadAt: this.store.huddleRead(conn.userId, targetId), unread: this.store.huddleUnread(conn.userId, targetId) }, requestId: frame.requestId });
+      return true;
+    }
+    const note = this.store.huddleNote(info.resultId);
+    const session = note ? this.store.huddle(note.sessionId) : this.store.huddle(info.resultId);
+    if (session) {
+      const project = this.store.project(session.projectId);
+      if (project) {
+        if (kind === "members") {
+          send(conn.ws, { type: "huddleMembers", sessionId: session.id, participants: session.participants, requestId: frame.requestId });
+          return true;
+        }
+        const changed = note ? { type: "huddleChanged" as const, session: this.huddleSessionView(conn.userId, session, project), note: this.huddleNoteView(conn.userId, project, note), requestId: frame.requestId } : { type: "huddleSession" as const, session: this.huddleSessionView(conn.userId, session, project), notes: this.store.huddleNotes(session.id).map(n => this.huddleNoteView(conn.userId, project, n)), requestId: frame.requestId };
+        send(conn.ws, changed);
+      }
+    }
+    return true;
+  }
+  private broadcastHuddle(session: HuddleSession, frame: ServerFrame, includeProjectMembers = false, origin?: Conn): void {
+    const ended = frame.type === "huddleChanged" && frame.session.state === "ended";
+    const ids = new Set(session.participants.filter(p => p.present || ended).map(p => p.id));
+    if (origin) ids.add(origin.userId);
+    const project = this.store.project(session.projectId);
+    if (!project) return;
+    if (includeProjectMembers) {
+      ids.add(project.ownerId);
+      if (project.channelId) for (const member of this.store.channelMembers(project.channelId)) ids.add(member.memberId);
+    }
+    for (const id of ids) {
+      const agent = this.store.agents().find(a => a.id === id);
+      const allowed = id === project.ownerId || (project.channelId && this.store.channelMembers(project.channelId).some(m => m.memberId === id)) || agent?.ownerId === project.ownerId;
+      if (!allowed) continue;
+      const viewSession = this.huddleSessionView(id, frame.type === "huddleChanged" ? frame.session : session, project);
+      const view = frame.type === "huddleChanged" ? { ...frame, session: viewSession, ...(frame.note ? { note: this.huddleNoteView(id, project, frame.note) } : {}) } : frame;
+      if (origin && id === origin.userId) {
+        send(origin.ws, view);
+        const mirror = "requestId" in view ? (() => { const { requestId: _requestId, ...rest } = view; void _requestId; return rest as ServerFrame; })() : view;
+        for (const c of this.conns) if (c.userId === id && c !== origin) send(c.ws, mirror);
+      } else if (origin && "requestId" in view) { const { requestId: _requestId, ...mirror } = view; void _requestId; this.toUser(id, mirror as ServerFrame); }
+      else this.toUser(id, view);
+    }
+  }
+  /** Who could have held notes for this project/session (owner, channel members, participants). */
+  private huddleAudience(project: Project, sessions: HuddleSession[] = []): Set<ID> {
+    const ids = new Set<ID>([project.ownerId]);
+    if (project.channelId) for (const member of this.store.channelMembers(project.channelId)) ids.add(member.memberId);
+    for (const session of sessions) {
+      for (const p of session.participants) {
+        const agent = this.store.agents().find(a => a.id === p.id);
+        ids.add(agent ? agent.ownerId : p.id);
+      }
+    }
+    return ids;
+  }
+  /** Access revoked for a person in a room: drop every project huddle they could have opened there. */
+  private invalidateHuddlesForMember(userId: ID, channelId: ID): void {
+    for (const session of this.store.huddles()) {
+      const project = this.store.project(session.projectId);
+      // Project owners keep access without channel membership (huddleFor).
+      if (!project || project.channelId !== channelId || project.ownerId === userId) continue;
+      if (session.state === "active" && session.participants.some(p => p.id === userId && p.present)) {
+        const at = Date.now();
+        const updated = { ...session, participants: session.participants.map(p => p.id === userId && p.present ? { ...p, present: false, leftAt: at } : p) };
+        this.store.huddleLeave(session.id, userId, at);
+        this.store.saveHuddle(updated);
+        this.broadcastHuddle(updated, { type: "huddleChanged", session: updated });
+      }
+      this.toUser(userId, { type: "huddleUnavailable", sessionId: session.id, problem: "This huddle is no longer available to you." });
+    }
   }
 
   /** Project feed visibility is membership, not repository ownership. */
@@ -2835,6 +2986,7 @@ export class Relay {
         const artifactIds = this.artifactIdsInChannel(ch.id);
         const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         this.store.removeChannelMember(ch.id, conn.userId, conn.userId);
+        this.invalidateHuddlesForMember(conn.userId, ch.id);
         this.audit(conn, "member_removed", ch.id, `left ${ch.name}`);
         this.tellLeft(conn.userId, ch.id);
         this.tellSaved(conn.userId);
@@ -2854,6 +3006,7 @@ export class Relay {
         const artifactIds = this.artifactIdsInChannel(ch.id);
         const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         this.store.removeChannelMember(ch.id, frame.memberId, conn.userId);
+        this.invalidateHuddlesForMember(frame.memberId, ch.id);
         this.audit(conn, "member_removed", ch.id, `removed someone from ${ch.name}`);
         // an agent's place in a room belongs to its owner's screen
         const agent = this.store.agents().find(a => a.id === frame.memberId);
@@ -3001,8 +3154,16 @@ export class Relay {
       }
       case "deleteAgent": {
         const existing = this.myAgent(conn.userId, frame.agentId);
+        const affectedHuddles = this.store.huddles().filter(h => h.participants.some(p => p.id === frame.agentId));
         this.stopRunsForDeletedAgent(conn, frame.agentId);
         this.store.deleteAgent(frame.agentId);
+        for (const before of affectedHuddles) {
+          const updated = this.store.huddle(before.id);
+          if (!updated) continue;
+          this.broadcastHuddle(updated, { type: "huddleChanged", session: updated });
+          const project = this.store.project(updated.projectId);
+          if (project) this.toUser(existing.ownerId, { type: "huddleChanged", session: this.huddleSessionView(existing.ownerId, updated, project) });
+        }
         this.syncHooksToEngine(conn.userId);
         // a deleted agent's lamp is not a fact about anything any more
         delete this.agentStatus[frame.agentId];
@@ -3057,12 +3218,30 @@ export class Relay {
             const ids = this.artifactIdsInChannel(ch.id);
             return { ids, before: this.snapshotArtifactProjections(ids) };
           });
+        const invalidatedHuddles = this.store.huddles().filter(h => {
+          const project = this.store.project(h.projectId);
+          return project?.ownerId === target.id || h.participants.some(p => p.id === target.id);
+        });
+        const invalidationAudience = new Map<ID, Set<ID>>();
+        for (const huddle of invalidatedHuddles) {
+          const project = this.store.project(huddle.projectId);
+          const audience = new Set<ID>(project?.ownerId === target.id ? huddle.participants.map(p => p.id) : [target.id]);
+          invalidationAudience.set(huddle.id, audience);
+          if (project?.ownerId !== target.id && huddle.participants.some(p => p.id === target.id && p.present)) {
+            const at = Date.now();
+            const updated = { ...huddle, participants: huddle.participants.map(p => p.id === target.id && p.present ? { ...p, present: false, leftAt: at } : p) };
+            this.store.huddleLeave(huddle.id, target.id, at);
+            this.store.saveHuddle(updated);
+            this.broadcastHuddle(updated, { type: "huddleChanged", session: updated });
+          }
+        }
         // Tombstone their project posts BEFORE the account row goes, and push
         // each tombstone to remaining members — same live-feed discipline as
         // socialUnavailable on project leave. Hard-delete would leave open
         // Team feed windows showing words by a person who is already gone.
         const socialTombstones = this.store.tombstoneSocialForRemovedUser(target.id);
         this.store.removeUser(target.id);
+        for (const huddle of invalidatedHuddles) for (const userId of invalidationAudience.get(huddle.id) ?? []) this.toUser(userId, { type: "huddleUnavailable", sessionId: huddle.id, problem: "This person is no longer on Cloud9, so their huddle is no longer available." });
         this.toEngines(target.id, { type: "hooksUpdated", hooks: [] });
         this.audit(conn, "agent_deleted", target.id, `removed ${target.name} from this Cloud9`);
         for (const a of theirAgents) {
@@ -3484,6 +3663,92 @@ export class Relay {
         send(conn.ws, { type: "activity", records });
         break;
       }
+      // ---- huddles: presence/shared notes only; no audio/video/calls ----
+      case "huddleProjects": {
+        send(conn.ws, { type: "huddleProjects", projects: this.store.huddleProjects(conn.userId), ...(frame.requestId ? { requestId: frame.requestId } : {}) }); break;
+      }
+      case "huddleList": {
+        const sessions = this.store.huddles(frame.projectId).filter(s => { try { this.huddleFor(conn.userId, s.id); return true; } catch { return false; } }).map(s => {
+          const project = this.store.project(s.projectId)!; return this.huddleSessionView(conn.userId, s, project);
+        });
+        send(conn.ws, { type: "huddleList", sessions, ...(frame.requestId ? { requestId: frame.requestId } : {}) }); break;
+      }
+      case "huddleOpen": {
+        const { session, project } = this.huddleFor(conn.userId, frame.sessionId);
+        if (this.huddleReplay(conn, frame, "open", session.id)) break;
+        send(conn.ws, { type: "huddleSession", session: this.huddleSessionView(conn.userId, session, project), notes: this.store.huddleNotes(session.id).map(n => this.huddleNoteView(conn.userId, project, n)), ...(frame.requestId ? { requestId: frame.requestId } : {}) }); break;
+      }
+      case "huddleStart": {
+        const project = this.huddleProject(conn.userId, frame.projectId);
+        if (this.huddleReplay(conn, frame, "start", project.id)) break;
+        const bad = validateHuddleText(frame.title, "title") || validateHuddleText(frame.agenda, "agenda"); if (bad) throw new Error(bad);
+        if (frame.channelId && frame.channelId !== project.channelId) throw new Error("huddle channel must match project channel");
+        const user = this.store.users().find(u => u.id === conn.userId)!; const now = Date.now();
+        const participant: HuddleParticipant = { id: user.id, name: user.name, kind: "human", joinedAt: now, present: true };
+        const session: HuddleSession = { id: newId("huddle"), projectId: project.id, channelId: project.channelId, title: frame.title.trim(), agenda: frame.agenda.trim(), ownerId: user.id, state: "active", startedAt: now, participants: [participant], unread: 0 };
+        this.store.huddleMutation(() => { this.store.saveHuddle(session); this.store.huddleJoin(session.id, user.id, now); }, this.huddleReceipt(conn, frame, "start", project.id, session.id));
+        this.broadcastHuddle(session, { type: "huddleChanged", session }, true, conn);
+        send(conn.ws, { type: "huddleSession", session: this.huddleSessionView(conn.userId, session, project), notes: [], ...(frame.requestId ? { requestId: frame.requestId } : {}) }); break;
+      }
+      case "huddleJoin": {
+        const { session } = this.huddleFor(conn.userId, frame.sessionId); if (this.huddleReplay(conn, frame, "join", session.id)) break;
+        if (session.state !== "active") throw new Error("this huddle has ended"); const user = this.store.users().find(u => u.id === conn.userId)!; const now = Date.now();
+        const participants = session.participants.filter(p => p.id !== user.id); participants.push({ id: user.id, name: user.name, kind: "human", joinedAt: now, present: true });
+        const updated = { ...session, participants: participants.sort((a, b) => a.joinedAt - b.joinedAt || a.id.localeCompare(b.id)) };
+        this.store.huddleMutation(() => { this.store.huddleJoin(session.id, user.id, now); this.store.saveHuddle(updated); }, this.huddleReceipt(conn, frame, "join", session.id, session.id));
+        this.broadcastHuddle(updated, { type: "huddleChanged", session: updated, ...(frame.requestId ? { requestId: frame.requestId } : {}) }, false, conn); break;
+      }
+      case "huddleLeave": {
+        const { session } = this.huddleFor(conn.userId, frame.sessionId); if (this.huddleReplay(conn, frame, "leave", session.id)) break;
+        if (session.state !== "active") throw new Error("this huddle has ended");
+        const now = Date.now(); const participants = session.participants.map(p => p.id === conn.userId && p.present ? { ...p, leftAt: now, present: false } : p); const updated = { ...session, participants };
+        this.store.huddleMutation(() => { this.store.huddleLeave(session.id, conn.userId, now); this.store.saveHuddle(updated); }, this.huddleReceipt(conn, frame, "leave", session.id, session.id));
+        this.broadcastHuddle(updated, { type: "huddleChanged", session: updated, ...(frame.requestId ? { requestId: frame.requestId } : {}) }, false, conn); break;
+      }
+      case "huddleEnd": {
+        const { session } = this.huddleFor(conn.userId, frame.sessionId); if (this.huddleReplay(conn, frame, "end", session.id)) break;
+        if (session.ownerId !== conn.userId) throw new Error("only the huddle owner can end it");
+        if (session.state === "ended") { const project = this.store.project(session.projectId); this.store.huddleMutation(() => undefined, this.huddleReceipt(conn, frame, "end", session.id, session.id)); if (project) send(conn.ws, { type: "huddleSession", session: this.huddleSessionView(conn.userId, session, project), notes: this.store.huddleNotes(session.id).map(n => this.huddleNoteView(conn.userId, project, n)), ...(frame.requestId ? { requestId: frame.requestId } : {}) }); break; }
+        const endedAt = Date.now(); const updated = { ...session, state: "ended" as const, endedAt, participants: session.participants.map(p => p.present ? { ...p, present: false, leftAt: endedAt } : p) };
+        this.store.huddleMutation(() => { for (const participant of session.participants) if (participant.present) this.store.huddleLeave(session.id, participant.id, endedAt); this.store.saveHuddle(updated); }, this.huddleReceipt(conn, frame, "end", session.id, session.id));
+        this.broadcastHuddle(updated, { type: "huddleChanged", session: updated, ...(frame.requestId ? { requestId: frame.requestId } : {}) }, false, conn); break;
+      }
+      case "huddleNote": {
+        const { session, project } = this.huddleFor(conn.userId, frame.sessionId); if (this.huddleReplay(conn, frame, "note", session.id)) break;
+        if (!["note", "decision", "action"].includes(frame.kind)) throw new Error("invalid huddle note kind");
+        const bad = validateHuddleText(frame.body, "note") || validateHuddleLinks(frame.links ?? []); if (bad) throw new Error(bad); this.huddleLinks(conn.userId, project, frame.links ?? []);
+        const user = this.store.users().find(u => u.id === conn.userId)!; const note: HuddleNote = { id: newId("hnote"), sessionId: session.id, kind: frame.kind, body: frame.body.trim(), authorId: user.id, authorName: user.name, authorKind: "human", createdAt: Date.now(), links: frame.links ?? [] };
+        this.store.huddleMutation(() => this.store.saveHuddleNote(note), this.huddleReceipt(conn, frame, "note", session.id, note.id));
+        this.broadcastHuddle(session, { type: "huddleChanged", session, note, ...(frame.requestId ? { requestId: frame.requestId } : {}) }, false, conn); break;
+      }
+      case "agentHuddleNote": {
+        if (conn.client !== "engine") throw new Error("only an agent host can write as an agent"); const agent = this.myAgent(conn.userId, frame.agentId); const knownAgents = this.huddleEngineAgents.get(conn.ws) ?? new Set<ID>(); knownAgents.add(agent.id); this.huddleEngineAgents.set(conn.ws, knownAgents); const { session, project } = this.huddleFor(conn.userId, frame.sessionId); if (this.huddleReplay(conn, frame, "agent-note", session.id)) break;
+        if (!["note", "decision", "action"].includes(frame.kind)) throw new Error("invalid huddle note kind");
+        const bad = validateHuddleText(frame.body, "note") || validateHuddleLinks(frame.links ?? []); if (bad) throw new Error(bad); this.huddleLinks(conn.userId, project, frame.links ?? []);
+        const now = Date.now(); const participants = session.participants.some(p => p.id === agent.id) ? session.participants.map(p => p.id === agent.id ? { ...p, name: agent.name, present: true, joinedAt: now, leftAt: undefined } : p) : [...session.participants, { id: agent.id, name: agent.name, kind: "agent" as const, joinedAt: now, present: true }]; const updated = { ...session, participants: participants.sort((a, b) => a.joinedAt - b.joinedAt || a.id.localeCompare(b.id)) };
+        const note: HuddleNote = { id: newId("hnote"), sessionId: session.id, kind: frame.kind, body: frame.body.trim(), authorId: agent.id, authorName: agent.name, authorKind: "agent", createdAt: now, links: frame.links ?? [] };
+        this.store.huddleMutation(() => { this.store.saveHuddle(updated); this.store.huddleJoin(session.id, agent.id, now); this.store.saveHuddleNote(note); }, this.huddleReceipt(conn, frame, "agent-note", session.id, note.id));
+        this.broadcastHuddle(updated, { type: "huddleChanged", session: updated, note, ...(frame.requestId ? { requestId: frame.requestId } : {}) }, false, conn); break;
+      }
+      case "huddleDeleteNote": {
+        const note = this.store.huddleNote(frame.noteId); if (!note) throw new Error("no such huddle note"); const { session } = this.huddleFor(conn.userId, note.sessionId); if (this.huddleReplay(conn, frame, "delete-note", note.id)) break;
+        if (note.authorId !== conn.userId && session.ownerId !== conn.userId) throw new Error("only the note author or huddle owner can delete this");
+        const deleted = note.deletedAt ? note : { ...note, body: "This note was deleted.", deletedAt: Date.now() };
+        this.store.huddleMutation(() => this.store.saveHuddleNote(deleted, true), this.huddleReceipt(conn, frame, "delete-note", note.id, note.id));
+        this.broadcastHuddle(session, { type: "huddleChanged", session, note: deleted, ...(frame.requestId ? { requestId: frame.requestId } : {}) }, false, conn); break;
+      }
+      case "huddleMarkRead": {
+        const { session } = this.huddleFor(conn.userId, frame.sessionId); if (this.huddleReplay(conn, frame, "read", session.id)) break;
+        const at = typeof frame.ts === "number" && Number.isFinite(frame.ts) ? Math.min(Math.max(0, frame.ts), Date.now()) : Date.now(); const entry = this.store.huddleMutation(() => this.store.huddleMarkRead(conn.userId, session.id, at), this.huddleReceipt(conn, frame, "read", session.id, session.id));
+        send(conn.ws, { type: "huddleRead", entry, ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        for (const c of this.conns) if (c.userId === conn.userId && c !== conn) send(c.ws, { type: "huddleRead", entry });
+        break;
+      }
+      case "huddleMembers": {
+        const { session } = this.huddleFor(conn.userId, frame.sessionId); if (this.huddleReplay(conn, frame, "members", session.id)) break;
+        const entry = this.store.huddleMutation(() => undefined, this.huddleReceipt(conn, frame, "members", session.id, session.id));
+        void entry; send(conn.ws, { type: "huddleMembers", sessionId: session.id, participants: session.participants, ...(frame.requestId ? { requestId: frame.requestId } : {}) }); break;
+      }
       // ---- projects: a GitHub repository connected to Cloud9 (his item 7) ----
       //
       // ONE GATE, `myProject`, on stored state — the same law `myAgent` follows
@@ -3554,7 +3819,13 @@ export class Relay {
           else delete project.description;
         }
         if (frame.channelId !== undefined) {
-          if (frame.channelId) project.channelId = frame.channelId;
+          const nextChannel = frame.channelId || undefined;
+          if (nextChannel !== project.channelId) {
+            if (this.store.huddles(project.id).length > 0) {
+              throw new Error("this project has huddles, so its room cannot be changed");
+            }
+          }
+          if (nextChannel) project.channelId = nextChannel;
           else delete project.channelId;
         }
         this.store.saveProject(project);
@@ -3652,7 +3923,7 @@ export class Relay {
       }
       case "forgetProject": {
         const project = this.myProject(conn.userId, frame.projectId);
-        const audience = this.projectAudience(project);
+        const projectAudience = this.projectAudience(project);
         for (const userId of this.store.socialMembers(project.id, project.ownerId)) {
           this.toUser(userId, { type: "socialUnavailable", projectId: project.id });
         }
@@ -3661,9 +3932,15 @@ export class Relay {
         // reach GitHub at all, and that is the design, not an omission.
         // a look still in flight has nothing left to report into
         this.endLook(project.id);
+        const forgottenHuddles = this.store.huddles(project.id);
+        // Full prior audience: owner + channel members + anyone who joined presence (and agent owners).
+        const huddleAudience = this.huddleAudience(project, forgottenHuddles);
         this.store.forgetProject(project.id);
+        for (const huddle of forgottenHuddles) {
+          for (const userId of huddleAudience) this.toUser(userId, { type: "huddleUnavailable", sessionId: huddle.id, problem: "This project was forgotten, so its huddle is no longer available." });
+        }
         this.audit(conn, "project_forgotten", project.id, `disconnected ${project.repo}`);
-        for (const userId of audience) {
+        for (const userId of projectAudience) {
           this.toUser(userId, { type: "projectForgotten", projectId: project.id });
         }
         this.sendPulseSnapshotTo(pulseAudience);

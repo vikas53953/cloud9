@@ -14,6 +14,7 @@ import {
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
   EverywhereHit, SearchKind,
   SearchHit, ServerFrame, SKILL_LIMITS, SOCIAL_LIMITS, SocialLink, SocialPost, summarizeRun, Task, User, humanDuration, humanMoney,
+  HuddleSession, HuddleNote, HuddleNoteKind, HuddleLink,
   StoredHook, HOOK_EVENTS, HOOK_ACTIONS,
   NotificationInboxEntry,
    EngineeringPulseUpdate, EngineeringPulseDraft,
@@ -1155,7 +1156,7 @@ const IconPolls = (): React.JSX.Element => (
     <path d="M4 19V5"/><path d="M10 19V9"/><path d="M16 19v-6"/><path d="M22 19H2"/>
   </svg>
 );
-
+const IconHuddle = (): React.JSX.Element => (<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M3.5 19c.6-3 2.1-4.5 4.5-4.5S11.9 16 12.5 19M11.5 19c.6-3 2.1-4.5 4.5-4.5s3.9 1.5 4.5 4.5"/></svg>);
 const IconSocial = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <path d="M5 5.5h14v10H9l-4 3v-13Z" /><path d="M8 9h8M8 12h5" />
@@ -2001,7 +2002,7 @@ function JoinScreen({ onJoin }: { onJoin: () => void }): React.JSX.Element {
 
 /* ================= the workspace shell ================= */
 
-type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "pulse" | "polls" | "hooks" | "social" | "spending" | "activity" | "notifications" | "saved" | "settings";
+type ScreenName = "chat" | "crew" | "market" | "editor" | "tasks" | "workflows" | "files" | "projects" | "huddles" | "pulse" | "polls" | "hooks" | "social" | "spending" | "activity" | "notifications" | "saved" | "settings";
 type ModalName = "invite" | "channel" | "browse" | "friends";
 
 /** Presence line for a rail row — built only from what the app really knows. */
@@ -2328,6 +2329,50 @@ function Workspace(): React.JSX.Element {
       }
     });
   }, []);
+
+
+  const openHuddleLink = useCallback((link: HuddleLink, projectId?: ID) => {
+    if (link.available === false) return;
+    attemptLeave(() => {
+      const now = Date.now();
+      if (link.kind === "artifact" && (link.artifactId ?? link.id)) {
+        setFileOpenAt({ artifactId: link.artifactId ?? link.id!, at: now });
+        setScreen("files");
+      } else if (link.kind === "run" && link.id) {
+        const ownerTask = client.getSnapshot().tasks.find(t => t.runId === link.id);
+        if (ownerTask) {
+          setTaskOpenAt({ taskId: ownerTask.id, runId: link.id, at: now });
+          setScreen("tasks");
+        } else {
+          setRunOpenAt({ runId: link.id, at: now });
+          setScreen("activity");
+        }
+      } else if (link.kind === "task" && link.id) {
+        setTaskOpenAt({ taskId: link.id, at: now });
+        setScreen("tasks");
+      } else if (link.kind === "projectItem") {
+        const fromSession = projectId
+          ?? client.getSnapshot().huddles.sessions.find(s => s.projectId)?.projectId
+          ?? client.getSnapshot().projects.list[0]?.id;
+        if (!fromSession) return;
+        setProjectOpenAt({
+          projectId: fromSession,
+          ...(link.projectItemKind ? { itemKind: link.projectItemKind } : {}),
+          ...(link.projectItemNumber !== undefined ? { number: link.projectItemNumber } : {}),
+          at: now,
+        });
+        setScreen("projects");
+      }
+    });
+  }, []);
+  useEffect(() => {
+    const link = world.huddleNavigation;
+    if (!link) return;
+    client.clearHuddleNavigation();
+    openHuddleLink(link);
+  }, [world.huddleNavigation, openHuddleLink]);
+
+  const openHuddles = useCallback(() => { attemptLeave(() => { client.askHuddles(); setScreen("huddles"); }); }, []);
 
   const openPulse = useCallback(() => {
     attemptLeave(() => {
@@ -2864,6 +2909,7 @@ function Workspace(): React.JSX.Element {
               otherwise unchanged. Everything the hub and the engine already
               hold about his repositories arrives through this one door. */}
           {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
+          {railBtn("huddles", "Huddles", <IconHuddle />, undefined, openHuddles)}
           {railBtn("pulse", "Engineering Pulse", <IconPulse />,
             Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
           {railBtn("polls", "Polls", <IconPolls />, undefined, openPolls)}
@@ -2958,6 +3004,7 @@ function Workspace(): React.JSX.Element {
             <ProjectsScreen onOpenChannel={id => goChannel(id)} openAt={projectOpenAt}
               onOpened={clearProjectOpen} />
           )}
+          {screen === "huddles" && <HuddlesScreen onLink={openHuddleLink} />}
           {screen === "pulse" && <EngineeringPulseScreen
             onOpenTask={id => attemptLeave(() => {
               setTaskOpenAt({ taskId: id, at: Date.now() });
@@ -14966,6 +15013,46 @@ function socialLinkLabel(link: SocialLink): string {
   if (link.available === false) return "Unavailable link";
   if (link.kind === "projectItem") return `${link.itemKind === "pull" ? "PR" : "Issue"} #${link.number ?? "?"}`;
   return `${link.kind} ${link.id}`;
+}
+
+
+function HuddlesScreen({ onLink }: { onLink: (link: HuddleLink, projectId?: ID) => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [projectId, setProjectId] = useState<ID>("");
+  const [sessionId, setSessionId] = useState<ID>();
+  const [title, setTitle] = useState("");
+  const [agenda, setAgenda] = useState("");
+  const [body, setBody] = useState("");
+  const [kind, setKind] = useState<HuddleNoteKind>("note");
+  const startRequest = useRef<ID | undefined>(undefined);
+  const noteRequest = useRef<ID | undefined>(undefined);
+  const noteDraft = useRef("");
+  useEffect(() => { client.askHuddleProjects(); client.askHuddles(); }, []);
+  useEffect(() => {
+    if (!projectId && world.huddleProjects.list[0]) setProjectId(world.huddleProjects.list[0].id);
+    if (projectId) client.askHuddles(projectId);
+    if (!sessionId && world.huddles.sessions[0]) setSessionId(world.huddles.sessions[0].id);
+  }, [projectId, sessionId, world.huddleProjects.list, world.huddles.sessions]);
+  // Open durable history + clear unread when a session is selected (reconnect/reopen path).
+  useEffect(() => {
+    if (!sessionId) return;
+    client.askHuddle(sessionId);
+    client.huddleSend({ type: "huddleMarkRead", sessionId });
+  }, [sessionId]);
+  const active = world.huddles.sessions.find(s => s.id === sessionId);
+  const notes = active ? world.huddleNotes[active.id] ?? [] : [];
+  const latest = Object.values(world.huddleMutations).sort((a, b) => a.state === "pending" ? -1 : b.state === "pending" ? 1 : 0)[0];
+  useEffect(() => { const id = startRequest.current; if (id && world.huddleMutations[id]?.state === "succeeded") { setTitle(""); setAgenda(""); startRequest.current = undefined; } }, [world.huddleMutations]);
+  useEffect(() => { const id = noteRequest.current; if (id && world.huddleMutations[id]?.state === "succeeded") { setBody(current => current === noteDraft.current ? "" : current); noteRequest.current = undefined; } }, [world.huddleMutations]);
+  const start = (e: React.FormEvent) => { e.preventDefault(); if (projectId && title.trim() && agenda.trim()) { startRequest.current = client.huddleSend({ type: "huddleStart", projectId, title, agenda }); } };
+  // Notes are project-scoped: any project member may write without joining presence.
+  const addNote = (e: React.FormEvent) => { e.preventDefault(); if (active && active.state === "active" && body.trim()) { noteDraft.current = body; noteRequest.current = client.huddleSend({ type: "huddleNote", sessionId: active.id, kind, body }); } };
+  return <section className="huddle-screen" aria-labelledby="huddles-heading"><header className="screen-head"><div><span className="eyebrow">Project presence</span><h1 id="huddles-heading">Huddles</h1><p className="muted">Shared notes for the project team — join only marks you present. No audio or video in v1.</p></div></header>
+    <label className="field-label" htmlFor="huddle-project">Project</label><select id="huddle-project" className="input" value={projectId} onChange={e => { setProjectId(e.target.value); setSessionId(undefined); }} aria-label="Choose huddle project"><option value="">Choose a project</option>{world.huddleProjects.list.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+    {world.lastError && <div role="alert" aria-live="polite">{world.lastError.text}</div>}
+    {latest?.state === "pending" && <div role="status" aria-live="polite">Saving huddle action…</div>}{latest?.state === "lost" && <div role="alert">{latest.problem}</div>}{latest?.state === "refused" && <div role="alert">{latest.problem}</div>}
+    {!world.huddleProjects.asked || !world.huddles.asked ? <div className="empty-state" role="status">Loading huddles…</div> : <div className="huddle-layout"><aside className="huddle-list" aria-label="Huddle sessions">{world.huddles.sessions.filter(s => !projectId || s.projectId === projectId).length === 0 ? <div className="empty-state">No huddles yet.</div> : world.huddles.sessions.filter(s => !projectId || s.projectId === projectId).map(s => <button className={`huddle-row${s.id === sessionId ? " selected" : ""}`} key={s.id} type="button" onClick={() => setSessionId(s.id)}><strong>{s.title}</strong><span>{s.state} · {s.unread ? `${s.unread} new notes` : "read"}</span><small>{new Date(s.startedAt).toLocaleString()}</small></button>)}</aside><div className="huddle-detail" aria-live="polite">{active ? <><div className="huddle-head"><span className="status-pill">{active.state}</span><h2>{active.title}</h2><p className="muted">{active.agenda}</p><div className="huddle-actions">{active.state === "active" && !active.participants.some(p => p.id === world.me?.id && p.present) && <button className="btn small" type="button" onClick={() => client.huddleSend({ type: "huddleJoin", sessionId: active.id })}>Join</button>}{active.state === "active" && active.participants.some(p => p.id === world.me?.id && p.present) && <button className="btn small" type="button" onClick={() => client.huddleSend({ type: "huddleLeave", sessionId: active.id })}>Leave</button>}{active.state === "active" && active.ownerId === world.me?.id && <button className="btn small" type="button" onClick={() => client.huddleSend({ type: "huddleEnd", sessionId: active.id })}>End huddle</button>}</div></div><div className="huddle-presence" aria-label="Participants">{active.participants.map(p => <span className={p.present ? "present" : "left"} key={`${p.id}-${p.joinedAt}`}>{p.name} · {p.kind} {p.present ? "present" : "left"}</span>)}</div><div className="huddle-notes" role="feed" aria-label="Shared notes">{notes.length === 0 ? <div className="empty-state">No notes yet.</div> : notes.map(n => <article className="huddle-note" key={n.id}><strong>{n.deletedAt ? "Deleted note" : n.kind}</strong><span className="muted">{n.authorName} ({n.authorKind}) · {new Date(n.createdAt).toLocaleString()}</span><p>{n.body}</p>{n.links?.length > 0 && <div className="huddle-links" aria-label="Related links">{n.links.map((link, i) => <button key={`${n.id}-link-${i}`} className="linkish" type="button" disabled={link.available === false} title={link.available === false ? "Unavailable" : "Open related item"} onClick={() => onLink(link, active.projectId)}>{link.label ?? link.kind}{link.available === false ? " (unavailable)" : ""}</button>)}</div>}{!n.deletedAt && (n.authorId === world.me?.id || active.ownerId === world.me?.id) && <button className="linkish" type="button" onClick={() => client.huddleSend({ type: "huddleDeleteNote", noteId: n.id })}>Delete note</button>}</article>)}</div><form className="huddle-composer" onSubmit={addNote}><label className="field-label" htmlFor="huddle-kind">Type</label><select id="huddle-kind" className="input" value={kind} onChange={e => setKind(e.target.value as HuddleNoteKind)} disabled={active.state !== "active"}><option value="note">Note</option><option value="decision">Decision</option><option value="action">Action item</option></select><label className="field-label" htmlFor="huddle-note">Shared note</label><textarea id="huddle-note" className="input" value={body} onChange={e => setBody(e.target.value)} placeholder="Write a note for the team" required disabled={active.state !== "active"} /><button className="btn primary" disabled={active.state !== "active"}>Add note</button></form></> : <div className="empty-state">Choose a huddle.</div>}</div></div>}
+    <form className="huddle-start" onSubmit={start}><h2>Start a huddle</h2><label className="field-label" htmlFor="huddle-title">Title</label><input id="huddle-title" className="input" value={title} onChange={e => setTitle(e.target.value)} required /><label className="field-label" htmlFor="huddle-agenda">Agenda</label><textarea id="huddle-agenda" className="input" value={agenda} onChange={e => setAgenda(e.target.value)} required /><button className="btn primary" disabled={!projectId}>Start huddle</button></form></section>;
 }
 
 function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => void }): React.JSX.Element {

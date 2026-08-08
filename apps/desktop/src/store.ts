@@ -13,6 +13,7 @@ import {
   Project, ProjectItem, ProjectPollView, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject, validateEngineeringPulseDraft,
   Workflow, WorkflowRun,
+  HuddleSession, HuddleNote, HuddleReadEntry, HuddleParticipant, HuddleNoteKind, HuddleLink,
   SocialLink, SocialPost,
   // SPENDING BLOCK (what the crew costs, 2026-08-07)
   AgentTokenUse, WasteFinding,
@@ -389,6 +390,11 @@ export interface World {
   projectItems: Record<ID, { asked: boolean; items: ProjectItem[] }>;
   /** Poll list is tied to both its active project and its latest request. */
   polls: { asked: boolean; projectId?: ID; requestId?: ID; list: ProjectPollView[] };
+  huddles: { asked: boolean; sessions: HuddleSession[] };
+  huddleProjects: { asked: boolean; list: Project[] };
+  huddleMutations: Record<ID, { kind: ClientFrame["type"]; state: "pending" | "succeeded" | "refused" | "lost"; problem?: string }>;
+  huddleNotes: Record<ID, HuddleNote[]>;
+  huddleNavigation?: HuddleLink;
   hooks: { asked: boolean; requestId?: ID; mutationRequestId?: ID; pending?: Record<ID, true>; auditRequestId?: ID; auditAsked?: boolean; auditLoading?: boolean; audit?: HookAuditEntry[]; auditProblem?: string; list: StoredHook[]; problem?: string; test?: { hookId: ID; ok: boolean; said: string } };
   socialProjects: { asked: boolean; list: Project[]; requestId?: ID };
   /** Unread counts for every member project, not just the currently open feed. */
@@ -687,7 +693,9 @@ export class RelayClient {
     runs: {}, runLists: {}, runsGone: {},
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
-    projects: { asked: false, list: [] }, projectItems: {}, polls: { asked: false, list: [] }, hooks: { asked: false, list: [] },
+    projects: { asked: false, list: [] }, projectItems: {}, polls: { asked: false, list: [] },
+    huddles: { asked: false, sessions: [] }, huddleProjects: { asked: false, list: [] }, huddleMutations: {}, huddleNotes: {}, huddleNavigation: undefined,
+    hooks: { asked: false, list: [] },
     socialProjects: { asked: false, list: [] }, socialUnread: {}, socialPending: {}, socialCompleted: undefined, socialFeeds: {},
     pulse: { asked: false, loading: false, updates: [], unreadByProject: {}, projects: [] },
     repoChoices: { asked: false, asking: false },
@@ -2089,6 +2097,30 @@ export class RelayClient {
       lost: settled,
     });
   }
+  askHuddleProjects(): void { const requestId=this.nextRequestId("huddleProjects"); const settled=():void=>{this.world.huddleProjects={...this.world.huddleProjects,asked:true};this.emit();}; this.transmit({type:"huddleProjects",requestId},{answers:f=>f.type==="huddleProjects"&&f.requestId===requestId,answered:f=>{if(f.type==="huddleProjects")this.world.huddleProjects={asked:true,list:f.projects};this.emit();},refused:settled,lost:settled}); }
+  askHuddles(projectId?: ID): void { const requestId=this.nextRequestId("huddleList"); const settled=():void=>{this.world.huddles={...this.world.huddles,asked:true};this.emit();}; this.transmit({type:"huddleList",...(projectId?{projectId}: {}),requestId},{answers:f=>f.type==="huddleList"&&f.requestId===requestId,answered:f=>{if(f.type==="huddleList")this.world.huddles={asked:true,sessions:f.sessions};this.emit();},refused:settled,lost:settled}); }
+  askHuddle(sessionId: ID): void { const requestId=this.nextRequestId("huddleOpen"); const settled=():void=>{this.emit();}; this.transmit({type:"huddleOpen",sessionId,requestId},{answers:f=>f.type==="huddleSession"&&f.session.id===sessionId&&f.requestId===requestId,answered:f=>{if(f.type==="huddleSession")this.world.huddleNotes={...this.world.huddleNotes,[sessionId]:f.notes};this.emit();},refused:settled,lost:settled}); }
+  huddleSend(frame: ClientFrame): ID | undefined {
+    const requestId = this.nextRequestId(frame.type);
+    this.world.huddleMutations = { ...this.world.huddleMutations, [requestId]: { kind: frame.type, state: "pending" } };
+    this.emit();
+    const id = this.transmit({ ...frame, requestId }, {
+      answers: response => (response as { requestId?: ID }).requestId === requestId && ["huddleSession", "huddleChanged", "huddleRead", "huddleMembers"].includes(response.type),
+      answered: () => { const current=this.world.huddleMutations[requestId]; if(current)this.world.huddleMutations={...this.world.huddleMutations,[requestId]:{...current,state:"succeeded"}}; this.emit(); },
+      refused: problem => { const current=this.world.huddleMutations[requestId]; if(current)this.world.huddleMutations={...this.world.huddleMutations,[requestId]:{...current,state:"refused",problem}}; this.emit(); },
+      lost: () => { const current=this.world.huddleMutations[requestId]; if(current)this.world.huddleMutations={...this.world.huddleMutations,[requestId]:{...current,state:"lost",problem:"Cloud9 disconnected before it confirmed this huddle action; your draft is still here."}}; this.emit(); },
+    });
+    if (!id) { const current=this.world.huddleMutations[requestId]; if(current)this.world.huddleMutations={...this.world.huddleMutations,[requestId]:{...current,state:"lost",problem:"Cloud9 is offline; your huddle action was not sent."}}; this.emit(); }
+    return id;
+  }
+  huddleLink(link: HuddleLink): void {
+    if (link.available === false) return;
+    this.world.huddleNavigation = link;
+    if (link.kind === "artifact" && (link.artifactId ?? link.id)) this.askArtifactDetail(link.artifactId ?? link.id!);
+    if (link.kind === "projectItem" && link.projectItemKind) this.askProjects();
+    this.emit();
+  }
+  clearHuddleNavigation(): void { this.world.huddleNavigation = undefined; this.emit(); }
   askHooks(): void {
     const requestId = this.nextRequestId("hooks");
     // Class rule: always spread the prior hooks bag. A list answer must never
@@ -2224,6 +2256,8 @@ export class RelayClient {
 
   markSocialRead(projectId: ID, at?: number): void {
     this.socialMutation({ type: "socialMarkRead", projectId, ...(at !== undefined ? { at } : {}) });
+  }
+
   /* ---------------- Engineering Pulse ---------------- */
 
   askPulse(projectId?: ID): void {
@@ -3499,6 +3533,11 @@ export class RelayClient {
         // screen must say "looking" rather than "you have none".
         w.projects = { asked: false, list: [] };
         w.projectItems = {};
+        w.huddles = { asked: false, sessions: [] };
+        w.huddleProjects = { asked: false, list: [] };
+        w.huddleMutations = {};
+        w.huddleNotes = {};
+        w.huddleNavigation = undefined;
         w.hooks = { asked: false, list: [] };
         w.socialProjects = { asked: false, list: [] };
         w.socialUnread = {};
@@ -3933,6 +3972,13 @@ export class RelayClient {
           w.members = { ...w.members, [frame.channelId]: frame.members };
         }
         break;
+      case "huddleProjects": w.huddleProjects={asked:true,list:frame.projects}; break;
+      case "huddleList": w.huddles={asked:true,sessions:frame.sessions}; break;
+      case "huddleSession": { w.huddles={asked:true,sessions:w.huddles.sessions.some(s=>s.id===frame.session.id)?w.huddles.sessions.map(s=>s.id===frame.session.id?frame.session:s):[frame.session,...w.huddles.sessions]}; w.huddleNotes={...w.huddleNotes,[frame.session.id]:frame.notes}; break; }
+      case "huddleChanged": { const i=w.huddles.sessions.findIndex(s=>s.id===frame.session.id); w.huddles={asked:true,sessions:i<0?[frame.session,...w.huddles.sessions]:w.huddles.sessions.map(s=>s.id===frame.session.id?frame.session:s)}; if(frame.note){const list=w.huddleNotes[frame.session.id]??[]; const j=list.findIndex(n=>n.id===frame.note!.id); w.huddleNotes={...w.huddleNotes,[frame.session.id]:j<0?[...list,frame.note]:list.map(n=>n.id===frame.note!.id?frame.note!:n)};} break; }
+      case "huddleRead": { const i=w.huddles.sessions.findIndex(s=>s.id===frame.entry.sessionId); if(i>=0)w.huddles={...w.huddles,sessions:w.huddles.sessions.map(s=>s.id===frame.entry.sessionId?{...s,unread:frame.entry.unread}:s)}; break; }
+      case "huddleUnavailable": { w.huddles={...w.huddles,sessions:w.huddles.sessions.filter(s=>s.id!==frame.sessionId)}; const {[frame.sessionId]:goneNotes,...restNotes}=w.huddleNotes; void goneNotes; w.huddleNotes=restNotes; break; }
+      case "huddleMembers": break;
       case "channelLeft": {
         // Out of the room means out of it NOW — not after a reload. Everything
         // cached for it goes with it, or the app would keep drawing a
@@ -3981,7 +4027,7 @@ export class RelayClient {
         w.savedMessages = w.savedMessages.map(entry => entry.channelId === frame.channelId
           ? { ...entry, state: "inaccessible", message: undefined }
           : entry);
-        
+
         // Projects linked to the room derive access from its membership. The
         // relay sends a revocation too, but purge by channel here so a window
         // cannot keep drawing a poll if the two frames arrive out of order.
@@ -4002,7 +4048,12 @@ export class RelayClient {
             w.polls = { asked: true, list: [] };
           }
         }
-break;
+        const removedHuddleProjects = new Set(w.huddleProjects.list.filter(p => p.channelId === frame.channelId && p.ownerId !== w.me?.id).map(p => p.id));
+        w.huddleProjects = { ...w.huddleProjects, list: w.huddleProjects.list.filter(p => !removedHuddleProjects.has(p.id)) };
+        const removedHuddles = w.huddles.sessions.filter(s => removedHuddleProjects.has(s.projectId));
+        w.huddles = { ...w.huddles, sessions: w.huddles.sessions.filter(s => !removedHuddleProjects.has(s.projectId)) };
+        for (const session of removedHuddles) { const { [session.id]: gone, ...rest } = w.huddleNotes; void gone; w.huddleNotes = rest; }
+        break;
       }
       /* Projects. These four used to be dropped with a comment saying the
          Projects screen would claim them one day. It has. */
@@ -4036,6 +4087,7 @@ break;
         const { [frame.projectId]: goneItems, ...restItems } = w.projectItems;
         void goneItems;
         w.projectItems = restItems;
+        // Keep both Pulse and Huddles project caches in step when a project is forgotten.
         w.pulse = {
           ...w.pulse,
           projects: w.pulse.projects.filter(p => p.id !== frame.projectId),
@@ -4044,6 +4096,10 @@ break;
             .filter(([id]) => id !== frame.projectId)),
         };
         if (w.polls.projectId === frame.projectId) w.polls = { asked: true, list: [] };
+        const removed = w.huddles.sessions.filter(s => s.projectId === frame.projectId);
+        w.huddles = { ...w.huddles, sessions: w.huddles.sessions.filter(s => s.projectId !== frame.projectId) };
+        for (const session of removed) { const { [session.id]: gone, ...rest } = w.huddleNotes; void gone; w.huddleNotes = rest; }
+        w.huddleProjects = { ...w.huddleProjects, list: w.huddleProjects.list.filter(p => p.id !== frame.projectId) };
         break;
       }
       case "projectItems":
