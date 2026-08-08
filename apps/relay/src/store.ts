@@ -10,7 +10,7 @@ import {
   ChannelRole, EverywhereHit, ID, Message, SearchKind,
   MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, ProjectItem, PROJECT_LIMITS,
   SocialPost, SocialReaction, SocialReadEntry, SocialLink, SOCIAL_LIMITS,
-  EngineeringPulseUpdate,
+  EngineeringPulseUpdate, redactDeletedPulseUpdate,
   RunRecord, RUN_RETENTION, Task, User, StoredHook, isSafeStoredId, nameKey, newId,
   NOTIFICATION_INBOX_LIMITS,
   type NotificationInboxKind, type NotificationInboxState,
@@ -3901,22 +3901,26 @@ export class Store implements JoinHubStore {
   }
 
   savePulse(update: EngineeringPulseUpdate): void {
+    // Delete is a moderation control: never keep section bodies or related
+    // links once deletedAt is set. The tombstone row stays for the feed.
+    const stored = redactDeletedPulseUpdate(update);
     this.db.prepare(
       "INSERT INTO pulse_updates(id,projectId,authorId,createdAt,updatedAt,deletedAt,json) " +
       "VALUES(?,?,?,?,?,?,?) " +
       "ON CONFLICT(id) DO UPDATE SET projectId=excluded.projectId, authorId=excluded.authorId, " +
       "createdAt=excluded.createdAt, updatedAt=excluded.updatedAt, deletedAt=excluded.deletedAt, json=excluded.json",
     ).run(
-      update.id, update.projectId, update.authorId, update.createdAt, update.updatedAt,
-      update.deletedAt ?? null, JSON.stringify(update),
+      stored.id, stored.projectId, stored.authorId, stored.createdAt, stored.updatedAt,
+      stored.deletedAt ?? null, JSON.stringify(stored),
     );
-    this.prunePulse(update.projectId);
+    this.prunePulse(stored.projectId);
   }
 
   pulse(id: ID): EngineeringPulseUpdate | undefined {
     const row = this.db.prepare("SELECT json FROM pulse_updates WHERE id=?").get(id) as
       { json: string } | undefined;
-    return row ? (JSON.parse(row.json) as EngineeringPulseUpdate) : undefined;
+    // Re-redact on read so older pre-fix rows cannot ship deleted content.
+    return row ? redactDeletedPulseUpdate(JSON.parse(row.json) as EngineeringPulseUpdate) : undefined;
   }
 
   /** Newest first; tombstones remain so deletion is visible in the feed. */
@@ -3926,7 +3930,8 @@ export class Store implements JoinHubStore {
         .all(projectId, Math.max(1, Math.min(limit, 500)))
       : this.db.prepare("SELECT json FROM pulse_updates ORDER BY createdAt DESC,id DESC LIMIT ?")
         .all(Math.max(1, Math.min(limit, 500)));
-    return (rows as { json: string }[]).map(r => JSON.parse(r.json) as EngineeringPulseUpdate);
+    return (rows as { json: string }[]).map(r =>
+      redactDeletedPulseUpdate(JSON.parse(r.json) as EngineeringPulseUpdate));
   }
 
   private prunePulse(projectId: ID): void {

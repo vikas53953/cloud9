@@ -15305,9 +15305,25 @@ function EngineeringPulseScreen({
     setFormError(null);
     setAnnouncement("");
     const refused = (why: string): void => setFormError(why);
+    // On edit, always send related keys as value-or-null so clearing a link
+    // survives JSON (undefined is dropped; null is the explicit clear signal).
+    const editPatch: Partial<EngineeringPulseDraft> = {
+      done: draft.done, doing: draft.doing, blocked: draft.blocked,
+      decisions: draft.decisions, helpNeeded: draft.helpNeeded,
+      relatedTaskId: draft.relatedTaskId ?? null,
+      relatedRunId: draft.relatedRunId ?? null,
+      relatedProjectItem: draft.relatedProjectItem ?? null,
+    };
+    const createDraft: EngineeringPulseDraft = {
+      done: draft.done, doing: draft.doing, blocked: draft.blocked,
+      decisions: draft.decisions, helpNeeded: draft.helpNeeded,
+      ...(draft.relatedTaskId ? { relatedTaskId: draft.relatedTaskId } : {}),
+      ...(draft.relatedRunId ? { relatedRunId: draft.relatedRunId } : {}),
+      ...(draft.relatedProjectItem ? { relatedProjectItem: draft.relatedProjectItem } : {}),
+    };
     const sent = editing
-      ? client.updatePulse(editing, draft, refused)
-      : client.createPulse(projectId, draft, undefined, refused);
+      ? client.updatePulse(editing, editPatch, refused)
+      : client.createPulse(projectId, createDraft, undefined, refused);
     if (!sent) setFormError("Connect to Cloud9 before saving this update.");
     else setPendingSaveRequest(sent);
   };
@@ -15369,9 +15385,9 @@ function EngineeringPulseScreen({
       </header>
 
       <div className="pulse-body">
-        {!world.connected && <div className="notice" role="status">Connecting to Cloud9â€¦</div>}
+        {!world.connected && <div className="notice" role="status">Connecting to Cloud9...</div>}
         {world.pulse.loading && !pendingSaveRequest && !pendingDeleteRequest && (
-          <div className="pulse-skeleton" role="status" aria-live="polite">Loading Engineering Pulse updatesâ€¦</div>
+          <div className="pulse-skeleton" role="status" aria-live="polite">Loading Engineering Pulse updates...</div>
         )}
         {world.pulse.problem && (
           <div className="pulse-error" role="alert">
@@ -15408,16 +15424,16 @@ function EngineeringPulseScreen({
             </div>
             <div className="pulse-links">
               <label>Related task (optional)<input value={draft.relatedTaskId ?? ""}
-                onChange={e => setDraft(d => ({ ...d, relatedTaskId: e.target.value || undefined }))} /></label>
+                onChange={e => setDraft(d => ({ ...d, relatedTaskId: e.target.value || null }))} /></label>
               <label>Related run (optional)<input value={draft.relatedRunId ?? ""}
-                onChange={e => setDraft(d => ({ ...d, relatedRunId: e.target.value || undefined }))} /></label>
+                onChange={e => setDraft(d => ({ ...d, relatedRunId: e.target.value || null }))} /></label>
               <label>Pull request or issue number (optional)<input inputMode="numeric"
                 value={draft.relatedProjectItem?.number ?? ""}
                 onChange={e => { const number = Number(e.target.value); setDraft(d => ({ ...d,
-                  relatedProjectItem: number > 0 ? { kind: d.relatedProjectItem?.kind ?? "pull", number } : undefined })); }} /></label>
+                  relatedProjectItem: number > 0 ? { kind: d.relatedProjectItem?.kind ?? "pull", number } : null })); }} /></label>
               <label>Link type<select value={draft.relatedProjectItem?.kind ?? "pull"}
                 onChange={e => setDraft(d => ({ ...d, relatedProjectItem: d.relatedProjectItem
-                  ? { kind: e.target.value as ProjectItemKind, number: d.relatedProjectItem.number } : undefined }))}>
+                  ? { kind: e.target.value as ProjectItemKind, number: d.relatedProjectItem.number } : null }))}>
                 <option value="pull">Pull request</option><option value="issue">Issue</option>
               </select></label>
             </div>
@@ -15426,7 +15442,7 @@ function EngineeringPulseScreen({
               <span className="muted">Updates are visible to this project’s owner and room members.</span>
               <button className="primary" type="submit" disabled={world.pulse.loading || !!pendingSaveRequest}>{editing ? "Save changes" : "Post update"}</button>
             </div>
-            <div className="sr-only" role="status" aria-live="polite">{world.pulse.loading ? "Saving Engineering Pulse updateâ€¦" : announcement}</div>
+            <div className="sr-only" role="status" aria-live="polite">{world.pulse.loading ? "Saving Engineering Pulse update..." : announcement}</div>
           </form>
         )}
 
@@ -15452,7 +15468,7 @@ function EngineeringPulseScreen({
                 {(update.relatedTaskId || update.relatedRunId || related) && <p className="pulse-related">Related: {update.relatedTaskId && <button type="button" className="linkbtn" onClick={() => onOpenTask(update.relatedTaskId!)} aria-label={`Open related task ${update.relatedTaskId}`}>task {update.relatedTaskId}</button>}{update.relatedRunId && <button type="button" className="linkbtn" onClick={() => onOpenRun(update.relatedRunId!)} aria-label={`Open related run ${update.relatedRunId}`}>run {update.relatedRunId}</button>}{related && <button type="button" className="linkbtn" onClick={() => onOpenProject(update.projectId, related)} aria-label={`Open related ${related.kind === "pull" ? "pull request" : "issue"} ${related.number}`}>{item ? `${item.kind === "pull" ? "PR" : "issue"} #${item.number}` : `${related.kind === "pull" ? "PR" : "issue"} #${related.number} (not loaded)`}</button>}</p>}
                 {mine && <div className="pulse-actions"><button className="quiet" onClick={() => beginEdit(update)} disabled={!!pendingSaveRequest || !!pendingDeleteRequest}>Edit</button><button className="quiet danger" disabled={pendingDelete === update.id} onClick={() => {
                   if (!window.confirm("Delete this update? It will stay in the feed as a deleted update.")) return;
-                  setAnnouncement("Deleting Engineering Pulse updateâ€¦");
+                  setAnnouncement("Deleting Engineering Pulse update...");
                   const sent = client.deletePulse(update.id, why => setFormError(why));
                   if (sent) {
                     setPendingDelete(update.id);

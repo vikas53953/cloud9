@@ -2224,7 +2224,7 @@ export class RelayClient {
       lost: () => {
         if (this.world.pulse.requestId !== requestId) return;
         this.world.pulse = { ...this.world.pulse, asked: true, loading: false, requestId: undefined,
-          problem: "the hub did not answer â€” is it still running?" };
+          problem: "the hub did not answer - is it still running?" };
         this.emit();
       },
     });
@@ -2256,7 +2256,7 @@ export class RelayClient {
         this.pulseMutationRequestId = undefined;
         this.world.pulse = { ...this.world.pulse, loading: false, problem: why }; onRefused?.(why); this.emit();
       },
-      lost: () => { const why = "the hub did not answer â€” is it still running?";
+      lost: () => { const why = "the hub did not answer - is it still running?";
         if (this.pulseMutationRequestId !== requestId) return;
         this.pulseMutationRequestId = undefined;
         this.world.pulse = { ...this.world.pulse, loading: false, problem: why }; onRefused?.(why); this.emit(); },
@@ -2275,7 +2275,13 @@ export class RelayClient {
     this.emit();
     const requestId = this.nextRequestId("pulseUpdate");
     this.pulseMutationRequestId = requestId;
-    const sent = this.ask({ type: "pulseUpdate", updateId, patch, requestId }, {
+    // Related links: when the editor touches a key, send value-or-null so
+    // JSON.stringify cannot drop a clear. Untouched keys stay omitted (keep).
+    const safePatch: Partial<EngineeringPulseDraft> = { ...patch };
+    if ("relatedTaskId" in patch) safePatch.relatedTaskId = patch.relatedTaskId ?? null;
+    if ("relatedRunId" in patch) safePatch.relatedRunId = patch.relatedRunId ?? null;
+    if ("relatedProjectItem" in patch) safePatch.relatedProjectItem = patch.relatedProjectItem ?? null;
+    const sent = this.ask({ type: "pulseUpdate", updateId, patch: safePatch, requestId }, {
       answers: f => f.type === "pulseChanged" && f.requestId === requestId && f.update.id === updateId,
       answered: () => {
         if (this.pulseMutationRequestId !== requestId) return;
@@ -2288,7 +2294,7 @@ export class RelayClient {
         this.pulseMutationRequestId = undefined;
         this.world.pulse = { ...this.world.pulse, loading: false, problem: why }; onRefused?.(why); this.emit();
       },
-      lost: () => { const why = "the hub did not answer â€” is it still running?";
+      lost: () => { const why = "the hub did not answer - is it still running?";
         if (this.pulseMutationRequestId !== requestId) return;
         this.pulseMutationRequestId = undefined;
         this.world.pulse = { ...this.world.pulse, loading: false, problem: why }; onRefused?.(why); this.emit(); },
@@ -2320,7 +2326,7 @@ export class RelayClient {
         this.pulseMutationRequestId = undefined;
         this.world.pulse = { ...this.world.pulse, loading: false, problem: why }; onRefused?.(why); this.emit();
       },
-      lost: () => { const why = "the hub did not answer â€” is it still running?";
+      lost: () => { const why = "the hub did not answer - is it still running?";
         if (this.pulseMutationRequestId !== requestId) return;
         this.pulseMutationRequestId = undefined;
         this.world.pulse = { ...this.world.pulse, loading: false, problem: why }; onRefused?.(why); this.emit(); },

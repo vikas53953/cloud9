@@ -9,6 +9,11 @@ const draft: EngineeringPulseDraft = {
   done: "Shipped the intake copy", doing: "Reviewing the next task",
   blocked: "", decisions: "Keep the feed project-scoped", helpNeeded: "",
 };
+/** Section fields only — safe to spread into a stored EngineeringPulseUpdate. */
+const draftSections = {
+  done: draft.done, doing: draft.doing, blocked: draft.blocked,
+  decisions: draft.decisions, helpNeeded: draft.helpNeeded,
+};
 
 async function stand(t: TestContext) {
   const relay = new Relay({ dbPath: tmp("engineering-pulse.db"), ownerToken: "pulse-owner", ownerName: "Vikas" });
@@ -42,14 +47,25 @@ test("Pulse updates persist across Store reopen and keep a deletion tombstone", 
   const p = project("u-owner");
   first.saveProject(p);
   first.savePulse({ id: "pulse-1", projectId: p.id, authorId: "u-owner", authorKind: "human", authorName: "Vikas",
-    createdAt: 10, updatedAt: 10, ...draft });
+    createdAt: 10, updatedAt: 10, ...draftSections, relatedTaskId: "task-secret" });
   first.markPulseRead("u-owner", p.id, 10);
   first.db.close();
   const second = new Store(db);
   assert.equal(second.schemaVersion(), 9);
   assert.equal(second.pulses(p.id)[0].id, "pulse-1");
   const row = second.pulse("pulse-1")!; row.deletedAt = 20; row.updatedAt = 20; second.savePulse(row);
-  assert.equal(second.pulses(p.id)[0].deletedAt, 20);
+  const tombstone = second.pulses(p.id)[0];
+  assert.equal(tombstone.deletedAt, 20);
+  // Soft-delete purges section bodies and related links in storage.
+  assert.equal(tombstone.done, "");
+  assert.equal(tombstone.doing, "");
+  assert.equal(tombstone.blocked, "");
+  assert.equal(tombstone.decisions, "");
+  assert.equal(tombstone.helpNeeded, "");
+  assert.equal(tombstone.relatedTaskId, undefined);
+  const raw = second.db.prepare("SELECT json FROM pulse_updates WHERE id=?").get("pulse-1") as { json: string };
+  assert.equal(raw.json.includes("Shipped the intake copy"), false, "deleted body must not remain in the row");
+  assert.equal(raw.json.includes("task-secret"), false, "deleted related link must not remain in the row");
   second.db.close();
 });
 
@@ -88,7 +104,7 @@ test("v9 receipt repair backfills live updates and retires orphan ids", () => {
   const db = tmp("pulse-receipt-repair.db");
   const first = new Store(db);
   first.savePulse({ id: "bind-pulse", projectId: "project-bind", authorId: "u-owner", authorKind: "human",
-    authorName: "Vikas", createdAt: 10, updatedAt: 10, ...draft });
+    authorName: "Vikas", createdAt: 10, updatedAt: 10, ...draftSections });
   first.db.exec("DROP TABLE pulse_mutation_receipts; "
     + "CREATE TABLE pulse_mutation_receipts(userId TEXT NOT NULL, requestId TEXT NOT NULL, "
     + "kind TEXT NOT NULL, payloadHash TEXT NOT NULL, updateId TEXT NOT NULL, createdAt INTEGER NOT NULL, "
@@ -135,10 +151,27 @@ test("owner can post, edit, delete, list and mark a Pulse update", async t => {
     f => f.type === "pulseChanged" && f.requestId === "delete-1"
       && f.update.id === created.update.id && !!f.update.deletedAt);
   assert.ok(deleted.update.deletedAt);
+  // Wire projection must not ship the deleted section text (B1).
+  assert.equal(deleted.update.done, "");
+  assert.equal(deleted.update.doing, "");
+  assert.equal(deleted.update.decisions, "");
+  assert.equal(deleted.update.relatedProjectItem, undefined);
+  assert.equal(deleted.update.done.includes("Shipped"), false);
+  const stored = relay.store.pulse(created.update.id)!;
+  assert.equal(stored.done, "");
+  assert.equal(stored.relatedProjectItem, undefined);
   owner.send({ type: "pulseUpdate", updateId: created.update.id, patch: { doing: "should stay deleted" }, requestId: "update-deleted" });
   const editDenied = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
     f => f.type === "error" && f.requestId === "update-deleted");
   assert.match(editDenied.error, /deleted.*cannot be edited/);
+  owner.send({ type: "pulseList", projectId: p.id, requestId: "list-after-delete" });
+  const listed = await owner.wait<Extract<ServerFrame, { type: "pulse" }>>(
+    f => f.type === "pulse" && f.requestId === "list-after-delete");
+  const listedRow = listed.updates.find(u => u.id === created.update.id)!;
+  assert.ok(listedRow.deletedAt);
+  assert.equal(listedRow.done, "");
+  assert.equal(listedRow.doing, "");
+  assert.equal(JSON.stringify(listedRow).includes("Shipped the intake copy"), false);
   owner.send({ type: "pulseRead", projectId: p.id, at: Date.now(), requestId: "read-1" });
   const read = await owner.wait<Extract<ServerFrame, { type: "pulse" }>>(
     f => f.type === "pulse" && f.projectId === p.id && f.requestId === "read-1");
@@ -146,6 +179,72 @@ test("owner can post, edit, delete, list and mark a Pulse update", async t => {
   owner.send({ type: "pulseRead", projectId: p.id, at: Number.MAX_SAFE_INTEGER, requestId: "read-future" });
   await owner.wait(f => f.type === "pulse" && f.requestId === "read-future");
   assert.ok(relay.store.pulseReadAt(ownerId, p.id) <= Date.now(), "future read watermarks are clamped");
+});
+
+test("clearing related links on edit uses null and list/replay stay clear", async t => {
+  const { relay, owner, ownerId } = await stand(t);
+  const p = project(ownerId); relay.store.saveProject(p);
+  const task: Task = { id: "task-1", title: "Linked task", requesterId: ownerId,
+    requesterName: "Vikas", agentId: "agent-1", channelId: "ch-pulse-link", status: "completed",
+    createdAt: 1, updatedAt: 1 };
+  relay.store.saveTask(task);
+  const run: RunRecord = {
+    id: "run-1", kind: "task", agentId: task.agentId, agentName: "bot",
+    provider: "mock", requestedBy: "Vikas", requestedByKind: "human", ask: task.title,
+    startedAt: 1, finishedAt: 2, durationMs: 1, outcome: "ok", steps: [], replyChars: 0, events: 0,
+  };
+  relay.store.saveRun({ record: run, agentId: task.agentId, ownerId, channelId: task.channelId });
+  const item: ProjectItem = { projectId: p.id, kind: "pull", number: 9, title: "Link me",
+    state: "open", url: "https://github.com/vikas53953/cloud9/pull/9", createdAt: 1, updatedAt: 2 };
+  relay.store.syncProjectItems(p.id, [item]);
+
+  owner.send({ type: "pulseCreate", projectId: p.id, draft: {
+    ...draft, relatedTaskId: task.id, relatedRunId: run.id,
+    relatedProjectItem: { kind: "pull", number: 9 },
+  }, requestId: "link-create" });
+  const created = await owner.wait<Extract<ServerFrame, { type: "pulseChanged" }>>(
+    f => f.type === "pulseChanged" && f.requestId === "link-create");
+  assert.equal(created.update.relatedTaskId, task.id);
+  assert.equal(created.update.relatedRunId, run.id);
+  assert.deepEqual(created.update.relatedProjectItem, { kind: "pull", number: 9 });
+
+  // null is the explicit clear signal (undefined would be dropped by JSON).
+  owner.send({ type: "pulseUpdate", updateId: created.update.id, patch: {
+    relatedTaskId: null, relatedRunId: null, relatedProjectItem: null,
+  }, requestId: "link-clear" });
+  const cleared = await owner.wait<Extract<ServerFrame, { type: "pulseChanged" }>>(
+    f => f.type === "pulseChanged" && f.requestId === "link-clear");
+  assert.equal(cleared.update.relatedTaskId, undefined);
+  assert.equal(cleared.update.relatedRunId, undefined);
+  assert.equal(cleared.update.relatedProjectItem, undefined);
+  assert.equal(relay.store.pulse(created.update.id)!.relatedTaskId, undefined);
+  assert.equal(relay.store.pulse(created.update.id)!.relatedRunId, undefined);
+  assert.equal(relay.store.pulse(created.update.id)!.relatedProjectItem, undefined);
+
+  // Replay of the same clear must stay clear.
+  owner.send({ type: "pulseUpdate", updateId: created.update.id, patch: {
+    relatedTaskId: null, relatedRunId: null, relatedProjectItem: null,
+  }, requestId: "link-clear" });
+  const replay = await owner.wait<Extract<ServerFrame, { type: "pulseChanged" }>>(
+    f => f.type === "pulseChanged" && f.requestId === "link-clear");
+  assert.equal(replay.update.relatedTaskId, undefined);
+  assert.equal(replay.update.relatedRunId, undefined);
+  assert.equal(replay.update.relatedProjectItem, undefined);
+
+  // Omitted keys still keep remaining links (only clear what was null'd).
+  owner.send({ type: "pulseUpdate", updateId: created.update.id, patch: {
+    relatedTaskId: task.id,
+  }, requestId: "link-restore-task" });
+  const restored = await owner.wait<Extract<ServerFrame, { type: "pulseChanged" }>>(
+    f => f.type === "pulseChanged" && f.requestId === "link-restore-task");
+  assert.equal(restored.update.relatedTaskId, task.id);
+  owner.send({ type: "pulseUpdate", updateId: created.update.id, patch: {
+    doing: "still working",
+  }, requestId: "link-keep-omitted" });
+  const kept = await owner.wait<Extract<ServerFrame, { type: "pulseChanged" }>>(
+    f => f.type === "pulseChanged" && f.requestId === "link-keep-omitted");
+  assert.equal(kept.update.relatedTaskId, task.id, "omitted relatedTaskId keeps the existing link");
+  assert.equal(kept.update.doing, "still working");
 });
 
 test("editing or deleting an inaccessible Pulse id is indistinguishable from a missing id", async t => {
@@ -276,7 +375,7 @@ test("Pulse mutation receipts are owner-scoped and expire on lookup", () => {
   const store = new Store(db);
   const hash = store.pulseMutationHash("pulseCreate", { projectId: "p", draft, agentId: null });
   const update = { id: "receipt-pulse", projectId: "p", authorId: "u-owner", authorKind: "human" as const,
-    authorName: "Vikas", createdAt: 1, updatedAt: 1, ...draft };
+    authorName: "Vikas", createdAt: 1, updatedAt: 1, ...draftSections };
   store.savePulseMutation("u-owner", "pulse-request", "pulseCreate", hash, update);
   assert.equal((store.db.prepare("SELECT projectId FROM pulse_mutation_receipts WHERE userId=? AND requestId=?")
     .get("u-owner", "pulse-request") as { projectId: string }).projectId, "p");

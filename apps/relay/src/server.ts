@@ -14,7 +14,8 @@ import {
   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
   MESSAGE_LIMITS, ARTIFACT_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
   ReachCatchup,
-  EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject, validateEngineeringPulseDraft,
+  EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject,
+  redactDeletedPulseUpdate, validateEngineeringPulseDraft,
   RepoChoice, REPO_LIST_LIMITS, validateRepoChoice, validateLocalFolder,
   RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
   // "show me the plan first" (2026-08-05) — the hub still writes the line the
@@ -1047,19 +1048,23 @@ export class Relay {
     return audience;
   }
 
-  /** Remove related identifiers the reader can no longer open. */
+  /** Remove related identifiers the reader can no longer open; purge deleted bodies. */
   private pulseProjection(userId: ID, update: EngineeringPulseUpdate): EngineeringPulseUpdate {
-    const project = this.store.project(update.projectId);
-    const task = update.relatedTaskId ? this.store.task(update.relatedTaskId) : undefined;
-    const run = update.relatedRunId ? this.store.run(update.relatedRunId) : undefined;
+    // Soft-delete is content moderation: list, welcome, and replay must never
+    // re-ship the deleted section text (storage also purges; this is the wire).
+    const redacted = redactDeletedPulseUpdate(update);
+    if (redacted.deletedAt) return redacted;
+    const project = this.store.project(redacted.projectId);
+    const task = redacted.relatedTaskId ? this.store.task(redacted.relatedTaskId) : undefined;
+    const run = redacted.relatedRunId ? this.store.run(redacted.relatedRunId) : undefined;
     const canTask = !!task && this.canSeeTask(userId, task)
       && (!project?.channelId || task.channelId === project.channelId);
     const canRun = !!run && this.canSeeRun(userId, run)
       && (!project?.channelId || run.channelId === project.channelId);
-    const canItem = !!project && !!update.relatedProjectItem
+    const canItem = !!project && !!redacted.relatedProjectItem
       && this.store.projectItems(project.id).some(item =>
-        item.kind === update.relatedProjectItem!.kind && item.number === update.relatedProjectItem!.number);
-    const { relatedTaskId, relatedRunId, relatedProjectItem, ...base } = update;
+        item.kind === redacted.relatedProjectItem!.kind && item.number === redacted.relatedProjectItem!.number);
+    const { relatedTaskId, relatedRunId, relatedProjectItem, ...base } = redacted;
     return {
       ...base,
       ...(canTask ? { relatedTaskId } : {}),
@@ -1082,6 +1087,7 @@ export class Relay {
 
   /** Related links are references, not free-form labels: prove they exist and are readable. */
   private validatePulseLinks(userId: ID, project: Project, draft: EngineeringPulseDraft): void {
+    // null means "clear this link" and needs no existence check.
     if (draft.relatedTaskId) {
       const task = this.store.task(draft.relatedTaskId);
       if (!task || !this.canSeeTask(userId, task)) throw new Error("that related task is not available");
@@ -4041,24 +4047,41 @@ export class Relay {
           throw new Error("you may only edit your own update");
         }
         const patch = { ...frame.patch };
+        // Related links: undefined = keep existing, null = clear, value = set.
+        // JSON.stringify drops undefined, so clients must send null to clear.
+        const relatedTaskId = patch.relatedTaskId !== undefined
+          ? (patch.relatedTaskId || undefined)
+          : existing.relatedTaskId;
+        const relatedRunId = patch.relatedRunId !== undefined
+          ? (patch.relatedRunId || undefined)
+          : existing.relatedRunId;
+        const relatedProjectItem = patch.relatedProjectItem !== undefined
+          ? (patch.relatedProjectItem || undefined)
+          : existing.relatedProjectItem;
         const merged: EngineeringPulseDraft = {
           done: patch.done ?? existing.done, doing: patch.doing ?? existing.doing,
           blocked: patch.blocked ?? existing.blocked, decisions: patch.decisions ?? existing.decisions,
           helpNeeded: patch.helpNeeded ?? existing.helpNeeded,
-          ...(patch.relatedTaskId !== undefined ? { relatedTaskId: patch.relatedTaskId } :
-            existing.relatedTaskId ? { relatedTaskId: existing.relatedTaskId } : {}),
-          ...(patch.relatedRunId !== undefined ? { relatedRunId: patch.relatedRunId } :
-            existing.relatedRunId ? { relatedRunId: existing.relatedRunId } : {}),
-          ...(patch.relatedProjectItem !== undefined ? { relatedProjectItem: patch.relatedProjectItem } :
-            existing.relatedProjectItem ? { relatedProjectItem: existing.relatedProjectItem } : {}),
+          ...(relatedTaskId ? { relatedTaskId } : {}),
+          ...(relatedRunId ? { relatedRunId } : {}),
+          ...(relatedProjectItem ? { relatedProjectItem } : {}),
         };
         const bad = validateEngineeringPulseDraft(merged);
         if (bad) throw new Error(bad);
         this.validatePulseLinks(conn.userId, project, merged);
+        // Do not spread existing related* fields - merged is the sole source.
+        const {
+          relatedTaskId: _oldTask, relatedRunId: _oldRun, relatedProjectItem: _oldItem,
+          ...baseExisting
+        } = existing;
         const update: EngineeringPulseUpdate = {
-          ...existing, ...merged,
+          ...baseExisting,
           done: merged.done.trim(), doing: merged.doing.trim(), blocked: merged.blocked.trim(),
-          decisions: merged.decisions.trim(), helpNeeded: merged.helpNeeded.trim(), updatedAt: Date.now(),
+          decisions: merged.decisions.trim(), helpNeeded: merged.helpNeeded.trim(),
+          updatedAt: Date.now(),
+          ...(merged.relatedTaskId ? { relatedTaskId: merged.relatedTaskId } : {}),
+          ...(merged.relatedRunId ? { relatedRunId: merged.relatedRunId } : {}),
+          ...(merged.relatedProjectItem ? { relatedProjectItem: merged.relatedProjectItem } : {}),
         };
         if (frame.requestId && pulseHash) this.store.savePulseMutation(conn.userId, frame.requestId, "pulseUpdate", pulseHash, update);
         else this.store.savePulse(update);
@@ -4094,22 +4117,31 @@ export class Relay {
         if (existing.authorId !== author.id || existing.authorKind !== author.kind) {
           throw new Error("you may only delete your own update");
         }
+        let tombstone = existing;
         if (!existing.deletedAt) {
-          existing.deletedAt = Date.now();
-          existing.updatedAt = existing.deletedAt;
-          if (frame.requestId && pulseHash) this.store.savePulseMutation(conn.userId, frame.requestId, "pulseDelete", pulseHash, existing);
-          else this.store.savePulse(existing);
-          this.audit(conn, "pulse_deleted", existing.id, `deleted an Engineering Pulse update for ${project.name}`,
+          // Purge bodies at the moment of delete so storage and every wire
+          // projection lose the secret text (author-only delete for v1).
+          tombstone = redactDeletedPulseUpdate({
+            ...existing,
+            deletedAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+          if (frame.requestId && pulseHash) this.store.savePulseMutation(conn.userId, frame.requestId, "pulseDelete", pulseHash, tombstone);
+          else this.store.savePulse(tombstone);
+          this.audit(conn, "pulse_deleted", tombstone.id, `deleted an Engineering Pulse update for ${project.name}`,
           author.agent ? { asAgent: author.agent } : {});
         } else if (frame.requestId && pulseHash) {
           // A first delete of an already-deleted tombstone is still an
           // idempotent mutation and gets its durable receipt.
-          this.store.savePulseMutation(conn.userId, frame.requestId, "pulseDelete", pulseHash, existing);
+          tombstone = redactDeletedPulseUpdate(existing);
+          this.store.savePulseMutation(conn.userId, frame.requestId, "pulseDelete", pulseHash, tombstone);
+        } else {
+          tombstone = redactDeletedPulseUpdate(existing);
         }
         for (const recipient of this.conns) {
           if (!this.pulseAudience(project).has(recipient.userId)) continue;
           send(recipient.ws, {
-            type: "pulseChanged", update: this.pulseProjection(recipient.userId, existing),
+            type: "pulseChanged", update: this.pulseProjection(recipient.userId, tombstone),
             unreadByProject: this.pulseUnreadFrame(recipient.userId), projects: this.pulseProjectsFor(recipient.userId),
             ...(recipient === conn && frame.requestId ? { requestId: frame.requestId } : {}),
           });

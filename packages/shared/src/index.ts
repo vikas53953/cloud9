@@ -1857,9 +1857,34 @@ export const ENGINEERING_PULSE_LIMITS = {
   updatesPerProject: 500,
 } as const;
 
-export type EngineeringPulseDraft = Pick<EngineeringPulseUpdate,
-  "done" | "doing" | "blocked" | "decisions" | "helpNeeded" |
-  "relatedTaskId" | "relatedRunId" | "relatedProjectItem">;
+/**
+ * Draft for create, or a patch for edit. Related links accept `null` as an
+ * explicit clear: JSON drops `undefined`, so clearing a link must send null
+ * end-to-end or the hub keeps the previous value.
+ */
+export type EngineeringPulseDraft = {
+  done: string;
+  doing: string;
+  blocked: string;
+  decisions: string;
+  helpNeeded: string;
+  relatedTaskId?: ID | null;
+  relatedRunId?: ID | null;
+  relatedProjectItem?: { kind: ProjectItemKind; number: number } | null;
+};
+
+/** Strip section bodies and related links from a deleted Pulse row. */
+export function redactDeletedPulseUpdate(update: EngineeringPulseUpdate): EngineeringPulseUpdate {
+  if (!update.deletedAt) return update;
+  const {
+    relatedTaskId: _task, relatedRunId: _run, relatedProjectItem: _item,
+    ...rest
+  } = update;
+  return {
+    ...rest,
+    done: "", doing: "", blocked: "", decisions: "", helpNeeded: "",
+  };
+}
 
 /** Validate the bounded plain-word sections and optional related links. */
 export function validateEngineeringPulseDraft(value: unknown): string | null {
@@ -1874,15 +1899,16 @@ export function validateEngineeringPulseDraft(value: unknown): string | null {
       return `${label} is too long (max ${ENGINEERING_PULSE_LIMITS.section} characters)`;
     }
   }
-  if (draft.relatedTaskId !== undefined &&
+  // `null` means "clear this link" on edit and is always valid.
+  if (draft.relatedTaskId !== undefined && draft.relatedTaskId !== null &&
       (typeof draft.relatedTaskId !== "string" || draft.relatedTaskId.length > 200)) {
     return "the related task is not valid";
   }
-  if (draft.relatedRunId !== undefined &&
+  if (draft.relatedRunId !== undefined && draft.relatedRunId !== null &&
       (typeof draft.relatedRunId !== "string" || draft.relatedRunId.length > 200)) {
     return "the related run is not valid";
   }
-  if (draft.relatedProjectItem !== undefined) {
+  if (draft.relatedProjectItem !== undefined && draft.relatedProjectItem !== null) {
     const item = draft.relatedProjectItem;
     if (!item || (item.kind !== "pull" && item.kind !== "issue") ||
         !Number.isInteger(item.number) || item.number <= 0) {
