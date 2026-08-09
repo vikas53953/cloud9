@@ -1868,11 +1868,14 @@ function applyTheme(mode: AppearanceMode, palette: PaletteName, customAccent = "
   if (validAccent(customAccent)) {
     const hex = customAccent.slice(1);
     const value = parseInt(hex, 16);
-    const luminance = (0.2126 * ((value >> 16) & 255) + 0.7152 * ((value >> 8) & 255) + 0.0722 * (value & 255)) / 255;
+    const channel = (shift: number) => { const c = ((value >> shift) & 255) / 255; return c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4; };
+    const luminance = .2126 * channel(16) + .7152 * channel(8) + .0722 * channel(0);
+    const whiteContrast = 1.05 / (luminance + .05);
+    const darkContrast = (luminance + .05) / .05;
     root.style.setProperty("--pine", customAccent);
-    root.style.setProperty("--on-pine", luminance > .55 ? "#08120F" : "#FFFFFF");
+    root.style.setProperty("--on-pine", darkContrast >= whiteContrast ? "#08120F" : "#FFFFFF");
     root.style.setProperty("--pine-soft", `color-mix(in srgb, ${customAccent} 18%, transparent)`);
-    const foreground = luminance > .55 ? "#08120F" : "#FFFFFF";
+    const foreground = darkContrast >= whiteContrast ? "#08120F" : "#FFFFFF";
     root.style.setProperty("--chrome-bg", customAccent); root.style.setProperty("--shell-rail", customAccent); root.style.setProperty("--rail-bg", customAccent);
     root.style.setProperty("--rail-text", foreground); root.style.setProperty("--rail-ink", foreground); root.style.setProperty("--rail-muted", foreground);
     root.style.setProperty("--rail-active", `color-mix(in srgb, ${foreground} 86%, ${customAccent})`); root.style.setProperty("--rail-active-ink", customAccent);
