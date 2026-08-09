@@ -517,8 +517,11 @@ export class Engine {
     // Mark before sending: duplicate live frames and welcome replays cannot
     // produce a second warning, even when the first send is still in flight.
     this.lateWarningIds.add(approval.id);
-    writeWholeFile(this.lateWarningPath, JSON.stringify([...this.lateWarningIds]),
+    const warningSaved = writeWholeFile(this.lateWarningPath, JSON.stringify([...this.lateWarningIds]),
       message => console.error(`[engine] could not save late approval warning: ${message}`));
+    if (!warningSaved) {
+      console.error("[engine] late approval warning deduplication will last only until this restart");
+    }
     this.agentSend(agent.id, channelId,
       "You've just said yes to this, but I'm no longer waiting on it — Cloud9 was " +
       "restarted after I asked, so nothing was standing by to act on your answer. " +
