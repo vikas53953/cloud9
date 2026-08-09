@@ -3248,7 +3248,7 @@ function Workspace(): React.JSX.Element {
             <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
               <IconBolt />Ctrl K
             </button>
-            {railBtn("settings", "Admin", <IconGear />)}
+            {railBtn("settings", "Settings", <IconGear />)}
             {/* Which Cloud9 am I on, and a door to join a friend's. The active
                 hub's name rides on the button so it is glanceable, and the
                 connection sentence is its tooltip — both from `hubConn`, never a
@@ -12464,12 +12464,11 @@ const desktop = (): DesktopBridge | undefined =>
 
 const SET_SECTIONS = [
   ["set-look", "Appearance"],
-  ["set-replies", "Replies"],
-  ["set-agents", "New agents"],
+  ["set-replies", "Chat and replies"],
+  ["set-agents", "Agents"],
   ["set-notify", "Notifications"],
-  ["set-quiet", "Quiet hours"],
-  ["set-files", "Agent files"],
   ["set-apps", "Connected apps"],
+  ["set-workspace", "Workspace administration"],
   ["set-danger", "Danger zone"],
 ] as const;
 
@@ -12588,7 +12587,7 @@ function SettingsScreen(): React.JSX.Element {
           {/* HIS CHOICE, AND IT CHANGES THE BEHAVIOUR. Each line says what
               actually happens on screen, not which one sounds tidier. */}
           <section id="set-replies" className="setsect">
-            <h3>Replies</h3>
+            <h3>Chat and replies</h3>
             <p className="sec-note">
               What happens when you press <b>Reply</b> on a message. Either way the reply is
               still linked to the message it answers — this is about where you read it.
@@ -12629,7 +12628,7 @@ function SettingsScreen(): React.JSX.Element {
           </section>
 
           <section id="set-agents" className="setsect">
-            <h3>New agents start here</h3>
+            <h3>Agents</h3>
             <p className="sec-note">What a brand new agent starts with. You can change it per agent afterwards.</p>
             <div className="two">
               <div className="field-row">
@@ -12645,47 +12644,7 @@ function SettingsScreen(): React.JSX.Element {
                 <DefaultModelPick provider={p.defaultProvider} />
               </div>
             </div>
-          </section>
-
-          <section id="set-notify" className="setsect">
-            <h3>Notifications</h3>
-            <p className="sec-note">Cloud9 interrupts you as little as it can get away with.</p>
-            <div className="panelbox">
-              <label className="toggle-row">
-                <span className="tx">
-                  <b>Tell me about new messages</b>
-                  <span>{typeof Notification !== "undefined" && Notification.permission === "denied"
-                    ? "This computer is blocking Cloud9's pop-ups — allow them in your system settings."
-                    : "Your computer will ask permission the first time."}</span>
-                </span>
-                <input className="sw" type="checkbox" checked={p.notify} aria-label="Tell me about new messages"
-                  onChange={e => askNotify(e.target.checked)} />
-              </label>
-            </div>
-          </section>
-
-          <section id="set-quiet" className="setsect">
-            <h3>Quiet hours</h3>
-            <p className="sec-note">No pop-ups between these times. Anything urgent still lands in Tasks for the morning.</p>
-            <div className="panelbox">
-              <label className="toggle-row">
-                <span className="tx"><b>Quiet hours</b><span>Switch the window on, then set it below.</span></span>
-                <input className="sw" type="checkbox" checked={p.quietOn} aria-label="Quiet hours"
-                  onChange={e => prefs.set({ quietOn: e.target.checked })} />
-              </label>
-            </div>
-            <div className="quietrow">
-              <div className="field-row"><label>From</label>
-                <input className="input" type="time" value={p.quietFrom} disabled={!p.quietOn}
-                  onChange={e => prefs.set({ quietFrom: e.target.value })} /></div>
-              <div className="field-row"><label>Until</label>
-                <input className="input" type="time" value={p.quietTo} disabled={!p.quietOn}
-                  onChange={e => prefs.set({ quietTo: e.target.value })} /></div>
-            </div>
-          </section>
-
-          <section id="set-files" className="setsect">
-            <h3>Where agents live</h3>
+            <h4>Agent files</h4>
             <p className="sec-note">Where your agents keep the files they make and read.</p>
             <div className="path pathbox">
               <MarkFolder />
@@ -12704,6 +12663,40 @@ function SettingsScreen(): React.JSX.Element {
             {!desktop()?.openAgentFolder &&
               <div className="notice">Opening a folder needs the desktop app. In a browser you can still copy the path.</div>}
             {folderNote && <div className="notice">{folderNote}</div>}
+          </section>
+
+          <section id="set-notify" className="setsect">
+            <h3>Notifications</h3>
+            <p className="sec-note">Cloud9 interrupts you as little as it can get away with.</p>
+            <div className="panelbox">
+              <label className="toggle-row">
+                <span className="tx">
+                  <b>Tell me about new messages</b>
+                  <span>{typeof Notification !== "undefined" && Notification.permission === "denied"
+                    ? "This computer is blocking Cloud9's pop-ups — allow them in your system settings."
+                    : "Your computer will ask permission the first time."}</span>
+                </span>
+                <input className="sw" type="checkbox" checked={p.notify} aria-label="Tell me about new messages"
+                  onChange={e => askNotify(e.target.checked)} />
+              </label>
+            </div>
+            <h4>Quiet hours</h4>
+            <p className="sec-note">No pop-ups between these times. Anything urgent still lands in Tasks for the morning.</p>
+            <div className="panelbox">
+              <label className="toggle-row">
+                <span className="tx"><b>Quiet hours</b><span>Switch the window on, then set it below.</span></span>
+                <input className="sw" type="checkbox" checked={p.quietOn} aria-label="Quiet hours"
+                  onChange={e => prefs.set({ quietOn: e.target.checked })} />
+              </label>
+            </div>
+            <div className="quietrow">
+              <div className="field-row"><label>From</label>
+                <input className="input" type="time" value={p.quietFrom} disabled={!p.quietOn}
+                  onChange={e => prefs.set({ quietFrom: e.target.value })} /></div>
+              <div className="field-row"><label>Until</label>
+                <input className="input" type="time" value={p.quietTo} disabled={!p.quietOn}
+                  onChange={e => prefs.set({ quietTo: e.target.value })} /></div>
+            </div>
           </section>
 
           {owner ? (
@@ -12770,6 +12763,12 @@ function SettingsScreen(): React.JSX.Element {
             </section>
           )}
 
+          <section id="set-workspace" className="setsect">
+            <h3>Workspace administration</h3>
+            <p className="sec-note">Manage who can enter this workspace. Organization policies and billing will live here when available.</p>
+            <WorkspaceAdministration />
+          </section>
+
           <section id="set-danger" className="setsect danger">
             <h3>Danger zone</h3>
             <p className="sec-note">These cannot be undone from here.</p>
@@ -12797,25 +12796,13 @@ function DefaultModelPick({ provider }: { provider: Provider }): React.JSX.Eleme
 function DangerZone({ stored, onStoredChanged }: {
   stored: CredentialStatus | null; onStoredChanged: () => void;
 }): React.JSX.Element {
-  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const [confirmPerson, setConfirmPerson] = useState<ID | "">("");
   const [note, setNote] = useState<string | null>(null);
-
-  const uniqueOthers = onePerPerson(world.users).filter(u => u.id !== world.me?.id);
 
   const removeKey = async (h: Harness) => {
     const r = await desktop()?.clearCredential?.(h);
     setNote(r?.ok ? `Removed the saved ${PROVIDER_LABEL[h]} key from this computer.`
       : r?.error ?? "Nothing to remove, or the app could not remove it.");
     onStoredChanged();
-  };
-
-  const removePerson = () => {
-    if (!confirmPerson) return;
-    const person = uniqueOthers.find(u => u.id === confirmPerson);
-    client.send({ type: "removeUser", userId: confirmPerson });
-    setNote(`Asked to remove ${person?.name ?? "that person"}. They lose access the next time they connect.`);
-    setConfirmPerson("");
   };
 
   return (
@@ -12830,21 +12817,44 @@ function DangerZone({ stored, onStoredChanged }: {
               onClick={() => void removeKey("codex")}>Remove Codex key</button>
           </span>
         </div>
-        {/* Removing a person is owner-only in the relay. Same rule as the invite
-            button: don't offer what can only come back as a refusal. */}
-        {isOwner(world.me) && (
-          <div className="toggle-row">
-            <span className="tx"><b>Remove a person</b><span>They can no longer read or write in your Cloud9.</span></span>
-            <span className="dangerbtns">
-              <select className="removepersonpick" value={confirmPerson} aria-label="Choose someone to remove"
-                onChange={e => setConfirmPerson(e.target.value)}>
-                <option value="">Choose someone…</option>
-                {uniqueOthers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-              </select>
-              <button className="btn small danger" disabled={!confirmPerson} onClick={removePerson}>Remove</button>
-            </span>
-          </div>
-        )}
+      </div>
+      {note && <div className="notice">{note}</div>}
+    </>
+  );
+}
+
+function WorkspaceAdministration(): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [confirmPerson, setConfirmPerson] = useState<ID | "">("");
+  const [note, setNote] = useState<string | null>(null);
+  const uniqueOthers = onePerPerson(world.users).filter(u => u.id !== world.me?.id);
+
+  if (!isOwner(world.me)) {
+    return <div className="notice">Only the workspace owner can change members and permissions.</div>;
+  }
+
+  const removePerson = () => {
+    if (!confirmPerson) return;
+    const person = uniqueOthers.find(u => u.id === confirmPerson);
+    client.send({ type: "removeUser", userId: confirmPerson });
+    setNote(`Asked to remove ${person?.name ?? "that person"}. They lose access the next time they connect.`);
+    setConfirmPerson("");
+  };
+
+  return (
+    <>
+      <div className="panelbox">
+        <div className="toggle-row">
+          <span className="tx"><b>Workspace members</b><span>Remove access for someone who should no longer enter this Cloud9.</span></span>
+          <span className="dangerbtns">
+            <select className="removepersonpick" value={confirmPerson} aria-label="Choose someone to remove"
+              onChange={e => setConfirmPerson(e.target.value)}>
+              <option value="">Choose someone…</option>
+              {uniqueOthers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+            <button className="btn small danger" disabled={!confirmPerson} onClick={removePerson}>Remove access</button>
+          </span>
+        </div>
       </div>
       {note && <div className="notice">{note}</div>}
     </>

@@ -15,9 +15,9 @@ test("the permanent rail stays focused and the full feature set is grouped behin
   assert.match(nav, /railBtn\("activity", "Activity"/);
   assert.match(nav, /railBtn\("files", "Files"/);
   assert.match(nav, /<IconMore \/>More/);
-  assert.match(nav, /railBtn\("settings", "Admin"/);
+  assert.match(nav, /railBtn\("settings", "Settings"/);
   assert.doesNotMatch(nav, /railBtn\("chat", "Chat"/);
-  assert.doesNotMatch(nav, /railBtn\("settings", "Settings"/);
+  assert.doesNotMatch(nav, /railBtn\("settings", "Admin"/);
   assert.match(nav, /toolBtn\("tasks", "Tasks"/);
   assert.match(nav, /toolBtn\("projects", "Projects"/);
   assert.match(nav, /data-open-tools/);
@@ -36,6 +36,32 @@ test("the permanent rail stays focused and the full feature set is grouped behin
   assert.match(app, /const openHome = useCallback\(\(\) => \{\s*attemptLeave\(\(\) => \{\s*setScreen\("chat"\);\s*const room = world\.channels\.find\(c => c\.kind !== "dm"\)/,
     "Home must leave a DM by selecting an actual room");
   assert.match(nav, /railBtn\("chat", "Home", <IconHome \/>, undefined, openHome/);
+});
+
+test("personal settings are named separately from workspace administration", () => {
+  const app = read("App.tsx");
+  const sections = app.slice(app.indexOf("const SET_SECTIONS"), app.indexOf("function SettingsScreen"));
+
+  for (const label of [
+    "Appearance",
+    "Chat and replies",
+    "Agents",
+    "Notifications",
+    "Connected apps",
+    "Workspace administration",
+    "Danger zone",
+  ]) {
+    assert.match(sections, new RegExp(`\\[\\"[^\\"]+\\", \\"${label}\\"\\]`));
+  }
+  assert.doesNotMatch(sections, /\["set-quiet", "Quiet hours"\]/,
+    "quiet hours belongs under Notifications rather than acting like a top-level preference area");
+  assert.doesNotMatch(sections, /\["set-files", "Agent files"\]/,
+    "agent storage belongs under Agents rather than acting like a top-level preference area");
+  assert.match(app, /<h3>Workspace administration<\/h3>/);
+  assert.match(app, /<WorkspaceAdministration \/>/);
+  assert.match(app, /Only the workspace owner can change members and permissions/);
+  assert.match(app, /<DangerZone stored=\{stored\}/,
+    "destructive personal credential controls remain in Danger zone");
 });
 
 test("a channel opens without a persistent rail and opts into room details", () => {
