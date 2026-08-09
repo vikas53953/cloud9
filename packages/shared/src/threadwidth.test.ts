@@ -21,14 +21,14 @@ test("the space to share, at the four sizes that were photographed", () => {
   assert.equal(spaceToShare(800), 506);     // 800  - 78 - 216
 });
 
-test("894 is where the app can just barely still split", () => {
-  assert.equal(SPLIT_NEEDS_WINDOW, 894);
-  assert.equal(cannotSplit(spaceToShare(894)), false, "at 894 both floors fit exactly");
-  assert.equal(cannotSplit(spaceToShare(893)), true);
+test("1114 is where the app can just barely still split", () => {
+  assert.equal(SPLIT_NEEDS_WINDOW, 1114);
+  assert.equal(cannotSplit(spaceToShare(1114)), false, "at 1114 both floors fit exactly");
+  assert.equal(cannotSplit(spaceToShare(1113)), true);
   assert.equal(cannotSplit(spaceToShare(800)), true);
   /* And at 894 the handle has nowhere to travel — that is arithmetic, not a
      fault, and the page says so out loud. */
-  assert.equal(widestThread(spaceToShare(894)), THREAD_FLOOR);
+  assert.equal(widestThread(spaceToShare(1114)), THREAD_FLOOR);
 });
 
 /* ------------------------------------------------------- no cap on the thread
@@ -39,19 +39,19 @@ test("there is a floor on the room and NO ceiling on the thread", () => {
     const space = spaceToShare(viewport);
     assert.equal(widestThread(space), space - ROOM_FLOOR,
       "the only limit is the room's floor");
-    assert.equal(widthToDraw(999999, space), space - ROOM_FLOOR,
+    assert.equal(widthToDraw(999999, space), cannotSplit(space) ? space : space - ROOM_FLOOR,
       "asking for a huge thread gives back everything except the room's floor");
   }
   /* Concretely: on his own maximised window it is 1292px, against 280 today. */
-  assert.equal(widthToDraw(999999, spaceToShare(1920)), 1292);
+  assert.equal(widthToDraw(999999, spaceToShare(1920)), 1072);
   /* Wider window => wider thread, every time. A ceiling would flatten this. */
   assert.ok(widthToDraw(9e9, spaceToShare(2560)) > widthToDraw(9e9, spaceToShare(1920)));
 });
 
 test("the invented 380px room floor is gone and must not come back", () => {
-  assert.equal(ROOM_FLOOR, 300);
+  assert.equal(ROOM_FLOOR, 520);
   assert.equal(THREAD_FLOOR, 300);
-  assert.equal(widthToDraw(9e9, spaceToShare(1920)), 1292,
+  assert.equal(widthToDraw(9e9, spaceToShare(1920)), 1072,
     "a 380 room floor would give 1212 here — that is the rejected number");
 });
 
@@ -62,23 +62,23 @@ test("a narrow window BORROWS his width, it never rewrites it", () => {
   const his = 1200;
   const wide = spaceToShare(1920);
   const narrow = spaceToShare(1330);
-  assert.equal(widthToDraw(his, wide), 1200, "his own screen gives him what he chose");
-  assert.equal(widthToDraw(his, narrow), 736, "1036 - 300; drawn smaller because it must be");
+  assert.equal(widthToDraw(his, wide), 1072, "his own screen honours the readable-room floor");
+  assert.equal(widthToDraw(his, narrow), 516, "1036 - 520; drawn smaller because the room stays readable");
   /* The stored number is untouched — same input, same answer, on the way back up */
-  assert.equal(widthToDraw(his, wide), 1200, "widen again and his 1200 is back");
+  assert.equal(widthToDraw(his, wide), 1072, "widen again restores the same bounded drawn width");
 });
 
 test("even in take-over territory his width survives", () => {
   const his = 1200;
   assert.equal(widthToDraw(his, spaceToShare(800)), 506, "drawn as the whole area");
-  assert.equal(widthToDraw(his, spaceToShare(1920)), 1200, "and still his when there is room");
+  assert.equal(widthToDraw(his, spaceToShare(1920)), 1072, "and the room remains readable when it returns");
 });
 
 test("only his own doing produces a number meant to be stored", () => {
   const space = spaceToShare(1920);
-  assert.equal(widthHeChose(1200, space), 1200);
+  assert.equal(widthHeChose(1200, space), 1072);
   assert.equal(widthHeChose(50, space), THREAD_FLOOR, "a drag past the floor stops at it");
-  assert.equal(widthHeChose(9e9, space), 1292, "and past the room's floor stops there");
+  assert.equal(widthHeChose(9e9, space), 1072, "and past the room's floor stops there");
   assert.equal(widthHeChose(NaN, space), THREAD_DEFAULT);
 });
 
@@ -107,15 +107,15 @@ test("before the screen has measured itself, he still gets HIS width", () => {
 });
 
 test("it opens at Buzz's measured default, not at today's 280", () => {
-  assert.equal(THREAD_DEFAULT, 388);
-  assert.equal(widthToDraw(THREAD_DEFAULT, spaceToShare(1920)), 388);
+  assert.equal(THREAD_DEFAULT, 460);
+  assert.equal(widthToDraw(THREAD_DEFAULT, spaceToShare(1920)), 460);
   assert.notEqual(THREAD_DEFAULT, 280);
 });
 
 test("arrow keys move it by a step that is visible but not wild", () => {
   const space = spaceToShare(1920);
-  assert.equal(widthHeChose(THREAD_DEFAULT + THREAD_STEP, space), 404);
-  assert.equal(widthHeChose(THREAD_DEFAULT - THREAD_STEP, space), 372);
+  assert.equal(widthHeChose(THREAD_DEFAULT + THREAD_STEP, space), 476);
+  assert.equal(widthHeChose(THREAD_DEFAULT - THREAD_STEP, space), 444);
 });
 
 /* --------------------------------------------------- the conditional tooltip

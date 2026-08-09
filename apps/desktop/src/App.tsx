@@ -1163,6 +1163,9 @@ const IconChat = (): React.JSX.Element => (
     <path d="M8.5 9.5h7M8.5 12.5h4" />
   </svg>
 );
+const IconSearch = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15.2 15.2 4.3 4.3"/></svg>
+);
 const IconHome = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <path d="m4 10 8-6 8 6v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19Z" />
@@ -1693,7 +1696,9 @@ function makeStore<T>(name: string, fallback: T) {
 
 export type ThemeName =
   | "system" | "light" | "dark" | "daylight" | "cloud9-pine" | "midnight"
-  | "aubergine" | "solarized-dark" | "rose-pine" | "catppuccin";
+  | "aubergine" | "solarized-dark" | "rose-pine" | "catppuccin" | "nord" | "dracula"
+  | "tokyo-night" | "graphite" | "porcelain" | "warm-paper" | "solarized-light"
+  | "high-contrast-dark" | "high-contrast-light";
 
 export type AppearanceMode = "system" | "light" | "dark";
 export type PaletteName = Exclude<ThemeName, "system" | "light" | "dark">;
@@ -1704,14 +1709,24 @@ const PALETTES: readonly {
   label: string;
   prev: string;
   mode: Exclude<AppearanceMode, "system">;
+  category: "Dark" | "Light" | "Accessibility";
 }[] = [
-  { value: "daylight", label: "Daylight", prev: "prev-light", mode: "light" },
-  { value: "cloud9-pine", label: "Cloud9 Pine", prev: "prev-pine", mode: "light" },
-  { value: "midnight", label: "Midnight", prev: "prev-dark", mode: "dark" },
-  { value: "aubergine", label: "Aubergine", prev: "prev-aubergine", mode: "dark" },
-  { value: "solarized-dark", label: "Solarized dark", prev: "prev-solarized", mode: "dark" },
-  { value: "rose-pine", label: "Rose Pine", prev: "prev-rose", mode: "dark" },
-  { value: "catppuccin", label: "Catppuccin", prev: "prev-catppuccin", mode: "dark" },
+  { value: "daylight", label: "Daylight", prev: "prev-light", mode: "light", category: "Light" },
+  { value: "cloud9-pine", label: "Cloud9 Pine", prev: "prev-pine", mode: "light", category: "Light" },
+  { value: "porcelain", label: "Porcelain", prev: "prev-light", mode: "light", category: "Light" },
+  { value: "warm-paper", label: "Warm Paper", prev: "prev-light", mode: "light", category: "Light" },
+  { value: "solarized-light", label: "Solarized Light", prev: "prev-light", mode: "light", category: "Light" },
+  { value: "high-contrast-light", label: "High Contrast Light", prev: "prev-light", mode: "light", category: "Accessibility" },
+  { value: "midnight", label: "Midnight", prev: "prev-dark", mode: "dark", category: "Dark" },
+  { value: "aubergine", label: "Aubergine", prev: "prev-aubergine", mode: "dark", category: "Dark" },
+  { value: "solarized-dark", label: "Solarized dark", prev: "prev-solarized", mode: "dark", category: "Dark" },
+  { value: "rose-pine", label: "Rose Pine", prev: "prev-rose", mode: "dark", category: "Dark" },
+  { value: "catppuccin", label: "Catppuccin", prev: "prev-catppuccin", mode: "dark", category: "Dark" },
+  { value: "nord", label: "Nord", prev: "prev-catppuccin", mode: "dark", category: "Dark" },
+  { value: "dracula", label: "Dracula", prev: "prev-aubergine", mode: "dark", category: "Dark" },
+  { value: "tokyo-night", label: "Tokyo Night", prev: "prev-solarized", mode: "dark", category: "Dark" },
+  { value: "graphite", label: "Graphite", prev: "prev-dark", mode: "dark", category: "Dark" },
+  { value: "high-contrast-dark", label: "High Contrast Dark", prev: "prev-dark", mode: "dark", category: "Accessibility" },
 ];
 
 function paletteMode(palette: PaletteName): Exclude<AppearanceMode, "system"> {
@@ -1728,6 +1743,8 @@ export interface Prefs {
    * split; it is never read by the UI after migration. */
   appearanceMode: AppearanceMode;
   palette: PaletteName;
+  favoritePalettes: PaletteName[];
+  customAccent: string;
   threadLayout: ThreadLayout;
   theme?: ThemeName;
   defaultProvider: Provider;
@@ -1777,6 +1794,8 @@ export interface Prefs {
 const prefs = makeStore<Prefs>("cloud9.prefs", {
   appearanceMode: "system",
   palette: "cloud9-pine",
+  favoritePalettes: [],
+  customAccent: "",
   threadLayout: "split",
   defaultProvider: "claude",
   defaultModel: { claude: MODEL_DEFAULT.claude, codex: MODEL_DEFAULT.codex },
@@ -1827,7 +1846,11 @@ function resolvedAppearanceMode(mode: AppearanceMode): Exclude<AppearanceMode, "
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-function applyTheme(mode: AppearanceMode, palette: PaletteName): void {
+function validAccent(value: string): boolean {
+  return /^#[0-9a-f]{6}$/i.test(value);
+}
+
+function applyTheme(mode: AppearanceMode, palette: PaletteName, customAccent = ""): void {
   const root = document.documentElement;
   root.setAttribute("data-appearance-mode", mode);
   root.setAttribute("data-palette", palette);
@@ -1838,6 +1861,8 @@ function applyTheme(mode: AppearanceMode, palette: PaletteName): void {
   const effectivePalette = paletteMode(palette) === (dark ? "dark" : "light")
     ? palette : defaultPalette(dark ? "dark" : "light");
   root.setAttribute("data-theme", effectivePalette);
+  if (validAccent(customAccent)) root.style.setProperty("--pine", customAccent);
+  else root.style.removeProperty("--pine");
   const computed = getComputedStyle(root);
   const bridge = (window as unknown as { cloud9?: DesktopBridge }).cloud9;
   void bridge?.setTitleBarAppearance?.({
@@ -1845,7 +1870,7 @@ function applyTheme(mode: AppearanceMode, palette: PaletteName): void {
     symbolColor: computed.getPropertyValue("--ink").trim(),
   });
 }
-applyTheme(prefs.get().appearanceMode, prefs.get().palette);
+applyTheme(prefs.get().appearanceMode, prefs.get().palette, prefs.get().customAccent);
 
 function isDarkNow(): boolean {
   const mode = document.documentElement.getAttribute("data-appearance-mode");
@@ -2013,14 +2038,14 @@ export function App(): React.JSX.Element {
   const p = usePrefs();
 
   useEffect(() => {
-    applyTheme(p.appearanceMode, p.palette);
+    applyTheme(p.appearanceMode, p.palette, p.customAccent);
     if (p.appearanceMode !== "system") return;
     const media = window.matchMedia?.("(prefers-color-scheme: dark)");
     if (!media) return;
-    const onChange = () => applyTheme(p.appearanceMode, p.palette);
+    const onChange = () => applyTheme(p.appearanceMode, p.palette, p.customAccent);
     media.addEventListener?.("change", onChange);
     return () => media.removeEventListener?.("change", onChange);
-  }, [p.appearanceMode, p.palette]);
+  }, [p.appearanceMode, p.palette, p.customAccent]);
 
   useEffect(() => {
     if (client.token()) client.connect(client.token());
@@ -2233,6 +2258,13 @@ function Workspace(): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const p = usePrefs();
   const [screen, setScreen] = useState<ScreenName>("chat");
+  /* Global chrome owns only screen history. Channel/thread history remains the
+     chat surface's job, so Back never pretends it can reconstruct a message
+     cursor it did not record. */
+  const [screenPast, setScreenPast] = useState<ScreenName[]>([]);
+  const [screenFuture, setScreenFuture] = useState<ScreenName[]>([]);
+  const screenHistoryRef = useRef(screen);
+  const historyJumpRef = useRef(false);
   const [forumTaskTarget, setForumTaskTarget] = useState<ID>();
   const [forumRunTarget, setForumRunTarget] = useState<ID>();
   const [forumProjectItemTarget, setForumProjectItemTarget] = useState<{ projectId: ID; kind: "pull" | "issue"; number: number }>();
@@ -2288,6 +2320,40 @@ function Workspace(): React.JSX.Element {
   const active = world.channels.find(c => c.id === activeId)
     ?? (activeId === null ? world.channels.find(c => c.kind !== "dm") : world.channels[0]);
   const owner = isOwner(world.me);
+
+  useEffect(() => {
+    const previous = screenHistoryRef.current;
+    if (previous === screen) return;
+    if (historyJumpRef.current) {
+      historyJumpRef.current = false;
+    } else {
+      setScreenPast(items => [...items.slice(-19), previous]);
+      setScreenFuture([]);
+    }
+    screenHistoryRef.current = screen;
+  }, [screen]);
+
+  const goBack = useCallback(() => {
+    const previous = screenPast.at(-1);
+    if (!previous) return;
+    attemptLeave(() => {
+      historyJumpRef.current = true;
+      setScreenPast(items => items.slice(0, -1));
+      setScreenFuture(items => [screen, ...items].slice(0, 20));
+      setScreen(previous);
+    });
+  }, [screen, screenPast]);
+
+  const goForward = useCallback(() => {
+    const next = screenFuture[0];
+    if (!next) return;
+    attemptLeave(() => {
+      historyJumpRef.current = true;
+      setScreenFuture(items => items.slice(1));
+      setScreenPast(items => [...items, screen].slice(-20));
+      setScreen(next);
+    });
+  }, [screen, screenFuture]);
   const openInvite = useCallback(() => {
     client.send({ type: "createInvite" });
     setModal("invite");
@@ -2617,6 +2683,11 @@ function Workspace(): React.JSX.Element {
         e.preventDefault();
         setQuick(q => !q);
       }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        leaveThen(() => { setScreen("chat"); setSearchOpen(true); });
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
         e.preventDefault();
         /* Through the one door as well: Ctrl+F is a way to the chat screen, and
@@ -2629,7 +2700,7 @@ function Workspace(): React.JSX.Element {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [leaveThen]);
 
   /* ---- clicking a Windows notification lands on the thing it is about ----
    *
@@ -3180,6 +3251,24 @@ function Workspace(): React.JSX.Element {
         <span className="window-drag-shell" />
         <span className="window-drag-canvas" />
       </div>
+
+      <header className="globalbar" aria-label="Global navigation">
+        <div className="global-nav" aria-label="Navigation history">
+          <button className="iconbtn" aria-label="Go back" title="Go back" disabled={screenPast.length === 0} onClick={goBack}>←</button>
+          <button className="iconbtn" aria-label="Go forward" title="Go forward" disabled={screenFuture.length === 0} onClick={goForward}>→</button>
+        </div>
+        <button className="global-search" type="button" onClick={() => leaveThen(() => { setScreen("chat"); setSearchOpen(true); })}
+          aria-label="Search messages, rooms, agents, files and activity" title="Global search (Ctrl Shift F)">
+          <IconSearch /><span>Search messages, rooms, agents, files and activity</span><kbd>Ctrl Shift F</kbd>
+        </button>
+        <div className="global-actions">
+          <button className="iconbtn" aria-label="Help" title="Help and shortcuts" onClick={() => client.notify("Ctrl K starts Quick Chat. Ctrl Shift F searches messages, rooms, agents, files and activity.")}>?</button>
+          <button className="iconbtn" aria-label="Notifications" title="Notifications" onClick={openNotifications}><IconBell />{unreadNotifications > 0 && <b>{unreadNotifications}</b>}</button>
+          <button className="global-profile" aria-label="Connection and profile" title={world.hubConn.line || "Connection and profile"} onClick={() => setModal("friends")}>
+            <span className={`rail-lamp ${world.connected ? "ok" : ""}`} /><span>{world.me?.name ?? "Profile"}</span>
+          </button>
+        </div>
+      </header>
 
       {world.harness?.demo && (
         <div className="demobanner" role="status">{DEMO_MODE_BANNER}</div>
@@ -3983,6 +4072,7 @@ function ChatScreen({
   const [threadRoot, setThreadRoot] = useState<ID | null>(null);
   /** the room-details panel, which shares the right-hand slot with a thread */
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [workspaceQuery, setWorkspaceQuery] = useState("");
   /* THREADS OR NOT — his setting, read in the one place that opens them. */
   const p = usePrefs();
   const threading = p.replies !== "inline";
@@ -4071,6 +4161,7 @@ function ChatScreen({
 
   const agentDmFor = (a: AgentDef) =>
     world.channels.find(c => c.kind === "dm" && c.memberIds.includes(a.id));
+  const matchesWorkspace = (label: string) => label.toLowerCase().includes(workspaceQuery.trim().toLowerCase());
 
   return (
     <div ref={gridRef}
@@ -4087,8 +4178,12 @@ function ChatScreen({
               `${countOf(people.length, "person", "people")} in this Cloud9`}>
             {people.length + agents.length} here
           </span>
+          <button className="iconbtn workspace-menu" aria-label="Workspace options" title="Workspace options" onClick={onBrowseRooms}>⌄</button>
+          <button className="iconbtn workspace-new" aria-label="Create a channel" title="Create a channel" onClick={onNewChannel}>＋</button>
+          <button className="iconbtn workspace-agent" aria-label="Create an agent" title="Create an agent" onClick={onNewAgent}>✦</button>
         </div>
         <div className="side-scroll">
+          <label className="workspace-search"><IconSearch /><input value={workspaceQuery} onChange={e => setWorkspaceQuery(e.target.value)} placeholder="Search this workspace" aria-label="Search channels and people" /></label>
           <div className="side-group">
             <div className="side-head">
               <span className="eyebrow">Channels</span>
@@ -4098,7 +4193,7 @@ function ChatScreen({
             </div>
             {channels.length === 0
               ? <RailEmpty text="No channels yet." action="Make the first one" onAction={onNewChannel} />
-              : channels.map(c => {
+              : channels.filter(c => matchesWorkspace(c.name)).map(c => {
                 const unread = unreadFor(c);
                 return (
                   <button key={c.id} className={`side-item${c.archivedAt ? " is-archived" : ""}`}
@@ -4130,7 +4225,7 @@ function ChatScreen({
             </div>
             {agents.length === 0 && humanDms.length === 0 &&
               <RailEmpty text="Nobody hired yet." action="Browse the casting room" onAction={onBrowseMarket} />}
-            {agents.map(a => {
+            {agents.filter(a => matchesWorkspace(a.name)).map(a => {
               const dm = agentDmFor(a);
               const unread = dm
                 ? unreadFor(dm)
@@ -4169,7 +4264,7 @@ Open your chat with ${a.name}`}>
                 </div>
               );
             })}
-            {humanDms.map(c => {
+            {humanDms.filter(c => matchesWorkspace(peerOf(c).name)).map(c => {
               const pr = peerOf(c);
               const unread = unreadFor(c);
               return (
@@ -7716,10 +7811,15 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
         )}
         <textarea
           ref={taRef}
-          rows={1}
+          rows={inThreadPanel ? 2 : 3}
           value={text}
           placeholder={placeholder}
-          onChange={e => { setText(e.target.value); setAcIndex(0); }}
+          onChange={e => {
+            setText(e.target.value); setAcIndex(0);
+            const box = e.currentTarget;
+            box.style.height = "auto";
+            box.style.height = `${Math.min(box.scrollHeight, inThreadPanel ? 180 : 240)}px`;
+          }}
           onKeyDown={e => {
             if (suggestions.length > 0) {
               if (e.key === "ArrowDown") { e.preventDefault(); setAcIndex(i => (i + 1) % suggestions.length); return; }
@@ -12479,6 +12579,10 @@ function SettingsScreen(): React.JSX.Element {
   const [folder, setFolder] = useState<string | null>(null);
   const [folderNote, setFolderNote] = useState<string | null>(null);
   const [here, setHere] = useState<string>("set-look");
+  const [paletteQuery, setPaletteQuery] = useState("");
+  const [paletteCategory, setPaletteCategory] = useState<"All" | "Dark" | "Light" | "Accessibility">("All");
+  const [previewPalette, setPreviewPalette] = useState<PaletteName | null>(null);
+  const [appearanceNote, setAppearanceNote] = useState<string | null>(null);
 
   const refreshStored = () => {
     void desktop()?.credentialStatus?.().then(setStored).catch(() => setStored(null));
@@ -12502,6 +12606,43 @@ function SettingsScreen(): React.JSX.Element {
     }
   };
 
+  const exportAppearance = () => {
+    const data = JSON.stringify({
+      version: 1,
+      appearanceMode: p.appearanceMode,
+      palette: p.palette,
+      favoritePalettes: p.favoritePalettes,
+      customAccent: p.customAccent,
+      threadLayout: p.threadLayout,
+    }, null, 2);
+    const href = URL.createObjectURL(new Blob([data], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = href; link.download = "cloud9-appearance.json"; link.click();
+    URL.revokeObjectURL(href);
+    setAppearanceNote("Appearance exported.");
+  };
+
+  const importAppearance = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const value = JSON.parse(await file.text()) as Partial<Prefs>;
+      const palette = PALETTES.some(item => item.value === value.palette) ? value.palette as PaletteName : p.palette;
+      const favoritePalettes = Array.isArray(value.favoritePalettes)
+        ? value.favoritePalettes.filter((item): item is PaletteName => PALETTES.some(paletteItem => paletteItem.value === item))
+        : p.favoritePalettes;
+      prefs.set({
+        appearanceMode: value.appearanceMode === "light" || value.appearanceMode === "dark" || value.appearanceMode === "system" ? value.appearanceMode : p.appearanceMode,
+        palette,
+        favoritePalettes,
+        customAccent: typeof value.customAccent === "string" && validAccent(value.customAccent) ? value.customAccent : "",
+        threadLayout: value.threadLayout === "focus" || value.threadLayout === "split" ? value.threadLayout : p.threadLayout,
+      });
+      setAppearanceNote("Appearance imported and applied.");
+    } catch {
+      setAppearanceNote("That file is not a valid Cloud9 appearance export.");
+    }
+  };
+
   const goTo = (id: string) => {
     setHere(id);
     /* The same one owner of "may the view animate on this machine" the message
@@ -12514,7 +12655,10 @@ function SettingsScreen(): React.JSX.Element {
   const codexInfo = world.harness?.codex;
 
   const visibleMode = resolvedAppearanceMode(p.appearanceMode);
-  const visiblePalettes = PALETTES.filter(item => item.mode === visibleMode);
+  const visiblePalettes = PALETTES.filter(item =>
+    item.mode === visibleMode
+    && (paletteCategory === "All" || item.category === paletteCategory)
+    && item.label.toLowerCase().includes(paletteQuery.trim().toLowerCase()));
   const activePalette = paletteMode(p.palette) === visibleMode ? p.palette : defaultPalette(visibleMode);
 
   return (
@@ -12550,18 +12694,34 @@ function SettingsScreen(): React.JSX.Element {
                 </button>
               ))}
             </div>
-            <div className="theme-picks" data-palette-mode={visibleMode}>
-              {visiblePalettes.map(({ value, label, prev }) => (
-                <button key={value} className="theme-pick" data-theme-set={value}
-                  aria-pressed={activePalette === value} onClick={() => prefs.set({ palette: value })}>
-                  <span className={`prev ${prev}`} aria-hidden="true">
-                    <span className="rail-s" />
-                    <span className="lines"><i className="l1" /><i className="l2" /><i className="l3" /></span>
-                  </span>
-                  <span className="nm">{label}</span>
-                </button>
-              ))}
+            <div className="palette-tools">
+              <input className="input palette-search" value={paletteQuery} onChange={e => setPaletteQuery(e.target.value)} placeholder="Search palettes" aria-label="Search appearance palettes" />
+              <div className="palette-categories" role="group" aria-label="Palette category">
+                {(["All", "Dark", "Light", "Accessibility"] as const).map(category => <button key={category} className="subtle" aria-pressed={paletteCategory === category} onClick={() => setPaletteCategory(category)}>{category}</button>)}
+              </div>
             </div>
+            <div className="theme-picks" data-palette-mode={visibleMode}>
+              {visiblePalettes.map(({ value, label, prev }) => {
+                const favourite = p.favoritePalettes.includes(value);
+                const selected = (previewPalette ?? activePalette) === value;
+                return <div key={value} className="theme-card">
+                  <button className="theme-pick" data-theme-set={value} aria-pressed={selected} onClick={() => setPreviewPalette(value)}>
+                    <span className={`prev ${prev}`} aria-hidden="true"><span className="rail-s" /><span className="side-s" /><span className="canvas-s" /><span className="composer-s" /></span>
+                    <span className="nm">{label}</span>
+                  </button>
+                  <button className="palette-star" aria-label={`${favourite ? "Remove" : "Add"} ${label} ${favourite ? "from" : "to"} favourites`} aria-pressed={favourite} onClick={() => prefs.set({ favoritePalettes: favourite ? p.favoritePalettes.filter(item => item !== value) : [...p.favoritePalettes, value] })}>★</button>
+                </div>;
+              })}
+            </div>
+            {!visiblePalettes.length && <p className="sec-note">No palettes match this search.</p>}
+            <div className="appearance-actions">
+              <button className="primary" disabled={!previewPalette || previewPalette === activePalette} onClick={() => { if (previewPalette) prefs.set({ palette: previewPalette }); setAppearanceNote("Palette applied."); }}>Apply preview</button>
+              <label className="accent-control">Custom accent <input type="color" value={validAccent(p.customAccent) ? p.customAccent : "#61d1af"} onChange={e => prefs.set({ customAccent: e.target.value })} /></label>
+              <button className="subtle" onClick={() => prefs.set({ customAccent: "" })}>Use palette accent</button>
+              <button className="subtle" onClick={exportAppearance}>Export JSON</button>
+              <label className="subtle import-appearance">Import JSON<input type="file" accept="application/json" onChange={e => void importAppearance(e.currentTarget.files?.[0])} /></label>
+            </div>
+            {appearanceNote && <p className="set-note" role="status">{appearanceNote}</p>}
             <div className="thread-layout-row" role="group" aria-label="Thread layout">
               <span className="tx"><b>Thread layout</b><span>
                 {p.threadLayout === "focus" ? "Threads open over the channel, full width" : "Threads open in a side panel next to the channel"}
