@@ -6855,7 +6855,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
     // everyone watching is told the root changed — otherwise "12 replies" would
     // only appear after a reload.
     if (message.replyTo) {
-      const root = this.store.bumpReplyCount(message.replyTo, message.ts);
+      const root = this.store.bumpReplyCount(message.replyTo, message.ts, message.authorId);
       if (root) this.broadcastMessageUpdate(root);
     }
     if (message.authorKind === "agent") {

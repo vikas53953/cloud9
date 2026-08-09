@@ -3412,6 +3412,14 @@ export interface Message {
   replyCount?: number;
   /** when the newest reply landed — the other half of "12 replies · 3m ago" */
   lastReplyAt?: number;
+  /**
+   * WHO is in the thread, newest speaker first, at most three — so the reply
+   * line can show their faces, the way Buzz stacks them beside "12 replies".
+   * Stored beside the count and kept by the same `bumpReplyCount`; a reply that
+   * is taken back keeps its face, exactly as it keeps its count (a tombstone
+   * still says the conversation happened).
+   */
+  replyFaces?: ID[];
   // ---- filled in by the relay when it hands a message out, never stored ----
   /** who reacted with what */
   reactions?: MessageReaction[];

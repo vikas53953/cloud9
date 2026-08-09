@@ -276,6 +276,12 @@ a{color:var(--ultra);}
 /* ---------------- PORTRAITS (cast plates) ---------------- */
 .portrait{display:block;border-radius:11px;overflow:hidden;flex:none;background:var(--sunk);line-height:0;}
 .portrait svg{display:block;width:100%;height:100%;}
+/* ROUND FACES IN CONVERSATION (L1, 2026-08-08 — Slack/Buzz shape). Wherever a
+   face says WHO is speaking — message rows, the sidebar, the thread rail — it
+   is a circle now, agent portrait and person initial alike. The crew card and
+   casting-room plates keep their square "plate" on purpose: that is the
+   Studio's own metaphor, and their rules below are specific enough to win. */
+.avatar .portrait{border-radius:50%;}
 .avatar{position:relative;flex:none;display:inline-flex;align-self:flex-start;line-height:0;}
 .avatar .status{
   position:absolute;right:-3px;bottom:-3px;width:12px;height:12px;border-radius:99px;
@@ -290,6 +296,7 @@ a{color:var(--ultra);}
   font-family:var(--display);font-weight:600;letter-spacing:-.01em;
   background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line-soft);
 }
+.avatar .initialplate{border-radius:50%;}
 .tone-0{background:var(--pine-soft);color:var(--pine);}
 .tone-1{background:var(--ultra-soft);color:var(--ultra);}
 .tone-2{background:var(--marigold-soft);color:var(--marigold);}
@@ -530,11 +537,18 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 /* --- the thread --- */
 .thread{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg);overflow:hidden;}
 .chathead .approvalpill{flex:none;}
+/* THE SLIM HEADER (L3). The room's top row answers at a glance and otherwise
+   stays out of the conversation's way: tighter rhythm, and the two controls
+   are quiet until the hand comes near them. */
+.chathead{gap:10px;padding:0 16px 0 22px;}
 .chathead select{
-  border:1px solid var(--line);background:var(--surface);color:var(--ink);
-  border-radius:var(--radius-s);padding:5px 10px;font-size:12.5px;max-width:150px;cursor:pointer;
+  border:1px solid transparent;background:transparent;color:var(--ink-3);
+  border-radius:var(--radius-s);padding:4px 8px;font-size:12.5px;max-width:150px;cursor:pointer;
 }
-.chathead select:hover{background:var(--surface-2);border-color:var(--ink-3);}
+.chathead select:hover{background:var(--surface-2);border-color:var(--line);color:var(--ink);}
+.iconbtn{width:28px;height:28px;flex:none;display:grid;place-items:center;
+  border-radius:var(--radius-s);color:var(--ink-3);font-size:14px;}
+.iconbtn:hover{background:var(--surface-2);color:var(--ink);}
 
 .dm-head{height:auto;padding:18px 34px;}
 .dm-head .role{color:var(--ink-3);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -555,15 +569,24 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
   box-shadow:0 6px 20px rgba(0,0,0,.22);cursor:pointer;}
 .newpill:hover{filter:brightness(1.12);}
 .newpill .np-arrow{font-size:13px;line-height:1;}
-.daymark{display:flex;align-items:center;gap:14px;margin:6px 0 22px;}
-.daymark::before,.daymark::after{content:"";height:1px;background:var(--line);flex:1;}
-.daymark .tag{white-space:nowrap;}
+.daymark{display:flex;justify-content:center;margin:10px 0 18px;}
+/* A soft centred pill (Buzz's "Wednesday, July 29th") in the Studio palette —
+   replaces the flanked-rules small caps, which read formal and a little stern. */
+.daymark::before,.daymark::after{content:none;}
+.daymark .tag{white-space:nowrap;background:var(--surface);border:1px solid var(--line);
+  border-radius:999px;padding:3px 13px;}
 .newline{display:flex;align-items:center;gap:9px;margin:2px 0 10px;}
 .newline .rule{flex:1;background:var(--marigold-hi);opacity:.7;}
 .newline .tag{color:var(--marigold);}
 
 .msg{display:grid;grid-template-columns:38px minmax(0,1fr);gap:13px;margin-bottom:22px;
-  min-width:0;max-width:880px;position:relative;}
+  min-width:0;max-width:880px;position:relative;border-radius:var(--radius);}
+/* THE ROW ANSWERS THE HAND (L2). Slack tints the whole row on hover, which is
+   what makes its floating toolbar read as belonging to the message; without
+   the tint our own strip looked detached from short messages. The halo is
+   box-shadow, not padding, so not one pixel of layout moves. */
+.msg:hover{background:color-mix(in srgb,var(--ink) 4%,transparent);
+  box-shadow:0 0 0 6px color-mix(in srgb,var(--ink) 4%,transparent);}
 .app[data-compact="on"] .msg{margin-bottom:11px;}
 .msg .who{display:flex;align-items:baseline;gap:9px;margin-bottom:4px;flex-wrap:wrap;}
 .msg .who b{font-family:var(--display);font-size:15.5px;font-weight:600;color:var(--ink);}
@@ -630,7 +653,7 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 .runstrip b{color:var(--ink-2);font-weight:600;}
 .runstrip .sep{width:3px;height:3px;border-radius:99px;background:var(--line);}
 .msgactions{
-  position:absolute;top:-12px;right:0;display:flex;gap:2px;
+  position:absolute;top:-13px;right:2px;display:flex;gap:2px;z-index:22;
   background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-s);
   box-shadow:var(--shadow);padding:2px;opacity:0;pointer-events:none;
   transition:opacity .12s var(--ease);
@@ -846,6 +869,13 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
   box-shadow:var(--shadow-lg);padding:6px;
   display:grid;grid-template-columns:repeat(8,26px);gap:2px;
 }
+/* F1 — the Buzz-shaped row. Emoji button + tray share one wrapper (the
+   click-away owner holds the ref); the tray rises from the button now. */
+.emojihold{position:relative;display:inline-flex;}
+/* Bold/italic/code sit one click deep behind the Aa; still in the DOM either
+   way, so the thread-box parity check keeps reading them. */
+.fmtset{display:none;}
+.fmtset.on{display:inline-flex;gap:8px;}
 .emojipop button{width:26px;height:26px;border-radius:var(--radius-xs);font-size:15px;line-height:1;}
 .emojipop button:hover{background:var(--surface-2);}
 /* The actions menu — the one way in to every typed command. Same popover
@@ -1774,6 +1804,9 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-s);
   box-shadow:var(--shadow);z-index:20;
 }
+/* the ☺ button and its tray in one wrapper — the click-away owner (F3) holds
+   one ref, and the tray anchors to the button that opened it */
+.reacthold{position:relative;display:inline-flex;}
 .reactpop button{
   width:28px;height:26px;border-radius:var(--radius-xs);display:grid;place-items:center;font-size:15px;
 }
@@ -1792,6 +1825,14 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 }
 .threadline:hover{border-color:var(--ultra);background:var(--ultra-soft);}
 .threadline .arrow{font-family:var(--mono);}
+/* the repliers' faces, stacked (F2) — the Buzz shape; the pill still carries
+   the count in words, the faces only say WHO */
+.threadline .tl-faces{display:inline-flex;align-items:center;}
+.threadline .tl-faces .avatar{margin-left:-6px;}
+.threadline .tl-faces .avatar:first-child{margin-left:0;}
+.threadline .tl-faces .portrait,.threadline .tl-faces .initialplate{
+  box-shadow:0 0 0 2px var(--surface);
+}
 .threadline .ago{color:var(--ink-3);font-family:var(--mono);font-size:10.5px;}
 /* A THREAD THAT MOVED since he last read this conversation. It is the same
    pill, lit — not a second control — so the reply count stays one thing that

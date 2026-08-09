@@ -2397,11 +2397,17 @@ export class Store implements JoinHubStore {
    * (Buzz's `thread_metadata.reply_count` — the reason theirs is cheap).
    * Returns the updated root so the caller can broadcast it.
    */
-  bumpReplyCount(rootId: ID, at: number): Message | undefined {
+  bumpReplyCount(rootId: ID, at: number, authorId?: ID): Message | undefined {
     const root = this.message(rootId);
     if (!root) return undefined;
     root.replyCount = (root.replyCount ?? 0) + 1;
     root.lastReplyAt = at;
+    /* Who is in the thread, newest first, capped at three — the faces beside
+       the count. The speaker moves to the front rather than appearing twice. */
+    if (authorId) {
+      root.replyFaces = [authorId, ...(root.replyFaces ?? []).filter(id => id !== authorId)]
+        .slice(0, 3);
+    }
     this.saveMessage(root);
     return root;
   }
