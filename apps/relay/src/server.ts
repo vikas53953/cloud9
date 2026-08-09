@@ -30,6 +30,7 @@ import {
   SavingProposal, applySaving, findWaste, rollUpTokenUse, savingDetail, savingHeadline,
   tidySaving, validateSavingProposal,
   SearchHit, SavedMessageEntry, ServerFrame, Task, UnreadEntry, User, WorldState,
+  HumanTyping,
   NotificationInboxEntry, NotificationInboxKind, notificationEventId,
   Workflow, WorkflowRun, WorkflowRunStep, WorkflowStepStatus,
   SocialLink, SocialPost, SOCIAL_LIMITS, validateSocialText,
@@ -95,6 +96,19 @@ interface Conn {
   userId: ID;
   client: "desktop" | "mobile" | "engine";
 }
+
+interface LiveTyping extends HumanTyping {
+  expiresAt: number;
+  /** Last time this signal was broadcast, used to debounce noisy clients. */
+  lastBroadcastAt: number;
+  /** One account may type in the same room from more than one live window. */
+  sources: Set<WebSocket>;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+/** Human typing is deliberately short-lived and in-memory only. */
+const HUMAN_TYPING_TTL_MS = 4_000;
+const HUMAN_TYPING_DEBOUNCE_MS = 250;
 
 /** Reminder dates are metadata only: no scheduler or notification exists in v1. */
 const SAVED_REMINDER_HORIZON_MS = 5 * 365 * 24 * 60 * 60 * 1000;
@@ -254,6 +268,8 @@ export class Relay {
    * with the clock, and with their first use — whichever comes first.
    */
   private tickets = new Map<string, { target: TicketTarget; userId: ID; expiresAt: number }>();
+  /** Live human typing by account/channel. Never written to SQLite or history. */
+  private liveTyping = new Map<string, LiveTyping>();
   /** Agent ids currently represented by each engine socket for huddle presence cleanup. */
   private huddleEngineAgents = new Map<WebSocket, Set<ID>>();
 
@@ -396,6 +412,7 @@ export class Relay {
   close(): void {
     if (this.pollExpiryTimer) clearTimeout(this.pollExpiryTimer);
     this.pollExpiryTimer = undefined;
+    for (const state of [...this.liveTyping.values()]) this.removeLiveTyping(state.channelId, state.userId, false);
     for (const t of this.looking.values()) clearTimeout(t);
     this.looking.clear();
     for (const c of this.conns) c.ws.close();
@@ -449,6 +466,10 @@ export class Relay {
       if (!conn) return;
       const closed = conn;
       this.conns.delete(conn);
+      // A person may have the same room open on another desktop or mobile
+      // client. Remove only this socket's signal; the shared row ends once its
+      // final live source leaves.
+      this.clearTypingForConnection(closed.ws);
       // A dropped socket is a leave, not a still-present participant. Persist
       // it and tell only the remaining authorized audience.
       const stillConnected = [...this.conns].some(c => c.userId === closed.userId && c.client === "desktop");
@@ -2271,6 +2292,110 @@ private viewProject(project: Project, viewerId?: ID): Project {
     }
   }
 
+  private typingKey(channelId: ID, userId: ID): string {
+    return `${channelId}\u0000${userId}`;
+  }
+
+  /** Stamp and schedule one live signal; the timer is the only expiry owner. */
+  private scheduleTypingExpiry(state: LiveTyping): void {
+    if (state.timer) clearTimeout(state.timer);
+    const delay = Math.max(0, state.expiresAt! - Date.now());
+    state.timer = setTimeout(() => {
+      const current = this.liveTyping.get(this.typingKey(state.channelId, state.userId));
+      if (current !== state) return;
+      if (Date.now() < state.expiresAt!) {
+        this.scheduleTypingExpiry(state);
+        return;
+      }
+      this.removeLiveTyping(state.channelId, state.userId);
+    }, delay);
+  }
+
+  /** Remove one signal and tell the channel's CURRENT authorized audience. */
+  private removeLiveTyping(channelId: ID, userId: ID, notify = true): void {
+    const key = this.typingKey(channelId, userId);
+    const state = this.liveTyping.get(key);
+    if (!state) return;
+    if (state.timer) clearTimeout(state.timer);
+    this.liveTyping.delete(key);
+    if (!notify) return;
+    const channel = this.store.channel(channelId);
+    if (!channel) return;
+    this.toChannel(channel, {
+      type: "typing",
+      typing: { channelId, userId, userName: state.userName, typing: false },
+    });
+  }
+
+  /** Clear every live signal authored by one human (disconnect/removal path). */
+  private clearTypingForUser(userId: ID): void {
+    for (const state of [...this.liveTyping.values()]) {
+      if (state.userId === userId) this.removeLiveTyping(state.channelId, userId);
+    }
+  }
+
+  /** A blur/close only removes the signal from the window that sent it. */
+  private clearTypingForConnection(ws: WebSocket): void {
+    for (const state of [...this.liveTyping.values()]) {
+      if (!state.sources.delete(ws)) continue;
+      if (state.sources.size === 0) this.removeLiveTyping(state.channelId, state.userId);
+    }
+  }
+
+  /** Clear a room's signal once the person is no longer allowed to see it. */
+  private clearTypingForChannelUser(channelId: ID, userId: ID): void {
+    this.removeLiveTyping(channelId, userId);
+  }
+
+  /**
+   * Human typing is authenticated against stored membership and is never a
+   * request/response. The relay owns the displayed name, debounce and expiry.
+   */
+  private handleTyping(conn: Conn, frame: Extract<ClientFrame, { type: "typing" }>): void {
+    if (conn.client === "engine") throw new Error("agents cannot send human typing");
+    const channel = frame.typing
+      ? this.writableChannel(conn.userId, frame.channelId)
+      : this.channelFor(conn.userId, frame.channelId);
+    const user = this.store.user(conn.userId);
+    if (!user) throw new Error("no such person");
+    const key = this.typingKey(channel.id, user.id);
+    const current = this.liveTyping.get(key);
+    if (!frame.typing) {
+      // Repeated stops are intentionally silent. One person's other open
+      // window may still be typing in this room, so only its own source ends.
+      if (!current || !current.sources.delete(conn.ws)) return;
+      if (current.sources.size === 0) this.removeLiveTyping(channel.id, user.id);
+      return;
+    }
+
+    const now = Date.now();
+    const expiresAt = now + HUMAN_TYPING_TTL_MS;
+    if (current) {
+      current.sources.add(conn.ws);
+      current.expiresAt = expiresAt;
+      this.scheduleTypingExpiry(current);
+      // Keep a noisy keydown stream in memory, but broadcast at most 4/sec.
+      if (now - current.lastBroadcastAt < HUMAN_TYPING_DEBOUNCE_MS) return;
+      current.lastBroadcastAt = now;
+      this.toChannel(channel, {
+        type: "typing",
+        typing: { channelId: channel.id, userId: user.id, userName: user.name, typing: true, expiresAt },
+      });
+      return;
+    }
+
+    const state: LiveTyping = {
+      channelId: channel.id, userId: user.id, userName: user.name,
+      typing: true, expiresAt, lastBroadcastAt: now, sources: new Set([conn.ws]),
+    };
+    this.liveTyping.set(key, state);
+    this.scheduleTypingExpiry(state);
+    this.toChannel(channel, {
+      type: "typing",
+      typing: { channelId: channel.id, userId: user.id, userName: user.name, typing: true, expiresAt },
+    });
+  }
+
   /**
    * The artifact this person may read, or "no such file".
    *
@@ -2678,6 +2803,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
     // membership rule used everywhere else in the relay.
     const stillVisible = this.visibleChannels(userId).some(c => c.id === channelId);
     if (stillVisible) return;
+    this.clearTypingForChannelUser(channelId, userId);
     this.toUser(userId, { type: "channelLeft", channelId });
     // Leaving a project room also changes Pulse visibility. Refresh the scoped
     // feed immediately so a removed member cannot keep a cached update alive.
@@ -3048,6 +3174,9 @@ private viewProject(project: Project, viewerId?: ID): Project {
 
   private handleFrame(conn: Conn, frame: ClientFrame): void {
     switch (frame.type) {
+      case "typing":
+        this.handleTyping(conn, frame);
+        break;
       case "send": {
         const user = this.store.users().find(u => u.id === conn.userId)!;
         const channel = this.writableChannel(conn.userId, frame.channelId); // you may only post where you are
@@ -3664,6 +3793,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
             this.broadcastHuddle(updated, { type: "huddleChanged", session: updated });
           }
         }
+        this.clearTypingForUser(target.id);
         // Tombstone their project posts BEFORE the account row goes, and push
         // each tombstone to remaining members — same live-feed discipline as
         // socialUnavailable on project leave. Hard-delete would leave open

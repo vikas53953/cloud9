@@ -202,6 +202,23 @@ test("inline agent activity is delayed, expandable, and never renders live priva
     "live activity must not expose provider reasoning/detail text");
 });
 
+test("human typing is an ephemeral, channel-scoped signal rather than a message", () => {
+  const app = read("App.tsx");
+  const store = read("store.ts");
+  const css = read("styles.css");
+  assert.match(store, /humanTyping: Record<ID, HumanTyping\[\]>/);
+  assert.match(store, /setTyping\(channelId: ID, typing: boolean\)/);
+  assert.match(store, /case "typing":\s*this\.noteHumanTyping\(frame\.typing\)/);
+  assert.match(store, /this\.clearHumanTyping\(undefined, undefined, false\)/,
+    "a reconnect must clear old ephemeral typing rows");
+  assert.match(store, /A hub switch is a new live session[\s\S]*?this\.world\.connected = false;/,
+    "a hub switch must let a focused composer re-advertise after welcome");
+  assert.match(app, /client\.setTyping\(channel\.id,/);
+  assert.match(app, /humanTyping\.length > 0/);
+  assert.match(app, /is typing/);
+  assert.match(css, /\.typing-indicator/);
+});
+
 test("the composer restores scoped text drafts without claiming files survive restart", () => {
   const app = read("App.tsx");
   const css = read("styles.css");

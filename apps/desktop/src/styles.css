@@ -3955,6 +3955,9 @@ button.chip{cursor:pointer;}
   color:var(--on-gold);
 }
 .composer .tools .voicebtn.recording{box-shadow:0 0 0 3px color-mix(in srgb,var(--madder) 20%,transparent);}
+.typing-indicator{padding:0 34px 8px;color:var(--ink-2);font-size:12px;line-height:1.35;min-height:24px;}
+.typing-dots{display:inline-block;letter-spacing:2px;color:var(--pine);animation:typing-pulse 1s ease-in-out infinite;}
+@keyframes typing-pulse{50%{opacity:.42;transform:translateY(1px)}}
 
 @media (max-width:560px){
   .composer{padding:10px 16px 14px;}

@@ -54,6 +54,73 @@ async function say(client: TestClient, channelId: string, text: string): Promise
   return f.message;
 }
 
+test("human typing is membership-scoped, request-independent, debounced, and ephemeral", async () => {
+  const { relay, url, owner, general, me } = await stand("chat-typing.db");
+  const { guest, me: guestMe, code: usedCode } = await bringIn(relay, url, owner, "Priya", general.id);
+  // General is intentionally shared with every newly invited user. Exercise a
+  // private room instead, so the outsider assertion proves current membership.
+  owner.send({ type: "createChannel", name: "typing-private", memberIds: [guestMe.id], kind: "channel" });
+  const privateRoom = await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.name === "typing-private");
+  const ownerTyping = { type: "typing" as const, channelId: privateRoom.channel.id, typing: true };
+  owner.frames.length = 0;
+  guest.frames.length = 0;
+  owner.send(ownerTyping);
+  const first = await guest.wait<Extract<ServerFrame, { type: "typing" }>>(
+    f => f.type === "typing" && f.typing.typing);
+  assert.equal(first.typing.userId, me.id);
+  assert.equal(first.typing.userName, "Vikas");
+  assert.ok((first.typing.expiresAt ?? 0) > Date.now());
+  assert.equal(JSON.stringify(first).includes("requestId"), false,
+    "typing broadcasts are not request answers");
+
+  // A second keydown inside the debounce window renews the relay TTL but does
+  // not create a second broadcast frame.
+  const before = guest.frames.filter(f => f.type === "typing" && f.typing.typing).length;
+  owner.send(ownerTyping);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(guest.frames.filter(f => f.type === "typing" && f.typing.typing).length, before);
+
+  owner.send({ type: "typing", channelId: privateRoom.channel.id, typing: false });
+  const stopped = await guest.wait<Extract<ServerFrame, { type: "typing" }>>(
+    f => f.type === "typing" && !f.typing.typing);
+  assert.equal(stopped.typing.userId, first.typing.userId);
+
+  // An unjoined person cannot make the relay invent a room-scoped signal.
+  const inviteCode = await invite(owner, usedCode);
+  const outsider = new TestClient(url, `invite:${inviteCode}:Outsider`);
+  await outsider.wait(f => f.type === "welcome");
+  outsider.send(ownerTyping);
+  const refused = await outsider.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(refused.error, /no such channel/);
+
+  // The signal never appears in durable history (there is no typing table or
+  // message row for it).
+  assert.equal(relay.store.history(privateRoom.channel.id, {}, 50).items.some(m => m.text === "typing"), false);
+  outsider.close(); guest.close(); owner.close(); relay.close();
+});
+
+test("one window cannot stop another window of the same person from typing", async () => {
+  const { relay, url, owner, general } = await stand("chat-typing-windows.db");
+  const { guest, me: guestMe } = await bringIn(relay, url, owner, "Priya", general.id);
+  owner.send({ type: "createChannel", name: "typing-windows", memberIds: [guestMe.id], kind: "channel" });
+  const room = await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.name === "typing-windows");
+  const mirror = new TestClient(url, "tok-owner");
+  await mirror.wait(f => f.type === "welcome");
+  const typing = { type: "typing" as const, channelId: room.channel.id, typing: true };
+  owner.send(typing);
+  await guest.wait(f => f.type === "typing" && f.typing.typing);
+  mirror.send(typing);
+  owner.close();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(guest.frames.some(f => f.type === "typing" && !f.typing.typing), false,
+    "closing one source must not stop the same person's other window");
+  mirror.send({ type: "typing", channelId: room.channel.id, typing: false });
+  await guest.wait(f => f.type === "typing" && !f.typing.typing);
+  mirror.close(); guest.close(); relay.close();
+});
+
 // ---------------------------------------------------------------------------
 // 1. Scrollback
 // ---------------------------------------------------------------------------

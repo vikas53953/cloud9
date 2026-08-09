@@ -4961,6 +4961,7 @@ function ChatView({
      `page` are narrowed to THIS channel for the same reason. */
   const world = useWorld(w => ({
     messages: w.messages[channel.id],
+    humanTyping: w.humanTyping[channel.id],
     page: w.pages[channel.id],
     prepended: w.prepended,
     users: w.users,
@@ -4974,6 +4975,8 @@ function ChatView({
     savedPending: w.savedPending,
   }));
   const all = useMemo(() => world.messages ?? [], [world.messages]);
+  const humanTyping = useMemo(() => (world.humanTyping ?? [])
+    .filter(signal => signal.typing && signal.userId !== world.me?.id), [world.humanTyping, world.me?.id]);
   const threading = !!onOpenThread;
   /** the message this conversation's own box is answering, in inline mode */
   const [replyingTo, setReplyingTo] = useState<ID | null>(null);
@@ -5643,6 +5646,15 @@ function ChatView({
           </button>
         )}
       </div>
+
+      {humanTyping.length > 0 && (
+        <div className="typing-indicator" role="status" aria-live="polite">
+          <span className="typing-dots" aria-hidden="true">•••</span>{" "}
+          {humanTyping.length === 1
+            ? `${humanTyping[0].userName} is typing…`
+            : `${humanTyping.map(signal => signal.userName).join(", ")} are typing…`}
+        </div>
+      )}
 
       {/* In inline mode the conversation's own box is what carries a reply, so
           it says which message it is answering and offers a way out of it. */}
@@ -7352,6 +7364,15 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
       : clearChatDraft(draftScope);
     setDraftStatus(result.ok ? (text.length > 0 ? "saved" : "idle") : "unavailable");
   }, [draftKey, draftScope, hydratedDraftKey, text]);
+
+  /* Human typing is live only while this composer is focused and has real
+     words. The channel cleanup is separate so ordinary keystrokes renew the
+     signal without sending a stop/start pair on every render. */
+  useEffect(() => {
+    client.setTyping(channel.id,
+      focused && text.trim().length > 0 && world.connected && !channel.archivedAt);
+  }, [channel.archivedAt, channel.id, focused, text, world.connected]);
+  useEffect(() => () => { client.setTyping(channel.id, false); }, [channel.id]);
 
   /**
    * THE BOX GROWS WITH WHAT IS IN IT.

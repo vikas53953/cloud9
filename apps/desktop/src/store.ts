@@ -8,7 +8,7 @@ import {
   MemoryNote,
   NotificationInboxEntry,
   SavedMessageEntry,
-  EverywhereHit, SearchKind,
+  EverywhereHit, SearchKind, HumanTyping,
   ReachCatchup,
   Project, ForumTopic, ForumReply, ForumReadEntry, ForumLink, ForumStatus, ProjectItem, ProjectPollView, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
   EngineeringCanvasView, EngineeringCanvasRevision, CanvasBlockKind, CanvasLink,
@@ -222,6 +222,8 @@ export interface World {
   agents: AgentDef[];
   channels: Channel[];
   messages: Record<ID, Message[]>; // by channel
+  /** Ephemeral live typing, keyed by channel; never persisted or included in history. */
+  humanTyping: Record<ID, HumanTyping[]>;
   agentStatus: Record<ID, AgentStatus>;
   /**
    * CAN THIS AGENT ACTUALLY BE USED RIGHT NOW — the hub's answer, never ours.
@@ -700,7 +702,7 @@ export function purgeLegacySecrets(): void {
 export class RelayClient {
   world: World = {
     connected: false, authFailed: false, users: [], agents: [], channels: [],
-    messages: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
+    messages: {}, humanTyping: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
     notifications: [], notificationsAsked: false, notificationsLoading: false,
     notificationsRequestId: undefined, notificationsProblem: undefined,
     workflows: [], workflowRuns: [], workflowLoading: false,
@@ -729,6 +731,7 @@ export class RelayClient {
   private ws?: WebSocket;
   /** Frames from a socket that has been replaced never reach the new world. */
   private socketEpoch = 0;
+  private humanTypingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private listeners = new Set<Listener>();
   private snapshotCache: World = { ...this.world };
 
@@ -814,6 +817,13 @@ export class RelayClient {
     this.recovering = false;
     this.world.authFailed = false;
     this.world.lastError = undefined;
+    // A hub switch is a new live session even if the old socket has not fired
+    // its close event yet. This false -> true edge lets a focused composer
+    // re-advertise genuine typing after the new welcome, instead of leaving a
+    // remote room with a stale/quiet indicator.
+    this.world.connected = false;
+    this.clearHumanTyping(undefined, undefined, false);
+    this.world.humanTyping = {};
     // questions asked of the last connection will never be answered by this one
     const orphaned = this.asked;
     this.asked = [];
@@ -889,6 +899,8 @@ export class RelayClient {
       // belongs to a connection nobody is on any more.
       if (this.ws !== ws) return;
       clearLiveSteps();
+      this.clearHumanTyping(undefined, undefined, false);
+      this.world.humanTyping = {};
       this.world.connected = false;
       // Settle every lifecycle row before dropping request maps. Mutation
       // callbacks clear their own pending IDs and leave a scoped retry notice;
@@ -1258,6 +1270,13 @@ export class RelayClient {
   private transmit(frame: ClientFrame, waiting: Omit<Asked, "kind" | "requestId"> = {}): ID | undefined {
     const ws = this.ws;
     if (ws?.readyState !== WebSocket.OPEN) return undefined;
+    // Typing is a live signal, not a request. Keep it free of request ids so
+    // no lifecycle ledger (or direct refusal UI) can mistake it for durable
+    // work, and so older peers can safely ignore the new frame type.
+    if (frame.type === "typing") {
+      ws.send(JSON.stringify(frame));
+      return undefined;
+    }
     const outgoing = this.identify(frame);
     ws.send(JSON.stringify(outgoing));
     // `hello` is the one frame asked before there is a conversation to have.
@@ -1310,6 +1329,39 @@ export class RelayClient {
     if (i < 0) return;
     const [settled] = this.asked.splice(i, 1);
     settled.refused?.(frame.error);
+  }
+
+  private humanTypingKey(channelId: ID, userId: ID): string {
+    return `${channelId}\u0000${userId}`;
+  }
+
+  private clearHumanTyping(channelId?: ID, userId?: ID, notify = true): void {
+    const next: Record<ID, HumanTyping[]> = {};
+    let changed = false;
+    for (const [cid, entries] of Object.entries(this.world.humanTyping)) {
+      const kept = entries.filter(entry => {
+        const matches = (channelId === undefined || cid === channelId)
+          && (userId === undefined || entry.userId === userId);
+        return !matches;
+      });
+      if (kept.length !== entries.length) changed = true;
+      if (kept.length > 0) next[cid] = kept;
+    }
+    for (const [key, timer] of this.humanTypingTimers) {
+      const [cid, uid] = key.split("\u0000");
+      const matches = (channelId === undefined || cid === channelId)
+        && (userId === undefined || uid === userId);
+      if (matches) { clearTimeout(timer); this.humanTypingTimers.delete(key); }
+    }
+    if (changed) {
+      this.world.humanTyping = next;
+      if (notify) this.emit();
+    }
+  }
+
+  /** Send one request-independent signal. Callers gate active state on the UI. */
+  setTyping(channelId: ID, typing: boolean): void {
+    this.transmit({ type: "typing", channelId, typing });
   }
 
   /** Fire-and-forget still returns the exact id put on the wire for deterministic QA. */
@@ -3641,6 +3693,33 @@ askPolls(projectId: ID): void {
     this.emit();
   }
 
+  private noteHumanTyping(signal: HumanTyping): void {
+    const known = this.world.users.find(user => user.id === signal.userId);
+    // The server sends human users only, but the client keeps this boundary too:
+    // never draw an invented name, an agent, or our own signal.
+    if (!known || known.id === this.world.me?.id || !signal.typing
+      || signal.expiresAt === undefined || signal.expiresAt <= Date.now()) {
+      this.clearHumanTyping(signal.channelId, signal.userId);
+      return;
+    }
+    this.clearHumanTyping(signal.channelId, signal.userId, false);
+    const entry: HumanTyping = {
+      channelId: signal.channelId, userId: known.id, userName: known.name,
+      typing: true, expiresAt: signal.expiresAt,
+    };
+    const list = this.world.humanTyping[signal.channelId] ?? [];
+    this.world.humanTyping = {
+      ...this.world.humanTyping,
+      [signal.channelId]: [...list.filter(item => item.userId !== known.id), entry],
+    };
+    const key = this.humanTypingKey(signal.channelId, known.id);
+    const timer = setTimeout(() => {
+      const current = this.world.humanTyping[signal.channelId]?.find(item => item.userId === known.id);
+      if (current?.expiresAt === signal.expiresAt) this.clearHumanTyping(signal.channelId, known.id);
+    }, Math.max(0, signal.expiresAt - Date.now()));
+    this.humanTypingTimers.set(key, timer);
+  }
+
   private onFrame(frame: ServerFrame): void {
     const w = this.world;
     this.seen[frame.type] = (this.seen[frame.type] ?? 0) + 1;
@@ -3668,6 +3747,8 @@ askPolls(projectId: ID): void {
         // The snapshot is durable state, never a continuation of a transient
         // tool stream. Begin each admitted session with a quiet activity cache.
         clearLiveSteps();
+        this.clearHumanTyping(undefined, undefined, false);
+        w.humanTyping = {};
         w.connected = true;
         w.authFailed = false;
         // The hub has let us in — and only now is the credential that got us
@@ -3879,6 +3960,9 @@ askPolls(projectId: ID): void {
         }
         break;
       }
+      case "typing":
+        this.noteHumanTyping(frame.typing);
+        break;
       case "channel": {
         const i = w.channels.findIndex(c => c.id === frame.channel.id);
         if (i >= 0) w.channels[i] = frame.channel; else w.channels.push(frame.channel);
@@ -4062,6 +4146,7 @@ askPolls(projectId: ID): void {
         // Removed means removed EVERYWHERE, now — not after a reload. The
         // sidebar, the @-mention list and the "Remove a person" dropdown all
         // read these two arrays, so dropping them here fixes every list at once.
+        this.clearHumanTyping(undefined, frame.userId, false);
         if (w.me && frame.userId === w.me.id) {
           // it was us: the relay has already closed the socket, so show the
           // welcome screen with a reason rather than an empty app
@@ -4070,6 +4155,7 @@ askPolls(projectId: ID): void {
           break;
         }
         w.users = w.users.filter(u => u.id !== frame.userId);
+        this.clearHumanTyping(undefined, frame.userId, false);
         w.channels = w.channels.filter(
           c => !(c.kind === "dm" && c.memberIds.includes(frame.userId)));
         break;
@@ -4238,6 +4324,7 @@ askPolls(projectId: ID): void {
         const { [frame.channelId]: goneMessages, ...restMessages } = w.messages;
         void goneMessages;
         w.messages = restMessages;
+        this.clearHumanTyping(frame.channelId, undefined, false);
         const { [frame.channelId]: gonePage, ...restPages } = w.pages;
         void gonePage;
         w.pages = restPages;

@@ -3515,6 +3515,8 @@ export type WithRequestId<T> = T extends unknown ? T & { requestId?: ID } : neve
 type ClientFrameBase =
   | { type: "hello"; token: string; client: "desktop" | "mobile" | "engine" }
   | { type: "send"; channelId: ID; text: string; tempId?: string; replyTo?: ID; attachmentIds?: ID[] }
+  /** Live human typing is a request-independent, non-durable signal. */
+  | { type: "typing"; channelId: ID; typing: boolean }
   | { type: "createChannel"; name: string; memberIds: ID[]; kind?: ChannelKind }
   | { type: "addMembers"; channelId: ID; memberIds: ID[] }
   // ---- channels as real things (docs/plans/chat-basics-handoff.md §7) ----
@@ -4030,6 +4032,17 @@ type ClientFrameBase =
 /** Every client request may opt into direct-answer/refusal correlation. */
 export type ClientFrame = WithRequestId<ClientFrameBase>;
 
+/** A human's live typing state. It is never part of `WorldState` or history. */
+export interface HumanTyping {
+  channelId: ID;
+  userId: ID;
+  /** Stamped by the relay from its stored user record; clients never author this. */
+  userName: string;
+  typing: boolean;
+  /** Relay expiry for an active signal; absent on an explicit stop. */
+  expiresAt?: number;
+}
+
 export type AgentStatus = "idle" | "working" | "braked";
 
 // ---------- can this agent actually be used right now? ----------
@@ -4272,6 +4285,8 @@ export interface ReachCatchupAgent {
 export type ServerFrame =
   | { type: "welcome"; state: WorldState }
   | { type: "message"; message: Message; tempId?: string }
+  /** Ephemeral human typing; request-independent and never persisted. */
+  | { type: "typing"; typing: HumanTyping }
   | { type: "channel"; channel: Channel }
   | { type: "agent"; agent: AgentDef }
   | { type: "agentDeleted"; agentId: ID }
