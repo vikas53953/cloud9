@@ -23,6 +23,7 @@
  *   node scripts/shoot-spending.mjs
  */
 import { chromium } from "playwright";
+import { clickRail } from "./rail-navigation.mjs";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -75,11 +76,7 @@ async function main() {
       ?? await ctx.waitForEvent("page");
     await page.waitForSelector(".rail", { timeout: 60_000 });
 
-    const door = page.locator('.rail .rail-btn[data-go="spending"]');
-    if (await door.count() === 0) {
-      throw new Error("NOT ON SCREEN — the installed app has no Spending in its rail.");
-    }
-    await door.click();
+    await clickRail(page, "spending");
     await page.waitForSelector(".spending", { timeout: 30_000 });
     // wait for the hub's answer to land rather than photographing "working it out"
     await page.waitForFunction(

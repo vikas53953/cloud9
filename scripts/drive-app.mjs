@@ -45,6 +45,7 @@
  */
 
 import { chromium } from "playwright";
+import { clickRail } from "./rail-navigation.mjs";
 import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -1859,7 +1860,7 @@ async function walk(page) {
   let handmade = null;
 
   try {
-    await page.click('.rail .rail-btn[data-go="crew"]');
+    await clickRail(page, "crew");
     await page.waitForSelector(".crew-bar", { timeout: 30000 });
     await shot(page, "crew-empty");
 
@@ -2153,7 +2154,7 @@ async function walk(page) {
          screen's own "Talk to" button leads. */
       if (rows.every(r => r.blocked)) {
         await page.keyboard.press("Escape").catch(() => {});
-        await page.click('.rail .rail-btn[data-go="crew"]');
+        await clickRail(page, "crew");
         const talk = page.locator('button:has-text("Talk to")').first();
         if (await talk.count() === 0) {
           throw new Error("every action is blocked in the room, and the crew screen offers " +
@@ -2502,7 +2503,7 @@ async function walk(page) {
    * whether it was broken or whether he really had spent nothing. */
 
   try {
-    await page.click('.rail .rail-btn[data-go="spending"]');
+    await clickRail(page, "spending");
     await page.waitForSelector(".spending", { timeout: 30000 });
     const spendingShot = await shot(page, "spending");
     // KEPT, not thrown away with the rest. This picture is cited in a pull
@@ -2664,9 +2665,9 @@ async function walk(page) {
   let memberSidecar = null;
   let memberPage = null;
   try {
-    const filesDoor = page.locator('.rail .rail-btn[data-go="files"]');
-    await filesDoor.click();
+    await clickRail(page, "files");
     await page.waitForSelector("[data-files-screen]", { timeout: 30000 });
+    const toolsDoor = page.locator("[data-open-tools]");
     let refreshObserver = null;
     await checkWithRequiredCleanup(EXPECTED_CHECKS[21], async () => {
       const index = page.locator('[data-files-screen] .files-index[aria-label="Files you can read"]');
@@ -2680,7 +2681,7 @@ async function walk(page) {
         return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) > 0
           && box.width > 0 && box.height > 0 && !!at && el.contains(at);
       });
-      if ((await filesDoor.count()) !== 1 || !await filesDoor.isVisible() || !await filesDoor.isEnabled()
+      if ((await toolsDoor.count()) !== 1 || !await toolsDoor.isVisible() || !await toolsDoor.isEnabled()
         || (await index.count()) !== 1 || !await index.isVisible() || !hit
         || (await refresh.count()) !== 1 || !await refresh.isVisible()) {
         throw new Error("NOT ON SCREEN — the Files door/index is hidden, covered, or cannot be used");
@@ -2856,12 +2857,12 @@ async function walk(page) {
     await memberSidecar.reconnect(memberId, known.me);
     memberPage = memberSidecar.page;
 
-    await page.click('.rail .rail-btn[data-go="files"]');
+    await clickRail(page, "files");
     await page.waitForSelector(`.file-index-row[data-file-row="${v1.id}"]`, { timeout: 20000 });
     await row.click();
     await page.waitForSelector(`.files-detail[data-file-detail="${v1.id}"][data-file-detail-state="here"]`,
       { timeout: 20000 });
-    await memberPage.click('.rail .rail-btn[data-go="files"]');
+    await clickRail(memberPage, "files");
     await memberPage.waitForSelector(`.file-index-row[data-file-row="${v1.id}"]`, { timeout: 20000 });
     await memberPage.click(`.file-index-row[data-file-row="${v1.id}"]`);
     await memberPage.waitForSelector(
@@ -3451,7 +3452,7 @@ async function walk(page) {
       await shot(page, "room-mute-installed");
 
       // --- the connections file block, in the agent editor ---
-      await page.click('.rail .rail-btn[data-go="crew"]');
+      await clickRail(page, "crew");
       await page.waitForSelector(".crew-bar", { timeout: 30000 });
       await page.click('.cast[data-crew] button:has-text("Edit")');
       await page.waitForSelector(".editor .reachladder", { timeout: 30000 });
@@ -4175,7 +4176,7 @@ async function runSidecarProbe() {
     const ownerId = await waitForEstablishedIdentity(ownerPage);
     const relay = new URL(ownerPage.url()).searchParams.get("relay");
 
-    await ownerPage.click('.rail .rail-btn[data-go="crew"]');
+    await clickRail(ownerPage, "crew");
     await ownerPage.waitForSelector(".crew-bar", { timeout: 30000 });
     if (await ownerPage.locator(".cast[data-crew]").count() === 0) {
       const write = ownerPage.locator('.crew-bar button, .crew-bar a').filter({ hasText: /write|new agent|make/i }).first();
@@ -4248,7 +4249,7 @@ async function runSidecarProbe() {
     const memberId = await assertRedeemedMemberIdentity(sidecar.page, ownerId);
     await sidecar.reconnect(memberId, ownerId);
 
-    await ownerPage.click('.rail .rail-btn[data-go="files"]');
+    await clickRail(ownerPage, "files");
     await ownerPage.waitForSelector(`.file-index-row[data-file-row="${probeArtifact.id}"]`, { timeout: 30000 });
     probeRow = ownerPage.locator(`.file-index-row[data-file-row="${probeArtifact.id}"]`);
     await probeRow.click();
@@ -4258,7 +4259,7 @@ async function runSidecarProbe() {
     await ownerPage.waitForSelector(
       `.files-detail[data-file-detail="${probeArtifact.id}"] .fileaccess[data-access-editor="yes"]`, { timeout: 20000 });
 
-    await sidecar.page.click('.rail .rail-btn[data-go="files"]');
+    await clickRail(sidecar.page, "files");
     await sidecar.page.waitForSelector(`.file-index-row[data-file-row="${probeArtifact.id}"]`, { timeout: 30000 });
     await sidecar.page.click(`.file-index-row[data-file-row="${probeArtifact.id}"]`);
     await sidecar.page.waitForSelector(

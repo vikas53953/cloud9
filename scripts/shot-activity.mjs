@@ -17,6 +17,7 @@
  *   node scripts/shot-activity.mjs --keep-open leave the window up to look at
  */
 import { chromium } from "playwright";
+import { clickRail } from "./rail-navigation.mjs";
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -91,7 +92,7 @@ async function shot(page, slug) {
 }
 
 async function makeAgent(page, name, persona) {
-  await page.click('.rail .rail-btn[data-go="crew"]');
+  await clickRail(page, "crew");
   await page.waitForSelector(".crew-bar", { timeout: 30000 });
   const write = page.locator(".crew-bar button, .crew-bar a")
     .filter({ hasText: /write|new agent|make/i }).first();

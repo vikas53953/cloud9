@@ -36,8 +36,8 @@ test("Canvas reuses openAt navigation and parks beside peer rails", () => {
   assert.match(app, /setRunOpenAt/);
   assert.doesNotMatch(app, /taskFocusId|runFocusId|projectFocus/);
   assert.match(app, /"canvas"/);
-  assert.match(app, /railBtn\("canvas"/);
-  assert.match(app, /railBtn\("forums"/);
+  assert.match(app, /toolBtn\("canvas"/);
+  assert.match(app, /toolBtn\("forums"/);
   assert.match(app, /huddles|pulse|polls|hooks|social|forums/);
 });
 
