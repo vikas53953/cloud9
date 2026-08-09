@@ -999,7 +999,12 @@ function useFollowToBottom(
        from here. */
     lastTop.current = el.scrollTop;
     keepFollowing();
-    const behavior: ScrollBehavior = placed.current ? scrollBehavior() : "auto";
+    /* A send is a commitment, not ambient motion. On long real conversations a
+       smooth animation can still be travelling when the new row changes height,
+       which is the "I pressed Enter and it did not scroll" experience. Land our
+       own message immediately; keep gentler motion for arrivals and resizes. */
+    const behavior: ScrollBehavior = why === "sent" ? "auto"
+      : placed.current ? scrollBehavior() : "auto";
     placed.current = true;
     followed = {
       n: followed.n + 1, why,
@@ -1075,17 +1080,30 @@ function useFollowToBottom(
   React.useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const his = (): void => { following.current = false; };
+    /* Reading intent wins immediately, before the browser's later scroll event.
+       Otherwise an arrival between a wheel/touch and that event can still see
+       the old `atBottom=true` and pull the reader back down. Clicking a reaction
+       or another control is not scrolling, so it only interrupts animation. */
+    const claimView = (): void => { following.current = false; atBottom.current = false; };
+    const onMouseDown = (event: MouseEvent): void => {
+      following.current = false;
+      if (!(event.target instanceof Element)
+        || !event.target.closest("button,a,input,textarea,select")) atBottom.current = false;
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      following.current = false;
+      if (["ArrowUp", "PageUp", "Home"].includes(event.key)) atBottom.current = false;
+    };
     const opts = { passive: true } as const;
-    el.addEventListener("wheel", his, opts);
-    el.addEventListener("touchstart", his, opts);
-    el.addEventListener("mousedown", his, opts);
-    el.addEventListener("keydown", his);
+    el.addEventListener("wheel", claimView, opts);
+    el.addEventListener("touchstart", claimView, opts);
+    el.addEventListener("mousedown", onMouseDown, opts);
+    el.addEventListener("keydown", onKeyDown);
     return () => {
-      el.removeEventListener("wheel", his);
-      el.removeEventListener("touchstart", his);
-      el.removeEventListener("mousedown", his);
-      el.removeEventListener("keydown", his);
+      el.removeEventListener("wheel", claimView);
+      el.removeEventListener("touchstart", claimView);
+      el.removeEventListener("mousedown", onMouseDown);
+      el.removeEventListener("keydown", onKeyDown);
     };
   }, [ref]);
 
@@ -1239,6 +1257,11 @@ const IconGear = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <circle cx="12" cy="12" r="3.1" />
     <path d="M12 3.5v2.2M12 18.3v2.2M20.5 12h-2.2M5.7 12H3.5M17.9 6.1l-1.6 1.6M7.7 16.3l-1.6 1.6M17.9 17.9l-1.6-1.6M7.7 7.7 6.1 6.1" />
+  </svg>
+);
+const IconMore = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" />
   </svg>
 );
 const MarkClaude = (): React.JSX.Element => (
@@ -2128,6 +2151,8 @@ function Workspace(): React.JSX.Element {
    */
   const [awaitingHire, setAwaitingHire] = useState<string | null>(null);
   const [quick, setQuick] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const toolsHoldRef = useRef<HTMLDivElement>(null);
   const [pendingPeer, setPendingPeer] = useState<{ id: ID; since: number } | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -2325,7 +2350,7 @@ function Workspace(): React.JSX.Element {
     attemptLeave(() => { client.askPublicUpdates(); setScreen("updates"); });
   }, []);
   const openPolls = useCallback(() => {
-    setScreen("polls");
+    attemptLeave(() => setScreen("polls"));
   }, []);
 
 
@@ -2980,6 +3005,29 @@ function Workspace(): React.JSX.Element {
     </button>
   );
 
+  useEscapeCloses(() => setToolsOpen(false), toolsOpen);
+  useClickAwayCloses(toolsHoldRef, () => setToolsOpen(false), toolsOpen);
+
+  const toolBtn = (
+    go: ScreenName, label: string, icon: React.ReactNode, badge?: number, onClick?: () => void,
+  ) => (
+    <button className={`tool-drawer-btn${badge ? " rail-badge" : ""}`} data-go={go}
+      aria-current={screen === go ? "page" : undefined}
+      onClick={() => {
+        setToolsOpen(false);
+        (onClick ?? (() => goScreen(go)))();
+      }}>
+      <span className="tool-drawer-icon">{icon}</span>
+      <span>{label}</span>
+      {badge ? <b className="rail-count">{badge}</b> : null}
+    </button>
+  );
+
+  const moreActive = !(["chat", "tasks", "projects", "activity", "settings"] as ScreenName[]).includes(screen);
+  const moreNeedsAttention = unreadNotifications > 0 || world.savedNew || socialUnread > 0
+    || Object.values(world.pulse.unreadByProject).some(n => n > 0)
+    || world.canvases.list.some(c => c.unread);
+
   return (
     <div className="shell">
       {screen !== "saved" && world.savedNotice && (
@@ -3004,52 +3052,55 @@ function Workspace(): React.JSX.Element {
           <div className="rail-main">
             <div className="brand" title="Cloud9" aria-hidden="true"><CloudMark /></div>
 
-            <section className="rail-group" aria-labelledby="rail-talk-label">
-              <h2 className="rail-group-label" id="rail-talk-label">Talk</h2>
+            <div className="rail-primary" aria-label="Primary destinations">
               {railBtn("chat", "Chat", <IconChat />)}
-              {railBtn("notifications", "Notifications", <IconBell />, unreadNotifications, openNotifications)}
-              {railBtn("saved", "Saved for later", <IconSave />, world.savedNew ? 1 : undefined, openSaved)}
-            </section>
-
-            <section className="rail-group" aria-labelledby="rail-crew-label">
-              <h2 className="rail-group-label" id="rail-crew-label">Crew</h2>
-              {railBtn("crew", "Crew", <IconCrew />)}
-              {railBtn("social", "Team feed", <IconSocial />, socialUnread, openSocial)}
-              {railBtn("huddles", "Huddles", <IconHuddle />, undefined, openHuddles)}
-            </section>
-
-            <section className="rail-group" aria-labelledby="rail-work-label">
-              <h2 className="rail-group-label" id="rail-work-label">Work</h2>
               {railBtn("tasks", "Tasks", <IconTasks />, pendingApprovals)}
-              {railBtn("workflows", "Workflows", <IconWorkflow />)}
-              {railBtn("files", "Files", <IconFiles />)}
-              {/* ADDED beside the four he approved — the Studio navigation is
-                  otherwise unchanged. Everything the hub and the engine already
-                  hold about his repositories arrives through this one door. */}
               {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
-              {railBtn("forums", "Decision threads", <IconForum />, undefined, openForums)}
-              {railBtn("pulse", "Engineering Pulse", <IconPulse />,
-                Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
-              {railBtn("polls", "Polls", <IconPolls />, undefined, openPolls)}
-              {railBtn("canvas", "Canvas", <IconCanvas />, world.canvases.list.some(c => c.unread) ? 1 : undefined, openCanvas)}
-              {railBtn("updates", "Public updates", <IconUpdates />, undefined, openUpdates)}
-            </section>
-
-            <section className="rail-group" aria-labelledby="rail-running-label">
-              <h2 className="rail-group-label" id="rail-running-label">Running the studio</h2>
-              {railBtn("hooks", "Hooks", <IconGear />)}
-              {/* ADDED 2026-08-07. It sits beside the Activity button because it
-                  answers the same shape of question — "what has been going on?" —
-                  about money rather than about actions. */}
-              {railBtn("spending", "Spending", <IconSpending />, undefined, openSpending)}
-              {/* CALLED WHAT IT IS. The button said "Log" while the screen behind
-                  it said "Activity", so the one place that answers "what are my
-                  agents doing" was named after the driest thing on it. The count is
-                  how many are working this second, and it is the only reason he
-                  needs to look — a rail that stays quiet while an agent works is
-                  the version of this feature that does not get used. */}
               {railBtn("activity", "Activity", <IconLog />, workingNow, openActivity)}
-            </section>
+              <div className="rail-tools-wrap" ref={toolsHoldRef}>
+                <button className={`rail-btn${moreNeedsAttention ? " rail-badge" : ""}`}
+                  data-open-tools aria-expanded={toolsOpen} aria-controls="cloud9-tools-drawer"
+                  aria-current={moreActive ? "true" : "false"} title="More tools"
+                  onClick={() => setToolsOpen(open => !open)}>
+                  <IconMore />More
+                  {moreNeedsAttention ? <b className="rail-count">1</b> : null}
+                </button>
+                {toolsOpen && (
+                  <div className="rail-tools-drawer" id="cloud9-tools-drawer" role="dialog"
+                    aria-modal="false" aria-label="Cloud9 tools">
+                    <header>
+                      <div><strong>All tools</strong><span>Grouped by what you are trying to do.</span></div>
+                      <button aria-label="Close tools" onClick={() => setToolsOpen(false)}>×</button>
+                    </header>
+                    <div className="tool-drawer-groups">
+                      <section><h2>Talk</h2>
+                        {toolBtn("notifications", "Notifications", <IconBell />, unreadNotifications, openNotifications)}
+                        {toolBtn("saved", "Saved for later", <IconSave />, world.savedNew ? 1 : undefined, openSaved)}
+                      </section>
+                      <section><h2>Crew</h2>
+                        {toolBtn("crew", "Crew", <IconCrew />)}
+                        {toolBtn("social", "Team feed", <IconSocial />, socialUnread, openSocial)}
+                        {toolBtn("huddles", "Huddles", <IconHuddle />, undefined, openHuddles)}
+                      </section>
+                      <section><h2>Build</h2>
+                        {toolBtn("workflows", "Workflows", <IconWorkflow />)}
+                        {toolBtn("files", "Files", <IconFiles />)}
+                        {toolBtn("forums", "Decision threads", <IconForum />, undefined, openForums)}
+                        {toolBtn("pulse", "Engineering Pulse", <IconPulse />,
+                          Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
+                        {toolBtn("polls", "Polls", <IconPolls />, undefined, openPolls)}
+                        {toolBtn("canvas", "Canvas", <IconCanvas />, world.canvases.list.some(c => c.unread) ? 1 : undefined, openCanvas)}
+                        {toolBtn("updates", "Public updates", <IconUpdates />, undefined, openUpdates)}
+                      </section>
+                      <section><h2>Automate & govern</h2>
+                        {toolBtn("hooks", "Hooks", <IconGear />)}
+                        {toolBtn("spending", "Spending", <IconSpending />, undefined, openSpending)}
+                      </section>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           <div className="rail-utilities">
@@ -4854,7 +4905,12 @@ function ChatView({
     //    yanking the reader away from the thing they asked for.
     if (viewIsClaimed()) return;
     // 3. otherwise a new arrival follows a reader who is already at the bottom.
-    if (atBottom.current) { follow("arrived"); caughtUp(); return; }
+    //    Our own echoed row lands immediately rather than animating across a long
+    //    history: the pre-send follow cannot show a row React has not drawn yet.
+    if (atBottom.current) {
+      follow(messages.at(-1)?.authorId === meId ? "sent" : "arrived");
+      caughtUp(); return;
+    }
     /* 4. …and one that arrives while he has read back does NOT move him. That
        is the whole of the pill: instead of taking the view, the app says how
        many are down there and leaves the decision to him. Counted here rather
@@ -6558,8 +6614,10 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
   const neverClaimed = useCallback(() => false, []);
   const { follow, atBottom, noteScrolled } = useFollowToBottom(bodyRef, neverClaimed);
   React.useLayoutEffect(() => {
-    if (atBottom.current) follow("arrived");
-  }, [messages.length, follow, atBottom]);
+    if (atBottom.current) {
+      follow(messages.at(-1)?.authorId === world.me?.id ? "sent" : "arrived");
+    }
+  }, [messages.length, follow, atBottom, messages, world.me?.id]);
   useEffect(() => {
     if (!takeover) return;
     const first = panelRef.current?.querySelector<HTMLElement>(

@@ -1,4 +1,5 @@
 import { chromium } from "playwright";
+import { clickRail } from "./rail-navigation.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -3045,7 +3046,7 @@ try {
    * Every number in these checks is read from `@cloud9/engine`, so the suite
    * cannot agree with a screen that has quietly drifted from the table.
    */
-  await page.click('.rail-btn[data-go="crew"]');
+  await clickRail(page, "crew");
   await page.waitForSelector(".crew-bar", { timeout: 15000 });
   await page.click('.cast[data-crew="Scout"] button:has-text("Edit")');
   await page.waitForSelector(".editor .reachladder", { timeout: 20000 });
@@ -3497,7 +3498,7 @@ try {
   ok("and nothing on screen calls it a hiring hall any more",
     !/hiring hall/i.test(await page.locator("body").innerText()),
     (await page.getAttribute(".sidebar .side-head .browsebtn.tomarket", "aria-label")) ?? "");
-  await page.click('.rail-btn[data-go="crew"]');
+  await clickRail(page, "crew");
   await page.waitForSelector(".crew-bar", { timeout: 15000 });
   ok("and from the crew screen",
     (await page.locator(".crew-bar .tomarket").count()) === 1 &&
@@ -4019,7 +4020,7 @@ try {
   await page.screenshot({ path: `${SHOTS}/presence-conversation.png` });
 
   // ---- paused is a real answer, and it is the owner's own doing ----
-  await page.click('.rail-btn[data-go="crew"]');
+  await clickRail(page, "crew");
   await page.waitForSelector(".crew-grid", { timeout: 20000 });
   await page.click('.cast[data-crew="Architect"] button:has-text("Edit")');
   await page.waitForSelector(".editor .lifecyclepick", { timeout: 20000 });
@@ -4075,7 +4076,7 @@ try {
     /switched off by its owner/.test(dead.why),
     dead ? dead.why : "(Architect not on screen)");
   await page.screenshot({ path: `${SHOTS}/presence-offline.png` });
-  await page.click('.rail-btn[data-go="crew"]');
+  await clickRail(page, "crew");
   await page.waitForSelector(".crew-grid", { timeout: 20000 });
   await page.click('.cast[data-crew="Architect"] button:has-text("Edit")');
   await page.waitForSelector(".editor .lifecyclepick", { timeout: 20000 });
@@ -5409,9 +5410,10 @@ try {
     afterSend.followed.n > afterArrival.followed.n && sinceHePressed.includes("sent"),
     `${afterSend.followed.n - afterArrival.followed.n} follow(s) since he pressed Enter: ` +
     JSON.stringify(sinceHePressed));
-  ok("it moved smoothly, because this machine has not asked for stillness (face 3)",
+  ok("his own message lands immediately; later layout follows may stay smooth",
     afterSend.motion === "smooth" && afterSend.behaviors.length >= 1 &&
-    afterSend.behaviors.every(b => b === "smooth"),
+    afterSend.behaviors.includes("auto") &&
+    afterSend.behaviors.every(b => b === "auto" || b === "smooth"),
     `motion=${afterSend.motion} behaviours=${JSON.stringify(afterSend.behaviors)}`);
   await page.screenshot({ path: `${SHOTS}/fix3-follows-his-own-message.png` });
 
@@ -6078,12 +6080,11 @@ try {
     afterFarEnter.rowHeight >= 100,
     `${afterFarEnter.fromBottom}px from the bottom; his ${afterFarEnter.rowHeight}px row wholly ` +
     `in sight: ${afterFarEnter.wholeRowInSight}`);
-  ok("and the rule still recognised his echo as one to follow — the clock measures stillness, not how long the animation lasts",
-    sinceFarEnter.includes("sent") && sinceFarEnter.includes("arrived") && heldEcho >= 1,
+  ok("and the rule still recognised his echo as his own send after the delayed frame landed",
+    sinceFarEnter.includes("sent") && heldEcho >= 1,
     `${farFollows} follow(s) since he pressed Enter: ${JSON.stringify(sinceFarEnter)} ` +
-    `(${heldEcho} held frame(s) let through 1,000ms in). With the 700ms clock this reads ` +
-    `exactly ["sent","resized"] — no "arrived" at all, because the rule had already ` +
-    "talked itself out of following its own animation.");
+    `(${heldEcho} held frame(s) let through 1,000ms in). The echoed row is now ` +
+    "deliberately classified as sent, so it lands immediately after React draws it.");
   await page.screenshot({ path: `${SHOTS}/scroll-enter-from-far-back.png` });
 
   /* ---- `from:` really filters now, so the placeholder is not a promise the
@@ -6420,7 +6421,7 @@ try {
   ok("a run that finishes anywhere this person can see arrives unasked, and is kept by its own id",
     (await page.evaluate(id => window.cloud9Runs.held().find(r => r.id === id)?.steps, rich.id)) === 6);
   // ---- an agent's own history, in its editor. Owner only. ----
-  await page.click('.rail-btn[data-go="crew"]');
+  await clickRail(page, "crew");
   await page.click('.cast[data-crew="Scout"] >> text=Edit');
   await page.waitForSelector(".recentwork", { timeout: 20000 });
   await page.waitForSelector(`.recentwork .workrow[data-run="${rich.id}"]`, { timeout: 20000 });
@@ -6497,7 +6498,7 @@ try {
   await page.screenshot({ path: `${SHOTS}/run-failed.png` });
 
   // ---- and none of it is offered for somebody else's agent ----
-  await fpage.click('.rail-btn[data-go="crew"]');
+  await clickRail(fpage, "crew");
   await fpage.waitForSelector(".cast", { timeout: 20000 });
   ok("a friend is never shown — and never asks for — the history of an agent that isn't theirs",
     (await fpage.locator(".recentwork").count()) === 0 &&
@@ -6527,14 +6528,15 @@ try {
   await page.click('.rail-btn[data-go="projects"]');
   await page.waitForSelector(".projects", { timeout: 20000 });
 
-  ok("PROJECTS is in the icon rail, beside the four screens he approved",
+  ok("PROJECTS is in the primary rail with the approved direct destinations and More tools",
     await page.evaluate(() => {
-      const rail = [...document.querySelectorAll(".rail .rail-btn")]
+      const rail = [...document.querySelectorAll(".rail [data-go]")]
         .map(b => b.dataset.go ?? b.title ?? "");
       return rail.includes("projects")
-        && ["chat", "crew", "tasks", "activity", "settings"].every(s => rail.includes(s));
+        && ["chat", "tasks", "activity", "settings"].every(s => rail.includes(s))
+        && !!document.querySelector("[data-open-tools]");
     }),
-    (await page.$$eval(".rail .rail-btn", bs => bs.map(b => b.dataset.go ?? b.title).join(", "))));
+    (await page.$$eval(".rail [data-go]", bs => bs.map(b => b.dataset.go ?? b.title).join(", "))));
 
   await page.waitForSelector(".proj-list .railempty, .proj-list .side-item", { timeout: 20000 });
   ok("with nothing connected the screen says so, rather than drawing an empty list of nothing",
@@ -7332,7 +7334,7 @@ try {
   } // end act: GitHub projects, what leaves this computer, and the in-tray
   if (act("the ladder at its widest, presence, and files an agent made")) {
   /* ---- the reach ladder, at its widest: top rung, everything disclosed ---- */
-  await page.click('.rail-btn[data-go="crew"]');
+  await clickRail(page, "crew");
   await page.waitForSelector(".crew-bar", { timeout: 20000 });
   await page.click('.cast[data-crew="Scout"] button:has-text("Edit")');
   await page.waitForSelector(".editor .reachladder", { timeout: 20000 });
@@ -7632,11 +7634,11 @@ try {
    * the real retained file above: its first two versions prove a handoff between
    * agents; its latest revision names a real turn and links exactly back to v1.
    */
-  const filesDoor = page.locator('.rail-btn[data-go="files"]');
-  await filesDoor.click();
+  await clickRail(page, "files");
   await page.waitForSelector('[data-files-screen][data-files-state="some"]', { timeout: 20000 });
-  ok("Files is in the rail and opens as the bounded cross-room workspace",
-    (await filesDoor.count()) === 1
+  ok("Files is in More tools and opens as the bounded cross-room workspace",
+    (await page.locator("[data-open-tools]").count()) === 1
+    && await page.locator("[data-open-tools]").isVisible()
     && (await page.locator('[data-files-screen] .files-index[aria-label="Files you can read"]').count()) === 1
     && (await page.locator('[data-files-screen] h2').innerText()).trim() === "Files");
 
@@ -7670,7 +7672,7 @@ try {
   const ownerAccess = page.locator(`.files-detail[data-file-detail="${artId}"] .fileaccess`);
   await page.waitForSelector(`.files-detail[data-file-detail="${artId}"] .fileaccess[data-access-editor="yes"]`,
     { timeout: 20000 });
-  await fpage.click('.rail-btn[data-go="files"]');
+  await clickRail(fpage, "files");
   await fpage.waitForSelector(`.file-index-row[data-file-row="${artId}"]`, { timeout: 20000 });
   await fpage.click(`.file-index-row[data-file-row="${artId}"]`);
   await fpage.waitForSelector(`.files-detail[data-file-detail="${artId}"] .fileaccess[data-access-editor="read-only"]`,
@@ -7704,7 +7706,7 @@ try {
       '.roommembers .memberrow[data-member="Priya"] .rolename')?.dataset.role === wanted,
     role, { timeout: 20000, what: `Priya to become ${role} in #general` });
     await page.click(".roompanel .roomclose");
-    await page.click('.rail-btn[data-go="files"]');
+    await clickRail(page, "files");
     await page.waitForSelector(`.file-index-row[data-file-row="${artId}"]`, { timeout: 20000 });
     await page.click(`.file-index-row[data-file-row="${artId}"]`);
     await page.waitForSelector(`.files-detail[data-file-detail="${artId}"][data-file-detail-state="here"]`,
@@ -7977,7 +7979,7 @@ try {
    * warning and nothing saved. The checks below hold the CLASS — one owner,
    * asked by every way out, on more than one surface.
    */
-  await page.click('.rail-btn[data-go="crew"]');
+  await clickRail(page, "crew");
   await page.waitForSelector(".crew-grid", { timeout: 20000 });
   /* One of his own agents — the Edit button only exists on those, which is the
      hub's rule and not a courtesy, so this picks the first card that has one. */
@@ -8031,7 +8033,7 @@ try {
   await page.waitForSelector(".overlay.leaveask", { timeout: 15000 });
   await page.click(".overlay.leaveask .discardwork");
   await page.waitForSelector(".composer textarea", { timeout: 20000 });
-  await page.click('.rail-btn[data-go="crew"]');
+  await clickRail(page, "crew");
   await openEditable();
   ok("choosing to throw the words away really leaves, and really discards them",
     !(await page.inputValue(".editor textarea.persona-input")).includes("THROWN AWAY ON PURPOSE")

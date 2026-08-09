@@ -8,7 +8,7 @@ const store = fs.readFileSync(path.join(__dirname, "..", "src", "store.ts"), "ut
 
 test("Hooks rail/editor is owner-scoped, accessible, and has no shell field", () => {
   const surface = app.slice(app.indexOf("function HooksScreen"), app.indexOf("function SpendingScreen"));
-  assert.match(app, /railBtn\("hooks", "Hooks"/);
+  assert.match(app, /toolBtn\("hooks", "Hooks"/);
   assert.match(surface, /role="status"/);
   assert.match(surface, /role="alert"/);
   assert.doesNotMatch(surface, /command|webhook|shell/i);
