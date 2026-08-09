@@ -504,10 +504,11 @@ function mintJoinTokenOn(port, token) {
 // features broke — three for the stop button, two for the claim check, two for
 // the picture an agent is shown, two for the "use my own setup" switch, and one
 // each for how hard it thinks and for keeping the NEWEST notes.
-// 584 → 590 (2026-08-09): six chat look-and-feel finish-line checks — the
+// 584 → 591 (2026-08-09): seven chat look-and-feel finish-line checks — the
 // !bg row in the ＋ menu, both emoji-tray dismissal paths, reply faces, and
-// computed round conversation faces, plus absence of the retired toolbar title.
-const EXPECTED_CHECKS = 590;
+// computed round conversation faces, plus absence of the retired toolbar title,
+// and the Aa formatting disclosure contract.
+const EXPECTED_CHECKS = 591;
 
 /* ---- ONE SUITE, TWO RUN MODES (2026-08-05) --------------------------------
  *
@@ -2213,11 +2214,25 @@ try {
        generates no box of its own is exactly what `contents` means. So the
        BUTTONS are asked, which is what he actually sees. */
     const showing = el => !!el && el.getClientRects().length > 0;
+    /* The calm/writing question is about the three direct surface controls,
+       not every descendant button. Bold/italic/code live one click deep in
+       `.fmtset` and are intentionally hidden until Aa opens it. Keep the
+       complete descendant title list below so DOM/title parity remains a
+       separate, strong contract. */
+    const surface = [
+      box.querySelector(".toolset > .attach"),
+      box.querySelector(".toolset > .emojihold > button"),
+      box.querySelector(".toolset > .fmtbtn"),
+    ];
+    const nested = [...box.querySelectorAll(".fmtset button.mini")];
     const receding = [...box.querySelectorAll(".toolset button.mini")];
     return {
       writing: box.dataset.writing,
       recedingInBox: receding.map(b => b.title),
-      recedingShowing: receding.length > 0 && receding.every(showing),
+      surfaceInBox: surface.map(b => b?.title ?? ""),
+      surfaceShowing: surface.every(showing),
+      nestedInBox: nested.map(b => b.title),
+      nestedShowing: nested.length > 0 && nested.every(showing),
       actionsShowing: showing(box.querySelector(".actionsbtn")),
       sendShowing: showing(box.querySelector(".sendbtn")),
       /* The button whose whole job was to type one character. It went; the
@@ -2233,17 +2248,52 @@ try {
   undefined, { timeout: 10000, what: "the box to arm when he clicks into it" });
   armedBox = await composerNow();
   ok("the message box is calm when nothing is being written, and shows its tools the moment he is — and they never left the box",
-    calmBox.writing === "no" && calmBox.recedingShowing === false &&
+    calmBox.writing === "no" && calmBox.surfaceShowing === false &&
     calmBox.recedingInBox.length >= 5 &&
-    armedBox.writing === "yes" && armedBox.recedingShowing === true &&
+    armedBox.writing === "yes" && armedBox.surfaceShowing === true &&
+    armedBox.nestedShowing === false &&
     armedBox.recedingInBox.length === calmBox.recedingInBox.length,
-    `calm: ${calmBox.recedingInBox.length} tools in the box, showing=${calmBox.recedingShowing}; ` +
-    `writing: ${armedBox.recedingInBox.length} in the box, showing=${armedBox.recedingShowing}`);
+    `calm: ${calmBox.recedingInBox.length} tools in the box, surface=${calmBox.surfaceShowing}; ` +
+    `writing: ${armedBox.recedingInBox.length} in the box, surface=${armedBox.surfaceShowing}, ` +
+    `nested=${armedBox.nestedShowing}`);
   ok("the ＋ Actions door and Send are on screen in BOTH states — invisible is the same as absent",
     calmBox.actionsShowing === true && calmBox.sendShowing === true &&
     armedBox.actionsShowing === true && armedBox.sendShowing === true,
     `calm: ＋=${calmBox.actionsShowing} Send=${calmBox.sendShowing}; ` +
     `writing: ＋=${armedBox.actionsShowing} Send=${armedBox.sendShowing}`);
+  await page.click(".thread .composer .fmtbtn");
+  await page.waitForSelector(".thread .composer .fmtset.on", { timeout: 10000 });
+  const formattingOpen = await page.evaluate(() => {
+    const box = document.querySelector(".thread .composer .composer-box");
+    const set = box?.querySelector(".fmtset");
+    const buttons = [...(set?.querySelectorAll("button.mini") ?? [])];
+    return {
+      expanded: box?.querySelector(".fmtbtn")?.getAttribute("aria-expanded"),
+      open: set?.classList.contains("on") === true,
+      titles: buttons.map(b => b.title),
+      showing: buttons.length === 3 && buttons.every(b => b.getClientRects().length > 0),
+    };
+  });
+  await page.click(".thread .composer .fmtbtn");
+  await waitFor(page, () => !document.querySelector(".thread .composer .fmtset.on"),
+  undefined, { timeout: 10000, what: "Aa formatting controls to close again" });
+  const formattingClosed = await page.evaluate(() => {
+    const box = document.querySelector(".thread .composer .composer-box");
+    const set = box?.querySelector(".fmtset");
+    const buttons = [...(set?.querySelectorAll("button.mini") ?? [])];
+    return {
+      expanded: box?.querySelector(".fmtbtn")?.getAttribute("aria-expanded"),
+      open: set?.classList.contains("on") === true,
+      showing: buttons.some(b => b.getClientRects().length > 0),
+    };
+  });
+  ok("Aa reveals Bold, Italic, and Code, then closes and restores the calm formatting state",
+    formattingOpen.open && formattingOpen.expanded === "true" && formattingOpen.showing &&
+    formattingOpen.titles.join(" / ") === "Bold / Italic / Code" &&
+    !formattingClosed.open && formattingClosed.expanded === "false" && !formattingClosed.showing,
+    `open: ${formattingOpen.titles.join(" / ")} showing=${formattingOpen.showing}; ` +
+    `closed: open=${formattingClosed.open} expanded=${formattingClosed.expanded} ` +
+    `showing=${formattingClosed.showing}`);
   await page.click(".thread .composer .emojihold > button");
   await page.waitForSelector(".thread .composer .emojipop", { timeout: 10000 });
   await page.keyboard.press("Escape");
