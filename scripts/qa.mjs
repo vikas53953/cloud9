@@ -8374,7 +8374,9 @@ try {
   ok("an agent whose job is stuck says so on its presence line, instead of reading as fine",
     presenceRow.trouble === "blocked"
       && /Stuck — waiting on something/.test(presenceRow.words)
-      && presenceRow.words.includes(STUCK_WHY)
+      // The rail is deliberately one concise state. The task card above owns
+      // the full reason; repeating it here is the clutter PR34 removed.
+      && !presenceRow.words.includes(STUCK_WHY)
       && !/\bReady\b/.test(presenceRow.words),
     JSON.stringify(presenceRow).slice(0, 200));
 
@@ -8582,6 +8584,29 @@ try {
   await page.click(".sidebar >> text=# trip-goa");
   await page.waitForSelector(".composer textarea", { timeout: 15000 });
 
+  const stopWorld = await page.evaluate(() => ({
+    channels: window.cloud9Wire.channels(),
+    agents: window.cloud9Wire.agents(),
+  }));
+  const scoutId = stopWorld.agents.find(a => a.name === "Scout")?.id;
+  const tripGoaId = stopWorld.channels.find(c => c.name === "trip-goa")?.id;
+  if (!scoutId || !tripGoaId) {
+    throw new Error("the Stop journey could not identify Scout or #trip-goa from the running app");
+  }
+  /* Earlier smoke journeys may still have Scout finishing background work.
+     A second !bg request queues behind that turn, so clicking the already
+     visible Stop would exercise the wrong task. Start this journey only from
+     the state a person sees before beginning new work: Scout is idle and has
+     no queued/running job. */
+  await waitFor(page, wantedAgent => {
+    const hasStop = [...document.querySelectorAll("button.stopnow[data-stop-agent]")]
+      .some(b => b.dataset.stopAgent === wantedAgent);
+    const hasLiveJob = window.cloud9Runs.jobs().some(j =>
+      j.agentId === wantedAgent && (j.status === "not_started" || j.status === "working"));
+    return !hasStop && !hasLiveJob;
+  }, scoutId, { timeout: 180000, what: "Scout to finish earlier work before the Stop journey" });
+  const knownJobs = await page.evaluate(() => window.cloud9Runs.jobs().map(j => j.id));
+
   /* CATCH THE CONTROL THE MOMENT IT EXISTS, AND PRESS IT THERE AND THEN.
      A turn can be over in a second (canned answers are instant), so a harness
      that waits for the button, then reads it, then clicks it, is racing the
@@ -8590,30 +8615,48 @@ try {
      takes down what the button SAYS at the moment it appears, and clicks the
      real control right then. It is one real click on the real button — the
      same event his mouse would send — not a frame typed onto the wire. */
-  await page.evaluate(() => {
+  await page.evaluate(([knownJobs, wantedAgent, wantedChannel]) => {
     window.__c9stop = null;
     const grab = () => {
+      const fresh = window.cloud9Runs.jobs().find(j =>
+        !knownJobs.includes(j.id)
+        && j.status === "working"
+        && j.agentId === wantedAgent
+        && j.channelId === wantedChannel);
       const b = document.querySelector("button.stopnow[data-stop-agent]");
-      if (!b || window.__c9stop) return false;
+      if (!fresh || !b || b.dataset.stopAgent !== wantedAgent || window.__c9stop) return false;
       window.__c9stop = {
         agent: b.dataset.stopAgent, title: b.title ?? "", text: (b.innerText ?? "").trim(),
+        taskId: fresh.id,
       };
       b.click();
       return true;
     };
     if (!grab()) {
-      const mo = new MutationObserver(() => { if (grab()) mo.disconnect(); });
+      let timer;
+      const mo = new MutationObserver(() => {
+        if (!grab()) return;
+        mo.disconnect();
+        clearInterval(timer);
+      });
       mo.observe(document.body, { childList: true, subtree: true, attributes: true });
+      /* A task can enter the store while an older Scout Stop is already drawn.
+         That state change need not alter this conversation's DOM, so the
+         observer alone has nothing to wake it. Poll the app's own QA seam too;
+         the click is still the real button and only the fresh task can arm it. */
+      timer = setInterval(() => {
+        if (!grab()) return;
+        clearInterval(timer);
+        mo.disconnect();
+      }, 25);
     }
-  });
+  }, [knownJobs, scoutId, tripGoaId]);
   const stopBox = page.locator(".composer textarea");
   await stopBox.fill("@Scout !bg take your time comparing every villa in this shortlist");
   await stopBox.press("Enter");
   await waitFor(page, () => !!window.__c9stop, undefined,
     { timeout: 90000, what: "a Stop control to be offered while the agent works" });
   const stopSeen = await page.evaluate(() => window.__c9stop);
-  const scoutId = (await page.evaluate(() => window.cloud9Wire.agents()))
-    .find(a => a.name === "Scout")?.id;
   ok("while an agent is working, the owner is offered a Stop that names THAT agent",
     stopSeen.text === "Stop" && stopSeen.agent === scoutId && /Stop Scout/.test(stopSeen.title),
     `${stopSeen.title} :: data-stop-agent=${stopSeen.agent}`);
@@ -8622,15 +8665,16 @@ try {
      so the distinction this feature exists for is cancelled-versus-failed, and
      that is exactly what is read here. */
   let outcomes = [];
-  await waitFor(page, () => (window.cloud9Runs?.held() ?? [])
-    .some(r => r.outcome === "cancelled"), undefined,
+  await waitFor(page, taskId => (window.cloud9Runs?.held() ?? [])
+    .some(r => r.taskId === taskId && r.outcome === "cancelled"), stopSeen.taskId,
   { timeout: 90000, what: "the stopped turn to be recorded as cancelled, not failed" })
     .catch(() => { /* judged below, in words, rather than thrown */ });
   outcomes = await page.evaluate(() => window.cloud9Runs?.held() ?? []);
   const stillWorking = await page.locator("button.stopnow[data-stop-agent]").count();
+  const stoppedOutcome = outcomes.find(r => r.taskId === stopSeen.taskId);
   ok("pressing it really ends the turn, and the record calls it stopped — never failed",
-    outcomes.some(r => r.outcome === "cancelled") && stillWorking === 0,
-    `${stillWorking} agent(s) still working · outcomes: ${outcomes.map(r => r.outcome).join(",") || "none"}`);
+    stoppedOutcome?.outcome === "cancelled" && stillWorking === 0,
+    `${stillWorking} agent(s) still working · stopped task outcome: ${stoppedOutcome?.outcome ?? "missing"}`);
 
   /* AND HE CAN SEE IT. The record card lives under the message that asked, so
      the thread is opened to read the words the app puts on it — the same
@@ -8711,7 +8755,10 @@ try {
     `${seenBytes.length} of ${PICTURE.length} bytes`);
   const tooBig = tooBigSentence(
     "huge.png", "a PNG picture", ATTACHMENT_LIMITS.bytes + 1, ATTACHMENT_LIMITS.bytes);
-  const ceilingMB = `${(ATTACHMENT_LIMITS.bytes / 1048576).toFixed(1)} MB`;
+  // `tooBigSentence` speaks in decimal MB, as people see file sizes in the UI.
+  // Keep this independent expected value on the same public unit rather than
+  // comparing a binary MiB number to the engine's sentence.
+  const ceilingMB = `${(ATTACHMENT_LIMITS.bytes / 1_000_000).toFixed(1)} MB`;
   ok("a picture too big to be shown is refused in plain words, with the shared ceiling in it",
     tooBig.includes("huge.png") && tooBig.includes(ceilingMB) && /have not seen it/.test(tooBig)
     && /do not guess/.test(tooBig),
@@ -8726,7 +8773,8 @@ try {
   await page.click('.sidebar .agentrow[data-agent="Scout"] button[title="Edit agent"]');
   await page.waitForSelector(".editor", { timeout: 20000 });
   const setupSwitch = await page.evaluate(label => {
-    const rows = [...document.querySelectorAll(".editor .toggle-row, .editor .field-row")];
+    const rows = [...document.querySelectorAll(
+      ".editor .toggle-row, .editor .field-row, .editor .choice-row")];
     const row = rows.find(r => (r.innerText ?? "").includes(label));
     return row ? { found: true, text: row.innerText.replace(/\s+/g, " ").slice(0, 120) } : { found: false };
   }, OWNER_SETUP_WORDS.label);

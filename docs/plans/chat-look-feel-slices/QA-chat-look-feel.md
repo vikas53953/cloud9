@@ -1,6 +1,6 @@
 # Chat look-and-feel QA finish line
 
-Date: 2026-08-09  
+Date: 2026-08-09
 Scope: `scripts/qa.mjs` only; product changes are intentionally out of scope.
 Artifact: `docs/plans/chat-look-feel-slices/QA-chat-look-feel.md`
 

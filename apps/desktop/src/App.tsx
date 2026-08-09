@@ -2757,7 +2757,10 @@ function Workspace(): React.JSX.Element {
       held: () => Object.entries(client.world.runs)
         .map(([id, r]) => ({ id, outcome: r.outcome, taskId: r.taskId ?? null, steps: r.steps.length })),
       jobs: () => client.world.tasks
-        .map(t => ({ id: t.id, status: t.status, runId: t.runId ?? null })),
+        .map(t => ({
+          id: t.id, status: t.status, runId: t.runId ?? null,
+          agentId: t.agentId, channelId: t.channelId,
+        })),
       /* THE HISTORY ENTRIES EXACTLY AS THE HUB SENT THEM, so a test can be
          built from real records instead of hand-written ones. A fixture written
          by the same person as the code agrees with the code by construction —
