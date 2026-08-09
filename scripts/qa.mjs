@@ -504,10 +504,10 @@ function mintJoinTokenOn(port, token) {
 // features broke — three for the stop button, two for the claim check, two for
 // the picture an agent is shown, two for the "use my own setup" switch, and one
 // each for how hard it thinks and for keeping the NEWEST notes.
-// 584 → 589 (2026-08-09): five chat look-and-feel finish-line checks — the
+// 584 → 590 (2026-08-09): six chat look-and-feel finish-line checks — the
 // !bg row in the ＋ menu, both emoji-tray dismissal paths, reply faces, and
-// computed round conversation faces.
-const EXPECTED_CHECKS = 589;
+// computed round conversation faces, plus absence of the retired toolbar title.
+const EXPECTED_CHECKS = 590;
 
 /* ---- ONE SUITE, TWO RUN MODES (2026-08-05) --------------------------------
  *
@@ -2064,6 +2064,16 @@ try {
     roomTools.every(t => threadTools.includes(t)) &&
     NAMED_TOOLS.every(t => threadTools.includes(t)),
     `room: ${roomTools.join(" / ")} :: thread: ${threadTools.join(" / ")}`);
+  const retiredBackgroundTitle = "Hand this over as background work";
+  const retiredRoomButtons = await page.locator(
+    `.thread .composer .tools button.mini[title="${retiredBackgroundTitle}"]`,
+  ).count();
+  const retiredThreadButtons = await page.locator(
+    `.threadcomposer .tools button.mini[title="${retiredBackgroundTitle}"]`,
+  ).count();
+  ok("the retired background-work toolbar button is absent from both room and thread composers",
+    retiredRoomButtons === 0 && retiredThreadButtons === 0,
+    `room: ${retiredRoomButtons} :: thread: ${retiredThreadButtons}`);
   await page.screenshot({ path: `${SHOTS}/thread-composer-tools.png` });
   await page.click(".threadpanel .threadclose");
   await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
