@@ -1581,6 +1581,37 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .empty p{font-size:13.5px;line-height:1.6;}
 .empty code{font-family:var(--mono);font-size:11.5px;background:var(--surface);
   border:1px solid var(--line);border-radius:var(--radius-xs);padding:0 4px;}
+.empty-room{width:100%;max-width:760px;}
+.empty-welcome-cards{
+  display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px;width:100%;margin:8px 0 1px;
+}
+.empty-welcome-card{
+  min-width:0;display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto;
+  align-items:start;gap:8px 10px;padding:15px;text-align:left;
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);
+  box-shadow:var(--shadow);transition:background .15s var(--ease),border-color .15s var(--ease),transform .12s var(--ease);
+}
+.empty-welcome-card:hover:not(:disabled){background:var(--surface-2);border-color:var(--pine);}
+.empty-welcome-card:active:not(:disabled){transform:translateY(1px);}
+.empty-welcome-card:disabled{opacity:.62;cursor:not-allowed;}
+.empty-welcome-icon{
+  width:32px;height:32px;display:grid;place-items:center;flex:none;border-radius:var(--radius-s);
+  background:var(--pine-soft);color:var(--pine);font-size:18px;line-height:1;
+}
+.empty-welcome-card:nth-child(2) .empty-welcome-icon{background:var(--ultra-soft);color:var(--ultra);}
+.empty-welcome-copy{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.empty-welcome-copy strong{font-family:var(--display);font-size:16px;color:var(--ink);}
+.empty-welcome-copy>span{font-size:12.5px;line-height:1.45;color:var(--ink-2);}
+.empty-welcome-action{
+  grid-column:2;font-size:11.5px;font-weight:600;line-height:1.4;color:var(--pine);
+}
+.empty-welcome-card:disabled .empty-welcome-action{color:var(--ink-3);}
+.empty-welcome-hint{max-width:58ch;margin-top:2px;font-size:13px;line-height:1.55;}
+@media (max-width:640px){
+  .empty-room{padding-left:16px;padding-right:16px;}
+  .empty-welcome-cards{grid-template-columns:1fr;}
+  .empty-welcome-card{padding:14px;}
+}
 
 /* ---------------- OVERLAYS (invite + new channel only) ---------------- */
 .overlay{

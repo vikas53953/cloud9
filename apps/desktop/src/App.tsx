@@ -4002,6 +4002,7 @@ Open your chat with ${a.name}`}>
       {active ? (
         <ChatView key={active.id} channel={active} lastRead={lastRead} findOpen={findOpen}
           onCloseFind={onCloseFind} onEditAgent={onEditAgent} onOpenTasks={onOpenTasks}
+          owner={owner} onNewAgent={onNewAgent} onInvite={onInvite}
           jumpTo={jumpTo} onJumped={onJumped}
           onOpenThread={threading ? openThread : undefined} threadRoot={threadRoot}
           onToggleDetails={toggleDetails} detailsOpen={detailsOpen} takeover={takeover} />
@@ -4579,11 +4580,13 @@ function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
 
 function ChatView({
   channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpenTasks,
+  owner, onNewAgent, onInvite,
   jumpTo, onJumped, onOpenThread, threadRoot, onToggleDetails, detailsOpen,
   takeover,
 }: {
   channel: Channel; lastRead: number; findOpen: boolean; onCloseFind: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenTasks: () => void;
+  owner: boolean; onNewAgent: () => void; onInvite: () => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
   /** absent when his setting says replies stay in the conversation */
   onOpenThread?: (rootId: ID) => void; threadRoot: ID | null;
@@ -5131,13 +5134,40 @@ function ChatView({
           </div>
         )}
         {!needle && messages.length === 0 && (
-          <div className="empty">
-            <div className="empty-mark" aria-hidden="true">{isDm ? "✉" : "#"}</div>
-            <h2>{isDm ? `This is the start of your chat with ${peerName}` : `Nothing said in #${channel.name} yet`}</h2>
-            <p>Type below to start it. Put <code>@</code> in front of an agent's name to hand it a job,
-              add <code>!bg</code> when it should work in the background, and type <code>/</code> to
-              see everything an agent can be asked to do.</p>
-          </div>
+          isDm ? (
+            <div className="empty">
+              <div className="empty-mark" aria-hidden="true">✉</div>
+              <h2>This is the start of your chat with {peerName}</h2>
+              <p>Type below to start. Use <code>@name</code> to ask an agent, <code>!bg</code> for background work, or <code>/</code> for commands.</p>
+            </div>
+          ) : (
+            <div className="empty empty-room" data-empty-room="yes">
+              <div className="empty-mark" aria-hidden="true">#</div>
+              <h2>Nothing said in #{channel.name} yet</h2>
+              <div className="empty-welcome-cards" aria-label="Ways to get this room started">
+                <button type="button" className="empty-welcome-card" onClick={onNewAgent}>
+                  <span className="empty-welcome-icon" aria-hidden="true">✦</span>
+                  <span className="empty-welcome-copy">
+                    <strong>Add an agent here</strong>
+                    <span>Create an agent, then add it to this room from the header.</span>
+                  </span>
+                  <span className="empty-welcome-action" aria-hidden="true">Create an agent →</span>
+                </button>
+                <button type="button" className="empty-welcome-card" onClick={onInvite} disabled={!owner}
+                  title={owner ? "Create a one-time invite" : "Only the owner can invite people"}>
+                  <span className="empty-welcome-icon" aria-hidden="true">↗</span>
+                  <span className="empty-welcome-copy">
+                    <strong>Invite someone</strong>
+                    <span>Share a one-time invite so they can join this Cloud9.</span>
+                  </span>
+                  <span className="empty-welcome-action" aria-hidden="true">
+                    {owner ? "Create an invite →" : "Only the owner can invite people"}
+                  </span>
+                </button>
+              </div>
+              <p className="empty-welcome-hint">Or type below to start. Use <code>@name</code> to ask an agent, <code>!bg</code> for background work, or <code>/</code> for commands.</p>
+            </div>
+          )
         )}
         {rows.map(r => (
           <React.Fragment key={r.m.id}>
