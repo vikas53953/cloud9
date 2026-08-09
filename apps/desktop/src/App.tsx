@@ -1163,6 +1163,18 @@ const IconChat = (): React.JSX.Element => (
     <path d="M8.5 9.5h7M8.5 12.5h4" />
   </svg>
 );
+const IconHome = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="m4 10 8-6 8 6v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19Z" />
+    <path d="M9.5 20.5v-6h5v6" />
+  </svg>
+);
+const IconDirect = (): React.JSX.Element => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M5 5h14v10H9l-4 4V5Z" />
+    <path d="M8 9h8M8 12h5" />
+  </svg>
+);
 const IconCrew = (): React.JSX.Element => (
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <circle cx="9" cy="8.5" r="3.2" /><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0" />
@@ -1679,8 +1691,12 @@ function makeStore<T>(name: string, fallback: T) {
   };
 }
 
+export type ThemeName =
+  | "system" | "light" | "dark" | "daylight" | "cloud9-pine" | "midnight"
+  | "aubergine" | "solarized-dark" | "rose-pine" | "catppuccin";
+
 export interface Prefs {
-  theme: "light" | "dark" | "system";
+  theme: ThemeName;
   defaultProvider: Provider;
   defaultModel: Record<Provider, string>;
   notify: boolean;
@@ -1748,15 +1764,20 @@ const usePrefs = (): Prefs => useSyncExternalStore(prefs.subscribe, prefs.get);
 
 function applyTheme(theme: Prefs["theme"]): void {
   const root = document.documentElement;
-  if (theme === "system") root.removeAttribute("data-theme");
-  else root.setAttribute("data-theme", theme);
+  /* Keep installs from the original three-choice picker working. The named
+     palettes are all CSS semantic token sets; the root only needs the name. */
+  const migrated: ThemeName = theme === "light" ? "daylight"
+    : theme === "dark" ? "midnight" : theme;
+  if (migrated === "system") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", migrated);
+  if (theme !== migrated && prefs.get().theme === theme) prefs.set({ theme: migrated });
 }
 applyTheme(prefs.get().theme);
 
 function isDarkNow(): boolean {
   const pinned = document.documentElement.getAttribute("data-theme");
-  if (pinned === "dark") return true;
-  if (pinned === "light") return false;
+  if (["midnight", "aubergine", "solarized-dark", "rose-pine", "catppuccin", "dark"].includes(pinned ?? "")) return true;
+  if (["daylight", "cloud9-pine", "light"].includes(pinned ?? "")) return false;
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
 }
 
@@ -2182,7 +2203,8 @@ function Workspace(): React.JSX.Element {
   const clearRunOpen = useCallback(() => setRunOpenAt(null), []);
   const clearProjectOpen = useCallback(() => setProjectOpenAt(null), []);
 
-  const active = world.channels.find(c => c.id === activeId) ?? world.channels[0];
+  const active = world.channels.find(c => c.id === activeId)
+    ?? (activeId === null ? world.channels.find(c => c.kind !== "dm") : world.channels[0]);
   const owner = isOwner(world.me);
   const openInvite = useCallback(() => {
     client.send({ type: "createInvite" });
@@ -2605,8 +2627,7 @@ function Workspace(): React.JSX.Element {
     // conversation on screen is a different job and keeps its own bar (Ctrl+F).
     "search": () => leaveThen(() => { setScreen("chat"); setSearchOpen(true); }),
     "toggle-theme": () => {
-      const now = document.documentElement.getAttribute("data-theme");
-      prefs.set({ theme: now === "dark" ? "light" : "dark" });
+      prefs.set({ theme: isDarkNow() ? "daylight" : "midnight" });
     },
     "activity": openActivity,
     "tasks": () => goScreen("tasks"),
@@ -2981,6 +3002,27 @@ function Workspace(): React.JSX.Element {
   const humanDms = world.channels.filter(c =>
     c.kind === "dm" && !c.memberIds.some(id => world.agents.some(a => a.id === id)));
 
+  const openHome = useCallback(() => {
+    attemptLeave(() => {
+      setScreen("chat");
+      const room = world.channels.find(c => c.kind !== "dm");
+      setActiveId(room?.id ?? null);
+    });
+  }, [world.channels]);
+
+  /* DMs is a destination, not a second inbox. Prefer an existing direct
+     conversation and leave the Studio floor's Direct list visible when there
+     is not one yet. This keeps the route useful for a brand-new Cloud9. */
+  const openDms = useCallback(() => {
+    attemptLeave(() => {
+      setScreen("chat");
+      const first = humanDms[0]
+        ?? world.channels.find(c => c.kind === "dm")
+        ?? null;
+      if (first) setActiveId(first.id);
+    });
+  }, [humanDms, world.channels]);
+
   const peerOf = (c: Channel) => {
     const { name, agent } = channelPeer(c, world);
     const status = agent ? agentStatusLine(agent, world.agentStatus[agent.id]) : null;
@@ -2996,9 +3038,10 @@ function Workspace(): React.JSX.Element {
 
   const railBtn = (
     go: ScreenName, label: string, icon: React.ReactNode, badge?: number, onClick?: () => void,
+    activeOverride?: boolean,
   ) => (
     <button className={`rail-btn${badge ? " rail-badge" : ""}`} data-go={go}
-      aria-current={screen === go ? "true" : "false"} title={label}
+      aria-current={(activeOverride ?? (screen === go)) ? "true" : "false"} title={label}
       onClick={onClick ?? (() => goScreen(go))}>
       {icon}{label}
       {badge ? <b className="rail-count">{badge}</b> : null}
@@ -3023,7 +3066,7 @@ function Workspace(): React.JSX.Element {
     </button>
   );
 
-  const moreActive = !(["chat", "tasks", "projects", "activity", "settings"] as ScreenName[]).includes(screen);
+  const moreActive = !(["chat", "tasks", "projects", "activity", "files", "settings"] as ScreenName[]).includes(screen);
   const moreNeedsAttention = unreadNotifications > 0 || world.savedNew || socialUnread > 0
     || Object.values(world.pulse.unreadByProject).some(n => n > 0)
     || world.canvases.list.some(c => c.unread);
@@ -3053,10 +3096,12 @@ function Workspace(): React.JSX.Element {
             <div className="brand" title="Cloud9" aria-hidden="true"><CloudMark /></div>
 
             <div className="rail-primary" aria-label="Primary destinations">
-              {railBtn("chat", "Chat", <IconChat />)}
-              {railBtn("tasks", "Tasks", <IconTasks />, pendingApprovals)}
-              {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
+              {railBtn("chat", "Home", <IconHome />, undefined, openHome,
+                screen === "chat" && active?.kind !== "dm")}
+              {railBtn("chat", "DMs", <IconDirect />, undefined, openDms,
+                screen === "chat" && active?.kind === "dm")}
               {railBtn("activity", "Activity", <IconLog />, workingNow, openActivity)}
+              {railBtn("files", "Files", <IconFiles />)}
               <div className="rail-tools-wrap" ref={toolsHoldRef}>
                 <button className={`rail-btn${moreNeedsAttention ? " rail-badge" : ""}`}
                   data-open-tools aria-expanded={toolsOpen} aria-controls="cloud9-tools-drawer"
@@ -3083,8 +3128,9 @@ function Workspace(): React.JSX.Element {
                         {toolBtn("huddles", "Huddles", <IconHuddle />, undefined, openHuddles)}
                       </section>
                       <section><h2>Build</h2>
+                        {toolBtn("tasks", "Tasks", <IconTasks />, pendingApprovals)}
+                        {toolBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
                         {toolBtn("workflows", "Workflows", <IconWorkflow />)}
-                        {toolBtn("files", "Files", <IconFiles />)}
                         {toolBtn("forums", "Decision threads", <IconForum />, undefined, openForums)}
                         {toolBtn("pulse", "Engineering Pulse", <IconPulse />,
                           Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
@@ -3107,7 +3153,7 @@ function Workspace(): React.JSX.Element {
             <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
               <IconBolt />Ctrl K
             </button>
-            {railBtn("settings", "Settings", <IconGear />)}
+            {railBtn("settings", "Admin", <IconGear />)}
             {/* Which Cloud9 am I on, and a door to join a friend's. The active
                 hub's name rides on the button so it is glanceable, and the
                 connection sentence is its tooltip — both from `hubConn`, never a
@@ -3136,6 +3182,7 @@ function Workspace(): React.JSX.Element {
               onNewChannel={() => setModal("channel")} onBrowseRooms={() => setModal("browse")}
               onNewAgent={() => openEditor("new")} onBrowseMarket={() => goScreen("market")}
               onInvite={openInvite} onEditAgent={a => openEditor(a)} onOpenDm={openDm}
+              onOpenHuddles={openHuddles}
               lastRead={active ? world.unread[active.id]?.lastReadTs ?? 0 : 0}
               findOpen={findOpen} onCloseFind={() => setFindOpen(false)}
               onOpenTasks={() => goScreen("tasks")}
@@ -3804,6 +3851,7 @@ function focusThreadTarget(root: HTMLElement | null, opener: HTMLElement | null)
 function ChatScreen({
   active, setActiveId, channels, humanDms, agents, people, unreadFor, peerOf, owner,
   onNewChannel, onBrowseRooms, onNewAgent, onBrowseMarket, onInvite, onEditAgent, onOpenDm,
+  onOpenHuddles,
   lastRead, findOpen, onCloseFind,
   onOpenTasks, jumpTo, onJumped, openThreadFor, onThreadOpened,
 }: {
@@ -3813,6 +3861,7 @@ function ChatScreen({
   onNewChannel: () => void; onBrowseRooms: () => void; onNewAgent: () => void;
   onBrowseMarket: () => void; onInvite: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenDm: (id: ID, name: string) => void;
+  onOpenHuddles: () => void;
   lastRead: number; findOpen: boolean; onCloseFind: () => void; onOpenTasks: () => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
   /**
@@ -3931,7 +3980,7 @@ function ChatScreen({
   return (
     <div ref={gridRef}
       className={`chatgrid${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}${
-        threadRoot ? " withthread" : ""}${takeover ? " takeover" : ""}`}
+        threadRoot ? " withthread" : ""}${detailsOpen ? " withdetails" : ""}${takeover ? " takeover" : ""}`}
       style={{ "--thread-w": `${drawnWidth}px` } as React.CSSProperties}>
       <aside className="sidebar" aria-label="Studio floor">
         <div className="sidebar-head">
@@ -4077,6 +4126,7 @@ Open your chat with ${a.name}`}>
         <ChatView key={active.id} channel={active} lastRead={lastRead} findOpen={findOpen}
           onCloseFind={onCloseFind} onEditAgent={onEditAgent} onOpenTasks={onOpenTasks}
           owner={owner} onNewAgent={onNewAgent} onInvite={onInvite}
+          onOpenHuddles={onOpenHuddles}
           jumpTo={jumpTo} onJumped={onJumped}
           onOpenThread={threading ? openThread : undefined} threadRoot={threadRoot}
           onToggleDetails={toggleDetails} detailsOpen={detailsOpen} takeover={takeover} />
@@ -4123,8 +4173,6 @@ Open your chat with ${a.name}`}>
           onClose={() => setDetailsOpen(false)} onOpenDm={onOpenDm}
           onLeft={() => setDetailsOpen(false)} />
       )}
-      {active && !isDm && !threadRoot && !detailsOpen &&
-        <ChannelRail channel={active} onEditAgent={onEditAgent} onOpenDm={onOpenDm} />}
     </div>
   );
 }
@@ -4655,12 +4703,14 @@ function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
 function ChatView({
   channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpenTasks,
   owner, onNewAgent, onInvite,
+  onOpenHuddles,
   jumpTo, onJumped, onOpenThread, threadRoot, onToggleDetails, detailsOpen,
   takeover,
 }: {
   channel: Channel; lastRead: number; findOpen: boolean; onCloseFind: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenTasks: () => void;
   owner: boolean; onNewAgent: () => void; onInvite: () => void;
+  onOpenHuddles: () => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
   /** absent when his setting says replies stay in the conversation */
   onOpenThread?: (rootId: ID) => void; threadRoot: ID | null;
@@ -4692,6 +4742,11 @@ function ChatView({
   const threading = !!onOpenThread;
   /** the message this conversation's own box is answering, in inline mode */
   const [replyingTo, setReplyingTo] = useState<ID | null>(null);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const headerMenuRef = useRef<HTMLDivElement>(null);
+  useEscapeCloses(() => setHeaderMenuOpen(false), headerMenuOpen);
+  useClickAwayCloses(headerMenuRef, () => setHeaderMenuOpen(false), headerMenuOpen);
+  useEffect(() => { setHeaderMenuOpen(false); }, [channel.id]);
   useEffect(() => { setReplyingTo(null); }, [channel.id]);
   useEffect(() => { if (threading) setReplyingTo(null); }, [threading]);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -5017,6 +5072,7 @@ function ChatView({
   const isDm = channel.kind === "dm";
   const peerUser = people.find(u => u.id !== world.me?.id);
   const peerAgent = world.agents.find(a => channel.memberIds.includes(a.id));
+  const roomAgent = world.agents.find(a => channel.memberIds.includes(a.id));
   const peerName = isDm ? peerUser?.name ?? peerAgent?.name ?? channel.name : null;
 
   const rows: Row[] = useMemo(() => {
@@ -5103,6 +5159,24 @@ function ChatView({
      this agent's job is stuck or fell over. */
   const dmSays = peerAgent ? presenceSays(world, peerAgent.id, dmPresence) : undefined;
 
+  const copyChannelRef = useCallback(() => {
+    const value = channel.kind === "dm" ? channel.name : `#${channel.name}`;
+    if (!navigator.clipboard?.writeText) {
+      client.notify("Clipboard is unavailable here. Select the channel name manually.");
+    } else {
+      void navigator.clipboard.writeText(`${value} (${channel.id})`)
+        .then(() => client.notify("Channel name and ID copied."))
+        .catch(() => client.notify("Clipboard is unavailable here. Select the channel name manually."));
+    }
+    setHeaderMenuOpen(false);
+  }, [channel.id, channel.kind, channel.name]);
+  const prefillSummary = useCallback(() => {
+    const target = roomAgent ? `@${roomAgent.name}` : "@agent";
+    composerInsert?.(`${target} Please summarize #${channel.name}: key decisions, open questions, and next steps.`);
+    client.notify("Drafted a summary request. Review it before sending.");
+    setHeaderMenuOpen(false);
+  }, [channel.name, roomAgent]);
+
   return (
     <div ref={roomRef} className="thread" aria-hidden={takeover ? "true" : undefined}>
       {isDm ? (
@@ -5139,6 +5213,11 @@ function ChatView({
       ) : (
         <header className="topbar chathead">
           <h2 className="ch-title"><span className="h">#</span><span className="n">{channel.name}</span></h2>
+          <button className="chip header-members" aria-label="Show channel members and details"
+            aria-expanded={detailsOpen} onClick={onToggleDetails}>
+            <span aria-hidden="true">●</span>
+            {countOf(people.length + agents.length, "member", "members")}
+          </button>
           <span className="sub">
             {countOf(people.length, "person", "people")} ·{" "}
             {countOf(agents.length, "agent")}
@@ -5151,6 +5230,20 @@ function ChatView({
             <span className="ch-topic" title={`Topic: ${channel.topic}`}>{channel.topic}</span>
           )}
           <div className="grow" />
+          <div className="header-menu-wrap" ref={headerMenuRef}>
+            <button className="iconbtn header-overflow" aria-label="More channel actions"
+              aria-haspopup="menu" aria-expanded={headerMenuOpen}
+              onClick={() => setHeaderMenuOpen(open => !open)}>⋯</button>
+            {headerMenuOpen && (
+              <div className="header-menu" role="menu" aria-label="Channel actions">
+                <button role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Room details</button>
+                {owner && !channel.archivedAt && <button role="menuitem" onClick={() => { setHeaderMenuOpen(false); onInvite(); }}>Invite people</button>}
+                <button role="menuitem" onClick={() => { setHeaderMenuOpen(false); onOpenHuddles(); }}>Open Huddle notes</button>
+                <button role="menuitem" onClick={copyChannelRef}>Copy channel name and ID</button>
+                {!channel.archivedAt && <button role="menuitem" onClick={prefillSummary}>Draft a channel summary request</button>}
+              </div>
+            )}
+          </div>
           {/* Counts what is genuinely WAITING. An expired card is still drawn
               below, but nothing is waiting on him for it any more. */}
           {waitingHere.length > 0 && (
@@ -5690,7 +5783,8 @@ function MessageFiles({ attachments }: { attachments: Attachment[] }): React.JSX
       {attachments.map(a => {
         const held = world.files[a.id];
         const picture = isInlineViewable(a.name) && downloadContentType(a.name).startsWith("image/");
-        const showing = picture && held?.state === "ready" && !!held.url;
+        const voice = /^voice-message-.+\.webm$/i.test(a.name);
+        const showing = (picture || voice) && held?.state === "ready" && !!held.url;
         return (
           <div className="fileblock" key={a.id} data-file={a.name} data-attachment={a.id}>
             <div className="filecard">
@@ -5698,7 +5792,7 @@ function MessageFiles({ attachments }: { attachments: Attachment[] }): React.JSX
               <span className="filenames">
                 <span className="nm">{a.name}</span>
                 <span className="meta">
-                  {fileSize(a.size)} · {picture ? "picture" : "file"}
+                  {fileSize(a.size)} · {picture ? "picture" : voice ? "audio message" : "file"}
                 </span>
               </span>
               <span className="act">
@@ -5709,8 +5803,8 @@ function MessageFiles({ attachments }: { attachments: Attachment[] }): React.JSX
                     onClick={() => client.closeFile(a.id)}>Hide</button>
                 ) : (
                   <button className="btn small fileopen"
-                    onClick={() => { void (picture ? client.openFile(a) : client.saveFile(a)); }}>
-                    {picture ? "Show" : "Save"}
+                    onClick={() => { void (picture || voice ? client.openFile(a) : client.saveFile(a)); }}>
+                    {picture ? "Show" : voice ? "Play" : "Save"}
                   </button>
                 )}
               </span>
@@ -5722,14 +5816,15 @@ function MessageFiles({ attachments }: { attachments: Attachment[] }): React.JSX
               <div className="filefail" role="status">
                 <span className="problemtext">{plainError(held.error)}</span>
                 <button className="linkish fileretry"
-                  onClick={() => { client.closeFile(a.id); void (picture ? client.openFile(a) : client.saveFile(a)); }}>
+                  onClick={() => { client.closeFile(a.id); void (picture || voice ? client.openFile(a) : client.saveFile(a)); }}>
                   Open it again
                 </button>
               </div>
             )}
             {showing && (
               <div className="fileshot">
-                <img src={held.url} alt={a.name} />
+                {picture ? <img src={held.url} alt={a.name} />
+                  : <audio controls preload="metadata" src={held.url} aria-label={`Play ${a.name}`} />}
               </div>
             )}
           </div>
@@ -6755,6 +6850,19 @@ function AddToChannel({ channel }: { channel: Channel }): React.JSX.Element | nu
 }
 
 const QUICK_EMOJI = ["👍", "🙏", "🎉", "🔥", "✅", "❌", "😀", "😅", "🤔", "👀", "🚀", "☁️", "📌", "⏰", "💡", "❤️"];
+const EMOJI_CATEGORIES: Record<string, string[]> = {
+  Quick: QUICK_EMOJI,
+  Smileys: ["😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "🙂", "🙃", "😉", "😊", "😇", "🥰", "😍", "🤩", "😘", "😋", "😛", "🤔", "🤗", "🤭", "🤫", "🤥", "😶", "😐", "😑", "😬", "🙄", "😮", "😴", "🤯", "😎", "🤓", "🧐"],
+  Gestures: ["👍", "👎", "👌", "✌️", "🤞", "🤟", "🤘", "🤙", "👋", "👏", "🙌", "👐", "🤝", "🙏", "💪", "🫶", "👀", "💯"],
+  Work: ["✅", "☑️", "❌", "⚠️", "🚀", "💡", "📌", "📎", "📝", "📣", "🎯", "📊", "🔍", "🧪", "🛠️", "⏰", "📅", "🔒", "🔓", "💬"],
+  Hearts: ["❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔", "💕", "💖", "💗", "💓", "💞", "💘", "💝", "❤️‍🔥"],
+};
+const EMOJI_KEYWORDS: Record<string, string> = {
+  "👍": "thumbs up approve like", "👎": "thumbs down dislike", "🙏": "thanks please pray",
+  "🎉": "party celebrate", "🔥": "fire hot", "✅": "check done yes", "❌": "no error",
+  "🚀": "rocket launch ship", "💡": "idea light bulb", "📌": "pin", "⏰": "time clock",
+  "❤️": "heart love", "👀": "eyes look", "🤔": "think thinking", "💯": "hundred perfect",
+};
 
 /* ============== ONE WAY IN FOR EVERY TYPED COMMAND ==============
  *
@@ -6944,6 +7052,9 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const [text, setText] = useState("");
   const [acIndex, setAcIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [emojiQuery, setEmojiQuery] = useState("");
+  const [emojiCategory, setEmojiCategory] = useState("Quick");
+  const [recording, setRecording] = useState(false);
   /* the Aa formatting strip — one click deep, the Buzz shape (F1) */
   const [fmtOpen, setFmtOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -6972,6 +7083,12 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const fileRef = useRef<HTMLInputElement>(null);
   /* wraps the emoji button AND its tray, so a click anywhere else closes it */
   const emojiHoldRef = useRef<HTMLSpanElement>(null);
+  const toolsRef = useRef<HTMLDivElement>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordingStartingRef = useRef(false);
+  const recordingRequestRef = useRef(0);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const keepRecordingRef = useRef(false);
   const uploads = world.uploads[channel.id] ?? [];
   const ready = uploads.filter(u => u.state === "done").length;
   const busy = uploads.some(u => u.state === "sending");
@@ -7042,6 +7159,94 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
     for (const f of files) client.attach(channel.id, f);
   }, [channel.id]);
 
+  const stopVoiceRecording = useCallback((): void => {
+    const recorder = recorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+    keepRecordingRef.current = true;
+    recorder.stop();
+  }, []);
+
+  const startVoiceRecording = useCallback(async (): Promise<void> => {
+    if (recording) {
+      stopVoiceRecording();
+      return;
+    }
+    if (recordingStartingRef.current) return;
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      client.notify("Audio recording is not available on this computer.");
+      return;
+    }
+    let stream: MediaStream | null = null;
+    const request = ++recordingRequestRef.current;
+    try {
+      recordingStartingRef.current = true;
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (request !== recordingRequestRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus" : "audio/webm";
+      const recorder = new MediaRecorder(stream, { mimeType: mime });
+      const chunks: Blob[] = [];
+      recordingStreamRef.current = stream;
+      recorderRef.current = recorder;
+      keepRecordingRef.current = false;
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) chunks.push(event.data);
+      };
+      recorder.onerror = () => {
+        keepRecordingRef.current = false;
+        client.notify("Cloud9 could not record that audio message.");
+        if (recorder.state !== "inactive") recorder.stop();
+        else {
+          stream?.getTracks().forEach(track => track.stop());
+          recordingStreamRef.current = null;
+          recorderRef.current = null;
+          setRecording(false);
+        }
+      };
+      recorder.onstop = () => {
+        const shouldKeep = keepRecordingRef.current;
+        stream?.getTracks().forEach(track => track.stop());
+        if (recorderRef.current === recorder) {
+          recordingStreamRef.current = null;
+          recorderRef.current = null;
+          keepRecordingRef.current = false;
+          setRecording(false);
+        }
+        if (!shouldKeep || chunks.length === 0) return;
+        const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        attachFiles([new File([blob], `voice-message-${stamp}.webm`, { type: blob.type })]);
+        client.notify("Audio message added. Review the attachment, then send it.");
+      };
+      recorder.start(250);
+      if (request === recordingRequestRef.current) recordingStartingRef.current = false;
+      setRecording(true);
+      client.notify("Recording audio. Press the microphone again to stop.");
+    } catch {
+      stream?.getTracks().forEach(track => track.stop());
+      if (request === recordingRequestRef.current) {
+        recordingStartingRef.current = false;
+        recordingStreamRef.current = null;
+        recorderRef.current = null;
+        keepRecordingRef.current = false;
+        setRecording(false);
+        client.notify("Microphone access was not granted.");
+      }
+    }
+  }, [attachFiles, recording, stopVoiceRecording]);
+
+  useEffect(() => () => {
+    recordingRequestRef.current += 1;
+    recordingStartingRef.current = false;
+    keepRecordingRef.current = false;
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    recordingStreamRef.current?.getTracks().forEach(track => track.stop());
+  }, [channel.id]);
+
   const directory = useMemo(() => [
     ...world.agents.map(a => ({ id: a.id, name: a.name, label: `${a.emoji} ${a.name}`, sub: "agent" })),
     ...onePerPerson(world.users).filter(u => u.id !== world.me?.id).map(u => ({ id: u.id, name: u.name, label: u.name, sub: "person" })),
@@ -7084,6 +7289,17 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const menuOpen = actionsOpen || slashShowing;
   const menuRows = actionsOpen ? ROOM_COMMANDS : slashRows;
   const openedBy = actionsOpen ? "button" : "slash";
+  const emojiRows = useMemo(() => {
+    const source = EMOJI_CATEGORIES[emojiCategory] ?? QUICK_EMOJI;
+    const query = emojiQuery.trim().toLowerCase();
+    if (!query) return source;
+    const all = Object.entries(EMOJI_CATEGORIES).flatMap(([category, values]) =>
+      values.map(value => ({ value, category })));
+    return all.filter(({ value, category }) =>
+      category.toLowerCase().includes(query) || (EMOJI_KEYWORDS[value] ?? "").includes(query) || value.includes(query))
+      .map(({ value }) => value)
+      .filter((value, index, values) => values.indexOf(value) === index);
+  }, [emojiCategory, emojiQuery]);
 
   /** he is writing — the row of tools is worth its space; see `focused` above */
   const armed = focused || text.length > 0 || uploads.length > 0 || menuOpen || emojiOpen;
@@ -7095,6 +7311,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
      THAT list and nothing underneath it. Dismissing the `/` list leaves his
      words alone — a menu closing must never take the line he was typing. */
   useEscapeCloses(() => { setActionsOpen(false); setSlashDismissed(true); }, menuOpen);
+  useClickAwayCloses(toolsRef, () => { setActionsOpen(false); setSlashDismissed(true); }, menuOpen);
 
   /* The emoji tray learns the same manners as every other overlay (F3):
      Escape closes it through the one stack, a click elsewhere closes it
@@ -7410,7 +7627,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
             attachFiles(files);
           }}
         />
-        <div className="tools">
+        <div className="tools" ref={toolsRef}>
           {/* The one composer affordance he asked for in round 1 that was never
               built. The input itself is hidden because a bare file input cannot
               be made to look like anything; the button in front of it is the
@@ -7432,9 +7649,10 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               and this is the road for somebody who does not. Invisible is the
               same as absent. */}
           <button className="mini actionsbtn" title="Things you can ask an agent to do — or type / in the box"
+            aria-label="Tools and slash commands"
             aria-expanded={actionsOpen} aria-haspopup="menu"
             onClick={() => { setActionsOpen(o => !o); setEmojiOpen(false); }}>
-            ＋ Actions
+            <span aria-hidden="true">＋</span><span className="sr-only">Tools</span>
           </button>
           {/**
             * THE ROW THAT ONLY MATTERS WHILE HE IS WRITING, and is only there
@@ -7458,6 +7676,10 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
             * inside it, are exactly the things he wants there.
             */}
           <span className="toolset">
+            <button className="mini mentionbtn" aria-label="Insert a mention" title="Mention a person or agent"
+              onClick={() => insert("@")}>
+              @
+            </button>
             <button className="mini attach" title={`Attach a file — or paste one, or drop one on the box (up to ${ATTACHMENT_LIMITS.perMessage}, ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB each)`}
               onClick={() => fileRef.current?.click()}>📎</button>
             {/* ONE ROW, THE BUZZ SHAPE (F1): attach, emoji, formatting, send.
@@ -7471,9 +7693,21 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
                 onClick={() => { setEmojiOpen(o => !o); setFmtOpen(false); }}>🙂</button>
               {emojiOpen && (
                 <div className="emojipop" role="menu" aria-label="Add an emoji">
-                  {QUICK_EMOJI.map(e => (
-                    <button key={e} onClick={() => { insert(e); setEmojiOpen(false); }}>{e}</button>
-                  ))}
+                  <input className="emoji-search" type="search" value={emojiQuery}
+                    onChange={e => setEmojiQuery(e.target.value)} placeholder="Search emoji"
+                    aria-label="Search emoji" />
+                  <div className="emoji-cats" role="tablist" aria-label="Emoji categories">
+                    {Object.keys(EMOJI_CATEGORIES).map(category => (
+                      <button key={category} role="tab" aria-selected={emojiCategory === category}
+                        onClick={() => setEmojiCategory(category)}>{category}</button>
+                    ))}
+                  </div>
+                  <div className="emoji-grid">
+                    {emojiRows.map((e, i) => (
+                      <button key={`${e}-${i}`} role="menuitem" aria-label={`Insert ${e}`}
+                        onClick={() => { insert(e); setEmojiOpen(false); }}>{e}</button>
+                    ))}
+                  </div>
                 </div>
               )}
             </span>
@@ -7486,18 +7720,25 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
             </span>
           </span>
+          <button className={`mini voicebtn${recording ? " recording" : ""}`}
+            aria-label={recording ? "Stop audio recording" : "Record an audio message"}
+            aria-pressed={recording} title={recording ? "Stop recording" : "Record an audio message"}
+            onClick={() => { void startVoiceRecording(); }}>
+            <span aria-hidden="true">{recording ? "■" : "🎙"}</span>
+          </button>
           <div className="grow" />
-          {!inThreadPanel && <span className="eyebrow">{busy ? "Sending a file up…" : "Enter to send"}</span>}
+          {!inThreadPanel && busy && <span className="eyebrow">Sending a file up…</span>}
           {/* While a file is on its way the button SAYS so rather than sending
               without it. Enter says the same thing out loud (see `sendNow`), so
               neither route can quietly leave a file behind. */}
           <button className="primary small sendbtn" onClick={sendNow}
+            aria-label={busy ? "Waiting for attachment" : ready > 0 ? `Send with ${countOf(ready, "file")}` : "Send message"}
             data-waiting={busy ? "file" : undefined}
             title={busy ? "A file is still going up. It goes with this message once it lands." : undefined}
             disabled={busy || (!text.trim() && ready === 0)}>
-            {busy
+            <span aria-hidden="true">↑</span><span className="sr-only">{busy
               ? "Waiting for a file…"
-              : `Send${ready > 0 ? ` with ${countOf(ready, "file")}` : ""}`}
+              : `Send${ready > 0 ? ` with ${countOf(ready, "file")}` : ""}`}</span>
           </button>
           {/* One list, built from ONE table (`ROOM_COMMANDS`), whichever door
               opened it — the ＋ beside the box or a `/` typed into it. A row that
@@ -12142,9 +12383,14 @@ function SettingsScreen(): React.JSX.Element {
   const codexInfo = world.harness?.codex;
 
   const themes: [Prefs["theme"], string, string][] = [
-    ["light", "Daylight", "prev-light"],
-    ["dark", "Studio dark", "prev-dark"],
-    ["system", "Follow this computer", "prev-system"],
+    ["system", "System", "prev-system"],
+    ["daylight", "Daylight", "prev-light"],
+    ["cloud9-pine", "Cloud9 Pine", "prev-pine"],
+    ["midnight", "Midnight", "prev-dark"],
+    ["aubergine", "Aubergine", "prev-aubergine"],
+    ["solarized-dark", "Solarized dark", "prev-solarized"],
+    ["rose-pine", "Rose Pine", "prev-rose"],
+    ["catppuccin", "Catppuccin", "prev-catppuccin"],
   ];
 
   return (

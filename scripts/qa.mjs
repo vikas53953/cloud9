@@ -2906,8 +2906,8 @@ try {
     });
     await page.fill(".composer textarea", "@Ping !bg a job to reject");
     await page.press(".composer textarea", "Enter");
-    await page.waitForSelector('.rail-btn[data-go="tasks"] .rail-count', { timeout: 90000 });
-    await page.click('.rail-btn[data-go="tasks"]');
+    await page.waitForSelector('[data-open-tools] .rail-count', { timeout: 90000 });
+    await clickRail(page, "tasks");
     await page.click('.taskrow button:has-text("Reject")');
     await page.waitForSelector('.notify-toast[data-kind="job_finished"]', { timeout: 30000 });
     const jTitle = (await page.locator('.notify-toast[data-kind="job_finished"] .notify-title').first().innerText()).trim();

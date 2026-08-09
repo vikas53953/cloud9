@@ -537,8 +537,14 @@ function createMainWindow() {
     title: "Cloud9",
     backgroundColor: "#10131c",
     icon: appIconPath(),
+    // Keep the application menu (and its accelerators) installed, but keep
+    // its native strip out of the installed app's normal window chrome.
+    autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, "preload.cjs") },
   });
+  // autoHideMenuBar controls the platform default; make the initial state
+  // explicit so a restored window cannot bring the strip back on startup.
+  mainWin.setMenuBarVisibility(false);
   loadRenderer(mainWin);
   mainWin.on("closed", () => { mainWin = null; });
 }

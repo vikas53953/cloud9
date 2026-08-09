@@ -54,6 +54,14 @@
   --rail-muted:#B7C9C2;
   --rail-hover:#1A584D;
   --rail-active:#F7F8F3;
+  --rail-active-ink:var(--rail-bg);
+
+  /* Semantic shell family: rail, Studio floor and chat header stay related
+     even when a named palette swaps the underlying pigments. */
+  --shell-rail:var(--rail-bg);
+  --shell-sidebar:var(--bg-2);
+  --shell-header:var(--surface);
+  --shell-canvas:var(--bg);
 
   --shadow:0 1px 2px rgba(21,31,27,.06), 0 12px 30px -18px rgba(21,31,27,.45);
   --shadow-lg:0 2px 4px rgba(21,31,27,.06), 0 34px 60px -30px rgba(21,31,27,.5);
@@ -76,6 +84,11 @@
   --swatch-light-ink:#151F1B;   --swatch-light-accent:#B77A0C;
   --swatch-dark-paper:#171F1B;  --swatch-dark-rail:#0A0F0D;  --swatch-dark-line:#2C3833;
   --swatch-dark-ink:#ECEFE5;    --swatch-dark-accent:#EFB447;
+  --swatch-pine-paper:#E5EFE9; --swatch-pine-rail:#0D4438; --swatch-pine-ink:#0E6653; --swatch-pine-line:#BFD4C9; --swatch-pine-accent:#CDE8DB;
+  --swatch-aubergine-paper:#261A2B; --swatch-aubergine-rail:#110A15; --swatch-aubergine-ink:#D9A7E6; --swatch-aubergine-line:#4B3553; --swatch-aubergine-accent:#9B82A1;
+  --swatch-solarized-paper:#002B36; --swatch-solarized-rail:#001B22; --swatch-solarized-ink:#2AA198; --swatch-solarized-line:#23515A; --swatch-solarized-accent:#B6C3B2;
+  --swatch-rose-paper:#191724; --swatch-rose-rail:#100E19; --swatch-rose-ink:#9CCFD8; --swatch-rose-line:#4A4560; --swatch-rose-accent:#E0DEF4;
+  --swatch-cat-paper:#1E1E2E; --swatch-cat-rail:#11111B; --swatch-cat-ink:#94E2D5; --swatch-cat-line:#4A4A64; --swatch-cat-accent:#CDD6F4;
 
   --radius:14px;
   --radius-s:9px;
@@ -123,6 +136,7 @@
     --rail-muted:#8FA098;
     --rail-hover:#17231F;
     --rail-active:#23483F;
+    --rail-active-ink:var(--rail-ink);
 
     --shadow:0 1px 2px rgba(0,0,0,.5), 0 14px 34px -20px rgba(0,0,0,.9);
     --shadow-lg:0 2px 6px rgba(0,0,0,.5), 0 40px 70px -34px rgba(0,0,0,1);
@@ -143,7 +157,7 @@
   --madder:#F4788C; --madder-soft:#40151F;
   --on-pine:#08120F; --on-gold:#221703; --on-ink:#0F1512;
   --rail-bg:#080E0C; --rail-ink:#ECEFE5; --rail-muted:#8FA098;
-  --rail-hover:#17231F; --rail-active:#23483F;
+  --rail-hover:#17231F; --rail-active:#23483F; --rail-active-ink:var(--rail-ink);
   --shadow:0 1px 2px rgba(0,0,0,.5), 0 14px 34px -20px rgba(0,0,0,.9);
   --shadow-lg:0 2px 6px rgba(0,0,0,.5), 0 40px 70px -34px rgba(0,0,0,1);
   --scrim:rgba(0,0,0,.62);
@@ -152,6 +166,23 @@
   color-scheme:dark;
 }
 :root[data-theme="light"]{ color-scheme:light; }
+
+/* Named appearance presets. Components consume semantic tokens above; these
+   overrides deliberately avoid per-component color forks. */
+:root[data-theme="daylight"]{color-scheme:light;--bg:#F4F1E9;--bg-2:#E8E4D9;--surface:#FFFDF8;--surface-2:#F3EEE4;--sunk:#E6E0D2;--line:#D8D0C0;--line-soft:#E7E0D4;--ink:#24201B;--ink-2:#6A6258;--ink-3:#91877B;--pine:#2D6B5D;--pine-soft:#DDEBE4;--rail-bg:#214A42;--rail-ink:#F7FBF5;--rail-muted:#B9CEC5;--rail-hover:#2C5E53;--rail-active:#F6E6C4;--shell-rail:var(--rail-bg);--shell-sidebar:var(--bg-2);--shell-header:var(--surface);--shell-canvas:var(--bg);}
+:root[data-theme="cloud9-pine"]{color-scheme:light;--bg:#E5EFE9;--bg-2:#D5E6DE;--surface:#F8FCF9;--surface-2:#EAF4EF;--sunk:#D0E2D9;--line:#BFD4C9;--line-soft:#D5E4DC;--ink:#10261E;--ink-2:#486357;--ink-3:#758E82;--pine:#0E6653;--pine-soft:#CDE8DB;--rail-bg:#0D4438;--rail-ink:#F0FBF5;--rail-muted:#A8C9BA;--rail-hover:#155B4C;--rail-active:#CDE8DB;--shell-rail:var(--rail-bg);--shell-sidebar:var(--bg-2);--shell-header:var(--surface);--shell-canvas:var(--bg);}
+:root[data-theme="midnight"],:root[data-theme="aubergine"],:root[data-theme="solarized-dark"],:root[data-theme="rose-pine"],:root[data-theme="catppuccin"]{color-scheme:dark;--bg:#111916;--bg-2:#0C1310;--surface:#1A2420;--surface-2:#223029;--sunk:#141D19;--line:#34453D;--line-soft:#293831;--ink:#EEF4ED;--ink-2:#A8B9AF;--ink-3:#7D9085;--pine:#61D1AF;--pine-soft:#163C32;--rail-bg:#08110E;--rail-ink:#EEF4ED;--rail-muted:#9BB5A8;--rail-hover:#173028;--rail-active:#23483E;--rail-active-ink:var(--rail-ink);--shell-rail:var(--rail-bg);--shell-sidebar:var(--bg-2);--shell-header:var(--surface);--shell-canvas:var(--bg);}
+:root[data-theme="aubergine"]{--bg:#1B1520;--bg-2:#130F17;--surface:#261A2B;--surface-2:#322238;--line:#4B3553;--line-soft:#38263E;--ink:#F5EDF8;--ink-2:#C4ADC9;--ink-3:#9B82A1;--pine:#D9A7E6;--pine-soft:#422B4C;--rail-bg:#110A15;--rail-hover:#2B1834;--rail-active:#53345E;}
+:root[data-theme="solarized-dark"]{--bg:#002B36;--bg-2:#00232C;--surface:#073642;--surface-2:#0A4050;--line:#23515A;--line-soft:#17434C;--ink:#EEE8D5;--ink-2:#B6C3B2;--ink-3:#829A9A;--pine:#2AA198;--pine-soft:#123F45;--rail-bg:#001B22;--rail-hover:#0A3640;--rail-active:#164C55;}
+:root[data-theme="rose-pine"]{--bg:#191724;--bg-2:#13111D;--surface:#26233A;--surface-2:#332F48;--line:#4A4560;--line-soft:#39344E;--ink:#E0DEF4;--ink-2:#B5B1D1;--ink-3:#8884A4;--pine:#9CCFD8;--pine-soft:#213A43;--rail-bg:#100E19;--rail-hover:#2B2940;--rail-active:#453F62;}
+:root[data-theme="catppuccin"]{--bg:#1E1E2E;--bg-2:#181825;--surface:#24243A;--surface-2:#313149;--line:#4A4A64;--line-soft:#3A3A53;--ink:#CDD6F4;--ink-2:#A6ADC9;--ink-3:#8589A5;--pine:#94E2D5;--pine-soft:#1C4142;--rail-bg:#11111B;--rail-hover:#2D3048;--rail-active:#45476A;}
+
+/* The shell reads as one quiet frame: Studio floor and channel header are
+   tonal steps from the rail, while the message canvas remains paper/dark. */
+:root,:root[data-theme="light"],:root[data-theme="dark"],:root[data-theme="daylight"],:root[data-theme="cloud9-pine"],:root[data-theme="midnight"],:root[data-theme="aubergine"],:root[data-theme="solarized-dark"],:root[data-theme="rose-pine"],:root[data-theme="catppuccin"]{
+  --shell-sidebar:var(--rail-bg);
+  --shell-header:var(--rail-bg);
+}
 
 /* ---------------- BASE ---------------- */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
@@ -325,14 +356,14 @@ a{color:var(--ultra);}
 }
 
 /* ---------------- APP SHELL ---------------- */
-.shell{height:100%;display:flex;flex-direction:column;min-width:0;overflow:hidden;background:var(--bg);}
+.shell{height:100%;display:flex;flex-direction:column;min-width:0;overflow:hidden;background:var(--shell-canvas);}
 .app{flex:1;min-height:0;display:grid;grid-template-columns:var(--rail-w) minmax(0,1fr);overflow:hidden;}
 .stage{min-width:0;min-height:0;overflow:hidden;display:flex;flex-direction:column;}
 .screen{flex:1;min-height:0;min-width:0;overflow:hidden;display:flex;flex-direction:column;}
 
 /* ---------------- THE ICON RAIL ---------------- */
 .rail{
-  position:relative;background:var(--rail-bg);border-right:1px solid var(--rail-hover);color:var(--rail-ink);
+  position:relative;background:var(--shell-rail);border-right:1px solid var(--rail-hover);color:var(--rail-ink);
   display:flex;flex-direction:column;align-items:center;padding:14px 0 12px;
   min-height:0;overflow:hidden;
 }
@@ -346,7 +377,7 @@ a{color:var(--ultra);}
 }
 .rail-utilities{
   width:100%;display:flex;flex:none;flex-direction:column;align-items:center;gap:4px;
-  padding-top:8px;border-top:1px solid var(--rail-hover);background:var(--rail-bg);
+  padding-top:8px;border-top:1px solid var(--rail-hover);background:var(--shell-rail);
 }
 .brand{
   width:40px;height:40px;border-radius:12px;display:grid;place-items:center;margin-bottom:12px;
@@ -427,19 +458,24 @@ a{color:var(--ultra);}
 /* ---------------- SHARED SCREEN TOP BAR ---------------- */
 .topbar{
   height:var(--top-h);flex:none;display:flex;align-items:center;gap:14px;padding:0 22px;
-  border-bottom:1px solid var(--line);background:var(--surface);min-width:0;
+  border-bottom:1px solid var(--rail-hover);background:var(--shell-header);color:var(--rail-ink);min-width:0;
 }
 .topbar h2{font-size:19px;min-width:0;display:flex;align-items:baseline;gap:3px;}
-.topbar h2 .h{color:var(--ink-3);font-family:var(--mono);font-size:17px;font-weight:400;}
+.topbar h2 .h{color:var(--rail-muted);font-family:var(--mono);font-size:17px;font-weight:400;}
 .topbar h2 .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.topbar .sub{color:var(--ink-3);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.topbar .sub{color:var(--rail-muted);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.topbar .ghost,.topbar .mini,.topbar .iconbtn,.topbar .chip,.topbar .eyebrow,.topbar label{color:var(--rail-muted);}
+.topbar .ghost:hover,.topbar .mini:hover,.topbar .iconbtn:hover,.topbar .chip:hover{background:var(--rail-hover);color:var(--rail-ink);}
+.topbar.dm-head .role,.topbar .presencehere,.topbar .presencehere .ph-why,.topbar.chathead .ch-topic{color:var(--rail-muted);}
+.topbar .presencehere[data-presence] b{color:var(--rail-ink);}
 
 /* ---------------- CHAT + DM ---------------- */
 .chatgrid{
   flex:1;min-height:0;display:grid;position:relative;
-  grid-template-columns:var(--side-w) minmax(0,1fr) var(--aside-w);min-width:0;overflow:hidden;
+  grid-template-columns:var(--side-w) minmax(0,1fr);min-width:0;overflow:hidden;
 }
 .chatgrid.no-aside{grid-template-columns:var(--side-w) minmax(0,1fr);}
+.chatgrid.withdetails{grid-template-columns:var(--side-w) minmax(0,1fr) var(--aside-w);}
 
 /* ------------------------------------------------------------------
    HE DECIDES HOW WIDE THE THREAD IS (2026-08-07). His words: "in slack
@@ -527,9 +563,13 @@ body.dragging-thread *{cursor:col-resize !important;}
 .threadhead .threadmode{flex:none;}
 
 .sidebar{
-  border-right:1px solid var(--line);background:var(--bg-2);
+  border-right:1px solid var(--rail-hover);background:var(--shell-sidebar);color:var(--rail-ink);
   display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;
 }
+.sidebar .eyebrow,.sidebar .side-head button,.sidebar .side-item,.sidebar .side-item .hash,.sidebar .side-item .cnt{color:var(--rail-muted);}
+.sidebar .side-item:hover,.sidebar .agentrow:hover{background:var(--rail-hover);color:var(--rail-ink);}
+.sidebar .side-item[aria-current="true"],.sidebar .agentrow[aria-current="true"]{background:var(--rail-active);color:var(--rail-active-ink);box-shadow:none;}
+.sidebar .side-item[aria-current="true"] .hash{color:var(--rail-active-ink);}
 .sidebar-head{padding:16px 16px 10px;display:flex;align-items:center;gap:8px;min-width:0;}
 .sidebar-head h2{font-size:17px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .sidebar-head .chip{margin-left:auto;flex:none;}
@@ -586,20 +626,29 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 .railempty button:hover{border-bottom-color:var(--pine);}
 
 /* --- the thread --- */
-.thread{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg);overflow:hidden;}
+.thread{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--shell-canvas);overflow:hidden;}
 .chathead .approvalpill{flex:none;}
 /* THE SLIM HEADER (L3). The room's top row answers at a glance and otherwise
    stays out of the conversation's way: tighter rhythm, and the two controls
    are quiet until the hand comes near them. */
 .chathead{gap:10px;padding:0 16px 0 22px;}
 .chathead select{
-  border:1px solid transparent;background:transparent;color:var(--ink-3);
+  border:1px solid transparent;background:transparent;color:var(--rail-muted);
   border-radius:var(--radius-s);padding:4px 8px;font-size:12.5px;max-width:150px;cursor:pointer;
 }
-.chathead select:hover{background:var(--surface-2);border-color:var(--line);color:var(--ink);}
+.chathead select:hover{background:var(--rail-hover);border-color:var(--rail-hover);color:var(--rail-ink);}
 .iconbtn{width:28px;height:28px;flex:none;display:grid;place-items:center;
-  border-radius:var(--radius-s);color:var(--ink-3);font-size:14px;}
-.iconbtn:hover{background:var(--surface-2);color:var(--ink);}
+  border-radius:var(--radius-s);color:var(--rail-muted);font-size:14px;}
+.iconbtn:hover{background:var(--rail-hover);color:var(--rail-ink);}
+.header-members{padding:4px 9px;min-height:28px;gap:5px;color:var(--rail-muted);}
+.header-members span{font-size:9px;color:var(--rail-ink);}
+.header-menu-wrap{position:relative;display:flex;align-items:center;}
+.header-overflow{font-size:20px;letter-spacing:2px;line-height:1;}
+.header-menu{position:absolute;right:0;top:calc(100% + 7px);z-index:15;min-width:230px;padding:6px;
+  display:grid;gap:2px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-s);box-shadow:var(--shadow-lg);}
+.header-menu button{min-height:34px;padding:7px 9px;border-radius:6px;text-align:left;color:var(--ink-2);font-size:13px;}
+.header-menu button:hover,.header-menu button:focus-visible{background:var(--surface-2);color:var(--ink);}
+.chathead .header-members + .sub{display:none;}
 
 .dm-head{height:auto;padding:18px 34px;}
 .dm-head .role{color:var(--ink-3);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -912,13 +961,19 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 /* A file being dragged over the box — the whole box is the target. */
 .composer.isdrop .composer-box{border-color:var(--pine);background:var(--pine-soft);}
 .composer .tools .mini{flex:none;}
+.composer .tools .actionsbtn,.composer .tools .mentionbtn,.composer .tools .attach{width:30px;height:30px;padding:3px;display:grid;place-items:center;font-size:15px;}
+.composer .tools .mentionbtn{font-family:var(--body);font-weight:700;color:var(--ultra);}
 .composer .tools .primary{flex:none;}
+.composer .tools .sendbtn{width:32px;height:30px;padding:3px;font-size:17px;line-height:1;}
+.composer .tools .voicebtn{width:30px;height:30px;padding:3px;display:grid;place-items:center;font-size:15px;}
+.composer .tools .voicebtn.recording{background:var(--madder-soft);color:var(--madder);box-shadow:0 0 0 2px color-mix(in srgb,var(--madder) 24%,transparent);}
+.fileshot audio{display:block;width:min(100%,440px);margin:10px auto;}
 .composer .tools .eyebrow{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
 .emojipop{
   position:absolute;bottom:100%;left:0;margin-bottom:6px;z-index:6;
   background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
   box-shadow:var(--shadow-lg);padding:6px;
-  display:grid;grid-template-columns:repeat(8,26px);gap:2px;
+  display:block;width:min(300px,calc(100vw - 24px));max-height:min(360px,60vh);overflow:auto;
 }
 /* F1 — the Buzz-shaped row. Emoji button + tray share one wrapper (the
    click-away owner holds the ref); the tray rises from the button now. */
@@ -927,7 +982,13 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
    way, so the thread-box parity check keeps reading them. */
 .fmtset{display:none;}
 .fmtset.on{display:inline-flex;gap:8px;}
-.emojipop button{width:26px;height:26px;border-radius:var(--radius-xs);font-size:15px;line-height:1;}
+.emoji-search{width:100%;height:30px;margin-bottom:6px;border:1px solid var(--line);border-radius:6px;background:var(--surface-2);padding:4px 7px;font-size:12px;}
+.emoji-cats{display:flex;gap:3px;overflow:auto;margin-bottom:6px;}
+.emoji-cats button{width:auto;height:26px;padding:3px 7px;font-size:10px;color:var(--ink-3);white-space:nowrap;}
+.emojipop .emoji-cats button{width:auto;}
+.emoji-cats button[aria-selected="true"]{background:var(--pine-soft);color:var(--pine);}
+.emoji-grid{display:grid;grid-template-columns:repeat(8,26px);gap:2px;}
+.emojipop button{min-width:26px;width:26px;height:26px;border-radius:var(--radius-xs);font-size:15px;line-height:1;}
 .emojipop button:hover{background:var(--surface-2);}
 /* The actions menu — the one way in to every typed command. Same popover
    language as .emojipop and .autocomplete above (sits over the box, one border,
@@ -1412,7 +1473,7 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .setsect h3{font-size:21px;}
 .setsect .sec-note{margin:-8px 0 2px;}
 .setsect.danger h3{color:var(--madder);}
-.theme-picks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}
+.theme-picks{display:grid;grid-template-columns:repeat(auto-fit,minmax(138px,1fr));gap:12px;}
 .theme-pick{border:1.5px solid var(--line);border-radius:var(--radius);padding:9px;background:var(--surface);
   display:grid;gap:8px;min-width:0;transition:border-color .15s var(--ease);}
 .theme-pick:hover{border-color:var(--ink-3);}
@@ -1433,6 +1494,11 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .prev-dark .l2{width:90%;background:var(--swatch-dark-line);}
 .prev-dark .l3{width:52%;background:var(--swatch-dark-accent);}
 .prev-system{background:linear-gradient(100deg,var(--swatch-light-paper) 50%,var(--swatch-dark-paper) 50%);}
+.prev-pine{background:var(--swatch-pine-paper);}.prev-pine .rail-s{background:var(--swatch-pine-rail);}.prev-pine .l1{background:var(--swatch-pine-ink);}.prev-pine .l2{background:var(--swatch-pine-line);}.prev-pine .l3{background:var(--swatch-pine-accent);}
+.prev-aubergine{background:var(--swatch-aubergine-paper);}.prev-aubergine .rail-s{background:var(--swatch-aubergine-rail);}.prev-aubergine .l1{background:var(--swatch-aubergine-ink);}.prev-aubergine .l2{background:var(--swatch-aubergine-line);}.prev-aubergine .l3{background:var(--swatch-aubergine-accent);}
+.prev-solarized{background:var(--swatch-solarized-paper);}.prev-solarized .rail-s{background:var(--swatch-solarized-rail);}.prev-solarized .l1{background:var(--swatch-solarized-ink);}.prev-solarized .l2{background:var(--swatch-solarized-line);}.prev-solarized .l3{background:var(--swatch-solarized-accent);}
+.prev-rose{background:var(--swatch-rose-paper);}.prev-rose .rail-s{background:var(--swatch-rose-rail);}.prev-rose .l1{background:var(--swatch-rose-ink);}.prev-rose .l2{background:var(--swatch-rose-line);}.prev-rose .l3{background:var(--swatch-rose-accent);}
+.prev-catppuccin{background:var(--swatch-cat-paper);}.prev-catppuccin .rail-s{background:var(--swatch-cat-rail);}.prev-catppuccin .l1{background:var(--swatch-cat-ink);}.prev-catppuccin .l2{background:var(--swatch-cat-line);}.prev-catppuccin .l3{background:var(--swatch-cat-accent);}
 .quietrow{display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:340px;}
 .path{
   display:flex;gap:9px;align-items:center;font-family:var(--mono);font-size:12.5px;color:var(--ink-2);
@@ -1816,6 +1882,10 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 @media (max-width:1100px){
   .editor-body{grid-template-columns:minmax(0,1fr);}
   .preview-col{border-left:0;border-top:1px solid var(--line);}
+}
+@media (max-width:860px){
+  .chatgrid.withdetails{grid-template-columns:var(--side-w) minmax(0,1fr);}
+  .chatgrid.withdetails>.aside{position:absolute;inset:0 0 0 var(--side-w);z-index:35;box-shadow:var(--shadow-lg);}
 }
 
 /* ============================================================
