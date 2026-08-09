@@ -55,7 +55,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
 import { artifactRef } from "@cloud9/shared";
-import { abilitiesForReach } from "@cloud9/engine/dist/abilities.js";
 /* WHERE AN AGENT'S ANSWER LIVES — the same one owner the browser suite uses,
    imported rather than re-spelled here. Since 2026-08-04 an answer hangs off the
    message it answers, in the channel as well as inside a thread, and a harness
@@ -3549,19 +3548,10 @@ async function walk(page) {
     }));
     const room = world.channels.find(c => c.name === "general") ?? world.channels[0];
     const mine = (welcome?.state?.agents ?? []).filter(a => a.ownerId === world.me);
-    const worker = mine[0];
+    const worker = mine.find(a => (a.provider ?? "claude") === "claude") ?? mine[0];
     if (!room || !worker) {
       throw new Error("the fresh app needs a room and one owned agent before this journey exists");
     }
-    /* These are provider-bound installed checks, not Claude-specific checks.
-       Use the explicitly approved Codex Sol route so a separate Claude weekly
-       limit cannot be mistaken for a broken Cloud9 file or vision path. Two
-       bounded turns are spent: one file, one image. */
-    const verificationWorker = {
-      ...worker,
-      provider: "codex", model: "gpt-5.6-sol",
-      abilities: abilitiesForReach("mypc"),
-    };
 
     const openRoom = page.locator(`.sidebar .side-item[data-channel="${room.name}"]`).first();
     if (await openRoom.count()) await openRoom.click();
@@ -3616,7 +3606,7 @@ async function walk(page) {
       const emptied = await page.evaluate(agent => window.cloud9Wire.ask({
         type: "updateAgent", agent,
       }), {
-        ...verificationWorker,
+        ...worker,
         abilities: { ...(worker.abilities ?? {}), files: true, wholeComputer: true },
         wholeComputerRoots: [],
       });
@@ -3643,7 +3633,7 @@ async function walk(page) {
       const saved = await page.evaluate(agent => window.cloud9Wire.ask({
         type: "updateAgent", agent,
       }), {
-        ...verificationWorker,
+        ...worker,
         abilities: {
           ...(worker.abilities ?? {}),
           files: true, wholeComputer: true,
