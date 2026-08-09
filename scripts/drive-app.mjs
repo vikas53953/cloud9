@@ -2211,10 +2211,19 @@ async function walk(page) {
            generates no box of its own is exactly what `contents` means. */
         const showing = el => !!el && el.getClientRects().length > 0;
         const receding = [...b.querySelectorAll(".toolset button.mini")];
+        /* Bold/italic/code deliberately stay mounted behind Aa. They are part
+           of the capability count, but they are not supposed to take space
+           until Aa is opened. Judge the visible row by its three direct doors:
+           attach, emoji, and Aa. */
+        const rowDoors = [
+          b.querySelector(".toolset > .attach"),
+          b.querySelector(".toolset > .emojihold > button.mini"),
+          b.querySelector(".toolset > .fmtbtn"),
+        ];
         return {
           writing: b.dataset.writing ?? "(no data-writing)",
           inBox: receding.length,
-          toolsShowing: receding.length > 0 && receding.every(showing),
+          toolsShowing: rowDoors.every(showing),
           actionsShowing: showing(b.querySelector(".actionsbtn")),
           sendShowing: showing(b.querySelector(".sendbtn")),
         };
@@ -3375,8 +3384,11 @@ async function walk(page) {
         return { trouble: el.getAttribute("data-trouble") ?? "",
           words: el.innerText.replace(/\s+/g, " ").trim() };
       }, first.name);
+      /* The rail owns the concise state; the task card owns the full reason.
+         Repeating the reason here is exactly the clutter the frontend pass
+         removed. */
       if (row.trouble !== "blocked" || !/Stuck — waiting on something/.test(row.words)
-        || !row.words.includes(STUCK_WHY) || /\bReady\b/.test(row.words)) {
+        || row.words.includes(STUCK_WHY) || /\bReady\b/.test(row.words)) {
         throw new Error(`NOT ON SCREEN — ${first.name}'s presence line reads ` +
           `${JSON.stringify(row).slice(0, 200)} while its job is stuck`);
       }
