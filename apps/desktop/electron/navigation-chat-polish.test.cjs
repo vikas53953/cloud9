@@ -190,6 +190,16 @@ test("the shell keeps the top drag strip and live progress contract inspectable"
   assert.match(css, /\.live-progress-rail/);
 });
 
+test("inline agent activity is delayed, expandable, and never renders live private detail", () => {
+  const app = read("App.tsx");
+  assert.match(app, /setTimeout\(\(\) => setShown\(true\), 650\)/,
+    "short turns must not flash a working card");
+  assert.match(app, /<details key=\{row\.agentId\} className="liveturn"/,
+    "the public activity list is compact until a person expands it");
+  assert.match(app, /steps=\{row\.steps\.map\(step => \(\{ \.\.\.step, detail: undefined \}\)\)\}/,
+    "live activity must not expose provider reasoning/detail text");
+});
+
 test("the new rail and tools drawer have explicit hierarchy and focus states", () => {
   const css = read("styles.css");
   assert.match(css, /--rail-bg:/);
