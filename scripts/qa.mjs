@@ -504,7 +504,10 @@ function mintJoinTokenOn(port, token) {
 // features broke — three for the stop button, two for the claim check, two for
 // the picture an agent is shown, two for the "use my own setup" switch, and one
 // each for how hard it thinks and for keeping the NEWEST notes.
-const EXPECTED_CHECKS = 584;
+// 584 → 589 (2026-08-09): five chat look-and-feel finish-line checks — the
+// !bg row in the ＋ menu, both emoji-tray dismissal paths, reply faces, and
+// computed round conversation faces.
+const EXPECTED_CHECKS = 589;
 
 /* ---- ONE SUITE, TWO RUN MODES (2026-08-05) --------------------------------
  *
@@ -1406,6 +1409,9 @@ try {
       && ["!issue", "!comment", "!review", "!code", "!bg", "!remember", "!handoff",
         "!schedule", "!schedules", "!unschedule"].every(c => named.includes(c)),
     `${rowCount} rows: ${named.join(" ")}`);
+  ok("the ＋ menu keeps background delegation as its explicit !bg row",
+    (await page.locator('.composer .actionspop .ap-row[data-command="!bg"]').count()) === 1,
+    `!bg rows: ${await page.locator('.composer .actionspop .ap-row[data-command="!bg"]').count()}`);
 
   // a row that CAN work here writes its line into the box he already uses
   await page.click('.composer .actionspop .ap-row[data-command="!remember"]');
@@ -1880,6 +1886,19 @@ try {
   const replyLine = (await page.locator(".threadline").last().innerText()).replace(/\s+/g, " ");
   ok("a reply lands in the thread and the message it answers says how many replies it has",
     /1 reply/.test(replyLine), replyLine);
+  const replyFaces = page.locator(".threadline").last().locator(".tl-faces");
+  ok("the reply count line carries the faces of its repliers",
+    (await replyFaces.count()) === 1 &&
+    (await replyFaces.locator(".avatar").count()) >= 1 &&
+    (await replyFaces.locator(".avatar").count()) <= 3,
+    `${await replyFaces.locator(".avatar").count()} face(s) on the reply line`);
+  const conversationFaceRadii = await page.$$eval(
+    ".msgs .msg .avatar .portrait, .msgs .msg .avatar .initialplate",
+    els => els.map(el => getComputedStyle(el).borderRadius),
+  );
+  ok("conversation faces are round in the computed layout, not just by class name",
+    conversationFaceRadii.length > 0 && conversationFaceRadii.every(r => r === "50%"),
+    conversationFaceRadii.join(" / "));
   await page.screenshot({ path: `${SHOTS}/chat-thread.png` });
 
   await page.click(".threadpanel .threadclose");
@@ -2038,8 +2057,8 @@ try {
   const toolsOf = sel => page.$$eval(`${sel} .tools button.mini`, bs => bs.map(b => b.title));
   const roomTools = await toolsOf(".thread .composer");
   const threadTools = await toolsOf(".threadcomposer");
-  const NAMED_TOOLS = ["Bold", "Italic", "Code", "Hand this over as background work"];
-  ok("the thread's box offers the same tools as the room's — bold, italic, code and Delegate among them",
+  const NAMED_TOOLS = ["Bold", "Italic", "Code"];
+  ok("the thread's box offers the same tools as the room's — bold, italic and code among them",
     roomTools.length > 0 &&
     threadTools.length === roomTools.length &&
     roomTools.every(t => threadTools.includes(t)) &&
@@ -2215,6 +2234,18 @@ try {
     armedBox.actionsShowing === true && armedBox.sendShowing === true,
     `calm: ＋=${calmBox.actionsShowing} Send=${calmBox.sendShowing}; ` +
     `writing: ＋=${armedBox.actionsShowing} Send=${armedBox.sendShowing}`);
+  await page.click(".thread .composer .emojihold > button");
+  await page.waitForSelector(".thread .composer .emojipop", { timeout: 10000 });
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".thread .composer .emojipop", { state: "detached", timeout: 10000 });
+  ok("the composer emoji tray closes on Escape",
+    (await page.locator(".thread .composer .emojipop").count()) === 0);
+  await page.click(".thread .composer .emojihold > button");
+  await page.waitForSelector(".thread .composer .emojipop", { timeout: 10000 });
+  await page.click(".thread .chathead");
+  await page.waitForSelector(".thread .composer .emojipop", { state: "detached", timeout: 10000 });
+  ok("the composer emoji tray closes when the pointer lands outside it",
+    (await page.locator(".thread .composer .emojipop").count()) === 0);
   await page.screenshot({ path: `${SHOTS}/composer-calm-and-armed.png` });
 
   } // end act: where an answer lands, and the setting that moves it
@@ -3816,7 +3847,11 @@ try {
     agent: r.dataset.agent,
     presence: r.dataset.presence,
     word: r.querySelector(".an-state b")?.innerText.trim() ?? "",
-    why: (r.querySelector(".an-state")?.innerText ?? "").replace(/\s+/g, " ").trim(),
+    /* The full sentence is the row button's title (`says.title`). The compact
+       `.an-state` owns only the one-word status now, so reading its innerText
+       here would silently stop proving the reason. */
+    why: (r.querySelector(".agentmain")?.getAttribute("title") ?? "")
+      .split("\n")[0].replace(/\s+/g, " ").trim(),
     dot: [...(r.querySelector(".pdot")?.classList ?? [])].find(c => c.startsWith("p-")) ?? "",
   })));
   mine = await rowState(page);
