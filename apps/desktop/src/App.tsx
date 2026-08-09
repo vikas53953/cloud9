@@ -5153,14 +5153,18 @@ function ChatView({
                   </span>
                   <span className="empty-welcome-action" aria-hidden="true">Create an agent →</span>
                 </button>
-                <button type="button" className="empty-welcome-card" onClick={onInvite} disabled={!owner}
+                <button type="button" className="empty-welcome-card" onClick={() => { if (owner) onInvite(); }}
+                  aria-disabled={!owner ? "true" : undefined}
+                  aria-describedby={!owner ? `empty-invite-denial-${channel.id}` : undefined}
                   title={owner ? "Create a one-time invite" : "Only the owner can invite people"}>
                   <span className="empty-welcome-icon" aria-hidden="true">↗</span>
                   <span className="empty-welcome-copy">
                     <strong>Invite someone</strong>
                     <span>Share a one-time invite so they can join this Cloud9.</span>
                   </span>
-                  <span className="empty-welcome-action" aria-hidden="true">
+                  <span className="empty-welcome-action"
+                    id={!owner ? `empty-invite-denial-${channel.id}` : undefined}
+                    aria-hidden={owner ? "true" : undefined}>
                     {owner ? "Create an invite →" : "Only the owner can invite people"}
                   </span>
                 </button>
