@@ -6926,8 +6926,12 @@ try {
     type: "askApproval", askId: "qa-push-1", agentId: scout.id, channelId: general.id,
     facts: PUSH_FACTS,
   }));
-  await page.waitForSelector('.msg[data-kind="action"]', { timeout: 20000 });
-  const pushCard = page.locator('.msg[data-kind="action"]').first();
+  const pushCard = page.locator('.msg[data-kind="action"]', {
+    hasText: describeRemoteAction(PUSH_FACTS),
+  }).first();
+  await pushCard.waitFor({ timeout: 20000 });
+  const pushApprovalId = await pushCard.getAttribute("data-approval");
+  if (!pushApprovalId) throw new Error("the push card has no approval ID to correlate with Tasks");
 
   /* THE SENTENCE, VERBATIM. Every noun in it came from `git` and `gh` rather
      than from the agent, and that is the whole reason he can trust it — so the
@@ -6950,7 +6954,7 @@ try {
     (await pushCard.locator(".remoteact").innerText()).trim().toLowerCase()
       === REMOTE_ACTIONS.push.toLowerCase(),
     (await pushCard.locator(".remoteact").innerText()).trim());
-  const NO_EXPIRY_WORDS = /\b(?:expire|expires|expired|deadline|time ran out)\b/i;
+  const NO_EXPIRY_WORDS = /\b(?:expir(?:e(?:s|d)?|ing|y|ations?)|deadline|time ran out)\b/i;
   const NO_EXPIRY_MARKUP = ".apexpiry, .expiredline, [data-expired]";
   const pushWords = (await pushCard.innerText()).replace(/\s+/g, " ");
   const pushKv = (await pushCard.locator("dl.kv").innerText()).replace(/\s+/g, " ");
@@ -6991,9 +6995,9 @@ try {
 
   /* ---- the same request, in the Tasks in-tray ---- */
   await page.click('.rail-btn[data-go="tasks"]');
-  await page.waitForSelector('.tasks-side .approval[data-kind="action"]', { timeout: 20000 });
-  const trayCard = page.locator('.tasks-side .approval[data-kind="action"]').first();
-  const pushApprovalId = await trayCard.getAttribute("data-appr");
+  const trayCard = page.locator(
+    `.tasks-side .approval[data-kind="action"][data-appr="${pushApprovalId}"]`);
+  await trayCard.waitFor({ timeout: 20000 });
   ok("the same request is in the Tasks in-tray, still pending and without expiry wording or markup",
     (await trayCard.locator("h4").innerText()).trim() === describeRemoteAction(PUSH_FACTS) &&
     (await trayCard.getAttribute("data-state")) === "pending" &&
@@ -7025,7 +7029,10 @@ try {
   ok("the same pending action remains in its conversation after reload, still waiting on its owner",
     (await persistedMessage.getAttribute("data-state")) === "pending" &&
     (await persistedMessage.locator("button:has-text('Approve')").count()) === 1 &&
-    (await persistedMessage.locator("button:has-text('Not now')").count()) === 1);
+    (await persistedMessage.locator("button:has-text('Not now')").count()) === 1 &&
+    !NO_EXPIRY_WORDS.test((await persistedMessage.innerText()).replace(/\s+/g, " ")) &&
+    (await persistedMessage.locator(NO_EXPIRY_MARKUP).count()) === 0,
+    (await persistedMessage.innerText()).replace(/\s+/g, " "));
 
   /* ---- HE SAID YES, and the relay records completion ---------------------- */
   await page.click('.rail-btn[data-go="tasks"]');
