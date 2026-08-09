@@ -28,7 +28,7 @@ This board was last verified against GitHub at **2026-08-08 01:34 +05:30** and `
 | Engineering Pulse | BUILDING | `engineering-pulse` / PR #21 (rebase after PR #20 social feed) | Vikas Mittal | unassigned | Review the internal Pulse/feed surface for loading, error, membership, and moderation boundaries. B1-B3 fixed; rebased over social feed.
 | Internal team social feed | BUILDING | `internal-team-social-feed` / PR #20 (`53ea088`) | Vikas Mittal | chatgpt-codex-connector | Review project-scoped chronological posts/comments/reactions by humans and agents with membership isolation, own edit/delete, durable links, unread, and accessible states.
 | Project polls | BUILDING | `feature/project-polls` / PR #22 (`b03b99a`) | Vikas Mittal | unassigned | Review project-scoped durable polls with explicit ownership, close/edit rules, and accessible results; no public publishing. |
-| Engineering Canvas | BUILDING | `feature/engineering-canvas` / PR #26 (rebased on `8d601a7`; B1�B3 closed) | Vikas Mittal | unassigned | Re-review: canvas rail beside huddles/pulse/polls/hooks/social; openAt only (no taskFocus API); viewProject(viewerId) redaction + member regression; SCHEMA_VERSION 10; union revoke/forget. Evidence: relay canvas 12/12, desktop nav 4/4, typecheck:app pass. |
+| Engineering Canvas | BUILDING | `feature/engineering-canvas` / PR #26 (rebased on `8d601a7`; B1�B3 closed) | Vikas Mittal | unassigned | Re-review: canvas rail beside huddles/pulse/polls/hooks/social; openAt only (no taskFocus API); viewProject(viewerId) redaction + member regression; SCHEMA_VERSION 10; union revoke/forget. Evidence: relay canvas 12/12, desktop nav 4/4, typecheck:app pass. |
 | Project forums/decision threads | BUILDING | `project-forums-decision-threads` / PR #23 (`6a76fbf`) | Vikas Mittal | chatgpt-codex-connector | Review durable project discussion and decision records with membership, moderation, link-access, and audit boundaries. |
 | Huddle presence/shared notes | BUILDING | `huddle-presence-shared-notes` / PR #24 (`8722312`) | Vikas Mittal | chatgpt-codex-connector | Review project/channel-scoped presence and notes only; v1 excludes audio and video and must preserve membership boundaries; current checkpoint adds correlated mutations, membership invalidation, link guards/navigation, and disconnect cleanup. |
 | Public project update publishing | BUILDING | `public-project-updates` / PR #25 (rebased; B1-B5 class fix) | Vikas Mittal | unassigned | Re-review after human-desktop-only gates, agent-draft approve, HTTP public token route, minimal App patch, adversarial tests. |
@@ -63,10 +63,6 @@ is not there, say so and ask once.
 ---
 
 ## 1. WHERE WE ARE RIGHT NOW
-
-| # | HIS ASK (his words — never renamed) | Who has it | Stage | Evidence so far |
-|---|---|---|---|---|
-| 25 | **"work on frontend layout and chat experience of cloud9 — improve it and make it like slack or Buzz"** | kimi (author) · reviewer TBD | **BUILDING** — approved plan, branch `feature/chat-look-feel` | Plan page `docs/gates/chat-experience-plan-2026-08-08.html`, all 9 changes 👍 by him 2026-08-08: L1 round faces · L2 hover tools pinned to message · L3 slimmer room header · L4 day pills · L5 one-line sidebar presence · F1 calmer composer · F2 faces on the reply line · F3 emoji-tray dismissal via the overlay owner · F4 empty-room welcome cards. Buzz opened and photographed (7 Aug) as the verified reference; Slack docs refused to load — nothing copied from memory. **Control on master's 6 reds:** 2 stale `dist` test files (timebudget/turnleash — sources deleted by PR #13, tsc never cleans), 1 REAL writeoutcome violation (`engine.ts:520` late-warning write), 2 REAL relay project-test failures. All pre-date this branch; this branch touches only `apps/desktop`. |
 
 ### CURRENT SNAPSHOT — 2026-08-08 01:34 +05:30
 
