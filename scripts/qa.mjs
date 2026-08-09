@@ -45,7 +45,7 @@ import {
   abilitiesForReach, CAPABILITIES, REACH_LEVELS,
   // what a brand-new agent starts with, so this suite asks the table rather
   // than carrying a list of switch names that used to be right
-  NEW_AGENT_ABILITIES, capabilitiesForNewAgent,
+  NEW_AGENT_ABILITIES, capabilitiesForNewAgent, describeApprovalNeeds,
 } from "@cloud9/engine/dist/abilities.js";
 import { isolationFor } from "@cloud9/engine/dist/isolation.js";
 /* WHAT LANDED OVERNIGHT (2026-08-05/06), each read from the module that owns it
@@ -3210,22 +3210,41 @@ try {
   } // end act: a rung really is a prefix of the table
   if (act("what an agent will ask before it acts", { smoke: true })) {
   // ---- what will ask first, and that it is NOT something he can clear ----
-  /* SCOPED TO THE APPROVALS SECTION, and it says out loud how many of these
-     lists are on screen. The editor has TWO blocks that can draw a "you'll be
+  /* SCOPED TO THE APPROVALS SECTION. A brand-new agent defaults to localFree,
+     so its approval list is derived from the selected trust contract. The editor
+     has TWO blocks that can draw a "you'll be
      asked before it" list — the approvals one and the one the middle trust
      setting adds — and when both draw at once the screen tells him the same
      thing twice with different lists. This check read them merged, agreed with
      neither, and then DIED on a selector that matched two notes, taking 413
      checks with it. It now judges the approvals list on its own and fails
-     loudly, in words, when a second list has appeared beside it. */
+     loudly, in words, when a second list has appeared beside it. The strict
+     setting is also exercised below as a control case. */
   asksList = () => page.$$eval(".editor .asksec .willask li", ls => ls.map(l => l.dataset.ask));
   const shownAsks = await asksList();
   const askBlocks = await page.locator(".editor .willask").count();
+  const selectedTrust = await page.$eval(
+    '.editor .trustpick[aria-pressed="true"]', b => b.dataset.trust);
+  const shownAbilities = Object.fromEntries((await abilityRows()).map(r => [r.ability, r.on]));
+  const expectedAsks = describeApprovalNeeds({ abilities: shownAbilities, trust: selectedTrust });
+  const expectedAskBlocks = expectedAsks.length > 0 ? 1 : 0;
+  /* Keep the strict setting as a deliberate control case. The editor restores
+     the default selection before the next check, and both expected lists come
+     from the engine's public contract rather than a copied capability subset. */
+  await page.locator('.editor .trustpick[data-trust="askEveryTime"]').click();
+  const strictAsks = await asksList();
+  const strictAskBlocks = await page.locator(".editor .willask").count();
+  const strictExpected = describeApprovalNeeds({ abilities: shownAbilities, trust: "askEveryTime" });
+  const strictExpectedBlocks = strictExpected.length > 0 ? 1 : 0;
+  await page.locator(`.editor .trustpick[data-trust="${selectedTrust}"]`).click();
   ok("with the top rung on, the screen names exactly the powers that will stop and ask him — once",
-    JSON.stringify(shownAsks) ===
-      JSON.stringify(CAPABILITIES.filter(c => c.alwaysAsk).map(c => c.label))
-    && askBlocks === 1,
-    `${askBlocks} "you'll be asked" block(s) on screen :: ${shownAsks.join(" / ")}`);
+    selectedTrust === "localFree" &&
+    JSON.stringify(shownAsks) === JSON.stringify(expectedAsks) &&
+    askBlocks === expectedAskBlocks &&
+    JSON.stringify(strictAsks) === JSON.stringify(strictExpected) &&
+    strictAskBlocks === strictExpectedBlocks,
+    `${selectedTrust}: ${askBlocks} block(s) :: ${shownAsks.join(" / ")} ` +
+      `| askEveryTime: ${strictAskBlocks} block(s) :: ${strictAsks.join(" / ")}`);
   const askNotes = await page.$$eval(".editor .willask .wa-note",
     ns => ns.map(n => n.innerText.replace(/\s+/g, " ").trim()));
   ok("and those are stated, never offered as switches he could clear",
@@ -3338,23 +3357,36 @@ try {
     !/Look things up and keep notes/.test(await page.locator(".editor .reachmixed").innerText()) &&
     /Run programs on this computer/.test(await page.locator(".editor .reachmixed").innerText()),
     (await page.locator(".editor .reachmixed").innerText()).replace(/\s+/g, " "));
-  ok("switching one power on is enough to make the screen promise he will be asked",
-    (await asksList()).includes("Run programs on this computer"),
-    (await asksList()).join(" / "));
+  const mixTrust = await page.$eval(
+    '.editor .trustpick[aria-pressed="true"]', b => b.dataset.trust);
+  const mixAbilities = Object.fromEntries((await abilityRows()).map(r => [r.ability, r.on]));
+  const mixExpectedAsks = describeApprovalNeeds({ abilities: mixAbilities, trust: mixTrust });
+  ok("under the new agent's local-free default, a local-only power stays quiet",
+    mixTrust === "localFree" &&
+    JSON.stringify(await asksList()) === JSON.stringify(mixExpectedAsks) &&
+    !mixExpectedAsks.includes("Run programs on this computer"),
+    `${mixTrust}: ${(await asksList()).join(" / ") || "nothing"}`);
   await page.locator(".editor .reachladder").scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${SHOTS}/reach-ladder.png` });
 
   } // end act: a hand-picked mix is never rounded
   if (act("the honest report, and the casting room")) {
   /* ---- the honest report: how high the switches go, and whether they hold ---- */
-  const claudeIso = isolationFor("claude");
-  const codexIso = isolationFor("codex");
+  /* A new agent runs in the owner's setup by default. Read that stored choice
+     from the editor so the QA expectation follows the same mode the card is
+     rendering, rather than silently comparing an owner-setup card with the
+     declared-environment report. */
+  const setupMode = (await page.getAttribute(".editor .ownersetup", "data-owner-setup")) === "on"
+    ? "owner" : "declared";
+  const claudeIso = isolationFor("claude", setupMode);
+  const codexIso = isolationFor("codex", setupMode);
   ok("the screen says how high these switches GO, not only what they keep out",
     (await page.locator('.editor .harnesshonest [data-field="ceiling"]').innerText()).trim()
       === claudeIso.ceiling,
     (await page.locator('.editor .harnesshonest [data-field="ceiling"]').innerText()).trim().slice(0, 70));
-  ok("a Claude agent is told the switches really are the whole boundary",
-    (await page.getAttribute(".editor .harnesshonest", "data-boundary")) === "yes" &&
+  ok("a Claude agent's report matches the setup mode it is actually running in",
+    (await page.getAttribute(".editor .harnesshonest", "data-boundary")) ===
+      (claudeIso.togglesAreTheBoundary ? "yes" : "no") &&
     (await page.locator('.editor .harnesshonest [data-field="headline"]').innerText()).trim()
       === claudeIso.headline);
   await page.locator(".editor .harnesshonest").scrollIntoViewIfNeeded();
