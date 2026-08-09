@@ -25,20 +25,27 @@ Two QA expectations had drifted from the current public contract:
   an approval under that same local-free default. **Pass:** it now compares the
   mixed abilities to `describeApprovalNeeds` and asserts the local-only command
   remains quiet.
-- **Fail:** the honesty checks called `isolationFor("claude")` and
-  `isolationFor("codex")`, which means declared mode, while the editor's
-  `data-owner-setup="on"` card was in owner mode. **Pass:** QA reads that rendered
-  mode and compares ceiling, boundary/headline, leaks, unknowns, and measurement
-  evidence against the matching `isolationFor(provider, mode)` result.
+- **Fail, first revision:** selecting the right setup mode fixed the values but
+  left asymmetric coverage. Claude only compared ceiling, boundary, and headline;
+  Codex alone compared controls, leaks, unknowns, and measurement evidence, and
+  its wait still hard-coded `data-boundary="no"`. **Pass:** one reader now captures
+  both cards, and the same paired assertions compare Claude and Codex against
+  `isolationFor(provider, setupMode)` for ceiling, boundary, headline, controls,
+  exact leak names and order, exact unknown text and heading, and exact measurement
+  evidence.
 
 ## Check count and validation
 
 The stale predicates were replaced in place; the full-run expected count remains
-**590**. No product or shared/engine files changed.
+**590**, and the static `ok(` call count remains **549**. No product or
+shared/engine files changed.
 
 - `node --check scripts/qa.mjs`: pass.
-- Focused static probes: the new trust/isolation expressions parse and the old
-  hard-coded always-ask and declared-only calls are absent from the edited blocks.
-- Full browser QA was not run here; this branch has no installed dependencies or
-  built UI artifacts in the checkout. That is an environment boundary, not a QA
-  pass.
+- `git diff --check`: pass.
+- Focused red/green source-contract probe: the committed first revision fails the
+  symmetric-provider predicate; this revision passes it, including absence of the
+  hard-coded Codex boundary selector.
+- Browser QA is not claimed: current `Test-Path` probes return false for
+  `node_modules`, `packages/engine/dist`, `packages/shared/dist`, and
+  `apps/desktop/dist`. No runtime result can be reproduced in this checkout
+  without first installing and building those artifacts.
