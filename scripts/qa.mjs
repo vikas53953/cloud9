@@ -6907,9 +6907,9 @@ try {
 
      An agent standing still mid-job, asking to do something OUTSIDE this
      computer. The card has to read as clearly as the money moment in the
-     prototype: what will happen, to which repository and branch, how many
-     commits, and that it runs out. `expired` is its own state — "he never saw
-     it" is not "he said no" — and it is never painted as an error.
+     prototype: what will happen, to which repository and branch, and how many
+     commits. The request has no timer now: it stays pending until its owner
+     decides, and the UI must not reintroduce expiry words or elements.
 
      Sent through `askApproval` on the engine connection, which is the only
      connection allowed to send it. The SCREEN cannot mint one, deliberately.
@@ -6950,11 +6950,17 @@ try {
     (await pushCard.locator(".remoteact").innerText()).trim().toLowerCase()
       === REMOTE_ACTIONS.push.toLowerCase(),
     (await pushCard.locator(".remoteact").innerText()).trim());
-  ok("it says when it runs out — an agent is standing there waiting for the answer",
-    /minutes|about a minute|seconds/.test(
-      await pushCard.locator("dl.kv").innerText()) &&
-    /EXPIRES/i.test(await pushCard.locator("dl.kv").innerText()),
-    (await pushCard.locator("dl.kv").innerText()).replace(/\s+/g, " "));
+  const NO_EXPIRY_WORDS = /\b(?:expire|expires|expired|deadline|time ran out)\b/i;
+  const NO_EXPIRY_MARKUP = ".apexpiry, .expiredline, [data-expired]";
+  const pushWords = (await pushCard.innerText()).replace(/\s+/g, " ");
+  const pushKv = (await pushCard.locator("dl.kv").innerText()).replace(/\s+/g, " ");
+  ok("a pending push request says when it was asked, but never promises an expiry",
+    /Asked/i.test(pushKv) && !NO_EXPIRY_WORDS.test(`${pushWords} ${pushKv}`),
+    pushKv);
+  ok("a pending push request has no expiry element or legacy expired state",
+    (await pushCard.getAttribute("data-state")) === "pending" &&
+    (await pushCard.locator(NO_EXPIRY_MARKUP).count()) === 0,
+    `${await pushCard.getAttribute("data-state")} · ${await pushCard.locator(NO_EXPIRY_MARKUP).count()} expiry element(s)`);
   ok("a request with no job behind it offers no 'see the job' button to press",
     (await pushCard.locator("text=See the job").count()) === 0);
   /* The pill and the cards read the same list, so the only check worth making
@@ -6987,61 +6993,80 @@ try {
   await page.click('.rail-btn[data-go="tasks"]');
   await page.waitForSelector('.tasks-side .approval[data-kind="action"]', { timeout: 20000 });
   const trayCard = page.locator('.tasks-side .approval[data-kind="action"]').first();
-  ok("the same request is in the Tasks in-tray, carrying its sentence and its deadline",
+  const pushApprovalId = await trayCard.getAttribute("data-appr");
+  ok("the same request is in the Tasks in-tray, still pending and without expiry wording or markup",
     (await trayCard.locator("h4").innerText()).trim() === describeRemoteAction(PUSH_FACTS) &&
-    /Expires/.test(await trayCard.locator(".apexpiry").innerText()),
-    (await trayCard.locator(".apexpiry").innerText()).trim());
+    (await trayCard.getAttribute("data-state")) === "pending" &&
+    !NO_EXPIRY_WORDS.test((await trayCard.innerText()).replace(/\s+/g, " ")) &&
+    (await trayCard.locator(NO_EXPIRY_MARKUP).count()) === 0,
+    (await trayCard.innerText()).replace(/\s+/g, " "));
   await page.screenshot({ path: `${SHOTS}/projects-approval-tray.png` });
 
+  /* The request is durable, not a ten-minute toast. Reload the owner's window,
+     return to the in-tray, and then return to the room: both surfaces must still
+     show the same pending approval with the real buttons. */
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector('.rail-btn[data-go="tasks"]', { timeout: 20000 });
+  await page.click('.rail-btn[data-go="tasks"]');
+  await page.waitForSelector(`.tasks-side .approval[data-appr="${pushApprovalId}"][data-state="pending"]`, { timeout: 20000 });
+  const persistedTray = page.locator(`.tasks-side .approval[data-appr="${pushApprovalId}"]`);
+  ok("a pending action survives an owner-window reload in the Tasks in-tray",
+    (await persistedTray.getAttribute("data-state")) === "pending");
+  ok("after reload it is still answerable, with no expiry wording or legacy markup",
+    (await persistedTray.locator("button:has-text('Approve')").count()) === 1 &&
+    (await persistedTray.locator("button:has-text('Not now')").count()) === 1 &&
+    !NO_EXPIRY_WORDS.test((await persistedTray.innerText()).replace(/\s+/g, " ")) &&
+    (await persistedTray.locator(NO_EXPIRY_MARKUP).count()) === 0,
+    (await persistedTray.innerText()).replace(/\s+/g, " "));
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# general");
+  await page.waitForSelector(`.msg[data-approval="${pushApprovalId}"][data-state="pending"]`, { timeout: 20000 });
+  const persistedMessage = page.locator(`.msg[data-approval="${pushApprovalId}"]`);
+  ok("the same pending action remains in its conversation after reload, still waiting on its owner",
+    (await persistedMessage.getAttribute("data-state")) === "pending" &&
+    (await persistedMessage.locator("button:has-text('Approve')").count()) === 1 &&
+    (await persistedMessage.locator("button:has-text('Not now')").count()) === 1);
+
+  /* ---- HE SAID YES, and the relay records completion ---------------------- */
+  await page.click('.rail-btn[data-go="tasks"]');
+  await page.waitForSelector('.tasks-side', { timeout: 20000 });
+  const APPROVE_FACTS = {
+    action: "push", repo: REPO, branch: "cloud9/scout-approved", commits: 1, files: 1,
+  };
+  engineWs.send(JSON.stringify({
+    type: "askApproval", askId: "qa-push-approved", agentId: scout.id, channelId: general.id,
+    facts: APPROVE_FACTS,
+  }));
+  const approveCard = page.locator('.tasks-side .approval[data-kind="action"]', { hasText: "cloud9/scout-approved" }).first();
+  await approveCard.waitFor({ timeout: 20000 });
+  const approveId = await approveCard.getAttribute("data-appr");
+  await approveCard.locator('button:has-text("Approve")').click();
+  const approvedFrame = await engineGot(
+    f => f.type === "approval" && f.approval?.id === approveId && f.approval?.status === "approved",
+    "the approved request to reach the asking engine");
+  await waitFor(page, id => !document.querySelector(`.tasks-side .approval[data-appr="${id}"]`), approveId,
+    { timeout: 20000, what: "the approved request to leave the in-tray" });
+  ok("approving a pending action completes it and removes it from the waiting tray",
+    approvedFrame?.approval?.status === "approved" &&
+    (await page.locator(`.tasks-side .approval[data-appr="${approveId}"]`).count()) === 0,
+    approvedFrame ? `relay recorded ${approvedFrame.approval.status}` : "the relay did not record approved");
+
   /* ---- HE SAID NO, and nothing happened ---- */
-  const noId = await trayCard.getAttribute("data-appr");
-  await trayCard.locator('button:has-text("Not now")').click();
+  const noCard = page.locator(`.tasks-side .approval[data-appr="${pushApprovalId}"]`);
+  const noId = await noCard.getAttribute("data-appr");
+  await noCard.locator('button:has-text("Not now")').click();
   await waitFor(page, id => !document.querySelector(`.approval[data-appr="${id}"]`), noId,
     { timeout: 20000, what: "the refused request to leave the in-tray" });
+  const rejectedFrame = await engineGot(
+    f => f.type === "approval" && f.approval?.id === noId && f.approval?.status === "rejected",
+    "the refused request to reach the asking engine");
   ok("saying 'not now' answers it, and it stops waiting on him",
-    (await page.locator(`.tasks-side .approval[data-appr="${noId}"]`).count()) === 0);
+    rejectedFrame?.approval?.status === "rejected" &&
+    (await page.locator(`.tasks-side .approval[data-appr="${noId}"]`).count()) === 0,
+    rejectedFrame ? `relay recorded ${rejectedFrame.approval.status}` : "the relay did not record rejected");
 
-  /* ---- NOBODY ANSWERED, which is a different event and is drawn differently.
-     The hub's own deadline is ten minutes, so this proves the rendering in a
-     throwaway window with a controlled clock: the app decides a card is past
-     answering from `expiresAt`, and the hub refuses a late decision anyway — so
-     an Approve button after the deadline would be a button that cannot work.
-     The main window is untouched. */
-  const clockCtx = await browser.newContext();
-  const clockPage = await clockCtx.newPage();
-  await clockPage.clock.install();
-  await clockPage.goto(UI);
-  await signInAsOwner(clockPage);
-  engineWs.send(JSON.stringify({
-    type: "askApproval", askId: "qa-push-3", agentId: scout.id, channelId: general.id,
-    facts: { action: "push", repo: REPO, branch: "cloud9/lonely-1", commits: 1 },
-  }));
-  await clockPage.click(".sidebar >> text=# general");
-  await clockPage.waitForSelector('.msg[data-kind="action"][data-state="pending"]', { timeout: 20000 });
-  ok("before the deadline the request is answerable, with both buttons on it",
-    (await clockPage.locator('.msg[data-kind="action"] button:has-text("Approve")').count()) > 0);
-  // eleven minutes, so the ten-minute deadline is certainly behind us. A jump
-  // rather than a run: the countdown ticks once a second, and running six
-  // hundred of those would be six hundred renders to prove one thing.
-  await clockPage.clock.fastForward(11 * 60 * 1000);
-  await clockPage.waitForSelector('.msg[data-kind="action"][data-state="expired"]', { timeout: 20000 });
-  const deadCard = clockPage.locator('.msg[data-kind="action"][data-state="expired"]').first();
-  ok("a request nobody answered says nobody answered — it is not quietly a refusal",
-    /Nobody answered/i.test(await deadCard.innerText()) &&
-    !/reject/i.test(await deadCard.innerText()),
-    (await deadCard.locator(".expiredline").innerText()).replace(/\s+/g, " "));
-  ok("and it offers no button, because there is nothing left to answer",
-    (await deadCard.locator("button:has-text('Approve')").count()) === 0 &&
-    (await deadCard.locator("button:has-text('Not now')").count()) === 0);
-  ok("an expired request is not painted as an error — nothing happened, which is the safe outcome",
-    (await deadCard.locator(".chip.is-madder, .callout.approval .danger").count()) === 0 &&
-    /nothing happened/i.test(await deadCard.locator(".spend .per").innerText()),
-    (await deadCard.locator(".spend .per").innerText()).trim());
-  ok("the card stays where it was, so a request that ran out while he was away is FOUND, not vanished",
-    (await clockPage.locator('.msg[data-kind="action"]').count()) >= 1);
-  await deadCard.scrollIntoViewIfNeeded();
-  await clockPage.screenshot({ path: `${SHOTS}/projects-approval-expired.png` });
-  await clockCtx.close();
+  /* No unanswered-deadline branch exists any more: new cards stay pending until
+     the owner decides. The reload and decision checks above hold that contract. */
 
   /* ==========================================================================
      THE GITHUB WRITES — the SAME card, not a second one.
