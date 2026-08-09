@@ -4645,21 +4645,27 @@ function LiveWork({ messageId, agents, channelId }: {
 }): React.JSX.Element | null {
   const rows = useLiveSteps(messageId);
   const [now, setNow] = useState(() => Date.now());
+  const [shown, setShown] = useState(false);
   useEffect(() => {
     if (rows.length === 0) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [rows.length]);
-  if (rows.length === 0) return null;
+  useEffect(() => {
+    if (rows.length === 0) { setShown(false); return; }
+    const timer = window.setTimeout(() => setShown(true), 650);
+    return () => window.clearTimeout(timer);
+  }, [rows.length, messageId]);
+  if (rows.length === 0 || !shown) return null;
   return (
     <div className="livework" data-machine="yes" data-msg={messageId}>
       {rows.map(row => {
         if (row.steps.length === 0) return null;
         const name = agents.find(a => a.id === row.agentId)?.name ?? "An agent";
         return (
-          <div key={row.agentId} className="liveturn" data-agent={row.agentId}
+          <details key={row.agentId} className="liveturn" data-agent={row.agentId}
             data-live-steps={row.steps.length}>
-            <div className="live-progress" data-live-progress="true">
+            <summary className="live-progress" data-live-progress="true">
               <div className="live-progress-rail" aria-hidden="true">
                 {row.steps.slice(0, 8).map(step => <i key={step.seq} data-kind={step.kind} />)}
               </div>
@@ -4678,16 +4684,16 @@ function LiveWork({ messageId, agents, channelId }: {
                       type: "send", channelId, text: `@${name} !stop`,
                     })}>Stop</button>
                 </div>
-                <RunSteps steps={row.steps} />
               </div>
-            </div>
+            </summary>
+            <RunSteps steps={row.steps.map(step => ({ ...step, detail: undefined }))} />
             {/* SAID OUT LOUD on the thing itself, the same courtesy a receipt
                 pays: this is live, and it is not the record. The record lands
                 under the reply when the turn ends. */}
             <p className="livenote">
               Live from the app as it works. The full record appears when it finishes.
             </p>
-          </div>
+          </details>
         );
       })}
     </div>

@@ -998,6 +998,7 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
   display:block;width:100%;border:0;background:transparent;resize:none;outline:none;
   font-family:var(--body);font-size:14.5px;line-height:1.55;min-height:72px;max-height:240px;overflow-y:auto;color:var(--ink);
 }
+.liveturn summary{cursor:pointer;list-style:none;}.liveturn summary::-webkit-details-marker{display:none;}.liveturn:not([open]) .livenote{display:none;}.liveturn[open] .live-progress{margin-bottom:7px;}
 .composer.threadcomposer textarea{min-height:48px;max-height:180px;}
 .composer textarea::placeholder{color:var(--ink-3);}
 .composer .tools{display:flex;align-items:center;gap:8px;margin-top:9px;flex-wrap:nowrap;min-width:0;}
