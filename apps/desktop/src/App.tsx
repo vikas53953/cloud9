@@ -2998,53 +2998,73 @@ function Workspace(): React.JSX.Element {
 
       <div className="app" data-compact={p.compact ? "on" : "off"}>
         <nav className="rail" aria-label="Cloud9 sections">
-          <div className="brand" title="Cloud9" aria-hidden="true"><CloudMark /></div>
-          {railBtn("chat", "Chat", <IconChat />)}
-          {railBtn("crew", "Crew", <IconCrew />)}
-          {railBtn("tasks", "Tasks", <IconTasks />, pendingApprovals)}
-          {railBtn("workflows", "Workflows", <IconWorkflow />)}
-          {railBtn("files", "Files", <IconFiles />)}
-          {/* ADDED beside the four he approved — the Studio navigation is
-              otherwise unchanged. Everything the hub and the engine already
-              hold about his repositories arrives through this one door. */}
-          {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
-          {railBtn("forums", "Decision threads", <IconForum />, undefined, openForums)}
-          {railBtn("huddles", "Huddles", <IconHuddle />, undefined, openHuddles)}
-          {railBtn("pulse", "Engineering Pulse", <IconPulse />,
-            Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
-          {railBtn("polls", "Polls", <IconPolls />, undefined, openPolls)}
-          {railBtn("canvas", "Canvas", <IconCanvas />, world.canvases.list.some(c => c.unread) ? 1 : undefined, openCanvas)}
-          {railBtn("updates", "Public updates", <IconUpdates />, undefined, openUpdates)}
-          {railBtn("hooks", "Hooks", <IconGear />)}
-          {railBtn("social", "Team feed", <IconSocial />, socialUnread, openSocial)}
-          {/* ADDED 2026-08-07. It sits beside the Activity button because it
-              answers the same shape of question — "what has been going on?" —
-              about money rather than about actions. */}
-          {railBtn("spending", "Spending", <IconSpending />, undefined, openSpending)}
-          {/* CALLED WHAT IT IS. The button said "Log" while the screen behind
-              it said "Activity", so the one place that answers "what are my
-              agents doing" was named after the driest thing on it. The count is
-              how many are working this second, and it is the only reason he
-              needs to look — a rail that stays quiet while an agent works is
-              the version of this feature that does not get used. */}
-          {railBtn("activity", "Activity", <IconLog />, workingNow, openActivity)}
-          {railBtn("notifications", "Notifications", <IconBell />, unreadNotifications, openNotifications)}
-          {railBtn("saved", "Saved for later", <IconSave />, world.savedNew ? 1 : undefined, openSaved)}
-          <div className="rail-spacer" />
-          <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
-            <IconBolt />Ctrl K
-          </button>
-          {railBtn("settings", "Settings", <IconGear />)}
-          {/* Which Cloud9 am I on, and a door to join a friend's. The active
-              hub's name rides on the button so it is glanceable, and the
-              connection sentence is its tooltip — both from `hubConn`, never a
-              hopeful label. */}
-          <button className="rail-btn hubswitch" title={world.hubConn.line || "Connect to a friend's Cloud9"}
-            onClick={() => setModal("friends")}>
-            <CloudMark />{activeHubName(world)}
-          </button>
-          <span className={`rail-lamp ${world.connected ? "ok" : ""}`}
-            title={world.connected ? `On the floor as ${world.me?.name ?? "you"}` : "Reconnecting…"} />
+          <div className="rail-main">
+            <div className="brand" title="Cloud9" aria-hidden="true"><CloudMark /></div>
+
+            <section className="rail-group" aria-labelledby="rail-talk-label">
+              <h2 className="rail-group-label" id="rail-talk-label">Talk</h2>
+              {railBtn("chat", "Chat", <IconChat />)}
+              {railBtn("notifications", "Notifications", <IconBell />, unreadNotifications, openNotifications)}
+              {railBtn("saved", "Saved for later", <IconSave />, world.savedNew ? 1 : undefined, openSaved)}
+            </section>
+
+            <section className="rail-group" aria-labelledby="rail-crew-label">
+              <h2 className="rail-group-label" id="rail-crew-label">Crew</h2>
+              {railBtn("crew", "Crew", <IconCrew />)}
+              {railBtn("social", "Team feed", <IconSocial />, socialUnread, openSocial)}
+              {railBtn("huddles", "Huddles", <IconHuddle />, undefined, openHuddles)}
+            </section>
+
+            <section className="rail-group" aria-labelledby="rail-work-label">
+              <h2 className="rail-group-label" id="rail-work-label">Work</h2>
+              {railBtn("tasks", "Tasks", <IconTasks />, pendingApprovals)}
+              {railBtn("workflows", "Workflows", <IconWorkflow />)}
+              {railBtn("files", "Files", <IconFiles />)}
+              {/* ADDED beside the four he approved — the Studio navigation is
+                  otherwise unchanged. Everything the hub and the engine already
+                  hold about his repositories arrives through this one door. */}
+              {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
+              {railBtn("forums", "Decision threads", <IconForum />, undefined, openForums)}
+              {railBtn("pulse", "Engineering Pulse", <IconPulse />,
+                Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
+              {railBtn("polls", "Polls", <IconPolls />, undefined, openPolls)}
+              {railBtn("canvas", "Canvas", <IconCanvas />, world.canvases.list.some(c => c.unread) ? 1 : undefined, openCanvas)}
+              {railBtn("updates", "Public updates", <IconUpdates />, undefined, openUpdates)}
+            </section>
+
+            <section className="rail-group" aria-labelledby="rail-running-label">
+              <h2 className="rail-group-label" id="rail-running-label">Running the studio</h2>
+              {railBtn("hooks", "Hooks", <IconGear />)}
+              {/* ADDED 2026-08-07. It sits beside the Activity button because it
+                  answers the same shape of question — "what has been going on?" —
+                  about money rather than about actions. */}
+              {railBtn("spending", "Spending", <IconSpending />, undefined, openSpending)}
+              {/* CALLED WHAT IT IS. The button said "Log" while the screen behind
+                  it said "Activity", so the one place that answers "what are my
+                  agents doing" was named after the driest thing on it. The count is
+                  how many are working this second, and it is the only reason he
+                  needs to look — a rail that stays quiet while an agent works is
+                  the version of this feature that does not get used. */}
+              {railBtn("activity", "Activity", <IconLog />, workingNow, openActivity)}
+            </section>
+          </div>
+
+          <div className="rail-utilities">
+            <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
+              <IconBolt />Ctrl K
+            </button>
+            {railBtn("settings", "Settings", <IconGear />)}
+            {/* Which Cloud9 am I on, and a door to join a friend's. The active
+                hub's name rides on the button so it is glanceable, and the
+                connection sentence is its tooltip — both from `hubConn`, never a
+                hopeful label. */}
+            <button className="rail-btn hubswitch" title={world.hubConn.line || "Connect to a friend's Cloud9"}
+              onClick={() => setModal("friends")}>
+              <CloudMark />{activeHubName(world)}
+            </button>
+            <span className={`rail-lamp ${world.connected ? "ok" : ""}`}
+              title={world.connected ? `On the floor as ${world.me?.name ?? "you"}` : "Reconnecting…"} />
+          </div>
         </nav>
 
         <main className="stage">
