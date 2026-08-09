@@ -692,7 +692,28 @@ const HOW_TO_ANSWER: Record<PromptTurnKind, (name: string) => string> = {
  * flag or future caller can produce an unlabelled fake.
  */
 export class MockProvider implements ClaudeProvider {
-  async respond({ agent, trigger, triggerAuthor }: RespondInput): Promise<string> {
+  async respond({ agent, trigger, triggerAuthor, abortController }: RespondInput): Promise<string> {
+    /* The installed-app and browser walks need one deliberately stoppable demo
+       turn. Ordinary canned replies stay instant; the explicit human phrase
+       below holds only demo work, and uses the same AbortController as the real
+       providers. Without this, QA clicks a real Stop button against a promise
+       that has already resolved and can only report a false product failure. */
+    const deliberatelyStoppableDemo = /\btake your time\b/i.test(trigger);
+    if (deliberatelyStoppableDemo && abortController) {
+      await new Promise<void>((resolve, reject) => {
+        const signal = abortController.signal;
+        const stopped = () => {
+          clearTimeout(timer);
+          reject(new Error("the owner stopped this demo turn"));
+        };
+        const timer = setTimeout(() => {
+          signal.removeEventListener("abort", stopped);
+          resolve();
+        }, 10_000);
+        if (signal.aborted) stopped();
+        else signal.addEventListener("abort", stopped, { once: true });
+      });
+    }
     return DEMO_REPLY_PREFIX + this.cannedBody({ agent, trigger, triggerAuthor });
   }
 

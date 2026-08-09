@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud9 chat, the Slack/Buzz way — what I will build · 8 Aug 2026</title>
+<style>
+  :root{
+    --ink:#1b2a38; --bg:#f4f7fa; --card:#ffffff; --line:#dde5ec; --muted:#5b6d7d;
+    --green:#1e7d4f; --green-bg:#e3f3ea; --amber:#9a6a00; --amber-bg:#fff3d6;
+    --red:#b03535; --red-bg:#fbe7e7; --blue:#2c7fc4; --blue-bg:#e5f1fb;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --ink:#e6edf3; --bg:#101a23; --card:#18232e; --line:#2f3d4a; --muted:#93a4b3;
+      --green:#5cc78f; --green-bg:#14372a; --amber:#e0b04a; --amber-bg:#3a2f12;
+      --red:#e07a7a; --red-bg:#3d1d1d; --blue:#5aa5dd; --blue-bg:#16324a;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink);}
+  .wrap{max-width:960px;margin:0 auto;padding:2rem 1.2rem 7rem;}
+  h1{font-size:1.65rem;margin:.2rem 0 .3rem}
+  h2{font-size:1.15rem;margin:.1rem 0 .8rem}
+  .when{color:var(--muted);font-size:.92rem}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:1.2rem 1.3rem;margin-bottom:1.1rem}
+  .chip{display:inline-block;font-size:.74rem;font-weight:600;border-radius:99px;padding:.12rem .6rem;white-space:nowrap}
+  .c-ok{background:var(--green-bg);color:var(--green)}
+  .c-gap{background:var(--amber-bg);color:var(--amber)}
+  .c-fog{background:var(--red-bg);color:var(--red)}
+  .c-info{background:var(--blue-bg);color:var(--blue)}
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:.8rem;margin:.6rem 0}
+  @media (max-width:760px){.pair{grid-template-columns:1fr}}
+  .pair figure{margin:0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#0001}
+  .pair img{width:100%;display:block}
+  .pair figcaption{font-size:.82rem;color:var(--muted);padding:.4rem .6rem}
+  table{width:100%;border-collapse:collapse;font-size:.93rem}
+  td,th{padding:.5rem .45rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{font-size:.76rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+  tr:last-child td{border-bottom:none}
+  ul,ol{margin:.3rem 0 .3rem 1.1rem;padding:0}
+  li{margin-bottom:.45rem}
+  .muted{color:var(--muted);font-size:.88rem}
+  .keep{background:var(--green-bg);border-radius:10px;padding:.7rem .9rem;font-size:.92rem}
+  .fb-block{border:1px solid var(--line);border-radius:12px;padding:.9rem 1rem;margin-bottom:.8rem;background:var(--card)}
+  .fb-block h3{margin:.1rem 0 .5rem;font-size:1rem}
+  .cols{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:.7rem}
+  @media (max-width:760px){.cols{grid-template-columns:1fr}}
+  .cols .h{font-size:.74rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:.2rem}
+  .cols>div{font-size:.9rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Cloud9 chat, the Slack/Buzz way — what I will build</h1>
+  <div class="when">Plan for your go/no-go · 8 August 2026 · <b>Nothing is built yet.</b>
+  Mark 👍 on the changes you want, 👎 on the ones you don't, 💬 for anything between. Then "Copy my feedback" and paste it back.</div>
+</header>
+
+<section data-fb="What I looked at (evidence)">
+  <h2>1 · What I looked at <span class="chip c-ok">opened, not remembered</span></h2>
+  <table>
+    <tr><th>Reference</th><th>How I checked it</th><th>Status</th></tr>
+    <tr><td><b>Buzz</b></td><td>Installed on this machine; walked and photographed 7 Aug (home, #coding, agents, projects, pulse, workflows)</td><td><span class="chip c-ok">verified</span></td></tr>
+    <tr><td><b>Cloud9 as it is today</b></td><td>Your installed app, photographed 7 Aug (chat, thread, composer) + the current screen code read line by line</td><td><span class="chip c-ok">verified</span></td></tr>
+    <tr><td><b>Slack</b></td><td>Tried to open Slack's own help pages — their site refused the request (rate-limited)</td><td><span class="chip c-fog">not verified</span> — so every "like Slack/Buzz" item below is grounded in the Buzz pictures, not memory</td></tr>
+  </table>
+
+  <div class="pair">
+    <figure><img src="../qa/buzz-coding-2026-08-07.jpg" alt="Buzz #coding channel"><figcaption><b>Buzz</b> · #coding · 7 Aug</figcaption></figure>
+    <figure><img src="../qa/app-09-chat.png" alt="Cloud9 chat today"><figcaption><b>Cloud9</b> · #general · your installed app, 7 Aug</figcaption></figure>
+  </div>
+  <div class="pair">
+    <figure><img src="../qa/buzz-home-2026-08-07.jpg" alt="Buzz inbox and thread"><figcaption><b>Buzz</b> · inbox + open thread</figcaption></figure>
+    <figure><img src="../qa/app-22-thread-agent-answer.png" alt="Cloud9 thread today"><figcaption><b>Cloud9</b> · open thread, your installed app</figcaption></figure>
+  </div>
+</section>
+
+<section data-fb="What Cloud9 already does right">
+  <h2>2 · What Cloud9 already does right <span class="chip c-ok">keep, don't touch</span></h2>
+  <div class="keep">
+    Reading the screen code and the pictures: the <b>bones are already Slack-shaped</b>. Consecutive messages from the
+    same person group under one header ✓ · reaction chips with counts ✓ · "↳ 2 replies · last at 09:22" thread line ✓ ·
+    day dividers ✓ · a "New" unread separator ✓ · a "↓ N new messages" jump pill ✓ · @mentions as chips ✓ ·
+    "agent is working" live card with a Stop button ✓ · edit/delete/save on hover ✓.
+    <b>None of this gets rebuilt.</b> The work below is look-and-feel and ergonomics, not a rewrite.
+  </div>
+</section>
+
+<section data-fb="The look — five changes">
+  <h2>3 · The look — five changes <span class="chip c-gap">pick each one</span></h2>
+
+  <div class="fb-block" data-fb="L1 · Round faces, not square tiles">
+    <h3>L1 · Round faces, not square tiles</h3>
+    <div class="cols">
+      <div><div class="h">Now</div>People get a flat square tile with an initial ("V"). Agents have real generated portraits — shown square.</div>
+      <div><div class="h">Buzz does</div>Every face is a round circle, people and agents alike, with a small presence dot.</div>
+      <div><div class="h">I'll do</div>Round every face in the chat (messages, sidebar, thread panel), presence dot at the corner. One component owns "a face", so it changes everywhere at once.</div>
+    </div>
+  </div>
+
+  <div class="fb-block" data-fb="L2 · Hover tools pinned to the message">
+    <h3>L2 · Hover tools pinned to the message</h3>
+    <div class="cols">
+      <div><div class="h">Now</div>The Reply/save/edit strip floats loose and can appear detached from its message, covering text (visible in the thread screenshot).</div>
+      <div><div class="h">Buzz does</div>A slim icon strip pinned to the message's own top-right corner — never covering the words.</div>
+      <div><div class="h">I'll do</div>Pin the strip to the message corner, icons only, words on hover-tip. Reply stays first.</div>
+    </div>
+  </div>
+
+  <div class="fb-block" data-fb="L3 · Slimmer room header">
+    <h3>L3 · Slimmer room header</h3>
+    <div class="cols">
+      <div><div class="h">Now</div>The header spends a tall row on "1 person · 0 agents · ✦ Private · Add someone… · Room details" — text buttons.</div>
+      <div><div class="h">Buzz does</div>One slim row: the room name, then small icons — saved, people-with-count, more.</div>
+      <div><div class="h">I'll do</div>Keep the words, halve the height: name + counts inline, "Add someone" and "Room details" become quiet icon buttons with tips.</div>
+    </div>
+  </div>
+
+  <div class="fb-block" data-fb="L4 · Day pills instead of cap rules">
+    <h3>L4 · Friendlier day markers</h3>
+    <div class="cols">
+      <div><div class="h">Now</div>"TODAY" / "THAT'S THE BEGINNING…" in small caps between thin rules — formal, a little stern.</div>
+      <div><div class="h">Buzz does</div>A soft centred pill: "Wednesday, July 29th".</div>
+      <div><div class="h">I'll do</div>Day markers become centred pills in the Studio palette — "Today", "Yesterday", "Wednesday, 29 July". The "New" separator stays exactly as it is.</div>
+    </div>
+  </div>
+
+  <div class="fb-block" data-fb="L5 · One-line presence in the sidebar">
+    <h3>L5 · One-line presence in the sidebar</h3>
+    <div class="cols">
+      <div><div class="h">Now</div>"Ready · its engine is running — Claude hasn't reporte…" — a truncated sentence under every agent.</div>
+      <div><div class="h">Buzz does</div>A dot and one short word; details wait for the profile.</div>
+      <div><div class="h">I'll do</div>Sidebar rows get dot + one word ("Ready", "Working", "Asleep"). The long sentence moves to a hover-tip, so no information is lost.</div>
+    </div>
+  </div>
+</section>
+
+<section data-fb="The feel — four changes">
+  <h2>4 · The feel — four changes <span class="chip c-gap">pick each one</span></h2>
+
+  <div class="fb-block" data-fb="F1 · Calmer composer">
+    <h3>F1 · A calmer composer</h3>
+    <div class="cols">
+      <div><div class="h">Now</div>Two rows of controls: + Actions · paperclip · Delegate as a job · B · I · &lt;/&gt; · 😊 · ENTER TO SEND · Send. Powerful, busy.</div>
+      <div><div class="h">Buzz does</div>One slim row: @ · attach · 😊 · Aa · send arrow.</div>
+      <div><div class="h">I'll do</div>One row: + (holds Actions and Delegate) · attach · 😊 · Aa formatting toggle · Send. Everything that exists today stays reachable — just one click deeper. Nothing is removed.</div>
+    </div>
+  </div>
+
+  <div class="fb-block" data-fb="F2 · Faces on the thread line">
+    <h3>F2 · Faces on the "2 replies" line</h3>
+    <div class="cols">
+      <div><div class="h">Now</div>"↳ 2 replies · last at 09:22 AM" — text only.</div>
+      <div><div class="h">Buzz does</div>The repliers' faces stacked beside the count — you can see WHO is in the thread before opening it.</div>
+      <div><div class="h">I'll do</div>Up to three faces before the count. (Needs the hub to say who replied — it already counts them; I'll verify the data reaches the screen before promising this one.)</div>
+    </div>
+  </div>
+
+  <div class="fb-block" data-fb="F3 · One emoji-tray repair">
+    <h3>F3 · The emoji tray learns manners</h3>
+    <div class="cols">
+      <div><div class="h">Now</div>The emoji tray ignores Escape and clicks away from it — a known rough edge, written down 30 Jul and still open.</div>
+      <div><div class="h">Buzz does</div>Escape closes; click-away closes. (Quick chat already does this right in Cloud9 — the tray is the odd one out.)</div>
+      <div><div class="h">I'll do</div>Route the tray through the same overlay owner Quick chat uses, so every popup in the app dismisses the same way — the class fix, not a patch.</div>
+    </div>
+  </div>
+
+  <div class="fb-block" data-fb="F4 · Welcome cards in an empty room">
+    <h3>F4 · An empty room invites you in</h3>
+    <div class="cols">
+      <div><div class="h">Now</div>An empty room shows a paragraph of instructions at the top.</div>
+      <div><div class="h">Buzz does</div>Two big friendly cards: "Create agent" and "Add people".</div>
+      <div><div class="h">I'll do</div>Cards for the two real first actions — "Add an agent here" and "Invite someone" — with the instruction sentence kept, shorter, under them.</div>
+    </div>
+  </div>
+</section>
+
+<section data-fb="Out of bounds">
+  <h2>5 · Out of bounds for this round <span class="chip c-info">not touched</span></h2>
+  <ul>
+    <li><b>The Studio look</b> — colours, serif headings, the cream/dark themes. You approved Studio; this round adopts Slack/Buzz <i>ergonomics</i>, not their skin.</li>
+    <li><b>Run strip, Stop button, approval cards, live "working" steps</b> — the things Cloud9 has that Buzz doesn't.</li>
+    <li><b>The right rail</b> ("In this channel" / "Jobs from this channel") — bigger question; parked unless you say otherwise.</li>
+    <li><b>New features</b> — queue visibility, search-everywhere and friends stay in the backlog; this round is polish only.</li>
+    <li><b>Slack-specific inventions</b> — since I couldn't open Slack's docs today, nothing is copied from memory and claimed "Slack does this". Buzz is the model; it's on this machine.</li>
+  </ul>
+</section>
+
+<section data-fb="How I'll prove it">
+  <h2>6 · How I'll prove it <span class="chip c-info">the evidence you get</span></h2>
+  <ol>
+    <li>Build on a branch; a <b>different</b> agent reviews (the standing law — nobody reviews their own work).</li>
+    <li><b>Before/after screenshots of every changed surface</b>, taken from the installed app at your window size — a green build is not evidence for anything visual (your rule, 7 Aug).</li>
+    <li>Full test sweep + browser QA + the installed-app walk, real counts, before it merges.</li>
+    <li>Then a fresh installer on your machine, and a review page to walk through.</li>
+  </ol>
+  <p class="muted"><b>Also on my plate, honestly:</b> the full test sweep I ran this morning before your message found
+  <b>6 red tests on current master</b> (out of ~1,600) — including one about a file-write result being ignored.
+  I have not diagnosed them yet; on this machine they could be load, or real. They get looked at before anything merges, either way.</p>
+</section>
+
+</div>
+
+<script>
+/* ============================================================
+   Vikas review kit — feedback layer for every HTML review page.
+   Paste this <script> at the end of any artifact I hand him.
+
+   What it gives him:
+     - click any section marked data-fb="<label>" to attach a note
+     - thumbs up / down per section
+     - a floating panel listing everything he has said
+     - ONE button that copies it all as plain text to paste back
+
+   Why it exists: published artifacts cannot send data back into a
+   Claude session (no such capability). This turns "read a wall and
+   retype your thoughts" into "click, type, copy once".
+
+   Usage:
+     1. mark reviewable blocks:  <section data-fb="Option A — Slack True">
+     2. include this script once, at the end of the page.
+   ============================================================ */
+(function () {
+  "use strict";
+  var STORE = "vikas-fb-" + (document.title || location.pathname);
+  var notes = {};
+  try { notes = JSON.parse(localStorage.getItem(STORE) || "{}"); } catch (e) { notes = {}; }
+
+  function save() { try { localStorage.setItem(STORE, JSON.stringify(notes)); } catch (e) {} }
+
+  var css = document.createElement("style");
+  css.textContent = [
+    ':root{--fb-ink:#16232e;--fb-bg:#fff;--fb-line:#d8e0e8;--fb-accent:#2c7fc4;',
+    '--fb-yes:#1e7d4f;--fb-yes-bg:#e3f3ea;--fb-no:#b03535;--fb-no-bg:#fbe7e7;--fb-muted:#5a6b7a;}',
+    '@media (prefers-color-scheme:dark){:root{--fb-ink:#e6edf3;--fb-bg:#18232e;--fb-line:#2f3d4a;',
+    '--fb-accent:#5aa5dd;--fb-yes:#5cc78f;--fb-yes-bg:#14372a;--fb-no:#e07a7a;--fb-no-bg:#3d1d1d;--fb-muted:#93a4b3;}}',
+    '[data-fb]{position:relative;}',
+    '[data-fb].fb-has{outline:2px solid var(--fb-accent);outline-offset:3px;border-radius:8px;}',
+    '.fb-tools{position:absolute;top:.4rem;right:.4rem;display:flex;gap:.25rem;opacity:.45;',
+    'transition:opacity .15s;z-index:5;}',
+    '[data-fb]:hover .fb-tools,[data-fb]:focus-within .fb-tools{opacity:1;}',
+    '@media (prefers-reduced-motion:reduce){.fb-tools{transition:none;}}',
+    '.fb-tools button{font:600 .78rem/1 system-ui,sans-serif;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);border-radius:99px;padding:.3rem .6rem;cursor:pointer;}',
+    '.fb-tools button:hover{border-color:var(--fb-accent);color:var(--fb-accent);}',
+    '.fb-tools button.on-yes{background:var(--fb-yes-bg);color:var(--fb-yes);border-color:var(--fb-yes);}',
+    '.fb-tools button.on-no{background:var(--fb-no-bg);color:var(--fb-no);border-color:var(--fb-no);}',
+    '.fb-note{margin-top:.6rem;width:100%;box-sizing:border-box;font:.92rem/1.5 system-ui,sans-serif;',
+    'color:var(--fb-ink);background:var(--fb-bg);border:1px dashed var(--fb-line);border-radius:8px;',
+    'padding:.55rem .7rem;resize:vertical;min-height:2.6rem;}',
+    '.fb-note:focus{outline:2px solid var(--fb-accent);outline-offset:1px;border-style:solid;}',
+    '.fb-bar{position:fixed;right:1rem;bottom:1rem;z-index:9999;display:flex;flex-direction:column;',
+    'align-items:flex-end;gap:.5rem;font:14px/1.5 system-ui,sans-serif;}',
+    '.fb-bar button{cursor:pointer;border-radius:99px;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);padding:.55rem 1rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.14);}',
+    '.fb-bar .fb-copy{background:var(--fb-accent);color:#fff;border-color:transparent;}',
+    '.fb-panel{background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;',
+    'padding:.9rem 1rem;max-width:min(380px,90vw);max-height:50vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.2);display:none;}',
+    '.fb-panel.open{display:block;}',
+    '.fb-panel h4{margin:0 0 .5rem;font-size:.95rem;}',
+    '.fb-panel li{margin-bottom:.5rem;font-size:.88rem;}',
+    '.fb-panel .lbl{font-weight:600;}',
+    '.fb-empty{color:var(--fb-muted);font-size:.88rem;margin:0;}',
+    '@media print{.fb-bar,.fb-tools{display:none;}}'
+  ].join("");
+  document.head.appendChild(css);
+
+  // The floating bar is built FIRST: per-section wiring calls render(), which
+  // needs these to exist. (Building it after the loop threw on the first
+  // section and left every later section without its buttons.)
+  var bar = document.createElement("div");
+  bar.className = "fb-bar";
+  var panel = document.createElement("div");
+  panel.className = "fb-panel";
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  var copy = document.createElement("button");
+  copy.type = "button"; copy.className = "fb-copy"; copy.textContent = "📋 Copy my feedback";
+  bar.appendChild(panel); bar.appendChild(toggle); bar.appendChild(copy);
+  document.body.appendChild(bar);
+
+  var blocks = [].slice.call(document.querySelectorAll("[data-fb]"));
+
+  // Standalone mode: a page with no marked-up blocks (e.g. a full-screen
+  // prototype we did not author) still gets a working note box, so the layer
+  // can be injected into ANY page rather than only pages we wrote.
+  if (!blocks.length) {
+    var solo = document.createElement("div");
+    solo.setAttribute("data-fb", document.title || "this page");
+    solo.setAttribute("data-fb-solo", "");
+    solo.style.cssText = "position:fixed;left:1rem;bottom:1rem;z-index:9998;width:min(320px,80vw);" +
+      "background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;" +
+      "padding:2.2rem .8rem .8rem;box-shadow:0 8px 30px rgba(0,0,0,.2);font:14px/1.5 system-ui,sans-serif;";
+    var cap = document.createElement("div");
+    cap.textContent = "Notes on this page";
+    cap.style.cssText = "font-weight:600;font-size:.85rem;margin-bottom:.3rem;";
+    solo.appendChild(cap);
+    document.body.appendChild(solo);
+    blocks = [solo];
+  }
+  blocks.forEach(function (el) {
+    var key = el.getAttribute("data-fb");
+    if (!notes[key]) notes[key] = { verdict: "", text: "" };
+
+    var tools = document.createElement("div");
+    tools.className = "fb-tools";
+    var yes = document.createElement("button");
+    yes.type = "button"; yes.textContent = "👍 like"; yes.title = "I like this";
+    var no = document.createElement("button");
+    no.type = "button"; no.textContent = "👎 no"; no.title = "Not this";
+    var add = document.createElement("button");
+    add.type = "button"; add.textContent = "💬 note"; add.title = "Write a note";
+    tools.appendChild(yes); tools.appendChild(no); tools.appendChild(add);
+    el.appendChild(tools);
+
+    var note = document.createElement("textarea");
+    note.className = "fb-note";
+    note.placeholder = "Your note on “" + key + "”…";
+    note.value = notes[key].text || "";
+    // in standalone mode the box is the whole point — always show it
+    var solo = el.hasAttribute("data-fb-solo");
+    note.style.display = notes[key].text || solo ? "block" : "none";
+    el.appendChild(note);
+
+    function paint() {
+      yes.className = notes[key].verdict === "yes" ? "on-yes" : "";
+      no.className = notes[key].verdict === "no" ? "on-no" : "";
+      el.classList.toggle("fb-has", !!(notes[key].verdict || notes[key].text));
+      render();
+    }
+    yes.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "yes" ? "" : "yes"; save(); paint();
+    });
+    no.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "no" ? "" : "no"; save(); paint();
+    });
+    add.addEventListener("click", function () {
+      note.style.display = "block"; note.focus();
+    });
+    note.addEventListener("input", function () {
+      notes[key].text = note.value.trim(); save(); paint();
+    });
+    paint();
+  });
+
+  function collected() {
+    return Object.keys(notes)
+      .filter(function (k) { return notes[k].verdict || notes[k].text; })
+      .map(function (k) { return { key: k, v: notes[k].verdict, t: notes[k].text }; });
+  }
+
+  function asText() {
+    var items = collected();
+    if (!items.length) return "";
+    var out = ["FEEDBACK ON: " + (document.title || "this page"), ""];
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "LIKE" : i.v === "no" ? "NO" : "NOTE";
+      out.push("- [" + mark + "] " + i.key + (i.t ? " — " + i.t : ""));
+    });
+    return out.join("\n");
+  }
+
+  function render() {
+    var items = collected();
+    toggle.textContent = items.length ? "🗒 " + items.length + " marked" : "🗒 no marks yet";
+    if (!items.length) { panel.innerHTML = '<p class="fb-empty">Hover any section, then use 👍 / 👎 / 💬.</p>'; return; }
+    var html = "<h4>What you've said</h4><ul>";
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "👍" : i.v === "no" ? "👎" : "💬";
+      html += '<li>' + mark + ' <span class="lbl">' + escapeHtml(i.key) + "</span>" +
+        (i.t ? " — " + escapeHtml(i.t) : "") + "</li>";
+    });
+    panel.innerHTML = html + "</ul>";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  toggle.addEventListener("click", function () { panel.classList.toggle("open"); });
+  copy.addEventListener("click", function () {
+    var text = asText();
+    if (!text) { copy.textContent = "nothing marked yet"; setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 1600); return; }
+    var done = function () {
+      copy.textContent = "✅ copied — paste it to Claude";
+      setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 2600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { window.prompt("Copy this:", text); }
+      document.body.removeChild(ta);
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

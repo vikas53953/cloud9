@@ -637,6 +637,36 @@ function useEscapeCloses(onClose: () => void, enabled = true): void {
   }, [enabled]);
 }
 
+/**
+ * "A CLICK ELSEWHERE CLOSES THIS" — the other half of popover manners (F3).
+ *
+ * The escape stack answers the keyboard; this answers the mouse. The emoji
+ * tray ignored BOTH for months — a known rough edge written down 2026-07-30 —
+ * because it was a popover, not a backdrop overlay, and nobody owned popovers.
+ * Now one hook does: wrap the button AND its tray in one element, hand over
+ * the ref, and any pointer that lands outside closes the tray. Same rule
+ * everywhere, so the composer tray and the message-reaction tray can never
+ * drift into two different behaviours again.
+ *
+ * Paired with `useEscapeCloses` at each call site: Escape closes it, a click
+ * away closes it, and the button that opened it still toggles it.
+ */
+function useClickAwayCloses(
+  ref: React.RefObject<HTMLElement | null>, onClose: () => void, enabled = true,
+): void {
+  const latest = useRef(onClose);
+  latest.current = onClose;
+  useEffect(() => {
+    if (!enabled) return;
+    const onDown = (e: PointerEvent): void => {
+      const el = ref.current;
+      if (el && e.target instanceof Node && !el.contains(e.target)) latest.current();
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    return () => window.removeEventListener("pointerdown", onDown, true);
+  }, [enabled, ref]);
+}
+
 /* ============ MAY THIS SCREEN BE LEFT WHILE IT HOLDS UNSAVED WORK? ========
  *
  * ONE OWNER for the whole app, and the reason is the audit's worst finding:
@@ -2727,7 +2757,10 @@ function Workspace(): React.JSX.Element {
       held: () => Object.entries(client.world.runs)
         .map(([id, r]) => ({ id, outcome: r.outcome, taskId: r.taskId ?? null, steps: r.steps.length })),
       jobs: () => client.world.tasks
-        .map(t => ({ id: t.id, status: t.status, runId: t.runId ?? null })),
+        .map(t => ({
+          id: t.id, status: t.status, runId: t.runId ?? null,
+          agentId: t.agentId, channelId: t.channelId,
+        })),
       /* THE HISTORY ENTRIES EXACTLY AS THE HUB SENT THEM, so a test can be
          built from real records instead of hand-written ones. A fixture written
          by the same person as the code agrees with the code by construction —
@@ -2968,53 +3001,73 @@ function Workspace(): React.JSX.Element {
 
       <div className="app" data-compact={p.compact ? "on" : "off"}>
         <nav className="rail" aria-label="Cloud9 sections">
-          <div className="brand" title="Cloud9" aria-hidden="true"><CloudMark /></div>
-          {railBtn("chat", "Chat", <IconChat />)}
-          {railBtn("crew", "Crew", <IconCrew />)}
-          {railBtn("tasks", "Tasks", <IconTasks />, pendingApprovals)}
-          {railBtn("workflows", "Workflows", <IconWorkflow />)}
-          {railBtn("files", "Files", <IconFiles />)}
-          {/* ADDED beside the four he approved — the Studio navigation is
-              otherwise unchanged. Everything the hub and the engine already
-              hold about his repositories arrives through this one door. */}
-          {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
-          {railBtn("forums", "Decision threads", <IconForum />, undefined, openForums)}
-          {railBtn("huddles", "Huddles", <IconHuddle />, undefined, openHuddles)}
-          {railBtn("pulse", "Engineering Pulse", <IconPulse />,
-            Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
-          {railBtn("polls", "Polls", <IconPolls />, undefined, openPolls)}
-          {railBtn("canvas", "Canvas", <IconCanvas />, world.canvases.list.some(c => c.unread) ? 1 : undefined, openCanvas)}
-          {railBtn("updates", "Public updates", <IconUpdates />, undefined, openUpdates)}
-          {railBtn("hooks", "Hooks", <IconGear />)}
-          {railBtn("social", "Team feed", <IconSocial />, socialUnread, openSocial)}
-          {/* ADDED 2026-08-07. It sits beside the Activity button because it
-              answers the same shape of question — "what has been going on?" —
-              about money rather than about actions. */}
-          {railBtn("spending", "Spending", <IconSpending />, undefined, openSpending)}
-          {/* CALLED WHAT IT IS. The button said "Log" while the screen behind
-              it said "Activity", so the one place that answers "what are my
-              agents doing" was named after the driest thing on it. The count is
-              how many are working this second, and it is the only reason he
-              needs to look — a rail that stays quiet while an agent works is
-              the version of this feature that does not get used. */}
-          {railBtn("activity", "Activity", <IconLog />, workingNow, openActivity)}
-          {railBtn("notifications", "Notifications", <IconBell />, unreadNotifications, openNotifications)}
-          {railBtn("saved", "Saved for later", <IconSave />, world.savedNew ? 1 : undefined, openSaved)}
-          <div className="rail-spacer" />
-          <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
-            <IconBolt />Ctrl K
-          </button>
-          {railBtn("settings", "Settings", <IconGear />)}
-          {/* Which Cloud9 am I on, and a door to join a friend's. The active
-              hub's name rides on the button so it is glanceable, and the
-              connection sentence is its tooltip — both from `hubConn`, never a
-              hopeful label. */}
-          <button className="rail-btn hubswitch" title={world.hubConn.line || "Connect to a friend's Cloud9"}
-            onClick={() => setModal("friends")}>
-            <CloudMark />{activeHubName(world)}
-          </button>
-          <span className={`rail-lamp ${world.connected ? "ok" : ""}`}
-            title={world.connected ? `On the floor as ${world.me?.name ?? "you"}` : "Reconnecting…"} />
+          <div className="rail-main">
+            <div className="brand" title="Cloud9" aria-hidden="true"><CloudMark /></div>
+
+            <section className="rail-group" aria-labelledby="rail-talk-label">
+              <h2 className="rail-group-label" id="rail-talk-label">Talk</h2>
+              {railBtn("chat", "Chat", <IconChat />)}
+              {railBtn("notifications", "Notifications", <IconBell />, unreadNotifications, openNotifications)}
+              {railBtn("saved", "Saved for later", <IconSave />, world.savedNew ? 1 : undefined, openSaved)}
+            </section>
+
+            <section className="rail-group" aria-labelledby="rail-crew-label">
+              <h2 className="rail-group-label" id="rail-crew-label">Crew</h2>
+              {railBtn("crew", "Crew", <IconCrew />)}
+              {railBtn("social", "Team feed", <IconSocial />, socialUnread, openSocial)}
+              {railBtn("huddles", "Huddles", <IconHuddle />, undefined, openHuddles)}
+            </section>
+
+            <section className="rail-group" aria-labelledby="rail-work-label">
+              <h2 className="rail-group-label" id="rail-work-label">Work</h2>
+              {railBtn("tasks", "Tasks", <IconTasks />, pendingApprovals)}
+              {railBtn("workflows", "Workflows", <IconWorkflow />)}
+              {railBtn("files", "Files", <IconFiles />)}
+              {/* ADDED beside the four he approved — the Studio navigation is
+                  otherwise unchanged. Everything the hub and the engine already
+                  hold about his repositories arrives through this one door. */}
+              {railBtn("projects", "Projects", <IconProjects />, undefined, openProjects)}
+              {railBtn("forums", "Decision threads", <IconForum />, undefined, openForums)}
+              {railBtn("pulse", "Engineering Pulse", <IconPulse />,
+                Object.values(world.pulse.unreadByProject).reduce((sum, n) => sum + n, 0), openPulse)}
+              {railBtn("polls", "Polls", <IconPolls />, undefined, openPolls)}
+              {railBtn("canvas", "Canvas", <IconCanvas />, world.canvases.list.some(c => c.unread) ? 1 : undefined, openCanvas)}
+              {railBtn("updates", "Public updates", <IconUpdates />, undefined, openUpdates)}
+            </section>
+
+            <section className="rail-group" aria-labelledby="rail-running-label">
+              <h2 className="rail-group-label" id="rail-running-label">Running the studio</h2>
+              {railBtn("hooks", "Hooks", <IconGear />)}
+              {/* ADDED 2026-08-07. It sits beside the Activity button because it
+                  answers the same shape of question — "what has been going on?" —
+                  about money rather than about actions. */}
+              {railBtn("spending", "Spending", <IconSpending />, undefined, openSpending)}
+              {/* CALLED WHAT IT IS. The button said "Log" while the screen behind
+                  it said "Activity", so the one place that answers "what are my
+                  agents doing" was named after the driest thing on it. The count is
+                  how many are working this second, and it is the only reason he
+                  needs to look — a rail that stays quiet while an agent works is
+                  the version of this feature that does not get used. */}
+              {railBtn("activity", "Activity", <IconLog />, workingNow, openActivity)}
+            </section>
+          </div>
+
+          <div className="rail-utilities">
+            <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
+              <IconBolt />Ctrl K
+            </button>
+            {railBtn("settings", "Settings", <IconGear />)}
+            {/* Which Cloud9 am I on, and a door to join a friend's. The active
+                hub's name rides on the button so it is glanceable, and the
+                connection sentence is its tooltip — both from `hubConn`, never a
+                hopeful label. */}
+            <button className="rail-btn hubswitch" title={world.hubConn.line || "Connect to a friend's Cloud9"}
+              onClick={() => setModal("friends")}>
+              <CloudMark />{activeHubName(world)}
+            </button>
+            <span className={`rail-lamp ${world.connected ? "ok" : ""}`}
+              title={world.connected ? `On the floor as ${world.me?.name ?? "you"}` : "Reconnecting…"} />
+          </div>
         </nav>
 
         <main className="stage">
@@ -3903,9 +3956,13 @@ Open your chat with ${a.name}`}>
                     <AgentFace name={a.name} size={22} presence={pres} hasPresence />
                     <span className="txt agent-name">
                       <span className="an-name">{a.name}</span>
+                      {/* A DOT AND ONE WORD on the row — the Buzz shape. The full
+                          sentence (state + why) is one hover away: the row's own
+                          tip carries `says.title`, from the same one owner
+                          (`presenceSays`), so the short line and the long answer
+                          can never disagree. */}
                       <span className={`an-state${says.trouble ? " introuble" : ""}`}>
                         <b>{says.word}</b>
-                        {says.reason && <> · {says.reason}</>}
                       </span>
                     </span>
                     <MutedMark channelId={dm?.id} />
@@ -3968,6 +4025,7 @@ Open your chat with ${a.name}`}>
       {active ? (
         <ChatView key={active.id} channel={active} lastRead={lastRead} findOpen={findOpen}
           onCloseFind={onCloseFind} onEditAgent={onEditAgent} onOpenTasks={onOpenTasks}
+          owner={owner} onNewAgent={onNewAgent} onInvite={onInvite}
           jumpTo={jumpTo} onJumped={onJumped}
           onOpenThread={threading ? openThread : undefined} threadRoot={threadRoot}
           onToggleDetails={toggleDetails} detailsOpen={detailsOpen} takeover={takeover} />
@@ -4545,11 +4603,13 @@ function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
 
 function ChatView({
   channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpenTasks,
+  owner, onNewAgent, onInvite,
   jumpTo, onJumped, onOpenThread, threadRoot, onToggleDetails, detailsOpen,
   takeover,
 }: {
   channel: Channel; lastRead: number; findOpen: boolean; onCloseFind: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenTasks: () => void;
+  owner: boolean; onNewAgent: () => void; onInvite: () => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
   /** absent when his setting says replies stay in the conversation */
   onOpenThread?: (rootId: ID) => void; threadRoot: ID | null;
@@ -5044,9 +5104,14 @@ function ChatView({
             </button>
           )}
           {!channel.archivedAt && <AddToChannel channel={channel} />}
-          <button className="btn small roomdetailsbtn" aria-expanded={detailsOpen}
-            title="What this room is for, who is in it, and how it is run"
-            onClick={onToggleDetails}>Room details</button>
+          {/* A QUIET ICON, not a furniture button (L3 — the Buzz-shaped header).
+              The words moved into the tip; the accessible name stays "Room
+              details", so every check and every screen reader finds it exactly
+              where it always was. */}
+          <button className="iconbtn roomdetailsbtn" aria-expanded={detailsOpen}
+            aria-label="Room details"
+            title="Room details — what this room is for, who is in it, and how it is run"
+            onClick={onToggleDetails}>ⓘ</button>
         </header>
       )}
 
@@ -5092,13 +5157,44 @@ function ChatView({
           </div>
         )}
         {!needle && messages.length === 0 && (
-          <div className="empty">
-            <div className="empty-mark" aria-hidden="true">{isDm ? "✉" : "#"}</div>
-            <h2>{isDm ? `This is the start of your chat with ${peerName}` : `Nothing said in #${channel.name} yet`}</h2>
-            <p>Type below to start it. Put <code>@</code> in front of an agent's name to hand it a job,
-              add <code>!bg</code> when it should work in the background, and type <code>/</code> to
-              see everything an agent can be asked to do.</p>
-          </div>
+          isDm ? (
+            <div className="empty">
+              <div className="empty-mark" aria-hidden="true">✉</div>
+              <h2>This is the start of your chat with {peerName}</h2>
+              <p>Type below to start. Use <code>@name</code> to ask an agent, <code>!bg</code> for background work, or <code>/</code> for commands.</p>
+            </div>
+          ) : (
+            <div className="empty empty-room" data-empty-room="yes">
+              <div className="empty-mark" aria-hidden="true">#</div>
+              <h2>Nothing said in #{channel.name} yet</h2>
+              <div className="empty-welcome-cards" role="group" aria-label="Ways to get this room started">
+                <button type="button" className="empty-welcome-card" onClick={onNewAgent}>
+                  <span className="empty-welcome-icon" aria-hidden="true">✦</span>
+                  <span className="empty-welcome-copy">
+                    <strong>Add an agent here</strong>
+                    <span>Create an agent, then add it to this room from the header.</span>
+                  </span>
+                  <span className="empty-welcome-action" aria-hidden="true">Create an agent →</span>
+                </button>
+                <button type="button" className="empty-welcome-card" onClick={() => { if (owner) onInvite(); }}
+                  aria-disabled={!owner ? "true" : undefined}
+                  aria-describedby={!owner ? `empty-invite-denial-${channel.id}` : undefined}
+                  title={owner ? "Create a one-time invite" : "Only the owner can invite people"}>
+                  <span className="empty-welcome-icon" aria-hidden="true">↗</span>
+                  <span className="empty-welcome-copy">
+                    <strong>Invite someone</strong>
+                    <span>Share a one-time invite so they can join this Cloud9.</span>
+                  </span>
+                  <span className="empty-welcome-action"
+                    id={!owner ? `empty-invite-denial-${channel.id}` : undefined}
+                    aria-hidden={owner ? "true" : undefined}>
+                    {owner ? "Create an invite →" : "Only the owner can invite people"}
+                  </span>
+                </button>
+              </div>
+              <p className="empty-welcome-hint">Or type below to start. Use <code>@name</code> to ask an agent, <code>!bg</code> for background work, or <code>/</code> for commands.</p>
+            </div>
+          )
         )}
         {rows.map(r => (
           <React.Fragment key={r.m.id}>
@@ -6021,6 +6117,10 @@ const MessageRow = React.memo(function MessageRow({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const deleted = !!m.deletedAt;
   const inThread = variant === "thread";
+  /* wraps the ☺ button AND its tray, so a click anywhere else closes it (F3) */
+  const reactHoldRef = useRef<HTMLSpanElement>(null);
+  useEscapeCloses(() => setPickEmoji(false), pickEmoji);
+  useClickAwayCloses(reactHoldRef, () => setPickEmoji(false), pickEmoji);
 
   const copy = () => {
     void navigator.clipboard?.writeText(m.text).then(() => {
@@ -6164,6 +6264,21 @@ const MessageRow = React.memo(function MessageRow({
    */
   const threadMoved = !inThread && !deleted && replyCount > 0
     && !threadSeen && !!newSince && (m.lastReplyAt ?? 0) > newSince;
+  /* WHO IS IN THE THREAD, before the number (F2 — Buzz stacks the repliers'
+     faces beside "23 replies", and who is in there is what makes him open it).
+     The hub keeps the three newest speakers on the root (`replyFaces`); the
+     faces are decorative — the count and the words still carry the facts, so
+     an unreadable face never costs information. */
+  const threadFaces = (!inThread && !deleted)
+    ? (m.replyFaces ?? [])
+      .map(id => {
+        const agent = agents.find(a => a.id === id);
+        if (agent) return { id, name: agent.name, kind: "agent" as const };
+        const user = users.find(u => u.id === id);
+        return { id, name: id === me?.id ? "You" : user?.name ?? "Someone", kind: "person" as const };
+      })
+      .slice(0, 3)
+    : [];
   const threadLine = (!inThread && !deleted && replyCount > 0 && onOpenThread) && (
     <button className={`threadline${threadMoved ? " has-new" : ""}`} data-replies={replyCount}
       data-thread-new={threadMoved ? "yes" : undefined}
@@ -6171,6 +6286,15 @@ const MessageRow = React.memo(function MessageRow({
         ? "This thread has moved since you last read this conversation"
         : "Open this thread"}
       onClick={() => onOpenThread(m.id)}>
+      {threadFaces.length > 0 && (
+        <span className="tl-faces" aria-hidden="true">
+          {threadFaces.map(f => (
+            f.kind === "agent"
+              ? <span className="avatar" key={f.id}><Portrait identity={f.name} size={18} /></span>
+              : <PersonFace key={f.id} name={f.name} size={18} />
+          ))}
+        </span>
+      )}
       <span className="arrow" aria-hidden="true">↳</span>
       {countOf(replyCount, "reply", "replies")}
       {threadMoved && <span className="newtag">New</span>}
@@ -6210,8 +6334,21 @@ const MessageRow = React.memo(function MessageRow({
     </div>
   ) : (
     <div className="msgactions">
-      <button className="ma react" title="React to this" aria-expanded={pickEmoji}
-        onClick={() => setPickEmoji(o => !o)}>☺</button>
+      <span className="reacthold" ref={reactHoldRef}>
+        <button className="ma react" title="React to this" aria-expanded={pickEmoji}
+          onClick={() => setPickEmoji(o => !o)}>☺</button>
+        {pickEmoji && (
+          <div className="reactpop" role="menu" aria-label="React with an emoji">
+            {REACT_EMOJI.map(e => {
+              const isMine = !!me
+                && (m.reactions ?? []).some(r => r.emoji === e && r.userIds.includes(me.id));
+              return (
+                <button key={e} aria-pressed={isMine} onClick={() => react(e, !isMine)}>{e}</button>
+              );
+            })}
+          </div>
+        )}
+      </span>
       {/* THE WAY IN. It used to be a bare ↳ among five other glyphs, so the
           only door to a thread was an unlabelled icon that appears on hover —
           which is a fair description of a feature nobody can find. It carries
@@ -6240,17 +6377,6 @@ const MessageRow = React.memo(function MessageRow({
       {mine && (
         <button className="ma del" title="Take this message back"
           onClick={() => setConfirmDelete(true)}>🗑</button>
-      )}
-      {pickEmoji && (
-        <div className="reactpop" role="menu">
-          {REACT_EMOJI.map(e => {
-            const isMine = !!me
-              && (m.reactions ?? []).some(r => r.emoji === e && r.userIds.includes(me.id));
-            return (
-              <button key={e} aria-pressed={isMine} onClick={() => react(e, !isMine)}>{e}</button>
-            );
-          })}
-        </div>
       )}
     </div>
   );
@@ -6760,6 +6886,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const [text, setText] = useState("");
   const [acIndex, setAcIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  /* the Aa formatting strip — one click deep, the Buzz shape (F1) */
+  const [fmtOpen, setFmtOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   /**
    * THE AFFORDANCES APPEAR ON INTENT (his draft, §3.2).
@@ -6784,6 +6912,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const inThreadPanel = !!replyTo && !onStopAnswering;
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  /* wraps the emoji button AND its tray, so a click anywhere else closes it */
+  const emojiHoldRef = useRef<HTMLSpanElement>(null);
   const uploads = world.uploads[channel.id] ?? [];
   const ready = uploads.filter(u => u.state === "done").length;
   const busy = uploads.some(u => u.state === "sending");
@@ -6907,6 +7037,12 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
      THAT list and nothing underneath it. Dismissing the `/` list leaves his
      words alone — a menu closing must never take the line he was typing. */
   useEscapeCloses(() => { setActionsOpen(false); setSlashDismissed(true); }, menuOpen);
+
+  /* The emoji tray learns the same manners as every other overlay (F3):
+     Escape closes it through the one stack, a click elsewhere closes it
+     through the one hook above. Registered only while it is open. */
+  useEscapeCloses(() => setEmojiOpen(false), emojiOpen);
+  useClickAwayCloses(emojiHoldRef, () => setEmojiOpen(false), emojiOpen);
 
   /* WHICH REPOSITORIES ARE CONNECTED, asked the moment the menu opens — the
      same way the Projects screen asks, and for the same reason: a list cached
@@ -7266,13 +7402,31 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
           <span className="toolset">
             <button className="mini attach" title={`Attach a file — or paste one, or drop one on the box (up to ${ATTACHMENT_LIMITS.perMessage}, ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB each)`}
               onClick={() => fileRef.current?.click()}>📎</button>
-            <button className="mini" title="Hand this over as background work"
-              onClick={() => insert("!bg ")}>{inThreadPanel ? "Delegate" : "Delegate as a job"}</button>
-            <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
-            <button className="mini ital" title="Italic" onClick={() => wrap("_")}>I</button>
-            <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
-            <button className="mini" title="Emoji" aria-expanded={emojiOpen}
-              onClick={() => setEmojiOpen(o => !o)}>🙂</button>
+            {/* ONE ROW, THE BUZZ SHAPE (F1): attach, emoji, formatting, send.
+                "Delegate as a job" is not lost — it is the `!bg` row in the ＋
+                list beside the box, which writes the very same line. Bold,
+                italic and code sit one click deep behind the Aa, exactly the
+                way Buzz's composer hides them; they stay IN the DOM either way,
+                so the thread-box parity check reads them as ever. */}
+            <span className="emojihold" ref={emojiHoldRef}>
+              <button className="mini" title="Emoji" aria-expanded={emojiOpen}
+                onClick={() => { setEmojiOpen(o => !o); setFmtOpen(false); }}>🙂</button>
+              {emojiOpen && (
+                <div className="emojipop" role="menu" aria-label="Add an emoji">
+                  {QUICK_EMOJI.map(e => (
+                    <button key={e} onClick={() => { insert(e); setEmojiOpen(false); }}>{e}</button>
+                  ))}
+                </div>
+              )}
+            </span>
+            <button className="mini fmtbtn" title="Formatting — bold, italic, code"
+              aria-expanded={fmtOpen}
+              onClick={() => { setFmtOpen(o => !o); setEmojiOpen(false); }}>Aa</button>
+            <span className={`fmtset${fmtOpen ? " on" : ""}`}>
+              <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
+              <button className="mini ital" title="Italic" onClick={() => wrap("_")}>I</button>
+              <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
+            </span>
           </span>
           <div className="grow" />
           {!inThreadPanel && <span className="eyebrow">{busy ? "Sending a file up…" : "Enter to send"}</span>}
@@ -7287,13 +7441,6 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               ? "Waiting for a file…"
               : `Send${ready > 0 ? ` with ${countOf(ready, "file")}` : ""}`}
           </button>
-          {emojiOpen && (
-            <div className="emojipop">
-              {QUICK_EMOJI.map(e => (
-                <button key={e} onClick={() => { insert(e); setEmojiOpen(false); }}>{e}</button>
-              ))}
-            </div>
-          )}
           {/* One list, built from ONE table (`ROOM_COMMANDS`), whichever door
               opened it — the ＋ beside the box or a `/` typed into it. A row that
               cannot work here is drawn as it really is — off, with the reason on

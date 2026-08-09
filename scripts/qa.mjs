@@ -45,7 +45,7 @@ import {
   abilitiesForReach, CAPABILITIES, REACH_LEVELS,
   // what a brand-new agent starts with, so this suite asks the table rather
   // than carrying a list of switch names that used to be right
-  NEW_AGENT_ABILITIES, capabilitiesForNewAgent,
+  NEW_AGENT_ABILITIES, capabilitiesForNewAgent, describeApprovalNeeds,
 } from "@cloud9/engine/dist/abilities.js";
 import { isolationFor } from "@cloud9/engine/dist/isolation.js";
 /* WHAT LANDED OVERNIGHT (2026-08-05/06), each read from the module that owns it
@@ -504,7 +504,11 @@ function mintJoinTokenOn(port, token) {
 // features broke — three for the stop button, two for the claim check, two for
 // the picture an agent is shown, two for the "use my own setup" switch, and one
 // each for how hard it thinks and for keeping the NEWEST notes.
-const EXPECTED_CHECKS = 584;
+// 584 → 591 (2026-08-09): seven chat look-and-feel finish-line checks — the
+// !bg row in the ＋ menu, both emoji-tray dismissal paths, reply faces, and
+// computed round conversation faces, plus absence of the retired toolbar title,
+// and the Aa formatting disclosure contract.
+const EXPECTED_CHECKS = 591;
 
 /* ---- ONE SUITE, TWO RUN MODES (2026-08-05) --------------------------------
  *
@@ -1406,6 +1410,9 @@ try {
       && ["!issue", "!comment", "!review", "!code", "!bg", "!remember", "!handoff",
         "!schedule", "!schedules", "!unschedule"].every(c => named.includes(c)),
     `${rowCount} rows: ${named.join(" ")}`);
+  ok("the ＋ menu keeps background delegation as its explicit !bg row",
+    (await page.locator('.composer .actionspop .ap-row[data-command="!bg"]').count()) === 1,
+    `!bg rows: ${await page.locator('.composer .actionspop .ap-row[data-command="!bg"]').count()}`);
 
   // a row that CAN work here writes its line into the box he already uses
   await page.click('.composer .actionspop .ap-row[data-command="!remember"]');
@@ -1880,6 +1887,19 @@ try {
   const replyLine = (await page.locator(".threadline").last().innerText()).replace(/\s+/g, " ");
   ok("a reply lands in the thread and the message it answers says how many replies it has",
     /1 reply/.test(replyLine), replyLine);
+  const replyFaces = page.locator(".threadline").last().locator(".tl-faces");
+  ok("the reply count line carries the faces of its repliers",
+    (await replyFaces.count()) === 1 &&
+    (await replyFaces.locator(".avatar").count()) >= 1 &&
+    (await replyFaces.locator(".avatar").count()) <= 3,
+    `${await replyFaces.locator(".avatar").count()} face(s) on the reply line`);
+  const conversationFaceRadii = await page.$$eval(
+    ".msgs .msg .avatar .portrait, .msgs .msg .avatar .initialplate",
+    els => els.map(el => getComputedStyle(el).borderRadius),
+  );
+  ok("conversation faces are round in the computed layout, not just by class name",
+    conversationFaceRadii.length > 0 && conversationFaceRadii.every(r => r === "50%"),
+    conversationFaceRadii.join(" / "));
   await page.screenshot({ path: `${SHOTS}/chat-thread.png` });
 
   await page.click(".threadpanel .threadclose");
@@ -2038,13 +2058,23 @@ try {
   const toolsOf = sel => page.$$eval(`${sel} .tools button.mini`, bs => bs.map(b => b.title));
   const roomTools = await toolsOf(".thread .composer");
   const threadTools = await toolsOf(".threadcomposer");
-  const NAMED_TOOLS = ["Bold", "Italic", "Code", "Hand this over as background work"];
-  ok("the thread's box offers the same tools as the room's — bold, italic, code and Delegate among them",
+  const NAMED_TOOLS = ["Bold", "Italic", "Code"];
+  ok("the thread's box offers the same tools as the room's — bold, italic and code among them",
     roomTools.length > 0 &&
     threadTools.length === roomTools.length &&
     roomTools.every(t => threadTools.includes(t)) &&
     NAMED_TOOLS.every(t => threadTools.includes(t)),
     `room: ${roomTools.join(" / ")} :: thread: ${threadTools.join(" / ")}`);
+  const retiredBackgroundTitle = "Hand this over as background work";
+  const retiredRoomButtons = await page.locator(
+    `.thread .composer .tools button.mini[title="${retiredBackgroundTitle}"]`,
+  ).count();
+  const retiredThreadButtons = await page.locator(
+    `.threadcomposer .tools button.mini[title="${retiredBackgroundTitle}"]`,
+  ).count();
+  ok("the retired background-work toolbar button is absent from both room and thread composers",
+    retiredRoomButtons === 0 && retiredThreadButtons === 0,
+    `room: ${retiredRoomButtons} :: thread: ${retiredThreadButtons}`);
   await page.screenshot({ path: `${SHOTS}/thread-composer-tools.png` });
   await page.click(".threadpanel .threadclose");
   await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
@@ -2184,11 +2214,25 @@ try {
        generates no box of its own is exactly what `contents` means. So the
        BUTTONS are asked, which is what he actually sees. */
     const showing = el => !!el && el.getClientRects().length > 0;
+    /* The calm/writing question is about the three direct surface controls,
+       not every descendant button. Bold/italic/code live one click deep in
+       `.fmtset` and are intentionally hidden until Aa opens it. Keep the
+       complete descendant title list below so DOM/title parity remains a
+       separate, strong contract. */
+    const surface = [
+      box.querySelector(".toolset > .attach"),
+      box.querySelector(".toolset > .emojihold > button"),
+      box.querySelector(".toolset > .fmtbtn"),
+    ];
+    const nested = [...box.querySelectorAll(".fmtset button.mini")];
     const receding = [...box.querySelectorAll(".toolset button.mini")];
     return {
       writing: box.dataset.writing,
       recedingInBox: receding.map(b => b.title),
-      recedingShowing: receding.length > 0 && receding.every(showing),
+      surfaceInBox: surface.map(b => b?.title ?? ""),
+      surfaceShowing: surface.every(showing),
+      nestedInBox: nested.map(b => b.title),
+      nestedShowing: nested.length > 0 && nested.every(showing),
       actionsShowing: showing(box.querySelector(".actionsbtn")),
       sendShowing: showing(box.querySelector(".sendbtn")),
       /* The button whose whole job was to type one character. It went; the
@@ -2204,17 +2248,64 @@ try {
   undefined, { timeout: 10000, what: "the box to arm when he clicks into it" });
   armedBox = await composerNow();
   ok("the message box is calm when nothing is being written, and shows its tools the moment he is — and they never left the box",
-    calmBox.writing === "no" && calmBox.recedingShowing === false &&
+    calmBox.writing === "no" && calmBox.surfaceShowing === false &&
     calmBox.recedingInBox.length >= 5 &&
-    armedBox.writing === "yes" && armedBox.recedingShowing === true &&
+    armedBox.writing === "yes" && armedBox.surfaceShowing === true &&
+    armedBox.nestedShowing === false &&
     armedBox.recedingInBox.length === calmBox.recedingInBox.length,
-    `calm: ${calmBox.recedingInBox.length} tools in the box, showing=${calmBox.recedingShowing}; ` +
-    `writing: ${armedBox.recedingInBox.length} in the box, showing=${armedBox.recedingShowing}`);
+    `calm: ${calmBox.recedingInBox.length} tools in the box, surface=${calmBox.surfaceShowing}; ` +
+    `writing: ${armedBox.recedingInBox.length} in the box, surface=${armedBox.surfaceShowing}, ` +
+    `nested=${armedBox.nestedShowing}`);
   ok("the ＋ Actions door and Send are on screen in BOTH states — invisible is the same as absent",
     calmBox.actionsShowing === true && calmBox.sendShowing === true &&
     armedBox.actionsShowing === true && armedBox.sendShowing === true,
     `calm: ＋=${calmBox.actionsShowing} Send=${calmBox.sendShowing}; ` +
     `writing: ＋=${armedBox.actionsShowing} Send=${armedBox.sendShowing}`);
+  await page.click(".thread .composer .fmtbtn");
+  await page.waitForSelector(".thread .composer .fmtset.on", { timeout: 10000 });
+  const formattingOpen = await page.evaluate(() => {
+    const box = document.querySelector(".thread .composer .composer-box");
+    const set = box?.querySelector(".fmtset");
+    const buttons = [...(set?.querySelectorAll("button.mini") ?? [])];
+    return {
+      expanded: box?.querySelector(".fmtbtn")?.getAttribute("aria-expanded"),
+      open: set?.classList.contains("on") === true,
+      titles: buttons.map(b => b.title),
+      showing: buttons.length === 3 && buttons.every(b => b.getClientRects().length > 0),
+    };
+  });
+  await page.click(".thread .composer .fmtbtn");
+  await waitFor(page, () => !document.querySelector(".thread .composer .fmtset.on"),
+  undefined, { timeout: 10000, what: "Aa formatting controls to close again" });
+  const formattingClosed = await page.evaluate(() => {
+    const box = document.querySelector(".thread .composer .composer-box");
+    const set = box?.querySelector(".fmtset");
+    const buttons = [...(set?.querySelectorAll("button.mini") ?? [])];
+    return {
+      expanded: box?.querySelector(".fmtbtn")?.getAttribute("aria-expanded"),
+      open: set?.classList.contains("on") === true,
+      showing: buttons.some(b => b.getClientRects().length > 0),
+    };
+  });
+  ok("Aa reveals Bold, Italic, and Code, then closes and restores the calm formatting state",
+    formattingOpen.open && formattingOpen.expanded === "true" && formattingOpen.showing &&
+    formattingOpen.titles.join(" / ") === "Bold / Italic / Code" &&
+    !formattingClosed.open && formattingClosed.expanded === "false" && !formattingClosed.showing,
+    `open: ${formattingOpen.titles.join(" / ")} showing=${formattingOpen.showing}; ` +
+    `closed: open=${formattingClosed.open} expanded=${formattingClosed.expanded} ` +
+    `showing=${formattingClosed.showing}`);
+  await page.click(".thread .composer .emojihold > button");
+  await page.waitForSelector(".thread .composer .emojipop", { timeout: 10000 });
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".thread .composer .emojipop", { state: "detached", timeout: 10000 });
+  ok("the composer emoji tray closes on Escape",
+    (await page.locator(".thread .composer .emojipop").count()) === 0);
+  await page.click(".thread .composer .emojihold > button");
+  await page.waitForSelector(".thread .composer .emojipop", { timeout: 10000 });
+  await page.click(".thread .chathead");
+  await page.waitForSelector(".thread .composer .emojipop", { state: "detached", timeout: 10000 });
+  ok("the composer emoji tray closes when the pointer lands outside it",
+    (await page.locator(".thread .composer .emojipop").count()) === 0);
   await page.screenshot({ path: `${SHOTS}/composer-calm-and-armed.png` });
 
   } // end act: where an answer lands, and the setting that moves it
@@ -3119,22 +3210,41 @@ try {
   } // end act: a rung really is a prefix of the table
   if (act("what an agent will ask before it acts", { smoke: true })) {
   // ---- what will ask first, and that it is NOT something he can clear ----
-  /* SCOPED TO THE APPROVALS SECTION, and it says out loud how many of these
-     lists are on screen. The editor has TWO blocks that can draw a "you'll be
+  /* SCOPED TO THE APPROVALS SECTION. A brand-new agent defaults to localFree,
+     so its approval list is derived from the selected trust contract. The editor
+     has TWO blocks that can draw a "you'll be
      asked before it" list — the approvals one and the one the middle trust
      setting adds — and when both draw at once the screen tells him the same
      thing twice with different lists. This check read them merged, agreed with
      neither, and then DIED on a selector that matched two notes, taking 413
      checks with it. It now judges the approvals list on its own and fails
-     loudly, in words, when a second list has appeared beside it. */
+     loudly, in words, when a second list has appeared beside it. The strict
+     setting is also exercised below as a control case. */
   asksList = () => page.$$eval(".editor .asksec .willask li", ls => ls.map(l => l.dataset.ask));
   const shownAsks = await asksList();
   const askBlocks = await page.locator(".editor .willask").count();
+  const selectedTrust = await page.$eval(
+    '.editor .trustpick[aria-pressed="true"]', b => b.dataset.trust);
+  const shownAbilities = Object.fromEntries((await abilityRows()).map(r => [r.ability, r.on]));
+  const expectedAsks = describeApprovalNeeds({ abilities: shownAbilities, trust: selectedTrust });
+  const expectedAskBlocks = expectedAsks.length > 0 ? 1 : 0;
+  /* Keep the strict setting as a deliberate control case. The editor restores
+     the default selection before the next check, and both expected lists come
+     from the engine's public contract rather than a copied capability subset. */
+  await page.locator('.editor .trustpick[data-trust="askEveryTime"]').click();
+  const strictAsks = await asksList();
+  const strictAskBlocks = await page.locator(".editor .willask").count();
+  const strictExpected = describeApprovalNeeds({ abilities: shownAbilities, trust: "askEveryTime" });
+  const strictExpectedBlocks = strictExpected.length > 0 ? 1 : 0;
+  await page.locator(`.editor .trustpick[data-trust="${selectedTrust}"]`).click();
   ok("with the top rung on, the screen names exactly the powers that will stop and ask him — once",
-    JSON.stringify(shownAsks) ===
-      JSON.stringify(CAPABILITIES.filter(c => c.alwaysAsk).map(c => c.label))
-    && askBlocks === 1,
-    `${askBlocks} "you'll be asked" block(s) on screen :: ${shownAsks.join(" / ")}`);
+    selectedTrust === "localFree" &&
+    JSON.stringify(shownAsks) === JSON.stringify(expectedAsks) &&
+    askBlocks === expectedAskBlocks &&
+    JSON.stringify(strictAsks) === JSON.stringify(strictExpected) &&
+    strictAskBlocks === strictExpectedBlocks,
+    `${selectedTrust}: ${askBlocks} block(s) :: ${shownAsks.join(" / ")} ` +
+      `| askEveryTime: ${strictAskBlocks} block(s) :: ${strictAsks.join(" / ")}`);
   const askNotes = await page.$$eval(".editor .willask .wa-note",
     ns => ns.map(n => n.innerText.replace(/\s+/g, " ").trim()));
   ok("and those are stated, never offered as switches he could clear",
@@ -3247,53 +3357,102 @@ try {
     !/Look things up and keep notes/.test(await page.locator(".editor .reachmixed").innerText()) &&
     /Run programs on this computer/.test(await page.locator(".editor .reachmixed").innerText()),
     (await page.locator(".editor .reachmixed").innerText()).replace(/\s+/g, " "));
-  ok("switching one power on is enough to make the screen promise he will be asked",
-    (await asksList()).includes("Run programs on this computer"),
-    (await asksList()).join(" / "));
+  const mixTrust = await page.$eval(
+    '.editor .trustpick[aria-pressed="true"]', b => b.dataset.trust);
+  const mixAbilities = Object.fromEntries((await abilityRows()).map(r => [r.ability, r.on]));
+  const mixExpectedAsks = describeApprovalNeeds({ abilities: mixAbilities, trust: mixTrust });
+  ok("under the new agent's local-free default, a local-only power stays quiet",
+    mixTrust === "localFree" &&
+    JSON.stringify(await asksList()) === JSON.stringify(mixExpectedAsks) &&
+    !mixExpectedAsks.includes("Run programs on this computer"),
+    `${mixTrust}: ${(await asksList()).join(" / ") || "nothing"}`);
   await page.locator(".editor .reachladder").scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${SHOTS}/reach-ladder.png` });
 
   } // end act: a hand-picked mix is never rounded
   if (act("the honest report, and the casting room")) {
   /* ---- the honest report: how high the switches go, and whether they hold ---- */
-  const claudeIso = isolationFor("claude");
-  const codexIso = isolationFor("codex");
-  ok("the screen says how high these switches GO, not only what they keep out",
-    (await page.locator('.editor .harnesshonest [data-field="ceiling"]').innerText()).trim()
-      === claudeIso.ceiling,
-    (await page.locator('.editor .harnesshonest [data-field="ceiling"]').innerText()).trim().slice(0, 70));
-  ok("a Claude agent is told the switches really are the whole boundary",
-    (await page.getAttribute(".editor .harnesshonest", "data-boundary")) === "yes" &&
-    (await page.locator('.editor .harnesshonest [data-field="headline"]').innerText()).trim()
-      === claudeIso.headline);
-  await page.locator(".editor .harnesshonest").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: `${SHOTS}/reach-honest-claude.png` });
+  /* A new agent runs in the owner's setup by default. Read that stored choice
+     from the editor so the QA expectation follows the same mode the card is
+     rendering, rather than silently comparing an owner-setup card with the
+     declared-environment report. */
+  const setupMode = (await page.getAttribute(".editor .ownersetup", "data-owner-setup")) === "on"
+    ? "owner" : "declared";
+  const claudeIso = isolationFor("claude", setupMode);
+  const codexIso = isolationFor("codex", setupMode);
+  if (!claudeIso || !codexIso) throw new Error(`no isolation contract for ${setupMode} mode`);
 
-  await page.click('.editor .app-pick[data-app="codex"]');
-  await page.waitForSelector('.editor .harnesshonest[data-boundary="no"]', { timeout: 10000 });
-  ok("and a Codex agent is NOT — the same screen refuses to tell him the same story twice",
-    (await page.locator('.editor .harnesshonest [data-field="headline"]').innerText()).trim()
-      === codexIso.headline,
-    (await page.locator('.editor .harnesshonest [data-field="headline"]').innerText()).trim().slice(0, 70));
-  ok("it says instead what those switches DO control on Codex",
-    new RegExp(codexIso.togglesControl.split(":")[0]).test(
-      await page.locator('.editor .harnesshonest [data-field="controls"]').innerText()));
-  await page.locator(".editor .harnesshonest .hh-more summary").click();
-  ok("everything Codex keeps hold of anyway is named, one line each",
-    (await page.locator(".editor .honestleaks li").count()) === codexIso.stillLoaded.length,
-    `${await page.locator(".editor .honestleaks li").count()} of ${codexIso.stillLoaded.length}`);
-  ok("and what we looked at and could not settle is kept apart from it, under its own heading",
-    (await page.locator(".editor .honestunknowns li").count()) === codexIso.unknowns.length &&
-    /could not tell/i.test(await page.locator(".editor .harnesshonest .hh-more").innerText()),
-    `${await page.locator(".editor .honestunknowns li").count()} unknown(s)`);
-  /* textContent, not innerText: the line is set in small caps by the stylesheet
-     and innerText hands back what the CSS did, not what the engine said. */
-  ok("the report carries the version and date it was measured on, so a stale claim shows",
-    (await page.locator(".editor .hh-measured").textContent()).includes(codexIso.measuredOn),
-    (await page.locator(".editor .hh-measured").textContent()).trim());
-  await page.locator(".editor .harnesshonest").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: `${SHOTS}/reach-honest-codex.png` });
+  /* ONE READER FOR BOTH APPS. The old checks looked at a Claude headline, then
+     inspected Codex's collections and evidence alone. That asymmetry let either
+     card lose a field without the other provider's check noticing. This reader
+     changes only the selected app; every assertion below compares the same UI
+     field to the same `isolationFor(provider, setupMode)` field for both. */
+  const readHonesty = async (provider, expected) => {
+    const picker = page.locator(`.editor .app-pick[data-app="${provider}"]`);
+    if ((await picker.getAttribute("aria-pressed")) !== "true") await picker.click();
+    await page.waitForFunction(([harness, headline]) => {
+      const card = document.querySelector(".editor .harnesshonest");
+      return card?.dataset.harness === harness &&
+        card.querySelector('[data-field="headline"]')?.textContent?.trim() === headline;
+    }, [provider, expected.headline], { timeout: 10000 });
+    const more = page.locator(".editor .harnesshonest .hh-more");
+    if (await more.count() === 1 && !(await more.evaluate(el => el.open))) {
+      await more.locator("summary").click();
+    }
+    const shown = await page.locator(".editor .harnesshonest").evaluate(card => {
+      const clean = text => text?.replace(/\s+/g, " ").trim() ?? null;
+      return {
+        ceiling: clean(card.querySelector('[data-field="ceiling"]')?.textContent),
+        boundary: card.dataset.boundary,
+        headline: clean(card.querySelector('[data-field="headline"]')?.textContent),
+        controls: clean(card.querySelector('[data-field="controls"]')?.textContent),
+        leaks: [...card.querySelectorAll(".honestleaks li")].map(li => li.dataset.leak),
+        unknowns: [...card.querySelectorAll(".honestunknowns li")]
+          .map(li => clean(li.textContent)),
+        moreWords: clean(card.querySelector(".hh-more")?.textContent),
+        measured: clean(card.querySelector(".hh-measured")?.textContent),
+      };
+    });
+    await page.locator(".editor .harnesshonest").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${SHOTS}/reach-honest-${provider}.png` });
+    return shown;
+  };
+  const reports = [
+    { provider: "claude", expected: claudeIso,
+      shown: await readHonesty("claude", claudeIso) },
+    { provider: "codex", expected: codexIso,
+      shown: await readHonesty("codex", codexIso) },
+  ];
+  const reportDetails = field => reports.map(r =>
+    `${r.provider}: ${JSON.stringify(r.shown[field])}`).join(" | ");
+  const cleanExpected = text => text.replace(/\s+/g, " ").trim();
 
+  ok("both honesty cards say exactly how high their switches go",
+    reports.every(r => r.shown.ceiling === cleanExpected(r.expected.ceiling)),
+    reportDetails("ceiling"));
+  ok("both honesty cards derive their boundary from the setup mode on screen",
+    reports.every(r => r.shown.boundary ===
+      (r.expected.togglesAreTheBoundary ? "yes" : "no")),
+    reportDetails("boundary"));
+  ok("both honesty cards carry their provider-and-mode headline word for word",
+    reports.every(r => r.shown.headline === cleanExpected(r.expected.headline)),
+    reportDetails("headline"));
+  ok("both honesty cards say exactly what the switches control when they are not the boundary",
+    reports.every(r => r.shown.controls === (r.expected.togglesAreTheBoundary
+      ? null : `What the switches do control: ${cleanExpected(r.expected.togglesControl)}.`)),
+    reportDetails("controls"));
+  ok("both honesty cards name every still-loaded surface, in contract order",
+    reports.every(r => JSON.stringify(r.shown.leaks) ===
+      JSON.stringify(r.expected.stillLoaded.map(leak => leak.name))),
+    reportDetails("leaks"));
+  ok("both honesty cards keep every unknown separate, under its own honest heading",
+    reports.every(r => JSON.stringify(r.shown.unknowns) ===
+      JSON.stringify(r.expected.unknowns.map(cleanExpected)) &&
+      (r.expected.unknowns.length === 0 || /could not tell/i.test(r.shown.moreWords ?? ""))),
+    reportDetails("unknowns"));
+  ok("both honesty cards carry the exact version and date their evidence was measured on",
+    reports.every(r => r.shown.measured === `Measured on ${r.expected.measuredOn}.`),
+    reportDetails("measured"));
   /* WHAT A HAND-MADE AGENT'S EDITOR OFFERS — held for the comparison below.
      Nothing typed here is saved: the editor is left with Cancel. */
   handMadeOffers = await editorOffers(page);
@@ -3816,7 +3975,11 @@ try {
     agent: r.dataset.agent,
     presence: r.dataset.presence,
     word: r.querySelector(".an-state b")?.innerText.trim() ?? "",
-    why: (r.querySelector(".an-state")?.innerText ?? "").replace(/\s+/g, " ").trim(),
+    /* The full sentence is the row button's title (`says.title`). The compact
+       `.an-state` owns only the one-word status now, so reading its innerText
+       here would silently stop proving the reason. */
+    why: (r.querySelector(".agentmain")?.getAttribute("title") ?? "")
+      .split("\n")[0].replace(/\s+/g, " ").trim(),
     dot: [...(r.querySelector(".pdot")?.classList ?? [])].find(c => c.startsWith("p-")) ?? "",
   })));
   mine = await rowState(page);
@@ -6862,9 +7025,9 @@ try {
 
      An agent standing still mid-job, asking to do something OUTSIDE this
      computer. The card has to read as clearly as the money moment in the
-     prototype: what will happen, to which repository and branch, how many
-     commits, and that it runs out. `expired` is its own state — "he never saw
-     it" is not "he said no" — and it is never painted as an error.
+     prototype: what will happen, to which repository and branch, and how many
+     commits. The request has no timer now: it stays pending until its owner
+     decides, and the UI must not reintroduce expiry words or elements.
 
      Sent through `askApproval` on the engine connection, which is the only
      connection allowed to send it. The SCREEN cannot mint one, deliberately.
@@ -6881,8 +7044,12 @@ try {
     type: "askApproval", askId: "qa-push-1", agentId: scout.id, channelId: general.id,
     facts: PUSH_FACTS,
   }));
-  await page.waitForSelector('.msg[data-kind="action"]', { timeout: 20000 });
-  const pushCard = page.locator('.msg[data-kind="action"]').first();
+  const pushCard = page.locator('.msg[data-kind="action"]', {
+    hasText: describeRemoteAction(PUSH_FACTS),
+  }).first();
+  await pushCard.waitFor({ timeout: 20000 });
+  const pushApprovalId = await pushCard.getAttribute("data-approval");
+  if (!pushApprovalId) throw new Error("the push card has no approval ID to correlate with Tasks");
 
   /* THE SENTENCE, VERBATIM. Every noun in it came from `git` and `gh` rather
      than from the agent, and that is the whole reason he can trust it — so the
@@ -6905,11 +7072,17 @@ try {
     (await pushCard.locator(".remoteact").innerText()).trim().toLowerCase()
       === REMOTE_ACTIONS.push.toLowerCase(),
     (await pushCard.locator(".remoteact").innerText()).trim());
-  ok("it says when it runs out — an agent is standing there waiting for the answer",
-    /minutes|about a minute|seconds/.test(
-      await pushCard.locator("dl.kv").innerText()) &&
-    /EXPIRES/i.test(await pushCard.locator("dl.kv").innerText()),
-    (await pushCard.locator("dl.kv").innerText()).replace(/\s+/g, " "));
+  const NO_EXPIRY_WORDS = /\b(?:expir(?:e(?:s|d)?|ing|y|ations?)|deadline|time ran out)\b/i;
+  const NO_EXPIRY_MARKUP = ".apexpiry, .expiredline, [data-expired]";
+  const pushWords = (await pushCard.innerText()).replace(/\s+/g, " ");
+  const pushKv = (await pushCard.locator("dl.kv").innerText()).replace(/\s+/g, " ");
+  ok("a pending push request says when it was asked, but never promises an expiry",
+    /Asked/i.test(pushKv) && !NO_EXPIRY_WORDS.test(`${pushWords} ${pushKv}`),
+    pushKv);
+  ok("a pending push request has no expiry element or legacy expired state",
+    (await pushCard.getAttribute("data-state")) === "pending" &&
+    (await pushCard.locator(NO_EXPIRY_MARKUP).count()) === 0,
+    `${await pushCard.getAttribute("data-state")} · ${await pushCard.locator(NO_EXPIRY_MARKUP).count()} expiry element(s)`);
   ok("a request with no job behind it offers no 'see the job' button to press",
     (await pushCard.locator("text=See the job").count()) === 0);
   /* The pill and the cards read the same list, so the only check worth making
@@ -6940,63 +7113,85 @@ try {
 
   /* ---- the same request, in the Tasks in-tray ---- */
   await page.click('.rail-btn[data-go="tasks"]');
-  await page.waitForSelector('.tasks-side .approval[data-kind="action"]', { timeout: 20000 });
-  const trayCard = page.locator('.tasks-side .approval[data-kind="action"]').first();
-  ok("the same request is in the Tasks in-tray, carrying its sentence and its deadline",
+  const trayCard = page.locator(
+    `.tasks-side .approval[data-kind="action"][data-appr="${pushApprovalId}"]`);
+  await trayCard.waitFor({ timeout: 20000 });
+  ok("the same request is in the Tasks in-tray, still pending and without expiry wording or markup",
     (await trayCard.locator("h4").innerText()).trim() === describeRemoteAction(PUSH_FACTS) &&
-    /Expires/.test(await trayCard.locator(".apexpiry").innerText()),
-    (await trayCard.locator(".apexpiry").innerText()).trim());
+    (await trayCard.getAttribute("data-state")) === "pending" &&
+    !NO_EXPIRY_WORDS.test((await trayCard.innerText()).replace(/\s+/g, " ")) &&
+    (await trayCard.locator(NO_EXPIRY_MARKUP).count()) === 0,
+    (await trayCard.innerText()).replace(/\s+/g, " "));
   await page.screenshot({ path: `${SHOTS}/projects-approval-tray.png` });
 
+  /* The request is durable, not a ten-minute toast. Reload the owner's window,
+     return to the in-tray, and then return to the room: both surfaces must still
+     show the same pending approval with the real buttons. */
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector('.rail-btn[data-go="tasks"]', { timeout: 20000 });
+  await page.click('.rail-btn[data-go="tasks"]');
+  await page.waitForSelector(`.tasks-side .approval[data-appr="${pushApprovalId}"][data-state="pending"]`, { timeout: 20000 });
+  const persistedTray = page.locator(`.tasks-side .approval[data-appr="${pushApprovalId}"]`);
+  ok("a pending action survives an owner-window reload in the Tasks in-tray",
+    (await persistedTray.getAttribute("data-state")) === "pending");
+  ok("after reload it is still answerable, with no expiry wording or legacy markup",
+    (await persistedTray.locator("button:has-text('Approve')").count()) === 1 &&
+    (await persistedTray.locator("button:has-text('Not now')").count()) === 1 &&
+    !NO_EXPIRY_WORDS.test((await persistedTray.innerText()).replace(/\s+/g, " ")) &&
+    (await persistedTray.locator(NO_EXPIRY_MARKUP).count()) === 0,
+    (await persistedTray.innerText()).replace(/\s+/g, " "));
+  await page.click('.rail-btn[data-go="chat"]');
+  await page.click(".sidebar >> text=# general");
+  await page.waitForSelector(`.msg[data-approval="${pushApprovalId}"][data-state="pending"]`, { timeout: 20000 });
+  const persistedMessage = page.locator(`.msg[data-approval="${pushApprovalId}"]`);
+  ok("the same pending action remains in its conversation after reload, still waiting on its owner",
+    (await persistedMessage.getAttribute("data-state")) === "pending" &&
+    (await persistedMessage.locator("button:has-text('Approve')").count()) === 1 &&
+    (await persistedMessage.locator("button:has-text('Not now')").count()) === 1 &&
+    !NO_EXPIRY_WORDS.test((await persistedMessage.innerText()).replace(/\s+/g, " ")) &&
+    (await persistedMessage.locator(NO_EXPIRY_MARKUP).count()) === 0,
+    (await persistedMessage.innerText()).replace(/\s+/g, " "));
+
+  /* ---- HE SAID YES, and the relay records completion ---------------------- */
+  await page.click('.rail-btn[data-go="tasks"]');
+  await page.waitForSelector('.tasks-side', { timeout: 20000 });
+  const APPROVE_FACTS = {
+    action: "push", repo: REPO, branch: "cloud9/scout-approved", commits: 1, files: 1,
+  };
+  engineWs.send(JSON.stringify({
+    type: "askApproval", askId: "qa-push-approved", agentId: scout.id, channelId: general.id,
+    facts: APPROVE_FACTS,
+  }));
+  const approveCard = page.locator('.tasks-side .approval[data-kind="action"]', { hasText: "cloud9/scout-approved" }).first();
+  await approveCard.waitFor({ timeout: 20000 });
+  const approveId = await approveCard.getAttribute("data-appr");
+  await approveCard.locator('button:has-text("Approve")').click();
+  const approvedFrame = await engineGot(
+    f => f.type === "approval" && f.approval?.id === approveId && f.approval?.status === "approved",
+    "the approved request to reach the asking engine");
+  await waitFor(page, id => !document.querySelector(`.tasks-side .approval[data-appr="${id}"]`), approveId,
+    { timeout: 20000, what: "the approved request to leave the in-tray" });
+  ok("approving a pending action completes it and removes it from the waiting tray",
+    approvedFrame?.approval?.status === "approved" &&
+    (await page.locator(`.tasks-side .approval[data-appr="${approveId}"]`).count()) === 0,
+    approvedFrame ? `relay recorded ${approvedFrame.approval.status}` : "the relay did not record approved");
+
   /* ---- HE SAID NO, and nothing happened ---- */
-  const noId = await trayCard.getAttribute("data-appr");
-  await trayCard.locator('button:has-text("Not now")').click();
+  const noCard = page.locator(`.tasks-side .approval[data-appr="${pushApprovalId}"]`);
+  const noId = await noCard.getAttribute("data-appr");
+  await noCard.locator('button:has-text("Not now")').click();
   await waitFor(page, id => !document.querySelector(`.approval[data-appr="${id}"]`), noId,
     { timeout: 20000, what: "the refused request to leave the in-tray" });
+  const rejectedFrame = await engineGot(
+    f => f.type === "approval" && f.approval?.id === noId && f.approval?.status === "rejected",
+    "the refused request to reach the asking engine");
   ok("saying 'not now' answers it, and it stops waiting on him",
-    (await page.locator(`.tasks-side .approval[data-appr="${noId}"]`).count()) === 0);
+    rejectedFrame?.approval?.status === "rejected" &&
+    (await page.locator(`.tasks-side .approval[data-appr="${noId}"]`).count()) === 0,
+    rejectedFrame ? `relay recorded ${rejectedFrame.approval.status}` : "the relay did not record rejected");
 
-  /* ---- NOBODY ANSWERED, which is a different event and is drawn differently.
-     The hub's own deadline is ten minutes, so this proves the rendering in a
-     throwaway window with a controlled clock: the app decides a card is past
-     answering from `expiresAt`, and the hub refuses a late decision anyway — so
-     an Approve button after the deadline would be a button that cannot work.
-     The main window is untouched. */
-  const clockCtx = await browser.newContext();
-  const clockPage = await clockCtx.newPage();
-  await clockPage.clock.install();
-  await clockPage.goto(UI);
-  await signInAsOwner(clockPage);
-  engineWs.send(JSON.stringify({
-    type: "askApproval", askId: "qa-push-3", agentId: scout.id, channelId: general.id,
-    facts: { action: "push", repo: REPO, branch: "cloud9/lonely-1", commits: 1 },
-  }));
-  await clockPage.click(".sidebar >> text=# general");
-  await clockPage.waitForSelector('.msg[data-kind="action"][data-state="pending"]', { timeout: 20000 });
-  ok("before the deadline the request is answerable, with both buttons on it",
-    (await clockPage.locator('.msg[data-kind="action"] button:has-text("Approve")').count()) > 0);
-  // eleven minutes, so the ten-minute deadline is certainly behind us. A jump
-  // rather than a run: the countdown ticks once a second, and running six
-  // hundred of those would be six hundred renders to prove one thing.
-  await clockPage.clock.fastForward(11 * 60 * 1000);
-  await clockPage.waitForSelector('.msg[data-kind="action"][data-state="expired"]', { timeout: 20000 });
-  const deadCard = clockPage.locator('.msg[data-kind="action"][data-state="expired"]').first();
-  ok("a request nobody answered says nobody answered — it is not quietly a refusal",
-    /Nobody answered/i.test(await deadCard.innerText()) &&
-    !/reject/i.test(await deadCard.innerText()),
-    (await deadCard.locator(".expiredline").innerText()).replace(/\s+/g, " "));
-  ok("and it offers no button, because there is nothing left to answer",
-    (await deadCard.locator("button:has-text('Approve')").count()) === 0 &&
-    (await deadCard.locator("button:has-text('Not now')").count()) === 0);
-  ok("an expired request is not painted as an error — nothing happened, which is the safe outcome",
-    (await deadCard.locator(".chip.is-madder, .callout.approval .danger").count()) === 0 &&
-    /nothing happened/i.test(await deadCard.locator(".spend .per").innerText()),
-    (await deadCard.locator(".spend .per").innerText()).trim());
-  ok("the card stays where it was, so a request that ran out while he was away is FOUND, not vanished",
-    (await clockPage.locator('.msg[data-kind="action"]').count()) >= 1);
-  await deadCard.scrollIntoViewIfNeeded();
-  await clockPage.screenshot({ path: `${SHOTS}/projects-approval-expired.png` });
-  await clockCtx.close();
+  /* No unanswered-deadline branch exists any more: new cards stay pending until
+     the owner decides. The reload and decision checks above hold that contract. */
 
   /* ==========================================================================
      THE GITHUB WRITES — the SAME card, not a second one.
@@ -8179,7 +8374,9 @@ try {
   ok("an agent whose job is stuck says so on its presence line, instead of reading as fine",
     presenceRow.trouble === "blocked"
       && /Stuck — waiting on something/.test(presenceRow.words)
-      && presenceRow.words.includes(STUCK_WHY)
+      // The rail is deliberately one concise state. The task card above owns
+      // the full reason; repeating it here is the clutter PR34 removed.
+      && !presenceRow.words.includes(STUCK_WHY)
       && !/\bReady\b/.test(presenceRow.words),
     JSON.stringify(presenceRow).slice(0, 200));
 
@@ -8387,6 +8584,29 @@ try {
   await page.click(".sidebar >> text=# trip-goa");
   await page.waitForSelector(".composer textarea", { timeout: 15000 });
 
+  const stopWorld = await page.evaluate(() => ({
+    channels: window.cloud9Wire.channels(),
+    agents: window.cloud9Wire.agents(),
+  }));
+  const scoutId = stopWorld.agents.find(a => a.name === "Scout")?.id;
+  const tripGoaId = stopWorld.channels.find(c => c.name === "trip-goa")?.id;
+  if (!scoutId || !tripGoaId) {
+    throw new Error("the Stop journey could not identify Scout or #trip-goa from the running app");
+  }
+  /* Earlier smoke journeys may still have Scout finishing background work.
+     A second !bg request queues behind that turn, so clicking the already
+     visible Stop would exercise the wrong task. Start this journey only from
+     the state a person sees before beginning new work: Scout is idle and has
+     no queued/running job. */
+  await waitFor(page, wantedAgent => {
+    const hasStop = [...document.querySelectorAll("button.stopnow[data-stop-agent]")]
+      .some(b => b.dataset.stopAgent === wantedAgent);
+    const hasLiveJob = window.cloud9Runs.jobs().some(j =>
+      j.agentId === wantedAgent && (j.status === "not_started" || j.status === "working"));
+    return !hasStop && !hasLiveJob;
+  }, scoutId, { timeout: 180000, what: "Scout to finish earlier work before the Stop journey" });
+  const knownJobs = await page.evaluate(() => window.cloud9Runs.jobs().map(j => j.id));
+
   /* CATCH THE CONTROL THE MOMENT IT EXISTS, AND PRESS IT THERE AND THEN.
      A turn can be over in a second (canned answers are instant), so a harness
      that waits for the button, then reads it, then clicks it, is racing the
@@ -8395,30 +8615,48 @@ try {
      takes down what the button SAYS at the moment it appears, and clicks the
      real control right then. It is one real click on the real button — the
      same event his mouse would send — not a frame typed onto the wire. */
-  await page.evaluate(() => {
+  await page.evaluate(([knownJobs, wantedAgent, wantedChannel]) => {
     window.__c9stop = null;
     const grab = () => {
+      const fresh = window.cloud9Runs.jobs().find(j =>
+        !knownJobs.includes(j.id)
+        && j.status === "working"
+        && j.agentId === wantedAgent
+        && j.channelId === wantedChannel);
       const b = document.querySelector("button.stopnow[data-stop-agent]");
-      if (!b || window.__c9stop) return false;
+      if (!fresh || !b || b.dataset.stopAgent !== wantedAgent || window.__c9stop) return false;
       window.__c9stop = {
         agent: b.dataset.stopAgent, title: b.title ?? "", text: (b.innerText ?? "").trim(),
+        taskId: fresh.id,
       };
       b.click();
       return true;
     };
     if (!grab()) {
-      const mo = new MutationObserver(() => { if (grab()) mo.disconnect(); });
+      let timer;
+      const mo = new MutationObserver(() => {
+        if (!grab()) return;
+        mo.disconnect();
+        clearInterval(timer);
+      });
       mo.observe(document.body, { childList: true, subtree: true, attributes: true });
+      /* A task can enter the store while an older Scout Stop is already drawn.
+         That state change need not alter this conversation's DOM, so the
+         observer alone has nothing to wake it. Poll the app's own QA seam too;
+         the click is still the real button and only the fresh task can arm it. */
+      timer = setInterval(() => {
+        if (!grab()) return;
+        clearInterval(timer);
+        mo.disconnect();
+      }, 25);
     }
-  });
+  }, [knownJobs, scoutId, tripGoaId]);
   const stopBox = page.locator(".composer textarea");
   await stopBox.fill("@Scout !bg take your time comparing every villa in this shortlist");
   await stopBox.press("Enter");
   await waitFor(page, () => !!window.__c9stop, undefined,
     { timeout: 90000, what: "a Stop control to be offered while the agent works" });
   const stopSeen = await page.evaluate(() => window.__c9stop);
-  const scoutId = (await page.evaluate(() => window.cloud9Wire.agents()))
-    .find(a => a.name === "Scout")?.id;
   ok("while an agent is working, the owner is offered a Stop that names THAT agent",
     stopSeen.text === "Stop" && stopSeen.agent === scoutId && /Stop Scout/.test(stopSeen.title),
     `${stopSeen.title} :: data-stop-agent=${stopSeen.agent}`);
@@ -8427,15 +8665,16 @@ try {
      so the distinction this feature exists for is cancelled-versus-failed, and
      that is exactly what is read here. */
   let outcomes = [];
-  await waitFor(page, () => (window.cloud9Runs?.held() ?? [])
-    .some(r => r.outcome === "cancelled"), undefined,
+  await waitFor(page, taskId => (window.cloud9Runs?.held() ?? [])
+    .some(r => r.taskId === taskId && r.outcome === "cancelled"), stopSeen.taskId,
   { timeout: 90000, what: "the stopped turn to be recorded as cancelled, not failed" })
     .catch(() => { /* judged below, in words, rather than thrown */ });
   outcomes = await page.evaluate(() => window.cloud9Runs?.held() ?? []);
   const stillWorking = await page.locator("button.stopnow[data-stop-agent]").count();
+  const stoppedOutcome = outcomes.find(r => r.taskId === stopSeen.taskId);
   ok("pressing it really ends the turn, and the record calls it stopped — never failed",
-    outcomes.some(r => r.outcome === "cancelled") && stillWorking === 0,
-    `${stillWorking} agent(s) still working · outcomes: ${outcomes.map(r => r.outcome).join(",") || "none"}`);
+    stoppedOutcome?.outcome === "cancelled" && stillWorking === 0,
+    `${stillWorking} agent(s) still working · stopped task outcome: ${stoppedOutcome?.outcome ?? "missing"}`);
 
   /* AND HE CAN SEE IT. The record card lives under the message that asked, so
      the thread is opened to read the words the app puts on it — the same
@@ -8516,7 +8755,10 @@ try {
     `${seenBytes.length} of ${PICTURE.length} bytes`);
   const tooBig = tooBigSentence(
     "huge.png", "a PNG picture", ATTACHMENT_LIMITS.bytes + 1, ATTACHMENT_LIMITS.bytes);
-  const ceilingMB = `${(ATTACHMENT_LIMITS.bytes / 1048576).toFixed(1)} MB`;
+  // `tooBigSentence` speaks in decimal MB, as people see file sizes in the UI.
+  // Keep this independent expected value on the same public unit rather than
+  // comparing a binary MiB number to the engine's sentence.
+  const ceilingMB = `${(ATTACHMENT_LIMITS.bytes / 1_000_000).toFixed(1)} MB`;
   ok("a picture too big to be shown is refused in plain words, with the shared ceiling in it",
     tooBig.includes("huge.png") && tooBig.includes(ceilingMB) && /have not seen it/.test(tooBig)
     && /do not guess/.test(tooBig),
@@ -8531,7 +8773,8 @@ try {
   await page.click('.sidebar .agentrow[data-agent="Scout"] button[title="Edit agent"]');
   await page.waitForSelector(".editor", { timeout: 20000 });
   const setupSwitch = await page.evaluate(label => {
-    const rows = [...document.querySelectorAll(".editor .toggle-row, .editor .field-row")];
+    const rows = [...document.querySelectorAll(
+      ".editor .toggle-row, .editor .field-row, .editor .choice-row")];
     const row = rows.find(r => (r.innerText ?? "").includes(label));
     return row ? { found: true, text: row.innerText.replace(/\s+/g, " ").slice(0, 120) } : { found: false };
   }, OWNER_SETUP_WORDS.label);
