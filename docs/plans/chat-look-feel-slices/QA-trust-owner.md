@@ -1,6 +1,6 @@
 # QA trust and owner-setup contract
 
-Date: 2026-08-09  
+Date: 2026-08-09
 Scope: `scripts/qa.mjs` only; product and shared engine code are intentionally out of scope.
 
 ## Root cause
