@@ -3330,43 +3330,79 @@ try {
     ? "owner" : "declared";
   const claudeIso = isolationFor("claude", setupMode);
   const codexIso = isolationFor("codex", setupMode);
-  ok("the screen says how high these switches GO, not only what they keep out",
-    (await page.locator('.editor .harnesshonest [data-field="ceiling"]').innerText()).trim()
-      === claudeIso.ceiling,
-    (await page.locator('.editor .harnesshonest [data-field="ceiling"]').innerText()).trim().slice(0, 70));
-  ok("a Claude agent's report matches the setup mode it is actually running in",
-    (await page.getAttribute(".editor .harnesshonest", "data-boundary")) ===
-      (claudeIso.togglesAreTheBoundary ? "yes" : "no") &&
-    (await page.locator('.editor .harnesshonest [data-field="headline"]').innerText()).trim()
-      === claudeIso.headline);
-  await page.locator(".editor .harnesshonest").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: `${SHOTS}/reach-honest-claude.png` });
+  if (!claudeIso || !codexIso) throw new Error(`no isolation contract for ${setupMode} mode`);
 
-  await page.click('.editor .app-pick[data-app="codex"]');
-  await page.waitForSelector('.editor .harnesshonest[data-boundary="no"]', { timeout: 10000 });
-  ok("and a Codex agent is NOT — the same screen refuses to tell him the same story twice",
-    (await page.locator('.editor .harnesshonest [data-field="headline"]').innerText()).trim()
-      === codexIso.headline,
-    (await page.locator('.editor .harnesshonest [data-field="headline"]').innerText()).trim().slice(0, 70));
-  ok("it says instead what those switches DO control on Codex",
-    new RegExp(codexIso.togglesControl.split(":")[0]).test(
-      await page.locator('.editor .harnesshonest [data-field="controls"]').innerText()));
-  await page.locator(".editor .harnesshonest .hh-more summary").click();
-  ok("everything Codex keeps hold of anyway is named, one line each",
-    (await page.locator(".editor .honestleaks li").count()) === codexIso.stillLoaded.length,
-    `${await page.locator(".editor .honestleaks li").count()} of ${codexIso.stillLoaded.length}`);
-  ok("and what we looked at and could not settle is kept apart from it, under its own heading",
-    (await page.locator(".editor .honestunknowns li").count()) === codexIso.unknowns.length &&
-    /could not tell/i.test(await page.locator(".editor .harnesshonest .hh-more").innerText()),
-    `${await page.locator(".editor .honestunknowns li").count()} unknown(s)`);
-  /* textContent, not innerText: the line is set in small caps by the stylesheet
-     and innerText hands back what the CSS did, not what the engine said. */
-  ok("the report carries the version and date it was measured on, so a stale claim shows",
-    (await page.locator(".editor .hh-measured").textContent()).includes(codexIso.measuredOn),
-    (await page.locator(".editor .hh-measured").textContent()).trim());
-  await page.locator(".editor .harnesshonest").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: `${SHOTS}/reach-honest-codex.png` });
+  /* ONE READER FOR BOTH APPS. The old checks looked at a Claude headline, then
+     inspected Codex's collections and evidence alone. That asymmetry let either
+     card lose a field without the other provider's check noticing. This reader
+     changes only the selected app; every assertion below compares the same UI
+     field to the same `isolationFor(provider, setupMode)` field for both. */
+  const readHonesty = async (provider, expected) => {
+    const picker = page.locator(`.editor .app-pick[data-app="${provider}"]`);
+    if ((await picker.getAttribute("aria-pressed")) !== "true") await picker.click();
+    await page.waitForFunction(([harness, headline]) => {
+      const card = document.querySelector(".editor .harnesshonest");
+      return card?.dataset.harness === harness &&
+        card.querySelector('[data-field="headline"]')?.textContent?.trim() === headline;
+    }, [provider, expected.headline], { timeout: 10000 });
+    const more = page.locator(".editor .harnesshonest .hh-more");
+    if (await more.count() === 1 && !(await more.evaluate(el => el.open))) {
+      await more.locator("summary").click();
+    }
+    const shown = await page.locator(".editor .harnesshonest").evaluate(card => {
+      const clean = text => text?.replace(/\s+/g, " ").trim() ?? null;
+      return {
+        ceiling: clean(card.querySelector('[data-field="ceiling"]')?.textContent),
+        boundary: card.dataset.boundary,
+        headline: clean(card.querySelector('[data-field="headline"]')?.textContent),
+        controls: clean(card.querySelector('[data-field="controls"]')?.textContent),
+        leaks: [...card.querySelectorAll(".honestleaks li")].map(li => li.dataset.leak),
+        unknowns: [...card.querySelectorAll(".honestunknowns li")]
+          .map(li => clean(li.textContent)),
+        moreWords: clean(card.querySelector(".hh-more")?.textContent),
+        measured: clean(card.querySelector(".hh-measured")?.textContent),
+      };
+    });
+    await page.locator(".editor .harnesshonest").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${SHOTS}/reach-honest-${provider}.png` });
+    return shown;
+  };
+  const reports = [
+    { provider: "claude", expected: claudeIso,
+      shown: await readHonesty("claude", claudeIso) },
+    { provider: "codex", expected: codexIso,
+      shown: await readHonesty("codex", codexIso) },
+  ];
+  const reportDetails = field => reports.map(r =>
+    `${r.provider}: ${JSON.stringify(r.shown[field])}`).join(" | ");
+  const cleanExpected = text => text.replace(/\s+/g, " ").trim();
 
+  ok("both honesty cards say exactly how high their switches go",
+    reports.every(r => r.shown.ceiling === cleanExpected(r.expected.ceiling)),
+    reportDetails("ceiling"));
+  ok("both honesty cards derive their boundary from the setup mode on screen",
+    reports.every(r => r.shown.boundary ===
+      (r.expected.togglesAreTheBoundary ? "yes" : "no")),
+    reportDetails("boundary"));
+  ok("both honesty cards carry their provider-and-mode headline word for word",
+    reports.every(r => r.shown.headline === cleanExpected(r.expected.headline)),
+    reportDetails("headline"));
+  ok("both honesty cards say exactly what the switches control when they are not the boundary",
+    reports.every(r => r.shown.controls === (r.expected.togglesAreTheBoundary
+      ? null : `What the switches do control: ${cleanExpected(r.expected.togglesControl)}.`)),
+    reportDetails("controls"));
+  ok("both honesty cards name every still-loaded surface, in contract order",
+    reports.every(r => JSON.stringify(r.shown.leaks) ===
+      JSON.stringify(r.expected.stillLoaded.map(leak => leak.name))),
+    reportDetails("leaks"));
+  ok("both honesty cards keep every unknown separate, under its own honest heading",
+    reports.every(r => JSON.stringify(r.shown.unknowns) ===
+      JSON.stringify(r.expected.unknowns.map(cleanExpected)) &&
+      (r.expected.unknowns.length === 0 || /could not tell/i.test(r.shown.moreWords ?? ""))),
+    reportDetails("unknowns"));
+  ok("both honesty cards carry the exact version and date their evidence was measured on",
+    reports.every(r => r.shown.measured === `Measured on ${r.expected.measuredOn}.`),
+    reportDetails("measured"));
   /* WHAT A HAND-MADE AGENT'S EDITOR OFFERS — held for the comparison below.
      Nothing typed here is saved: the editor is left with Cancel. */
   handMadeOffers = await editorOffers(page);
