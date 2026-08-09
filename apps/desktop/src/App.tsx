@@ -637,6 +637,36 @@ function useEscapeCloses(onClose: () => void, enabled = true): void {
   }, [enabled]);
 }
 
+/**
+ * "A CLICK ELSEWHERE CLOSES THIS" — the other half of popover manners (F3).
+ *
+ * The escape stack answers the keyboard; this answers the mouse. The emoji
+ * tray ignored BOTH for months — a known rough edge written down 2026-07-30 —
+ * because it was a popover, not a backdrop overlay, and nobody owned popovers.
+ * Now one hook does: wrap the button AND its tray in one element, hand over
+ * the ref, and any pointer that lands outside closes the tray. Same rule
+ * everywhere, so the composer tray and the message-reaction tray can never
+ * drift into two different behaviours again.
+ *
+ * Paired with `useEscapeCloses` at each call site: Escape closes it, a click
+ * away closes it, and the button that opened it still toggles it.
+ */
+function useClickAwayCloses(
+  ref: React.RefObject<HTMLElement | null>, onClose: () => void, enabled = true,
+): void {
+  const latest = useRef(onClose);
+  latest.current = onClose;
+  useEffect(() => {
+    if (!enabled) return;
+    const onDown = (e: PointerEvent): void => {
+      const el = ref.current;
+      if (el && e.target instanceof Node && !el.contains(e.target)) latest.current();
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    return () => window.removeEventListener("pointerdown", onDown, true);
+  }, [enabled, ref]);
+}
+
 /* ============ MAY THIS SCREEN BE LEFT WHILE IT HOLDS UNSAVED WORK? ========
  *
  * ONE OWNER for the whole app, and the reason is the audit's worst finding:
@@ -3903,9 +3933,13 @@ Open your chat with ${a.name}`}>
                     <AgentFace name={a.name} size={22} presence={pres} hasPresence />
                     <span className="txt agent-name">
                       <span className="an-name">{a.name}</span>
+                      {/* A DOT AND ONE WORD on the row — the Buzz shape. The full
+                          sentence (state + why) is one hover away: the row's own
+                          tip carries `says.title`, from the same one owner
+                          (`presenceSays`), so the short line and the long answer
+                          can never disagree. */}
                       <span className={`an-state${says.trouble ? " introuble" : ""}`}>
                         <b>{says.word}</b>
-                        {says.reason && <> · {says.reason}</>}
                       </span>
                     </span>
                     <MutedMark channelId={dm?.id} />
@@ -5044,9 +5078,14 @@ function ChatView({
             </button>
           )}
           {!channel.archivedAt && <AddToChannel channel={channel} />}
-          <button className="btn small roomdetailsbtn" aria-expanded={detailsOpen}
-            title="What this room is for, who is in it, and how it is run"
-            onClick={onToggleDetails}>Room details</button>
+          {/* A QUIET ICON, not a furniture button (L3 — the Buzz-shaped header).
+              The words moved into the tip; the accessible name stays "Room
+              details", so every check and every screen reader finds it exactly
+              where it always was. */}
+          <button className="iconbtn roomdetailsbtn" aria-expanded={detailsOpen}
+            aria-label="Room details"
+            title="Room details — what this room is for, who is in it, and how it is run"
+            onClick={onToggleDetails}>ⓘ</button>
         </header>
       )}
 
@@ -6021,6 +6060,10 @@ const MessageRow = React.memo(function MessageRow({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const deleted = !!m.deletedAt;
   const inThread = variant === "thread";
+  /* wraps the ☺ button AND its tray, so a click anywhere else closes it (F3) */
+  const reactHoldRef = useRef<HTMLSpanElement>(null);
+  useEscapeCloses(() => setPickEmoji(false), pickEmoji);
+  useClickAwayCloses(reactHoldRef, () => setPickEmoji(false), pickEmoji);
 
   const copy = () => {
     void navigator.clipboard?.writeText(m.text).then(() => {
@@ -6164,6 +6207,21 @@ const MessageRow = React.memo(function MessageRow({
    */
   const threadMoved = !inThread && !deleted && replyCount > 0
     && !threadSeen && !!newSince && (m.lastReplyAt ?? 0) > newSince;
+  /* WHO IS IN THE THREAD, before the number (F2 — Buzz stacks the repliers'
+     faces beside "23 replies", and who is in there is what makes him open it).
+     The hub keeps the three newest speakers on the root (`replyFaces`); the
+     faces are decorative — the count and the words still carry the facts, so
+     an unreadable face never costs information. */
+  const threadFaces = (!inThread && !deleted)
+    ? (m.replyFaces ?? [])
+      .map(id => {
+        const agent = agents.find(a => a.id === id);
+        if (agent) return { id, name: agent.name, kind: "agent" as const };
+        const user = users.find(u => u.id === id);
+        return { id, name: id === me?.id ? "You" : user?.name ?? "Someone", kind: "person" as const };
+      })
+      .slice(0, 3)
+    : [];
   const threadLine = (!inThread && !deleted && replyCount > 0 && onOpenThread) && (
     <button className={`threadline${threadMoved ? " has-new" : ""}`} data-replies={replyCount}
       data-thread-new={threadMoved ? "yes" : undefined}
@@ -6171,6 +6229,15 @@ const MessageRow = React.memo(function MessageRow({
         ? "This thread has moved since you last read this conversation"
         : "Open this thread"}
       onClick={() => onOpenThread(m.id)}>
+      {threadFaces.length > 0 && (
+        <span className="tl-faces" aria-hidden="true">
+          {threadFaces.map(f => (
+            f.kind === "agent"
+              ? <span className="avatar" key={f.id}><Portrait identity={f.name} size={18} /></span>
+              : <PersonFace key={f.id} name={f.name} size={18} />
+          ))}
+        </span>
+      )}
       <span className="arrow" aria-hidden="true">↳</span>
       {countOf(replyCount, "reply", "replies")}
       {threadMoved && <span className="newtag">New</span>}
@@ -6210,8 +6277,21 @@ const MessageRow = React.memo(function MessageRow({
     </div>
   ) : (
     <div className="msgactions">
-      <button className="ma react" title="React to this" aria-expanded={pickEmoji}
-        onClick={() => setPickEmoji(o => !o)}>☺</button>
+      <span className="reacthold" ref={reactHoldRef}>
+        <button className="ma react" title="React to this" aria-expanded={pickEmoji}
+          onClick={() => setPickEmoji(o => !o)}>☺</button>
+        {pickEmoji && (
+          <div className="reactpop" role="menu" aria-label="React with an emoji">
+            {REACT_EMOJI.map(e => {
+              const isMine = !!me
+                && (m.reactions ?? []).some(r => r.emoji === e && r.userIds.includes(me.id));
+              return (
+                <button key={e} aria-pressed={isMine} onClick={() => react(e, !isMine)}>{e}</button>
+              );
+            })}
+          </div>
+        )}
+      </span>
       {/* THE WAY IN. It used to be a bare ↳ among five other glyphs, so the
           only door to a thread was an unlabelled icon that appears on hover —
           which is a fair description of a feature nobody can find. It carries
@@ -6240,17 +6320,6 @@ const MessageRow = React.memo(function MessageRow({
       {mine && (
         <button className="ma del" title="Take this message back"
           onClick={() => setConfirmDelete(true)}>🗑</button>
-      )}
-      {pickEmoji && (
-        <div className="reactpop" role="menu">
-          {REACT_EMOJI.map(e => {
-            const isMine = !!me
-              && (m.reactions ?? []).some(r => r.emoji === e && r.userIds.includes(me.id));
-            return (
-              <button key={e} aria-pressed={isMine} onClick={() => react(e, !isMine)}>{e}</button>
-            );
-          })}
-        </div>
       )}
     </div>
   );
@@ -6760,6 +6829,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const [text, setText] = useState("");
   const [acIndex, setAcIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  /* the Aa formatting strip — one click deep, the Buzz shape (F1) */
+  const [fmtOpen, setFmtOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   /**
    * THE AFFORDANCES APPEAR ON INTENT (his draft, §3.2).
@@ -6784,6 +6855,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const inThreadPanel = !!replyTo && !onStopAnswering;
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  /* wraps the emoji button AND its tray, so a click anywhere else closes it */
+  const emojiHoldRef = useRef<HTMLSpanElement>(null);
   const uploads = world.uploads[channel.id] ?? [];
   const ready = uploads.filter(u => u.state === "done").length;
   const busy = uploads.some(u => u.state === "sending");
@@ -6907,6 +6980,12 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
      THAT list and nothing underneath it. Dismissing the `/` list leaves his
      words alone — a menu closing must never take the line he was typing. */
   useEscapeCloses(() => { setActionsOpen(false); setSlashDismissed(true); }, menuOpen);
+
+  /* The emoji tray learns the same manners as every other overlay (F3):
+     Escape closes it through the one stack, a click elsewhere closes it
+     through the one hook above. Registered only while it is open. */
+  useEscapeCloses(() => setEmojiOpen(false), emojiOpen);
+  useClickAwayCloses(emojiHoldRef, () => setEmojiOpen(false), emojiOpen);
 
   /* WHICH REPOSITORIES ARE CONNECTED, asked the moment the menu opens — the
      same way the Projects screen asks, and for the same reason: a list cached
@@ -7266,13 +7345,31 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
           <span className="toolset">
             <button className="mini attach" title={`Attach a file — or paste one, or drop one on the box (up to ${ATTACHMENT_LIMITS.perMessage}, ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB each)`}
               onClick={() => fileRef.current?.click()}>📎</button>
-            <button className="mini" title="Hand this over as background work"
-              onClick={() => insert("!bg ")}>{inThreadPanel ? "Delegate" : "Delegate as a job"}</button>
-            <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
-            <button className="mini ital" title="Italic" onClick={() => wrap("_")}>I</button>
-            <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
-            <button className="mini" title="Emoji" aria-expanded={emojiOpen}
-              onClick={() => setEmojiOpen(o => !o)}>🙂</button>
+            {/* ONE ROW, THE BUZZ SHAPE (F1): attach, emoji, formatting, send.
+                "Delegate as a job" is not lost — it is the `!bg` row in the ＋
+                list beside the box, which writes the very same line. Bold,
+                italic and code sit one click deep behind the Aa, exactly the
+                way Buzz's composer hides them; they stay IN the DOM either way,
+                so the thread-box parity check reads them as ever. */}
+            <span className="emojihold" ref={emojiHoldRef}>
+              <button className="mini" title="Emoji" aria-expanded={emojiOpen}
+                onClick={() => { setEmojiOpen(o => !o); setFmtOpen(false); }}>🙂</button>
+              {emojiOpen && (
+                <div className="emojipop" role="menu" aria-label="Add an emoji">
+                  {QUICK_EMOJI.map(e => (
+                    <button key={e} onClick={() => { insert(e); setEmojiOpen(false); }}>{e}</button>
+                  ))}
+                </div>
+              )}
+            </span>
+            <button className="mini fmtbtn" title="Formatting — bold, italic, code"
+              aria-expanded={fmtOpen}
+              onClick={() => { setFmtOpen(o => !o); setEmojiOpen(false); }}>Aa</button>
+            <span className={`fmtset${fmtOpen ? " on" : ""}`}>
+              <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
+              <button className="mini ital" title="Italic" onClick={() => wrap("_")}>I</button>
+              <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
+            </span>
           </span>
           <div className="grow" />
           {!inThreadPanel && <span className="eyebrow">{busy ? "Sending a file up…" : "Enter to send"}</span>}
@@ -7287,13 +7384,6 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               ? "Waiting for a file…"
               : `Send${ready > 0 ? ` with ${countOf(ready, "file")}` : ""}`}
           </button>
-          {emojiOpen && (
-            <div className="emojipop">
-              {QUICK_EMOJI.map(e => (
-                <button key={e} onClick={() => { insert(e); setEmojiOpen(false); }}>{e}</button>
-              ))}
-            </div>
-          )}
           {/* One list, built from ONE table (`ROOM_COMMANDS`), whichever door
               opened it — the ＋ beside the box or a `/` typed into it. A row that
               cannot work here is drawn as it really is — off, with the reason on
