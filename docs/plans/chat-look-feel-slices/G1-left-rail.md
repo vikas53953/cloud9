@@ -1,6 +1,6 @@
 # G1 · Left-rail grouping
 
-**Status:** Implemented on `feature/chat-look-feel-rail` (2026-08-09).  
+**Status:** Implemented on `feature/chat-look-feel-rail` (2026-08-09).
 **Scope:** Left-rail grouping only; the utility row and existing button behavior remain unchanged.
 
 ## Visible order
