@@ -1695,8 +1695,41 @@ export type ThemeName =
   | "system" | "light" | "dark" | "daylight" | "cloud9-pine" | "midnight"
   | "aubergine" | "solarized-dark" | "rose-pine" | "catppuccin";
 
+export type AppearanceMode = "system" | "light" | "dark";
+export type PaletteName = Exclude<ThemeName, "system" | "light" | "dark">;
+export type ThreadLayout = "focus" | "split";
+
+const PALETTES: readonly {
+  value: PaletteName;
+  label: string;
+  prev: string;
+  mode: Exclude<AppearanceMode, "system">;
+}[] = [
+  { value: "daylight", label: "Daylight", prev: "prev-light", mode: "light" },
+  { value: "cloud9-pine", label: "Cloud9 Pine", prev: "prev-pine", mode: "light" },
+  { value: "midnight", label: "Midnight", prev: "prev-dark", mode: "dark" },
+  { value: "aubergine", label: "Aubergine", prev: "prev-aubergine", mode: "dark" },
+  { value: "solarized-dark", label: "Solarized dark", prev: "prev-solarized", mode: "dark" },
+  { value: "rose-pine", label: "Rose Pine", prev: "prev-rose", mode: "dark" },
+  { value: "catppuccin", label: "Catppuccin", prev: "prev-catppuccin", mode: "dark" },
+];
+
+function paletteMode(palette: PaletteName): Exclude<AppearanceMode, "system"> {
+  return PALETTES.find(candidate => candidate.value === palette)?.mode ?? "light";
+}
+
+function defaultPalette(mode: Exclude<AppearanceMode, "system">): PaletteName {
+  return mode === "dark" ? "midnight" : "cloud9-pine";
+}
+
 export interface Prefs {
-  theme: ThemeName;
+  /** New installs keep these as separate durable choices. `theme` is retained
+   * only as an optional migration bridge for installs written before this
+   * split; it is never read by the UI after migration. */
+  appearanceMode: AppearanceMode;
+  palette: PaletteName;
+  threadLayout: ThreadLayout;
+  theme?: ThemeName;
   defaultProvider: Provider;
   defaultModel: Record<Provider, string>;
   notify: boolean;
@@ -1737,11 +1770,14 @@ export interface Prefs {
    * writes here. Absent (an install from before this) means the default.
    */
   threadWidth: number;
-  threadTakeover: boolean;
+  /** Migration bridge for installs written before `threadLayout`. */
+  threadTakeover?: boolean;
 }
 
 const prefs = makeStore<Prefs>("cloud9.prefs", {
-  theme: "system",
+  appearanceMode: "system",
+  palette: "cloud9-pine",
+  threadLayout: "split",
   defaultProvider: "claude",
   defaultModel: { claude: MODEL_DEFAULT.claude, codex: MODEL_DEFAULT.codex },
   notify: false,
@@ -1753,8 +1789,32 @@ const prefs = makeStore<Prefs>("cloud9.prefs", {
   replies: "thread",
   mutedChannelIds: [],
   threadWidth: THREAD_DEFAULT,
-  threadTakeover: false,
 });
+
+/* Migrate the old single `theme` value once, without invalidating any other
+   preferences. Named palettes carry their own light/dark family; the legacy
+   light/dark aliases become the closest matching family defaults. */
+function migratePrefs(value: Prefs): void {
+  const legacy = value.theme;
+  const next: Partial<Prefs> = {};
+  if (legacy !== undefined) {
+    if (legacy === "system") {
+      next.appearanceMode = "system";
+    } else {
+      const palette: PaletteName = legacy === "light" ? "daylight"
+        : legacy === "dark" ? "midnight" : legacy;
+      next.palette = palette;
+      next.appearanceMode = paletteMode(palette);
+    }
+    next.theme = undefined;
+  }
+  if (value.threadTakeover !== undefined) {
+    next.threadLayout = value.threadTakeover ? "focus" : "split";
+    next.threadTakeover = undefined;
+  }
+  if (Object.keys(next).length > 0) prefs.set(next);
+}
+migratePrefs(prefs.get());
 
 const usePrefs = (): Prefs => useSyncExternalStore(prefs.subscribe, prefs.get);
 
@@ -1762,22 +1822,36 @@ const usePrefs = (): Prefs => useSyncExternalStore(prefs.subscribe, prefs.get);
    relay keeps it on the ACCOUNT, so reading a room on this computer marks it
    read on every other one too. `purgeLegacySecrets` deletes the old key. */
 
-function applyTheme(theme: Prefs["theme"]): void {
-  const root = document.documentElement;
-  /* Keep installs from the original three-choice picker working. The named
-     palettes are all CSS semantic token sets; the root only needs the name. */
-  const migrated: ThemeName = theme === "light" ? "daylight"
-    : theme === "dark" ? "midnight" : theme;
-  if (migrated === "system") root.removeAttribute("data-theme");
-  else root.setAttribute("data-theme", migrated);
-  if (theme !== migrated && prefs.get().theme === theme) prefs.set({ theme: migrated });
+function resolvedAppearanceMode(mode: AppearanceMode): Exclude<AppearanceMode, "system"> {
+  if (mode !== "system") return mode;
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
-applyTheme(prefs.get().theme);
+
+function applyTheme(mode: AppearanceMode, palette: PaletteName): void {
+  const root = document.documentElement;
+  root.setAttribute("data-appearance-mode", mode);
+  root.setAttribute("data-palette", palette);
+  /* Existing palette selectors are kept as the compatibility CSS surface. A
+     system mode resolves to the selected palette's family while the mode
+     remains independently durable and visible in Settings. */
+  const dark = resolvedAppearanceMode(mode) === "dark";
+  const effectivePalette = paletteMode(palette) === (dark ? "dark" : "light")
+    ? palette : defaultPalette(dark ? "dark" : "light");
+  root.setAttribute("data-theme", effectivePalette);
+  const computed = getComputedStyle(root);
+  const bridge = (window as unknown as { cloud9?: DesktopBridge }).cloud9;
+  void bridge?.setTitleBarAppearance?.({
+    color: computed.getPropertyValue("--shell-canvas").trim(),
+    symbolColor: computed.getPropertyValue("--ink").trim(),
+  });
+}
+applyTheme(prefs.get().appearanceMode, prefs.get().palette);
 
 function isDarkNow(): boolean {
-  const pinned = document.documentElement.getAttribute("data-theme");
-  if (["midnight", "aubergine", "solarized-dark", "rose-pine", "catppuccin", "dark"].includes(pinned ?? "")) return true;
-  if (["daylight", "cloud9-pine", "light"].includes(pinned ?? "")) return false;
+  const mode = document.documentElement.getAttribute("data-appearance-mode");
+  if (mode === "dark") return true;
+  if (mode === "light") return false;
+  if (mode === "system") return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
 }
 
@@ -1938,7 +2012,15 @@ export function App(): React.JSX.Element {
   const [joined, setJoined] = useState(!!client.token());
   const p = usePrefs();
 
-  useEffect(() => { applyTheme(p.theme); }, [p.theme]);
+  useEffect(() => {
+    applyTheme(p.appearanceMode, p.palette);
+    if (p.appearanceMode !== "system") return;
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!media) return;
+    const onChange = () => applyTheme(p.appearanceMode, p.palette);
+    media.addEventListener?.("change", onChange);
+    return () => media.removeEventListener?.("change", onChange);
+  }, [p.appearanceMode, p.palette]);
 
   useEffect(() => {
     if (client.token()) client.connect(client.token());
@@ -2627,7 +2709,11 @@ function Workspace(): React.JSX.Element {
     // conversation on screen is a different job and keeps its own bar (Ctrl+F).
     "search": () => leaveThen(() => { setScreen("chat"); setSearchOpen(true); }),
     "toggle-theme": () => {
-      prefs.set({ theme: isDarkNow() ? "daylight" : "midnight" });
+      const nextMode = isDarkNow() ? "light" : "dark";
+      prefs.set({
+        appearanceMode: nextMode,
+        palette: defaultPalette(nextMode),
+      });
     },
     "activity": openActivity,
     "tasks": () => goScreen("tasks"),
@@ -3086,6 +3172,15 @@ function Workspace(): React.JSX.Element {
       {/* Demo answers are made up. If the engine is handing them out, the app
           says so across the top — a canned reply must never pass for a real
           one just because nobody looked at the launcher. */}
+      {/* Electron's native titlebar is hidden in the installed window. This
+          silent strip keeps the whole top edge draggable without repeating a
+          Cloud9 wordmark; the shell half and canvas half preserve the same
+          zoning as the body below. */}
+      <div className="window-drag-strip" aria-hidden="true">
+        <span className="window-drag-shell" />
+        <span className="window-drag-canvas" />
+      </div>
+
       {world.harness?.demo && (
         <div className="demobanner" role="status">{DEMO_MODE_BANNER}</div>
       )}
@@ -3902,7 +3997,7 @@ function ChatScreen({
   const restoreFocusPending = useRef(false);
   const space = useSpaceToShare(gridRef);
   const tooNarrowToSplit = space > 0 && cannotSplit(space);
-  const takeover = !!threadRoot && (tooNarrowToSplit || p.threadTakeover);
+  const takeover = !!threadRoot && (tooNarrowToSplit || p.threadLayout === "focus");
   const previousTakeover = useRef(takeover);
   const drawnWidth = widthToDraw(p.threadWidth, space);
   const chooseWidth = useCallback((px: number) => { prefs.set({ threadWidth: px }); }, []);
@@ -3934,7 +4029,7 @@ function ChatScreen({
   const leaveTakeover = useCallback(() => {
     requestThreadFocusRestore();
     if (tooNarrowToSplit) setThreadRoot(null);
-    else prefs.set({ threadTakeover: false });
+    else prefs.set({ threadLayout: "split" });
   }, [requestThreadFocusRestore, tooNarrowToSplit]);
 
   // a thread — and a details panel — belong to the conversation they were
@@ -4157,7 +4252,7 @@ Open your chat with ${a.name}`}>
           takeover={takeover} forced={tooNarrowToSplit}
           onToggleTakeover={takeover
             ? leaveTakeover
-            : () => prefs.set({ threadTakeover: true })}
+            : () => prefs.set({ threadLayout: "focus" })}
           onClose={() => { requestThreadFocusRestore(); setThreadRoot(null); }} />
       )}
       {/* THE STRIP HE GRABS. There is deliberately no handle at all when the
@@ -4355,19 +4450,17 @@ const isLink = (s: string): boolean => /^https?:\/\//i.test(s);
 /**
  * Every step, in the order it happened.
  *
- * Thinking and talking are collapsed to start with — they are the steps a
- * person scrolls past to find the four that matter. A refusal (`note`) is the
- * opposite: it is the first evidence Cloud9 has ever had that a permission
- * boundary actually held, so it is drawn as a good thing, not an error.
+ * Private thinking and intermediate model speech are never rendered. The
+ * inspectable surface is observable work only: tools, reads, writes, searches,
+ * commands, web access and permission refusals. A refusal (`note`) remains
+ * evidence that a permission boundary held, so it is drawn as a good thing.
  */
 function RunSteps({ steps, truncated }: {
   steps: readonly RunStep[]; truncated?: boolean;
 }): React.JSX.Element {
-  const [showQuiet, setShowQuiet] = useState(false);
   const isQuiet = (s: RunStep): boolean => s.kind === "thinking" || s.kind === "message";
-  const quiet = steps.filter(isQuiet);
   // already in `seq` order, and a filter keeps it that way
-  const shown = showQuiet ? steps : steps.filter(s => !isQuiet(s));
+  const shown = steps.filter(s => !isQuiet(s));
   return (
     <div className="runsteps">
       <ol>
@@ -4392,11 +4485,6 @@ function RunSteps({ steps, truncated }: {
           </li>
         ))}
       </ol>
-      {quiet.length > 0 && (
-        <button className="runquiet" aria-expanded={showQuiet} onClick={() => setShowQuiet(v => !v)}>
-          {showQuiet ? "Hide" : "Show"} what it thought and said · {quiet.length}
-        </button>
-      )}
       {truncated && (
         <p className="runtrunc">Some steps were left out to keep this small.</p>
       )}
@@ -4435,10 +4523,17 @@ function RunSteps({ steps, truncated }: {
  * `agents` is passed IN rather than read from the client, for the same reason
  * `AgentReceipts` does it: one direction of import, and no cycle.
  */
-function LiveWork({ messageId, agents }: {
+function LiveWork({ messageId, agents, channelId }: {
   messageId: ID; agents: readonly AgentDef[];
+  channelId?: ID;
 }): React.JSX.Element | null {
   const rows = useLiveSteps(messageId);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (rows.length === 0) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [rows.length]);
   if (rows.length === 0) return null;
   return (
     <div className="livework" data-machine="yes" data-msg={messageId}>
@@ -4448,11 +4543,28 @@ function LiveWork({ messageId, agents }: {
         return (
           <div key={row.agentId} className="liveturn" data-agent={row.agentId}
             data-live-steps={row.steps.length}>
-            <p className="livehd">
+            <div className="live-progress" data-live-progress="true">
+              <div className="live-progress-rail" aria-hidden="true">
+                {row.steps.slice(0, 8).map(step => <i key={step.seq} data-kind={step.kind} />)}
+              </div>
+              <div className="live-progress-copy">
+                <div className="live-meta">
+                  <p className="livehd">
               <span className="pulse" aria-hidden="true" />
               {name} is working — here's what it's done so far
             </p>
-            <RunSteps steps={row.steps} />
+                  <span className="live-elapsed" aria-label={`Working elapsed ${elapsed(now - row.startedAt)}`}>
+                    Working for {elapsed(now - row.startedAt)}
+                  </span>
+                  <button className="btn small ghost stopnow" data-stop-agent={row.agentId}
+                    type="button" disabled={!channelId} title={`Stop ${name} and spend nothing more on this`}
+                    onClick={() => channelId && client.send({
+                      type: "send", channelId, text: `@${name} !stop`,
+                    })}>Stop</button>
+                </div>
+                <RunSteps steps={row.steps} />
+              </div>
+            </div>
             {/* SAID OUT LOUD on the thing itself, the same courtesy a receipt
                 pays: this is live, and it is not the record. The record lands
                 under the reply when the turn ends. */}
@@ -4464,6 +4576,18 @@ function LiveWork({ messageId, agents }: {
       })}
     </div>
   );
+}
+
+/** Elapsed visible wait time for providers that have not emitted an inspectable
+ * step yet. This is intentionally a clock, not a made-up activity label. */
+function WorkingElapsed(): React.JSX.Element {
+  const [startedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <>Working for {elapsed(now - startedAt)}</>;
 }
 
 /** ✓ / ✕ / ⏸ for the three ways a turn can end. */
@@ -5126,6 +5250,9 @@ function ChatView({
   const working = useMemo(
     () => agents.filter(a => world.agentStatus[a.id] === "working"),
     [agents, world.agentStatus]);
+  const liveWorkNow = useLiveWorkByAgent();
+  const workingWithoutLiveSteps = useMemo(
+    () => working.filter(a => !liveWorkNow[a.id]), [working, liveWorkNow]);
 
   /**
    * The approvals that belong in THIS conversation.
@@ -5355,6 +5482,7 @@ function ChatView({
             )}
             <MessageRow m={r.m} cont={r.cont} ask={r.ask}
               me={world.me} agents={world.agents} users={world.users}
+              channelId={channel.id}
               answered={r.m.replyTo ? byId.get(r.m.replyTo) : undefined}
               doneRunId={doneRunIds.get(r.m.id)}
               agent={agentOf.get(r.m.authorId)}
@@ -5387,14 +5515,14 @@ function ChatView({
             onOpenTasks={onOpenTasks} />
         ))}
 
-        {working.map(a => (
+        {workingWithoutLiveSteps.map(a => (
           <div className="msg" key={a.id}>
             <AgentFace name={a.name} size={34} lamp="run" />
             <div className="body">
               <div className="who"><b>{a.name}</b><span className="badge">Agent</span><span className="t">now</span></div>
               <div className="thinking">
                 <span className="bars" aria-hidden="true"><i /><i /><i /><i /><i /></span>
-                {a.name} is working on it
+                <WorkingElapsed />
                 {/* ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
                     THE STOP BUTTON, and it is here because this is the only place
                     on the screen that says something is running. A control for
@@ -6219,7 +6347,7 @@ function RoomFiles({ channel }: { channel: Channel }): React.JSX.Element {
 const MessageRow = React.memo(function MessageRow({
   m, cont, ask, me, agents, users, answered, doneRunId,
   agent, working, onOpenThread, onInlineReply, onGoToMessage,
-  inOpenThread, litUp, variant, archived, newSince, threadSeen, saved, savedPending,
+  inOpenThread, litUp, variant, archived, newSince, threadSeen, saved, savedPending, channelId,
 }: {
   /** the message itself, straight out of the store — never a copy */
   m: Message;
@@ -6253,6 +6381,7 @@ const MessageRow = React.memo(function MessageRow({
   inOpenThread?: boolean;
   saved?: boolean;
   savedPending?: boolean;
+  channelId?: ID;
   litUp?: boolean;
   /** "thread" drops the affordances that would open a thread inside a thread */
   variant?: "channel" | "thread";
@@ -6575,7 +6704,7 @@ const MessageRow = React.memo(function MessageRow({
           {!deleted && <AgentReceipts messageId={m.id} agents={agents} />}
           {/* the steps arriving while the turn runs — drawn on the message that
               ASKED, which is where the 👀 already is, and gone when it ends */}
-          {!deleted && <LiveWork messageId={m.id} agents={agents} />}
+          {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} />}
           {threadLine}
         </div>
         {actions}
@@ -6657,7 +6786,7 @@ const MessageRow = React.memo(function MessageRow({
         {reactionRow}
         {!deleted && <AgentReceipts messageId={m.id} agents={agents} />}
         {/* same, on a full message — see the note on the continuation above */}
-        {!deleted && <LiveWork messageId={m.id} agents={agents} />}
+        {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} />}
         {threadLine}
       </div>
       {actions}
@@ -6748,6 +6877,7 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
         {root && (
           <MessageRow m={root} variant="thread" archived={!!channel.archivedAt}
             me={world.me} agents={world.agents} users={world.users}
+            channelId={channel.id}
             doneRunId={doneRunIds.get(root.id)}
             agent={agentOf.get(root.authorId)} />
         )}
@@ -6761,6 +6891,7 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
         {replies.map(m => (
           <MessageRow key={m.id} m={m} variant="thread" archived={!!channel.archivedAt}
             me={world.me} agents={world.agents} users={world.users}
+            channelId={channel.id}
             doneRunId={doneRunIds.get(m.id)}
             agent={agentOf.get(m.authorId)}
             working={world.agentStatus[m.authorId] === "working"} />
@@ -12261,6 +12392,7 @@ interface CredentialStatus {
 }
 interface DesktopBridge {
   isDesktop?: boolean;
+  setTitleBarAppearance?: (appearance: { color: string; symbolColor: string }) => Promise<unknown>;
   setApiKey?: (harness: Harness, kind: string, value: string) => Promise<IpcResult>;
   clearCredential?: (harness: Harness) => Promise<IpcResult>;
   credentialStatus?: () => Promise<CredentialStatus>;
@@ -12382,16 +12514,9 @@ function SettingsScreen(): React.JSX.Element {
   const claudeInfo = world.harness?.claude;
   const codexInfo = world.harness?.codex;
 
-  const themes: [Prefs["theme"], string, string][] = [
-    ["system", "System", "prev-system"],
-    ["daylight", "Daylight", "prev-light"],
-    ["cloud9-pine", "Cloud9 Pine", "prev-pine"],
-    ["midnight", "Midnight", "prev-dark"],
-    ["aubergine", "Aubergine", "prev-aubergine"],
-    ["solarized-dark", "Solarized dark", "prev-solarized"],
-    ["rose-pine", "Rose Pine", "prev-rose"],
-    ["catppuccin", "Catppuccin", "prev-catppuccin"],
-  ];
+  const visibleMode = resolvedAppearanceMode(p.appearanceMode);
+  const visiblePalettes = PALETTES.filter(item => item.mode === visibleMode);
+  const activePalette = paletteMode(p.palette) === visibleMode ? p.palette : defaultPalette(visibleMode);
 
   return (
     <div className="settings settingspanel">
@@ -12410,11 +12535,26 @@ function SettingsScreen(): React.JSX.Element {
         <div className="set-main">
           <section id="set-look" className="setsect">
             <h3>Appearance</h3>
-            <p className="sec-note">Cloud9 follows this computer unless you pick a side.</p>
-            <div className="theme-picks">
-              {themes.map(([value, label, prev]) => (
+            <p className="sec-note">Choose when Cloud9 follows this computer, then choose a palette for that mode.</p>
+            <div className="appearance-mode" role="group" aria-label="Appearance mode">
+              {(["system", "light", "dark"] as const).map(mode => (
+                <button key={mode} type="button" data-appearance-mode={mode}
+                  aria-pressed={p.appearanceMode === mode}
+                  onClick={() => {
+                    const family = mode === "system" ? resolvedAppearanceMode(mode) : mode;
+                    const nextPalette = paletteMode(p.palette) === family
+                      ? p.palette
+                      : defaultPalette(family);
+                    prefs.set({ appearanceMode: mode, palette: nextPalette });
+                  }}>
+                  {mode === "system" ? "System" : mode === "light" ? "Light" : "Dark"}
+                </button>
+              ))}
+            </div>
+            <div className="theme-picks" data-palette-mode={visibleMode}>
+              {visiblePalettes.map(({ value, label, prev }) => (
                 <button key={value} className="theme-pick" data-theme-set={value}
-                  aria-pressed={p.theme === value} onClick={() => prefs.set({ theme: value })}>
+                  aria-pressed={activePalette === value} onClick={() => prefs.set({ palette: value })}>
                   <span className={`prev ${prev}`} aria-hidden="true">
                     <span className="rail-s" />
                     <span className="lines"><i className="l1" /><i className="l2" /><i className="l3" /></span>
@@ -12422,6 +12562,19 @@ function SettingsScreen(): React.JSX.Element {
                   <span className="nm">{label}</span>
                 </button>
               ))}
+            </div>
+            <div className="thread-layout-row" role="group" aria-label="Thread layout">
+              <span className="tx"><b>Thread layout</b><span>
+                {p.threadLayout === "focus" ? "Threads open over the channel, full width" : "Threads open in a side panel next to the channel"}
+              </span></span>
+              <select className="select thread-layout-select" value={p.threadLayout}
+                aria-label="Thread layout" onChange={e => {
+                  const layout = e.target.value as ThreadLayout;
+                  prefs.set({ threadLayout: layout });
+                }}>
+                <option value="focus">Focus</option>
+                <option value="split">Split</option>
+              </select>
             </div>
             <div className="panelbox">
               <label className="toggle-row">

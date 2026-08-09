@@ -1,7 +1,7 @@
 // Cloud9 desktop shell: hosts the renderer, the global ⌘K quick-chat window,
 // and the agent engine (so agents run while the app is open — Stage-1 decision 5).
 const {
-  app, BrowserWindow, Menu, dialog, globalShortcut, ipcMain, Notification, safeStorage, shell,
+  app, BrowserWindow, Menu, dialog, globalShortcut, ipcMain, nativeTheme, Notification, safeStorage, shell,
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
@@ -531,6 +531,18 @@ function loadRenderer(win, hash) {
   }
 }
 
+function titleBarOverlayFor(appearance) {
+  const fallback = nativeTheme.shouldUseDarkColors
+    ? { color: "#111916", symbolColor: "#EEF4ED" }
+    : { color: "#F7F8F3", symbolColor: "#17211D" };
+  const valid = value => typeof value === "string" && /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(value);
+  return {
+    color: valid(appearance?.color) ? appearance.color : fallback.color,
+    symbolColor: valid(appearance?.symbolColor) ? appearance.symbolColor : fallback.symbolColor,
+    height: 28,
+  };
+}
+
 function createMainWindow() {
   mainWin = new BrowserWindow({
     width: 1200, height: 800, minWidth: 800, minHeight: 500,
@@ -540,6 +552,10 @@ function createMainWindow() {
     // Keep the application menu (and its accelerators) installed, but keep
     // its native strip out of the installed app's normal window chrome.
     autoHideMenuBar: true,
+    ...(process.platform === "win32" ? {
+      titleBarStyle: "hidden",
+      titleBarOverlay: titleBarOverlayFor(),
+    } : {}),
     webPreferences: { preload: path.join(__dirname, "preload.cjs") },
   });
   // autoHideMenuBar controls the platform default; make the initial state
@@ -548,6 +564,16 @@ function createMainWindow() {
   loadRenderer(mainWin);
   mainWin.on("closed", () => { mainWin = null; });
 }
+
+ipcMain.handle("cloud9:setTitleBarAppearance", (event, appearance) => {
+  if (process.platform !== "win32") return { ok: true, supported: false };
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!mainWin || win !== mainWin || typeof mainWin.setTitleBarOverlay !== "function") {
+    return { ok: false, supported: true };
+  }
+  mainWin.setTitleBarOverlay(titleBarOverlayFor(appearance));
+  return { ok: true, supported: true };
+});
 
 function toggleQuickWindow() {
   if (quickWin) { quickWin.close(); quickWin = null; return; }

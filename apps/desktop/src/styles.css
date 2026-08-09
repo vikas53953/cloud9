@@ -177,11 +177,11 @@
 :root[data-theme="rose-pine"]{--bg:#191724;--bg-2:#13111D;--surface:#26233A;--surface-2:#332F48;--line:#4A4560;--line-soft:#39344E;--ink:#E0DEF4;--ink-2:#B5B1D1;--ink-3:#8884A4;--pine:#9CCFD8;--pine-soft:#213A43;--rail-bg:#100E19;--rail-hover:#2B2940;--rail-active:#453F62;}
 :root[data-theme="catppuccin"]{--bg:#1E1E2E;--bg-2:#181825;--surface:#24243A;--surface-2:#313149;--line:#4A4A64;--line-soft:#3A3A53;--ink:#CDD6F4;--ink-2:#A6ADC9;--ink-3:#8589A5;--pine:#94E2D5;--pine-soft:#1C4142;--rail-bg:#11111B;--rail-hover:#2D3048;--rail-active:#45476A;}
 
-/* The shell reads as one quiet frame: Studio floor and channel header are
-   tonal steps from the rail, while the message canvas remains paper/dark. */
+/* Two deliberate zones: the primary rail and Studio floor share one pigment;
+   every content header continues the same paper/dark canvas as its pane. */
 :root,:root[data-theme="light"],:root[data-theme="dark"],:root[data-theme="daylight"],:root[data-theme="cloud9-pine"],:root[data-theme="midnight"],:root[data-theme="aubergine"],:root[data-theme="solarized-dark"],:root[data-theme="rose-pine"],:root[data-theme="catppuccin"]{
   --shell-sidebar:var(--rail-bg);
-  --shell-header:var(--rail-bg);
+  --shell-header:var(--shell-canvas);
 }
 
 /* ---------------- BASE ---------------- */
@@ -357,6 +357,10 @@ a{color:var(--ultra);}
 
 /* ---------------- APP SHELL ---------------- */
 .shell{height:100%;display:flex;flex-direction:column;min-width:0;overflow:hidden;background:var(--shell-canvas);}
+.window-drag-strip{height:28px;min-height:28px;display:grid;grid-template-columns:calc(var(--rail-w) + var(--side-w)) minmax(0,1fr);
+  flex:none;background:var(--shell-canvas);-webkit-app-region:drag;user-select:none;}
+.window-drag-shell{background:var(--shell-rail);border-right:1px solid var(--rail-hover);}
+.window-drag-canvas{background:var(--shell-canvas);}
 .app{flex:1;min-height:0;display:grid;grid-template-columns:var(--rail-w) minmax(0,1fr);overflow:hidden;}
 .stage{min-width:0;min-height:0;overflow:hidden;display:flex;flex-direction:column;}
 .screen{flex:1;min-height:0;min-width:0;overflow:hidden;display:flex;flex-direction:column;}
@@ -555,7 +559,7 @@ body.dragging-thread *{cursor:col-resize !important;}
 }
 .threadpanel.takeover{
   position:absolute;top:0;right:0;bottom:0;left:calc(var(--side-w) + 118px);
-  z-index:41;box-shadow:var(--shadow-lg);background:var(--bg-2);
+  z-index:41;box-shadow:var(--shadow-lg);background:var(--shell-canvas);
 }
 /* When the window itself is too narrow to split, the thread takes the LOT and
    there is nothing behind it worth dimming. */
@@ -568,7 +572,7 @@ body.dragging-thread *{cursor:col-resize !important;}
 }
 .sidebar .eyebrow,.sidebar .side-head button,.sidebar .side-item,.sidebar .side-item .hash,.sidebar .side-item .cnt{color:var(--rail-muted);}
 .sidebar .side-item:hover,.sidebar .agentrow:hover{background:var(--rail-hover);color:var(--rail-ink);}
-.sidebar .side-item[aria-current="true"],.sidebar .agentrow[aria-current="true"]{background:var(--rail-active);color:var(--rail-active-ink);box-shadow:none;}
+.sidebar .side-item[aria-current="true"],.sidebar .agentrow[aria-current="true"]{background:color-mix(in srgb,var(--pine) 17%,var(--shell-sidebar));color:var(--rail-ink);box-shadow:inset 3px 0 0 var(--pine);}
 .sidebar .side-item[aria-current="true"] .hash{color:var(--rail-active-ink);}
 .sidebar-head{padding:16px 16px 10px;display:flex;align-items:center;gap:8px;min-width:0;}
 .sidebar-head h2{font-size:17px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -631,7 +635,12 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 /* THE SLIM HEADER (L3). The room's top row answers at a glance and otherwise
    stays out of the conversation's way: tighter rhythm, and the two controls
    are quiet until the hand comes near them. */
-.chathead{gap:10px;padding:0 16px 0 22px;}
+.chathead{gap:10px;padding:0 16px 0 22px;background:var(--shell-canvas);color:var(--ink);border-bottom-color:var(--line);}
+.chathead .sub,.chathead .ch-topic,.chathead .role,.chathead .presencehere,.chathead .presencehere .ph-why{color:var(--ink-2);}
+.chathead .iconbtn,.chathead .header-members{color:var(--ink-2);}
+.chathead .iconbtn:hover,.chathead .header-members:hover{background:var(--surface-2);color:var(--ink);}
+.chatgrid,.chatgrid h1,.chatgrid h2,.chatgrid h3,.chatgrid h4,.chatgrid .who b{font-family:var(--body);}
+.chatgrid h1,.chatgrid h2,.chatgrid h3,.chatgrid h4{font-weight:650;letter-spacing:-.01em;}
 .chathead select{
   border:1px solid transparent;background:transparent;color:var(--rail-muted);
   border-radius:var(--radius-s);padding:4px 8px;font-size:12.5px;max-width:150px;cursor:pointer;
@@ -879,6 +888,16 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
   width:7px;height:7px;border-radius:50%;background:var(--ultra);flex:none;
   animation:live-breathe 1.6s ease-in-out infinite;
 }
+.live-progress{display:grid;grid-template-columns:18px minmax(0,1fr);gap:10px;align-items:start;}
+.live-progress-rail{position:relative;display:grid;justify-items:center;align-content:start;gap:5px;padding-top:5px;}
+.live-progress-rail::before{content:"";position:absolute;top:13px;bottom:4px;width:2px;background:var(--line);}
+.live-progress-rail i{width:8px;height:8px;border-radius:99px;background:var(--pine);border:2px solid var(--surface-2);z-index:1;}
+.live-progress-rail i:nth-child(2){background:var(--ultra);}
+.live-progress-rail i:nth-child(3){background:var(--marigold-hi);}
+.live-progress-copy{min-width:0;}
+.live-progress-copy .live-meta{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:3px;}
+.live-progress-copy .live-elapsed{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);}
+.live-progress-copy .stopnow{margin-left:auto;}
 .livenote{margin:7px 0 0;font-size:11px;color:var(--ink-3);}
 @keyframes live-breathe{0%,100%{opacity:.35;}50%{opacity:1;}}
 @media (prefers-reduced-motion: reduce){.livehd .pulse{animation:none;}}
@@ -1036,7 +1055,7 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 .opt-sub{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.12em;}
 
 /* --- the right rail --- */
-.aside{border-left:1px solid var(--line);background:var(--bg-2);overflow-y:auto;min-width:0;min-height:0;}
+.aside{border-left:1px solid var(--line);background:var(--shell-canvas);overflow-y:auto;min-width:0;min-height:0;}
 .aside-sec{padding:16px 16px 18px;border-bottom:1px solid var(--line-soft);}
 .aside-sec:last-child{border-bottom:0;}
 .aside-sec .eyebrow{display:block;margin-bottom:11px;}
@@ -1499,6 +1518,24 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .prev-solarized{background:var(--swatch-solarized-paper);}.prev-solarized .rail-s{background:var(--swatch-solarized-rail);}.prev-solarized .l1{background:var(--swatch-solarized-ink);}.prev-solarized .l2{background:var(--swatch-solarized-line);}.prev-solarized .l3{background:var(--swatch-solarized-accent);}
 .prev-rose{background:var(--swatch-rose-paper);}.prev-rose .rail-s{background:var(--swatch-rose-rail);}.prev-rose .l1{background:var(--swatch-rose-ink);}.prev-rose .l2{background:var(--swatch-rose-line);}.prev-rose .l3{background:var(--swatch-rose-accent);}
 .prev-catppuccin{background:var(--swatch-cat-paper);}.prev-catppuccin .rail-s{background:var(--swatch-cat-rail);}.prev-catppuccin .l1{background:var(--swatch-cat-ink);}.prev-catppuccin .l2{background:var(--swatch-cat-line);}.prev-catppuccin .l3{background:var(--swatch-cat-accent);}
+
+/* Buzz-grounded appearance controls: mode and palette are two separate
+   decisions. The card list is filtered by mode in React; this selector keeps
+   the selected state compact and legible on either surface. */
+.appearance-mode{display:inline-flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--line);
+  border-radius:10px;background:var(--surface);width:max-content;max-width:100%;}
+.appearance-mode button{min-width:76px;padding:7px 14px;border-radius:7px;color:var(--ink-2);font-size:13px;
+  transition:background .15s var(--ease),color .15s var(--ease),box-shadow .15s var(--ease);}
+.appearance-mode button:hover{color:var(--ink);background:var(--surface-2);}
+.appearance-mode button[aria-pressed="true"]{background:var(--ink);color:var(--on-ink);box-shadow:0 1px 2px rgba(0,0,0,.16);}
+:root[data-appearance-mode="dark"] .appearance-mode button[aria-pressed="true"]{background:var(--pine);color:var(--on-pine);}
+.appearance-mode button:focus-visible{outline:2px solid var(--pine);outline-offset:1px;}
+.thread-layout-row{display:flex;align-items:center;gap:20px;padding:13px 16px;border:1px solid var(--line);
+  border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow);}
+.thread-layout-row .tx{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1;}
+.thread-layout-row .tx b{font-size:13.5px;color:var(--ink);}
+.thread-layout-row .tx span{font-size:12.5px;color:var(--ink-2);}
+.thread-layout-select{width:112px;flex:none;padding:7px 9px;}
 .quietrow{display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:340px;}
 .path{
   display:flex;gap:9px;align-items:center;font-family:var(--mono);font-size:12.5px;color:var(--ink-2);
@@ -1999,12 +2036,12 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   letter-spacing:.05em;color:var(--ultra);
 }
 .inthreadmark:hover{text-decoration:underline;}
-.threadpanel{display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+.threadpanel{display:flex;flex-direction:column;min-height:0;overflow:hidden;background:var(--shell-canvas);}
 .threadhead{
   display:flex;align-items:center;gap:9px;flex:none;padding:13px 16px;
-  border-bottom:1px solid var(--line);background:var(--surface-2);
+  border-bottom:1px solid var(--line);background:var(--shell-canvas);
 }
-.threadbody{flex:1;min-height:0;overflow-y:auto;padding:16px;}
+.threadbody{flex:1;min-height:0;overflow-y:auto;padding:16px;background:var(--shell-canvas);}
 .threadbody .msg{margin-bottom:16px;}
 .threadbody .msgactions{top:-10px;}
 .threadcount{

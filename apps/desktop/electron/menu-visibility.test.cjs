@@ -22,6 +22,12 @@ test("the main window hides the native strip without removing the application me
     "the installed main window should autohide its native menu bar");
   assert.match(mainWindow, /mainWin\.setMenuBarVisibility\(false\)/,
     "the main window should start with its native menu bar hidden");
+  assert.match(mainWindow, /titleBarStyle:\s*"hidden"/,
+    "the black native title strip should be replaced by Cloud9's themed drag area");
+  assert.match(mainWindow, /titleBarOverlay:\s*titleBarOverlayFor/,
+    "Windows controls should remain native while their surface follows the selected appearance");
+  assert.match(source, /cloud9:setTitleBarAppearance/,
+    "the renderer should be able to keep native window controls legible after a theme change");
   assert.match(source, /Menu\.setApplicationMenu\(Menu\.buildFromTemplate\(template\)\)/,
     "the application menu template must remain installed for commands and accelerators");
   assert.match(source, /return \{ label, accelerator,/,
