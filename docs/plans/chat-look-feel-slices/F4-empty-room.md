@@ -15,10 +15,11 @@ Approval boundary: NOT_ADVISOR_APPROVED (root proceeded under user best-effort a
 
 ## Focused proof
 
-- `git diff --check 8310af8...HEAD` — passed after removing trailing whitespace and the extra EOF blank line (exit 0).
-- `node` TypeScript `transpileModule` syntax check for `apps/desktop/src/App.tsx` — passed.
-- F4 source invariant check — passed: exactly two `.empty-welcome-card` instances, both approved labels, room marker, shortened hint, `aria-disabled`/`aria-describedby` owner-denial association, `.msgs` inline container, and `@container chat-stream (max-width:560px)` are present.
-- `npm run typecheck:app` — blocked by the checkout's missing built workspace declarations (`@cloud9/shared` and `@cloud9/engine/dist/*`), producing the existing cascade of unresolved-module/implicit-any diagnostics. No F4-specific diagnostics remained after the accessibility and container-layout changes.
+- `git diff --check 8310af8...HEAD` — passed (exit 0; no whitespace or EOF diagnostics).
+- `node` TypeScript `transpileModule` syntax check for `apps/desktop/src/App.tsx` — passed (`App.tsx transpile syntax check: passed`).
+- F4 source invariant check — passed (`F4 accessibility/source invariant check: passed`; exactly two cards, labels, marker, hint, guest association).
+- F4 container responsive check — passed (`F4 container responsive check: passed`; `.msgs` inline container plus the named `@container` breakpoint are present).
+- `npm run typecheck:app` — exit 2 with 172 captured output lines and 0 diagnostics on the F4 lines; blocked by the checkout's missing built workspace declarations (`@cloud9/shared` and `@cloud9/engine/dist/*`), producing the existing unresolved-module/implicit-any cascade.
 
 ## Risks / unknowns
 
