@@ -572,7 +572,7 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 .dm-head h2{font-size:21px;}
 
 .msgs{flex:1;min-height:0;overflow-y:auto;padding:26px 34px 14px;min-width:0;
-  display:flex;flex-direction:column;}
+  display:flex;flex-direction:column;container-type:inline-size;container-name:chat-stream;}
 .msgs>*{flex:none;}
 .msgs>.daymark:first-child,.msgs>.msg:first-child{margin-top:auto;}
 /* "↓ N new messages" — floats over the foot of the list and takes NO height of
@@ -1608,9 +1608,9 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);
   box-shadow:var(--shadow);transition:background .15s var(--ease),border-color .15s var(--ease),transform .12s var(--ease);
 }
-.empty-welcome-card:hover:not(:disabled){background:var(--surface-2);border-color:var(--pine);}
-.empty-welcome-card:active:not(:disabled){transform:translateY(1px);}
-.empty-welcome-card:disabled{opacity:.62;cursor:not-allowed;}
+.empty-welcome-card:hover:not(:disabled):not([aria-disabled="true"]){background:var(--surface-2);border-color:var(--pine);}
+.empty-welcome-card:active:not(:disabled):not([aria-disabled="true"]){transform:translateY(1px);}
+.empty-welcome-card[aria-disabled="true"]{opacity:.62;cursor:not-allowed;}
 .empty-welcome-icon{
   width:32px;height:32px;display:grid;place-items:center;flex:none;border-radius:var(--radius-s);
   background:var(--pine-soft);color:var(--pine);font-size:18px;line-height:1;
@@ -1622,9 +1622,9 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .empty-welcome-action{
   grid-column:2;font-size:11.5px;font-weight:600;line-height:1.4;color:var(--pine);
 }
-.empty-welcome-card:disabled .empty-welcome-action{color:var(--ink-3);}
+.empty-welcome-card[aria-disabled="true"] .empty-welcome-action{color:var(--ink-3);}
 .empty-welcome-hint{max-width:58ch;margin-top:2px;font-size:13px;line-height:1.55;}
-@media (max-width:640px){
+@container chat-stream (max-width:560px){
   .empty-room{padding-left:16px;padding-right:16px;}
   .empty-welcome-cards{grid-template-columns:1fr;}
   .empty-welcome-card{padding:14px;}
