@@ -4700,18 +4700,6 @@ function LiveWork({ messageId, agents, channelId }: {
   );
 }
 
-/** Elapsed visible wait time for providers that have not emitted an inspectable
- * step yet. This is intentionally a clock, not a made-up activity label. */
-function WorkingElapsed(): React.JSX.Element {
-  const [startedAt] = useState(() => Date.now());
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-  return <>Working for {elapsed(now - startedAt)}</>;
-}
-
 /** ✓ / ✕ / ⏸ for the three ways a turn can end. */
 function RunMark({ outcome }: { outcome: RunRecord["outcome"] }): React.JSX.Element {
   if (outcome === "failed") {
@@ -5369,13 +5357,6 @@ function ChatView({
      the contract on `MessageRow`. */
   const onInlineReply = useCallback((id: ID) => setReplyingTo(id), []);
 
-  const working = useMemo(
-    () => agents.filter(a => world.agentStatus[a.id] === "working"),
-    [agents, world.agentStatus]);
-  const liveWorkNow = useLiveWorkByAgent();
-  const workingWithoutLiveSteps = useMemo(
-    () => working.filter(a => !liveWorkNow[a.id]), [working, liveWorkNow]);
-
   /**
    * The approvals that belong in THIS conversation.
    *
@@ -5637,35 +5618,6 @@ function ChatView({
             onOpenTasks={onOpenTasks} />
         ))}
 
-        {workingWithoutLiveSteps.map(a => (
-          <div className="msg" key={a.id}>
-            <AgentFace name={a.name} size={34} lamp="run" />
-            <div className="body">
-              <div className="who"><b>{a.name}</b><span className="badge">Agent</span><span className="t">now</span></div>
-              <div className="thinking">
-                <span className="bars" aria-hidden="true"><i /><i /><i /><i /><i /></span>
-                <WorkingElapsed />
-                {/* ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
-                    THE STOP BUTTON, and it is here because this is the only place
-                    on the screen that says something is running. A control for
-                    stopping work that lives in a settings panel is a control
-                    nobody finds while the thing is running.
-
-                    IT TYPES THE SAME COMMAND HE COULD TYPE. "!stop" is the one
-                    owner of stopping in the engine, and this button sends exactly
-                    that message rather than inventing a second private route —
-                    so the button and the typed command can never mean different
-                    things, and stopping works identically from the phone. */}
-                <button className="btn small ghost stopnow" data-stop-agent={a.id}
-                  title={`Stop ${a.name} and spend nothing more on this`}
-                  onClick={() => client.send({
-                    type: "send", channelId: channel.id, text: `@${a.name} !stop`,
-                  })}>Stop</button>
-                {/* ===== GAP C BLOCK — end ===== */}
-              </div>
-            </div>
-          </div>
-        ))}
       </div>
 
       {/**

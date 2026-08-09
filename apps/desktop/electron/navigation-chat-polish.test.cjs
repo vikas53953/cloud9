@@ -179,8 +179,10 @@ test("the shell keeps the top drag strip and live progress contract inspectable"
   assert.match(css, /\.window-drag-strip/);
   assert.match(css, /-webkit-app-region:drag/);
   assert.match(app, /data-live-progress="true"/);
-  assert.match(app, /<WorkingElapsed \/>/,
-    "a provider without live steps should still expose truthful elapsed wait time");
+  assert.doesNotMatch(app, /<WorkingElapsed \/>/,
+    "raw agent status must not create an unanchored working card");
+  assert.match(app, /provider or a run that cannot stream produces no live view whatsoever/,
+    "the room must stay quiet rather than inventing activity for a turn without public steps");
   assert.match(app, /Working elapsed/);
   assert.match(app, /now - row\.startedAt/,
     "streamed elapsed time should use the hub timestamp for the first observed step");
