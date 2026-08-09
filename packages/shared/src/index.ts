@@ -3441,6 +3441,19 @@ export interface SavedMessageEntry {
   threadParentId?: ID;
 }
 
+/** A durable pin shared by every current member of one non-DM channel. */
+export interface ChannelPinEntry {
+  id: ID;
+  channelId: ID;
+  messageId: ID;
+  pinnedAt: number;
+  pinnedById?: ID;
+  pinnedByName?: string;
+  state: "active" | "deleted" | "inaccessible";
+  message?: Message;
+  threadParentId?: ID;
+}
+
 /** One search result, with enough around it to draw a row without asking again. */
 export interface SearchHit {
   message: Message;
@@ -3594,6 +3607,9 @@ type ClientFrameBase =
   | { type: "saveMessage"; messageId: ID; note?: string; remindAt?: number }
   /** Remove one of this person's saves; repeating the request is idempotent. */
   | { type: "unsaveMessage"; messageId: ID }
+  | { type: "listChannelPins"; channelId: ID; limit?: number; beforePinnedAt?: number; beforeMessageId?: ID }
+  | { type: "pinMessage"; channelId: ID; messageId: ID }
+  | { type: "unpinMessage"; channelId: ID; messageId: ID }
   /** Park a file on the hub. Answered with an `attachment` frame carrying its id. */
   | { type: "uploadAttachment"; channelId: ID; name: string; dataBase64: string; mime?: string }
   /**
@@ -4418,6 +4434,7 @@ export type ServerFrame =
   | { type: "notificationUpdated"; entry: NotificationInboxEntry }
   /** Durable saved-message answer/push, scoped to the authenticated person. */
   | { type: "savedMessages"; entries: SavedMessageEntry[]; revision?: number; hasMore?: boolean; nextSavedAt?: number; nextMessageId?: ID; requestId?: ID }
+  | { type: "channelPins"; channelId: ID; entries: ChannelPinEntry[]; revision?: number; hasMore?: boolean; nextPinnedAt?: number; nextMessageId?: ID; requestId?: ID }
   | { type: "userJoined"; user: User }
   | { type: "userRemoved"; userId: ID }
   | { type: "token"; token: string } // durable token issued after invite redemption

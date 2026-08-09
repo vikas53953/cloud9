@@ -8,7 +8,7 @@ import {
   ArtifactVersion, ArtifactVersionRef, ArtifactWorkspaceEntry, Attachment, ATTACHMENT_LIMITS,
   describeArtifactVersion, effectiveArtifactAccess, findArtifactRefs, isArtifactRestricted, latestVersion,
   normaliseArtifactAccess, validateArtifactAccess, versionOf,
-  Channel, ChannelMember, ChannelRole, DEMO_MODE_BANNER, downloadContentType,
+  Channel, ChannelMember, ChannelRole, ChannelPinEntry, DEMO_MODE_BANNER, downloadContentType,
   GitHubAccountInfo, HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectPollView, PublicUpdateDraft, ProjectItemKind, ProjectItemState,
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
@@ -4973,6 +4973,9 @@ function ChatView({
     approvals: w.approvals,
     savedMessages: w.savedMessages,
     savedPending: w.savedPending,
+    members: w.members[channel.id],
+    channelPins: w.channelPins[channel.id],
+    channelPinPending: w.channelPinPending,
   }));
   const all = useMemo(() => world.messages ?? [], [world.messages]);
   const humanTyping = useMemo(() => (world.humanTyping ?? [])
@@ -5385,6 +5388,10 @@ function ChatView({
   const myApprovals = myApprovalsAll.filter(
     ap => (ap.status === "pending" || ap.status === "expired") && inThisRoom(ap));
   const waitingHere = waitingAll.filter(inThisRoom);
+  const pinRows = world.members ?? [];
+  const myRole = pinRows.find(row => row.memberId === world.me?.id)?.role;
+  const canManagePins = !isDm && mayAdministerChannel(myRole);
+  const pinnedIds = useMemo(() => new Set((world.channelPins?.entries ?? []).map(entry => entry.messageId)), [world.channelPins?.entries]);
 
   /* The same fact as the sidebar row, from the same one place, so the rail and
      the conversation can never disagree about whether anyone is home. */
@@ -5451,6 +5458,10 @@ function ChatView({
             aria-expanded={detailsOpen} onClick={onToggleDetails}>
             <span aria-hidden="true">●</span>
             {countOf(people.length + agents.length, "member", "members")}
+          </button>
+          <button className="chip header-pins" aria-label="Show pinned messages"
+            title="Show pinned messages" aria-expanded={detailsOpen} onClick={onToggleDetails}>
+            📌 Pinned
           </button>
           <span className="sub">
             {countOf(people.length, "person", "people")} ·{" "}
@@ -5611,6 +5622,9 @@ function ChatView({
               threadSeen={openedThreads.has(r.m.id)}
               saved={world.savedMessages.some(entry => entry.messageId === r.m.id)}
               savedPending={world.savedPending.includes(r.m.id)}
+              pinned={pinnedIds.has(r.m.id)}
+              pinPending={world.channelPinPending.includes(r.m.id)}
+              canManagePins={canManagePins}
               litUp={litUp === r.m.id} />
           </React.Fragment>
         ))}
@@ -6435,6 +6449,7 @@ const MessageRow = React.memo(function MessageRow({
   m, cont, ask, me, agents, users, answered, doneRunId,
   agent, working, onOpenThread, onInlineReply, onGoToMessage,
   inOpenThread, litUp, variant, archived, newSince, threadSeen, saved, savedPending, channelId,
+  pinned, pinPending, canManagePins,
 }: {
   /** the message itself, straight out of the store — never a copy */
   m: Message;
@@ -6468,6 +6483,9 @@ const MessageRow = React.memo(function MessageRow({
   inOpenThread?: boolean;
   saved?: boolean;
   savedPending?: boolean;
+  pinned?: boolean;
+  pinPending?: boolean;
+  canManagePins?: boolean;
   channelId?: ID;
   litUp?: boolean;
   /** "thread" drops the affordances that would open a thread inside a thread */
@@ -6737,6 +6755,13 @@ const MessageRow = React.memo(function MessageRow({
         onClick={() => saved ? client.unsaveForLater(m.id) : client.saveForLater(m.id)}>
         {saved ? "★" : "☆"}
       </button>
+      {canManagePins && channelId && (
+        <button className="ma pin-action" title={pinPending ? "Updating pinned message" : pinned ? "Unpin from channel" : "Pin in channel"}
+          aria-pressed={pinned} aria-busy={pinPending} disabled={pinPending}
+          onClick={() => pinned ? client.unpinChannelMessage(channelId, m.id) : client.pinChannelMessage(channelId, m.id)}>
+          {pinned ? "📌" : "📍"}
+        </button>
+      )}
       {mine && (
         <button className="ma edit" title="Change what this says"
           onClick={() => { setDraft(m.text); setEditing(true); }}>✎</button>
@@ -8115,6 +8140,9 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
   onLeft: () => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const pinState = world.channelPins[channel.id] ?? {
+    asked: false, loading: false, entries: [], hasMore: false,
+  };
   const [editInfo, setEditInfo] = useState(false);
   const [topic, setTopic] = useState(channel.topic ?? "");
   const [description, setDescription] = useState(channel.description ?? "");
@@ -8139,6 +8167,10 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
   const myRole: ChannelRole | undefined =
     rows.find(m => m.memberId === world.me?.id)?.role;
   const mayRun = mayAdministerChannel(myRole);
+  const isRoom = channel.kind !== "dm";
+  useEffect(() => {
+    if (isRoom && !pinState.asked && !pinState.loading) client.askChannelPins(channel.id);
+  }, [channel.id, isRoom, pinState.asked, pinState.loading]);
   const archived = !!channel.archivedAt;
   const open = channel.visibility === "open";
   /* Who is being taken out, or given a different job. Held by row key, so the
@@ -8177,7 +8209,6 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
     client.askMembers(channel.id);
   };
 
-  const isRoom = channel.kind !== "dm";
   const mayRemove = (m: ChannelMember): boolean =>
     isRoom && mayRun && m.memberId !== world.me?.id
     && (m.role !== "owner" || myRole === "owner");
@@ -8270,6 +8301,46 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
             details, because that is where a person looks for "this room" —
             Settings owns the switches that are true everywhere. */}
         <RoomMute channel={channel} isRoom={isRoom} />
+
+        <div className="aside-sec roompins" data-pins-channel={channel.id}>
+          <div className="roompins-head">
+            <span className="eyebrow">Pinned messages</span>
+            {pinState.asked && <button className="linkish" type="button" onClick={() => client.askChannelPins(channel.id)}>Refresh</button>}
+          </div>
+          {pinState.loading && <div className="d-empty" role="status">Loading pinned messages…</div>}
+          {!pinState.loading && pinState.problem && (
+            <div className="d-empty room-pin-error" role="alert">{pinState.problem}<button className="linkish" onClick={() => client.askChannelPins(channel.id)}>Try again</button></div>
+          )}
+          {!pinState.loading && !pinState.problem && pinState.asked && pinState.entries.length === 0 && (
+            <div className="d-empty" data-pins-empty="yes">No messages are pinned in this room yet.</div>
+          )}
+          {!pinState.loading && pinState.entries.length > 0 && (
+            <div className="room-pin-list" aria-label="Pinned messages">
+              {pinState.entries.map(entry => {
+                const pending = world.channelPinPending.includes(entry.messageId);
+                const source = entry.state === "deleted" ? "Source deleted" : entry.state === "inaccessible" ? "Source unavailable" : "Pinned";
+                return (
+                  <article key={entry.id} className={`room-pin-row source-${entry.state}`}>
+                    <div className="room-pin-copy">
+                      <strong>{source}</strong>
+                      <span>{entry.message?.text || (entry.state === "active" ? "(no message)" : "The original message is no longer available.")}</span>
+                      <small>{entry.message?.authorName ?? "Cloud9"} · {clock(entry.pinnedAt)}</small>
+                    </div>
+                    {mayRun && entry.state !== "inaccessible" && (
+                      <button type="button" className="linkish" disabled={pending} aria-busy={pending}
+                        onClick={() => client.unpinChannelMessage(channel.id, entry.messageId)}>
+                        {pending ? "Removing…" : "Unpin"}
+                      </button>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+          {!pinState.loading && pinState.asked && pinState.hasMore && pinState.nextPinnedAt !== undefined && pinState.nextMessageId && (
+            <button type="button" className="btn small ghost" onClick={() => client.askChannelPins(channel.id, pinState.nextPinnedAt, pinState.nextMessageId)}>Load more pinned messages</button>
+          )}
+        </div>
 
         {/* WHAT THE AGENTS IN HERE HAVE MADE. A file is the room's, not the
             agent's — which is why it is listed with the room's own details. */}

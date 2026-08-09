@@ -7,7 +7,7 @@ import {
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   MemoryNote,
   NotificationInboxEntry,
-  SavedMessageEntry,
+  SavedMessageEntry, ChannelPinEntry,
   EverywhereHit, SearchKind, HumanTyping,
   ReachCatchup,
   Project, ForumTopic, ForumReply, ForumReadEntry, ForumLink, ForumStatus, ProjectItem, ProjectPollView, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
@@ -48,6 +48,10 @@ function workflowOrder(a: Workflow, b: Workflow): number {
 
 type SavedRequestFrame = Extract<ClientFrame, {
   type: "listSaved" | "saveMessage" | "unsaveMessage"
+}>;
+
+type ChannelPinRequestFrame = Extract<ClientFrame, {
+  type: "listChannelPins" | "pinMessage" | "unpinMessage"
 }>;
 
 /**
@@ -200,6 +204,18 @@ export interface PulseState {
   problem?: string;
 }
 
+export interface ChannelPinsState {
+  asked: boolean;
+  loading: boolean;
+  entries: ChannelPinEntry[];
+  hasMore: boolean;
+  nextPinnedAt?: number;
+  nextMessageId?: ID;
+  requestId?: ID;
+  revision?: number;
+  problem?: string;
+}
+
 const emptyArtifactWorkspace = (loading = false): ArtifactWorkspacePage => ({
   asked: false, loading, entries: [], hasMore: true,
   capacity: ARTIFACT_LIMITS.workspaceDefault,
@@ -279,6 +295,9 @@ export interface World {
   savedPending: ID[];
   /** Set when a save arrives while the Saved screen is not open. */
   savedNew: boolean;
+  /** Shared pins, keyed by channel; absent means this client has not asked. */
+  channelPins: Record<ID, ChannelPinsState>;
+  channelPinPending: ID[];
   /** status of the local Claude/Codex apps — booleans and labels, never secrets */
   harness?: HarnessState;
   /**
@@ -709,6 +728,7 @@ export class RelayClient {
     savedMessages: [], savedLoading: false, savedAsked: false,
     savedRequestId: undefined, savedProblem: undefined, savedNotice: undefined,
     savedRevision: 0, savedHasMore: false, savedPending: [], savedNew: false,
+    channelPins: {}, channelPinPending: [],
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
@@ -914,6 +934,7 @@ export class RelayClient {
       // snapshot is the source of truth for the next epoch.
       this.workflowRequests.clear();
       this.savedRequests.clear();
+      this.channelPinRequests.clear();
       this.pulseMutationRequestId = undefined;
       this.pulseAcceptedRequestId = undefined;
       this.pulseReadRequests.clear();
@@ -931,6 +952,8 @@ export class RelayClient {
       // fire-and-forget row that never entered the lifecycle ledger.
       this.world.savedPending = this.world.savedPending.filter(messageId =>
         [...this.savedRequests.values()].some(frame => frame.type !== "listSaved" && frame.messageId === messageId));
+      this.world.channelPins = {};
+      this.world.channelPinPending = [];
       // A credential the hub REFUSED must not spin: the reason is on screen and
       // retrying it would only overwrite it with the same refusal.
       if (this.world.authFailed) { this.syncHubWorld(); this.emit(); return; }
@@ -1199,6 +1222,7 @@ export class RelayClient {
   private asked: Asked[] = [];
   private workflowRequests = new Map<ID, WorkflowRequestFrame>();
   private savedRequests = new Map<ID, SavedRequestFrame>();
+  private channelPinRequests = new Map<ID, ChannelPinRequestFrame>();
   /** Mutation receipts currently expected; late direct frames are ignored. */
   private loseForumRequests(): void {
     const live = this.asked;
@@ -1735,6 +1759,133 @@ export class RelayClient {
     const stillWaiting = [...this.savedRequests.values()].some(frame =>
       frame.type !== "listSaved" && frame.messageId === messageId);
     if (!stillWaiting) this.world.savedPending = this.world.savedPending.filter(id => id !== messageId);
+  }
+
+  /** Fetch one channel's canonical shared pin list, with a relay-owned cursor. */
+  askChannelPins(channelId: ID, beforePinnedAt?: number, beforeMessageId?: ID): void {
+    const prior = this.world.channelPins[channelId] ?? {
+      asked: false, loading: false, entries: [], hasMore: false,
+    };
+    const append = beforePinnedAt !== undefined && beforeMessageId !== undefined;
+    const requestId = this.nextRequestId("listChannelPins");
+    this.world.channelPins = {
+      ...this.world.channelPins,
+      [channelId]: { ...prior, loading: true, problem: undefined, requestId },
+    };
+    this.emit();
+    const frame: ChannelPinRequestFrame = {
+      type: "listChannelPins", channelId,
+      ...(append ? { beforePinnedAt, beforeMessageId } : {}),
+    };
+    this.channelPinRequests.set(requestId, frame);
+    const sent = this.ask({ ...frame, requestId }, {
+      answers: f => f.type === "channelPins" && f.channelId === channelId && f.requestId === requestId,
+      answered: f => {
+        this.channelPinRequests.delete(requestId);
+        const held = this.world.channelPins[channelId];
+        if (!held || held.requestId !== requestId || f.type !== "channelPins") return;
+        this.world.channelPins = {
+          ...this.world.channelPins,
+          [channelId]: {
+            asked: true, loading: false,
+            entries: append
+              ? [...held.entries, ...f.entries.filter(entry => !held.entries.some(old => old.id === entry.id))]
+              : [...f.entries],
+            hasMore: f.hasMore ?? false,
+            nextPinnedAt: f.nextPinnedAt, nextMessageId: f.nextMessageId, revision: f.revision,
+          },
+        };
+        this.emit();
+      },
+      refused: error => {
+        this.channelPinRequests.delete(requestId);
+        const held = this.world.channelPins[channelId];
+        if (!held || held.requestId !== requestId) return;
+        this.world.channelPins = { ...this.world.channelPins,
+          [channelId]: { ...held, asked: true, loading: false, requestId: undefined, problem: error } };
+        this.emit();
+      },
+      lost: () => {
+        this.channelPinRequests.delete(requestId);
+        const held = this.world.channelPins[channelId];
+        if (!held || held.requestId !== requestId) return;
+        this.world.channelPins = { ...this.world.channelPins,
+          [channelId]: { ...held, asked: true, loading: false, requestId: undefined,
+            problem: "The relay did not answer. Try loading pinned messages again." } };
+        this.emit();
+      },
+    });
+    if (!sent) {
+      this.channelPinRequests.delete(requestId);
+      const held = this.world.channelPins[channelId];
+      if (held?.requestId === requestId) {
+        this.world.channelPins = { ...this.world.channelPins,
+          [channelId]: { ...held, asked: true, loading: false, requestId: undefined,
+            problem: "Cloud9 is reconnecting. Pinned messages will return when the relay answers." } };
+        this.emit();
+      }
+    }
+  }
+
+  pinChannelMessage(channelId: ID, messageId: ID): ID | undefined {
+    return this.sendChannelPin({ type: "pinMessage", channelId, messageId });
+  }
+
+  unpinChannelMessage(channelId: ID, messageId: ID): ID | undefined {
+    return this.sendChannelPin({ type: "unpinMessage", channelId, messageId });
+  }
+
+  private sendChannelPin(frame: Extract<ChannelPinRequestFrame, { type: "pinMessage" | "unpinMessage" }>): ID | undefined {
+    const requestId = this.nextRequestId(frame.type);
+    this.channelPinRequests.set(requestId, frame);
+    this.world.channelPinPending = [...new Set([...this.world.channelPinPending, frame.messageId])];
+    const sent = this.transmit({ ...frame, requestId }, {
+      answers: f => f.type === "channelPins" && f.channelId === frame.channelId && f.requestId === requestId,
+      answered: f => {
+        this.channelPinRequests.delete(requestId);
+        this.finishChannelPinPending(frame.messageId);
+        if (f.type !== "channelPins") return;
+        this.world.channelPins = { ...this.world.channelPins,
+          [frame.channelId]: {
+            asked: true, loading: false, entries: [...f.entries], hasMore: f.hasMore ?? false,
+            nextPinnedAt: f.nextPinnedAt, nextMessageId: f.nextMessageId, revision: f.revision,
+          } };
+        this.emit();
+      },
+      refused: error => {
+        this.channelPinRequests.delete(requestId);
+        this.finishChannelPinPending(frame.messageId);
+        const held = this.world.channelPins[frame.channelId] ?? { asked: false, loading: false, entries: [], hasMore: false };
+        this.world.channelPins = { ...this.world.channelPins,
+          [frame.channelId]: { ...held, problem: error } };
+        this.emit();
+      },
+      lost: () => {
+        this.channelPinRequests.delete(requestId);
+        this.finishChannelPinPending(frame.messageId);
+        const held = this.world.channelPins[frame.channelId] ?? { asked: false, loading: false, entries: [], hasMore: false };
+        this.world.channelPins = { ...this.world.channelPins,
+          [frame.channelId]: { ...held, problem: "The relay did not answer. Try again." } };
+        this.emit();
+      },
+    });
+    if (!sent) {
+      this.channelPinRequests.delete(requestId);
+      this.finishChannelPinPending(frame.messageId);
+      const held = this.world.channelPins[frame.channelId] ?? { asked: false, loading: false, entries: [], hasMore: false };
+      this.world.channelPins = { ...this.world.channelPins,
+        [frame.channelId]: { ...held, problem: "Cloud9 is reconnecting. Try again when the relay answers." } };
+      this.emit();
+      return undefined;
+    }
+    this.emit();
+    return requestId;
+  }
+
+  private finishChannelPinPending(messageId: ID): void {
+    const stillWaiting = [...this.channelPinRequests.values()].some(frame =>
+      frame.type !== "listChannelPins" && frame.messageId === messageId);
+    if (!stillWaiting) this.world.channelPinPending = this.world.channelPinPending.filter(id => id !== messageId);
   }
 
   /* ---------------- search ---------------- */
@@ -3775,6 +3926,7 @@ askPolls(projectId: ID): void {
         // A reconnect starts a new request epoch. Do not let a stale response
         // from the old socket match run/archive/stop/retry bookkeeping.
         this.workflowRequests.clear();
+        this.channelPinRequests.clear();
         this.pulseMutationRequestId = undefined;
         this.pulseAcceptedRequestId = undefined;
         this.pulseReadRequests.clear();
@@ -3794,6 +3946,8 @@ askPolls(projectId: ID): void {
         w.savedNextMessageId = undefined;
         w.savedPending = [];
         w.savedNew = false;
+        w.channelPins = {};
+        w.channelPinPending = [];
         w.pulse = {
           asked: true, loading: false, updates: frame.state.pulse?.updates ?? [],
           unreadByProject: frame.state.pulse?.unreadByProject ?? {}, projects: frame.state.pulse?.projects ?? [],
@@ -3933,6 +4087,23 @@ askPolls(projectId: ID): void {
         w.savedMessages = [...frame.entries];
         break;
       }
+      case "channelPins": {
+        const held = w.channelPins[frame.channelId];
+        if (frame.requestId !== undefined) {
+          if (!this.channelPinRequests.has(frame.requestId)) break;
+        } else if (held?.requestId !== undefined) {
+          // An uncorrelated mirror must not outrank a list request in flight.
+          break;
+        } else if (frame.revision !== undefined && held?.revision !== undefined && frame.revision < held.revision) {
+          break;
+        }
+        const next: ChannelPinsState = {
+          asked: true, loading: false, entries: [...frame.entries], hasMore: frame.hasMore ?? false,
+          nextPinnedAt: frame.nextPinnedAt, nextMessageId: frame.nextMessageId, revision: frame.revision,
+        };
+        w.channelPins = { ...w.channelPins, [frame.channelId]: next };
+        break;
+      }
       case "token":
         // HELD, NOT WRITTEN. The hub has minted a credential for this attempt,
         // but the attempt is not a session until `welcome` arrives — and until
@@ -3979,6 +4150,9 @@ askPolls(projectId: ID): void {
           w.savedMessages = w.savedMessages.map(entry => entry.channelId === frame.channel.id
             ? { ...entry, state: "inaccessible", message: undefined }
             : entry);
+          const pins = w.channelPins[frame.channel.id];
+          if (pins) w.channelPins = { ...w.channelPins,
+            [frame.channel.id]: { ...pins, entries: pins.entries.map(entry => ({ ...entry, state: "inaccessible", message: undefined })) } };
         }
         break;
       }
@@ -4130,6 +4304,16 @@ askPolls(projectId: ID): void {
           w.savedMessages = w.savedMessages.map(entry => entry.messageId === frame.message.id
             ? { ...entry, state: "active", message: frame.message }
             : entry);
+        }
+        const pins = w.channelPins[frame.message.channelId];
+        if (pins) {
+          const replacement = frame.message.deletedAt
+            ? { state: "deleted" as const, message: undefined }
+            : { state: "active" as const, message: frame.message };
+          w.channelPins = { ...w.channelPins,
+            [frame.message.channelId]: { ...pins,
+              entries: pins.entries.map(entry => entry.messageId === frame.message.id
+                ? { ...entry, ...replacement } : entry) } };
         }
         break;
       case "thread":
@@ -4365,6 +4549,16 @@ askPolls(projectId: ID): void {
         w.savedMessages = w.savedMessages.map(entry => entry.channelId === frame.channelId
           ? { ...entry, state: "inaccessible", message: undefined }
           : entry);
+        const droppedPinMessageIds = new Set<ID>();
+        for (const [requestId, pending] of this.channelPinRequests) {
+          if (pending.channelId !== frame.channelId) continue;
+          if (pending.type !== "listChannelPins") droppedPinMessageIds.add(pending.messageId);
+          this.channelPinRequests.delete(requestId);
+        }
+        w.channelPinPending = w.channelPinPending.filter(id => !droppedPinMessageIds.has(id));
+        const { [frame.channelId]: gonePins, ...restPins } = w.channelPins;
+        void gonePins;
+        w.channelPins = restPins;
 
         // Projects linked to the room derive access from its membership. The
         // relay sends a revocation too, but purge by channel here so a window

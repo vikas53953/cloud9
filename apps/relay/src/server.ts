@@ -29,7 +29,7 @@ import {
   planHeadline, tidyPlan, validatePlanAsk,
   SavingProposal, applySaving, findWaste, rollUpTokenUse, savingDetail, savingHeadline,
   tidySaving, validateSavingProposal,
-  SearchHit, SavedMessageEntry, ServerFrame, Task, UnreadEntry, User, WorldState,
+  SearchHit, SavedMessageEntry, ChannelPinEntry, ServerFrame, Task, UnreadEntry, User, WorldState,
   HumanTyping,
   NotificationInboxEntry, NotificationInboxKind, notificationEventId,
   Workflow, WorkflowRun, WorkflowRunStep, WorkflowStepStatus,
@@ -2327,6 +2327,33 @@ private viewProject(project: Project, viewerId?: ID): Project {
     });
   }
 
+  /** Project shared pins against the viewer's CURRENT channel access/source. */
+  private channelPinProjection(userId: ID, row: import("./store.js").ChannelPinRow): ChannelPinEntry {
+    const pinnedBy = this.store.user(row.pinnedById);
+    const base: ChannelPinEntry = {
+      id: row.id, channelId: row.channelId, messageId: row.messageId, pinnedAt: row.pinnedAt,
+      ...(pinnedBy ? { pinnedById: pinnedBy.id, pinnedByName: pinnedBy.name } : {}),
+      state: "inaccessible",
+    };
+    let channel: Channel;
+    try { channel = this.channelFor(userId, row.channelId); } catch { return base; }
+    const message = this.store.message(row.messageId);
+    if (!message || message.channelId !== channel.id) return base;
+    if (message.deletedAt) return { ...base, state: "deleted" };
+    return {
+      ...base, state: "active", message: this.hydrate([message])[0],
+      ...(message.replyTo ? { threadParentId: message.replyTo } : {}),
+    };
+  }
+
+  private channelPinsProjection(
+    userId: ID,
+    opts: { channelId: ID; limit?: number; beforePinnedAt?: number; beforeMessageId?: ID },
+  ): ChannelPinEntry[] {
+    return this.store.channelPinsPage(opts.channelId, opts.limit, opts.beforePinnedAt, opts.beforeMessageId)
+      .entries.map(row => this.channelPinProjection(userId, row));
+  }
+
   /** Clear every live signal authored by one human (disconnect/removal path). */
   private clearTypingForUser(userId: ID): void {
     for (const state of [...this.liveTyping.values()]) {
@@ -2880,6 +2907,36 @@ private viewProject(project: Project, viewerId?: ID): Project {
       if (conn.userId === userId && (!correlated || conn !== origin)) send(conn.ws, base);
     }
     if (correlated) send(origin!.ws, { ...base, requestId: requestId! });
+  }
+
+  /** Shared pins mirror to every authorized window; only the origin gets the receipt id. */
+  private tellChannelPins(
+    channel: Channel, requestId?: ID, origin?: Conn,
+    opts: { limit?: number; beforePinnedAt?: number; beforeMessageId?: ID } = {},
+  ): void {
+    const page = this.store.channelPinsPage(channel.id, opts.limit, opts.beforePinnedAt, opts.beforeMessageId);
+    const correlated = Boolean(origin && requestId);
+    for (const conn of this.conns) {
+      if (!this.audienceFor(channel).has(conn.userId)) continue;
+      if (correlated && conn === origin) continue;
+      send(conn.ws, {
+        type: "channelPins", channelId: channel.id,
+        entries: this.channelPinsProjection(conn.userId, { ...opts, channelId: channel.id }),
+        revision: this.store.channelPinsRevision(channel.id), hasMore: page.hasMore,
+        ...(page.nextPinnedAt !== undefined ? { nextPinnedAt: page.nextPinnedAt } : {}),
+        ...(page.nextMessageId !== undefined ? { nextMessageId: page.nextMessageId } : {}),
+      });
+    }
+    if (correlated) {
+      send(origin!.ws, {
+        type: "channelPins", channelId: channel.id,
+        entries: this.channelPinsProjection(origin!.userId, { ...opts, channelId: channel.id }),
+        revision: this.store.channelPinsRevision(channel.id), hasMore: page.hasMore,
+        ...(page.nextPinnedAt !== undefined ? { nextPinnedAt: page.nextPinnedAt } : {}),
+        ...(page.nextMessageId !== undefined ? { nextMessageId: page.nextMessageId } : {}),
+        requestId: requestId!,
+      });
+    }
   }
 
   private tellWorkflowRun(userId: ID, run: WorkflowRun, requestId?: ID, origin?: Conn): void {
@@ -3584,6 +3641,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
         this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
         this.audit(conn, "member_role_changed", ch.id, `changed a role in ${ch.name}`);
         this.broadcastChannel(this.store.channel(ch.id)!);
+        this.broadcastChannelMembers(ch.id);
         break;
       }
       case "channelMembers": {
@@ -6674,6 +6732,59 @@ private viewProject(project: Project, viewerId?: ID): Project {
         this.tellSaved(conn.userId, frame.requestId, conn, frame);
         break;
       }
+      case "listChannelPins": {
+        const channel = this.channelFor(conn.userId, frame.channelId);
+        if (channel.kind === "dm") throw new Error("direct conversations do not have shared pins");
+        const page = this.store.channelPinsPage(channel.id, frame.limit, frame.beforePinnedAt, frame.beforeMessageId);
+        send(conn.ws, {
+          type: "channelPins", channelId: channel.id,
+          entries: page.entries.map(row => this.channelPinProjection(conn.userId, row)),
+          revision: this.store.channelPinsRevision(channel.id), hasMore: page.hasMore,
+          ...(page.nextPinnedAt !== undefined ? { nextPinnedAt: page.nextPinnedAt } : {}),
+          ...(page.nextMessageId !== undefined ? { nextMessageId: page.nextMessageId } : {}),
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        });
+        break;
+      }
+      case "pinMessage": {
+        // Authenticate the room and source BEFORE consulting the retry ledger.
+        // A stale receipt must never become a side channel after membership or
+        // channel kind changes.
+        const channel = this.adminChannel(conn.userId, frame.channelId);
+        if (channel.kind === "dm") throw new Error("direct conversations do not have shared pins");
+        const message = this.messageFor(conn.userId, frame.messageId);
+        if (message.channelId !== channel.id) throw new Error("that message is not in this channel");
+        const status = frame.requestId
+          ? this.store.channelPinMutationStatus(conn.userId, frame.requestId, "pinMessage", channel.id, message.id)
+          : undefined;
+        if (status === "conflict") throw new Error("that channel pin request id was already used for a different pin");
+        if (status === "replay") {
+          this.tellChannelPins(channel, frame.requestId, conn);
+          break;
+        }
+        if (channel.archivedAt) throw new Error("that conversation is archived");
+        if (message.deletedAt) throw new Error("that message was deleted");
+        this.store.pinChannelMessage(conn.userId, channel.id, message.id, frame.requestId);
+        this.tellChannelPins(channel, frame.requestId, conn);
+        break;
+      }
+      case "unpinMessage": {
+        const channel = this.adminChannel(conn.userId, frame.channelId);
+        if (channel.kind === "dm") throw new Error("direct conversations do not have shared pins");
+        const message = this.messageFor(conn.userId, frame.messageId);
+        if (message.channelId !== channel.id) throw new Error("that message is not in this channel");
+        const status = frame.requestId
+          ? this.store.channelPinMutationStatus(conn.userId, frame.requestId, "unpinMessage", channel.id, message.id)
+          : undefined;
+        if (status === "conflict") throw new Error("that channel pin request id was already used for a different removal");
+        if (status === "replay") {
+          this.tellChannelPins(channel, frame.requestId, conn);
+          break;
+        }
+        this.store.unpinChannelMessage(conn.userId, channel.id, message.id, frame.requestId);
+        this.tellChannelPins(channel, frame.requestId, conn);
+        break;
+      }
       case "saveMessage": {
         const note = frame.note === undefined ? undefined : String(frame.note).trim();
         if (note !== undefined && note.length > 2000) throw new Error("that note is too long (max 2000 characters)");
@@ -7059,6 +7170,18 @@ private viewProject(project: Project, viewerId?: ID): Project {
     // never keeps an old list after its room visibility changes.
     for (const project of this.store.projectsAll()) {
       if (project.channelId === channel.id) this.pushCanvasProject(project);
+    }
+  }
+
+  /** Membership roles are UI permissions too, so every open member view must
+   * receive the authoritative rows when an owner changes somebody's role. */
+  private broadcastChannelMembers(channelId: ID): void {
+    const channel = this.store.channel(channelId);
+    if (!channel) return;
+    const members = this.store.channelMembers(channelId);
+    const audience = this.audienceFor(channel);
+    for (const conn of this.conns) {
+      if (audience.has(conn.userId)) send(conn.ws, { type: "channelMembers", channelId, members });
     }
   }
 
