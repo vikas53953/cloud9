@@ -23,6 +23,12 @@ const hubToken = (() => {
 contextBridge.exposeInMainWorld("cloud9", {
   isDesktop: true,
 
+  /** Keep Windows' native window controls legible on Cloud9's current canvas. */
+  setTitleBarAppearance: appearance => ipcRenderer.invoke("cloud9:setTitleBarAppearance", {
+    color: appearance?.color,
+    symbolColor: appearance?.symbolColor,
+  }),
+
   /* ---------- THE HUB SIGN-IN, IN MEMORY ONLY ----------
    * `token()` is this launch's key, or null when there is none to hand over.
    * `remember(t)` asks the MAIN process to keep it — encrypted by Windows — so

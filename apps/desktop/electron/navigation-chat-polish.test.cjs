@@ -111,21 +111,54 @@ test("audio messages use the microphone and enter the ordinary attachment lifecy
     "recorded messages should be playable where they are posted");
 });
 
-test("the shell shows eight current theme presets and migrates legacy names", () => {
+test("appearance mode, palette, and thread layout are separate durable preferences", () => {
   const app = read("App.tsx");
-  const start = app.indexOf("const themes: [Prefs[\"theme\"], string, string][] = [");
-  assert.notEqual(start, -1, "settings should define the visible theme presets");
-  const end = app.indexOf("  ];", start);
-  const themeRows = app.slice(start, end).match(/\[\"([^\"]+)\",/g) ?? [];
-  assert.deepEqual(themeRows.map(row => row.match(/\[\"([^\"]+)\",/)?.[1]), [
-    "system", "daylight", "cloud9-pine", "midnight", "aubergine",
-    "solarized-dark", "rose-pine", "catppuccin",
-  ]);
-  assert.doesNotMatch(app.slice(start, end), /\[\"(?:light|dark)\",/,
-    "legacy light/dark values should not need visible cards");
-  assert.match(app, /theme === "light" \? "daylight"/);
-  assert.match(app, /theme === "dark" \? "midnight"/);
-  assert.match(app, /prefs\.set\(\{ theme: migrated \}\)/);
+  assert.match(app, /appearanceMode: AppearanceMode/);
+  assert.match(app, /palette: PaletteName/);
+  assert.match(app, /threadLayout: ThreadLayout/);
+  assert.match(app, /const PALETTES:/);
+  assert.match(app, /function paletteMode/);
+  assert.match(app, /data-appearance-mode=\{mode\}/);
+  assert.match(app, /\["system", "light", "dark"\]/);
+  assert.match(app, /System/);
+  assert.match(app, /Light/);
+  assert.match(app, /Dark/);
+  assert.match(app, /Focus/);
+  assert.match(app, /Split/);
+  assert.match(app, /const visibleMode = resolvedAppearanceMode\(p\.appearanceMode\)/);
+  assert.match(app, /data-palette-mode=\{visibleMode\}/);
+  assert.match(app, /function migratePrefs/);
+  assert.match(app, /legacy === "light"/);
+  assert.match(app, /legacy === "dark"/);
+  assert.match(app, /threadTakeover \? "focus" : "split"/);
+  assert.match(app, /next\.theme = undefined/);
+  assert.match(app, /next\.threadTakeover = undefined/);
+});
+
+test("the chat thread layout maps Focus to takeover and Split to an adjacent panel", () => {
+  const app = read("App.tsx");
+  assert.match(app, /p\.threadLayout === "focus"/);
+  assert.match(app, /prefs\.set\(\{ threadLayout: "split" \}\)/);
+  assert.match(app, /prefs\.set\(\{ threadLayout: "focus" \}\)/);
+  assert.match(app, /tooNarrowToSplit/);
+});
+
+test("the shell keeps the top drag strip and live progress contract inspectable", () => {
+  const app = read("App.tsx");
+  const css = read("styles.css");
+  assert.match(app, /className="window-drag-strip"/);
+  assert.match(css, /\.window-drag-strip/);
+  assert.match(css, /-webkit-app-region:drag/);
+  assert.match(app, /data-live-progress="true"/);
+  assert.match(app, /<WorkingElapsed \/>/,
+    "a provider without live steps should still expose truthful elapsed wait time");
+  assert.match(app, /Working elapsed/);
+  assert.match(app, /now - row\.startedAt/,
+    "streamed elapsed time should use the hub timestamp for the first observed step");
+  assert.doesNotMatch(app, /Show"\} what it thought and said/,
+    "private model reasoning must never be exposed as a UI disclosure");
+  assert.match(app, /data-stop-agent=\{row\.agentId\}/);
+  assert.match(css, /\.live-progress-rail/);
 });
 
 test("the new rail and tools drawer have explicit hierarchy and focus states", () => {

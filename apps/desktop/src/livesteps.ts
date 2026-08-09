@@ -25,6 +25,8 @@ interface Row {
   agentId: ID;
   /** every step seen so far this turn, in `seq` order */
   steps: RunStep[];
+  /** Hub time of the first observable batch for this turn. */
+  startedAt: number;
 }
 
 const EMPTY: readonly Row[] = [];
@@ -72,7 +74,7 @@ export function noteLiveSteps(live: LiveRunSteps): void {
   const steps = [...merged.values()].sort((a, b) => a.seq - b.seq);
   byMessage.set(live.messageId, [
     ...rows.filter(r => r.agentId !== live.agentId),
-    { agentId: live.agentId, steps },
+    { agentId: live.agentId, steps, startedAt: mine?.startedAt ?? live.at },
   ]);
   stampedAt.set(keyOf(live.messageId, live.agentId), ++tick);
   arm(live.messageId, live.agentId);
