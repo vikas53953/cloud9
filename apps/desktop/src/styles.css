@@ -3853,3 +3853,125 @@ button.chip{cursor:pointer;}
 .canvas-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}.canvas-block.tombstone{opacity:.65;min-height:48px;}.canvas-history{border-top:1px solid var(--line-soft);padding-top:10px;display:grid;gap:5px;}
 @media (max-width:720px){.canvas-body{padding:12px 14px 32px}.canvas-layout{grid-template-columns:1fr}.canvas-list{display:flex;overflow:auto;gap:6px;padding-bottom:2px}.canvas-list .side-item{min-width:150px}.canvas-editor>header{align-items:center}.canvas-create .field{min-width:0;width:100%}.canvas-link{display:grid;grid-template-columns:1fr}.canvas-link .field{min-width:0}}
 
+/* ---- Composer polish ----------------------------------------------------
+   The message box is the one place in chat that should feel immediately
+   writable. Keep this scoped to the composer: the Studio palette remains the
+   authority everywhere else, while the input gets a quieter surface, a clear
+   control row, and enough flex room to survive a narrow thread rail. */
+.composer-box:not(.readonly){
+  background:color-mix(in srgb,var(--surface) 94%,var(--surface-2));
+  border-color:color-mix(in srgb,var(--line) 88%,var(--ink-3));
+  padding:12px 14px 10px;
+  box-shadow:0 5px 20px -17px var(--ink),var(--shadow);
+  transition:border-color .16s var(--ease),box-shadow .16s var(--ease),background .16s var(--ease);
+}
+.composer-box:not(.readonly):hover{border-color:var(--ink-3);}
+.composer-box:not(.readonly):focus-within{
+  border-color:var(--pine);
+  background:var(--surface);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--pine) 16%,transparent),0 7px 24px -18px var(--ink),var(--shadow);
+}
+.composer textarea{
+  min-height:68px;
+  padding:2px 0;
+  caret-color:var(--pine);
+  overflow-wrap:anywhere;
+}
+.composer textarea:focus::placeholder{color:color-mix(in srgb,var(--ink-3) 72%,var(--ink));}
+.composer .tools{
+  align-items:center;
+  gap:6px;
+  margin-top:10px;
+  justify-content:flex-start;
+  max-width:100%;
+  overflow:visible;
+}
+.composer .tools .mini,
+.composer .tools .voicebtn{
+  width:32px;
+  height:32px;
+  padding:0;
+  display:grid;
+  place-items:center;
+  border-radius:var(--radius-s);
+  flex:0 0 auto;
+  transition:background .15s var(--ease),color .15s var(--ease),border-color .15s var(--ease),transform .12s var(--ease);
+}
+.composer .tools .actionsbtn{
+  background:var(--surface-2);
+  border-color:var(--line);
+  color:var(--ink-2);
+}
+.composer .tools .actionsbtn:hover:not(:disabled),
+.composer .tools .actionsbtn[aria-expanded="true"]{
+  background:var(--pine-soft);
+  border-color:color-mix(in srgb,var(--pine) 42%,var(--line));
+  color:var(--pine);
+}
+.composer .tools .mentionbtn{background:var(--ultra-soft);border-color:color-mix(in srgb,var(--ultra) 30%,var(--line));}
+.composer .tools .attach{background:color-mix(in srgb,var(--pine-soft) 55%,transparent);}
+.composer .tools .mini:hover:not(:disabled),
+.composer .tools .voicebtn:hover:not(:disabled){transform:translateY(-1px);}
+.composer .tools .mini:active:not(:disabled),
+.composer .tools .voicebtn:active:not(:disabled){transform:translateY(0);}
+.composer .tools .mini:focus-visible,
+.composer .tools .voicebtn:focus-visible,
+.composer .tools .sendbtn:focus-visible{outline:2px solid var(--marigold-hi);outline-offset:2px;}
+.composer .tools > .grow{flex:1 1 24px;min-width:8px;}
+.composer-draft-status{color:var(--ink-2);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;}
+.composer-draft-status[data-draft-status="restored"]{color:var(--pine);}
+.composer-draft-status[data-draft-status="unavailable"]{color:var(--madder);}
+.composer .tools .eyebrow{flex:0 1 220px;max-width:40%;}
+.composer .tools .sendbtn{
+  flex:0 0 auto;
+  width:36px;
+  min-width:36px;
+  height:32px;
+  padding:0;
+  border-radius:var(--radius-s);
+  background:var(--pine);
+  border-color:var(--pine);
+  color:var(--on-pine);
+  box-shadow:0 3px 10px -7px var(--pine);
+  transition:background .15s var(--ease),border-color .15s var(--ease),box-shadow .15s var(--ease),transform .12s var(--ease);
+}
+.composer .tools .sendbtn:hover:not(:disabled){
+  background:var(--ink);
+  border-color:var(--ink);
+  color:var(--on-ink);
+  box-shadow:0 5px 13px -8px var(--ink);
+}
+.composer .tools .sendbtn:active:not(:disabled){transform:translateY(1px);}
+.composer .tools .sendbtn:disabled{
+  opacity:1;
+  background:var(--sunk);
+  border-color:var(--line);
+  color:var(--ink-3);
+  box-shadow:none;
+}
+.composer .tools .sendbtn[data-waiting="file"]{
+  background:var(--marigold);
+  border-color:var(--marigold);
+  color:var(--on-gold);
+}
+.composer .tools .voicebtn.recording{box-shadow:0 0 0 3px color-mix(in srgb,var(--madder) 20%,transparent);}
+
+@media (max-width:560px){
+  .composer{padding:10px 16px 14px;}
+  .composer-box:not(.readonly){padding:10px 11px 9px;}
+  .composer textarea{min-height:60px;font-size:14px;}
+  .composer .tools{gap:5px;margin-top:8px;}
+  .composer .tools .eyebrow{flex-basis:150px;max-width:34%;}
+  .composer-draft-status{max-width:120px;}
+}
+@media (max-width:400px){
+  .composer{padding-left:10px;padding-right:10px;}
+  .composer-box:not(.readonly){padding-left:10px;padding-right:10px;}
+  .composer textarea{min-height:56px;max-height:180px;}
+  .composer .tools{gap:4px;}
+  .composer .tools .mini,
+  .composer .tools .voicebtn{width:30px;height:30px;}
+  .composer .tools .sendbtn{width:34px;min-width:34px;height:30px;}
+  .composer .tools .eyebrow{flex-basis:96px;max-width:32%;font-size:10px;}
+}
+

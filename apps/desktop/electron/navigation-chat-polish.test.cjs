@@ -202,6 +202,21 @@ test("inline agent activity is delayed, expandable, and never renders live priva
     "live activity must not expose provider reasoning/detail text");
 });
 
+test("the composer restores scoped text drafts without claiming files survive restart", () => {
+  const app = read("App.tsx");
+  const css = read("styles.css");
+  assert.match(app, /from "\.\/chatdrafts\.js"/);
+  assert.match(app, /userId: world\.me\.id, channelId: channel\.id/);
+  assert.match(app, /Hydrate before this scope may write/);
+  assert.match(app, /clearChatDraft\(draftScope\)/,
+    "a successful send must remove the matching text draft");
+  assert.match(app, /browser cannot\n\s*restore a File safely after restart/,
+    "attachment persistence must not be misrepresented");
+  assert.match(app, /data-draft-status/);
+  assert.match(css, /\.composer-draft-status\{color:var\(--ink-2\);font-size:12px;/,
+    "draft recovery state must remain readable on light theme surfaces");
+});
+
 test("the new rail and tools drawer have explicit hierarchy and focus states", () => {
   const css = read("styles.css");
   assert.match(css, /--rail-bg:/);

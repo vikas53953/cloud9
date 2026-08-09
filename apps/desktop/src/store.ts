@@ -35,7 +35,7 @@ import {
 // the header of that file. This is the only line of this module that knows.
 import { noteReceipt } from "./receipts.js";
 // …and so do live steps, for the same reasons, in their own file.
-import { noteLiveSteps } from "./livesteps.js";
+import { clearLiveSteps, noteLiveSteps } from "./livesteps.js";
 
 type WorkflowRequestFrame = Extract<ClientFrame, {
   type: "listWorkflows" | "createWorkflow" | "updateWorkflow" | "archiveWorkflow" | "runWorkflow" | "stopWorkflow" | "retryWorkflow"
@@ -871,6 +871,9 @@ export class RelayClient {
   }
 
   private openSocketTo(url: string): void {
+    // Public activity belongs to one live socket epoch. A reconnect has no
+    // authority to keep showing a previous engine's in-flight preview.
+    clearLiveSteps();
     this.ws?.close();
     const epoch = ++this.socketEpoch;
     const ws = new WebSocket(url);
@@ -885,6 +888,7 @@ export class RelayClient {
       // A newer socket has already taken over (a switch or a retry) — this close
       // belongs to a connection nobody is on any more.
       if (this.ws !== ws) return;
+      clearLiveSteps();
       this.world.connected = false;
       // Settle every lifecycle row before dropping request maps. Mutation
       // callbacks clear their own pending IDs and leave a scoped retry notice;
@@ -1387,7 +1391,10 @@ export class RelayClient {
    */
   submit(problem: string | null, frame: ClientFrame, say?: (why: string) => void): boolean {
     if (this.refused(problem, say)) return false;
-    this.send(frame);
+    if (this.send(frame) === undefined) {
+      (say ?? ((why: string) => this.notify(why)))("Cloud9 is offline. Your message is still in the box.");
+      return false;
+    }
     return true;
   }
 
@@ -3658,6 +3665,9 @@ askPolls(projectId: ID): void {
     if (frame.type !== "error") this.settle(frame);
     switch (frame.type) {
       case "welcome": {
+        // The snapshot is durable state, never a continuation of a transient
+        // tool stream. Begin each admitted session with a quiet activity cache.
+        clearLiveSteps();
         w.connected = true;
         w.authFailed = false;
         // The hub has let us in — and only now is the credential that got us

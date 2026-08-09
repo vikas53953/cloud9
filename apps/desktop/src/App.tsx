@@ -84,6 +84,7 @@ import { AgentReceipts } from "./receipts.js";
 // same reasons — see its header. Only the HOOK comes from there; the steps are
 // drawn by `RunSteps` below, the same renderer the stored record uses.
 import { useLiveSteps, useLiveWorkByAgent } from "./livesteps.js";
+import { chatDraftKey, clearChatDraft, loadChatDraft, saveChatDraft, type ChatDraftScope } from "./chatdrafts.js";
 import {
   abilitiesOn, abilityWords, MARKET_CATEGORIES, MARKET_TEMPLATES, MarketTemplate,
 } from "./market.js";
@@ -7255,6 +7256,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [text, setText] = useState("");
+  const [hydratedDraftKey, setHydratedDraftKey] = useState<string | null>(null);
+  const [draftStatus, setDraftStatus] = useState<"idle" | "restored" | "saved" | "unavailable">("idle");
   const [acIndex, setAcIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [emojiQuery, setEmojiQuery] = useState("");
@@ -7284,6 +7287,13 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
      conversation's own box keeps every one of them even while it is answering
      something — it is the same box it always was, only aimed. */
   const inThreadPanel = !!replyTo && !onStopAnswering;
+  /* Text is durable per person, room, and reply target. Files deliberately
+     remain in the relay's existing parked-upload lifecycle: a browser cannot
+     restore a File safely after restart, so Cloud9 never pretends it can. */
+  const draftScope = useMemo<ChatDraftScope | null>(() => world.me?.id
+    ? { userId: world.me.id, channelId: channel.id, ...(replyTo ? { threadId: replyTo } : {}) }
+    : null, [channel.id, replyTo, world.me?.id]);
+  const draftKey = useMemo(() => draftScope ? chatDraftKey(draftScope) : null, [draftScope]);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   /* wraps the emoji button AND its tray, so a click anywhere else closes it */
@@ -7313,6 +7323,35 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
       .reduce((n, u) => n + u.size, 0),
     [world.uploads]);
   const parkedHours = Math.round(ATTACHMENT_LIMITS.parkedTtlMs / 3_600_000);
+
+  /* Hydrate before this scope may write. Without the separate `hydratedDraftKey`
+     guard, React could briefly save the previous room's words into the next
+     room while the channel changes. */
+  useEffect(() => {
+    setHydratedDraftKey(null);
+    if (!draftScope || !draftKey) {
+      setText("");
+      setDraftStatus("idle");
+      return;
+    }
+    const loaded = loadChatDraft(draftScope);
+    if (loaded.ok) {
+      setText(loaded.text ?? "");
+      setDraftStatus(loaded.text ? "restored" : "idle");
+    } else {
+      setText("");
+      setDraftStatus("unavailable");
+    }
+    setHydratedDraftKey(draftKey);
+  }, [draftKey, draftScope]);
+
+  useEffect(() => {
+    if (!draftScope || !draftKey || hydratedDraftKey !== draftKey) return;
+    const result = text.length > 0
+      ? saveChatDraft(draftScope, text)
+      : clearChatDraft(draftScope);
+    setDraftStatus(result.ok ? (text.length > 0 ? "saved" : "idle") : "unavailable");
+  }, [draftKey, draftScope, hydratedDraftKey, text]);
 
   /**
    * THE BOX GROWS WITH WHAT IS IN IT.
@@ -7630,6 +7669,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
         ...(ready.ids.length ? { attachmentIds: ready.ids } : {}),
       });
     if (!went) return;
+    if (draftScope) clearChatDraft(draftScope);
     setText("");
     setEmojiOpen(false);
     setActionsOpen(false);
@@ -7937,6 +7977,14 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
             <span aria-hidden="true">{recording ? "■" : "🎙"}</span>
           </button>
           <div className="grow" />
+          {text.length > 0 && !inThreadPanel && (
+            <span className="composer-draft-status" data-draft-status={draftStatus}>
+              {draftStatus === "restored" ? "Draft restored"
+                : draftStatus === "saved" ? "Draft saved locally"
+                  : draftStatus === "unavailable" ? "Draft is only in this window"
+                    : null}
+            </span>
+          )}
           {!inThreadPanel && busy && <span className="eyebrow">Sending a file up…</span>}
           {/* While a file is on its way the button SAYS so rather than sending
               without it. Enter says the same thing out loud (see `sendNow`), so
