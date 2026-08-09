@@ -5164,7 +5164,7 @@ function ChatView({
             <div className="empty empty-room" data-empty-room="yes">
               <div className="empty-mark" aria-hidden="true">#</div>
               <h2>Nothing said in #{channel.name} yet</h2>
-              <div className="empty-welcome-cards" aria-label="Ways to get this room started">
+              <div className="empty-welcome-cards" role="group" aria-label="Ways to get this room started">
                 <button type="button" className="empty-welcome-card" onClick={onNewAgent}>
                   <span className="empty-welcome-icon" aria-hidden="true">✦</span>
                   <span className="empty-welcome-copy">
