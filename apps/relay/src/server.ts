@@ -5615,7 +5615,6 @@ private viewProject(project: Project, viewerId?: ID): Project {
           const items = frame.items.map(i => ({ ...i, projectId: project.id }));
           const stored = this.store.syncProjectItems(project.id, items);
           this.toUser(conn.userId, { type: "projectItems", projectId: project.id, items: stored });
-          this.pushCanvasProject(project);
         }
         if (frame.defaultBranch !== undefined) {
           // it becomes part of "nothing lands here without him", so it is
@@ -5637,6 +5636,10 @@ private viewProject(project: Project, viewerId?: ID): Project {
         }
         this.store.saveProject(project);
         this.toUser(conn.userId, { type: "project", project: this.viewProject(project) });
+        // Canvas viewers must see the completed project row. Broadcasting from
+        // the item block above exposed an intermediate frame after `looking`
+        // ended but before defaultBranch/syncedAt were applied.
+        if (frame.items !== undefined) this.pushCanvasProject(project);
         break;
       }
       // ---- Engineering Pulse: project-scoped daily updates ----
