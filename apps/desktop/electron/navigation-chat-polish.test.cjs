@@ -69,7 +69,7 @@ test("a channel opens without a persistent rail and opts into room details", () 
 
   assert.doesNotMatch(app, /<ChannelRail\b/, "ChannelRail remains retired from the default chat tree");
   assert.match(app, /const \[detailsOpen, setDetailsOpen\] = useState\(false\)/);
-  assert.match(app, /className=\{`chatgrid\$\{isDm && !threadRoot && !detailsOpen \? " no-aside" : ""\}/);
+  assert.match(app, /className=\{`chatgrid\$\{studioCollapsed \? " studio-collapsed" : ""\}/);
   assert.match(app, /active && !threadRoot && detailsOpen && \(/,
     "the details panel is rendered only after the explicit opt-in");
 });
@@ -151,8 +151,11 @@ test("appearance mode, palette, and thread layout are separate durable preferenc
   assert.match(app, /Dark/);
   assert.match(app, /Focus/);
   assert.match(app, /Split/);
-  assert.match(app, /const visibleMode = resolvedAppearanceMode\(p\.appearanceMode\)/);
+  assert.match(app, /const effectiveMode = previewMode \?\? p\.appearanceMode/);
   assert.match(app, /data-palette-mode=\{visibleMode\}/);
+  assert.match(app, /ACCENT_PRESETS/);
+  assert.match(app, /Apply theme/);
+  assert.match(app, /Revert preview/);
   assert.match(app, /function migratePrefs/);
   assert.match(app, /legacy === "light"/);
   assert.match(app, /legacy === "dark"/);

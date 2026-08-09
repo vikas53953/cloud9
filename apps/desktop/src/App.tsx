@@ -1728,6 +1728,10 @@ const PALETTES: readonly {
   { value: "graphite", label: "Graphite", prev: "prev-dark", mode: "dark", category: "Dark" },
   { value: "high-contrast-dark", label: "High Contrast Dark", prev: "prev-dark", mode: "dark", category: "Accessibility" },
 ];
+const ACCENT_PRESETS = [
+  ["Neutral", "#50606a"], ["Blue", "#3B82F6"], ["Cyan", "#06B6D4"], ["Green", "#22A06B"], ["Orange", "#EA7A18"],
+  ["Red", "#DC3545"], ["Pink", "#D946A6"], ["Lavender", "#8B7CF6"], ["Purple", "#7C3AED"], ["Indigo", "#4F46E5"],
+] as const;
 
 function paletteMode(palette: PaletteName): Exclude<AppearanceMode, "system"> {
   return PALETTES.find(candidate => candidate.value === palette)?.mode ?? "light";
@@ -1861,13 +1865,23 @@ function applyTheme(mode: AppearanceMode, palette: PaletteName, customAccent = "
   const effectivePalette = paletteMode(palette) === (dark ? "dark" : "light")
     ? palette : defaultPalette(dark ? "dark" : "light");
   root.setAttribute("data-theme", effectivePalette);
-  if (validAccent(customAccent)) root.style.setProperty("--pine", customAccent);
-  else root.style.removeProperty("--pine");
+  if (validAccent(customAccent)) {
+    const hex = customAccent.slice(1);
+    const value = parseInt(hex, 16);
+    const luminance = (0.2126 * ((value >> 16) & 255) + 0.7152 * ((value >> 8) & 255) + 0.0722 * (value & 255)) / 255;
+    root.style.setProperty("--pine", customAccent);
+    root.style.setProperty("--on-pine", luminance > .55 ? "#08120F" : "#FFFFFF");
+    root.style.setProperty("--pine-soft", `color-mix(in srgb, ${customAccent} 18%, transparent)`);
+    const foreground = luminance > .55 ? "#08120F" : "#FFFFFF";
+    root.style.setProperty("--chrome-bg", customAccent); root.style.setProperty("--shell-rail", customAccent); root.style.setProperty("--rail-bg", customAccent);
+    root.style.setProperty("--rail-text", foreground); root.style.setProperty("--rail-ink", foreground); root.style.setProperty("--rail-muted", foreground);
+    root.style.setProperty("--rail-active", `color-mix(in srgb, ${foreground} 86%, ${customAccent})`); root.style.setProperty("--rail-active-ink", customAccent);
+  } else { for (const token of ["--pine", "--on-pine", "--pine-soft", "--chrome-bg", "--shell-rail", "--rail-bg", "--rail-text", "--rail-ink", "--rail-muted", "--rail-active", "--rail-active-ink"]) root.style.removeProperty(token); }
   const computed = getComputedStyle(root);
   const bridge = (window as unknown as { cloud9?: DesktopBridge }).cloud9;
   void bridge?.setTitleBarAppearance?.({
-    color: computed.getPropertyValue("--shell-canvas").trim(),
-    symbolColor: computed.getPropertyValue("--ink").trim(),
+    color: computed.getPropertyValue("--chrome-bg").trim(),
+    symbolColor: computed.getPropertyValue("--rail-text").trim(),
   });
 }
 applyTheme(prefs.get().appearanceMode, prefs.get().palette, prefs.get().customAccent);
@@ -4075,6 +4089,7 @@ function ChatScreen({
   const [workspaceQuery, setWorkspaceQuery] = useState("");
   /* THREADS OR NOT — his setting, read in the one place that opens them. */
   const p = usePrefs();
+  const studioCollapsed = !!p.collapsed["studio-floor"];
   const threading = p.replies !== "inline";
 
   /* ---- how wide the thread is, and which way he is looking at it ---------
@@ -4165,15 +4180,15 @@ function ChatScreen({
 
   return (
     <div ref={gridRef}
-      className={`chatgrid${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}${
+      className={`chatgrid${studioCollapsed ? " studio-collapsed" : ""}${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}${
         threadRoot ? " withthread" : ""}${detailsOpen ? " withdetails" : ""}${takeover ? " takeover" : ""}`}
       style={{ "--thread-w": `${drawnWidth}px` } as React.CSSProperties}>
       <aside className="sidebar" aria-label="Studio floor">
         <div className="sidebar-head">
-          <h2>Studio floor</h2>
+          <button className="workspace-name" aria-label="Workspace options" title="Workspace options" onClick={onBrowseRooms}>Studio floor <span aria-hidden="true">⌄</span></button>
           {/* The relay does not report who is at their desk, so this counts who
               is IN this Cloud9 — never "online", which we cannot know. */}
-          <span className="chip"
+          <span className="chip workspace-members"
             title={`${countOf(agents.length, "agent")} and ` +
               `${countOf(people.length, "person", "people")} in this Cloud9`}>
             {people.length + agents.length} here
@@ -4311,6 +4326,9 @@ Open your chat with ${a.name}`}>
           </div>
         </div>
       </aside>
+      <button className="studio-collapse" aria-label={studioCollapsed ? "Expand Studio Floor" : "Collapse Studio Floor"}
+        title={studioCollapsed ? "Expand Studio Floor" : "Collapse Studio Floor"}
+        onClick={() => prefs.set({ collapsed: { ...p.collapsed, "studio-floor": !studioCollapsed } })}>{studioCollapsed ? "›" : "‹"}</button>
 
       {active ? (
         <ChatView key={active.id} channel={active} lastRead={lastRead} findOpen={findOpen}
@@ -12582,6 +12600,8 @@ function SettingsScreen(): React.JSX.Element {
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteCategory, setPaletteCategory] = useState<"All" | "Dark" | "Light" | "Accessibility">("All");
   const [previewPalette, setPreviewPalette] = useState<PaletteName | null>(null);
+  const [previewMode, setPreviewMode] = useState<AppearanceMode | null>(null);
+  const [previewAccent, setPreviewAccent] = useState<string | null>(null);
   const [appearanceNote, setAppearanceNote] = useState<string | null>(null);
 
   const refreshStored = () => {
@@ -12654,12 +12674,22 @@ function SettingsScreen(): React.JSX.Element {
   const claudeInfo = world.harness?.claude;
   const codexInfo = world.harness?.codex;
 
-  const visibleMode = resolvedAppearanceMode(p.appearanceMode);
+  const previewing = previewPalette !== null || previewMode !== null || previewAccent !== null;
+  const effectiveMode = previewMode ?? p.appearanceMode;
+  const visibleMode = resolvedAppearanceMode(effectiveMode);
   const visiblePalettes = PALETTES.filter(item =>
     item.mode === visibleMode
     && (paletteCategory === "All" || item.category === paletteCategory)
     && item.label.toLowerCase().includes(paletteQuery.trim().toLowerCase()));
-  const activePalette = paletteMode(p.palette) === visibleMode ? p.palette : defaultPalette(visibleMode);
+  const activePalette = paletteMode(previewPalette ?? p.palette) === visibleMode ? previewPalette ?? p.palette : defaultPalette(visibleMode);
+  const revertPreview = useCallback(() => { setPreviewPalette(null); setPreviewMode(null); setPreviewAccent(null); setAppearanceNote("Preview reverted."); }, []);
+  useEffect(() => {
+    if (!previewing) return;
+    applyTheme(effectiveMode, previewPalette ?? p.palette, previewAccent ?? p.customAccent);
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") revertPreview(); };
+    window.addEventListener("keydown", escape);
+    return () => { window.removeEventListener("keydown", escape); applyTheme(p.appearanceMode, p.palette, p.customAccent); };
+  }, [previewing, effectiveMode, previewPalette, previewAccent, p.appearanceMode, p.palette, p.customAccent, revertPreview]);
 
   return (
     <div className="settings settingspanel">
@@ -12667,7 +12697,7 @@ function SettingsScreen(): React.JSX.Element {
         <h2>Settings</h2>
         <span className="sub">How Cloud9 behaves on this computer</span>
         <div className="grow" />
-        <span className="eyebrow">Saved as you change it</span>
+        <span className="eyebrow">Preview, then apply</span>
       </header>
       <div className="set-body">
         <nav className="set-nav" aria-label="Settings sections">
@@ -12682,13 +12712,13 @@ function SettingsScreen(): React.JSX.Element {
             <div className="appearance-mode" role="group" aria-label="Appearance mode">
               {(["system", "light", "dark"] as const).map(mode => (
                 <button key={mode} type="button" data-appearance-mode={mode}
-                  aria-pressed={p.appearanceMode === mode}
+                  aria-pressed={effectiveMode === mode}
                   onClick={() => {
                     const family = mode === "system" ? resolvedAppearanceMode(mode) : mode;
-                    const nextPalette = paletteMode(p.palette) === family
-                      ? p.palette
+                    const nextPalette = paletteMode(previewPalette ?? p.palette) === family
+                      ? previewPalette ?? p.palette
                       : defaultPalette(family);
-                    prefs.set({ appearanceMode: mode, palette: nextPalette });
+                    setPreviewMode(mode); setPreviewPalette(nextPalette);
                   }}>
                   {mode === "system" ? "System" : mode === "light" ? "Light" : "Dark"}
                 </button>
@@ -12715,13 +12745,16 @@ function SettingsScreen(): React.JSX.Element {
             </div>
             {!visiblePalettes.length && <p className="sec-note">No palettes match this search.</p>}
             <div className="appearance-actions">
-              <button className="primary" disabled={!previewPalette || previewPalette === activePalette} onClick={() => { if (previewPalette) prefs.set({ palette: previewPalette }); setAppearanceNote("Palette applied."); }}>Apply preview</button>
-              <label className="accent-control">Custom accent <input type="color" value={validAccent(p.customAccent) ? p.customAccent : "#61d1af"} onChange={e => prefs.set({ customAccent: e.target.value })} /></label>
-              <button className="subtle" onClick={() => prefs.set({ customAccent: "" })}>Use palette accent</button>
+              <button className="primary" disabled={!previewing} onClick={() => { prefs.set({ appearanceMode: effectiveMode, palette: previewPalette ?? p.palette, customAccent: previewAccent ?? p.customAccent }); setPreviewPalette(null); setPreviewMode(null); setPreviewAccent(null); setAppearanceNote("Appearance applied."); }}>Apply theme</button>
+              <button className="subtle" disabled={!previewing} onClick={revertPreview}>Revert preview</button>
+              <button className="subtle" onClick={() => { setPreviewMode("light"); setPreviewPalette("cloud9-pine"); setPreviewAccent(""); }}>Restore safe default</button>
+              <span className="accent-presets" role="group" aria-label="Accent color presets">{ACCENT_PRESETS.map(([name, color]) => <button key={name} className="accent-swatch" title={name} aria-label={`${name} accent`} aria-pressed={(previewAccent ?? p.customAccent) === color} style={{ "--swatch": color } as React.CSSProperties} onClick={() => setPreviewAccent(color)}>{(previewAccent ?? p.customAccent) === color ? "✓" : ""}</button>)}</span>
+              <label className="accent-control">Custom accent <input type="color" value={validAccent(previewAccent ?? p.customAccent) ? previewAccent ?? p.customAccent : "#61d1af"} onChange={e => setPreviewAccent(e.target.value)} /></label>
+              <button className="subtle" onClick={() => setPreviewAccent("")}>Use palette accent</button>
               <button className="subtle" onClick={exportAppearance}>Export JSON</button>
               <label className="subtle import-appearance">Import JSON<input type="file" accept="application/json" onChange={e => void importAppearance(e.currentTarget.files?.[0])} /></label>
             </div>
-            {appearanceNote && <p className="set-note" role="status">{appearanceNote}</p>}
+            <div className="appearance-status" role="status">{previewing ? `Previewing ${PALETTES.find(item => item.value === activePalette)?.label ?? "appearance"}. Press Escape to revert.` : appearanceNote ?? "Changes apply only when you choose Apply theme."}</div>
             <div className="thread-layout-row" role="group" aria-label="Thread layout">
               <span className="tx"><b>Thread layout</b><span>
                 {p.threadLayout === "focus" ? "Threads open over the channel, full width" : "Threads open in a side panel next to the channel"}
