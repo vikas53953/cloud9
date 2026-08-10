@@ -163,7 +163,7 @@ import {
    Imported by path for the same reason the two lines above are: these are the
    halves of shared/engine the browser is allowed to see. */
 import {
-  chooseDelivery, decideNotification, dedupeKey, isNotifyKind, notifyTarget,
+  chooseDelivery, decideNotification, dedupeKey, isNotifyKind, notifyTarget, withRoomMuted,
   threadReplyEvent,
   type Cloud9Notification, type DeliveryChoice, type NotifyEvent, type NotifyTarget,
 } from "@cloud9/shared/dist/notify.js";
