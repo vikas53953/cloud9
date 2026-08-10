@@ -9,7 +9,7 @@ import {
   NotificationInboxEntry,
   SavedMessageEntry, ChannelPinEntry,
   EverywhereHit, SearchKind, HumanTyping,
-  ReachCatchup,
+  ReachCatchup, MessageStatus,
   Project, ForumTopic, ForumReply, ForumReadEntry, ForumLink, ForumStatus, ProjectItem, ProjectPollView, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
   EngineeringCanvasView, EngineeringCanvasRevision, CanvasBlockKind, CanvasLink,
   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject, validateEngineeringPulseDraft,
@@ -239,6 +239,8 @@ export interface World {
   agents: AgentDef[];
   channels: Channel[];
   messages: Record<ID, Message[]>; // by channel
+  /** Author-only accepted/delivered/read projections keyed by canonical id. */
+  messageStatuses: Record<ID, MessageStatus>;
   /** Ephemeral live typing, keyed by channel; never persisted or included in history. */
   humanTyping: Record<ID, HumanTyping[]>;
   agentStatus: Record<ID, AgentStatus>;
@@ -722,7 +724,7 @@ export function purgeLegacySecrets(): void {
 export class RelayClient {
   world: World = {
     connected: false, authFailed: false, users: [], agents: [], channels: [],
-    messages: {}, humanTyping: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
+    messages: {}, messageStatuses: {}, humanTyping: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
     notifications: [], notificationsAsked: false, notificationsLoading: false,
     notificationsRequestId: undefined, notificationsProblem: undefined,
     workflows: [], workflowRuns: [], workflowLoading: false,
@@ -1391,8 +1393,23 @@ export class RelayClient {
     this.transmit({ type: "typing", channelId, typing });
   }
 
-  /** Fire-and-forget still returns the exact id put on the wire for deterministic QA. */
+  private clientMessageKey(frame: Extract<ClientFrame, { type: "send" }>): string {
+    return JSON.stringify([frame.channelId, frame.text, frame.replyTo ?? null, frame.attachmentIds ?? []]);
+  }
+
+  private nextClientMessageId(): ID {
+    this.clientMessageSequence++;
+    return `cm_${Date.now().toString(36)}_${this.clientMessageSequence.toString(36)}`;
+  }
+
+  /** Fire-and-forget still returns the exact transport id; message identity is separate and stable. */
   send(frame: ClientFrame): ID | undefined {
+    if (frame.type === "send") {
+      const key = this.clientMessageKey(frame);
+      const clientMessageId = frame.clientMessageId ?? frame.tempId ?? this.pendingClientMessageIds.get(key) ?? this.nextClientMessageId();
+      this.pendingClientMessageIds.set(key, clientMessageId);
+      return this.transmit({ ...frame, clientMessageId, tempId: frame.tempId ?? clientMessageId });
+    }
     return this.transmit(frame);
   }
 
@@ -1584,8 +1601,18 @@ export class RelayClient {
   /* ---------------- read state ---------------- */
 
   /** "I have read this conversation up to here." Kept on the account, not here. */
-  markRead(channelId: ID, ts?: number): void {
-    this.send({ type: "markRead", channelId, ts });
+  markRead(channelId: ID, ts?: number, messageId?: ID): void {
+    this.send({ type: "markRead", channelId, ...(ts !== undefined ? { ts } : {}), ...(messageId ? { messageId } : {}) });
+  }
+
+  /** Recover one lost send acknowledgement using the author-only relay query. */
+  askMessageStatus(messageId?: ID, clientMessageId?: ID): ID | undefined {
+    const requestId = this.nextRequestId("messageStatus");
+    return this.send({ type: "messageStatus", ...(messageId ? { messageId } : {}), ...(clientMessageId ? { clientMessageId } : {}), requestId });
+  }
+
+  messageStatus(messageId: ID): MessageStatus | undefined {
+    return this.world.messageStatuses[messageId];
   }
 
   /** Fetch the relay-owned, durable mention/thread-reply inbox. */
@@ -3310,6 +3337,8 @@ askPolls(projectId: ID): void {
    */
 
   private requestSequence = 0;
+  private clientMessageSequence = 0;
+  private pendingClientMessageIds = new Map<string, ID>();
   private accessSave?: ArtifactAccessSaveState;
 
   artifactAccessSaveState(): ArtifactAccessSaveState | undefined {
@@ -3958,6 +3987,8 @@ askPolls(projectId: ID): void {
           requestId: undefined,
         };
         w.messages = {};
+        w.messageStatuses = {};
+        for (const status of frame.state.messageStatuses ?? []) w.messageStatuses[status.messageId] = status;
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
         }
@@ -4126,7 +4157,18 @@ askPolls(projectId: ID): void {
         // new arrays, not in-place pushes: the UI compares references to decide
         // what to recompute, so a mutated-in-place list looks like "no change"
         const cid = frame.message.channelId;
-        w.messages = { ...w.messages, [cid]: [...(w.messages[cid] ?? []), frame.message] };
+        const currentMessages = w.messages[cid] ?? [];
+        if (!currentMessages.some(m => m.id === frame.message.id)) {
+          w.messages = { ...w.messages, [cid]: [...currentMessages, frame.message] };
+        }
+        if (frame.message.authorId === w.me?.id && frame.message.clientMessageId) {
+          for (const [key, id] of this.pendingClientMessageIds) if (id === frame.message.clientMessageId) this.pendingClientMessageIds.delete(key);
+        }
+        // The recipient proves delivery by acknowledging the authenticated
+        // frame. Engines are never recipients and are rejected by the relay.
+        if (frame.message.authorKind === "human" && frame.message.authorId !== w.me?.id && w.connected) {
+          this.send({ type: "messageReceipt", channelId: frame.message.channelId, messageId: frame.message.id, status: "delivered" });
+        }
         // A reply belongs to its thread as well as to the room. Without this
         // the open thread panel would sit there missing the very reply that was
         // just typed into it, until somebody closed and reopened it.
@@ -4134,6 +4176,11 @@ askPolls(projectId: ID): void {
         if (root && w.threads[root] && !w.threads[root].some(m => m.id === frame.message.id)) {
           w.threads = { ...w.threads, [root]: [...w.threads[root], frame.message] };
         }
+        break;
+      }
+      case "messageStatus":
+      case "messageReceipt": {
+        w.messageStatuses = { ...w.messageStatuses, [frame.status.messageId]: frame.status };
         break;
       }
       case "typing":

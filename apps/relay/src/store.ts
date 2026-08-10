@@ -9,6 +9,7 @@ import {
   StoredArtifact, StoredArtifactVersion, artifactVersionForPublic,
   ChannelRole, EverywhereHit, ID, Message, SearchKind,
   MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, ProjectItem, PROJECT_LIMITS,
+  MessageStatus, MessageDeliveryStage,
   EngineeringCanvas, EngineeringCanvasRevision, CanvasBlock, CANVAS_LIMITS,
   ProjectPoll, ProjectPollDecision, ProjectPollOption,
   SocialPost, SocialReaction, SocialReadEntry, SocialLink, SOCIAL_LIMITS,
@@ -217,6 +218,8 @@ export type SavedMutationKind = "saveMessage" | "unsaveMessage";
 
 const SAVED_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const CHANNEL_PIN_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const MESSAGE_SEND_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const MESSAGE_SEND_MAX_ROWS = 512;
 
 interface SavedMutationReceipt {
   userId: ID;
@@ -229,6 +232,31 @@ interface SavedMutationReceipt {
 interface RawSavedMessageRow {
   userId: string; messageId: string; channelId: string;
   savedAt: number; note: string | null; remindAt: number | null;
+}
+
+export interface MessageSendLedgerRow {
+  authorId: ID;
+  clientMessageId: ID;
+  channelId: ID;
+  messageId: ID;
+  payloadHash: string;
+  createdAt: number;
+}
+
+export interface MessageReceiptRow {
+  messageId: ID;
+  channelId: ID;
+  recipientId: ID;
+  deliveredAt?: number;
+  readAt?: number;
+  cursorTs?: number;
+  cursorId?: ID;
+}
+
+export interface HumanMessageWrite {
+  message: Message;
+  clientMessageId: ID;
+  payloadHash: string;
 }
 
 function toSavedMessageRow(r: RawSavedMessageRow): SavedMessageRow {
@@ -407,6 +435,20 @@ export class Store implements JoinHubStore {
         json TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS msg_chan_ts ON messages(channelId, ts);
+      CREATE TABLE IF NOT EXISTS message_send_ledger(
+        authorId TEXT NOT NULL, clientMessageId TEXT NOT NULL,
+        channelId TEXT NOT NULL, messageId TEXT NOT NULL,
+        payloadHash TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        PRIMARY KEY(authorId, clientMessageId)
+      );
+      CREATE INDEX IF NOT EXISTS message_send_ledger_order
+        ON message_send_ledger(authorId, createdAt DESC);
+      CREATE TABLE IF NOT EXISTS message_receipts(
+        messageId TEXT NOT NULL, channelId TEXT NOT NULL, recipientId TEXT NOT NULL,
+        deliveredAt INTEGER, readAt INTEGER, cursorTs INTEGER, cursorId TEXT,
+        PRIMARY KEY(messageId, recipientId)
+      );
+      CREATE INDEX IF NOT EXISTS message_receipt_message ON message_receipts(messageId);
       CREATE TABLE IF NOT EXISTS tasks(
         id TEXT PRIMARY KEY, updatedAt INTEGER NOT NULL, json TEXT NOT NULL
       );
@@ -539,7 +581,7 @@ export class Store implements JoinHubStore {
       -- machines. It used to live in one browser's localStorage.
       CREATE TABLE IF NOT EXISTS reads(
         userId TEXT NOT NULL, channelId TEXT NOT NULL,
-        lastReadTs INTEGER NOT NULL, updatedAt INTEGER NOT NULL,
+        lastReadTs INTEGER NOT NULL, lastReadId TEXT, updatedAt INTEGER NOT NULL,
         PRIMARY KEY (userId, channelId)
       );
 
@@ -1095,6 +1137,7 @@ export class Store implements JoinHubStore {
     this.addColumn("hook_requests", "createdAt", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("social_ops", "payloadHash", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("social_ops", "projectId", "TEXT");
+    this.addColumn("reads", "lastReadId", "TEXT");
     // AN INDEX CAN ONLY BE BUILT OVER A COLUMN THAT EXISTS, so it is built
     // here, after the ALTERs, and not up in the CREATE block with the others.
     //
@@ -1174,6 +1217,8 @@ export class Store implements JoinHubStore {
     this.step(11, () => this.addEngineeringCanvasSchema());
     // v11 -> v12: shared channel pins and their bounded retry ledger.
     this.step(12, () => this.addChannelPinsSchema());
+    // v12 -> v13: durable human message acknowledgement ledger and receipts.
+    this.step(13, () => this.addMessageReceiptsSchema());
 
     // The one thing that still says a person can only be in a room once at a
     // time, now that the primary key no longer does. It lives here, below the
@@ -1354,6 +1399,26 @@ export class Store implements JoinHubStore {
       CREATE INDEX IF NOT EXISTS channel_pin_receipt_order
         ON channel_pin_receipts(userId,createdAt DESC);
     `);
+  }
+
+  private addMessageReceiptsSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS message_send_ledger(
+        authorId TEXT NOT NULL, clientMessageId TEXT NOT NULL,
+        channelId TEXT NOT NULL, messageId TEXT NOT NULL,
+        payloadHash TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        PRIMARY KEY(authorId, clientMessageId)
+      );
+      CREATE INDEX IF NOT EXISTS message_send_ledger_order
+        ON message_send_ledger(authorId, createdAt DESC);
+      CREATE TABLE IF NOT EXISTS message_receipts(
+        messageId TEXT NOT NULL, channelId TEXT NOT NULL, recipientId TEXT NOT NULL,
+        deliveredAt INTEGER, readAt INTEGER, cursorTs INTEGER, cursorId TEXT,
+        PRIMARY KEY(messageId, recipientId)
+      );
+      CREATE INDEX IF NOT EXISTS message_receipt_message ON message_receipts(messageId);
+    `);
+    this.addColumn("reads", "lastReadId", "TEXT");
   }
 
   private ensurePulseReceiptProjectColumn(): void {
@@ -1680,6 +1745,11 @@ export class Store implements JoinHubStore {
     this.tx(() => {
       this.db.prepare("DELETE FROM saved_mutation_receipts WHERE userId=?").run(id);
       this.db.prepare("DELETE FROM saved_messages WHERE userId=?").run(id);
+      // Send retries are account-scoped and must not survive account removal;
+      // retaining them would let a future account accidentally replay an old
+      // author's canonical id and would keep delivery metadata past access.
+      this.db.prepare("DELETE FROM message_send_ledger WHERE authorId=?").run(id);
+      this.clearMessageReceiptsForAuthor(id);
       this.db.prepare("DELETE FROM channel_pin_receipts WHERE userId=?").run(id);
       this.db.prepare("DELETE FROM hook_requests WHERE ownerId=?").run(id);
       this.db.prepare("DELETE FROM hook_audit WHERE ownerId=?").run(id);
@@ -1910,6 +1980,8 @@ export class Store implements JoinHubStore {
         "DELETE FROM artifact_access_users WHERE userId=? " +
         "AND artifactId IN (SELECT id FROM artifacts WHERE channelId=?)",
       ).run(memberId, channelId);
+      this.db.prepare("DELETE FROM message_receipts WHERE channelId=? AND recipientId=?")
+        .run(channelId, memberId);
       this.mirrorMemberIds(channelId);
     });
   }
@@ -1972,6 +2044,173 @@ export class Store implements JoinHubStore {
     const row = this.db.prepare("SELECT json FROM messages WHERE id=?").get(id) as
       { json: string } | undefined;
     return row ? (JSON.parse(row.json) as Message) : undefined;
+  }
+
+  /** Canonical payload identity for the author-scoped send ledger. */
+  messagePayloadHash(input: {
+    channelId: ID; text: string; replyTo?: ID; attachmentIds?: ID[];
+  }): string {
+    return createHash("sha256").update(JSON.stringify([
+      input.channelId, input.text, input.replyTo ?? null, input.attachmentIds ?? [],
+    ])).digest("hex");
+  }
+
+  private messageLedger(authorId: ID, clientMessageId: ID): MessageSendLedgerRow | undefined {
+    return this.db.prepare(
+      "SELECT authorId,clientMessageId,channelId,messageId,payloadHash,createdAt "
+      + "FROM message_send_ledger WHERE authorId=? AND clientMessageId=?",
+    ).get(authorId, clientMessageId) as MessageSendLedgerRow | undefined;
+  }
+
+  /**
+   * Atomically persist one human message and its retry ledger row. A replay of
+   * the same author/client id and canonical payload returns the original row;
+   * reusing that id for another payload is a hard refusal.
+   */
+  saveHumanMessage(
+    message: Message,
+    clientMessageId: ID,
+    payloadHash: string,
+  ): { message: Message; replayed: boolean } {
+    return this.tx(() => {
+      const prior = this.messageLedger(message.authorId, clientMessageId);
+      if (prior) {
+        if (prior.payloadHash !== payloadHash || prior.channelId !== message.channelId) {
+          throw new Error("that client message id was already used for different words");
+        }
+        const existing = this.message(prior.messageId);
+        if (existing) return { message: existing, replayed: true };
+        // A torn legacy row is not allowed to make a retry disappear. Retire it
+        // and write the canonical message below in this same transaction.
+        this.db.prepare("DELETE FROM message_send_ledger WHERE authorId=? AND clientMessageId=?")
+          .run(message.authorId, clientMessageId);
+      }
+      const row = stripHydrated({ ...message, clientMessageId });
+      this.db.prepare("INSERT INTO messages(id,channelId,ts,json) VALUES(?,?,?,?)")
+        .run(row.id, row.channelId, row.ts, JSON.stringify(row));
+      this.indexMessage(row);
+      const now = Date.now();
+      this.db.prepare(
+        "INSERT INTO message_send_ledger(authorId,clientMessageId,channelId,messageId,payloadHash,createdAt) VALUES(?,?,?,?,?,?)",
+      ).run(message.authorId, clientMessageId, message.channelId, message.id, payloadHash, now);
+      this.pruneMessageLedgers(now);
+      return { message: row, replayed: false };
+    });
+  }
+
+  private pruneMessageLedgers(now: number): void {
+    this.db.prepare("DELETE FROM message_send_ledger WHERE createdAt < ?")
+      .run(now - MESSAGE_SEND_RETENTION_MS);
+    // Prune each author independently so one noisy account cannot evict
+    // another account's retry history.
+    const authors = this.db.prepare("SELECT DISTINCT authorId FROM message_send_ledger").all() as { authorId: ID }[];
+    for (const { authorId } of authors) {
+      this.db.prepare(
+        "DELETE FROM message_send_ledger WHERE authorId=? AND clientMessageId NOT IN "
+        + "(SELECT clientMessageId FROM message_send_ledger WHERE authorId=? "
+        + "ORDER BY createdAt DESC,clientMessageId DESC LIMIT ?)",
+      ).run(authorId, authorId, MESSAGE_SEND_MAX_ROWS);
+    }
+  }
+
+  messageSendStatus(authorId: ID, clientMessageId?: ID, messageId?: ID): MessageSendLedgerRow | undefined {
+    if (clientMessageId) {
+      const row = this.messageLedger(authorId, clientMessageId);
+      if (row && row.createdAt < Date.now() - MESSAGE_SEND_RETENTION_MS) {
+        this.db.prepare("DELETE FROM message_send_ledger WHERE authorId=? AND clientMessageId=?")
+          .run(authorId, clientMessageId);
+        return undefined;
+      }
+      return row;
+    }
+    if (!messageId) return undefined;
+    return this.db.prepare(
+      "SELECT authorId,clientMessageId,channelId,messageId,payloadHash,createdAt "
+      + "FROM message_send_ledger WHERE authorId=? AND messageId=? AND createdAt>=? "
+      + "ORDER BY createdAt DESC LIMIT 1",
+    ).get(authorId, messageId, Date.now() - MESSAGE_SEND_RETENTION_MS) as MessageSendLedgerRow | undefined;
+  }
+
+  messageReceipt(messageId: ID, recipientId: ID): MessageReceiptRow | undefined {
+    const row = this.db.prepare(
+      "SELECT messageId,channelId,recipientId,deliveredAt,readAt,cursorTs,cursorId "
+      + "FROM message_receipts WHERE messageId=? AND recipientId=?",
+    ).get(messageId, recipientId) as {
+      messageId: ID; channelId: ID; recipientId: ID; deliveredAt: number | null;
+      readAt: number | null; cursorTs: number | null; cursorId: ID | null;
+    } | undefined;
+    if (!row) return undefined;
+    return {
+      messageId: row.messageId, channelId: row.channelId, recipientId: row.recipientId,
+      ...(row.deliveredAt !== null ? { deliveredAt: row.deliveredAt } : {}),
+      ...(row.readAt !== null ? { readAt: row.readAt } : {}),
+      ...(row.cursorTs !== null ? { cursorTs: row.cursorTs } : {}),
+      ...(row.cursorId ? { cursorId: row.cursorId } : {}),
+    };
+  }
+
+  messageReceipts(messageId: ID): MessageReceiptRow[] {
+    const rows = this.db.prepare(
+      "SELECT messageId,channelId,recipientId,deliveredAt,readAt,cursorTs,cursorId "
+      + "FROM message_receipts WHERE messageId=?",
+    ).all(messageId) as {
+      messageId: ID; channelId: ID; recipientId: ID; deliveredAt: number | null;
+      readAt: number | null; cursorTs: number | null; cursorId: ID | null;
+    }[];
+    return rows.map(row => ({
+      messageId: row.messageId, channelId: row.channelId, recipientId: row.recipientId,
+      ...(row.deliveredAt !== null ? { deliveredAt: row.deliveredAt } : {}),
+      ...(row.readAt !== null ? { readAt: row.readAt } : {}),
+      ...(row.cursorTs !== null ? { cursorTs: row.cursorTs } : {}),
+      ...(row.cursorId ? { cursorId: row.cursorId } : {}),
+    }));
+  }
+
+  /** Monotonic receipt transition. Returns false for duplicate/out-of-order frames. */
+  recordMessageReceipt(
+    recipientId: ID, message: Message, status: Exclude<MessageDeliveryStage, "accepted" | "unknown" | "failed">,
+    cursor?: { ts?: number; id?: ID },
+  ): boolean {
+    return this.tx(() => {
+      const prior = this.messageReceipt(message.id, recipientId);
+      if (status === "delivered" && prior?.deliveredAt !== undefined) return false;
+      if (status === "read" && prior?.readAt !== undefined) return false;
+      const now = Date.now();
+      if (status === "delivered") {
+        this.db.prepare(
+          "INSERT INTO message_receipts(messageId,channelId,recipientId,deliveredAt) VALUES(?,?,?,?) "
+          + "ON CONFLICT(messageId,recipientId) DO UPDATE SET deliveredAt=COALESCE(message_receipts.deliveredAt,excluded.deliveredAt)",
+        ).run(message.id, message.channelId, recipientId, now);
+        this.db.prepare("DELETE FROM message_receipts WHERE COALESCE(readAt,deliveredAt) < ?")
+          .run(now - MESSAGE_SEND_RETENTION_MS);
+        return true;
+      }
+      // A read frame implies delivery. Cursor fields are facts from the relay's
+      // authorized message, never a client identity claim.
+      this.db.prepare(
+        "INSERT INTO message_receipts(messageId,channelId,recipientId,deliveredAt,readAt,cursorTs,cursorId) VALUES(?,?,?,?,?,?,?) "
+        + "ON CONFLICT(messageId,recipientId) DO UPDATE SET "
+        + "deliveredAt=COALESCE(message_receipts.deliveredAt,excluded.deliveredAt), "
+        + "readAt=COALESCE(message_receipts.readAt,excluded.readAt), "
+        + "cursorTs=COALESCE(message_receipts.cursorTs,excluded.cursorTs), "
+        + "cursorId=COALESCE(message_receipts.cursorId,excluded.cursorId)",
+      ).run(message.id, message.channelId, recipientId, now, now, cursor?.ts ?? message.ts, cursor?.id ?? message.id);
+      this.db.prepare("DELETE FROM message_receipts WHERE COALESCE(readAt,deliveredAt) < ?")
+        .run(now - MESSAGE_SEND_RETENTION_MS);
+      return true;
+    });
+  }
+
+  clearMessageReceipts(messageId: ID): void {
+    this.db.prepare("DELETE FROM message_receipts WHERE messageId=?").run(messageId);
+  }
+
+  /** Remove all receipt metadata for messages authored by a deleted account. */
+  clearMessageReceiptsForAuthor(authorId: ID): void {
+    this.db.prepare(
+      "DELETE FROM message_receipts WHERE messageId IN "
+      + "(SELECT id FROM messages WHERE json_extract(json,'$.authorId')=?)",
+    ).run(authorId);
   }
 
   private addSavedMessagesSchema(): void {
@@ -2616,11 +2855,12 @@ export class Store implements JoinHubStore {
    * (Buzz's `thread_metadata.reply_count` — the reason theirs is cheap).
    * Returns the updated root so the caller can broadcast it.
    */
-  bumpReplyCount(rootId: ID, at: number, authorId?: ID): Message | undefined {
+  bumpReplyCount(rootId: ID, at: number, authorId?: ID, replyId?: ID): Message | undefined {
     const root = this.message(rootId);
     if (!root) return undefined;
     root.replyCount = (root.replyCount ?? 0) + 1;
     root.lastReplyAt = at;
+    if (replyId) root.lastReplyId = replyId;
     /* Who is in the thread, newest first, capped at three — the faces beside
        the count. The speaker moves to the front rather than appearing twice. */
     if (authorId) {
@@ -3574,17 +3814,24 @@ export class Store implements JoinHubStore {
   }
 
   // ---- read state (on the account, not the machine) ----
-  markRead(userId: ID, channelId: ID, ts: number): number {
+  markRead(userId: ID, channelId: ID, ts: number, messageId?: ID): number {
     const now = Date.now();
-    const current = this.lastRead(userId, channelId);
+    const current = this.lastReadCursor(userId, channelId);
     // Read state only ever moves FORWARD. A client that reconnects and replays
     // an old position must not un-read what another machine already read.
-    const next = Math.max(current, ts);
+    const next = ts > current.ts || (ts === current.ts && (messageId ?? "") > (current.id ?? ""))
+      ? { ts, id: messageId } : current;
     this.db.prepare(
-      "INSERT INTO reads(userId,channelId,lastReadTs,updatedAt) VALUES(?,?,?,?) " +
-      "ON CONFLICT(userId,channelId) DO UPDATE SET lastReadTs=excluded.lastReadTs, updatedAt=excluded.updatedAt",
-    ).run(userId, channelId, next, now);
-    return next;
+      "INSERT INTO reads(userId,channelId,lastReadTs,lastReadId,updatedAt) VALUES(?,?,?,?,?) " +
+      "ON CONFLICT(userId,channelId) DO UPDATE SET lastReadTs=excluded.lastReadTs,lastReadId=excluded.lastReadId,updatedAt=excluded.updatedAt",
+    ).run(userId, channelId, next.ts, next.id ?? null, now);
+    return next.ts;
+  }
+
+  lastReadCursor(userId: ID, channelId: ID): { ts: number; id?: ID } {
+    const row = this.db.prepare("SELECT lastReadTs,lastReadId FROM reads WHERE userId=? AND channelId=?")
+      .get(userId, channelId) as { lastReadTs: number; lastReadId: ID | null } | undefined;
+    return { ts: row?.lastReadTs ?? 0, ...(row?.lastReadId ? { id: row.lastReadId } : {}) };
   }
 
   lastRead(userId: ID, channelId: ID): number {
@@ -3604,10 +3851,10 @@ export class Store implements JoinHubStore {
     // printed "999+" as if it had hit a ceiling. A capped number dressed as an
     // exact one is a lie; if the frame cannot carry "capped" (shared types are
     // closed today), the only honest hub answer is the real total.
-    const since = this.lastRead(userId, channelId);
+    const since = this.lastReadCursor(userId, channelId);
     const rows = this.db
-      .prepare("SELECT json FROM messages WHERE channelId=? AND ts>? ORDER BY ts ASC")
-      .all(channelId, since) as { json: string }[];
+      .prepare("SELECT json FROM messages WHERE channelId=? AND (ts>? OR (ts=? AND id>?)) ORDER BY ts ASC,id ASC")
+      .all(channelId, since.ts, since.ts, since.id ?? "") as { json: string }[];
     let unread = 0;
     let mentions = 0;
     for (const r of rows) {
@@ -5025,7 +5272,7 @@ export const ARTIFACT_STAGE_GRACE_MS = 60_000;
  * 11 = Engineering Canvas documents and revisions.
  * 12 = shared non-DM channel pins and bounded mutation receipts.
  */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 /**
  * The fingerprint of one line of the trail.

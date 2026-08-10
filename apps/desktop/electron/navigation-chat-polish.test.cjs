@@ -227,7 +227,7 @@ test("the composer restores scoped text drafts without claiming files survive re
   assert.match(app, /Hydrate before this scope may write/);
   assert.match(app, /clearChatDraft\(draftScope\)/,
     "a successful send must remove the matching text draft");
-  assert.match(app, /browser cannot\n\s*restore a File safely after restart/,
+  assert.match(app, /browser cannot\r?\n\s*restore a File safely after restart/,
     "attachment persistence must not be misrepresented");
   assert.match(app, /data-draft-status/);
   assert.match(css, /\.composer-draft-status\{color:var\(--ink-2\);font-size:12px;/,
@@ -257,4 +257,14 @@ test("sending a message follows the newest content immediately", () => {
     "the send control should stay compact and arrow-led");
   assert.match(app, /<span className="sr-only">\{busy/,
     "the compact send control still needs an accessible name");
+});
+
+test("focus read recheck uses the chat scroll container bounds", () => {
+  const app = read("App.tsx");
+  const focus = app.slice(app.indexOf("/* Re-check only rows"), app.indexOf("const roomRef"));
+  assert.match(focus, /const rootRect = root\?\.getBoundingClientRect\(\)/);
+  assert.match(focus, /rect\.top >= rootRect\.top && rect\.bottom <= rootRect\.bottom/,
+    "focus must not treat rows clipped by the .msgs container as visible");
+  assert.doesNotMatch(focus, /window\.innerHeight/,
+    "the viewport check must not use the window when .msgs is scrolled");
 });

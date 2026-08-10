@@ -3381,6 +3381,8 @@ export interface MessageReaction {
 
 export interface Message {
   id: ID;
+  /** Stable client identity retained across reconnect/retry. Never used as transport correlation. */
+  clientMessageId?: ID;
   channelId: ID;
   authorId: ID;
   authorName: string;
@@ -3415,6 +3417,8 @@ export interface Message {
   replyCount?: number;
   /** when the newest reply landed — the other half of "12 replies · 3m ago" */
   lastReplyAt?: number;
+  /** canonical reply id breaks same-millisecond thread/read ties */
+  lastReplyId?: ID;
   /**
    * WHO is in the thread, newest speaker first, at most three — so the reply
    * line can show their faces, the way Buzz stacks them beside "12 replies".
@@ -3442,6 +3446,24 @@ export interface SavedMessageEntry {
   message?: Message;
   /** Source thread root, when the saved message is a reply. */
   threadParentId?: ID;
+}
+
+export type MessageDeliveryStage = "accepted" | "delivered" | "read" | "unknown" | "failed";
+
+/** Author-scoped delivery projection. Recipient ids are present only for a direct human DM. */
+export interface MessageStatus {
+  messageId: ID;
+  clientMessageId?: ID;
+  channelId: ID;
+  stage: MessageDeliveryStage;
+  acceptedAt?: number;
+  deliveredAt?: number;
+  readAt?: number;
+  deliveredCount?: number;
+  readCount?: number;
+  recipientCount?: number;
+  /** Exact human state is allowed only for a direct human conversation. */
+  recipients?: Array<{ recipientId: ID; stage: "delivered" | "read"; at: number }>;
 }
 
 /** A durable pin shared by every current member of one non-DM channel. */
@@ -3515,8 +3537,10 @@ export interface EverywhereHit {
 /** Where one person has read up to in one conversation, and what is left. */
 export interface UnreadEntry {
   channelId: ID;
-  /** everything at or before this moment has been seen */
+  /** everything at or before this cursor has been seen */
   lastReadTs: number;
+  /** id breaks same-millisecond ties; absent only on legacy relay rows */
+  lastReadId?: ID;
   /** messages after it that this person did not write */
   unread: number;
   /** how many of those @mention them (or one of their agents) */
@@ -3530,7 +3554,7 @@ export type WithRequestId<T> = T extends unknown ? T & { requestId?: ID } : neve
 
 type ClientFrameBase =
   | { type: "hello"; token: string; client: "desktop" | "mobile" | "engine" }
-  | { type: "send"; channelId: ID; text: string; tempId?: string; replyTo?: ID; attachmentIds?: ID[] }
+  | { type: "send"; channelId: ID; text: string; tempId?: string; clientMessageId?: ID; replyTo?: ID; attachmentIds?: ID[] }
   /** Live human typing is a request-independent, non-durable signal. */
   | { type: "typing"; channelId: ID; typing: boolean }
   | { type: "createChannel"; name: string; memberIds: ID[]; kind?: ChannelKind }
@@ -3668,7 +3692,13 @@ type ClientFrameBase =
    */
   | { type: "artifactTicket"; artifactId: ID; version?: number }
   /** "I have read this conversation up to here" — kept on the account, not the machine. */
-  | { type: "markRead"; channelId: ID; ts?: number }
+  | { type: "markRead"; channelId: ID; ts?: number; messageId?: ID }
+  /** Author-only recovery query for a lost message acknowledgement. */
+  | { type: "messageStatus"; messageId?: ID; clientMessageId?: ID }
+  /** Authenticated human recipient receipt; the relay derives recipient identity. */
+  | { type: "messageReceipt"; channelId: ID; messageId: ID; status: "delivered" | "read"; ts?: number; messageIdCursor?: ID }
+  /** Compatibility spelling for clients that call the frame a human receipt. */
+  | { type: "humanReceipt"; channelId: ID; messageId: ID; status: "delivered" | "read"; ts?: number; messageIdCursor?: ID }
   /** Ask for this person's durable mention/thread-reply inbox. */
   | { type: "notifications"; includeDismissed?: boolean; limit?: number }
   /** Mark one durable inbox row read; the relay checks recipient ownership. */
@@ -4255,6 +4285,8 @@ export interface WorldState {
    * follows them between machines (absent on a relay older than this round).
    */
   unread?: UnreadEntry[];
+  /** Accepted/delivered/read state for messages authored by this person only. */
+  messageStatuses?: MessageStatus[];
   /**
    * WHAT THE HUB CHANGED ABOUT HIS AGENTS WHILE HE WAS NOT LOOKING.
    *
@@ -4305,7 +4337,9 @@ export interface ReachCatchupAgent {
 
 export type ServerFrame =
   | { type: "welcome"; state: WorldState }
-  | { type: "message"; message: Message; tempId?: string }
+  | { type: "message"; message: Message; tempId?: string; requestId?: ID }
+  | { type: "messageStatus"; status: MessageStatus; requestId?: ID }
+  | { type: "messageReceipt"; status: MessageStatus; requestId?: ID }
   /** Ephemeral human typing; request-independent and never persisted. */
   | { type: "typing"; typing: HumanTyping }
   | { type: "channel"; channel: Channel }

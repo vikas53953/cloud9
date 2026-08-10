@@ -30,6 +30,7 @@ import {
   SavingProposal, applySaving, findWaste, rollUpTokenUse, savingDetail, savingHeadline,
   tidySaving, validateSavingProposal,
   SearchHit, SavedMessageEntry, ChannelPinEntry, ServerFrame, Task, UnreadEntry, User, WorldState,
+  MessageStatus,
   HumanTyping,
   NotificationInboxEntry, NotificationInboxKind, notificationEventId,
   Workflow, WorkflowRun, WorkflowRunStep, WorkflowStepStatus,
@@ -605,7 +606,7 @@ export class Relay {
     if (!user) { sendFrameError(ws, "bad token", frame); ws.close(); return undefined; }
     const conn: Conn = { ws, userId: user.id, client: frame.client };
     this.conns.add(conn);
-    send(ws, { type: "welcome", state: this.worldFor(user.id) });
+    send(ws, { type: "welcome", state: this.worldFor(user.id, conn.client) });
     if (conn.userId === this.ownerId && this.restartExpiredWorkflowApprovals.length) {
       const expired = this.restartExpiredWorkflowApprovals;
       this.restartExpiredWorkflowApprovals = [];
@@ -667,7 +668,7 @@ export class Relay {
       this.broadcastChannel(this.store.channel(general.id)!);
     }
     this.broadcast({ type: "userJoined", user });
-    send(ws, { type: "welcome", state: this.worldFor(user.id) });
+    send(ws, { type: "welcome", state: this.worldFor(user.id, conn.client) });
     return conn;
   }
 
@@ -737,7 +738,7 @@ export class Relay {
     this.announcePresence(this.store.agents().filter(a => a.ownerId === userId));
   }
 
-  private worldFor(userId: ID): WorldState {
+  private worldFor(userId: ID, client: Conn["client"] = "desktop"): WorldState {
     const users = this.store.users();
     const channels = this.visibleChannels(userId);
     return {
@@ -778,6 +779,10 @@ export class Relay {
       // read state comes from the RELAY now, not from one browser's storage, so
       // reading on the laptop is read on the phone too
       unread: this.unreadFor(userId, channels),
+      // Engines are not human windows/readers.  Keep the author delivery
+      // projection out of their bootstrap state; desktop/mobile windows get
+      // the author-only projection and subsequent status pushes.
+      messageStatuses: client === "engine" ? [] : this.messageStatusesFor(userId),
       // WHAT THE HUB CHANGED ABOUT HIS AGENTS BEFORE HE ARRIVED, to the person
       // whose agents they are and to nobody else. A guest is not shown a list of
       // somebody else's crew, and it is absent entirely when nothing happened.
@@ -2117,11 +2122,112 @@ private viewProject(project: Project, viewerId?: ID): Project {
   /** Where this person has read up to, in every conversation they can see. */
   private unreadFor(userId: ID, channels: Channel[]): UnreadEntry[] {
     const mine = this.myIds(userId);
-    return channels.map(c => ({
-      channelId: c.id,
-      lastReadTs: this.store.lastRead(userId, c.id),
-      ...this.store.unreadFor(userId, c.id, mine),
-    }));
+    return channels.map(c => {
+      const cursor = this.store.lastReadCursor(userId, c.id);
+      return {
+        channelId: c.id, lastReadTs: cursor.ts,
+        ...(cursor.id ? { lastReadId: cursor.id } : {}),
+        ...this.store.unreadFor(userId, c.id, mine),
+      };
+    });
+  }
+
+  /** Build the author-only delivery projection; group rows never contain recipient ids. */
+  private messageStatusFor(authorId: ID, message: Message): MessageStatus {
+    const channel = this.store.channel(message.channelId);
+    const ledger = this.store.messageSendStatus(authorId, message.clientMessageId, message.id);
+    // Receipt audience is frozen at message creation.  Current membership is
+    // only an access gate; a late joiner must not inflate an old message's
+    // recipient count, and a former member must remain part of the historical
+    // denominator even after their receipt metadata is cleaned up.
+    const humans = this.store.channelMembers(message.channelId, { at: message.ts })
+      .map(member => member.memberId)
+      .filter(id => !!this.store.user(id) && id !== authorId);
+    const receipts = this.store.messageReceipts(message.id).filter(r => humans.includes(r.recipientId));
+    const deliveredCount = receipts.filter(r => r.deliveredAt !== undefined || r.readAt !== undefined).length;
+    const readCount = receipts.filter(r => r.readAt !== undefined).length;
+    const stage: MessageStatus["stage"] = readCount > 0 && readCount >= humans.length && humans.length > 0
+      ? "read" : deliveredCount > 0 ? "delivered" : "accepted";
+    const directHuman = channel?.kind === "dm" && humans.length === 1;
+    return {
+      messageId: message.id, ...(message.clientMessageId ? { clientMessageId: message.clientMessageId } : {}),
+      channelId: message.channelId, stage,
+      acceptedAt: ledger?.createdAt ?? message.ts,
+      ...(receipts.find(r => r.deliveredAt !== undefined)?.deliveredAt !== undefined
+        ? { deliveredAt: receipts.find(r => r.deliveredAt !== undefined)!.deliveredAt } : {}),
+      ...(receipts.find(r => r.readAt !== undefined)?.readAt !== undefined
+        ? { readAt: receipts.find(r => r.readAt !== undefined)!.readAt } : {}),
+      deliveredCount, readCount, recipientCount: humans.length,
+      ...(directHuman ? {
+        recipients: receipts.filter(r => r.deliveredAt !== undefined || r.readAt !== undefined).map(r => ({
+          recipientId: r.recipientId,
+          stage: r.readAt !== undefined ? "read" as const : "delivered" as const,
+          at: r.readAt ?? r.deliveredAt!,
+        })),
+      } : {}),
+    };
+  }
+
+  private messageStatusesFor(authorId: ID): MessageStatus[] {
+    const channels = this.visibleChannels(authorId);
+    // `recentMessages(channels, 512)` is intentionally per-channel.  Do not
+    // slice the flattened result: channel ordering would let one busy room
+    // evict every other room's status from the bootstrap projection.
+    return channels.flatMap(channel => this.store.history(channel.id, {}, 512).items)
+      .filter(message => message.authorId === authorId)
+      .map(message => this.messageStatusFor(authorId, message));
+  }
+
+  private pushMessageStatus(authorId: ID, message: Message): void {
+    const channel = this.store.channel(message.channelId);
+    if (!channel || !this.audienceFor(channel).has(authorId)) return;
+    const frame: ServerFrame = { type: "messageStatus", status: this.messageStatusFor(authorId, message) };
+    // Delivery is a human author's window concern.  In particular, do not
+    // stream this projection to an engine connection, and never room-broadcast
+    // it: an engine is not a human reader and other members must not learn a
+    // sender's per-message state.
+    for (const conn of this.conns) {
+      if (conn.userId === authorId && conn.client !== "engine") send(conn.ws, frame);
+    }
+  }
+
+  /** Authenticate and apply one human delivered/read receipt. */
+  private handleHumanReceipt(conn: Conn, frame: Extract<ClientFrame, { type: "messageReceipt" | "humanReceipt" }>): void {
+    if (conn.client === "engine") throw new Error("agent engines cannot send human receipts");
+    // The TypeScript union is not a runtime boundary: a reconnecting or
+    // hand-written client can still put an arbitrary string on the wire.
+    // Refuse it before the store's read branch could interpret it as `read`.
+    if (frame.status !== "delivered" && frame.status !== "read") {
+      throw new Error("that receipt stage is not supported");
+    }
+    const channel = this.channelFor(conn.userId, frame.channelId);
+    // `channelFor` also permits a person's own agent to make the conversation
+    // visible.  A human receipt is narrower: the authenticated human account
+    // itself must be a current member, not merely the owner of an agent in the
+    // room.
+    if (!channel.memberIds.includes(conn.userId)) {
+      throw new Error("only a direct human member can acknowledge this message");
+    }
+    const message = this.store.message(frame.messageId);
+    if (!message || message.channelId !== channel.id) throw new Error("that message is not in this channel");
+    if (!this.store.channelMembers(channel.id, { at: message.ts }).some(member => member.memberId === conn.userId)) {
+      throw new Error("you were not a human member when that message was sent");
+    }
+    if (message.authorKind !== "human" || message.authorId === conn.userId) {
+      throw new Error("only another human recipient can acknowledge this message");
+    }
+    const cursorTs = frame.ts;
+    const cursorId = frame.messageIdCursor;
+    if (frame.status === "read" && cursorTs !== undefined) {
+      const latest = this.store.history(channel.id, {}, MESSAGE_LIMITS.page).items.at(-1);
+      if (latest && (cursorTs > latest.ts || (cursorTs === latest.ts && cursorId !== undefined && cursorId > latest.id))) {
+        throw new Error("that read cursor is ahead of this conversation");
+      }
+    }
+    const changed = this.store.recordMessageReceipt(conn.userId, message, frame.status, {
+      ts: cursorTs, id: cursorId,
+    });
+    if (changed) this.pushMessageStatus(message.authorId, message);
   }
 
   /** Project one durable row against the recipient's CURRENT access/message. */
@@ -3348,24 +3454,69 @@ private viewProject(project: Project, viewerId?: ID): Project {
         break;
       case "send": {
         const user = this.store.users().find(u => u.id === conn.userId)!;
+        const clientMessageId = frame.clientMessageId ?? frame.tempId ?? newId("cm");
+        const existing = this.store.messageSendStatus(conn.userId, clientMessageId);
+        // A retry is an acknowledgement recovery operation, not a new write.
+        // Authorise the original channel first (so removal still refuses), but
+        // do not re-run mutable write/reply gates such as archive status.
+        if (existing) {
+          this.channelFor(conn.userId, existing.channelId);
+          const payloadHash = this.store.messagePayloadHash({
+            channelId: frame.channelId, text: frame.text, replyTo: frame.replyTo,
+            attachmentIds: frame.attachmentIds,
+          });
+          if (existing.channelId !== frame.channelId || existing.payloadHash !== payloadHash) {
+            throw new Error("that client message id was already used for different words");
+          }
+          const priorMessage = this.store.message(existing.messageId);
+          if (!priorMessage) throw new Error("that accepted message is no longer available");
+          send(conn.ws, { type: "message", message: this.hydrate([priorMessage])[0], tempId: frame.tempId, requestId: frame.requestId });
+          this.pushMessageStatus(conn.userId, priorMessage);
+          break;
+        }
         const channel = this.writableChannel(conn.userId, frame.channelId); // you may only post where you are
         const hasFiles = (frame.attachmentIds?.length ?? 0) > 0;
         // words are optional only when a file is carrying the message
         const bad = validateMessageText(frame.text, hasFiles);
         if (bad) throw new Error(bad);
         const replyTo = this.resolveReplyTo(channel, frame.replyTo);
+        const payloadHash = this.store.messagePayloadHash({
+          channelId: frame.channelId, text: frame.text, replyTo: frame.replyTo, attachmentIds: frame.attachmentIds,
+        });
         const id = newId("m");
         const attachments = this.claimAttachments(conn.userId, channel, frame.attachmentIds, id);
         this.postMessage({
           id, channelId: frame.channelId,
           authorId: user.id, authorName: user.name, authorKind: "human",
+          clientMessageId,
           text: frame.text, ts: Date.now(),
           mentions: this.mentionsFor(conn.userId, frame.text),
           ...(replyTo ? { replyTo } : {}),
           ...(attachments.length ? { attachments } : {}),
-        }, frame.tempId);
+        }, frame.tempId, frame.requestId, clientMessageId, payloadHash);
         break;
       }
+      case "messageStatus": {
+        if (conn.client === "engine") throw new Error("message status is only available to human windows");
+        const row = this.store.messageSendStatus(conn.userId, frame.clientMessageId, frame.messageId);
+        if (!row) throw new Error("that accepted message is not available");
+        const message = this.store.message(row.messageId);
+        if (!message || message.authorId !== conn.userId) throw new Error("that accepted message is not available");
+        // The send ledger is intentionally durable across reconnects, but it
+        // is not a channel-access grant.  An author who has since left (or was
+        // removed from) the conversation must not use a lost-ack query to
+        // recover old DM recipient identities or any other status projection.
+        const channel = this.store.channel(message.channelId);
+        if (!channel || !channel.memberIds.includes(conn.userId)) {
+          throw new Error("that accepted message is not available");
+        }
+        send(conn.ws, { type: "messageStatus", status: this.messageStatusFor(conn.userId, message), requestId: frame.requestId });
+        break;
+      }
+      case "messageReceipt":
+      case "humanReceipt":
+        this.handleHumanReceipt(conn, frame);
+        break;
       case "agentSend": {
         const agent = this.myAgent(conn.userId, frame.agentId);
         // an agent speaks where it (or its owner) belongs, nowhere else
@@ -6702,6 +6853,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
           this.store.removeAttachmentBytes(a.storedAs);
         }
         this.store.clearReactions(message.id);
+        this.store.clearMessageReceipts(message.id);
         message.text = "";
         message.mentions = [];
         message.attachments = undefined;
@@ -6959,10 +7111,18 @@ private viewProject(project: Project, viewerId?: ID): Project {
       }
       case "markRead": {
         const channel = this.channelFor(conn.userId, frame.channelId);
-        const ts = typeof frame.ts === "number" ? frame.ts : Date.now();
-        const lastReadTs = this.store.markRead(conn.userId, channel.id, ts);
+        let ts = typeof frame.ts === "number" ? frame.ts : Date.now();
+        let messageId = frame.messageId;
+        const latest = this.store.history(channel.id, {}, MESSAGE_LIMITS.page).items.at(-1);
+        if (latest && (ts > latest.ts || (ts === latest.ts && messageId !== undefined && messageId > latest.id))) {
+          // A stale/future viewport cannot mark an unseen future message read;
+          // clamp to the newest authorized message instead of trusting a clock.
+          ts = latest.ts; messageId = latest.id;
+        }
+        const lastReadTs = this.store.markRead(conn.userId, channel.id, ts, messageId);
+        const cursor = this.store.lastReadCursor(conn.userId, channel.id);
         const entry: UnreadEntry = {
-          channelId: channel.id, lastReadTs,
+          channelId: channel.id, lastReadTs, ...(cursor.id ? { lastReadId: cursor.id } : {}),
           ...this.store.unreadFor(conn.userId, channel.id, this.myIds(conn.userId)),
         };
         // EVERY machine this person is signed in on, which is the whole point
@@ -7325,7 +7485,13 @@ private viewProject(project: Project, viewerId?: ID): Project {
     return [...this.store.users(), ...this.store.agents()].map(x => ({ id: x.id, name: x.name }));
   }
 
-  private postMessage(message: Message, tempId?: string): void {
+  private postMessage(
+    message: Message,
+    tempId?: string,
+    requestId?: ID,
+    clientMessageId?: ID,
+    payloadHash?: string,
+  ): void {
     const ch = this.store.channel(message.channelId);
     if (!ch) throw new Error("no such channel");
     // Capture the thread as it stood BEFORE this reply landed. That timing is
@@ -7334,13 +7500,18 @@ private viewProject(project: Project, viewerId?: ID): Project {
     const priorReplies = message.replyTo
       ? this.store.thread(message.replyTo).filter(m => m.id !== message.id)
       : [];
-    this.store.saveMessage(message);
+    if (message.authorKind === "human" && clientMessageId && payloadHash) {
+      const saved = this.store.saveHumanMessage(message, clientMessageId, payloadHash);
+      message = saved.message;
+    } else {
+      this.store.saveMessage(message);
+    }
     this.recordMessageNotifications(ch, message, priorReplies);
     // A reply bumps the CACHED count on the message that started the thread, and
     // everyone watching is told the root changed — otherwise "12 replies" would
     // only appear after a reload.
     if (message.replyTo) {
-      const root = this.store.bumpReplyCount(message.replyTo, message.ts, message.authorId);
+      const root = this.store.bumpReplyCount(message.replyTo, message.ts, message.authorId, message.id);
       if (root) this.broadcastMessageUpdate(root);
     }
     if (message.authorKind === "agent") {
@@ -7353,12 +7524,13 @@ private viewProject(project: Project, viewerId?: ID): Project {
     const memberUserIds = this.audienceFor(ch);
     for (const conn of this.conns) {
       if (!memberUserIds.has(conn.userId)) continue;
-      send(conn.ws, { type: "message", message, tempId });
+      send(conn.ws, { type: "message", message, tempId, ...(conn.userId === message.authorId && requestId ? { requestId } : {}) });
       // proactive agent messages become notifications on mobile clients
       if (message.proactive && conn.client === "mobile") {
         send(conn.ws, { type: "push", message });
       }
     }
+    if (message.authorKind === "human") this.pushMessageStatus(message.authorId, message);
     // push log for offline members (APNs delivery later)
     if (message.proactive) {
       const online = new Set([...this.conns].map(c => c.userId));

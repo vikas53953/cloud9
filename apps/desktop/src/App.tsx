@@ -14,6 +14,7 @@ import {
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
   EverywhereHit, SearchKind,
   SearchHit, ServerFrame, SKILL_LIMITS, SOCIAL_LIMITS, SocialLink, SocialPost, summarizeRun, Task, User, humanDuration, humanMoney,
+  MessageStatus,
   HuddleSession, HuddleNote, HuddleNoteKind, HuddleLink,
   StoredHook, HOOK_EVENTS, HOOK_ACTIONS,
   NotificationInboxEntry,
@@ -3079,7 +3080,10 @@ function Workspace(): React.JSX.Element {
   }>());
   const unreadFor = useCallback((c: Channel): Unread => {
     const entry = world.unread[c.id];
-    const seen = entry?.lastReadTs ?? 0;
+    const seen: ReadCursor = {
+      ts: entry?.lastReadTs ?? 0,
+      ...(entry?.lastReadId ? { id: entry.lastReadId } : {}),
+    };
     const msgs = world.messages[c.id] ?? NO_MESSAGES;
     const held = unreadCache.current.get(c.id);
     if (held && Object.is(held.msgs, msgs) && Object.is(held.entry, entry)
@@ -3089,7 +3093,7 @@ function Workspace(): React.JSX.Element {
     }
     const mine = world.me?.id;
     const myAgentIds = world.agents.filter(a => a.ownerId === mine).map(a => a.id);
-    const fresh = msgs.filter(m => m.ts > seen && m.authorId !== mine);
+    const fresh = msgs.filter(m => afterCursor(m, seen) && m.authorId !== mine);
     const mentionsMe = (m: Message) =>
       (m.mentions ?? []).some(id => id === mine || myAgentIds.includes(id));
     const unread = Math.max(fresh.length, entry?.unread ?? 0);
@@ -3128,30 +3132,6 @@ function Workspace(): React.JSX.Element {
     });
     return value;
   }, [world.unread, world.messages, world.me, world.agents, p.replies]);
-
-  /* Reading a conversation marks it read — on the account, so the phone finds
-     out too. Debounced, because a burst of arriving messages is one read. */
-  const newestTs = active
-    ? (world.messages[active.id] ?? []).reduce((n, m) => Math.max(n, m.ts), 0)
-    : 0;
-  useEffect(() => {
-    if (!active || screen !== "chat" || !world.connected) return;
-    const seen = world.unread[active.id]?.lastReadTs ?? 0;
-    const upTo = newestTs || Date.now();
-    if (seen >= upTo) return;
-    const t = setTimeout(() => client.markRead(active.id, upTo), 350);
-    return () => clearTimeout(t);
-  }, [active?.id, newestTs, screen, world.connected, world.unread]);
-
-  /* Coming back to the window is also "I have read this". */
-  useEffect(() => {
-    const onFocus = () => {
-      if (!active || screen !== "chat") return;
-      client.markRead(active.id);
-    };
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, [active?.id, screen]);
 
   /* Opening a conversation asks the relay for its newest page, which is the
      only way to learn whether there is anything OLDER — `welcome` hands over
@@ -3386,7 +3366,10 @@ function Workspace(): React.JSX.Element {
               onNewAgent={() => openEditor("new")} onBrowseMarket={() => goScreen("market")}
               onInvite={openInvite} onEditAgent={a => openEditor(a)} onOpenDm={openDm}
               onOpenHuddles={openHuddles}
-              lastRead={active ? world.unread[active.id]?.lastReadTs ?? 0 : 0}
+              lastRead={active
+                ? { ts: world.unread[active.id]?.lastReadTs ?? 0,
+                    ...(world.unread[active.id]?.lastReadId ? { id: world.unread[active.id]!.lastReadId } : {}) }
+                : { ts: 0 }}
               findOpen={findOpen} onCloseFind={() => setFindOpen(false)}
               onOpenTasks={() => goScreen("tasks")}
               jumpTo={jumpTo} onJumped={() => setJumpTo(null)}
@@ -3833,6 +3816,13 @@ interface Unread {
   onlyThreads: boolean;
 }
 
+/** Durable read position; id breaks ties when two messages share a timestamp. */
+interface ReadCursor { ts: number; id?: ID }
+
+function afterCursor(message: { ts: number; id: ID }, cursor: ReadCursor): boolean {
+  return message.ts > cursor.ts || (message.ts === cursor.ts && !!cursor.id && message.id > cursor.id);
+}
+
 /**
  * The unread marks on a rail row — nothing at all when there is nothing new.
  *
@@ -4065,7 +4055,7 @@ function ChatScreen({
   onBrowseMarket: () => void; onInvite: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenDm: (id: ID, name: string) => void;
   onOpenHuddles: () => void;
-  lastRead: number; findOpen: boolean; onCloseFind: () => void; onOpenTasks: () => void;
+  lastRead: ReadCursor; findOpen: boolean; onCloseFind: () => void; onOpenTasks: () => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
   /**
    * The message that STARTED a thread another screen wants opened — a reply
@@ -4984,7 +4974,7 @@ function ChatView({
   jumpTo, onJumped, onOpenThread, threadRoot, onToggleDetails, detailsOpen,
   takeover,
 }: {
-  channel: Channel; lastRead: number; findOpen: boolean; onCloseFind: () => void;
+  channel: Channel; lastRead: ReadCursor; findOpen: boolean; onCloseFind: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenTasks: () => void;
   owner: boolean; onNewAgent: () => void; onInvite: () => void;
   onOpenHuddles: () => void;
@@ -5003,6 +4993,7 @@ function ChatView({
      `page` are narrowed to THIS channel for the same reason. */
   const world = useWorld(w => ({
     messages: w.messages[channel.id],
+    connected: w.connected,
     humanTyping: w.humanTyping[channel.id],
     page: w.pages[channel.id],
     prepended: w.prepended,
@@ -5018,6 +5009,7 @@ function ChatView({
     members: w.members[channel.id],
     channelPins: w.channelPins[channel.id],
     channelPinPending: w.channelPinPending,
+    messageStatuses: w.messageStatuses,
   }));
   const all = useMemo(() => world.messages ?? [], [world.messages]);
   const humanTyping = useMemo(() => (world.humanTyping ?? [])
@@ -5033,6 +5025,77 @@ function ChatView({
   useEffect(() => { setReplyingTo(null); }, [channel.id]);
   useEffect(() => { if (threading) setReplyingTo(null); }, [threading]);
   const streamRef = useRef<HTMLDivElement>(null);
+  /* A read receipt is earned by viewport visibility, not by mounting a room.
+     The cursor is the (timestamp, canonical id) pair, so messages sharing a
+     millisecond are ordered deterministically. */
+  useEffect(() => {
+    if (!world.connected || typeof IntersectionObserver === "undefined") return;
+    const root = streamRef.current;
+    if (!root) return;
+    const byId = new Map((world.messages ?? []).map(message => [message.id, message]));
+    const pending = new Map<ID, Message>();
+    let timer: number | undefined;
+    const flush = () => {
+      if (pending.size === 0) return;
+      const ordered = [...pending.values()].sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
+      const cursor = ordered.at(-1)!;
+      client.markRead(channel.id, cursor.ts, cursor.id);
+      // A human recipient's read acknowledgement is authenticated by the
+      // relay from this socket.  Agent-authored messages are intentionally not
+      // acknowledged as human reads.
+      for (const message of ordered) {
+        if (message.authorKind === "human" && message.authorId !== world.me?.id) {
+          client.send({ type: "messageReceipt", channelId: channel.id, messageId: message.id,
+            status: "read", ts: message.ts, messageIdCursor: message.id });
+        }
+      }
+      pending.clear();
+    };
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting || entry.intersectionRatio < 0.6) continue;
+        const id = (entry.target as HTMLElement).dataset.msg;
+        const message = id ? byId.get(id) : undefined;
+        if (!message) continue;
+        pending.set(message.id, message);
+      }
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(flush, 120);
+    }, { root, threshold: [0.6] });
+    root.querySelectorAll<HTMLElement>(".msg[data-msg]").forEach(node => observer.observe(node));
+    return () => {
+      observer.disconnect();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [channel.id, world.connected, world.messages, world.me?.id]);
+
+  /* Re-check only rows that are genuinely visible when the app regains focus;
+     focus alone does not claim the conversation was read. */
+  useEffect(() => {
+    const onFocus = () => {
+      if (!world.connected) return;
+      const root = streamRef.current;
+      const rootRect = root?.getBoundingClientRect();
+      if (!root || !rootRect) return;
+      const byId = new Map((world.messages ?? []).map(message => [message.id, message]));
+      const visible = [...root.querySelectorAll<HTMLElement>(".msg[data-msg]")]
+        .map(node => ({ node, rect: node.getBoundingClientRect() }))
+        .filter(({ rect }) => rect.top >= rootRect.top && rect.bottom <= rootRect.bottom)
+        .map(({ node }) => byId.get(node.dataset.msg ?? ""))
+        .filter((message): message is Message => !!message)
+        .sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id)).at(-1);
+      if (visible) {
+        client.markRead(channel.id, visible.ts, visible.id);
+        if (visible.authorKind === "human" && visible.authorId !== world.me?.id) {
+          client.send({ type: "messageReceipt", channelId: channel.id, messageId: visible.id,
+            status: "read", ts: visible.ts, messageIdCursor: visible.id });
+        }
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [channel.id, world.connected, world.messages, world.me?.id]);
+
   const roomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const room = roomRef.current;
@@ -5370,7 +5433,8 @@ function ChatView({
         && prev.authorId === m.authorId && m.ts - prev.ts < 5 * 60 * 1000
         && !m.replyTo && !prev.replyTo;
       const ask = m.authorKind === "agent" && !m.proactive ? findAsk(messages, i, m) : undefined;
-      const firstUnread = !markedUnread && openedAt > 0 && m.ts > openedAt && m.authorId !== world.me?.id;
+      const firstUnread = !markedUnread && openedAt.ts > 0 && afterCursor(m, openedAt)
+        && m.authorId !== world.me?.id;
       if (firstUnread) markedUnread = true;
       return { m, cont, dayStart, firstUnread, ask };
     });
@@ -5642,6 +5706,8 @@ function ChatView({
             )}
             <MessageRow m={r.m} cont={r.cont} ask={r.ask}
               me={world.me} agents={world.agents} users={world.users}
+              delivery={r.m.authorKind === "human" && r.m.authorId === world.me?.id
+                ? world.messageStatuses[r.m.id] : undefined}
               channelId={channel.id}
               answered={r.m.replyTo ? byId.get(r.m.replyTo) : undefined}
               doneRunId={doneRunIds.get(r.m.id)}
@@ -6487,11 +6553,41 @@ function RoomFiles({ channel }: { channel: Channel }): React.JSX.Element {
  * hand it a fresh object or a fresh arrow function per render and every bubble
  * is back to redrawing on every frame, silently.
  */
+/**
+ * Delivery is an author-only fact.  The relay deliberately sends aggregate
+ * counts for rooms and recipient detail only for a direct human conversation;
+ * this renderer therefore speaks only the stage and (where useful) the
+ * aggregate count, never a recipient identity.  An absent status is the
+ * optimistic local state while the acknowledgement is in flight.
+ */
+function DeliveryStatus({ status }: { status?: MessageStatus }): React.JSX.Element {
+  const stage = status?.stage;
+  const label = stage === "accepted" ? "Sent"
+    : stage === "delivered" ? "Delivered"
+      : stage === "read" ? "Read"
+        : stage === "unknown" ? "Unknown"
+          : stage === "failed" ? "Failed"
+          : "Sending";
+  const count = stage === "delivered" ? status?.deliveredCount
+    : stage === "read" ? status?.readCount
+      : undefined;
+  const suffix = count !== undefined && count > 0
+    ? ` by ${count} ${count === 1 ? "person" : "people"}`
+    : "";
+  const spoken = `${label}${suffix}`;
+  return (
+    <span className="message-delivery-status" role="status" aria-label={`Message status: ${spoken}`}
+      data-delivery-stage={stage ?? "sending"}>
+      {spoken}
+    </span>
+  );
+}
+
 const MessageRow = React.memo(function MessageRow({
   m, cont, ask, me, agents, users, answered, doneRunId,
   agent, working, onOpenThread, onInlineReply, onGoToMessage,
   inOpenThread, litUp, variant, archived, newSince, threadSeen, saved, savedPending, channelId,
-  pinned, pinPending, canManagePins,
+  pinned, pinPending, canManagePins, delivery,
 }: {
   /** the message itself, straight out of the store — never a copy */
   m: Message;
@@ -6513,7 +6609,7 @@ const MessageRow = React.memo(function MessageRow({
   agent?: AgentDef; working?: boolean;
   /** the read marker this conversation was opened on — 0/absent means "unknown,
    *  so claim nothing". Only used to say whether a thread has moved since. */
-  newSince?: number;
+  newSince?: ReadCursor;
   /** he has already opened this message's thread in this visit */
   threadSeen?: boolean;
   /** threads are on: replying opens one, and the reply count opens it again */
@@ -6528,6 +6624,8 @@ const MessageRow = React.memo(function MessageRow({
   pinned?: boolean;
   pinPending?: boolean;
   canManagePins?: boolean;
+  /** author-only human delivery state; groups contain counts, never identities */
+  delivery?: MessageStatus;
   channelId?: ID;
   litUp?: boolean;
   /** "thread" drops the affordances that would open a thread inside a thread */
@@ -6690,7 +6788,8 @@ const MessageRow = React.memo(function MessageRow({
    * the report; this deliberately stops at what the client can know.
    */
   const threadMoved = !inThread && !deleted && replyCount > 0
-    && !threadSeen && !!newSince && (m.lastReplyAt ?? 0) > newSince;
+    && !threadSeen && !!newSince && !!m.lastReplyAt
+    && afterCursor({ ts: m.lastReplyAt!, id: m.lastReplyId ?? "" }, newSince);
   /* WHO IS IN THE THREAD, before the number (F2 — Buzz stacks the repliers'
      faces beside "23 replies", and who is in there is what makes him open it).
      The hub keeps the three newest speakers on the root (`replyFaces`); the
@@ -6853,6 +6952,7 @@ const MessageRow = React.memo(function MessageRow({
           {!deleted && m.attachments && m.attachments.length > 0 &&
             <MessageFiles attachments={m.attachments} />}
           {!deleted && m.editedAt && <span className="editedmark">edited</span>}
+          {!deleted && mine && !isAgent && <DeliveryStatus status={delivery} />}
           {refusedNotes}
           {reactionRow}
           {!deleted && <AgentReceipts messageId={m.id} agents={agents} />}
@@ -6919,6 +7019,7 @@ const MessageRow = React.memo(function MessageRow({
           {isAgent && <span className="badge">Agent</span>}
           <span className="t">{clock(m.ts)}</span>
           {!deleted && m.editedAt && <span className="editedmark">edited</span>}
+          {!deleted && mine && !isAgent && <DeliveryStatus status={delivery} />}
           {m.proactive && <span className="chip is-ultra selfstart">Nobody asked — I noticed</span>}
         </div>
         {answeringLine}
@@ -7033,6 +7134,8 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
         {root && (
           <MessageRow m={root} variant="thread" archived={!!channel.archivedAt}
             me={world.me} agents={world.agents} users={world.users}
+            delivery={root.authorKind === "human" && root.authorId === world.me?.id
+              ? world.messageStatuses[root.id] : undefined}
             channelId={channel.id}
             doneRunId={doneRunIds.get(root.id)}
             agent={agentOf.get(root.authorId)} />
@@ -7047,6 +7150,8 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
         {replies.map(m => (
           <MessageRow key={m.id} m={m} variant="thread" archived={!!channel.archivedAt}
             me={world.me} agents={world.agents} users={world.users}
+            delivery={m.authorKind === "human" && m.authorId === world.me?.id
+              ? world.messageStatuses[m.id] : undefined}
             channelId={channel.id}
             doneRunId={doneRunIds.get(m.id)}
             agent={agentOf.get(m.authorId)}
