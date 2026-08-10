@@ -2431,6 +2431,7 @@ function Workspace(): React.JSX.Element {
   /** a project (and optional PR/issue) Team feed / Pulse asked Projects to open */
   const [projectOpenAt, setProjectOpenAt] =
     useState<{ projectId: ID; itemKind?: ProjectItemKind; number?: number; at: number } | null>(null);
+  const [canvasProjectId, setCanvasProjectId] = useState<ID | undefined>();
   /* ...and the one owner that puts it back down again. A request like this is
      an ERRAND, not a setting: `jumpTo` and `openThreadFor` are both handed back
      the moment the screen has done as it was asked, and this is the same. Left
@@ -2756,8 +2757,8 @@ function Workspace(): React.JSX.Element {
   const openHuddles = useCallback(() => { attemptLeave(() => { client.askHuddles(); setScreen("huddles"); }); }, []);
 
   
-  const openCanvas = useCallback(() => {
-    attemptLeave(() => { client.askProjects(); setScreen("canvas"); });
+  const openCanvas = useCallback((projectId?: ID) => {
+    attemptLeave(() => { setCanvasProjectId(projectId); client.askProjects(); setScreen("canvas"); });
   }, []);
 
   const openCanvasLink = useCallback((link: CanvasLink, projectId: ID) => {
@@ -3469,7 +3470,7 @@ function Workspace(): React.JSX.Element {
               onNewChannel={() => setModal("channel")} onBrowseRooms={() => setModal("browse")}
               onNewAgent={() => openEditor("new")} onBrowseMarket={() => goScreen("market")}
               onInvite={openInvite} onEditAgent={a => openEditor(a)} onOpenDm={openDm}
-              onOpenHuddles={openHuddles}
+              onOpenHuddles={openHuddles} onOpenCanvas={openCanvas}
               lastRead={active
                 ? { ts: world.unread[active.id]?.lastReadTs ?? 0,
                     ...(world.unread[active.id]?.lastReadId ? { id: world.unread[active.id]!.lastReadId } : {}) }
@@ -3545,7 +3546,7 @@ function Workspace(): React.JSX.Element {
             })}
           />}
           {screen === "polls" && <PollsScreen />}
-          {screen === "canvas" && <CanvasScreen onOpenLink={openCanvasLink} />}
+          {screen === "canvas" && <CanvasScreen initialProjectId={canvasProjectId} onOpenLink={openCanvasLink} />}
           {screen === "updates" && <PublicUpdatesScreen />}
           {screen === "hooks" && <HooksScreen />}
           {screen === "social" && <SocialFeedScreen onOpenLink={openSocialLink} />}
@@ -4148,7 +4149,7 @@ function focusThreadTarget(root: HTMLElement | null, opener: HTMLElement | null)
 function ChatScreen({
   active, setActiveId, channels, humanDms, agents, people, unreadFor, peerOf, owner,
   onNewChannel, onBrowseRooms, onNewAgent, onBrowseMarket, onInvite, onEditAgent, onOpenDm,
-  onOpenHuddles,
+  onOpenHuddles, onOpenCanvas,
   lastRead, findOpen, onCloseFind,
   onOpenTasks, jumpTo, onJumped, openThreadFor, onThreadOpened,
 }: {
@@ -4158,7 +4159,7 @@ function ChatScreen({
   onNewChannel: () => void; onBrowseRooms: () => void; onNewAgent: () => void;
   onBrowseMarket: () => void; onInvite: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenDm: (id: ID, name: string) => void;
-  onOpenHuddles: () => void;
+  onOpenHuddles: () => void; onOpenCanvas: (projectId?: ID) => void;
   lastRead: ReadCursor; findOpen: boolean; onCloseFind: () => void; onOpenTasks: () => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
   /**
@@ -4433,7 +4434,7 @@ Open your chat with ${a.name}`}>
         <ChatView key={active.id} channel={active} lastRead={lastRead} findOpen={findOpen}
           onCloseFind={onCloseFind} onEditAgent={onEditAgent} onOpenTasks={onOpenTasks}
           owner={owner} onNewAgent={onNewAgent} onInvite={onInvite}
-          onOpenHuddles={onOpenHuddles}
+          onOpenHuddles={onOpenHuddles} onOpenCanvas={onOpenCanvas}
           jumpTo={jumpTo} onJumped={onJumped}
           onOpenThread={threading ? openThread : undefined} threadRoot={threadRoot}
           onToggleDetails={toggleDetails} detailsOpen={detailsOpen} takeover={takeover} />
@@ -4478,7 +4479,7 @@ Open your chat with ${a.name}`}>
       {active && !threadRoot && detailsOpen && (
         <RoomPanel key={`details-${active.id}`} channel={active}
           onClose={() => setDetailsOpen(false)} onOpenDm={onOpenDm}
-          onLeft={() => setDetailsOpen(false)} />
+          onLeft={() => setDetailsOpen(false)} onOpenCanvas={onOpenCanvas} />
       )}
     </div>
   );
@@ -5316,14 +5317,14 @@ function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
 function ChatView({
   channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpenTasks,
   owner, onNewAgent, onInvite,
-  onOpenHuddles,
+  onOpenHuddles, onOpenCanvas,
   jumpTo, onJumped, onOpenThread, threadRoot, onToggleDetails, detailsOpen,
   takeover,
 }: {
   channel: Channel; lastRead: ReadCursor; findOpen: boolean; onCloseFind: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenTasks: () => void;
   owner: boolean; onNewAgent: () => void; onInvite: () => void;
-  onOpenHuddles: () => void;
+  onOpenHuddles: () => void; onOpenCanvas: (projectId?: ID) => void;
   jumpTo: { id: ID; at: number } | null; onJumped: () => void;
   /** absent when his setting says replies stay in the conversation */
   onOpenThread?: (rootId: ID) => void; threadRoot: ID | null;
@@ -5355,6 +5356,8 @@ function ChatView({
     members: w.members[channel.id],
     channelPins: w.channelPins[channel.id],
     channelPinPending: w.channelPinPending,
+    projects: w.projects,
+    canvases: w.canvases,
     messageStatuses: w.messageStatuses,
     channelMemoryPolicies: w.channelMemoryPolicies,
   }));
@@ -5943,6 +5946,9 @@ function ChatView({
           {channel.topic && (
             <span className="ch-topic" title={`Topic: ${channel.topic}`}>{channel.topic}</span>
           )}
+          <ChannelContextSummary channel={channel} agents={agents} messages={all}
+            pins={world.channelPins} connected={world.connected}
+            onToggleDetails={onToggleDetails} detailsOpen={detailsOpen} />
           <div className="grow" />
           <div className="header-menu-wrap" ref={headerMenuRef}>
             <button className="iconbtn header-overflow" aria-label="More channel actions"
@@ -6865,6 +6871,40 @@ function RoomMute({ channel, isRoom }: { channel: Channel; isRoom: boolean }): R
  * a week later without scrolling for it. Asked when the panel opens, and every
  * `artifact` frame that lands afterwards replaces the row with the same id.
  */
+function RoomCanvases({ channel, onOpen }: { channel: Channel; onOpen: (projectId?: ID) => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const visible = channel.memberIds.includes(world.me?.id ?? "") || channel.memberIds.some(id =>
+    world.agents.some(agent => agent.id === id && agent.ownerId === world.me?.id));
+  useEffect(() => {
+    if (visible && world.connected && !world.projects.asked) client.askProjects();
+  }, [channel.id, visible, world.connected, world.projects.asked]);
+  const project = visible ? world.projects.list.find(candidate => candidate.channelId === channel.id) : undefined;
+  useEffect(() => {
+    if (project?.id && world.connected && world.canvases.projectId !== project.id) client.askCanvases(project.id);
+  }, [project?.id, world.connected, world.canvases.projectId]);
+  const canvases = world.canvases.projectId === project?.id ? world.canvases.list : [];
+  const canvasAsked = world.canvases.projectId === project?.id && world.canvases.asked;
+  return (
+    <div className="aside-sec roomcanvases" data-canvas-channel={channel.id}>
+      <div className="roomcanvases-head"><span className="eyebrow">Canvas</span>
+        {project && <button type="button" className="linkish" onClick={() => onOpen(project.id)}>Open Canvas</button>}
+      </div>
+      {!visible && <p className="sec-note">This room is no longer available to you.</p>}
+      {visible && !world.projects.asked && <p className="sec-note" role="status">Looking for a linked Canvas…</p>}
+      {visible && world.projects.asked && !project && <p className="sec-note">No durable Canvas is linked to this room yet.</p>}
+      {visible && project && !canvasAsked && <p className="sec-note" role="status">Loading Canvas context…</p>}
+      {visible && project && canvasAsked && canvases.length === 0 && <p className="sec-note">No Canvas has been created for {project.name}.</p>}
+      {canvases.length > 0 && <div className="roomcanvas-list" aria-label="Room canvases">
+        {canvases.slice(0, 3).map(canvas => <button key={canvas.id} type="button" className="roomcanvas-row" onClick={() => onOpen(project?.id)}>
+          <span><strong>{canvas.title}</strong><small>Revision {canvas.revision} · {canvas.blocks.filter(block => !block.deletedAt).length} active blocks</small></span>
+          {canvas.unread && <span className="badge" aria-label="unread Canvas updates">New</span>}
+        </button>)}
+      </div>}
+      {visible && project && <p className="sec-note roomcanvas-note">View-only summary. Edit durable Canvas content in Canvas.</p>}
+    </div>
+  );
+}
+
 function RoomFiles({ channel }: { channel: Channel }): React.JSX.Element {
   useSyncExternalStore(client.subscribe, client.getSnapshot);
   useEffect(() => { client.askArtifacts(channel.id); }, [channel.id]);
@@ -9240,6 +9280,53 @@ function RoomVisibility({ channel, size = "short" }: {
 
 /* ---- what this room is, who is in it, and how it is run ---- */
 
+/** Compact room-scoped context, using only current membership and public live steps. */
+function ChannelContextSummary({ channel, agents, messages, pins, connected,
+  onToggleDetails, detailsOpen,
+}: {
+  channel: Channel; agents: AgentDef[]; messages: Message[];
+  pins?: { asked: boolean; loading: boolean; entries: ChannelPinEntry[] };
+  connected: boolean; onToggleDetails: () => void; detailsOpen: boolean;
+}): React.JSX.Element {
+  const isRoom = channel.kind !== "dm";
+  useEffect(() => {
+    if (isRoom && connected && !pins?.asked && !pins?.loading) client.askChannelPins(channel.id);
+  }, [channel.id, connected, isRoom, pins?.asked, pins?.loading]);
+  const liveWork = useLiveWorkByAgent();
+  const messageIds = useMemo(() => new Set(messages.map(message => message.id)), [messages]);
+  const working = useMemo(() => agents.map(agent => {
+    const work = liveWork[agent.id];
+    return work && messageIds.has(work.messageId) ? { agent, work } : undefined;
+  }).filter((row): row is { agent: AgentDef; work: { doing: string; messageId: ID } } => !!row),
+  [agents, liveWork, messageIds]);
+  const activePins = (pins?.entries ?? []).filter(entry => entry.state === "active");
+  const pinPreview = activePins.find(entry => entry.message?.text)?.message?.text;
+  const goal = channel.topic || channel.description;
+  const detailId = `room-context-${channel.id}`;
+  return (
+    <div className="channel-context-summary" data-context-summary={channel.id}>
+      <span className="channel-context-goal" title={goal ? `Room goal: ${goal}` : "No room topic or goal has been set"}>
+        <span className="eyebrow">{channel.topic ? "Topic" : "Goal"}</span>
+        <span>{goal || "No topic or goal set"}</span>
+      </span>
+      {isRoom && <span className="channel-context-pins" title={pinPreview ? `Pinned: ${pinPreview}` : "Pinned context"}>
+        <span aria-hidden="true">📌</span>{pins?.asked ? `${activePins.length} pinned` : "Pinned context"}
+        {pinPreview && <span className="channel-context-pin-preview">{quoteOf(pinPreview, 72)}</span>}
+      </span>}
+      {agents.length > 0 && <span className="channel-context-agents" title={agents.map(agent => agent.name).join(", ")}>
+        <span aria-hidden="true">✦</span>{agents.length} agent{agents.length === 1 ? "" : "s"} here
+      </span>}
+      {working.length > 0 && <span className="channel-context-working" data-working-count={working.length}
+        title={working.map(({ agent, work }) => `${agent.name}: ${work.doing}`).join(" · ")}>
+        <span className="dot live" aria-hidden="true" />
+        {working.length === 1 ? `${working[0].agent.name} working` : `${working.length} working now`}
+      </span>}
+      <button type="button" className="channel-context-open" aria-expanded={detailsOpen}
+        aria-controls={detailId} aria-label="Open room context" onClick={onToggleDetails}>Context</button>
+    </div>
+  );
+}
+
 /**
  * The room-details panel (§10.8).
  *
@@ -9248,16 +9335,25 @@ function RoomVisibility({ channel, size = "short" }: {
  * the gate on every one of them (§8), so nothing here can widen what is
  * allowed — it can only stop a click that would always be refused.
  */
-function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
+function RoomPanel({ channel, onClose, onOpenDm, onLeft, onOpenCanvas }: {
   channel: Channel;
   onClose: () => void;
   onOpenDm: (id: ID, name: string) => void;
   onLeft: () => void;
+  onOpenCanvas: (projectId?: ID) => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const panelRef = useRef<HTMLElement>(null);
+  useEscapeCloses(onClose, true);
+  useClickAwayCloses(panelRef, onClose, true);
   const pinState = world.channelPins[channel.id] ?? {
     asked: false, loading: false, entries: [], hasMore: false,
   };
+  const panelLiveWork = useLiveWorkByAgent();
+  const panelMessageIds = new Set((world.messages[channel.id] ?? []).map(message => message.id));
+  const liveWorkingAgents = new Set(Object.entries(panelLiveWork)
+    .filter(([, work]) => panelMessageIds.has(work.messageId))
+    .map(([agentId]) => agentId));
   const [editInfo, setEditInfo] = useState(false);
   const [topic, setTopic] = useState(channel.topic ?? "");
   const [description, setDescription] = useState(channel.description ?? "");
@@ -9358,7 +9454,7 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
   };
 
   return (
-    <aside className="aside roompanel" aria-label="Room details">
+    <aside ref={panelRef} id={`room-context-${channel.id}`} className="aside roompanel" aria-label="Room details">
       <div className="threadhead">
         <span className="eyebrow">Room details</span>
         <div className="grow" />
@@ -9460,6 +9556,7 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
         {/* WHAT THE AGENTS IN HERE HAVE MADE. A file is the room's, not the
             agent's — which is why it is listed with the room's own details. */}
         <RoomFiles channel={channel} />
+        <RoomCanvases channel={channel} onOpen={onOpenCanvas} />
 
         <div className="aside-sec roommembers">
           <span className="eyebrow">Who's here ({rows.length})</span>
@@ -9483,9 +9580,10 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft }: {
               <React.Fragment key={key}>
               <div className="mini-agent memberrow"
                 data-member={who.name} data-memberkey={key}
+                data-live-working={who.agent && liveWorkingAgents.has(m.memberId) ? "yes" : "no"}
                 data-joined={m.joinedAt}>
                 {who.agent
-                  ? <AgentFace name={who.name} size={36} lamp={world.agentStatus[m.memberId] === "working" ? "run" : "live"} />
+                  ? <AgentFace name={who.name} size={36} lamp={liveWorkingAgents.has(m.memberId) ? "run" : "live"} />
                   : <PersonFace name={who.name} size={36} lamp={m.memberId === world.me?.id ? "live" : "idle"} />}
                 <span style={{ minWidth: 0 }}>
                   <span className="nm">
@@ -16631,9 +16729,11 @@ function PollCard({ poll, summary, onSummary }: { poll: ProjectPollView; summary
 
 const CANVAS_BLOCK_KINDS: CanvasBlockKind[] = ["markdown", "architecture", "requirements", "decision", "link", "task", "run", "pullRequest", "artifact"];
 
-function CanvasScreen({ onOpenLink }: { onOpenLink: (link: CanvasLink, projectId: ID) => void }): React.JSX.Element {
+function CanvasScreen({ onOpenLink, initialProjectId }: {
+  onOpenLink: (link: CanvasLink, projectId: ID) => void; initialProjectId?: ID;
+}): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const [projectId, setProjectId] = useState<ID | "">("");
+  const [projectId, setProjectId] = useState<ID | "">(initialProjectId ?? "");
   const [canvasId, setCanvasId] = useState<ID | "">("");
   const [newTitle, setNewTitle] = useState("");
   const [kind, setKind] = useState<CanvasBlockKind>("markdown");
@@ -16644,6 +16744,7 @@ function CanvasScreen({ onOpenLink }: { onOpenLink: (link: CanvasLink, projectId
   const dirtyCanvas = newTitle.trim().length > 0 || text.trim().length > 0 || Object.keys(editing).length > 0;
   useUnsavedWork("the Canvas draft", dirtyCanvas);
   useEffect(() => { if (world.connected) client.askProjects(); }, [world.connected]);
+  useEffect(() => { if (initialProjectId) setProjectId(initialProjectId); }, [initialProjectId]);
   const projects = world.projects.list;
   const project = projects.find(p => p.id === projectId) ?? projects[0];
   useEffect(() => { if (project?.id && world.connected) { setProjectId(project.id); client.askCanvases(project.id); } }, [project?.id, world.connected]);
