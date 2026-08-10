@@ -873,6 +873,19 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
   letter-spacing:.04em;
 }
 .runmore:hover{text-decoration:underline;}
+.runreceipt-toggle{
+  display:inline-flex;align-items:center;gap:8px;margin-top:2px;padding:5px 0;
+  background:none;border:0;cursor:pointer;color:var(--pine);
+  font-family:var(--body);font-size:12.5px;font-weight:600;
+}
+.runreceipt-toggle:hover{text-decoration:underline;}
+.runreceipt-toggle .tri{font-size:10px;color:var(--ink-3);}
+.runreceipt-toggle .n{font-family:var(--mono);font-size:11px;color:var(--ink-3);font-weight:400;letter-spacing:.04em;}
+.runreceipt{margin-top:4px;border-top:1px solid var(--line-soft);padding-top:8px;min-width:0;}
+.runreceipt .kv{margin:0;}
+.runreceipt-list{display:grid;gap:3px;min-width:0;}
+.runreceipt-test,.runreceipt-artifact{display:block;overflow-wrap:anywhere;}
+.runreceipt a{color:var(--ultra);overflow-wrap:anywhere;}
 .runsteps{margin-top:8px;border-top:1px solid var(--line-soft);padding-top:10px;}
 .runsteps ol{list-style:none;margin:0;padding:0;display:grid;gap:2px;}
 .runstep{
@@ -983,6 +996,11 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 .run-comparison-differences{border-top:1px solid var(--line);padding-top:9px;}
 .run-comparison-differences ul{margin:6px 0 0;padding-left:18px;display:grid;gap:3px;font-size:11.5px;}
 @media (max-width:700px){.run-compare-grid{grid-template-columns:1fr;}.workrow-head{grid-template-columns:1fr;}.workrow .compare-toggle{margin:0 8px 8px;justify-self:start;}}
+@media (max-width:560px){
+  .callout.run .hd{align-items:flex-start;flex-wrap:wrap;}
+  .callout.run .run-outcome-badge{margin-left:auto;}
+  .runreceipt .kv{grid-template-columns:minmax(0,auto) minmax(0,1fr);gap:4px 9px;}
+}
 
 /* --- what this agent remembers (agent memory) --- */
 .remembers{display:grid;gap:7px;}

@@ -1356,6 +1356,14 @@ export interface RunStep {
   ok?: boolean;
 }
 
+/** A provider-reported test command, kept separate from private reasoning. */
+export interface RunTestFact {
+  /** the command or runner name the provider exposed publicly */
+  command: string;
+  /** only when the provider reported the command's outcome */
+  ok?: boolean;
+}
+
 /**
  * Token and money figures, each present only if the CLI reported it.
  *
@@ -1462,6 +1470,8 @@ export interface RunRecord {
   /** plain-words failure, already redacted. Absent on a clean run. */
   error?: string;
   steps: RunStep[];
+  /** test commands observed in the provider's public command stream */
+  tests?: RunTestFact[];
   usage?: RunUsage;
   /** the CLI's own conversation id */
   sessionId?: string;
@@ -1586,6 +1596,9 @@ export const RUN_LIMITS = {
   detail: 300,
   ask: 500,
   error: 300,
+  /** test command facts retained per run */
+  tests: 64,
+  test: 240,
   /** a single stream line longer than this is skipped, not parsed */
   line: 256 * 1024,
 } as const;
@@ -7063,6 +7076,117 @@ function lastSegment(p: string): string {
   return parts[parts.length - 1] || "";
 }
 
+/*
+ * The wire boundary is a schema boundary, not a convenient place to spread a
+ * provider object. Keep the allow-lists next to the projection and validator
+ * so a field added to RunRecord cannot silently become room-visible metadata.
+ */
+const RUN_STEP_KINDS = new Set<RunStepKind>([
+  "command", "read", "write", "search", "web", "tool", "thinking", "message", "note",
+]);
+const RUN_RECORD_FIELDS = new Set([
+  "id", "kind", "agentId", "agentName", "provider", "model", "actualModel", "channelId", "taskId",
+  "requestedBy", "requestedByKind", "ask", "startedAt", "finishedAt", "durationMs", "cliDurationMs",
+  "outcome", "error", "steps", "tests", "usage", "sessionId", "effort", "branch", "commit", "files",
+  "pullRequest", "artifacts", "checkpointId", "priorRunId", "replyTo", "invocation", "resumed", "numTurns",
+  "replyChars", "events", "truncated", "trust", "ownerSetup", "capStop", "fellBackTo", "planOnly",
+]);
+const RUN_STEP_FIELDS = new Set(["seq", "kind", "label", "detail", "ok"]);
+const RUN_TEST_FIELDS = new Set(["command", "ok"]);
+const RUN_ARTIFACT_FIELDS = new Set(["id", "name", "version", "size", "available"]);
+const RUN_USAGE_FIELDS = new Set([
+  "inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens", "reasoningTokens", "costUsd", "handedToIt",
+]);
+const RUN_CAP_STOP_FIELDS = new Set(["which", "capUsd"]);
+
+function plainObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
+}
+
+function publicText(value: unknown, max: number): string | undefined {
+  return typeof value === "string" ? redactForSharing(value, max) : undefined;
+}
+
+function publicNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function publicStep(value: unknown): RunStep | undefined {
+  const raw = plainObject(value);
+  if (!raw || !Number.isSafeInteger(raw.seq) || (raw.seq as number) < 1
+    || !RUN_STEP_KINDS.has(raw.kind as RunStepKind) || typeof raw.label !== "string") return undefined;
+  const out: RunStep = {
+    seq: raw.seq as number,
+    kind: raw.kind as RunStepKind,
+    label: redactForSharing(raw.label, RUN_LIMITS.label),
+  };
+  if (typeof raw.detail === "string") out.detail = redactForSharing(raw.detail, RUN_LIMITS.detail);
+  if (typeof raw.ok === "boolean") out.ok = raw.ok;
+  return out;
+}
+
+function publicTest(value: unknown): RunTestFact | undefined {
+  const raw = plainObject(value);
+  if (!raw || typeof raw.command !== "string") return undefined;
+  return {
+    command: redactForSharing(raw.command, RUN_LIMITS.test),
+    ...(typeof raw.ok === "boolean" ? { ok: raw.ok } : {}),
+  };
+}
+
+function publicArtifact(value: unknown): NonNullable<RunRecord["artifacts"]>[number] | undefined {
+  const raw = plainObject(value);
+  if (!raw || typeof raw.id !== "string" || typeof raw.name !== "string") return undefined;
+  const out: NonNullable<RunRecord["artifacts"]>[number] = {
+    id: redactForSharing(raw.id, 120), name: redactForSharing(raw.name, 120),
+  };
+  if (Number.isSafeInteger(raw.version) && (raw.version as number) >= 1) out.version = raw.version as number;
+  if (Number.isSafeInteger(raw.size) && (raw.size as number) >= 0) out.size = raw.size as number;
+  if (typeof raw.available === "boolean") out.available = raw.available;
+  return out;
+}
+
+function publicUsage(value: unknown): RunUsage | undefined {
+  const raw = plainObject(value);
+  if (!raw) return undefined;
+  const out: RunUsage = {};
+  for (const key of ["inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens", "reasoningTokens", "costUsd", "handedToIt"] as const) {
+    const number = publicNumber(raw[key]);
+    if (number !== undefined) out[key] = number;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function publicCapStop(value: unknown): RunRecord["capStop"] | undefined {
+  const raw = plainObject(value);
+  if (!raw || (raw.which !== "perJob" && raw.which !== "perMonth")
+    || typeof raw.capUsd !== "number" || !Number.isFinite(raw.capUsd)) return undefined;
+  return { which: raw.which, capUsd: raw.capUsd };
+}
+
+function publicInvocation(value: unknown, agentId: unknown): AgentInvocationReceipt | undefined {
+  if (validateAgentInvocationReceipt(value, typeof agentId === "string" ? agentId : undefined)) return undefined;
+  const raw = value as AgentInvocationReceipt;
+  const abilities: AgentAbilities = {
+    webSearch: raw.abilities.webSearch, files: raw.abilities.files,
+    schedules: raw.abilities.schedules, background: raw.abilities.background,
+    ...(typeof raw.abilities.helpers === "boolean" ? { helpers: raw.abilities.helpers } : {}),
+    ...(typeof raw.abilities.commands === "boolean" ? { commands: raw.abilities.commands } : {}),
+    ...(typeof raw.abilities.wholeComputer === "boolean" ? { wholeComputer: raw.abilities.wholeComputer } : {}),
+    ...(typeof raw.abilities.connections === "boolean" ? { connections: raw.abilities.connections } : {}),
+  };
+  return {
+    agentId: raw.agentId,
+    ...(raw.model !== undefined ? { model: raw.model } : {}),
+    ...(raw.effort !== undefined ? { effort: raw.effort } : {}),
+    permissionScope: raw.permissionScope, trust: raw.trust, abilities,
+    ...(raw.requestedModel !== undefined ? { requestedModel: raw.requestedModel } : {}),
+    ...(raw.requestedEffort !== undefined ? { requestedEffort: raw.requestedEffort } : {}),
+    ...(raw.fallback !== undefined ? { fallback: raw.fallback } : {}),
+  };
+}
+
 /**
  * The version of a record that may be shown in chat, sent to a client, or read
  * by a guest. Every free-text field goes through `redactForSharing`.
@@ -7075,23 +7199,175 @@ function lastSegment(p: string): string {
  * before it reaches anybody.
  */
 export function shareableRun(record: RunRecord): RunRecord {
-  return {
-    ...record,
-    ask: redactForSharing(record.ask, RUN_LIMITS.ask),
-    ...(record.error ? { error: redactForSharing(record.error, RUN_LIMITS.error) } : {}),
-    ...(record.files ? { files: record.files.slice(0, 64).map(f => redactForSharing(f, 240)) } : {}),
-    ...(record.branch ? { branch: redactForSharing(record.branch, 120) } : {}),
-    ...(record.commit ? { commit: redactForSharing(record.commit, 120) } : {}),
-    ...(record.pullRequest ? { pullRequest: redactForSharing(record.pullRequest, 240) } : {}),
-    ...(record.artifacts ? { artifacts: record.artifacts.slice(0, 32).map(a => ({
-      ...a, id: redactForSharing(a.id, 120), name: redactForSharing(a.name, 120),
-    })) } : {}),
-    steps: (record.steps ?? []).map(s => ({
-      ...s,
-      label: redactForSharing(s.label, RUN_LIMITS.label),
-      ...(s.detail ? { detail: redactForSharing(s.detail, RUN_LIMITS.detail) } : {}),
-    })),
+  const raw = record as Partial<RunRecord>;
+  const kind = raw.kind === "chat" || raw.kind === "task" || raw.kind === "schedule" ? raw.kind : "chat";
+  const requestedByKind = raw.requestedByKind === "human" || raw.requestedByKind === "agent" || raw.requestedByKind === "schedule"
+    ? raw.requestedByKind : "human";
+  const outcome = raw.outcome === "ok" || raw.outcome === "failed" || raw.outcome === "cancelled" || raw.outcome === "refused"
+    ? raw.outcome : "failed";
+  const out: RunRecord = {
+    id: publicText(raw.id, 180) ?? "",
+    kind,
+    agentId: publicText(raw.agentId, 64) ?? "",
+    agentName: publicText(raw.agentName, AGENT_LIMITS.name) ?? "",
+    provider: publicText(raw.provider, 64) ?? "",
+    requestedBy: publicText(raw.requestedBy, AGENT_LIMITS.name) ?? "",
+    requestedByKind,
+    ask: publicText(raw.ask, RUN_LIMITS.ask) ?? "",
+    startedAt: publicNumber(raw.startedAt) ?? 0,
+    finishedAt: publicNumber(raw.finishedAt) ?? 0,
+    durationMs: publicNumber(raw.durationMs) ?? 0,
+    outcome,
+    steps: Array.isArray(raw.steps) ? raw.steps.map(publicStep).filter((s): s is RunStep => !!s) : [],
+    replyChars: publicNumber(raw.replyChars) ?? 0,
+    events: publicNumber(raw.events) ?? 0,
   };
+  if (typeof raw.model === "string") out.model = redactForSharing(raw.model, 120);
+  if (typeof raw.actualModel === "string") out.actualModel = redactForSharing(raw.actualModel, 120);
+  if (typeof raw.channelId === "string") out.channelId = redactForSharing(raw.channelId, 180);
+  if (typeof raw.taskId === "string") out.taskId = redactForSharing(raw.taskId, 180);
+  if (typeof raw.cliDurationMs === "number" && Number.isFinite(raw.cliDurationMs)) out.cliDurationMs = raw.cliDurationMs;
+  if (typeof raw.error === "string") out.error = redactForSharing(raw.error, RUN_LIMITS.error);
+  if (Array.isArray(raw.tests)) {
+    const tests = raw.tests.slice(0, RUN_LIMITS.tests).map(publicTest).filter((t): t is RunTestFact => !!t);
+    if (tests.length > 0) out.tests = tests;
+  }
+  const usage = publicUsage(raw.usage);
+  if (usage) out.usage = usage;
+  if (typeof raw.sessionId === "string") out.sessionId = redactForSharing(raw.sessionId, 180);
+  if (typeof raw.effort === "string") out.effort = redactForSharing(raw.effort, 32);
+  if (typeof raw.branch === "string") out.branch = redactForSharing(raw.branch, 120);
+  if (typeof raw.commit === "string") out.commit = redactForSharing(raw.commit, 120);
+  if (Array.isArray(raw.files)) {
+    const files = raw.files.slice(0, 64).filter((file): file is string => typeof file === "string")
+      .map(file => redactForSharing(file, 240));
+    if (files.length > 0) out.files = files;
+  }
+  if (typeof raw.pullRequest === "string") out.pullRequest = redactForSharing(raw.pullRequest, 240);
+  if (Array.isArray(raw.artifacts)) {
+    const artifacts = raw.artifacts.slice(0, 32).map(publicArtifact).filter((a): a is NonNullable<RunRecord["artifacts"]>[number] => !!a);
+    if (artifacts.length > 0) out.artifacts = artifacts;
+  }
+  if (typeof raw.checkpointId === "string") out.checkpointId = redactForSharing(raw.checkpointId, 180);
+  if (typeof raw.priorRunId === "string") out.priorRunId = redactForSharing(raw.priorRunId, 180);
+  if (typeof raw.replyTo === "string") out.replyTo = redactForSharing(raw.replyTo, 180);
+  const invocation = publicInvocation(raw.invocation, raw.agentId);
+  if (invocation) out.invocation = invocation;
+  if (typeof raw.resumed === "boolean") out.resumed = raw.resumed;
+  if (typeof raw.numTurns === "number" && Number.isFinite(raw.numTurns)) out.numTurns = raw.numTurns;
+  if (typeof raw.truncated === "boolean") out.truncated = raw.truncated;
+  if (isAgentTrust(raw.trust)) out.trust = raw.trust;
+  if (typeof raw.ownerSetup === "boolean") out.ownerSetup = raw.ownerSetup;
+  const capStop = publicCapStop(raw.capStop);
+  if (capStop) out.capStop = capStop;
+  if (typeof raw.fellBackTo === "string") out.fellBackTo = redactForSharing(raw.fellBackTo, 120);
+  if (typeof raw.planOnly === "boolean") out.planOnly = raw.planOnly;
+  return out;
+}
+
+/**
+ * Pull only named test runners out of provider-reported command steps.
+ *
+ * This is a classification of an observed command, not a claim that a test
+ * suite passed. `ok` is copied only when the provider supplied it. Keeping the
+ * rule here lets the engine and desktop use the same bounded vocabulary and
+ * prevents a sentence in an agent reply from becoming a test receipt.
+ */
+export function testFactsFromSteps(steps: readonly RunStep[]): RunTestFact[] {
+  const seen = new Set<string>();
+  const out: RunTestFact[] = [];
+  for (const step of steps) {
+    if (step.kind !== "command") continue;
+    // Providers put the executable in either field depending on the event
+    // shape. Inspect each field as a command on its own: joining label prose
+    // to detail made `echo npm test` and quoted sentences look executable.
+    const candidates = [step.detail, step.label].filter((value): value is string =>
+      typeof value === "string" && value.trim().length > 0);
+    const command = candidates.find(testCommandHasRunner);
+    if (!command) continue;
+    const normalized = command.replace(/\s+/g, " ").trim();
+    const clipped = normalized.length > RUN_LIMITS.test
+      ? `${normalized.slice(0, RUN_LIMITS.test - 1)}…` : normalized;
+    if (seen.has(clipped)) continue;
+    seen.add(clipped);
+    out.push({ command: clipped, ...(typeof step.ok === "boolean" ? { ok: step.ok } : {}) });
+    if (out.length >= RUN_LIMITS.tests) break;
+  }
+  return out;
+}
+
+/**
+ * Return true only when a shell segment's executable is a known test runner.
+ * This deliberately does not search prose: `echo npm test`, `printf "pytest"`,
+ * and `# npm test` are observations about text, not evidence that tests ran.
+ */
+function testCommandHasRunner(raw: string): boolean {
+  const segments = shellCommandSegments(raw);
+  for (const tokens of segments) {
+    const command = skipTestWrappers(tokens);
+    if (!command) continue;
+    const [exe, next] = command;
+    const name = exe.replace(/.*[\\/]/, "").toLowerCase();
+    if (name === "npm" && (next === "test" || next === "t" || (next === "run" && command[2] === "test"))) return true;
+    if ((name === "yarn" || name === "pnpm")
+      && (next === "test" || (next === "run" && command[2] === "test"))) return true;
+    if (name === "npx" && ["vitest", "jest", "mocha"].includes(next?.toLowerCase() ?? "")) return true;
+    if (["vitest", "jest", "mocha", "pytest", "py.test", "unittest", "rspec", "phpunit", "ctest", "tox"].includes(name)) return true;
+    if ((name === "go" || name === "cargo" || name === "dotnet" || name === "gradle" || name === "mvn" || name === "make")
+      && next === "test") return true;
+    if (name === "node" && next === "--test") return true;
+    if ((name === "python" || name === "python3") && next === "-m"
+      && ["pytest", "unittest"].includes(command[2]?.toLowerCase() ?? "")) return true;
+  }
+  return false;
+}
+
+/** Split shell operators outside quotes, retaining each segment's tokens. */
+function shellCommandSegments(raw: string): string[][] {
+  const segments: string[][] = [];
+  let tokens: string[] = [];
+  let token = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  const flush = (): void => { if (token) { tokens.push(token); token = ""; } };
+  const cut = (): void => { flush(); if (tokens.length) segments.push(tokens); tokens = []; };
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (escaped) { token += ch; escaped = false; continue; }
+    if (ch === "\\" && quote !== "'") { escaped = true; continue; }
+    if (quote) { if (ch === quote) quote = undefined; else token += ch; continue; }
+    if (ch === "'" || ch === '"') { quote = ch; continue; }
+    if (ch === "#" && token === "") break;
+    if (/\s/.test(ch)) { flush(); continue; }
+    if (ch === ";" || ch === "\n" || (ch === "&" && raw[i + 1] === "&")
+      || (ch === "|" && raw[i + 1] === "|")) {
+      cut(); if (ch !== ";" && ch !== "\n") i++; continue;
+    }
+    token += ch;
+  }
+  cut();
+  return segments;
+}
+
+/** Strip a small, explicit set of harmless shell wrappers before the runner. */
+function skipTestWrappers(tokens: string[]): string[] | undefined {
+  const out = [...tokens];
+  while (out.length > 0) {
+    const name = out[0]!.replace(/.*[\\/]/, "").toLowerCase();
+    if (/^[a-z_][a-z0-9_]*=.*/i.test(out[0]!)) { out.shift(); continue; }
+    if (name === "env" || name === "command" || name === "time" || name === "nice" || name === "nohup") {
+      out.shift();
+      while (out[0]?.startsWith("-") || (out[0] && /^[a-z_][a-z0-9_]*=.*/i.test(out[0]!))) out.shift();
+      continue;
+    }
+    if (name === "timeout") {
+      out.shift();
+      while (out[0]?.startsWith("-") || (out[0] && /^\d+(?:\.\d+)?[smhd]?$/i.test(out[0]!))) out.shift();
+      continue;
+    }
+    return out;
+  }
+  return undefined;
 }
 
 // ---------- reading a run in plain words ----------
@@ -7211,6 +7487,7 @@ function capitalise(s: string): string {
 export function validateRunRecord(record: unknown): string | null {
   if (!record || typeof record !== "object") return "that isn't a run record";
   const r = record as Partial<RunRecord>;
+  if (Object.keys(r).some(key => !RUN_RECORD_FIELDS.has(key))) return "that run record has unknown fields";
   if (!isSafeStoredId(r.id)) {
     return "that run id isn't usable";
   }
@@ -7245,6 +7522,22 @@ export function validateRunRecord(record: unknown): string | null {
   if (r.steps.length > RUN_LIMITS.steps) return "that run has too many steps";
   const badStep = validateSteps(r.steps);
   if (badStep) return badStep;
+  if (r.tests !== undefined && (!Array.isArray(r.tests) || r.tests.length > RUN_LIMITS.tests
+    || r.tests.some(t => !t || typeof t !== "object" || Array.isArray(t)
+      || Object.keys(t).some(key => !RUN_TEST_FIELDS.has(key))
+      || typeof t.command !== "string" || t.command.length > RUN_LIMITS.test
+      || (t.ok !== undefined && typeof t.ok !== "boolean")))) {
+    return "a run's public tests are not usable";
+  }
+  if (r.usage !== undefined) {
+    if (!r.usage || typeof r.usage !== "object" || Array.isArray(r.usage)
+      || Object.keys(r.usage).some(key => !RUN_USAGE_FIELDS.has(key))) {
+      return "a run's usage facts are not usable";
+    }
+    for (const value of Object.values(r.usage)) {
+      if (typeof value !== "number" || !Number.isFinite(value)) return "a run's usage facts are not usable";
+    }
+  }
   // the trust setting this run took place under — the same three words or
   // nothing at all, so a stored run cannot claim a rule that does not exist
   const badTrust = validateTrust(r.trust);
@@ -7259,6 +7552,14 @@ export function validateRunRecord(record: unknown): string | null {
   if (r.ownerSetup !== undefined && typeof r.ownerSetup !== "boolean") {
     return "a run either used your own setup or it didn't";
   }
+  if (r.capStop !== undefined) {
+    if (!r.capStop || typeof r.capStop !== "object" || Array.isArray(r.capStop)
+      || Object.keys(r.capStop).some(key => !RUN_CAP_STOP_FIELDS.has(key))
+      || (r.capStop.which !== "perJob" && r.capStop.which !== "perMonth")
+      || typeof r.capStop.capUsd !== "number" || !Number.isFinite(r.capStop.capUsd)) {
+      return "a run's spending stop is not usable";
+    }
+  }
   for (const [what, value, max] of [
     ["effort", r.effort, 32], ["branch", r.branch, 120], ["commit", r.commit, 120],
     ["pull request", r.pullRequest, 240], ["checkpoint id", r.checkpointId, 180],
@@ -7270,7 +7571,14 @@ export function validateRunRecord(record: unknown): string | null {
   if (r.files !== undefined && (!Array.isArray(r.files) || r.files.length > 64 || r.files.some(f => typeof f !== "string" || f.length > 240))) {
     return "a run's public files are not usable";
   }
-  if (r.artifacts !== undefined && (!Array.isArray(r.artifacts) || r.artifacts.length > 32 || r.artifacts.some(a => !a || typeof a.id !== "string" || typeof a.name !== "string"))) {
+  if (r.artifacts !== undefined && (!Array.isArray(r.artifacts) || r.artifacts.length > 32 || r.artifacts.some(a => {
+    if (!a || typeof a !== "object" || Array.isArray(a)) return true;
+    return Object.keys(a).some(key => !RUN_ARTIFACT_FIELDS.has(key))
+      || typeof a.id !== "string" || typeof a.name !== "string"
+      || (a.version !== undefined && (!Number.isSafeInteger(a.version) || a.version < 1))
+      || (a.size !== undefined && (!Number.isSafeInteger(a.size) || a.size < 0))
+      || (a.available !== undefined && typeof a.available !== "boolean");
+  }))) {
     return "a run's public artifacts are not usable";
   }
   return null;
@@ -7286,6 +7594,9 @@ export function validateRunRecord(record: unknown): string | null {
 function validateSteps(steps: readonly Partial<RunStep>[]): string | null {
   for (const s of steps) {
     if (!s || typeof s !== "object") return "that isn't a step";
+    if (Object.keys(s).some(key => !RUN_STEP_FIELDS.has(key))) return "a step has unknown fields";
+    if (!Number.isSafeInteger(s.seq) || (s.seq as number) < 1) return "a step needs its place in the run";
+    if (!RUN_STEP_KINDS.has(s.kind as RunStepKind)) return "a step has an unknown kind";
     if (typeof s.label !== "string" || s.label.length > RUN_LIMITS.label) {
       return "a step's label is too long";
     }

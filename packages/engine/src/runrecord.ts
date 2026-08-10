@@ -30,14 +30,16 @@
 // (`traceFromStream` + an `EventMapper`) and turn one turn into a record.
 import {
   AgentTrust, AgentInvocationReceipt, RunKind, RunOutcome, RunRecord, RunStep, RunStepKind, RunUsage, RUN_LIMITS,
+  RunTestFact, testFactsFromSteps,
   SpendCapWhich,
 } from "@cloud9/shared";
 
 export {
-  RUN_LIMITS, countSteps, summarizeRun, humanDuration, humanMoney, shareableRun,
+  RUN_LIMITS, countSteps, summarizeRun, humanDuration, humanMoney, shareableRun, testFactsFromSteps,
   runListEntry, fitRunRecord, validateRunRecord, redactForSharing,
   type RunStepKind, type RunStep, type RunUsage, type RunRecord,
   type RunOutcome, type RunKind, type RunCounts, type RunListEntry,
+  type RunTestFact,
 } from "@cloud9/shared";
 
 /** What one provider's stream told us. The single shape both CLIs produce. */
@@ -296,6 +298,8 @@ export interface RunFinish {
   /** this run was the agent writing a plan, not doing the work */
   planOnly?: boolean;
   /** Observable public checkpoint metadata, never provider internals. */
+  /** Explicit provider-reported tests, when a caller has them. */
+  tests?: RunTestFact[];
   effort?: string;
   branch?: string;
   commit?: string;
@@ -317,6 +321,7 @@ export function newRunId(now = Date.now(), rand = Math.random): string {
 
 export function buildRunRecord(seed: RunSeed, finish: RunFinish, id = newRunId()): RunRecord {
   const t = finish.trace;
+  const tests = finish.tests ?? testFactsFromSteps(t?.steps ?? []);
   return {
     id,
     kind: seed.kind,
@@ -337,6 +342,7 @@ export function buildRunRecord(seed: RunSeed, finish: RunFinish, id = newRunId()
     outcome: finish.outcome,
     ...(finish.error ? { error: clip(finish.error, RUN_LIMITS.error) } : {}),
     steps: t?.steps ?? [],
+    ...(tests.length > 0 ? { tests } : {}),
     ...(t?.usage ? { usage: t.usage } : {}),
     ...(t?.sessionId ? { sessionId: t.sessionId } : {}),
     // WHICH PATH THIS TURN TOOK. Present whenever the provider had an opinion,

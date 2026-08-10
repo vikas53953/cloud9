@@ -245,6 +245,20 @@ test("the summary of a real Claude run names the file work and the money", () =>
   assert.equal(summarizeRun(record), "Read 1 file, took 45 seconds, cost 76 cents.");
 });
 
+test("a built record carries only observed test commands, with provider outcomes when present", () => {
+  const record = buildRunRecord(seed({ provider: "codex" }), {
+    finishedAt: 1_004_000, outcome: "ok", reply: "done",
+    trace: {
+      provider: "codex", text: "done", events: 3,
+      steps: [
+        { seq: 1, kind: "command", label: "Ran a command", detail: "npm test", ok: true },
+        { seq: 2, kind: "command", label: "Ran a command", detail: "git commit -m tests", ok: true },
+      ],
+    },
+  });
+  assert.deepEqual(record.tests, [{ command: "npm test", ok: true }]);
+});
+
 test("every clause in a summary has a step behind it", () => {
   const record = buildRunRecord(seed(), { finishedAt: 1_004_000, outcome: "ok", reply: "hi" });
   assert.equal(summarizeRun(record),

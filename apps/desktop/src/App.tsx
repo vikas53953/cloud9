@@ -14,7 +14,7 @@ import {
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectPollView, PublicUpdateDraft, ProjectItemKind, ProjectItemState,
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
   EverywhereHit, SearchKind,
-  SearchHit, ServerFrame, SKILL_LIMITS, SOCIAL_LIMITS, SocialLink, SocialPost, summarizeRun, Task, User, humanDuration, humanMoney,
+  SearchHit, ServerFrame, SKILL_LIMITS, SOCIAL_LIMITS, SocialLink, SocialPost, summarizeRun, testFactsFromSteps, Task, User, humanDuration, humanMoney,
   MessageStatus,
   HuddleSession, HuddleNote, HuddleNoteKind, HuddleLink,
   StoredHook, HOOK_EVENTS, HOOK_ACTIONS,
@@ -4952,6 +4952,7 @@ function RunOutcomeBadge({ outcome }: { outcome: RunRecord["outcome"] }): React.
  */
 function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
   const [open, setOpen] = useState(false);
+  const [receiptOpen, setReceiptOpen] = useState(false);
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const recovery = world.runRecovery[record.id];
   const provider = PROVIDER_LABEL[record.provider] ?? record.provider;
@@ -5014,6 +5015,44 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
       : ["went-wrong", "What went wrong", plainError(record.error)]);
   }
 
+  /* The compact card keeps the frequently needed facts above the fold. These
+     are the less frequent execution facts behind one keyboard-accessible
+     disclosure. Every value is optional because an absent provider report is
+     not a zero or an estimate. */
+  const tests = record.tests ?? testFactsFromSteps(record.steps);
+  const receiptRows: [string, string, React.ReactNode][] = [];
+  if (record.effort) {
+    receiptRows.push(["effort", "Effort", record.effort]);
+  }
+  if (record.invocation) {
+    receiptRows.push(["permission", "Permission", record.invocation.permissionScope === "readOnly"
+      ? "Read-only" : "Agent actions"]);
+  }
+  if (record.files?.length) {
+    receiptRows.push(["files", "Files changed", <span className="runreceipt-list">{record.files.join(", ")}</span>]);
+  }
+  if (tests.length) {
+    receiptRows.push(["tests", "Tests run", <span className="runreceipt-list">{tests.map((test, i) => (
+      <span key={`${test.command}-${i}`} className="runreceipt-test">
+        {test.command}{test.ok === true ? " · passed" : test.ok === false ? " · failed" : " · outcome not reported"}
+      </span>
+    ))}</span>]);
+  }
+  if (record.pullRequest) {
+    receiptRows.push(["pull-request", "Pull request", isLink(record.pullRequest)
+      ? <a href={record.pullRequest} target="_blank" rel="noreferrer noopener">{record.pullRequest}</a>
+      : record.pullRequest]);
+  }
+  if (record.branch) receiptRows.push(["branch", "Branch", record.branch]);
+  if (record.commit) receiptRows.push(["commit", "Commit", record.commit]);
+  if (record.artifacts?.length) {
+    receiptRows.push(["artifacts", "Artifacts", <span className="runreceipt-list">{record.artifacts.map((artifact, i) => (
+      <span key={`${artifact.id}-${i}`} className="runreceipt-artifact">
+        {artifact.name}{artifact.available === false ? " · unavailable" : ""}
+      </span>
+    ))}</span>]);
+  }
+
   const title = record.outcome === "failed"
     ? `${record.agentName} didn't finish “${record.ask}”`
     : record.outcome === "cancelled"
@@ -5038,6 +5077,26 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
           </React.Fragment>
         ))}
       </dl>
+      {receiptRows.length > 0 && (
+        <>
+          <button className="runreceipt-toggle" type="button" aria-expanded={receiptOpen}
+            aria-controls={`run-receipt-${record.id}`} onClick={() => setReceiptOpen(v => !v)}>
+            <span className="tri" aria-hidden="true">{receiptOpen ? "▾" : "▸"}</span>
+            Execution receipt <span className="n">{countOf(receiptRows.length, "fact")}</span>
+          </button>
+          {receiptOpen && (
+            <section className="runreceipt" id={`run-receipt-${record.id}`} aria-label="Execution receipt details">
+              <dl className="kv">
+                {receiptRows.map(([key, label, value]) => (
+                  <React.Fragment key={key}>
+                    <dt data-receipt-row={key}>{label}</dt><dd data-receipt-row={key}>{value}</dd>
+                  </React.Fragment>
+                ))}
+              </dl>
+            </section>
+          )}
+        </>
+      )}
       {record.steps.length > 0 && (
         <button className="runmore" aria-expanded={open} data-steps={record.steps.length}
           onClick={() => setOpen(v => !v)}>
