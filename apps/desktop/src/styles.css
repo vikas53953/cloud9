@@ -2116,6 +2116,14 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-s);
   box-shadow:var(--shadow);z-index:20;
 }
+.reactpop.reactpicker{display:block;gap:0;width:min(300px,calc(100vw - 24px));max-height:min(360px,60vh);overflow:auto;padding:6px;}
+.reactpop.reactpicker .emoji-search{width:100%;height:30px;margin-bottom:6px;border:1px solid var(--line);border-radius:6px;background:var(--surface-2);padding:4px 7px;font-size:12px;}
+.reactpop.reactpicker .emoji-cats{display:flex;gap:3px;overflow:auto;margin-bottom:6px;}
+.reactpop.reactpicker .emoji-cats button{width:auto;height:26px;min-width:0;padding:3px 7px;font-size:10px;color:var(--ink-3);white-space:nowrap;}
+.reactpop.reactpicker .emoji-cats button[aria-selected="true"]{background:var(--pine-soft);color:var(--pine);}
+.reactpop.reactpicker .emoji-grid{display:grid;grid-template-columns:repeat(8,26px);gap:2px;}
+.reactpop.reactpicker .emoji-grid button{width:26px;height:26px;min-width:26px;border-radius:var(--radius-xs);font-size:15px;line-height:1;}
+.reactpop.reactpicker .emoji-grid button:hover{background:var(--surface-2);}
 /* the ☺ button and its tray in one wrapper — the click-away owner (F3) holds
    one ref, and the tray anchors to the button that opened it */
 .reacthold{position:relative;display:inline-flex;}

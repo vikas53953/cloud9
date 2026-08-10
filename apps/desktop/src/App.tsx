@@ -97,6 +97,9 @@ import {
   type TurnLifecycleState,
 } from "./turnlifecycle.js";
 import { composerIntent } from "./composerintent.js";
+import {
+  recentEmojisFor, rememberRecentEmoji, subscribeRecentEmojis,
+} from "./recentemoji.js";
 import { chatDraftKey, clearChatDraft, loadChatDraft, saveChatDraft, type ChatDraftScope } from "./chatdrafts.js";
 import {
   abilitiesOn, abilityWords, MARKET_CATEGORIES, MARKET_TEMPLATES, MarketTemplate,
@@ -6443,9 +6446,6 @@ function ApprovalTray({ approval, agent, task }: {
   );
 }
 
-/** The six emoji offered on hover. The full set is still in the composer. */
-const REACT_EMOJI = ["👍", "🎉", "🙏", "👀", "✅", "❤️"];
-
 /* ---- the files that rode along with a message ----
  *
  * A ticket to fetch a file is minted AT THE CLICK and nowhere else: it is good
@@ -6999,9 +6999,13 @@ const MessageRow = React.memo(function MessageRow({
   const isAgent = m.authorKind === "agent";
   const [copied, setCopied] = useState(false);
   const [pickEmoji, setPickEmoji] = useState(false);
+  const [reactionQuery, setReactionQuery] = useState("");
+  const [reactionCategory, setReactionCategory] = useState("Quick");
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(m.text);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const recentEmojis = useRecentEmojis(me?.id);
+  const pendingReactionRef = useRef<Set<string>>(new Set());
   const deleted = !!m.deletedAt;
   const inThread = variant === "thread";
   /* wraps the ☺ button AND its tray, so a click anywhere else closes it (F3) */
@@ -7034,9 +7038,29 @@ const MessageRow = React.memo(function MessageRow({
       ?? "Someone";
 
   const react = (emoji: string, on: boolean) => {
-    client.send({ type: "react", messageId: m.id, emoji, on });
+    const sent = client.send({ type: "react", messageId: m.id, emoji, on });
+    if (on && sent !== undefined) {
+      const key = `${m.id}\u0000${emoji}`;
+      pendingReactionRef.current.add(key);
+      setTimeout(() => pendingReactionRef.current.delete(key), 15_000);
+    }
     setPickEmoji(false);
   };
+
+  /* The reaction frame is the hub's authoritative success signal. A click or
+     transport send alone is not enough: refusals and disconnects must never
+     teach the picker a choice that did not land. */
+  useEffect(() => {
+    if (!me) return;
+    for (const key of pendingReactionRef.current) {
+      const [messageId, emoji] = key.split("\u0000");
+      if (messageId !== m.id) continue;
+      const landed = (m.reactions ?? []).some(r => r.emoji === emoji && r.userIds.includes(me.id));
+      if (!landed) continue;
+      rememberRecentEmoji(me.id, emoji);
+      pendingReactionRef.current.delete(key);
+    }
+  }, [m.id, m.reactions, me]);
 
   const saveEdit = () => {
     const next = draft.trim();
@@ -7076,6 +7100,10 @@ const MessageRow = React.memo(function MessageRow({
   ));
 
   const reactions = (m.reactions ?? []).filter(r => r.userIds.length > 0);
+  const reactionCatalog = useMemo(() => emojiCatalogFor(recentEmojis), [recentEmojis]);
+  const reactionRows = useMemo(
+    () => emojiRowsFor(reactionCatalog, reactionCategory, reactionQuery),
+    [reactionCatalog, reactionCategory, reactionQuery]);
   const reactionRow = (!deleted && reactions.length > 0) && (
     <div className="reactions">
       {reactions.map(r => {
@@ -7223,17 +7251,31 @@ const MessageRow = React.memo(function MessageRow({
   ) : (
     <div className="msgactions">
       <span className="reacthold" ref={reactHoldRef}>
-        <button className="ma react" title="React to this" aria-expanded={pickEmoji}
+        <button className="ma react" title="React to this" aria-label="React to this message"
+          aria-expanded={pickEmoji} aria-haspopup="menu"
           onClick={() => setPickEmoji(o => !o)}>☺</button>
         {pickEmoji && (
-          <div className="reactpop" role="menu" aria-label="React with an emoji">
-            {REACT_EMOJI.map(e => {
-              const isMine = !!me
-                && (m.reactions ?? []).some(r => r.emoji === e && r.userIds.includes(me.id));
-              return (
-                <button key={e} aria-pressed={isMine} onClick={() => react(e, !isMine)}>{e}</button>
-              );
-            })}
+          <div className="reactpop reactpicker emojipop" role="menu" aria-label="React with an emoji">
+            <input className="emoji-search" type="search" value={reactionQuery}
+              onChange={e => setReactionQuery(e.target.value)} placeholder="Search emoji"
+              aria-label="Search reaction emoji" autoFocus />
+            <div className="emoji-cats" role="tablist" aria-label="Reaction emoji categories">
+              {Object.keys(reactionCatalog).map(category => (
+                <button key={category} type="button" role="tab"
+                  aria-selected={reactionCategory === category}
+                  onClick={() => setReactionCategory(category)}>{category}</button>
+              ))}
+            </div>
+            <div className="emoji-grid" role="group" aria-label="Reaction emoji choices">
+              {reactionRows.map((e, i) => {
+                const isMine = !!me
+                  && (m.reactions ?? []).some(r => r.emoji === e && r.userIds.includes(me.id));
+                return (
+                  <button key={`${e}-${i}`} type="button" role="menuitem" aria-label={`React with ${e}`}
+                    aria-pressed={isMine} onClick={() => react(e, !isMine)}>{e}</button>
+                );
+              })}
+            </div>
           </div>
         )}
       </span>
@@ -7631,6 +7673,32 @@ const EMOJI_KEYWORDS: Record<string, string> = {
   "❤️": "heart love", "👀": "eyes look", "🤔": "think thinking", "💯": "hundred perfect",
 };
 
+function useRecentEmojis(userId?: ID): readonly string[] {
+  const subscribe = useCallback((listener: () => void) => subscribeRecentEmojis(userId, listener), [userId]);
+  const read = useCallback(() => recentEmojisFor(userId), [userId]);
+  return useSyncExternalStore(subscribe, read, read);
+}
+
+function emojiCatalogFor(recent: readonly string[]): Record<string, readonly string[]> {
+  return recent.length > 0 ? { Recent: [...recent], ...EMOJI_CATEGORIES } : EMOJI_CATEGORIES;
+}
+
+function emojiRowsFor(
+  catalog: Record<string, readonly string[]>, category: string, query: string,
+): readonly string[] {
+  const source = catalog[category] ?? QUICK_EMOJI;
+  const wanted = query.trim().toLowerCase();
+  if (!wanted) return source;
+  const all = Object.entries(catalog).flatMap(([group, values]) =>
+    values.map(value => ({ value, group })));
+  return all.filter(({ value, group }) =>
+    group.toLowerCase().includes(wanted)
+      || (EMOJI_KEYWORDS[value] ?? "").includes(wanted)
+      || value.includes(wanted))
+    .map(({ value }) => value)
+    .filter((value, index, values) => values.indexOf(value) === index);
+}
+
 /* ============== ONE WAY IN FOR EVERY TYPED COMMAND ==============
  *
  * THE BUG THIS FIXES. Everything an agent can be TOLD to do — open a GitHub
@@ -7851,6 +7919,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   onSent?: () => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const recentEmojis = useRecentEmojis(world.me?.id);
   const [text, setText] = useState("");
   const [hydratedDraftKey, setHydratedDraftKey] = useState<string | null>(null);
   const [draftStatus, setDraftStatus] = useState<"idle" | "restored" | "saved" | "unavailable">("idle");
@@ -8435,17 +8504,9 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const menuOpen = actionsOpen || slashShowing;
   const menuRows = actionsOpen ? ROOM_COMMANDS : slashRows;
   const openedBy = actionsOpen ? "button" : "slash";
-  const emojiRows = useMemo(() => {
-    const source = EMOJI_CATEGORIES[emojiCategory] ?? QUICK_EMOJI;
-    const query = emojiQuery.trim().toLowerCase();
-    if (!query) return source;
-    const all = Object.entries(EMOJI_CATEGORIES).flatMap(([category, values]) =>
-      values.map(value => ({ value, category })));
-    return all.filter(({ value, category }) =>
-      category.toLowerCase().includes(query) || (EMOJI_KEYWORDS[value] ?? "").includes(query) || value.includes(query))
-      .map(({ value }) => value)
-      .filter((value, index, values) => values.indexOf(value) === index);
-  }, [emojiCategory, emojiQuery]);
+  const emojiCatalog = useMemo(() => emojiCatalogFor(recentEmojis), [recentEmojis]);
+  const emojiRows = useMemo(() => emojiRowsFor(emojiCatalog, emojiCategory, emojiQuery),
+    [emojiCatalog, emojiCategory, emojiQuery]);
 
   /** he is writing — the row of tools is worth its space; see `focused` above */
   const armed = focused || text.length > 0 || scopedUploads.length > 0 || menuOpen || emojiOpen;
@@ -8938,15 +8999,23 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
                     onChange={e => setEmojiQuery(e.target.value)} placeholder="Search emoji"
                     aria-label="Search emoji" />
                   <div className="emoji-cats" role="tablist" aria-label="Emoji categories">
+                    {recentEmojis.length > 0 && (
+                      <button key="Recent" type="button" role="tab" aria-selected={emojiCategory === "Recent"}
+                        onClick={() => setEmojiCategory("Recent")}>Recent</button>
+                    )}
                     {Object.keys(EMOJI_CATEGORIES).map(category => (
-                      <button key={category} role="tab" aria-selected={emojiCategory === category}
+                      <button key={category} type="button" role="tab" aria-selected={emojiCategory === category}
                         onClick={() => setEmojiCategory(category)}>{category}</button>
                     ))}
                   </div>
                   <div className="emoji-grid">
                     {emojiRows.map((e, i) => (
-                      <button key={`${e}-${i}`} role="menuitem" aria-label={`Insert ${e}`}
-                        onClick={() => { insert(e); setEmojiOpen(false); }}>{e}</button>
+                      <button key={`${e}-${i}`} type="button" role="menuitem" aria-label={`Insert ${e}`}
+                        onClick={() => {
+                          insert(e);
+                          rememberRecentEmoji(world.me?.id, e);
+                          setEmojiOpen(false);
+                        }}>{e}</button>
                     ))}
                   </div>
                 </div>
