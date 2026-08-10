@@ -4180,6 +4180,7 @@ function ChatScreen({
     presence: w.presence,
     tasks: w.tasks,
     handoffs: w.handoffs,
+    taskMutations: w.taskMutations,
     me: w.me,
     savedMessages: w.savedMessages,
   }));
@@ -5353,6 +5354,7 @@ function ChatView({
     presence: w.presence,
     tasks: w.tasks,
     handoffs: w.handoffs,
+    taskMutations: w.taskMutations,
     approvals: w.approvals,
     savedMessages: w.savedMessages,
     savedPending: w.savedPending,
@@ -5833,6 +5835,13 @@ function ChatView({
     }
     return map;
   }, [world.handoffs, channel.id]);
+  const taskMutationByMessage = useMemo(() => {
+    const map = new Map<ID, World["taskMutations"][ID]>();
+    for (const mutation of Object.values(world.taskMutations)) {
+      if (mutation.sourceMessageId) map.set(mutation.sourceMessageId, mutation);
+    }
+    return map;
+  }, [world.taskMutations]);
 
   /* Held still between renders, or every bubble redraws on every frame — see
      the contract on `MessageRow`. */
@@ -6085,14 +6094,16 @@ function ChatView({
             )}
             <MessageRow m={r.m} cont={r.cont} ask={r.ask}
               me={world.me} agents={agents} users={world.users}
+              presence={world.presence}
               delivery={r.m.authorKind === "human" && r.m.authorId === world.me?.id
                 ? world.messageStatuses[r.m.id] : undefined}
-              presence={world.presence} connected={world.connected}
+              connected={world.connected}
               channelId={channel.id}
               answered={r.m.replyTo ? byId.get(r.m.replyTo) : undefined}
               doneRunId={doneRunIds.get(r.m.id)}
               task={taskByMessage.get(r.m.id)}
               handoff={handoffByMessage.get(r.m.id)}
+              taskMutation={taskMutationByMessage.get(r.m.id)}
               agent={agentOf.get(r.m.authorId)}
               working={world.agentStatus[r.m.authorId] === "working"}
               /* Reading an archived room still works all the way down: the
@@ -7076,10 +7087,10 @@ function handOffCandidates(
 }
 
 const MessageRow = React.memo(function MessageRow({
-  m, cont, ask, me, agents, users, answered, doneRunId, task,
+  m, cont, ask, me, agents, users, presence, answered, doneRunId, task, taskMutation,
   agent, working, onOpenThread, onInlineReply, onGoToMessage,
   inOpenThread, litUp, variant, archived, newSince, threadSeen, saved, savedPending, channelId,
-  pinned, pinPending, canManagePins, delivery, presence, connected, handoff,
+  pinned, pinPending, canManagePins, delivery, connected, handoff,
 }: {
   /** the message itself, straight out of the store — never a copy */
   m: Message;
@@ -7091,6 +7102,7 @@ const MessageRow = React.memo(function MessageRow({
   me?: User;
   agents: AgentDef[];
   users: User[];
+  presence?: Record<ID, AgentPresenceState>;
   /**
    * The message this one answers, already looked up by the parent out of the
    * WHOLE conversation (a thread reply's parent is often not on screen).
@@ -7100,6 +7112,8 @@ const MessageRow = React.memo(function MessageRow({
   doneRunId?: string;
   /** a background task joined to this exact asking message */
   task?: Task;
+  /** latest correlated message-to-task mutation for this source message */
+  taskMutation?: World["taskMutations"][ID];
   agent?: AgentDef; working?: boolean;
   /** the read marker this conversation was opened on — 0/absent means "unknown,
    *  so claim nothing". Only used to say whether a thread has moved since. */
@@ -7121,7 +7135,6 @@ const MessageRow = React.memo(function MessageRow({
   /** author-only human delivery state; groups contain counts, never identities */
   delivery?: MessageStatus;
   /** relay-reported availability facts used by the handoff chooser */
-  presence?: Record<ID, AgentPresenceState>;
   connected?: boolean;
   /** correlated relay lifecycle for the source message's latest handoff */
   handoff?: HandoffRequestState;
@@ -7145,6 +7158,10 @@ const MessageRow = React.memo(function MessageRow({
   const [handTarget, setHandTarget] = useState<ID>();
   const recentEmojis = useRecentEmojis(me?.id);
   const pendingReactionRef = useRef<Set<string>>(new Set());
+  const [turnTaskOpen, setTurnTaskOpen] = useState(false);
+  const [taskTitle, setTaskTitle] = useState(m.text);
+  const [taskAgentId, setTaskAgentId] = useState(agents[0]?.id ?? "");
+  const [taskDeadline, setTaskDeadline] = useState("");
   const deleted = !!m.deletedAt;
   const inThread = variant === "thread";
   /* wraps the ☺ button AND its tray, so a click anywhere else closes it (F3) */
@@ -7204,6 +7221,12 @@ const MessageRow = React.memo(function MessageRow({
       sourceMessageId: m.id, sourceThreadId: handSourceThreadId,
     });
   };
+  const taskCandidates = me ? agents.filter(candidate => mayDriveAgent(me.id, candidate)) : [];
+  const availableTaskAgents = taskCandidates.filter(candidate => {
+    if (candidate.lifecycle === "paused" || candidate.lifecycle === "disabled") return false;
+    const state = presence?.[candidate.id]?.presence;
+    return state !== "paused" && state !== "offline";
+  });
 
   const nameFor = (id: ID): string =>
     id === me?.id ? "You"
@@ -7235,6 +7258,21 @@ const MessageRow = React.memo(function MessageRow({
       pendingReactionRef.current.delete(key);
     }
   }, [m.id, m.reactions, me]);
+
+  const submitTask = (): void => {
+    if (!channelId || !taskAgentId || !taskTitle.trim()
+      || !availableTaskAgents.some(candidate => candidate.id === taskAgentId)) return;
+    const deadlineAt = taskDeadline ? new Date(taskDeadline).getTime() : undefined;
+    client.createTaskFromMessage({
+      agentId: taskAgentId, channelId: channelId!, title: taskTitle,
+      sourceMessageId: m.id, sourceThreadId: m.replyTo ?? m.id, deadlineAt,
+    });
+    /* The store owns this correlated lifecycle. Deriving the card from its
+       source-message mutation means a reconnect/welcome cannot leave a local
+       request id pretending that creation is still pending. */
+  };
+
+  const taskState = taskMutation?.state;
 
   const saveEdit = () => {
     const next = draft.trim();
@@ -7575,6 +7613,56 @@ const MessageRow = React.memo(function MessageRow({
     </div>
   );
 
+  const taskAction = !deleted && !task && !isAgent && mine && !archived && channelId && availableTaskAgents.length > 0 ? (
+    <button className="ma task-action" title="Turn this message into a task"
+      aria-expanded={turnTaskOpen} onClick={() => {
+        setTaskTitle(m.text); setTaskAgentId(availableTaskAgents[0]?.id ?? ""); setTaskDeadline("");
+        setTurnTaskOpen(open => !open);
+      }}>Turn into task</button>
+  ) : null;
+
+  const taskUnavailable = !deleted && !task && !isAgent && mine && !archived && channelId && agents.length > 0 && availableTaskAgents.length === 0 ? (
+    <span className="task-inline-state" role="status">No available room agent can take this task right now.</span>
+  ) : null;
+
+  const taskComposer = turnTaskOpen && !task && !deleted && !isAgent && mine && !archived && availableTaskAgents.length > 0 && channelId ? (
+    <div className="task-inline" role="dialog" aria-label="Turn message into a task">
+      <label><span>Task owner</span>
+        <select value={taskAgentId} onChange={event => setTaskAgentId(event.target.value)}>
+          {taskCandidates.map(agentOption => {
+            const unavailable = !availableTaskAgents.some(candidate => candidate.id === agentOption.id);
+            const reason = presence?.[agentOption.id]?.reason ?? (agentOption.lifecycle === "paused" ? "paused by its owner" : agentOption.lifecycle === "disabled" ? "switched off" : "unavailable");
+            return <option key={agentOption.id} value={agentOption.id} disabled={unavailable}>{agentOption.name}{unavailable ? ` (${reason})` : ""}</option>;
+          })}
+        </select>
+      </label>
+      <label><span>Task title</span>
+        <textarea value={taskTitle} rows={2} maxLength={4000}
+          onChange={event => setTaskTitle(event.target.value)} />
+      </label>
+      <label><span>Deadline (optional)</span>
+        <input type="datetime-local" value={taskDeadline}
+          onChange={event => setTaskDeadline(event.target.value)} />
+      </label>
+      <div className="task-inline-actions">
+        <button className="btn primary small" disabled={taskState === "pending" || !taskAgentId || !taskTitle.trim()}
+          onClick={submitTask}>{taskState === "pending" ? "Creating…" : "Create task"}</button>
+        <button className="btn ghost small" onClick={() => setTurnTaskOpen(false)}>Cancel</button>
+      </div>
+      {taskState === "succeeded" && <p role="status" className="task-inline-state success">Task created{taskMutation?.taskId ? ` · ${taskMutation.taskId}` : ""}.</p>}
+      {(taskState === "refused" || taskState === "lost") && <p role="alert" className="task-inline-state">{taskMutation?.problem ?? "The task could not be created."}</p>}
+    </div>
+  ) : null;
+  const taskCard = task && !deleted ? (
+    <div className="task-source-card" role="status">
+      <strong>Task created</strong>
+      <span>{task.title}</span>
+      <span>Owner: {agents.find(candidate => candidate.id === task.agentId)?.name ?? "room agent"}</span>
+      {task.deadlineAt && <span>Deadline: {new Date(task.deadlineAt).toLocaleString()}</span>}
+      <span data-task-status={task.status}>{task.status.replaceAll("_", " ")}</span>
+    </div>
+  ) : null;
+
   const editor = (
     <div className="editmsg">
       <textarea className="editmsg-input" value={draft} autoFocus rows={2}
@@ -7625,6 +7713,8 @@ const MessageRow = React.memo(function MessageRow({
           {threadLine}
         </div>
         {actions}
+        <div className="task-affordance">{taskAction}{taskUnavailable}{taskComposer}</div>
+        {taskCard}
       </article>
     );
   }
@@ -7710,6 +7800,8 @@ const MessageRow = React.memo(function MessageRow({
         {threadLine}
       </div>
       {actions}
+      <div className="task-affordance">{taskAction}{taskUnavailable}{taskComposer}</div>
+      {taskCard}
     </article>
   );
 });
@@ -7814,14 +7906,15 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
         {!root && <div className="d-empty">Fetching this thread…</div>}
         {root && (
           <MessageRow m={root} variant="thread" archived={!!channel.archivedAt}
-            me={world.me} agents={channelAgents} users={world.users}
+            me={world.me} agents={channelAgents} users={world.users} presence={world.presence}
             delivery={root.authorKind === "human" && root.authorId === world.me?.id
               ? world.messageStatuses[root.id] : undefined}
-             presence={world.presence} connected={world.connected}
+             connected={world.connected}
              channelId={channel.id}
              doneRunId={doneRunIds.get(root.id)}
              task={taskByMessage.get(root.id)}
              handoff={handoffByMessage.get(root.id)}
+             taskMutation={Object.values(world.taskMutations).find(mutation => mutation.sourceMessageId === root.id)}
              agent={agentOf.get(root.authorId)} />
         )}
         {root && (
@@ -7833,14 +7926,15 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
         )}
         {replies.map(m => (
           <MessageRow key={m.id} m={m} variant="thread" archived={!!channel.archivedAt}
-            me={world.me} agents={channelAgents} users={world.users}
+            me={world.me} agents={channelAgents} users={world.users} presence={world.presence}
             delivery={m.authorKind === "human" && m.authorId === world.me?.id
               ? world.messageStatuses[m.id] : undefined}
-             presence={world.presence} connected={world.connected}
+             connected={world.connected}
              channelId={channel.id}
              doneRunId={doneRunIds.get(m.id)}
              task={taskByMessage.get(m.id)}
              handoff={handoffByMessage.get(m.id)}
+             taskMutation={Object.values(world.taskMutations).find(mutation => mutation.sourceMessageId === m.id)}
              agent={agentOf.get(m.authorId)}
             working={world.agentStatus[m.authorId] === "working"} />
         ))}

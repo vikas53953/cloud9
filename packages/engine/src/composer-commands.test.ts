@@ -69,6 +69,21 @@ test("slash assign creates the existing durable task and rejects an off-room tar
   assert.equal(frames.filter(f => f.type === "createTask").length, 1);
 });
 
+test("background task creation carries the immutable source message", async () => {
+  const { engine, frames } = setup(new CaptureProvider());
+  const sourceMessage: Message = {
+    id: "m-source-bg", channelId: "c1", authorId: OWNER,
+    authorName: "Owner", authorKind: "human", text: "@Scout !bg inspect the build",
+    ts: Date.now(), mentions: ["a-scout"], replyTo: "m-source-thread",
+  };
+  await (engine as unknown as { considerReplies(m: Message): Promise<void> })
+    .considerReplies(sourceMessage);
+  const task = frames.find((f): f is Extract<ClientFrame, { type: "createTask" }> => f.type === "createTask");
+  assert.equal(task?.sourceMessageId, sourceMessage.id);
+  assert.equal(task?.channelId, sourceMessage.channelId);
+  assert.equal(task?.title, "inspect the build");
+});
+
 test("slash assign resolves exact spaced and emoji room agents on the dispatch path", async () => {
   const data = agent({ id: "a-data", name: "Data Scout", emoji: "📊" });
   const compass = agent({ id: "a-compass", name: "🧭 Reviewer", emoji: "🧭" });

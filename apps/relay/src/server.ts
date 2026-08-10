@@ -1528,6 +1528,7 @@ export class Relay {
     return createHash("sha256").update(JSON.stringify([
       frame.agentId, frame.channelId, frame.title, frame.requesterId ?? null,
       frame.sourceMessageId ?? null, frame.sourceThreadId ?? null,
+      frame.deadlineAt ?? null,
       frame.causedByHook === true,
     ])).digest("hex");
   }
@@ -3475,19 +3476,56 @@ private viewProject(project: Project, viewerId?: ID): Project {
   private createTaskFor(
     conn: Conn,
     input: {
-      agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID; sourceThreadId?: ID;
+      agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID;
+      sourceThreadId?: ID; deadlineAt?: number;
       causedByHook?: boolean;
       workflowId?: ID; workflowRunId?: ID; workflowStepId?: ID;
     },
     opts: { requestId?: ID; origin?: Conn } = {},
   ): Task {
     const { agent, channel, requester, sourceThreadId } = this.authorizeTaskInput(conn, input);
+    const titleProblem = validateTaskTitle(input.title);
+    if (titleProblem) throw new Error(titleProblem);
+    const title = input.title.trim();
     const now = Date.now();
-    const needsApproval = requiresApproval(agent, input.title);
+    if (input.deadlineAt !== undefined &&
+      (!Number.isSafeInteger(input.deadlineAt) || input.deadlineAt <= now)) {
+      throw new Error("a task deadline must be in the future");
+    }
+    // A source message is the durable idempotency boundary for the inline
+    // message-to-task flow. A reconnecting window may retry with a fresh
+    // transport request id after losing its acknowledgement; never mint a
+    // second task (or a second approval) for the same source/payload.
+    if (input.sourceMessageId) {
+      const existing = this.store.tasksForSourceMessage(requester.id, input.sourceMessageId);
+      const matches = (prior: Task): boolean => prior.title === title
+        && prior.agentId === agent.id && prior.channelId === channel.id
+        && prior.requesterId === requester.id
+        && (prior.ownerId ?? prior.requesterId) === requester.id
+        && prior.sourceMessageId === input.sourceMessageId
+        && prior.sourceThreadId === sourceThreadId
+        && prior.deadlineAt === input.deadlineAt
+        && !!prior.causedByHook === !!input.causedByHook
+        && prior.workflowId === input.workflowId
+        && prior.workflowRunId === input.workflowRunId
+        && prior.workflowStepId === input.workflowStepId;
+      const canonical = existing.find(matches);
+      if (canonical) {
+        this.publishTask(canonical, opts.requestId, opts.origin);
+        return canonical;
+      }
+      if (existing.length > 0) {
+        throw new Error("that source message already has a task with different details");
+      }
+    }
+    const needsApproval = requiresApproval(agent, title);
     const task: Task = {
-      id: newId("t"), title: input.title,
+      id: newId("t"), title,
       ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
       ...(sourceThreadId ? { sourceThreadId } : {}),
+      ownerId: requester.id,
+      ...(input.deadlineAt !== undefined ? { deadlineAt: input.deadlineAt } : {}),
+      ...(opts.requestId ? { createRequestId: opts.requestId } : {}),
       requesterId: requester.id, requesterName: requester.name,
       agentId: agent.id, channelId: channel.id,
       status: needsApproval ? "waiting_approval" : "not_started",
@@ -3550,19 +3588,21 @@ private viewProject(project: Project, viewerId?: ID): Project {
       || sourceMessage.authorKind !== "human" || sourceMessage.authorId !== requester.id)) {
       throw new Error("the task source message is not this requester's message in this channel");
     }
-    const sourceThreadId = input.sourceThreadId;
-    if (sourceThreadId) {
-      const thread = this.store.message(sourceThreadId);
-      const canonicalRoot = sourceMessage ? (sourceMessage.replyTo ?? sourceMessage.id) : undefined;
+    const canonicalRoot = sourceMessage ? (sourceMessage.replyTo ?? sourceMessage.id) : undefined;
+    if (input.sourceThreadId) {
+      const thread = this.store.message(input.sourceThreadId);
       if (!thread || thread.channelId !== channel.id || thread.replyTo
         || !canonicalRoot || canonicalRoot !== thread.id) {
         throw new Error("the task source thread is not this message's thread");
       }
     }
+    if (!sourceMessage && input.sourceThreadId) {
+      throw new Error("a task source thread needs a source message");
+    }
     if (!mayDriveAgent(requester.id, agent)) {
       throw new Error(agent.name + " isn't set up to take work from " + requester.name);
     }
-    return { agent, channel, requester, sourceMessage, sourceThreadId };
+    return { agent, channel, requester, sourceMessage, sourceThreadId: canonicalRoot };
   }
 
   private persistWorkflowRun(run: WorkflowRun, requestId?: ID, origin?: Conn): void {
@@ -4644,6 +4684,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
           requesterId: frame.requesterId,
           ...(frame.sourceMessageId ? { sourceMessageId: frame.sourceMessageId } : {}),
           ...(frame.sourceThreadId ? { sourceThreadId: frame.sourceThreadId } : {}),
+          ...(frame.deadlineAt !== undefined ? { deadlineAt: frame.deadlineAt } : {}),
           ...(frame.causedByHook ? { causedByHook: true } : {}),
         }, { requestId, origin: conn });
         if (requestId) {
@@ -8371,18 +8412,22 @@ private viewProject(project: Project, viewerId?: ID): Project {
   private publishTask(task: Task, requestId?: ID, origin?: Conn): void {
     const correlated = Boolean(requestId && origin);
     const audience = this.taskAudience(task);
-    const sendTask = (conn: Conn): void => {
-      if (correlated && conn === origin) return;
-      send(conn.ws, { type: "task", task });
-    };
+    let originDelivered = false;
     for (const conn of this.conns) {
-      if (audience.has(conn.userId)) sendTask(conn);
+      if (!audience.has(conn.userId) || (correlated && conn === origin)) continue;
+      if (conn === origin) originDelivered = true;
+      send(conn.ws, { type: "task", task });
     }
     // Correlation is only returned to a currently authorized origin. This is
     // deliberately not a transport acknowledgement for a requester who has
     // since left the room or lost drive access.
     if (correlated && audience.has(origin!.userId)) {
       send(origin!.ws, { type: "task", task, requestId: requestId! });
+    }
+    // Legacy engine frames carry no request id. They still need the ordinary
+    // task push on the originating engine socket so it can claim/run work.
+    if (origin && !requestId && audience.has(origin.userId) && !originDelivered) {
+      send(origin.ws, { type: "task", task });
     }
   }
 
@@ -8491,7 +8536,15 @@ private viewProject(project: Project, viewerId?: ID): Project {
       return;
     }
     if (approval.kind === "action") this.toUser(approval.ownerId, { type: "approval", approval });
-    else this.broadcast({ type: "approval", approval });
+    else if (approval.taskId) {
+      const task = this.store.task(approval.taskId);
+      if (task) {
+        const audience = this.taskAudience(task);
+        for (const conn of this.conns) {
+          if (audience.has(conn.userId)) send(conn.ws, { type: "approval", approval });
+        }
+      }
+    } else this.broadcast({ type: "approval", approval });
   }
 
   // NOTHING KILLS A CARD ANY MORE (2026-08-07). There used to be a sweep here
@@ -8522,13 +8575,12 @@ private viewProject(project: Project, viewerId?: ID): Project {
   private visibleApprovals(userId: ID): Approval[] {
     return this.store.approvals().filter(a => {
       if (this.isWorkflowApproval(a)) return this.workflowApprovalAudience(a).has(userId);
-      const task = a.taskId ? this.store.task(a.taskId) : undefined;
-      if (task?.channelId && a.kind !== "action") {
-        const channel = this.store.channel(task.channelId);
-        return a.ownerId === userId || task.requesterId === userId
-          || (!!channel && this.audienceFor(channel).has(userId));
+      if (a.kind === "action") return a.ownerId === userId;
+      if (a.taskId) {
+        const task = this.store.task(a.taskId);
+        return task ? this.taskAudience(task).has(userId) : false;
       }
-      return a.kind !== "action" || a.ownerId === userId;
+      return true;
     });
   }
 
@@ -8573,6 +8625,14 @@ private viewProject(project: Project, viewerId?: ID): Project {
  * requests would go down with it. One rule, one place.
  */
 export { isBranchName as isSafeBranchName } from "@cloud9/shared";
+
+const TASK_TITLE_LIMIT = 4000;
+
+function validateTaskTitle(title: unknown): string | null {
+  if (typeof title !== "string" || title.trim().length === 0) return "a task needs some words";
+  if (title.length > TASK_TITLE_LIMIT) return `that task title is too long (max ${TASK_TITLE_LIMIT} characters)`;
+  return null;
+}
 
 /**
  * Does this task need the owner to say yes first?

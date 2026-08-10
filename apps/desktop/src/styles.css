@@ -4151,3 +4151,12 @@ button.chip{cursor:pointer;}
   .composer .tools .eyebrow{flex-basis:96px;max-width:32%;font-size:10px;}
 }
 
+.task-affordance { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-top: 6px; }
+.task-inline { display: grid; gap: 8px; min-width: min(360px, 100%); padding: 10px; border: 1px solid var(--line, #d8dce4); border-radius: 8px; background: var(--panel, #fff); }
+.task-inline label { display: grid; gap: 4px; font-size: 12px; }
+.task-inline label > span { font-weight: 600; }
+.task-inline select, .task-inline input, .task-inline textarea { width: 100%; box-sizing: border-box; }
+.task-inline-actions { display: flex; gap: 8px; }
+.task-inline-state { margin: 0; font-size: 12px; }
+.task-inline-state.success { color: var(--success, #16734a); }
+.task-source-card { display: grid; gap: 3px; margin-top: 8px; padding: 8px 10px; border-left: 3px solid var(--accent, #7557d6); background: var(--panel-muted, #f5f4fb); font-size: 12px; }

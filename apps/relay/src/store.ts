@@ -4672,6 +4672,26 @@ export class Store implements JoinHubStore {
     const row = this.db.prepare("SELECT json FROM tasks WHERE id=?").get(id) as { json: string } | undefined;
     return row ? (JSON.parse(row.json) as Task) : undefined;
   }
+  /** Find one durable create replay receipt without trusting a client projection. */
+  taskForCreateRequest(requesterId: ID, requestId: ID): Task | undefined {
+    const rows = this.db.prepare(
+      "SELECT json FROM tasks WHERE json_extract(json,'$.requesterId')=? "
+      + "AND json_extract(json,'$.createRequestId')=? ORDER BY updatedAt DESC LIMIT 1",
+    ).all(requesterId, requestId) as { json: string }[];
+    return rows.length > 0 ? JSON.parse(rows[0].json) as Task : undefined;
+  }
+  /**
+   * Find all message-created tasks for one authenticated requester/source.
+   * Source identity is the durable idempotency boundary when a window loses
+   * the create acknowledgement and retries with a fresh transport request id.
+   */
+  tasksForSourceMessage(requesterId: ID, sourceMessageId: ID): Task[] {
+    const rows = this.db.prepare(
+      "SELECT json FROM tasks WHERE json_extract(json,'$.requesterId')=? "
+      + "AND json_extract(json,'$.sourceMessageId')=? ORDER BY updatedAt DESC, id DESC",
+    ).all(requesterId, sourceMessageId) as { json: string }[];
+    return rows.map(row => JSON.parse(row.json) as Task);
+  }
   tasks(limit = 200): Task[] {
     return (this.db.prepare("SELECT json FROM tasks ORDER BY updatedAt DESC LIMIT ?").all(limit) as { json: string }[])
       .map(r => JSON.parse(r.json) as Task);

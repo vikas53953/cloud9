@@ -38,10 +38,11 @@ test("turn lifecycle only speaks from accepted public evidence", () => {
       ["accepted", "cancelled", "completed", "failed", "queued", "waiting-user", "working"]);
 
     const message = { id: "m1", channelId: "c1", authorId: "u1", authorKind: "human" };
-    const task = { id: "t1", sourceMessageId: "m1", channelId: "c1", requesterId: "u1", agentId: "a1", title: "same", status: "working" };
+    const task = { id: "t1", sourceMessageId: "m1", channelId: "c1", requesterId: "u1", agentId: "a1", title: "same", status: "working", createdAt: 1, updatedAt: 1 };
     assert.strictEqual(taskForSourceMessage(message, [task], new Set(["a1"])), task);
-    assert.equal(taskForSourceMessage(message, [task, { ...task, id: "t2" }], new Set(["a1"])), undefined,
-      "duplicate source rows fail closed instead of choosing the first task");
+    const duplicate = { ...task, id: "t2", createdAt: 2, updatedAt: 2 };
+    assert.strictEqual(taskForSourceMessage(message, [task, duplicate], new Set(["a1"])), duplicate,
+      "historical duplicate source rows choose the deterministic latest canonical task");
     assert.equal(taskForSourceMessage(message, [task], new Set(["a2"])), undefined,
       "a task for an agent outside this channel must not render");
     assert.equal(taskForSourceMessage({ ...message, id: "other" }, [task], new Set(["a1"])), undefined);

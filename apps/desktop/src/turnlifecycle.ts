@@ -43,8 +43,9 @@ export interface TurnTaskAnchorMessage {
 /**
  * Join a durable task to the exact message that created it. A title is not an
  * identity: two requests may intentionally have the same words in one room.
- * Returning nothing for an ambiguous or legacy row is safer than drawing work
- * beneath the wrong message.
+ * Historical rows can contain duplicates from a lost acknowledgement on an
+ * older relay. Pick one deterministic canonical row instead of dropping the
+ * card entirely; the relay now prevents new duplicates at this source boundary.
  */
 export function taskForSourceMessage(
   message: TurnTaskAnchorMessage,
@@ -59,7 +60,8 @@ export function taskForSourceMessage(
     && task.channelId === message.channelId
     && task.requesterId === message.authorId
     && agentIds.has(task.agentId));
-  return matches.length === 1 ? matches[0] : undefined;
+  return matches
+    .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt || b.id.localeCompare(a.id))[0];
 }
 
 /** The words shown on the compact card. Keep them plain and stable. */

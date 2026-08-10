@@ -322,6 +322,8 @@ export interface World {
   hubConn: { phase: ConnState["phase"]; line: string };
   tasks: Task[];
   handoffs: Record<ID, HandoffRequestState>;
+  /** Correlated inline message-to-task mutations, including lost/refused state. */
+  taskMutations: Record<ID, { state: "pending" | "succeeded" | "refused" | "lost"; taskId?: ID; sourceMessageId?: ID; problem?: string }>;
   approvals: Approval[];
   workflows: Workflow[];
   workflowRuns: WorkflowRun[];
@@ -786,7 +788,7 @@ export function purgeLegacySecrets(): void {
 export class RelayClient {
   world: World = {
     connected: false, authFailed: false, users: [], agents: [], channels: [],
-    messages: {}, messageStatuses: {}, humanTyping: {}, agentStatus: {}, presence: {}, tasks: [], handoffs: {}, approvals: [], activity: [],
+    messages: {}, messageStatuses: {}, humanTyping: {}, agentStatus: {}, presence: {}, tasks: [], handoffs: {}, taskMutations: {}, approvals: [], activity: [],
     notifications: [], notificationsAsked: false, notificationsLoading: false,
     notificationsRequestId: undefined, notificationsProblem: undefined,
     workflows: [], workflowRuns: [], workflowLoading: false,
@@ -913,6 +915,10 @@ export class RelayClient {
     this.world.connected = false;
     this.clearHumanTyping(undefined, undefined, false);
     this.world.humanTyping = {};
+    // A new socket epoch owns its own correlated task receipts. Keep only the
+    // lost rows re-added by the callbacks below; never carry a stale pending
+    // creation into another hub/session.
+    this.world.taskMutations = {};
     // questions asked of the last connection will never be answered by this one
     this.clearAllUploads();
     const orphaned = this.asked;
@@ -1004,6 +1010,7 @@ export class RelayClient {
       // simply clearing the maps used to lose that intent silently.
       const orphaned = this.asked;
       this.asked = [];
+      this.world.taskMutations = {};
       for (const a of orphaned) a.lost?.();
       // Request ids belong to this socket epoch. A late workflow response from
       // the dropped socket must never settle a new window's run/archive/stop
@@ -1552,6 +1559,38 @@ export class RelayClient {
       }
     }
     if (changed) this.world.handoffs = next;
+  }
+
+  /** Turn one accessible human message into durable work with a settled receipt. */
+  createTaskFromMessage(input: {
+    agentId: ID; channelId: ID; title: string; sourceMessageId: ID;
+    sourceThreadId?: ID; deadlineAt?: number;
+  }): ID | undefined {
+    const requestId = this.nextRequestId("createTask");
+    const set = (state: "pending" | "succeeded" | "refused" | "lost", problem?: string, taskId?: ID): void => {
+      this.world.taskMutations = {
+        ...this.world.taskMutations, [requestId]: { state, sourceMessageId: input.sourceMessageId,
+          ...(problem ? { problem } : {}), ...(taskId ? { taskId } : {}) },
+      };
+      this.emit();
+    };
+    const sent = this.transmit({
+      type: "createTask", agentId: input.agentId, channelId: input.channelId,
+      title: input.title, sourceMessageId: input.sourceMessageId,
+      ...(input.sourceThreadId ? { sourceThreadId: input.sourceThreadId } : {}),
+      ...(input.deadlineAt !== undefined ? { deadlineAt: input.deadlineAt } : {}), requestId,
+    }, {
+      answers: frame => frame.type === "task" && frame.requestId === requestId,
+      answered: frame => { if (frame.type === "task") set("succeeded", undefined, frame.task.id); },
+      refused: problem => set("refused", problem),
+      lost: () => set("lost", "Cloud9 disconnected before it confirmed this task; try again when the relay answers."),
+    });
+    if (sent === undefined) {
+      set("lost", "Cloud9 is offline; this task was not sent.");
+      return undefined;
+    }
+    set("pending");
+    return requestId;
   }
 
   private canonicalDraftThreadId(threadId?: ID): ID | undefined {
@@ -4567,6 +4606,7 @@ askPolls(projectId: ID): void {
         w.presence = frame.state.presence ?? {};
         w.tasks = frame.state.tasks;
         this.reconcileHandoffs(w.tasks);
+        w.taskMutations = {};
         w.approvals = frame.state.approvals;
         w.notifications = frame.state.notifications ?? [];
         w.notificationsAsked = true;
@@ -4880,6 +4920,9 @@ askPolls(projectId: ID): void {
           || frame.channel.memberIds.some(memberId =>
             w.agents.some(agent => agent.id === memberId && agent.ownerId === w.me?.id));
         if (!stillVisible) {
+          const ownAgentIds = new Set(w.agents.filter(agent => agent.ownerId === w.me?.id).map(agent => agent.id));
+          w.tasks = w.tasks.filter(task => task.channelId !== frame.channel.id
+            || task.requesterId === w.me?.id || ownAgentIds.has(task.agentId));
           this.clearUploadsFor(frame.channel.id);
           this.clearRichLinkPreviewsForChannel(frame.channel.id);
           clearLiveSteps(row => row.channelId === frame.channel.id);

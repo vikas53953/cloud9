@@ -1148,6 +1148,12 @@ export interface Task {
   sourceMessageId?: ID;
   /** The canonical thread root containing the source message, when applicable. */
   sourceThreadId?: ID;
+  /** The human account that owns this task's request. Legacy rows may omit it. */
+  ownerId?: ID;
+  /** An explicitly chosen deadline; absent means the task has no deadline. */
+  deadlineAt?: number;
+  /** Stable mutation id used to replay one accepted create without minting twice. */
+  createRequestId?: ID;
   requesterId: ID;         // human who asked
   requesterName: string;
   agentId: ID;             // assigned agent (FR-TS-007 multi-agent: later)
@@ -4010,7 +4016,7 @@ type ClientFrameBase =
   // engine's own account (the owner) for a friend's request. Only an engine
   // connection may set it, and the relay still checks that person is real and
   // can see the channel — it is a claim, not a permission.
-  | { type: "createTask"; agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID; sourceThreadId?: ID; needsApproval?: boolean; action?: string; causedByHook?: boolean }
+  | { type: "createTask"; agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID; sourceThreadId?: ID; deadlineAt?: number; needsApproval?: boolean; action?: string; causedByHook?: boolean }
   /**
    * engine (agent owner) only. `summary` follows the same sentence-vs-silence
    * rule as every other optional field in this protocol: ABSENT means "I am not
@@ -6519,7 +6525,16 @@ export function validateMessageText(text: unknown, allowEmpty = false): string |
  * in the database, so an unbounded one is a way to put a blob in through a path
  * nobody sized. A TLDR is a couple of sentences — this is generous, not tight.
  */
-export const TASK_LIMITS = { summary: 500 } as const;
+export const TASK_LIMITS = { title: 4000, summary: 500 } as const;
+
+/** Check a task title before it is persisted or routed to an engine. */
+export function validateTaskTitle(title: unknown): string | null {
+  if (typeof title !== "string" || title.trim().length === 0) return "a task needs some words";
+  if (title.length > TASK_LIMITS.title) {
+    return `that task title is too long (max ${TASK_LIMITS.title} characters)`;
+  }
+  return null;
+}
 
 /**
  * Check the summary an agent wrote about its own finished job.
