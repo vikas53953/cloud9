@@ -78,6 +78,7 @@ import {
   cannotSplit, dividerSpokenWords, dividerWords, widestThread, widthHeChose, widthToDraw,
   ForumTopic, ForumReply, ForumStatus, ForumLink, ClientFrame, RunComparison,
   RichLinkPreview, findRichLinkRefs, richLinkToken,
+  taskMatchesCommandCenterFilter, type CommandCenterFilter,
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, uploadPreviewKind, useWorld, World, type HandoffRequestState } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -2411,6 +2412,7 @@ function Workspace(): React.JSX.Element {
    */
   const [awaitingHire, setAwaitingHire] = useState<string | null>(null);
   const [quick, setQuick] = useState(false);
+  const [launcherOpen, setLauncherOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const toolsHoldRef = useRef<HTMLDivElement>(null);
   const [pendingPeer, setPendingPeer] = useState<{ id: ID; since: number } | null>(null);
@@ -2807,7 +2809,7 @@ function Workspace(): React.JSX.Element {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        setQuick(q => !q);
+        setLauncherOpen(open => !open);
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
@@ -3367,7 +3369,7 @@ function Workspace(): React.JSX.Element {
           <IconSearch /><span>Search messages, rooms, agents, files and activity</span><kbd>Ctrl Shift F</kbd>
         </button>
         <div className="global-actions">
-          <button className="iconbtn" aria-label="Help" title="Help and shortcuts" onClick={() => client.notify("Ctrl K starts Quick Chat. Ctrl Shift F searches messages, rooms, agents, files and activity.")}>?</button>
+          <button className="iconbtn" aria-label="Help" title="Help and shortcuts" onClick={() => client.notify("Ctrl K opens the command launcher. Ctrl Shift F searches messages, rooms, agents, files and activity.")}>?</button>
           <button className="iconbtn" aria-label="Notifications" title="Notifications" onClick={openNotifications}><IconBell />{unreadNotifications > 0 && <b>{unreadNotifications}</b>}</button>
           <button className="global-profile" aria-label="Connection and profile" title={world.hubConn.line || "Connection and profile"} onClick={() => setModal("friends")}>
             <span className={`rail-lamp ${world.connected ? "ok" : ""}`} /><span>{world.me?.name ?? "Profile"}</span>
@@ -3439,7 +3441,7 @@ function Workspace(): React.JSX.Element {
           </div>
 
           <div className="rail-utilities">
-            <button className="rail-btn" title="Quick chat (Ctrl K)" onClick={() => setQuick(true)}>
+            <button className="rail-btn" title="Command launcher (Ctrl K)" onClick={() => setLauncherOpen(true)}>
               <IconBolt />Ctrl K
             </button>
             {railBtn("settings", "Settings", <IconGear />)}
@@ -3581,6 +3583,30 @@ function Workspace(): React.JSX.Element {
       )}
       {/* The one question about unsaved words, for every screen in the app. */}
       <LeaveGuardDialog />
+      {launcherOpen && <CommandLauncher
+        onClose={() => setLauncherOpen(false)}
+        onGoChannel={id => { setLauncherOpen(false); goChannel(id); }}
+        onOpenSource={(channelId, messageId, threadId) => {
+          setLauncherOpen(false);
+          attemptLeave(() => {
+            setActiveId(channelId);
+            setScreen("chat");
+            setJumpTo({ id: messageId, at: Date.now() });
+            if (threadId) setOpenThreadFor({ id: threadId, at: Date.now() });
+          });
+        }}
+        onSearch={() => { setLauncherOpen(false); leaveThen(() => { setScreen("chat"); setSearchOpen(true); }); }}
+        onQuickChat={() => { setLauncherOpen(false); setQuick(true); }}
+        onOpenTasks={() => { setLauncherOpen(false); goScreen("tasks"); }}
+        onOpenActivity={() => { setLauncherOpen(false); openActivity(); }}
+        onToggleMute={channelId => {
+          const muted = p.mutedChannelIds.includes(channelId);
+          prefs.set({ mutedChannelIds: withRoomMuted(prefs.get(), channelId, !muted).mutedChannelIds });
+          client.notify(!muted ? "Channel muted" : "Channel unmuted");
+        }}
+        onMarkRead={(channelId, ts, messageId) => { client.markRead(channelId, ts, messageId); setLauncherOpen(false); }}
+        mutedChannelIds={p.mutedChannelIds}
+      />}
       {quick && <QuickChat onClose={() => setQuick(false)} />}
       {modal === "invite" && <InviteModal onClose={() => setModal(null)} />}
       {modal === "channel" && <ChannelModal onClose={() => setModal(null)} />}
@@ -11194,6 +11220,135 @@ function QuickChat({ onClose, standalone }: { onClose?: () => void; standalone?:
   return <div className="qc-veil" role="dialog" aria-modal="true" aria-label="Quick chat" onClick={onClose}>{body}</div>;
 }
 
+type CommandLauncherProps = {
+  onClose: () => void;
+  onGoChannel: (id: ID) => void;
+  onOpenSource: (channelId: ID, messageId: ID, threadId?: ID) => void;
+  onSearch: () => void;
+  onQuickChat: () => void;
+  onOpenTasks: () => void;
+  onOpenActivity: () => void;
+  onToggleMute: (channelId: ID) => void;
+  onMarkRead: (channelId: ID, ts?: number, messageId?: ID) => void;
+  mutedChannelIds: readonly ID[];
+};
+
+/** Keyboard-first navigation over rows the relay has already authorized. */
+function CommandLauncher({
+  onClose, onGoChannel, onOpenSource, onSearch, onQuickChat,
+  onOpenTasks, onOpenActivity, onToggleMute, onMarkRead, mutedChannelIds,
+}: CommandLauncherProps): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const previousFocus = useRef<HTMLElement | null>(
+    typeof document === "undefined" ? null : document.activeElement as HTMLElement | null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    return () => previousFocus.current?.focus?.();
+  }, []);
+  useClickAwayCloses(panelRef, onClose, true);
+  useEscapeCloses(onClose, true);
+
+  type Item = { id: string; label: string; hint: string; keywords: string; run: () => void };
+  const items = useMemo<Item[]>(() => {
+    const rows: Item[] = [
+      { id: "palette", label: "Open command palette", hint: "Focus this launcher", keywords: "command palette launcher", run: () => inputRef.current?.focus() },
+      { id: "tasks", label: "Open Tasks", hint: "Command-center work", keywords: "tasks work jobs", run: onOpenTasks },
+      { id: "activity", label: "Open Activity", hint: "Durable run history", keywords: "activity runs history", run: onOpenActivity },
+    ];
+    if (world.connected) rows.splice(1, 0,
+      { id: "search", label: "Search everywhere", hint: "Messages, rooms, agents, files", keywords: "search find", run: onSearch },
+      { id: "quick-chat", label: "Quick chat", hint: "Send a message", keywords: "chat message", run: onQuickChat });
+    for (const channel of world.channels) {
+      const prefix = channel.kind === "channel" ? "#" : "";
+      rows.push({
+        id: `channel:${channel.id}`,
+        label: `Jump to ${prefix}${channel.name}`,
+        hint: channel.kind === "dm" ? "Direct conversation" : "Channel",
+        keywords: `jump ${channel.name} channel room`,
+        run: () => onGoChannel(channel.id),
+      });
+      const messages = world.messages[channel.id] ?? [];
+      for (const message of messages.slice(-20).reverse()) {
+        const hasThread = !!message.replyTo || !!message.replyCount || !!world.threads[message.id];
+        if (!hasThread) continue;
+        const source = message.replyTo ? "Open source" : "Open thread";
+        rows.push({
+          id: `source:${message.id}`,
+          label: `${source} in ${prefix}${channel.name}`,
+          hint: message.text.trim().slice(0, 80) || "Message",
+          keywords: `thread source ${channel.name} ${message.text}`,
+          run: () => onOpenSource(channel.id, message.id, message.replyTo ?? message.id),
+        });
+      }
+      const latest = messages.at(-1);
+      if (latest && world.connected) {
+        const muted = mutedChannelIds.includes(channel.id);
+        rows.push({
+          id: `mute:${channel.id}`,
+          label: `${muted ? "Unmute" : "Mute"} ${prefix}${channel.name}`,
+          hint: "Durable notification preference",
+          keywords: `mute unmute notifications ${channel.name}`,
+          run: () => onToggleMute(channel.id),
+        });
+        rows.push({
+          id: `read:${channel.id}`,
+          label: `Mark ${prefix}${channel.name} read`,
+          hint: "Durable read receipt",
+          keywords: `read unread mark ${channel.name}`,
+          run: () => onMarkRead(channel.id, latest.ts, latest.id),
+        });
+      }
+    }
+    return rows;
+  }, [mutedChannelIds, onGoChannel, onMarkRead, onOpenActivity, onOpenSource, onOpenTasks, onQuickChat, onSearch, onToggleMute, world.channels, world.connected, world.messages, world.threads]);
+
+  const needle = query.trim().toLowerCase();
+  const visible = items.filter(item => !needle || `${item.label} ${item.hint} ${item.keywords}`.toLowerCase().includes(needle));
+  useEffect(() => setSelected(i => Math.min(i, Math.max(visible.length - 1, 0))), [visible.length]);
+
+  const choose = (item?: Item): void => {
+    if (!item) return;
+    item.run();
+    if (item.id !== "palette") onClose();
+  };
+  return (
+    <div className="command-launcher-veil" role="presentation" onClick={onClose}>
+      <div ref={panelRef} className="command-launcher" role="dialog" aria-modal="true" aria-label="Command launcher" onClick={e => e.stopPropagation()}>
+        <div className="command-launcher-head">
+          <span className="eyebrow">Command palette</span>
+          <span className="kbd">Esc</span>
+        </div>
+        <input ref={inputRef} className="command-launcher-input" value={query}
+          placeholder="Jump, search, or run a command…" aria-label="Filter commands"
+          onChange={e => { setQuery(e.target.value); setSelected(0); }}
+          onKeyDown={e => {
+            if (e.key === "ArrowDown") { e.preventDefault(); setSelected(i => visible.length ? (i + 1) % visible.length : 0); }
+            if (e.key === "ArrowUp") { e.preventDefault(); setSelected(i => visible.length ? (i - 1 + visible.length) % visible.length : 0); }
+            if (e.key === "Enter") { e.preventDefault(); choose(visible[selected]); }
+          }} />
+        <div className="command-launcher-list" role="listbox" aria-label="Available commands">
+          {visible.map((item, index) => (
+            <button key={item.id} type="button" role="option" aria-selected={index === selected}
+              className={`command-launcher-item${index === selected ? " selected" : ""}`}
+              onMouseEnter={() => setSelected(index)} onClick={() => choose(item)}>
+              <span><strong>{item.label}</strong><small>{item.hint}</small></span>
+              {index === selected && <span className="kbd">Enter</span>}
+            </button>
+          ))}
+          {visible.length === 0 && <div className="command-launcher-empty" role="status">
+            {world.connected ? "No commands match this search." : "Offline: only local navigation commands are available."}
+          </div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ================= model picker (his 5, 6) ================= */
 
 /** The models this harness really offers, or the documented set until it says. */
@@ -16067,7 +16222,8 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
   onOpened?: () => void;
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const [filter, setFilter] = useState<"all" | "running" | "done" | "failed">("all");
+  type TaskScreenFilter = CommandCenterFilter | "running" | "done";
+  const [filter, setFilter] = useState<TaskScreenFilter>("all");
   const [focusTaskId, setFocusTaskId] = useState<ID | null>(null);
 
   useEffect(() => {
@@ -16094,10 +16250,15 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
   const mineExpired = mineAll.filter(a => approvalIsDead(a));
 
   const shown = world.tasks.filter(t => {
+    if (filter === "all") return true;
     if (filter === "running") return RUNNING_STATES.includes(t.status);
     if (filter === "done") return t.status === "completed";
-    if (filter === "failed") return t.status === "failed" || t.status === "cancelled";
-    return true;
+    return taskMatchesCommandCenterFilter({
+      task: t,
+      approvals: world.approvals,
+      runs: Object.values(world.runs),
+      meId: world.me?.id,
+    }, filter);
   });
   /* A STUCK JOB IS NOT A RUNNING JOB. It used to be printed under "Running"
      with everything genuinely moving, which is how a job waiting on something
@@ -16171,8 +16332,8 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
         <h2>Tasks</h2>
         <span className="sub">Jobs you handed out, and the ones waiting on your word</span>
         <div className="grow" />
-        <div className="seg" role="group" aria-label="Which jobs to show">
-          {([["all", "All"], ["running", "Running"], ["done", "Done"], ["failed", "Failed"]] as const).map(([k, l]) => (
+        <div className="seg command-center-filters" role="group" aria-label="Command center filters">
+          {([["all", "All"], ["running", "Running"], ["done", "Done"], ["mine", "Mine"], ["waiting", "Waiting for me"], ["failed", "Failed"], ["completed", "Completed"]] as const).map(([k, l]) => (
             <button key={k} aria-pressed={filter === k} onClick={() => setFilter(k)}>{l}</button>
           ))}
         </div>
@@ -16180,7 +16341,10 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
 
       <div className="tasks-body">
         <div className="tasks-main">
-          {world.tasks.length === 0 && (
+          {!world.connected && (
+            <div className="empty-state command-center-offline" role="status">Cloud9 is offline. Reconnect to refresh command-center facts.</div>
+          )}
+          {world.tasks.length === 0 && world.connected && (
             <EmptyTray title="Nothing handed over yet"
               line={<>Ask an agent with <code>@Agent !bg your job</code> and the result lands here.</>} />
           )}
@@ -16188,7 +16352,7 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
               empty panel on its own reads as "nothing ever happened". */}
           {world.tasks.length > 0 && shown.length === 0 && (
             <EmptyTray title="No jobs of that kind"
-              line={<>Nothing here is {filter === "running" ? "running or stuck" : filter === "done" ? "finished" : "failed or stopped"} right now. Pick “All” to see every job.</>} />
+              line={<>No server-recorded jobs match this filter right now. Pick “All” to see every job.</>} />
           )}
           {stuck.length > 0 && (
             <span className="eyebrow stucklabel" style={{ display: "block", marginBottom: 12 }}>
@@ -18531,6 +18695,7 @@ function ActivityScreen({ openAt, onOpened }: {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [showAgents, setShowAgents] = useState(true);
   const [showPeople, setShowPeople] = useState(true);
+  const [commandFilter, setCommandFilter] = useState<CommandCenterFilter>("all");
   const [focusRunId, setFocusRunId] = useState<ID | null>(null);
 
   /* THE TRAIL USED TO FREEZE THE MOMENT IT WAS OPENED.
@@ -18557,7 +18722,22 @@ function ActivityScreen({ openAt, onOpened }: {
   const focusGone = focusRunId ? !!world.runsGone[focusRunId] : false;
 
   const rows = [...world.activity].reverse().filter(r =>
-    r.actorKind === "agent" ? showAgents : showPeople);
+    r.actorKind === "agent" ? showAgents : showPeople).filter(r => {
+      if (commandFilter === "all") return true;
+      const directTask = r.refId ? world.tasks.find(t => t.id === r.refId) : undefined;
+      const directRun = r.refId ? world.runs[r.refId] : undefined;
+      const directApproval = r.refId ? world.approvals.find(a => a.id === r.refId) : undefined;
+      const linkedTask = directTask ?? (directRun?.taskId
+        ? world.tasks.find(t => t.id === directRun.taskId)
+        : directApproval?.taskId ? world.tasks.find(t => t.id === directApproval.taskId) : undefined);
+      if (!linkedTask) return false;
+      return taskMatchesCommandCenterFilter({
+        task: linkedTask,
+        approvals: world.approvals,
+        runs: Object.values(world.runs),
+        meId: world.me?.id,
+      }, commandFilter);
+    });
 
   const days: { label: string; rows: typeof rows }[] = [];
   for (const r of rows) {
@@ -18574,6 +18754,11 @@ function ActivityScreen({ openAt, onOpened }: {
         <span className="sub">What your agents are doing now, and everything they did before</span>
         <div className="grow" />
         <div className="filters">
+          <div className="seg command-center-filters" role="group" aria-label="Command center filters">
+            {([["all", "All"], ["mine", "Mine"], ["waiting", "Waiting for me"], ["failed", "Failed"], ["completed", "Completed"]] as const).map(([key, label]) => (
+              <button key={key} aria-pressed={commandFilter === key} onClick={() => setCommandFilter(key)}>{label}</button>
+            ))}
+          </div>
           <button className="chip is-pine" aria-pressed={showAgents}
             onClick={() => setShowAgents(v => !v)}>Agents</button>
           <button className="chip is-ultra" aria-pressed={showPeople}
@@ -18582,6 +18767,7 @@ function ActivityScreen({ openAt, onOpened }: {
       </header>
 
       <div className="act-body">
+        {!world.connected && <div className="empty-state command-center-offline" role="status">Cloud9 is offline. Activity filters use the last authorized records.</div>}
         {focusRunId && (
           <div className="act-focused-run" data-run={focusRunId} aria-label="Opened run">
             <span className="eyebrow">Opened from Team feed</span>
@@ -18597,7 +18783,11 @@ function ActivityScreen({ openAt, onOpened }: {
         <RightNowBoard />
 
         <div className="act-day"><span className="eyebrow">Before now</span></div>
-        {rows.length === 0 && (
+        {rows.length === 0 && world.activity.length > 0 && (
+          <EmptyTray title="No recorded activity matches this filter"
+            line="Try All to see every server-recorded activity row." />
+        )}
+        {rows.length === 0 && world.activity.length === 0 && (
           <EmptyTray title="Nothing has happened yet"
             line="Every message, job and go-ahead shows up here, newest first." />
         )}

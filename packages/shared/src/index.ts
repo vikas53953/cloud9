@@ -7442,3 +7442,8 @@ export {
   COMPOSER_COMMAND_NAMES, COMPOSER_COMMAND_SPELLINGS, parseComposerCommand,
   type ComposerCommandName, type ParsedComposerCommand,
 } from "./composer-commands.js";
+
+export {
+  taskMatchesCommandCenterFilter,
+  type CommandCenterFilter, type CommandCenterFacts,
+} from "./activity-command-center.js";
