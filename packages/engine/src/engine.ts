@@ -21,6 +21,7 @@ import {
   // engine, the hub and the window cannot end up with three opinions about the
   // same money.
   humanMoney, findWaste, narrowingOnly, renderTokenUseReport, rollUpTokenUse, tidySaving,
+  RESPONSE_STREAM_LIMITS, type AgentResponseStreamKind,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
 // WHOSE SETUP EACH TURN RUNS IN — the same one owner both harnesses read, asked
@@ -60,7 +61,7 @@ import { verifyTurn } from "./verify.js";
 import { describeRepoTurn, repoTurn, RepoTurnResult } from "./repowork.js";
 import { GitWorkspace, Worktree } from "./worktree.js";
 import { GitHubWriteRequest, GitHubWriteRequestWithoutRepo, runGitHubWrite } from "./githubwrite.js";
-import { buildRunRecord, ProviderTrace, RunFinish, RunKind, RunSeed } from "./runrecord.js";
+import { buildRunRecord, newRunId, ProviderTrace, RunFinish, RunKind, RunSeed } from "./runrecord.js";
 import { RunStore } from "./runstore.js";
 import {
   MemoryStore, MemoryKind, MemoryNote, MEMORY_NOTES_PER_TURN, newMemoryId,
@@ -1045,6 +1046,10 @@ export class Engine {
       // CLAUDE.md, his connected services and his hooks loaded (`ownersetup.ts`).
       ownerSetup: usesOwnerSetup(agent),
     };
+    // Allocate the turn id before the provider starts. The same id is used by
+    // every preview event and by the durable run record, so a late frame can
+    // never be mistaken for a newer turn.
+    const turnId = newRunId(seed.startedAt);
     let trace: ProviderTrace | undefined;
     // ==================================================================
     // WHAT THIS AGENT MAY SPEND — decided HERE, once, for every kind of turn
@@ -1083,6 +1088,10 @@ export class Engine {
      *  path, any runner that ignores the option) must cost the room no frames
      *  at all, not one meaningless "it's finished" for a box nobody saw. */
     let streamed = false;
+    let responseStarted = false;
+    let responseClosed = false;
+    let responseSeq = 0;
+    let responseChars = 0;
     // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
     /** the handle that stops this turn; absent until the harness is actually run */
     let stop: ReturnType<typeof newStopScope> | undefined;
@@ -1113,6 +1122,7 @@ export class Engine {
       if (!provider) {
         throw new HarnessUnavailableError(harness, `${harness} is not connected on this machine`);
       }
+      const responseCapable = canSignal && provider.canStreamResponse?.() === true;
       // ASKED TO SHOW A PLAN BY A HARNESS THAT HAS NO PLAN MODE. Refused out
       // loud rather than quietly doing the work — see `PlanNotOfferedError`.
       // This is the last gate; `planFirstTurn` asks the same question earlier so
@@ -1179,6 +1189,30 @@ export class Engine {
         ...(input.planOnly ? { planOnly: true } : {}),
         ...(providerAbortController ? { abortController: providerAbortController } : {}),
         onTrace: t => { trace = t; },
+        ...(responseCapable ? {
+          onResponseText: (chunk: string) => {
+            if (responseClosed || typeof chunk !== "string" || chunk.length === 0) return;
+            // A provider callback is trusted only as far as its declared text;
+            // split oversized increments and enforce the same total ceiling the
+            // relay and desktop apply. No tool labels or reasoning reach here.
+            let offset = 0;
+            while (offset < chunk.length && !responseClosed) {
+              const piece = chunk.slice(offset, offset + RESPONSE_STREAM_LIMITS.deltaChars);
+              offset += piece.length;
+              if (responseChars + piece.length > RESPONSE_STREAM_LIMITS.totalChars) {
+                responseClosed = true;
+                if (responseStarted) this.sendResponseStream(agent.id, input, turnId, "response-fail", ++responseSeq, undefined, "response preview reached its size limit");
+                return;
+              }
+              if (!responseStarted) {
+                responseStarted = true;
+                this.sendResponseStream(agent.id, input, turnId, "response-start", 0);
+              }
+              responseChars += piece.length;
+              this.sendResponseStream(agent.id, input, turnId, "response-delta", ++responseSeq, piece);
+            }
+          },
+        } : {}),
         // WHAT IT IS DOING, AS IT DOES IT. Only offered when there is a message
         // and a room to show it against — the same gate `sendReceipt` uses, in
         // the same one place, so a scheduled or proactive turn cannot stream
@@ -1196,7 +1230,7 @@ export class Engine {
       // THE OWNER PULLED THE PLUG AND THE HARNESS STILL ANSWERED — a half-made
       // answer from a process that was killed mid-sentence. It is not reported
       // as a good turn, because it is not one.
-      if (stop.stopped) this.turnWasStopped(agent, seed, input, trace); // throws
+      if (stop.stopped) this.turnWasStopped(agent, seed, input, trace, turnId); // throws
       // ===== GAP C BLOCK — end =====
       // DID THIS TURN GET THE MODEL IT ASKED FOR? Worked out once, here, and
       // put on the record, so the screen never has to guess from two ids what
@@ -1223,7 +1257,11 @@ export class Engine {
         finishedAt: Date.now(), outcome: "ok", trace, reply: text,
         ...(stoodIn ? { fellBackTo: stoodIn } : {}),
         ...(input.planOnly ? { planOnly: true } : {}),
-      });
+      }, turnId);
+      if (responseStarted && !responseClosed) {
+        responseClosed = true;
+        this.sendResponseStream(agent.id, input, turnId, "response-final", ++responseSeq);
+      }
       // NEVER A SILENT SWAP. He chose a model; he is told, in the room, when he
       // did not get it. The record carries the fact whether or not there is a
       // room to say it in, so a scheduled check-in that fell back is still
@@ -1261,8 +1299,22 @@ export class Engine {
       // exactly what the button offered.
       // Already recorded and already spoken for by the line above — it must not
       // be written down a second time on its way out.
-      if (err instanceof TurnStoppedError) throw err;
-      if (stop?.stopped) this.turnWasStopped(agent, seed, input, trace); // throws
+      if (err instanceof TurnStoppedError) {
+        if (responseStarted && !responseClosed) {
+          responseClosed = true;
+          this.sendResponseStream(agent.id, input, turnId, "response-cancel", ++responseSeq,
+            undefined, "you stopped this run");
+        }
+        throw err;
+      }
+      if (stop?.stopped) {
+        if (responseStarted && !responseClosed) {
+          responseClosed = true;
+          this.sendResponseStream(agent.id, input, turnId, "response-cancel", ++responseSeq,
+            undefined, "you stopped this run");
+        }
+        this.turnWasStopped(agent, seed, input, trace, turnId); // throws
+      }
       // ===== GAP C BLOCK — end =====
       this.recordRun(seed, {
         finishedAt: Date.now(), outcome: "failed", trace,
@@ -1276,7 +1328,14 @@ export class Engine {
         ...(err instanceof SpendCapReachedError
           ? { capStop: { which: err.which, capUsd: err.capUsd } } : {}),
         ...(input.planOnly ? { planOnly: true } : {}),
-      });
+      }, turnId);
+      if (responseStarted && !responseClosed) {
+        responseClosed = true;
+        this.sendResponseStream(agent.id, input, turnId,
+          err instanceof TurnStoppedError ? "response-cancel" : "response-fail",
+          ++responseSeq, undefined,
+          err instanceof TurnStoppedError ? "you stopped this run" : "the response did not finish");
+      }
       // ⚠️ — it did not go through. The tick says the STATE; the honest
       // sentence the caller posts says the words.
       this.sendVerdict(agent.id, input, {
@@ -1371,6 +1430,30 @@ export class Engine {
       this.sendFrame({ type: "agentSteps", agentId, channelId, messageId, done: true });
     } catch (err) {
       console.error("[engine] could not close a live view:", err);
+    }
+  }
+
+  /** Send a genuine provider response preview; relay supplies the timestamp. */
+  private sendResponseStream(
+    agentId: ID, input: TurnInput, turnId: string, kind: AgentResponseStreamKind,
+    seq: number, text?: string, reason?: string,
+  ): void {
+    const messageId = input.triggerMessageId;
+    const channelId = input.channelId;
+    if (!messageId || !channelId) return;
+    try {
+      this.sendFrame({
+        type: "agentResponse",
+        event: {
+          kind, channelId, triggerMessageId: messageId, agentId, turnId, seq,
+          // The relay overwrites this untrusted placeholder with hub time.
+          at: 0,
+          ...(text !== undefined ? { text } : {}),
+          ...(reason ? { reason } : {}),
+        },
+      });
+    } catch (err) {
+      console.error("[engine] could not send response preview:", err);
     }
   }
 
@@ -1601,16 +1684,19 @@ export class Engine {
     // sentence reaching here is either Cloud9's own or a plan already bounded
     // and stripped by `tidyPlan`.
     this.agentSend(agent.id, channelId, text,
-      { ...(input.replyTo ? { replyTo: input.replyTo } : {}) });
+      {
+        ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+        ...(input.triggerMessageId ? { responseTriggerMessageId: input.triggerMessageId } : {}),
+      });
   }
 
   /**
    * Build and store one run record. Never throws: a turn that worked must not
    * be reported as broken because its paperwork failed.
    */
-  private recordRun(seed: RunSeed, finish: RunFinish): RunRecord | undefined {
+  private recordRun(seed: RunSeed, finish: RunFinish, id?: string): RunRecord | undefined {
     try {
-      const record = buildRunRecord(seed, finish);
+      const record = buildRunRecord(seed, finish, id);
       this.lastRun = record;
       this.runs.save(record);
       this.publishRun(record);
@@ -1825,12 +1911,12 @@ export class Engine {
    * still running and still costing him.
    */
   private turnWasStopped(
-    agent: AgentDef, seed: RunSeed, input: TurnInput, trace?: ProviderTrace,
+    agent: AgentDef, seed: RunSeed, input: TurnInput, trace?: ProviderTrace, id?: string,
   ): never {
     this.recordRun(seed, {
       finishedAt: Date.now(), outcome: "cancelled", trace,
       error: "you stopped this run",
-    });
+    }, id);
     this.sendVerdict(agent.id, input, {
       outcome: "failed", ...(trace?.steps ? { steps: trace.steps } : {}),
       error: "you stopped this run",
@@ -1950,13 +2036,19 @@ export class Engine {
         return;
       }
       const text = await this.respondAs(agent, brief);
-      this.agentSend(agent.id, channelId, text, { ...(replyTo ? { replyTo } : {}) });
+      this.agentSend(agent.id, channelId, text, {
+        ...(replyTo ? { replyTo } : {}),
+        ...(trigger.id ? { responseTriggerMessageId: trigger.id } : {}),
+      });
     } catch (err) {
       // A STOP IS NOT A BREAKAGE. He pressed the button, so the agent says so
       // in its own words rather than being reported as broken.
       this.agentSend(agent.id, channelId,
         saidWhenTurnEnded(err, `${agent.name} could not take a turn`),
-        { ...(replyTo ? { replyTo } : {}) });
+        {
+          ...(replyTo ? { replyTo } : {}),
+          ...(trigger.id ? { responseTriggerMessageId: trigger.id } : {}),
+        });
     } finally {
       this.setStatus(agent.id, "idle");
     }
@@ -2124,7 +2216,7 @@ export class Engine {
       this.markWork(task, "working", false);
       this.markWork(task, "done");
       this.reportFinished(agent.id, task.channelId, thread,
-        `📦 Task done:\n${text}`, roomLineForThreadJob(task.title));
+        `📦 Task done:\n${text}`, roomLineForThreadJob(task.title), true, this.askMessageFor.get(task.id));
     } catch (err) {
       // HE STOPPED IT, so it is not a job that failed and it is certainly not a
       // job that finished. Its own ending, written down and said out loud.
@@ -2139,7 +2231,7 @@ export class Engine {
       // a job that fell over is still a finished job: the reason goes where it
       // was asked for, and the room hears that it ended
       this.reportFinished(agent.id, task.channelId, thread, said,
-        roomLineForThreadJob(task.title, "failed"), false);
+        roomLineForThreadJob(task.title, "failed"), false, this.askMessageFor.get(task.id));
     } finally {
       this.setStatus(agent.id, "idle");
       this.askMessageFor.delete(task.id);
@@ -2378,7 +2470,7 @@ export class Engine {
         ...(thread ? { replyTo: thread } : {}),
       });
       this.reportFinished(agent.id, channelId, thread, `📦 Background task done:\n${text}`,
-        roomLineForThreadJob(trigger.text.replace(/^!bg\s+/i, "")));
+        roomLineForThreadJob(trigger.text.replace(/^!bg\s+/i, "")), true, trigger.id);
     } catch (err) {
       // Same law as `jobWasStopped`: a stop is said in the room he pressed the
       // button in, and it is never dressed up as a job that finished.
@@ -3516,11 +3608,12 @@ export class Engine {
    */
   agentSend(
     agentId: ID, channelId: ID, text: string,
-    opts: { proactive?: boolean; replyTo?: ID } = {},
+    opts: { proactive?: boolean; replyTo?: ID; responseTriggerMessageId?: ID } = {},
   ): void {
     this.sendFrame({
       type: "agentSend", agentId, channelId, text, proactive: opts.proactive ?? false,
       ...(opts.replyTo ? { replyTo: opts.replyTo } : {}),
+      ...(opts.responseTriggerMessageId ? { responseTriggerMessageId: opts.responseTriggerMessageId } : {}),
     });
   }
 
@@ -3560,11 +3653,16 @@ export class Engine {
    */
   private reportFinished(
     agentId: ID, channelId: ID, thread: ID | undefined,
-    detail: string, roomLine: string, proactive = true,
+    detail: string, roomLine: string, proactive = true, responseTriggerMessageId?: ID,
   ): void {
     this.agentSend(agentId, channelId, detail,
-      { proactive, ...(thread ? { replyTo: thread } : {}) });
-    if (thread) this.agentSend(agentId, channelId, roomLine, { proactive });
+      {
+        proactive, ...(thread ? { replyTo: thread } : {}),
+        ...(responseTriggerMessageId ? { responseTriggerMessageId } : {}),
+      });
+    if (thread) this.agentSend(agentId, channelId, roomLine, {
+      proactive, ...(responseTriggerMessageId ? { responseTriggerMessageId } : {}),
+    });
   }
 
   private setStatus(agentId: ID, status: "idle" | "working" | "braked"): void {

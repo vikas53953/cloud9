@@ -36,6 +36,7 @@ import {
 import { noteReceipt } from "./receipts.js";
 // …and so do live steps, for the same reasons, in their own file.
 import { clearLiveSteps, noteLiveSteps } from "./livesteps.js";
+import { clearAgentResponses, noteAgentMessage, noteAgentResponse } from "./responsestream.js";
 
 type WorkflowRequestFrame = Extract<ClientFrame, {
   type: "listWorkflows" | "createWorkflow" | "updateWorkflow" | "archiveWorkflow" | "runWorkflow" | "stopWorkflow" | "retryWorkflow"
@@ -904,6 +905,7 @@ export class RelayClient {
     // Public activity belongs to one live socket epoch. A reconnect has no
     // authority to keep showing a previous engine's in-flight preview.
     clearLiveSteps();
+    clearAgentResponses();
     this.ws?.close();
     const epoch = ++this.socketEpoch;
     const ws = new WebSocket(url);
@@ -919,6 +921,7 @@ export class RelayClient {
       // belongs to a connection nobody is on any more.
       if (this.ws !== ws) return;
       clearLiveSteps();
+      clearAgentResponses();
       this.clearHumanTyping(undefined, undefined, false);
       this.world.humanTyping = {};
       this.world.connected = false;
@@ -3898,6 +3901,7 @@ askPolls(projectId: ID): void {
         // The snapshot is durable state, never a continuation of a transient
         // tool stream. Begin each admitted session with a quiet activity cache.
         clearLiveSteps();
+        clearAgentResponses();
         this.clearHumanTyping(undefined, undefined, false);
         w.humanTyping = {};
         w.connected = true;
@@ -4118,6 +4122,7 @@ askPolls(projectId: ID): void {
         w.joinToken = { code: frame.code, expiresInMs: frame.expiresInMs, ts: Date.now() };
         break;
       case "message": {
+        noteAgentMessage(frame.message);
         // new arrays, not in-place pushes: the UI compares references to decide
         // what to recompute, so a mutated-in-place list looks like "no change"
         const cid = frame.message.channelId;
@@ -4167,6 +4172,10 @@ askPolls(projectId: ID): void {
         // a deleted agent's presence is not a fact about anything any more
         const { [frame.agentId]: _gone, ...rest } = w.presence;
         w.presence = rest;
+        // Agent deletion is an access loss for every in-flight preview this
+        // window could have been drawing; do not leave text visible until the
+        // stale timer happens to fire.
+        clearAgentResponses(row => row.agentId === frame.agentId);
         this.forgetRunsOf(frame.agentId);
         break;
       }
@@ -4294,6 +4303,12 @@ askPolls(projectId: ID): void {
            small store in `livesteps.ts`. */
         noteLiveSteps(frame.live);
         break;
+      case "agentResponse":
+        // Ephemeral provider text is held outside WorldState and is discarded
+        // on terminal frames by the dedicated cache. It never enters history,
+        // search or unread state.
+        noteAgentResponse(frame.stream);
+        break;
       case "messageUpdated":
         this.replaceMessage(frame.message);
         if (frame.message.deletedAt) {
@@ -4335,6 +4350,7 @@ askPolls(projectId: ID): void {
           // it was us: the relay has already closed the socket, so show the
           // welcome screen with a reason rather than an empty app
           w.authFailed = true;
+          clearAgentResponses();
           w.lastError = { text: "you were removed from this Cloud9", ts: Date.now() };
           break;
         }
@@ -4509,6 +4525,7 @@ askPolls(projectId: ID): void {
         void goneMessages;
         w.messages = restMessages;
         this.clearHumanTyping(frame.channelId, undefined, false);
+        clearAgentResponses(row => row.channelId === frame.channelId);
         const { [frame.channelId]: gonePage, ...restPages } = w.pages;
         void gonePage;
         w.pages = restPages;

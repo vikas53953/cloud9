@@ -115,6 +115,8 @@ export interface RespondInput extends TurnBrief {
    * Same law as `onTrace`: a failure here may never cost the caller its answer.
    */
   onStep?: (steps: RunStep[]) => void;
+  /** Genuine provider response-text increments; never tool steps or reasoning. */
+  onResponseText?: (text: string) => void;
   /**
    * THIS TURN BELONGS TO A CONVERSATION THREAD, and may therefore continue the
    * harness's own session instead of starting a cold one (`sessionresume.ts`).
@@ -172,6 +174,8 @@ export interface ThreadContinuity {
 
 export interface ClaudeProvider {
   respond(input: RespondInput): Promise<string>;
+  /** True only when this provider exposes genuine incremental response text. */
+  canStreamResponse?(): boolean;
   /**
    * CAN THIS PROVIDER TAKE A PLAN-ONLY TURN — one where the agent says what it
    * intends and does nothing?
@@ -717,6 +721,8 @@ export class MockProvider implements ClaudeProvider {
     return DEMO_REPLY_PREFIX + this.cannedBody({ agent, trigger, triggerAuthor });
   }
 
+  canStreamResponse(): boolean { return false; }
+
   private cannedBody(
     { agent, trigger, triggerAuthor }: Pick<RespondInput, "agent" | "trigger" | "triggerAuthor">,
   ): string {
@@ -873,6 +879,8 @@ export class SdkProvider implements ClaudeProvider {
     private queryOverride?: SdkQuery,
   ) {}
 
+  canStreamResponse(): boolean { return true; }
+
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir } = input;
     const offeredRoots = this.opts.wholeComputerRoots?.(agent.id) ?? [];
@@ -934,6 +942,19 @@ export class SdkProvider implements ClaudeProvider {
     try {
       for await (const message of query({ prompt: parts.turn, options })) {
         const event = message as Record<string, unknown>;
+        // The SDK's stream_event/text_delta is the only provider signal that
+        // proves an answer increment. Assistant snapshots and thinking blocks
+        // are intentionally excluded so the preview cannot fake typing or
+        // expose private reasoning.
+        if (event.type === "stream_event") {
+          const raw = event.event as Record<string, unknown> | undefined;
+          const delta = raw?.delta as Record<string, unknown> | undefined;
+          const text = delta?.type === "text_delta" ? delta.text : undefined;
+          if (typeof text === "string" && text.length > 0) {
+            try { input.onResponseText?.(text); }
+            catch (err) { console.error("[engine] SDK response preview watcher failed:", err); }
+          }
+        }
         if (event.type === "result") sawResult = true;
         const steps = walker.feed(JSON.stringify(event));
         if (steps.length) {

@@ -84,6 +84,7 @@ import { AgentReceipts, useAgentReceipts } from "./receipts.js";
 // same reasons — see its header. Only the HOOK comes from there; the steps are
 // drawn by `RunSteps` below, the same renderer the stored record uses.
 import { useLiveSteps, useLiveWorkByAgent } from "./livesteps.js";
+import { useResponsePreviews } from "./responsestream.js";
 import { chatDraftKey, clearChatDraft, loadChatDraft, saveChatDraft, type ChatDraftScope } from "./chatdrafts.js";
 import {
   abilitiesOn, abilityWords, MARKET_CATEGORIES, MARKET_TEMPLATES, MarketTemplate,
@@ -4713,6 +4714,35 @@ function LiveWork({ messageId, agents, channelId }: {
   );
 }
 
+/** A provider-backed answer preview, deliberately separate from tool activity. */
+function ResponsePreview({ messageId, agents }: {
+  messageId: ID; agents: readonly AgentDef[];
+}): React.JSX.Element | null {
+  const previews = useResponsePreviews(messageId);
+  if (previews.length === 0) return null;
+  return (
+    <div className="response-preview" data-response-preview="true" data-msg={messageId}>
+      {previews.map(preview => {
+        const name = agents.find(agent => agent.id === preview.agentId)?.name ?? "An agent";
+        return (
+          <div key={`${preview.agentId}:${preview.turnId}`} className="response-preview-bubble"
+            data-response-state={preview.status}>
+            <div className="response-preview-meta"><b>{name}</b><span>Provisional response</span></div>
+            {/* Deltas stay quiet; only the bounded lifecycle status is polite.
+                The durable message itself remains the source of truth. */}
+            <div className="response-preview-text" aria-live="off">
+              {preview.text || <span className="response-preview-wait">Preparing a response…</span>}
+            </div>
+            <div className="response-preview-state" role="status" aria-live="polite">
+              {preview.status === "finalizing" ? "Response received; saving it…" : "Still working…"}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** ✓ / ✕ / ⏸ for the three ways a turn can end. */
 function RunMark({ outcome }: { outcome: RunRecord["outcome"] }): React.JSX.Element {
   if (outcome === "failed") {
@@ -6826,6 +6856,7 @@ const MessageRow = React.memo(function MessageRow({
           {refusedNotes}
           {reactionRow}
           {!deleted && <AgentReceipts messageId={m.id} agents={agents} />}
+          {!deleted && <ResponsePreview messageId={m.id} agents={agents} />}
           {/* the steps arriving while the turn runs — drawn on the message that
               ASKED, which is where the 👀 already is, and gone when it ends */}
           {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} />}
@@ -6909,6 +6940,7 @@ const MessageRow = React.memo(function MessageRow({
         {refusedNotes}
         {reactionRow}
         {!deleted && <AgentReceipts messageId={m.id} agents={agents} />}
+        {!deleted && <ResponsePreview messageId={m.id} agents={agents} />}
         {/* same, on a full message — see the note on the continuation above */}
         {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} />}
         {threadLine}

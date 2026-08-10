@@ -103,6 +103,23 @@ test("SDK exposes live steps, trace/session/run facts, Cloud9 tools, and closes 
   assert.ok((options?.tools as string[]).some(name => name.startsWith("mcp__cloud9__")));
 });
 
+test("SDK response preview emits only genuine text_delta increments", async () => {
+  const deltas: string[] = [];
+  const provider = new SdkProvider(
+    { apiKey: "saved-key" }, () => "C:\\agents\\a1", {},
+    fakeQuery([
+      system,
+      { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "hel" } } },
+      { type: "stream_event", event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "private" } } },
+      { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "lo" } } },
+      success("hello"),
+    ]),
+  );
+  await provider.respond({ ...turn(agent()), onResponseText: text => deltas.push(text) });
+  assert.deepEqual(deltas, ["hel", "lo"]);
+  assert.equal(provider.canStreamResponse?.(), true);
+});
+
 test("Stop's abort controller reaches the SDK query", async () => {
   const controller = new AbortController();
   let seen: AbortController | undefined;

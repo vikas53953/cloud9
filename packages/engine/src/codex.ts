@@ -742,6 +742,9 @@ export class CodexProvider implements ClaudeProvider {
     this.command = opts.command ?? "codex";
   }
 
+  // Codex exec --json has no genuine response text delta event in this seam.
+  canStreamResponse(): boolean { return false; }
+
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir, onTrace, onStep } = input;
     // its own git worktree when it is working in a repository (`repowork.ts`),

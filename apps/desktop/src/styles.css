@@ -905,6 +905,13 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
    steps inside are the SAME `.runstep` rows the record uses — one vocabulary,
    one look, whichever half of the turn you are watching. */
 .livework{margin-top:8px;display:grid;gap:8px;}
+.response-preview{margin-top:8px;display:grid;gap:8px;}
+.response-preview-bubble{padding:10px 12px;border-radius:var(--radius-s);background:var(--surface-2);border-left:2px solid var(--pine);}
+.response-preview-meta{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--ink-3);}
+.response-preview-meta span{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--pine);}
+.response-preview-text{margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;color:var(--ink-2);}
+.response-preview-wait{color:var(--ink-3);font-style:italic;}
+.response-preview-state{margin-top:7px;font-size:10.5px;color:var(--ink-3);}
 .liveturn{
   padding:9px 11px;border-radius:var(--radius-s);background:var(--surface-2);
   border-left:2px solid var(--ultra);

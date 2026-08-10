@@ -37,6 +37,8 @@ import {
   agentPresence, describeRemoteAction, detailRemoteAction, validateRemoteActionFacts,
   isReceiptStage, isReceiptVerdict,
   RUN_LIMITS, redactForSharing, validateLiveSteps,
+  RESPONSE_STREAM_LIMITS, validateAgentResponseStream,
+  type AgentResponseStreamEvent,
   contentDisposition, downloadContentType, fitRunRecord, isBranchName, isSafeFileName,
   isSafeStoredId, latestVersion, looksLikeText, normaliseArtifactAccess,
   normaliseArtifactLinks, validateArtifactAccessMutation, validateArtifactLinks,
@@ -105,6 +107,27 @@ interface LiveTyping extends HumanTyping {
   sources: Set<WebSocket>;
   timer?: ReturnType<typeof setTimeout>;
 }
+
+interface ActiveResponseStream {
+  /** The engine socket that started this turn; a second host must not keep it alive. */
+  source: WebSocket;
+  ownerId: ID;
+  channelId: ID;
+  triggerMessageId: ID;
+  agentId: ID;
+  turnId: string;
+  lastSeq: number;
+  /** Sequence ids already projected; frames may arrive out of order. */
+  seenSeq: Set<number>;
+  totalChars: number;
+  eventTimes: number[];
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+const responseStreamKey = (ownerId: ID, channelId: ID, triggerMessageId: ID, agentId: ID, turnId: string): string =>
+  `${ownerId}\u0000${channelId}\u0000${triggerMessageId}\u0000${agentId}\u0000${turnId}`;
+const responseStreamSlot = (ownerId: ID, channelId: ID, triggerMessageId: ID, agentId: ID): string =>
+  `${ownerId}\u0000${channelId}\u0000${triggerMessageId}\u0000${agentId}`;
 
 /** Human typing is deliberately short-lived and in-memory only. */
 const HUMAN_TYPING_TTL_MS = 4_000;
@@ -272,6 +295,16 @@ export class Relay {
   private liveTyping = new Map<string, LiveTyping>();
   /** Agent ids currently represented by each engine socket for huddle presence cleanup. */
   private huddleEngineAgents = new Map<WebSocket, Set<ID>>();
+  /** Genuine response previews; process memory only and swept on inactivity. */
+  private responseStreams = new Map<string, ActiveResponseStream>();
+  private responseStreamSlots = new Map<string, string>();
+  /**
+   * Recently ended turn keys. A terminal/source-close frame must not free the
+   * same public turn id for another engine socket to resurrect immediately.
+   * These are process-local, bounded, and expire with the same lease as a live
+   * preview; they are not history or durable response content.
+   */
+  private responseStreamTombstones = new Map<string, number>();
 
   /**
    * The receipt for the one-time catch-up, when this start is the one that ran
@@ -415,6 +448,7 @@ export class Relay {
     for (const state of [...this.liveTyping.values()]) this.removeLiveTyping(state.channelId, state.userId, false);
     for (const t of this.looking.values()) clearTimeout(t);
     this.looking.clear();
+    this.clearResponseStreams();
     for (const c of this.conns) c.ws.close();
     this.wss.close();
     this.server.close();
@@ -496,19 +530,25 @@ export class Relay {
       }
       // The engine host owns the CLIs. Once it's gone, its last status report is
       // a stale claim about a machine nobody is watching — drop it and say so.
-      if (conn.client === "engine" && !this.hasEngine(conn.userId)) {
-        delete this.harness[conn.userId];
-        delete this.signInFlight[conn.userId];
+      if (closed.client === "engine") {
+        // Each preview is bound to the socket that started it. A second engine
+        // for the same owner is a separate host, not permission to continue a
+        // turn whose source process has disappeared.
+        this.clearResponseStreams(stream => stream.source === closed.ws);
+      }
+      if (closed.client === "engine" && !this.hasEngine(closed.userId)) {
+        delete this.harness[closed.userId];
+        delete this.signInFlight[closed.userId];
         // THE SAME REASONING, APPLIED TO THE LAMP. The last idle/working/braked
         // an engine reported is a claim about a machine nobody is watching any
         // more, and keeping it meant an engine that died mid-turn left its agent
         // "working" for ever. Dropped, and everyone is told what is true now:
         // nobody can run these agents.
         for (const agent of this.store.agents()) {
-          if (agent.ownerId === conn.userId) delete this.agentStatus[agent.id];
+          if (agent.ownerId === closed.userId) delete this.agentStatus[agent.id];
         }
-        this.announcePresenceForOwner(conn.userId);
-        this.toUser(conn.userId, {
+        this.announcePresenceForOwner(closed.userId);
+        this.toUser(closed.userId, {
           type: "harness",
           state: {
             claude: {
@@ -2830,6 +2870,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
     // membership rule used everywhere else in the relay.
     const stillVisible = this.visibleChannels(userId).some(c => c.id === channelId);
     if (stillVisible) return;
+    this.clearResponseStreams(stream => stream.ownerId === userId && stream.channelId === channelId);
     this.clearTypingForChannelUser(channelId, userId);
     this.toUser(userId, { type: "channelLeft", channelId });
     // Leaving a project room also changes Pulse visibility. Refresh the scoped
@@ -2842,6 +2883,77 @@ private viewProject(project: Project, viewerId?: ID): Project {
     for (const project of this.store.projectsAll()) {
       if (project.channelId === channelId && project.ownerId !== userId) {
         this.toUser(userId, { type: "projectAccessRevoked", projectId: project.id });
+      }
+    }
+  }
+
+  /** Drop ephemeral response previews when their owner or access boundary goes away. */
+  private clearResponseStreams(
+    predicate: (stream: ActiveResponseStream) => boolean = () => true,
+    reason = "response preview ended because access changed",
+  ): void {
+    for (const [key, stream] of this.responseStreams) {
+      if (!predicate(stream)) continue;
+      const channel = this.store.channel(stream.channelId);
+      if (channel) {
+        this.toChannel(channel, {
+          type: "agentResponse",
+          stream: {
+            kind: "response-cancel", channelId: stream.channelId,
+            triggerMessageId: stream.triggerMessageId, agentId: stream.agentId,
+            turnId: stream.turnId, seq: stream.lastSeq + 1, at: Date.now(), reason,
+          },
+        });
+      }
+      if (stream.timer) clearTimeout(stream.timer);
+      this.tombstoneResponseStream(key);
+      this.responseStreams.delete(key);
+      const slot = responseStreamSlot(stream.ownerId, stream.channelId, stream.triggerMessageId, stream.agentId);
+      if (this.responseStreamSlots.get(slot) === key) this.responseStreamSlots.delete(slot);
+    }
+  }
+
+  /** Remember a recently ended public turn without retaining any response text. */
+  private tombstoneResponseStream(key: string, now = Date.now()): void {
+    this.responseStreamTombstones.set(key, now + RESPONSE_STREAM_LIMITS.staleMs);
+    const max = RESPONSE_STREAM_LIMITS.maxActiveStreams * 4;
+    if (this.responseStreamTombstones.size <= max) return;
+    for (const [candidate, expiresAt] of this.responseStreamTombstones) {
+      if (expiresAt <= now || this.responseStreamTombstones.size > max) {
+        this.responseStreamTombstones.delete(candidate);
+      }
+      if (this.responseStreamTombstones.size <= max) break;
+    }
+  }
+
+  private responseStreamRecentlyEnded(key: string, now = Date.now()): boolean {
+    const expiresAt = this.responseStreamTombstones.get(key);
+    if (expiresAt === undefined) return false;
+    if (expiresAt <= now) {
+      this.responseStreamTombstones.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  /** Project a safe terminal event and forget its in-memory stream state. */
+  private failResponseStream(
+    channel: Channel, event: AgentResponseStreamEvent, reason: string, key?: string,
+  ): void {
+    const now = Date.now();
+    const projected: AgentResponseStreamEvent = {
+      ...event, kind: "response-fail", seq: Math.max(0, event.seq), at: now,
+      text: undefined, reason: reason.slice(0, RESPONSE_STREAM_LIMITS.reasonChars), channelId: channel.id,
+    };
+    this.toChannel(channel, { type: "agentResponse", stream: projected });
+    if (key) {
+      const active = this.responseStreams.get(key);
+      if (active?.timer) clearTimeout(active.timer);
+      this.tombstoneResponseStream(key, now);
+      this.responseStreams.delete(key);
+      if (active) {
+        const slot = responseStreamSlot(active.ownerId, active.channelId, active.triggerMessageId, active.agentId);
+        if (this.responseStreamSlots.get(slot) === key) this.responseStreamSlots.delete(slot);
       }
     }
   }
@@ -3267,6 +3379,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
           authorEmoji: agent.emoji, text: frame.text, ts: Date.now(),
           proactive: frame.proactive,
           mentions: this.mentionsFor(conn.userId, frame.text),
+          ...(frame.responseTriggerMessageId ? { responseTriggerMessageId: frame.responseTriggerMessageId } : {}),
           ...(replyTo ? { replyTo } : {}),
         });
         break;
@@ -3548,6 +3661,10 @@ private viewProject(project: Project, viewerId?: ID): Project {
         if (frame.archived) {
           ch.archivedAt = Date.now();
           ch.archivedBy = conn.userId;
+          // An archived conversation is read-only. End any in-flight preview
+          // rather than letting an engine continue projecting into a room that
+          // no longer accepts durable agent messages.
+          this.clearResponseStreams(stream => stream.channelId === ch.id);
         } else {
           ch.archivedAt = undefined;
           ch.archivedBy = undefined;
@@ -3591,6 +3708,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
         const artifactIds = this.artifactIdsInChannel(ch.id);
         const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         this.store.removeChannelMember(ch.id, conn.userId, conn.userId);
+        this.clearResponseStreams(stream => stream.ownerId === conn.userId && stream.channelId === ch.id);
         this.invalidateHuddlesForMember(conn.userId, ch.id);
         this.audit(conn, "member_removed", ch.id, `left ${ch.name}`);
         this.tellLeft(conn.userId, ch.id);
@@ -3611,10 +3729,13 @@ private viewProject(project: Project, viewerId?: ID): Project {
         const artifactIds = this.artifactIdsInChannel(ch.id);
         const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         this.store.removeChannelMember(ch.id, frame.memberId, conn.userId);
+        const removedAgent = this.store.agents().find(a => a.id === frame.memberId);
+        this.clearResponseStreams(stream => stream.channelId === ch.id
+          && (stream.agentId === frame.memberId || (!!removedAgent && stream.ownerId === removedAgent.ownerId)));
         this.invalidateHuddlesForMember(frame.memberId, ch.id);
         this.audit(conn, "member_removed", ch.id, `removed someone from ${ch.name}`);
         // an agent's place in a room belongs to its owner's screen
-        const agent = this.store.agents().find(a => a.id === frame.memberId);
+        const agent = removedAgent;
         this.tellLeft(agent ? agent.ownerId : frame.memberId, ch.id);
         this.tellSaved(agent ? agent.ownerId : frame.memberId);
         this.pushArtifactProjectionDiff(beforeArtifacts, artifactIds);
@@ -3769,6 +3890,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
             block.link?.kind === "run" && deletedRunIds.has(block.link.id))));
         const affectedHuddles = this.store.huddles().filter(h => h.participants.some(p => p.id === frame.agentId));
         this.stopRunsForDeletedAgent(conn, frame.agentId);
+        this.clearResponseStreams(stream => stream.agentId === frame.agentId);
         this.store.deleteAgent(frame.agentId);
         for (const before of affectedHuddles) {
           const updated = this.store.huddle(before.id);
@@ -3828,6 +3950,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
         const target = this.store.user(frame.userId);
         if (!target) throw new Error("no such person");
         const theirAgents = this.store.agents().filter(a => a.ownerId === target.id);
+        this.clearResponseStreams(stream => stream.ownerId === target.id
+          || theirAgents.some(agent => agent.id === stream.agentId));
         const affectedArtifacts = this.store.channels()
           .filter(ch => ch.memberIds.includes(target.id))
           .map(ch => {
@@ -6420,6 +6544,123 @@ private viewProject(project: Project, viewerId?: ID): Project {
             at: Date.now(),
           },
         });
+        break;
+      }
+      case "agentResponse": {
+        // Response previews are a separate semantic protocol. They never share
+        // live tool-step frames, receipts, history, search, unread or storage.
+        if (conn.client !== "engine") throw new Error("only the engine can stream an agent response");
+        const event = frame.event;
+        // A size violation can arrive after a valid start.  Refuse it with a
+        // terminal projection before rejecting the frame so clients cannot be
+        // left showing an immortal spinner.  Build the lookup only from the
+        // active relay state; malformed caller fields are never projected.
+        const candidate = event as Partial<AgentResponseStreamEvent>;
+        if (candidate.kind === "response-delta" && typeof candidate.text === "string"
+          && typeof candidate.channelId === "string" && typeof candidate.triggerMessageId === "string"
+          && typeof candidate.agentId === "string" && typeof candidate.turnId === "string") {
+          const violationKey = responseStreamKey(
+            conn.userId, candidate.channelId, candidate.triggerMessageId, candidate.agentId, candidate.turnId,
+          );
+          const violationActive = this.responseStreams.get(violationKey);
+          const violationChannel = violationActive ? this.store.channel(violationActive.channelId) : undefined;
+          const tooLarge = candidate.text.length > RESPONSE_STREAM_LIMITS.deltaChars
+            || Boolean(violationActive && violationActive.totalChars + candidate.text.length > RESPONSE_STREAM_LIMITS.totalChars);
+          if (tooLarge && violationActive && violationActive.source === conn.ws && violationChannel) {
+            this.failResponseStream(violationChannel, {
+              kind: "response-delta", channelId: violationActive.channelId,
+              triggerMessageId: violationActive.triggerMessageId, agentId: violationActive.agentId,
+              turnId: violationActive.turnId, seq: violationActive.lastSeq + 1, at: Date.now(),
+            }, "response preview reached its size limit", violationKey);
+            break;
+          }
+        }
+        const bad = validateAgentResponseStream(event);
+        if (bad) throw new Error(bad);
+        const agent = this.myAgent(conn.userId, event.agentId);
+        const message = this.messageFor(conn.userId, event.triggerMessageId);
+        if (message.channelId !== event.channelId) throw new Error("no such message");
+        const ch = this.store.channel(message.channelId);
+        if (ch?.archivedAt) throw new Error("that conversation is archived — response previews are closed");
+        if (!ch || !ch.memberIds.includes(agent.id)) throw new Error("that agent is not in this conversation");
+        const slot = responseStreamSlot(conn.userId, message.channelId, message.id, agent.id);
+        const key = responseStreamKey(conn.userId, message.channelId, message.id, agent.id, event.turnId);
+        const now = Date.now();
+        let active = this.responseStreams.get(key);
+        // A second turn for the same trigger is not allowed to overwrite the
+        // first. Stale/cross-turn frames are dropped without projection.
+        const priorKey = this.responseStreamSlots.get(slot);
+        if (event.kind === "response-start") {
+          if (event.seq !== 0) throw new Error("a response stream must start at sequence zero");
+          if (this.responseStreamRecentlyEnded(key, now)) break;
+          if (priorKey && priorKey !== key) break;
+          if (active) break; // idempotent duplicate start
+          if (this.responseStreams.size >= RESPONSE_STREAM_LIMITS.maxActiveStreams) {
+            this.failResponseStream(ch, event, "too many live response previews");
+            break;
+          }
+          active = {
+            source: conn.ws,
+            ownerId: conn.userId, channelId: message.channelId,
+            triggerMessageId: message.id, agentId: agent.id, turnId: event.turnId,
+            lastSeq: 0, seenSeq: new Set([0]), totalChars: 0, eventTimes: [now],
+          };
+          active.timer = setTimeout(() => {
+            if (this.responseStreams.get(key) !== active) return;
+            this.tombstoneResponseStream(key);
+            this.responseStreams.delete(key);
+            if (this.responseStreamSlots.get(slot) === key) this.responseStreamSlots.delete(slot);
+          }, RESPONSE_STREAM_LIMITS.staleMs);
+          (active.timer as unknown as { unref?: () => void }).unref?.();
+          this.responseStreams.set(key, active);
+          this.responseStreamSlots.set(slot, key);
+        } else {
+          // A second engine socket may know the same owner/turn ids, but it is
+          // not the process that opened this preview. Never let it inject a
+          // delta or terminal frame into the source-bound stream.
+          if (!active || priorKey !== key || active.source !== conn.ws) break;
+          active.eventTimes = active.eventTimes.filter(at => now - at < 1_000);
+          if (active.eventTimes.length >= RESPONSE_STREAM_LIMITS.eventsPerSecond) {
+            this.failResponseStream(ch, event, "response preview was rate-limited", key);
+            break;
+          }
+          active.eventTimes.push(now);
+          if (active.seenSeq.has(event.seq)) break; // duplicate; out-of-order is safe
+          if (event.kind === "response-delta") {
+            const chars = event.text?.length ?? 0;
+            if (chars > RESPONSE_STREAM_LIMITS.deltaChars
+              || active.totalChars + chars > RESPONSE_STREAM_LIMITS.totalChars) {
+              this.failResponseStream(ch, event, "response preview reached its size limit", key);
+              break;
+            }
+            active.totalChars += chars;
+          }
+          active.seenSeq.add(event.seq);
+          active.lastSeq = Math.max(active.lastSeq, event.seq);
+          // Activity extends the lease; a long but live answer must not be
+          // mistaken for a stale preview. The timer is still a hard backstop
+          // when the engine/socket dies silently.
+          if (active.timer) clearTimeout(active.timer);
+          active.timer = setTimeout(() => {
+            if (this.responseStreams.get(key) !== active) return;
+            this.tombstoneResponseStream(key);
+            this.responseStreams.delete(key);
+            if (this.responseStreamSlots.get(slot) === key) this.responseStreamSlots.delete(slot);
+          }, RESPONSE_STREAM_LIMITS.staleMs);
+          (active.timer as unknown as { unref?: () => void }).unref?.();
+        }
+        const projected: AgentResponseStreamEvent = {
+          ...event,
+          channelId: ch.id, triggerMessageId: message.id, agentId: agent.id,
+          at: now,
+        };
+        this.toChannel(ch, { type: "agentResponse", stream: projected });
+        if (event.kind === "response-final" || event.kind === "response-cancel" || event.kind === "response-fail") {
+          if (active?.timer) clearTimeout(active.timer);
+          this.tombstoneResponseStream(key, now);
+          this.responseStreams.delete(key);
+          if (this.responseStreamSlots.get(slot) === key) this.responseStreamSlots.delete(slot);
+        }
         break;
       }
       case "editMessage": {

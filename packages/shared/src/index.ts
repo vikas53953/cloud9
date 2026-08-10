@@ -8,6 +8,7 @@ import type { AgentReceipt, ReceiptStage, ReceiptVerdict } from "./receipts.js";
 // Same arrangement, same reason: `livesteps.ts` imports only `ID` and `RunStep`
 // back, type-only, so nothing here is really circular.
 import type { LiveRunSteps } from "./livesteps.js";
+import type { AgentResponseStreamEvent } from "./responsestream.js";
 // …but this one IS a value, and it is imported rather than re-spelled because
 // the hub's refusal has to be measured against the same number the wire
 // documents. It is a leaf: `livesteps.ts` has no runtime import of its own.
@@ -3384,6 +3385,8 @@ export interface Message {
   authorId: ID;
   authorName: string;
   authorKind: AuthorKind;
+  /** Correlates an ephemeral response preview with the durable agent answer. */
+  responseTriggerMessageId?: ID;
   authorEmoji?: string;
   text: string;
   ts: number;
@@ -3673,7 +3676,7 @@ type ClientFrameBase =
   /** Hide one durable inbox row. */
   | { type: "dismissNotification"; notificationId: ID }
   // engine-host only: post a message authored by one of the owner's agents
-  | { type: "agentSend"; agentId: ID; channelId: ID; text: string; proactive?: boolean; replyTo?: ID }
+  | { type: "agentSend"; agentId: ID; channelId: ID; text: string; proactive?: boolean; replyTo?: ID; responseTriggerMessageId?: ID }
   /**
    * engine-host only in practice: put an emoji on a message AS ONE OF YOUR
    * AGENTS — "picked it up", "working", "done" (his item 5).
@@ -3721,6 +3724,8 @@ type ClientFrameBase =
    * survives — this is a preview of it, never a replacement for it.
    */
   | { type: "agentSteps"; agentId: ID; channelId: ID; messageId: ID; steps?: RunStep[]; done?: boolean }
+  /** ENGINE-HOST ONLY: genuine provider response text increments. */
+  | { type: "agentResponse"; event: AgentResponseStreamEvent }
   // v2 — tasks / approvals / activity
   // `requesterId` says WHO ASKED for this work. The engine host relays a task on
   // behalf of whoever typed "!bg …", so without it the relay would credit the
@@ -4362,6 +4367,8 @@ export type ServerFrame =
    * "what did it do?". This is only the waiting made visible.
    */
   | { type: "liveSteps"; live: LiveRunSteps }
+  /** Ephemeral provider response preview; never persisted or counted unread. */
+  | { type: "agentResponse"; stream: AgentResponseStreamEvent }
   /** A message changed — edited, deleted, or given its first attachment. */
   | { type: "messageUpdated"; message: Message }
   | { type: "thread"; parentId: ID; messages: Message[] }
@@ -6615,6 +6622,10 @@ export {
 export {
   LIVE_STEPS_PER_BATCH, LIVE_STEPS_STALE_MS, type LiveRunSteps,
 } from "./livesteps.js";
+export {
+  RESPONSE_STREAM_LIMITS, isAgentResponseStreamKind, validateAgentResponseStream,
+  type AgentResponseStreamEvent, type AgentResponseStreamKind,
+} from "./responsestream.js";
 
 // ---------------------------------------------------------------------------
 // HOW HARD AN AGENT SHOULD THINK — the four words the owner chooses between, and

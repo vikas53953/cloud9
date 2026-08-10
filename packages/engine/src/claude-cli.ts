@@ -826,6 +826,10 @@ export class ClaudeCliProvider implements ClaudeProvider {
     this.command = opts.command ?? "claude";
   }
 
+  // Claude CLI's stream-json exposes snapshots/tool events here, not a
+  // provider-proven incremental answer delta. Keep this path final-only.
+  canStreamResponse(): boolean { return false; }
+
   /**
    * MAY THIS TURN CONTINUE THE SESSION IT ALREADY HAS? (`sessionresume.ts`)
    *
