@@ -47,15 +47,17 @@ test("Canvas project projections redact per viewer on the hub", () => {
   assert.match(server, /viewProject\(project, userId\)/);
   assert.match(server, /pushCanvasProject/);
   // Forums owns step 10, Canvas step 11, channel pins step 12, message
-  // receipts step 13, durable composer drafts step 14, and safe run recovery
-  // takes the next isolated migration.
-  assert.match(relayStore, /export const SCHEMA_VERSION = 15/);
+  // receipts step 13, durable composer drafts step 14, safe run recovery step
+  // 15, and channel memory policy takes step 16.
+  assert.match(relayStore, /CHANNEL_MEMORY_POLICY_SCHEMA_VERSION = 16/);
+  assert.match(relayStore, /export const SCHEMA_VERSION = CHANNEL_MEMORY_POLICY_SCHEMA_VERSION/);
   assert.match(relayStore, /step\(10, \(\) => this\.addForumSchema\(\)\)/);
   assert.match(relayStore, /step\(11, \(\) => this\.addEngineeringCanvasSchema\(\)\)/);
   assert.match(relayStore, /step\(12, \(\) => this\.addChannelPinsSchema\(\)\)/);
   assert.match(relayStore, /step\(13, \(\) => this\.addMessageReceiptsSchema\(\)\)/);
   assert.match(relayStore, /step\(14, \(\) => this\.addChatDraftSchema\(\)\)/);
   assert.match(relayStore, /step\(15, \(\) => this\.addRunRecoverySchema\(\)\)/);
+  assert.match(relayStore, /step\(CHANNEL_MEMORY_POLICY_SCHEMA_VERSION, \(\) => this\.addChannelMemoryPolicySchema\(\)\)/);
   assert.match(relayStore, /DELETE FROM engineering_canvases/);
   assert.match(relayStore, /DELETE FROM forum_topics/);
   assert.match(store, /canvases\.projectId === frame\.projectId/);

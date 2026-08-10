@@ -8,7 +8,8 @@ import {
   ArtifactVersion, ArtifactVersionRef, ArtifactWorkspaceEntry, Attachment, ATTACHMENT_LIMITS,
   describeArtifactVersion, effectiveArtifactAccess, findArtifactRefs, isArtifactRestricted, latestVersion,
   normaliseArtifactAccess, validateArtifactAccess, versionOf,
-  Channel, ChannelMember, ChannelRole, ChannelPinEntry, DEMO_MODE_BANNER, downloadContentType,
+  Channel, ChannelMember, ChannelRole, ChannelPinEntry, ChannelMemoryMode, ChannelMemoryPolicy,
+  channelMemoryModeWords, channelMemoryPolicyWords, DEMO_MODE_BANNER, downloadContentType,
   GitHubAccountInfo, HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectPollView, PublicUpdateDraft, ProjectItemKind, ProjectItemState,
   REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
@@ -5158,6 +5159,7 @@ function ChatView({
     channelPins: w.channelPins[channel.id],
     channelPinPending: w.channelPinPending,
     messageStatuses: w.messageStatuses,
+    channelMemoryPolicies: w.channelMemoryPolicies,
   }));
   const all = useMemo(() => world.messages ?? [], [world.messages]);
   const humanTyping = useMemo(() => (world.humanTyping ?? [])
@@ -5645,6 +5647,10 @@ function ChatView({
   const pinRows = world.members ?? [];
   const myRole = pinRows.find(row => row.memberId === world.me?.id)?.role;
   const canManagePins = !isDm && mayAdministerChannel(myRole);
+  const policyRows = (world.channelMemoryPolicies ?? []).filter(policy => policy.channelId === channel.id);
+  const channelAgents = agents;
+  const canManageMemory = !isDm && mayAdministerChannel(myRole);
+  useEffect(() => { if (!isDm) client.askChannelMemoryPolicies(channel.id); }, [channel.id, isDm]);
   const pinnedIds = useMemo(() => new Set((world.channelPins?.entries ?? []).map(entry => entry.messageId)), [world.channelPins?.entries]);
 
   /* The same fact as the sidebar row, from the same one place, so the rail and
@@ -5687,6 +5693,8 @@ function ChatView({
             {/* A direct conversation with somebody else's agent is a direct
                 conversation with that somebody: they can read it. */}
             {peerAgent && <AgentOwnerTag agent={peerAgent} place="conversation" />}
+            <ChannelMemoryControl channel={channel} agents={peerAgent ? [peerAgent] : []}
+              policies={policyRows} canManage={false} viewerId={world.me?.id} />
           </div>
           <div className="grow" />
           {peerAgent && (
@@ -5721,6 +5729,8 @@ function ChatView({
             {countOf(people.length, "person", "people")} ·{" "}
             {countOf(agents.length, "agent")}
           </span>
+          <ChannelMemoryControl channel={channel} agents={channelAgents}
+            policies={policyRows} canManage={canManageMemory} viewerId={world.me?.id} />
           {/* Open or shut, said where the room is named. A room that anyone in
               this Cloud9 can find and let themselves into is a different thing
               from one you were put in, and that must never be a guess. */}
@@ -8968,6 +8978,86 @@ function SupplyGapBadge({ agent, onEdit, where }: {
         {first.fix}
       </button>
     </span>
+  );
+}
+
+function ChannelMemoryControl({ channel, agents, policies, canManage, viewerId }: {
+  channel: Channel;
+  agents: AgentDef[];
+  policies: ChannelMemoryPolicy[];
+  canManage: boolean;
+  viewerId?: ID;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const controlRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (controlRef.current && !controlRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setOpen(false);
+      buttonRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+  const effectiveModes = agents.map(agent => policies.find(item => item.agentId === agent.id)?.mode
+    ?? (channel.kind === "dm" ? "none" : "explicit" as ChannelMemoryMode));
+  const firstMode = effectiveModes[0] as ChannelMemoryMode | undefined;
+  // An empty conversation cannot retain an agent note. Calling that state
+  // "Mixed" would imply an unknown policy and make a human-human DM look less
+  // conservative than it is. Keep the chip truthful until an agent appears.
+  const mode = agents.length === 0
+    ? "none" as ChannelMemoryMode
+    : firstMode && effectiveModes.every(value => value === firstMode) ? firstMode : undefined;
+  const modeLabel = mode ? channelMemoryModeWords(mode) : "Mixed";
+  return (
+    <div ref={controlRef} className="memory-policy-control" data-memory-policy={mode ?? "mixed"}>
+      <button ref={buttonRef} type="button" className="chip" aria-label="Current channel memory policy"
+        aria-expanded={open} title={mode ? channelMemoryPolicyWords(mode) : "Each agent has its own Cloud9 storage rule."}
+        onClick={() => setOpen(value => !value)}>
+        ◉ Memory: {modeLabel}
+      </button>
+      {open && (
+        <div className="memory-policy-popover" role="dialog" aria-label="Channel memory policy details">
+          <strong>What Cloud9 may remember here</strong>
+          <p>{mode ? channelMemoryPolicyWords(mode) : "Each agent has its own Cloud9 storage rule in this conversation. See the rows below."}</p>
+          <p className="d-empty">This is Cloud9 storage only; it cannot make a model forget text already shown to it.</p>
+          {agents.length === 0 && <p className="d-empty">No agents are in this channel.</p>}
+          {agents.map(agent => {
+            const policy = policies.find(item => item.agentId === agent.id);
+            const selected = policy?.mode ?? (channel.kind === "dm" ? "none" : "explicit");
+            const who = policy?.updatedBy ? (client.getSnapshot().users.find(user => user.id === policy.updatedBy)?.name ?? policy.updatedBy) : "Cloud9 default";
+            const ownsAgent = viewerId !== undefined && agent.ownerId === viewerId;
+            return (
+              <div className="memory-policy-row" key={agent.id}>
+                <label>
+                  <span><b>{agent.name}</b> · {channelMemoryModeWords(selected)}</span>
+                  {canManage && ownsAgent && channel.kind !== "dm" ? (
+                    <select aria-label={`Memory policy for ${agent.name}`} value={selected}
+                      onChange={event => client.setChannelMemoryPolicy(channel.id, agent.id, event.target.value as ChannelMemoryMode, policy?.revision)}>
+                      <option value="none">No retention</option>
+                      <option value="explicit">Explicit only</option>
+                      <option value="summary">Decision summaries</option>
+                    </select>
+                  ) : <span className="d-empty" title={canManage && !ownsAgent ? "Only the agent owner can change this policy" : undefined}>View only</span>}
+                </label>
+                <small>Last changed by {who}{policy ? ` · ${dayLabel(policy.updatedAt)} at ${clock(policy.updatedAt)}` : ""}</small>
+              </div>
+            );
+          })}
+          {channel.kind === "dm" && <p className="d-empty">Direct messages always use No retention unless you explicitly save a global agent note elsewhere.</p>}
+        </div>
+      )}
+    </div>
   );
 }
 

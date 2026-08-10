@@ -54,7 +54,7 @@ test("checkpoint and recovery receipts survive reopen and stay bounded", () => {
   assert.equal(store.checkpoint(cp.id)?.runId, record().id);
   assert.equal(store.recoveryReceipt("owner-1", "recover-1")?.status, "accepted");
   const reopened = new Store(db);
-  assert.equal(reopened.schemaVersion(), 15);
+  assert.equal(reopened.schemaVersion(), 16);
   assert.equal(reopened.checkpointsForRun(record().id).length, 1);
   assert.equal(reopened.recoveryReceipt("owner-1", "recover-1")?.request.runId, record().id);
   store.close(); reopened.close();

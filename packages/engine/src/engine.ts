@@ -8,6 +8,8 @@ import WebSocket from "ws";
 import {
   AgentDef, AgentSchedule, Approval, ARTIFACT_LIMITS, ATTACHMENT_LIMITS,
   Channel, ClientFrame, HarnessName, HarnessState, ID,
+  ChannelMemoryPolicy, ChannelMemoryMode, defaultChannelMemoryMode,
+  channelMemoryMaySave, channelMemoryMayUse,
   Message, Project, ReceiptStage, ReceiptVerdict, RemoteActionFacts, RunRecord, ServerFrame,
   Task, TaskStatus, WorkReaction,
   WorldState, describeRemoteAction, isSafeFileName,
@@ -582,6 +584,31 @@ export class Engine {
         else this.state.channels.push(frame.channel);
         break;
       }
+      case "channelMemoryPolicies":
+        if (this.state) {
+          this.state.channelMemoryPolicies = [
+            ...(this.state.channelMemoryPolicies ?? []).filter(policy => policy.channelId !== frame.channelId),
+            ...frame.policies,
+          ];
+        }
+        break;
+      case "channelMemoryPolicy":
+        if (this.state) {
+          this.state.channelMemoryPolicies = [
+            ...(this.state.channelMemoryPolicies ?? []).filter(policy =>
+              policy.channelId !== frame.policy.channelId || policy.agentId !== frame.policy.agentId),
+            frame.policy,
+          ];
+        }
+        break;
+      case "channelLeft":
+        if (this.state) {
+          this.state.channels = this.state.channels.filter(channel => channel.id !== frame.channelId);
+          this.state.channelMemoryPolicies = (this.state.channelMemoryPolicies ?? [])
+            .filter(policy => policy.channelId !== frame.channelId);
+        }
+        this.history.delete(frame.channelId);
+        break;
       case "agent": {
         if (!this.state) break;
         const i = this.state.agents.findIndex(a => a.id === frame.agent.id);
@@ -769,6 +796,25 @@ export class Engine {
 
   private channel(id: ID): Channel | undefined {
     return this.state?.channels.find(c => c.id === id);
+  }
+
+  /** Effective policy from the relay snapshot; absent rows use the documented default. */
+  private channelMemoryPolicy(channelId: ID, agentId: ID): ChannelMemoryPolicy | undefined {
+    const found = this.state?.channelMemoryPolicies?.find(policy =>
+      policy.channelId === channelId && policy.agentId === agentId);
+    if (found) return found;
+    const channel = this.channel(channelId);
+    // No fabricated default: an unknown channel, or an agent that is not a
+    // live member of it, is outside the policy boundary. Callers that are
+    // about to persist a channel-scoped note must refuse before touching the
+    // memory store.
+    if (!channel || !channel.memberIds.includes(agentId)) return undefined;
+    return {
+      channelId, agentId,
+      mode: defaultChannelMemoryMode(channel?.kind ?? "channel"), revision: 0,
+      updatedAt: channel?.createdAt ?? 0,
+      updatedBy: this.state?.me.id ?? "system", isDefault: true,
+    };
   }
 
   private async considerReplies(message: Message): Promise<void> {
@@ -1221,7 +1267,7 @@ export class Engine {
         // is a bounded string; an agent that has saved nothing gets "" and the
         // prompt says nothing about memory. Reading its own store must never be
         // the reason a turn fails, so it is wrapped.
-        memory: this.rememberedFor(agent.id),
+        memory: this.rememberedFor(agent.id, input.channelId),
         // THE INSTRUCTION TRAVELS WITH THE TURN, and `buildAgentPrompt` refuses
         // to render without it. This is the line the old `buildAgentPrompt(agent,
         // context)` threw away, which is why a 6:30am check-in was woken up and
@@ -2772,7 +2818,7 @@ export class Engine {
                 `answer instead, and remember it next time if it still matters.`,
             };
           }
-          const answer = await this.rememberFromAgent(turn.agentId!, text, kind);
+          const answer = await this.rememberFromAgent(turn.agentId!, text, kind, turn.channelId as ID);
           if (answer.saved) written++;
           return answer;
         },
@@ -3430,9 +3476,19 @@ export class Engine {
    * must never be the reason a turn fails, so it is wrapped: a store that
    * cannot be read seeds nothing rather than throwing.
    */
-  private rememberedFor(agentId: ID): string {
+  private rememberedFor(agentId: ID, channelId?: ID): string {
     try {
-      return retrieveMemory(this.memory.list(agentId));
+      const notes = this.memory.list(agentId);
+      if (!channelId) return retrieveMemory(notes);
+      const policy = this.channelMemoryPolicy(channelId, agentId);
+      // A turn with no live channel/agent membership has no authorized
+      // channel-scoped memory context. Do not seed notes from an invented
+      // fallback room.
+      if (!policy) return "";
+      const mode = policy.mode;
+      return retrieveMemory(notes.filter(note =>
+        (note.channelId === undefined || note.channelId === channelId)
+        && channelMemoryMayUse(mode, note)));
     } catch (err) {
       console.error(`[engine] could not seed memory for agent ${agentId}:`, err);
       return "";
@@ -3450,6 +3506,14 @@ export class Engine {
     agent: AgentDef, channelId: ID, text: string, replyTo?: ID,
   ): Promise<void> {
     const inThread = replyTo ? { replyTo } : {}; // asked in a thread, answered in it
+    const policy = this.channelMemoryPolicy(channelId, agent.id);
+    if (!policy) return;
+    if (!channelMemoryMaySave(policy.mode, "owner", "fact")) {
+      this.agentSend(agent.id, channelId,
+        `I didn't save that to memory — this channel is set to ${policy.mode === "none" ? "No retention" : "Decision summaries"}. ` +
+        `Cloud9 refused the note at its storage boundary; this does not claim the model forgot it.`, inThread);
+      return;
+    }
     const verdict = worthRemembering(text);
     if (!verdict.keep) {
       this.agentSend(agent.id, channelId,
@@ -3459,7 +3523,7 @@ export class Engine {
     }
     const note: MemoryNote = {
       id: newMemoryId(), agentId: agent.id, kind: "fact",
-      text: text.trim(), createdAt: Date.now(), source: "owner",
+      text: text.trim(), createdAt: Date.now(), source: "owner", channelId,
     };
     const saved = this.memory.save(note);
     if (!saved) {
@@ -3498,7 +3562,7 @@ export class Engine {
    * its own cap. A refusal comes back in words the agent can read out.
    */
   async rememberFromAgent(
-    agentId: ID, text: string, kind: string,
+    agentId: ID, text: string, kind: string, channelId?: ID,
   ): Promise<Cloud9RememberAnswer> {
     if (!this.myAgents.some(a => a.id === agentId)) {
       return { saved: false, why: "That memory does not belong to you, so nothing was saved." };
@@ -3516,12 +3580,27 @@ export class Engine {
     // something real. The stored kind is only ever one of the five, so nothing
     // a model types can reach `validateNote` as a surprise.
     const known: MemoryKind[] = ["fact", "preference", "decision", "outcome", "correction"];
+    const resolvedKind = known.includes(kind as MemoryKind) ? kind as MemoryKind : "fact";
+    const policy = channelId ? this.channelMemoryPolicy(channelId, agentId) : undefined;
+    if (channelId && !policy) {
+      return {
+        saved: false,
+        why: "That memory was not saved because this agent is not a member of that conversation.",
+      };
+    }
+    if (policy && !channelMemoryMaySave(policy.mode, "agent", resolvedKind)) {
+      return {
+        saved: false,
+        why: `That was not saved — this channel's memory policy is ${policy.mode === "none" ? "No retention" : policy.mode === "summary" ? "Decision summaries" : "Explicit only"}. ` +
+          "Cloud9 refused it at its storage boundary; it cannot claim the model forgot the text.",
+      };
+    }
     const note: MemoryNote = {
-      id: newMemoryId(), agentId, kind: known.includes(kind as MemoryKind) ? kind as MemoryKind : "fact",
+      id: newMemoryId(), agentId, kind: resolvedKind,
       text: text.trim(), createdAt: Date.now(),
       // WHO WROTE IT, honestly. This is the whole of the owner's visibility: the
       // panel reads this field to say "it chose to remember this".
-      source: "agent",
+      source: "agent", ...(channelId ? { channelId } : {}),
     };
     let saved: string | undefined;
     try {
@@ -3541,6 +3620,20 @@ export class Engine {
     this.reportMemory(agentId);
     return { saved: true, text: note.text };
   }
+
+  /** Hook-owned notes use the same channel policy gate as a human request. */
+  saveOwnerMemoryNote(agentId: ID, channelId: ID | undefined, text: string): boolean {
+    const policy = channelId ? this.channelMemoryPolicy(channelId, agentId) : undefined;
+    if (channelId && !policy) return false;
+    if (policy && !channelMemoryMaySave(policy.mode, "owner", "fact")) return false;
+    const verdict = worthRemembering(text);
+    if (!verdict.keep) return false;
+    const note: MemoryNote = {
+      id: newMemoryId(), agentId, kind: "fact", text: text.trim(),
+      createdAt: Date.now(), source: "owner", ...(channelId ? { channelId } : {}),
+    };
+    return Boolean(this.memory.save(note));
+  }
   // ===== GAP A BLOCK — end =====
 
   /**
@@ -3551,7 +3644,13 @@ export class Engine {
   reportMemory(agentId: ID): void {
     try {
       if (!this.myAgents.some(a => a.id === agentId)) return;
-      const notes = this.memory.list(agentId);
+      const notes = this.memory.list(agentId).filter(note => {
+        if (!note.channelId) return true; // existing global agent memory UI stays distinct
+        const channel = this.channel(note.channelId);
+        if (!channel || !channel.memberIds.includes(agentId)) return false;
+        const policy = this.channelMemoryPolicy(note.channelId, agentId);
+        return Boolean(policy && channelMemoryMayUse(policy.mode, note));
+      });
       this.sendFrame({ type: "memoryChanged", agentId, notes });
     } catch (err) {
       console.error(`[engine] could not report memory for agent ${agentId}:`, err);

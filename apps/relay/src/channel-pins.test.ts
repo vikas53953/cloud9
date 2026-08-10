@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { TestContext } from "node:test";
 import { Message, ServerFrame } from "@cloud9/shared";
 import { Relay } from "./server.js";
-import { SCHEMA_VERSION, Store } from "./store.js";
+import { CHANNEL_MEMORY_POLICY_SCHEMA_VERSION, SCHEMA_VERSION, Store } from "./store.js";
 import { TestClient, tmp } from "./testclient.js";
 
 async function stand(t: TestContext, name: string) {
@@ -29,7 +29,8 @@ test("channel pins migrate after v11 and keep a stable newest-first cursor", () 
   old.db.close();
   const store = new Store(dbPath, { ownerToken: "tok-owner" });
   assert.equal(store.schemaVersion(), SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 14);
+  assert.equal(SCHEMA_VERSION, 16);
+  assert.equal(SCHEMA_VERSION, CHANNEL_MEMORY_POLICY_SCHEMA_VERSION);
   assert.ok(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='channel_pins'").get());
   store.db.close();
 });

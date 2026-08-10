@@ -3044,6 +3044,95 @@ export const DEMO_REPLY_PREFIX = "[demo — not a real answer] ";
 export type ChannelKind = "channel" | "dm";
 
 /**
+ * The storage boundary for an agent's durable notes in one conversation.
+ *
+ * `none` is the conservative default for direct messages. `explicit` keeps
+ * today's behaviour: only a human `!remember` request may create a
+ * conversation-scoped note. `summary` is an explicit opt-in for compact
+ * decision/outcome notes written by the agent; it is still Cloud9 storage,
+ * not model-level forgetting.
+ */
+export type ChannelMemoryMode = "none" | "explicit" | "summary";
+
+export const CHANNEL_MEMORY_MODES: readonly ChannelMemoryMode[] = ["none", "explicit", "summary"];
+
+export interface ChannelMemoryPolicy {
+  channelId: ID;
+  agentId: ID;
+  mode: ChannelMemoryMode;
+  revision: number;
+  updatedAt: number;
+  updatedBy: ID;
+  /** true when no explicit row exists and the mode is the documented default. */
+  isDefault?: boolean;
+}
+
+export interface ChannelMemoryPolicyAudit {
+  id: ID;
+  channelId: ID;
+  agentId: ID;
+  revision: number;
+  mode: ChannelMemoryMode;
+  previousMode?: ChannelMemoryMode;
+  actorId: ID;
+  at: number;
+  /** replay-safe owner-scoped mutation receipt, when one was supplied */
+  requestId?: ID;
+}
+
+export function isChannelMemoryMode(value: unknown): value is ChannelMemoryMode {
+  return value === "none" || value === "explicit" || value === "summary";
+}
+
+/** Direct messages start with no durable channel memory; rooms preserve v1. */
+export function defaultChannelMemoryMode(kind: ChannelKind): ChannelMemoryMode {
+  return kind === "dm" ? "none" : "explicit";
+}
+
+export function channelMemoryModeWords(mode: ChannelMemoryMode): string {
+  if (mode === "none") return "No retention";
+  if (mode === "summary") return "Decision summaries";
+  return "Explicit only";
+}
+
+export function channelMemoryPolicyWords(mode: ChannelMemoryMode): string {
+  if (mode === "none") {
+    return "Nothing from this conversation is saved in Cloud9 channel memory. " +
+      "The model may still see the current conversation while it is open.";
+  }
+  if (mode === "summary") {
+    return "Cloud9 may keep short decision or outcome notes for this agent in this " +
+      "conversation. This controls Cloud9 storage; it cannot make a model forget " +
+      "anything already shown to it.";
+  }
+  return "Only an explicit human !remember request may save a short note for this " +
+    "conversation. Cloud9 does not claim model-level forgetting.";
+}
+
+/** One enforcement rule used by the engine and by focused policy tests. */
+export function channelMemoryMaySave(
+  mode: ChannelMemoryMode,
+  source: MemoryNote["source"],
+  kind: MemoryKind,
+): boolean {
+  if (mode === "none") return false;
+  if (mode === "explicit") return source === "owner";
+  return source === "owner" || kind === "decision" || kind === "outcome";
+}
+
+export function channelMemoryMayUse(mode: ChannelMemoryMode, note: MemoryNote): boolean {
+  // `none` governs durable notes that came from this channel. Global agent
+  // notes predate channel policy and remain available to seed a DM; the UI
+  // explicitly promises that a DM's No retention setting does not erase the
+  // agent's owner-scoped memory elsewhere.
+  if (note.channelId === undefined) return true;
+  if (mode === "none") return false;
+  // Summary mode limits what the agent itself may write, while still allowing
+  // an explicitly requested owner note to be read back in that channel.
+  return true;
+}
+
+/**
  * Who may CHANGE a conversation, as opposed to who may talk in it.
  *
  * - `owner` — made it (or was handed it). May do everything, including hand
@@ -3614,6 +3703,13 @@ type ClientFrameBase =
   // ---- channels as real things (docs/plans/chat-basics-handoff.md §7) ----
   /** Set what a room is for and what it is about. Absent field = leave alone. */
   | { type: "setChannelInfo"; channelId: ID; description?: string; topic?: string }
+  /** Read effective per-agent memory rules for a conversation. */
+  | { type: "channelMemoryPolicies"; channelId: ID }
+  /** Owner/admin only. `expectedRevision` makes stale-window writes explicit. */
+  | {
+      type: "setChannelMemoryPolicy"; channelId: ID; agentId: ID;
+      mode: ChannelMemoryMode; expectedRevision?: number;
+    }
   /** Open a room to browse-and-join, or shut it again. */
   | { type: "setChannelVisibility"; channelId: ID; visibility: ChannelVisibility }
   /** Retire a room (or bring it back). Archived is READ-ONLY, never deleted. */
@@ -4313,6 +4409,8 @@ export interface WorldState {
   users: User[];
   agents: AgentDef[];
   channels: Channel[];
+  /** Effective channel+agent memory policies visible to this account. */
+  channelMemoryPolicies?: ChannelMemoryPolicy[];
   /** most recent messages per channel */
   messages: Message[];
   agentStatus: Record<ID, AgentStatus>;
@@ -4402,6 +4500,8 @@ export type ServerFrame =
   /** Ephemeral human typing; request-independent and never persisted. */
   | { type: "typing"; typing: HumanTyping }
   | { type: "channel"; channel: Channel }
+  | { type: "channelMemoryPolicies"; channelId: ID; policies: ChannelMemoryPolicy[]; requestId?: ID }
+  | { type: "channelMemoryPolicy"; policy: ChannelMemoryPolicy; requestId?: ID }
   | { type: "agent"; agent: AgentDef }
   | { type: "agentDeleted"; agentId: ID }
   /**
@@ -5369,6 +5469,8 @@ export interface MemoryNote {
   runId?: string;
   /** `agent` for the agent itself, `owner` for the person, `system` for the engine */
   source: "agent" | "owner" | "system";
+  /** Present for a note created from a channel; absent is the existing global agent memory. */
+  channelId?: ID;
 }
 
 /**

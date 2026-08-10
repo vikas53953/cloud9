@@ -12,6 +12,7 @@ import {
   StoredArtifact, StoredArtifactVersion, artifactForPublic,
   Channel, ChannelMember,
   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
+  isChannelMemoryMode,
   MESSAGE_LIMITS, ARTIFACT_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
   PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, PublicUpdateLink,
   validatePublicUpdateText, validatePublicUpdateLinks,
@@ -779,6 +780,7 @@ export class Relay {
       users,
       agents: this.store.agents(),
       channels,
+      channelMemoryPolicies: this.store.channelMemoryPoliciesFor(userId),
       // only the conversations this person is actually in (P1 #7). The opening
       // frame used to carry the backlog of EVERY channel in the database.
       messages: this.hydrate(this.store.recentMessages(channels)),
@@ -4058,6 +4060,36 @@ private viewProject(project: Project, viewerId?: ID): Project {
         this.audit(conn, "channel_updated", ch.id,
           frame.topic !== undefined ? `set the topic of ${ch.name}` : `described ${ch.name}`);
         this.broadcastChannel(this.store.channel(ch.id)!);
+        break;
+      }
+      case "channelMemoryPolicies": {
+        const ch = this.channelFor(conn.userId, frame.channelId);
+        send(conn.ws, {
+          type: "channelMemoryPolicies", channelId: ch.id,
+          policies: this.store.channelMemoryPolicies(ch.id), requestId: frame.requestId,
+        });
+        break;
+      }
+      case "setChannelMemoryPolicy": {
+        if (conn.client === "engine") throw new Error("an agent engine cannot change channel memory policy");
+        const ch = this.adminChannel(conn.userId, frame.channelId);
+        if (!isChannelMemoryMode(frame.mode)) throw new Error("that memory policy is not supported");
+        const agent = this.store.agents().find(candidate => candidate.id === frame.agentId);
+        if (!agent || !ch.memberIds.includes(agent.id)) throw new Error("that agent is not in this conversation");
+        // A room manager can only govern an agent they own. This prevents an
+        // admin from changing another person's agent's durable memory merely
+        // because both agents happen to share a room.
+        if (agent.ownerId !== conn.userId) throw new Error("you can only change memory policy for your own agent");
+        const result = this.store.setChannelMemoryPolicy({
+          ownerId: conn.userId, actorId: conn.userId, channelId: ch.id, agentId: agent.id,
+          mode: frame.mode, expectedRevision: frame.expectedRevision, requestId: frame.requestId,
+        });
+        const base: ServerFrame = { type: "channelMemoryPolicy", policy: result.policy };
+        // Broadcast projections without the originating request id. A second
+        // window must converge from the policy itself, never inherit a request
+        // id it did not mint.
+        this.toChannel(ch, base);
+        if (frame.requestId) send(conn.ws, { ...base, requestId: frame.requestId });
         break;
       }
       case "setChannelVisibility": {
@@ -8114,12 +8146,18 @@ private viewProject(project: Project, viewerId?: ID): Project {
     for (const conn of this.conns) {
       if (audience.has(conn.userId)) send(conn.ws, { type: "channel", channel });
     }
+    this.broadcastChannelMemoryPolicies(channel);
     // Channel membership is also the access boundary for linked Canvases.
     // Re-project them after every add/join/remove/leave broadcast so a window
     // never keeps an old list after its room visibility changes.
     for (const project of this.store.projectsAll()) {
       if (project.channelId === channel.id) this.pushCanvasProject(project);
     }
+  }
+
+  private broadcastChannelMemoryPolicies(channel: Channel): void {
+    const policies = this.store.channelMemoryPolicies(channel.id);
+    this.toChannel(channel, { type: "channelMemoryPolicies", channelId: channel.id, policies });
   }
 
   /** Membership roles are UI permissions too, so every open member view must

@@ -7,7 +7,8 @@ import {
   ActivityRecord, AgentDef, Approval, ArtifactAccess, ArtifactLink,
   ArtifactWorkspaceEntry, Attachment, Channel, ChannelMember,
   StoredArtifact, StoredArtifactVersion, artifactVersionForPublic,
-  ChannelRole, EverywhereHit, ID, Message, SearchKind,
+  ChannelRole, EverywhereHit, ID, Message, SearchKind, ChannelMemoryMode,
+  ChannelMemoryPolicy, ChannelMemoryPolicyAudit, defaultChannelMemoryMode, isChannelMemoryMode,
   MessageReaction, MESSAGE_LIMITS, ARTIFACT_LIMITS, Project, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, ProjectItem, PROJECT_LIMITS,
   MessageStatus, MessageDeliveryStage,
   EngineeringCanvas, EngineeringCanvasRevision, CanvasBlock, CANVAS_LIMITS,
@@ -254,6 +255,17 @@ const SAVED_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const CHANNEL_PIN_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const MESSAGE_SEND_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const MESSAGE_SEND_MAX_ROWS = 512;
+/** Sequential integration lane for channel+agent memory policy. */
+export const CHANNEL_MEMORY_POLICY_SCHEMA_VERSION = 16;
+const CHANNEL_MEMORY_AUDIT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+const CHANNEL_MEMORY_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+/** Keep the idempotency ledger finite even when an owner changes policies often. */
+const CHANNEL_MEMORY_RECEIPT_LIMIT = 512;
+
+interface RawChannelMemoryPolicy {
+  channelId: string; agentId: string; mode: string; revision: number;
+  updatedAt: number; updatedBy: string;
+}
 
 interface SavedMutationReceipt {
   userId: ID;
@@ -617,6 +629,31 @@ export class Store implements JoinHubStore {
         PRIMARY KEY (channelId, memberId, joinedAt)
       );
       CREATE INDEX IF NOT EXISTS cm_member ON channel_members(memberId);
+
+      -- Explicit per-channel, per-agent memory controls. Missing rows are
+      -- interpreted by the channel kind (rooms=explicit, DMs=none), so old
+      -- databases preserve documented behaviour without a bulk rewrite.
+      CREATE TABLE IF NOT EXISTS channel_memory_policies(
+        channelId TEXT NOT NULL, agentId TEXT NOT NULL, mode TEXT NOT NULL,
+        revision INTEGER NOT NULL, updatedAt INTEGER NOT NULL, updatedBy TEXT NOT NULL,
+        PRIMARY KEY(channelId, agentId)
+      );
+      CREATE INDEX IF NOT EXISTS cmp_channel ON channel_memory_policies(channelId);
+      CREATE TABLE IF NOT EXISTS channel_memory_policy_audit(
+        id TEXT PRIMARY KEY, channelId TEXT NOT NULL, agentId TEXT NOT NULL,
+        revision INTEGER NOT NULL, mode TEXT NOT NULL, previousMode TEXT,
+        actorId TEXT NOT NULL, at INTEGER NOT NULL, requestId TEXT
+      );
+      CREATE INDEX IF NOT EXISTS cmp_audit_order
+        ON channel_memory_policy_audit(channelId, at DESC, id DESC);
+      CREATE TABLE IF NOT EXISTS channel_memory_policy_receipts(
+        ownerId TEXT NOT NULL, requestId TEXT NOT NULL, payloadHash TEXT NOT NULL,
+        channelId TEXT NOT NULL, agentId TEXT NOT NULL, mode TEXT NOT NULL,
+        revision INTEGER NOT NULL, resultJson TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        PRIMARY KEY(ownerId, requestId)
+      );
+      CREATE INDEX IF NOT EXISTS cmp_receipt_order
+        ON channel_memory_policy_receipts(ownerId, createdAt DESC);
 
       -- WHAT AN AGENT ACTUALLY DID, one row per turn (FR-TL-003).
       --
@@ -1299,6 +1336,9 @@ export class Store implements JoinHubStore {
     // v14 -> v15: public run checkpoints and correlated recovery receipts.
     this.step(15, () => this.addRunRecoverySchema());
 
+    // v15 -> v16: channel+agent memory policy and bounded audit/receipts.
+    this.step(CHANNEL_MEMORY_POLICY_SCHEMA_VERSION, () => this.addChannelMemoryPolicySchema());
+
     // The one thing that still says a person can only be in a room once at a
     // time, now that the primary key no longer does. It lives here, below the
     // step that reshapes the table, for the same reason act_seq does.
@@ -1323,6 +1363,30 @@ export class Store implements JoinHubStore {
         PRIMARY KEY(requesterId, requestId)
       );
       CREATE INDEX IF NOT EXISTS recovery_receipt_created ON recovery_receipts(createdAt);
+    `);
+  }
+
+  private addChannelMemoryPolicySchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS channel_memory_policies(
+        channelId TEXT NOT NULL, agentId TEXT NOT NULL, mode TEXT NOT NULL,
+        revision INTEGER NOT NULL, updatedAt INTEGER NOT NULL, updatedBy TEXT NOT NULL,
+        PRIMARY KEY(channelId, agentId)
+      );
+      CREATE INDEX IF NOT EXISTS cmp_channel ON channel_memory_policies(channelId);
+      CREATE TABLE IF NOT EXISTS channel_memory_policy_audit(
+        id TEXT PRIMARY KEY, channelId TEXT NOT NULL, agentId TEXT NOT NULL,
+        revision INTEGER NOT NULL, mode TEXT NOT NULL, previousMode TEXT,
+        actorId TEXT NOT NULL, at INTEGER NOT NULL, requestId TEXT
+      );
+      CREATE INDEX IF NOT EXISTS cmp_audit_order ON channel_memory_policy_audit(channelId,at DESC,id DESC);
+      CREATE TABLE IF NOT EXISTS channel_memory_policy_receipts(
+        ownerId TEXT NOT NULL, requestId TEXT NOT NULL, payloadHash TEXT NOT NULL,
+        channelId TEXT NOT NULL, agentId TEXT NOT NULL, mode TEXT NOT NULL,
+        revision INTEGER NOT NULL, resultJson TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        PRIMARY KEY(ownerId,requestId)
+      );
+      CREATE INDEX IF NOT EXISTS cmp_receipt_order ON channel_memory_policy_receipts(ownerId,createdAt DESC);
     `);
   }
 
@@ -1855,6 +1919,8 @@ export class Store implements JoinHubStore {
       this.db.prepare("DELETE FROM message_send_ledger WHERE authorId=?").run(id);
       this.clearMessageReceiptsForAuthor(id);
       this.db.prepare("DELETE FROM channel_pin_receipts WHERE userId=?").run(id);
+      this.db.prepare("DELETE FROM channel_memory_policy_audit WHERE actorId=?").run(id);
+      this.db.prepare("DELETE FROM channel_memory_policy_receipts WHERE ownerId=?").run(id);
       this.db.prepare("DELETE FROM hook_requests WHERE ownerId=?").run(id);
       this.db.prepare("DELETE FROM hook_audit WHERE ownerId=?").run(id);
       this.db.prepare("DELETE FROM hooks WHERE ownerId=?").run(id);
@@ -1866,7 +1932,9 @@ export class Store implements JoinHubStore {
       this.db.prepare("DELETE FROM draft_mutation_receipts WHERE userId=?").run(id);
       this.db.prepare("DELETE FROM attachments WHERE uploadedBy=? AND messageId IS NULL").run(id);
       this.db.prepare("DELETE FROM run_checkpoints WHERE ownerId=?").run(id);
-      this.db.prepare("DELETE FROM recovery_receipts WHERE requesterId=? OR agentId IN (SELECT id FROM agents WHERE ownerId=?)").run(id, id);
+      // Owned-agent recovery rows were removed by deleteAgent/forgetRuns above;
+      // the remaining account-scoped rows are those requested by this user.
+      this.db.prepare("DELETE FROM recovery_receipts WHERE requesterId=?").run(id);
     });
     for (const row of parked) {
       const attachment = this.safeParse<Attachment>(row.json, "a parked file", row.id);
@@ -1926,6 +1994,9 @@ export class Store implements JoinHubStore {
       this.saveHuddle({ ...session, participants: session.participants.map(p => p.id === id && p.present ? { ...p, present: false, leftAt: at } : p) });
     }
     this.db.prepare("DELETE FROM agents WHERE id=?").run(id);
+    this.db.prepare("DELETE FROM channel_memory_policies WHERE agentId=?").run(id);
+    this.db.prepare("DELETE FROM channel_memory_policy_audit WHERE agentId=?").run(id);
+    this.db.prepare("DELETE FROM channel_memory_policy_receipts WHERE agentId=?").run(id);
     // An agent's runs go with it. Leaving them behind would be a pile of
     // records about an agent nobody can see any more, and the `ownerId` on
     // them would be the only thing still deciding who may read them.
@@ -2095,6 +2166,9 @@ export class Store implements JoinHubStore {
       ).run(memberId, channelId);
       this.db.prepare("DELETE FROM message_receipts WHERE channelId=? AND recipientId=?")
         .run(channelId, memberId);
+      // A departed agent no longer has a policy in this channel. Removing the
+      // row also makes a later rejoin start from the documented default.
+      if (this.agents().some(agent => agent.id === memberId)) this.forgetChannelMemoryPolicies(channelId, memberId);
       this.mirrorMemberIds(channelId);
     });
   }
@@ -2120,6 +2194,149 @@ export class Store implements JoinHubStore {
     return (this.db.prepare("SELECT json FROM channels").all() as { json: string }[])
       .map(r => this.hydrateChannel(r.json));
   }
+
+  // ---- per-channel agent memory policy ------------------------------------
+
+  private rawChannelMemoryPolicy(channelId: ID, agentId: ID): ChannelMemoryPolicy | undefined {
+    const row = this.db.prepare(
+      "SELECT channelId,agentId,mode,revision,updatedAt,updatedBy FROM channel_memory_policies WHERE channelId=? AND agentId=?",
+    ).get(channelId, agentId) as RawChannelMemoryPolicy | undefined;
+    if (!row || !isChannelMemoryMode(row.mode)) return undefined;
+    return { channelId: row.channelId, agentId: row.agentId, mode: row.mode,
+      revision: row.revision, updatedAt: row.updatedAt, updatedBy: row.updatedBy };
+  }
+
+  /** Effective policy, including the documented default for old rows. */
+  channelMemoryPolicy(channelId: ID, agentId: ID): ChannelMemoryPolicy | undefined {
+    const channel = this.channel(channelId);
+    if (!channel || !channel.memberIds.includes(agentId)) return undefined;
+    const explicit = this.rawChannelMemoryPolicy(channelId, agentId);
+    if (explicit) return explicit;
+    const owner = this.channelMembers(channelId).find(m => m.role === "owner")?.memberId ?? "system";
+    return {
+      channelId, agentId, mode: defaultChannelMemoryMode(channel.kind), revision: 0,
+      updatedAt: channel.createdAt, updatedBy: owner, isDefault: true,
+    };
+  }
+
+  channelMemoryPolicies(channelId: ID): ChannelMemoryPolicy[] {
+    const channel = this.channel(channelId);
+    if (!channel) return [];
+    return this.agents().filter(agent => channel.memberIds.includes(agent.id))
+      .map(agent => this.channelMemoryPolicy(channelId, agent.id)!)
+      .filter(Boolean);
+  }
+
+  /** Policies visible to a member, including agents owned by that member. */
+  channelMemoryPoliciesFor(userId: ID): ChannelMemoryPolicy[] {
+    const ownedAgents = new Set(this.agents().filter(a => a.ownerId === userId).map(a => a.id));
+    const visible = this.channels().filter(c => c.memberIds.includes(userId) || c.memberIds.some(id => ownedAgents.has(id)));
+    return visible.flatMap(c => this.channelMemoryPolicies(c.id));
+  }
+
+  setChannelMemoryPolicy(input: {
+    ownerId: ID; actorId: ID; channelId: ID; agentId: ID; mode: ChannelMemoryMode;
+    expectedRevision?: number; requestId?: ID;
+  }): { policy: ChannelMemoryPolicy; replayed: boolean } {
+    if (!isChannelMemoryMode(input.mode)) throw new Error("that memory policy is not supported");
+    const now = Date.now();
+    const hash = createHash("sha256").update(JSON.stringify([
+      input.channelId, input.agentId, input.mode, input.expectedRevision ?? null,
+    ])).digest("hex");
+    if (input.requestId) {
+      const prior = this.db.prepare(
+        "SELECT payloadHash,channelId,agentId,createdAt FROM channel_memory_policy_receipts WHERE ownerId=? AND requestId=?",
+      ).get(input.ownerId, input.requestId) as {
+        payloadHash: string; channelId: ID; agentId: ID; createdAt: number;
+      } | undefined;
+      if (prior && prior.createdAt < now - CHANNEL_MEMORY_RECEIPT_RETENTION_MS) {
+        // Match the other mutation ledgers: an expired request id is no
+        // longer an idempotency claim, so a fresh request may use it again.
+        this.db.prepare(
+          "DELETE FROM channel_memory_policy_receipts WHERE ownerId=? AND requestId=?",
+        ).run(input.ownerId, input.requestId);
+      } else if (prior) {
+        if (prior.payloadHash !== hash) throw new Error("that policy request id was already used for a different change");
+        // The receipt is only an idempotency key. Its result snapshot may be
+        // older than a later policy revision (for example when a second window
+        // changed rev1 to rev2 before the first window retried). Project the
+        // current row so a replay can never regress another window's view.
+        // A receipt may outlive a partially-cleaned policy row. Do not treat
+        // the channel's effective default as an authoritative replay result:
+        // only a live member with a persisted row can safely replay the old
+        // request without fabricating or broadcasting a default.
+        const replayChannel = this.channel(prior.channelId);
+        const authoritative = replayChannel?.memberIds.includes(prior.agentId)
+          ? this.rawChannelMemoryPolicy(prior.channelId, prior.agentId)
+          : undefined;
+        if (authoritative) return { policy: authoritative, replayed: true };
+        // Policy rows and receipts are normally removed together. A legacy or
+        // partially-cleaned database must not resurrect the receipt snapshot:
+        // discard it and let the normal membership gate refuse or create a
+        // fresh authoritative row.
+        this.db.prepare(
+          "DELETE FROM channel_memory_policy_receipts WHERE ownerId=? AND requestId=?",
+        ).run(input.ownerId, input.requestId);
+      }
+    }
+    const current = this.channelMemoryPolicy(input.channelId, input.agentId);
+    if (!current) throw new Error("that agent is not in this channel");
+    if (input.expectedRevision !== undefined && input.expectedRevision !== current.revision) {
+      throw new Error(`this memory policy changed since you opened it (now revision ${current.revision})`);
+    }
+    const next: ChannelMemoryPolicy = {
+      channelId: input.channelId, agentId: input.agentId, mode: input.mode,
+      revision: current.revision + 1, updatedAt: now, updatedBy: input.actorId,
+    };
+    this.tx(() => {
+      this.db.prepare(
+        "INSERT INTO channel_memory_policies(channelId,agentId,mode,revision,updatedAt,updatedBy) VALUES(?,?,?,?,?,?) " +
+        "ON CONFLICT(channelId,agentId) DO UPDATE SET mode=excluded.mode,revision=excluded.revision,updatedAt=excluded.updatedAt,updatedBy=excluded.updatedBy",
+      ).run(next.channelId, next.agentId, next.mode, next.revision, next.updatedAt, next.updatedBy);
+      this.db.prepare(
+        "INSERT INTO channel_memory_policy_audit(id,channelId,agentId,revision,mode,previousMode,actorId,at,requestId) VALUES(?,?,?,?,?,?,?,?,?)",
+      ).run(newId("cmpa"), next.channelId, next.agentId, next.revision, next.mode,
+        current.mode, input.actorId, now, input.requestId ?? null);
+      if (input.requestId) this.db.prepare(
+        "INSERT INTO channel_memory_policy_receipts(ownerId,requestId,payloadHash,channelId,agentId,mode,revision,resultJson,createdAt) VALUES(?,?,?,?,?,?,?,?,?)",
+      ).run(input.ownerId, input.requestId, hash, next.channelId, next.agentId, next.mode,
+        next.revision, JSON.stringify(next), now);
+      this.db.prepare("DELETE FROM channel_memory_policy_audit WHERE at < ?")
+        .run(now - CHANNEL_MEMORY_AUDIT_RETENTION_MS);
+      this.db.prepare("DELETE FROM channel_memory_policy_receipts WHERE createdAt < ?")
+        .run(now - CHANNEL_MEMORY_RECEIPT_RETENTION_MS);
+      this.db.prepare(
+        "DELETE FROM channel_memory_policy_receipts WHERE ownerId=? AND requestId NOT IN "
+        + "(SELECT requestId FROM channel_memory_policy_receipts WHERE ownerId=? "
+        + "ORDER BY createdAt DESC,requestId DESC LIMIT ?)",
+      ).run(input.ownerId, input.ownerId, CHANNEL_MEMORY_RECEIPT_LIMIT);
+    });
+    return { policy: next, replayed: false };
+  }
+
+  channelMemoryPolicyAudit(channelId: ID, agentId?: ID, limit = 100): ChannelMemoryPolicyAudit[] {
+    const rows = (agentId
+      ? this.db.prepare("SELECT id,channelId,agentId,revision,mode,previousMode,actorId,at,requestId FROM channel_memory_policy_audit WHERE channelId=? AND agentId=? ORDER BY at DESC,id DESC LIMIT ?").all(channelId, agentId, Math.max(1, Math.min(limit, 200)))
+      : this.db.prepare("SELECT id,channelId,agentId,revision,mode,previousMode,actorId,at,requestId FROM channel_memory_policy_audit WHERE channelId=? ORDER BY at DESC,id DESC LIMIT ?").all(channelId, Math.max(1, Math.min(limit, 200)))) as Array<Record<string, unknown>>;
+    return rows.map(row => ({
+      id: String(row.id), channelId: String(row.channelId), agentId: String(row.agentId),
+      revision: Number(row.revision), mode: row.mode as ChannelMemoryMode,
+      ...(row.previousMode ? { previousMode: row.previousMode as ChannelMemoryMode } : {}),
+      actorId: String(row.actorId), at: Number(row.at), ...(row.requestId ? { requestId: String(row.requestId) } : {}),
+    }));
+  }
+
+  private forgetChannelMemoryPolicies(channelId: ID, agentId?: ID): void {
+    if (agentId) {
+      this.db.prepare("DELETE FROM channel_memory_policies WHERE channelId=? AND agentId=?").run(channelId, agentId);
+      this.db.prepare("DELETE FROM channel_memory_policy_audit WHERE channelId=? AND agentId=?").run(channelId, agentId);
+      this.db.prepare("DELETE FROM channel_memory_policy_receipts WHERE channelId=? AND agentId=?").run(channelId, agentId);
+    } else {
+      this.db.prepare("DELETE FROM channel_memory_policies WHERE channelId=?").run(channelId);
+      this.db.prepare("DELETE FROM channel_memory_policy_audit WHERE channelId=?").run(channelId);
+      this.db.prepare("DELETE FROM channel_memory_policy_receipts WHERE channelId=?").run(channelId);
+    }
+  }
   /**
    * The one-to-one conversation between exactly these two ids, if there is one
    * (his 15). Membership is compared as a SET, so "me and Neha" and "Neha and
@@ -2136,6 +2353,16 @@ export class Store implements JoinHubStore {
   channel(id: ID): Channel | undefined {
     const row = this.db.prepare("SELECT json FROM channels WHERE id=?").get(id) as { json: string } | undefined;
     return row ? this.hydrateChannel(row.json) : undefined;
+  }
+
+  /** Hard deletion for administrative cleanup; all channel-scoped policy data goes with it. */
+  deleteChannel(id: ID): void {
+    this.tx(() => {
+      this.forgetChannelMemoryPolicies(id);
+      this.db.prepare("DELETE FROM channel_members WHERE channelId=?").run(id);
+      this.db.prepare("DELETE FROM messages WHERE channelId=?").run(id);
+      this.db.prepare("DELETE FROM channels WHERE id=?").run(id);
+    });
   }
 
   // ---- messages ----
@@ -5825,8 +6052,9 @@ export const ARTIFACT_STAGE_GRACE_MS = 60_000;
  * 13 = durable message delivery/read state and send idempotency.
  * 14 = durable channel/thread composer drafts and retry receipts.
  * 15 = public run checkpoints and correlated recovery receipts.
+ * 16 = channel+agent memory policy, audit, and bounded mutation receipts.
  */
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = CHANNEL_MEMORY_POLICY_SCHEMA_VERSION;
 
 /**
  * The fingerprint of one line of the trail.

@@ -4,7 +4,7 @@ import {
   ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, ARTIFACT_LIMITS, Artifact, ArtifactAccess,
   ArtifactRelationView, ArtifactVersion, ArtifactWorkspaceEntry,
   Attachment, ATTACHMENT_LIMITS, Channel,
-  ChatDraft, DraftAttachment,
+  ChatDraft, DraftAttachment, ChannelMemoryMode, ChannelMemoryPolicy,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   MemoryNote,
   NotificationInboxEntry,
@@ -249,6 +249,7 @@ export interface World {
   users: User[];
   agents: AgentDef[];
   channels: Channel[];
+  channelMemoryPolicies: ChannelMemoryPolicy[];
   messages: Record<ID, Message[]>; // by channel
   /** Author-only accepted/delivered/read projections keyed by canonical id. */
   messageStatuses: Record<ID, MessageStatus>;
@@ -766,6 +767,7 @@ export class RelayClient {
     artifactWorkspace: emptyArtifactWorkspace(),
     artifactRelations: {}, artifactRelationsTruncated: {}, artifactDetailProblems: {},
     memory: {},
+    channelMemoryPolicies: [],
     hubs: [], activeHubId: "self", hubConn: { phase: "idle", line: "" },
   };
   private ws?: WebSocket;
@@ -2482,6 +2484,21 @@ export class RelayClient {
   /** Ask who is in one room. Answered with roles, join dates and who let them in. */
   askMembers(channelId: ID): void {
     this.send({ type: "channelMembers", channelId });
+  }
+
+  channelMemoryPoliciesFor(channelId: ID): ChannelMemoryPolicy[] {
+    return this.world.channelMemoryPolicies.filter(policy => policy.channelId === channelId);
+  }
+
+  askChannelMemoryPolicies(channelId: ID): void {
+    this.send({ type: "channelMemoryPolicies", channelId });
+  }
+
+  setChannelMemoryPolicy(
+    channelId: ID, agentId: ID, mode: ChannelMemoryMode, expectedRevision?: number,
+  ): void {
+    this.send({ type: "setChannelMemoryPolicy", channelId, agentId, mode,
+      ...(expectedRevision !== undefined ? { expectedRevision } : {}) });
   }
 
   /* ---------------- what an agent remembers between conversations ----------------
@@ -4221,6 +4238,7 @@ askPolls(projectId: ID): void {
         w.users = frame.state.users;
         w.agents = frame.state.agents;
         w.channels = frame.state.channels;
+        w.channelMemoryPolicies = frame.state.channelMemoryPolicies ?? [];
         w.agentStatus = frame.state.agentStatus;
         // A hub from before presence existed sends nothing here. Empty is the
         // honest landing place: every row then says "we have not looked yet"
@@ -4535,6 +4553,21 @@ askPolls(projectId: ID): void {
         }
         break;
       }
+      case "channelMemoryPolicies": {
+        w.channelMemoryPolicies = [
+          ...w.channelMemoryPolicies.filter(policy => policy.channelId !== frame.channelId),
+          ...frame.policies,
+        ];
+        break;
+      }
+      case "channelMemoryPolicy": {
+        w.channelMemoryPolicies = [
+          ...w.channelMemoryPolicies.filter(policy =>
+            policy.channelId !== frame.policy.channelId || policy.agentId !== frame.policy.agentId),
+          frame.policy,
+        ];
+        break;
+      }
       case "agent": {
         const i = w.agents.findIndex(a => a.id === frame.agent.id);
         if (i >= 0) w.agents[i] = frame.agent; else w.agents.push(frame.agent);
@@ -4543,6 +4576,7 @@ askPolls(projectId: ID): void {
       }
       case "agentDeleted": {
         w.agents = w.agents.filter(a => a.id !== frame.agentId);
+        w.channelMemoryPolicies = w.channelMemoryPolicies.filter(policy => policy.agentId !== frame.agentId);
         // a deleted agent's presence is not a fact about anything any more
         const { [frame.agentId]: _gone, ...rest } = w.presence;
         w.presence = rest;
@@ -4732,6 +4766,8 @@ askPolls(projectId: ID): void {
         this.clearHumanTyping(undefined, frame.userId, false);
         w.channels = w.channels.filter(
           c => !(c.kind === "dm" && c.memberIds.includes(frame.userId)));
+        const removedAgentIds = new Set(w.agents.filter(agent => agent.ownerId === frame.userId).map(agent => agent.id));
+        w.channelMemoryPolicies = w.channelMemoryPolicies.filter(policy => !removedAgentIds.has(policy.agentId));
         break;
       }
       case "forumProjects": {
@@ -4980,6 +5016,7 @@ askPolls(projectId: ID): void {
         // cached for it goes with it, or the app would keep drawing a
         // conversation the relay will no longer answer about.
         w.channels = w.channels.filter(c => c.id !== frame.channelId);
+        w.channelMemoryPolicies = w.channelMemoryPolicies.filter(policy => policy.channelId !== frame.channelId);
         const { [frame.channelId]: goneMessages, ...restMessages } = w.messages;
         void goneMessages;
         w.messages = restMessages;

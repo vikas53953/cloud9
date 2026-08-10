@@ -217,7 +217,7 @@ test("v12 databases migrate durable drafts on reopen", () => {
   old.db.prepare("UPDATE meta SET value='12' WHERE key='schemaVersion'").run();
   old.db.close();
   const reopened = new Store(dbPath, { ownerToken: "migration-owner" });
-  assert.equal(reopened.schemaVersion(), 14);
+  assert.equal(reopened.schemaVersion(), 16);
   assert.deepEqual(reopened.chatDrafts("missing-user"), []);
   reopened.db.close();
 });
