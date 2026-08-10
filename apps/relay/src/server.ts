@@ -35,6 +35,7 @@ import {
   SavingProposal, applySaving, findWaste, rollUpTokenUse, savingDetail, savingHeadline,
   tidySaving, validateSavingProposal,
   SearchHit, SavedMessageEntry, ChannelPinEntry, ServerFrame, Task, UnreadEntry, User, WorldState,
+  RichLinkPreview, RichLinkRef, RICH_LINK_LIMITS,
   MessageStatus,
   ChatDraft, DraftAttachment, DraftAttachmentState, DRAFT_LIMITS,
   HumanTyping,
@@ -1676,6 +1677,93 @@ export class Relay {
     const agent = this.store.agents().find(candidate => candidate.id === task.agentId);
     if (agent?.ownerId === userId) return true;
     try { this.channelFor(userId, task.channelId); return true; } catch { return false; }
+  }
+
+  /**
+   * Resolve message-text links through the same gates as their full viewers.
+   * Missing or inaccessible targets are omitted, never represented as an
+   * ``available: false`` row that could reveal whether a guessed id exists.
+   */
+  private richLinkPreviewsFor(userId: ID, refs: RichLinkRef[]): RichLinkPreview[] {
+    const out: RichLinkPreview[] = [];
+    const seen = new Set<string>();
+    const add = (preview: RichLinkPreview): void => {
+      const key = preview.ref.kind === "projectItem"
+        ? `${preview.ref.kind}:${preview.ref.projectId}:${preview.ref.itemKind}:${preview.ref.number}`
+        : `${preview.ref.kind}:${preview.ref.id}${preview.ref.version === undefined ? "" : `@${preview.ref.version}`}`;
+      const source = preview.sourceUrl ? `:${preview.sourceUrl}` : "";
+      if (seen.has(key + source)) return;
+      seen.add(key + source); out.push(preview);
+    };
+    for (const ref of refs) {
+      if (!ref || typeof ref !== "object" || typeof ref.kind !== "string") continue;
+      if (ref.kind === "task") {
+        if (!isSafeStoredId(ref.id)) continue;
+        const task = this.store.task(ref.id);
+        if (!task || !this.canSeeTask(userId, task)) continue;
+        add({ ref, channelId: task.channelId, ownerId: task.agentId, title: task.title, status: task.status, ...(task.requesterName ? { owner: task.requesterName } : {}) });
+        continue;
+      }
+      if (ref.kind === "run") {
+        if (!isSafeStoredId(ref.id)) continue;
+        const row = this.store.run(ref.id);
+        if (!row || !this.canSeeRun(userId, row)) continue;
+        const record = row.record;
+        add({ ref, channelId: record.channelId, ownerId: record.agentId, title: record.ask, status: record.outcome, ...(record.requestedBy ? { owner: record.requestedBy } : {}) });
+        continue;
+      }
+      if (ref.kind === "artifact") {
+        if (!isSafeStoredId(ref.id)) continue;
+        let artifact: StoredArtifact;
+        try { artifact = this.artifactFor(userId, ref.id); } catch { continue; }
+        const version = ref.version === undefined ? latestVersion(artifact) : artifact.versions.find(v => v.version === ref.version);
+        if (!version) continue;
+        add({ ref, channelId: artifact.channelId, ownerId: version.agentId, title: artifact.name, ...(version.agentName ? { owner: version.agentName } : {}) });
+        continue;
+      }
+      if (ref.kind === "decision") {
+        if (!isSafeStoredId(ref.id)) continue;
+        const topic = this.store.forumTopicFor(userId, ref.id);
+        if (!topic || topic.deletedAt) continue;
+        try { this.forumProject(userId, topic.projectId); } catch { continue; }
+        let channelId: ID | undefined;
+        try { channelId = this.store.project(topic.projectId)?.channelId; } catch { /* absent project metadata is not disclosure */ }
+        add({ ref, channelId, ownerId: topic.authorId, title: topic.title, status: topic.status, ...(topic.authorName ? { owner: topic.authorName } : {}) });
+        continue;
+      }
+      if (ref.kind === "projectItem") {
+        if (!isSafeStoredId(ref.projectId) || (ref.itemKind !== "pull" && ref.itemKind !== "issue")
+          || !Number.isSafeInteger(ref.number) || ref.number < 1) continue;
+        let project: Project;
+        // Project item snapshots are an owner-only GitHub projection today;
+        // do not widen the existing `projectItems` contract just because a
+        // message contains a matching URL.
+        try { project = this.myProject(userId, ref.projectId); } catch { continue; }
+        const item = this.store.projectItems(project.id).find(i => i.kind === ref.itemKind && i.number === ref.number);
+        if (!item) continue;
+        add({ ref, channelId: project.channelId, ownerId: project.ownerId, sourceUrl: item.url, title: item.title, status: item.state, ...(item.author ? { owner: item.author } : {}) });
+        continue;
+      }
+      if (ref.kind === "url" && typeof ref.url === "string" && ref.url.length <= RICH_LINK_LIMITS.url
+        && /^https?:\/\//i.test(ref.url)) {
+        const candidates = this.store.projectsAll().filter(project => project.ownerId === userId)
+          .flatMap(project => this.store.projectItems(project.id)
+            .filter(item => item.url === ref.url)
+            .map(item => ({ project, item })))
+          .sort((a, b) => a.project.id.localeCompare(b.project.id)
+            || a.item.kind.localeCompare(b.item.kind) || a.item.number - b.item.number);
+        const match = candidates[0];
+        if (match) {
+          add({
+            ref: { kind: "projectItem", projectId: match.project.id, itemKind: match.item.kind, number: match.item.number },
+            channelId: match.project.channelId, ownerId: match.project.ownerId,
+            sourceUrl: ref.url, title: match.item.title, status: match.item.state,
+            ...(match.item.author ? { owner: match.item.author } : {}),
+          });
+        }
+      }
+    }
+    return out;
   }
 
   private sendPulseToAudience(project: Project, frame: ServerFrame): void {
@@ -7538,6 +7626,27 @@ private viewProject(project: Project, viewerId?: ID): Project {
       }
       case "artifact": {
         send(conn.ws, this.artifactFrame(conn.userId, frame.artifactId, frame.requestId));
+        break;
+      }
+      case "richLinkPreviews": {
+        // The message id is an access proof as well as the local cache key:
+        // callers cannot resolve links copied from a room they no longer read.
+        this.messageFor(conn.userId, frame.messageId);
+        // Request ids are transport correlation only.  Never echo an
+        // unbounded or non-string value back to the socket (the runtime frame
+        // can be forged even though the TypeScript type says `ID`).  Refuse
+        // the request before projecting any target facts.
+        if (frame.requestId !== undefined && !isSafeStoredId(frame.requestId)) {
+          throw new Error("invalid request id");
+        }
+        if (!Array.isArray(frame.refs) || frame.refs.length > RICH_LINK_LIMITS.refsPerMessage) {
+          throw new Error("too many linked items");
+        }
+        send(conn.ws, {
+          type: "richLinkPreviews", messageId: frame.messageId,
+          previews: this.richLinkPreviewsFor(conn.userId, frame.refs),
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+        });
         break;
       }
       case "setArtifactAccess": {

@@ -3532,6 +3532,18 @@ button.chip{cursor:pointer;}
 .roomfiles .filesnote{margin-top:8px;}
 .artcard.place-room{background:var(--surface-2);}
 
+/* Access-projected message links.  Keep these quieter than full file cards:
+   only server-authorized metadata is shown, and a narrow room stays readable. */
+.rich-link-previews{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:6px;margin:7px 0 2px;min-width:0;}
+.rich-link-preview{display:grid;gap:2px;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius-s);background:var(--surface-2);}
+.rich-link-preview:focus-within{border-color:var(--pine);box-shadow:0 0 0 2px color-mix(in srgb,var(--pine) 22%,transparent);}
+.rich-link-type{font-family:var(--mono);font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--pine);}
+.rich-link-title{min-width:0;overflow-wrap:anywhere;font-size:12.5px;line-height:1.35;color:var(--ink);}
+.rich-link-meta{display:flex;gap:3px;flex-wrap:wrap;min-width:0;color:var(--ink-3);font-size:11px;line-height:1.35;}
+.rich-link-open{justify-self:start;margin-top:3px;color:var(--pine);font-size:11px;line-height:1.3;text-decoration:underline;text-underline-offset:2px;}
+.rich-link-open:focus-visible{outline:2px solid var(--pine);outline-offset:2px;border-radius:2px;}
+@media (max-width:560px){.rich-link-previews{grid-template-columns:minmax(0,1fr);}.rich-link-preview{padding:7px 9px;}}
+
 /* ---------------- WHAT THE COMPUTER SAID ----------------
  * Folded away, and only ever offered when the raw words were too raw to show
  * as the sentence — so this is never a second copy of something already read. */

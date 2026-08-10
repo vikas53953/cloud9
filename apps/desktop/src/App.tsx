@@ -77,6 +77,7 @@ import {
   BESIDE_LABEL, EXPAND_LABEL, THREAD_DEFAULT, THREAD_FLOOR, THREAD_STEP,
   cannotSplit, dividerSpokenWords, dividerWords, widestThread, widthHeChose, widthToDraw,
   ForumTopic, ForumReply, ForumStatus, ForumLink, ClientFrame, RunComparison,
+  RichLinkPreview, findRichLinkRefs, richLinkToken,
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, uploadPreviewKind, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -6798,6 +6799,43 @@ function MessageArtifacts({ text }: { text: string }): React.JSX.Element | null 
   );
 }
 
+/** Compact metadata only; every field here came from a successful relay gate. */
+function RichLinkPreviewCards({ previews }: { previews: RichLinkPreview[] }): React.JSX.Element | null {
+  const visible = previews.filter(preview => preview.ref.kind !== "artifact");
+  if (visible.length === 0) return null;
+  const labelFor = (preview: RichLinkPreview): string => {
+    if (preview.ref.kind === "projectItem") return preview.ref.itemKind === "pull" ? "Pull request" : "Issue";
+    if (preview.ref.kind === "task") return "Task";
+    if (preview.ref.kind === "run") return "Run";
+    if (preview.ref.kind === "decision") return "Decision";
+    return "Linked item";
+  };
+  return (
+    <div className="rich-link-previews" aria-label="Linked Cloud9 items">
+      {visible.map(preview => (
+        <article className="rich-link-preview" key={`${preview.ref.kind}:${preview.ref.kind === "projectItem" ? `${preview.ref.projectId}:${preview.ref.itemKind}:${preview.ref.number}` : preview.ref.id}`}
+          data-rich-kind={labelFor(preview).toLowerCase().replace(/\s+/g, "-")}
+          data-rich-state={preview.status ?? undefined}>
+          <span className="rich-link-type">{labelFor(preview)}</span>
+          <strong className="rich-link-title">{preview.title}</strong>
+          {(preview.status || preview.owner) && (
+            <span className="rich-link-meta">
+              {preview.status && <span>{preview.status}</span>}
+              {preview.status && preview.owner && <span aria-hidden="true"> Â· </span>}
+              {preview.owner && <span>{preview.owner}</span>}
+            </span>
+          )}
+          {preview.sourceUrl && (
+            <a className="rich-link-open" href={preview.sourceUrl} target="_blank" rel="noreferrer">
+              Open source
+            </a>
+          )}
+        </article>
+      ))}
+    </div>
+  );
+}
+
 /**
  * THE WORDS WITHOUT THE REFERENCE.
  *
@@ -7273,7 +7311,25 @@ const MessageRow = React.memo(function MessageRow({
      beside the card that replaces it. Nothing else reads `drawn`: copying,
      editing and searching all still see the real message. */
   const artifactRefs = useMemo(() => findArtifactRefs(m.text), [m.text]);
-  const drawn = artifactRefs.length > 0 ? withoutArtifactRefs(m.text) : m.text;
+  const richRefs = useMemo(() => findRichLinkRefs(m.text), [m.text]);
+  const richState = useWorld(w => w.richLinkPreviews[m.id]);
+  const richPreviews = richState?.previews ?? [];
+  useEffect(() => {
+    if (deleted || richRefs.length === 0) {
+      client.clearRichLinkPreviews(m.id);
+      return;
+    }
+    client.askRichLinkPreviews(m.id, richRefs);
+  }, [deleted, m.id, richRefs]);
+  const drawn = useMemo(() => {
+    let next = artifactRefs.length > 0 ? withoutArtifactRefs(m.text) : m.text;
+    for (const preview of richPreviews) {
+      const token = preview.sourceUrl ?? richLinkToken(preview.ref);
+      if (!token) continue;
+      next = next.split(token).join("");
+    }
+    return next.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  }, [artifactRefs.length, m.text, richPreviews]);
 
   /* A tombstone has no actions: there is nothing left to react to, copy, edit
      or reply to, and a button that always errors is a dead click. */
@@ -7393,6 +7449,7 @@ const MessageRow = React.memo(function MessageRow({
         <div className="body">
           {deleted ? tombstone : editing ? editor : drawn ? paragraph(drawn) : null}
           {!deleted && !editing && <MessageArtifacts text={m.text} />}
+          {!deleted && !editing && <RichLinkPreviewCards previews={richPreviews} />}
           {!deleted && doneRunId && <TaskRun runId={doneRunId} />}
           {!deleted && m.attachments && m.attachments.length > 0 &&
             <MessageFiles attachments={m.attachments} />}
@@ -7480,6 +7537,7 @@ const MessageRow = React.memo(function MessageRow({
         )}
         {deleted ? tombstone : editing ? editor : body}
         {!deleted && !editing && <MessageArtifacts text={m.text} />}
+        {!deleted && !editing && <RichLinkPreviewCards previews={richPreviews} />}
         {!deleted && doneRunId && <TaskRun runId={doneRunId} />}
         {!deleted && m.attachments && m.attachments.length > 0 &&
           <MessageFiles attachments={m.attachments} />}

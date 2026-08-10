@@ -3924,6 +3924,8 @@ type ClientFrameBase =
   | { type: "artifactWorkspace"; before?: number; beforeId?: ID; limit?: number }
   /** One artifact and its whole version history, by id. */
   | { type: "artifact"; artifactId: ID }
+  /** Resolve message-text links against the reader's current access. */
+  | { type: "richLinkPreviews"; messageId: ID; refs: RichLinkRef[] }
   /** Owner/admin only: narrow this whole chain, or restore room access. */
   | { type: "setArtifactAccess"; artifactId: ID; access: ArtifactAccess }
   /**
@@ -4692,6 +4694,8 @@ export type ServerFrame =
       /** true only when more valid relation rows exist beyond the shared cap */
       relationsTruncated?: true;
     }
+  /** Access-projected compact metadata; inaccessible refs are omitted. */
+  | { type: "richLinkPreviews"; messageId: ID; previews: RichLinkPreview[]; requestId?: ID }
   /** Answers `artifacts`. Newest change first. */
   | { type: "artifacts"; channelId: ID; artifacts: Artifact[] }
   /** Answers `artifactWorkspace`, with a stable updatedAt/id cursor. */
@@ -5630,6 +5634,102 @@ export function findArtifactRefs(text: unknown): ArtifactRef[] {
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(ref);
+  }
+  return out;
+}
+
+// ---------- access-projected links in message text ----------
+//
+// Rich cards are deliberately a request/response projection.  The text parser
+// only identifies bounded, stable references; title, state and owner all come
+// from the relay after it has checked the reader's current access.  A URL that
+// is not an exact stored project item therefore remains an ordinary safe link.
+
+export type RichLinkKind = "task" | "run" | "artifact" | "decision" | "projectItem" | "url";
+
+export type RichLinkRef =
+  | { kind: "task" | "run" | "artifact" | "decision"; id: ID; version?: number }
+  | { kind: "projectItem"; projectId: ID; itemKind: ProjectItemKind; number: number }
+  | { kind: "url"; url: string };
+
+export interface RichLinkPreview {
+  /** The authorized target. For a matched external URL this is projectItem. */
+  ref: Exclude<RichLinkRef, { kind: "url" }>;
+  /** Correlation facts used only for client-side cache invalidation. */
+  channelId?: ID;
+  ownerId?: ID;
+  /** The exact source URL when a stored project item matched message text. */
+  sourceUrl?: string;
+  title: string;
+  status?: TaskStatus | RunOutcome | ProjectItemState | ForumStatus;
+  owner?: string;
+}
+
+export const RICH_LINK_LIMITS = {
+  refsPerMessage: 16,
+  url: 1000,
+} as const;
+
+function richLinkRefKey(ref: RichLinkRef): string {
+  return ref.kind === "url"
+    ? `url:${ref.url}`
+    : ref.kind === "projectItem"
+      ? `projectItem:${ref.projectId}:${ref.itemKind}:${ref.number}`
+      : `${ref.kind}:${ref.id}${ref.version === undefined ? "" : `@${ref.version}`}`;
+}
+
+/** Stable key for correlating a preview with its source text. */
+export function richLinkKey(ref: RichLinkRef): string {
+  return richLinkRefKey(ref);
+}
+
+/** Turn one internal reference back into its canonical message token. */
+export function richLinkToken(ref: RichLinkRef): string | undefined {
+  switch (ref.kind) {
+    case "artifact": return artifactRef(ref.id, ref.version);
+    case "task": return `cloud9://task/${ref.id}`;
+    case "run": return `cloud9://run/${ref.id}`;
+    case "decision": return `cloud9://decision/${ref.id}`;
+    case "projectItem": return `cloud9://project/${ref.projectId}/${ref.itemKind}/${ref.number}`;
+    case "url": return ref.url;
+  }
+}
+
+function parseRichLinkToken(raw: string): RichLinkRef | undefined {
+  if (raw.startsWith(ARTIFACT_REF_SCHEME)) {
+    const parsed = parseArtifactRef(raw);
+    return parsed ? { kind: "artifact", id: parsed.artifactId, ...(parsed.version === undefined ? {} : { version: parsed.version }) } : undefined;
+  }
+  const match = raw.match(/^cloud9:\/\/(task|run|decision)\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/);
+  if (match && isSafeStoredId(match[2])) return { kind: match[1] as "task" | "run" | "decision", id: match[2] };
+  const project = raw.match(/^cloud9:\/\/project\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})\/(pull|issue)\/([1-9][0-9]{0,8})$/);
+  if (project && isSafeStoredId(project[1])) {
+    const number = Number(project[3]);
+    if (Number.isSafeInteger(number) && number > 0) return { kind: "projectItem", projectId: project[1], itemKind: project[2] as ProjectItemKind, number };
+  }
+  return undefined;
+}
+
+/** Parse bounded internal refs plus ordinary HTTP(S) URLs from one message. */
+export function findRichLinkRefs(text: unknown): RichLinkRef[] {
+  if (typeof text !== "string" || text.length === 0) return [];
+  const out: RichLinkRef[] = [];
+  const seen = new Set<string>();
+  const add = (ref: RichLinkRef): void => {
+    if (out.length >= RICH_LINK_LIMITS.refsPerMessage) return;
+    const key = richLinkRefKey(ref);
+    if (seen.has(key)) return;
+    seen.add(key); out.push(ref);
+  };
+  const tokens = /cloud9:\/\/(?:artifact|task|run|decision)\/[A-Za-z0-9][A-Za-z0-9._-]*(?:@\d+)?|cloud9:\/\/project\/[A-Za-z0-9][A-Za-z0-9._-]*\/(?:pull|issue)\/[1-9][0-9]{0,8}|https?:\/\/[^\s<>()]+/gi;
+  for (const hit of text.match(tokens) ?? []) {
+    const token = hit.replace(/[.,!?;:]+$/, "");
+    if (/^https?:\/\//i.test(token)) {
+      if (token.length <= RICH_LINK_LIMITS.url) add({ kind: "url", url: token });
+    } else {
+      const parsed = parseRichLinkToken(token);
+      if (parsed) add(parsed);
+    }
   }
   return out;
 }

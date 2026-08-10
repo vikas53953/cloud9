@@ -18,6 +18,7 @@ import {
   Workflow, WorkflowRun,
   HuddleSession, HuddleNote, HuddleReadEntry, HuddleParticipant, HuddleNoteKind, HuddleLink,
   SocialLink, SocialPost,
+  RichLinkPreview, RichLinkRef, richLinkKey,
   // SPENDING BLOCK (what the crew costs, 2026-08-07)
   AgentTokenUse, WasteFinding,
   UnreadEntry, User,
@@ -537,6 +538,8 @@ export interface World {
    * that had already come back as a "no".
    */
   artifactsGone: Record<ID, true>;
+  /** Per-message metadata returned only after the relay projected link access. */
+  richLinkPreviews: Record<ID, { asked: boolean; loading: boolean; refsKey: string; refs: RichLinkRef[]; previews: RichLinkPreview[] }>;
   /**
    * Which files are in one conversation, by channel — ids only, so there is one
    * copy of an artifact (above) and not a second one per room.
@@ -791,7 +794,7 @@ export class RelayClient {
     socialProjects: { asked: false, list: [] }, socialUnread: {}, socialPending: {}, socialCompleted: undefined, socialFeeds: {},
     pulse: { asked: false, loading: false, updates: [], unreadByProject: {}, projects: [] },
     repoChoices: { asked: false, asking: false },
-    artifacts: {}, artifactsGone: {}, channelArtifacts: {},
+    artifacts: {}, artifactsGone: {}, richLinkPreviews: {}, channelArtifacts: {},
     artifactWorkspace: emptyArtifactWorkspace(),
     artifactRelations: {}, artifactRelationsTruncated: {}, artifactDetailProblems: {},
     memory: {},
@@ -981,6 +984,7 @@ export class RelayClient {
       this.clearAllUploads();
       this.clearHumanTyping(undefined, undefined, false);
       this.world.humanTyping = {};
+      this.world.richLinkPreviews = {};
       this.world.connected = false;
       // Settle every lifecycle row before dropping request maps. Mutation
       // callbacks clear their own pending IDs and leave a scoped retry notice;
@@ -2389,6 +2393,7 @@ export class RelayClient {
        reason this run cannot be shown ends the disclosure's wait. */
     const gone = (): void => {
       this.world.runsGone = { ...this.world.runsGone, [runId]: true };
+      this.clearRichLinkPreviewsForRef("run", runId);
       this.emit();
     };
     this.ask({ type: "runDetail", runId }, {
@@ -2523,6 +2528,10 @@ export class RelayClient {
    */
   private forgetRunsOf(agentId: ID): void {
     const w = this.world;
+    // Invalidate while the records still provide the run-id correlation for
+    // an in-flight preview; deleting them first would leave a loading cache
+    // able to survive an agent deletion.
+    this.clearRichLinkPreviewsForAgent(agentId);
     const kept: Record<string, RunRecord> = {};
     for (const [id, record] of Object.entries(w.runs)) {
       if (record.agentId !== agentId) kept[id] = record;
@@ -3913,6 +3922,103 @@ askPolls(projectId: ID): void {
   /** detail questions already on the wire — invalidating a cache must not duplicate them */
   private artifactDetailInFlight = new Set<ID>();
 
+  /** Ask once per message/ref set; responses contain only relay-authorized facts. */
+  askRichLinkPreviews(messageId: ID, refs: RichLinkRef[]): void {
+    if (refs.length === 0) return;
+    const refsKey = refs.map(richLinkKey).join("|");
+    const current = this.world.richLinkPreviews[messageId];
+    if (current?.loading || (current?.asked && current.refsKey === refsKey)) return;
+    const requestId = this.nextRequestId("richLinkPreviews");
+    this.world.richLinkPreviews = {
+      ...this.world.richLinkPreviews,
+      [messageId]: { asked: false, loading: true, refsKey, refs: [...refs], previews: [] },
+    };
+    this.emit();
+    const finish = (previews: RichLinkPreview[]): void => {
+      const held = this.world.richLinkPreviews[messageId];
+      if (!held || held.refsKey !== refsKey) return;
+      this.world.richLinkPreviews = {
+        ...this.world.richLinkPreviews,
+        [messageId]: { asked: true, loading: false, refsKey, refs: [...refs], previews },
+      };
+      this.emit();
+    };
+    const sent = this.ask({ type: "richLinkPreviews", messageId, refs, requestId }, {
+      answers: frame => frame.type === "richLinkPreviews" && frame.requestId === requestId,
+      answered: frame => { if (frame.type === "richLinkPreviews") finish(frame.previews); },
+      refused: () => finish([]),
+      lost: () => finish([]),
+    });
+    if (!sent) finish([]);
+  }
+
+  richLinkPreviewsFor(messageId: ID): RichLinkPreview[] {
+    return this.world.richLinkPreviews[messageId]?.previews ?? [];
+  }
+
+  /** Drop one projection when its source text or access boundary changes. */
+  clearRichLinkPreviews(messageId: ID): void {
+    if (!(messageId in this.world.richLinkPreviews)) return;
+    this.clearRichLinkPreviewsForMessage(messageId);
+    this.emit();
+  }
+
+  private clearRichLinkPreviewsWhere(
+    predicate: (preview: RichLinkPreview) => boolean,
+    refPredicate?: (ref: RichLinkRef) => boolean,
+  ): boolean {
+    const next = { ...this.world.richLinkPreviews };
+    let changed = false;
+    for (const [messageId, state] of Object.entries(next)) {
+      if (!state.previews.some(predicate) && !(refPredicate && state.refs.some(refPredicate))) continue;
+      delete next[messageId];
+      changed = true;
+    }
+    if (changed) this.world.richLinkPreviews = next;
+    return changed;
+  }
+
+  private clearRichLinkPreviewsForRef(kind: "task" | "run" | "artifact" | "decision", id: ID): void {
+    this.clearRichLinkPreviewsWhere(
+      preview => preview.ref.kind === kind && preview.ref.id === id,
+      ref => ref.kind === kind && ref.id === id,
+    );
+  }
+
+  private clearRichLinkPreviewsForProject(projectId: ID): void {
+    this.clearRichLinkPreviewsWhere(
+      preview => preview.ref.kind === "projectItem" && preview.ref.projectId === projectId,
+      ref => ref.kind === "projectItem" && ref.projectId === projectId,
+    );
+  }
+
+  private clearRichLinkPreviewsForAgent(agentId: ID): void {
+    const taskIds = new Set(this.world.tasks.filter(task => task.agentId === agentId).map(task => task.id));
+    const runIds = new Set(Object.values(this.world.runs)
+      .filter(run => run.agentId === agentId).map(run => run.id));
+    this.clearRichLinkPreviewsWhere(
+      preview => preview.ownerId === agentId,
+      ref => (ref.kind === "task" && taskIds.has(ref.id)) || (ref.kind === "run" && runIds.has(ref.id)),
+    );
+  }
+
+  private clearRichLinkPreviewsForMessage(messageId: ID): void {
+    if (!(messageId in this.world.richLinkPreviews)) return;
+    const next = { ...this.world.richLinkPreviews };
+    delete next[messageId];
+    this.world.richLinkPreviews = next;
+  }
+
+  private clearRichLinkPreviewsForChannel(channelId: ID): void {
+    const ids = new Set((this.world.messages[channelId] ?? []).map(message => message.id));
+    this.clearRichLinkPreviewsWhere(preview => preview.channelId === channelId);
+    if (ids.size === 0) return;
+    const next = { ...this.world.richLinkPreviews };
+    let changed = false;
+    for (const id of ids) if (id in next) { delete next[id]; changed = true; }
+    if (changed) this.world.richLinkPreviews = next;
+  }
+
   /**
    * Ask for one file an agent made, by id — the card behind a reference.
    *
@@ -4435,6 +4541,7 @@ askPolls(projectId: ID): void {
           requestId: undefined,
         };
         w.messages = {};
+        w.richLinkPreviews = {};
         w.messageStatuses = {};
         for (const status of frame.state.messageStatuses ?? []) w.messageStatuses[status.messageId] = status;
         w.drafts = {};
@@ -4695,6 +4802,10 @@ askPolls(projectId: ID): void {
         );
         if (i >= 0) w.channels[i] = frame.channel; else w.channels.push(frame.channel);
         w.channels = [...w.channels];
+        if (previousChannel && (previousChannel.memberIds.length !== frame.channel.memberIds.length
+          || previousChannel.memberIds.some(id => !frame.channel.memberIds.includes(id)))) {
+          this.clearRichLinkPreviewsForChannel(frame.channel.id);
+        }
         // A room arriving for the FIRST time is a room we just joined, so the
         // browse list — which only ever shows rooms you are not in — has gone
         // stale. Only on arrival: a topic change must not reset it.
@@ -4705,6 +4816,7 @@ askPolls(projectId: ID): void {
             w.agents.some(agent => agent.id === memberId && agent.ownerId === w.me?.id));
         if (!stillVisible) {
           this.clearUploadsFor(frame.channel.id);
+          this.clearRichLinkPreviewsForChannel(frame.channel.id);
           clearLiveSteps(row => row.channelId === frame.channel.id);
           clearReceipts(row => row.channelId === frame.channel.id);
           clearAgentResponses(row => row.channelId === frame.channel.id);
@@ -4776,6 +4888,7 @@ askPolls(projectId: ID): void {
         const i = w.tasks.findIndex(t => t.id === frame.task.id);
         if (i >= 0) w.tasks[i] = frame.task; else w.tasks.unshift(frame.task);
         w.tasks = [...w.tasks];
+        this.clearRichLinkPreviewsForRef("task", frame.task.id);
         break;
       }
       case "approval": {
@@ -4889,6 +5002,9 @@ askPolls(projectId: ID): void {
         break;
       case "messageUpdated":
         this.replaceMessage(frame.message);
+        // The source text is the correlation contract. Re-parse on the next
+        // render rather than retaining cards for refs an edit removed.
+        this.clearRichLinkPreviewsForMessage(frame.message.id);
         if (frame.message.deletedAt) {
           w.savedMessages = w.savedMessages.map(entry => entry.messageId === frame.message.id
             ? { ...entry, state: "deleted", message: undefined }
@@ -4954,22 +5070,26 @@ askPolls(projectId: ID): void {
         w.forumUnavailableProjects = unavailable;
         const feeds = Object.fromEntries(Object.entries(w.forumFeeds).filter(([id]) => visible.has(id)));
         const replies = { ...w.forumReplies };
-        for (const [id, feed] of Object.entries(w.forumFeeds)) if (!visible.has(id)) for (const topic of feed.topics) delete replies[topic.id];
+        for (const [id, feed] of Object.entries(w.forumFeeds)) if (!visible.has(id)) for (const topic of feed.topics) {
+          delete replies[topic.id];
+          this.clearRichLinkPreviewsForRef("decision", topic.id);
+        }
         w.forumProjects={asked:true,projects}; w.forumFeeds=feeds; w.forumReplies=replies; break;
       }
       case "forumFeed": {
         const old=w.forumFeeds[frame.projectId]??{asked:false,loading:false,topics:[],unread:0};
         const topics = [...frame.topics].sort((a,b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id));
+        for (const topic of topics) this.clearRichLinkPreviewsForRef("decision", topic.id);
         w.forumFeeds={...w.forumFeeds,[frame.projectId]:{...old,asked:true,loading:false,topics,unread:frame.unread,selected:topics.some(t=>t.id===old.selected)?old.selected:topics[0]?.id}}; break;
       }
       case "forumTopic": {
-        const projectId=frame.topic.projectId; const old=w.forumFeeds[projectId]??{asked:false,loading:false,topics:[],unread:0}; const i=old.topics.findIndex(t=>t.id===frame.topic.id); const topics=(i<0?[frame.topic,...old.topics]:old.topics.map(t=>t.id===frame.topic.id?frame.topic:t)).sort((a,b)=>b.createdAt-a.createdAt||b.id.localeCompare(a.id)); w.forumFeeds={...w.forumFeeds,[projectId]:{...old,topics,selected:frame.topic.id}}; w.forumReplies={...w.forumReplies,[frame.topic.id]:frame.replies.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))}; break;
+        const projectId=frame.topic.projectId; const old=w.forumFeeds[projectId]??{asked:false,loading:false,topics:[],unread:0}; const i=old.topics.findIndex(t=>t.id===frame.topic.id); const topics=(i<0?[frame.topic,...old.topics]:old.topics.map(t=>t.id===frame.topic.id?frame.topic:t)).sort((a,b)=>b.createdAt-a.createdAt||b.id.localeCompare(a.id)); this.clearRichLinkPreviewsForRef("decision", frame.topic.id); w.forumFeeds={...w.forumFeeds,[projectId]:{...old,topics,selected:frame.topic.id}}; w.forumReplies={...w.forumReplies,[frame.topic.id]:frame.replies.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))}; break;
       }
       case "forumChanged": {
-        const old=w.forumFeeds[frame.projectId]??{asked:true,loading:false,topics:[],unread:0}; let topics=old.topics; if(frame.topic){const i=topics.findIndex(t=>t.id===frame.topic!.id);topics=i<0?[frame.topic,...topics]:topics.map(t=>t.id===frame.topic!.id?frame.topic!:t);topics=[...topics].sort((a,b)=>b.createdAt-a.createdAt||b.id.localeCompare(a.id));} if(frame.reply){const list=w.forumReplies[frame.reply.topicId]??[]; const i=list.findIndex(r=>r.id===frame.reply!.id); const replies=i<0?[...list,frame.reply]:list.map(r=>r.id===frame.reply!.id?frame.reply!:r); w.forumReplies={...w.forumReplies,[frame.reply.topicId]:replies.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))};} w.forumFeeds={...w.forumFeeds,[frame.projectId]:{...old,topics}}; break;
+        const old=w.forumFeeds[frame.projectId]??{asked:true,loading:false,topics:[],unread:0}; let topics=old.topics; if(frame.topic){const i=topics.findIndex(t=>t.id===frame.topic!.id);topics=i<0?[frame.topic,...topics]:topics.map(t=>t.id===frame.topic!.id?frame.topic!:t);topics=[...topics].sort((a,b)=>b.createdAt-a.createdAt||b.id.localeCompare(a.id));this.clearRichLinkPreviewsForRef("decision", frame.topic.id);} if(frame.reply){const list=w.forumReplies[frame.reply.topicId]??[]; const i=list.findIndex(r=>r.id===frame.reply!.id); const replies=i<0?[...list,frame.reply]:list.map(r=>r.id===frame.reply!.id?frame.reply!:r); w.forumReplies={...w.forumReplies,[frame.reply.topicId]:replies.sort((a,b)=>a.createdAt-b.createdAt||a.id.localeCompare(b.id))};} w.forumFeeds={...w.forumFeeds,[frame.projectId]:{...old,topics}}; break;
       }
       case "forumRead": { const old=w.forumFeeds[frame.entry.projectId]; if(old)w.forumFeeds={...w.forumFeeds,[frame.entry.projectId]:{...old,unread:frame.entry.unread}}; break; }
-      case "forumUnavailable": { const old=w.forumFeeds[frame.projectId]; const ids=old?.topics.map(t=>t.id)??[]; const {[frame.projectId]:gone,...rest}=w.forumFeeds; void gone; const replies={...w.forumReplies}; ids.forEach(id=>delete replies[id]); w.forumFeeds=rest; w.forumReplies=replies; w.forumProjects={...w.forumProjects,projects:w.forumProjects.projects.filter(p=>p.id!==frame.projectId)}; break; }
+      case "forumUnavailable": { const old=w.forumFeeds[frame.projectId]; const ids=old?.topics.map(t=>t.id)??[]; const {[frame.projectId]:gone,...rest}=w.forumFeeds; void gone; const replies={...w.forumReplies}; ids.forEach(id=>{delete replies[id];this.clearRichLinkPreviewsForRef("decision", id);}); w.forumFeeds=rest; w.forumReplies=replies; w.forumProjects={...w.forumProjects,projects:w.forumProjects.projects.filter(p=>p.id!==frame.projectId)}; break; }
       case "forumMembers": {
         w.forumMembersByProject = { ...w.forumMembersByProject, [frame.projectId]: frame.userIds };
         break;
@@ -5077,6 +5197,7 @@ askPolls(projectId: ID): void {
         // so a run from a conversation this screen never opened still lands
         // somewhere findable rather than being dropped for not being expected.
         w.runs = { ...w.runs, [frame.record.id]: frame.record };
+        this.clearRichLinkPreviewsForRef("run", frame.record.id);
         break;
       // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) =====
       case "spending":
@@ -5091,6 +5212,7 @@ askPolls(projectId: ID): void {
         if (key) {
           w.runLists = { ...w.runLists, [key]: { asked: true, loading: false, entries: frame.runs } };
         }
+        for (const record of frame.runs) this.clearRichLinkPreviewsForRef("run", record.id);
         break;
       }
       case "runRecovery": {
@@ -5176,6 +5298,7 @@ askPolls(projectId: ID): void {
             /* Roles are part of file access: manager inclusion and relation
                visibility can change while memberIds stays identical. */
             this.invalidateArtifactRelations();
+            this.clearRichLinkPreviewsForChannel(frame.channelId);
           }
           w.members = { ...w.members, [frame.channelId]: frame.members };
         }
@@ -5193,6 +5316,10 @@ askPolls(projectId: ID): void {
         // conversation the relay will no longer answer about.
         w.channels = w.channels.filter(c => c.id !== frame.channelId);
         w.channelMemoryPolicies = w.channelMemoryPolicies.filter(policy => policy.channelId !== frame.channelId);
+        const messageIds = new Set((w.messages[frame.channelId] ?? []).map(message => message.id));
+        w.richLinkPreviews = Object.fromEntries(
+          Object.entries(w.richLinkPreviews).filter(([id]) => !messageIds.has(id)),
+        );
         const { [frame.channelId]: goneMessages, ...restMessages } = w.messages;
         void goneMessages;
         w.messages = restMessages;
@@ -5298,6 +5425,7 @@ askPolls(projectId: ID): void {
         // arriving for a question nobody is asking any more goes nowhere.
         break;
       case "projectForgotten": {
+        this.clearRichLinkPreviewsForProject(frame.projectId);
         w.projects = {
           ...w.projects,
           list: w.projects.list.filter(p => p.id !== frame.projectId),
@@ -5331,6 +5459,7 @@ askPolls(projectId: ID): void {
            in answer to `askProjectItems`. Applied unconditionally for the same
            reason `read` is: this frame is how a window finds out that GitHub
            moved underneath it. */
+        this.clearRichLinkPreviewsForProject(frame.projectId);
         w.projectItems = {
           ...w.projectItems,
           [frame.projectId]: { asked: true, items: frame.items },
@@ -5418,6 +5547,7 @@ askPolls(projectId: ID): void {
         w.canvases = { ...w.canvases, history: frame.revisions, historyRequestId: undefined, historyLoading: false, historyProblem: undefined };
         break;
       case "projectAccessRevoked": {
+        this.clearRichLinkPreviewsForProject(frame.projectId);
         w.projects = { ...w.projects, list: w.projects.list.filter(p => p.id !== frame.projectId) };
         const { [frame.projectId]: goneItems, ...restItems } = w.projectItems;
         void goneItems;
@@ -5694,6 +5824,11 @@ askPolls(projectId: ID): void {
         // Deliberately the same screen state as an invented id: no probing.
         // onFrame emits once after the switch; the helper only mutates here.
         this.forgetArtifact(frame.artifactId, false);
+        this.clearRichLinkPreviewsForRef("artifact", frame.artifactId);
+        break;
+      case "richLinkPreviews":
+        // The correlated ask callback installs this projection before the
+        // switch. Unsolicited/late frames have no cache entry and are ignored.
         break;
       case "artifactWorkspace":
         // Applied only by the bounded page request that asked for it.
