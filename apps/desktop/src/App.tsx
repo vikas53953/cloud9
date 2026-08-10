@@ -96,6 +96,7 @@ import {
   taskForSourceMessage, turnLifecycleSentence, turnLifecycleState, turnLifecycleStoppable,
   type TurnLifecycleState,
 } from "./turnlifecycle.js";
+import { composerIntent } from "./composerintent.js";
 import { chatDraftKey, clearChatDraft, loadChatDraft, saveChatDraft, type ChatDraftScope } from "./chatdrafts.js";
 import {
   abilitiesOn, abilityWords, MARKET_CATEGORIES, MARKET_TEMPLATES, MarketTemplate,
@@ -8482,6 +8483,14 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const roomAgents = useMemo(
     () => world.agents.filter(a => channel.memberIds.includes(a.id)),
     [world.agents, channel.memberIds]);
+  /* The button's word follows the same explicit room invocation facts the
+     engine will use. This is presentation only; `sendNow` remains the one
+     message submission path for both labels. */
+  const intent = useMemo(() => composerIntent({
+    text, roomAgents, requesterId: world.me?.id, direct: channel.kind === "dm",
+    available: world.connected && !world.authFailed && hasComposerAccess,
+  }), [text, roomAgents, world.me?.id, channel.kind, world.connected, world.authFailed, hasComposerAccess]);
+  const runningIntent = intent === "run";
 
   /**
    * WHY THIS COMMAND CANNOT BE USED IN THIS ROOM RIGHT NOW — in plain words, or
@@ -8979,13 +8988,19 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               without it. Enter says the same thing out loud (see `sendNow`), so
               neither route can quietly leave a file behind. */}
           <button className="primary small sendbtn" onClick={sendNow}
-            aria-label={busy ? "Waiting for attachment" : ready > 0 ? `Send with ${countOf(ready, "file")}` : "Send message"}
+            data-intent={intent}
+            aria-label={busy ? "Waiting for attachment" : ready > 0
+              ? `${runningIntent ? "Run" : "Send"} with ${countOf(ready, "file")}`
+              : runningIntent ? "Run agent request" : "Send message"}
             data-waiting={busy ? "file" : undefined}
-            title={busy ? "A file is still going up. It goes with this message once it lands." : undefined}
+            title={busy
+              ? "A file is still going up. It goes with this message once it lands."
+              : runningIntent ? "Run this request with an agent in this room"
+                : "Send this message to the room"}
             disabled={busy || (!text.trim() && ready === 0)}>
             <span aria-hidden="true">↑</span><span className="sr-only">{busy
               ? "Waiting for a file…"
-              : `Send${ready > 0 ? ` with ${countOf(ready, "file")}` : ""}`}</span>
+              : `${runningIntent ? "Run" : "Send"}${ready > 0 ? ` with ${countOf(ready, "file")}` : ""}`}</span>
           </button>
           {/* One list, built from ONE table (`ROOM_COMMANDS`), whichever door
               opened it — the ＋ beside the box or a `/` typed into it. A row that
