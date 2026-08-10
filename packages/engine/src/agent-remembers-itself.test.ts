@@ -218,6 +218,13 @@ test("what an agent remembers today seeds its turn tomorrow", async () => {
 
 test("one turn may keep only a few notes, and is told plainly when it has had its share", async () => {
   const { engine } = makeEngine();
+  // The per-turn quota is exercised through a policy-permitted agent write.
+  // Rooms default to explicit-human-only memory, so a bare fact would now be
+  // refused by the storage boundary before it ever reached the quota counter.
+  engine.state!.channelMemoryPolicies = [{
+    channelId: "c1", agentId: "a1", mode: "summary", revision: 1,
+    updatedAt: 1, updatedBy: OWNER,
+  }];
   await engine.tools.start();
   try {
     const open = engine.openToolTurn({ channelId: "c1", agentId: "a1" })!;
@@ -226,7 +233,7 @@ test("one turn may keep only a few notes, and is told plainly when it has had it
       .turns.get(open.secret)!;
     const answers: Cloud9RememberAnswer[] = [];
     for (let i = 0; i < MEMORY_NOTES_PER_TURN + 2; i++) {
-      answers.push(await turn.remember!(`the owner's rule number ${i} is a real one`, "fact"));
+      answers.push(await turn.remember!(`decision number ${i} remains in force`, "decision"));
     }
     const saved = answers.filter(a => a.saved).length;
     assert.equal(saved, MEMORY_NOTES_PER_TURN, "the ceiling is the ceiling");
@@ -240,7 +247,7 @@ test("one turn may keep only a few notes, and is told plainly when it has had it
     const next = engine.openToolTurn({ channelId: "c1", agentId: "a1" })!;
     const nextTurn = (engine.tools as unknown as { turns: Map<string, Cloud9ToolTurn> })
       .turns.get(next.secret)!;
-    assert.equal((await nextTurn.remember!("tomorrow is a fresh allowance", "fact")).saved, true);
+    assert.equal((await nextTurn.remember!("tomorrow's decision starts a fresh allowance", "decision")).saved, true);
     open.close();
     next.close();
   } finally {
