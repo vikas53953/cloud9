@@ -25,7 +25,9 @@ import {
   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject,
   redactDeletedPulseUpdate, validateEngineeringPulseDraft,
   RepoChoice, REPO_LIST_LIMITS, validateRepoChoice, validateLocalFolder,
-  RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
+  RunRecord, RUN_RETENTION, APPROVAL_LIMITS, APPROVAL_CHECKPOINT_LIMITS,
+  tidyApprovalText, validateApprovalInstructions,
+  validateApprovalQuestion, validateApprovalCheckpointRequestId,
   ThreadSummaryRequest, ThreadSummaryResult, THREAD_SUMMARY_LIMITS,
   RunCheckpoint, RecoveryRequest, RecoveryReceipt, recoveryDecision,
   compareRecoveryRequest, compareRuns, recoveryRequestFingerprint,
@@ -90,6 +92,23 @@ import {
   mintJoinToken, checkJoinToken, redeemJoinToken, resolveJoinBind,
   revokeJoinToken as retireJoinToken, JOIN_TOKEN_TTL_MS,
 } from "./joinhub.js";
+
+function stableApprovalCheckpointHash(frame: ClientFrame): string {
+  const canonical = (value: unknown, key?: string): unknown => {
+    if (key === "requestId") return undefined;
+    if (Array.isArray(value)) return value.map(item => canonical(item));
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .filter(([name]) => name !== "requestId")
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([name, item]) => [name, canonical(item, name)]),
+      );
+    }
+    return value;
+  };
+  return createHash("sha256").update(JSON.stringify(canonical(frame))).digest("hex");
+}
 
 /**
  * WHAT ONE DOWNLOAD TICKET IS FOR.
@@ -3567,6 +3586,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
       approval = {
         id: newId("ap"), taskId: task.id, agentId: agent.id, ownerId: agent.ownerId,
         action: describeApproval(task.title), status: "pending", createdAt: now,
+        instructions: task.title,
+        revision: 0, approvalEpoch: newId("ae"), requesterId: requester.id,
         channelId: channel.id,
       };
       task.approvalId = approval.id;
@@ -4026,6 +4047,101 @@ private viewProject(project: Project, viewerId?: ID): Project {
       settleOnError(error);
       throw error;
     }
+  }
+
+  /**
+   * Apply the non-executing half of an inline checkpoint. Every edit or
+   * clarification invalidates older buttons and leaves the card pending; only
+   * a later, explicit approved decision can release the engine/task.
+   */
+  private mutateApprovalCheckpoint(
+    conn: Conn,
+    frame: Extract<ClientFrame, { type: "decideApproval" | "editApproval" | "askApprovalQuestion" }>,
+  ): void {
+    const requestProblem = validateApprovalCheckpointRequestId(frame.requestId);
+    if (requestProblem) throw new Error(requestProblem);
+    const requestId = frame.requestId!;
+    const approvalId = frame.type === "decideApproval" || frame.type === "editApproval"
+      || frame.type === "askApprovalQuestion" ? frame.approvalId : "";
+    const operation = frame.type === "editApproval" ? "edit"
+      : frame.type === "askApprovalQuestion" ? "question"
+        : frame.type === "decideApproval" ? frame.decision : undefined;
+    if (operation !== "edit" && operation !== "question") throw new Error("that is not a checkpoint edit");
+    const approval = this.store.approval(approvalId);
+    if (!approval) throw new Error("no such approval");
+    const agent = this.store.agents().find(a => a.id === approval.agentId
+      && a.ownerId === approval.ownerId);
+    if (!agent) throw new Error("that approval's agent is no longer available");
+    if (approval.channelId) this.channelFor(conn.userId, approval.channelId);
+    const allowed = approval.ownerId === conn.userId || approval.requesterId === conn.userId;
+    if (!allowed) throw new Error("only the approval owner or requester can change this checkpoint");
+    const revision = approval.revision ?? 0;
+    const epoch = approval.approvalEpoch ?? "";
+    const payloadHash = stableApprovalCheckpointHash(frame);
+    const prior = approval.checkpointReceipts?.find(receipt => receipt.requestId === requestId)
+      ?? (approval.lastCheckpoint?.requestId === requestId ? approval.lastCheckpoint : undefined);
+    if (prior) {
+      if (prior.actorId !== conn.userId) {
+        throw new Error("that checkpoint request id belongs to another person");
+      }
+      if (prior.payloadHash !== payloadHash) {
+        throw new Error("that checkpoint request id was already used for different work");
+      }
+      this.sendApproval(approval);
+      return;
+    }
+    if (!Number.isSafeInteger(frame.expectedRevision) || !epoch
+      || typeof frame.approvalEpoch !== "string" || frame.expectedRevision !== revision
+      || frame.approvalEpoch !== epoch) {
+      throw new Error("this approval changed; refresh it before trying again");
+    }
+    if (approval.status !== "pending") throw new Error("that approval is no longer pending");
+    const now = Date.now();
+    if (operation === "edit") {
+      // Only job-shaped approvals have a durable execution field we can update
+      // atomically before the eventual task starts. Plans, remote actions and
+      // saving proposals have closed facts whose safe execution cannot be
+      // rewritten from arbitrary prose, so their Edit control is intentionally
+      // absent and the relay refuses forged edits too.
+      if (!approval.taskId || (approval.kind !== undefined && approval.kind !== "task")) {
+        throw new Error("this approval kind cannot safely revise its instructions");
+      }
+      const value = frame.type === "editApproval" || frame.type === "decideApproval"
+        ? frame.instructions : undefined;
+      const bad = validateApprovalInstructions(value);
+      if (bad) throw new Error(bad);
+      const instructions = tidyApprovalText(value, APPROVAL_CHECKPOINT_LIMITS.instructions);
+      approval.instructions = instructions;
+      // Job-shaped cards execute the exact revised task title after approval.
+      const task = this.store.task(approval.taskId);
+      if (!task || task.status !== "waiting_approval") {
+        throw new Error("that job is no longer waiting for revised instructions");
+      }
+      task.title = instructions;
+      task.updatedAt = now;
+      this.store.saveTask(task);
+      this.publishTask(task);
+    } else {
+      const value = frame.type === "askApprovalQuestion" || frame.type === "decideApproval"
+        ? frame.question : undefined;
+      const bad = validateApprovalQuestion(value);
+      if (bad) throw new Error(bad);
+      const text = tidyApprovalText(value, APPROVAL_CHECKPOINT_LIMITS.question);
+      const clarifications = approval.clarifications ? [...approval.clarifications] : [];
+      clarifications.push({ id: newId("aq"), askedBy: conn.userId, text, createdAt: now });
+      approval.clarifications = clarifications.slice(-20);
+    }
+    approval.revision = revision + 1;
+    approval.approvalEpoch = newId("ae").slice(0, APPROVAL_CHECKPOINT_LIMITS.epoch);
+    const receipt = {
+      requestId, actorId: conn.userId, operation, payloadHash, revision: approval.revision,
+    };
+    approval.lastCheckpoint = receipt;
+    approval.checkpointReceipts = [...(approval.checkpointReceipts ?? []), receipt].slice(-20);
+    this.store.saveApproval(approval);
+    this.audit(conn, "approval_checkpoint", approval.id,
+      operation === "edit" ? "updated approval instructions" : "asked an approval clarification");
+    this.sendApproval(approval);
   }
 
   private handleFrame(conn: Conn, frame: ClientFrame): void {
@@ -5093,6 +5209,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
         // check `recordRun` makes, for the same reason
         const namedTask = frame.taskId ? this.store.task(frame.taskId) : undefined;
         const taskId = namedTask && namedTask.agentId === agent.id ? namedTask.id : undefined;
+        const requesterId = namedTask?.requesterId ?? agent.ownerId;
         const now = Date.now();
         // THE SENTENCE IS WRITTEN HERE, from the facts, exactly as
         // `describeApproval` writes the job-shaped one. The agent supplied a
@@ -5102,6 +5219,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
           id: newId("ap"), agentId: agent.id, ownerId: agent.ownerId,
           action: describeRemoteAction(frame.facts).slice(0, APPROVAL_LIMITS.action),
           status: "pending", createdAt: now,
+          instructions: describeRemoteAction(frame.facts).slice(0, APPROVAL_CHECKPOINT_LIMITS.instructions),
+          revision: 0, approvalEpoch: newId("ae"), requesterId,
           kind: "action", remoteAction: frame.facts.action, channelId: channel.id,
           ...(taskId ? { taskId } : {}),
           ...(detail ? { detail: detail.slice(0, APPROVAL_LIMITS.detail) } : {}),
@@ -5145,6 +5264,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
         if (!askId) throw new Error("that request has no label to answer against");
         const namedTask = frame.taskId ? this.store.task(frame.taskId) : undefined;
         const taskId = namedTask && namedTask.agentId === agent.id ? namedTask.id : undefined;
+        const requesterId = namedTask?.requesterId ?? agent.ownerId;
         const now = Date.now();
         // THE AGENT WROTE THE PLAN, SO THE PLAN IS CONTAINED — bounded and
         // stripped by `tidyPlan` here, at the hub, on the way in. The line the
@@ -5156,6 +5276,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
           id: newId("ap"), agentId: agent.id, ownerId: agent.ownerId,
           action: planHeadline(plan).slice(0, APPROVAL_LIMITS.action),
           status: "pending", createdAt: now,
+          instructions: plan,
+          revision: 0, approvalEpoch: newId("ae"), requesterId,
           kind: "plan", channelId: channel.id,
           plan,
           ...(taskId ? { taskId } : {}),
@@ -5194,6 +5316,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
         if (!askId) throw new Error("that request has no label to answer against");
         const namedTask = frame.taskId ? this.store.task(frame.taskId) : undefined;
         const taskId = namedTask && namedTask.agentId === agent.id ? namedTask.id : undefined;
+        const requesterId = namedTask?.requesterId ?? agent.ownerId;
         const now = Date.now();
         // THE AGENT WROTE THE REASON, SO THE REASON IS CONTAINED — bounded and
         // stripped by `tidySaving` here, at the hub, on the way in. Everything
@@ -5212,6 +5335,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
           id: newId("ap"), agentId: agent.id, ownerId: agent.ownerId,
           action: savingHeadline(proposal).slice(0, APPROVAL_LIMITS.action),
           status: "pending", createdAt: now,
+          instructions: savingHeadline(proposal).slice(0, APPROVAL_CHECKPOINT_LIMITS.instructions),
+          revision: 0, approvalEpoch: newId("ae"), requesterId,
           kind: "saving", channelId: channel.id,
           detail: savingDetail(proposal).slice(0, APPROVAL_LIMITS.detail),
           saving: proposal,
@@ -5224,16 +5349,60 @@ private viewProject(project: Project, viewerId?: ID): Project {
         this.sendApproval(approval);
         break;
       }
+      case "editApproval":
+      case "askApprovalQuestion":
+        this.mutateApprovalCheckpoint(conn, frame);
+        break;
       case "decideApproval": {
+        const requestProblem = validateApprovalCheckpointRequestId(frame.requestId);
+        if (requestProblem) throw new Error(requestProblem);
+        const requestId = frame.requestId!;
+        if (frame.decision === "edit" || frame.decision === "question") {
+          this.mutateApprovalCheckpoint(conn, frame);
+          break;
+        }
         // a card he has already answered is not answerable twice
         const approval = this.store.approval(frame.approvalId);
         if (!approval) throw new Error("no such approval");
         // Provisional policy (PARKING-LOT D4): only the agent's owner decides.
         if (approval.ownerId !== conn.userId) throw new Error("only the agent's owner can decide this");
+        const currentAgent = this.store.agents().find(a => a.id === approval.agentId
+          && a.ownerId === approval.ownerId);
+        if (!currentAgent) throw new Error("that approval's agent is no longer available");
+        if (approval.channelId) this.channelFor(conn.userId, approval.channelId);
+        const revision = approval.revision ?? 0;
+        const epoch = approval.approvalEpoch ?? "";
+        const payloadHash = stableApprovalCheckpointHash(frame);
+        const prior = approval.checkpointReceipts?.find(receipt => receipt.requestId === requestId)
+          ?? (approval.lastCheckpoint?.requestId === requestId ? approval.lastCheckpoint : undefined);
+        if (prior) {
+          if (prior.actorId !== conn.userId) {
+            throw new Error("that checkpoint request id belongs to another person");
+          }
+          if (prior.payloadHash !== payloadHash) {
+            throw new Error("that checkpoint request id was already used for different work");
+          }
+          this.sendApproval(approval);
+          break;
+        }
+        if (!Number.isSafeInteger(frame.expectedRevision) || !epoch
+          || typeof frame.approvalEpoch !== "string" || frame.expectedRevision !== revision
+          || frame.approvalEpoch !== epoch) {
+          throw new Error("this approval changed; refresh it before trying again");
+        }
         if (approval.status !== "pending") break; // FR-AP-004: no re-execution through decided approvals
         approval.status = frame.decision;
         approval.decidedBy = conn.userId;
         approval.decidedAt = Date.now();
+        const receipt = {
+          requestId,
+          actorId: conn.userId,
+          operation: frame.decision,
+          payloadHash,
+          revision,
+        };
+        approval.lastCheckpoint = receipt;
+        approval.checkpointReceipts = [...(approval.checkpointReceipts ?? []), receipt].slice(-20);
         this.store.saveApproval(approval);
         this.audit(conn, "approval_decided", approval.id, `${frame.decision}: ${approval.action}`);
         if (approval.recoveryRequestId) {
@@ -7252,6 +7421,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
             id: newId("ap"), agentId: currentAgent.id, ownerId: currentAgent.ownerId,
             action: `${frame.mode === "retry" ? "Retry" : "Restart"} ${currentAgent.name}'s run`.slice(0, APPROVAL_LIMITS.action),
             status: "pending", createdAt: Date.now(), kind: "action",
+            instructions: `${frame.mode === "retry" ? "Retry" : "Restart"} ${currentAgent.name}'s run`.slice(0, APPROVAL_CHECKPOINT_LIMITS.instructions),
+            revision: 0, approvalEpoch: newId("ae"), requesterId: currentAgent.ownerId,
             ...(row.channelId ? { channelId: row.channelId } : {}), recoveryRequestId: requestId,
           };
           this.store.saveApproval(approval);
@@ -8737,34 +8908,19 @@ private viewProject(project: Project, viewerId?: ID): Project {
    * his phone and the engine that asked, all at once.
    */
   private sendApproval(approval: Approval): void {
-    if (this.isWorkflowApproval(approval)) {
-      const audience = this.workflowApprovalAudience(approval);
-      for (const conn of this.conns) {
-        if (audience.has(conn.userId)) send(conn.ws, { type: "approval", approval });
-      }
-      return;
+    const audience = new Set<ID>();
+    if (approval.channelId) {
+      const channel = this.store.channel(approval.channelId);
+      if (channel) for (const userId of this.audienceFor(channel)) audience.add(userId);
     }
-    const task = approval.taskId ? this.store.task(approval.taskId) : undefined;
-    if (task?.channelId && approval.kind !== "action") {
-      const channel = this.store.channel(task.channelId);
-      const audience = channel ? this.audienceFor(channel) : new Set<ID>();
-      audience.add(approval.ownerId);
-      audience.add(task.requesterId);
-      for (const conn of this.conns) {
-        if (audience.has(conn.userId)) send(conn.ws, { type: "approval", approval });
-      }
-      return;
+    // Cards without a room are private to the owner/requester. The owner is
+    // always retained for a room card too, so a later membership change cannot
+    // strand the person who must answer it.
+    audience.add(approval.ownerId);
+    if (approval.requesterId && !approval.channelId) audience.add(approval.requesterId);
+    for (const conn of this.conns) {
+      if (audience.has(conn.userId)) send(conn.ws, { type: "approval", approval });
     }
-    if (approval.kind === "action") this.toUser(approval.ownerId, { type: "approval", approval });
-    else if (approval.taskId) {
-      const task = this.store.task(approval.taskId);
-      if (task) {
-        const audience = this.taskAudience(task);
-        for (const conn of this.conns) {
-          if (audience.has(conn.userId)) send(conn.ws, { type: "approval", approval });
-        }
-      }
-    } else this.broadcast({ type: "approval", approval });
   }
 
   // NOTHING KILLS A CARD ANY MORE (2026-08-07). There used to be a sweep here
@@ -8774,33 +8930,13 @@ private viewProject(project: Project, viewerId?: ID): Project {
   // (@cloud9/shared, `ApprovalStatus`), but nothing produces a new one, and a
   // card only stops being pending because HE decided or he pressed Stop.
 
-  /** Saved runbook approvals follow the task's room, plus the owner who decides. */
-  private isWorkflowApproval(approval: Approval): boolean {
-    const task = approval.taskId ? this.store.task(approval.taskId) : undefined;
-    return Boolean(task?.workflowRunId);
-  }
-
-  private workflowApprovalAudience(approval: Approval): Set<ID> {
-    const audience = new Set<ID>([approval.ownerId]);
-    const channel = approval.channelId ? this.store.channel(approval.channelId) : undefined;
-    const agents = this.store.agents();
-    for (const memberId of channel?.memberIds ?? []) {
-      const memberAgent = agents.find(agent => agent.id === memberId);
-      audience.add(memberAgent?.ownerId ?? memberId);
-    }
-    return audience;
-  }
-
   /** The approvals this person may be shown. */
   private visibleApprovals(userId: ID): Approval[] {
-    return this.store.approvals().filter(a => {
-      if (this.isWorkflowApproval(a)) return this.workflowApprovalAudience(a).has(userId);
-      if (a.kind === "action") return a.ownerId === userId;
-      if (a.taskId) {
-        const task = this.store.task(a.taskId);
-        return task ? this.taskAudience(task).has(userId) : false;
-      }
-      return true;
+    return this.store.approvals().filter(approval => {
+      if (approval.ownerId === userId) return true;
+      if (!approval.channelId) return approval.requesterId === userId;
+      const channel = this.store.channel(approval.channelId);
+      return !!channel && this.audienceFor(channel).has(userId);
     });
   }
 

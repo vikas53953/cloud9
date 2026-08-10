@@ -5887,7 +5887,7 @@ function ChatView({
    * vanished: "he never saw it" is the outcome this card exists to make
    * visible. It is not counted below — nothing is waiting on him any more.
    */
-  const { mine: myApprovalsAll, waiting: waitingAll } =
+  const { involved: myApprovalsAll, waiting: waitingAll } =
     useMyApprovals(world.approvals, world.me?.id);
   const inThisRoom = (ap: Approval): boolean => {
     if (ap.channelId) return ap.channelId === channel.id;
@@ -6278,9 +6278,113 @@ function actionHeadline(approval: Approval): string {
    has selected only a slice of the world can still ask it. */
 function useMyApprovals(
   approvals: Approval[], meId: ID | undefined,
-): { mine: Approval[]; waiting: Approval[] } {
+): { mine: Approval[]; involved: Approval[]; waiting: Approval[] } {
   const mine = approvals.filter(a => a.ownerId === meId);
-  return { mine, waiting: mine.filter(a => a.status === "pending" && !approvalIsDead(a)) };
+  const involved = approvals.filter(a => a.ownerId === meId || a.requesterId === meId);
+  return { mine, involved, waiting: mine.filter(a => a.status === "pending" && !approvalIsDead(a)) };
+}
+
+/** Inline, keyboard-friendly checkpoint controls. Edits/questions never decide. */
+function ApprovalCheckpointControls({ approval, midRun, dead, onOpenTasks }: {
+  approval: Approval; midRun: boolean; dead: boolean; onOpenTasks?: () => void;
+}): React.JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [questioning, setQuestioning] = useState(false);
+  const [instructions, setInstructions] = useState(approval.instructions ?? approval.action);
+  const [question, setQuestion] = useState("");
+  const revision = approval.revision ?? 0;
+  const epoch = approval.approvalEpoch;
+  const connected = client.world.connected;
+  const canDecide = approval.ownerId === client.world.me?.id;
+  const canAsk = canDecide || approval.requesterId === client.world.me?.id;
+  /* Arbitrary prose can safely replace only the durable title of a waiting
+     task. Plan/action/saving cards carry closed facts that the engine cannot
+     reinterpret from edited text, so do not offer a cosmetic Edit button for
+     them. The relay enforces the same allow-list for forged frames. */
+  const canReviseInstructions = (approval.kind === undefined || approval.kind === "task")
+    && !!approval.taskId;
+  const canEdit = canAsk && canReviseInstructions;
+  const legacyPending = approval.status === "pending"
+    && (!Number.isSafeInteger(approval.revision) || typeof approval.approvalEpoch !== "string"
+      || approval.approvalEpoch.length === 0);
+  useEffect(() => {
+    setInstructions(approval.instructions ?? approval.action);
+    setQuestion("");
+    setEditing(false);
+    setQuestioning(false);
+  }, [approval.id, approval.revision, approval.instructions, approval.action]);
+  const checkpoint = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    approvalId: approval.id, expectedRevision: revision,
+    ...(epoch ? { approvalEpoch: epoch } : {}),
+    requestId: `approval-${approval.id}-${revision}-${Date.now().toString(36)}`,
+    ...extra,
+  });
+  if (dead) {
+    return <>
+      <span className="expiredline" data-expired={approval.id}>This checkpoint is closed; nothing happened.</span>
+      {!midRun && onOpenTasks && <button className="btn ghost small" type="button" onClick={onOpenTasks}>See the job</button>}
+    </>;
+  }
+  if (legacyPending) {
+    return <>
+      <span className="eyebrow approval-legacy" role="status" aria-live="polite">
+        This approval is from an older Cloud9 session and cannot be answered here. Refresh Cloud9 to load a current checkpoint.
+      </span>
+      {!midRun && onOpenTasks && <button className="btn ghost small" type="button" onClick={onOpenTasks}>See the job</button>}
+    </>;
+  }
+  if (!canDecide && !canAsk) {
+    return <span className="eyebrow">Waiting for the approval owner</span>;
+  }
+  return <div className="approval-checkpoint" data-checkpoint={approval.id}>
+    <div className="actions" role="group" aria-label="Approval checkpoint actions">
+      {canDecide && <>
+        <button className="gold" type="button" disabled={!connected}
+          onClick={() => client.send({ type: "decideApproval", decision: "approved", ...checkpoint() } as ClientFrame)}>
+          Approve
+        </button>
+        <button className={midRun ? "btn" : "btn danger"} type="button" disabled={!connected}
+          onClick={() => client.send({ type: "decideApproval", decision: "rejected", ...checkpoint() } as ClientFrame)}>
+          {midRun ? "Not now" : "Reject"}
+        </button>
+      </>}
+      {canEdit && <button className="btn ghost small" type="button" disabled={!connected}
+        aria-expanded={editing} onClick={() => { setEditing(v => !v); setQuestioning(false); }}>
+        Edit instructions
+      </button>}
+      {canAsk && <button className="btn ghost small" type="button" disabled={!connected}
+        aria-expanded={questioning} onClick={() => { setQuestioning(v => !v); setEditing(false); }}>
+        Ask a question
+      </button>}
+      {approval.taskId && onOpenTasks && <button className="btn ghost small" type="button" onClick={onOpenTasks}>See the job</button>}
+    </div>
+    {editing && <form className="approval-edit" onSubmit={event => {
+      event.preventDefault();
+      if (!instructions.trim() || !connected) return;
+      client.send({ type: "editApproval", instructions, ...checkpoint() } as ClientFrame);
+      setEditing(false);
+    }}>
+      <label htmlFor={`approval-instructions-${approval.id}`}>Revised instructions</label>
+      <textarea id={`approval-instructions-${approval.id}`} value={instructions} maxLength={4000}
+        onChange={event => setInstructions(event.target.value)} rows={4} />
+      <button className="btn small" type="submit" disabled={!connected || !instructions.trim()}>Save revision</button>
+      <span className="eyebrow">Saving creates a new checkpoint; it will not run until you approve it.</span>
+    </form>}
+    {questioning && <form className="approval-edit" onSubmit={event => {
+      event.preventDefault();
+      if (!question.trim() || !connected) return;
+      client.send({ type: "askApprovalQuestion", question, ...checkpoint() } as ClientFrame);
+      setQuestion("");
+      setQuestioning(false);
+    }}>
+      <label htmlFor={`approval-question-${approval.id}`}>Question for the approval thread</label>
+      <textarea id={`approval-question-${approval.id}`} value={question} maxLength={1000}
+        onChange={event => setQuestion(event.target.value)} rows={3} />
+      <button className="btn small" type="submit" disabled={!connected || !question.trim()}>Send question</button>
+      <span className="eyebrow">This is recorded on the checkpoint; it does not produce provider output.</span>
+    </form>}
+    {!connected && <span className="eyebrow" role="status">Cloud9 is reconnecting; actions are paused.</span>}
+  </div>;
 }
 
 /** The moment an agent stops and asks — the prototype's permission card. */
@@ -6393,6 +6497,14 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
               {saving && approval.saving?.because && (
                 <pre className="planbody" data-saving={approval.id}>{approval.saving.because}</pre>
               )}
+              {approval.instructions && approval.instructions !== approval.action && (
+                <pre className="planbody" data-instructions={approval.id}>{approval.instructions}</pre>
+              )}
+              {approval.clarifications?.map(item => (
+                <p className="planbody" data-clarification={item.id} key={item.id}>
+                  Question: {item.text}
+                </p>
+              ))}
               <span className="per">
                 {dead ? "nothing happened"
                   : saving ? "nothing changes until you say so — and you can undo it any time"
@@ -6400,29 +6512,7 @@ function ApprovalMoment({ approval, agent, task, onOpenTasks }: {
               </span>
             </div>
           }
-          actions={dead ? (
-            <>
-              <span className="expiredline" data-expired={approval.id}>
-                Nobody answered in time — it didn't happen. Ask again and the agent will
-                stop here once more.
-              </span>
-              {!midRun && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
-            </>
-          ) : (
-            <>
-              <button className="gold"
-                onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "approved" })}>
-                Approve
-              </button>
-              <button className={midRun ? "btn" : "btn danger"}
-                onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "rejected" })}>
-                {midRun ? "Not now" : "Reject"}
-              </button>
-              {/* Only a job-shaped approval HAS a job to look at. */}
-              {approval.taskId && <button className="btn ghost small" onClick={onOpenTasks}>See the job</button>}
-              <span className="eyebrow">Nothing has been changed yet</span>
-            </>
-          )}
+          actions={<ApprovalCheckpointControls approval={approval} midRun={midRun} dead={dead} onOpenTasks={onOpenTasks} />}
         />
       </div>
     </div>
@@ -6483,21 +6573,14 @@ function ApprovalTray({ approval, agent, task }: {
       {saving && approval.saving?.because && (
         <pre className="planbody" data-saving={approval.id}>{approval.saving.because}</pre>
       )}
-      {rule && <p className="meta" style={{ margin: "0 0 10px" }}>Rule hit: {rule}</p>}
-      {dead ? (
-        <p className="expiredline" data-expired={approval.id}>
-          Nobody answered in time — it didn't happen.
-        </p>
-      ) : (
-        <div className="actions">
-          <button className="gold small"
-            onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "approved" })}>Approve</button>
-          <button className={midRun ? "btn small" : "btn small danger"}
-            onClick={() => client.send({ type: "decideApproval", approvalId: approval.id, decision: "rejected" })}>
-            {midRun ? "Not now" : "Reject"}
-          </button>
-        </div>
+      {approval.instructions && approval.instructions !== approval.action && (
+        <pre className="planbody" data-instructions={approval.id}>{approval.instructions}</pre>
       )}
+      {approval.clarifications?.map(item => (
+        <p className="planbody" data-clarification={item.id} key={item.id}>Question: {item.text}</p>
+      ))}
+      {rule && <p className="meta" style={{ margin: "0 0 10px" }}>Rule hit: {rule}</p>}
+      <ApprovalCheckpointControls approval={approval} midRun={midRun} dead={dead} />
     </div>
   );
 }
@@ -16312,12 +16395,10 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
         </div>
         <div className="taskbtns">
           <span className="chip">{elapsed(t.updatedAt - t.createdAt)}</span>
-          {mine && <>
-            <button className="gold small"
-              onClick={() => client.send({ type: "decideApproval", approvalId: approval!.id, decision: "approved" })}>Approve</button>
-            <button className="btn small danger"
-              onClick={() => client.send({ type: "decideApproval", approvalId: approval!.id, decision: "rejected" })}>Reject</button>
-          </>}
+          {approval && (approval.status === "pending" || approvalIsDead(approval)) &&
+            <ApprovalCheckpointControls approval={approval}
+              midRun={approval.kind === "action" || approval.kind === "plan" || approval.kind === "saving"}
+              dead={approvalIsDead(approval)} />}
           {cancellable && !mine &&
             <button className="btn small" onClick={() => client.send({ type: "cancelTask", taskId: t.id })}>Stop</button>}
           {t.channelId && <button className="btn small" onClick={() => onOpenChannel(t.channelId)}>Read it</button>}

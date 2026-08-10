@@ -2786,6 +2786,52 @@ export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
  */
 export type ApprovalKind = "task" | "action" | "plan" | "saving";
 
+/** Bounded human input accepted by the inline approval checkpoint. */
+export const APPROVAL_CHECKPOINT_LIMITS = {
+  instructions: 4000,
+  question: 1000,
+  epoch: 128,
+  requestId: 64,
+} as const;
+
+export type ApprovalCheckpointDecision = "approved" | "rejected" | "edit" | "question";
+
+export interface ApprovalClarification {
+  id: ID;
+  askedBy: ID;
+  text: string;
+  createdAt: number;
+}
+
+/** Keep owner-entered text plain, bounded, and safe to render. */
+export function tidyApprovalText(value: unknown, limit: number): string {
+  if (typeof value !== "string") return "";
+  const flat = value
+    .replace(new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f"
+      + "\\u200b-\\u200f\\u2028\\u2029]", "g"), "")
+    .replace(/\r\n?/g, "\n")
+    .trim();
+  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
+}
+
+export function validateApprovalInstructions(value: unknown): string | null {
+  return tidyApprovalText(value, APPROVAL_CHECKPOINT_LIMITS.instructions)
+    ? null : "instructions cannot be empty";
+}
+
+export function validateApprovalQuestion(value: unknown): string | null {
+  return tidyApprovalText(value, APPROVAL_CHECKPOINT_LIMITS.question)
+    ? null : "question cannot be empty";
+}
+
+/** Checkpoint mutations are durable/idempotent, so every one needs a safe key. */
+export function validateApprovalCheckpointRequestId(value: unknown): string | null {
+  if (!isSafeStoredId(value) || (typeof value === "string" && value.length > APPROVAL_CHECKPOINT_LIMITS.requestId)) {
+    return "that checkpoint request id is not valid";
+  }
+  return null;
+}
+
 export interface Approval {
   id: ID;
   /**
@@ -2838,11 +2884,37 @@ export interface Approval {
   saving?: SavingProposal;
   /** Recovery action awaiting this same owner's fresh approval. */
   recoveryRequestId?: ID;
+  /** Exact text currently gated by this checkpoint. Absent on legacy cards. */
+  instructions?: string;
+  /** Monotonic revision; every edit or clarification invalidates old clicks. */
+  revision?: number;
+  /** Opaque token paired with `revision`, checked again at decision time. */
+  approvalEpoch?: string;
+  /** Person who requested the underlying task, when distinct from the owner. */
+  requesterId?: ID;
+  /** Durable, bounded questions asked while this card is pending. */
+  clarifications?: ApprovalClarification[];
+  /** Idempotency receipt for the last checkpoint mutation. */
+  lastCheckpoint?: {
+    requestId: ID;
+    actorId: ID;
+    operation: ApprovalCheckpointDecision;
+    payloadHash: string;
+    revision: number;
+  };
+  /** Bounded durable replay ledger for recent checkpoint mutations. */
+  checkpointReceipts?: Array<{
+    requestId: ID;
+    actorId: ID;
+    operation: ApprovalCheckpointDecision;
+    payloadHash: string;
+    revision: number;
+  }>;
 }
 
 export type ActivityKind =
   | "message" | "task_created" | "task_status" | "approval_requested"
-  | "approval_decided" | "agent_created" | "agent_updated" | "agent_deleted"
+  | "approval_decided" | "approval_checkpoint" | "agent_created" | "agent_updated" | "agent_deleted"
   | "workflow_created" | "workflow_updated" | "workflow_archived" | "workflow_run_started"
   | "workflow_run_state"
   | "channel_created" | "member_added" | "invite_created" | "invite_redeemed"
@@ -4088,7 +4160,19 @@ type ClientFrameBase =
   | { type: "runWorkflow"; workflowId: ID }
   | { type: "stopWorkflow"; workflowRunId: ID }
   | { type: "retryWorkflow"; workflowRunId: ID; stepId: ID }
-  | { type: "decideApproval"; approvalId: ID; decision: "approved" | "rejected" }
+  | {
+      type: "decideApproval"; approvalId: ID;
+      decision: ApprovalCheckpointDecision;
+      /** Required for checkpoint mutations from the current card. */
+      expectedRevision?: number;
+      approvalEpoch?: string;
+      /** Required for `edit` and `question`; ignored for approve/reject. */
+      instructions?: string;
+      question?: string;
+    }
+  /** Explicit aliases keep mobile/desktop callers readable while sharing the same gate. */
+  | { type: "editApproval"; approvalId: ID; instructions: string; expectedRevision?: number; approvalEpoch?: string }
+  | { type: "askApprovalQuestion"; approvalId: ID; question: string; expectedRevision?: number; approvalEpoch?: string }
   /**
    * ENGINE-HOST ONLY: an agent is MID-RUN and has reached one specific thing it
    * may not do on its own. "May I push this branch?"
