@@ -6943,3 +6943,9 @@ export {
   type RecoveryRequest, type RecoveryRequestPayload, type RecoveryReceipt,
   type ComparableRun, type InaccessibleRun, type RunComparison,
 } from "./run-recovery.js";
+
+// Cloud9-owned slash commands used by the chat composer and engine.
+export {
+  COMPOSER_COMMAND_NAMES, COMPOSER_COMMAND_SPELLINGS, parseComposerCommand,
+  type ComposerCommandName, type ParsedComposerCommand,
+} from "./composer-commands.js";

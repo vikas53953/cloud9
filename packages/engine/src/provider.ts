@@ -15,12 +15,15 @@ import {
 import { cloud9McpConfig, cloud9ToolNames, renderCloud9Tools } from "./cloud9tools.js";
 import type { OpenTurn } from "./toolbridge.js";
 import { envWithoutCredentials } from "./env.js";
-import { claudeSetupEnv, claudeSetupSdkOptions } from "./ownersetup.js";
+import { CLAUDE_ISOLATION_ENV, claudeSetupEnv, claudeSetupSdkOptions } from "./ownersetup.js";
 import { traceWalker, type EventMapper, type ProviderTrace, type RunUsage } from "./runrecord.js";
 import type { SessionBook } from "./sessionresume.js";
 // type-only: erased at compile time, so runrecord.ts may import this file back
 // without creating a runtime import cycle.
 import type { RunStep } from "./runrecord.js";
+
+/** Built-in tools safe for a review: local inspection only, no remote actions. */
+export const REVIEW_READ_ONLY_TOOLS = ["Read", "Glob", "Grep"] as const;
 
 /**
  * WHAT KIND OF TURN THIS IS — the difference between "write your next chat
@@ -90,6 +93,8 @@ export interface RespondInput extends TurnBrief {
    * Nothing about the approval law changes — a worktree is still entirely on
    * this computer, and pushing it anywhere is still asked about separately.
    */
+  /** A review turn narrows the provider to read-only tools without an approval card. */
+  reviewOnly?: boolean;
   /**
    * Optional: hand back what the agent actually did, parsed out of the CLI's
    * own stream (see runrecord.ts). A provider that cannot produce one simply
@@ -883,15 +888,18 @@ export class SdkProvider implements ClaudeProvider {
 
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir } = input;
-    const offeredRoots = this.opts.wholeComputerRoots?.(agent.id) ?? [];
-    const offeredMcpConfigPath = this.opts.mcpConfigPath?.(agent.id);
+    // A review is deliberately independent of the stored owner grants. Do not
+    // invoke these callbacks in review mode: they may load a credential file or
+    // create a remote client before the SDK ever receives its options.
+    const offeredRoots = input.reviewOnly ? [] : (this.opts.wholeComputerRoots?.(agent.id) ?? []);
+    const offeredMcpConfigPath = input.reviewOnly ? undefined : this.opts.mcpConfigPath?.(agent.id);
     const granted = grantedSupply(agent, {
       wholeComputerRoots: offeredRoots,
       mcpConfigPath: offeredMcpConfigPath,
     });
     const roots = granted.wholeComputerRoots ?? [];
     const mcpConfigPath = granted.mcpConfigPath;
-    const doorway = input.channelId
+    const doorway = input.channelId && !input.reviewOnly
       ? this.opts.cloud9Tools?.({ channelId: input.channelId, agentId: agent.id })
       : undefined;
     const parts = splitAgentPrompt(agent, {
@@ -906,14 +914,23 @@ export class SdkProvider implements ClaudeProvider {
       ...mcpServersFromFile(mcpConfigPath),
       ...(doorway ? cloud9McpServer(doorway) : {}),
     };
-    const tools = [...claudeToolsFor(agent), ...(doorway ? cloud9ToolNames() : [])];
+    const built = input.reviewOnly
+      ? claudeToolsFor(agent).filter(tool => REVIEW_READ_ONLY_TOOLS.includes(tool as typeof REVIEW_READ_ONLY_TOOLS[number]))
+      : claudeToolsFor(agent);
+    const tools = [...built, ...(doorway ? cloud9ToolNames() : [])];
     // SAME ISOLATION AS THE CLI PATH for this agent's setup mode: auto-memory
     // env from claudeSetupEnv, slash-commands / settings / strict MCP from
     // claudeSetupSdkOptions (maps claudeSetupFlags). Empty when the switch is
     // ON so his setup loads the way the CLI path would.
-    const isolation = claudeSetupSdkOptions(agent);
+    const isolation = input.reviewOnly
+      ? {
+        settingSources: [] as const,
+        strictMcpConfig: true as const,
+        extraArgs: { "disable-slash-commands": null } as const,
+      }
+      : claudeSetupSdkOptions(agent);
     const env = envWithoutCredentials(process.env, {
-      ...claudeSetupEnv(agent),
+      ...(input.reviewOnly ? CLAUDE_ISOLATION_ENV : claudeSetupEnv(agent)),
       ...(this.creds.apiKey ? { ANTHROPIC_API_KEY: this.creds.apiKey } : {}),
       ...(this.creds.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: this.creds.oauthToken } : {}),
     });
@@ -922,7 +939,9 @@ export class SdkProvider implements ClaudeProvider {
       systemPrompt: { type: "preset", preset: "claude_code", append: parts.standing },
       tools,
       allowedTools: tools,
-      disallowedTools: deniedClaudeTools(agent),
+      disallowedTools: input.reviewOnly
+        ? claudeToolsFor(agent).filter(tool => !built.includes(tool))
+        : deniedClaudeTools(agent),
       permissionMode: "dontAsk",
       ...(isolation.settingSources ? { settingSources: [...isolation.settingSources] } : {}),
       ...(isolation.strictMcpConfig ? { strictMcpConfig: true } : {}),

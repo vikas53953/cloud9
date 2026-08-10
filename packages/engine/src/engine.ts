@@ -24,6 +24,7 @@ import {
   // same money.
   humanMoney, findWaste, narrowingOnly, renderTokenUseReport, rollUpTokenUse, tidySaving,
   RESPONSE_STREAM_LIMITS, type AgentResponseStreamKind, RecoveryRequest,
+  parseComposerCommand,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
 // WHOSE SETUP EACH TURN RUNS IN — the same one owner both harnesses read, asked
@@ -249,6 +250,8 @@ export interface TurnInput {
    * a plan rather than as the job.
    */
   planOnly?: boolean;
+  /** A review turn is explicitly read-only and cannot publish or edit. */
+  reviewOnly?: boolean;
   /** Public link back to a failed/cancelled/refused run being recovered. */
   priorRunId?: ID;
 }
@@ -833,6 +836,28 @@ export class Engine {
     // receives it through the delivered handoff, not by replying to the command.
     const handoffCmd = message.authorKind === "human"
       ? parseHandoffCommand(message.text) : undefined;
+    const composerCommand = message.authorKind === "human"
+      ? parseComposerCommand(message.text, {
+        agentNames: channelAgents.map(a => a.name),
+        agentIds: channelAgents.map(a => a.id),
+      }) : undefined;
+    // Slash commands can target a stable agent id (`@a-data`) even though the
+    // relay's ordinary mention extractor only recognises display names. Resolve
+    // that target here so command routing does not fall through to persona
+    // relevance (or silently disappear) before the normal permission gate.
+    const commandTargetToken = composerCommand
+      ? (composerCommand.name === "assign" ? composerCommand.target : composerCommand.routeTarget)
+      : undefined;
+    const commandTargetMatches = commandTargetToken
+      ? channelAgents.filter(a => a.id.toLocaleLowerCase() === commandTargetToken.toLocaleLowerCase()
+        || a.name.toLocaleLowerCase() === commandTargetToken.toLocaleLowerCase())
+      : [];
+    const commandTarget = commandTargetMatches.length === 1 ? commandTargetMatches[0] : undefined;
+    const commandHasExplicitTarget = composerCommand !== undefined && commandTargetToken !== undefined;
+    const commandRefusalAgent = this.myAgents.find(a =>
+      channelAgents.some(roomAgent => roomAgent.id === a.id)
+      && a.lifecycle !== "paused" && a.lifecycle !== "disabled"
+      && mayDriveAgent(message.authorId, a));
 
     if (message.authorKind === "human" && isBrakedReset(history)) {
       // a human spoke — lift any brake status display
@@ -845,8 +870,30 @@ export class Engine {
       return;
     }
 
+    // An explicit route that did not resolve to exactly one live room agent is
+    // still a command, not ordinary prose. Say so once from a local eligible
+    // agent; otherwise a duplicate name or outsider id could fall through to
+    // persona relevance and accidentally start a different provider turn.
+    if (commandHasExplicitTarget && !commandTarget) {
+      if (commandRefusalAgent) {
+        this.agentSend(commandRefusalAgent.id, channel.id,
+          `I could not route that command because @${commandTargetToken} `
+          + "is not an agent in this room, or its name is ambiguous.",
+          { ...(thread ? { replyTo: thread } : {}) });
+      }
+      return;
+    }
+
     for (const agent of this.myAgents) {
-      if (!shouldReply(agent, message, channel, channelAgents)) continue;
+      if (commandHasExplicitTarget) {
+        // Explicit command targets still require an owner-authorised human and
+        // a live in-room agent. Unknown/ambiguous targets are handled once by
+        // the first room agent below; no other agent may free-chatter into the
+        // command.
+        if (!mayDriveAgent(message.authorId, agent)) continue;
+        if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") continue;
+        if (!commandTarget || agent.id !== commandTarget.id) continue;
+      } else if (!shouldReply(agent, message, channel, channelAgents)) continue;
       // The handoff command is answered by exactly one agent — the sender — and
       // deliberately silences the receiver's ordinary reply, so a "@To" mention
       // in the command does not produce both a handoff AND a chat answer.
@@ -860,6 +907,76 @@ export class Engine {
         if (me === handoffCmd.to.toLowerCase()) continue;
       }
       const bare = message.text.replace(/@[\w-]+\s*/g, "");
+      // Cloud9-owned slash commands are translated into existing engine paths.
+      // The relay still carries ordinary message text; this is the server-side
+      // meaning that keeps a palette row from being cosmetic.
+      if (composerCommand) {
+        if (composerCommand.name === "assign") {
+          const target = composerCommand.target
+            ? (() => {
+              const matches = channelAgents.filter(a =>
+                a.name.toLocaleLowerCase() === composerCommand.target!.toLocaleLowerCase()
+                || a.id.toLocaleLowerCase() === composerCommand.target!.toLocaleLowerCase());
+              return matches.length === 1 ? matches[0] : undefined;
+            })()
+            : undefined;
+          // `/assign` names the actual room agent. Never fall back to whichever
+          // agent happened to win mention routing when that name is absent.
+          if (!target || target.id !== agent.id) {
+            if (!target && channelAgents[0]?.id === agent.id) {
+              this.agentSend(agent.id, channel.id,
+                `I could not assign that work because @${composerCommand.target ?? "the named agent"} `
+                + "is not an agent in this room.", { ...(thread ? { replyTo: thread } : {}) });
+            }
+            continue;
+          }
+          const title = composerCommand.argument?.trim();
+          if (!title) continue; // parser rejects this; fail closed if changed
+          const needsApproval = approvalsFor(agent).background || needsApprovalToRun(agent);
+          this.sendFrame({
+            type: "createTask", agentId: agent.id, channelId: channel.id, title,
+            requesterId: message.authorId,
+            ...(needsApproval ? { needsApproval: true, action: `Run background task: ${title}` } : {}),
+          });
+          this.pendingAsks = rememberAsk(this.pendingAsks, {
+            agentId: agent.id, channelId: channel.id, title, messageId: message.id, at: Date.now(),
+            ...(thread ? { replyTo: thread } : {}),
+          });
+          this.reactAs(agent.id, message.id, "picked");
+          this.agentSend(agent.id, channel.id, needsApproval
+            ? "I can take that assignment, but it is waiting for my owner's approval first. 🔒 (see Tasks panel)"
+            : "Assignment accepted — I'll work on it in the background and post here when done. ⏳",
+            { ...(thread ? { replyTo: thread } : {}) });
+          continue;
+        }
+
+        const argument = composerCommand.argument?.trim();
+        if (composerCommand.name === "ship") {
+          if (!argument) continue;
+          void this.enqueueAgentTurn(agent.id, async () => {
+            await this.workInRepository(agent, {
+              channelId: channel.id, ask: argument, triggerAuthor: message.authorName,
+              ...(thread ? { replyTo: thread } : {}),
+            });
+          });
+          continue;
+        }
+
+        const trigger = composerCommand.name === "summarize"
+          ? `Summarize this conversation${argument ? `, focusing on ${argument}` : ""}. `
+            + "Include key decisions, open questions, and next actions."
+          : composerCommand.name === "review"
+            ? `Review ${argument} in this conversation. This is a read-only review: inspect and report findings, `
+              + "but do not edit files, run write operations, or publish anything."
+            : argument;
+        if (!trigger) continue;
+        void this.enqueueAgentTurn(agent.id, () => this.takeTurn(
+          agent, channel.id, { ...message, text: trigger },
+          composerCommand.name === "plan" ? { planFirst: true } :
+            composerCommand.name === "review" ? { reviewOnly: true } : undefined,
+        ));
+        continue;
+      }
       // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
       // STOP WHAT IT IS DOING: "@Agent !stop".
       //
@@ -1288,6 +1405,7 @@ export class Engine {
           ? { maxBudgetUsd: spendVerdict.turnCapUsd } : {}),
         // SAY WHAT YOU INTEND, AND DO NOTHING. Only ever set by `planFirstTurn`.
         ...(input.planOnly ? { planOnly: true } : {}),
+        ...(input.reviewOnly ? { reviewOnly: true } : {}),
         ...(providerAbortController ? { abortController: providerAbortController } : {}),
         onTrace: t => { trace = t; },
         ...(responseCapable ? {
@@ -2100,7 +2218,7 @@ export class Engine {
    */
   async takeTurn(
     agent: AgentDef, channelId: ID, trigger: Message,
-    opts: { planFirst?: boolean } = {},
+    opts: { planFirst?: boolean; reviewOnly?: boolean } = {},
   ): Promise<void> {
     this.setStatus(agent.id, "working");
     const replyTo = threadOf(trigger);
@@ -2115,6 +2233,7 @@ export class Engine {
         // the message the 👀 / 💭 / verdict are drawn on — the one being answered
         triggerMessageId: trigger.id,
         ...(replyTo ? { replyTo } : {}),
+        ...(opts.reviewOnly ? { reviewOnly: true } : {}),
         // THE SAME THREAD, TURN AFTER TURN — offered so the harness can continue
         // its own session rather than being re-told the room. Chat turns only:
         // a delegated job, a scheduled check-in and repository work all reach
@@ -2133,7 +2252,7 @@ export class Engine {
       // A PLAN TURN DOES NOT RESUME THE THREAD, so the continuity offered above
       // is dropped for it — see `planResume` in claude-cli.ts for why a
       // read-only session must not become the one the real turn continues.
-      if (opts.planFirst || showsPlanFirst(agent)) {
+      if (!opts.reviewOnly && (opts.planFirst || showsPlanFirst(agent))) {
         const { thread: _dropped, ...cold } = brief;
         await this.planFirstTurn(agent, cold);
         return;

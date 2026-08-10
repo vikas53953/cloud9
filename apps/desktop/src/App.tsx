@@ -7626,6 +7626,41 @@ interface RoomCommand {
  */
 const ROOM_COMMANDS: RoomCommand[] = [
   {
+    cmd: "/summarize",
+    label: "Summarize this conversation",
+    say: "Asks the selected room agent for a concise summary of decisions, open questions, and next actions. Nothing is sent until you review it.",
+    line: w => `@${w.first} /summarize <what to focus on (optional)>`,
+    needs: ["agent"],
+  },
+  {
+    cmd: "/plan",
+    label: "Plan a piece of work",
+    say: "Shows a read-only plan and waits for your approval before the selected agent does the work.",
+    line: w => `@${w.first} /plan <what to do>`,
+    needs: ["agent"],
+  },
+  {
+    cmd: "/review",
+    label: "Review a target",
+    say: "Runs a read-only review and reports findings. It cannot edit files or publish anything.",
+    line: w => `@${w.first} /review <file, change, or question>`,
+    needs: ["agent"],
+  },
+  {
+    cmd: "/ship",
+    label: "Ship repository work",
+    say: "Works in the agent's own repository branch. Any push or pull request still stops at the existing approval gate.",
+    line: w => `@${w.first} /ship <what to ship>`,
+    needs: ["agent", "repo"],
+  },
+  {
+    cmd: "/assign",
+    label: "Assign background work",
+    say: "Creates a durable background task for the named room agent. If its permissions require approval, the task waits in Tasks.",
+    line: w => `/assign @${w.first} <what they should do>`,
+    needs: ["agent"],
+  },
+  {
     cmd: "!issue",
     label: "Open a GitHub issue",
     say: "Writes a new issue on the connected repository. An approval card comes first — nothing leaves this computer until you say yes.",
@@ -7731,7 +7766,7 @@ const ACTIONS_PROMISE =
  */
 function commandMatches(c: RoomCommand, typed: string): boolean {
   if (!typed) return true;
-  const words = [c.cmd, ...(c.aliases ?? [])].map(w => w.replace(/^!/, "").toLowerCase());
+  const words = [c.cmd, ...(c.aliases ?? [])].map(w => w.replace(/^[!/]/, "").toLowerCase());
   return words.some(w => w.startsWith(typed)) || c.label.toLowerCase().includes(typed);
 }
 

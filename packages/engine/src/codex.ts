@@ -19,7 +19,7 @@ import { envWithoutCredentials } from "./env.js";
 // ONE OWNER for "isolated, or the owner's own setup" — read by this file and by
 // claude-cli.ts, so the two harnesses can never drift apart on the question.
 import {
-  codexDisabledBySetup, codexSetupFlags, codexUsesDisposableHome, SetupChoice,
+  CODEX_ISOLATION_FLAGS, codexDisabledBySetup, codexSetupFlags, codexUsesDisposableHome, SetupChoice,
 } from "./ownersetup.js";
 import { NO_TIME_LIMIT, run, Runner, safeArg } from "./run.js";
 import {
@@ -134,6 +134,8 @@ export interface CodexIsolatedEnvironmentOptions {
    * load. The credential stripping below happens either way.
    */
   agent?: SetupChoice;
+  /** Review turns always receive a disposable, isolated home. */
+  reviewOnly?: boolean;
 }
 
 export const CODEX_ISOLATION_PROFILE = "cloud9-isolated";
@@ -154,7 +156,7 @@ export function createCodexIsolatedEnvironment(
   // THE CREDENTIAL STRIPPING STILL HAPPENS — that is the line that does not move
   // whichever mode this is, and it is the same `envWithoutCredentials` the
   // Claude path calls. Nothing is created, so `dispose` has nothing to delete.
-  if (!codexUsesDisposableHome(options.agent)) {
+  if (!options.reviewOnly && !codexUsesDisposableHome(options.agent)) {
     return {
       env: envWithoutCredentials(baseEnv, {
         ...(options.apiKey ? { CODEX_API_KEY: options.apiKey } : {}),
@@ -638,6 +640,8 @@ export interface CodexArgExtras {
    * already reading.
    */
   cloud9Tool?: { url: string };
+  /** Review turns cannot write to their workspace. */
+  reviewOnly?: boolean;
 }
 
 export function codexArgs(
@@ -659,7 +663,7 @@ export function codexArgs(
     "-C", cwd,
     // the sandbox comes from the same table that writes the sentences the agent
     // reads about itself (abilities.ts) — one rule, two faces
-    "-s", codexSandboxFor(agent),
+    "-s", extras.reviewOnly ? "read-only" : codexSandboxFor(agent),
   ];
   // --- WHOSE SETUP DOES THIS AGENT RUN IN? (ownersetup.ts) -------------------
   // The one-turn profile lives in the throwaway CODEX_HOME and exists ONLY in
@@ -667,7 +671,7 @@ export function codexArgs(
   // turn before the model was reached. `codexUsesDisposableHome` is the same
   // answer `createCodexIsolatedEnvironment` uses to decide whether to write it,
   // so the flag and the folder cannot disagree.
-  if (codexUsesDisposableHome(agent)) args.push("-p", CODEX_ISOLATION_PROFILE);
+  if (!extras.reviewOnly && codexUsesDisposableHome(agent)) args.push("-p", CODEX_ISOLATION_PROFILE);
   if (agent.model) {
     if (!MODEL_ID_RE.test(agent.model)) throw new Error("refusing to run this agent: bad model id");
     args.push("-m", safeArg(agent.model));
@@ -676,17 +680,21 @@ export function codexArgs(
   // when he has switched this agent to his own Codex setup, which is the whole
   // of the change — his config.toml, his AGENTS.md, his MCP servers and his
   // rules then load exactly as they do when he runs `codex` himself.
-  args.push("-c", "approval_policy=never", "--ephemeral", ...codexSetupFlags(agent));
+  args.push("-c", "approval_policy=never", "--ephemeral",
+    ...(extras.reviewOnly ? CODEX_ISOLATION_FLAGS : codexSetupFlags(agent)));
   // ---------------------------------------------------------------------------
   // Every feature switch this agent's switches say to take away — the owner's
   // own setup unless he asked for it, plus anything a capability row would have
   // kept on.
-  for (const feature of codexDisabledFeaturesFor(agent)) args.push("--disable", feature);
+  const disabled = extras.reviewOnly
+    ? codexDisabledFeaturesFor({ ...agent, useOwnerSetup: false })
+    : codexDisabledFeaturesFor(agent);
+  for (const feature of disabled) args.push("--disable", feature);
   // Beyond its own folder, only when that switch is on. `--add-dir` is the CLI's
   // own flag ("Additional directories that should be writable alongside the
   // primary workspace", `codex exec --help` at 0.146.0). Paths go through RAW:
   // quoting has exactly one owner, see the note above.
-  if (reachesBeyondOwnFolder(agent)) {
+  if (!extras.reviewOnly && reachesBeyondOwnFolder(agent)) {
     for (const root of wholeComputerRoots) args.push("--add-dir", root);
   }
   // The only per-tool switch Codex has (`[tools] web_search`), driven by the
@@ -695,7 +703,7 @@ export function codexArgs(
   // papered over — but it is the switch the CLI offers and it follows the toggle
   // in BOTH directions, so an agent that was never allowed the web is at least
   // never handed it on purpose.
-  args.push("-c", `tools.web_search=${codexWebSearchFor(agent)}`);
+  args.push("-c", `tools.web_search=${extras.reviewOnly ? "false" : codexWebSearchFor(agent)}`);
   // ==================================================================
   // HOW HARD THIS AGENT SHOULD THINK (gap B, measured 2026-08-05 on 0.146.0).
   // ==================================================================
@@ -721,7 +729,7 @@ export function codexArgs(
   // Claude path: reading the room you are standing in is not a new power — every
   // agent, on every rung, is already handed the recent messages of it. Absent
   // when no doorway was opened, and the prompt is built from the same answer.
-  args.push(...codexCloud9ToolArgs(extras.cloud9Tool));
+  args.push(...codexCloud9ToolArgs(extras.reviewOnly ? undefined : extras.cloud9Tool));
   // NOT SET, and the reason is worth keeping. `-c agents.max_depth=0` looked
   // like the way to stop an agent spawning further agents. Running it proved
   // two things: it does not remove `collaboration.spawn_agent` (it was still in
@@ -751,14 +759,16 @@ export class CodexProvider implements ClaudeProvider {
     // its own folder otherwise. `codexArgs` puts the same folder in `-C`, so
     // the sandbox root and the working folder cannot drift apart.
     const cwd = workdir ?? this.opts.agentDataDir(agent.id);
-    const roots = this.opts.wholeComputerRoots?.(agent.id) ?? [];
+    const roots = input.reviewOnly ? [] : (this.opts.wholeComputerRoots?.(agent.id) ?? []);
     // THE DOORWAY, opened for this turn only and shut in the `finally` below —
     // the same call, on the same engine method, that the Claude path makes.
-    const doorway = input.channelId
+    const doorway = input.channelId && !input.reviewOnly
       ? this.opts.cloud9Tools?.({ channelId: input.channelId, agentId: agent.id })
       : undefined;
-    const args = codexArgs(agent, cwd, this.opts.models?.() ?? [], roots,
-      doorway ? { cloud9Tool: { url: doorway.url } } : {});
+    const args = codexArgs(agent, cwd, this.opts.models?.() ?? [], roots, {
+      ...(doorway ? { cloud9Tool: { url: doorway.url } } : {}),
+      ...(input.reviewOnly ? { reviewOnly: true } : {}),
+    });
     // THE SAME ONE ANSWER the Claude path uses. The owner's CONNECTIONS FILE is
     // still genuinely never supplied here — `connections.ts` explains, in his
     // words, why a Codex agent cannot be handed one without either breaking its
@@ -792,7 +802,8 @@ export class CodexProvider implements ClaudeProvider {
     // answer `codexArgs` above used for the flags and the profile. The ticket
     // rides in the environment, never in argv.
     const isolated = createCodexIsolatedEnvironment({
-      apiKey: key, agent, ...(doorway ? { toolSecret: doorway.secret } : {}),
+      apiKey: key, agent, reviewOnly: input.reviewOnly,
+      ...(doorway ? { toolSecret: doorway.secret } : {}),
     });
     // The preview's own reader — see the twin in claude-cli.ts. `codex exec
     // --json` prints one JSON line per item, so the SAME `codexMapper` that
