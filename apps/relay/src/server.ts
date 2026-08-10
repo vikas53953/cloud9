@@ -791,11 +791,11 @@ export class Relay {
       // including the ones nobody has ever reported a lamp for, which used to
       // be every agent on a hub that had just started.
       presence: this.presenceMap(),
-      tasks: this.store.tasks().filter(task => {
-        if (!task.workflowRunId) return true;
-        const agent = this.store.agents().find(a => a.id === task.agentId);
-        return agent?.ownerId === userId || this.visibleChannels(userId).some(channel => channel.id === task.channelId);
-      }),
+      // Tasks are private work records. Workflow tasks have had a narrower
+      // projection for a long time; ordinary handoffs must use the same
+      // owner/requester/current-room gate rather than leaking the whole tray
+      // in the welcome snapshot.
+      tasks: this.store.tasks().filter(task => this.canSeeTask(userId, task)),
       ...(userId === this.ownerId
         ? {
             workflows: this.store.workflows(userId),
@@ -1522,6 +1522,24 @@ export class Relay {
         .map(([key, item]) => [key, stable(item)]));
     };
     return createHash("sha256").update(JSON.stringify(stable(frame))).digest("hex");
+  }
+
+  private taskPayloadHash(frame: Extract<ClientFrame, { type: "createTask" }>): string {
+    return createHash("sha256").update(JSON.stringify([
+      frame.agentId, frame.channelId, frame.title, frame.requesterId ?? null,
+      frame.sourceMessageId ?? null, frame.sourceThreadId ?? null,
+      frame.causedByHook === true,
+    ])).digest("hex");
+  }
+
+  /** Request ids are durable lookup keys, not an unbounded text field. */
+  private taskRequestId(value: unknown): ID | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value !== "string" || value.length === 0 || value.length > 64
+      || value.trim() !== value || !isSafeStoredId(value)) {
+      throw new Error("that task request id is not usable");
+    }
+    return value;
   }
 
   private priorSocialOperation<T extends ServerFrame>(conn: Conn, kind: string, requestId?: ID, payloadHash?: string, projectId?: ID): T | undefined {
@@ -3457,27 +3475,19 @@ private viewProject(project: Project, viewerId?: ID): Project {
   private createTaskFor(
     conn: Conn,
     input: {
-      agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID;
+      agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID; sourceThreadId?: ID;
       causedByHook?: boolean;
       workflowId?: ID; workflowRunId?: ID; workflowStepId?: ID;
     },
+    opts: { requestId?: ID; origin?: Conn } = {},
   ): Task {
-    const agent = this.myAgent(conn.userId, input.agentId);
-    const channel = this.channelFor(conn.userId, input.channelId);
-    const requester = this.requesterFor(conn, input.requesterId, channel);
-    const sourceMessage = input.sourceMessageId ? this.store.message(input.sourceMessageId) : undefined;
-    if (input.sourceMessageId && (!sourceMessage || sourceMessage.channelId !== channel.id
-      || sourceMessage.authorKind !== "human" || sourceMessage.authorId !== requester.id)) {
-      throw new Error("the task source message is not this requester's message in this channel");
-    }
-    if (!mayDriveAgent(requester.id, agent)) {
-      throw new Error(agent.name + " isn't set up to take work from " + requester.name);
-    }
+    const { agent, channel, requester, sourceThreadId } = this.authorizeTaskInput(conn, input);
     const now = Date.now();
     const needsApproval = requiresApproval(agent, input.title);
     const task: Task = {
       id: newId("t"), title: input.title,
       ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+      ...(sourceThreadId ? { sourceThreadId } : {}),
       requesterId: requester.id, requesterName: requester.name,
       agentId: agent.id, channelId: channel.id,
       status: needsApproval ? "waiting_approval" : "not_started",
@@ -3492,7 +3502,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
       approval = {
         id: newId("ap"), taskId: task.id, agentId: agent.id, ownerId: agent.ownerId,
         action: describeApproval(task.title), status: "pending", createdAt: now,
-        ...(input.workflowRunId ? { channelId: channel.id } : {}),
+        channelId: channel.id,
       };
       task.approvalId = approval.id;
       this.store.saveApproval(approval);
@@ -3503,8 +3513,56 @@ private viewProject(project: Project, viewerId?: ID): Project {
     if (approval) this.sendApproval(approval);
     this.audit(conn, "task_created", task.id, "task for " + agent.name + ": " + task.title,
       { asUser: requester });
-    this.publishTask(task);
+    this.publishTask(task, opts.requestId, opts.origin);
     return task;
+  }
+
+  /** Re-run the exact same authorization checks before honoring a receipt. */
+  private authorizeTaskInput(
+    conn: Conn,
+    input: {
+      agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID; sourceThreadId?: ID;
+      causedByHook?: boolean;
+      workflowId?: ID; workflowRunId?: ID; workflowStepId?: ID;
+    },
+  ): { agent: AgentDef; channel: Channel; requester: User; sourceMessage?: Message; sourceThreadId?: ID } {
+    const agent = this.store.agents().find(candidate => candidate.id === input.agentId);
+    if (!agent) throw new Error("not your agent");
+    // An engine socket is a privileged pipe for its owner's agents only. A
+    // human socket may hand work to another room agent only when the stored
+    // mayDriveAgent rule explicitly permits that requester.
+    if (conn.client === "engine" && agent.ownerId !== conn.userId) {
+      throw new Error("not your agent");
+    }
+    const channel = this.channelFor(conn.userId, input.channelId);
+    if (channel.archivedAt) throw new Error("archived conversations are read-only");
+    if (!channel.memberIds.includes(agent.id)) {
+      throw new Error("that agent is not in this conversation");
+    }
+    const requester = this.requesterFor(conn, input.requesterId, channel);
+    if (conn.client !== "engine" && agent.ownerId !== conn.userId && !mayDriveAgent(requester.id, agent)) {
+      throw new Error("not your agent");
+    }
+    if (agent.lifecycle === "paused") throw new Error(agent.name + " is paused by its owner");
+    if (agent.lifecycle === "disabled") throw new Error(agent.name + " is switched off by its owner");
+    const sourceMessage = input.sourceMessageId ? this.store.message(input.sourceMessageId) : undefined;
+    if (input.sourceMessageId && (!sourceMessage || sourceMessage.channelId !== channel.id
+      || sourceMessage.authorKind !== "human" || sourceMessage.authorId !== requester.id)) {
+      throw new Error("the task source message is not this requester's message in this channel");
+    }
+    const sourceThreadId = input.sourceThreadId;
+    if (sourceThreadId) {
+      const thread = this.store.message(sourceThreadId);
+      const canonicalRoot = sourceMessage ? (sourceMessage.replyTo ?? sourceMessage.id) : undefined;
+      if (!thread || thread.channelId !== channel.id || thread.replyTo
+        || !canonicalRoot || canonicalRoot !== thread.id) {
+        throw new Error("the task source thread is not this message's thread");
+      }
+    }
+    if (!mayDriveAgent(requester.id, agent)) {
+      throw new Error(agent.name + " isn't set up to take work from " + requester.name);
+    }
+    return { agent, channel, requester, sourceMessage, sourceThreadId };
   }
 
   private persistWorkflowRun(run: WorkflowRun, requestId?: ID, origin?: Conn): void {
@@ -4558,12 +4616,41 @@ private viewProject(project: Project, viewerId?: ID): Project {
         break;
       }
       case "createTask": {
-        this.createTaskFor(conn, {
+        const requestId = this.taskRequestId(frame.requestId);
+        const payloadHash = this.taskPayloadHash(frame);
+        if (requestId) {
+          const prior = this.store.taskRequest(conn.userId, requestId);
+          if (prior) {
+            const replay = this.store.task(prior.taskId);
+            if (!replay) throw new Error("the earlier delegated task is no longer available");
+            // A receipt proves what happened, not that today's permissions are
+            // still the same. Re-run the complete current room/source/drive
+            // gate before replaying any task projection.
+            this.authorizeTaskInput(conn, {
+              agentId: replay.agentId, channelId: replay.channelId, title: replay.title,
+              requesterId: replay.requesterId,
+              ...(replay.sourceMessageId ? { sourceMessageId: replay.sourceMessageId } : {}),
+              ...(replay.sourceThreadId ? { sourceThreadId: replay.sourceThreadId } : {}),
+            });
+            if (prior.payloadHash !== payloadHash) {
+              throw new Error("that request id was already used for different work");
+            }
+            this.publishTask(replay, requestId, conn);
+            break;
+          }
+        }
+        const task = this.createTaskFor(conn, {
           agentId: frame.agentId, channelId: frame.channelId, title: frame.title,
           requesterId: frame.requesterId,
           ...(frame.sourceMessageId ? { sourceMessageId: frame.sourceMessageId } : {}),
+          ...(frame.sourceThreadId ? { sourceThreadId: frame.sourceThreadId } : {}),
           ...(frame.causedByHook ? { causedByHook: true } : {}),
-        });
+        }, { requestId, origin: conn });
+        if (requestId) {
+          this.store.saveTaskRequest({
+            requesterId: conn.userId, requestId, payloadHash, taskId: task.id, createdAt: Date.now(),
+          });
+        }
         break;
         /*
         // Two questions, both answered from STORED state, never from the frame
@@ -8281,23 +8368,31 @@ private viewProject(project: Project, viewerId?: ID): Project {
     for (const conn of this.conns) send(conn.ws, frame);
   }
 
-  private publishTask(task: Task): void {
-    if (!task.workflowRunId) {
-      this.broadcast({ type: "task", task });
-      return;
-    }
-    const channel = this.store.channel(task.channelId);
-    const agents = this.store.agents();
-    const audience = new Set<ID>();
-    for (const memberId of channel?.memberIds ?? []) {
-      const memberAgent = agents.find(agent => agent.id === memberId);
-      audience.add(memberAgent?.ownerId ?? memberId);
-    }
-    const taskAgent = agents.find(agent => agent.id === task.agentId);
-    if (taskAgent) audience.add(taskAgent.ownerId);
+  private publishTask(task: Task, requestId?: ID, origin?: Conn): void {
+    const correlated = Boolean(requestId && origin);
+    const audience = this.taskAudience(task);
+    const sendTask = (conn: Conn): void => {
+      if (correlated && conn === origin) return;
+      send(conn.ws, { type: "task", task });
+    };
     for (const conn of this.conns) {
-      if (audience.has(conn.userId)) send(conn.ws, { type: "task", task });
+      if (audience.has(conn.userId)) sendTask(conn);
     }
+    // Correlation is only returned to a currently authorized origin. This is
+    // deliberately not a transport acknowledgement for a requester who has
+    // since left the room or lost drive access.
+    if (correlated && audience.has(origin!.userId)) {
+      send(origin!.ws, { type: "task", task, requestId: requestId! });
+    }
+  }
+
+  private taskAudience(task: Task): Set<ID> {
+    const audience = new Set<ID>([task.requesterId]);
+    const agent = this.store.agents().find(candidate => candidate.id === task.agentId);
+    if (agent) audience.add(agent.ownerId);
+    const channel = this.store.channel(task.channelId);
+    if (channel) for (const userId of this.audienceFor(channel)) audience.add(userId);
+    return audience;
   }
 
   /**
@@ -8384,6 +8479,17 @@ private viewProject(project: Project, viewerId?: ID): Project {
       }
       return;
     }
+    const task = approval.taskId ? this.store.task(approval.taskId) : undefined;
+    if (task?.channelId && approval.kind !== "action") {
+      const channel = this.store.channel(task.channelId);
+      const audience = channel ? this.audienceFor(channel) : new Set<ID>();
+      audience.add(approval.ownerId);
+      audience.add(task.requesterId);
+      for (const conn of this.conns) {
+        if (audience.has(conn.userId)) send(conn.ws, { type: "approval", approval });
+      }
+      return;
+    }
     if (approval.kind === "action") this.toUser(approval.ownerId, { type: "approval", approval });
     else this.broadcast({ type: "approval", approval });
   }
@@ -8414,9 +8520,16 @@ private viewProject(project: Project, viewerId?: ID): Project {
 
   /** The approvals this person may be shown. */
   private visibleApprovals(userId: ID): Approval[] {
-    return this.store.approvals().filter(a => this.isWorkflowApproval(a)
-      ? this.workflowApprovalAudience(a).has(userId)
-      : a.kind !== "action" || a.ownerId === userId);
+    return this.store.approvals().filter(a => {
+      if (this.isWorkflowApproval(a)) return this.workflowApprovalAudience(a).has(userId);
+      const task = a.taskId ? this.store.task(a.taskId) : undefined;
+      if (task?.channelId && a.kind !== "action") {
+        const channel = this.store.channel(task.channelId);
+        return a.ownerId === userId || task.requesterId === userId
+          || (!!channel && this.audienceFor(channel).has(userId));
+      }
+      return a.kind !== "action" || a.ownerId === userId;
+    });
   }
 
   /** Send to one user's engine host connection(s) only. */

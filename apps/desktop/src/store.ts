@@ -271,6 +271,18 @@ export interface ArtifactAccessSaveState {
   problem?: string;
 }
 
+/** Durable correlation state for a handoff request on this desktop. */
+export interface HandoffRequestState {
+  requestId: ID;
+  sourceMessageId: ID;
+  channelId: ID;
+  agentId: ID;
+  title: string;
+  state: "pending" | "succeeded" | "refused" | "lost";
+  taskId?: ID;
+  problem?: string;
+}
+
 export interface World {
   connected: boolean;
   authFailed: boolean;
@@ -309,6 +321,7 @@ export interface World {
   /** Where the live connection stands, in one plain sentence (`connInWords`). */
   hubConn: { phase: ConnState["phase"]; line: string };
   tasks: Task[];
+  handoffs: Record<ID, HandoffRequestState>;
   approvals: Approval[];
   workflows: Workflow[];
   workflowRuns: WorkflowRun[];
@@ -773,7 +786,7 @@ export function purgeLegacySecrets(): void {
 export class RelayClient {
   world: World = {
     connected: false, authFailed: false, users: [], agents: [], channels: [],
-    messages: {}, messageStatuses: {}, humanTyping: {}, agentStatus: {}, presence: {}, tasks: [], approvals: [], activity: [],
+    messages: {}, messageStatuses: {}, humanTyping: {}, agentStatus: {}, presence: {}, tasks: [], handoffs: {}, approvals: [], activity: [],
     notifications: [], notificationsAsked: false, notificationsLoading: false,
     notificationsRequestId: undefined, notificationsProblem: undefined,
     workflows: [], workflowRuns: [], workflowLoading: false,
@@ -1488,6 +1501,57 @@ export class RelayClient {
       return this.transmit({ ...frame, clientMessageId, tempId: frame.tempId ?? clientMessageId });
     }
     return this.transmit(frame);
+  }
+
+  /** Send a handoff with a correlated lifecycle; no click is treated as success. */
+  createHandoff(frame: Extract<ClientFrame, { type: "createTask" }>): ID | undefined {
+    if (!frame.sourceMessageId || !frame.channelId || !frame.agentId || !frame.title.trim()) return undefined;
+    const requestId = this.nextRequestId("createTask");
+    const entry: HandoffRequestState = {
+      requestId, sourceMessageId: frame.sourceMessageId, channelId: frame.channelId,
+      agentId: frame.agentId, title: frame.title, state: "pending",
+    };
+    const setState = (patch: Partial<HandoffRequestState>): void => {
+      const current = this.world.handoffs[requestId] ?? entry;
+      this.world.handoffs = { ...this.world.handoffs, [requestId]: { ...current, ...patch } };
+      const rows = Object.entries(this.world.handoffs);
+      if (rows.length > 100) this.world.handoffs = Object.fromEntries(rows.slice(-100));
+      this.emit();
+    };
+    setState(entry);
+    const id = this.transmit({ ...frame, requestId }, {
+      answers: response => response.type === "task" && response.requestId === requestId,
+      answered: response => {
+        if (response.type === "task") setState({ state: "succeeded", taskId: response.task.id, problem: undefined });
+      },
+      refused: problem => setState({ state: "refused", problem }),
+      lost: () => setState({ state: "lost", problem: this.world.connected
+        ? "The relay did not confirm this handoff. Retry when connected."
+        : "Cloud9 disconnected before this handoff was confirmed. Retry when connected." }),
+    });
+    if (id === undefined) {
+      setState({ state: "lost", problem: "Cloud9 is offline; no task was created. Retry when connected." });
+      return undefined;
+    }
+    return id;
+  }
+
+  private reconcileHandoffs(tasks: readonly Task[]): void {
+    let changed = false;
+    const next = { ...this.world.handoffs };
+    for (const [requestId, handoff] of Object.entries(next)) {
+      if (handoff.state !== "pending" && handoff.state !== "lost") continue;
+      const task = tasks.find(candidate => candidate.sourceMessageId === handoff.sourceMessageId
+        && candidate.channelId === handoff.channelId && candidate.agentId === handoff.agentId);
+      if (task) {
+        next[requestId] = { ...handoff, state: "succeeded", taskId: task.id, problem: undefined };
+        changed = true;
+      } else if (handoff.state === "pending") {
+        next[requestId] = { ...handoff, state: "lost", problem: "The relay reconnected without confirming this handoff. Retry when connected." };
+        changed = true;
+      }
+    }
+    if (changed) this.world.handoffs = next;
   }
 
   private canonicalDraftThreadId(threadId?: ID): ID | undefined {
@@ -4502,6 +4566,7 @@ askPolls(projectId: ID): void {
         // rather than a green dot nobody stood behind.
         w.presence = frame.state.presence ?? {};
         w.tasks = frame.state.tasks;
+        this.reconcileHandoffs(w.tasks);
         w.approvals = frame.state.approvals;
         w.notifications = frame.state.notifications ?? [];
         w.notificationsAsked = true;
@@ -4889,6 +4954,13 @@ askPolls(projectId: ID): void {
         if (i >= 0) w.tasks[i] = frame.task; else w.tasks.unshift(frame.task);
         w.tasks = [...w.tasks];
         this.clearRichLinkPreviewsForRef("task", frame.task.id);
+        if (frame.requestId) {
+          const handoff = w.handoffs[frame.requestId];
+          if (handoff) w.handoffs = {
+            ...w.handoffs,
+            [frame.requestId]: { ...handoff, state: "succeeded", taskId: frame.task.id, problem: undefined },
+          };
+        }
         break;
       }
       case "approval": {

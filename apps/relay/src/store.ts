@@ -152,6 +152,14 @@ interface RawChatDraft {
   expiresAt: number; state: string; json: string;
 }
 
+export interface TaskRequestReceipt {
+  requesterId: ID;
+  requestId: ID;
+  payloadHash: string;
+  taskId: ID;
+  createdAt: number;
+}
+
 export interface SavedSendResult {
   message: Message;
   /** True when this request replayed a previously committed send. */
@@ -502,6 +510,13 @@ export class Store implements JoinHubStore {
       CREATE TABLE IF NOT EXISTS tasks(
         id TEXT PRIMARY KEY, updatedAt INTEGER NOT NULL, json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS task_requests(
+        requesterId TEXT NOT NULL, requestId TEXT NOT NULL, payloadHash TEXT NOT NULL,
+        taskId TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        PRIMARY KEY(requesterId, requestId)
+      );
+      CREATE INDEX IF NOT EXISTS task_request_order
+        ON task_requests(requesterId, createdAt DESC);
       CREATE TABLE IF NOT EXISTS workflows(
         id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, updatedAt INTEGER NOT NULL, json TEXT NOT NULL
       );
@@ -4660,6 +4675,16 @@ export class Store implements JoinHubStore {
   tasks(limit = 200): Task[] {
     return (this.db.prepare("SELECT json FROM tasks ORDER BY updatedAt DESC LIMIT ?").all(limit) as { json: string }[])
       .map(r => JSON.parse(r.json) as Task);
+  }
+  taskRequest(requesterId: ID, requestId: ID): TaskRequestReceipt | undefined {
+    return this.db.prepare(
+      "SELECT requesterId,requestId,payloadHash,taskId,createdAt FROM task_requests WHERE requesterId=? AND requestId=?",
+    ).get(requesterId, requestId) as TaskRequestReceipt | undefined;
+  }
+  saveTaskRequest(receipt: TaskRequestReceipt): void {
+    this.db.prepare(
+      "INSERT OR IGNORE INTO task_requests(requesterId,requestId,payloadHash,taskId,createdAt) VALUES(?,?,?,?,?)",
+    ).run(receipt.requesterId, receipt.requestId, receipt.payloadHash, receipt.taskId, receipt.createdAt);
   }
   saveWorkflow(w: Workflow): void {
     const bad = validateWorkflow(w);

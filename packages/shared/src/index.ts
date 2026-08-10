@@ -1146,6 +1146,8 @@ export interface Task {
   title: string;           // the requested outcome (FR-TS-001)
   /** The exact human message that created this task, when it came from chat. */
   sourceMessageId?: ID;
+  /** The canonical thread root containing the source message, when applicable. */
+  sourceThreadId?: ID;
   requesterId: ID;         // human who asked
   requesterName: string;
   agentId: ID;             // assigned agent (FR-TS-007 multi-agent: later)
@@ -4008,7 +4010,7 @@ type ClientFrameBase =
   // engine's own account (the owner) for a friend's request. Only an engine
   // connection may set it, and the relay still checks that person is real and
   // can see the channel — it is a claim, not a permission.
-  | { type: "createTask"; agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID; needsApproval?: boolean; action?: string; causedByHook?: boolean }
+  | { type: "createTask"; agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID; sourceThreadId?: ID; needsApproval?: boolean; action?: string; causedByHook?: boolean }
   /**
    * engine (agent owner) only. `summary` follows the same sentence-vs-silence
    * rule as every other optional field in this protocol: ABSENT means "I am not
@@ -4738,7 +4740,7 @@ export type ServerFrame =
   | { type: "userJoined"; user: User }
   | { type: "userRemoved"; userId: ID }
   | { type: "token"; token: string } // durable token issued after invite redemption
-  | { type: "task"; task: Task }
+  | { type: "task"; task: Task; requestId?: ID }
   | { type: "approval"; approval: Approval }
   | { type: "workflows"; workflows: Workflow[]; runs: WorkflowRun[]; requestId?: ID }
   | { type: "workflow"; workflow: Workflow; requestId?: ID }

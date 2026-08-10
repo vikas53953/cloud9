@@ -2400,6 +2400,16 @@ export class Engine {
       if (messageId) this.askMessageFor.set(task.id, messageId);
       if (replyTo) this.askThreadFor.set(task.id, replyTo);
     }
+    // Desktop "Hand this to…" requests arrive without the engine's local
+    // pending-ask ledger. The durable source fields are the authoritative
+    // continuation anchor for that path, so preserve the exact message/thread
+    // instead of pretending this is an unscoped Tasks-panel job.
+    if (!this.askMessageFor.has(task.id) && task.sourceMessageId) {
+      this.askMessageFor.set(task.id, task.sourceMessageId);
+    }
+    if (!this.askThreadFor.has(task.id) && task.sourceThreadId) {
+      this.askThreadFor.set(task.id, task.sourceThreadId);
+    }
     if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") return; // FR-AG-007
     // Last gate on "who may make this agent act". The relay checks the same
     // rule when the task is created; this is the check that runs on the machine

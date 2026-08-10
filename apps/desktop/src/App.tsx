@@ -79,7 +79,7 @@ import {
   ForumTopic, ForumReply, ForumStatus, ForumLink, ClientFrame, RunComparison,
   RichLinkPreview, findRichLinkRefs, richLinkToken,
 } from "@cloud9/shared";
-import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, uploadPreviewKind, useWorld, World } from "./store.js";
+import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, uploadPreviewKind, useWorld, World, type HandoffRequestState } from "./store.js";
 import { Markdown } from "./markdown.js";
 import {
   microphoneLevel, voiceDuration, voiceRecordingAllowed, voiceRecordingFailure,
@@ -4179,6 +4179,7 @@ function ChatScreen({
     channels: w.channels,
     presence: w.presence,
     tasks: w.tasks,
+    handoffs: w.handoffs,
     me: w.me,
     savedMessages: w.savedMessages,
   }));
@@ -5351,6 +5352,7 @@ function ChatView({
     agentStatus: w.agentStatus,
     presence: w.presence,
     tasks: w.tasks,
+    handoffs: w.handoffs,
     approvals: w.approvals,
     savedMessages: w.savedMessages,
     savedPending: w.savedPending,
@@ -5824,6 +5826,13 @@ function ChatView({
     }
     return map;
   }, [messages, world.tasks, agents]);
+  const handoffByMessage = useMemo(() => {
+    const map = new Map<ID, HandoffRequestState>();
+    for (const handoff of Object.values(world.handoffs)) {
+      if (handoff.channelId === channel.id) map.set(handoff.sourceMessageId, handoff);
+    }
+    return map;
+  }, [world.handoffs, channel.id]);
 
   /* Held still between renders, or every bubble redraws on every frame — see
      the contract on `MessageRow`. */
@@ -6078,10 +6087,12 @@ function ChatView({
               me={world.me} agents={agents} users={world.users}
               delivery={r.m.authorKind === "human" && r.m.authorId === world.me?.id
                 ? world.messageStatuses[r.m.id] : undefined}
+              presence={world.presence} connected={world.connected}
               channelId={channel.id}
               answered={r.m.replyTo ? byId.get(r.m.replyTo) : undefined}
               doneRunId={doneRunIds.get(r.m.id)}
               task={taskByMessage.get(r.m.id)}
+              handoff={handoffByMessage.get(r.m.id)}
               agent={agentOf.get(r.m.authorId)}
               working={world.agentStatus[r.m.authorId] === "working"}
               /* Reading an archived room still works all the way down: the
@@ -7022,11 +7033,53 @@ function DeliveryStatus({ status }: { status?: MessageStatus }): React.JSX.Eleme
   );
 }
 
+interface HandOffCandidate {
+  agent: AgentDef;
+  permission: string;
+  capabilities: string;
+  availability: string;
+  availabilityTitle: string;
+  allowed: boolean;
+  disabledReason?: string;
+}
+
+/** Facts shown before a human hands a real source message to a room agent. */
+function handOffCandidates(
+  agents: readonly AgentDef[], users: readonly User[], me: User | undefined,
+  presence: Record<ID, AgentPresenceState>,
+): HandOffCandidate[] {
+  const ownerName = (id: ID): string => users.find(user => user.id === id)?.name ?? "the owner";
+  return agents.map(agent => {
+    const p = presence[agent.id];
+    const permission = respondWords(agent, ownerName(agent.ownerId));
+    const enabled = Object.entries(effectiveAbilities(agent))
+      .filter(([, on]) => on === true)
+      .map(([key]) => CAPABILITIES.find(capability => capability.ability === key)?.label ?? key);
+    const capabilities = enabled.length > 0 ? enabled.join(" · ") : "None enabled";
+    const availability = p
+      ? `${PRESENCE_WORDS[p.presence]} · ${p.reason}`
+      : "Not reported by the agent engine";
+    const lifecycleBlocked = agent.lifecycle === "paused"
+      ? "Paused by the owner"
+      : agent.lifecycle === "disabled" ? "Switched off by the owner" : undefined;
+    const permissionAllowed = !!me && mayDriveAgent(me.id, agent);
+    const disabledReason = !permissionAllowed
+      ? "You are not allowed to hand work to this agent"
+      : lifecycleBlocked;
+    return {
+      agent, permission, capabilities, availability,
+      availabilityTitle: p ? `${availability} · Status: ${p.status}` : availability,
+      allowed: permissionAllowed && !lifecycleBlocked,
+      ...(disabledReason ? { disabledReason } : {}),
+    };
+  });
+}
+
 const MessageRow = React.memo(function MessageRow({
   m, cont, ask, me, agents, users, answered, doneRunId, task,
   agent, working, onOpenThread, onInlineReply, onGoToMessage,
   inOpenThread, litUp, variant, archived, newSince, threadSeen, saved, savedPending, channelId,
-  pinned, pinPending, canManagePins, delivery,
+  pinned, pinPending, canManagePins, delivery, presence, connected, handoff,
 }: {
   /** the message itself, straight out of the store — never a copy */
   m: Message;
@@ -7067,6 +7120,11 @@ const MessageRow = React.memo(function MessageRow({
   canManagePins?: boolean;
   /** author-only human delivery state; groups contain counts, never identities */
   delivery?: MessageStatus;
+  /** relay-reported availability facts used by the handoff chooser */
+  presence?: Record<ID, AgentPresenceState>;
+  connected?: boolean;
+  /** correlated relay lifecycle for the source message's latest handoff */
+  handoff?: HandoffRequestState;
   channelId?: ID;
   litUp?: boolean;
   /** "thread" drops the affordances that would open a thread inside a thread */
@@ -7083,14 +7141,24 @@ const MessageRow = React.memo(function MessageRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(m.text);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [handOpen, setHandOpen] = useState(false);
+  const [handTarget, setHandTarget] = useState<ID>();
   const recentEmojis = useRecentEmojis(me?.id);
   const pendingReactionRef = useRef<Set<string>>(new Set());
   const deleted = !!m.deletedAt;
   const inThread = variant === "thread";
   /* wraps the ☺ button AND its tray, so a click anywhere else closes it (F3) */
   const reactHoldRef = useRef<HTMLSpanElement>(null);
+  const handHoldRef = useRef<HTMLSpanElement>(null);
+  const handButtonRef = useRef<HTMLButtonElement>(null);
+  const closeHand = useCallback(() => {
+    setHandOpen(false);
+    queueMicrotask(() => handButtonRef.current?.focus());
+  }, []);
   useEscapeCloses(() => setPickEmoji(false), pickEmoji);
   useClickAwayCloses(reactHoldRef, () => setPickEmoji(false), pickEmoji);
+  useEscapeCloses(closeHand, handOpen);
+  useClickAwayCloses(handHoldRef, closeHand, handOpen);
 
   const copy = () => {
     void navigator.clipboard?.writeText(m.text).then(() => {
@@ -7109,6 +7177,33 @@ const MessageRow = React.memo(function MessageRow({
   const mine = !!me && (isAgent
     ? agents.find(a => a.id === m.authorId)?.ownerId === me.id
     : m.authorId === me.id);
+
+  const handCandidates = useMemo(
+    () => handOffCandidates(agents, users, me, presence ?? {}),
+    [agents, users, me, presence],
+  );
+  const handAllowed = handCandidates.some(candidate => candidate.allowed);
+  const handTask = task?.sourceMessageId === m.id ? task : undefined;
+  const handTargetCandidate = handCandidates.find(candidate => candidate.agent.id === handTarget);
+  const handRequestPending = handoff?.state === "pending" && !handTask;
+  const handSourceThreadId = m.replyTo ?? m.id;
+
+  useEffect(() => {
+    if (handOpen && !handTargetCandidate) {
+      setHandTarget(handCandidates.find(candidate => candidate.allowed)?.agent.id);
+    }
+  }, [handOpen, handTargetCandidate, handCandidates]);
+
+  const handOff = (): void => {
+    const target = handCandidates.find(candidate => candidate.agent.id === handTarget);
+    if (!target?.allowed || !me || !connected) return;
+    const title = m.text.trim().slice(0, 2000);
+    if (!title) return;
+    client.createHandoff({
+      type: "createTask", agentId: target.agent.id, channelId: channelId!, title,
+      sourceMessageId: m.id, sourceThreadId: handSourceThreadId,
+    });
+  };
 
   const nameFor = (id: ID): string =>
     id === me?.id ? "You"
@@ -7380,6 +7475,71 @@ const MessageRow = React.memo(function MessageRow({
           only door to a thread was an unlabelled icon that appears on hover —
           which is a fair description of a feature nobody can find. It carries
           the word now, and it says which of the two things it will do. */}
+      {!isAgent && mine && handAllowed && (
+        <span className="handhold" ref={handHoldRef}>
+          <button className="ma hand" type="button" title="Hand this message to a room agent"
+            aria-label="Hand this message to a room agent" aria-expanded={handOpen}
+            aria-haspopup="dialog" aria-controls={`handoff-dialog-${m.id}`} ref={handButtonRef}
+            onClick={() => setHandOpen(open => !open)}>
+            {handTask || handoff?.state === "succeeded" ? "Handoff status"
+              : handoff?.state === "lost" || handoff?.state === "refused" ? "Retry handoff" : "Hand this to…"}
+          </button>
+          {handOpen && (
+            <div className="handpop" id={`handoff-dialog-${m.id}`} role="dialog" aria-modal="false"
+              aria-labelledby={`handoff-title-${m.id}`}>
+              <div className="handhead">
+                <strong id={`handoff-title-${m.id}`}>Hand this message to…</strong>
+                <button className="handclose" type="button" aria-label="Close handoff chooser"
+                  title="Close" onClick={closeHand}>×</button>
+              </div>
+              <p className="handsource">Source preserved: this message and its thread ({handSourceThreadId}).</p>
+              <div className="handagents" role="listbox" aria-label="Room agents">
+                {handCandidates.map(candidate => {
+                  const selected = handTarget === candidate.agent.id;
+                  return (
+                    <button key={candidate.agent.id} type="button" role="option"
+                      className={`handagent${selected ? " selected" : ""}`}
+                      aria-selected={selected} aria-disabled={!candidate.allowed}
+                      disabled={!candidate.allowed || !!handRequestPending || !!handTask}
+                      title={candidate.disabledReason ?? candidate.availabilityTitle}
+                      onClick={() => setHandTarget(candidate.agent.id)}>
+                      <span className="handagent-name">{candidate.agent.emoji} {candidate.agent.name}</span>
+                      <span className="handfact">Permission: {candidate.permission}</span>
+                      <span className="handfact">Capabilities: {candidate.capabilities}</span>
+                      <span className="handfact" title={candidate.availabilityTitle}>Availability: {candidate.availability}</span>
+                      {!candidate.allowed && <span className="handfact handblocked">Unavailable: {candidate.disabledReason}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              {handTask && (
+                <p className="handstatus" role="status">Delegation status: {handTask.status.replace("_", " ")}
+                  {handTask.approvalId && handTask.status === "waiting_approval" ? " · approval pending" : ""}
+                </p>
+              )}
+              {handRequestPending && !handTask && (
+                <p className="handstatus" role="status">
+                  {connected ? "Waiting for the relay to confirm this task…" : "Relay disconnected; task status is not yet known."}
+                </p>
+              )}
+              {!handTask && handoff?.state === "succeeded" && (
+                <p className="handstatus" role="status">Relay accepted this handoff; the task projection is still syncing.</p>
+              )}
+              {!handTask && (handoff?.state === "lost" || handoff?.state === "refused") && (
+                <p className="handstatus" role="status">{handoff.problem ?? "The relay did not confirm this handoff."}</p>
+              )}
+              {!handTask && !handRequestPending && (
+                <button className="btn small primary handsubmit" type="button"
+                  disabled={!handTargetCandidate?.allowed || !connected}
+                  title={!connected ? "Reconnect to hand off this message" : handTargetCandidate?.disabledReason}
+                  onClick={handOff}>
+                  {connected ? "Hand it over" : "Reconnect to continue"}
+                </button>
+              )}
+            </div>
+          )}
+        </span>
+      )}
       {!inThread && (onOpenThread || onInlineReply) && (
         <button className="ma reply"
           title={onOpenThread ? "Reply in a thread on this message" : "Reply to this, here in the conversation"}
@@ -7599,6 +7759,13 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
      }
      return map;
     }, [messages, world.tasks, channelAgents]);
+  const handoffByMessage = useMemo(() => {
+    const map = new Map<ID, HandoffRequestState>();
+    for (const handoff of Object.values(world.handoffs)) {
+      if (handoff.channelId === channel.id) map.set(handoff.sourceMessageId, handoff);
+    }
+    return map;
+  }, [world.handoffs, channel.id]);
 
   /* THE SAME OWNER AS THE ROOM'S OWN LIST, not a second answer to the same
      question. A thread is a conversation too: a reply typed here, and a reply
@@ -7650,9 +7817,11 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
             me={world.me} agents={channelAgents} users={world.users}
             delivery={root.authorKind === "human" && root.authorId === world.me?.id
               ? world.messageStatuses[root.id] : undefined}
+             presence={world.presence} connected={world.connected}
              channelId={channel.id}
              doneRunId={doneRunIds.get(root.id)}
              task={taskByMessage.get(root.id)}
+             handoff={handoffByMessage.get(root.id)}
              agent={agentOf.get(root.authorId)} />
         )}
         {root && (
@@ -7667,9 +7836,11 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
             me={world.me} agents={channelAgents} users={world.users}
             delivery={m.authorKind === "human" && m.authorId === world.me?.id
               ? world.messageStatuses[m.id] : undefined}
+             presence={world.presence} connected={world.connected}
              channelId={channel.id}
              doneRunId={doneRunIds.get(m.id)}
              task={taskByMessage.get(m.id)}
+             handoff={handoffByMessage.get(m.id)}
              agent={agentOf.get(m.authorId)}
             working={world.agentStatus[m.authorId] === "working"} />
         ))}
