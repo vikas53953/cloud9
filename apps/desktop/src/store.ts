@@ -3,7 +3,7 @@ import { useCallback, useRef, useSyncExternalStore } from "react";
 import {
   ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, ARTIFACT_LIMITS, Artifact, ArtifactAccess,
   ArtifactRelationView, ArtifactVersion, ArtifactWorkspaceEntry,
-  Attachment, ATTACHMENT_LIMITS, Channel,
+  Attachment, ATTACHMENT_LIMITS, Channel, downloadContentType,
   ChatDraft, DraftAttachment, ChannelMemoryMode, ChannelMemoryPolicy,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   MemoryNote,
@@ -144,11 +144,39 @@ export interface Upload {
   threadId?: ID;
   /** local-only preview URL; never serialized into a draft or sent to relay */
   previewUrl?: string;
+  /** real FileReader progress while bytes are being read; upload itself is not faked as a percentage */
+  progress?: number;
+  /** what the tile is doing; durable rows use `ready`/`failed` after restore */
+  phase?: "reading" | "uploading" | "ready" | "failed";
   /** relay-owned draft state when restored after a restart */
   draftState?: "available" | "expired" | "unavailable" | "deleted" | "removed";
   uploadedAt?: number;
   expiresAt?: number;
   mime?: string;
+}
+
+/**
+ * Local previews are deliberately narrower than the relay's download allowlist.
+ * A browser object URL is safe for ordinary raster images and audio controls;
+ * SVG/HTML and every document type stay a named file even when their extension
+ * happens to look renderable. MIME and extension must agree when the browser
+ * provided a MIME; an empty MIME can still use the validated safe extension.
+ */
+export type UploadPreviewKind = "image" | "audio";
+const LOCAL_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico"]);
+const LOCAL_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/x-icon"]);
+const LOCAL_AUDIO_EXTENSIONS = new Set(["webm", "wav", "mp3", "m4a", "ogg", "oga", "aac"]);
+const LOCAL_AUDIO_TYPES = new Set(["audio/webm", "audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp4", "audio/ogg", "audio/aac"]);
+
+export function uploadPreviewKind(name: string, mime?: string): UploadPreviewKind | undefined {
+  const dot = name.lastIndexOf(".");
+  const extension = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+  const type = (mime ?? "").split(";", 1)[0].trim().toLowerCase();
+  if (LOCAL_IMAGE_EXTENSIONS.has(extension)
+    && (!type ? downloadContentType(name).startsWith("image/") : LOCAL_IMAGE_TYPES.has(type))) return "image";
+  if (LOCAL_AUDIO_EXTENSIONS.has(extension)
+    && (!type || LOCAL_AUDIO_TYPES.has(type))) return "audio";
+  return undefined;
 }
 
 /**
@@ -870,6 +898,7 @@ export class RelayClient {
     this.clearHumanTyping(undefined, undefined, false);
     this.world.humanTyping = {};
     // questions asked of the last connection will never be answered by this one
+    this.clearAllUploads();
     const orphaned = this.asked;
     this.asked = [];
       this.loseForumRequests();
@@ -930,6 +959,7 @@ export class RelayClient {
     // authority to keep showing a previous engine's in-flight preview.
     clearLiveSteps();
     clearAgentResponses();
+    this.clearAllUploads();
     this.ws?.close();
     const epoch = ++this.socketEpoch;
     const ws = new WebSocket(url);
@@ -946,6 +976,7 @@ export class RelayClient {
       if (this.ws !== ws) return;
       clearLiveSteps();
       clearAgentResponses();
+      this.clearAllUploads();
       this.clearHumanTyping(undefined, undefined, false);
       this.world.humanTyping = {};
       this.world.connected = false;
@@ -1362,6 +1393,19 @@ export class RelayClient {
   }
 
   /**
+   * Remove one lifecycle row without invoking its lost callback.
+   *
+   * Upload cleanup uses this when access disappears or a socket is replaced:
+   * the row is being removed, not failed, and invoking `lost` would otherwise
+   * start the next queued upload while the old connection is already gone.
+   * The timeout closure sees the row is absent and therefore becomes a no-op.
+   */
+  private removeAsked(requestId: ID): void {
+    const i = this.asked.findIndex(entry => entry.requestId === requestId);
+    if (i >= 0) this.asked.splice(i, 1);
+  }
+
+  /**
    * Hand one answer to the ONE question that recognises it.
    *
    * A pushed artifact can arrive between two unrelated questions, and a late
@@ -1543,24 +1587,37 @@ export class RelayClient {
     const current = this.world.uploads[draft.channelId] ?? [];
     const threadId = this.uploadThreadId(draft.threadId);
     const scope = (u: Upload): boolean => (this.uploadThreadId(u.threadId) ?? "") === (threadId ?? "");
-    // Every existing tray row is authoritative for dedupe, including failed
-    // rows and rows already named in an outgoing message. Re-open must not
-    // create a second tile merely because its prior state was not sendable.
-    const held = current.filter((u, index, all) => scope(u)
-      && (!u.attachmentId || all.findIndex(candidate => scope(candidate)
-        && candidate.attachmentId === u.attachmentId) === index));
-    const heldIds = new Set(held.map(u => u.attachmentId).filter((id): id is ID => Boolean(id)));
-    const restored: Upload[] = draft.attachments
+    const authoritative = draft.attachments
       .filter((a, _index, all) => a.state !== "removed"
-        && !heldIds.has(a.id)
-        && all.find(candidate => candidate.state !== "removed" && candidate.id === a.id) === a)
-      .map(a => ({
-        localId: `draft_${a.id}`, name: a.name, size: a.size,
+        && all.find(candidate => candidate.state !== "removed" && candidate.id === a.id) === a);
+    const draftIds = new Set(authoritative.map(a => a.id));
+    const prior = new Map<ID, Upload>();
+    const held = current.filter((u, index, all) => scope(u) && !u.attachmentId);
+    void held;
+    // The relay projection is authoritative for every row that already has a
+    // hub id. Only no-id rows are same-session transient work; an id missing
+    // from this authoritative draft was removed/reclaimed and must disappear.
+    for (const upload of current) {
+      if (!scope(upload) || !upload.attachmentId) continue;
+      if (draftIds.has(upload.attachmentId) && !prior.has(upload.attachmentId)) {
+        prior.set(upload.attachmentId, upload);
+        continue;
+      }
+      if (upload.previewUrl) URL.revokeObjectURL(upload.previewUrl);
+    }
+    const restored: Upload[] = authoritative
+      .map(a => {
+        const existing = prior.get(a.id);
+        return ({
+        localId: existing?.localId ?? `draft_${a.id}`, name: a.name, size: a.size,
         state: a.state === "available" ? "done" : "failed",
         attachmentId: a.id, threadId, mime: a.mime,
         uploadedAt: a.uploadedAt, expiresAt: a.expiresAt,
+        phase: a.state === "available" ? "ready" : "failed", progress: a.state === "available" ? 100 : undefined,
+        ...(existing?.previewUrl ? { previewUrl: existing.previewUrl } : {}),
         draftState: a.state, ...(a.error ? { error: a.error } : {}),
-      }));
+      });
+      });
     const other = current.filter(u => !scope(u));
     const next = [...other, ...held, ...restored];
     const same = current.length === next.length && current.every((u, i) => {
@@ -3235,8 +3292,53 @@ askPolls(projectId: ID): void {
   /* ---------------- attaching a file ---------------- */
 
   private uploadQueue: Array<{ channelId: ID; localId: string; threadId?: ID; frame: ClientFrame }> = [];
+  /** FileReader work has to be cancelled too; it can finish after a room went away. */
+  private uploadReaders = new Map<string, { channelId: ID; reader: FileReader }>();
   /** the one upload the hub is working on — see `attach` for why there is only one */
-  private uploading: { channelId: ID; localId: string } | null = null;
+  private uploading: { channelId: ID; localId: string; requestId: ID } | null = null;
+
+  /** Cancel transport/read work for one upload scope before removing its rows. */
+  private cancelUploadWork(channelId?: ID, localId?: string): void {
+    const matches = (candidateChannelId: ID, candidateLocalId: string): boolean =>
+      (channelId === undefined || candidateChannelId === channelId)
+      && (localId === undefined || candidateLocalId === localId);
+    this.uploadQueue = this.uploadQueue.filter(entry => !matches(entry.channelId, entry.localId));
+    for (const [readerLocalId, pending] of this.uploadReaders) {
+      if (!matches(pending.channelId, readerLocalId)) continue;
+      this.uploadReaders.delete(readerLocalId);
+      // The onabort handler only drops the map entry, so a browser completing
+      // the event cannot resurrect a row we are about to remove.
+      if (pending.reader.readyState === FileReader.LOADING) pending.reader.abort();
+    }
+    const current = this.uploading;
+    if (current && matches(current.channelId, current.localId)) {
+      this.removeAsked(current.requestId);
+      this.uploading = null;
+    }
+  }
+
+  /** Revoke every local preview URL before discarding upload state. */
+  private clearUploadsFor(channelId?: ID): void {
+    this.cancelUploadWork(channelId);
+    if (channelId === undefined) {
+      for (const rows of Object.values(this.world.uploads)) {
+        for (const upload of rows) if (upload.previewUrl) URL.revokeObjectURL(upload.previewUrl);
+      }
+      this.world.uploads = {};
+      return;
+    }
+    const rows = this.world.uploads[channelId] ?? [];
+    for (const upload of rows) if (upload.previewUrl) URL.revokeObjectURL(upload.previewUrl);
+    const { [channelId]: _gone, ...rest } = this.world.uploads;
+    void _gone;
+    this.world.uploads = rest;
+    // Uploads are globally serialized, not scoped to one room. If the removed
+    // room owned the current slot, let the next visible room take it now.
+    this.pumpUploads();
+  }
+
+  /** Reconnect/access-loss cleanup has one entry point so no preview leaks. */
+  private clearAllUploads(): void { this.clearUploadsFor(); }
 
   private setUploads(channelId: ID, next: Upload[]): void {
     this.world.uploads = { ...this.world.uploads, [channelId]: next };
@@ -3269,32 +3371,55 @@ askPolls(projectId: ID): void {
       this.notify(`that's the most files one message can carry (${ATTACHMENT_LIMITS.perMessage})`);
       return;
     }
+    const duplicate = list.some(u => u.state !== "failed"
+      && (this.uploadThreadId(u.threadId) ?? "") === (scopeThreadId ?? "")
+      && u.name === file.name && u.size === file.size && (u.mime ?? "") === (file.type ?? ""));
+    if (duplicate) {
+      this.notify("that file is already attached to this message");
+      return;
+    }
     const refusal = validateAttachment(file.name, file.size);
     if (refusal) {
       this.setUploads(channelId,
-        [...list, { localId, name: file.name, size: file.size, state: "failed", error: refusal, ...(scopeThreadId ? { threadId: scopeThreadId } : {}) }]);
+        [...list, { localId, name: file.name, size: file.size, state: "failed", phase: "failed", error: refusal, ...(scopeThreadId ? { threadId: scopeThreadId } : {}) }]);
       this.emit();
       return;
     }
+    const previewKind = uploadPreviewKind(file.name, file.type);
     this.setUploads(channelId,
-      [...list, { localId, name: file.name, size: file.size, state: "sending", ...(scopeThreadId ? { threadId: scopeThreadId } : {}),
+      [...list, { localId, name: file.name, size: file.size, state: "sending", phase: "reading", progress: 0,
+        ...(scopeThreadId ? { threadId: scopeThreadId } : {}),
         ...(file.type ? { mime: file.type } : {}),
-        ...(file.type.startsWith("image/") || file.type.startsWith("audio/") ? { previewUrl: URL.createObjectURL(file) } : {}) }]);
+        ...(previewKind ? { previewUrl: URL.createObjectURL(file) } : {}) }]);
     this.emit();
 
     const reader = new FileReader();
-    reader.onerror = () => {
-      this.patchUpload(channelId, localId, { state: "failed", error: "that file could not be read" });
+    this.uploadReaders.set(localId, { channelId, reader });
+    reader.onprogress = event => {
+      if (!event.lengthComputable || event.total <= 0) return;
+      this.patchUpload(channelId, localId, {
+        state: "sending", phase: "reading",
+        progress: Math.max(0, Math.min(100, Math.round(event.loaded / event.total * 100))),
+      });
       this.emit();
     };
+    reader.onerror = () => {
+      this.uploadReaders.delete(localId);
+      this.patchUpload(channelId, localId, { state: "failed", phase: "failed", progress: undefined, error: "that file could not be read" });
+      this.emit();
+    };
+    reader.onabort = () => { this.uploadReaders.delete(localId); };
     reader.onload = () => {
+      this.uploadReaders.delete(localId);
       const asUrl = String(reader.result ?? "");
       const comma = asUrl.indexOf(",");
       if (comma < 0) {
-        this.patchUpload(channelId, localId, { state: "failed", error: "that file could not be read" });
+        this.patchUpload(channelId, localId, { state: "failed", phase: "failed", progress: undefined, error: "that file could not be read" });
         this.emit();
         return;
       }
+      this.patchUpload(channelId, localId, { phase: "uploading", progress: 100 });
+      this.emit();
       this.uploadQueue.push({
         channelId, localId, ...(scopeThreadId ? { threadId: scopeThreadId } : {}),
         frame: {
@@ -3311,7 +3436,10 @@ askPolls(projectId: ID): void {
     if (this.uploading) return;
     const next = this.uploadQueue.shift();
     if (!next) return;
-    const up = { channelId: next.channelId, localId: next.localId };
+    // Assign the id before the send and capture it in every callback. The
+    // relay echoes it, so a late response for A cannot settle queued B.
+    const requestId = this.nextRequestId("uploadAttachment");
+    const up = { channelId: next.channelId, localId: next.localId, requestId };
     this.uploading = up;
     /* Only ever about THIS file. Both of these are reached from the request
        ledger, so they are called for this upload's own answer and for nothing
@@ -3319,20 +3447,25 @@ askPolls(projectId: ID): void {
     const failed = (why: string): void => {
       if (this.uploading !== up) return;
       this.uploading = null;
-      this.patchUpload(up.channelId, up.localId, { state: "failed", error: why });
+      this.patchUpload(up.channelId, up.localId, { state: "failed", phase: "failed", progress: undefined, error: why });
       this.emit();
       this.pumpUploads();
     };
-    const sent = this.ask(next.frame, {
-      answers: f => f.type === "attachment",
+    this.patchUpload(up.channelId, up.localId, { state: "sending", phase: "uploading", progress: 100 });
+    this.emit();
+    const sent = this.ask({ ...next.frame, requestId }, {
+      answers: f => f.type === "attachment"
+        && (f as { requestId?: ID }).requestId === requestId,
       answered: f => {
         if (this.uploading !== up || f.type !== "attachment") return;
         this.uploading = null;
         this.patchUpload(up.channelId, up.localId,
           { state: "done", attachmentId: f.attachment.id,
+            phase: "ready", progress: 100,
             uploadedAt: f.attachment.uploadedAt,
             expiresAt: f.attachment.uploadedAt + ATTACHMENT_LIMITS.parkedTtlMs,
             ...(f.attachment.mime ? { mime: f.attachment.mime } : {}) });
+        this.emit();
         this.pumpUploads();
       },
       refused: failed,
@@ -3341,13 +3474,28 @@ askPolls(projectId: ID): void {
     if (!sent) failed("there's no connection to the hub — take the file off and try again");
   }
 
+  /** Replace one failed/expired/unavailable tile without leaving its stale id in the draft. */
+  replaceUpload(channelId: ID, localId: string, file: File): void {
+    const prior = (this.world.uploads[channelId] ?? []).find(u => u.localId === localId);
+    if (!prior || prior.state !== "failed") {
+      this.attach(channelId, file);
+      return;
+    }
+    if (prior.previewUrl) URL.revokeObjectURL(prior.previewUrl);
+    this.cancelUploadWork(channelId, localId);
+    this.setUploads(channelId, (this.world.uploads[channelId] ?? []).filter(u => u.localId !== localId));
+    this.emit();
+    this.attach(channelId, file, prior.threadId);
+  }
+
   /** Take one picked file back out before the message is sent. */
   dropUpload(channelId: ID, localId: string): void {
-    this.uploadQueue = this.uploadQueue.filter(q => q.localId !== localId);
+    this.cancelUploadWork(channelId, localId);
     const prior = (this.world.uploads[channelId] ?? []).find(u => u.localId === localId);
     if (prior?.previewUrl) URL.revokeObjectURL(prior.previewUrl);
     this.setUploads(channelId, (this.world.uploads[channelId] ?? []).filter(u => u.localId !== localId));
     this.emit();
+    this.pumpUploads();
   }
 
   /** The ids to name in `send` — only the files that really landed. */
@@ -4544,6 +4692,7 @@ askPolls(projectId: ID): void {
           || frame.channel.memberIds.some(memberId =>
             w.agents.some(agent => agent.id === memberId && agent.ownerId === w.me?.id));
         if (!stillVisible) {
+          this.clearUploadsFor(frame.channel.id);
           w.savedMessages = w.savedMessages.map(entry => entry.channelId === frame.channel.id
             ? { ...entry, state: "inaccessible", message: undefined }
             : entry);
@@ -4757,6 +4906,7 @@ askPolls(projectId: ID): void {
         if (w.me && frame.userId === w.me.id) {
           // it was us: the relay has already closed the socket, so show the
           // welcome screen with a reason rather than an empty app
+          this.clearAllUploads();
           w.authFailed = true;
           clearAgentResponses();
           w.lastError = { text: "you were removed from this Cloud9", ts: Date.now() };
@@ -5041,9 +5191,7 @@ askPolls(projectId: ID): void {
         const { [frame.channelId]: goneMembers, ...restMembers } = w.members;
         void goneMembers;
         w.members = restMembers;
-        const { [frame.channelId]: goneUploads, ...restUploads } = w.uploads;
-        void goneUploads;
-        w.uploads = restUploads;
+        this.clearUploadsFor(frame.channelId);
         /* The room's files go with the room. The hub will refuse to ticket them
            now — permission is checked against membership at the moment of the
            click — so a list left on screen would be a list of dead buttons. */

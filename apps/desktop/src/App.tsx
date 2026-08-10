@@ -77,7 +77,7 @@ import {
   cannotSplit, dividerSpokenWords, dividerWords, widestThread, widthHeChose, widthToDraw,
   ForumTopic, ForumReply, ForumStatus, ForumLink, ClientFrame, RunComparison,
 } from "@cloud9/shared";
-import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from "./store.js";
+import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, uploadPreviewKind, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
 // The live 👀 / 💭 / verdict signals — ephemeral, and drawn so they can never
 // be mistaken for a person's reaction. All of it is in that one file.
@@ -551,6 +551,22 @@ const fileSize = (bytes: number): string => {
 const fileKind = (name: string): string => {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot + 1).toUpperCase().slice(0, 4) : "FILE";
+};
+
+/** State copy for the attachment tray. Relay-projected failures keep their
+ * exact sentence; local failures get a clear next action rather than a blank
+ * metadata line. */
+const uploadStatus = (u: { state: "sending" | "done" | "failed"; phase?: "reading" | "uploading" | "ready" | "failed"; progress?: number; draftState?: string; error?: string }): string => {
+  if (u.state === "sending") {
+    if (u.phase === "reading") return `Reading file${u.progress !== undefined ? ` — ${u.progress}%` : "…"}`;
+    return "Uploading…";
+  }
+  if (u.state === "done") return "Ready to send";
+  return plainError(u.error)
+    ?? (u.draftState === "expired" ? "This file expired — choose a replacement"
+      : u.draftState === "unavailable" ? "This file is unavailable — choose a replacement"
+        : u.draftState === "deleted" ? "This file is no longer available — choose a replacement"
+          : "Upload failed — choose a replacement");
 };
 
 /** "joined 3 Jun" — the date a membership row carries, said the short way. */
@@ -7784,6 +7800,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const mentionRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const replacementForRef = useRef<string | null>(null);
   /* wraps the emoji button AND its tray, so a click anywhere else closes it */
   const emojiHoldRef = useRef<HTMLSpanElement>(null);
   const toolsRef = useRef<HTMLDivElement>(null);
@@ -7840,14 +7857,17 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
 
   useEffect(() => {
     if (!durableDraft) return;
-    const marker = `${durableDraft.id}:${durableDraft.updatedAt}`;
+    const marker = `${durableDraft.id}:${durableDraft.updatedAt}:${world.connected ? "connected" : "offline"}`;
     if (restoredDraftAt.current === marker) return;
     restoredDraftAt.current = marker;
     if (durableDraft.updatedAt > Date.now() - 10 * 60_000 || text.length === 0) {
       setText(durableDraft.text);
     }
+    // A reconnect creates a fresh relay projection even when updatedAt did
+    // not change. Reconcile parked ids again so an expired/reclaimed file is
+    // visible instead of leaving a stale local tile behind.
     client.restoreDraftUploads(durableDraft);
-  }, [durableDraft?.id, durableDraft?.updatedAt, channel.id, replyTo]);
+  }, [durableDraft?.id, durableDraft?.updatedAt, channel.id, replyTo, world.connected]);
 
   useEffect(() => {
     if (!draftScope || !draftKey || hydratedDraftKey !== draftKey) return;
@@ -7944,6 +7964,9 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
      paperclip, a paste, or a drag. `client.attach` is the one owner of what
      happens next (the tray, the ceiling, the hub's refusal in its own words). */
   const attachFiles = useCallback((files: readonly File[]): void => {
+    // A regular pick/paste/drop is a fresh attachment action. Clear a retry
+    // target that may have been left behind if its file dialog was cancelled.
+    replacementForRef.current = null;
     for (const f of files) client.attach(channel.id, f, replyTo);
   }, [channel.id, replyTo]);
 
@@ -8378,23 +8401,30 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
           </div>
         )}
         {scopedUploads.length > 0 && (
-          <div className="uploadtray" aria-label="Files going with this message">
+          <div className="uploadtray" role="list" aria-label="Files going with this message">
             {scopedUploads.map(u => (
-              <div className={`uptile ${u.state}`} key={u.localId} data-upload={u.name}>
-                {u.previewUrl && u.name.match(/\.(png|jpe?g|gif|webp)$/i) && <img className="upload-preview" src={u.previewUrl} alt="" />}
-                {u.previewUrl && u.name.match(/\.(webm|wav|mp3|m4a|ogg)$/i) && <audio className="upload-preview" src={u.previewUrl} controls preload="metadata" aria-label={`Preview ${u.name}`} />}
+              <div className={`uptile ${u.state}`} key={u.localId} data-upload={u.name}
+                data-upload-state={u.draftState ?? u.phase ?? u.state} role="listitem"
+                aria-label={`${u.name}: ${uploadStatus(u)}`}>
+                {u.previewUrl && uploadPreviewKind(u.name, u.mime) === "image" && <img className="upload-preview" src={u.previewUrl} alt={`Preview of ${u.name}`} />}
+                {u.previewUrl && uploadPreviewKind(u.name, u.mime) === "audio" && <audio className="upload-preview" src={u.previewUrl} controls preload="metadata" aria-label={`Preview ${u.name}`} />}
                 <span className="glyph" aria-hidden="true">{fileKind(u.name)}</span>
                 <span className="filenames">
                   <span className="nm">{u.name}</span>
-                  <span className="meta">
+                  <span className="meta" aria-live="polite">{u.state === "done" ? `${fileSize(u.size)} · ${uploadStatus(u)}` : uploadStatus(u)}</span><span className="legacy-upload-meta" aria-hidden="true">
                     {u.state === "sending" ? "Going up…"
                       : u.state === "done" ? `${fileSize(u.size)} · ready to send`
                         : plainError(u.error)}
                   </span>
                 </span>
-                {u.state === "sending" && <span className="upbar" aria-hidden="true"><i /></span>}
-                {u.state === "failed" && <button className="upretry" aria-label={`Choose a replacement for ${u.name}`} onClick={() => fileRef.current?.click()}>Choose replacement</button>}
-                <button className="upx" aria-label={`Take ${u.name} back off this message`}
+                {u.state === "sending" && u.phase === "reading" && u.progress !== undefined && (
+                  <progress className="up-progress" max={100} value={u.progress}
+                    aria-label={`${u.name} file read progress`} />
+                )}
+                {u.state === "sending" && u.phase === "uploading" && <span className="upbar" role="status" aria-label={`Uploading ${u.name}`}><i /></span>}
+                {u.state === "failed" && <button className="upretry" type="button" aria-label={`Choose a replacement for ${u.name}`}
+                  onClick={() => { replacementForRef.current = u.localId; fileRef.current?.click(); }}>Choose replacement</button>}
+                <button className="upx" type="button" aria-label={`Take ${u.name} back off this message`}
                   title="Take this file off" onClick={() => client.dropUpload(channel.id, u.localId)}>✕</button>
               </div>
             ))}
@@ -8461,7 +8491,12 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
           <input ref={fileRef} className="filepick" type="file" multiple
             aria-label="Choose files to attach"
             onChange={e => {
-              attachFiles(Array.from(e.target.files ?? []));
+              const files = Array.from(e.target.files ?? []);
+              const replacementFor = replacementForRef.current;
+              replacementForRef.current = null;
+              if (replacementFor && files[0]) client.replaceUpload(channel.id, replacementFor, files[0]);
+              if (replacementFor) attachFiles(files.slice(1));
+              else attachFiles(files);
               e.target.value = "";
             }} />
           {/* THE ONE WAY IN to everything an agent can be TOLD to do, AND THE

@@ -7374,7 +7374,14 @@ private viewProject(project: Project, viewerId?: ID): Project {
         };
         this.store.saveAttachment(attachment, channel.id);
         // only the uploader is told — nobody else can name this id anyway
-        send(conn.ws, { type: "attachment", attachment });
+        // Echo the desktop's request identity when present. Older clients do
+        // not send one, so the optional field keeps the wire compatible while
+        // modern clients can never settle a later queued upload with a late
+        // answer from this one.
+        send(conn.ws, {
+          type: "attachment", attachment,
+          ...(frame.requestId !== undefined ? { requestId: frame.requestId } : {}),
+        });
         break;
       }
       case "attachmentTicket": {

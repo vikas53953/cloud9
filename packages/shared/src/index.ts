@@ -4566,7 +4566,7 @@ export type ServerFrame =
   | { type: "messageUpdated"; message: Message }
   | { type: "thread"; parentId: ID; messages: Message[] }
   /** A parked file, ready to be named in a `send`. Goes only to the uploader. */
-  | { type: "attachment"; attachment: Attachment }
+  | { type: "attachment"; attachment: Attachment; requestId?: ID }
   /**
    * Permission to fetch ONE file, ONCE, for a few seconds. Goes only to the
    * socket that asked. `url` is relative to the hub's own address — join it to
