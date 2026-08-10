@@ -1113,14 +1113,26 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 
 .autocomplete{
   position:absolute;bottom:100%;left:0;margin-bottom:6px;background:var(--surface);
-  border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;min-width:260px;
+  border:1px solid var(--line);border-radius:var(--radius);overflow:auto;
+  width:min(460px,calc(100% - 4px),calc(100vw - 24px));max-height:min(58vh,440px);
   box-shadow:var(--shadow-lg);z-index:5;
 }
 .ac-head{padding:6px 12px;color:var(--ink-3);background:var(--surface-2);border-bottom:1px solid var(--line-soft);}
-.autocomplete .opt{padding:6px 12px;font-size:13.5px;display:flex;gap:9px;align-items:center;cursor:pointer;}
+.autocomplete .opt{padding:8px 12px;font-size:13.5px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 9px;align-items:center;cursor:pointer;border:0;border-bottom:1px solid var(--line-soft);background:transparent;color:inherit;text-align:left;width:100%;}
+.autocomplete .opt:last-child{border-bottom:0;}
 .autocomplete .opt.on,.autocomplete .opt:hover{background:var(--surface-2);}
-.opt-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.opt-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--display);font-size:14px;}
 .opt-sub{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.12em;}
+.opt-meta{grid-column:1 / -1;display:flex;flex-wrap:wrap;gap:3px 10px;min-width:0;color:var(--ink-3);font-size:10.5px;line-height:1.35;}
+.opt-fact{min-width:0;overflow-wrap:anywhere;}
+.opt-fact.capability{color:var(--ultra);}
+.opt-fact.availability{color:var(--ink-2);}
+.opt-fact.trust{color:var(--ink-3);}
+@media (max-width:520px){
+  .autocomplete{width:min(100%,calc(100vw - 20px));max-width:calc(100vw - 20px);}
+  .autocomplete .opt{padding:8px 10px;}
+  .opt-meta{font-size:10px;gap:3px 7px;}
+}
 
 /* --- the right rail --- */
 .aside{border-left:1px solid var(--line);background:var(--shell-canvas);overflow-y:auto;min-width:0;min-height:0;}
@@ -2142,7 +2154,7 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .threadcount::after{content:"";height:1px;flex:1;background:var(--line);}
 .composer.threadcomposer{padding:12px 16px;border-top:1px solid var(--line);}
 .composer.threadcomposer .tools{flex-wrap:wrap;gap:6px;}
-.composer.threadcomposer .autocomplete{min-width:0;width:100%;}
+.composer.threadcomposer .autocomplete{min-width:0;width:min(100%,calc(100vw - 20px));max-width:calc(100vw - 20px);}
 
 /* --- an agent that will not answer the person who called it --- */
 .mentionrefused{

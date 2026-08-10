@@ -1466,6 +1466,79 @@ const PRESENCE_WORDS: Record<AgentPresence, string> = {
   ready: "Ready", working: "Working", paused: "Paused", offline: "Offline",
 };
 
+/** The older lamp is still a fact on the wire; keep its words human-friendly. */
+const STATUS_WORDS: Record<AgentStatus, string> = {
+  idle: "Idle", working: "Working", braked: "Waiting for a person",
+};
+
+/**
+ * One row in the @ picker. The picker is deliberately built from the same
+ * facts the rest of the room uses: channel membership, stored capabilities and
+ * trust, and the hub's presence/status projection. Missing presence is shown
+ * as missing, never as a cheerful availability claim.
+ */
+interface MentionCandidate {
+  id: ID;
+  name: string;
+  label: string;
+  kind: "agent" | "person";
+  capabilityLabel?: string;
+  availabilityLabel?: string;
+  availabilityTitle?: string;
+  trustLabel?: string;
+  statusLabel?: string;
+  membershipLabel: string;
+}
+
+function mentionCandidatesFor(channel: Pick<Channel, "memberIds">, world: Pick<World, "agents" | "users" | "me" | "presence" | "agentStatus">): MentionCandidate[] {
+  const memberIds = new Set(channel.memberIds);
+  const agents = world.agents.filter(agent => memberIds.has(agent.id));
+  /* An agent carries its owner's sight of the room. The relay uses this same
+     rule when it decides which rooms a person may see, so the picker cannot
+     offer an owner who is not actually represented in this conversation. */
+  const ownerIds = new Set(agents.map(agent => agent.ownerId));
+  const people = onePerPerson(world.users).filter(user =>
+    user.id !== world.me?.id && (memberIds.has(user.id) || ownerIds.has(user.id)));
+
+  const agentRows: MentionCandidate[] = agents.map(agent => {
+    const presence = world.presence[agent.id];
+    const effective = effectiveAbilities(agent);
+    const capabilityLabels = CAPABILITIES
+      .filter(capability => effective[capability.ability] === true)
+      .map(capability => capability.label);
+    const availabilityLabel = presence
+      ? `Availability: ${PRESENCE_WORDS[presence.presence]} · ${presence.reason}`
+      : "Availability: not reported";
+    return {
+      id: agent.id,
+      name: agent.name,
+      label: `${agent.emoji} ${agent.name}`,
+      kind: "agent",
+      capabilityLabel: capabilityLabels.length > 0
+        ? `Capabilities: ${capabilityLabels.join(" · ")}`
+        : "Capabilities: none enabled",
+      availabilityLabel,
+      availabilityTitle: presence ? `${availabilityLabel} · ${STATUS_WORDS[presence.status]}` : availabilityLabel,
+      trustLabel: `Trust: ${trustWords(agent)}`,
+      statusLabel: presence
+        ? `Status: ${STATUS_WORDS[presence.status]}`
+        : world.agentStatus[agent.id] !== undefined
+          ? `Status: ${STATUS_WORDS[world.agentStatus[agent.id]]}`
+          : undefined,
+      membershipLabel: "Membership: agent in this room",
+    };
+  });
+  const personRows: MentionCandidate[] = people.map(user => ({
+    id: user.id,
+    name: user.name,
+    label: user.name,
+    kind: "person",
+    membershipLabel: "Membership: person in this room",
+  }));
+  return [...agentRows, ...personRows].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.kind.localeCompare(b.kind));
+}
+
 /** What the hub said about this agent, or undefined for "nobody has said". */
 /* Takes only the part of the world it reads (`Pick<World, …>`), so a screen
    holding a selected SLICE can ask it too — see `useWorld` in store.ts. A full
@@ -7672,6 +7745,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
       the draft while the correlated relay removal is still settling. */
   const suppressEmptyRelayDraft = useRef(false);
   const [acIndex, setAcIndex] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [emojiQuery, setEmojiQuery] = useState("");
   const [emojiCategory, setEmojiCategory] = useState("Quick");
@@ -7708,6 +7782,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
     : null, [channel.id, replyTo, world.me?.id]);
   const draftKey = useMemo(() => draftScope ? chatDraftKey(draftScope) : null, [draftScope]);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const mentionRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   /* wraps the emoji button AND its tray, so a click anywhere else closes it */
   const emojiHoldRef = useRef<HTMLSpanElement>(null);
@@ -7832,9 +7907,21 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   }, [text]);
 
   const mentionQuery = useMemo(() => {
-    const m = /(?:^|\s)@([\w-]*)$/.exec(text);
+    const m = /(?:^|\s)@([^\s@]*)$/.exec(text);
     return m ? m[1].toLowerCase() : null;
   }, [text]);
+
+  /* A room roster is an access boundary. Reset the highlighted row whenever
+     it changes so an index selected for a member who just left can never be
+     applied to a different person. */
+  const mentionRosterKey = useMemo(
+    () => [...channel.memberIds].sort().join(","),
+    [channel.memberIds],
+  );
+  useEffect(() => {
+    setAcIndex(0);
+    setMentionDismissed(false);
+  }, [mentionQuery, mentionRosterKey]);
 
   /**
    * `/` IS THE FAST PATH TO THE SAME LIST THE ＋ OPENS — never a second one.
@@ -7948,16 +8035,23 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
     recordingStreamRef.current?.getTracks().forEach(track => track.stop());
   }, [channel.id]);
 
-  const directory = useMemo(() => [
-    ...world.agents.map(a => ({ id: a.id, name: a.name, label: `${a.emoji} ${a.name}`, sub: "agent" })),
-    ...onePerPerson(world.users).filter(u => u.id !== world.me?.id).map(u => ({ id: u.id, name: u.name, label: u.name, sub: "person" })),
-  ], [world.agents, world.users, world.me]);
+  const directory = useMemo(
+    () => mentionCandidatesFor(channel, world),
+    [channel, world.agents, world.agentStatus, world.me, world.presence, world.users],
+  );
 
-  const suggestions = mentionQuery === null ? [] :
+  const suggestions = mentionQuery === null || mentionDismissed ? [] :
     directory.filter(d => d.name.toLowerCase().startsWith(mentionQuery)).slice(0, 6);
+  const mentionOpen = suggestions.length > 0;
 
   const applyMention = (name: string) => {
-    setText(t => t.replace(/@[\w-]*$/, `@${name} `));
+    setMentionDismissed(false);
+    setText(t => {
+      const match = /(?:^|\s)@([^\s@]*)$/.exec(t);
+      if (!match) return t;
+      const atIndex = match.index + match[0].lastIndexOf("@");
+      return `${t.slice(0, atIndex)}@${name} ${t.slice(atIndex + 1 + match[1].length)}`;
+    });
     taRef.current?.focus();
   };
 
@@ -8013,6 +8107,12 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
      words alone — a menu closing must never take the line he was typing. */
   useEscapeCloses(() => { setActionsOpen(false); setSlashDismissed(true); }, menuOpen);
   useClickAwayCloses(toolsRef, () => { setActionsOpen(false); setSlashDismissed(true); }, menuOpen);
+
+  /* Mention suggestions are a popover too. Its ref covers only the list, so a
+     click back in the composer closes it without inventing a send or changing
+     the draft. */
+  useEscapeCloses(() => { setMentionDismissed(true); setAcIndex(0); }, mentionOpen);
+  useClickAwayCloses(mentionRef, () => { setMentionDismissed(true); setAcIndex(0); }, mentionOpen);
 
   /* The emoji tray learns the same manners as every other overlay (F3):
      Escape closes it through the one stack, a click elsewhere closes it
@@ -8238,15 +8338,26 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
           setFocused(false);
         }}
         data-writing={armed ? "yes" : "no"}>
-        {suggestions.length > 0 && (
-          <div className="autocomplete" data-mentions-open="yes" data-mentions={suggestions.length}>
-            <div className="ac-head tag">Send this to</div>
+        {mentionOpen && (
+          <div ref={mentionRef} className="autocomplete" id={`mention-list-${channel.id}`}
+            role="listbox" aria-label="Mention someone in this room"
+            data-mentions-open="yes" data-mentions={suggestions.length}>
+            <div className="ac-head tag">People and agents in this room</div>
             {suggestions.map((s, i) => (
-              <div key={s.id} className={`opt ${i === acIndex ? "on" : ""}`}
+              <button key={s.id} type="button" className={`opt ${i === acIndex ? "on" : ""}`}
+                id={`mention-option-${channel.id}-${s.id}`} role="option" aria-selected={i === acIndex}
                 onMouseDown={e => { e.preventDefault(); applyMention(s.name); }}>
                 <span className="opt-label">{s.label}</span>
-                <span className="opt-sub">{s.sub}</span>
-              </div>
+                <span className="opt-sub">{s.kind === "agent" ? "Agent" : "Person"}</span>
+                <span className="opt-meta">
+                  <span className="opt-fact membership" data-membership>{s.membershipLabel}</span>
+                  {s.capabilityLabel && <span className="opt-fact capability" data-capabilities>{s.capabilityLabel}</span>}
+                  {s.availabilityLabel && <span className="opt-fact availability" data-availability
+                    title={s.availabilityTitle}>{s.availabilityLabel}</span>}
+                  {s.statusLabel && <span className="opt-fact status" data-status>{s.statusLabel}</span>}
+                  {s.trustLabel && <span className="opt-fact trust" data-trust>{s.trustLabel}</span>}
+                </span>
+              </button>
             ))}
           </div>
         )}
@@ -8294,6 +8405,10 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
           rows={inThreadPanel ? 2 : 3}
           value={text}
           placeholder={placeholder}
+          aria-autocomplete="list"
+          aria-controls={mentionOpen ? `mention-list-${channel.id}` : undefined}
+          aria-activedescendant={mentionOpen && suggestions[acIndex]
+            ? `mention-option-${channel.id}-${suggestions[acIndex].id}` : undefined}
           onChange={e => {
             setText(e.target.value); setAcIndex(0);
             const box = e.currentTarget;
@@ -8301,7 +8416,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
             box.style.height = `${Math.min(box.scrollHeight, inThreadPanel ? 180 : 240)}px`;
           }}
           onKeyDown={e => {
-            if (suggestions.length > 0) {
+            if (mentionOpen) {
               if (e.key === "ArrowDown") { e.preventDefault(); setAcIndex(i => (i + 1) % suggestions.length); return; }
               if (e.key === "ArrowUp") { e.preventDefault(); setAcIndex(i => (i - 1 + suggestions.length) % suggestions.length); return; }
               if (e.key === "Tab" || e.key === "Enter") { e.preventDefault(); applyMention(suggestions[acIndex].name); return; }
