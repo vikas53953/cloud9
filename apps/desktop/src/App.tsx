@@ -79,6 +79,12 @@ import {
   ForumTopic, ForumReply, ForumStatus, ForumLink, ClientFrame, RunComparison,
   RichLinkPreview, findRichLinkRefs, richLinkToken,
   taskMatchesCommandCenterFilter, type CommandCenterFilter,
+  DEFAULT_CHAT_PERSONALIZATION, channelNotificationModeFor, channelNotificationModeWords,
+  chatAvatarScale, chatAvatarSizePx,
+  normalizeChatPersonalization, reconcileChannelNotificationPrefs,
+  withChannelNotificationMode,
+  type AvatarSize, type ChannelNotificationMode, type ChatFontSize,
+  type MessageDensity, type TimestampStyle,
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, uploadPreviewKind, useWorld, World, type HandoffRequestState } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -157,8 +163,8 @@ import {
    Imported by path for the same reason the two lines above are: these are the
    halves of shared/engine the browser is allowed to see. */
 import {
-  chooseDelivery, decideNotification, dedupeKey, isNotifyKind, isRoomMuted, notifyTarget,
-  threadReplyEvent, withRoomMuted,
+  chooseDelivery, decideNotification, dedupeKey, isNotifyKind, notifyTarget,
+  threadReplyEvent,
   type Cloud9Notification, type DeliveryChoice, type NotifyEvent, type NotifyTarget,
 } from "@cloud9/shared/dist/notify.js";
 import {
@@ -488,6 +494,9 @@ const initials = (name: string): string =>
 
 const clock = (ts: number): string =>
   new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+const exactTimestamp = (ts: number): string =>
+  new Date(ts).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 
 /**
  * How often the Activity trail asks the hub for anything new.
@@ -1867,6 +1876,11 @@ export interface Prefs {
   quietFrom: string;
   quietTo: string;
   compact: boolean;
+  /** Durable, local-only chat presentation choices. */
+  chatFontSize: ChatFontSize;
+  messageDensity: MessageDensity;
+  timestampStyle: TimestampStyle;
+  avatarSize: AvatarSize;
   collapsed: Record<string, boolean>;
   /**
    * WHAT A REPLY DOES. His choice, and it changes the behaviour, not the words.
@@ -1887,6 +1901,8 @@ export interface Prefs {
    * from before this setting behaves.
    */
   mutedChannelIds: string[];
+  /** Explicit per-room notification choices; legacy mute ids remain supported. */
+  channelNotificationModes: Record<string, ChannelNotificationMode>;
   /**
    * HOW WIDE HE PULLED THE THREAD, and which way he is looking at it.
    *
@@ -1917,9 +1933,14 @@ const prefs = makeStore<Prefs>("cloud9.prefs", {
   quietFrom: "22:00",
   quietTo: "08:00",
   compact: false,
+  chatFontSize: DEFAULT_CHAT_PERSONALIZATION.fontSize,
+  messageDensity: DEFAULT_CHAT_PERSONALIZATION.density,
+  timestampStyle: DEFAULT_CHAT_PERSONALIZATION.timestamp,
+  avatarSize: DEFAULT_CHAT_PERSONALIZATION.avatarSize,
   collapsed: {},
   replies: "thread",
   mutedChannelIds: [],
+  channelNotificationModes: {},
   threadWidth: THREAD_DEFAULT,
 });
 
@@ -1943,6 +1964,28 @@ function migratePrefs(value: Prefs): void {
   if (value.threadTakeover !== undefined) {
     next.threadLayout = value.threadTakeover ? "focus" : "split";
     next.threadTakeover = undefined;
+  }
+  const chat = normalizeChatPersonalization({
+    fontSize: value.chatFontSize,
+    density: value.messageDensity,
+    timestamp: value.timestampStyle,
+    avatarSize: value.avatarSize,
+  });
+  if (value.chatFontSize !== chat.fontSize) next.chatFontSize = chat.fontSize;
+  if (value.messageDensity !== chat.density) next.messageDensity = chat.density;
+  if (value.timestampStyle !== chat.timestamp) next.timestampStyle = chat.timestamp;
+  if (value.avatarSize !== chat.avatarSize) next.avatarSize = chat.avatarSize;
+  /* Bound local storage without deciding which rooms are accessible; access
+     cleanup happens once the relay has supplied the current authorized roster. */
+  const retainedIds = [
+    ...Object.keys(value.channelNotificationModes ?? {}),
+    ...(Array.isArray(value.mutedChannelIds) ? value.mutedChannelIds : []),
+  ];
+  const bounded = reconcileChannelNotificationPrefs(value, retainedIds);
+  if (JSON.stringify(bounded.channelNotificationModes) !== JSON.stringify(value.channelNotificationModes ?? {})
+      || JSON.stringify(bounded.mutedChannelIds) !== JSON.stringify(value.mutedChannelIds ?? [])) {
+    next.channelNotificationModes = bounded.channelNotificationModes;
+    next.mutedChannelIds = bounded.mutedChannelIds;
   }
   if (Object.keys(next).length > 0) prefs.set(next);
 }
@@ -2448,6 +2491,23 @@ function Workspace(): React.JSX.Element {
   const active = world.channels.find(c => c.id === activeId)
     ?? (activeId === null ? world.channels.find(c => c.kind !== "dm") : world.channels[0]);
   const owner = isOwner(world.me);
+
+  /* Room rules are account-local, but their keys must not survive access
+     cleanup. Only reconcile from a connected, server-authorized snapshot so a
+     reconnect cannot accidentally erase preferences while the roster is
+     temporarily empty. */
+  useEffect(() => {
+    if (!world.connected) return;
+    const next = reconcileChannelNotificationPrefs(prefs.get(), world.channels.map(c => c.id));
+    const current = prefs.get();
+    if (JSON.stringify(next.channelNotificationModes) !== JSON.stringify(current.channelNotificationModes)
+        || JSON.stringify(next.mutedChannelIds) !== JSON.stringify(current.mutedChannelIds)) {
+      prefs.set({
+        channelNotificationModes: next.channelNotificationModes,
+        mutedChannelIds: next.mutedChannelIds,
+      });
+    }
+  }, [world.connected, world.channels]);
 
   useEffect(() => {
     const previous = screenHistoryRef.current;
@@ -4015,11 +4075,13 @@ function UnreadMarks({ n }: { n: Unread }): React.JSX.Element | null {
  */
 function MutedMark({ channelId }: { channelId?: ID }): React.JSX.Element | null {
   const p = usePrefs();
-  if (!channelId || !isRoomMuted(p, channelId)) return null;
+  const mode = channelNotificationModeFor(p, channelId);
+  if (!channelId || mode === "all") return null;
+  const words = channelNotificationModeWords(mode);
   return (
     <span className="mutedmark" data-muted="yes"
-      title="Muted — only somebody mentioning you by name gets through"
-      aria-label="Muted">🔕</span>
+      title={words.markerTitle}
+      aria-label={words.markerAriaLabel}>🔕</span>
   );
 }
 
@@ -5990,13 +6052,21 @@ function ChatView({
     setHeaderMenuOpen(false);
   }, [channel.name, roomAgent]);
 
+  const chatPrefs = normalizeChatPersonalization(usePrefs());
+  const chatStyle = {
+    "--cloud9-chat-scale": chatPrefs.fontSize === "small" ? "0.92" : chatPrefs.fontSize === "large" ? "1.12" : "1",
+    "--cloud9-avatar-scale": String(chatAvatarScale(chatPrefs.avatarSize)),
+  } as React.CSSProperties;
+
   return (
-    <div ref={roomRef} className="thread" aria-hidden={takeover ? "true" : undefined}>
+    <div ref={roomRef}
+      className={`thread chat-font-${chatPrefs.fontSize} chat-density-${chatPrefs.density} chat-time-${chatPrefs.timestamp} chat-avatar-${chatPrefs.avatarSize}`}
+      style={chatStyle} aria-hidden={takeover ? "true" : undefined}>
       {isDm ? (
         <header className="topbar dm-head chathead">
           {peerAgent
-            ? <AgentFace name={peerAgent.name} size={48} presence={dmPresence} hasPresence />
-            : <PersonFace name={peerName ?? "?"} size={48} />}
+            ? <AgentFace name={peerAgent.name} size={chatAvatarSizePx(chatPrefs.avatarSize, 48)} presence={dmPresence} hasPresence />
+            : <PersonFace name={peerName ?? "?"} size={chatAvatarSizePx(chatPrefs.avatarSize, 48)} />}
           <div style={{ minWidth: 0 }}>
             <h2 className="ch-title"><span className="n">{peerName}</span></h2>
             <div className="role">
@@ -7052,9 +7122,9 @@ const withoutArtifactRefs = (text: string): string =>
  * the switches that are true everywhere (the master switch and quiet hours).
  *
  * IT IS NOT A SECOND GATE. The mute list is a prefs field the shared
- * `decideNotification` reads (`isRoomMuted`, packages/shared/src/notify.ts);
- * this panel only writes it, through `withRoomMuted`, so a room can never end
- * up in the list twice and this screen never re-decides anything.
+ * `decideNotification` reads the explicit per-room mode (and the legacy
+ * `isRoomMuted` list), packages/shared/src/notify.ts; this panel writes through
+ * the shared mode helper, so a room can never end up with conflicting rows.
  *
  * What it says on screen is the whole truth: muting silences this room EXCEPT
  * somebody mentioning him by name, and if notifications are off everywhere it
@@ -7062,18 +7132,19 @@ const withoutArtifactRefs = (text: string): string =>
  */
 function RoomMute({ channel, isRoom }: { channel: Channel; isRoom: boolean }): React.JSX.Element {
   const p = usePrefs();
-  const muted = isRoomMuted(p, channel.id);
+  const mode = channelNotificationModeFor(p, channel.id);
+  const muted = mode !== "all";
   const what = isRoom ? "room" : "conversation";
   const toggle = (): void => {
-    prefs.set({
-      mutedChannelIds: withRoomMuted(prefs.get(), channel.id, !muted).mutedChannelIds,
-    });
+    prefs.set(withChannelNotificationMode(prefs.get(), channel.id, muted ? "all" : "mentions"));
   };
   return (
     <div className="aside-sec roommute" data-muted={muted ? "yes" : "no"}>
       <span className="eyebrow">Notifications</span>
       <p className="roommute-state">
-        {muted
+        {mode === "off"
+          ? `Off. Nothing from this ${what} interrupts you.`
+          : muted
           ? `Muted. Nothing from this ${what} interrupts you — except somebody mentioning you by name.`
           : `On. This ${what} can interrupt you, as your notification settings allow.`}
       </p>
@@ -7314,6 +7385,8 @@ const MessageRow = React.memo(function MessageRow({
   archived?: boolean;
 }): React.JSX.Element {
   countRender("MessageRow");
+  const chatPrefs = normalizeChatPersonalization(usePrefs());
+  const avatarPx = chatAvatarSizePx(chatPrefs.avatarSize);
   const isAgent = m.authorKind === "agent";
   const [copied, setCopied] = useState(false);
   const [pickEmoji, setPickEmoji] = useState(false);
@@ -7586,8 +7659,8 @@ const MessageRow = React.memo(function MessageRow({
         <span className="tl-faces" aria-hidden="true">
           {threadFaces.map(f => (
             f.kind === "agent"
-              ? <span className="avatar" key={f.id}><Portrait identity={f.name} size={18} /></span>
-              : <PersonFace key={f.id} name={f.name} size={18} />
+              ? <span className="avatar" key={f.id}><Portrait identity={f.name} size={chatAvatarSizePx(chatPrefs.avatarSize, 18)} /></span>
+              : <PersonFace key={f.id} name={f.name} size={chatAvatarSizePx(chatPrefs.avatarSize, 18)} />
           ))}
         </span>
       )}
@@ -7861,7 +7934,7 @@ const MessageRow = React.memo(function MessageRow({
     return (
       <article className={`msg cont${deleted ? " deleted" : ""}${litUp ? " litup" : ""}`}
         data-msg={m.id}>
-        <div className="when-gutter">{clock(m.ts)}</div>
+        <div className="when-gutter">{chatPrefs.timestamp === "exact" ? exactTimestamp(m.ts) : clock(m.ts)}</div>
         <div className="body">
           {deleted ? tombstone : editing ? editor : drawn ? paragraph(drawn) : null}
           {!deleted && !editing && <MessageArtifacts text={m.text} />}
@@ -7931,13 +8004,13 @@ const MessageRow = React.memo(function MessageRow({
       className={`msg ${isAgent ? "from-agent" : ""} ${m.proactive ? "proactive" : ""}`
         + `${deleted ? " deleted" : ""}${litUp ? " litup" : ""}${inOpenThread ? " inthread" : ""}`}>
       {isAgent
-        ? <AgentFace name={m.authorName} size={34} lamp={working ? "run" : "live"} />
-        : <PersonFace name={m.authorName} size={34} />}
+        ? <AgentFace name={m.authorName} size={avatarPx} lamp={working ? "run" : "live"} />
+        : <PersonFace name={m.authorName} size={avatarPx} />}
       <div className="body">
         <div className="who">
           <b>{m.authorName}</b>
           {isAgent && <span className="badge">Agent</span>}
-          <span className="t">{clock(m.ts)}</span>
+          <span className="t">{chatPrefs.timestamp === "exact" ? exactTimestamp(m.ts) : clock(m.ts)}</span>
           {!deleted && m.editedAt && <span className="editedmark">edited</span>}
           {!deleted && mine && !isAgent && <DeliveryStatus status={delivery} />}
           {m.proactive && <span className="chip is-ultra selfstart">Nobody asked — I noticed</span>}
@@ -7989,6 +8062,11 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
 }): React.JSX.Element {
   const panelRef = useRef<HTMLElement>(null);
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const chatPrefs = normalizeChatPersonalization(usePrefs());
+  const chatStyle = {
+    "--cloud9-chat-scale": chatPrefs.fontSize === "small" ? "0.92" : chatPrefs.fontSize === "large" ? "1.12" : "1",
+    "--cloud9-avatar-scale": String(chatAvatarScale(chatPrefs.avatarSize)),
+  } as React.CSSProperties;
   const held = world.threads[rootId];
   const channelAgents = useMemo(() =>
     channel.memberIds.map(id => world.agents.find(agent => agent.id === id)).filter(Boolean) as AgentDef[],
@@ -8048,7 +8126,9 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
   }, [takeover]);
 
   return (
-    <aside ref={panelRef} className={`aside threadpanel${takeover ? " takeover" : ""}${forced ? " forced" : ""}`}
+    <aside ref={panelRef}
+      className={`aside threadpanel chat-font-${chatPrefs.fontSize} chat-density-${chatPrefs.density} chat-time-${chatPrefs.timestamp} chat-avatar-${chatPrefs.avatarSize}${takeover ? " takeover" : ""}${forced ? " forced" : ""}`}
+      style={chatStyle}
       aria-label="Thread">
       <div className="threadhead">
         {/* THE WAY BACK, when the thread is over the room. At a narrow window
@@ -14892,6 +14972,47 @@ function SettingsScreen(): React.JSX.Element {
               rather than in the conversation itself. A room you have turned down
               stays quiet either way; only somebody naming you gets through that.
             </p>
+            <h4>Chat personalization</h4>
+            <p className="sec-note">These choices are saved locally on this computer and preview immediately in the room and thread.</p>
+            <div className="panelbox chat-personalization-panel" data-chat-personalization="true">
+              <div className="chat-personalization-grid">
+                <label className="field-row"><span>Chat font size</span>
+                  <select className="select" aria-label="Chat font size" value={p.chatFontSize}
+                    onChange={e => prefs.set({ chatFontSize: e.target.value as ChatFontSize })}>
+                    <option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option>
+                  </select>
+                </label>
+                <label className="field-row"><span>Message density</span>
+                  <select className="select" aria-label="Message density" value={p.messageDensity}
+                    onChange={e => prefs.set({ messageDensity: e.target.value as MessageDensity })}>
+                    <option value="comfortable">Comfortable</option><option value="compact">Compact</option>
+                  </select>
+                </label>
+                <label className="field-row"><span>Timestamp style</span>
+                  <select className="select" aria-label="Timestamp style" value={p.timestampStyle}
+                    onChange={e => prefs.set({ timestampStyle: e.target.value as TimestampStyle })}>
+                    <option value="relative">Time only</option><option value="exact">Date and time</option>
+                  </select>
+                </label>
+                <label className="field-row"><span>Avatar size</span>
+                  <select className="select" aria-label="Avatar size" value={p.avatarSize}
+                    onChange={e => prefs.set({ avatarSize: e.target.value as AvatarSize })}>
+                    <option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option>
+                  </select>
+                </label>
+              </div>
+              <div className="chat-personalization-actions">
+                <button className="subtle" type="button" onClick={() => prefs.set({
+                  chatFontSize: DEFAULT_CHAT_PERSONALIZATION.fontSize,
+                  messageDensity: DEFAULT_CHAT_PERSONALIZATION.density,
+                  timestampStyle: DEFAULT_CHAT_PERSONALIZATION.timestamp,
+                  avatarSize: DEFAULT_CHAT_PERSONALIZATION.avatarSize,
+                })}>Reset chat appearance</button>
+                <span className="appearance-status" role="status">
+                  {!world.connected ? "Offline — saved locally; it will remain available when you reconnect." : "Saved locally on this computer."}
+                </span>
+              </div>
+            </div>
           </section>
 
           <section id="set-agents" className="setsect">
@@ -14963,6 +15084,27 @@ function SettingsScreen(): React.JSX.Element {
               <div className="field-row"><label>Until</label>
                 <input className="input" type="time" value={p.quietTo} disabled={!p.quietOn}
                   onChange={e => prefs.set({ quietTo: e.target.value })} /></div>
+            </div>
+            <h4>Per-channel notifications</h4>
+            <p className="sec-note">Choose which authorized rooms can interrupt you. Mentions always remain visible in the room; Off only controls notifications.</p>
+            {!world.connected && <div className="notice" role="status">Offline — showing the last authorized rooms. Changes are saved locally.</div>}
+            <div className="panelbox channel-notification-rules" data-channel-notification-rules="true">
+              {world.channels.length === 0
+                ? <span className="meta">No authorized rooms are available yet.</span>
+                : world.channels.map(channel => {
+                  const mode = channelNotificationModeFor(p, channel.id);
+                  const label = channel.kind === "dm" ? channel.name : `#${channel.name}`;
+                  return <label className="field-row channel-notification-rule" key={channel.id}>
+                    <span>{label}</span>
+                    <select className="select" aria-label={`Notifications for ${label}`} value={mode}
+                      onChange={e => prefs.set(withChannelNotificationMode(prefs.get(), channel.id, e.target.value as ChannelNotificationMode))}>
+                      <option value="all">All messages</option>
+                      <option value="mentions">Mentions only</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </label>;
+                })}
+              <button className="subtle" type="button" onClick={() => prefs.set({ channelNotificationModes: {}, mutedChannelIds: [] })}>Reset channel notification rules</button>
             </div>
           </section>
 

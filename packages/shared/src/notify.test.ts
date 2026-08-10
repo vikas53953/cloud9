@@ -73,6 +73,7 @@ test("DEFAULT_NOTIFY_PREFS matches Settings defaults", () => {
     quietFrom: "22:00",
     quietTo: "08:00",
     mutedChannelIds: [],
+    channelNotificationModes: {},
   });
 });
 
@@ -117,6 +118,15 @@ test("master switch off suppresses everything", () => {
   );
   assert.equal(d.raise, false);
   if (!d.raise) assert.equal(d.reason, "notifications_off");
+});
+
+test("explicit channel notification modes are enforced after global and self gates", () => {
+  const mention = evt({ kind: "mention", subjectId: "m-1" });
+  const message = evt({ kind: "thread_reply", subjectId: "r-1" });
+  assert.equal(decideNotification(message, { ...on, channelNotificationModes: { "ch-1": "off" } }, new Set(), at(12)).raise, false);
+  assert.equal(decideNotification(message, { ...on, channelNotificationModes: { "ch-1": "mentions" } }, new Set(), at(12)).raise, false);
+  assert.equal(decideNotification(mention, { ...on, channelNotificationModes: { "ch-1": "mentions" } }, new Set(), at(12)).raise, true);
+  assert.equal(decideNotification(message, { ...on, channelNotificationModes: { "ch-1": "all" } }, new Set(), at(12)).raise, true);
 });
 
 test("quiet hours suppress even approvals (Tasks hold the urgent path)", () => {

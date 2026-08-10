@@ -7822,6 +7822,16 @@ export {
   type NotificationInboxState, type NotificationSourceState,
 } from "./notification-inbox.js";
 
+// Durable per-user chat presentation and per-channel notification choices.
+export {
+  DEFAULT_CHAT_PERSONALIZATION, channelNotificationModeFor, channelNotificationModeWords,
+  chatAvatarScale, chatAvatarSizePx,
+  normalizeChatPersonalization, reconcileChannelNotificationPrefs,
+  validateChatPersonalization, withChannelNotificationMode,
+  type AvatarSize, type ChannelNotificationMode, type ChatFontSize,
+  type ChannelNotificationModeWords, type ChatPersonalization, type MessageDensity, type TimestampStyle,
+} from "./chat-personalization.js";
+
 // Public run checkpoints, provider-gated recovery and side-by-side comparison.
 export {
   buildRunCheckpoint, recoveryDecision, recoveryRequestFingerprint, sanitizeRecoveryAsk,

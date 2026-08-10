@@ -720,6 +720,17 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 
 .msg{display:grid;grid-template-columns:38px minmax(0,1fr);gap:13px;margin-bottom:22px;
   min-width:0;max-width:880px;position:relative;border-radius:var(--radius);}
+/* Per-user chat presentation. These semantic classes are shared by the main
+   room and thread rail; no inline message content is rewritten by settings. */
+.thread .msg .body{font-size:calc(1em * var(--cloud9-chat-scale, 1));}
+.thread .msg .who b{font-size:calc(15.5px * var(--cloud9-chat-scale, 1));}
+.chat-density-compact .msg{margin-bottom:11px;}
+.chat-density-compact .msg.cont{margin-top:-10px;}
+.chat-avatar-small .msg{grid-template-columns:30px minmax(0,1fr);}
+.chat-avatar-large .msg{grid-template-columns:46px minmax(0,1fr);}
+.chat-avatar-small .msg > .avatar{width:27px !important;height:27px !important;}
+.chat-avatar-large .msg > .avatar{width:41px !important;height:41px !important;}
+.chat-time-exact .msg .who .t{white-space:nowrap;}
 /* THE ROW ANSWERS THE HAND (L2). Slack tints the whole row on hover, which is
    what makes its floating toolbar read as belonging to the message; without
    the tint our own strip looked detached from short messages. The halo is
@@ -1689,6 +1700,13 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .thread-layout-row .tx span{font-size:12.5px;color:var(--ink-2);}
 .thread-layout-select{width:112px;flex:none;padding:7px 9px;}
 .quietrow{display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:340px;}
+.chat-personalization-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px;}
+.chat-personalization-grid .field-row,.channel-notification-rule{margin-bottom:10px;}
+.chat-personalization-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 0 4px;border-top:1px solid var(--line-soft);}
+.channel-notification-rules{display:grid;gap:2px;}
+.channel-notification-rule{display:grid;grid-template-columns:minmax(0,1fr) minmax(130px,180px);align-items:center;gap:12px;}
+.channel-notification-rule>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+@media (max-width:420px){.chat-personalization-grid{grid-template-columns:1fr;}.channel-notification-rule{grid-template-columns:1fr;gap:5px;}}
 .path{
   display:flex;gap:9px;align-items:center;font-family:var(--mono);font-size:12.5px;color:var(--ink-2);
   background:var(--sunk);border:1px solid var(--line);border-radius:9px;padding:8px 11px;min-width:0;
@@ -2102,6 +2120,20 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 @media (max-width:860px){
   .chatgrid.withdetails{grid-template-columns:var(--side-w) minmax(0,1fr);}
   .chatgrid.withdetails>.aside{position:absolute;inset:0 0 0 var(--side-w);z-index:35;box-shadow:var(--shadow-lg);}
+}
+@media (max-width:320px){
+  .msgs{padding:16px 10px 10px;}
+  .chathead,.dm-head{padding-left:10px;padding-right:10px;gap:6px;}
+  .chathead .ch-topic,.chathead .sub,.chathead .header-members{display:none;}
+  .msg{grid-template-columns:30px minmax(0,1fr);gap:8px;margin-bottom:16px;}
+  /* Large faces are 41px at the selected setting; keep the mobile track wide
+     enough for the actual child instead of letting an inline face overflow. */
+  .chat-avatar-large .msg{grid-template-columns:46px minmax(0,1fr);}
+  .threadbody{padding:10px;}
+  .msg .who{gap:5px;}
+  .msg .who .t{font-size:9px;}
+  .chat-time-exact .msg .who .t{white-space:normal;}
+  .composer{padding-left:10px;padding-right:10px;}
 }
 
 /* ============================================================
