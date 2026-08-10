@@ -1468,6 +1468,8 @@ export interface RunRecord {
   priorRunId?: string;
   /** The thread/reply this turn answered, when the engine recorded one. */
   replyTo?: ID;
+  /** Effective public invocation settings for the turn, when one was selected. */
+  invocation?: AgentInvocationReceipt;
   /**
    * DID THIS TURN CONTINUE THE HARNESS'S OWN SESSION, or start a cold one?
    *
@@ -3544,6 +3546,13 @@ export interface Message {
   deletedAt?: number;
   attachments?: Attachment[];
   /**
+   * A validated, per-message agent invocation request. This is deliberately
+   * public metadata only: it contains no prompt, credential, or provider
+   * transcript. The relay validates it against the mentioned agent before it
+   * stores or forwards the message.
+   */
+  invocation?: AgentInvocationRequest;
+  /**
    * How many replies hang off this message. STORED on the root and kept up to
    * date as replies arrive, not counted on the way out — so a channel list can
    * say "12 replies" without walking the conversation. (Buzz's
@@ -3565,6 +3574,89 @@ export interface Message {
   // ---- filled in by the relay when it hands a message out, never stored ----
   /** who reacted with what */
   reactions?: MessageReaction[];
+}
+
+/** The only permission narrowing a message may ask for. */
+export type InvocationPermissionScope = "agent" | "readOnly";
+
+/** Compact controls carried with one human message that names an agent. */
+export interface AgentInvocationRequest {
+  agentId: ID;
+  /** A model id from that agent owner's currently reported harness catalog. */
+  model?: string;
+  /** One of the four shared effort words; provider translation happens in engine. */
+  effort?: AgentEffort;
+  /** `readOnly` can only narrow the stored abilities/trust, never widen them. */
+  permissionScope?: InvocationPermissionScope;
+}
+
+/** Factual effective settings recorded when a turn actually starts. */
+export interface AgentInvocationReceipt {
+  agentId: ID;
+  /** The selected model, when the provider accepted and applied it. */
+  model?: string;
+  /** The selected effort, when this provider can honor it. */
+  effort?: AgentEffort;
+  permissionScope: InvocationPermissionScope;
+  trust: AgentTrust;
+  abilities: AgentAbilities;
+  /** Requested values that were intentionally not applied are explicit. */
+  requestedModel?: string;
+  requestedEffort?: AgentEffort;
+  fallback?: "provider-default";
+}
+
+/**
+ * Strip a client invocation down to the public fields that are part of the
+ * send identity. This is intentionally deterministic: retries may arrive
+ * with different object key order or with stale UI-only keys, but they must
+ * hash to the same accepted message.
+ */
+export function canonicalizeAgentInvocation(input: unknown): AgentInvocationRequest | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const raw = input as Partial<AgentInvocationRequest>;
+  if (typeof raw.agentId !== "string") return undefined;
+  const out: Record<string, unknown> = { agentId: raw.agentId };
+  // Preserve malformed known keys in the identity so a retry cannot turn a
+  // bad request into an accepted omission. Unknown keys remain intentionally
+  // stripped.
+  for (const key of ["model", "effort", "permissionScope"] as const) {
+    if (Object.prototype.hasOwnProperty.call(raw, key)) out[key] = (raw as Record<string, unknown>)[key];
+  }
+  return out as unknown as AgentInvocationRequest;
+}
+
+/**
+ * Resolve the one textual/stable-id agent target allowed by invocation
+ * controls. A duplicate display name, repeated mention, or two agent mentions
+ * is ambiguous and returns no target. Matches are sorted by their position in
+ * the message rather than by directory order, so every caller shares routing
+ * semantics.
+ */
+export function invocationTargetFor(
+  text: string,
+  agents: readonly Pick<AgentDef, "id" | "name">[],
+): ID | undefined {
+  const nameCounts = new Map<string, number>();
+  for (const agent of agents) {
+    const key = agent.name.trim().toLocaleLowerCase();
+    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+  }
+  const matches: Array<{ id: ID; at: number }> = [];
+  for (const agent of agents) {
+    if (nameCounts.get(agent.name.trim().toLocaleLowerCase()) !== 1) continue;
+    const tokens = [...new Set([agent.name, agent.id])];
+    for (const token of tokens) {
+      if (!token) continue;
+      const re = new RegExp(`@${escapeRe(token)}(?![\\w-])`, "gi");
+      for (const match of text.matchAll(re)) {
+        matches.push({ id: agent.id, at: match.index ?? -1 });
+      }
+    }
+  }
+  matches.sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+  if (matches.length !== 1) return undefined;
+  return matches[0]!.id;
 }
 
 /** A person's durable save of one message. The source is re-authorised on each read. */
@@ -3690,6 +3782,8 @@ export type WithRequestId<T> = T extends unknown ? T & { requestId?: ID } : neve
 type ClientFrameBase =
   | { type: "hello"; token: string; client: "desktop" | "mobile" | "engine" }
   | { type: "send"; channelId: ID; text: string; tempId?: string; replyTo?: ID; attachmentIds?: ID[];
+      /** Optional validated controls for the agent explicitly mentioned here. */
+      invocation?: AgentInvocationRequest;
       /** Stable id for retrying one accepted send after a lost acknowledgement. */
       clientMessageId?: ID }
   /** Durable composer draft operations are authenticated to the socket user. */
@@ -5874,6 +5968,152 @@ export function validateAgentInput(agent: AgentInput, rules: AgentInputRules = {
 }
 
 /**
+ * Validate one message's optional invocation controls against the authoritative
+ * agent and provider catalog. Unknown catalogs still get the model-id shape
+ * check; they never turn an arbitrary string into a command-line argument.
+ */
+export function validateAgentInvocation(
+  agent: Pick<AgentDef, "id" | "provider">,
+  request: unknown,
+  models?: readonly string[],
+): string | null {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    return "that agent invocation is not valid";
+  }
+  const input = request as Partial<AgentInvocationRequest>;
+  if (input.agentId !== agent.id) return "that invocation does not name this agent";
+  if (input.model !== undefined) {
+    if (typeof input.model !== "string" || input.model.length === 0 || !MODEL_ID_RE.test(input.model)) {
+      return "that model name isn't a valid model id";
+    }
+    if (!models || models.length === 0) {
+      return "the provider model catalog is unavailable; leave the model override blank";
+    }
+    if (!models.includes(input.model)) {
+      return "that model isn't one this app offers";
+    }
+  }
+  if (input.effort !== undefined && !isAgentEffort(input.effort)) {
+    return "that isn't one of the thinking-time settings this app offers";
+  }
+  if (input.permissionScope !== undefined
+    && input.permissionScope !== "agent" && input.permissionScope !== "readOnly") {
+    return "that permission scope is not supported";
+  }
+  return null;
+}
+
+/** Validate the bounded public receipt persisted on a run. */
+export function validateAgentInvocationReceipt(receipt: unknown, expectedAgentId?: ID): string | null {
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    return "that invocation receipt is not valid";
+  }
+  const r = receipt as Partial<AgentInvocationReceipt>;
+  if (typeof r.agentId !== "string" || r.agentId.length === 0 || r.agentId.length > 64) {
+    return "that invocation receipt has no usable agent";
+  }
+  if (expectedAgentId !== undefined && r.agentId !== expectedAgentId) {
+    return "that invocation receipt belongs to a different agent";
+  }
+  if (r.model !== undefined && (typeof r.model !== "string" || !MODEL_ID_RE.test(r.model))) {
+    return "that invocation receipt has an unusable model";
+  }
+  if (r.effort !== undefined && !isAgentEffort(r.effort)) {
+    return "that invocation receipt has an unusable effort";
+  }
+  if (r.permissionScope !== "agent" && r.permissionScope !== "readOnly") {
+    return "that invocation receipt has an unusable permission scope";
+  }
+  if (validateTrust(r.trust)) return "that invocation receipt has an unusable trust setting";
+  if (!r.abilities || typeof r.abilities !== "object" || Array.isArray(r.abilities)) {
+    return "that invocation receipt has no usable abilities";
+  }
+  const abilityKeys = new Set([
+    "webSearch", "files", "schedules", "background", "helpers", "commands", "wholeComputer", "connections",
+  ]);
+  for (const [key, value] of Object.entries(r.abilities)) {
+    if (!abilityKeys.has(key) || typeof value !== "boolean") {
+      return "that invocation receipt has unusable abilities";
+    }
+  }
+  for (const [key, value] of [["webSearch", r.abilities.webSearch], ["files", r.abilities.files],
+    ["schedules", r.abilities.schedules], ["background", r.abilities.background]] as const) {
+    if (typeof value !== "boolean") return `that invocation receipt is missing ${key}`;
+  }
+  if (r.permissionScope === "readOnly") {
+    if (r.trust !== "askEveryTime") return "a read-only invocation must keep ask-every-time trust";
+    if (Object.values(r.abilities).some(value => value !== false)) {
+      return "a read-only invocation cannot carry abilities that act or reach outside this computer";
+    }
+  }
+  if (r.requestedModel !== undefined
+    && (typeof r.requestedModel !== "string" || !MODEL_ID_RE.test(r.requestedModel))) {
+    return "that invocation receipt has an unusable requested model";
+  }
+  if (r.requestedEffort !== undefined && !isAgentEffort(r.requestedEffort)) {
+    return "that invocation receipt has an unusable requested effort";
+  }
+  if (r.requestedModel !== undefined && r.model !== r.requestedModel) {
+    return "that invocation receipt disagrees about its selected model";
+  }
+  if (r.requestedEffort !== undefined) {
+    const effortMatches = r.effort === r.requestedEffort;
+    const isFallback = r.fallback === "provider-default" && r.effort === undefined;
+    if (!effortMatches && !isFallback) {
+      return "that invocation receipt disagrees about its effort fallback";
+    }
+  }
+  if (r.fallback !== undefined && r.fallback !== "provider-default") {
+    return "that invocation receipt has an unusable fallback";
+  }
+  if (r.fallback === "provider-default" && r.effort !== undefined) {
+    return "a provider-default fallback cannot include an applied effort";
+  }
+  if (r.fallback === "provider-default" && r.requestedEffort === undefined) {
+    return "that invocation receipt has a fallback without a requested effort";
+  }
+  const allowed = new Set([
+    "agentId", "model", "effort", "permissionScope", "trust", "abilities",
+    "requestedModel", "requestedEffort", "fallback",
+  ]);
+  if (Object.keys(r).some(key => !allowed.has(key))) return "that invocation receipt has unknown fields";
+  return null;
+}
+
+/** Apply only narrowing controls; never mutate the stored agent. */
+export function agentForInvocation(
+  agent: AgentDef,
+  request: AgentInvocationRequest | undefined,
+  opts: { effortSupported?: boolean } = {},
+): { agent: AgentDef; receipt?: AgentInvocationReceipt } {
+  if (!request || request.agentId !== agent.id) return { agent };
+  const scope: InvocationPermissionScope = request.permissionScope ?? "agent";
+  const effortApplied = request.effort !== undefined && opts.effortSupported !== false;
+  const readOnly = scope === "readOnly";
+  const effectiveAbilities = readOnly
+    ? Object.fromEntries(Object.keys(agent.abilities ?? {}).map(key => [key, false])) as unknown as AgentAbilities
+    : { ...agent.abilities };
+  const effective: AgentDef = {
+    ...agent,
+    ...(request.model !== undefined ? { model: request.model } : {}),
+    ...(effortApplied ? { effort: request.effort } : opts.effortSupported === false ? { effort: undefined } : {}),
+    ...(readOnly ? { abilities: effectiveAbilities, trust: "askEveryTime" as const } : {}),
+  };
+  const receipt: AgentInvocationReceipt = {
+    agentId: agent.id,
+    ...(effective.model ? { model: effective.model } : {}),
+    ...(effortApplied && request.effort ? { effort: request.effort } : {}),
+    permissionScope: scope,
+    trust: trustOf(effective),
+    abilities: { ...effective.abilities },
+    ...(request.model ? { requestedModel: request.model } : {}),
+    ...(request.effort ? { requestedEffort: request.effort } : {}),
+    ...(!effortApplied && request.effort ? { fallback: "provider-default" as const } : {}),
+  };
+  return { agent: effective, receipt };
+}
+
+/**
  * THE SENTENCE FOR A SAVE THAT ARRIVED IN PIECES. It says what happened and
  * what to do, and it names no fields — the person did not choose a field name,
  * a program did.
@@ -6678,6 +6918,10 @@ export function validateRunRecord(record: unknown): string | null {
   // nothing at all, so a stored run cannot claim a rule that does not exist
   const badTrust = validateTrust(r.trust);
   if (badTrust) return badTrust;
+  if (r.invocation !== undefined) {
+    const badInvocation = validateAgentInvocationReceipt(r.invocation, r.agentId);
+    if (badInvocation) return badInvocation;
+  }
   // …and whose setup it ran in: a yes/no or nothing at all, never a word that
   // merely looks true. A record that overstates this would tell him a turn was
   // sandboxed when it was not, which is worse than not recording it.

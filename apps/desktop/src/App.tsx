@@ -56,6 +56,7 @@ import {
      there is no copy here that could describe a setting as something milder than
      it is. `NEW_AGENT_TRUST` is the middle one; see the note beside it. */
   AgentTrust, NEW_AGENT_TRUST, TRUST_LEVELS, trustLevel, trustOf, trustWords,
+  AgentInvocationRequest, InvocationPermissionScope, invocationTargetFor,
   NEW_AGENT_USE_OWNER_SETUP,
   /* HOW HARD AN AGENT SHOULD THINK — the four words and the sentence under each
      one, from the same file the two command lines read. The screen owns no copy:
@@ -7995,6 +7996,36 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const ready = scopedUploads.filter(u => u.state === "done").length;
   const busy = scopedUploads.some(u => u.state === "sending");
   const durableDraft = client.draft(channel.id, replyTo);
+  /** Agents explicitly named in the current text are the only real invocation
+      targets. Controls never appear for ordinary prose or a person mention. */
+  const roomAgents = useMemo(
+    () => world.agents.filter(a => channel.memberIds.includes(a.id)),
+    [world.agents, channel.memberIds]);
+  const invocationAgent = useMemo(() => {
+    const target = invocationTargetFor(text, roomAgents);
+    return roomAgents.find(agent => agent.id === target && mayDriveAgent(world.me?.id ?? "", agent));
+  }, [roomAgents, text, world.me?.id]);
+  const invocationTarget = invocationAgent?.id;
+  const invocationProvider = invocationAgent?.provider === "codex" ? "codex" : "claude";
+  const invocationModels = invocationAgent
+    ? (world.harness?.[invocationProvider]?.models ?? []).filter(model => typeof model === "string" && model)
+    : [];
+  const [invocationOpen, setInvocationOpen] = useState(false);
+  const [invocationModel, setInvocationModel] = useState<string | undefined>(undefined);
+  const [invocationEffort, setInvocationEffort] = useState<AgentEffort | undefined>(undefined);
+  const [invocationScope, setInvocationScope] = useState<InvocationPermissionScope>("agent");
+  const invocationRef = useRef<HTMLElement>(null);
+  const priorInvocationTarget = useRef<ID | undefined>(undefined);
+  useEffect(() => {
+    if (priorInvocationTarget.current === invocationTarget) return;
+    priorInvocationTarget.current = invocationTarget;
+    setInvocationOpen(false);
+    setInvocationScope("agent");
+    setInvocationModel(undefined);
+    setInvocationEffort(undefined);
+  }, [invocationTarget]);
+  useEscapeCloses(() => setInvocationOpen(false), invocationOpen && !!invocationAgent);
+  useClickAwayCloses(invocationRef, () => setInvocationOpen(false), invocationOpen && !!invocationAgent);
   const hasComposerAccess = !!world.me && (channel.memberIds.includes(world.me.id)
     || world.agents.some(agent => agent.ownerId === world.me!.id && channel.memberIds.includes(agent.id)));
   const recordingAllowed = voiceRecordingAllowed({
@@ -8541,9 +8572,6 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   }, [menuOpen]);
 
   /** the agents actually IN this room — an agent elsewhere cannot be told anything here */
-  const roomAgents = useMemo(
-    () => world.agents.filter(a => channel.memberIds.includes(a.id)),
-    [world.agents, channel.memberIds]);
   /* The button's word follows the same explicit room invocation facts the
      engine will use. This is presentation only; `sendNow` remains the one
      message submission path for both labels. */
@@ -8644,6 +8672,14 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
       {
         type: "send", channelId: channel.id, text: t, replyTo,
         ...(ready.ids.length ? { attachmentIds: ready.ids } : {}),
+        ...(invocationAgent ? {
+          invocation: {
+            agentId: invocationAgent.id,
+            ...(invocationModel ? { model: invocationModel } : {}),
+            ...(invocationEffort ? { effort: invocationEffort } : {}),
+            ...(invocationScope !== "agent" ? { permissionScope: invocationScope } : {}),
+          } satisfies AgentInvocationRequest,
+        } : {}),
       },
       () => {
         suppressEmptyRelayDraft.current = true;
@@ -8780,6 +8816,58 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               </button>
             ))}
           </div>
+        )}
+        {invocationAgent && (
+          <section ref={invocationRef} className="invocation-controls" data-invocation-agent={invocationAgent.id}
+            aria-label={`Invocation controls for ${invocationAgent.name}`}>
+            <button type="button" className="invocation-toggle"
+              aria-expanded={invocationOpen} aria-controls={`invocation-panel-${channel.id}`}
+              onClick={() => setInvocationOpen(open => !open)}>
+              <span aria-hidden="true">⚙</span>
+              <span>Run {invocationAgent.name}</span>
+              <span className="invocation-summary">
+                {invocationScope === "readOnly" ? "Read only" : trustWords(invocationAgent)}
+              </span>
+            </button>
+            {invocationOpen && (
+              <div className="invocation-panel" id={`invocation-panel-${channel.id}`} role="group"
+                aria-label={`Settings for running ${invocationAgent.name}`}>
+                <label>
+                  <span>Model</span>
+                  <select aria-label="Invocation model" value={invocationModel ?? ""}
+                    disabled={invocationModels.length === 0}
+                    onChange={e => setInvocationModel(e.target.value || undefined)}>
+                    <option value="">Agent's model</option>
+                    {invocationModels.length === 0 && <option value="" disabled>Provider catalog unavailable</option>}
+                    {invocationModels.map(model => <option key={model} value={model}>{model}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>Thinking time</span>
+                  <select aria-label="Invocation effort" value={invocationEffort ?? ""}
+                    onChange={e => setInvocationEffort((e.target.value || undefined) as AgentEffort | undefined)}>
+                    <option value="">Agent's setting</option>
+                    {AGENT_EFFORT_CHOICES.map(choice => <option key={choice.id} value={choice.id}>{choice.label}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>Permission scope</span>
+                  <select aria-label="Invocation permission scope" value={invocationScope}
+                    onChange={e => setInvocationScope(e.target.value as InvocationPermissionScope)}>
+                    <option value="agent">Agent permissions · {trustWords(invocationAgent)}</option>
+                    <option value="readOnly">Read only · inspection only</option>
+                  </select>
+                </label>
+                <p className="invocation-facts">
+                  {CAPABILITIES.filter(capability => effectiveAbilities(invocationAgent)[capability.ability] === true)
+                    .map(capability => capability.label).join(" · ") || "No abilities enabled"}
+                  {" · "}{invocationProvider === "codex" ? "Codex" : "Claude"}
+                </p>
+                {invocationModels.length === 0 &&
+                  <p className="invocation-note" role="status">Provider catalog unavailable; model overrides are disabled. Leave the model at the agent setting.</p>}
+              </div>
+            )}
+          </section>
         )}
         {/* Picked files wait here, above the words, until the message goes.
             Each one says what is happening to it — going up, up, or refused in

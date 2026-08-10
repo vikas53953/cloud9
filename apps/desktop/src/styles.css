@@ -2389,6 +2389,18 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .parked .pw{flex-basis:100%;font-size:11.5px;line-height:1.45;color:var(--ink-3);}
 
 .uploadtray{display:flex;flex-direction:column;gap:6px;margin-bottom:9px;}
+/* Per-message agent settings stay compact and collapsed until a real @agent
+   invocation is present. All labels are controls (not decorative overrides). */
+.invocation-controls{margin:4px 0 9px;border:1px solid var(--line-soft);border-radius:var(--radius-s);background:var(--surface-2);overflow:hidden;}
+.invocation-toggle{display:flex;align-items:center;gap:7px;width:100%;padding:7px 9px;border:0;background:transparent;color:var(--ink);font-size:11.5px;font-weight:650;text-align:left;cursor:pointer;}
+.invocation-toggle:hover{background:var(--surface);}
+.invocation-summary{margin-left:auto;color:var(--ink-3);font-size:10.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.invocation-panel{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;padding:8px 9px 9px;border-top:1px solid var(--line-soft);}
+.invocation-panel label{display:flex;flex-direction:column;gap:4px;min-width:0;color:var(--ink-2);font-size:10.5px;font-weight:650;}
+.invocation-panel select{width:100%;min-width:0;height:29px;border:1px solid var(--line);border-radius:var(--radius-xs);background:var(--surface);color:var(--ink);padding:3px 5px;font-size:11px;}
+.invocation-facts,.invocation-note{grid-column:1/-1;margin:1px 0 0;color:var(--ink-3);font-size:10.5px;line-height:1.35;}
+.invocation-note{color:var(--marigold);}
+@media (max-width:560px){.invocation-panel{grid-template-columns:1fr;}.invocation-summary{max-width:45%;}.invocation-panel select{height:32px;}.invocation-controls{margin-bottom:7px;}}
 .uptile{
   display:flex;align-items:center;gap:10px;min-width:0;min-height:48px;
   border:1px solid var(--line-soft);border-radius:var(--radius-s);

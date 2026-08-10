@@ -16,6 +16,7 @@ import {
   SocialPost, SocialReaction, SocialReadEntry, SocialLink, SOCIAL_LIMITS,
   EngineeringPulseUpdate, redactDeletedPulseUpdate,
   RunRecord, RUN_RETENTION, Task, User, StoredHook, isSafeStoredId, nameKey, newId,
+  canonicalizeAgentInvocation,
   RunCheckpoint, RecoveryRequest, RecoveryReceipt, recoveryRequestFingerprint, validateRunCheckpoint, RUN_RECOVERY_LIMITS,
   NOTIFICATION_INBOX_LIMITS,
   ChatDraft, DraftAttachment, DRAFT_LIMITS,
@@ -2483,10 +2484,11 @@ export class Store implements JoinHubStore {
 
   /** Canonical payload identity for the author-scoped send ledger. */
   messagePayloadHash(input: {
-    channelId: ID; text: string; replyTo?: ID; attachmentIds?: ID[];
+    channelId: ID; text: string; replyTo?: ID; attachmentIds?: ID[]; invocation?: unknown;
   }): string {
     return createHash("sha256").update(JSON.stringify([
       input.channelId, input.text, input.replyTo ?? null, input.attachmentIds ?? [],
+      canonicalizeAgentInvocation(input.invocation) ?? null,
     ])).digest("hex");
   }
 

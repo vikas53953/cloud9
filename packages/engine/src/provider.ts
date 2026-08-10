@@ -179,6 +179,8 @@ export interface ThreadContinuity {
 
 export interface ClaudeProvider {
   respond(input: RespondInput): Promise<string>;
+  /** True only when this route can apply a per-turn effort override. */
+  supportsEffort?(): boolean;
   /** True only when this provider exposes genuine incremental response text. */
   canStreamResponse?(): boolean;
   /**
@@ -727,6 +729,7 @@ export class MockProvider implements ClaudeProvider {
   }
 
   canStreamResponse(): boolean { return false; }
+  supportsEffort(): boolean { return false; }
 
   private cannedBody(
     { agent, trigger, triggerAuthor }: Pick<RespondInput, "agent" | "trigger" | "triggerAuthor">,

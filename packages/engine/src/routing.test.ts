@@ -19,6 +19,7 @@ class StubProvider implements ClaudeProvider {
     this.calls.push(input);
     return `reply from ${this.label}`;
   }
+  supportsEffort(): boolean { return true; }
 }
 
 const agent = (over: Partial<AgentDef> = {}): AgentDef => ({
@@ -39,6 +40,7 @@ function makeEngine() {
     relayUrl: "ws://127.0.0.1:1", token: "t", dataDir: tmp(),
     provider: claude, codexProvider: codex,
   });
+  engine.harnessModels = () => ["claude-sonnet-4-5", "claude-haiku-4-5"];
   const sent: { agentId: string; text: string }[] = [];
   engine.agentSend = (agentId, _channelId, text) => { sent.push({ agentId, text }); };
   return { engine, claude, codex, sent };
@@ -69,6 +71,34 @@ test("a claude agent's turn goes to the Claude provider only", async () => {
   assert.equal(claude.calls.length, 1);
   assert.equal(codex.calls.length, 0);
   assert.equal(sent[0].text, "reply from claude");
+});
+
+test("a message invocation narrows the agent and reaches the provider", async () => {
+  const { engine, claude } = makeEngine();
+  const message: Message = {
+    ...trigger, text: "@Scout inspect this", invocation: {
+      agentId: "a1", model: "claude-sonnet-4-5", effort: "hard", permissionScope: "readOnly",
+    },
+  };
+  await engine.takeTurn(agent({ model: "claude-haiku-4-5" }), "c1", message);
+  assert.equal(claude.calls.length, 1);
+  assert.equal(claude.calls[0].agent.model, "claude-sonnet-4-5");
+  assert.equal(claude.calls[0].agent.effort, "hard");
+  assert.equal(claude.calls[0].agent.trust, "askEveryTime");
+  assert.ok(Object.values(claude.calls[0].agent.abilities).every(value => value === false));
+});
+
+test("a forged invocation receipt is dropped before the run is persisted", async () => {
+  const { engine } = makeEngine();
+  await engine.respondAs(agent(), {
+    context: "", trigger: "inspect", triggerAuthor: "Vikas",
+    invocation: {
+      agentId: "not-a1", permissionScope: "agent", trust: "askEveryTime",
+      abilities: { webSearch: false, files: false, schedules: false, background: false },
+    } as never,
+  });
+  assert.equal(engine.lastRun?.invocation, undefined);
+  assert.match(engine.lastRun?.error ?? "", /receipt was refused/);
 });
 
 test("an unconnected harness makes the agent say so in plain words", async () => {

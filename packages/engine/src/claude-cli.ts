@@ -933,6 +933,7 @@ export class ClaudeCliProvider implements ClaudeProvider {
    * that says what it does and what it must be paired with).
    */
   canPlan(): boolean { return true; }
+  supportsEffort(): boolean { return true; }
 
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir, onTrace, onStep } = input;

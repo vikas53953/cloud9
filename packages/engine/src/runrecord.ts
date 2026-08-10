@@ -29,7 +29,7 @@
 // What stays here is what only the engine can do: read a harness's stream
 // (`traceFromStream` + an `EventMapper`) and turn one turn into a record.
 import {
-  AgentTrust, RunKind, RunOutcome, RunRecord, RunStep, RunStepKind, RunUsage, RUN_LIMITS,
+  AgentTrust, AgentInvocationReceipt, RunKind, RunOutcome, RunRecord, RunStep, RunStepKind, RunUsage, RUN_LIMITS,
   SpendCapWhich,
 } from "@cloud9/shared";
 
@@ -246,6 +246,7 @@ export interface RunSeed {
   channelId?: string;
   taskId?: string;
   replyTo?: string;
+  invocation?: AgentInvocationReceipt;
   requestedBy: string;
   requestedByKind: "human" | "agent" | "schedule";
   ask: string;
@@ -303,6 +304,7 @@ export interface RunFinish {
   artifacts?: Array<{ id: string; name: string; version?: number; size?: number; available?: boolean }>;
   checkpointId?: string;
   priorRunId?: string;
+  invocation?: AgentInvocationReceipt;
 }
 
 /** A run id that is also a safe file name and sorts by time. No underscores: the
@@ -325,6 +327,7 @@ export function buildRunRecord(seed: RunSeed, finish: RunFinish, id = newRunId()
     ...(seed.channelId ? { channelId: seed.channelId } : {}),
     ...(seed.taskId ? { taskId: seed.taskId } : {}),
     ...(seed.replyTo ? { replyTo: seed.replyTo } : {}),
+    ...(seed.invocation ? { invocation: seed.invocation } : {}),
     requestedBy: seed.requestedBy,
     requestedByKind: seed.requestedByKind,
     ask: clip(seed.ask.trim(), RUN_LIMITS.ask),

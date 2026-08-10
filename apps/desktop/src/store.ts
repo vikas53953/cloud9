@@ -1467,7 +1467,7 @@ export class RelayClient {
   }
 
   private clientMessageKey(frame: Extract<ClientFrame, { type: "send" }>): string {
-    return JSON.stringify([frame.channelId, frame.text, frame.replyTo ?? null, frame.attachmentIds ?? []]);
+    return JSON.stringify([frame.channelId, frame.text, frame.replyTo ?? null, frame.attachmentIds ?? [], frame.invocation ?? null]);
   }
 
   private nextClientMessageId(): ID {
@@ -1721,7 +1721,7 @@ export class RelayClient {
     const scopeKey = this.draftKey(frame.channelId, threadId);
     const attachmentIds = [...new Set(frame.attachmentIds ?? [])];
     const signature = JSON.stringify([
-      frame.channelId, frame.text, threadId ?? null, attachmentIds,
+      frame.channelId, frame.text, threadId ?? null, attachmentIds, frame.invocation ?? null,
     ]);
     const prior = this.pendingSendIntents.get(scopeKey);
     // A payload change starts a fresh intent. An uncertain/lost attempt keeps

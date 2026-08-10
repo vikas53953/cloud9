@@ -406,6 +406,69 @@ test("an agent's message belongs to its owner, not to whoever shares the room", 
   raj.close(); engine.close(); owner.close(); relay.close();
 });
 
+test("per-message invocation controls are mention-bound, validated, and durable", async () => {
+  const { relay, owner, general } = await stand("chat-invocation-controls.db");
+  try {
+  owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
+  const scout = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
+  owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Guide" } as never });
+  const guide = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(
+    f => f.type === "agent" && f.agent.name === "Guide")).agent;
+  owner.send({ type: "addMembers", channelId: general.id, memberIds: [scout.id, guide.id] });
+  await owner.wait(f => f.type === "channel"
+    && f.channel.memberIds.includes(scout.id) && f.channel.memberIds.includes(guide.id));
+
+  owner.send({
+    type: "send", channelId: general.id, text: "@Scout inspect this",
+    clientMessageId: "cm-invocation-controls",
+    invocation: { agentId: scout.id, effort: "hard", permissionScope: "readOnly" },
+  });
+  const accepted = (await owner.wait<Extract<ServerFrame, { type: "message" }>>(
+    f => f.type === "message" && f.message.text === "@Scout inspect this")).message;
+  assert.deepEqual(accepted.invocation, {
+    agentId: scout.id, effort: "hard", permissionScope: "readOnly",
+  });
+  assert.deepEqual(relay.store.message(accepted.id)?.invocation, accepted.invocation);
+
+  // A lost acknowledgement may reorder keys and carry stale UI-only fields;
+  // the retry must still replay the original row rather than create a second.
+  owner.frames.length = 0;
+  owner.send({
+    type: "send", channelId: general.id, text: "@Scout inspect this",
+    clientMessageId: "cm-invocation-controls",
+    invocation: { permissionScope: "readOnly", effort: "hard", agentId: scout.id, staleUiKey: "ignored" } as never,
+  });
+  const replay = (await owner.wait<Extract<ServerFrame, { type: "message" }>>(
+    f => f.type === "message" && f.message.id === accepted.id)).message;
+  assert.equal(replay.id, accepted.id);
+
+  owner.send({
+    type: "send", channelId: general.id, text: "@Scout model check",
+    invocation: { agentId: scout.id, model: "claude-sonnet-4-5" },
+  });
+  const unavailable = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(unavailable.error, /catalog/);
+  owner.frames.length = 0;
+
+  owner.send({
+    type: "send", channelId: general.id, text: "@Scout @Guide compare these",
+    invocation: { agentId: scout.id, effort: "hard" },
+  });
+  const ambiguous = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(ambiguous.error, /exactly one|unambiguous/);
+  owner.frames.length = 0;
+
+  owner.send({
+    type: "send", channelId: general.id, text: "ordinary prose",
+    invocation: { agentId: scout.id, model: "claude-sonnet-4-5" },
+  });
+  const refused = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+  assert.match(refused.error, /mention the agent|exactly one|unambiguous/);
+  } finally {
+    owner.close(); relay.close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // 5. Threads
 // ---------------------------------------------------------------------------

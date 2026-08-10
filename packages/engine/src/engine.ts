@@ -11,6 +11,8 @@ import {
   ChannelMemoryPolicy, ChannelMemoryMode, defaultChannelMemoryMode,
   channelMemoryMaySave, channelMemoryMayUse,
   Message, Project, ReceiptStage, ReceiptVerdict, RemoteActionFacts, RunRecord, ServerFrame,
+  AgentInvocationReceipt, agentForInvocation, invocationTargetFor, validateAgentInvocation,
+  validateAgentInvocationReceipt, validateRunRecord,
   Task, TaskStatus, WorkReaction,
   WorldState, describeRemoteAction, isSafeFileName,
   mayDriveAgent, shareableRun, validateAgentInput, validateTaskSummary,
@@ -260,6 +262,8 @@ export interface TurnInput {
   reviewOnly?: boolean;
   /** Public link back to a failed/cancelled/refused run being recovered. */
   priorRunId?: ID;
+  /** Validated per-message controls, carried into the public run receipt. */
+  invocation?: AgentInvocationReceipt;
 }
 
 export class Engine {
@@ -864,6 +868,19 @@ export class Engine {
       channelAgents.some(roomAgent => roomAgent.id === a.id)
       && a.lifecycle !== "paused" && a.lifecycle !== "disabled"
       && mayDriveAgent(message.authorId, a));
+    const invocationTarget = message.invocation
+      ? invocationTargetFor(message.text, channelAgents)
+      : undefined;
+    if (message.invocation && invocationTarget !== message.invocation.agentId) {
+      const refusalAgent = this.myAgents.find(a => a.id === message.invocation!.agentId);
+      if (refusalAgent) {
+        this.refuseInvocation(refusalAgent, channel.id, message,
+          invocationTarget
+            ? "choose invocation controls for the one agent named in this message"
+            : "the message must name exactly one unambiguous agent");
+      }
+      return;
+    }
 
     if (message.authorKind === "human" && isBrakedReset(history)) {
       // a human spoke — lift any brake status display
@@ -909,7 +926,11 @@ export class Engine {
     }
 
     for (const agent of this.myAgents) {
-      if (commandHasExplicitTarget) {
+      if (message.invocation) {
+        if (agent.id !== invocationTarget) continue;
+        if (!mayDriveAgent(message.authorId, agent)) continue;
+        if (agent.lifecycle === "paused" || agent.lifecycle === "disabled") continue;
+      } else if (commandHasExplicitTarget) {
         // Explicit command targets still require an owner-authorised human and
         // a live in-room agent. Unknown/ambiguous targets are handled once by
         // the first room agent below; no other agent may free-chatter into the
@@ -1272,6 +1293,7 @@ export class Engine {
       ...(input.channelId ? { channelId: input.channelId } : {}),
       ...(input.taskId ? { taskId: input.taskId } : {}),
       ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+      ...(input.invocation ? { invocation: input.invocation } : {}),
       requestedBy: input.triggerAuthor,
       requestedByKind: input.requesterKind ?? "human",
       ask: input.trigger,
@@ -1942,7 +1964,20 @@ export class Engine {
    */
   private recordRun(seed: RunSeed, finish: RunFinish, id?: string): RunRecord | undefined {
     try {
-      const record = buildRunRecord(seed, finish, id);
+      let record = buildRunRecord(seed, finish, id);
+      const bad = validateRunRecord(record);
+      if (bad && record.invocation) {
+        // A provider or older caller must not smuggle an unbounded receipt into
+        // the local run store. Keep the run audit, drop only the bad metadata,
+        // and make the redaction visible in its public error sentence.
+        const { invocation: _discarded, ...withoutInvocation } = record;
+        record = {
+          ...withoutInvocation,
+          error: withoutInvocation.error ?? "invocation receipt was refused before persistence",
+        };
+      }
+      const stillBad = validateRunRecord(record);
+      if (stillBad) throw new Error(stillBad);
       this.lastRun = record;
       this.runs.save(record);
       this.publishRun(record);
@@ -2245,11 +2280,47 @@ export class Engine {
     agent: AgentDef, channelId: ID, trigger: Message,
     opts: { planFirst?: boolean; reviewOnly?: boolean } = {},
   ): Promise<void> {
-    this.setStatus(agent.id, "working");
+    // The relay has already checked the request, but this is the last gate on
+    // the machine that spends the provider call. Re-check the model catalog and
+    // apply only a narrowing permission scope; a stale/forged message cannot
+    // widen the stored agent.
+    const request = trigger.invocation;
+    if (request) {
+      const room = this.channel(channelId);
+      const roomAgents = this.state?.agents.filter(candidate =>
+        !!room?.memberIds.includes(candidate.id)) ?? [agent];
+      const target = invocationTargetFor(trigger.text, roomAgents);
+      if (target !== agent.id) {
+        const problem = target
+          ? "choose invocation controls for the one agent named in this message"
+          : "the message must name exactly one unambiguous agent";
+        this.refuseInvocation(agent, channelId, trigger, problem);
+        return;
+      }
+    }
+    const provider = request ? this.providerFor(agent) : undefined;
+    const modelCatalog = request ? this.harnessModels?.(agent.provider ?? "claude") : undefined;
+    if (request) {
+      const problem = validateAgentInvocation(agent, request, modelCatalog);
+      if (problem) {
+        this.refuseInvocation(agent, channelId, trigger, problem);
+        return;
+      }
+      if (problem) {
+        this.agentSend(agent.id, channelId, `I could not start that invocation â€” ${problem}.`);
+        return;
+      }
+    }
+    const applied = request
+      ? agentForInvocation(agent, request, { effortSupported: provider?.supportsEffort?.() === true })
+      : { agent };
+    const turnAgent = applied.agent;
+    const invocationReadOnly = applied.receipt?.permissionScope === "readOnly";
+    this.setStatus(turnAgent.id, "working");
     const replyTo = threadOf(trigger);
     try {
       const brief: TurnInput = {
-        context: this.renderContext(channelId, agent, replyTo),
+        context: this.renderContext(channelId, turnAgent, replyTo),
         trigger: trigger.text,
         triggerAuthor: trigger.authorName,
         kind: "chat",
@@ -2258,14 +2329,15 @@ export class Engine {
         // the message the 👀 / 💭 / verdict are drawn on — the one being answered
         triggerMessageId: trigger.id,
         ...(replyTo ? { replyTo } : {}),
-        ...(opts.reviewOnly ? { reviewOnly: true } : {}),
+        ...(opts.reviewOnly || invocationReadOnly ? { reviewOnly: true } : {}),
+        ...(applied.receipt ? { invocation: applied.receipt } : {}),
         // THE SAME THREAD, TURN AFTER TURN — offered so the harness can continue
         // its own session rather than being re-told the room. Chat turns only:
         // a delegated job, a scheduled check-in and repository work all reach
         // `respondAs` by other routes and stay cold, which is this slice's
         // deliberate edge (`sessionresume.ts`).
         ...(() => {
-          const thread = this.threadContinuity(agent, channelId, trigger);
+          const thread = this.threadContinuity(turnAgent, channelId, trigger);
           return thread ? { thread } : {};
         })(),
       };
@@ -2277,28 +2349,41 @@ export class Engine {
       // A PLAN TURN DOES NOT RESUME THE THREAD, so the continuity offered above
       // is dropped for it — see `planResume` in claude-cli.ts for why a
       // read-only session must not become the one the real turn continues.
-      if (!opts.reviewOnly && (opts.planFirst || showsPlanFirst(agent))) {
+      if (!opts.reviewOnly && !invocationReadOnly && (opts.planFirst || showsPlanFirst(turnAgent))) {
         const { thread: _dropped, ...cold } = brief;
-        await this.planFirstTurn(agent, cold);
+        await this.planFirstTurn(turnAgent, cold);
         return;
       }
-      const text = await this.respondAs(agent, brief);
-      this.agentSend(agent.id, channelId, text, {
+      const text = await this.respondAs(turnAgent, brief);
+      this.agentSend(turnAgent.id, channelId, text, {
         ...(replyTo ? { replyTo } : {}),
         ...(trigger.id ? { responseTriggerMessageId: trigger.id } : {}),
       });
     } catch (err) {
       // A STOP IS NOT A BREAKAGE. He pressed the button, so the agent says so
       // in its own words rather than being reported as broken.
-      this.agentSend(agent.id, channelId,
-        saidWhenTurnEnded(err, `${agent.name} could not take a turn`),
+      this.agentSend(turnAgent.id, channelId,
+        saidWhenTurnEnded(err, `${turnAgent.name} could not take a turn`),
         {
           ...(replyTo ? { replyTo } : {}),
           ...(trigger.id ? { responseTriggerMessageId: trigger.id } : {}),
         });
     } finally {
-      this.setStatus(agent.id, "idle");
+      this.setStatus(turnAgent.id, "idle");
     }
+  }
+
+  /** Refuse an invalid invocation before any provider work, with an auditable run. */
+  private refuseInvocation(agent: AgentDef, channelId: ID, trigger: Message, problem: string): void {
+    const now = Date.now();
+    this.recordRun({
+      kind: "chat", agentId: agent.id, agentName: agent.name,
+      provider: agent.provider ?? "claude", channelId,
+      requestedBy: trigger.authorName,
+      requestedByKind: trigger.authorKind === "agent" ? "agent" : "human",
+      ask: trigger.text, startedAt: now,
+    }, { finishedAt: now, outcome: "refused", error: `invocation refused: ${problem}` });
+    this.agentSend(agent.id, channelId, `I could not start that invocation — ${problem}.`);
   }
 
   /** Claim and execute tasks assigned to my agents (status not_started). */

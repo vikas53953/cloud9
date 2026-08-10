@@ -752,6 +752,7 @@ export class CodexProvider implements ClaudeProvider {
 
   // Codex exec --json has no genuine response text delta event in this seam.
   canStreamResponse(): boolean { return false; }
+  supportsEffort(): boolean { return true; }
 
   async respond(input: RespondInput): Promise<string> {
     const { agent, workdir, onTrace, onStep } = input;

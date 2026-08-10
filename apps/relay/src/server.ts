@@ -12,6 +12,7 @@ import {
   StoredArtifact, StoredArtifactVersion, artifactForPublic,
   Channel, ChannelMember,
   ChannelRole, ChannelSummary, ClientFrame, HarnessState, ID, Message,
+  AgentInvocationRequest, canonicalizeAgentInvocation, invocationTargetFor, validateAgentInvocation,
   isChannelMemoryMode,
   MESSAGE_LIMITS, ARTIFACT_LIMITS, ATTACHMENT_LIMITS, ATTACHMENT_TICKET, Project, PROJECT_LIMITS,
   PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, PublicUpdateLink,
@@ -3720,7 +3721,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
           this.channelFor(conn.userId, existing.channelId);
           const payloadHash = this.store.messagePayloadHash({
             channelId: frame.channelId, text: frame.text, replyTo: frame.replyTo,
-            attachmentIds: frame.attachmentIds,
+            attachmentIds: frame.attachmentIds, invocation: frame.invocation,
           });
           if (existing.channelId !== frame.channelId || existing.payloadHash !== payloadHash) {
             throw new Error("that client message id was already used for different words");
@@ -3738,8 +3739,10 @@ private viewProject(project: Project, viewerId?: ID): Project {
         const bad = validateMessageText(frame.text, hasFiles);
         if (bad) throw new Error(bad);
         const replyTo = this.resolveReplyTo(channel, frame.replyTo);
+        const invocation = this.invocationFor(conn, channel, frame.text, frame.invocation);
         const payloadHash = this.store.messagePayloadHash({
           channelId: frame.channelId, text: frame.text, replyTo: frame.replyTo, attachmentIds: frame.attachmentIds,
+          invocation,
         });
         // The same 24-hour parked TTL applies at send time, not just at relay
         // startup/upload. A stale draft id must be refused rather than claimed.
@@ -3751,7 +3754,11 @@ private viewProject(project: Project, viewerId?: ID): Project {
           authorId: user.id, authorName: user.name, authorKind: "human",
           clientMessageId,
           text: frame.text, ts: Date.now(),
-          mentions: this.mentionsFor(conn.userId, frame.text),
+          mentions: [...new Set([
+            ...this.mentionsFor(conn.userId, frame.text),
+            ...(invocation ? [invocation.agentId] : []),
+          ])],
+          ...(invocation ? { invocation } : {}),
           ...(replyTo ? { replyTo } : {}),
           ...(attachments.length ? { attachments } : {}),
         }, frame.tempId, frame.requestId, conn.userId, replyTo, attachmentIds,
@@ -7774,7 +7781,18 @@ private viewProject(project: Project, viewerId?: ID): Project {
   private recordRun(conn: Conn, record: RunRecord): void {
     if (conn.client !== "engine") throw new Error("only the engine reports what an agent did");
     const bad = validateRunRecord(record);
-    if (bad) throw new Error(bad);
+    if (bad && record.invocation) {
+      // Preserve the run audit while dropping only an unverifiable invocation
+      // receipt. A forged receipt must never reach the durable row or a guest
+      // projection, but it also must not erase evidence that the turn ended.
+      const { invocation: _discarded, ...withoutInvocation } = record;
+      record = {
+        ...withoutInvocation,
+        error: withoutInvocation.error ?? "invocation receipt was refused before persistence",
+      };
+    }
+    const stillBad = validateRunRecord(record);
+    if (stillBad) throw new Error(stillBad);
     // WHOSE AGENT — stored state, never the record. This one line is what stops
     // an engine host reporting runs against another person's agent and, through
     // that, planting a readable record in a room it was never in.
@@ -8062,6 +8080,34 @@ private viewProject(project: Project, viewerId?: ID): Project {
 
   private directory(): { id: ID; name: string }[] {
     return [...this.store.users(), ...this.store.agents()].map(x => ({ id: x.id, name: x.name }));
+  }
+
+  /** Validate and canonicalize optional per-message agent controls. */
+  private invocationFor(
+    conn: Conn, channel: Channel, text: string, request?: AgentInvocationRequest,
+  ): AgentInvocationRequest | undefined {
+    if (!request) return undefined;
+    const agent = this.store.agents().find(candidate => candidate.id === request.agentId);
+    if (!agent || !channel.memberIds.includes(agent.id)) {
+      throw new Error("that agent is not in this conversation");
+    }
+    if (!mayDriveAgent(conn.userId, agent)) {
+      throw new Error("you may not invoke that agent");
+    }
+    const roomAgents = this.store.agents().filter(candidate => channel.memberIds.includes(candidate.id));
+    const target = invocationTargetFor(text, roomAgents);
+    if (target !== agent.id) {
+      throw new Error(target
+        ? "choose invocation controls for the one agent named in this message"
+        : "mention exactly one unambiguous agent before choosing invocation controls");
+    }
+    const provider = agent.provider === "codex" ? "codex" : "claude";
+    const models = this.harness[agent.ownerId]?.[provider].models;
+    const problem = validateAgentInvocation(agent, request, models);
+    if (problem) throw new Error(problem);
+    // Do not persist arbitrary client keys. Only canonical public metadata
+    // crosses to the engine and into the durable message row.
+    return canonicalizeAgentInvocation(request)!;
   }
 
   private postMessage(message: Message, tempId?: string, requestId?: ID, draftOwnerId?: ID,
