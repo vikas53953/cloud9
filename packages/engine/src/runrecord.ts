@@ -245,6 +245,7 @@ export interface RunSeed {
   model?: string;
   channelId?: string;
   taskId?: string;
+  replyTo?: string;
   requestedBy: string;
   requestedByKind: "human" | "agent" | "schedule";
   ask: string;
@@ -293,6 +294,15 @@ export interface RunFinish {
   fellBackTo?: string;
   /** this run was the agent writing a plan, not doing the work */
   planOnly?: boolean;
+  /** Observable public checkpoint metadata, never provider internals. */
+  effort?: string;
+  branch?: string;
+  commit?: string;
+  files?: string[];
+  pullRequest?: string;
+  artifacts?: Array<{ id: string; name: string; version?: number; size?: number; available?: boolean }>;
+  checkpointId?: string;
+  priorRunId?: string;
 }
 
 /** A run id that is also a safe file name and sorts by time. No underscores: the
@@ -314,6 +324,7 @@ export function buildRunRecord(seed: RunSeed, finish: RunFinish, id = newRunId()
     ...(seed.model ? { model: seed.model } : {}),
     ...(seed.channelId ? { channelId: seed.channelId } : {}),
     ...(seed.taskId ? { taskId: seed.taskId } : {}),
+    ...(seed.replyTo ? { replyTo: seed.replyTo } : {}),
     requestedBy: seed.requestedBy,
     requestedByKind: seed.requestedByKind,
     ask: clip(seed.ask.trim(), RUN_LIMITS.ask),
@@ -342,6 +353,14 @@ export function buildRunRecord(seed: RunSeed, finish: RunFinish, id = newRunId()
     ...(finish.capStop ? { capStop: finish.capStop } : {}),
     ...(finish.fellBackTo ? { fellBackTo: finish.fellBackTo } : {}),
     ...(finish.planOnly ? { planOnly: true } : {}),
+    ...(finish.effort ? { effort: finish.effort } : {}),
+    ...(finish.branch ? { branch: finish.branch } : {}),
+    ...(finish.commit ? { commit: finish.commit } : {}),
+    ...(finish.files ? { files: finish.files } : {}),
+    ...(finish.pullRequest ? { pullRequest: finish.pullRequest } : {}),
+    ...(finish.artifacts ? { artifacts: finish.artifacts } : {}),
+    ...(finish.checkpointId ? { checkpointId: finish.checkpointId } : {}),
+    ...(finish.priorRunId ? { priorRunId: finish.priorRunId } : {}),
     replyChars: finish.reply?.length ?? 0,
     events: t?.events ?? 0,
     ...(t?.truncated ? { truncated: true } : {}),

@@ -846,9 +846,16 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 .callout.run.out-failed{border-color:color-mix(in srgb,var(--madder) 45%,transparent);}
 .callout.run.out-failed .hd h4{color:var(--madder);}
 .callout.run.out-cancelled{border-color:color-mix(in srgb,var(--ink-3) 45%,transparent);}
+.callout.run.out-refused{border-color:color-mix(in srgb,var(--pine) 45%,transparent);}
+.callout.run.out-refused .hd h4{color:var(--pine);}
 .callout.run .runsum{
   margin:0;color:var(--ink);font-size:13.5px;font-weight:600;overflow-wrap:anywhere;
 }
+.run-recovery{display:grid;gap:7px;margin-top:12px;padding:11px 12px;border:1px solid color-mix(in srgb,var(--marigold) 38%,var(--line));border-radius:var(--radius-s);background:color-mix(in srgb,var(--marigold-soft) 42%,var(--surface));}
+.run-recovery p{margin:0;font-size:11.5px;overflow-wrap:anywhere;}
+.run-recovery-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.run-recovery-actions .linkish{margin-left:auto;}
+.recovery-reason{color:var(--ink-3);}
 .runmore{
   display:inline-flex;align-items:center;gap:8px;margin-top:2px;padding:5px 0;
   background:none;border:0;cursor:pointer;color:var(--pine);
@@ -941,6 +948,8 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 
 /* ---- an agent's recent work, in its editor ---- */
 .recentwork{display:grid;gap:7px;}
+.run-compare-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:11.5px;}
+.workrow-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:7px;}
 .workrow{border:1px solid var(--line-soft);border-radius:var(--radius-s);background:var(--surface);}
 .workrow .wr-head{
   display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;
@@ -952,8 +961,22 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 .workrow .wr-tx b{font-size:13px;color:var(--ink);overflow-wrap:anywhere;}
 .workrow .wr-sum{font-size:12px;color:var(--ink-2);overflow-wrap:anywhere;}
 .workrow .chip{flex:none;}
+.workrow .compare-toggle{margin-right:8px;white-space:nowrap;}
 .workrow .callout.run{margin:0 13px 13px;}
 .workrow .runwait,.workrow .runmissing,.workrow .runopen{margin:0 13px 13px;}
+.run-comparison-wait{padding:10px 12px;border:1px dashed var(--line);border-radius:var(--radius-s);}
+.run-comparison{display:grid;gap:12px;margin-top:6px;padding:14px;border:1px solid var(--line);border-radius:var(--radius-s);background:var(--surface-2);}
+.run-comparison-heading{display:flex;align-items:start;justify-content:space-between;gap:12px;}
+.run-comparison-heading h4,.run-compare-side h5,.run-comparison-differences h5{margin:0;color:var(--ink);font-size:13px;}
+.run-comparison-heading p{margin:3px 0 0;font-size:11.5px;}
+.run-compare-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+.run-compare-side{min-width:0;padding:10px;border:1px solid var(--line-soft);border-radius:var(--radius-xs);background:var(--surface);}
+.run-compare-side[data-accessible="no"]{border-style:dashed;}
+.run-compare-side .kv{margin:8px 0 0;gap:3px 10px;font-size:11.5px;}
+.run-compare-side .kv dt{font-size:10px;}
+.run-comparison-differences{border-top:1px solid var(--line);padding-top:9px;}
+.run-comparison-differences ul{margin:6px 0 0;padding-left:18px;display:grid;gap:3px;font-size:11.5px;}
+@media (max-width:700px){.run-compare-grid{grid-template-columns:1fr;}.workrow-head{grid-template-columns:1fr;}.workrow .compare-toggle{margin:0 8px 8px;justify-self:start;}}
 
 /* --- what this agent remembers (agent memory) --- */
 .remembers{display:grid;gap:7px;}

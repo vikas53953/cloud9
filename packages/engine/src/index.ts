@@ -178,6 +178,14 @@ export {
   isUsableSessionId, looksLikeRefusedResume, sessionKeyId,
   type SessionKey, type StoredSession, type ResumeVerdict, type ResumeWant,
 } from "./sessionresume.js";
+export {
+  buildRunCheckpoint, recoveryDecision, recoveryRequestFingerprint,
+  compareRecoveryRequest, compareRuns, validateRunCheckpoint, RUN_RECOVERY_LIMITS,
+  type RunCheckpoint, type PublicRunArtifact, type ProviderSessionCapability,
+  type RecoveryMode, type RecoveryAction, type RecoveryDecision,
+  type RecoveryRequest, type RecoveryRequestPayload, type RecoveryReceipt,
+  type ComparableRun, type InaccessibleRun, type RunComparison,
+} from "@cloud9/shared";
 // Parallel git worktrees — one workspace per agent, so several can work one
 // repository at once without colliding (his items 6 and 7).
 export {

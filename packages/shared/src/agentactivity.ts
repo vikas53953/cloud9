@@ -290,7 +290,7 @@ export function agentActivityLine(facts: AgentActivityFacts): AgentActivityLine 
         detail: `${when}. ${facts.last.summary}`,
       };
     }
-    const unhandledEnding: never = facts.last.outcome;
+    const unhandledEnding = facts.last.outcome;
     return notSure(`how its last job ended (${String(unhandledEnding)})`);
   }
 
@@ -402,7 +402,7 @@ function outcomeIsKnown(outcome: RunOutcome | undefined): AgentActivityLine | nu
     case "cancelled":
       return null;
     default: {
-      const unhandled: never = outcome;
+      const unhandled = outcome;
       return notSure(`how its last job ended ("${String(unhandled)}")`);
     }
   }

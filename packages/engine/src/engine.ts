@@ -21,7 +21,7 @@ import {
   // engine, the hub and the window cannot end up with three opinions about the
   // same money.
   humanMoney, findWaste, narrowingOnly, renderTokenUseReport, rollUpTokenUse, tidySaving,
-  RESPONSE_STREAM_LIMITS, type AgentResponseStreamKind,
+  RESPONSE_STREAM_LIMITS, type AgentResponseStreamKind, RecoveryRequest,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
 // WHOSE SETUP EACH TURN RUNS IN — the same one owner both harnesses read, asked
@@ -247,6 +247,8 @@ export interface TurnInput {
    * a plan rather than as the job.
    */
   planOnly?: boolean;
+  /** Public link back to a failed/cancelled/refused run being recovered. */
+  priorRunId?: ID;
 }
 
 export class Engine {
@@ -685,8 +687,60 @@ export class Engine {
       case "handoffReceived":
         void this.receiveHandoff(frame.handoff);
         break;
+      case "runRecoveryRequested":
+        void this.handleRecoveryRequest(frame.request);
+        break;
       default:
         break;
+    }
+  }
+
+  /**
+   * Recovery is always a new turn. The old approval desk is not consulted and
+   * no provider state is reconstructed here: policy, permissions and spending
+   * are re-evaluated by respondAs at action time. Resume remains unavailable
+   * unless a provider implements a real session continuation contract.
+   */
+  private async handleRecoveryRequest(request: RecoveryRequest): Promise<void> {
+    if (request.payload.mode !== "retry" && request.payload.mode !== "resume" && request.payload.mode !== "restart") {
+      console.warn(`[engine] recovery ${request.runId} has an unsupported action; no turn started`);
+      return;
+    }
+    if (request.payload.mode === "resume") {
+      console.warn(`[engine] resume requested for ${request.runId}, but provider resume is not implemented; no turn started`);
+      return;
+    }
+    const agent = this.myAgents.find(a => a.id === request.agentId);
+    if (!agent) return;
+    // Recovery must carry the factual shape of the original turn. A legacy
+    // receipt without that context is refused rather than silently becoming a
+    // chat turn in an invented room.
+    if ((request.kind !== "chat" && request.kind !== "task" && request.kind !== "schedule")
+      || (request.requesterKind !== "human" && request.requesterKind !== "agent" && request.requesterKind !== "schedule")
+      || request.requestedBy === undefined
+      || !request.requestedBy.trim()) {
+      console.warn(`[engine] recovery ${request.runId} has no original turn context; no turn started`);
+      return;
+    }
+    if (request.kind === "task" && (!request.taskId || !request.channelId)) {
+      console.warn(`[engine] recovery ${request.runId} has no task room/context; no turn started`);
+      return;
+    }
+    const channelId = request.channelId;
+    const context = channelId ? this.renderContext(channelId, agent, request.replyTo) : "";
+    const trigger = request.payload.mode === "restart"
+      ? `${request.payload.ask} (restart with context from run ${request.runId})`
+      : request.payload.ask;
+    try {
+      await this.respondAs(agent, {
+        context, trigger, triggerAuthor: request.requestedBy, kind: request.kind,
+        ...(channelId ? { channelId } : {}), ...(request.taskId ? { taskId: request.taskId } : {}),
+        requesterKind: request.requesterKind,
+        ...(request.replyTo ? { replyTo: request.replyTo } : {}),
+        priorRunId: request.runId,
+      });
+    } catch (error) {
+      console.error(`[engine] recovery turn ${request.runId} did not finish:`, error);
     }
   }
 
@@ -1029,6 +1083,7 @@ export class Engine {
       ...(agent.model ? { model: agent.model } : {}),
       ...(input.channelId ? { channelId: input.channelId } : {}),
       ...(input.taskId ? { taskId: input.taskId } : {}),
+      ...(input.replyTo ? { replyTo: input.replyTo } : {}),
       requestedBy: input.triggerAuthor,
       requestedByKind: input.requesterKind ?? "human",
       ask: input.trigger,
@@ -1257,6 +1312,7 @@ export class Engine {
         finishedAt: Date.now(), outcome: "ok", trace, reply: text,
         ...(stoodIn ? { fellBackTo: stoodIn } : {}),
         ...(input.planOnly ? { planOnly: true } : {}),
+        ...(input.priorRunId ? { priorRunId: input.priorRunId } : {}),
       }, turnId);
       if (responseStarted && !responseClosed) {
         responseClosed = true;
@@ -1328,6 +1384,7 @@ export class Engine {
         ...(err instanceof SpendCapReachedError
           ? { capStop: { which: err.which, capUsd: err.capUsd } } : {}),
         ...(input.planOnly ? { planOnly: true } : {}),
+        ...(input.priorRunId ? { priorRunId: input.priorRunId } : {}),
       }, turnId);
       if (responseStarted && !responseClosed) {
         responseClosed = true;

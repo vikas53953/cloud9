@@ -24,6 +24,9 @@ import {
   redactDeletedPulseUpdate, validateEngineeringPulseDraft,
   RepoChoice, REPO_LIST_LIMITS, validateRepoChoice, validateLocalFolder,
   RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
+  RunCheckpoint, RecoveryRequest, RecoveryReceipt, recoveryDecision,
+  compareRecoveryRequest, compareRuns, recoveryRequestFingerprint,
+  buildRunCheckpoint, sanitizeRecoveryAsk,
   // "show me the plan first" (2026-08-05) — the hub still writes the line the
   // owner reads and still bounds what the agent wrote
   planHeadline, tidyPlan, validatePlanAsk,
@@ -100,6 +103,17 @@ interface Conn {
   userId: ID;
   client: "desktop" | "mobile" | "engine";
 }
+
+interface RecoveryChallenge {
+  token: string;
+  requesterId: ID;
+  requestId: ID;
+  payloadFingerprint: string;
+  createdAt: number;
+}
+
+const RECOVERY_CHALLENGE_TTL_MS = 10 * 60_000;
+const RECOVERY_CHALLENGE_LIMIT = 512;
 
 interface LiveTyping extends HumanTyping {
   expiresAt: number;
@@ -278,6 +292,8 @@ export class Relay {
   // his screen, live, until he answers it or stops the agent.)
   /** Startup-expired workflow approvals are re-broadcast once the owner arrives. */
   private restartExpiredWorkflowApprovals: Approval[] = [];
+  /** Recovery approvals cannot survive only in a Map: settle them durably on restart. */
+  private restartSettledRecoveryApprovals: Approval[] = [];
   /** One persisted poll deadline is enough to wake the relay; the next one is rescheduled after each sweep. */
   private pollExpiryTimer?: ReturnType<typeof setTimeout>;
   /** last sign-in request per user, and whether one is still running */
@@ -293,6 +309,10 @@ export class Relay {
    * with the clock, and with their first use — whichever comes first.
    */
   private tickets = new Map<string, { target: TicketTarget; userId: ID; expiresAt: number }>();
+  /** Short-lived server-minted recovery capabilities; never durable or client-chosen. */
+  private recoveryChallenges = new Map<string, RecoveryChallenge>();
+  /** Recovery requests held by the existing approval desk until owner approval. */
+  private pendingRecovery = new Map<string, RecoveryRequest>();
   /** Live human typing by account/channel. Never written to SQLite or history. */
   private liveTyping = new Map<string, LiveTyping>();
   /** Agent ids currently represented by each engine socket for huddle presence cleanup. */
@@ -307,6 +327,7 @@ export class Relay {
    * preview; they are not history or durable response content.
    */
   private responseStreamTombstones = new Map<string, number>();
+  private closing = false;
 
   /**
    * The receipt for the one-time catch-up, when this start is the one that ran
@@ -337,6 +358,7 @@ export class Relay {
     this.ownerId = owner.id;
     const interrupted = this.store.interruptActiveWorkflowRuns(this.ownerId);
     this.restartExpiredWorkflowApprovals = this.store.takeInterruptedWorkflowApprovals();
+    this.restartSettledRecoveryApprovals = this.settleInterruptedRecoveryApprovals();
     if (interrupted.length) {
       console.warn(`[cloud9] marked ${interrupted.length} workflow run(s) interrupted after restart`);
     }
@@ -446,6 +468,7 @@ export class Relay {
   }
 
   close(): void {
+    this.closing = true;
     if (this.pollExpiryTimer) clearTimeout(this.pollExpiryTimer);
     this.pollExpiryTimer = undefined;
     for (const state of [...this.liveTyping.values()]) this.removeLiveTyping(state.channelId, state.userId, false);
@@ -455,11 +478,13 @@ export class Relay {
     for (const c of this.conns) c.ws.close();
     this.wss.close();
     this.server.close();
+    this.store.close();
   }
 
   private onConnection(ws: WebSocket): void {
     let conn: Conn | undefined;
     ws.on("message", raw => {
+      if (this.closing) return;
       let parsed: unknown;
       try { parsed = JSON.parse(String(raw)); } catch { return; }
       // JSON.parse returning a value does not make it a frame. Validate the
@@ -500,6 +525,7 @@ export class Relay {
       }
     });
     ws.on("close", () => {
+      if (this.closing) { if (conn) this.conns.delete(conn); return; }
       if (!conn) return;
       const closed = conn;
       this.conns.delete(conn);
@@ -613,6 +639,11 @@ export class Relay {
       const expired = this.restartExpiredWorkflowApprovals;
       this.restartExpiredWorkflowApprovals = [];
       for (const approval of expired) this.sendApproval(approval);
+    }
+    if (conn.userId === this.ownerId && this.restartSettledRecoveryApprovals.length) {
+      const settled = this.restartSettledRecoveryApprovals;
+      this.restartSettledRecoveryApprovals = [];
+      for (const approval of settled) this.sendApproval(approval);
     }
     if (conn.client === "engine") this.syncHooksToEngine(user.id);
     // An engine arriving changes the answer for every agent it can run, and
@@ -4726,6 +4757,48 @@ private viewProject(project: Project, viewerId?: ID): Project {
         approval.decidedAt = Date.now();
         this.store.saveApproval(approval);
         this.audit(conn, "approval_decided", approval.id, `${frame.decision}: ${approval.action}`);
+        if (approval.recoveryRequestId) {
+          const key = this.recoveryChallengeKey(approval.ownerId, approval.recoveryRequestId);
+          const pending = this.pendingRecovery.get(key);
+          if (pending) {
+            this.pendingRecovery.delete(key);
+            const target = this.store.run(pending.runId);
+            const currentAgent = target && target.ownerId === approval.ownerId
+              ? this.store.agents().find(a => a.id === pending.agentId) : undefined;
+            const currentDecision = target && currentAgent
+              ? recoveryDecision(target.record, this.store.checkpointForRun(target.record.id, target.agentId, target.ownerId)) : undefined;
+            const currentAction = currentDecision?.actions.find(a => a.mode === pending.payload.mode);
+            // Approval is a second boundary: read the current policy/trust and
+            // availability again immediately before crossing the engine wire.
+            const currentPolicyRequiresApproval = currentAgent ? mustAskBeforeActing(currentAgent) : undefined;
+            const policyAllowsApprovedAction = currentPolicyRequiresApproval !== undefined;
+            const canExecute = frame.decision === "approved" && !!target && !!currentAgent
+              && currentAgent.lifecycle !== "paused" && currentAgent.lifecycle !== "disabled"
+              && !!currentAction?.available && policyAllowsApprovedAction && this.hasEngine(approval.ownerId);
+            const receipt = this.store.recoveryReceipt(approval.ownerId, pending.requestId);
+            this.store.saveRecoveryReceipt({
+              request: pending, payloadFingerprint: recoveryRequestFingerprint(pending),
+              status: canExecute ? "accepted" : "refused",
+              ...(canExecute ? {} : { reason: frame.decision === "rejected" ? "rejected by owner" : !this.hasEngine(approval.ownerId) ? "the agent engine is not connected" : "the recovery action is no longer available" }),
+              createdAt: receipt?.createdAt ?? Date.now(),
+            });
+            if (currentDecision) {
+              this.toUser(approval.ownerId, {
+                type: "runRecovery", runId: pending.runId, decision: currentDecision,
+                requestId: pending.requestId, pending: false,
+                ...(!canExecute ? { problem: frame.decision === "rejected" ? "Recovery approval was rejected." : !this.hasEngine(approval.ownerId) ? "The agent engine is not connected. Recovery did not start." : "Recovery is no longer available." } : {}),
+              });
+            }
+            if (canExecute && target && currentAgent) {
+              // The approval is fresh, and the current action/policy is checked
+              // again immediately before the side effect crosses the engine wire.
+              this.toEngines(target.ownerId, {
+                type: "runRecoveryRequested",
+                request: { ...pending, payload: { ...pending.payload, approvalEpoch: "" } },
+              });
+            }
+          }
+        }
         // ===== SPENDING BLOCK (what the crew costs, 2026-08-07) — start =====
         //
         // A YES ON A SAVING CARD IS THE MOMENT THE SETTING CHANGES, and this is
@@ -6607,6 +6680,130 @@ private viewProject(project: Project, viewerId?: ID): Project {
         send(conn.ws, { type: "run", record: shareableRun(row.record) });
         break;
       }
+      case "runRecovery": {
+        if (frame.mode !== "retry" && frame.mode !== "resume" && frame.mode !== "restart") {
+          throw new Error("that recovery action is not supported");
+        }
+        if (frame.requestId !== undefined && !isSafeStoredId(frame.requestId)) {
+          throw new Error("that recovery request id is not usable");
+        }
+        if (typeof frame.approvalEpoch !== "string" || frame.approvalEpoch.length > 512
+          || /[\u0000-\u001f\u007f]/.test(frame.approvalEpoch)) {
+          throw new Error("that recovery authorization is not usable");
+        }
+        const row = this.store.run(frame.runId);
+        // Recovery can create new side effects. Only the run owner may ask;
+        // room visibility alone is deliberately not enough.
+        if (!row || row.ownerId !== conn.userId || !this.canSeeRun(conn.userId, row)) {
+          throw new Error("no such run");
+        }
+        const agent = this.myAgent(conn.userId, row.agentId);
+        const checkpoint = this.store.checkpointForRun(
+          row.record.id, row.agentId, row.ownerId, frame.checkpointId);
+        const decision = recoveryDecision(row.record, checkpoint);
+        const requestId = frame.requestId ?? newId("recover");
+        // Retry/restart must retain the factual requester from the original
+        // run. A legacy or forged record without one is explicitly refused;
+        // never fill it with a synthetic chat/requester identity.
+        if (!row.record.requestedBy.trim()) {
+          throw new Error("the original recovery requester is unavailable");
+        }
+        const request: RecoveryRequest = {
+          requestId, requesterId: conn.userId, agentId: row.agentId,
+          ...(row.channelId ? { channelId: row.channelId } : {}), runId: row.record.id,
+          kind: row.record.kind,
+          ...(row.record.taskId ? { taskId: row.record.taskId } : {}),
+          ...(row.record.replyTo ? { replyTo: row.record.replyTo } : {}),
+          requesterKind: row.record.requestedByKind,
+          requestedBy: sanitizeRecoveryAsk(row.record.requestedBy),
+          payload: { mode: frame.mode, ask: sanitizeRecoveryAsk(row.record.ask), ...(checkpoint ? { checkpointId: checkpoint.id } : {}), approvalEpoch: frame.approvalEpoch },
+        };
+        const previous = this.store.recoveryReceipt(conn.userId, requestId);
+        const replay = compareRecoveryRequest(previous, request);
+        if (replay === "conflict") throw new Error("that recovery request id was already used for a different action");
+        if (replay === "replay" && previous) {
+          send(conn.ws, { type: "runRecovery", runId: row.record.id, decision, requestId, pending: previous.status === "pending" });
+          break;
+        }
+        const challengeKey = this.recoveryChallengeKey(conn.userId, requestId);
+        const challenge = this.recoveryChallenges.get(challengeKey);
+        if (challenge && challenge.payloadFingerprint !== this.recoveryChallengeFingerprint(request)) {
+          throw new Error("that recovery request id was already used for a different action");
+        }
+        // A challenge proves only integrity of this exact bounded request. It
+        // never carries policy, trust or availability forward.
+        if (!frame.approvalEpoch) {
+          const challenged = { ...decision, authorizationToken: this.issueRecoveryChallenge(request) };
+          send(conn.ws, { type: "runRecovery", runId: row.record.id, decision: challenged, requestId });
+          break;
+        }
+        if (!this.consumeRecoveryChallenge(request)) throw new Error("that recovery authorization is invalid or expired");
+        // The token is integrity-only. Re-read ownership, trust/policy and
+        // action availability after the challenge is consumed.
+        const currentAgent = this.myAgent(conn.userId, row.agentId);
+        const currentCheckpoint = this.store.checkpointForRun(row.record.id, row.agentId, row.ownerId, frame.checkpointId);
+        const currentDecision = recoveryDecision(row.record, currentCheckpoint);
+        const currentAction = currentDecision.actions.find(a => a.mode === frame.mode);
+        const accepted = currentAgent.lifecycle !== "paused" && currentAgent.lifecycle !== "disabled"
+          && !!currentAction?.available;
+        const approvalRequired = accepted && frame.mode !== "resume" && mustAskBeforeActing(currentAgent);
+        if (!accepted) {
+          this.store.saveRecoveryReceipt({
+            request, payloadFingerprint: recoveryRequestFingerprint(request), status: "refused",
+            reason: currentAction?.reason ?? "this recovery action is unavailable", createdAt: Date.now(),
+          });
+          send(conn.ws, { type: "runRecovery", runId: row.record.id, decision: currentDecision, requestId });
+          break;
+        }
+        if (!this.hasEngine(row.ownerId)) {
+          this.store.saveRecoveryReceipt({
+            request, payloadFingerprint: recoveryRequestFingerprint(request), status: "refused",
+            reason: "the agent engine is not connected", createdAt: Date.now(),
+          });
+          send(conn.ws, { type: "runRecovery", runId: row.record.id, decision: currentDecision, requestId,
+            problem: "The agent engine is not connected. Recovery did not start." });
+          break;
+        }
+        if (approvalRequired) {
+          this.pendingRecovery.set(this.recoveryChallengeKey(conn.userId, requestId), request);
+          const approval: Approval = {
+            id: newId("ap"), agentId: currentAgent.id, ownerId: currentAgent.ownerId,
+            action: `${frame.mode === "retry" ? "Retry" : "Restart"} ${currentAgent.name}'s run`.slice(0, APPROVAL_LIMITS.action),
+            status: "pending", createdAt: Date.now(), kind: "action",
+            ...(row.channelId ? { channelId: row.channelId } : {}), recoveryRequestId: requestId,
+          };
+          this.store.saveApproval(approval);
+          this.store.saveRecoveryReceipt({
+            request, payloadFingerprint: recoveryRequestFingerprint(request), status: "pending", createdAt: Date.now(),
+          });
+          this.audit(conn, "approval_requested", approval.id,
+            `${currentAgent.name} asks to recover a run`, { asAgent: currentAgent });
+          this.sendApproval(approval);
+          send(conn.ws, { type: "runRecovery", runId: row.record.id, decision, requestId, pending: true });
+          break;
+        }
+        const receipt: RecoveryReceipt = {
+          request, payloadFingerprint: recoveryRequestFingerprint(request), status: "accepted", createdAt: Date.now(),
+        };
+        this.store.saveRecoveryReceipt(receipt);
+        if (accepted) this.toEngines(row.ownerId, {
+          type: "runRecoveryRequested",
+          request: { ...request, payload: { ...request.payload, approvalEpoch: "" } },
+        });
+        send(conn.ws, { type: "runRecovery", runId: row.record.id, decision: currentDecision, requestId });
+        break;
+      }
+      case "runCompare": {
+        const left = this.store.run(frame.leftRunId);
+        const right = this.store.run(frame.rightRunId);
+        const allowed = (candidate: RunRow | undefined): candidate is RunRow => !!candidate && this.canSeeRun(conn.userId, candidate);
+        const exact = compareRuns(left?.record, right?.record, record => {
+          const row = this.store.run(record.id); return allowed(row);
+        }, { left: left ? this.store.checkpointForRun(left.record.id, left.agentId, left.ownerId) : undefined,
+          right: right ? this.store.checkpointForRun(right.record.id, right.agentId, right.ownerId) : undefined });
+        send(conn.ws, { type: "runComparison", comparison: exact, requestId: frame.requestId });
+        break;
+      }
       // ---- agent memory: read and clear an agent's saved notes ----
       //
       // The hub keeps NO copy of memory — the engine's own store is the one
@@ -7572,6 +7769,18 @@ private viewProject(project: Project, viewerId?: ID): Project {
     // saveRun prunes in the same call, so "bounded" isn't something a caller
     // has to remember
     this.store.saveRun(row);
+    // Checkpoint only the public facts we observed. Session ids are retained
+    // as capability metadata, never as an assertion that arbitrary provider
+    // state can be resumed.
+    this.store.saveCheckpoint(buildRunCheckpoint(cleaned, {
+      branch: cleaned.branch, commit: cleaned.commit, files: cleaned.files,
+      artifacts: cleaned.artifacts,
+      priorRunId: cleaned.priorRunId,
+      providerSession: cleaned.sessionId ? {
+        provider: cleaned.provider, sessionId: cleaned.sessionId, canResume: false,
+        actionSemantics: "unknown", reason: "the provider did not report a safe recovery capability",
+      } : undefined,
+    }), { agentId: agent.id, ownerId: agent.ownerId, ...(channelId ? { channelId } : {}) });
 
     // THE ROW THE ACTIVITY PANEL WAS ALWAYS MISSING. Until now the trail could
     // say an agent spoke; it could not say what the agent did to be able to.
@@ -7610,15 +7819,105 @@ private viewProject(project: Project, viewerId?: ID): Project {
   /** Push a finished run to everyone who could see the conversation it was in. */
   private tellAboutRun(row: RunRow): void {
     const frame: ServerFrame = { type: "run", record: row.record };
+    const recovery: ServerFrame = {
+      type: "runRecovery", runId: row.record.id,
+      decision: recoveryDecision(row.record,
+        this.store.checkpointForRun(row.record.id, row.agentId, row.ownerId)),
+    };
     const channel = row.channelId ? this.store.channel(row.channelId) : undefined;
-    if (!channel) { this.toUser(row.ownerId, frame); return; }
+    if (!channel) {
+      this.toUser(row.ownerId, frame);
+      this.toUser(row.ownerId, recovery);
+      return;
+    }
     const audience = this.audienceFor(channel);
     // the owner hears about their own agent's work even if they have since
     // left the room it happened in
     audience.add(row.ownerId);
     for (const conn of this.conns) {
-      if (audience.has(conn.userId)) send(conn.ws, frame);
+      if (!audience.has(conn.userId)) continue;
+      send(conn.ws, frame);
+      // Recovery mutates the owner's agent and is never offered to room guests.
+      if (conn.userId === row.ownerId) send(conn.ws, recovery);
     }
+  }
+
+  private recoveryChallengeKey(requesterId: ID, requestId: ID): string {
+    return `${requesterId}:${requestId}`;
+  }
+
+  /**
+   * The approval card is durable, but the in-memory execution handoff is not.
+   * On a relay restart, never leave an approved card suggesting that a retry
+   * ran. Settle every recovery card and its receipt as a durable refusal; the
+   * owner can explicitly start a fresh challenge afterwards.
+   */
+  private settleInterruptedRecoveryApprovals(): Approval[] {
+    const settled: Approval[] = [];
+    const now = Date.now();
+    for (const approval of this.store.approvals(1000)) {
+      if (!approval.recoveryRequestId || (approval.status !== "pending" && approval.status !== "approved")) continue;
+      const receipt = this.store.recoveryReceipt(approval.ownerId, approval.recoveryRequestId);
+      // Approval rows and receipts are written separately. If the process
+      // stopped between those writes, there is no request payload from which
+      // to reconstruct an engine frame; still settle the approval durably so
+      // it cannot remain an apparently actionable card forever.
+      approval.status = "expired";
+      approval.decidedAt = now;
+      if (!receipt) approval.detail = "Cloud9 restarted before recovery could be reconstructed";
+      this.store.saveApproval(approval);
+      if (receipt && (receipt.status === "pending" || receipt.status === "accepted")) {
+        this.store.saveRecoveryReceipt({
+          request: receipt.request, payloadFingerprint: recoveryRequestFingerprint(receipt.request),
+          status: "refused", reason: "Cloud9 restarted before recovery could be executed", createdAt: receipt.createdAt,
+        });
+      }
+      settled.push(approval);
+    }
+    return settled;
+  }
+
+  private recoveryChallengeFingerprint(request: RecoveryRequest): string {
+    return recoveryRequestFingerprint({
+      ...request, payload: { ...request.payload, approvalEpoch: "" },
+    });
+  }
+
+  private pruneRecoveryChallenges(now = Date.now()): void {
+    for (const [key, challenge] of this.recoveryChallenges) {
+      if (challenge.createdAt < now - RECOVERY_CHALLENGE_TTL_MS) this.recoveryChallenges.delete(key);
+    }
+    const overflow = [...this.recoveryChallenges.values()]
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(RECOVERY_CHALLENGE_LIMIT);
+    for (const challenge of overflow) {
+      this.recoveryChallenges.delete(this.recoveryChallengeKey(challenge.requesterId, challenge.requestId));
+    }
+  }
+
+  private issueRecoveryChallenge(request: RecoveryRequest): string {
+    const now = Date.now();
+    this.pruneRecoveryChallenges(now);
+    const key = this.recoveryChallengeKey(request.requesterId, request.requestId);
+    const prior = this.recoveryChallenges.get(key);
+    if (prior && prior.payloadFingerprint === this.recoveryChallengeFingerprint(request)) return prior.token;
+    const token = secureId("recovery");
+    this.recoveryChallenges.set(key, {
+      token, requesterId: request.requesterId, requestId: request.requestId,
+      payloadFingerprint: this.recoveryChallengeFingerprint(request), createdAt: now,
+    });
+    this.pruneRecoveryChallenges(now);
+    return token;
+  }
+
+  private consumeRecoveryChallenge(request: RecoveryRequest): boolean {
+    const key = this.recoveryChallengeKey(request.requesterId, request.requestId);
+    const challenge = this.recoveryChallenges.get(key);
+    if (!challenge || challenge.createdAt < Date.now() - RECOVERY_CHALLENGE_TTL_MS) return false;
+    if (challenge.payloadFingerprint !== this.recoveryChallengeFingerprint(request)
+      || challenge.token !== request.payload.approvalEpoch) return false;
+    this.recoveryChallenges.delete(key);
+    return true;
   }
 
   /**

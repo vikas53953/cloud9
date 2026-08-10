@@ -74,7 +74,7 @@ import {
      is exactly where the last three attempts went wrong. */
   BESIDE_LABEL, EXPAND_LABEL, THREAD_DEFAULT, THREAD_FLOOR, THREAD_STEP,
   cannotSplit, dividerSpokenWords, dividerWords, widestThread, widthHeChose, widthToDraw,
-  ForumTopic, ForumReply, ForumStatus, ForumLink, ClientFrame,
+  ForumTopic, ForumReply, ForumStatus, ForumLink, ClientFrame, RunComparison,
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
@@ -4744,6 +4744,7 @@ function RunMark({ outcome }: { outcome: RunRecord["outcome"] }): React.JSX.Elem
     );
   }
   if (outcome === "cancelled") return <MarkClock />;
+  if (outcome === "refused") return <span className="run-refused-mark" aria-label="Refused">!</span>;
   return <MarkAnswer />;
 }
 
@@ -4753,6 +4754,8 @@ function RunMark({ outcome }: { outcome: RunRecord["outcome"] }): React.JSX.Elem
  */
 function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
   const [open, setOpen] = useState(false);
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const recovery = world.runRecovery[record.id];
   const provider = PROVIDER_LABEL[record.provider] ?? record.provider;
   // what the app SAID it used, or failing that what we asked for — and if
   // neither was reported, the app's name alone rather than an invented model
@@ -4817,7 +4820,9 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
     ? `${record.agentName} didn't finish “${record.ask}”`
     : record.outcome === "cancelled"
       ? `${record.agentName} was stopped on “${record.ask}”`
-      : `${record.agentName} finished “${record.ask}”`;
+      : record.outcome === "refused"
+        ? `${record.agentName} was refused before “${record.ask}”`
+    : `${record.agentName} finished “${record.ask}”`;
 
   return (
     <div className={`callout run out-${record.outcome}`} data-run={record.id}
@@ -4842,7 +4847,46 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
       )}
       {open && record.steps.length > 0 &&
         <RunSteps steps={record.steps} truncated={record.truncated} />}
+      {(record.outcome === "failed" || record.outcome === "cancelled" || record.outcome === "refused") && (
+        <RunRecoveryCard record={record} recovery={recovery} onInspect={() => setOpen(true)} />
+      )}
     </div>
+  );
+}
+
+function RunRecoveryCard({ record, recovery, onInspect }: {
+  record: RunRecord;
+  recovery?: { decision: import("@cloud9/shared").RecoveryDecision; requestId?: ID; pending?: boolean; problem?: string };
+  onInspect: () => void;
+}): React.JSX.Element {
+  const resume = recovery?.decision.actions.find(a => a.mode === "resume");
+  const retry = recovery?.decision.actions.find(a => a.mode === "retry");
+  const restart = recovery?.decision.actions.find(a => a.mode === "restart");
+  const resumeUnavailable = resume?.available === false || !resume;
+  const resumeReason = resume?.reason ?? "the provider has not reported a safely resumable session";
+  return (
+    <section className="run-recovery" data-run-recovery={record.id} aria-label="Run recovery">
+      <strong>Recover this run</strong>
+      <p className="muted">{plainError(record.error) ?? "This run did not finish."}</p>
+      {recovery?.problem && <p className="muted recovery-reason">{plainError(recovery.problem) ?? recovery.problem}</p>}
+      <div className="run-recovery-actions">
+        <button className="btn small primary" type="button" disabled={recovery?.pending || retry?.available === false}
+          onClick={() => client.recoverRun(record.id, "retry")}>
+          {recovery?.pending ? "Checking…" : "Retry safely"}
+        </button>
+        <button className="btn small" type="button" disabled={recovery?.pending || resumeUnavailable}
+          title={resumeReason}
+          onClick={() => client.recoverRun(record.id, "resume")}>
+          Resume from checkpoint
+        </button>
+        <button className="btn small" type="button" disabled={recovery?.pending || restart?.available === false}
+          onClick={() => client.recoverRun(record.id, "restart")}>
+          Restart with prior context
+        </button>
+        <button className="linkish" type="button" onClick={onInspect}>Inspect record</button>
+      </div>
+      {resumeUnavailable && <p className="muted recovery-reason">Resume unavailable: {resumeReason}</p>}
+    </section>
   );
 }
 
@@ -4883,19 +4927,40 @@ function TaskRun({ runId }: { runId: string }): React.JSX.Element {
 function RecentWork({ agentId }: { agentId: ID }): React.JSX.Element {
   // subscribed for the re-render: the list itself is read through the client,
   // so there is one spelling of a history's key and not two
-  useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [open, setOpen] = useState<string | null>(null);
+  const [selected, setSelected] = useState<ID[]>([]);
   const list = client.runsFor("agent", agentId);
   useEffect(() => { client.askRuns("agent", agentId, RUN_HISTORY_LIMIT); }, [agentId]);
+  useEffect(() => {
+    if (selected.length === 2) client.compareRuns(selected[0], selected[1]);
+  }, [selected]);
+  const comparison = selected.length === 2
+    ? client.runComparison(selected[0], selected[1])
+    : undefined;
+  const toggleComparison = (runId: ID): void => {
+    setSelected(current => current.includes(runId)
+      ? current.filter(id => id !== runId)
+      : current.length < 2 ? [...current, runId] : [current[1], runId]);
+  };
 
   return (
     <div className="recentwork" data-agent={agentId}>
+      <div className="run-compare-toolbar" aria-label="Compare runs">
+        <span className="muted">Select two runs to compare their recorded facts side by side.</span>
+        {selected.length > 0 && (
+          <button className="linkish" type="button" onClick={() => setSelected([])}>
+            Clear selection ({selected.length}/2)
+          </button>
+        )}
+      </div>
       {!list.asked && <div className="d-empty">Looking up what it has been doing…</div>}
       {list.asked && list.entries.length === 0 && (
         <div className="d-empty">Nothing yet. Every turn it takes from now on is written down here.</div>
       )}
       {list.entries.map((e: RunListEntry) => (
         <div className="workrow" key={e.id} data-run={e.id} data-outcome={e.outcome}>
+          <div className="workrow-head">
           <button className="wr-head" aria-expanded={open === e.id}
             onClick={() => {
               const next = open === e.id ? null : e.id;
@@ -4907,13 +4972,28 @@ function RecentWork({ agentId }: { agentId: ID }): React.JSX.Element {
               <b>{e.ask}</b>
               <span className="wr-sum">{e.summary}</span>
             </span>
-            <span className={`chip ${e.outcome === "ok" ? "is-pine" : e.outcome === "failed" ? "is-madder" : ""}`}>
-              {e.outcome === "ok" ? "Done" : e.outcome === "failed" ? "Didn't finish" : "Stopped"}
+            <span className={`chip ${e.outcome === "ok" ? "is-pine" : e.outcome === "failed" || e.outcome === "refused" ? "is-madder" : ""}`}>
+              {e.outcome === "ok" ? "Done" : e.outcome === "failed" ? "Didn't finish" : e.outcome === "refused" ? "Refused" : "Stopped"}
             </span>
           </button>
+          <button className="btn small compare-toggle" type="button"
+            aria-pressed={selected.includes(e.id)} data-compare-run={e.id}
+            onClick={() => toggleComparison(e.id)}>
+            {selected.includes(e.id) ? "Selected" : "Compare"}
+          </button>
+          </div>
           {open === e.id && <TaskRun runId={e.id} />}
         </div>
       ))}
+      {selected.length === 2 && (
+        comparison
+          ? <RunComparisonPanel comparison={comparison} onClear={() => setSelected([])} />
+          : <p className="muted run-comparison-wait" role="status">
+            {world.runComparisonProblems[`${selected[0]}:${selected[1]}`]
+              ? <>{plainError(world.runComparisonProblems[`${selected[0]}:${selected[1]}`]) ?? world.runComparisonProblems[`${selected[0]}:${selected[1]}`]} <button className="linkish" type="button" onClick={() => client.compareRuns(selected[0], selected[1])}>Try again</button></>
+              : "Comparing the two selected runs..."}
+          </p>
+      )}
     </div>
   );
 }
@@ -4928,6 +5008,74 @@ function RecentWork({ agentId }: { agentId: ID }): React.JSX.Element {
  * nothing. Clearing a note asks the engine to delete it and report back, so the
  * panel never shows one the store no longer holds.
  */
+function comparisonValue(value: React.ReactNode): React.ReactNode {
+  return value === undefined || value === null || value === ""
+    ? <span className="muted">Not reported</span>
+    : value;
+}
+
+function RunComparisonPanel({ comparison, onClear }: {
+  comparison: RunComparison;
+  onClear: () => void;
+}): React.JSX.Element {
+  const sides = [comparison.left, comparison.right];
+  const accessible = sides.filter(side => side.accessible);
+  const values = (side: RunComparison["left"]): Record<string, React.ReactNode> => {
+    if (!side.accessible) return {};
+    return {
+      Ask: side.ask,
+      Agent: side.agent,
+      Model: side.model,
+      Effort: side.effort,
+      Provider: side.provider,
+      Duration: humanDuration(side.durationMs),
+      ...(side.costUsd !== undefined ? { Cost: humanMoney(side.costUsd) } : {}),
+      Outcome: side.outcome,
+      Steps: side.steps.length ? side.steps.map(step => `${step.seq}. ${step.label}`).join("; ") : undefined,
+      Files: side.files.length ? side.files.join(", ") : undefined,
+      "Pull request": side.pullRequest,
+      Branch: side.branch,
+      Commit: side.commit,
+      Artifacts: side.artifacts.length ? side.artifacts.map(a => a.name || a.id).join(", ") : undefined,
+    };
+  };
+  const rows = ["Ask", "Agent", "Model", "Effort", "Provider", "Duration", "Cost", "Outcome", "Steps", "Files", "Pull request", "Branch", "Commit", "Artifacts"]
+    .filter(label => accessible.some(side => values(side)[label] !== undefined));
+  return (
+    <section className="run-comparison" data-run-comparison={`${comparison.left.runId}:${comparison.right.runId}`} aria-label="Run comparison">
+      <div className="run-comparison-heading">
+        <div>
+          <h4>Side-by-side run comparison</h4>
+          <p className="muted">Recorded public facts only; this view does not infer a quality winner.</p>
+        </div>
+        <button className="linkish" type="button" onClick={onClear}>Clear</button>
+      </div>
+      <div className="run-compare-grid">
+        {sides.map((side, index) => (
+          <article className="run-compare-side" key={`${side.runId}-${index}`} data-accessible={side.accessible ? "yes" : "no"}>
+            <h5>Run {index + 1}</h5>
+            {!side.accessible
+              ? <p className="muted">Run unavailable. Details and links are hidden.</p>
+              : <dl className="kv">{rows.map(label => (
+                <React.Fragment key={label}>
+                  <dt>{label}</dt><dd>{comparisonValue(values(side)[label])}</dd>
+                </React.Fragment>
+              ))}</dl>}
+          </article>
+        ))}
+      </div>
+      {comparison.differences.length > 0 && (
+        <div className="run-comparison-differences">
+          <h5>Differences</h5>
+          <ul>{comparison.differences.map(difference => (
+            <li key={difference.field}><b>{difference.field}</b>: {comparisonValue(difference.left)} / {comparisonValue(difference.right)}</li>
+          ))}</ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
   useSyncExternalStore(client.subscribe, client.getSnapshot);
   const held = client.memoryFor(agentId);

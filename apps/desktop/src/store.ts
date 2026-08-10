@@ -14,6 +14,7 @@ import {
   Project, ForumTopic, ForumReply, ForumReadEntry, ForumLink, ForumStatus, ProjectItem, ProjectPollView, PublicUpdateDraft, PublicUpdateRevision, PublicUpdateAudit, RepoChoice, RunListEntry, RunRecord, SearchHit, ServerFrame, Task, StoredHook, HookAuditEntry,
   EngineeringCanvasView, EngineeringCanvasRevision, CanvasBlockKind, CanvasLink,
   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringPulseProject, validateEngineeringPulseDraft,
+  RecoveryDecision, RecoveryMode, RunComparison,
   Workflow, WorkflowRun,
   HuddleSession, HuddleNote, HuddleReadEntry, HuddleParticipant, HuddleNoteKind, HuddleLink,
   SocialLink, SocialPost,
@@ -404,6 +405,10 @@ export interface World {
    * ever waiting for an answer that already came.
    */
   runsGone: Record<string, true>;
+  /** Recovery action availability and latest comparison, all from relay facts. */
+  runRecovery: Record<string, { decision: RecoveryDecision; requestId?: ID; mode?: RecoveryMode; authorizationToken?: string; pending?: boolean; problem?: string }>;
+  runComparisons: Record<string, RunComparison>;
+  runComparisonProblems: Record<string, string>;
   /**
    * THE REPOSITORIES THIS PERSON HAS CONNECTED, and what is open in each.
    *
@@ -746,7 +751,7 @@ export class RelayClient {
     channelPins: {}, channelPinPending: [],
     pages: {}, threads: {}, unread: {}, prepended: 0,
     uploads: {}, drafts: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
-    runs: {}, runLists: {}, runsGone: {},
+    runs: {}, runLists: {}, runsGone: {}, runRecovery: {}, runComparisons: {}, runComparisonProblems: {},
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
     projects: { asked: false, list: [] }, projectItems: {}, publicUpdates: { asked: false, drafts: [], revisions: [], audit: [] }, polls: { asked: false, list: [] }, canvases: { asked: false, list: [], history: [] },
@@ -767,6 +772,9 @@ export class RelayClient {
   /** Frames from a socket that has been replaced never reach the new world. */
   private socketEpoch = 0;
   private humanTypingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private recoveryTimers = new Map<ID, ReturnType<typeof setTimeout>>();
+  private comparisonTimers = new Map<ID, ReturnType<typeof setTimeout>>();
+  private comparisonRequests = new Map<ID, string>();
   private listeners = new Set<Listener>();
   private snapshotCache: World = { ...this.world };
 
@@ -2327,6 +2335,78 @@ export class RelayClient {
       refused: gone,
       lost: gone,
     });
+  }
+
+  /** Ask the relay for recovery actions, then perform only a fresh-authorised action. */
+  recoverRun(runId: ID, mode: "retry" | "resume" | "restart"): void {
+    const requestId = this.nextRequestId("runRecovery");
+    const existing = this.world.runRecovery[runId];
+    // Every user-triggered action starts a new server challenge. A token that
+    // authorised an earlier request must never be inherited for new side
+    // effects; only the correlated challenge response below reuses its exact
+    // request id once.
+    const approvalEpoch = "";
+    this.world.runRecovery = {
+      ...this.world.runRecovery,
+      [runId]: existing
+        ? { ...existing, requestId, mode, authorizationToken: undefined, pending: true, problem: undefined }
+        : { decision: { actions: [], recommended: "retry" }, requestId, mode, authorizationToken: undefined, pending: true },
+    };
+    this.emit();
+    const sent = this.send({ type: "runRecovery", runId, mode, approvalEpoch, requestId });
+    if (sent === undefined) {
+      this.world.runRecovery = { ...this.world.runRecovery, [runId]: {
+        ...this.world.runRecovery[runId], authorizationToken: undefined, pending: false,
+        problem: "Cloud9 is reconnecting. Try recovery again when the relay answers.",
+      } };
+      this.emit();
+      return;
+    }
+    const timer = setTimeout(() => {
+      const held = this.world.runRecovery[runId];
+      if (!held || held.requestId !== requestId || !held.pending) return;
+      this.world.runRecovery = { ...this.world.runRecovery, [runId]: {
+        ...held, authorizationToken: undefined, pending: false, problem: "The relay did not answer. Try recovery again.",
+      } };
+      this.recoveryTimers.delete(requestId);
+      this.emit();
+    }, ANSWER_WINDOW_MS);
+    this.recoveryTimers.set(requestId, timer);
+  }
+
+  /** Select exactly two known run ids; the relay applies access projection. */
+  compareRuns(leftRunId: ID, rightRunId: ID): void {
+    if (!leftRunId || !rightRunId || leftRunId === rightRunId) return;
+    const key = `${leftRunId}:${rightRunId}`;
+    const requestId = this.nextRequestId("runCompare");
+    this.world.runComparisonProblems = { ...this.world.runComparisonProblems };
+    delete this.world.runComparisonProblems[key];
+    let sent: ID | undefined;
+    try {
+      sent = this.send({ type: "runCompare", leftRunId, rightRunId, requestId });
+    } catch {
+      sent = undefined;
+    }
+    if (sent === undefined) {
+      this.world.runComparisonProblems = { ...this.world.runComparisonProblems,
+        [key]: "Cloud9 could not send the comparison. Try again when the relay answers." };
+      this.emit();
+      return;
+    }
+    this.comparisonRequests.set(requestId, key);
+    const timer = setTimeout(() => {
+      if (!this.comparisonRequests.has(requestId)) return;
+      this.comparisonRequests.delete(requestId);
+      this.comparisonTimers.delete(requestId);
+      this.world.runComparisonProblems = { ...this.world.runComparisonProblems,
+        [key]: "The relay did not answer. Try comparing again." };
+      this.emit();
+    }, ANSWER_WINDOW_MS);
+    this.comparisonTimers.set(requestId, timer);
+  }
+
+  runComparison(leftRunId: ID, rightRunId: ID): RunComparison | undefined {
+    return this.world.runComparisons[`${leftRunId}:${rightRunId}`];
   }
 
   /**
@@ -4212,6 +4292,14 @@ askPolls(projectId: ID): void {
         w.runs = {};
         w.runLists = {};
         w.runsGone = {};
+        w.runRecovery = {};
+        w.runComparisons = {};
+        w.runComparisonProblems = {};
+        for (const timer of this.recoveryTimers.values()) clearTimeout(timer);
+        this.recoveryTimers.clear();
+        for (const timer of this.comparisonTimers.values()) clearTimeout(timer);
+        this.comparisonTimers.clear();
+        this.comparisonRequests.clear();
         this.runAsked.clear();
         // Projects belonged to the last connection too, and `asked` goes back
         // to false with them: this world has not asked anything yet, so the
@@ -4706,6 +4794,22 @@ askPolls(projectId: ID): void {
           w.notificationsLoading = false;
           w.notificationsProblem = frame.error;
         }
+        if (frame.requestId !== undefined) {
+          const recovery = Object.entries(w.runRecovery).find(([, held]) => held.requestId === frame.requestId);
+          if (recovery) {
+            const [runId, held] = recovery;
+            clearTimeout(this.recoveryTimers.get(frame.requestId));
+            this.recoveryTimers.delete(frame.requestId);
+            w.runRecovery = { ...w.runRecovery, [runId]: { ...held, authorizationToken: undefined, pending: false, problem: frame.error } };
+          }
+        }
+        if (frame.requestId !== undefined && this.comparisonRequests.has(frame.requestId)) {
+          const key = this.comparisonRequests.get(frame.requestId)!;
+          clearTimeout(this.comparisonTimers.get(frame.requestId));
+          this.comparisonTimers.delete(frame.requestId);
+          this.comparisonRequests.delete(frame.requestId);
+          w.runComparisonProblems = { ...w.runComparisonProblems, [key]: frame.error };
+        }
         if (frame.requestId !== undefined && w.hooks.pending?.[frame.requestId]) {
           const pending = { ...w.hooks.pending }; delete pending[frame.requestId];
           w.hooks = { ...w.hooks, mutationRequestId: Object.keys(pending).at(-1), pending, problem: frame.error };
@@ -4742,6 +4846,7 @@ askPolls(projectId: ID): void {
       case "harnessRequest": // relay → engine host only
       case "memoryListRequested": // relay → engine host only
       case "forgetMemoryRequested": // relay → engine host only
+      case "runRecoveryRequested": // relay → engine host only
       case "handoffReceived":     // relay → the receiving agent's engine only
         break;
       case "memory":
@@ -4774,6 +4879,67 @@ askPolls(projectId: ID): void {
         if (key) {
           w.runLists = { ...w.runLists, [key]: { asked: true, loading: false, entries: frame.runs } };
         }
+        break;
+      }
+      case "runRecovery": {
+        const held = w.runRecovery[frame.runId];
+        if (!held || !frame.requestId || held.requestId === frame.requestId) {
+          if (frame.requestId) clearTimeout(this.recoveryTimers.get(frame.requestId));
+          if (frame.requestId) this.recoveryTimers.delete(frame.requestId);
+          const challenge = frame.decision.authorizationToken && held?.pending && held.mode
+            && held.requestId === frame.requestId && !held.authorizationToken;
+          if (challenge) {
+            w.runRecovery = { ...w.runRecovery, [frame.runId]: {
+              ...held, decision: frame.decision,
+              authorizationToken: frame.decision.authorizationToken, pending: true,
+            } };
+            const resent = this.send({ type: "runRecovery", runId: frame.runId, mode: held.mode!,
+              approvalEpoch: frame.decision.authorizationToken!, requestId: frame.requestId });
+            if (resent === undefined) {
+              w.runRecovery = { ...w.runRecovery, [frame.runId]: {
+                ...held, decision: frame.decision, pending: false,
+                authorizationToken: undefined,
+                problem: "Cloud9 is reconnecting. Try recovery again when the relay answers.",
+              } };
+              this.emit();
+              break;
+            }
+            const requestId = frame.requestId;
+            if (!requestId) break;
+            const timer = setTimeout(() => {
+              const current = this.world.runRecovery[frame.runId];
+              if (!current || current.requestId !== requestId || !current.pending) return;
+              this.world.runRecovery = { ...this.world.runRecovery, [frame.runId]: {
+                ...current, authorizationToken: undefined, pending: false, problem: "The relay did not answer. Try recovery again.",
+              } };
+              this.recoveryTimers.delete(requestId);
+              this.emit();
+            }, ANSWER_WINDOW_MS);
+            this.recoveryTimers.set(requestId, timer);
+          } else {
+            w.runRecovery = { ...w.runRecovery, [frame.runId]: {
+              ...held, decision: frame.decision, requestId: frame.requestId,
+              pending: frame.pending ?? false,
+              problem: frame.problem,
+              authorizationToken: frame.decision.authorizationToken,
+            } };
+          }
+        }
+        break;
+      }
+      case "runComparison": {
+        const left = frame.comparison.left.runId;
+        const right = frame.comparison.right.runId;
+        const key = `${left}:${right}`;
+        w.runComparisons = { ...w.runComparisons, [key]: frame.comparison };
+        if (frame.requestId && this.comparisonRequests.has(frame.requestId)) {
+          clearTimeout(this.comparisonTimers.get(frame.requestId));
+          this.comparisonTimers.delete(frame.requestId);
+          this.comparisonRequests.delete(frame.requestId);
+        }
+        const { [key]: comparisonProblem, ...comparisonProblems } = w.runComparisonProblems;
+        void comparisonProblem;
+        w.runComparisonProblems = comparisonProblems;
         break;
       }
       // Both of these are the answer to one particular question and are applied

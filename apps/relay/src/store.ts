@@ -15,6 +15,7 @@ import {
   SocialPost, SocialReaction, SocialReadEntry, SocialLink, SOCIAL_LIMITS,
   EngineeringPulseUpdate, redactDeletedPulseUpdate,
   RunRecord, RUN_RETENTION, Task, User, StoredHook, isSafeStoredId, nameKey, newId,
+  RunCheckpoint, RecoveryRequest, RecoveryReceipt, recoveryRequestFingerprint, validateRunCheckpoint, RUN_RECOVERY_LIMITS,
   NOTIFICATION_INBOX_LIMITS,
   ChatDraft, DraftAttachment, DRAFT_LIMITS,
   type NotificationInboxKind, type NotificationInboxState,
@@ -161,6 +162,19 @@ type DraftMutationKind = "draftUpdate" | "draftReclaim" | "draftRemove";
 interface DraftMutationReceipt {
   userId: ID; requestId: ID; kind: DraftMutationKind; payloadHash: string;
   resultJson: string; createdAt: number;
+}
+
+interface RawCheckpoint {
+  id: string; runId: string; agentId: string; ownerId: string;
+  channelId: string | null; createdAt: number; json: string;
+}
+
+interface RecoveryReceiptRow {
+  request: RecoveryRequest;
+  payloadFingerprint: string;
+  status: RecoveryReceipt["status"];
+  reason?: string;
+  createdAt: number;
 }
 
 type PulseMutationKind = "pulseCreate" | "pulseUpdate" | "pulseDelete";
@@ -397,6 +411,9 @@ export class Store implements JoinHubStore {
    * rather than a door that is shut forever.
    */
   readonly problems: string[] = [];
+
+  /** Close the SQLite handle explicitly so tests and clean shutdown release the file lock. */
+  close(): void { this.db.close(); }
   /** Approval cards retired by the one startup interruption sweep. */
   private interruptedWorkflowApprovals: Approval[] = [];
 
@@ -615,6 +632,23 @@ export class Store implements JoinHubStore {
       );
       CREATE INDEX IF NOT EXISTS run_agent ON runs(agentId, startedAt);
       CREATE INDEX IF NOT EXISTS run_task ON runs(taskId);
+
+      -- Public checkpoint facts and correlated recovery receipts. Neither table
+      -- stores provider transcripts, reasoning, credentials or approval grants.
+      CREATE TABLE IF NOT EXISTS run_checkpoints(
+        id TEXT PRIMARY KEY, runId TEXT NOT NULL, agentId TEXT NOT NULL,
+        ownerId TEXT NOT NULL, channelId TEXT, createdAt INTEGER NOT NULL,
+        json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS checkpoint_run ON run_checkpoints(runId, createdAt DESC);
+      CREATE INDEX IF NOT EXISTS checkpoint_owner ON run_checkpoints(ownerId, createdAt DESC);
+      CREATE TABLE IF NOT EXISTS recovery_receipts(
+        requesterId TEXT NOT NULL, requestId TEXT NOT NULL,
+        agentId TEXT NOT NULL, channelId TEXT, runId TEXT NOT NULL,
+        payloadHash TEXT NOT NULL, json TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        PRIMARY KEY(requesterId, requestId)
+      );
+      CREATE INDEX IF NOT EXISTS recovery_receipt_created ON recovery_receipts(createdAt);
 
       -- Read state lives HERE, on the account, so it follows a person between
       -- machines. It used to live in one browser's localStorage.
@@ -1262,6 +1296,8 @@ export class Store implements JoinHubStore {
     // are also declared during guarded open for fresh databases; this isolated
     // step is what upgrades an existing file atomically.
     this.step(14, () => this.addChatDraftSchema());
+    // v14 -> v15: public run checkpoints and correlated recovery receipts.
+    this.step(15, () => this.addRunRecoverySchema());
 
     // The one thing that still says a person can only be in a room once at a
     // time, now that the primary key no longer does. It lives here, below the
@@ -1269,6 +1305,25 @@ export class Store implements JoinHubStore {
     this.db.exec(
       "CREATE UNIQUE INDEX IF NOT EXISTS cm_live ON channel_members(channelId,memberId) WHERE removedAt IS NULL",
     );
+  }
+
+  private addRunRecoverySchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS run_checkpoints(
+        id TEXT PRIMARY KEY, runId TEXT NOT NULL, agentId TEXT NOT NULL,
+        ownerId TEXT NOT NULL, channelId TEXT, createdAt INTEGER NOT NULL,
+        json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS checkpoint_run ON run_checkpoints(runId, createdAt DESC);
+      CREATE INDEX IF NOT EXISTS checkpoint_owner ON run_checkpoints(ownerId, createdAt DESC);
+      CREATE TABLE IF NOT EXISTS recovery_receipts(
+        requesterId TEXT NOT NULL, requestId TEXT NOT NULL,
+        agentId TEXT NOT NULL, channelId TEXT, runId TEXT NOT NULL,
+        payloadHash TEXT NOT NULL, json TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        PRIMARY KEY(requesterId, requestId)
+      );
+      CREATE INDEX IF NOT EXISTS recovery_receipt_created ON recovery_receipts(createdAt);
+    `);
   }
 
   private addSocialOperationSchema(): void {
@@ -1810,6 +1865,8 @@ export class Store implements JoinHubStore {
       this.db.prepare("DELETE FROM chat_drafts WHERE userId=?").run(id);
       this.db.prepare("DELETE FROM draft_mutation_receipts WHERE userId=?").run(id);
       this.db.prepare("DELETE FROM attachments WHERE uploadedBy=? AND messageId IS NULL").run(id);
+      this.db.prepare("DELETE FROM run_checkpoints WHERE ownerId=?").run(id);
+      this.db.prepare("DELETE FROM recovery_receipts WHERE requesterId=? OR agentId IN (SELECT id FROM agents WHERE ownerId=?)").run(id, id);
     });
     for (const row of parked) {
       const attachment = this.safeParse<Attachment>(row.json, "a parked file", row.id);
@@ -5544,13 +5601,115 @@ export class Store implements JoinHubStore {
       ).all(taskId, RUN_RETENTION.perTask) as { id: string }[]) keptForTask.add(r.id);
     }
     const doomed = overflow.filter(r => !keptForTask.has(r.id)).map(r => r.id);
-    for (const id of doomed) this.db.prepare("DELETE FROM runs WHERE id=?").run(id);
+    for (const id of doomed) {
+      this.db.prepare("DELETE FROM run_checkpoints WHERE runId=?").run(id);
+      this.db.prepare("DELETE FROM recovery_receipts WHERE runId=?").run(id);
+      this.db.prepare("DELETE FROM runs WHERE id=?").run(id);
+    }
     return doomed.length;
   }
 
   /** Forget everything recorded about one agent — used when the agent is deleted. */
   forgetRuns(agentId: ID): void {
     this.db.prepare("DELETE FROM runs WHERE agentId=?").run(agentId);
+    this.db.prepare("DELETE FROM run_checkpoints WHERE agentId=?").run(agentId);
+    this.db.prepare("DELETE FROM recovery_receipts WHERE agentId=?").run(agentId);
+  }
+
+  // ---- public run checkpoints and correlated recovery receipts ----
+
+  /** Store only bounded public facts, retaining a small history per run. */
+  saveCheckpoint(
+    checkpoint: RunCheckpoint,
+    meta: { agentId?: ID; ownerId?: ID; channelId?: ID } = {},
+    keep = RUN_RECOVERY_LIMITS.checkpointsPerRun,
+  ): void {
+    const problem = validateRunCheckpoint(checkpoint);
+    if (problem) throw new Error(problem);
+    const row = this.run(checkpoint.runId);
+    const agentId = meta.agentId ?? row?.agentId;
+    const ownerId = meta.ownerId ?? row?.ownerId;
+    if (!agentId || !ownerId) throw new Error("a checkpoint needs its run owner");
+    const safe = JSON.parse(JSON.stringify(checkpoint)) as RunCheckpoint;
+    this.db.prepare(
+      "INSERT OR REPLACE INTO run_checkpoints(id,runId,agentId,ownerId,channelId,createdAt,json) VALUES(?,?,?,?,?,?,?)",
+    ).run(safe.id, safe.runId, agentId, ownerId, meta.channelId ?? row?.channelId ?? null,
+      safe.createdAt, JSON.stringify(safe));
+    const old = this.db.prepare(
+      "SELECT id FROM run_checkpoints WHERE runId=? ORDER BY createdAt DESC,id DESC LIMIT -1 OFFSET ?",
+    ).all(safe.runId, Math.max(1, Math.min(keep, RUN_RECOVERY_LIMITS.checkpointsPerRun))) as { id: string }[];
+    for (const item of old) this.db.prepare("DELETE FROM run_checkpoints WHERE id=?").run(item.id);
+  }
+
+  checkpoint(id: ID): RunCheckpoint | undefined {
+    const raw = this.db.prepare("SELECT json FROM run_checkpoints WHERE id=?").get(id) as { json: string } | undefined;
+    return raw ? this.safeParse<RunCheckpoint>(raw.json, "run checkpoint", id) : undefined;
+  }
+
+  /** Checkpoint projection bound to the stored run owner and agent. */
+  checkpointForRun(
+    runId: ID, agentId: ID, ownerId: ID, checkpointId?: ID,
+  ): RunCheckpoint | undefined {
+    const raw = this.db.prepare(
+      "SELECT json FROM run_checkpoints WHERE runId=? AND agentId=? AND ownerId=? "
+      + (checkpointId ? "AND id=? " : "") + "ORDER BY createdAt DESC,id DESC LIMIT 1",
+    ).get(...(checkpointId ? [runId, agentId, ownerId, checkpointId] : [runId, agentId, ownerId])) as { json: string } | undefined;
+    const checkpoint = raw ? this.safeParse<RunCheckpoint>(raw.json, "run checkpoint", runId) : undefined;
+    // The SQL columns bind ownership; the public payload must still name the
+    // same run. A damaged or hand-edited JSON row must never lend another run
+    // its files, branch, or provider capability.
+    return checkpoint?.runId === runId ? checkpoint : undefined;
+  }
+
+  checkpointsForRun(runId: ID, limit: number = RUN_RECOVERY_LIMITS.checkpointsPerRun): RunCheckpoint[] {
+    return (this.db.prepare(
+      "SELECT id,json FROM run_checkpoints WHERE runId=? ORDER BY createdAt DESC,id DESC LIMIT ?",
+    ).all(runId, Math.max(1, Math.min(Math.floor(limit), RUN_RECOVERY_LIMITS.checkpointsPerRun))) as { id: string; json: string }[])
+      .map(r => this.safeParse<RunCheckpoint>(r.json, "run checkpoint", r.id)).filter((r): r is RunCheckpoint => !!r);
+  }
+
+  /** Read one request receipt without exposing another requester's rows. */
+  recoveryReceipt(requesterId: ID, requestId: ID): RecoveryReceiptRow | undefined {
+    const raw = this.db.prepare(
+      "SELECT json FROM recovery_receipts WHERE requesterId=? AND requestId=?",
+    ).get(requesterId, requestId) as { json: string } | undefined;
+    return raw ? this.safeParse<RecoveryReceiptRow>(raw.json, "recovery receipt", requestId) : undefined;
+  }
+
+  saveRecoveryReceipt(receipt: RecoveryReceipt): void {
+    // The approval challenge is a transient capability, never durable data.
+    // Receipts retain only the correlated public action; idempotence fingerprints
+    // deliberately exclude that capability so a replay cannot force us to
+    // write the token into SQLite.
+    const request: RecoveryRequest = {
+      ...receipt.request,
+      payload: { ...receipt.request.payload, approvalEpoch: "" },
+    };
+    const fingerprint = recoveryRequestFingerprint(request);
+    const stored: RecoveryReceiptRow = { ...receipt, request, payloadFingerprint: fingerprint };
+    this.db.prepare(
+      "INSERT OR REPLACE INTO recovery_receipts(requesterId,requestId,agentId,channelId,runId,payloadHash,json,createdAt) VALUES(?,?,?,?,?,?,?,?)",
+    ).run(request.requesterId, request.requestId, request.agentId, request.channelId ?? null,
+      request.runId, fingerprint, JSON.stringify(stored), receipt.createdAt);
+    this.pruneRecoveryReceipts(receipt.createdAt);
+  }
+
+  pruneRecoveryReceipts(now = Date.now(), maxAgeMs = 30 * 24 * 60 * 60 * 1000, maxPerOwner = 512): number {
+    const before = this.db.prepare("SELECT COUNT(*) AS n FROM recovery_receipts WHERE createdAt < ?")
+      .get(now - maxAgeMs) as { n: number };
+    this.db.prepare("DELETE FROM recovery_receipts WHERE createdAt < ?").run(now - maxAgeMs);
+    let removed = before.n;
+    const owners = this.db.prepare("SELECT DISTINCT requesterId FROM recovery_receipts").all() as { requesterId: string }[];
+    for (const { requesterId } of owners) {
+      const overflow = this.db.prepare(
+        "SELECT requestId FROM recovery_receipts WHERE requesterId=? ORDER BY createdAt DESC,requestId DESC LIMIT -1 OFFSET ?",
+      ).all(requesterId, Math.max(1, Math.min(Math.floor(maxPerOwner), 512))) as { requestId: string }[];
+      for (const row of overflow) {
+        this.db.prepare("DELETE FROM recovery_receipts WHERE requesterId=? AND requestId=?").run(requesterId, row.requestId);
+        removed++;
+      }
+    }
+    return removed;
   }
 
   /** Every invite ever minted, newest state — for tests and future admin UI. */
@@ -5663,9 +5822,11 @@ export const ARTIFACT_STAGE_GRACE_MS = 60_000;
  * 10 = Project forums / decision threads (membership, topics, replies, receipts).
  * 11 = Engineering Canvas documents and revisions.
  * 12 = shared non-DM channel pins and bounded mutation receipts.
- * 13 = durable channel/thread composer drafts and retry receipts.
+ * 13 = durable message delivery/read state and send idempotency.
+ * 14 = durable channel/thread composer drafts and retry receipts.
+ * 15 = public run checkpoints and correlated recovery receipts.
  */
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 /**
  * The fingerprint of one line of the trail.

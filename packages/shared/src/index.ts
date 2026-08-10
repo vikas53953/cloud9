@@ -28,6 +28,7 @@ import { isAgentEffort } from "./effort.js";
 // costs nothing at runtime at all.
 import type { AgentTokenUse, SavingProposal, UsePeriod, WasteFinding } from "./tokenuse.js";
 import type { NotificationInboxEntry } from "./notification-inbox.js";
+import type { RecoveryMode, RecoveryDecision, RecoveryRequest, RunComparison } from "./run-recovery.js";
 
 export type ID = string;
 
@@ -1417,7 +1418,7 @@ export interface RunUsage {
   handedToIt?: number;
 }
 
-export type RunOutcome = "ok" | "failed" | "cancelled";
+export type RunOutcome = "ok" | "failed" | "cancelled" | "refused";
 export type RunKind = "chat" | "task" | "schedule";
 
 /** One agent turn or one delegated job, start to finish. */
@@ -1454,6 +1455,17 @@ export interface RunRecord {
   usage?: RunUsage;
   /** the CLI's own conversation id */
   sessionId?: string;
+  /** Public provider metadata; never a credential or private transcript. */
+  effort?: string;
+  branch?: string;
+  commit?: string;
+  files?: string[];
+  pullRequest?: string;
+  artifacts?: Array<{ id: string; name: string; version?: number; size?: number; available?: boolean }>;
+  checkpointId?: string;
+  priorRunId?: string;
+  /** The thread/reply this turn answered, when the engine recorded one. */
+  replyTo?: ID;
   /**
    * DID THIS TURN CONTINUE THE HARNESS'S OWN SESSION, or start a cold one?
    *
@@ -2812,6 +2824,8 @@ export interface Approval {
    * `tidySaving`, drawn as plain text, never interpreted.
    */
   saving?: SavingProposal;
+  /** Recovery action awaiting this same owner's fresh approval. */
+  recoveryRequestId?: ID;
 }
 
 export type ActivityKind =
@@ -4063,6 +4077,10 @@ type ClientFrameBase =
   | { type: "runList"; agentId?: ID; taskId?: ID; limit?: number }
   /** One run, in full. The id is enough: who may see it is read from the record. */
   | { type: "runDetail"; runId: string }
+  /** Recover a failed/cancelled/refused run. The relay re-checks access and policy at action time. */
+  | { type: "runRecovery"; runId: string; mode: RecoveryMode; checkpointId?: string; approvalEpoch: string }
+  /** Compare exactly two runs the caller is allowed to read. */
+  | { type: "runCompare"; leftRunId: string; rightRunId: string }
   /**
    * "WHAT ARE MY AGENTS COSTING ME, AND WHAT IS WASTEFUL ABOUT IT?"
    *
@@ -4598,6 +4616,8 @@ export type ServerFrame =
   | { type: "run"; record: RunRecord }
   /** Answers `runList`. Echoes back which question it is answering. */
   | { type: "runs"; agentId?: ID; taskId?: ID; runs: RunListEntry[] }
+  | { type: "runRecovery"; runId: string; decision: RecoveryDecision; requestId?: ID; pending?: boolean; problem?: string }
+  | { type: "runComparison"; comparison: RunComparison; requestId?: ID }
   /**
    * Answers `spending`. One row per agent that has actually taken a turn in the
    * period — an agent with nothing recorded is not a row, because a row of
@@ -4684,6 +4704,8 @@ export type ServerFrame =
    * task and the context pointer.
    */
   | { type: "handoffReceived"; handoff: AgentHandoff }
+  /** relay -> the owner's engine: execute only after fresh auth/policy checks. */
+  | { type: "runRecoveryRequested"; request: RecoveryRequest }
   | {
       type: "error";
       error: string;
@@ -6382,6 +6404,13 @@ export function shareableRun(record: RunRecord): RunRecord {
     ...record,
     ask: redactForSharing(record.ask, RUN_LIMITS.ask),
     ...(record.error ? { error: redactForSharing(record.error, RUN_LIMITS.error) } : {}),
+    ...(record.files ? { files: record.files.slice(0, 64).map(f => redactForSharing(f, 240)) } : {}),
+    ...(record.branch ? { branch: redactForSharing(record.branch, 120) } : {}),
+    ...(record.commit ? { commit: redactForSharing(record.commit, 120) } : {}),
+    ...(record.pullRequest ? { pullRequest: redactForSharing(record.pullRequest, 240) } : {}),
+    ...(record.artifacts ? { artifacts: record.artifacts.slice(0, 32).map(a => ({
+      ...a, id: redactForSharing(a.id, 120), name: redactForSharing(a.name, 120),
+    })) } : {}),
     steps: (record.steps ?? []).map(s => ({
       ...s,
       label: redactForSharing(s.label, RUN_LIMITS.label),
@@ -6438,6 +6467,10 @@ export function summarizeRun(record: RunRecord): string {
     return parts.length
       ? `Didn't finish. Got as far as ${parts.join(", ")}, ${time}${money}.${why}`
       : `Didn't finish, ${time}${money}.${why}`;
+  }
+  if (record.outcome === "refused") {
+    const why = record.error ? ` — ${record.error}` : "";
+    return `Didn't start because it was refused, ${time}${why}.`;
   }
   if (parts.length === 0) {
     return `Answered straight from what it knew — no tools used, ${time}${money}.`;
@@ -6509,8 +6542,11 @@ export function validateRunRecord(record: unknown): string | null {
   if (r.kind !== "chat" && r.kind !== "task" && r.kind !== "schedule") {
     return "a run is a chat reply, a job or a scheduled check-in";
   }
-  if (r.outcome !== "ok" && r.outcome !== "failed" && r.outcome !== "cancelled") {
-    return "a run either worked, failed or was stopped";
+  if (r.outcome !== "ok" && r.outcome !== "failed" && r.outcome !== "cancelled" && r.outcome !== "refused") {
+    return "a run either worked, failed or was stopped (or was refused)";
+  }
+  if (r.requestedByKind !== "human" && r.requestedByKind !== "agent" && r.requestedByKind !== "schedule") {
+    return "a run has an unknown requester";
   }
   if (typeof r.agentId !== "string" || r.agentId.length === 0 || r.agentId.length > 64) {
     return "a run belongs to an agent";
@@ -6543,6 +6579,20 @@ export function validateRunRecord(record: unknown): string | null {
   // sandboxed when it was not, which is worse than not recording it.
   if (r.ownerSetup !== undefined && typeof r.ownerSetup !== "boolean") {
     return "a run either used your own setup or it didn't";
+  }
+  for (const [what, value, max] of [
+    ["effort", r.effort, 32], ["branch", r.branch, 120], ["commit", r.commit, 120],
+    ["pull request", r.pullRequest, 240], ["checkpoint id", r.checkpointId, 180],
+    ["prior run id", r.priorRunId, 180],
+  ] as const) {
+    if (value !== undefined && (typeof value !== "string" || value.length > max)) return `that ${what} is not usable`;
+  }
+  if (r.replyTo !== undefined && !isSafeStoredId(r.replyTo)) return "that run reply is not usable";
+  if (r.files !== undefined && (!Array.isArray(r.files) || r.files.length > 64 || r.files.some(f => typeof f !== "string" || f.length > 240))) {
+    return "a run's public files are not usable";
+  }
+  if (r.artifacts !== undefined && (!Array.isArray(r.artifacts) || r.artifacts.length > 32 || r.artifacts.some(a => !a || typeof a.id !== "string" || typeof a.name !== "string"))) {
+    return "a run's public artifacts are not usable";
   }
   return null;
 }
@@ -6781,3 +6831,13 @@ export {
   type NotificationInboxEntry, type NotificationInboxKind,
   type NotificationInboxState, type NotificationSourceState,
 } from "./notification-inbox.js";
+
+// Public run checkpoints, provider-gated recovery and side-by-side comparison.
+export {
+  buildRunCheckpoint, recoveryDecision, recoveryRequestFingerprint, sanitizeRecoveryAsk,
+  compareRecoveryRequest, compareRuns, validateRunCheckpoint, RUN_RECOVERY_LIMITS,
+  type RunCheckpoint, type PublicRunArtifact, type ProviderSessionCapability,
+  type RecoveryMode, type RecoveryOutcome, type RecoveryAction, type RecoveryDecision,
+  type RecoveryRequest, type RecoveryRequestPayload, type RecoveryReceipt,
+  type ComparableRun, type InaccessibleRun, type RunComparison,
+} from "./run-recovery.js";
