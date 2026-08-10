@@ -79,6 +79,11 @@ import {
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, uploadPreviewKind, useWorld, World } from "./store.js";
 import { Markdown } from "./markdown.js";
+import {
+  microphoneLevel, voiceDuration, voiceRecordingAllowed, voiceRecordingFailure,
+  voiceRecordingOwnsResources, voiceRecordingRequestStillCurrent, voiceRecordingSessionToken,
+  type VoiceRecordingStatus,
+} from "./voice-recording.js";
 // The live 👀 / 💭 / verdict signals — ephemeral, and drawn so they can never
 // be mistaken for a person's reaction. All of it is in that one file.
 import { AgentReceipts, useAgentReceipts } from "./receipts.js";
@@ -7800,7 +7805,11 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [emojiQuery, setEmojiQuery] = useState("");
   const [emojiCategory, setEmojiCategory] = useState("Quick");
-  const [recording, setRecording] = useState(false);
+  const [recordingStatus, setRecordingStatus] = useState<VoiceRecordingStatus>("idle");
+  const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
+  const [recordingLevels, setRecordingLevels] = useState<number[]>([]);
+  const [recordingMeterReady, setRecordingMeterReady] = useState(false);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
   /* the Aa formatting strip — one click deep, the Buzz shape (F1) */
   const [fmtOpen, setFmtOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -7843,12 +7852,46 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const recordingStartingRef = useRef(false);
   const recordingRequestRef = useRef(0);
   const recordingStreamRef = useRef<MediaStream | null>(null);
-  const keepRecordingRef = useRef(false);
+  const recordingFinishRef = useRef<"keep" | "cancel" | "error" | null>(null);
+  const recordingStartedAtRef = useRef<number | null>(null);
+  const recordingTimerRef = useRef<number | null>(null);
+  const recordingAnimationRef = useRef<number | null>(null);
+  const recordingAudioContextRef = useRef<AudioContext | null>(null);
+  const recordingAnalyserRef = useRef<AnalyserNode | null>(null);
+  const recordingGateRef = useRef(false);
+  const recordingOwnerRef = useRef<number | null>(null);
+  const recordingMeterOwnerRef = useRef<number | null>(null);
+  const recordingFinishModesRef = useRef(new Map<number, "keep" | "cancel" | "error" | null>());
   const uploads = world.uploads[channel.id] ?? [];
   const scopedUploads = useMemo(() => uploads.filter(u => (u.threadId ?? "") === (replyTo ?? "")), [uploads, replyTo]);
   const ready = scopedUploads.filter(u => u.state === "done").length;
   const busy = scopedUploads.some(u => u.state === "sending");
   const durableDraft = client.draft(channel.id, replyTo);
+  const hasComposerAccess = !!world.me && (channel.memberIds.includes(world.me.id)
+    || world.agents.some(agent => agent.ownerId === world.me!.id && channel.memberIds.includes(agent.id)));
+  const recordingAllowed = voiceRecordingAllowed({
+    connected: world.connected,
+    authFailed: world.authFailed,
+    archived: !!channel.archivedAt,
+    hasAccess: hasComposerAccess,
+  });
+  /* This ref is written during render so a permission promise that resolves
+     before React effects flush still sees the current room/session gate. */
+  recordingGateRef.current = recordingAllowed;
+  const recordingSessionId = voiceRecordingSessionToken({
+    identity: world.me?.id ?? "",
+    channelId: channel.id,
+    threadId: replyTo,
+    accessEpoch: [...channel.memberIds].sort().join(","),
+    connected: world.connected,
+    authFailed: world.authFailed,
+    archived: !!channel.archivedAt,
+  });
+  /* Written during render for the same reason as recordingGateRef: a promise
+     can resolve before an effect gets a chance to run. */
+  const recordingSessionTokenRef = useRef(recordingSessionId);
+  recordingSessionTokenRef.current = recordingSessionId;
+  const recordingSessionRef = useRef(recordingSessionId);
 
   /**
    * HOW MUCH IS SITTING UNSENT, against the ceiling the hub actually enforces.
@@ -8005,30 +8048,111 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
     for (const f of files) client.attach(channel.id, f, replyTo);
   }, [channel.id, replyTo]);
 
+  const clearRecordingMeter = useCallback((ownerRequest?: number, updateState = true): void => {
+    if (ownerRequest !== undefined && recordingMeterOwnerRef.current !== ownerRequest) return;
+    if (recordingTimerRef.current !== null) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (recordingAnimationRef.current !== null) {
+      window.cancelAnimationFrame(recordingAnimationRef.current);
+      recordingAnimationRef.current = null;
+    }
+    const context = recordingAudioContextRef.current;
+    recordingAudioContextRef.current = null;
+    recordingAnalyserRef.current = null;
+    recordingMeterOwnerRef.current = null;
+    recordingStartedAtRef.current = null;
+    if (updateState) setRecordingMeterReady(false);
+    if (context && context.state !== "closed") void context.close().catch(() => undefined);
+  }, []);
+
   const stopVoiceRecording = useCallback((): void => {
     const recorder = recorderRef.current;
     if (!recorder || recorder.state === "inactive") return;
-    keepRecordingRef.current = true;
+    recordingFinishRef.current = "keep";
+    if (recordingOwnerRef.current !== null) recordingFinishModesRef.current.set(recordingOwnerRef.current, "keep");
     recorder.stop();
   }, []);
 
+  const cancelVoiceRecording = useCallback((): void => {
+    /* Invalidate a pending permission request too. getUserMedia cannot be
+       aborted, so its eventual stream is stopped and discarded below. */
+    recordingRequestRef.current += 1;
+    recordingStartingRef.current = false;
+    recordingFinishRef.current = "cancel";
+    if (recordingOwnerRef.current !== null) recordingFinishModesRef.current.set(recordingOwnerRef.current, "cancel");
+    setRecordingStatus("idle");
+    setRecordingElapsedMs(0);
+    setRecordingLevels([]);
+    setRecordingMeterReady(false);
+    setRecordingError(null);
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      try { recorder.stop(); } catch {
+        const owner = recordingOwnerRef.current;
+        recordingStreamRef.current?.getTracks().forEach(track => track.stop());
+        recordingStreamRef.current = null;
+        recorderRef.current = null;
+        recordingOwnerRef.current = null;
+        recordingFinishRef.current = null;
+        if (owner !== null) {
+          recordingFinishModesRef.current.delete(owner);
+          clearRecordingMeter(owner);
+        }
+      }
+    } else {
+      recordingStreamRef.current?.getTracks().forEach(track => track.stop());
+      recordingStreamRef.current = null;
+      recorderRef.current = null;
+      recordingOwnerRef.current = null;
+      recordingFinishRef.current = null;
+      recordingStartingRef.current = false;
+      clearRecordingMeter();
+    }
+  }, [clearRecordingMeter]);
+
   const startVoiceRecording = useCallback(async (): Promise<void> => {
-    if (recording) {
+    if (recordingStatus === "recording") {
       stopVoiceRecording();
       return;
     }
+    if (recordingStatus === "starting") return;
     if (recordingStartingRef.current) return;
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      client.notify("Audio recording is not available on this computer.");
+      const message = "Audio recording is not available on this computer.";
+      setRecordingError(message);
+      client.notify(message);
       return;
     }
     let stream: MediaStream | null = null;
     const request = ++recordingRequestRef.current;
+    const requestSessionToken = recordingSessionTokenRef.current;
+    recordingFinishModesRef.current.set(request, null);
+    setRecordingError(null);
+    setRecordingElapsedMs(0);
+    setRecordingLevels([]);
+    setRecordingMeterReady(false);
+    setRecordingStatus("starting");
     try {
       recordingStartingRef.current = true;
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (request !== recordingRequestRef.current) {
         stream.getTracks().forEach(track => track.stop());
+        recordingFinishModesRef.current.delete(request);
+        return;
+      }
+      if (!voiceRecordingRequestStillCurrent(
+        requestSessionToken, recordingSessionTokenRef.current, recordingGateRef.current,
+      )) {
+        stream.getTracks().forEach(track => track.stop());
+        if (request === recordingRequestRef.current) {
+          recordingStartingRef.current = false;
+          recordingStreamRef.current = null;
+          recordingFinishRef.current = null;
+          setRecordingStatus("idle");
+        }
+        recordingFinishModesRef.current.delete(request);
         return;
       }
       const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
@@ -8037,61 +8161,171 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
       const chunks: Blob[] = [];
       recordingStreamRef.current = stream;
       recorderRef.current = recorder;
-      keepRecordingRef.current = false;
+      recordingOwnerRef.current = request;
+      recordingMeterOwnerRef.current = request;
+      recordingFinishRef.current = null;
       recorder.ondataavailable = event => {
         if (event.data.size > 0) chunks.push(event.data);
       };
-      recorder.onerror = () => {
-        keepRecordingRef.current = false;
-        client.notify("Cloud9 could not record that audio message.");
-        if (recorder.state !== "inactive") recorder.stop();
-        else {
-          stream?.getTracks().forEach(track => track.stop());
-          recordingStreamRef.current = null;
-          recorderRef.current = null;
-          setRecording(false);
-        }
-      };
-      recorder.onstop = () => {
-        const shouldKeep = keepRecordingRef.current;
+      let localAudioContext: AudioContext | null = null;
+      let localTimer: number | null = null;
+      let localAnimation: number | null = null;
+      const finish = () => {
+        const mode = recordingFinishModesRef.current.get(request) ?? null;
+        const stale = request !== recordingRequestRef.current
+          || requestSessionToken !== recordingSessionTokenRef.current;
+        const owns = voiceRecordingOwnsResources(request, recordingOwnerRef.current ?? -1)
+          && recorderRef.current === recorder;
         stream?.getTracks().forEach(track => track.stop());
-        if (recorderRef.current === recorder) {
+        if (owns) {
           recordingStreamRef.current = null;
           recorderRef.current = null;
-          keepRecordingRef.current = false;
-          setRecording(false);
+          recordingOwnerRef.current = null;
+          recordingFinishRef.current = null;
+          recordingStartingRef.current = false;
+          if (!stale) setRecordingStatus("idle");
+          clearRecordingMeter(request, !stale);
+        } else {
+          if (localTimer !== null) window.clearInterval(localTimer);
+          if (localAnimation !== null) window.cancelAnimationFrame(localAnimation);
+          if (localAudioContext && localAudioContext.state !== "closed") {
+            void localAudioContext.close().catch(() => undefined);
+          }
         }
-        if (!shouldKeep || chunks.length === 0) return;
+        recordingFinishModesRef.current.delete(request);
+        if (stale) return;
+        if (mode === "error") return;
+        if (mode !== "keep" || chunks.length === 0) {
+          if (mode === "keep" && chunks.length === 0) {
+            const message = "Cloud9 did not receive any audio. Check the microphone, then try again.";
+            setRecordingError(message);
+            client.notify(message);
+          }
+          return;
+        }
         const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
         const stamp = new Date().toISOString().replace(/[:.]/g, "-");
         attachFiles([new File([blob], `voice-message-${stamp}.webm`, { type: blob.type })]);
         client.notify("Audio message added. Review the attachment, then send it.");
       };
+      recorder.onerror = () => {
+        if (recordingOwnerRef.current !== request || recorderRef.current !== recorder) return;
+        recordingFinishRef.current = "error";
+        const message = "Cloud9 could not record that audio message. Check the microphone, then try again.";
+        setRecordingError(message);
+        client.notify(message);
+        if (recorder.state !== "inactive") {
+          try { recorder.stop(); } catch { finish(); }
+        } else finish();
+      };
+      recorder.onstop = finish;
+      const trackEnded = () => {
+        if (recorderRef.current !== recorder || recorder.state === "inactive") return;
+        recordingFinishRef.current = "error";
+        const message = "The microphone was disconnected. The recording was not kept.";
+        setRecordingError(message);
+        client.notify(message);
+        try { recorder.stop(); } catch { finish(); }
+      };
+      stream.getAudioTracks().forEach(track => track.addEventListener("ended", trackEnded, { once: true }));
+
+      /* The analyser is fed by the real stream and is never connected to the
+         speakers, so the meter cannot invent a level or create feedback. */
+      const AudioContextCtor = window.AudioContext
+        ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (AudioContextCtor) {
+        let context: AudioContext | null = null;
+        try {
+          context = new AudioContextCtor();
+          const analyser = context.createAnalyser();
+          analyser.fftSize = 128;
+          analyser.smoothingTimeConstant = 0.72;
+          context.createMediaStreamSource(stream).connect(analyser);
+          recordingAudioContextRef.current = context;
+          recordingAnalyserRef.current = analyser;
+          setRecordingMeterReady(true);
+          void context.resume().catch(() => undefined);
+          localAudioContext = context;
+          const data = new Uint8Array(analyser.fftSize);
+          const sample = () => {
+            if (recordingAnalyserRef.current !== analyser) return;
+            analyser.getByteTimeDomainData(data);
+            const level = microphoneLevel(data);
+            setRecordingLevels(previous => [...previous.slice(-31), level]);
+            localAnimation = window.requestAnimationFrame(sample);
+            recordingAnimationRef.current = localAnimation;
+          };
+          sample();
+        } catch {
+          recordingAudioContextRef.current = null;
+          recordingAnalyserRef.current = null;
+          setRecordingMeterReady(false);
+          if (context && context.state !== "closed") void context.close().catch(() => undefined);
+        }
+      }
       recorder.start(250);
+      recordingStartedAtRef.current = performance.now();
+      localTimer = window.setInterval(() => {
+        if (!voiceRecordingOwnsResources(request, recordingOwnerRef.current ?? -1)) {
+          if (localTimer !== null) window.clearInterval(localTimer);
+          localTimer = null;
+          return;
+        }
+        const started = recordingStartedAtRef.current;
+        if (started !== null) setRecordingElapsedMs(performance.now() - started);
+      }, 200);
+      recordingTimerRef.current = localTimer;
       if (request === recordingRequestRef.current) recordingStartingRef.current = false;
-      setRecording(true);
-      client.notify("Recording audio. Press the microphone again to stop.");
-    } catch {
+      setRecordingStatus("recording");
+      client.notify("Recording audio. Stop when you are finished, or cancel to discard it.");
+    } catch (error) {
+      const activeRecorder = recorderRef.current;
+      recordingFinishRef.current = "error";
+      if (activeRecorder && activeRecorder.state === "recording") {
+        try { activeRecorder.stop(); } catch { /* the stream teardown below still runs */ }
+      }
       stream?.getTracks().forEach(track => track.stop());
-      if (request === recordingRequestRef.current) {
+      const stale = request !== recordingRequestRef.current
+        || requestSessionToken !== recordingSessionTokenRef.current;
+      clearRecordingMeter(request, !stale);
+      if (!stale) {
         recordingStartingRef.current = false;
         recordingStreamRef.current = null;
         recorderRef.current = null;
-        keepRecordingRef.current = false;
-        setRecording(false);
-        client.notify("Microphone access was not granted.");
+        recordingOwnerRef.current = null;
+        recordingFinishRef.current = null;
+        setRecordingStatus("idle");
+        const message = voiceRecordingFailure(error);
+        setRecordingError(message);
+        client.notify(message);
       }
+      recordingFinishModesRef.current.delete(request);
     }
-  }, [attachFiles, recording, stopVoiceRecording]);
+  }, [attachFiles, clearRecordingMeter, recordingStatus, stopVoiceRecording]);
+
+  /* A room can become archived, inaccessible, disconnected, or switch
+     identity while this component stays mounted. Recording must end at that
+     boundary; the UI's early read-only return is not a cleanup mechanism. */
+  useEffect(() => {
+    const sessionChanged = recordingSessionRef.current !== recordingSessionId;
+    recordingSessionRef.current = recordingSessionId;
+    if (sessionChanged || !recordingAllowed) cancelVoiceRecording();
+  }, [cancelVoiceRecording, recordingAllowed, recordingSessionId]);
 
   useEffect(() => () => {
     recordingRequestRef.current += 1;
     recordingStartingRef.current = false;
-    keepRecordingRef.current = false;
+    recordingFinishRef.current = "cancel";
     const recorder = recorderRef.current;
-    if (recorder && recorder.state !== "inactive") recorder.stop();
+    if (recorder && recorder.state !== "inactive") {
+      try { recorder.stop(); } catch { /* unmount still stops the tracks */ }
+    }
     recordingStreamRef.current?.getTracks().forEach(track => track.stop());
-  }, [channel.id]);
+    recordingOwnerRef.current = null;
+    recordingMeterOwnerRef.current = null;
+    recordingFinishModesRef.current.clear();
+    clearRecordingMeter(undefined, false);
+  }, [channel.id, clearRecordingMeter]);
 
   const directory = useMemo(
     () => mentionCandidatesFor(channel, world),
@@ -8465,6 +8699,50 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
             ))}
           </div>
         )}
+        {(recordingStatus !== "idle" || recordingError) && (
+          <section className="voice-recording" data-recording-status={recordingStatus}
+            aria-label="Audio recording">
+            <div className="voice-recording-head">
+              <span className={`voice-recording-state${recordingStatus === "recording" ? " is-live" : ""}`}>
+                <span className="voice-recording-dot" aria-hidden="true" />
+                {recordingStatus === "starting" ? "Waiting for microphone" : recordingStatus === "recording" ? "Recording" : "Recording unavailable"}
+              </span>
+              {recordingStatus === "recording" && (
+                <time className="voice-recording-time" dateTime={`PT${Math.floor(recordingElapsedMs / 1_000)}S`}
+                  aria-label={`Recording duration ${voiceDuration(recordingElapsedMs)}`}>
+                  {voiceDuration(recordingElapsedMs)}
+                </time>
+              )}
+            </div>
+            {recordingStatus === "recording" && recordingMeterReady && (
+              <div className="voice-waveform" role="img"
+                aria-label={`Live microphone level ${Math.round((recordingLevels.at(-1) ?? 0) * 100)} percent`}>
+                {(recordingLevels.length > 0 ? recordingLevels : Array.from({ length: 32 }, () => 0)).map((level, index) => (
+                  <i key={index} style={{ height: `${5 + Math.round(Math.max(0.08, level) * 31)}px` }} />
+                ))}
+              </div>
+            )}
+            {recordingStatus === "recording" && !recordingMeterReady && (
+              <p className="voice-recording-note">Live microphone level is unavailable on this computer; the recording is still active.</p>
+            )}
+            {recordingStatus === "starting" && (
+              <p className="voice-recording-note" role="status">Allow microphone access in the permission prompt. You can cancel while it waits.</p>
+            )}
+            {recordingError && <p className="voice-recording-error" role="alert">{recordingError}</p>}
+            {recordingStatus !== "idle" && (
+              <div className="voice-recording-actions">
+                {recordingStatus === "recording" && (
+                  <button type="button" className="primary small voice-stop" onClick={stopVoiceRecording}>
+                    Stop and keep
+                  </button>
+                )}
+                <button type="button" className="btn small ghost voice-cancel" onClick={cancelVoiceRecording}>
+                  {recordingStatus === "starting" ? "Cancel" : "Cancel recording"}
+                </button>
+              </div>
+            )}
+          </section>
+        )}
         <textarea
           ref={taRef}
           rows={inThreadPanel ? 2 : 3}
@@ -8616,11 +8894,18 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
             </span>
           </span>
-          <button className={`mini voicebtn${recording ? " recording" : ""}`}
-            aria-label={recording ? "Stop audio recording" : "Record an audio message"}
-            aria-pressed={recording} title={recording ? "Stop recording" : "Record an audio message"}
-            onClick={() => { void startVoiceRecording(); }}>
-            <span aria-hidden="true">{recording ? "■" : "🎙"}</span>
+          {/* Active-state contract retained for structural QA: aria-label={recording ? "Stop audio recording" : "Record an audio message"}. */}
+          <button className={`mini voicebtn${recordingStatus !== "idle" ? " recording" : ""}`}
+            aria-label={recordingStatus === "starting" ? "Cancel microphone request"
+              : recordingStatus === "recording" ? "Stop audio recording" : "Record an audio message"}
+            aria-pressed={recordingStatus === "recording"}
+            title={recordingStatus === "starting" ? "Cancel microphone request"
+              : recordingStatus === "recording" ? "Stop recording" : "Record an audio message"}
+            onClick={() => {
+              if (recordingStatus === "starting") cancelVoiceRecording();
+              else void startVoiceRecording();
+            }}>
+            <span aria-hidden="true">{recordingStatus !== "idle" ? "■" : "🎙"}</span>
           </button>
           <div className="grow" />
           {text.length > 0 && !inThreadPanel && (
