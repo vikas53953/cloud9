@@ -503,7 +503,45 @@ a{color:var(--ultra);}
   grid-template-columns:var(--side-w) minmax(0,1fr);min-width:0;overflow:hidden;
 }
 .chatgrid.no-aside{grid-template-columns:var(--side-w) minmax(0,1fr);}
+.chatgrid.focus-workspace{grid-template-columns:minmax(0,1fr);}
+.chatgrid.focus-workspace>.sidebar,.chatgrid.focus-workspace>.studio-collapse{display:none;}
 .chatgrid.withdetails{grid-template-columns:var(--side-w) minmax(0,1fr) var(--aside-w);}
+.chatgrid.withworkspace{grid-template-columns:var(--side-w) minmax(0,1fr) var(--workspace-w,320px);}
+
+/* Workspace modes are a projection beside chat, never a replacement for it.
+   The panel has its own close/focus action so the same layout remains usable
+   when a narrow window turns it into a takeover. */
+.workspace-layout-panel{
+  display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;
+  border-left:1px solid var(--line);background:var(--surface);color:var(--ink);
+}
+.workspace-layout-head{
+  flex:none;display:flex;align-items:flex-start;gap:10px;padding:14px 14px 12px;
+  border-bottom:1px solid var(--line-soft);background:var(--surface-2);
+}
+.workspace-layout-title{min-width:0;flex:1;display:grid;gap:3px;}
+.workspace-layout-title h3{font-family:var(--display);font-size:15px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.workspace-layout-close{color:var(--ink-2);}
+.workspace-layout-state,.workspace-layout-note{margin:12px 14px;color:var(--ink-2);font-size:12.5px;line-height:1.45;overflow-wrap:anywhere;}
+.workspace-layout-state{padding:12px;border:1px dashed var(--line);border-radius:var(--radius-s);background:var(--surface-2);}
+.workspace-layout-state.is-offline{margin:10px 14px 0;border-style:solid;color:var(--marigold);background:var(--marigold-soft);}
+.workspace-layout-state[role="alert"]{color:var(--madder);background:var(--madder-soft);}
+.workspace-layout-state .linkish{display:block;margin-top:8px;}
+.workspace-layout-body{min-height:0;overflow:auto;padding:0 0 18px;}
+.workspace-layout-panel .roomfiles{margin:0;padding:14px;overflow:auto;}
+.workspace-layout-panel .roomfiles>.eyebrow{display:block;margin-bottom:8px;}
+.workspace-layout-panel .roomfilelist{display:grid;gap:8px;}
+.workspace-layout-panel .filesnote{margin-top:10px;}
+.workspace-record-list{display:grid;gap:8px;padding:0 14px;}
+.workspace-record{display:grid;gap:5px;padding:10px 11px;border:1px solid var(--line-soft);border-radius:var(--radius-s);background:var(--surface-2);min-width:0;}
+.workspace-record.is-incident{border-color:color-mix(in srgb,var(--madder) 35%,var(--line-soft));}
+.workspace-record-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;}
+.workspace-record-head strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;}
+.workspace-record p{margin:0;font-size:12.5px;line-height:1.4;overflow-wrap:anywhere;}
+.workspace-record small{color:var(--ink-3);font-size:10.5px;overflow-wrap:anywhere;}
+.workspace-layout-panel .run-comparison{margin:0 14px;}
+.workspace-layout-control{display:flex;align-items:center;min-width:0;flex:none;}
+.workspace-layout-control select{max-width:130px;}
 
 /* ------------------------------------------------------------------
    HE DECIDES HOW WIDE THE THREAD IS (2026-08-07). His words: "in slack
@@ -2140,6 +2178,8 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 @media (max-width:860px){
   .chatgrid.withdetails{grid-template-columns:var(--side-w) minmax(0,1fr);}
   .chatgrid.withdetails>.aside{position:absolute;inset:0 0 0 var(--side-w);z-index:35;box-shadow:var(--shadow-lg);}
+  .chatgrid.withworkspace{grid-template-columns:var(--side-w) minmax(0,1fr);}
+  .chatgrid.withworkspace>.workspace-layout-panel{position:absolute;inset:0 0 0 var(--side-w);z-index:35;box-shadow:var(--shadow-lg);}
 }
 @media (max-width:320px){
   .msgs{padding:16px 10px 10px;}
@@ -2663,6 +2703,16 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   .channel-context-summary{max-width:34vw;}
   .channel-context-goal{display:none!important;}
   .channel-context-open{padding-left:5px;padding-right:5px;}
+  .workspace-layout-control select{max-width:100px;padding-left:4px;padding-right:4px;}
+}
+@media (max-width:320px){
+  .chatgrid.withworkspace>.workspace-layout-panel{inset:0;}
+  .workspace-layout-head{padding:11px 10px 9px;}
+  .workspace-layout-state,.workspace-layout-note{margin-left:10px;margin-right:10px;}
+  .workspace-record-list{padding-left:10px;padding-right:10px;}
+  .workspace-layout-panel .run-comparison{margin-left:10px;margin-right:10px;}
+  .workspace-layout-panel .roomfiles{padding-left:10px;padding-right:10px;}
+  .workspace-layout-control select{max-width:92px;font-size:11px;}
 }
 .memory-policy-control{position:relative;flex:none;}
 .memory-policy-popover{position:absolute;z-index:30;top:calc(100% + 8px);right:0;width:min(360px,calc(100vw - 32px));padding:14px;background:var(--panel,#fff);border:1px solid var(--line,#d8d8d8);border-radius:10px;box-shadow:0 12px 28px #0002;color:var(--ink,#222);}

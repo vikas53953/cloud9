@@ -1859,6 +1859,18 @@ function defaultPalette(mode: Exclude<AppearanceMode, "system">): PaletteName {
   return mode === "dark" ? "midnight" : "cloud9-pine";
 }
 
+/** The room workspace modes Cloud9 can actually render from durable records. */
+export type WorkspaceLayout = "focus" | "chat-files" | "chat-diff" | "review" | "incident";
+const WORKSPACE_LAYOUT_OPTIONS: ReadonlyArray<{ value: WorkspaceLayout; label: string }> = [
+  { value: "focus", label: "Focus chat" },
+  { value: "chat-files", label: "Chat + Files" },
+  { value: "chat-diff", label: "Chat + Diff" },
+  { value: "review", label: "Review" },
+  { value: "incident", label: "Incident" },
+];
+const isWorkspaceLayout = (value: unknown): value is WorkspaceLayout =>
+  WORKSPACE_LAYOUT_OPTIONS.some(option => option.value === value);
+
 export interface Prefs {
   /** New installs keep these as separate durable choices. `theme` is retained
    * only as an optional migration bridge for installs written before this
@@ -1868,6 +1880,8 @@ export interface Prefs {
   favoritePalettes: PaletteName[];
   customAccent: string;
   threadLayout: ThreadLayout;
+  /** The per-user/device room layout; invalid legacy values fail closed to Focus. */
+  workspaceLayout: WorkspaceLayout;
   theme?: ThemeName;
   defaultProvider: Provider;
   defaultModel: Record<Provider, string>;
@@ -1926,6 +1940,7 @@ const prefs = makeStore<Prefs>("cloud9.prefs", {
   favoritePalettes: [],
   customAccent: "",
   threadLayout: "split",
+  workspaceLayout: "focus",
   defaultProvider: "claude",
   defaultModel: { claude: MODEL_DEFAULT.claude, codex: MODEL_DEFAULT.codex },
   notify: false,
@@ -1986,6 +2001,11 @@ function migratePrefs(value: Prefs): void {
       || JSON.stringify(bounded.mutedChannelIds) !== JSON.stringify(value.mutedChannelIds ?? [])) {
     next.channelNotificationModes = bounded.channelNotificationModes;
     next.mutedChannelIds = bounded.mutedChannelIds;
+  }
+  /* Preferences are local input, not a trusted contract. A hand-edited or old
+     value must never make the chat claim a panel exists that it cannot render. */
+  if (!isWorkspaceLayout((value as unknown as { workspaceLayout?: unknown }).workspaceLayout)) {
+    next.workspaceLayout = "focus";
   }
   if (Object.keys(next).length > 0) prefs.set(next);
 }
@@ -4420,8 +4440,24 @@ function ChatScreen({
   const [workspaceQuery, setWorkspaceQuery] = useState("");
   /* THREADS OR NOT — his setting, read in the one place that opens them. */
   const p = usePrefs();
+  const workspaceLayout = p.workspaceLayout;
+  const workspaceLayoutRef = useRef<HTMLSelectElement>(null);
+  const priorWorkspaceLayout = useRef<WorkspaceLayout>(workspaceLayout);
   const studioCollapsed = !!p.collapsed["studio-floor"];
   const threading = p.replies !== "inline";
+  const workspaceAccess = !!active && !!world.me && active.memberIds.includes(world.me.id)
+    && world.channels.some(channel => channel.id === active.id);
+  const closeWorkspace = useCallback(() => { prefs.set({ workspaceLayout: "focus" }); }, []);
+  useEffect(() => {
+    if (!workspaceAccess && workspaceLayout !== "focus") closeWorkspace();
+  }, [workspaceAccess, workspaceLayout, closeWorkspace]);
+  useEffect(() => {
+    const enteredFocus = priorWorkspaceLayout.current !== "focus" && workspaceLayout === "focus";
+    priorWorkspaceLayout.current = workspaceLayout;
+    if (!enteredFocus) return;
+    const frame = requestAnimationFrame(() => workspaceLayoutRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [workspaceLayout]);
 
   /* ---- how wide the thread is, and which way he is looking at it ---------
      `p.threadWidth` is HIS number and nothing here ever writes it except his
@@ -4539,8 +4575,9 @@ function ChatScreen({
 
   return (
     <div ref={gridRef}
-      className={`chatgrid${studioCollapsed ? " studio-collapsed" : ""}${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}${
-        threadRoot ? " withthread" : ""}${detailsOpen ? " withdetails" : ""}${takeover ? " takeover" : ""}`}
+      className={`chatgrid${studioCollapsed ? " studio-collapsed" : ""}${workspaceLayout === "focus" ? " focus-workspace" : ""}${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}${
+        threadRoot ? " withthread" : ""}${detailsOpen ? " withdetails" : ""}${takeover ? " takeover" : ""}${
+        active && !threadRoot && !detailsOpen && !takeover && workspaceLayout !== "focus" ? " withworkspace" : ""}`}
       style={{ "--thread-w": `${drawnWidth}px` } as React.CSSProperties}>
       <aside className="sidebar" aria-label="Studio floor">
         <div className="sidebar-head">
@@ -4704,7 +4741,9 @@ Open your chat with ${a.name}`}>
           onOpenHuddles={onOpenHuddles} onOpenCanvas={onOpenCanvas}
           jumpTo={jumpTo} onJumped={onJumped}
           onOpenThread={threading ? openThread : undefined} threadRoot={threadRoot}
-          onToggleDetails={toggleDetails} detailsOpen={detailsOpen} takeover={takeover} />
+          onToggleDetails={toggleDetails} detailsOpen={detailsOpen} takeover={takeover}
+          workspaceLayout={workspaceLayout} workspaceLayoutRef={workspaceLayoutRef}
+          onWorkspaceLayout={layout => prefs.set({ workspaceLayout: layout })} />
       ) : (
         <div className="thread">
           <div className="msgs">
@@ -4716,6 +4755,11 @@ Open your chat with ${a.name}`}>
             </div>
           </div>
         </div>
+      )}
+
+      {active && workspaceAccess && !threadRoot && !detailsOpen && !takeover && workspaceLayout !== "focus" && (
+        <WorkspaceLayoutPanel channel={active} layout={workspaceLayout}
+          onClose={closeWorkspace} />
       )}
 
       {/* THE ROOM, DIMMED BEHIND THE THREAD — Buzz's own manners: it dims
@@ -4749,6 +4793,200 @@ Open your chat with ${a.name}`}>
           onLeft={() => setDetailsOpen(false)} onOpenCanvas={onOpenCanvas} />
       )}
     </div>
+  );
+}
+
+/**
+ * A right-hand workspace is a projection of records already authorised for the
+ * current room. It never treats a local preference, a message sentence, or an
+ * absent response as a file/diff/incident fact. Focus is the safe fallback.
+ */
+function WorkspaceLayoutPanel({ channel, layout, onClose }: {
+  channel: Channel;
+  layout: Exclude<WorkspaceLayout, "focus">;
+  onClose: () => void;
+}): React.JSX.Element {
+  const panelRef = useRef<HTMLElement>(null);
+  useEscapeCloses(onClose, true);
+  useClickAwayCloses(panelRef, onClose, true);
+  const world = useWorld(w => ({
+    connected: w.connected,
+    channels: w.channels,
+    meId: w.me?.id,
+    runs: w.runs,
+    runComparisons: w.runComparisons,
+    runComparisonProblems: w.runComparisonProblems,
+    tasks: w.tasks,
+    approvals: w.approvals,
+    handoffs: w.handoffs,
+  }));
+  /* A channel object can outlive membership on a reconnect. Never let that
+     retained object keep a panel's records visible: the current channel frame
+     and current user membership are the only access gate. */
+  const currentChannel = world.channels.find(candidate => candidate.id === channel.id);
+  const hasAccess = !!world.meId && !!currentChannel && currentChannel.memberIds.includes(world.meId);
+  const roomRuns = useMemo(() => Object.values(world.runs)
+    .filter(run => hasAccess && run.channelId === channel.id)
+    .sort((a, b) => (b.finishedAt || b.startedAt) - (a.finishedAt || a.startedAt)),
+  [world.runs, channel.id, hasAccess]);
+  const roomTasks = useMemo(() => world.tasks.filter(task => hasAccess && task.channelId === channel.id),
+    [world.tasks, channel.id, hasAccess]);
+  const roomApprovals = useMemo(() => world.approvals.filter(approval => {
+    if (!hasAccess) return false;
+    if (approval.channelId === channel.id) return true;
+    return !!approval.taskId && roomTasks.some(task => task.id === approval.taskId);
+  }), [world.approvals, roomTasks, channel.id, hasAccess]);
+  const roomHandoffs = useMemo(() => Object.values(world.handoffs)
+    .filter(handoff => hasAccess && handoff.channelId === channel.id), [world.handoffs, channel.id, hasAccess]);
+
+  const diffRunIds = useMemo(() => roomRuns.slice(0, 2).map(run => run.id), [roomRuns]);
+  const [diffDismissed, setDiffDismissed] = useState(false);
+  useEffect(() => { setDiffDismissed(false); }, [channel.id, layout, diffRunIds[0], diffRunIds[1]]);
+  useEffect(() => {
+    if (!hasAccess || layout !== "chat-diff" || diffRunIds.length !== 2) return;
+    client.compareRuns(diffRunIds[1], diffRunIds[0]);
+  }, [hasAccess, layout, diffRunIds[0], diffRunIds[1]]);
+
+  const title = layout === "chat-files" ? "Chat + Files"
+    : layout === "chat-diff" ? "Chat + Diff"
+      : layout === "review" ? "Review" : "Incident";
+  const subtitle = layout === "chat-files" ? "Files shared in this room"
+    : layout === "chat-diff" ? "Recorded run differences"
+      : layout === "review" ? "Durable work records" : "Recorded problems and refusals";
+
+  return (
+    <aside ref={panelRef} className={`workspace-layout-panel layout-${layout}`} aria-label={`${title} workspace`}>
+      <header className="workspace-layout-head">
+        <div className="workspace-layout-title">
+          <span className="eyebrow">{title}</span>
+          <h3>{subtitle}</h3>
+        </div>
+        <button type="button" className="iconbtn workspace-layout-close"
+          aria-label="Close workspace panel and focus chat" title="Focus chat"
+          onClick={onClose}>×</button>
+      </header>
+      {!hasAccess ? (
+        <div className="workspace-layout-state" data-access-state="unavailable" role="alert">
+          This room is no longer available to you. Workspace records are hidden.
+          <button type="button" className="linkish" onClick={onClose}>Focus chat</button>
+        </div>
+      ) : <>
+      {!world.connected && (
+        <p className="workspace-layout-state is-offline" role="status">
+          The connection is offline. Showing only records already received for this room.
+        </p>
+      )}
+
+      {layout === "chat-files" && <RoomFiles channel={channel} />}
+
+      {layout === "chat-diff" && (
+        <div className="workspace-layout-body workspace-diff" data-diff-channel={channel.id}>
+          <p className="workspace-layout-note">
+            Only provider-reported run facts appear here; Cloud9 does not invent a source diff.
+          </p>
+          {diffRunIds.length < 2 ? (
+            <div className="workspace-layout-state" data-diff-state="unavailable">
+              No verified diff source is available for this room yet. A comparison needs two recorded runs.
+            </div>
+          ) : (() => {
+            const key = `${diffRunIds[1]}:${diffRunIds[0]}`;
+            const comparison = world.runComparisons[key];
+            const problem = world.runComparisonProblems[key];
+            if (comparison && !diffDismissed) {
+              return <RunComparisonPanel comparison={comparison} onClear={() => setDiffDismissed(true)} />;
+            }
+            return (
+              <div className="workspace-layout-state" data-diff-state={problem ? "refused" : "looking"}
+                role={problem ? "alert" : "status"}>
+                {problem ? (plainError(problem) ?? problem) : "Checking the two recorded runs for differences…"}
+                {problem && <button type="button" className="linkish"
+                  onClick={() => client.compareRuns(diffRunIds[1], diffRunIds[0])}>Try again</button>}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {layout === "review" && (
+        <div className="workspace-layout-body workspace-review" data-review-channel={channel.id}>
+          {roomRuns.length === 0 && roomTasks.length === 0 && roomApprovals.length === 0 ? (
+            <div className="workspace-layout-state" data-review-state="empty">
+              No review records are available for this room on this device.
+            </div>
+          ) : (
+            <div className="workspace-record-list" role="list" aria-label="Room review records">
+              {roomRuns.slice(0, 8).map(run => (
+                <article key={`run-${run.id}`} className="workspace-record" role="listitem" data-record-kind="run" data-outcome={run.outcome}>
+                  <div className="workspace-record-head"><strong>{run.agentName}</strong><span className="chip">{run.outcome}</span></div>
+                  <p>{run.ask}</p>
+                  <small>{run.provider}{run.files?.length ? ` · ${run.files.length} reported file${run.files.length === 1 ? "" : "s"}` : ""}</small>
+                </article>
+              ))}
+              {roomTasks.slice(0, 8).map(task => (
+                <article key={`task-${task.id}`} className="workspace-record" role="listitem" data-record-kind="task" data-status={task.status}>
+                  <div className="workspace-record-head"><strong>Task</strong><span className="chip">{task.status.replace("_", " ")}</span></div>
+                  <p>{task.title}</p>
+                  {task.summary && <small>{task.summary}</small>}
+                </article>
+              ))}
+              {roomApprovals.slice(0, 8).map(approval => (
+                <article key={`approval-${approval.id}`} className="workspace-record" role="listitem" data-record-kind="approval" data-status={approval.status}>
+                  <div className="workspace-record-head"><strong>Approval</strong><span className="chip">{approval.status}</span></div>
+                  <p>{approval.action}</p>
+                  {approval.detail && <small>{approval.detail}</small>}
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {layout === "incident" && (
+        <div className="workspace-layout-body workspace-incidents" data-incident-channel={channel.id}>
+          {(() => {
+            const failedRuns = roomRuns.filter(run => run.outcome !== "ok");
+            const failedTasks = roomTasks.filter(task => ["failed", "cancelled", "blocked"].includes(task.status));
+            const refusedApprovals = roomApprovals.filter(approval => ["rejected", "expired"].includes(approval.status));
+            const lostHandoffs = roomHandoffs.filter(handoff => ["refused", "lost"].includes(handoff.state));
+            const count = failedRuns.length + failedTasks.length + refusedApprovals.length + lostHandoffs.length;
+            if (count === 0) {
+              return <div className="workspace-layout-state" data-incident-state="empty">
+                No incident record is available for this room.
+              </div>;
+            }
+            return (
+              <div className="workspace-record-list" role="list" aria-label="Room incidents">
+                {failedRuns.slice(0, 8).map(run => (
+                  <article key={`run-${run.id}`} className="workspace-record is-incident" role="listitem" data-record-kind="run" data-outcome={run.outcome}>
+                    <div className="workspace-record-head"><strong>{run.agentName}</strong><span className="chip is-madder">{run.outcome}</span></div>
+                    <p>{run.error || run.ask}</p>
+                  </article>
+                ))}
+                {failedTasks.slice(0, 8).map(task => (
+                  <article key={`task-${task.id}`} className="workspace-record is-incident" role="listitem" data-record-kind="task" data-status={task.status}>
+                    <div className="workspace-record-head"><strong>Task</strong><span className="chip is-madder">{task.status}</span></div>
+                    <p>{task.error || task.title}</p>
+                  </article>
+                ))}
+                {refusedApprovals.slice(0, 8).map(approval => (
+                  <article key={`approval-${approval.id}`} className="workspace-record is-incident" role="listitem" data-record-kind="approval" data-status={approval.status}>
+                    <div className="workspace-record-head"><strong>Approval</strong><span className="chip is-madder">{approval.status}</span></div>
+                    <p>{approval.action}</p>
+                  </article>
+                ))}
+                {lostHandoffs.slice(0, 8).map(handoff => (
+                  <article key={`handoff-${handoff.requestId}`} className="workspace-record is-incident" role="listitem" data-record-kind="handoff" data-status={handoff.state}>
+                    <div className="workspace-record-head"><strong>Delegation</strong><span className="chip is-madder">{handoff.state}</span></div>
+                    <p>{handoff.problem || handoff.title}</p>
+                  </article>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+      </>}
+    </aside>
   );
 }
 
@@ -5640,12 +5878,33 @@ function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
   );
 }
 
+function WorkspaceLayoutControl({ layout, onChange, selectRef }: {
+  layout: WorkspaceLayout;
+  onChange: (layout: WorkspaceLayout) => void;
+  selectRef?: React.RefObject<HTMLSelectElement>;
+}): React.JSX.Element {
+  return (
+    <label className="workspace-layout-control">
+      <span className="sr-only">Workspace layout</span>
+      <select ref={selectRef} aria-label="Workspace layout" value={layout}
+        onChange={event => {
+          const next = event.target.value;
+          if (isWorkspaceLayout(next)) onChange(next);
+        }}>
+        {WORKSPACE_LAYOUT_OPTIONS.map(option => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function ChatView({
   channel, lastRead, findOpen, onCloseFind, onEditAgent, onOpenTasks,
   owner, onNewAgent, onInvite,
   onOpenHuddles, onOpenCanvas,
   jumpTo, onJumped, onOpenThread, threadRoot, onToggleDetails, detailsOpen,
-  takeover,
+  takeover, workspaceLayout, workspaceLayoutRef, onWorkspaceLayout,
 }: {
   channel: Channel; lastRead: ReadCursor; findOpen: boolean; onCloseFind: () => void;
   onEditAgent: (a: AgentDef) => void; onOpenTasks: () => void;
@@ -5657,6 +5916,9 @@ function ChatView({
   onToggleDetails: () => void; detailsOpen: boolean;
   /** The room is covered by a take-over thread and must leave the tab order. */
   takeover: boolean;
+  workspaceLayout: WorkspaceLayout;
+  workspaceLayoutRef: React.RefObject<HTMLSelectElement>;
+  onWorkspaceLayout: (layout: WorkspaceLayout) => void;
 }): React.JSX.Element {
   countRender("ChatView");
   /* WHAT THIS SCREEN ACTUALLY READS — nothing else can redraw it.
@@ -6254,6 +6516,7 @@ function ChatView({
             <ChannelMemoryControl channel={channel} agents={peerAgent ? [peerAgent] : []}
               policies={policyRows} canManage={false} viewerId={world.me?.id} />
           </div>
+          <WorkspaceLayoutControl layout={workspaceLayout} onChange={onWorkspaceLayout} selectRef={workspaceLayoutRef} />
           <div className="grow" />
           {peerAgent && (
             <span className="presencehere" data-presence={dmPresence?.presence ?? "unknown"}
@@ -6299,6 +6562,7 @@ function ChatView({
           <ChannelContextSummary channel={channel} agents={agents} messages={all}
             pins={world.channelPins} connected={world.connected}
             onToggleDetails={onToggleDetails} detailsOpen={detailsOpen} />
+          <WorkspaceLayoutControl layout={workspaceLayout} onChange={onWorkspaceLayout} selectRef={workspaceLayoutRef} />
           <div className="grow" />
           <div className="header-menu-wrap" ref={headerMenuRef}>
             <button className="iconbtn header-overflow" aria-label="More channel actions"
