@@ -617,6 +617,16 @@ body.dragging-thread *{cursor:col-resize !important;}
 .studio-collapse{position:absolute;z-index:4;left:calc(var(--side-w) - 12px);top:calc(var(--top-h) + 12px);width:28px;height:32px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface-bg);color:var(--text-primary);box-shadow:var(--shadow);}
 .studio-collapse:hover,.studio-collapse:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px;}
 .side-head button:hover{color:var(--pine);background:var(--surface-2);}
+.sidebar-section-order{display:inline-flex;align-items:center;gap:1px;flex:none;}
+.sidebar-section-order button{min-width:22px!important;min-height:24px!important;padding:1px 3px!important;font-size:12px!important;}
+.sidebar-section-order button:disabled{opacity:.32;cursor:default;}
+.sidebar-pref-note{margin:4px 6px 0;padding:7px 9px;border:1px dashed var(--line);border-radius:var(--radius-xs);font-size:11px;line-height:1.35;color:var(--ink-3);}
+.side-subhead{padding:4px 9px 3px;color:var(--ink-3);font:600 10px var(--mono);letter-spacing:.08em;text-transform:uppercase;}
+.channel-row{display:flex;align-items:center;gap:2px;min-width:0;}
+.channel-row>.side-item{width:auto;flex:1;min-width:0;}
+.channel-pin{flex:none;width:28px;height:28px;padding:0;border:0;border-radius:var(--radius-xs);background:transparent;color:var(--ink-3);font-size:12px;opacity:.45;}
+.channel-pin:hover,.channel-pin:focus-visible,.channel-pin.is-pinned{opacity:1;color:var(--marigold-hi);background:var(--surface-2);}
+.channel-pin:focus-visible,.sidebar-section-order button:focus-visible{outline:2px solid var(--focus-ring);outline-offset:1px;}
 
 .side-item{
   width:100%;display:flex;align-items:center;gap:9px;padding:7px 9px;border:0;border-radius:9px;
@@ -2112,6 +2122,16 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   .tasks-body{grid-template-columns:minmax(0,1fr) 312px;}
   .editor-body{grid-template-columns:minmax(0,1fr) 300px;}
   .welcome-left{padding:44px 40px;}
+}
+@media (max-width:320px){
+  .side-scroll{padding-left:5px;padding-right:5px;}
+  .sidebar-head{padding-left:8px;padding-right:8px;gap:4px;}
+  .sidebar-head .workspace-name{font-size:15px;}
+  .side-head{padding-left:4px;padding-right:4px;gap:3px;}
+  .side-head button{min-width:24px;min-height:26px;padding-left:3px;padding-right:3px;}
+  .side-item{padding-left:6px;padding-right:5px;gap:5px;font-size:12.5px;}
+  .channel-pin{width:25px;height:26px;}
+  .sidebar-section-order button{min-width:20px!important;}
 }
 @media (max-width:1100px){
   .editor-body{grid-template-columns:minmax(0,1fr);}

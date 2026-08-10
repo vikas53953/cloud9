@@ -1993,6 +1993,123 @@ migratePrefs(prefs.get());
 
 const usePrefs = (): Prefs => useSyncExternalStore(prefs.subscribe, prefs.get);
 
+/* Sidebar layout is local to this signed-in account on this device. It never
+   travels through the relay, so a disconnected window can still reorder its
+   own view without pretending the server changed. Unknown/deleted channels are
+   reconciled when an authoritative channel list is available. */
+type SidebarSectionId = "channels" | "direct" | "people";
+const SIDEBAR_SECTIONS: readonly SidebarSectionId[] = ["channels", "direct", "people"];
+interface SidebarLayoutPrefs {
+  sections: SidebarSectionId[];
+  pinnedChannelIds: string[];
+}
+const DEFAULT_SIDEBAR_LAYOUT: SidebarLayoutPrefs = {
+  sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [],
+};
+
+function sidebarLayoutKey(userId: string): string {
+  return `cloud9.sidebar-layout.v1.${encodeURIComponent(userId)}`;
+}
+
+interface SidebarLayoutRead {
+  layout: SidebarLayoutPrefs;
+  unavailable: boolean;
+}
+
+function readSidebarLayout(userId: string | undefined): SidebarLayoutRead {
+  if (!userId) return { layout: { sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [] }, unavailable: false };
+  try {
+    const raw = localStorage.getItem(sidebarLayoutKey(userId));
+    if (!raw) return { layout: { sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [] }, unavailable: false };
+    const parsed = JSON.parse(raw) as { sections?: unknown; pinnedChannelIds?: unknown };
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+      || (parsed.sections !== undefined && !Array.isArray(parsed.sections))
+      || (parsed.pinnedChannelIds !== undefined && !Array.isArray(parsed.pinnedChannelIds))) {
+      throw new Error("sidebar preferences are not a usable object");
+    }
+    const sections: SidebarSectionId[] = [];
+    for (const candidate of parsed.sections ?? []) {
+      if (typeof candidate === "string"
+        && (SIDEBAR_SECTIONS as readonly string[]).includes(candidate)
+        && !sections.includes(candidate as SidebarSectionId)) {
+        sections.push(candidate as SidebarSectionId);
+      }
+    }
+    for (const section of SIDEBAR_SECTIONS) if (!sections.includes(section)) sections.push(section);
+    const pinnedChannelIds = Array.isArray(parsed.pinnedChannelIds)
+      ? parsed.pinnedChannelIds.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 180).slice(0, 200)
+      : [];
+    return { layout: { sections, pinnedChannelIds }, unavailable: false };
+  } catch {
+    return { layout: { ...DEFAULT_SIDEBAR_LAYOUT, sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [] }, unavailable: true };
+  }
+}
+
+function useSidebarLayout(userId: string | undefined, channelIds: readonly string[], channelListLoaded: boolean): {
+  layout: SidebarLayoutPrefs;
+  moveSection: (section: SidebarSectionId, direction: -1 | 1) => void;
+  togglePinned: (channelId: string) => void;
+  storageUnavailable: boolean;
+} {
+  const [scope, setScope] = useState(userId ?? "");
+  const [initialRead] = useState<SidebarLayoutRead>(() => readSidebarLayout(userId));
+  const [layout, setLayout] = useState<SidebarLayoutPrefs>(initialRead.layout);
+  const [storageStatus, setStorageStatus] = useState<"ok" | "readFailed" | "writeFailed">(
+    initialRead.unavailable ? "readFailed" : "ok");
+
+  useEffect(() => {
+    const nextScope = userId ?? "";
+    if (nextScope === scope) return;
+    const nextRead = readSidebarLayout(userId);
+    setScope(nextScope);
+    setLayout(nextRead.layout);
+    setStorageStatus(nextRead.unavailable ? "readFailed" : "ok");
+  }, [scope, userId]);
+
+  useEffect(() => {
+    if (!scope) return;
+    try {
+      localStorage.setItem(sidebarLayoutKey(scope), JSON.stringify(layout));
+      setStorageStatus(current => current === "writeFailed" ? "ok" : current);
+    } catch {
+      setStorageStatus("writeFailed");
+    }
+  }, [layout, scope]);
+
+  useEffect(() => {
+    /* Only a completed welcome snapshot is authoritative. A disconnected
+       window can temporarily expose the previous/empty array; keep pins until
+       the live account has actually answered with its channel list, including
+       the legitimate zero-channel case. */
+    if (!scope || !channelListLoaded) return;
+    const visible = new Set(channelIds);
+    setLayout(current => {
+      const pinnedChannelIds = current.pinnedChannelIds.filter(id => visible.has(id));
+      return pinnedChannelIds.length === current.pinnedChannelIds.length
+        ? current : { ...current, pinnedChannelIds };
+    });
+  }, [channelIds, channelListLoaded, scope]);
+
+  const moveSection = useCallback((section: SidebarSectionId, direction: -1 | 1) => {
+    setLayout(current => {
+      const index = current.sections.indexOf(section);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.sections.length) return current;
+      const sections = [...current.sections];
+      [sections[index], sections[target]] = [sections[target]!, sections[index]!];
+      return { ...current, sections };
+    });
+  }, []);
+
+  const togglePinned = useCallback((channelId: string) => {
+    setLayout(current => current.pinnedChannelIds.includes(channelId)
+      ? { ...current, pinnedChannelIds: current.pinnedChannelIds.filter(id => id !== channelId) }
+      : { ...current, pinnedChannelIds: [...current.pinnedChannelIds, channelId].slice(-200) });
+  }, []);
+
+  return { layout, moveSection, togglePinned, storageUnavailable: storageStatus !== "ok" };
+}
+
 /* Read state used to live in `localStorage` here. It does not any more: the
    relay keeps it on the ACCOUNT, so reading a room on this computer marks it
    read on every other one too. `purgeLegacySecrets` deletes the old key. */
@@ -4235,6 +4352,24 @@ function focusThreadTarget(root: HTMLElement | null, opener: HTMLElement | null)
   return document.activeElement === target;
 }
 
+function SidebarSectionOrder({
+  section, label, position, count, onMove,
+}: {
+  section: SidebarSectionId; label: string; position: number; count: number;
+  onMove: (section: SidebarSectionId, direction: -1 | 1) => void;
+}): React.JSX.Element {
+  return (
+    <span className="sidebar-section-order" aria-label={`${label} section order`}>
+      <button type="button" disabled={position <= 0}
+        aria-label={`Move ${label} section up`} title={`Move ${label} section up`}
+        onClick={() => onMove(section, -1)}>↑</button>
+      <button type="button" disabled={position >= count - 1}
+        aria-label={`Move ${label} section down`} title={`Move ${label} section down`}
+        onClick={() => onMove(section, 1)}>↓</button>
+    </span>
+  );
+}
+
 function ChatScreen({
   active, setActiveId, channels, humanDms, agents, people, unreadFor, peerOf, owner,
   onNewChannel, onBrowseRooms, onNewAgent, onBrowseMarket, onInvite, onEditAgent, onOpenDm,
@@ -4264,6 +4399,8 @@ function ChatScreen({
      meant every message in every room, every file that landed and every search
      answer redrew the whole floor list. */
   const world = useWorld(w => ({
+    connected: w.connected,
+    authFailed: w.authFailed,
     channels: w.channels,
     presence: w.presence,
     tasks: w.tasks,
@@ -4272,6 +4409,9 @@ function ChatScreen({
     me: w.me,
     savedMessages: w.savedMessages,
   }));
+  const channelIds = useMemo(() => world.channels.map(channel => channel.id), [world.channels]);
+  const channelListLoaded = world.connected && !!world.me && !world.authFailed;
+  const sidebarLayout = useSidebarLayout(world.me?.id, channelIds, channelListLoaded);
   const isDm = active?.kind === "dm";
   /** the message whose thread is open on the right, if any */
   const [threadRoot, setThreadRoot] = useState<ID | null>(null);
@@ -4368,6 +4508,34 @@ function ChatScreen({
   const agentDmFor = (a: AgentDef) =>
     world.channels.find(c => c.kind === "dm" && c.memberIds.includes(a.id));
   const matchesWorkspace = (label: string) => label.toLowerCase().includes(workspaceQuery.trim().toLowerCase());
+  const sectionPosition = (section: SidebarSectionId): number => {
+    const position = sidebarLayout.layout.sections.indexOf(section);
+    return position < 0 ? SIDEBAR_SECTIONS.indexOf(section) : position;
+  };
+  const pinned = new Set(sidebarLayout.layout.pinnedChannelIds);
+  const visibleChannels = channels.filter(c => matchesWorkspace(c.name));
+  const renderChannel = (c: Channel): React.JSX.Element => {
+    const unread = unreadFor(c);
+    const isPinned = pinned.has(c.id);
+    return (
+      <div key={c.id} className="channel-row" data-pinned={isPinned ? "true" : "false"}>
+        <button className={`side-item${c.archivedAt ? " is-archived" : ""}`}
+          data-channel={c.name} data-vis={c.archivedAt ? "archived" : c.visibility ?? "private"}
+          aria-current={active?.id === c.id ? "true" : "false"}
+          onClick={() => setActiveId(c.id)}>
+          <span className="hash">#</span>{" "}
+          <span className="txt">{c.name}</span>
+          <RoomVisibility channel={c} size="mark" />
+          <MutedMark channelId={c.id} />
+          <UnreadMarks n={unread} />
+        </button>
+        <button type="button" className={`channel-pin${isPinned ? " is-pinned" : ""}`}
+          aria-label={isPinned ? `Unpin ${c.name}` : `Pin ${c.name}`}
+          aria-pressed={isPinned} title={isPinned ? `Unpin ${c.name}` : `Pin ${c.name}`}
+          onClick={() => sidebarLayout.togglePinned(c.id)}>★</button>
+      </div>
+    );
+  };
 
   return (
     <div ref={gridRef}
@@ -4390,38 +4558,40 @@ function ChatScreen({
         </div>
         <div className="side-scroll">
           <label className="workspace-search"><IconSearch /><input value={workspaceQuery} onChange={e => setWorkspaceQuery(e.target.value)} placeholder="Search this workspace" aria-label="Search channels and people" /></label>
-          <div className="side-group">
+          {sidebarLayout.storageUnavailable && (
+            <div className="sidebar-pref-note" role="status">
+              Sidebar changes stay on this screen because device storage is unavailable.
+            </div>
+          )}
+          {sidebarLayout.layout.sections.map(section => {
+            if (section === "channels") return (
+          <div key="channels" className="side-group" data-sidebar-section="channels">
             <div className="side-head">
               <span className="eyebrow">Channels</span>
+              <SidebarSectionOrder section="channels" label="Channels" position={sectionPosition("channels")}
+                count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection} />
               <button className="browsebtn" title="Browse rooms you could join"
                 aria-label="Browse rooms" onClick={onBrowseRooms}>⌕</button>
               <button title="New channel" aria-label="New channel" onClick={onNewChannel}>＋</button>
             </div>
             {channels.length === 0
               ? <RailEmpty text="No channels yet." action="Make the first one" onAction={onNewChannel} />
-              : channels.filter(c => matchesWorkspace(c.name)).map(c => {
-                const unread = unreadFor(c);
-                return (
-                  <button key={c.id} className={`side-item${c.archivedAt ? " is-archived" : ""}`}
-                    data-channel={c.name} data-vis={c.archivedAt ? "archived" : c.visibility ?? "private"}
-                    aria-current={active?.id === c.id ? "true" : "false"}
-                    onClick={() => setActiveId(c.id)}>
-                    <span className="hash">#</span>{" "}
-                    <span className="txt">{c.name}</span>
-                    {/* Open, shut or retired, on every row — a room anyone can
-                        walk into must not look like one you were put in. */}
-                    <RoomVisibility channel={c} size="mark" />
-                    <MutedMark channelId={c.id} />
-                    <UnreadMarks n={unread} />
-                  </button>
-                );
-              })}
+              : <>
+                {visibleChannels.some(c => pinned.has(c.id)) && <div className="side-subhead">Pinned</div>}
+                {visibleChannels.filter(c => pinned.has(c.id)).map(renderChannel)}
+                {visibleChannels.some(c => !pinned.has(c.id)) && <div className="side-subhead">All channels</div>}
+                {visibleChannels.filter(c => !pinned.has(c.id)).map(renderChannel)}
+              </>}
             <button className="browserooms" onClick={onBrowseRooms}>Browse rooms to join</button>
           </div>
 
-          <div className="side-group">
+            );
+            if (section === "direct") return (
+          <div key="direct" className="side-group" data-sidebar-section="direct">
             <div className="side-head">
               <span className="eyebrow">Direct</span>
+              <SidebarSectionOrder section="direct" label="Direct" position={sectionPosition("direct")}
+                count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection} />
               {/* The same pair as Channels above: browse what exists, or make
                   one. This is where he already comes to add an agent, so this
                   is where the casting room has to be. */}
@@ -4486,9 +4656,13 @@ Open your chat with ${a.name}`}>
             })}
           </div>
 
-          <div className="side-group">
+            );
+            return (
+          <div key="people" className="side-group" data-sidebar-section="people">
             <div className="side-head">
               <span className="eyebrow">People</span>
+              <SidebarSectionOrder section="people" label="People" position={sectionPosition("people")}
+                count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection} />
               {/* Only the owner can mint an invite (the relay refuses everyone
                   else), so only the owner is offered one. */}
               {owner && <button title="Invite a friend" aria-label="Invite a friend" onClick={onInvite}>＋</button>}
@@ -4515,6 +4689,8 @@ Open your chat with ${a.name}`}>
               : <div className="railempty"><span>Only you so far. Vikas adds people to this Cloud9.</span></div>
             )}
           </div>
+            );
+          })}
         </div>
       </aside>
       <button className="studio-collapse" aria-label={studioCollapsed ? "Expand Studio Floor" : "Collapse Studio Floor"}
