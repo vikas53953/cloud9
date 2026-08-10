@@ -43,10 +43,13 @@ async function stand(name: string) {
   return { relay, url, owner, engine, me: hello.state.me, channel: hello.state.channels[0]! };
 }
 
-async function makeAgent(client: TestClient, name: string) {
+async function makeAgent(client: TestClient, name: string, channelId: string) {
   client.send({ type: "createAgent", agent: { ...BASE_AGENT, name } });
   const frame = await client.wait<Extract<ServerFrame, { type: "agent" }>>(
     f => f.type === "agent" && f.agent.name === name);
+  client.send({ type: "addMembers", channelId, memberIds: [frame.agent.id] });
+  await client.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.id === channelId && f.channel.memberIds.includes(frame.agent.id));
   return frame.agent;
 }
 
@@ -59,7 +62,7 @@ function waitApproval(c: TestClient, pred: (a: Approval) => boolean) {
 
 test("an agent asks mid-run, the owner says yes, and the engine is told which card it was", async () => {
   const { relay, owner, engine, channel } = await stand("ask.db");
-  const agent = await makeAgent(owner, "Architect");
+  const agent = await makeAgent(owner, "Architect", channel.id);
 
   engine.send({
     type: "askApproval", askId: "ask-1", agentId: agent.id, channelId: channel.id,
@@ -87,7 +90,11 @@ test("an agent asks mid-run, the owner says yes, and the engine is told which ca
   assert.equal(card.approval.expiresAt, undefined, "a mid-run card has no expiry clock");
   assert.equal(card.approval.taskId, undefined, "there was no job — and it does not invent one");
 
-  owner.send({ type: "decideApproval", approvalId: receipt.approvalId, decision: "approved" });
+  owner.send({
+    type: "decideApproval", approvalId: receipt.approvalId, decision: "approved",
+    expectedRevision: card.approval.revision ?? 0,
+    approvalEpoch: card.approval.approvalEpoch, requestId: "midrun-approve-1",
+  });
   const decided = await waitApproval(engine, a => a.id === receipt.approvalId && a.status !== "pending");
   assert.equal(decided.approval.status, "approved");
 
@@ -95,7 +102,7 @@ test("an agent asks mid-run, the owner says yes, and the engine is told which ca
 });
 test("a no comes back as a no, and it never becomes a maybe", async () => {
   const { relay, owner, engine, channel } = await stand("no.db");
-  const agent = await makeAgent(owner, "Architect");
+  const agent = await makeAgent(owner, "Architect", channel.id);
   engine.send({
     type: "askApproval", askId: "ask-2", agentId: agent.id, channelId: channel.id,
     facts: { action: "pullRequest", repo: "vikas53953/cloud9", branch: "cloud9/architect-1", base: "master" },
@@ -106,12 +113,20 @@ test("a no comes back as a no, and it never becomes a maybe", async () => {
   assert.equal(card.approval.action,
     "open a pull request into master from cloud9/architect-1 on vikas53953/cloud9");
 
-  owner.send({ type: "decideApproval", approvalId: receipt.approvalId, decision: "rejected" });
+  owner.send({
+    type: "decideApproval", approvalId: receipt.approvalId, decision: "rejected",
+    expectedRevision: card.approval.revision ?? 0,
+    approvalEpoch: card.approval.approvalEpoch, requestId: "midrun-reject-2",
+  });
   const decided = await waitApproval(engine, a => a.id === receipt.approvalId && a.status !== "pending");
   assert.equal(decided.approval.status, "rejected");
 
   // FR-AP-004: a decided card cannot be walked through a second time
-  owner.send({ type: "decideApproval", approvalId: receipt.approvalId, decision: "approved" });
+  owner.send({
+    type: "decideApproval", approvalId: receipt.approvalId, decision: "approved",
+    expectedRevision: card.approval.revision ?? 0,
+    approvalEpoch: card.approval.approvalEpoch, requestId: "midrun-flip-2",
+  });
   await new Promise(r => setTimeout(r, 200));
   const flips = engine.frames.filter(
     f => f.type === "approval" && f.approval.id === receipt.approvalId && f.approval.status === "approved");
@@ -131,7 +146,7 @@ test("NOBODY ANSWERS, so the card is STILL THERE — it does not die while he th
   // Verified failing against the old hub: the card came back `expired` and the
   // yes below did nothing.
   const { relay, url, owner, engine, channel } = await stand("expire.db");
-  const agent = await makeAgent(owner, "Architect");
+  const agent = await makeAgent(owner, "Architect", channel.id);
   engine.send({
     type: "askApproval", askId: "ask-3", agentId: agent.id, channelId: channel.id,
     facts: { action: "push", repo: "vikas53953/cloud9", branch: "cloud9/architect-1", commits: 1 },
@@ -153,7 +168,11 @@ test("NOBODY ANSWERS, so the card is STILL THERE — it does not die while he th
   assert.equal(seen.status, "pending", "his question was thrown away while he was thinking");
 
   // AND IT IS STILL ANSWERABLE — the whole point. An hour late is still an answer.
-  owner.send({ type: "decideApproval", approvalId: receipt.approvalId, decision: "approved" });
+  owner.send({
+    type: "decideApproval", approvalId: receipt.approvalId, decision: "approved",
+    expectedRevision: seen.revision ?? 0, approvalEpoch: seen.approvalEpoch,
+    requestId: "midrun-late-3",
+  });
   await new Promise(r => setTimeout(r, 200));
   assert.equal(relay.store.approval(receipt.approvalId)!.status, "approved");
 
@@ -167,7 +186,7 @@ test("a desktop client cannot mint an approval card for itself to approve", asyn
   // owner's own screen mints a card reading "push … on vikas53953/cloud9" and
   // then approves it, which is a yes nobody ever gave.
   const { relay, owner, channel } = await stand("desktopmint.db");
-  const agent = await makeAgent(owner, "Architect");
+  const agent = await makeAgent(owner, "Architect", channel.id);
   owner.send({
     type: "askApproval", askId: "ask-4", agentId: agent.id, channelId: channel.id,
     facts: { action: "push", repo: "vikas53953/cloud9", branch: "cloud9/architect-1", commits: 1 },
@@ -180,7 +199,7 @@ test("a desktop client cannot mint an approval card for itself to approve", asyn
 
 test("an engine cannot ask on behalf of somebody else's agent", async () => {
   const { relay, url, owner, channel } = await stand("notmine.db");
-  const mine = await makeAgent(owner, "Architect");
+  const mine = await makeAgent(owner, "Architect", channel.id);
   owner.send({ type: "createInvite" });
   const inv = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
   const friendEngine = new TestClient(url, `invite:${inv.code}:Priya`, "engine");
@@ -201,20 +220,23 @@ test("only the agent's owner decides, and nobody else is even shown the card", a
   // it, AND must not be able to read the branch and repository names off it.
   // Verified failing with the `kind === "action"` branch of `sendApproval`
   // removed — the card lands on the friend's screen.
-  const { relay, url, owner, engine, channel } = await stand("owneronly.db");
-  const agent = await makeAgent(owner, "Architect");
+  const { relay, url, owner, engine } = await stand("owneronly.db");
+  owner.send({ type: "createChannel", name: "private-approval", memberIds: [], kind: "channel" });
+  const channel = await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.name === "private-approval");
+  const agent = await makeAgent(owner, "Architect", channel.channel.id);
   owner.send({ type: "createInvite" });
   const inv = await owner.wait<Extract<ServerFrame, { type: "invite" }>>(f => f.type === "invite");
   const friend = new TestClient(url, `invite:${inv.code}:Priya`);
-  await friend.wait(f => f.type === "welcome");
+  await friend.wait<Extract<ServerFrame, { type: "welcome" }>>(f => f.type === "welcome");
 
   engine.send({
-    type: "askApproval", askId: "ask-6", agentId: agent.id, channelId: channel.id,
+    type: "askApproval", askId: "ask-6", agentId: agent.id, channelId: channel.channel.id,
     facts: { action: "push", repo: "vikas53953/secret-repo", branch: "cloud9/architect-1", commits: 4 },
   });
   const receipt = await engine.wait<Extract<ServerFrame, { type: "approvalAsked" }>>(
     f => f.type === "approvalAsked");
-  await waitApproval(owner, a => a.id === receipt.approvalId);
+  const ownerCard = await waitApproval(owner, a => a.id === receipt.approvalId);
   await new Promise(r => setTimeout(r, 250));
 
   assert.equal(
@@ -222,7 +244,11 @@ test("only the agent's owner decides, and nobody else is even shown the card", a
     "the friend was never shown a card naming a private repository",
   );
 
-  friend.send({ type: "decideApproval", approvalId: receipt.approvalId, decision: "approved" });
+  friend.send({
+    type: "decideApproval", approvalId: receipt.approvalId, decision: "approved",
+    expectedRevision: ownerCard.approval.revision ?? 0,
+    approvalEpoch: ownerCard.approval.approvalEpoch, requestId: "midrun-outsider-6",
+  });
   const err = await friend.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
   assert.match(err.error, /owner/i);
   assert.equal(relay.store.approval(receipt.approvalId)!.status, "pending");
@@ -244,7 +270,7 @@ test("the agent does not get to write the sentence the owner reads", async () =>
   // The one thing an approval card must never be is self-describing. Anything
   // the engine sends that is not on the facts list is simply not carried.
   const { relay, owner, engine, channel } = await stand("nosentence.db");
-  const agent = await makeAgent(owner, "Architect");
+  const agent = await makeAgent(owner, "Architect", channel.id);
   engine.send({
     type: "askApproval", askId: "ask-7", agentId: agent.id, channelId: channel.id,
     facts: {
@@ -265,7 +291,7 @@ test("the agent does not get to write the sentence the owner reads", async () =>
 
 test("a request naming something that is not a remote action is refused, not guessed at", async () => {
   const { relay, owner, engine, channel } = await stand("badfacts.db");
-  const agent = await makeAgent(owner, "Architect");
+  const agent = await makeAgent(owner, "Architect", channel.id);
   for (const facts of [
     { action: "deleteEverything", repo: "vikas53953/cloud9" },
     { action: "push", branch: "cloud9/x\nApproved: yes" },
@@ -286,8 +312,8 @@ test("a job named on the request has to really be that agent's job", async () =>
   // it, an agent could hang its push onto somebody else's job and inherit that
   // job's audience.
   const { relay, owner, engine, channel } = await stand("wrongtask.db");
-  const mine = await makeAgent(owner, "Architect");
-  const other = await makeAgent(owner, "Reviewer");
+  const mine = await makeAgent(owner, "Architect", channel.id);
+  const other = await makeAgent(owner, "Reviewer", channel.id);
   owner.send({ type: "createTask", agentId: other.id, channelId: channel.id, title: "review the thing" });
   const task = await owner.wait<Extract<ServerFrame, { type: "task" }>>(f => f.type === "task");
 

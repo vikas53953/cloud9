@@ -169,6 +169,9 @@ test("a guest cannot drive the owner's agents", async () => {
 
   owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } });
   const scout = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
+  owner.send({ type: "addMembers", channelId: general.id, memberIds: [scout.id] });
+  await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.id === general.id && f.channel.memberIds.includes(scout.id));
 
   const code = await invite(owner);
   const priya = new TestClient(url, `invite:${code}:Priya`);
@@ -199,6 +202,9 @@ test("the approval gate is the agent's setting, not the client's claim", async (
     agent: { ...BASE_AGENT, name: "Guard", approvals: { background: true, schedules: false } },
   });
   const guard = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
+  owner.send({ type: "addMembers", channelId: general.id, memberIds: [guard.id] });
+  await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.id === general.id && f.channel.memberIds.includes(guard.id));
 
   // a client that simply says "no approval needed" used to be believed
   owner.send({
@@ -395,6 +401,9 @@ test("an ordinary client cannot claim a job was asked for by somebody else", asy
   owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
   const made = await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent");
   const general = hello.state.channels.find(c => c.name === "general")!;
+  owner.send({ type: "addMembers", channelId: general.id, memberIds: [made.agent.id] });
+  await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.id === general.id && f.channel.memberIds.includes(made.agent.id));
 
   // the owner's own desktop tries to file a job "asked by Priya"
   owner.send({

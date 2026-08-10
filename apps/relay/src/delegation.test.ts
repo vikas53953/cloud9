@@ -110,7 +110,12 @@ test("delegation approvals use the existing pending → accepted task lifecycle"
   assert.ok(pending.task.approvalId);
   const card = await owner.wait<Extract<ServerFrame, { type: "approval" }>>(
     f => f.type === "approval" && f.approval.taskId === pending.task.id);
-  owner.send({ type: "decideApproval", approvalId: card.approval.id, decision: "approved" });
+  owner.send({
+    type: "decideApproval", approvalId: card.approval.id, decision: "approved",
+    expectedRevision: card.approval.revision ?? 0,
+    approvalEpoch: card.approval.approvalEpoch,
+    requestId: "delegation-approve",
+  });
   const accepted = await owner.wait<Extract<ServerFrame, { type: "task" }>>(
     f => f.type === "task" && f.task.id === pending.task.id && f.task.status === "not_started");
   assert.equal(accepted.task.status, "not_started");

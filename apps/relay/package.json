@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "npm run build && node dist/server.js",
-    "test": "npm run build && node --test dist/*.test.js"
+    "test": "npm run build && node --test --test-force-exit dist/*.test.js"
   },
   "dependencies": {
     "@cloud9/shared": "*",

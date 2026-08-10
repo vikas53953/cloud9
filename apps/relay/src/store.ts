@@ -4510,10 +4510,16 @@ export class Store implements JoinHubStore {
   markRead(userId: ID, channelId: ID, ts: number, messageId?: ID): number {
     const now = Date.now();
     const current = this.lastReadCursor(userId, channelId);
+    // Older clients sent only the timestamp. Resolve the last message at that
+    // exact timestamp so every message already visible at the watermark is
+    // read, while a message inserted later with the same timestamp remains new.
+    const resolvedId = messageId ?? (this.db.prepare(
+      "SELECT id FROM messages WHERE channelId=? AND ts=? ORDER BY id DESC LIMIT 1",
+    ).get(channelId, ts) as { id: ID } | undefined)?.id;
     // Read state only ever moves FORWARD. A client that reconnects and replays
     // an old position must not un-read what another machine already read.
-    const next = ts > current.ts || (ts === current.ts && (messageId ?? "") > (current.id ?? ""))
-      ? { ts, id: messageId } : current;
+    const next = ts > current.ts || (ts === current.ts && (resolvedId ?? "") > (current.id ?? ""))
+      ? { ts, id: resolvedId } : current;
     this.db.prepare(
       "INSERT INTO reads(userId,channelId,lastReadTs,lastReadId,updatedAt) VALUES(?,?,?,?,?) " +
       "ON CONFLICT(userId,channelId) DO UPDATE SET lastReadTs=excluded.lastReadTs,lastReadId=excluded.lastReadId,updatedAt=excluded.updatedAt",

@@ -138,7 +138,12 @@ test("forged recovery authorization is refused; a server challenge gates one fre
   const approval = await owner.wait<Extract<import("@cloud9/shared").ServerFrame, { type: "approval" }>>(
     f => f.type === "approval" && f.approval.recoveryRequestId === "real-1");
   assert.equal(engine.frames.some(f => f.type === "runRecoveryRequested"), false);
-  owner.send({ type: "decideApproval", approvalId: approval.approval.id, decision: "approved" });
+  owner.send({
+    type: "decideApproval", approvalId: approval.approval.id, decision: "approved",
+    expectedRevision: approval.approval.revision ?? 0,
+    approvalEpoch: approval.approval.approvalEpoch,
+    requestId: "recovery-approve-real-1",
+  });
   await engine.wait(f => f.type === "runRecoveryRequested");
   const acceptedReceipt = relay.store.recoveryReceipt(ownerId, "real-1");
   assert.equal(acceptedReceipt?.status, "accepted");

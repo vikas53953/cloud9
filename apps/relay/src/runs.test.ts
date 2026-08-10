@@ -150,6 +150,9 @@ test("a delegated job learns which run actually did it", async () => {
   const { relay, url, owner, engine, me } = await stand("runs-task.db");
   const agent = await makeAgent(owner, "Scout");
   const channel = relay.store.channels()[0];
+  owner.send({ type: "addMembers", channelId: channel.id, memberIds: [agent.id] });
+  await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.id === channel.id && f.channel.memberIds.includes(agent.id));
 
   engine.send({
     type: "createTask", agentId: agent.id, channelId: channel.id,
@@ -361,6 +364,10 @@ test("a run cannot attach itself to another agent's job", async () => {
   const scout = await makeAgent(owner, "Scout");
   const wanda = await makeAgent(owner, "Wanda");
   const channel = relay.store.channels()[0];
+  owner.send({ type: "addMembers", channelId: channel.id, memberIds: [scout.id, wanda.id] });
+  await owner.wait<Extract<ServerFrame, { type: "channel" }>>(
+    f => f.type === "channel" && f.channel.id === channel.id
+      && f.channel.memberIds.includes(scout.id) && f.channel.memberIds.includes(wanda.id));
 
   engine.send({
     type: "createTask", agentId: wanda.id, channelId: channel.id,
