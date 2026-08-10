@@ -70,9 +70,8 @@ try {
     approvalSaid.answerIds.length >= 1 && approvalSaid.replies >= 1,
     `${approvalSaid.answerIds.length} line(s) in the thread, the ask says ${approvalSaid.replies} reply/replies`);
 
-  // tasks rail button shows the badge + pending approval
-  // (selector updated in the Studio reskin: Tasks is a rail button with a count
-  // badge, exactly as the approved design draws it)
+  // Tasks is a Build destination behind More. Open it through the shared
+  // rail helper, then assert its own badge rather than requiring permanence.
   /* SCOPED TO THIS SCRIPT'S OWN JOB, never "the first row on the screen".
    *
    * WHY IT CHANGED, 2026-08-05. Every agent Cloud9 makes is fully capable from
@@ -83,9 +82,10 @@ try {
    * as one meant this suite could reject somebody else's job and call it a
    * pass. The badge is still checked; it is simply no longer read as a number
    * nobody owns. */
-  await page.waitForSelector('.rail-btn[data-go="tasks"] .rail-count', { timeout: 30000 });
+  await page.locator("[data-open-tools]").click();
+  await page.waitForSelector('.rail-tools-drawer [data-go="tasks"] .rail-count', { timeout: 30000 });
   ok("tasks button shows pending-approval badge", true);
-  await page.click('.rail-btn[data-go="tasks"]');
+  await page.click('.rail-tools-drawer [data-go="tasks"]');
   const sensitiveRow = page.locator(".taskrow", { hasText: "research the sensitive topic" }).first();
   await sensitiveRow.waitFor({ timeout: 30000 });
   await sensitiveRow.locator(".tstatus.waiting_approval").waitFor({ timeout: 30000 });
@@ -100,8 +100,9 @@ try {
   // second request → approve → completes with proactive result
   await box.fill("@Guard !bg summarise the safe topic");
   await box.press("Enter");
-  await page.waitForSelector('.rail-btn[data-go="tasks"] .rail-count', { timeout: 30000 });
-  await page.click('.rail-btn[data-go="tasks"]');
+  await page.locator("[data-open-tools]").click();
+  await page.waitForSelector('.rail-tools-drawer [data-go="tasks"] .rail-count', { timeout: 30000 });
+  await page.click('.rail-tools-drawer [data-go="tasks"]');
   const safeRow = page.locator(".taskrow", { hasText: "summarise the safe topic" }).first();
   await safeRow.waitFor({ timeout: 30000 });
   await safeRow.locator('button:has-text("Approve")').click();

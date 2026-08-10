@@ -1160,35 +1160,39 @@ try {
   } // end act: what the sign-in card says about every harness
   if (act("settings, the model picker and skills")) {
   // ---- his 13: settings has real, changeable things ----
-  // selectors updated (Studio reskin): the look is chosen with the approved
-  // design's three painted cards, each addressed by the theme it sets.
+  // Appearance now separates the three system/light/dark modes from its
+  // palette cards. Preview first, then Apply theme makes persistence explicit.
   const settingsPanel = page.locator(".settingspanel");
-  const themeButtons = await settingsPanel.locator("#set-look .theme-pick").count();
-  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="dark"]').click();
+  const modeButtons = await settingsPanel.locator("#set-look .appearance-mode [data-appearance-mode]").count();
+  await settingsPanel.locator('#set-look .appearance-mode [data-appearance-mode="dark"]').click();
+  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="midnight"]').click();
+  await settingsPanel.locator('#set-look .appearance-actions .primary:has-text("Apply theme")').click();
   const wentDark = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
-  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="light"]').click();
+  await settingsPanel.locator('#set-look .appearance-mode [data-appearance-mode="light"]').click();
+  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="cloud9-pine"]').click();
+  await settingsPanel.locator('#set-look .appearance-actions .primary:has-text("Apply theme")').click();
   const wentLight = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
-  ok("settings can actually change the look (light / dark / match this computer)",
-    themeButtons === 3 && wentDark === "dark" && wentLight === "light", `${wentDark} then ${wentLight}`);
-  await settingsPanel.locator('#set-look .theme-pick[data-theme-set="system"]').click();
+  ok("settings can actually change the look (system / light / dark plus palettes)",
+    modeButtons === 3 && wentDark === "midnight" && wentLight === "cloud9-pine", `${wentDark} then ${wentLight}`);
+  await settingsPanel.locator('#set-look .appearance-mode [data-appearance-mode="system"]').click();
+  await settingsPanel.locator('#set-look .appearance-actions .primary:has-text("Apply theme")').click();
 
   const defaultModels = await settingsPanel.locator("#set-agents select.defaultmodelpick option").count();
   ok("settings sets which app + model new agents start on",
     (await settingsPanel.locator("#set-agents select.defaultproviderpick").count()) === 1 && defaultModels > 0,
     `${defaultModels} models`);
 
-  // selectors updated (Studio reskin): quiet hours is its own section now, and
-  // a switch row is the approved design's `.toggle-row`.
-  await settingsPanel.locator('#set-quiet .toggle-row:has-text("Quiet hours") input').check();
-  const quietEnabled = await settingsPanel.locator('#set-quiet input[type="time"]').first().isEnabled();
+  // Quiet hours lives with the other notification controls.
+  await settingsPanel.locator('#set-notify .toggle-row:has-text("Quiet hours") input').check();
+  const quietEnabled = await settingsPanel.locator('#set-notify input[type="time"]').first().isEnabled();
   ok("settings has notifications on/off and quiet hours that switch on",
     (await settingsPanel.locator('#set-notify .toggle-row:has-text("new messages") input').count()) === 1 && quietEnabled);
-  await settingsPanel.locator('#set-quiet .toggle-row:has-text("Quiet hours") input').uncheck();
+  await settingsPanel.locator('#set-notify .toggle-row:has-text("Quiet hours") input').uncheck();
 
   ok("settings tells you where agent files live and offers a Danger zone",
-    (await settingsPanel.locator("#set-files .pathbox").count()) === 1 &&
+    (await settingsPanel.locator("#set-agents .pathbox").count()) === 1 &&
     (await settingsPanel.locator('#set-danger button:has-text("Remove Claude key")').count()) === 1 &&
-    (await settingsPanel.locator("#set-danger select.removepersonpick").count()) === 1);
+    (await settingsPanel.locator("#set-workspace select.removepersonpick").count()) === 1);
 
   // the policy disclosure (FR-PC-004) stays visible
   await page.waitForSelector("text=Heads up");
@@ -2414,8 +2418,14 @@ try {
     return dt;
   });
   await page.dispatchEvent(".thread .composer", "dragover", { dataTransfer: dropped });
+  await waitFor(page,
+    () => document.querySelector(".thread .composer")?.getAttribute("data-dragover") === "yes",
+    undefined, { timeout: 10000, what: "the composer to enter its dragover state" });
   const sayingDrop = await page.getAttribute(".thread .composer", "data-dragover");
   await page.dispatchEvent(".thread .composer", "drop", { dataTransfer: dropped });
+  await waitFor(page,
+    () => document.querySelector(".thread .composer")?.getAttribute("data-dragover") === "no",
+    undefined, { timeout: 10000, what: "the composer to leave its dragover state after drop" });
   await page.waitForSelector('.thread .composer .uptile[data-upload="dropped-note.txt"]', { timeout: 25000 });
   const afterDrop = await page.getAttribute(".thread .composer", "data-dragover");
   /* Built and dispatched inside the page rather than handed in from here: a
@@ -2601,6 +2611,7 @@ try {
       steps: [...(block?.querySelectorAll(".runstep") ?? [])]
         .map(s => `${s.dataset.seq}:${s.dataset.kind}:${s.dataset.ok}`),
       says: (block?.innerText ?? "").replace(/\s+/g, " ").trim(),
+      note: (block?.querySelector(".livenote")?.textContent ?? "").replace(/\s+/g, " ").trim(),
     };
   }, carrierId);
   ok("live steps stream onto the message that asked, and a step reported twice is ONE step with its outcome filled in — never the same command listed again",
@@ -2608,8 +2619,9 @@ try {
     live.steps.join(" ") === "1:command:true 2:read:unsaid",
     `${live.said} step(s) claimed, drawn: ${live.steps.join(" / ")}`);
   ok("and it says out loud that this is live and not the record, so nobody reads a preview as the answer",
-    /working/i.test(live.says) && /full record appears when it finishes/i.test(live.says),
-    live.says.slice(0, 110));
+    /working/i.test(live.says) && /live from the app as it works/i.test(live.note) &&
+    /full record appears when it finishes/i.test(live.note),
+    `${live.says.slice(0, 70)} :: ${live.note}`);
   await page.screenshot({ path: `${SHOTS}/live-steps.png` });
 
   await sendSteps(undefined, true);
@@ -2969,8 +2981,8 @@ try {
     const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
     await goSettings();
     if (!(await quietBox().isChecked())) await quietBox().click();
-    await page.fill('#set-quiet .quietrow .field-row:nth-child(1) input[type="time"]', hhmm(nowMin - 30));
-    await page.fill('#set-quiet .quietrow .field-row:nth-child(2) input[type="time"]', hhmm(nowMin + 30));
+    await page.fill('#set-notify .quietrow .field-row:nth-child(1) input[type="time"]', hhmm(nowMin - 30));
+    await page.fill('#set-notify .quietrow .field-row:nth-child(2) input[type="time"]', hhmm(nowMin + 30));
     await backToGeneral();
     await fpage.fill(".composer textarea", "@Vikas notify-quiet-should-stay-silent");
     await fpage.press(".composer textarea", "Enter");
@@ -4590,15 +4602,13 @@ try {
     (await ownScout.innerText()).replace(/\s+/g, " ").trim());
   await page.screenshot({ path: `${SHOTS}/room-members-owner.png` });
 
-  // the right rail says it too — an agent is a room participant wherever it is drawn
+  // Channel context is opt-in now: closing details must not leave the former
+  // permanent rail occupying the conversation, and reopening restores rows.
   await page.click(".roompanel .roomclose");
-  await page.waitForSelector('.aside .mini-agent[data-agent="Bramble"]', { timeout: 20000 });
-  const railBramble = page.locator('.aside .mini-agent[data-agent="Bramble"] .agentowner');
-  ok("the same is said in the rail beside the conversation, not only in the details panel",
-    (await railBramble.getAttribute("data-owner")) === "Priya" &&
-    /Priya can read this room/i.test(await railBramble.locator(".readsroom").innerText()),
-    (await railBramble.innerText()).replace(/\s+/g, " ").trim());
-  await page.screenshot({ path: `${SHOTS}/room-rail-owner.png` });
+  await page.waitForSelector(".roompanel", { state: "detached", timeout: 20000 });
+  ok("channel details stay opt-in instead of leaving a permanent rail beside the conversation",
+    (await page.locator(".aside").count()) === 0);
+  await page.screenshot({ path: `${SHOTS}/room-details-closed.png` });
   await page.click(".chathead .roomdetailsbtn");
   await page.waitForSelector(".roompanel .memberrow", { timeout: 20000 });
 
@@ -5466,10 +5476,10 @@ try {
     `${afterTray.fromBottom}px from the bottom, reasons since: ${JSON.stringify(sinceTray)}`);
 
   /* ---- the box grows with what is in it ----
-     It was `rows={1}` and nothing else, so a five-line message was typed into a
-     one-line slot with its own hidden scrollbar: he could see the line he was on
-     and none of the ones above it. And the list shrinks as it grows, which is
-     the very thing the rule above is watching for. */
+     The composer starts at its comfortable three-line minimum now. A five-line
+     message must still make the box meaningfully taller and fit without its own
+     hidden scrollbar. The list shrinks as it grows, which is the very thing the
+     rule above is watching for. */
   const oneLine = await page.$eval(".composer textarea", ta => Math.round(ta.getBoundingClientRect().height));
   await page.fill(".composer textarea", "one\ntwo\nthree\nfour\nfive");
   await page.waitForTimeout(500);
@@ -5477,7 +5487,7 @@ try {
     ta => ({ h: Math.round(ta.getBoundingClientRect().height), scrollH: ta.scrollHeight }));
   const whileTyping = await viewNow();
   ok("the box grows with what is typed into it, and the newest message stays in sight while it does",
-    fiveLines.h >= oneLine * 3 && fiveLines.h >= fiveLines.scrollH - 2 &&
+    fiveLines.h > oneLine + 8 && fiveLines.h >= fiveLines.scrollH - 2 &&
     whileTyping.fromBottom < 3 && whileTyping.newestInSight === true,
     `${oneLine}px empty → ${fiveLines.h}px for five lines (content ${fiveLines.scrollH}px), ` +
     `${whileTyping.fromBottom}px from the bottom`);
@@ -6221,7 +6231,7 @@ try {
      row does not say "0" would pass on a card that says "0"; asserting the row
      is not in the document is the only version that means anything. */
 
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   // What the screen is holding, printed before anything is asserted — a missing
   // card and a record that never arrived look identical on screen and are two
   // completely different bugs.
@@ -6321,7 +6331,7 @@ try {
   await page.click(".threadpanel .threadclose");
   await page.waitForSelector(".threadpanel", { state: "detached", timeout: 10000 });
 
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   await page.waitForSelector(`.taskrow .callout.run[data-run="${jobRunId}"]`, { timeout: 20000 });
   await noSidewaysWithACard("in the Tasks in-tray", "run-tasks");
 
@@ -6466,11 +6476,9 @@ try {
     (await richCard.locator('.runstep[data-kind="note"].held').count()) === 1 &&
     (await richCard.locator('.runstep[data-kind="note"].bad').count()) === 0 &&
     /Refused to use Bash/.test(await richCard.locator('.runstep[data-kind="note"]').innerText()));
-  ok("what it thought and what it said are folded away until they are asked for",
+  ok("private thinking and raw provider chatter are never shown in a public run",
     (await richCard.locator('.runstep[data-kind="thinking"]').count()) === 0 &&
-    (await richCard.locator(".runquiet").innerText()).includes("2"));
-  await richCard.locator(".runquiet").click();
-  await page.waitForSelector(`.workrow[data-run="${rich.id}"] .runstep[data-kind="thinking"]`, { timeout: 10000 });
+    (await richCard.locator(".runquiet").count()) === 0);
   await page.screenshot({ path: `${SHOTS}/run-steps.png` });
 
   // ---- the Codex half: tokens, and never a price ----
@@ -6525,15 +6533,14 @@ try {
      ====================================================================== */
 
   REPO = "vikas53953/cloud9";
-  await page.click('.rail-btn[data-go="projects"]');
+  await clickRail(page, "projects");
   await page.waitForSelector(".projects", { timeout: 20000 });
 
-  ok("PROJECTS is in the primary rail with the approved direct destinations and More tools",
+  ok("PROJECTS stays reachable through More while the primary rail keeps the focused destinations",
     await page.evaluate(() => {
-      const rail = [...document.querySelectorAll(".rail [data-go]")]
+      const rail = [...document.querySelectorAll(".rail-primary [data-go]")]
         .map(b => b.dataset.go ?? b.title ?? "");
-      return rail.includes("projects")
-        && ["chat", "tasks", "activity", "settings"].every(s => rail.includes(s))
+      return ["chat", "activity", "files"].every(s => rail.includes(s))
         && !!document.querySelector("[data-open-tools]");
     }),
     (await page.$$eval(".rail [data-go]", bs => bs.map(b => b.dataset.go ?? b.title).join(", "))));
@@ -7114,7 +7121,7 @@ try {
     await prCard.locator(".spend").innerText());
 
   /* ---- the same request, in the Tasks in-tray ---- */
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   const trayCard = page.locator(
     `.tasks-side .approval[data-kind="action"][data-appr="${pushApprovalId}"]`);
   await trayCard.waitFor({ timeout: 20000 });
@@ -7130,8 +7137,7 @@ try {
      return to the in-tray, and then return to the room: both surfaces must still
      show the same pending approval with the real buttons. */
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.waitForSelector('.rail-btn[data-go="tasks"]', { timeout: 20000 });
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   await page.waitForSelector(`.tasks-side .approval[data-appr="${pushApprovalId}"][data-state="pending"]`, { timeout: 20000 });
   const persistedTray = page.locator(`.tasks-side .approval[data-appr="${pushApprovalId}"]`);
   ok("a pending action survives an owner-window reload in the Tasks in-tray",
@@ -7155,7 +7161,7 @@ try {
     (await persistedMessage.innerText()).replace(/\s+/g, " "));
 
   /* ---- HE SAID YES, and the relay records completion ---------------------- */
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   await page.waitForSelector('.tasks-side', { timeout: 20000 });
   const APPROVE_FACTS = {
     action: "push", repo: REPO, branch: "cloud9/scout-approved", commits: 1, files: 1,
@@ -7274,7 +7280,7 @@ try {
    * NEXT script, blamed on a feature that was working perfectly. A section that
    * mints approvals answers all of them before it leaves.
    */
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   await page.waitForSelector(".tasks-side", { timeout: 20000 });
   for (const left of await page.$$eval('.tasks-side .approval[data-kind="action"]',
     els => els.map(e => e.dataset.appr))) {
@@ -8117,7 +8123,7 @@ try {
 
   /* THE PICTURE ITSELF: two repositories, one nickname. It used to be said
      twice — a clean toast and an "Error:"-prefixed line under the form. */
-  await page.click('.rail-btn[data-go="projects"]');
+  await clickRail(page, "projects");
   await page.waitForSelector(".projects", { timeout: 20000 });
   await page.click(".projects .topbar [data-connect]");
   await page.waitForSelector(".connectproj", { timeout: 20000 });
@@ -8319,7 +8325,7 @@ try {
     status: "failed",   // nothing recorded: no error, no summary
   });
 
-  await page.click('.rail-btn[data-go="tasks"]');
+  await clickRail(page, "tasks");
   await page.waitForSelector(`.taskrow[data-task="${failedJob}"]`, { timeout: 30000 });
   const failedCard = (await page.locator(`.taskrow[data-task="${failedJob}"]`).innerText())
     .replace(/\s+/g, " ").trim();
@@ -8583,22 +8589,37 @@ try {
      working and has to name that agent; pressing it has to really end the turn
      and be said out loud; and the record has to call it STOPPED — not failed,
      which is what "it went wrong" looks like and is a different thing. */
-  await page.click(".sidebar >> text=# trip-goa");
+  /* Earlier access-control journeys deliberately change #trip-goa. Build a
+     fresh, visible room with Scout for this run so Stop is exercised against a
+     turn that can actually be accepted, rather than a historical membership. */
+  const stopRoomName = "stop-journey";
+  await page.click('button[title="New channel"]');
+  await page.fill('.panel input[placeholder="trip-goa"]', stopRoomName);
+  await page.click('label:has-text("Scout") input');
+  await page.click(".panel .foot >> text=Create");
+  await page.waitForSelector(`.sidebar >> text=# ${stopRoomName}`, { timeout: 15000 });
+  await page.click(`text=# ${stopRoomName}`);
   await page.waitForSelector(".composer textarea", { timeout: 15000 });
 
   const stopWorld = await page.evaluate(() => ({
     channels: window.cloud9Wire.channels(),
     agents: window.cloud9Wire.agents(),
   }));
-  const scoutId = stopWorld.agents.find(a => a.name === "Scout")?.id;
-  const tripGoaId = stopWorld.channels.find(c => c.name === "trip-goa")?.id;
-  if (!scoutId || !tripGoaId) {
-    throw new Error("the Stop journey could not identify Scout or #trip-goa from the running app");
+  const tripGoa = stopWorld.channels.find(c => c.name === stopRoomName);
+  const tripGoaId = tripGoa?.id;
+  /* This room was created directly above with Scout selected. `memberIds` is
+     intentionally the human membership projection, so it cannot be used to
+     rediscover the agent that the create-room form just admitted. */
+  const stopAgent = stopWorld.agents.find(a => a.name === "Scout");
+  const stopAgentId = stopAgent?.id;
+  const stopAgentName = stopAgent?.name;
+  if (!stopAgentId || !stopAgentName || !tripGoaId) {
+    throw new Error("the Stop journey could not identify an agent member of the fresh Stop room");
   }
-  /* Earlier smoke journeys may still have Scout finishing background work.
+  /* Earlier smoke journeys may still have the selected agent finishing background work.
      A second !bg request queues behind that turn, so clicking the already
      visible Stop would exercise the wrong task. Start this journey only from
-     the state a person sees before beginning new work: Scout is idle and has
+     the state a person sees before beginning new work: the selected agent is idle and has
      no queued/running job. */
   await waitFor(page, wantedAgent => {
     const hasStop = [...document.querySelectorAll("button.stopnow[data-stop-agent]")]
@@ -8606,7 +8627,8 @@ try {
     const hasLiveJob = window.cloud9Runs.jobs().some(j =>
       j.agentId === wantedAgent && (j.status === "not_started" || j.status === "working"));
     return !hasStop && !hasLiveJob;
-  }, scoutId, { timeout: 180000, what: "Scout to finish earlier work before the Stop journey" });
+  }, stopAgentId, { timeout: 180000,
+    what: `${stopAgentName} to finish earlier work before the Stop journey` });
   const knownJobs = await page.evaluate(() => window.cloud9Runs.jobs().map(j => j.id));
 
   /* CATCH THE CONTROL THE MOMENT IT EXISTS, AND PRESS IT THERE AND THEN.
@@ -8642,7 +8664,7 @@ try {
         clearInterval(timer);
       });
       mo.observe(document.body, { childList: true, subtree: true, attributes: true });
-      /* A task can enter the store while an older Scout Stop is already drawn.
+      /* A task can enter the store while an older Stop control is already drawn.
          That state change need not alter this conversation's DOM, so the
          observer alone has nothing to wake it. Poll the app's own QA seam too;
          the click is still the real button and only the fresh task can arm it. */
@@ -8652,15 +8674,34 @@ try {
         mo.disconnect();
       }, 25);
     }
-  }, [knownJobs, scoutId, tripGoaId]);
+  }, [knownJobs, stopAgentId, tripGoaId]);
   const stopBox = page.locator(".composer textarea");
-  await stopBox.fill("@Scout !bg take your time comparing every villa in this shortlist");
+  const stopAsk = "take your time comparing every villa in this shortlist";
+  await stopBox.fill(`@${stopAgentName} !bg ${stopAsk}`);
   await stopBox.press("Enter");
+  /* A new agent's local-free contract still asks before background work when
+     its capabilities can change the owner's computer. Approve THIS job through
+     the visible card; otherwise it remains waiting and a Stop control is
+     correctly absent. Agents that do not need approval take the working branch
+     immediately, so this wait also keeps the QA path honest for both states. */
+  await waitFor(page, title => {
+    const pending = [...document.querySelectorAll('.msg[data-approval][data-state="pending"]')]
+      .some(card => (card.textContent ?? "").includes(title));
+    const working = window.cloud9Runs.jobs().some(job =>
+      job.title?.includes(title) && (job.status === "not_started" || job.status === "working"));
+    return pending || working;
+  }, stopAsk, { timeout: 30000, what: "the Stop job to be approved or started" });
+  const stopApproval = page.locator('.msg[data-approval][data-state="pending"]')
+    .filter({ hasText: stopAsk }).last();
+  if (await stopApproval.count()) {
+    await stopApproval.locator('button:has-text("Approve")').click();
+  }
   await waitFor(page, () => !!window.__c9stop, undefined,
     { timeout: 90000, what: "a Stop control to be offered while the agent works" });
   const stopSeen = await page.evaluate(() => window.__c9stop);
   ok("while an agent is working, the owner is offered a Stop that names THAT agent",
-    stopSeen.text === "Stop" && stopSeen.agent === scoutId && /Stop Scout/.test(stopSeen.title),
+    stopSeen.text === "Stop" && stopSeen.agent === stopAgentId &&
+    stopSeen.title === `Stop ${stopAgentName} and spend nothing more on this`,
     `${stopSeen.title} :: data-stop-agent=${stopSeen.agent}`);
   /* IT REALLY STOPPED — asked of the hub's own record, not of a sentence.
      `RunOutcome` has no "timed out": a turn that ran out of time is `failed`,

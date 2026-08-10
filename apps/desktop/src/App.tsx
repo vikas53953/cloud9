@@ -79,7 +79,7 @@ import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, useWorld, World } from 
 import { Markdown } from "./markdown.js";
 // The live 👀 / 💭 / verdict signals — ephemeral, and drawn so they can never
 // be mistaken for a person's reaction. All of it is in that one file.
-import { AgentReceipts } from "./receipts.js";
+import { AgentReceipts, useAgentReceipts } from "./receipts.js";
 // the live-steps store is ephemeral and lives beside the receipts one, for the
 // same reasons — see its header. Only the HOOK comes from there; the steps are
 // drawn by `RunSteps` below, the same renderer the stored record uses.
@@ -4644,7 +4644,18 @@ function LiveWork({ messageId, agents, channelId }: {
   messageId: ID; agents: readonly AgentDef[];
   channelId?: ID;
 }): React.JSX.Element | null {
-  const rows = useLiveSteps(messageId);
+  const stepRows = useLiveSteps(messageId);
+  const receipts = useAgentReceipts(messageId);
+  /* A receipt means this exact agent accepted this exact turn. Until the first
+     public tool/activity step arrives it is the only honest evidence we have:
+     show a compact working state and Stop, never invent a tool or a thought. */
+  const stepAgents = new Set(stepRows.map(row => row.agentId));
+  const rows = [
+    ...stepRows,
+    ...receipts
+      .filter(receipt => receipt.stage !== "verdict" && !stepAgents.has(receipt.agentId))
+      .map(receipt => ({ agentId: receipt.agentId, steps: [], startedAt: receipt.at })),
+  ];
   const [now, setNow] = useState(() => Date.now());
   const [shown, setShown] = useState(false);
   useEffect(() => {
@@ -4661,14 +4672,15 @@ function LiveWork({ messageId, agents, channelId }: {
   return (
     <div className="livework" data-machine="yes" data-msg={messageId}>
       {rows.map(row => {
-        if (row.steps.length === 0) return null;
         const name = agents.find(a => a.id === row.agentId)?.name ?? "An agent";
         return (
           <details key={row.agentId} className="liveturn" data-agent={row.agentId}
             data-live-steps={row.steps.length}>
             <summary className="live-progress" data-live-progress="true">
               <div className="live-progress-rail" aria-hidden="true">
-                {row.steps.slice(0, 8).map(step => <i key={step.seq} data-kind={step.kind} />)}
+                {row.steps.length > 0
+                  ? row.steps.slice(0, 8).map(step => <i key={step.seq} data-kind={step.kind} />)
+                  : <i data-kind="status" />}
               </div>
               <div className="live-progress-copy">
                 <div className="live-meta">
@@ -4687,7 +4699,7 @@ function LiveWork({ messageId, agents, channelId }: {
                 </div>
               </div>
             </summary>
-            <RunSteps steps={row.steps.map(step => ({ ...step, detail: undefined }))} />
+            {row.steps.length > 0 && <RunSteps steps={row.steps.map(step => ({ ...step, detail: undefined }))} />}
             {/* SAID OUT LOUD on the thing itself, the same courtesy a receipt
                 pays: this is live, and it is not the record. The record lands
                 under the reply when the turn ends. */}
