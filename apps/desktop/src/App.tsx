@@ -4643,10 +4643,16 @@ function LiveWork({ messageId, agents, channelId }: {
      show a compact working state and Stop, never invent a tool or a thought. */
   const stepAgents = new Set(stepRows.map(row => row.agentId));
   const rows = [
-    ...stepRows,
+    ...stepRows.map(row => ({ ...row, stoppable: true })),
     ...receipts
       .filter(receipt => receipt.stage !== "verdict" && !stepAgents.has(receipt.agentId))
-      .map(receipt => ({ agentId: receipt.agentId, steps: [], startedAt: receipt.at })),
+      .map(receipt => ({
+        agentId: receipt.agentId, steps: [], startedAt: receipt.at,
+        /* Receipts arrive before the engine registers its provider stop scope.
+           They are presence only; a live-step frame is the first signal that
+           necessarily came from inside that registered scope. */
+        stoppable: false,
+      })),
   ];
   const [now, setNow] = useState(() => Date.now());
   const [shown, setShown] = useState(false);
@@ -4683,11 +4689,21 @@ function LiveWork({ messageId, agents, channelId }: {
                   <span className="live-elapsed" aria-label={`Working elapsed ${elapsed(now - row.startedAt)}`}>
                     Working for {elapsed(now - row.startedAt)}
                   </span>
-                  <button className="btn small ghost stopnow" data-stop-agent={row.agentId}
-                    type="button" disabled={!channelId} title={`Stop ${name} and spend nothing more on this`}
-                    onClick={() => channelId && client.send({
-                      type: "send", channelId, text: `@${name} !stop`,
-                    })}>Stop</button>
+                  {row.stoppable === true && (
+                    <button className="btn small ghost stopnow" data-stop-agent={row.agentId}
+                      type="button" disabled={!channelId}
+                      title={`Stop ${name} and spend nothing more on this`}
+                      onClick={() => {
+                        if (!channelId) return;
+                        /* Do not claim “Stopping” from transport acceptance:
+                           the existing !stop path reports its own authoritative
+                           engine acknowledgement, while this live row remains
+                           the only proven stoppable scope. */
+                        client.send({
+                          type: "send", channelId, text: `@${name} !stop`,
+                        });
+                      }}>Stop</button>
+                  )}
                 </div>
               </div>
             </summary>
@@ -4734,7 +4750,7 @@ function ResponsePreview({ messageId, agents }: {
   );
 }
 
-/** ✓ / ✕ / ⏸ for the three ways a turn can end. */
+/** ✓ / ✕ / ⏸ for the four durable ways a turn can end. */
 function RunMark({ outcome }: { outcome: RunRecord["outcome"] }): React.JSX.Element {
   if (outcome === "failed") {
     return (
@@ -4747,6 +4763,24 @@ function RunMark({ outcome }: { outcome: RunRecord["outcome"] }): React.JSX.Elem
   if (outcome === "cancelled") return <MarkClock />;
   if (outcome === "refused") return <span className="run-refused-mark" aria-label="Refused">!</span>;
   return <MarkAnswer />;
+}
+
+const RUN_OUTCOME_WORDS: Record<RunRecord["outcome"], string> = {
+  ok: "Completed",
+  failed: "Failed",
+  cancelled: "Stopped",
+  refused: "Refused",
+};
+
+/** The final state is a durable RunRecord fact, never a live-signal guess. */
+function RunOutcomeBadge({ outcome }: { outcome: RunRecord["outcome"] }): React.JSX.Element {
+  const words = RUN_OUTCOME_WORDS[outcome];
+  return (
+    <span className={`chip run-outcome-badge out-${outcome}`} data-outcome-badge={outcome}
+      role="status" aria-label={`Outcome: ${words}`}>
+      {words}
+    </span>
+  );
 }
 
 /**
@@ -4828,7 +4862,9 @@ function RunCard({ record }: { record: RunRecord }): React.JSX.Element {
   return (
     <div className={`callout run out-${record.outcome}`} data-run={record.id}
       data-outcome={record.outcome} data-provider={record.provider}>
-      <div className="hd"><RunMark outcome={record.outcome} /><h4>{title}</h4></div>
+      <div className="hd"><RunMark outcome={record.outcome} /><h4>{title}</h4>
+        <RunOutcomeBadge outcome={record.outcome} />
+      </div>
       {/* verbatim from shared — the one line a non-developer reads, and the
           reason this whole feature exists */}
       <p className="runsum">{summarizeRun(record)}</p>
@@ -4863,30 +4899,58 @@ function RunRecoveryCard({ record, recovery, onInspect }: {
   const resume = recovery?.decision.actions.find(a => a.mode === "resume");
   const retry = recovery?.decision.actions.find(a => a.mode === "retry");
   const restart = recovery?.decision.actions.find(a => a.mode === "restart");
-  const resumeUnavailable = resume?.available === false || !resume;
-  const resumeReason = resume?.reason ?? "the provider has not reported a safely resumable session";
+  /* A missing decision means the relay has not authorized anything yet. In
+     particular, do not let an absent row temporarily enable a recovery click
+     while the challenge is still in flight. */
+  const decisionUnavailable = !recovery || recovery.decision.actions.length === 0;
+  const canResume = resume?.available === true;
+  /* Before the first challenge there is no relay decision to authorize a
+     side-effect yet. Re-run/Restart stay as the explicit challenge entry
+     points; once a decision exists, only its `available: true` fact enables
+     the action. */
+  const canRetry = decisionUnavailable || retry?.available === true;
+  const canRestart = decisionUnavailable || restart?.available === true;
+  const resumeUnavailable = !canResume;
+  const resumeReason = resume?.reason
+    ?? (decisionUnavailable ? "Cloud9 has not checked whether this provider can continue the run"
+      : "the provider has not reported a safely resumable session");
+  const retryReason = retry?.reason
+    ?? (decisionUnavailable ? "Cloud9 has not checked whether this run can be safely re-run"
+      : "the provider did not report a safely re-runnable run");
+  const restartReason = restart?.reason
+    ?? (decisionUnavailable ? "Cloud9 has not checked whether this run can safely restart"
+      : "the provider did not report a safely restartable run");
+  const pending = recovery?.pending === true;
   return (
-    <section className="run-recovery" data-run-recovery={record.id} aria-label="Run recovery">
+    <section className="run-recovery" data-run-recovery={record.id} aria-label="Run actions">
       <strong>Recover this run</strong>
       <p className="muted">{plainError(record.error) ?? "This run did not finish."}</p>
       {recovery?.problem && <p className="muted recovery-reason">{plainError(recovery.problem) ?? recovery.problem}</p>}
       <div className="run-recovery-actions">
-        <button className="btn small primary" type="button" disabled={recovery?.pending || retry?.available === false}
+        <button className="btn small primary" type="button" disabled={pending || !canRetry}
+          aria-disabled={pending || !canRetry}
+          title={retryReason}
           onClick={() => client.recoverRun(record.id, "retry")}>
-          {recovery?.pending ? "Checking…" : "Retry safely"}
+          {pending ? "Checking…" : "Re-run"}
         </button>
-        <button className="btn small" type="button" disabled={recovery?.pending || resumeUnavailable}
+        <button className="btn small" type="button" disabled={pending || !canResume}
+          aria-disabled={pending || !canResume}
           title={resumeReason}
           onClick={() => client.recoverRun(record.id, "resume")}>
-          Resume from checkpoint
+          Continue
         </button>
-        <button className="btn small" type="button" disabled={recovery?.pending || restart?.available === false}
+        <button className="btn small" type="button" disabled={pending || !canRestart}
+          aria-disabled={pending || !canRestart}
+          title={restartReason}
           onClick={() => client.recoverRun(record.id, "restart")}>
           Restart with prior context
         </button>
         <button className="linkish" type="button" onClick={onInspect}>Inspect record</button>
       </div>
-      {resumeUnavailable && <p className="muted recovery-reason">Resume unavailable: {resumeReason}</p>}
+      {decisionUnavailable && <p className="muted recovery-reason">
+        Re-run and Restart need a provider safety check before they can start. Selecting one requests that check.
+      </p>}
+      {resumeUnavailable && <p className="muted recovery-reason">Continue unavailable: {resumeReason}</p>}
     </section>
   );
 }

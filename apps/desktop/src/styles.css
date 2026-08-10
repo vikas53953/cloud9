@@ -848,12 +848,18 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 .callout.run.out-cancelled{border-color:color-mix(in srgb,var(--ink-3) 45%,transparent);}
 .callout.run.out-refused{border-color:color-mix(in srgb,var(--pine) 45%,transparent);}
 .callout.run.out-refused .hd h4{color:var(--pine);}
+.run-outcome-badge{margin-left:auto;flex:none;}
+.run-outcome-badge.out-ok{background:color-mix(in srgb,var(--pine) 14%,var(--surface));color:var(--pine);}
+.run-outcome-badge.out-failed{background:color-mix(in srgb,var(--madder) 14%,var(--surface));color:var(--madder);}
+.run-outcome-badge.out-cancelled{background:color-mix(in srgb,var(--ink-3) 14%,var(--surface));color:var(--ink-2);}
+.run-outcome-badge.out-refused{background:color-mix(in srgb,var(--marigold) 18%,var(--surface));color:var(--ink-2);}
 .callout.run .runsum{
   margin:0;color:var(--ink);font-size:13.5px;font-weight:600;overflow-wrap:anywhere;
 }
 .run-recovery{display:grid;gap:7px;margin-top:12px;padding:11px 12px;border:1px solid color-mix(in srgb,var(--marigold) 38%,var(--line));border-radius:var(--radius-s);background:color-mix(in srgb,var(--marigold-soft) 42%,var(--surface));}
 .run-recovery p{margin:0;font-size:11.5px;overflow-wrap:anywhere;}
 .run-recovery-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.run-recovery-actions button:disabled{cursor:not-allowed;opacity:.62;}
 .run-recovery-actions .linkish{margin-left:auto;}
 .recovery-reason{color:var(--ink-3);}
 .runmore{
