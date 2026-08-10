@@ -96,3 +96,25 @@ test("an offline submit reports failure so the composer retains its local draft"
   assert.match(store, /if \(this\.send\(frame\) === undefined\) \{/);
   assert.match(store, /Cloud9 is offline\. Your message is still in the box\./);
 });
+
+test("durable upload restore dedupes failed and already-outgoing ids", () => {
+  const store = fs.readFileSync(path.join(__dirname, "..", "src", "store.ts"), "utf8");
+  assert.match(store, /const held = current\.filter\(\(u, index, all\)/);
+  assert.match(store, /all\.find\(candidate => candidate\.state !== "removed" && candidate\.id === a\.id\)/);
+  assert.match(store, /return ids\.filter\(\(id, index\) => ids\.indexOf\(id\) === index\)/);
+});
+
+test("an authoritative empty scoped draft response clears the local scope", () => {
+  const store = fs.readFileSync(path.join(__dirname, "..", "src", "store.ts"), "utf8");
+  assert.match(store, /const request = frame\.requestId \? this\.draftRequests\.get\(frame\.requestId\) : undefined/);
+  assert.match(store, /if \(request\?\.type === "draftList" \|\| request\?\.type === "draftReconcile"\)/);
+  assert.match(store, /if \(channelMatches && threadMatches\) delete next\[key\]/);
+});
+
+test("send retries keep one client intent id until acceptance or payload change", () => {
+  const store = fs.readFileSync(path.join(__dirname, "..", "src", "store.ts"), "utf8");
+  assert.match(store, /private pendingSendIntents = new Map<string, \{ signature: string; clientMessageId: ID \}>\(\)/);
+  assert.match(store, /const prior = this\.pendingSendIntents\.get\(scopeKey\)/);
+  assert.match(store, /prior\?\.signature === signature/);
+  assert.match(store, /this\.pendingSendIntents\.delete\(scopeKey\)/);
+});

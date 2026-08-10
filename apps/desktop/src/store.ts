@@ -4,6 +4,7 @@ import {
   ActivityRecord, AgentDef, AgentPresenceState, AgentStatus, Approval, ARTIFACT_LIMITS, Artifact, ArtifactAccess,
   ArtifactRelationView, ArtifactVersion, ArtifactWorkspaceEntry,
   Attachment, ATTACHMENT_LIMITS, Channel,
+  ChatDraft, DraftAttachment,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
   MemoryNote,
   NotificationInboxEntry,
@@ -138,6 +139,15 @@ export interface Upload {
   error?: string;
   /** what to name in `send` once it is up */
   attachmentId?: ID;
+  /** optional thread target; room and thread trays never share ids */
+  threadId?: ID;
+  /** local-only preview URL; never serialized into a draft or sent to relay */
+  previewUrl?: string;
+  /** relay-owned draft state when restored after a restart */
+  draftState?: "available" | "expired" | "unavailable" | "deleted" | "removed";
+  uploadedAt?: number;
+  expiresAt?: number;
+  mime?: string;
 }
 
 /**
@@ -345,6 +355,8 @@ export interface World {
   prepended: number;
   /** files being sent up from this machine, by conversation */
   uploads: Record<ID, Upload[]>;
+  /** Relay-owned durable composer drafts keyed by channel and optional thread. */
+  drafts: Record<string, ChatDraft>;
   /** attached files this screen has opened, by attachment id */
   files: Record<ID, OpenFile>;
   /**
@@ -733,7 +745,7 @@ export class RelayClient {
     savedRevision: 0, savedHasMore: false, savedPending: [], savedNew: false,
     channelPins: {}, channelPinPending: [],
     pages: {}, threads: {}, unread: {}, prepended: 0,
-    uploads: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
+    uploads: {}, drafts: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {},
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
     spending: { asked: false, loading: false, rows: [] },
@@ -1228,6 +1240,9 @@ export class RelayClient {
   private workflowRequests = new Map<ID, WorkflowRequestFrame>();
   private savedRequests = new Map<ID, SavedRequestFrame>();
   private channelPinRequests = new Map<ID, ChannelPinRequestFrame>();
+  private draftRequests = new Map<ID, ClientFrame>();
+  /** One stable client send id per draft scope and payload until acceptance. */
+  private pendingSendIntents = new Map<string, { signature: string; clientMessageId: ID }>();
   /** Mutation receipts currently expected; late direct frames are ignored. */
   private loseForumRequests(): void {
     const live = this.asked;
@@ -1286,7 +1301,9 @@ export class RelayClient {
   private identify(frame: ClientFrame): ClientFrame & { requestId: ID } {
     const requestId = typeof frame.requestId === "string" && frame.requestId.length > 0
       ? frame.requestId : this.nextRequestId(frame.type);
-    return { ...frame, requestId };
+    return frame.type === "send"
+      ? { ...frame, requestId, clientMessageId: frame.clientMessageId ?? requestId }
+      : { ...frame, requestId };
   }
 
   /**
@@ -1413,6 +1430,139 @@ export class RelayClient {
     return this.transmit(frame);
   }
 
+  private canonicalDraftThreadId(threadId?: ID): ID | undefined {
+    if (!threadId) return undefined;
+    for (const messages of Object.values(this.world.messages)) {
+      const found = messages.find(message => message.id === threadId);
+      if (found) return found.replyTo ?? found.id;
+    }
+    for (const [rootId, messages] of Object.entries(this.world.threads)) {
+      if (rootId === threadId) return rootId;
+      const found = messages.find(message => message.id === threadId);
+      if (found) return found.replyTo ?? rootId;
+    }
+    return threadId;
+  }
+
+  private draftKey(channelId: ID, threadId?: ID): string {
+    return `${channelId}\u0000${this.canonicalDraftThreadId(threadId) ?? ""}`;
+  }
+
+  private uploadThreadId(threadId?: ID): ID | undefined {
+    return this.canonicalDraftThreadId(threadId);
+  }
+
+  draft(channelId: ID, threadId?: ID): ChatDraft | undefined {
+    return this.world.drafts[this.draftKey(channelId, threadId)];
+  }
+
+  /** Ask for durable drafts and reconcile parked attachment ids on every reopen. */
+  listDrafts(channelId?: ID, threadId?: ID, onSettled?: () => void): ID | undefined {
+    const requestId = this.nextRequestId("draftList");
+    const canonicalThreadId = this.canonicalDraftThreadId(threadId);
+    const frame: ClientFrame = { type: "draftList", ...(channelId ? { channelId } : {}), ...(canonicalThreadId ? { threadId: canonicalThreadId } : {}), requestId };
+    this.draftRequests.set(requestId, frame);
+    const sent = this.ask(frame, {
+      answers: f => f.type === "drafts" && f.requestId === requestId,
+      answered: () => onSettled?.(),
+      refused: why => { this.draftRequests.delete(requestId); onSettled?.(); this.world.lastError = { text: why, ts: Date.now() }; this.emit(); },
+      lost: () => { this.draftRequests.delete(requestId); onSettled?.(); this.world.lastError = { text: "Cloud9 is offline. Your draft is still on this computer.", ts: Date.now() }; this.emit(); },
+    });
+    if (!sent) {
+      this.draftRequests.delete(requestId);
+      // Treat an unavailable relay as a settled sync attempt. This lets the
+      // composer continue its local-only fallback rather than waiting forever
+      // for a response that cannot arrive.
+      onSettled?.();
+    }
+    return sent ? requestId : undefined;
+  }
+
+  reconcileDrafts(channelId?: ID, threadId?: ID): ID | undefined {
+    const requestId = this.nextRequestId("draftReconcile");
+    const canonicalThreadId = this.canonicalDraftThreadId(threadId);
+    const frame: ClientFrame = { type: "draftReconcile", ...(channelId ? { channelId } : {}), ...(canonicalThreadId ? { threadId: canonicalThreadId } : {}), requestId };
+    this.draftRequests.set(requestId, frame);
+    const sent = this.ask(frame, {
+      answers: f => f.type === "drafts" && f.requestId === requestId,
+      refused: why => { this.draftRequests.delete(requestId); this.world.lastError = { text: why, ts: Date.now() }; this.emit(); },
+      lost: () => { this.draftRequests.delete(requestId); this.world.lastError = { text: "Cloud9 is offline. Your draft is still here.", ts: Date.now() }; this.emit(); },
+    });
+    if (!sent) this.draftRequests.delete(requestId);
+    return sent ? requestId : undefined;
+  }
+
+  updateDraft(draft: Omit<ChatDraft, "id" | "updatedAt" | "expiresAt" | "state"> & Partial<Pick<ChatDraft, "id" | "updatedAt" | "expiresAt" | "state">>, onLost?: () => void): ID | undefined {
+    const requestId = this.nextRequestId("draftUpdate");
+    const attachments = draft.attachments.filter((a, index, all) =>
+      all.findIndex(candidate => candidate.id === a.id) === index);
+    const frame: ClientFrame = {
+      type: "draftUpdate", channelId: draft.channelId, ...(this.canonicalDraftThreadId(draft.threadId) ? { threadId: this.canonicalDraftThreadId(draft.threadId) } : {}),
+      text: draft.text, ...(draft.replyTo ? { replyTo: draft.replyTo } : {}),
+      attachments: attachments.map(a => ({ ...a })), requestId,
+    };
+    this.draftRequests.set(requestId, frame);
+    const sent = this.transmit(frame, {
+      answers: f => f.type === "draftChanged" && f.requestId === requestId,
+      refused: why => { this.draftRequests.delete(requestId); this.world.lastError = { text: why, ts: Date.now() }; this.emit(); },
+      lost: () => { this.draftRequests.delete(requestId); onLost?.(); this.world.lastError = { text: "Cloud9 is offline. Your draft is still here.", ts: Date.now() }; this.emit(); },
+    });
+    if (!sent) { this.draftRequests.delete(requestId); onLost?.(); }
+    return sent;
+  }
+
+  removeDraft(channelId: ID, threadId?: ID, onSettled?: () => void): ID | undefined {
+    const requestId = this.nextRequestId("draftRemove");
+    const canonicalThreadId = this.canonicalDraftThreadId(threadId);
+    const frame: ClientFrame = { type: "draftRemove", channelId, ...(canonicalThreadId ? { threadId: canonicalThreadId } : {}), requestId };
+    this.draftRequests.set(requestId, frame);
+    const sent = this.ask(frame, {
+      answers: f => f.type === "draftRemoved" && f.requestId === requestId,
+      // Keep the request in draftRequests until onFrame's draftRemoved case
+      // applies the correlated removal. Deleting here would make that case
+      // treat the response as an unrelated push and leave the stale row.
+      answered: () => { onSettled?.(); },
+      lost: () => { this.draftRequests.delete(requestId); onSettled?.(); this.world.lastError = { text: "Cloud9 is offline. Your draft is still here.", ts: Date.now() }; this.emit(); },
+      refused: why => { this.draftRequests.delete(requestId); onSettled?.(); this.world.lastError = { text: why, ts: Date.now() }; this.emit(); },
+    });
+    if (!sent) { this.draftRequests.delete(requestId); onSettled?.(); }
+    return sent ? requestId : undefined;
+  }
+
+  restoreDraftUploads(draft: ChatDraft): void {
+    const current = this.world.uploads[draft.channelId] ?? [];
+    const threadId = this.uploadThreadId(draft.threadId);
+    const scope = (u: Upload): boolean => (this.uploadThreadId(u.threadId) ?? "") === (threadId ?? "");
+    // Every existing tray row is authoritative for dedupe, including failed
+    // rows and rows already named in an outgoing message. Re-open must not
+    // create a second tile merely because its prior state was not sendable.
+    const held = current.filter((u, index, all) => scope(u)
+      && (!u.attachmentId || all.findIndex(candidate => scope(candidate)
+        && candidate.attachmentId === u.attachmentId) === index));
+    const heldIds = new Set(held.map(u => u.attachmentId).filter((id): id is ID => Boolean(id)));
+    const restored: Upload[] = draft.attachments
+      .filter((a, _index, all) => a.state !== "removed"
+        && !heldIds.has(a.id)
+        && all.find(candidate => candidate.state !== "removed" && candidate.id === a.id) === a)
+      .map(a => ({
+        localId: `draft_${a.id}`, name: a.name, size: a.size,
+        state: a.state === "available" ? "done" : "failed",
+        attachmentId: a.id, threadId, mime: a.mime,
+        uploadedAt: a.uploadedAt, expiresAt: a.expiresAt,
+        draftState: a.state, ...(a.error ? { error: a.error } : {}),
+      }));
+    const other = current.filter(u => !scope(u));
+    const next = [...other, ...held, ...restored];
+    const same = current.length === next.length && current.every((u, i) => {
+      const n = next[i];
+      return n && u.localId === n.localId && u.state === n.state && u.attachmentId === n.attachmentId
+        && u.error === n.error && u.threadId === n.threadId;
+    });
+    if (same) return;
+    this.world.uploads = { ...this.world.uploads, [draft.channelId]: next };
+    this.emit();
+  }
+
   listWorkflows(): ID | undefined {
     this.world.workflowError = undefined;
     this.world.workflowRetry = undefined;
@@ -1492,6 +1642,38 @@ export class RelayClient {
       return false;
     }
     return true;
+  }
+
+  /** Send a chat message and clear its draft only after the correlated accept. */
+  submitMessage(problem: string | null, frame: Extract<ClientFrame, { type: "send" }>,
+    accepted: () => void, lost?: (why: string) => void): ID | undefined {
+    if (this.refused(problem, why => lost?.(why))) return undefined;
+    const threadId = this.canonicalDraftThreadId(frame.replyTo);
+    const scopeKey = this.draftKey(frame.channelId, threadId);
+    const attachmentIds = [...new Set(frame.attachmentIds ?? [])];
+    const signature = JSON.stringify([
+      frame.channelId, frame.text, threadId ?? null, attachmentIds,
+    ]);
+    const prior = this.pendingSendIntents.get(scopeKey);
+    // A payload change starts a fresh intent. An uncertain/lost attempt keeps
+    // its id, so a later manual retry can ask the relay for the same receipt.
+    const clientMessageId = prior?.signature === signature
+      ? prior.clientMessageId
+      : (prior ? this.nextRequestId("send") : (frame.clientMessageId ?? this.nextRequestId("send")));
+    const pending = { signature, clientMessageId };
+    this.pendingSendIntents.set(scopeKey, pending);
+    const requestId = this.nextRequestId("send");
+    const sent = this.transmit({ ...frame, requestId, clientMessageId, attachmentIds }, {
+      answers: f => f.type === "message" && f.requestId === requestId,
+      answered: () => {
+        if (this.pendingSendIntents.get(scopeKey) === pending) this.pendingSendIntents.delete(scopeKey);
+        accepted();
+      },
+      refused: why => lost?.(why),
+      lost: () => lost?.("Cloud9 disconnected before it accepted your message. Your draft is still here."),
+    });
+    if (!sent) lost?.("Cloud9 is offline. Your message is still in the box.");
+    return sent;
   }
 
   /**
@@ -2955,7 +3137,7 @@ askPolls(projectId: ID): void {
 
   /* ---------------- attaching a file ---------------- */
 
-  private uploadQueue: Array<{ channelId: ID; localId: string; frame: ClientFrame }> = [];
+  private uploadQueue: Array<{ channelId: ID; localId: string; threadId?: ID; frame: ClientFrame }> = [];
   /** the one upload the hub is working on — see `attach` for why there is only one */
   private uploading: { channelId: ID; localId: string } | null = null;
 
@@ -2977,14 +3159,15 @@ askPolls(projectId: ID): void {
    * and a refusal would be pinned on the wrong file. A queue costs a moment on
    * a second file and buys an answer that is always about the right one.
    */
-  attach(channelId: ID, file: File): void {
+  attach(channelId: ID, file: File, threadId?: ID): void {
+    const scopeThreadId = this.uploadThreadId(threadId);
     const localId = `up_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
     const list = this.world.uploads[channelId] ?? [];
     // The same ceilings the hub holds, asked here first so a 10 MB file is
     // refused in the moment it is picked rather than after it has been read,
     // encoded and sent. `validateAttachment` is the hub's own function — there
     // is no second copy of the rule in this app.
-    const already = list.filter(u => u.state !== "failed").length;
+    const already = list.filter(u => u.state !== "failed" && (this.uploadThreadId(u.threadId) ?? "") === (scopeThreadId ?? "")).length;
     if (already >= ATTACHMENT_LIMITS.perMessage) {
       this.notify(`that's the most files one message can carry (${ATTACHMENT_LIMITS.perMessage})`);
       return;
@@ -2992,12 +3175,14 @@ askPolls(projectId: ID): void {
     const refusal = validateAttachment(file.name, file.size);
     if (refusal) {
       this.setUploads(channelId,
-        [...list, { localId, name: file.name, size: file.size, state: "failed", error: refusal }]);
+        [...list, { localId, name: file.name, size: file.size, state: "failed", error: refusal, ...(scopeThreadId ? { threadId: scopeThreadId } : {}) }]);
       this.emit();
       return;
     }
     this.setUploads(channelId,
-      [...list, { localId, name: file.name, size: file.size, state: "sending" }]);
+      [...list, { localId, name: file.name, size: file.size, state: "sending", ...(scopeThreadId ? { threadId: scopeThreadId } : {}),
+        ...(file.type ? { mime: file.type } : {}),
+        ...(file.type.startsWith("image/") || file.type.startsWith("audio/") ? { previewUrl: URL.createObjectURL(file) } : {}) }]);
     this.emit();
 
     const reader = new FileReader();
@@ -3014,7 +3199,7 @@ askPolls(projectId: ID): void {
         return;
       }
       this.uploadQueue.push({
-        channelId, localId,
+        channelId, localId, ...(scopeThreadId ? { threadId: scopeThreadId } : {}),
         frame: {
           type: "uploadAttachment", channelId, name: file.name,
           dataBase64: asUrl.slice(comma + 1), mime: file.type || undefined,
@@ -3047,7 +3232,10 @@ askPolls(projectId: ID): void {
         if (this.uploading !== up || f.type !== "attachment") return;
         this.uploading = null;
         this.patchUpload(up.channelId, up.localId,
-          { state: "done", attachmentId: f.attachment.id });
+          { state: "done", attachmentId: f.attachment.id,
+            uploadedAt: f.attachment.uploadedAt,
+            expiresAt: f.attachment.uploadedAt + ATTACHMENT_LIMITS.parkedTtlMs,
+            ...(f.attachment.mime ? { mime: f.attachment.mime } : {}) });
         this.pumpUploads();
       },
       refused: failed,
@@ -3059,15 +3247,19 @@ askPolls(projectId: ID): void {
   /** Take one picked file back out before the message is sent. */
   dropUpload(channelId: ID, localId: string): void {
     this.uploadQueue = this.uploadQueue.filter(q => q.localId !== localId);
+    const prior = (this.world.uploads[channelId] ?? []).find(u => u.localId === localId);
+    if (prior?.previewUrl) URL.revokeObjectURL(prior.previewUrl);
     this.setUploads(channelId, (this.world.uploads[channelId] ?? []).filter(u => u.localId !== localId));
     this.emit();
   }
 
   /** The ids to name in `send` — only the files that really landed. */
-  uploadIds(channelId: ID): ID[] {
-    return (this.world.uploads[channelId] ?? [])
-      .filter(u => u.state === "done" && u.attachmentId)
+  uploadIds(channelId: ID, threadId?: ID): ID[] {
+    const scopeThreadId = this.uploadThreadId(threadId);
+    const ids = (this.world.uploads[channelId] ?? [])
+      .filter(u => u.state === "done" && u.attachmentId && (this.uploadThreadId(u.threadId) ?? "") === (scopeThreadId ?? ""))
       .map(u => u.attachmentId!);
+    return ids.filter((id, index) => ids.indexOf(id) === index);
   }
 
   /**
@@ -3084,8 +3276,9 @@ askPolls(projectId: ID): void {
   }
 
   /** How many files in this conversation's tray are still on their way up. */
-  uploadsInFlight(channelId: ID): number {
-    return (this.world.uploads[channelId] ?? []).filter(u => u.state === "sending").length;
+  uploadsInFlight(channelId: ID, threadId?: ID): number {
+    const scopeThreadId = this.uploadThreadId(threadId);
+    return (this.world.uploads[channelId] ?? []).filter(u => u.state === "sending" && (this.uploadThreadId(u.threadId) ?? "") === (scopeThreadId ?? "")).length;
   }
 
   /**
@@ -3098,8 +3291,8 @@ askPolls(projectId: ID): void {
    * nothing. Nothing is ever discarded in silence; a message that cannot go yet
    * is refused in a sentence, and the file stays exactly where it is.
    */
-  readyToSend(channelId: ID, hasWords: boolean): { ok: boolean; ids: ID[]; why?: string } {
-    const waiting = this.uploadsInFlight(channelId);
+  readyToSend(channelId: ID, hasWords: boolean, threadId?: ID): { ok: boolean; ids: ID[]; why?: string } {
+    const waiting = this.uploadsInFlight(channelId, threadId);
     if (waiting > 0) {
       return {
         ok: false, ids: [],
@@ -3108,17 +3301,23 @@ askPolls(projectId: ID): void {
           : `those ${waiting} files are still going up — give them a moment, or take them off`,
       };
     }
-    const ids = this.uploadIds(channelId);
+    const ids = this.uploadIds(channelId, threadId);
     if (!hasWords && ids.length === 0) return { ok: false, ids: [] };
     return { ok: true, ids };
   }
 
   /** The tray is emptied once its files have gone out with a message. */
-  clearUploads(channelId: ID): void {
-    if (!this.world.uploads[channelId]) return;
-    const { [channelId]: gone, ...rest } = this.world.uploads;
-    void gone;
-    this.world.uploads = rest;
+  clearUploads(channelId: ID, threadId?: ID): void {
+    const gone = this.world.uploads[channelId];
+    if (!gone) return;
+    const scopeThreadId = this.uploadThreadId(threadId);
+    const keep: Upload[] = [];
+    for (const u of gone) {
+      if ((this.uploadThreadId(u.threadId) ?? "") === (scopeThreadId ?? "")) { if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); }
+      else keep.push(u);
+    }
+    if (keep.length) this.world.uploads = { ...this.world.uploads, [channelId]: keep };
+    else { const { [channelId]: _gone, ...rest } = this.world.uploads; void _gone; this.world.uploads = rest; }
     this.emit();
   }
 
@@ -3989,6 +4188,7 @@ askPolls(projectId: ID): void {
         w.messages = {};
         w.messageStatuses = {};
         for (const status of frame.state.messageStatuses ?? []) w.messageStatuses[status.messageId] = status;
+        w.drafts = {};
         for (const m of frame.state.messages) {
           (w.messages[m.channelId] ??= []).push(m);
         }
@@ -4163,6 +4363,9 @@ askPolls(projectId: ID): void {
         }
         if (frame.message.authorId === w.me?.id && frame.message.clientMessageId) {
           for (const [key, id] of this.pendingClientMessageIds) if (id === frame.message.clientMessageId) this.pendingClientMessageIds.delete(key);
+          for (const [key, intent] of this.pendingSendIntents) {
+            if (intent.clientMessageId === frame.message.clientMessageId) this.pendingSendIntents.delete(key);
+          }
         }
         // The recipient proves delivery by acknowledging the authenticated
         // frame. Engines are never recipients and are rejected by the relay.
@@ -4181,6 +4384,42 @@ askPolls(projectId: ID): void {
       case "messageStatus":
       case "messageReceipt": {
         w.messageStatuses = { ...w.messageStatuses, [frame.status.messageId]: frame.status };
+        break;
+      }
+      case "drafts": {
+        if (frame.requestId && !this.draftRequests.has(frame.requestId)) break;
+        const request = frame.requestId ? this.draftRequests.get(frame.requestId) : undefined;
+        if (frame.requestId) this.draftRequests.delete(frame.requestId);
+        const next = { ...w.drafts };
+        // A list response is an authoritative snapshot, including an empty
+        // scoped result. Remove stale local keys in that scope before applying
+        // the returned rows; otherwise reopening a room resurrects a draft the
+        // relay has already deleted on another device.
+        if (request?.type === "draftList" || request?.type === "draftReconcile") {
+          for (const key of Object.keys(next)) {
+            const [channelId, threadId] = key.split("\u0000");
+            const channelMatches = request.channelId === undefined || channelId === request.channelId;
+            const threadMatches = request.threadId === undefined || threadId === (request.threadId ?? "");
+            if (channelMatches && threadMatches) delete next[key];
+          }
+        }
+        for (const draft of frame.drafts) next[this.draftKey(draft.channelId, draft.threadId)] = draft;
+        w.drafts = next;
+        break;
+      }
+      case "draftChanged": {
+        if (frame.requestId && !this.draftRequests.has(frame.requestId)) break;
+        if (frame.requestId) this.draftRequests.delete(frame.requestId);
+        w.drafts = { ...w.drafts, [this.draftKey(frame.draft.channelId, frame.draft.threadId)]: frame.draft };
+        break;
+      }
+      case "draftRemoved": {
+        if (frame.requestId && !this.draftRequests.has(frame.requestId)) break;
+        if (frame.requestId) this.draftRequests.delete(frame.requestId);
+        const key = this.draftKey(frame.channelId, frame.threadId);
+        const { [key]: gone, ...rest } = w.drafts;
+        void gone;
+        w.drafts = rest;
         break;
       }
       case "typing":
@@ -4453,6 +4692,13 @@ askPolls(projectId: ID): void {
           if (savedFrame.type === "listSaved" && w.savedRequestId === frame.requestId) {
             w.savedLoading = false;
             w.savedRequestId = undefined;
+          }
+        }
+        if (frame.requestId !== undefined && this.draftRequests.has(frame.requestId)) {
+          const draftFrame = this.draftRequests.get(frame.requestId)!;
+          this.draftRequests.delete(frame.requestId);
+          if (draftFrame.type === "draftUpdate" || draftFrame.type === "draftReclaim") {
+            w.lastError = { text: `Draft kept: ${frame.error}`, ts: Date.now() };
           }
         }
         w.lastError = { text: frame.error, ts: Date.now() };

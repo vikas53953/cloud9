@@ -7444,6 +7444,11 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const [text, setText] = useState("");
   const [hydratedDraftKey, setHydratedDraftKey] = useState<string | null>(null);
   const [draftStatus, setDraftStatus] = useState<"idle" | "restored" | "saved" | "unavailable">("idle");
+  const [remoteDraftReady, setRemoteDraftReady] = useState(false);
+  const restoredDraftAt = useRef<string | null>(null);
+  /** After an accepted send, do not let the debounced empty snapshot recreate
+      the draft while the correlated relay removal is still settling. */
+  const suppressEmptyRelayDraft = useRef(false);
   const [acIndex, setAcIndex] = useState(0);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [emojiQuery, setEmojiQuery] = useState("");
@@ -7491,8 +7496,10 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const keepRecordingRef = useRef(false);
   const uploads = world.uploads[channel.id] ?? [];
-  const ready = uploads.filter(u => u.state === "done").length;
-  const busy = uploads.some(u => u.state === "sending");
+  const scopedUploads = useMemo(() => uploads.filter(u => (u.threadId ?? "") === (replyTo ?? "")), [uploads, replyTo]);
+  const ready = scopedUploads.filter(u => u.state === "done").length;
+  const busy = scopedUploads.some(u => u.state === "sending");
+  const durableDraft = client.draft(channel.id, replyTo);
 
   /**
    * HOW MUCH IS SITTING UNSENT, against the ceiling the hub actually enforces.
@@ -7514,7 +7521,9 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
      guard, React could briefly save the previous room's words into the next
      room while the channel changes. */
   useEffect(() => {
+    suppressEmptyRelayDraft.current = false;
     setHydratedDraftKey(null);
+    setRemoteDraftReady(false);
     if (!draftScope || !draftKey) {
       setText("");
       setDraftStatus("idle");
@@ -7529,7 +7538,19 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
       setDraftStatus("unavailable");
     }
     setHydratedDraftKey(draftKey);
-  }, [draftKey, draftScope]);
+    client.listDrafts(channel.id, replyTo, () => setRemoteDraftReady(true));
+  }, [draftKey, draftScope, world.connected]);
+
+  useEffect(() => {
+    if (!durableDraft) return;
+    const marker = `${durableDraft.id}:${durableDraft.updatedAt}`;
+    if (restoredDraftAt.current === marker) return;
+    restoredDraftAt.current = marker;
+    if (durableDraft.updatedAt > Date.now() - 10 * 60_000 || text.length === 0) {
+      setText(durableDraft.text);
+    }
+    client.restoreDraftUploads(durableDraft);
+  }, [durableDraft?.id, durableDraft?.updatedAt, channel.id, replyTo]);
 
   useEffect(() => {
     if (!draftScope || !draftKey || hydratedDraftKey !== draftKey) return;
@@ -7538,6 +7559,25 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
       : clearChatDraft(draftScope);
     setDraftStatus(result.ok ? (text.length > 0 ? "saved" : "idle") : "unavailable");
   }, [draftKey, draftScope, hydratedDraftKey, text]);
+
+  /* Mirror metadata to the relay, never browser File objects. The debounce
+     makes typing cheap while preserving the latest text across reconnects. */
+  useEffect(() => {
+    if (!world.me || hydratedDraftKey !== draftKey || !remoteDraftReady) return;
+    if (suppressEmptyRelayDraft.current && text.length === 0 && scopedUploads.length === 0) return;
+    if (suppressEmptyRelayDraft.current) suppressEmptyRelayDraft.current = false;
+    const attachments = scopedUploads.filter(u => u.attachmentId).map(u => ({
+      id: u.attachmentId!, name: u.name, size: u.size,
+      ...(u.mime ? { mime: u.mime } : {}), uploadedAt: u.uploadedAt ?? Date.now(),
+      expiresAt: u.expiresAt ?? Date.now() + ATTACHMENT_LIMITS.parkedTtlMs,
+      state: (u.draftState ?? (u.state === "done" ? "available" : "unavailable")) as "available" | "expired" | "unavailable" | "deleted" | "removed",
+      ...(u.error ? { error: u.error } : {}),
+    }));
+    const timer = window.setTimeout(() => {
+      client.updateDraft({ channelId: channel.id, ...(replyTo ? { threadId: replyTo, replyTo } : {}), text, attachments });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [channel.id, replyTo, text, scopedUploads, draftKey, hydratedDraftKey, remoteDraftReady, world.me]);
 
   /* Human typing is live only while this composer is focused and has real
      words. The channel cleanup is separate so ordinary keystrokes renew the
@@ -7595,8 +7635,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
      paperclip, a paste, or a drag. `client.attach` is the one owner of what
      happens next (the tray, the ceiling, the hub's refusal in its own words). */
   const attachFiles = useCallback((files: readonly File[]): void => {
-    for (const f of files) client.attach(channel.id, f);
-  }, [channel.id]);
+    for (const f of files) client.attach(channel.id, f, replyTo);
+  }, [channel.id, replyTo]);
 
   const stopVoiceRecording = useCallback((): void => {
     const recorder = recorderRef.current;
@@ -7741,7 +7781,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   }, [emojiCategory, emojiQuery]);
 
   /** he is writing — the row of tools is worth its space; see `focused` above */
-  const armed = focused || text.length > 0 || uploads.length > 0 || menuOpen || emojiOpen;
+  const armed = focused || text.length > 0 || scopedUploads.length > 0 || menuOpen || emojiOpen;
 
   /* THE ONE OWNER OF "ESCAPE CLOSES WHAT IT OPENED" (see `useEscapeCloses`).
      Registered only while the menu is on screen, so a closed menu adds nothing
@@ -7848,7 +7888,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
        file still on its way was dropped without a word and finished uploading
        into nothing. The store owns that judgement, so the button, the Enter key
        and a thread's own box all give the same answer. */
-    const ready = client.readyToSend(channel.id, t.length > 0);
+    const ready = client.readyToSend(channel.id, t.length > 0, replyTo);
     if (!ready.ok) {
       if (ready.why) client.notify(ready.why);
       return;
@@ -7857,30 +7897,31 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
        is the one owner of that rule — it asks the HUB'S OWN `validateMessageText`
        first, says the refusal in the hub's own words, and answers false with the
        box untouched. Nothing below it runs unless the message really went. */
-    const went = client.submit(
+    const went = client.submitMessage(
       validateMessageText(t, ready.ids.length > 0),
       {
         type: "send", channelId: channel.id, text: t, replyTo,
         ...(ready.ids.length ? { attachmentIds: ready.ids } : {}),
-      });
+      },
+      () => {
+        suppressEmptyRelayDraft.current = true;
+        // The relay's accepted send transaction already removed the matching
+        // durable draft and broadcasts that fact. Keep this composer ready for
+        // the next edit without issuing a second, unscoped delete that could
+        // erase newer text typed while the send was in flight.
+        setRemoteDraftReady(true);
+        if (draftScope) clearChatDraft(draftScope);
+        setText("");
+        setEmojiOpen(false);
+        setActionsOpen(false);
+        client.clearUploads(channel.id, replyTo);
+        taRef.current?.focus();
+        onSent?.();
+        onStopAnswering?.();
+      },
+      why => client.notify(why),
+    );
     if (!went) return;
-    if (draftScope) clearChatDraft(draftScope);
-    setText("");
-    setEmojiOpen(false);
-    setActionsOpen(false);
-    client.clearUploads(channel.id);
-    /* THE CURSOR STAYS WHERE HE IS TYPING. Pressing Enter always left it there;
-       clicking Send moved the focus onto the button, so the next thing he typed
-       went nowhere at all and he had to click back into the box. Both ways of
-       sending now end in the same place. */
-    taRef.current?.focus();
-    /* The list above takes the view down to what he just said. Told rather than
-       worked out from the message arriving: a send is his own act and follows
-       wherever he had scrolled back to. */
-    onSent?.();
-    /* The box stops being aimed the moment the reply is away, so the next
-       thing typed goes to the conversation unless he aims it again. */
-    onStopAnswering?.();
   };
 
   /* A direct conversation is stored under a machine name ("dm-mercer"), so the
@@ -8003,10 +8044,12 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
             </span>
           </div>
         )}
-        {uploads.length > 0 && (
+        {scopedUploads.length > 0 && (
           <div className="uploadtray" aria-label="Files going with this message">
-            {uploads.map(u => (
+            {scopedUploads.map(u => (
               <div className={`uptile ${u.state}`} key={u.localId} data-upload={u.name}>
+                {u.previewUrl && u.name.match(/\.(png|jpe?g|gif|webp)$/i) && <img className="upload-preview" src={u.previewUrl} alt="" />}
+                {u.previewUrl && u.name.match(/\.(webm|wav|mp3|m4a|ogg)$/i) && <audio className="upload-preview" src={u.previewUrl} controls preload="metadata" aria-label={`Preview ${u.name}`} />}
                 <span className="glyph" aria-hidden="true">{fileKind(u.name)}</span>
                 <span className="filenames">
                   <span className="nm">{u.name}</span>
@@ -8017,6 +8060,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
                   </span>
                 </span>
                 {u.state === "sending" && <span className="upbar" aria-hidden="true"><i /></span>}
+                {u.state === "failed" && <button className="upretry" aria-label={`Choose a replacement for ${u.name}`} onClick={() => fileRef.current?.click()}>Choose replacement</button>}
                 <button className="upx" aria-label={`Take ${u.name} back off this message`}
                   title="Take this file off" onClick={() => client.dropUpload(channel.id, u.localId)}>✕</button>
               </div>

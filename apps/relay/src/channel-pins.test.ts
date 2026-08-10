@@ -29,7 +29,7 @@ test("channel pins migrate after v11 and keep a stable newest-first cursor", () 
   old.db.close();
   const store = new Store(dbPath, { ownerToken: "tok-owner" });
   assert.equal(store.schemaVersion(), SCHEMA_VERSION);
-  assert.equal(SCHEMA_VERSION, 13);
+  assert.equal(SCHEMA_VERSION, 14);
   assert.ok(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='channel_pins'").get());
   store.db.close();
 });

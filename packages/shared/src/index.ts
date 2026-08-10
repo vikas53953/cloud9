@@ -3146,6 +3146,36 @@ export interface Attachment {
   uploadedAt: number;
 }
 
+/** A parked attachment as a draft can honestly draw it after a reconnect. */
+export type DraftAttachmentState = "available" | "expired" | "unavailable" | "deleted" | "removed";
+
+/** Metadata only: this shape deliberately has no browser File or byte field. */
+export interface DraftAttachment {
+  id: ID;
+  name: string;
+  size: number;
+  mime?: string;
+  uploadedAt: number;
+  expiresAt: number;
+  state: DraftAttachmentState;
+  error?: string;
+}
+
+export type ChatDraftState = "active" | "expired" | "unavailable" | "empty";
+
+/** One user/channel/thread draft, projected by the relay from stored facts. */
+export interface ChatDraft {
+  id: ID;
+  channelId: ID;
+  threadId?: ID;
+  text: string;
+  replyTo?: ID;
+  attachments: DraftAttachment[];
+  updatedAt: number;
+  expiresAt: number;
+  state: ChatDraftState;
+}
+
 // ---------- a file an AGENT made: the shared artifact ----------
 //
 // THE #1 GAP, in one sentence: an agent that produced a file could only paste a
@@ -3554,7 +3584,15 @@ export type WithRequestId<T> = T extends unknown ? T & { requestId?: ID } : neve
 
 type ClientFrameBase =
   | { type: "hello"; token: string; client: "desktop" | "mobile" | "engine" }
-  | { type: "send"; channelId: ID; text: string; tempId?: string; clientMessageId?: ID; replyTo?: ID; attachmentIds?: ID[] }
+  | { type: "send"; channelId: ID; text: string; tempId?: string; replyTo?: ID; attachmentIds?: ID[];
+      /** Stable id for retrying one accepted send after a lost acknowledgement. */
+      clientMessageId?: ID }
+  /** Durable composer draft operations are authenticated to the socket user. */
+  | { type: "draftList"; channelId?: ID; threadId?: ID }
+  | { type: "draftUpdate"; channelId: ID; threadId?: ID; text: string; replyTo?: ID; attachments: DraftAttachment[] }
+  | { type: "draftReconcile"; channelId?: ID; threadId?: ID }
+  | { type: "draftReclaim"; channelId: ID; threadId?: ID; attachmentIds?: ID[] }
+  | { type: "draftRemove"; channelId: ID; threadId?: ID }
   /** Live human typing is a request-independent, non-durable signal. */
   | { type: "typing"; channelId: ID; typing: boolean }
   | { type: "createChannel"; name: string; memberIds: ID[]; kind?: ChannelKind }
@@ -4340,6 +4378,9 @@ export type ServerFrame =
   | { type: "message"; message: Message; tempId?: string; requestId?: ID }
   | { type: "messageStatus"; status: MessageStatus; requestId?: ID }
   | { type: "messageReceipt"; status: MessageStatus; requestId?: ID }
+  | { type: "drafts"; drafts: ChatDraft[]; requestId?: ID }
+  | { type: "draftChanged"; draft: ChatDraft; requestId?: ID }
+  | { type: "draftRemoved"; channelId: ID; threadId?: ID; requestId?: ID }
   /** Ephemeral human typing; request-independent and never persisted. */
   | { type: "typing"; typing: HumanTyping }
   | { type: "channel"; channel: Channel }
@@ -4874,6 +4915,16 @@ export const ATTACHMENT_LIMITS = {
   parkedTtlMs: 24 * 60 * 60 * 1000,
   /** most uploads one person may start in a minute */
   uploadsPerMinute: 30,
+} as const;
+
+/** Bounds for durable draft rows and their retry ledger. */
+export const DRAFT_LIMITS = {
+  perUser: 100,
+  attachmentCount: ATTACHMENT_LIMITS.perMessage,
+  /** abandoned text/metadata rows are retained for one month at most */
+  retentionMs: 30 * 24 * 60 * 60 * 1000,
+  receiptRetentionMs: 30 * 24 * 60 * 60 * 1000,
+  receiptPerUser: 512,
 } as const;
 
 /**

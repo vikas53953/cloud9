@@ -31,6 +31,7 @@ import {
   tidySaving, validateSavingProposal,
   SearchHit, SavedMessageEntry, ChannelPinEntry, ServerFrame, Task, UnreadEntry, User, WorldState,
   MessageStatus,
+  ChatDraft, DraftAttachment, DraftAttachmentState, DRAFT_LIMITS,
   HumanTyping,
   NotificationInboxEntry, NotificationInboxKind, notificationEventId,
   Workflow, WorkflowRun, WorkflowRunStep, WorkflowStepStatus,
@@ -385,6 +386,7 @@ export class Relay {
     // uploader's, so nothing was ever going to reclaim them. Swept at every
     // start, and again on each upload, so the disk cannot fill with drafts.
     this.store.sweepParkedAttachments(Date.now() - ATTACHMENT_LIMITS.parkedTtlMs);
+    this.store.sweepChatDrafts(Date.now());
     // Poll deadlines survive a relay restart in SQLite. Schedule the earliest
     // one now so closure is pushed to every currently connected window rather
     // than waiting for somebody to request the poll list.
@@ -2357,22 +2359,181 @@ private viewProject(project: Project, viewerId?: ID): Project {
    * another message — a parked file id is a claim, so all three are checked
    * against what is stored rather than trusted.
    */
-  private claimAttachments(userId: ID, channel: Channel, ids: ID[] | undefined, messageId: ID): Attachment[] {
+  private validateAttachments(userId: ID, channel: Channel, ids: ID[] | undefined): Attachment[] {
     if (!ids || ids.length === 0) return [];
-    if (ids.length > ATTACHMENT_LIMITS.perMessage) {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length > ATTACHMENT_LIMITS.perMessage) {
       throw new Error(`that's too many files (max ${ATTACHMENT_LIMITS.perMessage})`);
     }
     const out: Attachment[] = [];
-    for (const id of new Set(ids)) {
+    const now = Date.now();
+    for (const id of uniqueIds) {
       const row = this.store.attachment(id);
       if (!row) throw new Error("that file isn't ready to send");
       if (row.attachment.uploadedBy !== userId) throw new Error("that file isn't yours to send");
       if (row.channelId !== channel.id) throw new Error("that file was uploaded to another conversation");
       if (row.messageId) throw new Error("that file has already been sent");
-      this.store.claimAttachment(id, messageId);
+      const expiresAt = row.attachment.uploadedAt + ATTACHMENT_LIMITS.parkedTtlMs;
+      const bytesPath = path.join(this.store.attachmentsDir, path.basename(row.attachment.storedAs));
+      if (row.attachment.uploadedAt > now || now >= expiresAt || !fs.existsSync(bytesPath)) {
+        this.store.removeParkedAttachment(id, userId);
+        throw new Error(row.attachment.uploadedAt > now
+          ? "that file is not available yet — attach it again"
+          : now >= expiresAt ? "that file expired — attach it again"
+            : "that file is no longer available — attach it again");
+      }
       out.push(row.attachment);
     }
     return out;
+  }
+
+  /**
+   * Re-project a draft attachment from relay-owned rows and bytes. A browser's
+   * metadata can name what it used to have, but it cannot make a reclaimed or
+   * inaccessible id available again.
+   */
+  private draftAttachment(userId: ID, channel: Channel, input: DraftAttachment): DraftAttachment {
+    const expiresAt = Number.isFinite(input.expiresAt) && input.expiresAt > 0
+      ? Math.floor(input.expiresAt) : input.uploadedAt + ATTACHMENT_LIMITS.parkedTtlMs;
+    const fallback = (state: DraftAttachmentState, error: string): DraftAttachment => ({
+      id: input.id, name: input.name, size: input.size,
+      ...(input.mime ? { mime: input.mime.slice(0, 128) } : {}),
+      uploadedAt: input.uploadedAt, expiresAt, state, error,
+    });
+    if (input.state === "removed") return fallback("removed", "removed from this draft");
+    const row = this.store.attachment(input.id);
+    if (!row) return fallback(Date.now() >= expiresAt ? "expired" : "unavailable",
+      Date.now() >= expiresAt ? "that file expired — attach it again" : "that file is no longer available — attach it again");
+    if (row.attachment.uploadedBy !== userId || row.channelId !== channel.id) {
+      return fallback("unavailable", "that file is no longer available in this conversation — attach it again");
+    }
+    if (row.messageId) return fallback("deleted", "that file was already sent or deleted");
+    const actualExpiresAt = row.attachment.uploadedAt + ATTACHMENT_LIMITS.parkedTtlMs;
+    // A client cannot make a future-dated upload available by projecting its
+    // metadata. Clock-skewed or tampered rows stay visibly unavailable until
+    // a fresh upload lands; send applies the same refusal at claim time.
+    if (row.attachment.uploadedAt > Date.now()) return {
+      id: row.attachment.id, name: row.attachment.name, size: row.attachment.size,
+      ...(row.attachment.mime ? { mime: row.attachment.mime } : {}),
+      uploadedAt: row.attachment.uploadedAt, expiresAt: actualExpiresAt,
+      state: "unavailable", error: "that file is not available yet — attach it again",
+    };
+    if (Date.now() >= actualExpiresAt) return {
+      id: row.attachment.id, name: row.attachment.name, size: row.attachment.size,
+      ...(row.attachment.mime ? { mime: row.attachment.mime } : {}),
+      uploadedAt: row.attachment.uploadedAt, expiresAt: actualExpiresAt,
+      state: "expired", error: "that file expired — attach it again",
+    };
+    const bytesPath = path.join(this.store.attachmentsDir, path.basename(row.attachment.storedAs));
+    if (!fs.existsSync(bytesPath)) return fallback("unavailable", "that file is no longer on the relay — attach it again");
+    return {
+      id: row.attachment.id, name: row.attachment.name, size: row.attachment.size,
+      ...(row.attachment.mime ? { mime: row.attachment.mime } : {}),
+      uploadedAt: row.attachment.uploadedAt, expiresAt: actualExpiresAt, state: "available",
+    };
+  }
+
+  private draftProjection(userId: ID, channel: Channel, draft: ChatDraft): ChatDraft {
+    const attachments = draft.attachments.slice(0, DRAFT_LIMITS.attachmentCount)
+      .map(a => this.draftAttachment(userId, channel, a));
+    const hasUnavailable = attachments.some(a => a.state === "unavailable" || a.state === "deleted");
+    const hasExpired = attachments.some(a => a.state === "expired");
+    const state = draft.text || attachments.some(a => a.state === "available")
+      ? (hasUnavailable ? "unavailable" : hasExpired ? "expired" : "active")
+      : (hasUnavailable ? "unavailable" : hasExpired ? "expired" : "empty");
+    return {
+      ...draft, channelId: channel.id, attachments, state,
+      // Projection reports the relay's current attachment truth but never
+      // moves the durable draft deadline forward. Reconcile must not become a
+      // keep-alive for an abandoned draft or a parked file.
+      expiresAt: Math.max(draft.expiresAt, ...attachments.map(a => a.expiresAt)),
+    };
+  }
+
+  private draftScope(conn: Conn, channelId: ID, threadId?: ID): { channel: Channel; threadId?: ID } {
+    const channel = this.channelFor(conn.userId, channelId);
+    if (threadId) {
+      const thread = this.store.message(threadId);
+      if (!thread || thread.channelId !== channel.id) throw new Error("that thread is no longer available");
+      return { channel, threadId: thread.replyTo ?? thread.id };
+    }
+    return { channel };
+  }
+
+  private draftInput(conn: Conn, frame: Extract<ClientFrame, { type: "draftUpdate" }>): ChatDraft {
+    const { channel, threadId } = this.draftScope(conn, frame.channelId, frame.threadId);
+    if (typeof frame.text !== "string" || frame.text.length > MESSAGE_LIMITS.text) {
+      throw new Error(`that draft is too long (max ${MESSAGE_LIMITS.text} characters)`);
+    }
+    if (!Array.isArray(frame.attachments) || frame.attachments.length > DRAFT_LIMITS.attachmentCount) {
+      throw new Error(`that draft has too many files (max ${DRAFT_LIMITS.attachmentCount})`);
+    }
+    const seen = new Set<ID>();
+    const attachments = frame.attachments.map(input => {
+      if (!input || typeof input.id !== "string" || !isSafeStoredId(input.id) || seen.has(input.id)) {
+        throw new Error("that draft has an invalid attachment");
+      }
+      seen.add(input.id);
+      if (typeof input.name !== "string" || !input.name || !Number.isFinite(input.size) || input.size < 0
+        || !Number.isFinite(input.uploadedAt) || !Number.isFinite(input.expiresAt)) {
+        throw new Error("that draft has invalid attachment details");
+      }
+      return this.draftAttachment(conn.userId, channel, input);
+    });
+    const now = Date.now();
+    return this.draftProjection(conn.userId, channel, {
+      id: this.store.draftId(conn.userId, channel.id, threadId), channelId: channel.id,
+      ...(threadId ? { threadId, replyTo: threadId } : {}), text: frame.text,
+      attachments, updatedAt: now,
+      expiresAt: Math.max(now + ATTACHMENT_LIMITS.parkedTtlMs, ...attachments.map(a => a.expiresAt)),
+      state: frame.text || attachments.length ? "active" : "empty",
+    });
+  }
+
+  /** Fingerprint the client's durable intent, excluding relay-derived state/expiry. */
+  private draftIntentHash(frame: Extract<ClientFrame, { type: "draftUpdate" }>, threadId?: ID): string {
+    const attachments = frame.attachments.map(input => ({
+      id: input.id, name: input.name, size: input.size,
+      mime: input.mime ?? null, uploadedAt: input.uploadedAt,
+    }));
+    return createHash("sha256").update(JSON.stringify([
+      "draftUpdate", frame.channelId, threadId ?? null, frame.text,
+      frame.replyTo ?? null, attachments,
+    ])).digest("hex");
+  }
+
+  private sendDraft(conn: Conn, draft: ChatDraft, requestId?: ID): void {
+    send(conn.ws, { type: "draftChanged", draft, ...(requestId ? { requestId } : {}) });
+  }
+
+  private inaccessibleDraft(draft: ChatDraft): ChatDraft {
+    return {
+      ...draft, state: "unavailable",
+      attachments: draft.attachments.map(a => a.state === "removed" ? a : {
+        ...a, state: "unavailable", error: "this conversation is no longer available",
+      }),
+    };
+  }
+
+  private projectDraftForUser(userId: ID, draft: ChatDraft): ChatDraft {
+    try {
+      const channel = this.channelFor(userId, draft.channelId);
+      return this.draftProjection(userId, channel, draft);
+    } catch {
+      return this.inaccessibleDraft(draft);
+    }
+  }
+
+  /** List only drafts whose room/thread is currently readable by this user. */
+  private visibleDrafts(conn: Conn, channelId?: ID, threadId?: ID): ChatDraft[] {
+    if (threadId && !channelId) throw new Error("a thread draft needs its channel");
+    const scope = channelId ? this.draftScope(conn, channelId, threadId) : undefined;
+    return this.store.chatDrafts(conn.userId, channelId, scope?.threadId)
+      .filter(draft => {
+        try { this.draftScope(conn, draft.channelId, draft.threadId); return true; }
+        catch { return false; }
+      })
+      .map(draft => this.projectDraftForUser(conn.userId, draft));
   }
 
   /**
@@ -3452,6 +3613,63 @@ private viewProject(project: Project, viewerId?: ID): Project {
       case "typing":
         this.handleTyping(conn, frame);
         break;
+      case "draftList": {
+        this.store.sweepChatDrafts(Date.now());
+        const drafts = this.visibleDrafts(conn, frame.channelId, frame.threadId);
+        send(conn.ws, { type: "drafts", drafts, ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        break;
+      }
+      case "draftReconcile": {
+        this.store.sweepChatDrafts(Date.now());
+        const drafts = this.visibleDrafts(conn, frame.channelId, frame.threadId);
+        // Reconcile is deliberately a projection/reclaim pass, not a TTL
+        // extension. Valid parked ids remain owned by the attachment store;
+        // expired/missing rows are marked so the UI can remove/reselect them.
+        for (const draft of drafts) {
+          try { this.store.reclaimChatDraftAttachments(conn.userId, draft); } catch { /* projection remains honest */ }
+        }
+        send(conn.ws, { type: "drafts", drafts, ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        break;
+      }
+      case "draftReclaim": {
+        const { threadId } = this.draftScope(conn, frame.channelId, frame.threadId);
+        const existing = this.store.chatDraft(conn.userId, frame.channelId, threadId);
+        if (!existing) {
+          send(conn.ws, { type: "draftRemoved", channelId: frame.channelId, ...(threadId ? { threadId } : {}), ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+          break;
+        }
+        const projected = this.projectDraftForUser(conn.userId, existing);
+        const keptIds = frame.attachmentIds ? new Set(frame.attachmentIds) : undefined;
+        const next = keptIds ? { ...projected, attachments: projected.attachments.filter(a => keptIds.has(a.id)) } : projected;
+        const saved = this.store.reclaimChatDraftAttachments(conn.userId, next, frame.requestId);
+        this.sendDraft(conn, this.projectDraftForUser(conn.userId, saved), frame.requestId);
+        this.toUserExcept(conn.userId, conn, { type: "draftChanged", draft: this.projectDraftForUser(conn.userId, saved) });
+        break;
+      }
+      case "draftUpdate": {
+        const { threadId } = this.draftScope(conn, frame.channelId, frame.threadId);
+        const input = this.draftInput(conn, frame);
+        const saved = this.store.saveChatDraft(conn.userId, input, frame.requestId, this.draftIntentHash(frame, threadId));
+        const projected = this.projectDraftForUser(conn.userId, saved);
+        this.sendDraft(conn, projected, frame.requestId);
+        this.toUserExcept(conn.userId, conn, { type: "draftChanged", draft: projected });
+        break;
+      }
+      case "draftRemove": {
+        const { threadId } = this.draftScope(conn, frame.channelId, frame.threadId);
+        this.store.removeChatDraft(conn.userId, frame.channelId, threadId, frame.requestId);
+        const out: ServerFrame = {
+          type: "draftRemoved", channelId: frame.channelId,
+          ...(threadId ? { threadId } : {}),
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        };
+        send(conn.ws, out);
+        this.toUserExcept(conn.userId, conn, {
+          type: "draftRemoved", channelId: frame.channelId,
+          ...(threadId ? { threadId } : {}),
+        });
+        break;
+      }
       case "send": {
         const user = this.store.users().find(u => u.id === conn.userId)!;
         const clientMessageId = frame.clientMessageId ?? frame.tempId ?? newId("cm");
@@ -3475,7 +3693,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
           break;
         }
         const channel = this.writableChannel(conn.userId, frame.channelId); // you may only post where you are
-        const hasFiles = (frame.attachmentIds?.length ?? 0) > 0;
+        const attachmentIds = [...new Set(frame.attachmentIds ?? [])];
+        const hasFiles = attachmentIds.length > 0;
         // words are optional only when a file is carrying the message
         const bad = validateMessageText(frame.text, hasFiles);
         if (bad) throw new Error(bad);
@@ -3483,9 +3702,12 @@ private viewProject(project: Project, viewerId?: ID): Project {
         const payloadHash = this.store.messagePayloadHash({
           channelId: frame.channelId, text: frame.text, replyTo: frame.replyTo, attachmentIds: frame.attachmentIds,
         });
+        // The same 24-hour parked TTL applies at send time, not just at relay
+        // startup/upload. A stale draft id must be refused rather than claimed.
+        this.store.sweepParkedAttachments(Date.now() - ATTACHMENT_LIMITS.parkedTtlMs);
         const id = newId("m");
-        const attachments = this.claimAttachments(conn.userId, channel, frame.attachmentIds, id);
-        this.postMessage({
+        const attachments = this.validateAttachments(conn.userId, channel, attachmentIds);
+        const saved = this.postMessage({
           id, channelId: frame.channelId,
           authorId: user.id, authorName: user.name, authorKind: "human",
           clientMessageId,
@@ -3493,7 +3715,19 @@ private viewProject(project: Project, viewerId?: ID): Project {
           mentions: this.mentionsFor(conn.userId, frame.text),
           ...(replyTo ? { replyTo } : {}),
           ...(attachments.length ? { attachments } : {}),
-        }, frame.tempId, frame.requestId, clientMessageId, payloadHash);
+        }, frame.tempId, frame.requestId, conn.userId, replyTo, attachmentIds,
+          clientMessageId, payloadHash);
+        // A concurrent first attempt may have committed between the status
+        // check and the transaction. Return its canonical row to this socket;
+        // do not broadcast or notify it a second time.
+        if (saved.replayed) {
+          send(conn.ws, { type: "message", message: saved.message,
+            ...(frame.tempId ? { tempId: frame.tempId } : {}),
+            ...(frame.requestId ? { requestId: frame.requestId } : {}) });
+        }
+        // A draft is cleared only after postMessage has accepted and stored the
+        // message. The Store method commits both rows together; postMessage
+        // broadcasts the resulting correlated removal to other devices.
         break;
       }
       case "messageStatus": {
@@ -7485,13 +7719,9 @@ private viewProject(project: Project, viewerId?: ID): Project {
     return [...this.store.users(), ...this.store.agents()].map(x => ({ id: x.id, name: x.name }));
   }
 
-  private postMessage(
-    message: Message,
-    tempId?: string,
-    requestId?: ID,
-    clientMessageId?: ID,
-    payloadHash?: string,
-  ): void {
+  private postMessage(message: Message, tempId?: string, requestId?: ID, draftOwnerId?: ID,
+    draftThreadId?: ID, attachmentIds?: readonly ID[], clientMessageId?: ID,
+    payloadHash?: string): { message: Message; replayed: boolean; draftRemoved: boolean } {
     const ch = this.store.channel(message.channelId);
     if (!ch) throw new Error("no such channel");
     // Capture the thread as it stood BEFORE this reply landed. That timing is
@@ -7500,12 +7730,12 @@ private viewProject(project: Project, viewerId?: ID): Project {
     const priorReplies = message.replyTo
       ? this.store.thread(message.replyTo).filter(m => m.id !== message.id)
       : [];
-    if (message.authorKind === "human" && clientMessageId && payloadHash) {
-      const saved = this.store.saveHumanMessage(message, clientMessageId, payloadHash);
-      message = saved.message;
-    } else {
-      this.store.saveMessage(message);
-    }
+    const saved = draftOwnerId
+      ? this.store.saveMessageAndRemoveDraft(message, draftOwnerId, draftThreadId,
+        attachmentIds, clientMessageId, payloadHash)
+      : (this.store.saveMessage(message), { message, replayed: false, draftRemoved: false });
+    if (saved.replayed) return saved;
+    message = saved.message;
     this.recordMessageNotifications(ch, message, priorReplies);
     // A reply bumps the CACHED count on the message that started the thread, and
     // everyone watching is told the root changed — otherwise "12 replies" would
@@ -7531,6 +7761,12 @@ private viewProject(project: Project, viewerId?: ID): Project {
       }
     }
     if (message.authorKind === "human") this.pushMessageStatus(message.authorId, message);
+    if (draftOwnerId && saved.draftRemoved) {
+      this.toUser(draftOwnerId, {
+        type: "draftRemoved", channelId: message.channelId,
+        ...(draftThreadId ? { threadId: draftThreadId } : {}),
+      });
+    }
     // push log for offline members (APNs delivery later)
     if (message.proactive) {
       const online = new Set([...this.conns].map(c => c.userId));
@@ -7538,6 +7774,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
         if (!online.has(uid)) this.store.logPush(uid, message.id);
       }
     }
+    return saved;
   }
 
   private broadcast(frame: ServerFrame): void {

@@ -46,11 +46,14 @@ test("Canvas project projections redact per viewer on the hub", () => {
   const relayStore = fs.readFileSync(path.join(__dirname, "..", "..", "relay", "src", "store.ts"), "utf8");
   assert.match(server, /viewProject\(project, userId\)/);
   assert.match(server, /pushCanvasProject/);
-  // Forums owns step 10, Canvas step 11, and channel pins take the next step.
-  assert.match(relayStore, /export const SCHEMA_VERSION = 12/);
+  // Forums owns step 10, Canvas step 11, channel pins step 12, message
+  // receipts step 13, and durable composer drafts take step 14.
+  assert.match(relayStore, /export const SCHEMA_VERSION = 14/);
   assert.match(relayStore, /step\(10, \(\) => this\.addForumSchema\(\)\)/);
   assert.match(relayStore, /step\(11, \(\) => this\.addEngineeringCanvasSchema\(\)\)/);
   assert.match(relayStore, /step\(12, \(\) => this\.addChannelPinsSchema\(\)\)/);
+  assert.match(relayStore, /step\(13, \(\) => this\.addMessageReceiptsSchema\(\)\)/);
+  assert.match(relayStore, /step\(14, \(\) => this\.addChatDraftSchema\(\)\)/);
   assert.match(relayStore, /DELETE FROM engineering_canvases/);
   assert.match(relayStore, /DELETE FROM forum_topics/);
   assert.match(store, /canvases\.projectId === frame\.projectId/);

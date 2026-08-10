@@ -16,6 +16,7 @@ import {
   EngineeringPulseUpdate, redactDeletedPulseUpdate,
   RunRecord, RUN_RETENTION, Task, User, StoredHook, isSafeStoredId, nameKey, newId,
   NOTIFICATION_INBOX_LIMITS,
+  ChatDraft, DraftAttachment, DRAFT_LIMITS,
   type NotificationInboxKind, type NotificationInboxState,
   Workflow, WorkflowRun, validateArtifactLinks, validateWorkflow,
   HuddleSession, HuddleNote, HuddleReadEntry,
@@ -141,6 +142,25 @@ export interface ArtifactByteStage {
 interface RawRun {
   id: string; agentId: string; ownerId: string;
   channelId: string | null; taskId: string | null; startedAt: number; json: string;
+}
+
+interface RawChatDraft {
+  userId: string; channelId: string; threadId: string; updatedAt: number;
+  expiresAt: number; state: string; json: string;
+}
+
+export interface SavedSendResult {
+  message: Message;
+  /** True when this request replayed a previously committed send. */
+  replayed: boolean;
+  /** True when the send removed the draft whose intent matched the message. */
+  draftRemoved: boolean;
+}
+
+type DraftMutationKind = "draftUpdate" | "draftReclaim" | "draftRemove";
+interface DraftMutationReceipt {
+  userId: ID; requestId: ID; kind: DraftMutationKind; payloadHash: string;
+  resultJson: string; createdAt: number;
 }
 
 type PulseMutationKind = "pulseCreate" | "pulseUpdate" | "pulseDelete";
@@ -500,6 +520,25 @@ export class Store implements JoinHubStore {
         messageId TEXT, uploadedAt INTEGER NOT NULL, json TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS att_msg ON attachments(messageId);
+
+      -- One durable composer row per authenticated person, room and optional
+      -- thread. Attachment entries are metadata projections only; bytes stay
+      -- under the attachment table/folder and continue to obey its TTL.
+      CREATE TABLE IF NOT EXISTS chat_drafts(
+        userId TEXT NOT NULL, channelId TEXT NOT NULL, threadId TEXT NOT NULL DEFAULT '',
+        updatedAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL,
+        state TEXT NOT NULL, json TEXT NOT NULL,
+        PRIMARY KEY(userId, channelId, threadId)
+      );
+      CREATE INDEX IF NOT EXISTS chat_draft_user_order
+        ON chat_drafts(userId, updatedAt DESC, channelId, threadId);
+      CREATE TABLE IF NOT EXISTS draft_mutation_receipts(
+        userId TEXT NOT NULL, requestId TEXT NOT NULL, kind TEXT NOT NULL,
+        payloadHash TEXT NOT NULL, resultJson TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        PRIMARY KEY(userId, requestId)
+      );
+      CREATE INDEX IF NOT EXISTS draft_receipt_order
+        ON draft_mutation_receipts(userId, createdAt DESC);
 
       -- A FILE AN AGENT MADE. Two tables, because an artifact has an identity
       -- that outlives any one set of bytes.
@@ -1219,6 +1258,10 @@ export class Store implements JoinHubStore {
     this.step(12, () => this.addChannelPinsSchema());
     // v12 -> v13: durable human message acknowledgement ledger and receipts.
     this.step(13, () => this.addMessageReceiptsSchema());
+    // v13 -> v14: durable composer rows and bounded retry ledger. The tables
+    // are also declared during guarded open for fresh databases; this isolated
+    // step is what upgrades an existing file atomically.
+    this.step(14, () => this.addChatDraftSchema());
 
     // The one thing that still says a person can only be in a room once at a
     // time, now that the primary key no longer does. It lives here, below the
@@ -1718,6 +1761,12 @@ export class Store implements JoinHubStore {
    * away, is retired here.
    */
   removeUser(id: ID): void {
+    // Parked bytes belong only to this account. Gather their relay-owned names
+    // before the account rows are deleted, then remove bytes after the metadata
+    // transaction commits so a failed transaction never loses the cleanup path.
+    const parked = this.db.prepare(
+      "SELECT id,json FROM attachments WHERE uploadedBy=? AND messageId IS NULL",
+    ).all(id) as { id: ID; json: string }[];
     const owned = this.projectsOf(id);
     this.tx(() => {
       for (const project of owned) this.deleteHuddleRows(project.id);
@@ -1758,7 +1807,14 @@ export class Store implements JoinHubStore {
       this.db.prepare("DELETE FROM social_reads WHERE userId=?").run(id);
       this.db.prepare("DELETE FROM social_members WHERE userId=?").run(id);
       this.db.prepare("DELETE FROM social_reactions WHERE actorId=?").run(id);
+      this.db.prepare("DELETE FROM chat_drafts WHERE userId=?").run(id);
+      this.db.prepare("DELETE FROM draft_mutation_receipts WHERE userId=?").run(id);
+      this.db.prepare("DELETE FROM attachments WHERE uploadedBy=? AND messageId IS NULL").run(id);
     });
+    for (const row of parked) {
+      const attachment = this.safeParse<Attachment>(row.json, "a parked file", row.id);
+      if (attachment?.storedAs) this.removeAttachmentBytes(attachment.storedAs);
+    }
     this.db.prepare("DELETE FROM tokens WHERE userId=?").run(id);
     this.db.prepare("DELETE FROM pulse_mutation_receipts WHERE userId=?").run(id);
     this.db.prepare("DELETE FROM pulse_reads WHERE userId=?").run(id);
@@ -2038,6 +2094,101 @@ export class Store implements JoinHubStore {
     this.db.prepare("INSERT OR REPLACE INTO messages(id,channelId,ts,json) VALUES(?,?,?,?)")
       .run(row.id, row.channelId, row.ts, JSON.stringify(row));
     this.indexMessage(row);
+  }
+
+  /** Fingerprint one client's durable send intent, excluding relay-owned ids and timestamps. */
+  messageSendHash(channelId: ID, text: string, replyTo: ID | undefined,
+    attachmentIds: readonly ID[]): string {
+    return createHash("sha256").update(JSON.stringify([
+      "send", channelId, text, replyTo ?? null, [...new Set(attachmentIds)],
+    ])).digest("hex");
+  }
+
+  /** Check a retry before attachment validation can reject its already-claimed ids. */
+  sentMessageStatus(userId: ID, clientMessageId: ID, payloadHash: string):
+    { status: "replay"; message: Message } | { status: "conflict" } | undefined {
+    const prior = this.messageLedger(userId, clientMessageId);
+    if (!prior) return undefined;
+    if (prior.payloadHash !== payloadHash) return { status: "conflict" };
+    const message = this.message(prior.messageId);
+    return message ? { status: "replay", message } : { status: "conflict" };
+  }
+
+  private sendDraftMatches(draft: ChatDraft | undefined, message: Message,
+    threadId: ID | undefined, expectedPayloadHash: string): boolean {
+    // The durable key is the authenticated owner + room + canonical thread,
+    // but scope alone is not enough: another window may have saved newer text
+    // or attachments while this send was in flight. Compare the immutable send
+    // intent before deleting so an accepted message cannot erase that newer
+    // draft. Relay-derived attachment state/expiry is deliberately excluded.
+    if (!draft || draft.channelId !== message.channelId
+      || (draft.threadId ?? "") !== (threadId ?? "")) return false;
+    const draftHash = this.messageSendHash(
+      draft.channelId, draft.text, draft.replyTo,
+      draft.attachments.map(attachment => attachment.id),
+    );
+    return draftHash === expectedPayloadHash;
+  }
+
+  /**
+   * Persist an accepted human message, claim its attachments, and remove only
+   * the draft whose intent still matches — all in one SQLite transaction.
+   * A clientMessageId receipt makes a lost acknowledgement safe to replay.
+   */
+  saveMessageAndRemoveDraft(message: Message, userId: ID, threadId?: ID,
+    attachmentIds: readonly ID[] = [], clientMessageId?: ID,
+    payloadHash?: string): SavedSendResult {
+    let released: ID[] = [];
+    const uniqueAttachmentIds = [...new Set(attachmentIds)];
+    const result = this.tx(() => {
+      const hash = payloadHash ?? this.messagePayloadHash({
+        channelId: message.channelId, text: message.text,
+        replyTo: message.replyTo, attachmentIds: uniqueAttachmentIds,
+      });
+      const draftIntentHash = this.messageSendHash(
+        message.channelId, message.text, message.replyTo, uniqueAttachmentIds,
+      );
+      const prior = clientMessageId ? this.messageLedger(userId, clientMessageId) : undefined;
+      if (prior) {
+        if (prior.payloadHash !== hash || prior.channelId !== message.channelId) {
+          throw new Error("that send id was already used for a different message");
+        }
+        const canonical = this.message(prior.messageId);
+        if (canonical) return { message: canonical, replayed: true, draftRemoved: false } satisfies SavedSendResult;
+        this.db.prepare("DELETE FROM message_send_ledger WHERE authorId=? AND clientMessageId=?")
+          .run(userId, prior.clientMessageId);
+      }
+      const draft = this.rawDraft(userId, message.channelId, threadId);
+      const claimed: Attachment[] = [];
+      for (const id of uniqueAttachmentIds) {
+        const row = this.attachment(id);
+        if (!row || row.attachment.uploadedBy !== userId || row.channelId !== message.channelId || row.messageId) {
+          throw new Error("that file is no longer available to send");
+        }
+        const updated = this.db.prepare("UPDATE attachments SET messageId=? WHERE id=? AND messageId IS NULL")
+          .run(message.id, id);
+        if (updated.changes !== 1) throw new Error("that file is no longer available to send");
+        claimed.push(row.attachment);
+      }
+      const stored = claimed.length ? { ...message, attachments: claimed } : message;
+      this.saveMessage(stored);
+      const draftRemoved = this.sendDraftMatches(draft, stored, threadId, draftIntentHash);
+      if (draftRemoved) {
+        released = draft!.attachments.map(a => a.id);
+        this.db.prepare("DELETE FROM chat_drafts WHERE userId=? AND channelId=? AND threadId=?")
+          .run(userId, message.channelId, threadId ?? "");
+      }
+      const now = Date.now();
+      if (clientMessageId) {
+        this.db.prepare(
+          "INSERT INTO message_send_ledger(authorId,clientMessageId,channelId,messageId,payloadHash,createdAt) VALUES(?,?,?,?,?,?)",
+        ).run(userId, clientMessageId, message.channelId, stored.id, hash, now);
+        this.pruneMessageLedgers(now);
+      }
+      return { message: stored, replayed: false, draftRemoved } satisfies SavedSendResult;
+    });
+    if (!result.replayed) this.cleanupUnreferencedParkedAttachments(userId, released);
+    return result;
   }
 
   message(id: ID): Message | undefined {
@@ -3007,6 +3158,15 @@ export class Store implements JoinHubStore {
     this.db.prepare("UPDATE attachments SET messageId=? WHERE id=?").run(messageId, id);
   }
 
+  /** Reclaim one unclaimed parked row and its bytes after expiry/corruption. */
+  removeParkedAttachment(id: ID, userId: ID): void {
+    const row = this.attachment(id);
+    if (!row || row.messageId || row.attachment.uploadedBy !== userId) return;
+    this.removeAttachmentBytes(row.attachment.storedAs);
+    this.db.prepare("DELETE FROM attachments WHERE id=? AND uploadedBy=? AND messageId IS NULL")
+      .run(id, userId);
+  }
+
   /**
    * How many bytes this person has PARKED — uploaded but not yet sent.
    *
@@ -3049,12 +3209,244 @@ export class Store implements JoinHubStore {
     return rows.length;
   }
 
+  /** Remove parked rows no longer referenced by one of this user's live drafts. */
+  private cleanupUnreferencedParkedAttachments(userId: ID, ids: readonly ID[]): number {
+    if (ids.length === 0) return 0;
+    const live = new Set(this.chatDrafts(userId).flatMap(d => d.attachments.map(a => a.id)));
+    let removed = 0;
+    for (const id of new Set(ids)) {
+      if (live.has(id)) continue;
+      const row = this.attachment(id);
+      if (!row || row.messageId || row.attachment.uploadedBy !== userId) continue;
+      this.removeAttachmentBytes(row.attachment.storedAs);
+      this.db.prepare("DELETE FROM attachments WHERE id=? AND uploadedBy=? AND messageId IS NULL")
+        .run(id, userId);
+      removed++;
+    }
+    return removed;
+  }
+
   /** Forget a message's files (used by delete) and say which bytes to remove. */
   releaseAttachments(messageId: ID): Attachment[] {
     const rows = this.db.prepare("SELECT json FROM attachments WHERE messageId=?")
       .all(messageId) as { json: string }[];
     this.db.prepare("DELETE FROM attachments WHERE messageId=?").run(messageId);
     return rows.map(r => JSON.parse(r.json) as Attachment);
+  }
+
+  private addChatDraftSchema(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS chat_drafts(
+        userId TEXT NOT NULL, channelId TEXT NOT NULL, threadId TEXT NOT NULL DEFAULT '',
+        updatedAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL,
+        state TEXT NOT NULL, json TEXT NOT NULL,
+        PRIMARY KEY(userId, channelId, threadId)
+      );
+      CREATE INDEX IF NOT EXISTS chat_draft_user_order
+        ON chat_drafts(userId, updatedAt DESC, channelId, threadId);
+      CREATE TABLE IF NOT EXISTS draft_mutation_receipts(
+        userId TEXT NOT NULL, requestId TEXT NOT NULL, kind TEXT NOT NULL,
+        payloadHash TEXT NOT NULL, resultJson TEXT NOT NULL, createdAt INTEGER NOT NULL,
+        PRIMARY KEY(userId, requestId)
+      );
+      CREATE INDEX IF NOT EXISTS draft_receipt_order
+        ON draft_mutation_receipts(userId, createdAt DESC);
+    `);
+  }
+
+  // ---- durable composer drafts -------------------------------------------
+  // Draft bytes never live here. `attachments` is an ordered metadata list,
+  // and the relay re-projects each id before returning it to a client.
+  private draftThread(threadId?: ID): string { return threadId ?? ""; }
+
+  draftId(userId: ID, channelId: ID, threadId?: ID): ID {
+    return `dr_${createHash("sha256").update(JSON.stringify([userId, channelId, this.draftThread(threadId)])).digest("hex").slice(0, 24)}`;
+  }
+
+  private draftMutationHash(kind: DraftMutationKind, payload: unknown): string {
+    return createHash("sha256").update(JSON.stringify([kind, payload])).digest("hex");
+  }
+
+  private draftReceipt(userId: ID, requestId: ID): DraftMutationReceipt | undefined {
+    const row = this.db.prepare(
+      "SELECT userId,requestId,kind,payloadHash,resultJson,createdAt FROM draft_mutation_receipts WHERE userId=? AND requestId=?",
+    ).get(userId, requestId) as DraftMutationReceipt | undefined;
+    if (row && row.createdAt < Date.now() - DRAFT_LIMITS.receiptRetentionMs) {
+      this.db.prepare("DELETE FROM draft_mutation_receipts WHERE userId=? AND requestId=?").run(userId, requestId);
+      return undefined;
+    }
+    return row;
+  }
+
+  private saveDraftReceipt(userId: ID, requestId: ID, kind: DraftMutationKind,
+    payloadHash: string, result: unknown, now: number): void {
+    this.db.prepare(
+      "INSERT INTO draft_mutation_receipts(userId,requestId,kind,payloadHash,resultJson,createdAt) VALUES(?,?,?,?,?,?)",
+    ).run(userId, requestId, kind, payloadHash, JSON.stringify(result), now);
+    this.db.prepare("DELETE FROM draft_mutation_receipts WHERE createdAt < ?")
+      .run(now - DRAFT_LIMITS.receiptRetentionMs);
+    this.db.prepare(
+      "DELETE FROM draft_mutation_receipts WHERE userId=? AND requestId NOT IN "
+      + "(SELECT requestId FROM draft_mutation_receipts WHERE userId=? ORDER BY createdAt DESC,requestId DESC LIMIT ?)",
+    ).run(userId, userId, DRAFT_LIMITS.receiptPerUser);
+  }
+
+  private rawDraft(userId: ID, channelId: ID, threadId?: ID): ChatDraft | undefined {
+    const row = this.db.prepare(
+      "SELECT userId,channelId,threadId,updatedAt,expiresAt,state,json FROM chat_drafts WHERE userId=? AND channelId=? AND threadId=?",
+    ).get(userId, channelId, this.draftThread(threadId)) as RawChatDraft | undefined;
+    if (!row) return undefined;
+    try {
+      return JSON.parse(row.json) as ChatDraft;
+    } catch (e) {
+      this.note(`draft ${this.draftId(userId, channelId, threadId)} could not be read (${(e as Error).message}) — it was skipped`);
+      return undefined;
+    }
+  }
+
+  chatDraft(userId: ID, channelId: ID, threadId?: ID): ChatDraft | undefined {
+    return this.rawDraft(userId, channelId, threadId);
+  }
+
+  /** Remove expired/abandoned draft rows and old mutation receipts. */
+  sweepChatDrafts(now = Date.now()): number {
+    const staleRows = this.db.prepare(
+      "SELECT userId,json FROM chat_drafts WHERE expiresAt <= ? OR updatedAt < ?",
+    ).all(now, now - DRAFT_LIMITS.retentionMs) as { userId: ID; json: string }[];
+    this.db.prepare("DELETE FROM chat_drafts WHERE expiresAt <= ? OR updatedAt < ?")
+      .run(now, now - DRAFT_LIMITS.retentionMs);
+    this.db.prepare("DELETE FROM draft_mutation_receipts WHERE createdAt < ?")
+      .run(now - DRAFT_LIMITS.receiptRetentionMs);
+    const idsByUser = new Map<ID, ID[]>();
+    for (const row of staleRows) {
+      const draft = this.safeParse<ChatDraft>(row.json, "a durable draft", "expired");
+      if (!draft) continue;
+      // A mutation receipt is only useful while its durable row exists. Drop
+      // receipts for swept scopes so a late retry cannot replay stale text and
+      // resurrect an expired draft that the retention sweep just removed.
+      const receipts = this.db.prepare(
+        "SELECT requestId,kind,resultJson FROM draft_mutation_receipts WHERE userId=?",
+      ).all(row.userId) as { requestId: ID; kind: DraftMutationKind; resultJson: string }[];
+      for (const receipt of receipts) {
+        try {
+          const result = JSON.parse(receipt.resultJson) as { channelId?: ID; threadId?: ID };
+          if (result.channelId === draft.channelId && (result.threadId ?? "") === (draft.threadId ?? "")) {
+            this.db.prepare("DELETE FROM draft_mutation_receipts WHERE userId=? AND requestId=?")
+              .run(row.userId, receipt.requestId);
+          }
+        } catch { /* malformed receipt is harmless and bounded by the sweep */ }
+      }
+      idsByUser.set(row.userId, [...(idsByUser.get(row.userId) ?? []), ...draft.attachments.map(a => a.id)]);
+    }
+    for (const [userId, ids] of idsByUser) this.cleanupUnreferencedParkedAttachments(userId, ids);
+    return staleRows.length;
+  }
+
+  chatDrafts(userId: ID, channelId?: ID, threadId?: ID): ChatDraft[] {
+    const rows = (channelId !== undefined
+      ? this.db.prepare(
+        "SELECT userId,channelId,threadId,updatedAt,expiresAt,state,json FROM chat_drafts WHERE userId=? AND channelId=? "
+        + (threadId === undefined ? "ORDER BY updatedAt DESC,channelId,threadId" : "AND threadId=? ORDER BY updatedAt DESC"),
+      ).all(...(threadId === undefined ? [userId, channelId] : [userId, channelId, this.draftThread(threadId)]))
+      : this.db.prepare(
+        "SELECT userId,channelId,threadId,updatedAt,expiresAt,state,json FROM chat_drafts WHERE userId=? ORDER BY updatedAt DESC,channelId,threadId",
+      ).all(userId)) as unknown as RawChatDraft[];
+    return rows.flatMap(row => {
+      try { return [JSON.parse(row.json) as ChatDraft]; }
+      catch { this.note(`draft ${this.draftId(row.userId, row.channelId, row.threadId || undefined)} could not be read — it was skipped`); return []; }
+    });
+  }
+
+  /** Store one draft and record a bounded request receipt for safe retries. */
+  saveChatDraft(userId: ID, draft: ChatDraft, requestId?: ID, intentHash?: string): ChatDraft {
+    let released: ID[] = [];
+    const next = this.tx(() => {
+      const payload = {
+        channelId: draft.channelId, threadId: draft.threadId ?? null, text: draft.text,
+        replyTo: draft.replyTo ?? null, attachments: draft.attachments,
+      };
+      const hash = intentHash ?? this.draftMutationHash("draftUpdate", payload);
+      const prior = requestId ? this.draftReceipt(userId, requestId) : undefined;
+      if (prior) {
+        if (prior.kind !== "draftUpdate" || prior.payloadHash !== hash) {
+          throw new Error("that draft request id was already used for a different update");
+        }
+        return JSON.parse(prior.resultJson) as ChatDraft;
+      }
+      const existing = this.rawDraft(userId, draft.channelId, draft.threadId);
+      if (!existing && (this.db.prepare("SELECT COUNT(*) n FROM chat_drafts WHERE userId=?").get(userId) as { n: number }).n >= DRAFT_LIMITS.perUser) {
+        throw new Error(`you already have ${DRAFT_LIMITS.perUser} drafts — remove one before starting another`);
+      }
+      const now = Date.now();
+      const next: ChatDraft = {
+        ...draft, id: existing?.id ?? (draft.id || this.draftId(userId, draft.channelId, draft.threadId)),
+        updatedAt: draft.updatedAt || now,
+        expiresAt: draft.expiresAt || now,
+        state: draft.state || (draft.text || draft.attachments.length ? "active" : "empty"),
+        attachments: [...draft.attachments],
+      };
+      released = (existing?.attachments ?? []).map(a => a.id)
+        .filter(id => !next.attachments.some(a => a.id === id));
+      this.db.prepare(
+        "INSERT INTO chat_drafts(userId,channelId,threadId,updatedAt,expiresAt,state,json) VALUES(?,?,?,?,?,?,?) "
+        + "ON CONFLICT(userId,channelId,threadId) DO UPDATE SET updatedAt=excluded.updatedAt,expiresAt=excluded.expiresAt,state=excluded.state,json=excluded.json",
+      ).run(userId, next.channelId, this.draftThread(next.threadId), next.updatedAt, next.expiresAt, next.state, JSON.stringify(next));
+      if (requestId) this.saveDraftReceipt(userId, requestId, "draftUpdate", hash, next, now);
+      return next;
+    });
+    this.cleanupUnreferencedParkedAttachments(userId, released);
+    return next;
+  }
+
+  removeChatDraft(userId: ID, channelId: ID, threadId?: ID, requestId?: ID): void {
+    let released: ID[] = [];
+    this.tx(() => {
+      const payload = { channelId, threadId: threadId ?? null };
+      const hash = this.draftMutationHash("draftRemove", payload);
+      const prior = requestId ? this.draftReceipt(userId, requestId) : undefined;
+      if (prior) {
+        if (prior.kind !== "draftRemove" || prior.payloadHash !== hash) {
+          throw new Error("that draft request id was already used for a different removal");
+        }
+        return;
+      }
+      const now = Date.now();
+      released = (this.rawDraft(userId, channelId, threadId)?.attachments ?? []).map(a => a.id);
+      this.db.prepare("DELETE FROM chat_drafts WHERE userId=? AND channelId=? AND threadId=?")
+        .run(userId, channelId, this.draftThread(threadId));
+      if (requestId) this.saveDraftReceipt(userId, requestId, "draftRemove", hash, { channelId, threadId }, now);
+    });
+    this.cleanupUnreferencedParkedAttachments(userId, released);
+  }
+
+  /** Update attachment states without touching text or other thread scope. */
+  reclaimChatDraftAttachments(userId: ID, draft: ChatDraft, requestId?: ID): ChatDraft {
+    let released: ID[] = [];
+    const next = this.tx(() => {
+      const payload = { channelId: draft.channelId, threadId: draft.threadId ?? null, attachmentIds: draft.attachments.map(a => a.id) };
+      const hash = this.draftMutationHash("draftReclaim", payload);
+      const prior = requestId ? this.draftReceipt(userId, requestId) : undefined;
+      if (prior) {
+        if (prior.kind !== "draftReclaim" || prior.payloadHash !== hash) {
+          throw new Error("that draft request id was already used for a different reclaim");
+        }
+        return JSON.parse(prior.resultJson) as ChatDraft;
+      }
+      const existing = this.rawDraft(userId, draft.channelId, draft.threadId);
+      if (!existing) return draft;
+      // Reclaim only re-projects attachment truth. It must not refresh the
+      // user's draft deadline/retention clock; ordinary draftUpdate is the
+      // explicit user activity that extends those fields.
+      released = existing.attachments.map(a => a.id)
+        .filter(id => !draft.attachments.some(a => a.id === id));
+      const next = { ...existing, attachments: draft.attachments, state: draft.state };
+      this.db.prepare("UPDATE chat_drafts SET state=?,json=? WHERE userId=? AND channelId=? AND threadId=?")
+        .run(next.state, JSON.stringify(next), userId, next.channelId, this.draftThread(next.threadId));
+      if (requestId) this.saveDraftReceipt(userId, requestId, "draftReclaim", hash, next, Date.now());
+      return next;
+    });
+    this.cleanupUnreferencedParkedAttachments(userId, released);
+    return next;
   }
 
   // ---- artifacts: files agents made ----
@@ -5271,8 +5663,9 @@ export const ARTIFACT_STAGE_GRACE_MS = 60_000;
  * 10 = Project forums / decision threads (membership, topics, replies, receipts).
  * 11 = Engineering Canvas documents and revisions.
  * 12 = shared non-DM channel pins and bounded mutation receipts.
+ * 13 = durable channel/thread composer drafts and retry receipts.
  */
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 /**
  * The fingerprint of one line of the trail.

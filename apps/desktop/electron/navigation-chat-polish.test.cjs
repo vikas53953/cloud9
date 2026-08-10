@@ -221,6 +221,7 @@ test("human typing is an ephemeral, channel-scoped signal rather than a message"
 
 test("the composer restores scoped text drafts without claiming files survive restart", () => {
   const app = read("App.tsx");
+  const store = read("store.ts");
   const css = read("styles.css");
   assert.match(app, /from "\.\/chatdrafts\.js"/);
   assert.match(app, /userId: world\.me\.id, channelId: channel\.id/);
@@ -232,6 +233,16 @@ test("the composer restores scoped text drafts without claiming files survive re
   assert.match(app, /data-draft-status/);
   assert.match(css, /\.composer-draft-status\{color:var\(--ink-2\);font-size:12px;/,
     "draft recovery state must remain readable on light theme surfaces");
+  assert.match(store, /canonicalDraftThreadId\(threadId\)/,
+    "reply-child draft requests must resolve to the root thread scope");
+  assert.match(store, /const canonicalThreadId = this\.canonicalDraftThreadId\(threadId\)/,
+    "list/remove/reconcile requests must use the canonical root id");
+  assert.match(store, /listDrafts\([\s\S]*?refused: why => \{ this\.draftRequests\.delete\(requestId\)/,
+    "a refused draft list must settle its request so a late frame cannot mutate state");
+  assert.match(store, /private uploadThreadId\(threadId\?: ID\)/,
+    "upload trays must share the canonical root thread scope");
+  assert.match(store, /const scopeThreadId = this\.uploadThreadId\(threadId\)/,
+    "attach/send/clear upload paths must normalize reply-child ids");
 });
 
 test("the new rail and tools drawer have explicit hierarchy and focus states", () => {
