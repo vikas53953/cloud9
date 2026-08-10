@@ -23,6 +23,7 @@ import type { ID, LiveRunSteps, RunStep } from "@cloud9/shared";
 
 /** One agent's live steps for one message, newest merged into oldest. */
 interface Row {
+  channelId: ID;
   agentId: ID;
   /** every step seen so far this turn, in `seq` order */
   steps: RunStep[];
@@ -107,7 +108,8 @@ function announce(): void {
  */
 export function noteLiveSteps(live: LiveRunSteps): void {
   if (!live || typeof live !== "object") return;
-  if (typeof live.messageId !== "string" || live.messageId.length === 0
+  if (typeof live.channelId !== "string" || live.channelId.length === 0
+    || typeof live.messageId !== "string" || live.messageId.length === 0
     || typeof live.agentId !== "string" || live.agentId.length === 0) return;
   if (live.done === true) { drop(live.messageId, live.agentId); return; }
   if (!Array.isArray(live.steps) || live.steps.length === 0) return;
@@ -133,7 +135,12 @@ export function noteLiveSteps(live: LiveRunSteps): void {
      a React render or move an agent's activity-board stamp backwards/forwards. */
   if (!changed) { arm(live.messageId, live.agentId); return; }
   const steps = [...merged.values()].sort((a, b) => a.seq - b.seq);
-  const nextRow = { agentId: live.agentId, steps, startedAt: mine?.startedAt ?? live.at };
+  const nextRow = {
+    channelId: live.channelId,
+    agentId: live.agentId,
+    steps,
+    startedAt: mine?.startedAt ?? live.at,
+  };
   if (mine) {
     const nextRows = [...rows];
     nextRows[rowIndex] = nextRow;
@@ -193,7 +200,26 @@ function drop(messageId: ID, agentId: ID, expectedTimer?: ReturnType<typeof setT
 }
 
 /** Tests and a reconnect both want a clean slate. Nothing here survives either. */
-export function clearLiveSteps(): void {
+export function clearLiveSteps(predicate?: (row: Row) => boolean): void {
+  if (predicate) {
+    let changed = false;
+    for (const [messageId, rows] of byMessage) {
+      const kept = rows.filter(row => !predicate(row));
+      if (kept.length === rows.length) continue;
+      changed = true;
+      for (const row of rows) if (predicate(row)) {
+        const key = keyOf(messageId, row.agentId);
+        const timer = timers.get(key);
+        if (timer) clearTimeout(timer);
+        timers.delete(key);
+        stampedAt.delete(key);
+      }
+      if (kept.length === 0) byMessage.delete(messageId);
+      else byMessage.set(messageId, kept);
+    }
+    if (changed) { tick++; announce(); }
+    return;
+  }
   // Reconnect hooks may call this more than once; an already-clean cache does
   // not need a second render or a new activity-board stamp.
   if (byMessage.size === 0 && timers.size === 0 && stampedAt.size === 0) return;

@@ -3368,7 +3368,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
   private createTaskFor(
     conn: Conn,
     input: {
-      agentId: ID; channelId: ID; title: string; requesterId?: ID;
+      agentId: ID; channelId: ID; title: string; requesterId?: ID; sourceMessageId?: ID;
       causedByHook?: boolean;
       workflowId?: ID; workflowRunId?: ID; workflowStepId?: ID;
     },
@@ -3376,6 +3376,11 @@ private viewProject(project: Project, viewerId?: ID): Project {
     const agent = this.myAgent(conn.userId, input.agentId);
     const channel = this.channelFor(conn.userId, input.channelId);
     const requester = this.requesterFor(conn, input.requesterId, channel);
+    const sourceMessage = input.sourceMessageId ? this.store.message(input.sourceMessageId) : undefined;
+    if (input.sourceMessageId && (!sourceMessage || sourceMessage.channelId !== channel.id
+      || sourceMessage.authorKind !== "human" || sourceMessage.authorId !== requester.id)) {
+      throw new Error("the task source message is not this requester's message in this channel");
+    }
     if (!mayDriveAgent(requester.id, agent)) {
       throw new Error(agent.name + " isn't set up to take work from " + requester.name);
     }
@@ -3383,6 +3388,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
     const needsApproval = requiresApproval(agent, input.title);
     const task: Task = {
       id: newId("t"), title: input.title,
+      ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
       requesterId: requester.id, requesterName: requester.name,
       agentId: agent.id, channelId: channel.id,
       status: needsApproval ? "waiting_approval" : "not_started",
@@ -4460,6 +4466,7 @@ private viewProject(project: Project, viewerId?: ID): Project {
         this.createTaskFor(conn, {
           agentId: frame.agentId, channelId: frame.channelId, title: frame.title,
           requesterId: frame.requesterId,
+          ...(frame.sourceMessageId ? { sourceMessageId: frame.sourceMessageId } : {}),
           ...(frame.causedByHook ? { causedByHook: true } : {}),
         });
         break;

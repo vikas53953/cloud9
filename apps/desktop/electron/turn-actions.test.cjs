@@ -22,13 +22,13 @@ test("Stop is offered only after a live-step scope and never claims transport ac
   const app = read("App.tsx");
   const live = app.slice(app.indexOf("function LiveWork"), app.indexOf("function ResponsePreview"));
 
-  assert.match(live, /stoppable: false/,
-    "accepted/read-only receipts must not claim that a provider scope can stop");
+  assert.match(live, /stoppable: turnLifecycleStoppable\(\{ steps: evidence\.steps \}\)/,
+    "only public live-step evidence may claim that a provider scope can stop");
   assert.doesNotMatch(live, /receipt\.stage === "thinking"/,
     "the early thinking receipt races live-turn scope registration");
-  assert.match(live, /row\.stoppable === true && \(/);
-  assert.match(live, /text: `@\$\{name\} !stop`/,
-    "Stop must use the existing real stop command path");
+  assert.match(live, /!terminal && row\.stoppable && <button/);
+  assert.match(live, /text: `!stop \$\{row\.agentId\}`/,
+    "Stop must use the exact stable-id stop command path");
   assert.doesNotMatch(live, /setStopping|stopping\.has|aria-busy/,
     "transport acceptance alone must not render a false Stopping state");
 });

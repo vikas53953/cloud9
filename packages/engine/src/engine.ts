@@ -117,6 +117,12 @@ function saidWhenTurnEnded(err: unknown, where: string): string {
   return err instanceof TurnStoppedError ? err.said : sanitizeForChat(err, where);
 }
 
+/** The button sends a stable agent id, never a display-name mention. */
+function directStopAgentId(text: string): ID | undefined {
+  const match = /^!stop\s+(\S+)\s*$/i.exec(text.trim());
+  return match?.[1];
+}
+
 export interface EngineOptions {
   relayUrl: string;      // ws://host:port
   token: string;         // this user's relay token
@@ -863,6 +869,24 @@ export class Engine {
       // a human spoke — lift any brake status display
       for (const a of this.myAgents) this.setStatus(a.id, "idle");
     }
+    /* The desktop button sends a stable agent id, never a display-name
+       mention. Names may contain spaces or emoji; ids are the exact routing
+       key. Keep normal permission, channel, lifecycle, and local-owner gates. */
+    const directStopId = message.authorKind === "human"
+      ? directStopAgentId(message.text) : undefined;
+    if (directStopId) {
+      const target = this.myAgents.find(agent => agent.id === directStopId
+        && channel.memberIds.includes(agent.id)
+        && agent.lifecycle !== "paused" && agent.lifecycle !== "disabled"
+        && mayDriveAgent(message.authorId, agent));
+      if (!target) return;
+      const stopped = this.stopAgent(target.id);
+      this.agentSend(target.id, channel.id, stopped > 0
+        ? `🛑 Stopping — pulling the plug on what I'm doing now.`
+        : `There was nothing running to stop — I'm not working on anything right now.`,
+        { ...(thread ? { replyTo: thread } : {}) });
+      return;
+    }
     if (isBraked(history, this.brake)) {
       for (const a of this.myAgents.filter(a => channel.memberIds.includes(a.id))) {
         this.setStatus(a.id, "braked");
@@ -1029,6 +1053,7 @@ export class Engine {
         const needsApproval = approvalsFor(agent).background || needsApprovalToRun(agent);
         this.sendFrame({
           type: "createTask", agentId: agent.id, channelId: channel.id, title,
+          sourceMessageId: message.id,
           // the person who TYPED it, not the account this engine runs as — a
           // friend's job must stay their job in Tasks and in the activity log
           requesterId: message.authorId,

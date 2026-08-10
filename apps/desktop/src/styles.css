@@ -1035,6 +1035,9 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
   font-family:var(--body);font-size:14.5px;line-height:1.55;min-height:72px;max-height:240px;overflow-y:auto;color:var(--ink);
 }
 .liveturn summary{cursor:pointer;list-style:none;}.liveturn summary::-webkit-details-marker{display:none;}.liveturn:not([open]) .livenote{display:none;}.liveturn[open] .live-progress{margin-bottom:7px;}
+.turn-lifecycle .liveturn[data-turn-state="completed"] .pulse{background:var(--pine);}
+.turn-lifecycle .liveturn[data-turn-state="failed"] .pulse{background:var(--madder);}
+.turn-lifecycle .liveturn[data-turn-state="cancelled"] .pulse{background:var(--ink-3);}
 .composer.threadcomposer textarea{min-height:48px;max-height:180px;}
 .composer textarea::placeholder{color:var(--ink-3);}
 .composer .tools{display:flex;align-items:center;gap:8px;margin-top:9px;flex-wrap:nowrap;min-width:0;}

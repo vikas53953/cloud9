@@ -92,6 +92,10 @@ import { AgentReceipts, useAgentReceipts } from "./receipts.js";
 // drawn by `RunSteps` below, the same renderer the stored record uses.
 import { useLiveSteps, useLiveWorkByAgent } from "./livesteps.js";
 import { useResponsePreviews } from "./responsestream.js";
+import {
+  taskForSourceMessage, turnLifecycleSentence, turnLifecycleState, turnLifecycleStoppable,
+  type TurnLifecycleState,
+} from "./turnlifecycle.js";
 import { chatDraftKey, clearChatDraft, loadChatDraft, saveChatDraft, type ChatDraftScope } from "./chatdrafts.js";
 import {
   abilitiesOn, abilityWords, MARKET_CATEGORIES, MARKET_TEMPLATES, MarketTemplate,
@@ -4545,6 +4549,11 @@ function findAsk(messages: Message[], i: number, agent: Message): Message | unde
   return undefined;
 }
 
+/** A durable task is shown only beneath its exact source message and member agent. */
+function taskForMessage(message: Message, tasks: readonly Task[], agents: readonly AgentDef[]): Task | undefined {
+  return taskForSourceMessage(message, tasks, new Set(agents.map(agent => agent.id)));
+}
+
 /* ---- the structured answer card ----
  * An agent's answer is text. When that text really does carry a run of
  * labelled facts — "Device: FRN-SW-01" and friends — the app sets them as a
@@ -4720,54 +4729,86 @@ function RunSteps({ steps, truncated }: {
       the lasting answer. Reload mid-turn and the preview is gone — nothing is
       lost, because it was never the record.                                  */
 
+const TURN_LIFECYCLE_LINGER_MS = 8_000;
+
 /**
  * The live steps for one message's turn, one block per agent working on it.
  *
  * `agents` is passed IN rather than read from the client, for the same reason
  * `AgentReceipts` does it: one direction of import, and no cycle.
  */
-function LiveWork({ messageId, agents, channelId }: {
+function LiveWork({ messageId, agents, channelId, task }: {
   messageId: ID; agents: readonly AgentDef[];
-  channelId?: ID;
+  channelId?: ID; task?: Task;
 }): React.JSX.Element | null {
   const stepRows = useLiveSteps(messageId);
   const receipts = useAgentReceipts(messageId);
-  /* A receipt means this exact agent accepted this exact turn. Until the first
-     public tool/activity step arrives it is the only honest evidence we have:
-     show a compact working state and Stop, never invent a tool or a thought. */
-  const stepAgents = new Set(stepRows.map(row => row.agentId));
-  const rows = [
-    ...stepRows.map(row => ({ ...row, stoppable: true })),
-    ...receipts
-      .filter(receipt => receipt.stage !== "verdict" && !stepAgents.has(receipt.agentId))
-      .map(receipt => ({
-        agentId: receipt.agentId, steps: [], startedAt: receipt.at,
-        /* Receipts arrive before the engine registers its provider stop scope.
-           They are presence only; a live-step frame is the first signal that
-           necessarily came from inside that registered scope. */
-        stoppable: false,
-      })),
-  ];
+  const previews = useResponsePreviews(messageId);
+  /* A receipt, public step, response preview, or exact background task is real
+     evidence. Raw agent presence is intentionally absent from this join. */
+  const rows = useMemo(() => {
+    const byAgent = new Map<ID, { steps: readonly RunStep[]; startedAt: number; signalAt: number }>();
+    for (const row of stepRows) {
+      byAgent.set(row.agentId, { steps: row.steps, startedAt: row.startedAt, signalAt: row.startedAt });
+    }
+    for (const receipt of receipts) {
+      const prior = byAgent.get(receipt.agentId);
+      const preview = previews.find(item => item.agentId === receipt.agentId);
+      byAgent.set(receipt.agentId, {
+        steps: prior?.steps ?? [], startedAt: prior?.startedAt ?? receipt.at,
+        signalAt: Math.max(prior?.signalAt ?? 0, receipt.at, preview?.lastAt ?? 0),
+      });
+    }
+    if (task) {
+      const prior = byAgent.get(task.agentId);
+      const preview = previews.find(item => item.agentId === task.agentId);
+      byAgent.set(task.agentId, {
+        steps: prior?.steps ?? [], startedAt: prior?.startedAt ?? task.updatedAt,
+        signalAt: Math.max(prior?.signalAt ?? 0, task.updatedAt, preview?.lastAt ?? 0),
+      });
+    }
+    return [...byAgent].flatMap(([agentId, evidence]) => {
+      if (!agents.some(agent => agent.id === agentId)) return [];
+      const receipt = receipts.find(item => item.agentId === agentId);
+      const preview = previews.find(item => item.agentId === agentId);
+      const state = turnLifecycleState({
+        taskStatus: task?.agentId === agentId ? task.status : undefined,
+        receipt, steps: evidence.steps, response: preview?.status,
+      });
+      if (!state) return [];
+      return [{ agentId, state, steps: evidence.steps, stoppable: turnLifecycleStoppable({ steps: evidence.steps }),
+        startedAt: evidence.startedAt, signalAt: evidence.signalAt }];
+    });
+  }, [stepRows, receipts, previews, task, agents]);
   const [now, setNow] = useState(() => Date.now());
   const [shown, setShown] = useState(false);
+  const visibleRows = useMemo(() => rows.filter(row => {
+    const terminal = row.state === "completed" || row.state === "failed" || row.state === "cancelled";
+    return !terminal || now - row.signalAt < TURN_LIFECYCLE_LINGER_MS;
+  }), [rows, now]);
   useEffect(() => {
-    if (rows.length === 0) return;
+    if (visibleRows.length === 0) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [rows.length]);
+  }, [visibleRows.length]);
   useEffect(() => {
-    if (rows.length === 0) { setShown(false); return; }
+    if (visibleRows.length === 0) { setShown(false); return; }
     const timer = window.setTimeout(() => setShown(true), 650);
     return () => window.clearTimeout(timer);
-  }, [rows.length, messageId]);
-  if (rows.length === 0 || !shown) return null;
+  }, [visibleRows.length, messageId]);
+  if (visibleRows.length === 0 || !shown) return null;
   return (
-    <div className="livework" data-machine="yes" data-msg={messageId}>
-      {rows.map(row => {
-        const name = agents.find(a => a.id === row.agentId)?.name ?? "An agent";
+    <div className="livework turn-lifecycle" data-machine="yes" data-msg={messageId}
+      aria-label="Agent turn activity">
+      {visibleRows.map(row => {
+        const agent = agents.find(a => a.id === row.agentId);
+        if (!agent) return null;
+        const name = agent.name;
+        const sentence = turnLifecycleSentence(name, row.state);
+        const terminal = row.state === "completed" || row.state === "failed" || row.state === "cancelled";
         return (
           <details key={row.agentId} className="liveturn" data-agent={row.agentId}
-            data-live-steps={row.steps.length}>
+            data-turn-state={row.state} data-live-steps={row.steps.length}>
             <summary className="live-progress" data-live-progress="true">
               <div className="live-progress-rail" aria-hidden="true">
                 {row.steps.length > 0
@@ -4778,26 +4819,16 @@ function LiveWork({ messageId, agents, channelId }: {
                 <div className="live-meta">
                   <p className="livehd">
               <span className="pulse" aria-hidden="true" />
-              {name} is working — here's what it's done so far
+              <span data-turn-state-label={row.state}>{sentence}</span>
             </p>
-                  <span className="live-elapsed" aria-label={`Working elapsed ${elapsed(now - row.startedAt)}`}>
-                    Working for {elapsed(now - row.startedAt)}
-                  </span>
-                  {row.stoppable === true && (
-                    <button className="btn small ghost stopnow" data-stop-agent={row.agentId}
-                      type="button" disabled={!channelId}
-                      title={`Stop ${name} and spend nothing more on this`}
-                      onClick={() => {
-                        if (!channelId) return;
-                        /* Do not claim “Stopping” from transport acceptance:
-                           the existing !stop path reports its own authoritative
-                           engine acknowledgement, while this live row remains
-                           the only proven stoppable scope. */
-                        client.send({
-                          type: "send", channelId, text: `@${name} !stop`,
-                        });
-                      }}>Stop</button>
-                  )}
+                  {!terminal && <span className="live-elapsed" aria-label={`Working elapsed ${elapsed(Math.max(0, now - row.startedAt))}`}>
+                    Working for {elapsed(Math.max(0, now - row.startedAt))}
+                  </span>}
+                  {!terminal && row.stoppable && <button className="btn small ghost stopnow" data-stop-agent={row.agentId}
+                    type="button" disabled={!channelId} title={`Stop ${name} and spend nothing more on this`}
+                    onClick={() => channelId && client.send({
+                      type: "send", channelId, text: `!stop ${row.agentId}`,
+                     })}>Stop</button>}
                 </div>
               </div>
             </summary>
@@ -4806,7 +4837,9 @@ function LiveWork({ messageId, agents, channelId }: {
                 pays: this is live, and it is not the record. The record lands
                 under the reply when the turn ends. */}
             <p className="livenote">
-              Live from the app as it works. The full record appears when it finishes.
+              {terminal
+                ? "This public turn card will clear shortly."
+                : "Live from the app as it works. The full record appears when it finishes."}
             </p>
           </details>
         );
@@ -4819,12 +4852,13 @@ function LiveWork({ messageId, agents, channelId }: {
 function ResponsePreview({ messageId, agents }: {
   messageId: ID; agents: readonly AgentDef[];
 }): React.JSX.Element | null {
-  const previews = useResponsePreviews(messageId);
+  const previews = useResponsePreviews(messageId)
+    .filter(preview => agents.some(agent => agent.id === preview.agentId));
   if (previews.length === 0) return null;
   return (
     <div className="response-preview" data-response-preview="true" data-msg={messageId}>
       {previews.map(preview => {
-        const name = agents.find(agent => agent.id === preview.agentId)?.name ?? "An agent";
+        const name = agents.find(agent => agent.id === preview.agentId)!.name;
         return (
           <div key={`${preview.agentId}:${preview.turnId}`} className="response-preview-bubble"
             data-response-state={preview.status}>
@@ -5771,8 +5805,16 @@ function ChatView({
   }, [world.agents]);
 
   /** the finished job behind a "📦 Task done" message — see `doneRunIdsFor` */
-  const doneRunIds = useMemo(
-    () => doneRunIdsFor(messages, world.tasks), [messages, world.tasks]);
+   const doneRunIds = useMemo(
+     () => doneRunIdsFor(messages, world.tasks), [messages, world.tasks]);
+  const taskByMessage = useMemo(() => {
+    const map = new Map<ID, Task>();
+    for (const message of messages) {
+      const task = taskForMessage(message, world.tasks, agents);
+      if (task) map.set(message.id, task);
+    }
+    return map;
+  }, [messages, world.tasks, agents]);
 
   /* Held still between renders, or every bubble redraws on every frame — see
      the contract on `MessageRow`. */
@@ -6021,12 +6063,13 @@ function ChatView({
               <div className="newline" role="separator"><span className="rule" /><span className="tag">New</span></div>
             )}
             <MessageRow m={r.m} cont={r.cont} ask={r.ask}
-              me={world.me} agents={world.agents} users={world.users}
+              me={world.me} agents={agents} users={world.users}
               delivery={r.m.authorKind === "human" && r.m.authorId === world.me?.id
                 ? world.messageStatuses[r.m.id] : undefined}
               channelId={channel.id}
               answered={r.m.replyTo ? byId.get(r.m.replyTo) : undefined}
               doneRunId={doneRunIds.get(r.m.id)}
+              task={taskByMessage.get(r.m.id)}
               agent={agentOf.get(r.m.authorId)}
               working={world.agentStatus[r.m.authorId] === "working"}
               /* Reading an archived room still works all the way down: the
@@ -6900,7 +6943,7 @@ function DeliveryStatus({ status }: { status?: MessageStatus }): React.JSX.Eleme
 }
 
 const MessageRow = React.memo(function MessageRow({
-  m, cont, ask, me, agents, users, answered, doneRunId,
+  m, cont, ask, me, agents, users, answered, doneRunId, task,
   agent, working, onOpenThread, onInlineReply, onGoToMessage,
   inOpenThread, litUp, variant, archived, newSince, threadSeen, saved, savedPending, channelId,
   pinned, pinPending, canManagePins, delivery,
@@ -6922,6 +6965,8 @@ const MessageRow = React.memo(function MessageRow({
   answered?: Message;
   /** the finished job behind a "📦 Task done" message, matched by the parent */
   doneRunId?: string;
+  /** a background task joined to this exact asking message */
+  task?: Task;
   agent?: AgentDef; working?: boolean;
   /** the read marker this conversation was opened on — 0/absent means "unknown,
    *  so claim nothing". Only used to say whether a thread has moved since. */
@@ -7275,7 +7320,7 @@ const MessageRow = React.memo(function MessageRow({
           {!deleted && <ResponsePreview messageId={m.id} agents={agents} />}
           {/* the steps arriving while the turn runs — drawn on the message that
               ASKED, which is where the 👀 already is, and gone when it ends */}
-          {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} />}
+          {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} task={task} />}
           {threadLine}
         </div>
         {actions}
@@ -7359,7 +7404,7 @@ const MessageRow = React.memo(function MessageRow({
         {!deleted && <AgentReceipts messageId={m.id} agents={agents} />}
         {!deleted && <ResponsePreview messageId={m.id} agents={agents} />}
         {/* same, on a full message — see the note on the continuation above */}
-        {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} />}
+        {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} task={task} />}
         {threadLine}
       </div>
       {actions}
@@ -7383,6 +7428,9 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
   const panelRef = useRef<HTMLElement>(null);
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const held = world.threads[rootId];
+  const channelAgents = useMemo(() =>
+    channel.memberIds.map(id => world.agents.find(agent => agent.id === id)).filter(Boolean) as AgentDef[],
+    [channel.memberIds, world.agents]);
   // the root may also be on screen in the conversation behind this panel
   const fromChannel = (world.messages[channel.id] ?? []).find(m => m.id === rootId);
   const messages = held ?? (fromChannel ? [fromChannel] : []);
@@ -7396,11 +7444,19 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
     for (const a of world.agents) map.set(a.id, a);
     return map;
   }, [world.agents]);
-  /* A "📦 Task done" reply shows its run card inside a thread too — the same
-     match the conversation makes, made here, so moving the work out of the
-     bubble did not quietly take the card away from this panel. */
-  const doneRunIds = useMemo(
-    () => doneRunIdsFor(messages, world.tasks), [messages, world.tasks]);
+   /* A "📦 Task done" reply shows its run card inside a thread too — the same
+      match the conversation makes, made here, so moving the work out of the
+      bubble did not quietly take the card away from this panel. */
+   const doneRunIds = useMemo(
+     () => doneRunIdsFor(messages, world.tasks), [messages, world.tasks]);
+   const taskByMessage = useMemo(() => {
+     const map = new Map<ID, Task>();
+     for (const message of messages) {
+       const task = taskForMessage(message, world.tasks, channelAgents);
+       if (task) map.set(message.id, task);
+     }
+     return map;
+    }, [messages, world.tasks, channelAgents]);
 
   /* THE SAME OWNER AS THE ROOM'S OWN LIST, not a second answer to the same
      question. A thread is a conversation too: a reply typed here, and a reply
@@ -7449,12 +7505,13 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
         {!root && <div className="d-empty">Fetching this thread…</div>}
         {root && (
           <MessageRow m={root} variant="thread" archived={!!channel.archivedAt}
-            me={world.me} agents={world.agents} users={world.users}
+            me={world.me} agents={channelAgents} users={world.users}
             delivery={root.authorKind === "human" && root.authorId === world.me?.id
               ? world.messageStatuses[root.id] : undefined}
-            channelId={channel.id}
-            doneRunId={doneRunIds.get(root.id)}
-            agent={agentOf.get(root.authorId)} />
+             channelId={channel.id}
+             doneRunId={doneRunIds.get(root.id)}
+             task={taskByMessage.get(root.id)}
+             agent={agentOf.get(root.authorId)} />
         )}
         {root && (
           <div className="threadcount">
@@ -7465,12 +7522,13 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
         )}
         {replies.map(m => (
           <MessageRow key={m.id} m={m} variant="thread" archived={!!channel.archivedAt}
-            me={world.me} agents={world.agents} users={world.users}
+            me={world.me} agents={channelAgents} users={world.users}
             delivery={m.authorKind === "human" && m.authorId === world.me?.id
               ? world.messageStatuses[m.id] : undefined}
-            channelId={channel.id}
-            doneRunId={doneRunIds.get(m.id)}
-            agent={agentOf.get(m.authorId)}
+             channelId={channel.id}
+             doneRunId={doneRunIds.get(m.id)}
+             task={taskByMessage.get(m.id)}
+             agent={agentOf.get(m.authorId)}
             working={world.agentStatus[m.authorId] === "working"} />
         ))}
       </div>

@@ -35,7 +35,7 @@ import {
 } from "@cloud9/shared";
 // Semantic receipts live in their own tiny ephemeral store, on purpose — see
 // the header of that file. This is the only line of this module that knows.
-import { noteReceipt } from "./receipts.js";
+import { clearReceipts, noteReceipt } from "./receipts.js";
 // …and so do live steps, for the same reasons, in their own file.
 import { clearLiveSteps, noteLiveSteps } from "./livesteps.js";
 import { clearAgentResponses, noteAgentMessage, noteAgentResponse } from "./responsestream.js";
@@ -958,6 +958,7 @@ export class RelayClient {
     // Public activity belongs to one live socket epoch. A reconnect has no
     // authority to keep showing a previous engine's in-flight preview.
     clearLiveSteps();
+    clearReceipts();
     clearAgentResponses();
     this.clearAllUploads();
     this.ws?.close();
@@ -975,6 +976,7 @@ export class RelayClient {
       // belongs to a connection nobody is on any more.
       if (this.ws !== ws) return;
       clearLiveSteps();
+      clearReceipts();
       clearAgentResponses();
       this.clearAllUploads();
       this.clearHumanTyping(undefined, undefined, false);
@@ -4374,6 +4376,7 @@ askPolls(projectId: ID): void {
         // The snapshot is durable state, never a continuation of a transient
         // tool stream. Begin each admitted session with a quiet activity cache.
         clearLiveSteps();
+        clearReceipts();
         clearAgentResponses();
         this.clearHumanTyping(undefined, undefined, false);
         w.humanTyping = {};
@@ -4681,6 +4684,15 @@ askPolls(projectId: ID): void {
         break;
       case "channel": {
         const i = w.channels.findIndex(c => c.id === frame.channel.id);
+        const previousChannel = i >= 0 ? w.channels[i] : undefined;
+        /* A member update can remove one agent while the authenticated user
+           remains in the room. Evict that agent's ephemeral rows before stale
+           signals can be rendered by any inline surface. */
+        const removedAgentIds = new Set<ID>(
+          (previousChannel?.memberIds ?? []).filter(memberId =>
+            !frame.channel.memberIds.includes(memberId)
+            && w.agents.some(agent => agent.id === memberId)),
+        );
         if (i >= 0) w.channels[i] = frame.channel; else w.channels.push(frame.channel);
         w.channels = [...w.channels];
         // A room arriving for the FIRST time is a room we just joined, so the
@@ -4693,12 +4705,19 @@ askPolls(projectId: ID): void {
             w.agents.some(agent => agent.id === memberId && agent.ownerId === w.me?.id));
         if (!stillVisible) {
           this.clearUploadsFor(frame.channel.id);
+          clearLiveSteps(row => row.channelId === frame.channel.id);
+          clearReceipts(row => row.channelId === frame.channel.id);
+          clearAgentResponses(row => row.channelId === frame.channel.id);
           w.savedMessages = w.savedMessages.map(entry => entry.channelId === frame.channel.id
             ? { ...entry, state: "inaccessible", message: undefined }
             : entry);
           const pins = w.channelPins[frame.channel.id];
           if (pins) w.channelPins = { ...w.channelPins,
             [frame.channel.id]: { ...pins, entries: pins.entries.map(entry => ({ ...entry, state: "inaccessible", message: undefined })) } };
+        } else if (removedAgentIds.size > 0) {
+          clearLiveSteps(row => row.channelId === frame.channel.id && removedAgentIds.has(row.agentId));
+          clearReceipts(row => row.channelId === frame.channel.id && removedAgentIds.has(row.agentId));
+          clearAgentResponses(row => row.channelId === frame.channel.id && removedAgentIds.has(row.agentId));
         }
         break;
       }
@@ -4733,6 +4752,8 @@ askPolls(projectId: ID): void {
         // window could have been drawing; do not leave text visible until the
         // stale timer happens to fire.
         clearAgentResponses(row => row.agentId === frame.agentId);
+        clearLiveSteps(row => row.agentId === frame.agentId);
+        clearReceipts(row => row.agentId === frame.agentId);
         this.forgetRunsOf(frame.agentId);
         break;
       }
@@ -4909,6 +4930,8 @@ askPolls(projectId: ID): void {
           this.clearAllUploads();
           w.authFailed = true;
           clearAgentResponses();
+          clearLiveSteps();
+          clearReceipts();
           w.lastError = { text: "you were removed from this Cloud9", ts: Date.now() };
           break;
         }
@@ -4917,6 +4940,9 @@ askPolls(projectId: ID): void {
         w.channels = w.channels.filter(
           c => !(c.kind === "dm" && c.memberIds.includes(frame.userId)));
         const removedAgentIds = new Set(w.agents.filter(agent => agent.ownerId === frame.userId).map(agent => agent.id));
+        clearAgentResponses(row => removedAgentIds.has(row.agentId));
+        clearLiveSteps(row => removedAgentIds.has(row.agentId));
+        clearReceipts(row => removedAgentIds.has(row.agentId));
         w.channelMemoryPolicies = w.channelMemoryPolicies.filter(policy => !removedAgentIds.has(policy.agentId));
         break;
       }
@@ -5172,6 +5198,8 @@ askPolls(projectId: ID): void {
         w.messages = restMessages;
         this.clearHumanTyping(frame.channelId, undefined, false);
         clearAgentResponses(row => row.channelId === frame.channelId);
+        clearLiveSteps(row => row.channelId === frame.channelId);
+        clearReceipts(row => row.channelId === frame.channelId);
         const { [frame.channelId]: gonePage, ...restPages } = w.pages;
         void gonePage;
         w.pages = restPages;
