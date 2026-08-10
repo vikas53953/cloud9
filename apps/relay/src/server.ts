@@ -26,6 +26,7 @@ import {
   redactDeletedPulseUpdate, validateEngineeringPulseDraft,
   RepoChoice, REPO_LIST_LIMITS, validateRepoChoice, validateLocalFolder,
   RunRecord, RUN_RETENTION, APPROVAL_LIMITS,
+  ThreadSummaryRequest, ThreadSummaryResult, THREAD_SUMMARY_LIMITS,
   RunCheckpoint, RecoveryRequest, RecoveryReceipt, recoveryDecision,
   compareRecoveryRequest, compareRuns, recoveryRequestFingerprint,
   buildRunCheckpoint, sanitizeRecoveryAsk,
@@ -57,6 +58,7 @@ import {
   validateMessageText, validateProjectItem, validateProjectText, validateReactionEmoji, validateHookInput,
   validateSocialLinks,
   validateName, validateRepo, validateRunRecord, validateTaskSummary, validateWorkflow,
+  validateThreadSummaryRequest, validateThreadSummaryResult,
   HuddleSession, HuddleNote, HuddleParticipant, HuddleLink, HuddleNoteKind, validateHuddleText, validateHuddleLinks,
   ForumTopic, ForumReply, ForumLink, ForumStatus,
   validateForumText, validateForumTags, validateForumLinks,
@@ -330,6 +332,9 @@ export class Relay {
    * preview; they are not history or durable response content.
    */
   private responseStreamTombstones = new Map<string, number>();
+  /** Explicit summary requests/results, bounded and process-local. */
+  private threadSummaryResults = new Map<string, ThreadSummaryResult>();
+  private threadSummaryPending = new Map<string, ThreadSummaryRequest>();
   private closing = false;
 
   /**
@@ -478,6 +483,11 @@ export class Relay {
     for (const t of this.looking.values()) clearTimeout(t);
     this.looking.clear();
     this.clearResponseStreams();
+    // No engine or requester can receive a late answer after shutdown. Drop
+    // both ledgers before closing sockets so a restarted relay cannot accept a
+    // stale provider result for an old request.
+    this.threadSummaryPending.clear();
+    this.threadSummaryResults.clear();
     for (const c of this.conns) c.ws.close();
     this.wss.close();
     this.server.close();
@@ -532,6 +542,18 @@ export class Relay {
       if (!conn) return;
       const closed = conn;
       this.conns.delete(conn);
+      // Summary requests belong to the requester identity, not to one
+      // particular desktop socket.  A mobile client is just as authoritative
+      // a requester as the desktop renderer; settle only after the person's
+      // last accepted human client has gone away.  (Engine sockets have their
+      // own lifecycle below and must not count as requester presence.)
+      const stillHasRequesterClient = [...this.conns].some(c =>
+        c.userId === closed.userId && c.client !== "engine");
+      if (!stillHasRequesterClient && closed.client !== "engine") {
+        this.settleThreadSummaries(request => request.requesterId === closed.userId,
+          "unavailable", "the requester disconnected before the summary was ready");
+      }
+      const stillHasDesktop = [...this.conns].some(c => c.userId === closed.userId && c.client === "desktop");
       // A person may have the same room open on another desktop or mobile
       // client. Remove only this socket's signal; the shared row ends once its
       // final live source leaves.
@@ -567,6 +589,11 @@ export class Relay {
         // for the same owner is a separate host, not permission to continue a
         // turn whose source process has disappeared.
         this.clearResponseStreams(stream => stream.source === closed.ws);
+        if (!this.hasEngine(closed.userId)) {
+          this.settleThreadSummaries(request => this.store.agents()
+            .some(agent => agent.id === request.agentId && agent.ownerId === closed.userId),
+          "unavailable", "the agent engine disconnected before the summary was ready");
+        }
       }
       if (closed.client === "engine" && !this.hasEngine(closed.userId)) {
         delete this.harness[closed.userId];
@@ -3834,6 +3861,173 @@ private viewProject(project: Project, viewerId?: ID): Project {
     }
   }
 
+  private threadSummaryKey(requesterId: ID, requestId: ID): string {
+    return `${requesterId}:${requestId}`;
+  }
+
+  /** Keep terminal outcomes for late-result rejection and honest retries. */
+  private settleThreadSummary(
+    key: string, request: ThreadSummaryRequest,
+    status: Extract<ThreadSummaryResult["status"], "refused" | "unavailable">,
+    error: string,
+  ): void {
+    this.threadSummaryPending.delete(key);
+    const result: ThreadSummaryResult = {
+      ...request, status, updatedAt: Date.now(), decisions: [], openQuestions: [], nextActions: [], sources: [],
+      error: redactForSharing(error, THREAD_SUMMARY_LIMITS.error),
+    };
+    this.threadSummaryResults.set(key, result);
+    while (this.threadSummaryResults.size > THREAD_SUMMARY_LIMITS.pendingCount) {
+      this.threadSummaryResults.delete(this.threadSummaryResults.keys().next().value!);
+    }
+    // This contains no provider facts or source labels, so it is safe to tell
+    // every still-open window of the requester even after room access changed.
+    this.toUser(request.requesterId, { type: "threadSummary", summary: result, requestId: request.requestId });
+  }
+
+  private settleThreadSummaries(
+    predicate: (request: ThreadSummaryRequest) => boolean,
+    status: Extract<ThreadSummaryResult["status"], "refused" | "unavailable">,
+    error: string,
+  ): void {
+    for (const [key, request] of [...this.threadSummaryPending.entries()]) {
+      if (predicate(request)) this.settleThreadSummary(key, request, status, error);
+    }
+  }
+
+  /** Provider source labels are untrusted; compare only bounded factual fields. */
+  private threadSummaryFingerprint(result: ThreadSummaryResult): string {
+    return JSON.stringify({
+      requestId: result.requestId, channelId: result.channelId, threadId: result.threadId,
+      sourceMessageId: result.sourceMessageId, agentId: result.agentId, requesterId: result.requesterId,
+      status: result.status, decisions: result.decisions, openQuestions: result.openQuestions,
+      nextActions: result.nextActions, sources: result.sources.map(source => source.messageId),
+      runId: result.runId, error: result.error,
+    });
+  }
+
+  /** Validate current source/thread access before asking an owner's engine. */
+  private requestThreadSummary(conn: Conn, frame: Extract<ClientFrame, { type: "threadSummary" }>): void {
+    if (conn.client === "engine") throw new Error("only a person can ask for a thread summary");
+    const request: ThreadSummaryRequest = {
+      requestId: frame.requestId ?? newId("ts"), channelId: frame.channelId,
+      threadId: frame.threadId, sourceMessageId: frame.sourceMessageId,
+      agentId: frame.agentId, requesterId: conn.userId,
+    };
+    const badRequest = validateThreadSummaryRequest(request);
+    if (badRequest) throw new Error(badRequest);
+    const channel = this.channelFor(conn.userId, request.channelId);
+    const source = this.messageFor(conn.userId, request.sourceMessageId);
+    if (source.deletedAt) throw new Error("that summary source was deleted");
+    if (source.channelId !== channel.id || source.id !== request.threadId || source.replyTo) {
+      throw new Error("that summary source is not the thread root");
+    }
+    const agent = this.store.agents().find(candidate => candidate.id === request.agentId);
+    if (!agent || !channel.memberIds.includes(agent.id)) throw new Error("that agent is not in this thread");
+    if (!mayDriveAgent(conn.userId, agent)) throw new Error("you may not ask that agent for a summary");
+    const key = this.threadSummaryKey(conn.userId, request.requestId);
+    const prior = this.threadSummaryResults.get(key);
+    if (prior) {
+      send(conn.ws, { type: "threadSummary", summary: prior, requestId: frame.requestId });
+      return;
+    }
+    const existing = this.threadSummaryPending.get(key);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(request)) throw new Error("that summary request id was already used");
+      send(conn.ws, {
+        type: "threadSummary", summary: {
+          ...request, status: "pending", updatedAt: Date.now(), decisions: [], openQuestions: [], nextActions: [], sources: [],
+        }, requestId: frame.requestId,
+      });
+      return;
+    }
+    if (this.threadSummaryPending.size >= THREAD_SUMMARY_LIMITS.pendingCount) {
+      throw new Error("too many thread summaries are pending; wait for one to finish and try again");
+    }
+    this.threadSummaryPending.set(key, request);
+    send(conn.ws, {
+      type: "threadSummary", summary: {
+        ...request, status: "pending", updatedAt: Date.now(), decisions: [], openQuestions: [], nextActions: [], sources: [],
+      }, requestId: frame.requestId,
+    });
+    this.toEngines(agent.ownerId, { type: "threadSummaryRequest", request });
+  }
+
+  /** Accept only an owner's engine result, then re-authorize every source. */
+  private recordThreadSummary(conn: Conn, result: ThreadSummaryResult): void {
+    if (conn.client !== "engine") throw new Error("only the engine reports a thread summary");
+    // The frame is untrusted at runtime even though the TypeScript signature is
+    // narrow.  Recover the only identity fields we may use to find a pending
+    // request before validating the rest, so malformed provider output cannot
+    // strand that request forever.
+    const candidate = (result && typeof result === "object" ? result : {}) as Partial<ThreadSummaryResult>;
+    const candidateRequestId = typeof candidate.requestId === "string" ? candidate.requestId : undefined;
+    const candidateRequesterId = typeof candidate.requesterId === "string" ? candidate.requesterId : undefined;
+    const key = candidateRequestId && candidateRequesterId
+      ? this.threadSummaryKey(candidateRequesterId, candidateRequestId) : undefined;
+    const pending = key ? this.threadSummaryPending.get(key) : undefined;
+    const settleOnError = (error: unknown): void => {
+      if (!key || !pending || this.threadSummaryPending.get(key) !== pending) return;
+      const reason = error instanceof Error ? error.message : String(error);
+      this.settleThreadSummary(key, pending, "unavailable", `the thread summary became unavailable: ${reason}`);
+    };
+
+    try {
+      const bad = validateThreadSummaryResult(result);
+      if (bad) throw new Error(bad);
+      const agent = this.myAgent(conn.userId, result.agentId);
+      // Re-authorize the root and requester before even considering an
+      // idempotent replay. A previously accepted result must not resurrect a
+      // deleted/tombstoned source (or project through stale requester access).
+      const channel = this.channelFor(conn.userId, result.channelId);
+      const source = this.messageFor(conn.userId, result.sourceMessageId);
+      if (source.deletedAt) throw new Error("that summary source was deleted");
+      if (source.id !== result.threadId || source.channelId !== channel.id || source.replyTo) {
+        throw new Error("that summary source is no longer the thread root");
+      }
+      const requesterChannel = this.channelFor(result.requesterId, result.channelId);
+      const verifiedSources = result.sources.map(item => {
+        const message = this.messageFor(conn.userId, item.messageId);
+        if (message.deletedAt) throw new Error("that summary cites a deleted message");
+        if (message.channelId !== channel.id || !(message.id === result.threadId || message.replyTo === result.threadId)) {
+          throw new Error("that summary cites a message outside the requested thread");
+        }
+        return { messageId: message.id, label: redactForSharing(`${message.authorName}: ${message.text}`, THREAD_SUMMARY_LIMITS.sourceLabel) };
+      });
+      const prior = this.threadSummaryResults.get(key!);
+      if (prior) {
+        if (this.threadSummaryFingerprint(prior) !== this.threadSummaryFingerprint(result)) {
+          throw new Error("that summary result conflicts with the accepted request");
+        }
+        this.toUser(result.requesterId, { type: "threadSummary", summary: prior, requestId: result.requestId });
+        return;
+      }
+      if (!pending || JSON.stringify(pending) !== JSON.stringify({
+        requestId: result.requestId, channelId: result.channelId, threadId: result.threadId,
+        sourceMessageId: result.sourceMessageId, agentId: result.agentId, requesterId: result.requesterId,
+      })) throw new Error("that summary result has no pending request");
+      const safe: ThreadSummaryResult = {
+        ...result,
+        decisions: result.decisions.map(value => redactForSharing(value, THREAD_SUMMARY_LIMITS.itemChars)),
+        openQuestions: result.openQuestions.map(value => redactForSharing(value, THREAD_SUMMARY_LIMITS.itemChars)),
+        nextActions: result.nextActions.map(value => redactForSharing(value, THREAD_SUMMARY_LIMITS.itemChars)),
+        sources: verifiedSources,
+      };
+      const safeBad = validateThreadSummaryResult(safe);
+      if (safeBad) throw new Error(safeBad);
+      this.threadSummaryPending.delete(key!);
+      this.threadSummaryResults.set(key!, safe);
+      while (this.threadSummaryResults.size > 128) this.threadSummaryResults.delete(this.threadSummaryResults.keys().next().value!);
+      // The lookup above is deliberately retained as a proof of current
+      // requester access; it is not provider-controlled projection data.
+      void agent; void requesterChannel;
+      this.toChannel(channel, { type: "threadSummary", summary: safe, requestId: result.requestId });
+    } catch (error) {
+      settleOnError(error);
+      throw error;
+    }
+  }
+
   private handleFrame(conn: Conn, frame: ClientFrame): void {
     switch (frame.type) {
       case "typing":
@@ -3896,6 +4090,9 @@ private viewProject(project: Project, viewerId?: ID): Project {
         });
         break;
       }
+      case "threadSummary":
+        this.requestThreadSummary(conn, frame);
+        break;
       case "send": {
         const user = this.store.users().find(u => u.id === conn.userId)!;
         const clientMessageId = frame.clientMessageId ?? frame.tempId ?? newId("cm");
@@ -4308,6 +4505,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
         if (frame.archived) {
           ch.archivedAt = Date.now();
           ch.archivedBy = conn.userId;
+          this.settleThreadSummaries(request => request.channelId === ch.id,
+            "unavailable", "the conversation was archived before the summary was ready");
           // An archived conversation is read-only. End any in-flight preview
           // rather than letting an engine continue projecting into a room that
           // no longer accepts durable agent messages.
@@ -4355,6 +4554,10 @@ private viewProject(project: Project, viewerId?: ID): Project {
         const artifactIds = this.artifactIdsInChannel(ch.id);
         const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         this.store.removeChannelMember(ch.id, conn.userId, conn.userId);
+        if (!this.visibleChannels(conn.userId).some(channel => channel.id === ch.id)) {
+          this.settleThreadSummaries(request => request.channelId === ch.id && request.requesterId === conn.userId,
+            "unavailable", "the requester no longer has access to this conversation");
+        }
         this.clearResponseStreams(stream => stream.ownerId === conn.userId && stream.channelId === ch.id);
         this.invalidateHuddlesForMember(conn.userId, ch.id);
         this.audit(conn, "member_removed", ch.id, `left ${ch.name}`);
@@ -4377,6 +4580,14 @@ private viewProject(project: Project, viewerId?: ID): Project {
         const beforeArtifacts = this.snapshotArtifactProjections(artifactIds);
         this.store.removeChannelMember(ch.id, frame.memberId, conn.userId);
         const removedAgent = this.store.agents().find(a => a.id === frame.memberId);
+        if (removedAgent) {
+          this.settleThreadSummaries(request => request.channelId === ch.id && request.agentId === removedAgent.id,
+            "unavailable", "the selected agent is no longer in this conversation");
+        }
+        if (!removedAgent && !this.visibleChannels(frame.memberId).some(channel => channel.id === ch.id)) {
+          this.settleThreadSummaries(request => request.channelId === ch.id && request.requesterId === frame.memberId,
+            "unavailable", "the requester no longer has access to this conversation");
+        }
         this.clearResponseStreams(stream => stream.channelId === ch.id
           && (stream.agentId === frame.memberId || (!!removedAgent && stream.ownerId === removedAgent.ownerId)));
         this.invalidateHuddlesForMember(frame.memberId, ch.id);
@@ -4528,6 +4739,8 @@ private viewProject(project: Project, viewerId?: ID): Project {
       }
       case "deleteAgent": {
         const existing = this.myAgent(conn.userId, frame.agentId);
+        this.settleThreadSummaries(request => request.agentId === existing.id,
+          "unavailable", "the selected agent was deleted before the summary was ready");
         // Deleting an agent also forgets its run rows. Re-project any durable
         // Canvas blocks that linked those runs so readers see the honest
         // unavailable state instead of a stale owner-only id forever.
@@ -4597,6 +4810,10 @@ private viewProject(project: Project, viewerId?: ID): Project {
         const target = this.store.user(frame.userId);
         if (!target) throw new Error("no such person");
         const theirAgents = this.store.agents().filter(a => a.ownerId === target.id);
+        const theirAgentIds = new Set(theirAgents.map(agent => agent.id));
+        this.settleThreadSummaries(request => request.requesterId === target.id
+          || theirAgentIds.has(request.agentId),
+        "unavailable", "the requester or selected agent is no longer available");
         this.clearResponseStreams(stream => stream.ownerId === target.id
           || theirAgents.some(agent => agent.id === stream.agentId));
         const affectedArtifacts = this.store.channels()
@@ -6858,6 +7075,9 @@ private viewProject(project: Project, viewerId?: ID): Project {
         break;
       }
       // ---- what an agent actually did (FR-TL-003) ----
+      case "threadSummaryResult":
+        this.recordThreadSummary(conn, frame.result);
+        break;
       case "runRecorded": {
         this.recordRun(conn, frame.record);
         break;

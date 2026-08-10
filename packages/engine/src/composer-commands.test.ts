@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AgentDef, ClientFrame, Message, WorldState } from "@cloud9/shared";
 import { Engine } from "./engine.js";
-import { ClaudeProvider, RespondInput } from "./provider.js";
+import { buildAgentPrompt, ClaudeProvider, RespondInput } from "./provider.js";
 import { tempDir } from "./tmp-for-tests.js";
 
 const OWNER = "u-owner";
@@ -14,9 +14,10 @@ const agent = (overrides: Partial<AgentDef> = {}): AgentDef => ({
 
 class CaptureProvider implements ClaudeProvider {
   inputs: RespondInput[] = [];
+  response = "done";
   async respond(input: RespondInput): Promise<string> {
     this.inputs.push(input);
-    return "done";
+    return this.response;
   }
 }
 
@@ -53,6 +54,45 @@ test("slash summarize and review become real provider turns", async () => {
   assert.equal(provider.inputs[1]?.reviewOnly, true);
   assert.match(provider.inputs[1]?.trigger ?? "", /read-only review/i);
   assert.ok(frames.some(f => f.type === "agentSend" && f.text === "done"));
+});
+
+test("an explicit thread summary is provider JSON only and emits a bounded result", async () => {
+  const provider = new CaptureProvider();
+  provider.response = JSON.stringify({
+    decisions: ["Ship Friday"], openQuestions: ["Migration plan"], nextActions: ["Confirm rollback"],
+  });
+  const { engine, frames, a } = setup(provider);
+  const root: Message = {
+    id: "m-summary-root", channelId: "c1", authorId: OWNER, authorName: "Owner",
+    authorKind: "human", text: "We should ship Friday", ts: Date.now(),
+  };
+  const reply: Message = {
+    id: "m-summary-reply", channelId: "c1", authorId: OWNER, authorName: "Owner",
+    authorKind: "human", text: "Migration needs a rollback", ts: Date.now() + 1, replyTo: root.id,
+  };
+  const unrelated: Message = {
+    id: "m-summary-unrelated", channelId: "c1", authorId: OWNER, authorName: "Owner",
+    authorKind: "human", text: "Unrelated private room chatter", ts: Date.now() + 2,
+  };
+  (engine as unknown as { history: Map<string, Message[]> }).history.set("c1", [root, reply, unrelated]);
+  (engine as unknown as { onFrame(frame: unknown): void }).onFrame({
+    type: "threadSummaryRequest",
+    request: {
+      requestId: "summary-engine-1", channelId: "c1", threadId: root.id,
+      sourceMessageId: root.id, agentId: a.id, requesterId: OWNER,
+    },
+  });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(provider.inputs[0]?.summaryOnly, true);
+  assert.match(buildAgentPrompt(a, provider.inputs[0]!), /ONLY one JSON object/i);
+  assert.match(provider.inputs[0]?.context ?? "", /We should ship Friday/);
+  assert.match(provider.inputs[0]?.context ?? "", /Migration needs a rollback/);
+  assert.doesNotMatch(provider.inputs[0]?.context ?? "", /Unrelated private room chatter/);
+  const result = frames.find((frame): frame is Extract<ClientFrame, { type: "threadSummaryResult" }> =>
+    frame.type === "threadSummaryResult");
+  assert.equal(result?.result.status, "ready");
+  assert.deepEqual(result?.result.decisions, ["Ship Friday"]);
+  assert.equal(result?.result.requestId, "summary-engine-1");
 });
 
 test("slash assign creates the existing durable task and rejects an off-room target", async () => {

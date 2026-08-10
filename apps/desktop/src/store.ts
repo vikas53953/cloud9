@@ -6,6 +6,7 @@ import {
   Attachment, ATTACHMENT_LIMITS, Channel, downloadContentType,
   ChatDraft, DraftAttachment, ChannelMemoryMode, ChannelMemoryPolicy,
   ChannelMember, ChannelSummary, ClientFrame, HarnessState, ID, isInlineViewable, Message,
+  ThreadSummaryResult, validateThreadSummaryResult,
   MemoryNote,
   NotificationInboxEntry,
   SavedMessageEntry, ChannelPinEntry,
@@ -378,6 +379,10 @@ export interface World {
   pages: Record<ID, Page>;
   /** one thread's messages, keyed by the id of the message that started it */
   threads: Record<ID, Message[]>;
+  /** Explicit, relay/provider-backed summaries keyed by their request id. */
+  threadSummaries: Record<ID, ThreadSummaryResult>;
+  /** Requests whose terminal summary result has not arrived yet. */
+  threadSummaryPending: Record<ID, true>;
   /**
    * Where this person has read up to, per conversation — from the RELAY, so it
    * follows them between machines. There is no browser copy of this any more.
@@ -796,7 +801,7 @@ export class RelayClient {
     savedRequestId: undefined, savedProblem: undefined, savedNotice: undefined,
     savedRevision: 0, savedHasMore: false, savedPending: [], savedNew: false,
     channelPins: {}, channelPinPending: [],
-    pages: {}, threads: {}, unread: {}, prepended: 0,
+    pages: {}, threads: {}, threadSummaries: {}, threadSummaryPending: {}, unread: {}, prepended: 0,
     uploads: {}, drafts: {}, files: {}, directory: { asked: false, channels: [] }, members: {},
     runs: {}, runLists: {}, runsGone: {}, runRecovery: {}, runComparisons: {}, runComparisonProblems: {},
     // SPENDING BLOCK (2026-08-07): never looked yet — see the note on the field
@@ -2655,6 +2660,53 @@ export class RelayClient {
   /** Ask who is in one room. Answered with roles, join dates and who let them in. */
   askMembers(channelId: ID): void {
     this.send({ type: "channelMembers", channelId });
+  }
+
+  /**
+   * Ask the relay/provider for a summary of one thread. This is deliberately
+   * an explicit action: no mount/reconnect path calls it and no local NLP is
+   * attempted when the provider is unavailable.
+   */
+  requestThreadSummary(
+    channelId: ID, threadId: ID, sourceMessageId: ID, agentId: ID, requestId = this.nextRequestId("threadSummary"),
+  ): ID | undefined {
+    const unavailable = (error: string): void => {
+      const result: ThreadSummaryResult = {
+        requestId, channelId, threadId, sourceMessageId, agentId,
+        requesterId: this.world.me?.id ?? "unknown-requester",
+        status: "unavailable", updatedAt: Date.now(),
+        decisions: [], openQuestions: [], nextActions: [], sources: [], error,
+      };
+      this.world.threadSummaries = { ...this.world.threadSummaries, [requestId]: result };
+      const { [requestId]: pending, ...rest } = this.world.threadSummaryPending;
+      void pending;
+      this.world.threadSummaryPending = rest;
+      this.emit();
+    };
+    const requesterId = this.world.me?.id;
+    if (!requesterId) { unavailable("Sign in before asking for a thread summary."); return undefined; }
+    this.world.threadSummaries = { ...this.world.threadSummaries, [requestId]: {
+      requestId, channelId, threadId, sourceMessageId, agentId, requesterId,
+      status: "pending", updatedAt: Date.now(), decisions: [], openQuestions: [], nextActions: [], sources: [],
+    } };
+    this.world.threadSummaryPending = { ...this.world.threadSummaryPending, [requestId]: true };
+    this.emit();
+    const sent = this.transmit({
+      type: "threadSummary", channelId, threadId, sourceMessageId, agentId, requestId,
+    }, {
+      answers: f => f.type === "threadSummary" && f.summary.requestId === requestId,
+      refused: unavailable,
+      lost: () => unavailable("Cloud9 disconnected before the summary was ready.") ,
+    });
+    if (!sent) unavailable("Cloud9 is offline. Try again when the relay is connected.");
+    return sent;
+  }
+
+  /** Retry with a fresh correlation id so a prior terminal refusal is not replayed. */
+  retryThreadSummary(requestId: ID): ID | undefined {
+    const prior = this.world.threadSummaries[requestId];
+    if (!prior || (prior.status !== "refused" && prior.status !== "unavailable")) return undefined;
+    return this.requestThreadSummary(prior.channelId, prior.threadId, prior.sourceMessageId, prior.agentId);
   }
 
   channelMemoryPoliciesFor(channelId: ID): ChannelMemoryPolicy[] {
@@ -4657,6 +4709,8 @@ askPolls(projectId: ID): void {
         // belonged to the last connection
         w.pages = {};
         w.threads = {};
+        w.threadSummaries = {};
+        w.threadSummaryPending = {};
         w.unread = {};
         // Everything derived from the last connection goes with it. Blob URLs
         // are freed rather than dropped, or a reconnect would leak every
@@ -5143,6 +5197,18 @@ askPolls(projectId: ID): void {
       case "thread":
         w.threads = { ...w.threads, [frame.parentId]: frame.messages };
         break;
+      case "threadSummary": {
+        // Relay validation is repeated at the renderer boundary. A malformed
+        // or provider-forged receipt must never become durable-looking UI.
+        if (!validateThreadSummaryResult(frame.summary)) break;
+        w.threadSummaries = { ...w.threadSummaries, [frame.summary.requestId]: frame.summary };
+        if (frame.summary.status !== "pending") {
+          const { [frame.summary.requestId]: pending, ...restPending } = w.threadSummaryPending;
+          void pending;
+          w.threadSummaryPending = restPending;
+        }
+        break;
+      }
       case "read":
         // Apply unconditionally — this frame is how the other machine finds out
         w.unread = { ...w.unread, [frame.entry.channelId]: frame.entry };
@@ -5291,6 +5357,7 @@ askPolls(projectId: ID): void {
       // exhaustiveness check below still holds.
       case "push":        // relay → mobile only
       case "harnessRequest": // relay → engine host only
+      case "threadSummaryRequest": // relay → engine only
       case "memoryListRequested": // relay → engine host only
       case "forgetMemoryRequested": // relay → engine host only
       case "runRecoveryRequested": // relay → engine host only
@@ -5438,6 +5505,15 @@ askPolls(projectId: ID): void {
         const { [frame.channelId]: goneMessages, ...restMessages } = w.messages;
         void goneMessages;
         w.messages = restMessages;
+        w.threads = Object.fromEntries(Object.entries(w.threads)
+          .filter(([rootId]) => !goneMessages?.some(message => message.id === rootId)));
+        const summaryIds = new Set(Object.entries(w.threadSummaries)
+          .filter(([, summary]) => summary.channelId === frame.channelId)
+          .map(([requestId]) => requestId));
+        w.threadSummaries = Object.fromEntries(Object.entries(w.threadSummaries)
+          .filter(([requestId]) => !summaryIds.has(requestId)));
+        w.threadSummaryPending = Object.fromEntries(Object.entries(w.threadSummaryPending)
+          .filter(([requestId]) => !summaryIds.has(requestId)));
         this.clearHumanTyping(frame.channelId, undefined, false);
         clearAgentResponses(row => row.channelId === frame.channelId);
         clearLiveSteps(row => row.channelId === frame.channelId);

@@ -520,6 +520,269 @@ test("a reply cannot be aimed at a message in another conversation", async () =>
   owner.close(); relay.close();
 });
 
+test("thread summaries are explicit, access-checked, idempotent, and relay-redacted", async () => {
+  const { relay, url, owner, general, me } = await stand("chat-thread-summary.db");
+  let engine: TestClient | undefined;
+  try {
+    owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
+    const scout = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
+    owner.send({ type: "addMembers", channelId: general.id, memberIds: [scout.id] });
+    await owner.wait(f => f.type === "channel" && f.channel.id === general.id && f.channel.memberIds.includes(scout.id));
+    const root = await say(owner, general.id, "We should ship Friday");
+    owner.send({ type: "send", channelId: general.id, text: "What about the migration?", replyTo: root.id });
+    await owner.wait(f => f.type === "message" && f.message.replyTo === root.id);
+
+    engine = new TestClient(url, "tok-owner", "engine");
+    await engine.wait(f => f.type === "welcome");
+    owner.frames.length = 0;
+    owner.send({ type: "threadSummary", channelId: general.id, threadId: root.id,
+      sourceMessageId: root.id, agentId: scout.id, requestId: "summary-idempotent-1" });
+    const pending = await owner.wait<Extract<ServerFrame, { type: "threadSummary" }>>(
+      f => f.type === "threadSummary" && f.summary.status === "pending");
+    assert.equal(pending.summary.requestId, "summary-idempotent-1");
+    const request = await engine.wait<Extract<ServerFrame, { type: "threadSummaryRequest" }>>(
+      f => f.type === "threadSummaryRequest" && f.request.requestId === "summary-idempotent-1");
+    const result = {
+      requestId: request.request.requestId, channelId: request.request.channelId,
+      threadId: request.request.threadId, sourceMessageId: request.request.sourceMessageId,
+      agentId: request.request.agentId, requesterId: request.request.requesterId,
+      status: "ready" as const, updatedAt: Date.now(), decisions: ["Ship Friday"],
+      openQuestions: ["Migration plan"], nextActions: ["Confirm rollback"],
+      sources: [{ messageId: root.id, label: "provider supplied secret label" }],
+    };
+    engine.send({ type: "threadSummaryResult", result });
+    const ready = await owner.wait<Extract<ServerFrame, { type: "threadSummary" }>>(
+      f => f.type === "threadSummary" && f.summary.requestId === result.requestId && f.summary.status === "ready");
+    assert.deepEqual(ready.summary.decisions, ["Ship Friday"]);
+    assert.match(ready.summary.sources[0].label, /Vikas: We should ship Friday/);
+    // A lost/retried provider acknowledgement with a different label is still
+    // the same bounded result: relay-owned source labels remain canonical.
+    engine.send({ type: "threadSummaryResult", result: { ...result, sources: [{ messageId: root.id, label: "another provider label" }] } });
+    const replay = await owner.wait<Extract<ServerFrame, { type: "threadSummary" }>>(
+      f => f.type === "threadSummary" && f.summary.requestId === result.requestId && f.summary.status === "ready");
+    assert.match(replay.summary.sources[0].label, /Vikas: We should ship Friday/);
+
+    // The source must be the root, not a reply or an unrelated message.
+    owner.send({ type: "threadSummary", channelId: general.id, threadId: root.id,
+      sourceMessageId: "not-a-message", agentId: scout.id, requestId: "summary-bad-source" });
+    const refused = await owner.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error" && f.requestId === "summary-bad-source");
+    assert.match(refused.error, /no such message|thread root/);
+    assert.equal(ready.summary.requesterId, me.id);
+  } finally {
+    engine?.close(); owner.close(); relay.close();
+  }
+});
+
+test("thread summary pending work settles on engine loss and rejects stale provider results", async () => {
+  const { relay, url, owner, general } = await stand("chat-thread-summary-engine-loss.db");
+  let engine: TestClient | undefined;
+  let replacement: TestClient | undefined;
+  try {
+    owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
+    const scout = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
+    owner.send({ type: "addMembers", channelId: general.id, memberIds: [scout.id] });
+    await owner.wait(f => f.type === "channel" && f.channel.id === general.id && f.channel.memberIds.includes(scout.id));
+    const root = await say(owner, general.id, "Summarize this thread after the engine drops");
+    engine = new TestClient(url, "tok-owner", "engine");
+    await engine.wait(f => f.type === "welcome");
+    owner.send({ type: "threadSummary", channelId: general.id, threadId: root.id,
+      sourceMessageId: root.id, agentId: scout.id, requestId: "summary-engine-loss" });
+    await owner.wait(f => f.type === "threadSummary" && f.summary.status === "pending");
+    await engine.wait(f => f.type === "threadSummaryRequest" && f.request.requestId === "summary-engine-loss");
+    engine.close(); engine = undefined;
+    const ended = await owner.wait<Extract<ServerFrame, { type: "threadSummary" }>>(
+      f => f.type === "threadSummary" && f.summary.requestId === "summary-engine-loss" && f.summary.status === "unavailable");
+    assert.match(ended.summary.error ?? "", /engine disconnected/);
+
+    replacement = new TestClient(url, "tok-owner", "engine");
+    await replacement.wait(f => f.type === "welcome");
+    replacement.frames.length = 0;
+    replacement.send({ type: "threadSummaryResult", result: {
+      requestId: "summary-engine-loss", channelId: general.id, threadId: root.id,
+      sourceMessageId: root.id, agentId: scout.id, requesterId: relay.ownerId,
+      status: "ready", updatedAt: Date.now(), decisions: ["stale"],
+      openQuestions: [], nextActions: [], sources: [],
+    } });
+    const stale = await replacement.wait<Extract<ServerFrame, { type: "error" }>>(
+      f => f.type === "error" && /conflicts with the accepted request|no pending request/.test(f.error));
+    assert.match(stale.error, /conflicts with the accepted request/);
+  } finally {
+    replacement?.close(); engine?.close(); owner.close(); relay.close();
+  }
+});
+
+test("thread summary requester disconnect and agent access loss settle terminally", async () => {
+  const { relay, url, owner, general } = await stand("chat-thread-summary-access-loss.db");
+  let replacement: TestClient | undefined;
+  try {
+    owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
+    const scout = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
+    owner.send({ type: "addMembers", channelId: general.id, memberIds: [scout.id] });
+    await owner.wait(f => f.type === "channel" && f.channel.id === general.id && f.channel.memberIds.includes(scout.id));
+    const root = await say(owner, general.id, "This request will lose access");
+    owner.send({ type: "threadSummary", channelId: general.id, threadId: root.id,
+      sourceMessageId: root.id, agentId: scout.id, requestId: "summary-requester-loss" });
+    await owner.wait(f => f.type === "threadSummary" && f.summary.status === "pending");
+    owner.close();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    replacement = new TestClient(url, "tok-owner");
+    await replacement.wait(f => f.type === "welcome");
+    replacement.send({ type: "threadSummary", channelId: general.id, threadId: root.id,
+      sourceMessageId: root.id, agentId: scout.id, requestId: "summary-requester-loss" });
+    const requesterEnded = await replacement.wait<Extract<ServerFrame, { type: "threadSummary" }>>(
+      f => f.type === "threadSummary" && f.summary.requestId === "summary-requester-loss" && f.summary.status === "unavailable");
+    assert.match(requesterEnded.summary.error ?? "", /requester disconnected/);
+
+    replacement.frames.length = 0;
+    replacement.send({ type: "threadSummary", channelId: general.id, threadId: root.id,
+      sourceMessageId: root.id, agentId: scout.id, requestId: "summary-agent-loss" });
+    await replacement.wait(f => f.type === "threadSummary" && f.summary.status === "pending");
+    replacement.send({ type: "removeMember", channelId: general.id, memberId: scout.id });
+    const agentEnded = await replacement.wait<Extract<ServerFrame, { type: "threadSummary" }>>(
+      f => f.type === "threadSummary" && f.summary.requestId === "summary-agent-loss" && f.summary.status === "unavailable");
+    assert.match(agentEnded.summary.error ?? "", /selected agent/);
+  } finally {
+    replacement?.close(); owner.close(); relay.close();
+  }
+});
+
+test("thread summary settles when the last mobile requester disconnects and rejects a stale result", async () => {
+  const { relay, url, owner, general } = await stand("chat-thread-summary-mobile-loss.db");
+  let mobile: TestClient | undefined;
+  let engine: TestClient | undefined;
+  let replacement: TestClient | undefined;
+  try {
+    owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
+    const scout = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
+    owner.send({ type: "addMembers", channelId: general.id, memberIds: [scout.id] });
+    await owner.wait(f => f.type === "channel" && f.channel.id === general.id && f.channel.memberIds.includes(scout.id));
+    const root = await say(owner, general.id, "Mobile requester lifecycle");
+    // Leave only a mobile requester socket alive. The old desktop-only gate
+    // would leave this pending forever when that socket closed.
+    owner.close();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    mobile = new TestClient(url, "tok-owner", "mobile");
+    await mobile.wait(f => f.type === "welcome");
+    engine = new TestClient(url, "tok-owner", "engine");
+    await engine.wait(f => f.type === "welcome");
+    mobile.send({ type: "threadSummary", channelId: general.id, threadId: root.id,
+      sourceMessageId: root.id, agentId: scout.id, requestId: "summary-mobile-loss" });
+    await mobile.wait(f => f.type === "threadSummary" && f.summary.status === "pending");
+    const request = await engine.wait<Extract<ServerFrame, { type: "threadSummaryRequest" }>>(
+      f => f.type === "threadSummaryRequest" && f.request.requestId === "summary-mobile-loss");
+    mobile.close();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    replacement = new TestClient(url, "tok-owner");
+    await replacement.wait(f => f.type === "welcome");
+    replacement.send({ type: "threadSummary", channelId: general.id, threadId: root.id,
+      sourceMessageId: root.id, agentId: scout.id, requestId: "summary-mobile-loss" });
+    const ended = await replacement.wait<Extract<ServerFrame, { type: "threadSummary" }>>(
+      f => f.type === "threadSummary" && f.summary.requestId === "summary-mobile-loss" && f.summary.status === "unavailable");
+    assert.match(ended.summary.error ?? "", /requester disconnected/);
+
+    engine.send({ type: "threadSummaryResult", result: {
+      ...request.request, status: "ready", updatedAt: Date.now(), decisions: ["stale"],
+      openQuestions: [], nextActions: [], sources: [],
+    } });
+    const stale = await engine.wait<Extract<ServerFrame, { type: "error" }>>(
+      f => f.type === "error" && /conflicts with the accepted request|no pending request/.test(f.error));
+    assert.match(stale.error, /conflicts with the accepted request/);
+  } finally {
+    replacement?.close(); engine?.close(); mobile?.close(); owner.close(); relay.close();
+  }
+});
+
+test("thread summary turns malformed and deleted-source provider results into terminal unavailable", async () => {
+  const { relay, url, owner, general } = await stand("chat-thread-summary-invalid-result.db");
+  let engine: TestClient | undefined;
+  try {
+    owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
+    const scout = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
+    owner.send({ type: "addMembers", channelId: general.id, memberIds: [scout.id] });
+    await owner.wait(f => f.type === "channel" && f.channel.id === general.id && f.channel.memberIds.includes(scout.id));
+    const root = await say(owner, general.id, "Provider result should not outlive its source");
+    engine = new TestClient(url, "tok-owner", "engine");
+    await engine.wait(f => f.type === "welcome");
+
+    owner.send({ type: "threadSummary", channelId: general.id, threadId: root.id,
+      sourceMessageId: root.id, agentId: scout.id, requestId: "summary-malformed-result" });
+    await owner.wait(f => f.type === "threadSummary" && f.summary.status === "pending");
+    const malformed = await engine.wait<Extract<ServerFrame, { type: "threadSummaryRequest" }>>(
+      f => f.type === "threadSummaryRequest" && f.request.requestId === "summary-malformed-result");
+    engine.send({ type: "threadSummaryResult", result: {
+      ...malformed.request, status: "ready", updatedAt: Date.now(), decisions: "not-a-list",
+      openQuestions: [], nextActions: [], sources: [],
+    } as never });
+    const malformedEnded = await owner.wait<Extract<ServerFrame, { type: "threadSummary" }>>(
+      f => f.type === "threadSummary" && f.summary.requestId === "summary-malformed-result" && f.summary.status === "unavailable");
+    assert.match(malformedEnded.summary.error ?? "", /unavailable/);
+    await engine.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error");
+
+    const deletedRoot = await say(owner, general.id, "This root will be deleted before the result");
+    owner.send({ type: "threadSummary", channelId: general.id, threadId: deletedRoot.id,
+      sourceMessageId: deletedRoot.id, agentId: scout.id, requestId: "summary-deleted-result" });
+    await owner.wait(f => f.type === "threadSummary" && f.summary.requestId === "summary-deleted-result" && f.summary.status === "pending");
+    const deletedRequest = await engine.wait<Extract<ServerFrame, { type: "threadSummaryRequest" }>>(
+      f => f.type === "threadSummaryRequest" && f.request.requestId === "summary-deleted-result");
+    owner.send({ type: "deleteMessage", messageId: deletedRoot.id });
+    await owner.wait(f => f.type === "messageUpdated" && f.message.id === deletedRoot.id && Boolean(f.message.deletedAt));
+    engine.send({ type: "threadSummaryResult", result: {
+      ...deletedRequest.request, status: "ready", updatedAt: Date.now(), decisions: ["should not persist"],
+      openQuestions: [], nextActions: [], sources: [{ messageId: deletedRoot.id, label: "provider label" }],
+    } });
+    const deletedEnded = await owner.wait<Extract<ServerFrame, { type: "threadSummary" }>>(
+      f => f.type === "threadSummary" && f.summary.requestId === "summary-deleted-result" && f.summary.status === "unavailable");
+    assert.match(deletedEnded.summary.error ?? "", /deleted/);
+    await engine.wait<Extract<ServerFrame, { type: "error" }>>(f => f.type === "error" && /deleted/.test(f.error));
+  } finally {
+    engine?.close(); owner.close(); relay.close();
+  }
+});
+
+test("thread summary rejects a deleted root before creating provider work", async () => {
+  const { relay, owner, general } = await stand("chat-thread-summary-deleted-request.db");
+  try {
+    owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
+    const scout = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
+    owner.send({ type: "addMembers", channelId: general.id, memberIds: [scout.id] });
+    await owner.wait(f => f.type === "channel" && f.channel.id === general.id && f.channel.memberIds.includes(scout.id));
+    const root = await say(owner, general.id, "Delete me before asking");
+    owner.send({ type: "deleteMessage", messageId: root.id });
+    await owner.wait(f => f.type === "messageUpdated" && f.message.id === root.id && Boolean(f.message.deletedAt));
+    owner.send({ type: "threadSummary", channelId: general.id, threadId: root.id,
+      sourceMessageId: root.id, agentId: scout.id, requestId: "summary-deleted-request" });
+    const refused = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
+      f => f.type === "error" && f.requestId === "summary-deleted-request");
+    assert.match(refused.error, /deleted/);
+  } finally {
+    owner.close(); relay.close();
+  }
+});
+
+test("thread summary pending ledger rejects requests beyond its honest bound", async () => {
+  const { relay, owner, general } = await stand("chat-thread-summary-bound.db");
+  try {
+    owner.send({ type: "createAgent", agent: { ...BASE_AGENT, name: "Scout" } as never });
+    const scout = (await owner.wait<Extract<ServerFrame, { type: "agent" }>>(f => f.type === "agent")).agent;
+    owner.send({ type: "addMembers", channelId: general.id, memberIds: [scout.id] });
+    await owner.wait(f => f.type === "channel" && f.channel.id === general.id && f.channel.memberIds.includes(scout.id));
+    const root = await say(owner, general.id, "Bound this summary queue");
+    owner.frames.length = 0;
+    for (let i = 0; i < 128; i++) {
+      owner.send({ type: "threadSummary", channelId: general.id, threadId: root.id,
+        sourceMessageId: root.id, agentId: scout.id, requestId: `summary-bound-${i}` });
+    }
+    await owner.wait(f => f.type === "threadSummary" && f.summary.requestId === "summary-bound-127");
+    owner.send({ type: "threadSummary", channelId: general.id, threadId: root.id,
+      sourceMessageId: root.id, agentId: scout.id, requestId: "summary-bound-overflow" });
+    const refused = await owner.wait<Extract<ServerFrame, { type: "error" }>>(
+      f => f.type === "error" && /too many thread summaries/.test(f.error));
+    assert.match(refused.error, /try again/);
+  } finally {
+    owner.close(); relay.close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // 6. Attachments
 // ---------------------------------------------------------------------------

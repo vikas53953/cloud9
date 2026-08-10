@@ -2198,6 +2198,20 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
 }
 .threadcount::after{content:"";height:1px;flex:1;background:var(--line);}
+.thread-summary-card{
+  margin:0 0 14px;padding:11px 12px;border:1px solid var(--line);border-radius:var(--radius-s);
+  background:var(--surface-1);font-size:12px;line-height:1.45;
+}
+.thread-summary-card.is-error{border-color:color-mix(in srgb,var(--marigold) 48%,var(--line));}
+.thread-summary-head{display:flex;align-items:center;gap:8px;min-width:0;}
+.thread-summary-head h2{margin:0;font-size:12px;letter-spacing:.06em;text-transform:uppercase;font-family:var(--mono);}
+.thread-summary-head .btn{margin-left:auto;flex:none;}
+.thread-summary-state{margin-left:auto;color:var(--pine);font-family:var(--mono);font-size:10px;text-transform:uppercase;}
+.thread-summary-note{margin:8px 0 0;color:var(--ink-2);}
+.thread-summary-facts,.thread-summary-sources{margin-top:9px;}
+.thread-summary-facts h3,.thread-summary-sources h3{margin:0 0 3px;font-size:11px;font-family:var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--ink-2);}
+.thread-summary-facts ul,.thread-summary-sources ul{margin:0;padding-left:18px;}
+.thread-summary-sources a{color:var(--pine);text-decoration:underline;text-underline-offset:2px;}
 .composer.threadcomposer{padding:12px 16px;border-top:1px solid var(--line);}
 .composer.threadcomposer .tools{flex-wrap:wrap;gap:6px;}
 .composer.threadcomposer .autocomplete{min-width:0;width:min(100%,calc(100vw - 20px));max-width:calc(100vw - 20px);}
@@ -4133,6 +4147,9 @@ button.chip{cursor:pointer;}
 @keyframes typing-pulse{50%{opacity:.42;transform:translateY(1px)}}
 
 @media (max-width:560px){
+  .thread-summary-card{margin-left:-4px;margin-right:-4px;padding:10px;}
+  .thread-summary-head{align-items:flex-start;flex-wrap:wrap;}
+  .thread-summary-head .btn{margin-left:auto;max-width:100%;}
   .composer{padding:10px 16px 14px;}
   .composer-box:not(.readonly){padding:10px 11px 9px;}
   .composer textarea{min-height:60px;font-size:14px;}

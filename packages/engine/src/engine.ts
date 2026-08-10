@@ -26,7 +26,8 @@ import {
   // same money.
   humanMoney, findWaste, narrowingOnly, renderTokenUseReport, rollUpTokenUse, tidySaving,
   RESPONSE_STREAM_LIMITS, type AgentResponseStreamKind, RecoveryRequest,
-  parseComposerCommand,
+  parseComposerCommand, ThreadSummaryRequest, ThreadSummaryResult,
+  validateThreadSummaryResult, THREAD_SUMMARY_LIMITS,
 } from "@cloud9/shared";
 import { approvalsFor, needsApprovalToRun } from "./abilities.js";
 // WHOSE SETUP EACH TURN RUNS IN — the same one owner both harnesses read, asked
@@ -264,6 +265,10 @@ export interface TurnInput {
   priorRunId?: ID;
   /** Validated per-message controls, carried into the public run receipt. */
   invocation?: AgentInvocationReceipt;
+  /** Explicit summary request; providers must return the bounded JSON shape. */
+  summaryOnly?: boolean;
+  summaryRequestId?: ID;
+  summaryRequesterId?: ID;
 }
 
 export class Engine {
@@ -590,6 +595,9 @@ export class Engine {
         this.pushHistory(frame.message);
         void this.considerReplies(frame.message);
         break;
+      case "threadSummaryRequest":
+        void this.handleThreadSummaryRequest(frame.request);
+        break;
       case "channel": {
         if (!this.state) break;
         const i = this.state.channels.findIndex(c => c.id === frame.channel.id);
@@ -733,6 +741,96 @@ export class Engine {
       default:
         break;
     }
+  }
+
+  /** Run one explicit summary request; never turns ordinary chat into a card. */
+  private async handleThreadSummaryRequest(request: ThreadSummaryRequest): Promise<void> {
+    const channel = this.channel(request.channelId);
+    const source = this.history.get(request.channelId)?.find(m => m.id === request.sourceMessageId);
+    const agent = this.myAgents.find(a => a.id === request.agentId
+      && !!channel?.memberIds.includes(a.id)
+      && a.lifecycle !== "paused" && a.lifecycle !== "disabled");
+    if (!channel || !source || source.id !== request.threadId || !agent) {
+      this.sendThreadSummaryResult(request, "unavailable", undefined, undefined,
+        "that thread or agent is no longer available");
+      return;
+    }
+    const requester = this.state?.users.find(user => user.id === request.requesterId);
+    const input: TurnInput = {
+      // A summary is deliberately narrower than an ordinary reply. The
+      // selected root and its direct replies are the complete provider input;
+      // unrelated room chatter must not become hidden summary context.
+      context: this.renderThreadContext(channel.id, agent, request.threadId),
+      trigger: "Summarize this thread into decisions, open questions, and next actions.",
+      triggerAuthor: requester?.name ?? "the requester",
+      kind: "chat", channelId: channel.id, requesterKind: "human",
+      replyTo: request.threadId, triggerMessageId: request.sourceMessageId,
+      reviewOnly: true, summaryOnly: true, summaryRequestId: request.requestId,
+      summaryRequesterId: request.requesterId,
+    };
+    try {
+      await this.respondAs(agent, input);
+    } catch {
+      // respondAs has already emitted the refused/unavailable terminal card.
+    }
+  }
+
+  private renderThreadContext(
+    channelId: ID, agent: Pick<AgentDef, "model" | "provider">, threadId: ID,
+  ): string {
+    const messages = (this.history.get(channelId) ?? [])
+      .filter(message => message.id === threadId || message.replyTo === threadId);
+    return renderConversation(messages, this.contextBudgetFor(agent));
+  }
+
+  private threadSummarySources(channelId: ID, threadId: ID): { messageId: ID; label: string }[] {
+    return (this.history.get(channelId) ?? [])
+      .filter(message => message.id === threadId || message.replyTo === threadId)
+      .slice(0, THREAD_SUMMARY_LIMITS.sourceCount)
+      .map(message => ({
+        messageId: message.id,
+        label: redactForSharing(`${message.authorName}: ${message.text}`, THREAD_SUMMARY_LIMITS.sourceLabel),
+      }));
+  }
+
+  private parseThreadSummary(text: string): Pick<ThreadSummaryResult, "decisions" | "openQuestions" | "nextActions"> | undefined {
+    if (typeof text !== "string" || !text.trim() || text.trim().startsWith("```")) return undefined;
+    try {
+      const raw = JSON.parse(text) as Record<string, unknown>;
+      const lists = ["decisions", "openQuestions", "nextActions"] as const;
+      if (Object.keys(raw).some(key => !lists.includes(key as typeof lists[number]))) return undefined;
+      const values = Object.fromEntries(lists.map(key => {
+        const value = raw[key];
+        return [key, Array.isArray(value) ? value.filter(item => typeof item === "string").slice(0, THREAD_SUMMARY_LIMITS.itemCount) : []];
+      })) as Pick<ThreadSummaryResult, "decisions" | "openQuestions" | "nextActions">;
+      if (lists.some(key => !Array.isArray(raw[key])
+        || (raw[key] as unknown[]).some(item => typeof item !== "string"))) return undefined;
+      return values;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private sendThreadSummaryResult(
+    request: ThreadSummaryRequest, status: ThreadSummaryResult["status"],
+    facts?: Pick<ThreadSummaryResult, "decisions" | "openQuestions" | "nextActions">,
+    runId?: ID, error?: string,
+  ): void {
+    const ready = status === "ready" && facts;
+    const result: ThreadSummaryResult = {
+      ...request, status, updatedAt: Date.now(),
+      decisions: ready ? facts.decisions : [], openQuestions: ready ? facts.openQuestions : [],
+      nextActions: ready ? facts.nextActions : [],
+      sources: ready ? this.threadSummarySources(request.channelId, request.threadId) : [],
+      ...(runId ? { runId } : {}), ...(error ? { error: redactForSharing(error, THREAD_SUMMARY_LIMITS.error) } : {}),
+    };
+    const bad = validateThreadSummaryResult(result);
+    if (bad) {
+      console.error(`[engine] refusing malformed thread summary result: ${bad}`);
+      return;
+    }
+    try { this.sendFrame({ type: "threadSummaryResult", result }); }
+    catch (err) { console.error("[engine] could not send thread summary:", err); }
   }
 
   /**
@@ -1453,6 +1551,7 @@ export class Engine {
         // SAY WHAT YOU INTEND, AND DO NOTHING. Only ever set by `planFirstTurn`.
         ...(input.planOnly ? { planOnly: true } : {}),
         ...(input.reviewOnly ? { reviewOnly: true } : {}),
+        ...(input.summaryOnly ? { summaryOnly: true } : {}),
         ...(providerAbortController ? { abortController: providerAbortController } : {}),
         onTrace: t => { trace = t; },
         ...(responseCapable ? {
@@ -1552,10 +1651,20 @@ export class Engine {
       // A published version must point at the exact run that made it. If the run
       // record itself could not be built, the turn still returns its answer but
       // no unattributed file is invented on the hub.
-      if (record) this.shareProduced(agent, input, seed.startedAt, record.id);
+      if (record && !input.summaryOnly) this.shareProduced(agent, input, seed.startedAt, record.id);
       // DID IT DO WHAT IT SAID? Checked against the record it just wrote, and
       // said out loud ONLY where the two disagree. See `checkClaims`.
-      if (record) this.checkClaims(agent, input, text, record);
+      if (record && !input.summaryOnly) this.checkClaims(agent, input, text, record);
+      if (input.summaryOnly && input.summaryRequestId && input.summaryRequesterId
+        && input.channelId && input.replyTo && input.triggerMessageId) {
+        const request: ThreadSummaryRequest = {
+          requestId: input.summaryRequestId, channelId: input.channelId, threadId: input.replyTo,
+          sourceMessageId: input.triggerMessageId, agentId: agent.id, requesterId: input.summaryRequesterId,
+        };
+        const facts = this.parseThreadSummary(text);
+        this.sendThreadSummaryResult(request, facts ? "ready" : "unavailable", facts, record?.id,
+          facts ? undefined : "the provider did not return a supported thread summary");
+      }
       return text;
     } catch (err) {
       // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====
@@ -1572,6 +1681,13 @@ export class Engine {
           this.sendResponseStream(agent.id, input, turnId, "response-cancel", ++responseSeq,
             undefined, "you stopped this run");
         }
+        if (input.summaryOnly && input.summaryRequestId && input.summaryRequesterId
+          && input.channelId && input.replyTo && input.triggerMessageId) {
+          this.sendThreadSummaryResult({
+            requestId: input.summaryRequestId, channelId: input.channelId, threadId: input.replyTo,
+            sourceMessageId: input.triggerMessageId, agentId: agent.id, requesterId: input.summaryRequesterId,
+          }, "unavailable", undefined, undefined, "you stopped this summary");
+        }
         throw err;
       }
       if (stop?.stopped) {
@@ -1580,10 +1696,17 @@ export class Engine {
           this.sendResponseStream(agent.id, input, turnId, "response-cancel", ++responseSeq,
             undefined, "you stopped this run");
         }
+        if (input.summaryOnly && input.summaryRequestId && input.summaryRequesterId
+          && input.channelId && input.replyTo && input.triggerMessageId) {
+          this.sendThreadSummaryResult({
+            requestId: input.summaryRequestId, channelId: input.channelId, threadId: input.replyTo,
+            sourceMessageId: input.triggerMessageId, agentId: agent.id, requesterId: input.summaryRequesterId,
+          }, "unavailable", undefined, undefined, "you stopped this summary");
+        }
         this.turnWasStopped(agent, seed, input, trace, turnId); // throws
       }
       // ===== GAP C BLOCK — end =====
-      this.recordRun(seed, {
+      const failedRecord = this.recordRun(seed, {
         finishedAt: Date.now(), outcome: "failed", trace,
         // the record keeps WHY, in words that carry no path, no argv and no
         // environment — the same rule sanitizeForChat enforces for chat
@@ -1610,6 +1733,15 @@ export class Engine {
         outcome: "failed", ...(trace?.steps ? { steps: trace.steps } : {}),
         error: err instanceof Error ? err.message : String(err),
       });
+      if (input.summaryOnly && input.summaryRequestId && input.summaryRequesterId
+        && input.channelId && input.replyTo && input.triggerMessageId) {
+        const request: ThreadSummaryRequest = {
+          requestId: input.summaryRequestId, channelId: input.channelId, threadId: input.replyTo,
+          sourceMessageId: input.triggerMessageId, agentId: agent.id, requesterId: input.summaryRequesterId,
+        };
+        this.sendThreadSummaryResult(request, stop ? "unavailable" : "refused", undefined, failedRecord?.id,
+          err instanceof Error ? err.message : "the provider was unavailable");
+      }
       throw err;
     } finally {
       // ===== GAP C BLOCK (stopping a running turn, 2026-08-05) — start =====

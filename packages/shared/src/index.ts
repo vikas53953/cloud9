@@ -3237,6 +3237,52 @@ export interface ChannelSummary {
   createdAt: number;
 }
 
+/** A source reference in an explicit thread summary. The relay re-checks the
+ * message before projecting it; a client never gets to turn an id into access. */
+export interface ThreadSummarySource {
+  messageId: ID;
+  label: string;
+}
+
+export type ThreadSummaryStatus = "pending" | "ready" | "refused" | "unavailable";
+
+export const THREAD_SUMMARY_LIMITS = {
+  itemCount: 8,
+  sourceCount: 24,
+  pendingCount: 128,
+  itemChars: 320,
+  sourceLabel: 160,
+  error: 300,
+} as const;
+
+/** Explicit, authenticated request to summarize one current thread. */
+export interface ThreadSummaryRequest {
+  requestId: ID;
+  channelId: ID;
+  threadId: ID;
+  sourceMessageId: ID;
+  agentId: ID;
+  requesterId: ID;
+}
+
+/** Provider-derived summary facts, never local NLP or private reasoning. */
+export interface ThreadSummaryResult {
+  requestId: ID;
+  channelId: ID;
+  threadId: ID;
+  sourceMessageId: ID;
+  agentId: ID;
+  requesterId: ID;
+  status: ThreadSummaryStatus;
+  updatedAt: number;
+  decisions: string[];
+  openQuestions: string[];
+  nextActions: string[];
+  sources: ThreadSummarySource[];
+  runId?: ID;
+  error?: string;
+}
+
 export type AuthorKind = "human" | "agent";
 
 /**
@@ -3880,6 +3926,8 @@ type ClientFrameBase =
   | { type: "deleteMessage"; messageId: ID }
   /** The whole of one thread: the message that started it and every reply. */
   | { type: "thread"; messageId: ID; limit?: number }
+  /** Explicitly ask one in-room agent for a provider-backed summary of a thread. */
+  | { type: "threadSummary"; channelId: ID; threadId: ID; sourceMessageId: ID; agentId: ID }
   /** Ask for this person's durable saved-message queue. */
   | { type: "listSaved"; limit?: number; beforeSavedAt?: number; beforeMessageId?: ID }
   /** Save one readable message; repeating the request is idempotent. */
@@ -4271,6 +4319,8 @@ type ClientFrameBase =
    * report, not a permission. It is scrubbed again on the way out.
    */
   | { type: "runRecorded"; record: RunRecord }
+  /** ENGINE-HOST ONLY: one explicit summary turn produced a bounded result. */
+  | { type: "threadSummaryResult"; result: ThreadSummaryResult }
   /**
    * "What has this agent been doing?" (`agentId`, owner only), or "what did
    * this job actually do?" (`taskId`, anyone who can see the conversation).
@@ -4671,6 +4721,10 @@ export type ServerFrame =
   /** A message changed — edited, deleted, or given its first attachment. */
   | { type: "messageUpdated"; message: Message }
   | { type: "thread"; parentId: ID; messages: Message[] }
+  /** The relay asks the owner's engine to produce one explicit thread summary. */
+  | { type: "threadSummaryRequest"; request: ThreadSummaryRequest }
+  /** Provider-backed summary card; arrays are empty unless status is ready. */
+  | { type: "threadSummary"; summary: ThreadSummaryResult; requestId?: ID }
   /** A parked file, ready to be named in a `send`. Goes only to the uploader. */
   | { type: "attachment"; attachment: Attachment; requestId?: ID }
   /**
@@ -6549,6 +6603,82 @@ export function validateTaskSummary(summary: unknown): string | null {
   if (summary.length > TASK_LIMITS.summary) {
     return `that summary is too long (max ${TASK_LIMITS.summary} characters)`;
   }
+  return null;
+}
+
+function validSummaryId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 96
+    && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+/** Validate the authenticated, bounded request before it crosses a relay. */
+export function validateThreadSummaryRequest(request: unknown): string | null {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    return "that thread summary request is not valid";
+  }
+  const r = request as Partial<ThreadSummaryRequest>;
+  for (const [what, value] of [
+    ["request id", r.requestId], ["channel", r.channelId], ["thread", r.threadId],
+    ["source message", r.sourceMessageId], ["agent", r.agentId], ["requester", r.requesterId],
+  ] as const) {
+    if (!validSummaryId(value)) return `that summary has no usable ${what}`;
+  }
+  const allowed = new Set(["requestId", "channelId", "threadId", "sourceMessageId", "agentId", "requesterId"]);
+  if (Object.keys(r).some(key => !allowed.has(key))) return "that summary request has unknown fields";
+  return null;
+}
+
+/** Validate provider-derived facts before they are persisted or projected. */
+export function validateThreadSummaryResult(result: unknown): string | null {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return "that thread summary result is not valid";
+  }
+  const r = result as Partial<ThreadSummaryResult>;
+  const requestProblem = validateThreadSummaryRequest({
+    requestId: r.requestId, channelId: r.channelId, threadId: r.threadId,
+    sourceMessageId: r.sourceMessageId, agentId: r.agentId, requesterId: r.requesterId,
+  });
+  if (requestProblem) return requestProblem;
+  if (r.status !== "pending" && r.status !== "ready" && r.status !== "refused" && r.status !== "unavailable") {
+    return "that summary has an unknown state";
+  }
+  if (typeof r.updatedAt !== "number" || !Number.isFinite(r.updatedAt)) return "that summary has no usable timestamp";
+  const list = (name: string, value: unknown, max: number, chars: number): string | null => {
+    if (!Array.isArray(value) || value.length > max) return `that summary has too many ${name}`;
+    if (value.some(item => typeof item !== "string" || item.trim().length === 0 || item.length > chars)) {
+      return `that summary has unusable ${name}`;
+    }
+    return null;
+  };
+  for (const [name, value] of [["decisions", r.decisions], ["open questions", r.openQuestions], ["next actions", r.nextActions]] as const) {
+    const bad = list(name, value, THREAD_SUMMARY_LIMITS.itemCount, THREAD_SUMMARY_LIMITS.itemChars);
+    if (bad) return bad;
+  }
+  if (!Array.isArray(r.sources) || r.sources.length > THREAD_SUMMARY_LIMITS.sourceCount) return "that summary has too many sources";
+  for (const source of r.sources) {
+    if (!source || typeof source !== "object" || Array.isArray(source)
+      || !validSummaryId((source as ThreadSummarySource).messageId)
+      || typeof (source as ThreadSummarySource).label !== "string"
+      || !(source as ThreadSummarySource).label.trim()
+      || (source as ThreadSummarySource).label.length > THREAD_SUMMARY_LIMITS.sourceLabel) {
+      return "that summary has an unusable source";
+    }
+    if (Object.keys(source).some(key => key !== "messageId" && key !== "label")) return "that summary source has unknown fields";
+  }
+  if (r.runId !== undefined && !validSummaryId(r.runId)) return "that summary has an unusable run id";
+  if (r.error !== undefined && (typeof r.error !== "string" || r.error.length > THREAD_SUMMARY_LIMITS.error)) {
+    return "that summary has an unusable error";
+  }
+  if (r.status === "ready" && r.error !== undefined) return "a ready summary cannot carry an error";
+  if (r.status !== "ready" && ((r.decisions as string[]).length !== 0 || (r.openQuestions as string[]).length !== 0
+    || (r.nextActions as string[]).length !== 0 || (r.sources as ThreadSummarySource[]).length !== 0)) {
+    return "a non-ready summary cannot carry provider facts";
+  }
+  const allowed = new Set([
+    "requestId", "channelId", "threadId", "sourceMessageId", "agentId", "requesterId",
+    "status", "updatedAt", "decisions", "openQuestions", "nextActions", "sources", "runId", "error",
+  ]);
+  if (Object.keys(r).some(key => !allowed.has(key))) return "that summary result has unknown fields";
   return null;
 }
 

@@ -62,6 +62,8 @@ export interface TurnBrief {
   workdir?: string;
   /** what the launcher will TRULY hand the harness, for this turn */
   supply?: Supply;
+  /** This turn must return only the bounded summary JSON, never chat prose. */
+  summaryOnly?: boolean;
   /** true when Cloud9's own tools are really in the agent's hands this turn */
   cloud9Tools?: boolean;
   /** the harness rendering this prompt; Codex has an admission gate, not a declared tool set */
@@ -609,7 +611,8 @@ export function splitAgentPrompt(agent: AgentDef, turn: TurnBrief): AgentPromptP
         : "") +
       `\n${turn.resumedContext ? RESUMED_CONVERSATION_HEADING : CONVERSATION_HEADING}` +
       `\n${turn.context}\n\n` +
-      HOW_TO_ANSWER[kind](agent.name),
+      HOW_TO_ANSWER[kind](agent.name) +
+      (turn.summaryOnly ? `\n\n${SUMMARY_OUTPUT_INSTRUCTION}` : ""),
   };
 }
 
@@ -693,6 +696,12 @@ const HOW_TO_ANSWER: Record<PromptTurnKind, (name: string) => string> = {
     `owner is asked and says yes, so never describe a change as published. ` +
     `Do not prefix your reply with your own name.`,
 };
+
+const SUMMARY_OUTPUT_INSTRUCTION =
+  `This is an explicit thread-summary turn. Return ONLY one JSON object, with no markdown, ` +
+  `private reasoning, or commentary: {"decisions":[],"openQuestions":[],"nextActions":[]}. ` +
+  `Use at most 8 concise strings in each array, each no longer than 320 characters. ` +
+  `If a category has no supported fact, leave its array empty. Do not invent facts.`;
 
 /**
  * Canned answers, for tests, QA and demo mode.

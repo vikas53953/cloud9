@@ -7759,7 +7759,7 @@ const MessageRow = React.memo(function MessageRow({
       : drawn ? paragraph(drawn) : null;
 
   return (
-    <article data-msg={m.id}
+    <article id={`message-${m.id}`} data-msg={m.id}
       className={`msg ${isAgent ? "from-agent" : ""} ${m.proactive ? "proactive" : ""}`
         + `${deleted ? " deleted" : ""}${litUp ? " litup" : ""}${inOpenThread ? " inthread" : ""}`}>
       {isAgent
@@ -7924,6 +7924,7 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
               : countOf(replies.length, "reply", "replies")}
           </div>
         )}
+        {root && <ThreadSummaryCard channel={channel} rootId={rootId} agents={channelAgents} />}
         {replies.map(m => (
           <MessageRow key={m.id} m={m} variant="thread" archived={!!channel.archivedAt}
             me={world.me} agents={channelAgents} users={world.users} presence={world.presence}
@@ -7942,6 +7943,65 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
       <Composer channel={channel} replyTo={rootId} onSent={() => follow("sent")} />
     </aside>
   );
+}
+
+/** Provider-backed facts for one thread. This card is inert until its button is pressed. */
+function ThreadSummaryCard({ channel, rootId, agents }: {
+  channel: Channel; rootId: ID; agents: AgentDef[];
+}): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const summaries = Object.values(world.threadSummaries)
+    .filter(summary => summary.channelId === channel.id && summary.threadId === rootId)
+    .sort((a, b) => b.updatedAt - a.updatedAt || b.requestId.localeCompare(a.requestId));
+  const summary = summaries[0];
+  const summarizer = agents.find(agent => agent.lifecycle !== "paused"
+    && agent.lifecycle !== "disabled" && mayDriveAgent(world.me?.id ?? "", agent));
+  const request = () => {
+    if (summarizer) client.requestThreadSummary(channel.id, rootId, rootId, summarizer.id);
+  };
+  if (!summary) {
+    return <section className="thread-summary-card" aria-labelledby={`thread-summary-title-${rootId}`}>
+      <div className="thread-summary-head"><h2 id={`thread-summary-title-${rootId}`}>Thread summary</h2>
+        <button className="btn small" type="button" onClick={request} disabled={!summarizer}
+          title={summarizer ? "Ask the available agent for a provider-backed summary" : "No available agent can summarize this thread"}>
+          Summarize thread
+        </button>
+      </div>
+      {!summarizer && <p className="thread-summary-note" role="status">No available agent can summarize this thread.</p>}
+    </section>;
+  }
+  if (summary.status === "pending") {
+    return <section className="thread-summary-card" aria-labelledby={`thread-summary-title-${rootId}`}>
+      <div className="thread-summary-head"><h2 id={`thread-summary-title-${rootId}`}>Thread summary</h2></div>
+      <p className="thread-summary-note" role="status" aria-live="polite">Summary pending from the provider…</p>
+    </section>;
+  }
+  if (summary.status !== "ready") {
+    return <section className="thread-summary-card is-error" aria-labelledby={`thread-summary-title-${rootId}`}>
+      <div className="thread-summary-head"><h2 id={`thread-summary-title-${rootId}`}>Thread summary</h2>
+        <button className="btn small" type="button" onClick={() => client.retryThreadSummary(summary.requestId)}>Retry</button>
+      </div>
+      <p className="thread-summary-note" role="status">{summary.status === "refused" ? "Summary refused" : "Summary unavailable"}{summary.error ? ` — ${summary.error}` : ""}.</p>
+    </section>;
+  }
+  return <section className="thread-summary-card" aria-labelledby={`thread-summary-title-${rootId}`}>
+    <div className="thread-summary-head"><h2 id={`thread-summary-title-${rootId}`}>Thread summary</h2>
+      <span className="thread-summary-state" role="status">Ready</span></div>
+    <SummaryFacts title="Decisions" rows={summary.decisions} />
+    <SummaryFacts title="Open questions" rows={summary.openQuestions} />
+    <SummaryFacts title="Next actions" rows={summary.nextActions} />
+    {summary.sources.length > 0 && <div className="thread-summary-sources">
+      <h3>Sources</h3>
+      <ul>{summary.sources.map(source => <li key={source.messageId}>
+        <a href={`#message-${source.messageId}`}>{source.label}</a>
+      </li>)}</ul>
+    </div>}
+  </section>;
+}
+
+function SummaryFacts({ title, rows }: { title: string; rows: string[] }): React.JSX.Element | null {
+  if (rows.length === 0) return null;
+  return <div className="thread-summary-facts"><h3>{title}</h3><ul>{rows.map((row, i) => <li key={`${title}-${i}`}>{row}</li>)}</ul></div>;
 }
 
 /**
