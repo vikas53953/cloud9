@@ -20,7 +20,10 @@ jobs:
   build-and-test:
     name: build + tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # The first real run took 17m38s end to end on windows-latest. 30 caps a
+    # hung suite (the engine suite currently never finishes on Linux) without
+    # cutting a healthy run short.
+    timeout-minutes: 30
     strategy:
       # Both platforms always report. A red Windows job must not hide the
       # Linux result, or the other way round.
