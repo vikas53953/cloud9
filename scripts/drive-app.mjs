@@ -3421,13 +3421,24 @@ async function walk(page) {
 
     await check(EXPECTED_CHECKS[31], async () => {
       await page.click('.rail .rail-btn[data-go="chat"]');
-      await page.waitForSelector(`.agentrow[data-agent="${first.name}"]`, { timeout: 20000 });
-      const row = await page.evaluate(name => {
-        const el = document.querySelector(`.agentrow[data-agent="${name}"]`);
-        return { trouble: el.getAttribute("data-trouble") ?? "",
-          words: el.innerText.replace(/\s+/g, " ").trim() };
-      }, first.name);
-      /* The rail owns the concise state; the task card owns the full reason.
+      await page.waitForSelector(".chathead", { timeout: 20000 });
+      /* READ THROUGH A SURFACE HE CAN ACTUALLY SEE, 2026-08-12. This used to
+         read `.agentrow[data-agent]` in the Studio sidebar — and the Focus
+         workspace layout hides that sidebar outright, so on the installed app
+         this was asking a hidden node, which is not evidence of anything. The
+         room's own header chip carries the same state from the same one owner
+         and is drawn in EVERY workspace layout. `:visible` is Playwright's own
+         answer to "is this on screen", so a chip that ever stopped being drawn
+         fails here rather than quietly passing. */
+      const chip = page.locator(`.chathead .agenttrouble[data-agent="${first.name}"]:visible`).first();
+      await chip.waitFor({ state: "visible", timeout: 20000 })
+        .catch(() => { throw new Error(`NOT ON SCREEN — ${first.name}'s job is stuck and the room ` +
+          "he is looking at says nothing visible about it"); });
+      const row = await chip.evaluate(el => ({
+        trouble: el.getAttribute("data-trouble") ?? "",
+        words: el.innerText.replace(/\s+/g, " ").trim(),
+      }));
+      /* The header owns the concise state; the task card owns the full reason.
          Repeating the reason here is exactly the clutter the frontend pass
          removed. */
       if (row.trouble !== "blocked" || !/Stuck — waiting on something/.test(row.words)
@@ -3436,7 +3447,8 @@ async function walk(page) {
           `${JSON.stringify(row).slice(0, 200)} while its job is stuck`);
       }
       await shot(page, "presence-in-trouble");
-      return `${first.name} reads "${row.words.slice(0, 70)}"`;
+      return `${first.name} reads "${row.words.slice(0, 70)}" on the room header, which is ` +
+        "drawn in every workspace layout including Focus";
     });
   } catch (err) {
     failGroup(COORD_GROUP.filter(n => !results.some(r => r.name === n)),
@@ -3625,20 +3637,29 @@ async function walk(page) {
        * with a door on the same line — and, since the app no longer goes silent
        * about reach in ANY state, the line is read again after the folder is
        * given and must have changed its answer rather than vanished. */
+      /* The agent's own row in the LIVE room-details panel. Until 2026-08-12
+         this reach line lived only on the retired `ChannelRail`, which has no
+         call site, so there was no surface for this to find at all — the check
+         was right and the app was missing the door. */
       const rail = `.aside .mini-agent[data-agent="${worker.name}"]`;
-      if (await page.locator(rail).count() === 0) {
-        const opener = page.locator(".chathead .roomdetailsbtn");
+      if (await page.locator(`${rail}:visible`).count() === 0) {
+        const opener = page.locator(".chathead .roomdetailsbtn:visible");
         if (await opener.count()) await opener.first().click();
       }
-      await page.waitForSelector(rail, { timeout: 20000 })
-        .catch(() => { throw new Error(`NOT ON SCREEN — ${worker.name} is not in the room's details panel`); });
+      await page.waitForSelector(rail, { state: "visible", timeout: 20000 })
+        .catch(() => { throw new Error(`NOT ON SCREEN — ${worker.name} has no visible row in the ` +
+          "room's details panel, so nothing there can say what it can and cannot reach"); });
 
+      /* `shown` is asked of the reach line ITSELF, not of the row that holds
+         it: a line inside a visible panel can still be display:none, and a
+         hidden node is not evidence. */
       const readLine = async () => page.evaluate(sel => {
         const el = document.querySelector(`${sel} [data-reach-gap]`);
         return el ? {
           state: el.getAttribute("data-reach-gap"),
           words: el.innerText.replace(/\s+/g, " ").trim(),
           fix: !!el.querySelector("[data-reach-fix]"),
+          shown: el.getClientRects().length > 0,
         } : null;
       }, rail);
 
@@ -3662,7 +3683,7 @@ async function walk(page) {
           gapBefore = await readLine();
           return !!gapBefore && /no folder has been chosen/i.test(gapBefore.words);
         }, { timeout: 30000, every: 200 }).catch(() => { /* say what it DOES read, below */ });
-      if (!gapBefore || !gapBefore.fix
+      if (!gapBefore || !gapBefore.fix || !gapBefore.shown
         || !/(own folder|no folder has been chosen)/i.test(gapBefore.words)) {
         throw new Error("NOT ON SCREEN — an agent that cannot reach this computer says nothing " +
           `about it in the room, or offers no way to change it: ${JSON.stringify(gapBefore)}`);
@@ -3688,7 +3709,7 @@ async function walk(page) {
           gapAfter = await readLine();
           return gapAfter?.state === "chosen";
         }, { timeout: 30000, every: 200 });
-      if (!gapAfter?.fix) {
+      if (!gapAfter?.fix || !gapAfter.shown) {
         throw new Error("NOT ON SCREEN — the room says which folders the agent has but offers " +
           `no way to change them: ${JSON.stringify(gapAfter)}`);
       }
