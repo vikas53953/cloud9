@@ -712,7 +712,7 @@ const SUMMARY_OUTPUT_INSTRUCTION =
  * flag or future caller can produce an unlabelled fake.
  */
 export class MockProvider implements ClaudeProvider {
-  async respond({ agent, trigger, triggerAuthor, abortController }: RespondInput): Promise<string> {
+  async respond({ agent, trigger, triggerAuthor, abortController, onStep }: RespondInput): Promise<string> {
     /* The installed-app and browser walks need one deliberately stoppable demo
        turn. Ordinary canned replies stay instant; the explicit human phrase
        below holds only demo work, and uses the same AbortController as the real
@@ -720,6 +720,10 @@ export class MockProvider implements ClaudeProvider {
        that has already resolved and can only report a false product failure. */
     const deliberatelyStoppableDemo = /\btake your time\b/i.test(trigger);
     if (deliberatelyStoppableDemo && abortController) {
+      // Stop is offered only after public provider activity proves this turn is
+      // live. This is the truthful activity fact for the labelled ten-second
+      // demo turn; real providers continue to report only their own events.
+      onStep?.([{ seq: 1, kind: "note", label: "Demo work is in progress" }]);
       await new Promise<void>((resolve, reject) => {
         const signal = abortController.signal;
         const stopped = () => {

@@ -85,9 +85,31 @@ test("channel loss and reconnect cancel pending readers, ledger rows, and previe
 test("authoritative draft restore drops reclaimed ids but preserves transient picks", () => {
   const store = read("store.ts");
   assert.match(store, /const authoritative = draft\.attachments/);
-  assert.match(store, /const held = current\.filter\(\(u, index, all\) => scope\(u\) && !u\.attachmentId\)/);
+  assert.match(store, /const held = current\.filter\(u => scope\(u\) && \(!u\.attachmentId/);
   assert.match(store, /if \(upload\.previewUrl\) URL\.revokeObjectURL\(upload\.previewUrl\);/);
   assert.match(store, /const next = \[\.\.\.other, \.\.\.held, \.\.\.restored\]/);
+});
+
+test("an older draft projection cannot erase a newly ready local upload", () => {
+  const store = read("store.ts");
+  assert.match(store, /draftSynced\?: boolean/);
+  assert.match(store, /draftSynced: false/);
+  assert.match(store, /const projectedIds = new Set\(draft\.attachments\.map\(a => a\.id\)\)/);
+  assert.match(store, /u\.draftSynced === false && !projectedIds\.has\(u\.attachmentId\)/);
+  assert.match(store, /upload\.draftSynced === false && !projectedIds\.has\(upload\.attachmentId\)/);
+  assert.match(store, /draftSynced: true/);
+  assert.match(store, /u\.draftSynced === n\.draftSynced/);
+  assert.doesNotMatch(store, /uploadedAt\s*>=\s*draft\.updatedAt/);
+});
+
+test("an accepted send clears only its own files, never a newly picked next file", () => {
+  const store = read("store.ts");
+  const app = read("App.tsx");
+  assert.match(store, /clearUploads\(channelId: ID, attachmentIds: readonly ID\[\], threadId\?: ID\)/);
+  assert.match(store, /const sentIds = new Set\(attachmentIds\)/);
+  assert.match(store, /const wasSent = !!u\.attachmentId && sentIds\.has\(u\.attachmentId\)/);
+  assert.match(store, /if \(inScope && wasSent\)/);
+  assert.match(app, /client\.clearUploads\(channel\.id, ready\.ids, replyTo\)/);
 });
 
 test("removing one channel advances the global upload queue", () => {

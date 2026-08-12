@@ -66,3 +66,29 @@ test("pure channel rules reject stale legacy room state and preserve mention sem
   assert.equal(shared.channelNotificationModeFor(off, "room-1"), "off");
   assert.deepEqual(shared.reconcileChannelNotificationPrefs(off, []), { ...off, channelNotificationModes: {}, mutedChannelIds: [] });
 });
+
+test("notification QA muted hook projects effective rules for accessible rooms only", async () => {
+  const hook = app.slice(app.indexOf("muted: () =>"), app.indexOf("threadRule: threadReplyEvent"));
+  assert.match(hook, /client\.getSnapshot\(\)/);
+  assert.match(hook, /snapshot\.channels/);
+  assert.match(hook, /channelNotificationModeFor\(currentPrefs, channel\.id\)/);
+
+  const shared = await import(pathToFileURL(path.join(root, "packages/shared/dist/chat-personalization.js")));
+  const prefs = {
+    channelNotificationModes: {
+      mentions: "mentions",
+      off: "off",
+      all: "all",
+      inaccessible: "off",
+    },
+    mutedChannelIds: ["legacy"],
+  };
+  const accessible = ["mentions", "off", "all", "legacy"];
+  const snapshot = { channels: accessible.map(id => ({ id })) };
+  const effectiveMuted = snapshot.channels
+    .filter(channel => shared.channelNotificationModeFor(prefs, channel.id) !== "all")
+    .map(channel => channel.id);
+  assert.deepEqual(effectiveMuted, ["mentions", "off", "legacy"]);
+  assert(!effectiveMuted.includes("all"), "explicit all must not appear muted");
+  assert(!effectiveMuted.includes("inaccessible"), "stale inaccessible rules must not leak");
+});

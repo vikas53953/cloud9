@@ -65,6 +65,23 @@ export type ChatDraftLoadResult = ChatDraftLoadSuccess | ChatDraftFailure;
 export type ChatDraftSaveResult = ChatDraftSaveSuccess | ChatDraftFailure;
 export type ChatDraftClearResult = ChatDraftClearSuccess | ChatDraftFailure;
 
+/**
+ * Decide whether a durable projection may hydrate an empty composer.
+ *
+ * An accepted send can be followed by the old debounced draft write reaching
+ * the relay. That projection has the exact text that was just sent and must
+ * not put the sent message back in the box. A different projection is a real
+ * cross-window edit and remains eligible for restore; non-empty local input
+ * always wins either way.
+ */
+export function shouldRestoreDurableChatDraft(input: {
+  localText: string;
+  durableText: string;
+  acceptedSentText?: string | null;
+}): boolean {
+  return input.localText.length === 0 && input.durableText !== input.acceptedSentText;
+}
+
 interface NormalizedScope {
   channelId: string;
   userId: string;

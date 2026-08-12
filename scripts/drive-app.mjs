@@ -98,7 +98,7 @@ const OPTS = {
 const EXPECTED_CHECKS = [
   "app launches and its own window answers a debugger",
   "the workspace is on screen (not stuck on sign-in)",
-  "Projects is in the icon rail",
+  "Projects is visibly reachable from the rail",
   "an agent row shows a real presence state",
   "the agent editor offers the full capability ladder",
   "the model list is longer than the four old Claude models",
@@ -1587,6 +1587,24 @@ async function waitForEstablishedIdentity(page, timeoutMs = 30000) {
   return page.evaluate(() => window.cloud9Wire.me());
 }
 
+/**
+ * The installed walk's fresh database starts in the shipped Focus layout, while
+ * the legacy room journeys still use the Studio sidebar to choose a room. Keep
+ * that fixture local to throwaway runs and make it safe to call after returning
+ * Home: only change the picker when it is not already on Chat + Files.
+ */
+async function ensureChatFilesSidebar(page) {
+  if (!OPTS.fresh) return;
+  const layout = page.locator('select[aria-label="Workspace layout"]:visible').first();
+  await layout.waitFor({ state: "visible", timeout: 30000 });
+  if (await layout.inputValue() !== "chat-files") await layout.selectOption("chat-files");
+  const sidebar = page.locator(".sidebar").first();
+  await sidebar.waitFor({ state: "visible", timeout: 30000 });
+  if (!await sidebar.isVisible()) {
+    throw new Error("the fresh installed walk selected Chat + Files but the sidebar is not visible");
+  }
+}
+
 async function assertRedeemedMemberIdentity(memberPage, ownerId) {
   const identity = await memberPage.evaluate(() => ({
     id: window.cloud9Wire?.me?.() ?? null,
@@ -1826,20 +1844,38 @@ async function walk(page) {
         "supposed to hand itself its own owner key and go straight in");
     }
     await waitForEstablishedIdentity(page);
-    return "workspace";
+    if (OPTS.fresh) {
+      await ensureChatFilesSidebar(page);
+      return "workspace with Chat + Files layout and visible sidebar";
+    }
+    return "workspace (real data; existing layout preserved)";
   });
   await shot(page, "start");
 
-  /* --- 2. the icon rail: is Projects there? ------------------------------ */
+  /* --- 2. More tools: is Projects visibly reachable from the rail? -------- */
 
   await check(EXPECTED_CHECKS[2], async () => {
-    const sections = await page.$$eval(".rail .rail-btn",
-      bs => bs.map(b => (b.getAttribute("data-go") ?? b.getAttribute("title") ?? "?").trim()));
-    const found = sections.some(s => /project/i.test(s));
-    if (!found) {
-      throw new Error(`NOT ON SCREEN — the rail is: ${sections.join(", ")}. No Projects.`);
+    const toolsDoor = page.locator("[data-open-tools]").first();
+    await toolsDoor.waitFor({ state: "visible", timeout: 15000 });
+    await toolsDoor.click();
+    const drawer = page.locator("#cloud9-tools-drawer");
+    try {
+      await drawer.waitFor({ state: "visible", timeout: 15000 });
+      const projects = drawer.locator('[data-go="projects"]').first();
+      await projects.waitFor({ state: "visible", timeout: 15000 });
+      if (!await projects.isVisible()) {
+        throw new Error("NOT ON SCREEN — the More tools drawer opened but Projects is not visible");
+      }
+      return "Projects is visible in the More tools drawer";
+    } finally {
+      const close = drawer.locator('[aria-label="Close tools"]').first();
+      if (await close.count() && await close.isVisible()) {
+        await close.click().catch(async () => { await page.keyboard.press("Escape").catch(() => {}); });
+      } else {
+        await page.keyboard.press("Escape").catch(() => {});
+      }
+      await drawer.waitFor({ state: "hidden", timeout: 10000 });
     }
-    return `rail is ${sections.join(", ")}`;
   });
 
   /* --- 3. crew, with an agent on it -------------------------------------- */
@@ -2169,10 +2205,14 @@ async function walk(page) {
         throw new Error(`every one of the ${rows.length} actions is blocked even in a direct ` +
           `chat with an agent — ` + rows.map(r => r.text).join(" | "));
       }
+      const selectedCommand = await usable.getAttribute("data-command");
+      if (!selectedCommand) {
+        throw new Error("the usable Actions row has no data-command to verify");
+      }
       await usable.click();
       const filled = (await page.inputValue(".composer textarea")).trim();
-      if (!filled.includes("!")) {
-        throw new Error(`choosing an action left the message box without a command: "${filled}"`);
+      if (!filled.includes(selectedCommand)) {
+        throw new Error(`choosing "${selectedCommand}" left the message box without that command: "${filled}"`);
       }
       await page.fill(".composer textarea", "");
       /* Escape must close the menu if it reopened — same one-owner rule as every
@@ -2298,7 +2338,7 @@ async function walk(page) {
   const DRIVE_REPO = "vikas53953/cloud9";
 
   try {
-    await page.click('.rail .rail-btn[data-go="projects"]');
+    await clickRail(page, "projects");
     await page.waitForSelector(".projects", { timeout: 30000 });
     await shot(page, "projects");
 
@@ -2837,6 +2877,7 @@ async function walk(page) {
        process. Its HTTP screen is the exact installed renderer tree approved by
        the launch guard; only the owner stays in the CDP-attached Electron app. */
     await page.click('.rail .rail-btn[data-go="chat"]');
+    await ensureChatFilesSidebar(page);
     await page.waitForSelector('button[title="Invite a friend"]', { timeout: 20000 });
     await page.click('button[title="Invite a friend"]');
     await page.waitForFunction(() => document.querySelector(".code")?.textContent?.startsWith("inv_"),
@@ -3103,6 +3144,7 @@ async function walk(page) {
 
     await page.click('.rail .rail-btn[data-go="chat"]');
     await page.waitForSelector(".composer textarea", { timeout: 30000 });
+    await ensureChatFilesSidebar(page);
     const crew = await page.evaluate(() => ({
       channels: window.cloud9Wire.channels(),
       agents: window.cloud9Wire.agents(),
@@ -3329,7 +3371,7 @@ async function walk(page) {
       status: "failed",   // nothing recorded: no error, no summary
     });
 
-    await page.click('.rail .rail-btn[data-go="tasks"]');
+    await clickRail(page, "tasks");
     await page.waitForSelector(`.taskrow[data-task="${stuckJob}"]`, { timeout: 30000 });
     await page.waitForSelector(`.taskrow[data-task="${silentJob}"]`, { timeout: 30000 });
     await shot(page, "jobs-in-trouble");
@@ -3427,16 +3469,12 @@ async function walk(page) {
 
     await check(EXPECTED_CHECKS[33], async () => {
       // --- the room's own mute control, in the details panel ---
-      const firstRoom = page.locator(".sidebar .side-item[data-channel]").first();
-      if (await firstRoom.count() === 0) throw new Error("no room in the rail to open the details of");
-      await firstRoom.click();
-      await page.waitForSelector(".composer textarea", { timeout: 20000 });
       if (await page.locator(".roommute").count() === 0) {
-        const opener = page.locator(".chathead .roomdetailsbtn");
+        const opener = page.locator(".chathead .roomdetailsbtn:visible").first();
         if (await opener.count() === 0) {
           throw new Error("NOT ON SCREEN — no way into the room details panel, so no mute control");
         }
-        await opener.first().click();
+        await opener.click();
       }
       await page.waitForSelector(".roommute", { timeout: 20000 })
         .catch(() => { throw new Error("NOT ON SCREEN — the room details panel offers no mute control"); });
@@ -3537,6 +3575,7 @@ async function walk(page) {
 
     await page.click('.rail .rail-btn[data-go="chat"]');
     await page.waitForSelector(".composer textarea", { timeout: 30000 });
+    await ensureChatFilesSidebar(page);
 
     reachEngine = await connectInstalledEngine(page);
     /* The WHOLE stored agent, from the hub's own opening picture of the world.
@@ -4215,6 +4254,7 @@ async function runSidecarProbe() {
     });
 
     await ownerPage.click('.rail .rail-btn[data-go="chat"]');
+    await ensureChatFilesSidebar(ownerPage);
     await ownerPage.waitForSelector('button[title="Invite a friend"]', { timeout: 20000 });
     await ownerPage.click('button[title="Invite a friend"]');
     await ownerPage.waitForFunction(() => document.querySelector(".code")?.textContent?.startsWith("inv_"),

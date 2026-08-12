@@ -99,9 +99,34 @@ test("an offline submit reports failure so the composer retains its local draft"
 
 test("durable upload restore dedupes failed and already-outgoing ids", () => {
   const store = fs.readFileSync(path.join(__dirname, "..", "src", "store.ts"), "utf8");
-  assert.match(store, /const held = current\.filter\(\(u, index, all\)/);
+  assert.match(store, /const held = current\.filter\(u => scope\(u\) && \(!u\.attachmentId/);
+  assert.match(store, /u\.draftSynced === false && !projectedIds\.has\(u\.attachmentId\)/);
   assert.match(store, /all\.find\(candidate => candidate\.state !== "removed" && candidate\.id === a\.id\)/);
   assert.match(store, /return ids\.filter\(\(id, index\) => ids\.indexOf\(id\) === index\)/);
+});
+
+test("an accepted send fences its late draft projection without hiding a newer edit", () => {
+  const sent = "twelve-line note from far back";
+  assert.equal(drafts.shouldRestoreDurableChatDraft({
+    localText: "", durableText: sent, acceptedSentText: sent,
+  }), false, "message held, draftRemoved delivered, then stale draftChanged must stay gone");
+  assert.equal(drafts.shouldRestoreDurableChatDraft({
+    localText: "", durableText: "typed in another window", acceptedSentText: sent,
+  }), true, "a different cross-window projection remains restorable");
+  assert.equal(drafts.shouldRestoreDurableChatDraft({
+    localText: "next message", durableText: sent, acceptedSentText: sent,
+  }), false, "new local input always wins over durable state");
+});
+
+test("the accepted-send fence survives reconnect hydration but resets on scope change", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "src", "App.tsx"), "utf8");
+  assert.match(app, /const acceptedSentScope = useRef<string \| null>\(null\)/);
+  assert.match(app, /if \(acceptedSentScope\.current !== draftKey\) \{/,
+    "only a real draft-scope change may clear the accepted-send fence");
+  assert.match(app, /acceptedSentScope\.current === draftKey \? acceptedSentText\.current : null/,
+    "reconnect hydration must still apply the fence for the same scope");
+  assert.match(app, /acceptedSentScope\.current = draftKey;\s*acceptedSentText\.current = t/,
+    "the accepted callback associates the fence with the sending scope");
 });
 
 test("an authoritative empty scoped draft response clears the local scope", () => {

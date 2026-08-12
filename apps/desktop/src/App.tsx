@@ -109,7 +109,10 @@ import { composerIntent } from "./composerintent.js";
 import {
   recentEmojisFor, rememberRecentEmoji, subscribeRecentEmojis,
 } from "./recentemoji.js";
-import { chatDraftKey, clearChatDraft, loadChatDraft, saveChatDraft, type ChatDraftScope } from "./chatdrafts.js";
+import {
+  chatDraftKey, clearChatDraft, loadChatDraft, saveChatDraft, shouldRestoreDurableChatDraft,
+  type ChatDraftScope,
+} from "./chatdrafts.js";
 import {
   abilitiesOn, abilityWords, MARKET_CATEGORIES, MARKET_TEMPLATES, MarketTemplate,
 } from "./market.js";
@@ -3286,7 +3289,7 @@ function Workspace(): React.JSX.Element {
         .map(([id, r]) => ({ id, outcome: r.outcome, taskId: r.taskId ?? null, steps: r.steps.length })),
       jobs: () => client.world.tasks
         .map(t => ({
-          id: t.id, status: t.status, runId: t.runId ?? null,
+          id: t.id, title: t.title, status: t.status, runId: t.runId ?? null,
           agentId: t.agentId, channelId: t.channelId,
         })),
       /* THE HISTORY ENTRIES EXACTLY AS THE HUB SENT THEM, so a test can be
@@ -3978,7 +3981,16 @@ function NotifyToasts(): React.JSX.Element | null {
       door: () => ({ ...osDoor.current, bridge: !!desktop()?.osNotify }),
       choose: chooseDelivery,
       target: notifyTarget,
-      muted: () => [...(prefs.get().mutedChannelIds ?? [])],
+      /* Keep this compatibility read truthful after explicit room rules stop
+         writing the legacy list. Read the current authorized roster at call
+         time so stale local rules never leak through the QA surface. */
+      muted: () => {
+        const snapshot = client.getSnapshot();
+        const currentPrefs = prefs.get();
+        return snapshot.channels
+          .filter(channel => channelNotificationModeFor(currentPrefs, channel.id) !== "all")
+          .map(channel => channel.id);
+      },
       /* The thread rule itself, so a check can ask "would a bystander be told?"
          without staging four people in a room — the same shape as `choose` and
          `target` above. It is the SAME function the effect below calls; there is
@@ -4514,14 +4526,18 @@ function ChatScreen({
   useEffect(() => { if (!threading) setThreadRoot(null); }, [threading]);
 
   const openThread = useCallback((rootId: ID) => {
-    const active = document.activeElement;
-    if (active instanceof HTMLElement && active !== document.body) {
-      threadOpener.current = active;
-    }
-    setThreadRoot(rootId);
-    setDetailsOpen(false);
-    client.send({ type: "thread", messageId: rootId });
-  }, []);
+    const go = () => {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active !== document.body) {
+        threadOpener.current = active;
+      }
+      setThreadRoot(rootId);
+      setDetailsOpen(false);
+      client.send({ type: "thread", messageId: rootId });
+    };
+    if (detailsOpen) attemptLeave(go);
+    else go();
+  }, [detailsOpen]);
 
   /* A reply found by search. Declared AFTER the "a thread belongs to the
      conversation it was opened from" effect above, so when both fire in the
@@ -4537,9 +4553,13 @@ function ChatScreen({
   }, [openThreadFor?.at, openThreadFor?.id, threading, openThread, onThreadOpened]);
 
   const toggleDetails = useCallback(() => {
-    setDetailsOpen(o => !o);
+    if (detailsOpen) {
+      attemptLeave(() => setDetailsOpen(false));
+      return;
+    }
+    setDetailsOpen(true);
     setThreadRoot(null);
-  }, []);
+  }, [detailsOpen]);
 
   const agentDmFor = (a: AgentDef) =>
     world.channels.find(c => c.kind === "dm" && c.memberIds.includes(a.id));
@@ -4558,7 +4578,10 @@ function ChatScreen({
         <button className={`side-item${c.archivedAt ? " is-archived" : ""}`}
           data-channel={c.name} data-vis={c.archivedAt ? "archived" : c.visibility ?? "private"}
           aria-current={active?.id === c.id ? "true" : "false"}
-          onClick={() => setActiveId(c.id)}>
+          onClick={() => {
+            if (active?.id === c.id && detailsOpen) toggleDetails();
+            else setActiveId(c.id);
+          }}>
           <span className="hash">#</span>{" "}
           <span className="txt">{c.name}</span>
           <RoomVisibility channel={c} size="mark" />
@@ -4808,7 +4831,14 @@ function WorkspaceLayoutPanel({ channel, layout, onClose }: {
 }): React.JSX.Element {
   const panelRef = useRef<HTMLElement>(null);
   useEscapeCloses(onClose, true);
-  useClickAwayCloses(panelRef, onClose, true);
+  // Pointer-away begins before the clicked control's `click` event. Closing a
+  // split workspace immediately can hide the Studio sidebar under the pointer
+  // and swallow the navigation the person actually chose. Let that click land,
+  // then return the room to Focus.
+  const closeAfterOutsideClick = useCallback(() => {
+    window.setTimeout(onClose, 0);
+  }, [onClose]);
+  useClickAwayCloses(panelRef, closeAfterOutsideClick, true);
   const world = useWorld(w => ({
     connected: w.connected,
     channels: w.channels,
@@ -5349,7 +5379,7 @@ function LiveWork({ messageId, agents, channelId, task }: {
                 under the reply when the turn ends. */}
             <p className="livenote">
               {terminal
-                ? "This public turn card will clear shortly."
+                ? "This public turn card is not the stored record and will clear shortly."
                 : "Live from the app as it works. The full record appears when it finishes."}
             </p>
           </details>
@@ -7765,6 +7795,65 @@ function handOffCandidates(
   });
 }
 
+type MessageRowProps = {
+  m: Message;
+  cont?: boolean;
+  ask?: Message;
+  me?: User;
+  agents: AgentDef[];
+  users: User[];
+  presence?: Record<ID, AgentPresenceState>;
+  answered?: Message;
+  doneRunId?: string;
+  task?: Task;
+  taskMutation?: World["taskMutations"][ID];
+  agent?: AgentDef; working?: boolean;
+  newSince?: ReadCursor;
+  threadSeen?: boolean;
+  onOpenThread?: (rootId: ID) => void;
+  onInlineReply?: (messageId: ID) => void;
+  onGoToMessage?: (messageId: ID) => void;
+  inOpenThread?: boolean;
+  saved?: boolean;
+  savedPending?: boolean;
+  pinned?: boolean;
+  pinPending?: boolean;
+  canManagePins?: boolean;
+  delivery?: MessageStatus;
+  connected?: boolean;
+  handoff?: HandoffRequestState;
+  channelId?: ID;
+  litUp?: boolean;
+  variant?: "channel" | "thread";
+  archived?: boolean;
+};
+
+/* Presence is global, but each row only reads entries for agents in its room.
+   A heartbeat for an agent in another room must not invalidate every bubble. */
+function sameMessageRowPresence(a: MessageRowProps, b: MessageRowProps): boolean {
+  if (a.presence === b.presence) return true;
+  const ids = new Set([...a.agents, ...b.agents].map(agent => agent.id));
+  for (const id of ids) {
+    const left = a.presence?.[id];
+    const right = b.presence?.[id];
+    if (left?.agentId !== right?.agentId || left?.status !== right?.status
+      || left?.presence !== right?.presence || left?.reason !== right?.reason) return false;
+  }
+  return true;
+}
+
+const MESSAGE_ROW_PROP_KEYS: readonly (keyof MessageRowProps)[] = [
+  "m", "cont", "ask", "me", "agents", "users", "answered", "doneRunId", "task", "taskMutation",
+  "agent", "working", "onOpenThread", "onInlineReply", "onGoToMessage", "inOpenThread", "litUp",
+  "variant", "archived", "newSince", "threadSeen", "saved", "savedPending", "channelId", "pinned",
+  "pinPending", "canManagePins", "delivery", "connected", "handoff",
+];
+
+function areMessageRowPropsEqual(a: MessageRowProps, b: MessageRowProps): boolean {
+  if (!sameMessageRowPresence(a, b)) return false;
+  return MESSAGE_ROW_PROP_KEYS.every(key => Object.is(a[key], b[key]));
+}
+
 const MessageRow = React.memo(function MessageRow({
   m, cont, ask, me, agents, users, presence, answered, doneRunId, task, taskMutation,
   agent, working, onOpenThread, onInlineReply, onGoToMessage,
@@ -8485,7 +8574,7 @@ const MessageRow = React.memo(function MessageRow({
       {taskCard}
     </article>
   );
-});
+}, areMessageRowPropsEqual);
 
 /* ---- one thread, in the right-hand rail ---- */
 
@@ -8558,6 +8647,22 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
       follow(messages.at(-1)?.authorId === world.me?.id ? "sent" : "arrived");
     }
   }, [messages.length, follow, atBottom, messages, world.me?.id]);
+  /* Opening the thread is the act that makes its replies visible. Advance the
+     same durable channel cursor the room viewport uses; otherwise the local
+     "New" badge clears while the sidebar's thread-unread count can remain
+     forever, claiming there is still something the person has not opened. */
+  const latestThreadReply = replies.at(-1);
+  useEffect(() => {
+    if (!world.connected) return;
+    const latest = latestThreadReply;
+    if (!latest) return;
+    client.markRead(channel.id, latest.ts, latest.id);
+    if (latest.authorKind === "human" && latest.authorId !== world.me?.id) {
+      client.send({ type: "messageReceipt", channelId: channel.id, messageId: latest.id,
+        status: "read", ts: latest.ts, messageIdCursor: latest.id });
+    }
+  }, [channel.id, latestThreadReply?.id, latestThreadReply?.ts,
+    latestThreadReply?.authorId, latestThreadReply?.authorKind, world.connected, world.me?.id]);
   useEffect(() => {
     if (!takeover) return;
     const first = panelRef.current?.querySelector<HTMLElement>(
@@ -9037,6 +9142,10 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
   const [draftStatus, setDraftStatus] = useState<"idle" | "restored" | "saved" | "unavailable">("idle");
   const [remoteDraftReady, setRemoteDraftReady] = useState(false);
   const restoredDraftAt = useRef<string | null>(null);
+  /** Text accepted by the last send in this scope. A late projection of that
+      exact text is the old draft write, not a new cross-window edit. */
+  const acceptedSentText = useRef<string | null>(null);
+  const acceptedSentScope = useRef<string | null>(null);
   /** After an accepted send, do not let the debounced empty snapshot recreate
       the draft while the correlated relay removal is still settling. */
   const suppressEmptyRelayDraft = useRef(false);
@@ -9184,6 +9293,13 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
      room while the channel changes. */
   useEffect(() => {
     suppressEmptyRelayDraft.current = false;
+    // Reconnects re-run hydration for the same room/thread. Preserve the
+    // accepted-send fence across that transport churn; only a real scope
+    // change may discard it.
+    if (acceptedSentScope.current !== draftKey) {
+      acceptedSentScope.current = draftKey;
+      acceptedSentText.current = null;
+    }
     setHydratedDraftKey(null);
     setRemoteDraftReady(false);
     if (!draftScope || !draftKey) {
@@ -9208,8 +9324,17 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
     const marker = `${durableDraft.id}:${durableDraft.updatedAt}:${world.connected ? "connected" : "offline"}`;
     if (restoredDraftAt.current === marker) return;
     restoredDraftAt.current = marker;
-    if (durableDraft.updatedAt > Date.now() - 10 * 60_000 || text.length === 0) {
-      setText(durableDraft.text);
+    // A relay projection may arrive after an accepted send while the person is
+    // already typing the next message. Restoration may fill an empty box, but
+    // it must never replace newer local input with an older cross-window draft.
+    if (text.length === 0) {
+      if (shouldRestoreDurableChatDraft({
+        localText: text, durableText: durableDraft.text,
+        acceptedSentText: acceptedSentScope.current === draftKey ? acceptedSentText.current : null,
+      })) {
+        acceptedSentText.current = null;
+        setText(durableDraft.text);
+      }
     }
     // A reconnect creates a fresh relay projection even when updatedAt did
     // not change. Reconcile parked ids again so an expired/reclaimed file is
@@ -9793,6 +9918,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
         } : {}),
       },
       () => {
+        acceptedSentScope.current = draftKey;
+        acceptedSentText.current = t;
         suppressEmptyRelayDraft.current = true;
         // The relay's accepted send transaction already removed the matching
         // durable draft and broadcasts that fact. Keep this composer ready for
@@ -9803,7 +9930,10 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
         setText("");
         setEmojiOpen(false);
         setActionsOpen(false);
-        client.clearUploads(channel.id, replyTo);
+        // Clear only the files captured by this accepted send. A person can
+        // pick the next file after the message appears but before this
+        // correlated callback runs; that newer file belongs to the next draft.
+        client.clearUploads(channel.id, ready.ids, replyTo);
         taRef.current?.focus();
         onSent?.();
         onStopAnswering?.();
@@ -10415,8 +10545,22 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft, onOpenCanvas }: {
 }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const panelRef = useRef<HTMLElement>(null);
-  useEscapeCloses(onClose, true);
-  useClickAwayCloses(panelRef, onClose, true);
+  const requestClose = useCallback(() => attemptLeave(onClose), [onClose]);
+  useEscapeCloses(requestClose, true);
+  /* Pointer-away begins before the clicked control's `click`. Closing here
+     immediately would unregister this panel's unsaved-work guard before a
+     sidebar/channel navigation asks it, silently losing the edit. Let the
+     underlying click claim navigation first. If it opened the shared leave
+     question, keep that exact destination; otherwise click-away itself goes
+     through the same guard. */
+  const closeAfterOutsideClick = useCallback(() => {
+    const leaveAtPointer = leaveAsk;
+    window.setTimeout(() => {
+      if (leaveAsk !== leaveAtPointer) return;
+      if (!leaveAtPointer) requestClose();
+    }, 0);
+  }, [requestClose]);
+  useClickAwayCloses(panelRef, closeAfterOutsideClick, true);
   const pinState = world.channelPins[channel.id] ?? {
     asked: false, loading: false, entries: [], hasMore: false,
   };
@@ -10529,7 +10673,7 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft, onOpenCanvas }: {
       <div className="threadhead">
         <span className="eyebrow">Room details</span>
         <div className="grow" />
-        <button className="iconbtn roomclose" aria-label="Close room details" onClick={onClose}>✕</button>
+        <button className="iconbtn roomclose" aria-label="Close room details" onClick={requestClose}>✕</button>
       </div>
 
       <div className="roombody">
@@ -10546,7 +10690,10 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft, onOpenCanvas }: {
                 <span className="lb">Description</span>
                 <textarea className="roomdesc-input" rows={3} value={description}
                   maxLength={500} placeholder="What this room is for"
-                  onChange={e => setDescription(e.target.value)} />
+                  onChange={e => {
+                    infoSettled.current = false;
+                    setDescription(e.target.value);
+                  }} />
               </label>
               <label className="roomfield">
                 <span className="lb">Topic — one line</span>
@@ -10573,7 +10720,10 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft, onOpenCanvas }: {
             </dl>
           )}
           {mayRun && !archived && !editInfo && (
-            <button className="btn small roominfo-edit" onClick={() => setEditInfo(true)}>
+            <button className="btn small roominfo-edit" onClick={() => {
+              infoSettled.current = false;
+              setEditInfo(true);
+            }}>
               Change these
             </button>
           )}
@@ -10769,7 +10919,16 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft, onOpenCanvas }: {
                 </div>
               </div>
               <button className="btn small roomarchive"
-                onClick={() => client.send({ type: "archiveChannel", channelId: channel.id, archived: !archived })}>
+                onClick={() => attemptLeave(() => {
+                  // Archiving changes the room but keeps this panel mounted.
+                  // A deliberate discard must therefore clear the editor here,
+                  // rather than relying on navigation to unmount it.
+                  infoSettled.current = true;
+                  setTopic(channel.topic ?? "");
+                  setDescription(channel.description ?? "");
+                  setEditInfo(false);
+                  client.send({ type: "archiveChannel", channelId: channel.id, archived: !archived });
+                })}>
                 {archived ? "Reopen this room" : "Archive this room"}
               </button>
               <div className="roomhint">
@@ -10789,7 +10948,9 @@ function RoomPanel({ channel, onClose, onOpenDm, onLeft, onOpenCanvas }: {
             <div className="roomleaveask">
               <span>Leave #{channel.name}? You'd stop seeing it.</span>
               <button className="btn small danger roomleave-yes"
-                onClick={() => { client.send({ type: "leaveChannel", channelId: channel.id }); onLeft(); }}>
+                onClick={() => attemptLeave(() => {
+                  client.send({ type: "leaveChannel", channelId: channel.id }); onLeft();
+                })}>
                 Yes, leave
               </button>
               <button className="btn small ghost" onClick={() => setConfirmLeave(false)}>Stay</button>

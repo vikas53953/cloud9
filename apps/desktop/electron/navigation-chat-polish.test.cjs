@@ -102,6 +102,20 @@ test("actions and emoji popovers close on Escape and click-away", () => {
   assert.match(app, /aria-label="Add an emoji"/);
 });
 
+test("room detail click-away cannot unregister unsaved work before navigation asks", () => {
+  const app = read("App.tsx");
+  assert.match(app, /const requestClose = useCallback\(\(\) => attemptLeave\(onClose\)/);
+  assert.match(app, /const leaveAtPointer = leaveAsk/);
+  assert.match(app, /if \(leaveAsk !== leaveAtPointer\) return/);
+  assert.match(app, /useClickAwayCloses\(panelRef, closeAfterOutsideClick, true\)/);
+  assert.match(app, /useEscapeCloses\(requestClose, true\)/);
+  assert.match(app, /aria-label="Close room details" onClick=\{requestClose\}/);
+  assert.match(app, /roomdesc-input[\s\S]*infoSettled\.current = false/);
+  assert.match(app, /if \(detailsOpen\) \{\s*attemptLeave\(\(\) => setDetailsOpen\(false\)\)/);
+  assert.match(app, /if \(detailsOpen\) attemptLeave\(go\)/,
+    "opening a thread must not unmount dirty room details before asking");
+});
+
 test("the emoji picker is searchable and category-based", () => {
   const app = read("App.tsx");
   const categories = app.slice(app.indexOf("const EMOJI_CATEGORIES"), app.indexOf("const EMOJI_KEYWORDS"));
@@ -228,6 +242,8 @@ test("the composer restores scoped text drafts without claiming files survive re
   assert.match(app, /Hydrate before this scope may write/);
   assert.match(app, /clearChatDraft\(draftScope\)/,
     "a successful send must remove the matching text draft");
+  assert.match(app, /Restoration may fill an empty box[\s\S]*?if \(text\.length === 0\)/,
+    "a late durable draft must never overwrite newer text already being typed");
   assert.match(app, /browser cannot\r?\n\s*restore a File safely after restart/,
     "attachment persistence must not be misrepresented");
   assert.match(app, /data-draft-status/);

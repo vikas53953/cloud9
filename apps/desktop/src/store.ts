@@ -155,6 +155,13 @@ export interface Upload {
   uploadedAt?: number;
   expiresAt?: number;
   mime?: string;
+  /**
+   * False only between this window receiving a new hub attachment id and a
+   * relay draft projection carrying that id. An older draft answer cannot
+   * erase that newer local intent; once projected, normal authoritative
+   * reconciliation applies again.
+   */
+  draftSynced?: boolean;
 }
 
 /**
@@ -1705,9 +1712,10 @@ export class RelayClient {
       .filter((a, _index, all) => a.state !== "removed"
         && all.find(candidate => candidate.state !== "removed" && candidate.id === a.id) === a);
     const draftIds = new Set(authoritative.map(a => a.id));
+    const projectedIds = new Set(draft.attachments.map(a => a.id));
     const prior = new Map<ID, Upload>();
-    const held = current.filter((u, index, all) => scope(u) && !u.attachmentId);
-    void held;
+    const held = current.filter(u => scope(u) && (!u.attachmentId
+      || (u.draftSynced === false && !projectedIds.has(u.attachmentId))));
     // The relay projection is authoritative for every row that already has a
     // hub id. Only no-id rows are same-session transient work; an id missing
     // from this authoritative draft was removed/reclaimed and must disappear.
@@ -1717,6 +1725,12 @@ export class RelayClient {
         prior.set(upload.attachmentId, upload);
         continue;
       }
+      // A draft response can have been created while this upload was still in
+      // flight. Until any relay projection includes the new id, that response
+      // is older than this window's local attachment intent and cannot erase
+      // it. This is a causal fence, not a wall-clock comparison: server
+      // processing can legitimately invert uploadedAt and draft.updatedAt.
+      if (upload.draftSynced === false && !projectedIds.has(upload.attachmentId)) continue;
       if (upload.previewUrl) URL.revokeObjectURL(upload.previewUrl);
     }
     const restored: Upload[] = authoritative
@@ -1727,6 +1741,7 @@ export class RelayClient {
         state: a.state === "available" ? "done" : "failed",
         attachmentId: a.id, threadId, mime: a.mime,
         uploadedAt: a.uploadedAt, expiresAt: a.expiresAt,
+        draftSynced: true,
         phase: a.state === "available" ? "ready" : "failed", progress: a.state === "available" ? 100 : undefined,
         ...(existing?.previewUrl ? { previewUrl: existing.previewUrl } : {}),
         draftState: a.state, ...(a.error ? { error: a.error } : {}),
@@ -1737,7 +1752,7 @@ export class RelayClient {
     const same = current.length === next.length && current.every((u, i) => {
       const n = next[i];
       return n && u.localId === n.localId && u.state === n.state && u.attachmentId === n.attachmentId
-        && u.error === n.error && u.threadId === n.threadId;
+        && u.error === n.error && u.threadId === n.threadId && u.draftSynced === n.draftSynced;
     });
     if (same) return;
     this.world.uploads = { ...this.world.uploads, [draft.channelId]: next };
@@ -3628,6 +3643,7 @@ askPolls(projectId: ID): void {
         this.patchUpload(up.channelId, up.localId,
           { state: "done", attachmentId: f.attachment.id,
             phase: "ready", progress: 100,
+            draftSynced: false,
             uploadedAt: f.attachment.uploadedAt,
             expiresAt: f.attachment.uploadedAt + ATTACHMENT_LIMITS.parkedTtlMs,
             ...(f.attachment.mime ? { mime: f.attachment.mime } : {}) });
@@ -3718,13 +3734,16 @@ askPolls(projectId: ID): void {
   }
 
   /** The tray is emptied once its files have gone out with a message. */
-  clearUploads(channelId: ID, threadId?: ID): void {
+  clearUploads(channelId: ID, attachmentIds: readonly ID[], threadId?: ID): void {
     const gone = this.world.uploads[channelId];
     if (!gone) return;
     const scopeThreadId = this.uploadThreadId(threadId);
+    const sentIds = new Set(attachmentIds);
     const keep: Upload[] = [];
     for (const u of gone) {
-      if ((this.uploadThreadId(u.threadId) ?? "") === (scopeThreadId ?? "")) { if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); }
+      const inScope = (this.uploadThreadId(u.threadId) ?? "") === (scopeThreadId ?? "");
+      const wasSent = !!u.attachmentId && sentIds.has(u.attachmentId);
+      if (inScope && wasSent) { if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); }
       else keep.push(u);
     }
     if (keep.length) this.world.uploads = { ...this.world.uploads, [channelId]: keep };

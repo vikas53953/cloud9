@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud9 — where we are · 8 Aug 2026</title>
+<style>
+  :root{
+    --ink:#1b2a38; --bg:#f4f7fa; --card:#ffffff; --line:#dde5ec; --muted:#5b6d7d;
+    --green:#1e7d4f; --green-bg:#e3f3ea; --amber:#9a6a00; --amber-bg:#fff3d6;
+    --red:#b03535; --red-bg:#fbe7e7; --blue:#2c7fc4; --blue-bg:#e5f1fb;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --ink:#e6edf3; --bg:#101a23; --card:#18232e; --line:#2f3d4a; --muted:#93a4b3;
+      --green:#5cc78f; --green-bg:#14372a; --amber:#e0b04a; --amber-bg:#3a2f12;
+      --red:#e07a7a; --red-bg:#3d1d1d; --blue:#5aa5dd; --blue-bg:#16324a;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink);}
+  .wrap{max-width:860px;margin:0 auto;padding:2rem 1.2rem 6rem;}
+  header.hero{margin-bottom:1.6rem}
+  h1{font-size:1.7rem;margin:.2rem 0 .3rem}
+  .when{color:var(--muted);font-size:.92rem}
+  .toc{display:flex;flex-wrap:wrap;gap:.4rem;margin:1rem 0 1.6rem}
+  .toc a{font-size:.85rem;text-decoration:none;color:var(--blue);background:var(--blue-bg);border-radius:99px;padding:.25rem .75rem}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:1.2rem 1.3rem;margin-bottom:1.1rem}
+  h2{font-size:1.12rem;margin:.1rem 0 .8rem;display:flex;align-items:center;gap:.5rem}
+  h2 .n{display:inline-grid;place-items:center;width:1.6rem;height:1.6rem;border-radius:50%;background:var(--blue-bg);color:var(--blue);font-size:.85rem;flex:none}
+  .chip{display:inline-block;font-size:.74rem;font-weight:600;border-radius:99px;padding:.12rem .6rem;white-space:nowrap}
+  .c-done{background:var(--green-bg);color:var(--green)}
+  .c-next{background:var(--amber-bg);color:var(--amber)}
+  .c-you{background:var(--red-bg);color:var(--red)}
+  .c-info{background:var(--blue-bg);color:var(--blue)}
+  table{width:100%;border-collapse:collapse;font-size:.92rem}
+  td,th{padding:.45rem .4rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+  tr:last-child td{border-bottom:none}
+  ul{margin:.3rem 0 .3rem 1.1rem;padding:0}
+  li{margin-bottom:.4rem}
+  .muted{color:var(--muted);font-size:.88rem}
+  .big{font-size:1.05rem}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:.7rem}
+  @media (max-width:640px){.grid{grid-template-columns:1fr}}
+  .tile{border:1px solid var(--line);border-radius:10px;padding:.7rem .8rem}
+  .tile b{display:block;margin-bottom:.15rem}
+  .warn{border-left:4px solid var(--amber);background:var(--amber-bg);border-radius:8px;padding:.7rem .9rem;font-size:.92rem;margin-top:.7rem}
+  .kbd{font:600 .82rem ui-monospace,Consolas,monospace;background:var(--blue-bg);color:var(--blue);border-radius:6px;padding:.05rem .4rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>☁️ Cloud9 — where we are</h1>
+  <div class="when">Snapshot put together <b>8 August 2026, evening</b>. Every claim below is date-stamped.
+  If the world moved after a stamp, the stamp wins the argument — tell me and I'll re-check.</div>
+  <div class="toc">
+    <a href="#s1">1 · The one-line picture</a>
+    <a href="#s2">2 · On your machine now</a>
+    <a href="#s3">3 · Done</a>
+    <a href="#s4">4 · Pending</a>
+    <a href="#s5">5 · Needs you</a>
+    <a href="#s6">6 · Honest gaps</a>
+    <a href="#s7">7 · What I'd do next</a>
+  </div>
+</header>
+
+<section id="s1" data-fb="The one-line picture">
+  <h2><span class="n">1</span> The one-line picture</h2>
+  <p class="big">The app is <b>healthy, fully merged, and current on your machine</b>. All 30 pull requests
+  ever opened are merged — <b>zero open right now</b> (checked against GitHub, 8 Aug evening).
+  No agent is mid-build. The crew is idle, waiting for the next ask.</p>
+  <p class="muted">The live tracker file still says several features are "building" — that board is from 01:34 last night
+  and has gone stale. The git history is the fresher truth: those eleven features all merged through yesterday and today.</p>
+</section>
+
+<section id="s2" data-fb="On your machine right now">
+  <h2><span class="n">2</span> On your machine right now <span class="chip c-done">verified today</span></h2>
+  <table>
+    <tr><th>Thing</th><th>State</th></tr>
+    <tr><td>The Cloud9 you double-click</td>
+        <td>Installed today at <b>21:00</b>. Its inner files are byte-identical to a build from the latest code
+        (same bundle <span class="kbd">index-U4E9vSyT.js</span> in both — compared, not assumed).</td></tr>
+    <tr><td>Latest code (<span class="kbd">master</span>)</td>
+        <td>Commit <span class="kbd">892b62e</span> — "Engineering Canvas" merge, today 20:28. Pushed to GitHub. Nothing uncommitted except two stray items: a <span class="kbd">.worktrees/</span> folder and one uncommitted walk script (<span class="kbd">walk-landed-rails.mjs</span>).</td></tr>
+    <tr><td>Open pull requests</td><td><b>None.</b> All 30 are merged.</td></tr>
+  </table>
+</section>
+
+<section id="s3" data-fb="Done — what you have now">
+  <h2><span class="n">3</span> Done — what's in the app <span class="chip c-done">merged</span></h2>
+
+  <p class="muted">Everything here is merged into master <i>and</i> inside the installed app on your machine (per section 2).</p>
+
+  <div class="grid">
+    <div class="tile"><b>💬 Chat, the Slack way</b>
+      Threads you can drag wider (merged PR #14) · search · reactions · edit/delete · files with
+      permission-checked downloads · saved-for-later list (PR #28) · a real mentions &amp; replies inbox (PR #19).</div>
+    <div class="tile"><b>🤖 Agents that work like employees</b>
+      No clocks killing a run mid-answer — a turn ends when it finishes, fails, or you press Stop (PR #13).
+      Activity board showing who is working · per-agent token spending with saving proposals (PR #10) ·
+      agents hand work to each other and remember things between chats.</div>
+    <div class="tile"><b>🛠 Projects &amp; GitHub</b>
+      Connect a repo, see trunk/PRs/issues, "Look at GitHub now" · an agent works in its own branch
+      and can only publish through your approval card (<span class="kbd">!code</span>) ·
+      manual workflow runbooks (PR #18) · hooks/rules editor (PR #27).</div>
+    <div class="tile"><b>📣 The team layer (this week's landslide)</b>
+      Social feed (PR #20) · Engineering Pulse stand-ups (PR #21) · project polls (PR #22) ·
+      forums &amp; decision records (PR #23) · huddle presence + shared notes (PR #24) ·
+      public project updates (PR #25) · Engineering Canvas (PR #26).</div>
+    <div class="tile"><b>📁 Files workspace</b>
+      A shared Files screen with per-version "who made this" and room-level permission control —
+      proven on the installed app 2 Aug.</div>
+    <div class="tile"><b>🏪 Marketplace &amp; crew</b>
+      Hire ready-made software roles (architect, QA, security review…), edit them like any agent,
+      generative portraits, skills library, capability ladder per agent.</div>
+  </div>
+</section>
+
+<section id="s4" data-fb="Pending — the not-started queue">
+  <h2><span class="n">4</span> Pending — nobody is on these yet <span class="chip c-next">ready next</span></h2>
+  <table>
+    <tr><th>#</th><th>What</th><th>Why you would care</th></tr>
+    <tr><td>1</td><td><b>See the queue.</b> Only two agents run at once; the rest wait invisibly.</td>
+      <td>You type to an agent that's busy, and its row still brags about the last job it finished. You can't tell it's holding your message.</td></tr>
+    <tr><td>2</td><td><b>See the agent's memory room.</b> Old chat gets silently dropped when context fills.</td>
+      <td>Today neither you nor the agent can tell what it forgot or how much room is left.</td></tr>
+    <tr><td>3</td><td><b>Real project skills.</b> Agents can't load skills from a project folder yet — only Cloud9's built-ins.</td>
+      <td>Claude Code on your desktop can; your Cloud9 agents can't. Needs an explicit allow-list so nothing reads your folders silently.</td></tr>
+    <tr><td>4</td><td><b>Richer hand-offs.</b> "@AgentB take this" can only point at a channel — not a memory, run, file, or thread.</td>
+      <td>Context gets lost when one agent passes work to another.</td></tr>
+    <tr><td>5</td><td><b>A "prove it" runner.</b> After an agent claims it built something, run a check you approved and show checked / couldn't-check / mismatch.</td>
+      <td>Today the app checks only four kinds of claims; nothing runs the project's own tests for you.</td></tr>
+  </table>
+
+  <p style="margin-top:.9rem"><b>Also open (found for you, smaller):</b></p>
+  <ul>
+    <li><b>A Codex agent can't have a spending limit at all</b> — only Claude reports what a turn cost, so Codex agents run with no money ceiling. This makes the "money default" decision below more urgent, not less.</li>
+    <li><b>One QA check reads like a phishing trick</b> (it asks an agent to read "the-secret-note.txt"). The agent politely refuses — correctly — so the walk shows 41/42 instead of 42/42. The check needs rewriting, not the app.</li>
+    <li><b>Sol's queue:</b> GitHub round 2 (waiting on your feedback), search-everywhere, turn coordination, and the notifications/mobile groundwork — all not started.</li>
+    <li><b>Join a friend's Cloud9</b> — the plumbing is built and tested underneath; there is still no screen for it. Blocked on the Tailscale sign-in below anyway.</li>
+  </ul>
+</section>
+
+<section id="s5" data-fb="Needs you — three things only you can do">
+  <h2><span class="n">5</span> Needs you — three things only you can do <span class="chip c-you">your hands</span></h2>
+  <table>
+    <tr><th>Thing</th><th>Cost</th><th>What it unblocks</th></tr>
+    <tr><td><b>Uninstall McAfee</b></td><td>~10 min</td>
+      <td>Every program start costs <b>271ms instead of 20ms</b> — it's the single reason builds and tests crawl on this PC. Windows Defender is off; McAfee is the only scanner.</td></tr>
+    <tr><td><b>Decide the money default</b></td><td>one word</td>
+      <td>Every new agent starts with your full personal setup ON and no spending cap — that's <b>about $1.75 a question vs half a cent</b> the other way. My recommendation: default OFF with a small cap, big switch one click away.</td></tr>
+    <tr><td><b>Tailscale sign-in</b></td><td>~10 min in your browser</td>
+      <td>The private network that lets friends (and your phone) reach your hub without exposing it to the public internet. The app side is ready; only the sign-in is yours.</td></tr>
+  </table>
+</section>
+
+<section id="s6" data-fb="Honest gaps — not verified">
+  <h2><span class="n">6</span> Honest gaps — what I am NOT claiming <span class="chip c-info">not verified</span></h2>
+  <ul>
+    <li><b>No full test sweep after the last eleven merges.</b> The last complete chain (build → tests → browser QA → package → install → walk the real app) ran on the <b>evening of 6 Aug</b>: walk 41/41, tests 1,618/1,620. Each of the 11 features merged since brought its own focused tests, but nobody has re-run the whole suite on today's master. That's the next proof to run.</li>
+    <li><b>Visual = needs a screenshot from the installed app.</b> Eleven screens merged in ~30 hours. Focused checks passed per branch, but the current installed build has not been walked end-to-end. If anything looks off when you click around, that's why — tell me what you see.</li>
+    <li><b>The tracker file is stale</b> (says "building" for things that merged today). It wants one honest rewrite — happy to do it.</li>
+  </ul>
+</section>
+
+<section id="s7" data-fb="What I'd do next">
+  <h2><span class="n">7</span> What I'd do next, if you say go</h2>
+  <ol>
+    <li><b>Run the full proof chain once on current master</b> — build, all tests, browser QA, fresh package, reinstall, walk the real app. One run, real numbers, screenshots. This converts section 6's "not verified" into fact.</li>
+    <li><b>Rewrite the tracker</b> so the board matches reality.</li>
+    <li><b>Then the queue, in the order of section 4</b> — starting with "see the queue", because it fixes the thing that bites you daily: talking to a busy agent and not knowing it.</li>
+  </ol>
+  <p class="muted">Mark anything above with 👍 / 👎 / 💬 and hit "Copy my feedback" — paste it back and I'll take it from there.</p>
+</section>
+
+</div>
+
+<script>
+/* ============================================================
+   Vikas review kit — feedback layer for every HTML review page.
+   Paste this <script> at the end of any artifact I hand him.
+
+   What it gives him:
+     - click any section marked data-fb="<label>" to attach a note
+     - thumbs up / down per section
+     - a floating panel listing everything he has said
+     - ONE button that copies it all as plain text to paste back
+
+   Why it exists: published artifacts cannot send data back into a
+   Claude session (no such capability). This turns "read a wall and
+   retype your thoughts" into "click, type, copy once".
+
+   Usage:
+     1. mark reviewable blocks:  <section data-fb="Option A — Slack True">
+     2. include this script once, at the end of the page.
+   ============================================================ */
+(function () {
+  "use strict";
+  var STORE = "vikas-fb-" + (document.title || location.pathname);
+  var notes = {};
+  try { notes = JSON.parse(localStorage.getItem(STORE) || "{}"); } catch (e) { notes = {}; }
+
+  function save() { try { localStorage.setItem(STORE, JSON.stringify(notes)); } catch (e) {} }
+
+  var css = document.createElement("style");
+  css.textContent = [
+    ':root{--fb-ink:#16232e;--fb-bg:#fff;--fb-line:#d8e0e8;--fb-accent:#2c7fc4;',
+    '--fb-yes:#1e7d4f;--fb-yes-bg:#e3f3ea;--fb-no:#b03535;--fb-no-bg:#fbe7e7;--fb-muted:#5a6b7a;}',
+    '@media (prefers-color-scheme:dark){:root{--fb-ink:#e6edf3;--fb-bg:#18232e;--fb-line:#2f3d4a;',
+    '--fb-accent:#5aa5dd;--fb-yes:#5cc78f;--fb-yes-bg:#14372a;--fb-no:#e07a7a;--fb-no-bg:#3d1d1d;--fb-muted:#93a4b3;}}',
+    '[data-fb]{position:relative;}',
+    '[data-fb].fb-has{outline:2px solid var(--fb-accent);outline-offset:3px;border-radius:8px;}',
+    '.fb-tools{position:absolute;top:.4rem;right:.4rem;display:flex;gap:.25rem;opacity:.45;',
+    'transition:opacity .15s;z-index:5;}',
+    '[data-fb]:hover .fb-tools,[data-fb]:focus-within .fb-tools{opacity:1;}',
+    '@media (prefers-reduced-motion:reduce){.fb-tools{transition:none;}}',
+    '.fb-tools button{font:600 .78rem/1 system-ui,sans-serif;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);border-radius:99px;padding:.3rem .6rem;cursor:pointer;}',
+    '.fb-tools button:hover{border-color:var(--fb-accent);color:var(--fb-accent);}',
+    '.fb-tools button.on-yes{background:var(--fb-yes-bg);color:var(--fb-yes);border-color:var(--fb-yes);}',
+    '.fb-tools button.on-no{background:var(--fb-no-bg);color:var(--fb-no);border-color:var(--fb-no);}',
+    '.fb-note{margin-top:.6rem;width:100%;box-sizing:border-box;font:.92rem/1.5 system-ui,sans-serif;',
+    'color:var(--fb-ink);background:var(--fb-bg);border:1px dashed var(--fb-line);border-radius:8px;',
+    'padding:.55rem .7rem;resize:vertical;min-height:2.6rem;}',
+    '.fb-note:focus{outline:2px solid var(--fb-accent);outline-offset:1px;border-style:solid;}',
+    '.fb-bar{position:fixed;right:1rem;bottom:1rem;z-index:9999;display:flex;flex-direction:column;',
+    'align-items:flex-end;gap:.5rem;font:14px/1.5 system-ui,sans-serif;}',
+    '.fb-bar button{cursor:pointer;border-radius:99px;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);padding:.55rem 1rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.14);}',
+    '.fb-bar .fb-copy{background:var(--fb-accent);color:#fff;border-color:transparent;}',
+    '.fb-panel{background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;',
+    'padding:.9rem 1rem;max-width:min(380px,90vw);max-height:50vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.2);display:none;}',
+    '.fb-panel.open{display:block;}',
+    '.fb-panel h4{margin:0 0 .5rem;font-size:.95rem;}',
+    '.fb-panel li{margin-bottom:.5rem;font-size:.88rem;}',
+    '.fb-panel .lbl{font-weight:600;}',
+    '.fb-empty{color:var(--fb-muted);font-size:.88rem;margin:0;}',
+    '@media print{.fb-bar,.fb-tools{display:none;}}'
+  ].join("");
+  document.head.appendChild(css);
+
+  // The floating bar is built FIRST: per-section wiring calls render(), which
+  // needs these to exist. (Building it after the loop threw on the first
+  // section and left every later section without its buttons.)
+  var bar = document.createElement("div");
+  bar.className = "fb-bar";
+  var panel = document.createElement("div");
+  panel.className = "fb-panel";
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  var copy = document.createElement("button");
+  copy.type = "button"; copy.className = "fb-copy"; copy.textContent = "📋 Copy my feedback";
+  bar.appendChild(panel); bar.appendChild(toggle); bar.appendChild(copy);
+  document.body.appendChild(bar);
+
+  var blocks = [].slice.call(document.querySelectorAll("[data-fb]"));
+
+  // Standalone mode: a page with no marked-up blocks (e.g. a full-screen
+  // prototype we did not author) still gets a working note box, so the layer
+  // can be injected into ANY page rather than only pages we wrote.
+  if (!blocks.length) {
+    var solo = document.createElement("div");
+    solo.setAttribute("data-fb", document.title || "this page");
+    solo.setAttribute("data-fb-solo", "");
+    solo.style.cssText = "position:fixed;left:1rem;bottom:1rem;z-index:9998;width:min(320px,80vw);" +
+      "background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;" +
+      "padding:2.2rem .8rem .8rem;box-shadow:0 8px 30px rgba(0,0,0,.2);font:14px/1.5 system-ui,sans-serif;";
+    var cap = document.createElement("div");
+    cap.textContent = "Notes on this page";
+    cap.style.cssText = "font-weight:600;font-size:.85rem;margin-bottom:.3rem;";
+    solo.appendChild(cap);
+    document.body.appendChild(solo);
+    blocks = [solo];
+  }
+  blocks.forEach(function (el) {
+    var key = el.getAttribute("data-fb");
+    if (!notes[key]) notes[key] = { verdict: "", text: "" };
+
+    var tools = document.createElement("div");
+    tools.className = "fb-tools";
+    var yes = document.createElement("button");
+    yes.type = "button"; yes.textContent = "👍 like"; yes.title = "I like this";
+    var no = document.createElement("button");
+    no.type = "button"; no.textContent = "👎 no"; no.title = "Not this";
+    var add = document.createElement("button");
+    add.type = "button"; add.textContent = "💬 note"; add.title = "Write a note";
+    tools.appendChild(yes); tools.appendChild(no); tools.appendChild(add);
+    el.appendChild(tools);
+
+    var note = document.createElement("textarea");
+    note.className = "fb-note";
+    note.placeholder = "Your note on “" + key + "”…";
+    note.value = notes[key].text || "";
+    // in standalone mode the box is the whole point — always show it
+    var solo = el.hasAttribute("data-fb-solo");
+    note.style.display = notes[key].text || solo ? "block" : "none";
+    el.appendChild(note);
+
+    function paint() {
+      yes.className = notes[key].verdict === "yes" ? "on-yes" : "";
+      no.className = notes[key].verdict === "no" ? "on-no" : "";
+      el.classList.toggle("fb-has", !!(notes[key].verdict || notes[key].text));
+      render();
+    }
+    yes.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "yes" ? "" : "yes"; save(); paint();
+    });
+    no.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "no" ? "" : "no"; save(); paint();
+    });
+    add.addEventListener("click", function () {
+      note.style.display = "block"; note.focus();
+    });
+    note.addEventListener("input", function () {
+      notes[key].text = note.value.trim(); save(); paint();
+    });
+    paint();
+  });
+
+  function collected() {
+    return Object.keys(notes)
+      .filter(function (k) { return notes[k].verdict || notes[k].text; })
+      .map(function (k) { return { key: k, v: notes[k].verdict, t: notes[k].text }; });
+  }
+
+  function asText() {
+    var items = collected();
+    if (!items.length) return "";
+    var out = ["FEEDBACK ON: " + (document.title || "this page"), ""];
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "LIKE" : i.v === "no" ? "NO" : "NOTE";
+      out.push("- [" + mark + "] " + i.key + (i.t ? " — " + i.t : ""));
+    });
+    return out.join("\n");
+  }
+
+  function render() {
+    var items = collected();
+    toggle.textContent = items.length ? "🗒 " + items.length + " marked" : "🗒 no marks yet";
+    if (!items.length) { panel.innerHTML = '<p class="fb-empty">Hover any section, then use 👍 / 👎 / 💬.</p>'; return; }
+    var html = "<h4>What you've said</h4><ul>";
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "👍" : i.v === "no" ? "👎" : "💬";
+      html += '<li>' + mark + ' <span class="lbl">' + escapeHtml(i.key) + "</span>" +
+        (i.t ? " — " + escapeHtml(i.t) : "") + "</li>";
+    });
+    panel.innerHTML = html + "</ul>";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  toggle.addEventListener("click", function () { panel.classList.toggle("open"); });
+  copy.addEventListener("click", function () {
+    var text = asText();
+    if (!text) { copy.textContent = "nothing marked yet"; setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 1600); return; }
+    var done = function () {
+      copy.textContent = "✅ copied — paste it to Claude";
+      setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 2600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { window.prompt("Copy this:", text); }
+      document.body.removeChild(ta);
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

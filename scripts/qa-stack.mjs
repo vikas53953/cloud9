@@ -225,7 +225,16 @@ async function main() {
   });
 
   if (!noUi) {
-    start("ui", "npx", ["vite", "preview", "--host", "127.0.0.1", "--port", String(UI_PORT)],
+    // Vite silently increments an occupied preview port. QA would then keep
+    // driving the old process on UI_PORT while the build started on UI_PORT+1,
+    // producing plausible but completely invalid results. Refuse that state
+    // before launch, and make Vite itself hold the same invariant.
+    if (await waitForPort(UI_PORT, 0.5)) {
+      await abort(1,
+        `[qa-stack] something is already using UI port ${UI_PORT} — probably a preview ` +
+        "from an earlier run. Close it and try again.");
+    }
+    start("ui", "npx", ["vite", "preview", "--host", "127.0.0.1", "--port", String(UI_PORT), "--strictPort"],
       {}, path.join(repo, "apps", "desktop"));
     if (!(await waitForPort(UI_PORT, 90))) {
       await abort(1, "[qa-stack] the app screen did not start — run `npm run build -w @cloud9/desktop`");

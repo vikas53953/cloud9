@@ -52,7 +52,8 @@ test("workspace access loss fails closed and panel dismissal restores the picker
   assert.match(panel, /if \(!hasAccess\) return false/);
   assert.match(panel, /data-access-state="unavailable"/);
   assert.match(panel, /useEscapeCloses\(onClose, true\)/);
-  assert.match(panel, /useClickAwayCloses\(panelRef, onClose, true\)/);
+  assert.match(panel, /window\.setTimeout\(onClose, 0\)/);
+  assert.match(panel, /useClickAwayCloses\(panelRef, closeAfterOutsideClick, true\)/);
   assert.match(app, /priorWorkspaceLayout/);
   assert.match(app, /workspaceLayoutRef\.current\?\.focus/);
 });

@@ -2,7 +2,7 @@
 import { chromium } from "playwright";
 import fs from "node:fs";
 import {
-  assertHarnessIsHonest, qaTarget, reportAndExit, signInAsOwner, waitForAgentAnswer,
+  assertHarnessIsHonest, qaTarget, reportAndExit, signInAsOwner, waitFor, waitForAgentAnswer,
 } from "./qa-target.mjs";
 
 const SHOTS = new URL("../docs/qa", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
@@ -48,13 +48,36 @@ try {
 
   // add to #general, request background work
   await page.click(".sidebar >> text=# general");
-  await page.selectOption(".chathead select", { label: "✨ Guard" }).catch(async () => {
-    const opt = await page.$$eval(".chathead select option", os => os.find(o => o.textContent.includes("Guard"))?.value);
-    await page.selectOption(".chathead select", opt);
+  await page.selectOption('.chathead select[aria-label="Add someone to this room"]', { label: "✨ Guard" }).catch(async () => {
+    const opt = await page.$$eval('.chathead select[aria-label="Add someone to this room"] option', os => os.find(o => o.textContent.includes("Guard"))?.value);
+    await page.selectOption('.chathead select[aria-label="Add someone to this room"]', opt);
   });
   const box = page.locator(".composer textarea");
-  await box.fill("@Guard !bg research the sensitive topic");
-  await box.press("Enter");
+  const sendAccepted = async text => {
+    await box.fill(text);
+    await waitFor(page, expected => {
+      const textarea = document.querySelector(".thread > .composer textarea");
+      const send = document.querySelector(".thread > .composer .sendbtn");
+      return textarea?.value === expected && send instanceof HTMLButtonElement && !send.disabled;
+    }, text, { timeout: 10000,
+      what: "the controlled composer to expose the enabled Run action" });
+    await page.locator(".thread > .composer .sendbtn").click();
+    const accepted = async () => waitFor(page, expected =>
+      [...document.querySelectorAll(".msgs .msg[data-msg]")]
+        .some(row => (row.textContent ?? "").includes(expected)),
+    text, { timeout: 15000, what: `the canonical room message "${text}" to arrive` });
+    try {
+      await accepted();
+    } catch (error) {
+      // A lost acknowledgement intentionally leaves the draft untouched and
+      // keeps its stable clientMessageId. One manual retry must return the
+      // canonical message rather than creating a duplicate.
+      if (await box.inputValue() !== text) throw error;
+      await page.locator(".thread > .composer .sendbtn").click();
+      await accepted();
+    }
+  };
+  await sendAccepted("@Guard !bg research the sensitive topic");
   /* WHERE THE ANSWER IS NOW. Since 2026-08-04 an agent answers in a thread
      hanging off the message it answers, so "I'm waiting for my owner's approval"
      is a reply under his ask, not a row in the scroll — see the long note on
@@ -98,8 +121,7 @@ try {
   await page.click('.rail-btn[data-go="chat"]');
 
   // second request → approve → completes with proactive result
-  await box.fill("@Guard !bg summarise the safe topic");
-  await box.press("Enter");
+  await sendAccepted("@Guard !bg summarise the safe topic");
   await page.locator("[data-open-tools]").click();
   await page.waitForSelector('.rail-tools-drawer [data-go="tasks"] .rail-count', { timeout: 30000 });
   await page.click('.rail-tools-drawer [data-go="tasks"]');
