@@ -20,10 +20,14 @@ jobs:
   build-and-test:
     name: build + tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # The first real run took 17m38s end to end on windows-latest. 30 caps a
-    # hung suite (the engine suite currently never finishes on Linux) without
-    # cutting a healthy run short.
-    timeout-minutes: 30
+    # BACKSTOP ONLY. The real caps are per step, below. A job-level timeout
+    # cancels the job, and `cancelled()` then skips every remaining step — so
+    # if this one ever fires first it destroys the per-suite reporting this
+    # workflow exists for. Sized so it cannot: worst honest case is ~1m
+    # install+build + 10m engine + 20m relay + 5m + 5m = 41m of step caps,
+    # which the step timeouts stop first in practice (relay's real time is
+    # 11m13s). Never lower this below the sum of the step caps.
+    timeout-minutes: 40
     strategy:
       # Both platforms always report. A red Windows job must not hide the
       # Linux result, or the other way round.
@@ -35,10 +39,10 @@ jobs:
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Use the Node version this repo pins
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -54,23 +58,42 @@ jobs:
         run: npm ci
 
       - name: Build
+        id: build
         run: npm run build
 
       # One step per workspace so a failure in an early suite does not hide the
       # later ones. `!cancelled()` keeps the remaining suites reporting; it does
-      # NOT make a failing suite pass — any red step still fails the job.
+      # NOT make a failing suite pass — any red step still fails the job. The
+      # `steps.build.outcome` gate stops four more reds piling on top of a real
+      # install/build failure, which would bury the actual cause.
+      #
+      # Every suite carries its OWN timeout. A step-level timeout marks that
+      # step `failure` and leaves the job running, so the suites behind a hung
+      # one still report; a job-level timeout would mark them `cancelled` and
+      # skip them. Sized from measured CI time, roughly 2x healthy:
+      #   shared 6s, engine 5m20s, relay 11m13s, desktop 3s.
       - name: Tests — packages/shared
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 5
         run: npm test -w @cloud9/shared
 
+      # 10 minutes: ~2x the 5m20s this takes on Windows. It also stops the
+      # known Linux hang dead — the suite goes silent 25s in and never returns.
+      # Deliberately NOT "fixed" with --test-force-exit: that would hide the
+      # leaked child processes instead of failing on them.
       - name: Tests — packages/engine
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 10
         run: npm test -w @cloud9/engine
 
+      # 20 minutes, not 10: this suite genuinely needs 11m13s on Windows, so a
+      # blanket cap would kill a healthy run.
       - name: Tests — apps/relay
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 20
         run: npm test -w @cloud9/relay
 
       - name: Tests — apps/desktop
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 5
         run: npm test -w @cloud9/desktop
