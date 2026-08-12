@@ -114,20 +114,98 @@ test("A SECRET SAID TO THE CONSOLE DOES NOT REACH THE FILE", async () => {
   assert.match(written, /the harness fell over/, "while the useful part still arrives");
 });
 
-test("nothing is written at all if the redaction rule cannot be loaded", async () => {
+test("this computer's own account name does not reach the log either", async () => {
   const userData = tmp();
   const { main } = loadMain({ userData });
-  const folder = await main.openDiary();
-  // …now pretend the rule was never there, as it would be on a broken install
-  const file = path.join(folder, "cloud9-main.log");
-  fs.writeFileSync(file, "");
-  const { main: second } = loadMain({ userData });
-  // no `loadRedactor` call: `redactForDiary` is null in this copy
-  console.log("[cloud9] must-not-reach-the-file");
-  const written = fs.readFileSync(file, "utf8");
-  assert.ok(!written.includes("must-not-reach-the-file"),
-    "FAIL CLOSED: unchecked text does not go on the disk just because a rule failed to load");
-  assert.ok(typeof second.loadRedactor === "function");
+  await main.openDiary();
+  const me = os.userInfo().username;
+  console.log(`[cloud9] agent folder for ${me} at ${os.homedir()}`);
+
+  const written = fs.readFileSync(path.join(userData, "logs", "cloud9-main.log"), "utf8");
+  assert.ok(!written.includes(me),
+    "PINNED ON PURPOSE: `redactForSharing` only blanks this machine's names once " +
+    "`setMachineNames` has run, and the only thing that runs it is `@cloud9/engine`'s own " +
+    `import side effect. A refactor that stops pulling provider.js in would silently weaken ` +
+    `this with nothing to say so: ${written}`);
+});
+
+// ---------------------------------------------------------------------------
+// AND WHEN THE REAL RULE CANNOT BE LOADED AT ALL.
+//
+// This is not a hypothetical branch. "The packaged app cannot load
+// @cloud9/engine" is one of the live root-cause hypotheses for blocker 8.3
+// itself — so it is precisely the session where the diary matters most, and the
+// first version of it responded by writing ONE generic warning and discarding
+// every startup line including the loader's own error. A diagnostic instrument
+// that switches itself off inside the failure it exists to diagnose is not an
+// instrument. It degrades now instead.
+// ---------------------------------------------------------------------------
+
+/** An `@cloud9/engine` that cannot be found, exactly as a broken install fails. */
+const brokenEngine = async () => {
+  throw new Error("Cannot find package '@cloud9/engine' imported from " +
+    "C:\\Users\\vikasmit\\AppData\\Local\\Programs\\Cloud9\\resources\\app\\electron\\main.cjs");
+};
+
+test("A LOST REDACTION RULE DEGRADES THE LOG — it does not empty it", async () => {
+  const userData = tmp();
+  const { main } = loadMain({ userData });
+  console.log("[cloud9] STARTUP-LINE-ONE claude installed=true signedIn=false");
+  await main.openDiary({ importEngine: brokenEngine });
+  console.log("[cloud9] STARTUP-LINE-TWO engine online");
+
+  const written = fs.readFileSync(path.join(userData, "logs", "cloud9-main.log"), "utf8");
+  assert.match(written, /STARTUP-LINE-ONE claude installed=true signedIn=false/,
+    "THE LINE BLOCKER 3 NEEDED was thrown away by the old fail-closed branch");
+  assert.match(written, /STARTUP-LINE-TWO/, "and lines said after it are kept too");
+});
+
+test("…and it says loudly that it is degraded, and why", async () => {
+  const userData = tmp();
+  const { main } = loadMain({ userData });
+  await main.openDiary({ importEngine: brokenEngine });
+  console.log("[cloud9] an-ordinary-line");
+
+  const written = fs.readFileSync(path.join(userData, "logs", "cloud9-main.log"), "utf8");
+  assert.match(written, /REDUCED LOGGING THIS SESSION/,
+    "a person reading this file must not mistake the blunt rule's output for the real one's");
+  assert.match(written, /Cannot find package '@cloud9\/engine'/,
+    "THE SINGLE MOST VALUABLE SENTENCE the app can write in this session is the reason, and " +
+    "`console.error` in a packaged main process goes nowhere — so it has to land here");
+  assert.match(written, /INFO~ \[cloud9\] an-ordinary-line/,
+    "every degraded line carries its own mark, so they can all be found with one search");
+});
+
+test("the reduced rule still keeps secrets out", async () => {
+  const userData = tmp();
+  const { main } = loadMain({ userData });
+  await main.openDiary({ importEngine: brokenEngine });
+  console.error("[cloud9] spawn failed:",
+    "ANTHROPIC_API_KEY=sk-ant-api03-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB " +
+    "at C:\\Users\\vikasmit\\.local\\bin\\claude.exe");
+
+  const written = fs.readFileSync(path.join(userData, "logs", "cloud9-main.log"), "utf8");
+  assert.ok(!written.includes("sk-ant-api03-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"),
+    `FAILING CLOSED ON SECRETS is the part that must not change: ${written}`);
+  assert.ok(!written.includes("C:\\Users\\vikasmit\\.local\\bin"),
+    "absolute paths are still cut down to their last segment");
+  assert.match(written, /claude\.exe/, "while the part worth reading survives");
+  assert.match(written, /spawn failed/);
+});
+
+test("the reduced rule is blunt on purpose, and never throws", () => {
+  const userData = tmp();
+  const { main } = loadMain({ userData });
+  const r = main.plainlyRedact;
+  assert.equal(r(""), "");
+  assert.equal(r(null), "");
+  assert.equal(r(undefined), "");
+  assert.match(r("CLOUD9_CRED=hunter2 stays out"), /CLOUD9_CRED=\*\*\*/);
+  assert.match(r("token ghp_AAAAAAAAAAAAAAAAAAAA here"), /\*\*\*/);
+  assert.match(r("/Users/vikasmit/notes/secret.md"), /secret\.md/);
+  assert.ok(!r("/Users/vikasmit/notes/secret.md").includes("vikasmit"));
+  // it caps, so one enormous line cannot swamp the file
+  assert.ok(r("x".repeat(9000)).length <= 4000);
 });
 
 // ---------------------------------------------------------------------------

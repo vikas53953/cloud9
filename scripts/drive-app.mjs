@@ -2763,15 +2763,46 @@ async function walk(page) {
         const card = page.locator(`.harnesscard[data-harness="${name}"]`).first();
         if (await card.count() === 0) throw new Error(`Settings has no ${name} card at all`);
 
-        /* Press the app's own Re-check and let it finish. The button reads
-           "Checking…" and is disabled while a look is in flight, so waiting for
-           it to come back is waiting for a settled answer. */
-        const recheck = card.locator(".harnessbtns .ghostbtn");
+        /* Press the app's own Re-check and let it finish.
+         *
+         * WAIT FOR IT TO START BEFORE WAITING FOR IT TO STOP (2026-08-13).
+         * Waiting only for "Checking…" to go away is a wait that can do nothing
+         * at all: `until` runs its question immediately, and the button only
+         * says "Checking…" after `refreshHarness` has crossed the socket, the
+         * engine has set the flag and the screen has redrawn. Land the first
+         * poll before that round-trip and the button still says "Re-check", the
+         * wait returns satisfied on poll zero, and the comparison below reads a
+         * card that is about to correct itself — hard-failing on a stale
+         * "✗ not signed in", which is precisely the flakiness this settle step
+         * was added to prevent.
+         *
+         * A MISSED START IS NOT A FAILURE. A quick harness can finish before we
+         * can see it begin, so not observing the start is treated as "already
+         * settled" — never as a fault. The check must not be able to go red
+         * because of its own timing either way.
+         *
+         * The button is named rather than positioned: the card has a second
+         * `.harnessbtns` block whose button is "Remove saved key", and a
+         * positional selector one DOM reorder away from deleting a real
+         * credential is not something to leave in a walk that also runs in
+         * `--real-data` mode. */
+        const recheck = card.getByRole("button", { name: /^(Re-check|Checking…)$/ });
         if (await recheck.count()) {
+          const label = async () =>
+            (await recheck.first().innerText().catch(() => "")).trim();
           await recheck.first().click().catch(() => { /* already looking */ });
-          await until(`the ${name} card to finish looking at this computer`, async () =>
-            !/checking/i.test((await recheck.first().innerText().catch(() => "")).trim()),
-            { timeout: 300000, every: 500 })
+          await until(`the ${name} card to start looking at this computer`,
+            async () => /checking/i.test(await label()),
+            { timeout: 5000, every: 100 })
+            .catch(() => { /* it answered before we could see it start — fine */ });
+          /* 3 minutes, not 5. A full detection round costs about 30 seconds and
+             five child processes, so this is already six times the measured
+             worst case — and this check's total budget is worth watching: two
+             cards × (this wait + a sign-in probe below) is the largest single
+             cost in the walk. */
+          await until(`the ${name} card to finish looking at this computer`,
+            async () => !/checking/i.test(await label()),
+            { timeout: 180000, every: 500 })
             .catch(() => { throw new Error(`the ${name} card never finished re-checking, so ` +
               "nothing it says can be compared with this computer"); });
         }
@@ -2787,8 +2818,6 @@ async function walk(page) {
         const saysSignedIn = /✓ signed in/.test(words);
         const saysSignedOut = /✗ not signed in/.test(words);
         const saysSignInUnknown = /· sign-in not confirmed/.test(words);
-        /* A saved key runs turns without the CLI being signed in at all, so the
-           sign-in comparison below does not apply to that machine. */
         const savedKey = /✓ key saved on this computer/.test(words);
 
         // ---- fact one: is the app here at all
@@ -2803,10 +2832,37 @@ async function walk(page) {
             `(${found.why})`);
           continue;
         }
+
+        /* ================================================================
+         * A SAVED KEY SETTLES THE SIGN-IN, WHATEVER THE CLI SITUATION IS.
+         * ================================================================
+         *
+         * Read straight off `applyProviders` in `host.ts`, which is the code
+         * that actually decides whether a turn can run: it builds an
+         * `SdkProvider` from a held credential BEFORE it ever looks at
+         * `lastState.installed`. So "a key saved in Settings and no CLI on the
+         * machine at all" is a fully working configuration, and the harness
+         * manager's merge correctly draws `✓ signed in` + `✓ key saved` +
+         * `· app not confirmed` for it.
+         *
+         * This escape used to live below, inside the branch for a CLI that IS
+         * present, so it could never be reached on that machine — and the check
+         * then failed with "the card claims a signed-in account for an app this
+         * computer cannot even run" while every agent in the app worked
+         * perfectly. A gating check calling a correct app a liar is the exact
+         * failure this whole PR is about, so the order here mirrors the order
+         * in `host.ts` rather than an order that reads naturally. */
+        if (savedKey && saysSignedIn) {
+          agreed.push(`${name} runs on a key saved in Settings` +
+            `${found.present ? ` (the app is here too: ${found.version})` : " — the app itself " +
+              "is not on this computer, and it does not need to be"}`);
+          continue;
+        }
+
         if (!found.present) {
           if (saysSignedIn) {
-            wrong.push(`${name}: the card claims a signed-in account for an app this computer ` +
-              "cannot even run");
+            wrong.push(`${name}: the card claims a signed-in account with no saved key and no ` +
+              "app on this computer to hold one");
             continue;
           }
           agreed.push(`${name} genuinely absent, and the card claims nothing it cannot know`);
@@ -2814,10 +2870,6 @@ async function walk(page) {
         }
 
         // ---- fact two: is it signed in. Only asked when the app really is here.
-        if (savedKey && saysSignedIn) {
-          agreed.push(`${name} found (${found.version}), runs on a key saved in Settings`);
-          continue;
-        }
         const login = signedInOnThisComputer(name);
         if (!login.answered) {
           /* This walk could not get an answer either. It refuses to accuse the

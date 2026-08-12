@@ -84,6 +84,8 @@ let diaryDropped = 0;
  * is null NOTHING goes on the disk. See `loadRedactor`.
  */
 let redactForDiary = null;
+/** why the real rule is not in force, kept so the file can say it */
+let redactorProblem = null;
 
 function diaryFolder() {
   try {
@@ -112,28 +114,88 @@ function diaryFolder() {
  * the same rule run records are shared under. One rule, one owner — a second
  * copy here would drift from it, which is the bug this whole round removed.
  *
- * FAIL CLOSED: if that rule cannot be loaded, the diary does not write. It says
- * so, in the file, once — a log that explains why it is empty is worth more
- * than a log that quietly is.
+ * ================================================================
+ * FAIL CLOSED ON SECRETS — NOT ON INFORMATION. (2026-08-13)
+ * ================================================================
  *
- * THE HONEST COST: `redactForSharing` cuts absolute paths down to their last
- * segment and replaces this account's name with "someone", so the diary says
- * "claude.exe" where the raw line said the full path. That is the trade the
- * project has already made everywhere else it shares text.
+ * The first version of this refused to write anything at all when the engine's
+ * rule could not be loaded. That is the wrong axis to fail on, and it was
+ * proved rather than argued: driving the branch produced a log containing ONE
+ * generic warning and nothing else — the harness-detection lines were gone, and
+ * so was the loader's own error naming the module it could not find.
+ *
+ * And the scenario that triggers it is not hypothetical. "The packaged app
+ * cannot load `@cloud9/engine`" is one of the live root-cause hypotheses for
+ * blocker 8.3 itself. So in exactly the case the diary was built to diagnose,
+ * the diary was disabling itself and erasing its best clue. A diagnostic
+ * instrument coupled to the subsystem it diagnoses is not an instrument.
+ *
+ * So it degrades instead of dying: `plainlyRedact` below is a small, blunt,
+ * self-contained scrub used ONLY when the real rule is unavailable. It is
+ * deliberately more aggressive and less clever than the engine's — it throws
+ * away more than it needs to — because its job is to be obviously safe without
+ * being obviously correct, and the session says so loudly in the file.
+ *
+ * THE HONEST COST of the real rule: `redactForSharing` cuts absolute paths down
+ * to their last segment, so the diary says "claude.exe" where the raw line said
+ * the full path. That is the trade the project already makes everywhere it
+ * shares text.
  */
-async function loadRedactor() {
+async function loadRedactor(importEngine) {
   if (redactForDiary) return true;
   try {
-    const mod = await import("@cloud9/engine");
+    const mod = await (importEngine ? importEngine() : import("@cloud9/engine"));
     if (typeof mod.redactForSharing !== "function") throw new Error("no redactForSharing in it");
     redactForDiary = mod.redactForSharing;
+    redactorProblem = null;
     return true;
   } catch (err) {
-    console.error("[cloud9] the diary could not load the engine's redaction rule, so nothing " +
-      `will be written to the log file: ${err?.message ?? err}`);
+    /* KEPT, NOT JUST PRINTED. `console.error` in a packaged Electron main
+       process goes nowhere — that is the entire reason this file exists — so
+       the one sentence most worth having ("could not find @cloud9/engine")
+       would be lost precisely when it matters. It is held here so `openDiary`
+       can put it in the file. */
+    redactorProblem = String(err?.message ?? err);
+    console.error("[cloud9] the diary could not load the engine's redaction rule, so this " +
+      `session's log is scrubbed by a reduced built-in rule instead: ${redactorProblem}`);
     redactForDiary = null;
     return false;
   }
+}
+
+/**
+ * THE REDUCED RULE — used only when the engine's own one cannot be loaded.
+ *
+ * Not a second copy of `redactForSharing`, and not trying to be: a copy that
+ * drifts from the original is the bug this round removed. This is a blunter
+ * instrument with a narrower promise — take out anything shaped like a secret,
+ * cut absolute paths to their last segment, and cap the length — accepting that
+ * it will also mangle harmless text. Every line it touches is marked in the
+ * file, so nobody mistakes its output for the real rule's.
+ */
+function plainlyRedact(text, max = DIARY_LINE_MAX) {
+  if (!text) return "";
+  let out = String(text)
+    // NAME=value → NAME=*** for anything that smells like a credential
+    .replace(/\b([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CRED|AUTH)[A-Za-z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|\S+)/gi,
+      (_m, name) => `${name}=***`)
+    // known token shapes, wherever they appear
+    .replace(/\b(?:sk|pk|ghp|gho|ghu|ghs|github_pat|xox[abprs]|glpat|AIza|hooks)[-_][A-Za-z0-9_-]{6,}/gi, "***")
+    // any long opaque blob
+    .replace(/\b[A-Za-z0-9+/_-]{40,}={0,2}\b/g, "***")
+    // absolute paths → last segment only (Windows, UNC, POSIX)
+    .replace(/\b[A-Za-z]:[\\/][^\s"'|;&]*/g, m => m.split(/[\\/]/).pop() || "…")
+    .replace(/(^|[\s"'(=,])\\\\[^\s"'|;&]+/g, (m, lead) => `${lead}${m.split(/[\\/]/).pop() || "…"}`)
+    .replace(/(^|[\s"'(=,])\/(?:home|Users|root|mnt|opt|srv|var|etc|tmp|private)\/[^\s"'|;&]*/g,
+      (m, lead) => `${lead}${m.split("/").pop() || "…"}`)
+    .replace(/\s+/g, " ")
+    .trim();
+  return out.length > max ? `${out.slice(0, max - 1)}…` : out;
+}
+
+/** Whichever rule is in force, and whether it is the reduced one. */
+function scrubForDiary(text, max = DIARY_LINE_MAX) {
+  return redactForDiary ? redactForDiary(text, max) : plainlyRedact(text, max);
 }
 
 /** What was said, joined, still raw. Never reaches a disk in this form. */
@@ -156,12 +218,17 @@ function diarySaid(args) {
  * work before the rule was loaded, and dropping those lines would have thrown
  * away exactly the startup lines this whole diary exists for.
  *
- * `redactForSharing` also flattens newlines, which is what keeps one event on
- * one line — a multi-line stack in a log searched with `findstr` is a needle in
- * a haystack twice over.
+ * Both rules also flatten newlines, which is what keeps one event on one line —
+ * a multi-line stack in a log searched with `findstr` is a needle in a haystack
+ * twice over.
+ *
+ * A LINE THE REDUCED RULE TOUCHED SAYS SO, in its level column (`INFO~`), so a
+ * person reading the file later can never mistake it for the real rule's output
+ * — and can find every one of them with a search for `~`.
  */
 function diaryRender(at, level, said) {
-  return `${at} ${level} ${redactForDiary(said, DIARY_LINE_MAX)}\n`;
+  const mark = redactForDiary ? "" : "~";
+  return `${at} ${level}${mark} ${scrubForDiary(said, DIARY_LINE_MAX)}\n`;
 }
 
 /**
@@ -194,8 +261,10 @@ function writeDiary(level, args) {
   } catch {
     return; // the console already has it, and a diary never stops the app
   }
-  // Nothing to write into yet: hold it raw, in memory, where it already is.
-  if (diaryFd === null || !redactForDiary) {
+  /* Nothing to write into yet: hold it raw, in memory, where it already is.
+     Only the FILE being absent holds a line back now — a missing redaction rule
+     no longer does, because there is a reduced one to fall back to. */
+  if (diaryFd === null) {
     if (diaryBacklog.length < DIARY_BACKLOG_MAX) diaryBacklog.push({ at, level, said });
     else diaryDropped++;
     return;
@@ -265,10 +334,11 @@ async function openLogFolder() {
  * buys a syscall per line to solve a problem nobody has had. Worth revisiting if
  * anything ever logs in a loop.
  */
-async function openDiary() {
-  /* THE RULE COMES FIRST. Nothing may be written until the redaction rule is
-     loaded, so this is awaited before the file is even opened. */
-  const guarded = await loadRedactor();
+async function openDiary(opts = {}) {
+  /* THE RULE COMES FIRST — awaited before the file is opened, so not one line
+     is ever written by an unscrubbed sink. `importEngine` is how a test drives
+     the failure path; the app passes nothing. */
+  const guarded = await loadRedactor(opts.importEngine);
   try {
     const folder = diaryFolder();
     fs.mkdirSync(folder, { recursive: true });
@@ -284,15 +354,17 @@ async function openDiary() {
     const fd = fs.openSync(file, "a");
     diaryFile = file;
     if (!guarded) {
-      /* A file that explains why it is empty. Written raw because it is fixed
-         words written here — nothing from anywhere else goes through. */
-      fs.writeSync(fd, `${new Date().toISOString()} WARN [cloud9] Cloud9 is not writing a log ` +
-        "this session: it could not load the rule that keeps secrets out of one, and writing " +
-        "unchecked text to a file is not something it will do.\n");
-      fs.closeSync(fd);
-      diaryFd = null;
-      diaryBacklog = [];
-      return folder;
+      /* DEGRADED, NOT DEAD — and it says so before anything else in the file.
+         The banner is fixed words plus the loader's own problem, put through
+         the reduced rule like everything else this session. That sentence
+         ("could not find @cloud9/engine") is the single most valuable thing the
+         app can write when this happens, and it is exactly what the previous
+         version threw away. */
+      fs.writeSync(fd, `${new Date().toISOString()} WARN [cloud9] REDUCED LOGGING THIS SESSION: ` +
+        "Cloud9 could not load the engine's redaction rule, so every line below is scrubbed by " +
+        "a blunter built-in one and marked with a trailing ~ on its level. It throws away more " +
+        "than it needs to. Lines are still written, because losing them would remove the " +
+        `evidence this log exists for. The reason: ${plainlyRedact(redactorProblem ?? "unknown", 600)}\n`);
     }
     for (const held of diaryBacklog) fs.writeSync(fd, diaryRender(held.at, held.level, held.said));
     /* AN UNMARKED GAP IN A DIAGNOSIS LOG IS WORSE THAN A SHORT ONE — somebody
@@ -1631,7 +1703,13 @@ if (PACKAGED && !app.requestSingleInstanceLock()) {
        folder in the user's Cloud9 data is expected rather than a side effect of
        somebody loading this file. Everything already said while the process
        came up is written out first. See the diary note at the top. Awaited
-       because it loads the redaction rule before it writes a single byte. */
+       because it loads the redaction rule before it writes a single byte.
+
+       THIS PULLS `@cloud9/engine` IN EARLIER THAN BEFORE — module evaluation
+       now happens here rather than lazily inside `startEngine()`, so it lands
+       ahead of the first window. The module was going to be loaded moments
+       later regardless and nothing else waits on it, but it is a real change to
+       startup order and is written down rather than left to be discovered. */
     await openDiary();
     // FIRST, before a single byte is written: load the one owner of the safe
     // write, and clear away the part-files of a save this app was killed during.
@@ -1717,6 +1795,6 @@ module.exports = {
     guardWindow,
     settingsPath, readSettings, writeSettings,
     secretPath, saveSecret, loadSecret, clearSecret,
-    diaryFolder, openDiary, loadRedactor, openLogFolder,
+    diaryFolder, openDiary, loadRedactor, openLogFolder, plainlyRedact,
   },
 };

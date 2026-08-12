@@ -244,11 +244,37 @@ test("a harness this code has never heard of is never called Claude", () => {
     "telling somebody on a third harness to sign in to Claude is a confident sentence about " +
     "the wrong program");
   assert.match(said, /Gemini/);
-  // and nothing odd from an unexpected name can reach a room
-  const weird = harnessDisconnectedReply("<img src=x>\n ", {
+});
+
+/* WRITTEN WITH ESCAPES, ON PURPOSE (2026-08-13). The first version of this test
+   held its control characters as LITERAL BYTES, which made this whole file BINARY
+   to `grep`, `git grep` and ripgrep — they answer "Binary file … matches" and
+   refuse to print the line. The one test file written so that nobody has to
+   re-diagnose blocker 3 was invisible to the search somebody would use to find
+   it, and its assertion rendered as a character class that looked like it banned
+   spaces — nonsense on its face, and it cost a reviewer a full cycle to discover
+   the "space" was a NUL. Same behaviour, readable, greppable. */
+test("nothing odd in an unexpected harness name can reach a room", () => {
+  const NUL = String.fromCharCode(0);
+  const CR = String.fromCharCode(13);
+  const LF = String.fromCharCode(10);
+  const said = harnessDisconnectedReply(`<img src=x>${LF}${NUL}`, {
     installed: false, signedIn: false, detected: true,
   });
-  assert.ok(!/[<> \n]/.test(weird), `an unexpected harness name reached a room: ${weird}`);
+  const banned: [string, string][] = [
+    ["a tag opener", "<"],
+    ["a tag closer", ">"],
+    ["a newline", LF],
+    ["a carriage return", CR],
+    ["a NUL byte", NUL],
+  ];
+  for (const [what, ch] of banned) {
+    assert.ok(!said.includes(ch),
+      `an unexpected harness name put ${what} into a room: ${JSON.stringify(said)}`);
+  }
+  // still a refusal, and still not somebody else's program
+  assert.match(said, /engine isn.t connected/i);
+  assert.ok(!/Claude/.test(said));
 });
 
 // ------------------------------------- 2. what a refused turn means for Stop
