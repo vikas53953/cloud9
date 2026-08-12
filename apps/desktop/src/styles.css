@@ -3307,7 +3307,14 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
   background:var(--madder-soft);}
 .chip.agenttrouble.is-failed .dot{background:var(--madder);
   box-shadow:0 0 0 3px color-mix(in srgb,var(--madder) 22%,transparent);}
-.chip.agenttrouble:hover,.chip.agenttrouble:focus-visible{background:var(--surface-2);}
+/* HOVER MAKES IT MORE OF WHAT IT IS, never less. A plain `background:` here
+   would beat the two rules above and drop the marigold/madder fill at exactly
+   the moment his pointer is on the chip — the one moment he is certainly
+   looking at it. So the pointer state is the same colour, harder. */
+.chip.agenttrouble.is-blocked:hover,.chip.agenttrouble.is-blocked:focus-visible{
+  border-color:var(--marigold);}
+.chip.agenttrouble.is-failed:hover,.chip.agenttrouble.is-failed:focus-visible{
+  border-color:var(--madder);}
 .job .jobwhy{display:block;margin-top:4px;color:var(--ink-2);}
 .job[data-trouble="failed"]{border-color:color-mix(in srgb,var(--madder) 35%,transparent);}
 .job[data-trouble="blocked"]{border-color:color-mix(in srgb,var(--marigold) 40%,transparent);}

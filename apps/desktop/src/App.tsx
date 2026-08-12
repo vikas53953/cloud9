@@ -4289,15 +4289,27 @@ function MutedMark({ channelId }: { channelId?: ID }): React.JSX.Element | null 
  * rail wrong, and the number quietly meant something else — so here the element
  * that is actually being divided is asked how wide it is, and only the channel
  * list is subtracted, read from the very custom property that draws it.
+ *
+ * AND READ OFF THE GRID, NOT OFF THE PAGE, 2026-08-12. `--side-w` is declared
+ * on `:root`, but the two layouts that take the channel list away — collapsed
+ * Studio and the Focus workspace — turn it to 0px ON THE GRID ELEMENT, which is
+ * exactly the column the template uses. Asking the document still got 250px (or
+ * 216px on a narrow window) in both, so the thread divider believed a whole
+ * channel list was in its way when nothing was. Custom properties inherit, so
+ * asking the grid gives the same answer as the document in every layout that
+ * has not overridden it, and the right one in the two that have.
  */
-function useSpaceToShare(gridRef: React.RefObject<HTMLDivElement | null>): number {
+function useSpaceToShare(
+  gridRef: React.RefObject<HTMLDivElement | null>,
+  /** whatever changes `--side-w` without changing the grid's own width */
+  layoutKey: string,
+): number {
   const [space, setSpace] = useState(0);
   useEffect(() => {
     const grid = gridRef.current;
     if (!grid) return;
     const read = (): void => {
-      const side = parseFloat(
-        getComputedStyle(document.documentElement).getPropertyValue("--side-w")) || 0;
+      const side = parseFloat(getComputedStyle(grid).getPropertyValue("--side-w")) || 0;
       setSpace(Math.max(0, Math.round(grid.clientWidth - side)));
     };
     read();
@@ -4307,7 +4319,10 @@ function useSpaceToShare(gridRef: React.RefObject<HTMLDivElement | null>): numbe
        without changing the grid's width at all. */
     window.addEventListener("resize", read);
     return () => { watch.disconnect(); window.removeEventListener("resize", read); };
-  }, [gridRef]);
+    /* `layoutKey` is the third way the answer changes: taking the channel list
+       away turns `--side-w` to 0 on the grid while the grid stays exactly as
+       wide as it was, so neither the observer nor a resize would ever fire. */
+  }, [gridRef, layoutKey]);
   return space;
 }
 
@@ -4513,7 +4528,7 @@ function ChatScreen({
   const gridRef = useRef<HTMLDivElement>(null);
   const threadOpener = useRef<HTMLElement | null>(null);
   const restoreFocusPending = useRef(false);
-  const space = useSpaceToShare(gridRef);
+  const space = useSpaceToShare(gridRef, `${workspaceLayout}:${studioCollapsed}`);
   const tooNarrowToSplit = space > 0 && cannotSplit(space);
   const takeover = !!threadRoot && (tooNarrowToSplit || p.threadLayout === "focus");
   const previousTakeover = useRef(takeover);
@@ -10936,9 +10951,17 @@ function RoomPanel({ channel, onClose, onOpenDm, onEditAgent, onLeft, onOpenCanv
                       looking at, one press away. See `ReachGap`: this is the
                       door that the retired `ChannelRail` used to carry and that
                       no live surface had, which is why the installed walk could
-                      not find it. */}
+                      not find it.
+
+                      The sentence is drawn for every agent in the room; the
+                      DOOR only for one he owns, because the hub refuses an edit
+                      to anybody else's ("not your agent") and this panel does
+                      not draw buttons whose one outcome is a refusal. */}
                   {who.agent
-                    ? <ReachGap agent={who.agent} onEdit={() => onEditAgent(who.agent!)} />
+                    ? <ReachGap agent={who.agent}
+                      onEdit={who.agent.ownerId === world.me?.id
+                        ? () => onEditAgent(who.agent!)
+                        : undefined} />
                     : null}
                 </span>
                 {(canRemove || canRerole || (who.user && m.memberId !== world.me?.id)) && (
@@ -11142,9 +11165,21 @@ const ROLE_MEANS: Record<ChannelRole, string> = {
  * fault this component exists to end. It is drawn in the live `RoomPanel`, on
  * the agent's own row under "Who's here", so the door is again beside the
  * agent's name in the room he is already looking at.
+ *
+ * A DOOR ONLY WHERE THE HUB WOULD SAY YES. A room can hold somebody else's
+ * agent, and the hub refuses an edit to one outright (`myAgent` — "not your
+ * agent"). Offering the door there would be a button whose one possible outcome
+ * is a refusal, which the room panel forbids nine lines from its own member
+ * rows. So the SENTENCE is drawn for every agent — it is true, he needs it, and
+ * `reachLineInRoom` is total precisely so no state goes quiet — and the door is
+ * replaced by "View only" when he does not own it. The owner tag on the row
+ * directly above already names who to ask, so this is a different door, not the
+ * absence of one.
  */
 function ReachGap({ agent, onEdit }: {
-  agent: AgentDef; onEdit: () => void;
+  agent: AgentDef;
+  /** absent when the viewer does not own this agent — the hub would refuse */
+  onEdit?: () => void;
 }): React.JSX.Element {
   /* A GAP FIRST, because a gap is a promise the app has made and cannot keep —
      and that badge covers connected services too, which this line never
@@ -11156,8 +11191,23 @@ function ReachGap({ agent, onEdit }: {
   return (
     <span className="an-fix" data-reach-gap={line.state}>
       {line.words}{" "}
-      <button className="linkbtn" data-reach-fix onClick={onEdit}>{line.fix}</button>
+      {onEdit
+        ? <button className="linkbtn" data-reach-fix onClick={onEdit}>{line.fix}</button>
+        : <NotYoursToChange />}
     </span>
+  );
+}
+
+/**
+ * THE SAME WORDS THIS APP ALREADY USES FOR "you may read this, not change it".
+ *
+ * Copied from the channel-memory rows rather than invented, so a person meets
+ * one phrase for one meaning wherever a control belongs to somebody else.
+ */
+function NotYoursToChange(): React.JSX.Element {
+  return (
+    <span className="d-empty" data-reach-viewonly
+      title="Only the agent owner can change this">View only</span>
   );
 }
 
@@ -11182,7 +11232,10 @@ function ReachGap({ agent, onEdit }: {
  * therefore true in any window: nothing has been chosen at all.
  */
 function SupplyGapBadge({ agent, onEdit, where }: {
-  agent: AgentDef; onEdit: () => void; where: "card" | "rail";
+  agent: AgentDef;
+  /** absent when the viewer does not own this agent — see `ReachGap` */
+  onEdit?: () => void;
+  where: "card" | "rail";
 }): React.JSX.Element | null {
   const gaps = supplyGapsOf(agent);
   if (gaps.length === 0) return null;
@@ -11195,10 +11248,12 @@ function SupplyGapBadge({ agent, onEdit, where }: {
       {gaps.length > 1
         ? `, and ${countOf(gaps.length - 1, "other switch", "other switches")} like it`
         : ""}.{" "}
-      <button className="linkbtn" data-reach-fix data-supply-gap-fix={first.ability}
-        onClick={onEdit}>
-        {first.fix}
-      </button>
+      {onEdit
+        ? <button className="linkbtn" data-reach-fix data-supply-gap-fix={first.ability}
+          onClick={onEdit}>
+          {first.fix}
+        </button>
+        : <NotYoursToChange />}
     </span>
   );
 }
@@ -16031,9 +16086,27 @@ function HarnessCard({
   const problem = info?.problem;
   const authKind = info?.authKind;
 
+  /**
+   * NEVER THE SCREEN'S OWN "not installed", 2026-08-12.
+   *
+   * `installed: false` does NOT mean "this app is not on this computer". It
+   * means nothing proved that it is — and the probe timing out is one of the
+   * ways that happens: the harness then sends `installed: false` alongside its
+   * own sentence, "Claude is on this computer but did not answer in time".
+   * This ladder tested the boolean FIRST and printed "not installed on this
+   * computer" straight over the top of that sentence, so the card contradicted
+   * itself and sent him off to install an app he already had — the exact
+   * failure `harness.ts` recorded on 2026-08-05, still alive on the screen.
+   *
+   * So the screen stops writing this state at all and prints the harness's own
+   * words, the way `modelsDetail` is already printed verbatim below. `detail`
+   * is a required field and carries "the Claude app isn't installed on this
+   * computer" when that really is what was found, so the clear answer is not
+   * lost — it just stops being a claim this screen makes on its own authority.
+   */
   const state = !info ? "checking…"
     : waiting ? "waiting for you in the browser…"
-    : !installed ? "not installed on this computer"
+    : !installed ? (info.detail || "not confirmed on this computer")
     : signedIn ? `signed in${info.account ? ` as ${info.account}` : ""}`
     : problem ? problem
     : info.detail ?? "installed, not signed in";
@@ -16082,10 +16155,28 @@ function HarnessCard({
       </div>
 
       <div className="harnessfacts">
+        {/* "FOUND" IS A FACT; "NOT FOUND" IS NOT ITS OPPOSITE. A version came
+            back, or nothing did — and nothing coming back covers both "it is
+            not here" and "it did not answer in time". This row used to print
+            "✗ app not found" over a state line that said the app IS here, so
+            the same card made both claims at once. `installed` alone cannot
+            tell those two apart, so the negative says only what is true of
+            both, and the state line above carries the harness's own sentence
+            for which one it was. */}
         <span className={installed ? "yes" : "no"}>
-          {installed ? `✓ app found${info?.version ? ` (${info.version})` : ""}` : "✗ app not found"}
+          {installed ? `✓ app found${info?.version ? ` (${info.version})` : ""}`
+            : "· app not confirmed"}
         </span>
-        <span className={signedIn ? "yes" : "no"}>{signedIn ? "✓ signed in" : "✗ not signed in"}</span>
+        {/* THE SAME RULE, AND HERE THE HARNESS ACTUALLY SAYS WHICH. `unsure`
+            exists precisely for "the app is here and never told us whether it
+            is signed in"; `signedIn` is false then because nothing proved
+            otherwise, not because a no came back. So the flat "✗" is kept for
+            the state that really was proved, and the unproved one says so. */}
+        <span className={signedIn ? "yes" : "no"}>
+          {signedIn ? "✓ signed in"
+            : info?.unsure ? "· sign-in not confirmed"
+            : "✗ not signed in"}
+        </span>
         {authWords && <span>{authWords}</span>}
         {(info?.models?.length ?? 0) > 0 && <span>{countOf(info!.models!.length, "model")} available</span>}
         {savedKey && <span>✓ key saved on this computer</span>}
