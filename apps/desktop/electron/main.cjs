@@ -66,13 +66,24 @@ const PACKAGED = app.isPackaged;
 const DIARY_MAX_BYTES = 5 * 1024 * 1024;
 /** what was said before there was a file to say it into; bounded on purpose */
 const DIARY_BACKLOG_MAX = 500;
+/** room for a redacted stack trace on one line — see `diaryLine` */
+const DIARY_LINE_MAX = 4000;
 /**
  * WRITTEN SYNCHRONOUSLY, and that is the whole point. A buffered stream loses
  * its tail when the process dies, and the lines worth having are the ones just
  * before it died. The volume is a handful of lines per session, not a hot path.
  */
 let diaryFd = null;
+let diaryFile = null;
 let diaryBacklog = [];
+/** how many lines were dropped before there was anywhere to put them */
+let diaryDropped = 0;
+/**
+ * THE RULE THAT DECIDES WHAT MAY BE WRITTEN DOWN — the engine's own
+ * `redactForSharing`, not a copy of it. Null until it is loaded, and while it
+ * is null NOTHING goes on the disk. See `loadRedactor`.
+ */
+let redactForDiary = null;
 
 function diaryFolder() {
   try {
@@ -83,23 +94,122 @@ function diaryFolder() {
   }
 }
 
-function diaryLine(level, args) {
-  const said = args.map(a => {
+/**
+ * ================================================================
+ * THE NO-SECRETS PROMISE IS ENFORCED HERE, NOT ASSERTED ELSEWHERE.
+ * ================================================================
+ *
+ * Before this, the diary was safe because every `console.*` call in
+ * `apps/desktop/electron/**` and `packages/engine/**` happened to log lengths
+ * rather than values. That is true today and it is not a guarantee: it is a
+ * property of hundreds of call sites, any of which can change, and the tee
+ * persists what used to be ephemeral. `sanitizeForChat` in the engine
+ * deliberately `console.error`s the RAW error precisely because raw errors
+ * "can carry file paths, command lines, argv" — that text now reaches a file.
+ *
+ * So the sink enforces it. `redactForSharing` already exists in the engine,
+ * already has tests proving `ANTHROPIC_API_KEY=sk-ant-…` becomes `***`, and is
+ * the same rule run records are shared under. One rule, one owner — a second
+ * copy here would drift from it, which is the bug this whole round removed.
+ *
+ * FAIL CLOSED: if that rule cannot be loaded, the diary does not write. It says
+ * so, in the file, once — a log that explains why it is empty is worth more
+ * than a log that quietly is.
+ *
+ * THE HONEST COST: `redactForSharing` cuts absolute paths down to their last
+ * segment and replaces this account's name with "someone", so the diary says
+ * "claude.exe" where the raw line said the full path. That is the trade the
+ * project has already made everywhere else it shares text.
+ */
+async function loadRedactor() {
+  if (redactForDiary) return true;
+  try {
+    const mod = await import("@cloud9/engine");
+    if (typeof mod.redactForSharing !== "function") throw new Error("no redactForSharing in it");
+    redactForDiary = mod.redactForSharing;
+    return true;
+  } catch (err) {
+    console.error("[cloud9] the diary could not load the engine's redaction rule, so nothing " +
+      `will be written to the log file: ${err?.message ?? err}`);
+    redactForDiary = null;
+    return false;
+  }
+}
+
+/** What was said, joined, still raw. Never reaches a disk in this form. */
+function diarySaid(args) {
+  return args.map(a => {
     if (typeof a === "string") return a;
-    if (a instanceof Error) return `${a.name}: ${a.message}`;
+    /* STACKS ARE KEPT (redacted). "Logs before guesses" is not served by an
+       engine crash landing as a one-line summary with no frames; the redaction
+       pass is what makes keeping them safe. */
+    if (a instanceof Error) return a.stack || `${a.name}: ${a.message}`;
     try { return JSON.stringify(a); } catch { return String(a); }
   }).join(" ");
-  return `${new Date().toISOString()} ${level} ${said}\n`;
+}
+
+/**
+ * The one place a line becomes bytes — and therefore the one place the
+ * redaction rule has to be applied. Kept separate from `diarySaid` because the
+ * backlog holds RAW text (it is already in this process's memory) and is
+ * redacted when it is finally written, not when it is buffered: buffering had to
+ * work before the rule was loaded, and dropping those lines would have thrown
+ * away exactly the startup lines this whole diary exists for.
+ *
+ * `redactForSharing` also flattens newlines, which is what keeps one event on
+ * one line — a multi-line stack in a log searched with `findstr` is a needle in
+ * a haystack twice over.
+ */
+function diaryRender(at, level, said) {
+  return `${at} ${level} ${redactForDiary(said, DIARY_LINE_MAX)}\n`;
+}
+
+/**
+ * One failed write must not end the diary for the rest of the session.
+ *
+ * A transient `EBUSY` (antivirus holding the handle) used to set `diaryFd` to
+ * null for good, silently — the app went back to keeping no logs mid-flight,
+ * which is the exact problem this file was written to end. Now the handle is
+ * closed and reopened once, and the attempt is visible either way.
+ */
+function reopenDiary() {
+  try { if (diaryFd !== null) fs.closeSync(diaryFd); } catch { /* already gone */ }
+  diaryFd = null;
+  if (!diaryFile) return false;
+  try {
+    diaryFd = fs.openSync(diaryFile, "a");
+    return true;
+  } catch {
+    diaryFd = null;
+    return false;
+  }
 }
 
 function writeDiary(level, args) {
+  let at;
+  let said;
   try {
-    const line = diaryLine(level, args);
-    if (diaryFd !== null) { fs.writeSync(diaryFd, line); return; }
-    if (diaryBacklog.length < DIARY_BACKLOG_MAX) diaryBacklog.push(line);
+    at = new Date().toISOString();
+    said = diarySaid(args);
   } catch {
-    // the console already has it, and a diary must never be why the app stops
-    diaryFd = null;
+    return; // the console already has it, and a diary never stops the app
+  }
+  // Nothing to write into yet: hold it raw, in memory, where it already is.
+  if (diaryFd === null || !redactForDiary) {
+    if (diaryBacklog.length < DIARY_BACKLOG_MAX) diaryBacklog.push({ at, level, said });
+    else diaryDropped++;
+    return;
+  }
+  try {
+    fs.writeSync(diaryFd, diaryRender(at, level, said));
+  } catch (err) {
+    if (reopenDiary()) {
+      try {
+        fs.writeSync(diaryFd, diaryRender(new Date().toISOString(), "WARN",
+          `[cloud9] the log file had to be reopened after a failed write (${err?.message ?? err})`));
+        fs.writeSync(diaryFd, diaryRender(at, level, said));
+      } catch { diaryFd = null; }
+    }
   }
 }
 
@@ -122,8 +232,43 @@ if (!globalThis[DIARY_MARK]) {
   }
 }
 
-/** Called once, when the app really is starting. Never throws. */
-function openDiary() {
+/**
+ * The Help menu's "Open the app's log folder".
+ *
+ * A named function rather than an inline handler so it can be tested: it used
+ * to open a folder nothing had ever written to and fail without a word, which
+ * is half of why blocker 3 took a round to diagnose. The folder is made on
+ * demand as well as at startup, so one deleted while the app is running still
+ * opens, and a refusal is now SAID rather than swallowed.
+ */
+async function openLogFolder() {
+  const folder = diaryFolder();
+  try { fs.mkdirSync(folder, { recursive: true }); } catch { /* reported below */ }
+  const problem = await shell.openPath(folder);
+  if (problem) {
+    console.error(`[cloud9] could not open the log folder: ${problem}`);
+    await dialog.showMessageBox({
+      type: "warning", title: "Cloud9",
+      message: "Cloud9 could not open its log folder.",
+      detail: `${folder}\n\n${problem}`, buttons: ["OK"],
+    });
+  }
+  return { ok: !problem, folder, problem: problem || undefined };
+}
+
+/**
+ * Called once, when the app really is starting. Never throws.
+ *
+ * ROTATION IS DECIDED HERE AND ONLY HERE, i.e. at startup. A session that runs
+ * for days past 5 MB keeps growing until the app is restarted. Accepted for now:
+ * the volume is a handful of lines per session, and a size check on every write
+ * buys a syscall per line to solve a problem nobody has had. Worth revisiting if
+ * anything ever logs in a loop.
+ */
+async function openDiary() {
+  /* THE RULE COMES FIRST. Nothing may be written until the redaction rule is
+     loaded, so this is awaited before the file is even opened. */
+  const guarded = await loadRedactor();
   try {
     const folder = diaryFolder();
     fs.mkdirSync(folder, { recursive: true });
@@ -137,7 +282,27 @@ function openDiary() {
       }
     } catch { /* no diary yet, or it is in use — appending is still fine */ }
     const fd = fs.openSync(file, "a");
-    for (const line of diaryBacklog) fs.writeSync(fd, line);
+    diaryFile = file;
+    if (!guarded) {
+      /* A file that explains why it is empty. Written raw because it is fixed
+         words written here — nothing from anywhere else goes through. */
+      fs.writeSync(fd, `${new Date().toISOString()} WARN [cloud9] Cloud9 is not writing a log ` +
+        "this session: it could not load the rule that keeps secrets out of one, and writing " +
+        "unchecked text to a file is not something it will do.\n");
+      fs.closeSync(fd);
+      diaryFd = null;
+      diaryBacklog = [];
+      return folder;
+    }
+    for (const held of diaryBacklog) fs.writeSync(fd, diaryRender(held.at, held.level, held.said));
+    /* AN UNMARKED GAP IN A DIAGNOSIS LOG IS WORSE THAN A SHORT ONE — somebody
+       reading it would take the jump in timestamps for a quiet period. */
+    if (diaryDropped > 0) {
+      fs.writeSync(fd, `${new Date().toISOString()} WARN [cloud9] ${diaryDropped} earlier ` +
+        `line(s) were dropped — more than ${DIARY_BACKLOG_MAX} were said before the log file ` +
+        "was open.\n");
+      diaryDropped = 0;
+    }
     diaryBacklog = [];
     diaryFd = fd;
     console.log(`[cloud9] Cloud9 ${app.getVersion()} starting — packaged=${PACKAGED}, ` +
@@ -1364,19 +1529,7 @@ function buildMenu() {
              folder deleted while the app is running still opens rather than
              failing without a word. */
           label: "Open the app's log folder",
-          click: async () => {
-            const folder = diaryFolder();
-            try { fs.mkdirSync(folder, { recursive: true }); } catch { /* shown below */ }
-            const problem = await shell.openPath(folder);
-            if (problem) {
-              console.error(`[cloud9] could not open the log folder: ${problem}`);
-              dialog.showMessageBox({
-                type: "warning", title: "Cloud9",
-                message: "Cloud9 could not open its log folder.",
-                detail: `${folder}\n\n${problem}`, buttons: ["OK"],
-              });
-            }
-          },
+          click: () => openLogFolder(),
         },
         { type: "separator" },
         {
@@ -1477,8 +1630,9 @@ if (PACKAGED && !app.requestSingleInstanceLock()) {
     /* THE DIARY GOES ON THE DISK HERE — the app really is starting now, so a
        folder in the user's Cloud9 data is expected rather than a side effect of
        somebody loading this file. Everything already said while the process
-       came up is written out first. See the diary note at the top. */
-    openDiary();
+       came up is written out first. See the diary note at the top. Awaited
+       because it loads the redaction rule before it writes a single byte. */
+    await openDiary();
     // FIRST, before a single byte is written: load the one owner of the safe
     // write, and clear away the part-files of a save this app was killed during.
     await loadDurableWrite();
@@ -1563,6 +1717,6 @@ module.exports = {
     guardWindow,
     settingsPath, readSettings, writeSettings,
     secretPath, saveSecret, loadSecret, clearSecret,
-    diaryFolder, openDiary,
+    diaryFolder, openDiary, loadRedactor, openLogFolder,
   },
 };

@@ -163,6 +163,18 @@ export async function detectClaude(
     // "not installed on this computer" because of that sends him off to install
     // an app he already has. Say what actually happened, and let the manager's
     // re-look settle it.
+    //
+    // `unsure` IS THE SAME FACT AS THE SIGN-IN PROBE'S (2026-08-12). It used to
+    // be set only below, on the sign-in timeout, and this branch left it unset —
+    // so `detail` said "is on this computer" while the flags said `installed:
+    // false` with nothing marking the disagreement. Anything reading the flags
+    // rather than the sentence then stated the opposite of what was found: the
+    // agent's own refusal told him to go and install an app he already has,
+    // which is exactly the 2026-08-05 report this branch exists to prevent.
+    // "The probe did not answer" is one fact; it now carries one flag, whichever
+    // probe it was, and `scheduleRelook` already reads that flag as "come back
+    // in seconds".
+    info.unsure = true;
     info.detail = "Claude is on this computer but did not answer in time — Cloud9 will look again shortly.";
     return info;
   }
@@ -229,7 +241,10 @@ export async function detectCodex(
   };
   const version = await askVersion(runner, command, timeoutMs);
   if (version.timedOut) {
-    // same reasoning as detectClaude — see askVersion
+    // same reasoning as detectClaude — see askVersion — INCLUDING the `unsure`
+    // flag: an unanswered probe is an unanswered probe, and the two harnesses
+    // must not drift on what that means
+    info.unsure = true;
     info.detail = "Codex is on this computer but did not answer in time — Cloud9 will look again shortly.";
     return info;
   }

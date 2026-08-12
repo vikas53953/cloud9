@@ -31,10 +31,13 @@
 //      moment a provider exists, so this is a discrimination, not an excuse.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AgentDef, Message, WorldState } from "@cloud9/shared";
+import { AgentDef, HarnessInfo, Message, WorldState } from "@cloud9/shared";
 import { Engine } from "./engine.js";
+import { detectClaude, detectCodex } from "./harness.js";
+import { RunResult } from "./run.js";
 import {
-  ClaudeProvider, HARNESS_DISCONNECTED_REPLY, harnessDisconnectedReply, RespondInput,
+  ClaudeProvider, HARNESS_DISCONNECTED_REPLY, harnessDisconnectedReply, HarnessReadiness,
+  RespondInput,
 } from "./provider.js";
 import { tempDir } from "./tmp-for-tests.js";
 
@@ -127,6 +130,125 @@ test("every refusal is still a refusal, and none of them leaks anything", () => 
       assert.ok(!/error|exception|stack/i.test(said), `developer jargon in: ${said}`);
     }
   }
+});
+
+// ============================================================================
+// 1b. THE STATES DETECTION CAN REALLY PRODUCE — not the ones I imagined.
+// ============================================================================
+//
+// The sweep above feeds HAND-WRITTEN readiness objects, and that is exactly how
+// the first version of this shipped a lie: `detectClaude` returns
+// `installed:false` when `claude --version` runs out of patience — an ABSENCE
+// of an answer, not an answer — and no hand-written case in this file had that
+// shape, so nothing caught the refusal telling him to install an app he already
+// had. A test that invents its own inputs can only ever agree with whoever
+// invented them.
+//
+// So these drive the REAL `detectClaude` / `detectCodex` with a stubbed command
+// runner, convert their output the same way `host.ts` does, and ask what the
+// room would actually be told.
+
+const TIMED_OUT: RunResult =
+  { code: null, stdout: "", stderr: "", timedOut: true, notFound: false };
+const NOT_FOUND: RunResult =
+  { code: null, stdout: "", stderr: "", timedOut: false, notFound: true };
+const VERSION_OK: RunResult =
+  { code: 0, stdout: "2.1.226 (Claude Code)", stderr: "", timedOut: false, notFound: false };
+
+/**
+ * The SAME conversion `host.ts` performs, kept in one line here so this test
+ * cannot quietly disagree with the app about what a detection means.
+ */
+const readinessOf = (info: HarnessInfo): HarnessReadiness => ({
+  installed: info.installed,
+  signedIn: info.signedIn,
+  unsure: info.unsure === true,
+  detected: true,
+});
+
+test("A PROBE THAT NEVER ANSWERED IS NOT 'you have not installed it'", async () => {
+  // `claude --version` runs out of patience: a process was started and said
+  // nothing. Nothing is proved about presence in either direction.
+  const info = await detectClaude(async () => TIMED_OUT, "claude", 10);
+  assert.equal(info.unsure, true,
+    "an unanswered probe is the same fact whichever probe it was — the sign-in probe has " +
+    "always flagged it, and the version probe left it unset, which is what let the lie out");
+
+  const said = harnessDisconnectedReply("claude", readinessOf(info));
+  assert.ok(!/isn't on this computer/i.test(said),
+    `A FALSE CLAIM ABOUT HIS OWN COMPUTER: detection's own words are "${info.detail}", and ` +
+    `the room was told "${said}"`);
+  assert.ok(!/\bInstall it\b/.test(said),
+    "this is the 2026-08-05 report in the agent's voice — being sent to install an app he has");
+  assert.match(said, /hasn't answered yet|asking again/i);
+});
+
+test("…and Codex behaves identically, because it is the same fact", async () => {
+  const info = await detectCodex(async () => TIMED_OUT, "codex", 10);
+  assert.equal(info.unsure, true, "the two harnesses must not drift on what a timeout means");
+  const said = harnessDisconnectedReply("codex", readinessOf(info));
+  assert.ok(!/isn't on this computer/i.test(said), `the room was told "${said}"`);
+  assert.match(said, /Codex/);
+});
+
+test("a command that genuinely is not there IS reported as not installed", async () => {
+  // The discrimination that keeps the fix honest: `notFound` is a real answer,
+  // and softening it too would leave a person with no app and no idea why.
+  const info = await detectClaude(async () => NOT_FOUND, "claude", 10);
+  assert.equal(info.installed, false);
+  assert.notEqual(info.unsure, true, "'the shell could not find it' IS an answer");
+  const said = harnessDisconnectedReply("claude", readinessOf(info));
+  assert.match(said, /isn't on this computer/i);
+  assert.match(said, /Install it/);
+});
+
+test("installed but the sign-in probe gave up: still not accused of being signed out", async () => {
+  const info = await detectClaude(async (_cmd: string, args: string[]) =>
+    (args[0] === "--version" ? VERSION_OK : TIMED_OUT), "claude", 10);
+  assert.equal(info.installed, true);
+  assert.equal(info.unsure, true);
+  const said = harnessDisconnectedReply("claude", readinessOf(info));
+  assert.match(said, /hasn't said whether it is signed in/i);
+  assert.ok(!/isn't signed in/.test(said), "an unanswered probe is not a signed-out account");
+});
+
+test("every state real detection can produce is still a refusal, and never a false claim", async () => {
+  const runs: [string, (c: string, a: string[]) => Promise<RunResult>][] = [
+    ["version timed out", async () => TIMED_OUT],
+    ["command not found", async () => NOT_FOUND],
+    ["sign-in timed out", async (_c, a) => (a[0] === "--version" ? VERSION_OK : TIMED_OUT)],
+    ["signed out", async (_c, a) => (a[0] === "--version" ? VERSION_OK
+      : { code: 1, stdout: "{\"loggedIn\":false}", stderr: "", timedOut: false, notFound: false })],
+  ];
+  for (const [what, runner] of runs) {
+    const info = await detectClaude(runner, "claude", 10);
+    const said = harnessDisconnectedReply("claude", readinessOf(info));
+    assert.match(said, /engine isn't connected/i, `${what}: stopped being a refusal`);
+    // THE LAW: a refusal may say less than it knows; it may never say more.
+    if (!info.installed && info.unsure) {
+      assert.ok(!/isn't on this computer|Install it/.test(said),
+        `${what}: claimed the app is absent when nothing had answered — "${said}"`);
+    }
+    if (info.installed) {
+      assert.ok(!/isn't on this computer/.test(said),
+        `${what}: claimed the app is absent when it had answered --version — "${said}"`);
+    }
+  }
+});
+
+test("a harness this code has never heard of is never called Claude", () => {
+  const said = harnessDisconnectedReply("gemini", {
+    installed: false, signedIn: false, detected: true,
+  });
+  assert.ok(!/Claude/.test(said),
+    "telling somebody on a third harness to sign in to Claude is a confident sentence about " +
+    "the wrong program");
+  assert.match(said, /Gemini/);
+  // and nothing odd from an unexpected name can reach a room
+  const weird = harnessDisconnectedReply("<img src=x>\n ", {
+    installed: false, signedIn: false, detected: true,
+  });
+  assert.ok(!/[<> \n]/.test(weird), `an unexpected harness name reached a room: ${weird}`);
 });
 
 // ------------------------------------- 2. what a refused turn means for Stop

@@ -372,25 +372,61 @@ export const HARNESS_DISCONNECTED_REPLY =
  *
  * Nothing from the harness's own text is forwarded: see `HarnessReadiness`.
  */
+/**
+ * The app's name as a person writes it. A harness this file has never heard of
+ * gets its own name back, tidied — NOT "Claude". `harness === "codex" ? "Codex"
+ * : "Claude"` would tell somebody running a third harness to go and sign in to
+ * Claude, which is a confident sentence about the wrong program.
+ */
+function harnessAppName(harness: string): string {
+  const known: Record<string, string> = { claude: "Claude", codex: "Codex" };
+  const name = (harness ?? "").trim();
+  if (known[name.toLowerCase()]) return known[name.toLowerCase()];
+  // its own name, kept to plain characters so nothing unexpected reaches a room
+  const plain = name.replace(/[^A-Za-z0-9 .-]/g, "").slice(0, 24).trim();
+  return plain ? plain.charAt(0).toUpperCase() + plain.slice(1) : "your agent's engine";
+}
+
 export function harnessDisconnectedReply(
   harness: string, readiness?: HarnessReadiness,
 ): string {
   // Nobody wired the facts in (an older host, a bare engine in a test). The
   // generic sentence is the honest answer when nothing is known.
   if (!readiness) return HARNESS_DISCONNECTED_REPLY;
-  const app = harness === "codex" ? "Codex" : "Claude";
+  const app = harnessAppName(harness);
   if (!readiness.detected) {
     return "my engine isn't connected yet — Cloud9 is still looking at what this computer " +
       "has. Give it a moment and ask me again.";
   }
+  /* ================================================================
+   * "I COULD NOT TELL" IS ASKED BEFORE "IT IS NOT THERE" (2026-08-12).
+   * ================================================================
+   *
+   * This order is the whole point and it was the wrong way round on the first
+   * pass. A probe that ran out of patience leaves `installed: false` — nothing
+   * proved otherwise — but that is an ABSENCE OF AN ANSWER, not an answer. Ask
+   * "is it installed?" first and an unanswered probe gets reported as a
+   * finding: "the Claude app isn't on this computer. Install it." Said to a
+   * person who has it installed, that is a positively false claim about his own
+   * machine, and it is the 2026-08-05 report ("Settings told me to install an
+   * app I already have") reappearing in the agent's own voice.
+   *
+   * So "unsure" is answered first, and it is never a claim about presence in
+   * either direction. Which probe gave up is worth saying, because the two lead
+   * to different next steps.
+   */
+  if (readiness.unsure) {
+    return readiness.installed
+      ? `my engine isn't connected yet — ${app} is on this computer, but it hasn't said ` +
+        "whether it is signed in. Cloud9 is asking again; give it a moment and ask me again, " +
+        "or open Settings and sign in."
+      : `my engine isn't connected yet — Cloud9 asked ${app} on this computer and it hasn't ` +
+        "answered yet, so nothing is settled either way. Cloud9 is asking again; give it a " +
+        "moment and ask me again.";
+  }
   if (!readiness.installed) {
     return `my engine isn't connected — the ${app} app isn't on this computer. Install it, ` +
       `or save a ${app} key in Settings, then ask me again.`;
-  }
-  if (readiness.unsure) {
-    return `my engine isn't connected yet — ${app} is on this computer, but it hasn't said ` +
-      "whether it is signed in. Cloud9 is asking again; give it a moment and ask me again, " +
-      "or open Settings and sign in.";
   }
   if (!readiness.signedIn) {
     return `my engine isn't connected — ${app} is on this computer but isn't signed in. ` +
