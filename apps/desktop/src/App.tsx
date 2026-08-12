@@ -4508,10 +4508,22 @@ function ChatScreen({
   const threading = p.replies !== "inline";
   const workspaceAccess = !!active && !!world.me && active.memberIds.includes(world.me.id)
     && world.channels.some(channel => channel.id === active.id);
+  /* NOT KNOWN YET IS NOT THE SAME AS REFUSED — the second half of "a chosen
+     layout stays chosen". `workspaceAccess` is false during every ordinary
+     start-up and reconnect, simply because the room list has not answered yet.
+     Reading that silence as "this room is not yours" wrote Focus over the saved
+     preference on EVERY launch, so Chat + Files never survived closing the app.
+     The room list has its own answer for this — `channelListLoaded`, the same
+     signal the sidebar's pinned rooms wait for (see `useSidebarLayout`) — so
+     the durable choice is only overwritten when a room is actually open and
+     this person is demonstrably not in it. While the answer is still missing
+     the panel simply does not draw (it is gated on `workspaceAccess` below),
+     which fails closed on screen without touching what he chose. */
+  const workspaceAccessRefused = channelListLoaded && !!active && !!world.me && !workspaceAccess;
   const closeWorkspace = useCallback(() => { prefs.set({ workspaceLayout: "focus" }); }, []);
   useEffect(() => {
-    if (!workspaceAccess && workspaceLayout !== "focus") closeWorkspace();
-  }, [workspaceAccess, workspaceLayout, closeWorkspace]);
+    if (workspaceAccessRefused && workspaceLayout !== "focus") closeWorkspace();
+  }, [workspaceAccessRefused, workspaceLayout, closeWorkspace]);
   useEffect(() => {
     const enteredFocus = priorWorkspaceLayout.current !== "focus" && workspaceLayout === "focus";
     priorWorkspaceLayout.current = workspaceLayout;
@@ -4881,14 +4893,20 @@ function WorkspaceLayoutPanel({ channel, layout, onClose }: {
 }): React.JSX.Element {
   const panelRef = useRef<HTMLElement>(null);
   useEscapeCloses(onClose, true);
-  // Pointer-away begins before the clicked control's `click` event. Closing a
-  // split workspace immediately can hide the Studio sidebar under the pointer
-  // and swallow the navigation the person actually chose. Let that click land,
-  // then return the room to Focus.
-  const closeAfterOutsideClick = useCallback(() => {
-    window.setTimeout(onClose, 0);
-  }, [onClose]);
-  useClickAwayCloses(panelRef, closeAfterOutsideClick, true);
+  /* NO CLICK-AWAY HERE, ON PURPOSE — and this is the whole bug it fixes.
+     A workspace layout is not a popover. It is a durable choice made in the
+     "Workspace layout" picker and it lives in `prefs.workspaceLayout`, the same
+     per-user/device preference file as appearance and thread width. This panel
+     only DRAWS that choice; it does not own it.
+     While a pointer-away close was wired here, any click outside the panel —
+     in the conversation, on the sidebar, on empty space — rewrote that saved
+     preference back to Focus. Focus was reachable by ordinary use, so "Chat +
+     Files" never survived the next click and a deliberate view read as a
+     popover that had lost interest.
+     The layout now changes only the ways it was chosen: the picker, this
+     panel's own × ("Focus chat"), Escape, or losing access to the room.
+     `useClickAwayCloses` stays where it belongs — trays and menus whose entire
+     existence is that one open moment. */
   const world = useWorld(w => ({
     connected: w.connected,
     channels: w.channels,
