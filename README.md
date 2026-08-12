@@ -66,12 +66,52 @@ For live Claude agents: settings (⚙) → paste your Anthropic API key, or run
 Desktop shell: `cd apps/desktop && npx electron .` (set `CLOUD9_DEV_URL=http://localhost:5173` for dev).
 iPhone: `cd apps/mobile && npm install && npx expo start`, scan with Expo Go.
 
+## Node version — check this first
+
+Cloud9 needs **Node 22.12 or newer**. It is developed and verified on **Node
+24**, which is what `.nvmrc` pins. Node 20 is not enough: the hub uses Node's
+own built-in database (`node:sqlite`), which does not exist before Node 22, and
+Electron 43 and Vite 8 both ask for 22.12 or newer.
+
+```bash
+node -v      # must print v22.12.0 or higher
+nvm use      # picks up .nvmrc if you use nvm / fnm
+```
+
+`npm install` now **stops with an error** on an unsupported Node instead of
+printing a warning and carrying on (`engine-strict=true` in `.npmrc`). That is
+deliberate: on Node 20 everything installs, then every hub test fails with a
+confusing "unknown builtin module" message that looks like broken code rather
+than a wrong runtime.
+
 ## Tests & QA
 
 ```bash
-npm test               # engine + relay unit/integration tests
-node scripts/qa.mjs    # Playwright browser QA (screenshots → docs/qa/)
+npm test                # all four parts: shared, engine, relay, desktop
+npm run qa              # Playwright browser QA (screenshots → docs/qa/)
+npm run qa:app          # drives the real installed Windows app (local only)
 ```
+
+`npm test` stops at the first part that fails, so to see the whole picture run
+them one at a time:
+
+```bash
+npm test -w @cloud9/shared
+npm test -w @cloud9/engine
+npm test -w @cloud9/relay
+npm test -w @cloud9/desktop
+```
+
+Windows note: the test scripts pass a **quoted** recursive glob
+(`node --test "dist/**/*.test.js"`), so Node expands it itself. Neither
+PowerShell nor `cmd` expands an unquoted `dist/*.test.js`, and the old
+non-recursive pattern also skipped test files sitting in sub-folders.
+
+Every pull request runs build plus all four suites on Windows and Linux
+(`.github/workflows/ci.yml`). `npm run qa:app` is not in CI — it needs a real
+installed Windows app. `packages/engine` has known failures on Windows caused
+by short (`NAME~1`) temp paths; see §7-D of
+`HANDOFF-PR43-CONTINUATION-2026-08-12.md`.
 
 ## Claude credentials — important
 

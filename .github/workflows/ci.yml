@@ -1,0 +1,73 @@
+name: CI
+
+# Build and unit tests only. No secrets, no publishing, no release job, and no
+# installed-app walk (`npm run qa:app` drives a real installed Windows binary
+# and is local-only by nature).
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: build + tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      # Both platforms always report. A red Windows job must not hide the
+      # Linux result, or the other way round.
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Use the Node version this repo pins
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Show the runtime
+        run: |
+          node -v
+          npm -v
+
+      # engine-strict is on in .npmrc, so this step is also the Node floor
+      # check: an unsupported runtime fails here rather than in a test.
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # One step per workspace so a failure in an early suite does not hide the
+      # later ones. `!cancelled()` keeps the remaining suites reporting; it does
+      # NOT make a failing suite pass — any red step still fails the job.
+      - name: Tests — packages/shared
+        if: ${{ !cancelled() }}
+        run: npm test -w @cloud9/shared
+
+      - name: Tests — packages/engine
+        if: ${{ !cancelled() }}
+        run: npm test -w @cloud9/engine
+
+      - name: Tests — apps/relay
+        if: ${{ !cancelled() }}
+        run: npm test -w @cloud9/relay
+
+      - name: Tests — apps/desktop
+        if: ${{ !cancelled() }}
+        run: npm test -w @cloud9/desktop
