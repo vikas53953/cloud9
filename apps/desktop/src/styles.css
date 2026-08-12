@@ -503,7 +503,15 @@ a{color:var(--ultra);}
   grid-template-columns:var(--side-w) minmax(0,1fr);min-width:0;overflow:hidden;
 }
 .chatgrid.no-aside{grid-template-columns:var(--side-w) minmax(0,1fr);}
-.chatgrid.focus-workspace{grid-template-columns:minmax(0,1fr);}
+/* FOCUS TAKES THE SIDEBAR OUT OF THE GRID, NOT JUST OFF THE SCREEN.
+   `--side-w:0px` is the fix for the CLASS, not for one case: every variant
+   below (`.withdetails`, `.withthread`, `.withthread.takeover`, and the
+   narrow-window rules that inset a panel by `var(--side-w)`) starts its
+   template with that column. Hiding the sidebar with `display:none` alone left
+   those templates holding a 260px column for an element that is no longer a
+   grid item, so opening room details or a thread in Focus squeezed the
+   conversation into the missing sidebar's width. */
+.chatgrid.focus-workspace{--side-w:0px;grid-template-columns:minmax(0,1fr);}
 .chatgrid.focus-workspace>.sidebar,.chatgrid.focus-workspace>.studio-collapse{display:none;}
 .chatgrid.withdetails{grid-template-columns:var(--side-w) minmax(0,1fr) var(--aside-w);}
 .chatgrid.withworkspace{grid-template-columns:var(--side-w) minmax(0,1fr) var(--workspace-w,320px);}
@@ -3281,6 +3289,32 @@ input.sw:disabled{opacity:.45;cursor:not-allowed;}
 .taskresult.trouble.is-failed b{color:var(--madder);}
 .taskresult.trouble.is-blocked{border-color:color-mix(in srgb,var(--marigold) 40%,transparent);}
 .taskresult.trouble.is-blocked b{color:var(--marigold);}
+/* The same trouble language, worn by the room header's own chip — marigold for
+   waiting, madder for fallen over, and the state word never wrapped away. The
+   `[data-trouble] .an-state b` rules above already colour the word itself, so
+   this only has to carry the chip. */
+/* It SHRINKS rather than being pushed off the end of a crowded header — the
+   name never does, so the smallest this can ever get still says who. */
+.chip.agenttrouble{flex:0 1 auto;min-width:0;display:inline-flex;align-items:center;gap:6px;
+  max-width:280px;}
+.chip.agenttrouble .an-name{flex:none;font-weight:650;}
+.chip.agenttrouble .an-state{display:inline;margin-top:0;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;}
+.chip.agenttrouble .tr-more{flex:none;color:var(--ink-3);}
+.chip.agenttrouble.is-blocked{border-color:color-mix(in srgb,var(--marigold) 40%,transparent);
+  background:var(--marigold-soft);}
+.chip.agenttrouble.is-failed{border-color:color-mix(in srgb,var(--madder) 40%,transparent);
+  background:var(--madder-soft);}
+.chip.agenttrouble.is-failed .dot{background:var(--madder);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--madder) 22%,transparent);}
+/* HOVER MAKES IT MORE OF WHAT IT IS, never less. A plain `background:` here
+   would beat the two rules above and drop the marigold/madder fill at exactly
+   the moment his pointer is on the chip — the one moment he is certainly
+   looking at it. So the pointer state is the same colour, harder. */
+.chip.agenttrouble.is-blocked:hover,.chip.agenttrouble.is-blocked:focus-visible{
+  border-color:var(--marigold);}
+.chip.agenttrouble.is-failed:hover,.chip.agenttrouble.is-failed:focus-visible{
+  border-color:var(--madder);}
 .job .jobwhy{display:block;margin-top:4px;color:var(--ink-2);}
 .job[data-trouble="failed"]{border-color:color-mix(in srgb,var(--madder) 35%,transparent);}
 .job[data-trouble="blocked"]{border-color:color-mix(in srgb,var(--marigold) 40%,transparent);}
