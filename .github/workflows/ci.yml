@@ -27,7 +27,7 @@ jobs:
     # install+build + 10m engine + 20m relay + 5m + 5m = 41m of step caps,
     # which the step timeouts stop first in practice (relay's real time is
     # 11m13s). Never lower this below the sum of the step caps.
-    timeout-minutes: 40
+    timeout-minutes: 45
     strategy:
       # Both platforms always report. A red Windows job must not hide the
       # Linux result, or the other way round.
@@ -70,8 +70,8 @@ jobs:
       # Every suite carries its OWN timeout. A step-level timeout marks that
       # step `failure` and leaves the job running, so the suites behind a hung
       # one still report; a job-level timeout would mark them `cancelled` and
-      # skip them. Sized from measured CI time, roughly 2x healthy:
-      #   shared 6s, engine 5m20s, relay 11m13s, desktop 3s.
+      # skip them. Sized from measured CI time (shared 6s, engine 5m20s,
+      # relay up to 14m39s, desktop 3s); relay's margin is only ~1.37x.
       - name: Tests — packages/shared
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 5
