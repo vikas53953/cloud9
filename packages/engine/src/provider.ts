@@ -268,10 +268,38 @@ export class ProviderOutputMissingError extends Error {
  * trace (harness-signin.md decision 3, FR-TL-005).
  */
 export class HarnessUnavailableError extends Error {
-  constructor(public harness: string, message: string) {
+  constructor(
+    public harness: string,
+    message: string,
+    /**
+     * What this computer was actually found to have, when anything was found.
+     * Absent means nobody looked, and the reply falls back to the generic
+     * sentence — see `harnessDisconnectedReply`.
+     */
+    public readonly readiness?: HarnessReadiness,
+  ) {
     super(message);
     this.name = "HarnessUnavailableError";
   }
+}
+
+/**
+ * WHAT THE APP ACTUALLY KNOWS about a harness at the moment a turn is refused.
+ *
+ * Booleans and nothing else, on purpose. `HarnessInfo.detail` reads well on the
+ * Settings card but it can carry the signed-in ACCOUNT, and a chat message is
+ * read by everyone in the channel — the same law `sanitizeForChat` exists for.
+ * So the sentence below is built here, out of fixed words and these flags.
+ */
+export interface HarnessReadiness {
+  /** the app is on this computer */
+  installed: boolean;
+  /** it reports a logged-in account, or Cloud9 holds a key for it */
+  signedIn: boolean;
+  /** it is here but did NOT say whether it is signed in — the probe gave up */
+  unsure?: boolean;
+  /** this computer has been looked at at least once */
+  detected: boolean;
 }
 
 /** A capability mix that a provider cannot safely honor; the turn did not run. */
@@ -315,9 +343,63 @@ export class InstructionsNotSavedError extends Error {
   }
 }
 
-/** What the agent says when its harness isn't connected. No jargon. */
+/**
+ * What the agent says when its harness isn't connected and NOTHING is known
+ * about why. No jargon.
+ */
 export const HARNESS_DISCONNECTED_REPLY =
   "my engine isn't connected — open Settings and sign in, then ask me again.";
+
+/**
+ * THE SAME REFUSAL, BUT TRUE ABOUT THIS COMPUTER.
+ *
+ * ================================================================
+ * WHY THIS EXISTS (2026-08-12, installed blocker 3)
+ * ================================================================
+ *
+ * Every reason a turn cannot run used to come out as the one sentence above:
+ * "open Settings and sign in". On a machine where the app is not installed at
+ * all that sends him to a sign-in button for an app he does not have. And on a
+ * machine where Claude IS installed and IS signed in, but the sign-in probe has
+ * not answered yet (`HarnessInfo.unsure` — measured at 77 seconds on this
+ * computer, see `harness.ts`), it tells him to fix something that is not
+ * broken, which is the 2026-08-05 report happening again one surface over.
+ *
+ * `AGENTS.md`: a refusal must say WHY and say HOW TO ENABLE IT. One sentence
+ * cannot do that for four different situations, so there are four sentences,
+ * chosen from what was actually found. Every one of them is still a REFUSAL —
+ * nothing here makes an agent answer when it cannot.
+ *
+ * Nothing from the harness's own text is forwarded: see `HarnessReadiness`.
+ */
+export function harnessDisconnectedReply(
+  harness: string, readiness?: HarnessReadiness,
+): string {
+  // Nobody wired the facts in (an older host, a bare engine in a test). The
+  // generic sentence is the honest answer when nothing is known.
+  if (!readiness) return HARNESS_DISCONNECTED_REPLY;
+  const app = harness === "codex" ? "Codex" : "Claude";
+  if (!readiness.detected) {
+    return "my engine isn't connected yet — Cloud9 is still looking at what this computer " +
+      "has. Give it a moment and ask me again.";
+  }
+  if (!readiness.installed) {
+    return `my engine isn't connected — the ${app} app isn't on this computer. Install it, ` +
+      `or save a ${app} key in Settings, then ask me again.`;
+  }
+  if (readiness.unsure) {
+    return `my engine isn't connected yet — ${app} is on this computer, but it hasn't said ` +
+      "whether it is signed in. Cloud9 is asking again; give it a moment and ask me again, " +
+      "or open Settings and sign in.";
+  }
+  if (!readiness.signedIn) {
+    return `my engine isn't connected — ${app} is on this computer but isn't signed in. ` +
+      `Open Settings, sign in to ${app}, then ask me again.`;
+  }
+  // Found, signed in, and STILL no provider. Nothing is known that would make a
+  // more specific sentence true, so it does not invent one.
+  return HARNESS_DISCONNECTED_REPLY;
+}
 
 /**
  * The ONE place raw error text is turned into something a chat message may
@@ -328,7 +410,11 @@ export const HARNESS_DISCONNECTED_REPLY =
  */
 export function sanitizeForChat(err: unknown, where: string): string {
   console.error(`[engine] ${where}:`, err);
-  if (err instanceof HarnessUnavailableError) return HARNESS_DISCONNECTED_REPLY;
+  // Still one refusal, still nothing from the error's own text — but it names
+  // the situation this computer is actually in. See `harnessDisconnectedReply`.
+  if (err instanceof HarnessUnavailableError) {
+    return harnessDisconnectedReply(err.harness, err.readiness);
+  }
   if (err instanceof HarnessAbilityBoundaryError) return err.message;
   // Built from capability LABELS out of the table and fixed words — no path, no
   // argv, no error code — and it is the one thing the owner has to hear, since

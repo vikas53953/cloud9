@@ -25,6 +25,133 @@ if (process.platform === "win32") app.setAppUserModelId(APP_ID);
 /** true in the installed app, false when run from the repo with `electron .` */
 const PACKAGED = app.isPackaged;
 
+/* ---------- THE APP'S OWN DIARY ----------------------------------------
+ *
+ * ================================================================
+ * WHY THIS EXISTS, AND IT COST A WHOLE ROUND OF DIAGNOSIS
+ * ================================================================
+ *
+ * 2026-08-12. The installed walk reported an agent answering "my engine isn't
+ * connected" and NOBODY COULD SAY WHY. The engine host writes the answer down
+ * every time it happens — `[engine-host] Claude connected (…)`, `[engine-host]
+ * Claude disconnected`, `claude installed=… signedIn=…` — and every one of
+ * those lines went to `console.log` in a packaged Electron main process, which
+ * on Windows has no console attached to it. So the app was explaining itself,
+ * out loud, into nothing. The Help menu even offers "Open the app's log
+ * folder", pointing at a folder NOTHING HAS EVER WRITTEN TO and which therefore
+ * does not exist, so pressing it fails silently too.
+ *
+ * "Logs before guesses" is not a habit anybody can keep against an app that
+ * keeps no logs. So: everything this process says is also appended here, with
+ * the time it was said, and the menu item now opens a folder that is really
+ * there.
+ *
+ * NO SECRETS, and that is a property of the callers rather than a promise made
+ * here: every place in this file and in `@cloud9/engine/host` that touches a
+ * key logs its LENGTH and never its value (decision 6). This only forwards what
+ * they already chose to say — it does not widen what is said, and nothing new
+ * is logged because of it.
+ *
+ * It can never take the app down: a folder it cannot make or a file it cannot
+ * open leaves the console exactly as it was.
+ *
+ * NOTHING IS WRITTEN BY MERELY LOADING THIS FILE. Importing a module must not
+ * make folders: the durability tests load this file to exercise the safe-write
+ * rules against a temporary user folder, and they assert exactly what is in it,
+ * because a stray file there is the very bug they exist to catch. So the
+ * console is tee'd into MEMORY at load and the lines are only ever put on the
+ * disk when the app itself says it has started. Nothing said before that is
+ * lost — the buffered lines are written out first.
+ */
+const DIARY_MAX_BYTES = 5 * 1024 * 1024;
+/** what was said before there was a file to say it into; bounded on purpose */
+const DIARY_BACKLOG_MAX = 500;
+/**
+ * WRITTEN SYNCHRONOUSLY, and that is the whole point. A buffered stream loses
+ * its tail when the process dies, and the lines worth having are the ones just
+ * before it died. The volume is a handful of lines per session, not a hot path.
+ */
+let diaryFd = null;
+let diaryBacklog = [];
+
+function diaryFolder() {
+  try {
+    return app.getPath("logs");
+  } catch {
+    // some Electron builds refuse `logs` until it exists; userData always works
+    return path.join(app.getPath("userData"), "logs");
+  }
+}
+
+function diaryLine(level, args) {
+  const said = args.map(a => {
+    if (typeof a === "string") return a;
+    if (a instanceof Error) return `${a.name}: ${a.message}`;
+    try { return JSON.stringify(a); } catch { return String(a); }
+  }).join(" ");
+  return `${new Date().toISOString()} ${level} ${said}\n`;
+}
+
+function writeDiary(level, args) {
+  try {
+    const line = diaryLine(level, args);
+    if (diaryFd !== null) { fs.writeSync(diaryFd, line); return; }
+    if (diaryBacklog.length < DIARY_BACKLOG_MAX) diaryBacklog.push(line);
+  } catch {
+    // the console already has it, and a diary must never be why the app stops
+    diaryFd = null;
+  }
+}
+
+/* Tee, never replace: the console keeps working exactly as before (it is the
+   only output `npm run dev` has), and the file is the copy that survives.
+   ONCE PER PROCESS — the tests load this file again for every case, and
+   wrapping an already-wrapped console would stack a new layer each time. */
+const DIARY_MARK = Symbol.for("cloud9.diary.tee");
+/* The tee is installed once; WHERE it delivers is looked up every time, so the
+   copy that is loaded now owns the diary. In the app that is the same thing —
+   this file is loaded exactly once — and it is what lets a test load it again
+   and get its own. */
+const DIARY_SINK = Symbol.for("cloud9.diary.sink");
+globalThis[DIARY_SINK] = writeDiary;
+if (!globalThis[DIARY_MARK]) {
+  globalThis[DIARY_MARK] = true;
+  for (const [name, level] of [["log", "INFO"], ["warn", "WARN"], ["error", "ERROR"]]) {
+    const original = console[name].bind(console);
+    console[name] = (...args) => { original(...args); globalThis[DIARY_SINK]?.(level, args); };
+  }
+}
+
+/** Called once, when the app really is starting. Never throws. */
+function openDiary() {
+  try {
+    const folder = diaryFolder();
+    fs.mkdirSync(folder, { recursive: true });
+    const file = path.join(folder, "cloud9-main.log");
+    /* ONE step back, never a pile: a log folder that grows without limit is its
+       own bug report. The previous run's diary is kept because the interesting
+       failure is usually the one before the restart. */
+    try {
+      if (fs.statSync(file).size > DIARY_MAX_BYTES) {
+        fs.renameSync(file, path.join(folder, "cloud9-main.1.log"));
+      }
+    } catch { /* no diary yet, or it is in use — appending is still fine */ }
+    const fd = fs.openSync(file, "a");
+    for (const line of diaryBacklog) fs.writeSync(fd, line);
+    diaryBacklog = [];
+    diaryFd = fd;
+    console.log(`[cloud9] Cloud9 ${app.getVersion()} starting — packaged=${PACKAGED}, ` +
+      `Electron ${process.versions.electron}, Node ${process.versions.node}`);
+    return folder;
+  } catch {
+    diaryFd = null;
+    // Said through the ordinary console: there is nowhere else for it to go.
+    console.warn("[cloud9] no log file could be opened on this computer — the app still " +
+      "runs, but it cannot keep a record of what it did");
+    return null;
+  }
+}
+
 const DEV_URL = process.env.CLOUD9_DEV_URL; // e.g. http://localhost:5173
 /**
  * Where the app talks to its hub. In dev this is the hub Start Cloud9.cmd
@@ -1232,8 +1359,24 @@ function buildMenu() {
       submenu: [
         menuItem("Quick chat (Ctrl+K)", "quick-chat"),
         {
+          /* It opens a folder that is really there now — see the diary note at
+             the top of this file. Made on demand as well as at startup, so a
+             folder deleted while the app is running still opens rather than
+             failing without a word. */
           label: "Open the app's log folder",
-          click: () => shell.openPath(app.getPath("logs")),
+          click: async () => {
+            const folder = diaryFolder();
+            try { fs.mkdirSync(folder, { recursive: true }); } catch { /* shown below */ }
+            const problem = await shell.openPath(folder);
+            if (problem) {
+              console.error(`[cloud9] could not open the log folder: ${problem}`);
+              dialog.showMessageBox({
+                type: "warning", title: "Cloud9",
+                message: "Cloud9 could not open its log folder.",
+                detail: `${folder}\n\n${problem}`, buttons: ["OK"],
+              });
+            }
+          },
         },
         { type: "separator" },
         {
@@ -1331,6 +1474,11 @@ if (PACKAGED && !app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    /* THE DIARY GOES ON THE DISK HERE — the app really is starting now, so a
+       folder in the user's Cloud9 data is expected rather than a side effect of
+       somebody loading this file. Everything already said while the process
+       came up is written out first. See the diary note at the top. */
+    openDiary();
     // FIRST, before a single byte is written: load the one owner of the safe
     // write, and clear away the part-files of a save this app was killed during.
     await loadDurableWrite();
@@ -1415,5 +1563,6 @@ module.exports = {
     guardWindow,
     settingsPath, readSettings, writeSettings,
     secretPath, saveSecret, loadSecret, clearSecret,
+    diaryFolder, openDiary,
   },
 };

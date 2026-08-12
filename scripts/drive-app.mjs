@@ -3749,6 +3749,58 @@ async function walk(page) {
     }
     const leaveAsk2 = page.locator(".overlay.leaveask .discardwork");
     if (await leaveAsk2.count()) await leaveAsk2.first().click();
+
+    /* ================================================================
+     * CAN THIS COMPUTER RUN A TURN AT ALL — ASKED BEFORE EITHER CHECK
+     * ================================================================
+     *
+     * 2026-08-12, and the reason both of these were misread for a round.
+     * The picture check reported "it never said what is actually in the
+     * picture" and the stop check reported "no Stop control ever appeared".
+     * BOTH SENTENCES WERE TRUE AND BOTH WERE ABOUT THE WRONG THING: the agent
+     * had answered "my engine isn't connected", so no model ever saw the
+     * bytes and no child process was ever started for a Stop button to kill.
+     * Two features were left looking broken by a machine whose engine simply
+     * had no harness attached.
+     *
+     * The two harness checks earlier in this walk cannot catch that, BY
+     * CONSTRUCTION: [37] compares the Settings card against `claude --version`
+     * and asks nothing about signing in, so a computer that has the app but is
+     * signed out — or one whose sign-in probe has not answered yet — passes
+     * both of them and still cannot run a single turn.
+     *
+     * So the app's OWN visible card is read first, on the Settings screen a
+     * person would look at, and if it says the engine cannot run then that is
+     * what these two checks report. It is still a FAILURE — nothing here is
+     * skipped or counted green, and `AGENTS.md` is explicit that a cascading
+     * unavailable check is not green. What changes is that the failure now
+     * names the real cause instead of blaming the picture or the button. */
+    await page.click('.rail .rail-btn[data-go="settings"]');
+    await page.waitForSelector('.harnesscard[data-harness="claude"]', { timeout: 30000 });
+    const engineCard = await page.evaluate(() => {
+      const card = document.querySelector('.harnesscard[data-harness="claude"]');
+      if (!card) return null;
+      const facts = card.querySelector(".harnessfacts");
+      return {
+        state: (card.querySelector(".harnessstate")?.innerText ?? "").replace(/\s+/g, " ").trim(),
+        facts: (facts?.innerText ?? "").replace(/\s+/g, " ").trim(),
+      };
+    });
+    if (!engineCard) throw new Error("the Settings screen has no Claude card to read");
+    /* The card's own words, not this harness's opinion: "✓ signed in" is the
+       very line the card draws, and a saved key is the app's other way of
+       being able to run. Either one means a turn can really start. */
+    const engineCanRun = /✓\s*signed in/.test(engineCard.facts)
+      || /✓\s*key saved on this computer/.test(engineCard.facts);
+    await shot(page, "engine-readiness-before-picture-and-stop");
+    if (!engineCanRun) {
+      throw new Error("NOT PROVED, AND NOT ABOUT EITHER FEATURE — this computer's engine " +
+        "cannot run a turn right now, so no model can be shown a picture and no real turn " +
+        `exists to stop. Cloud9's own Settings card says: "${engineCard.state}" · ` +
+        `"${engineCard.facts}". Sign in to Claude (or save a key in Settings) and run this ` +
+        "walk again; these two checks are unproven either way until then");
+    }
+
     await page.click('.rail .rail-btn[data-go="chat"]');
     await page.waitForSelector(".composer textarea", { timeout: 30000 });
     const who = await page.evaluate(() => (window.cloud9Wire.agents() ?? [])[0]?.name ?? "");
@@ -3783,6 +3835,17 @@ async function walk(page) {
       await shot(page, "picture-seen-not-guessed");
       const close = page.locator(".threadpanel .threadclose");
       if (await close.count()) await close.click();
+      /* THE AGENT REFUSED, AND IT IS NOT A PICTURE PROBLEM. Its engine said so
+         itself, in the one sentence `@cloud9/engine` uses for a harness that is
+         not attached. Reported as what it is — the alternative reads "it never
+         said what is in the picture", which sends the next person hunting
+         through image handling for a bug that is not there. Still a failure:
+         nothing about seeing a picture was proved. */
+      if (/engine isn't connected/i.test(said)) {
+        throw new Error("NOT ABOUT THE PICTURE — the agent refused the turn because its engine " +
+          `is not connected on this computer, so nothing ever looked at the bytes. ${who} said: ` +
+          `"${said.slice(0, 250)}"`);
+      }
       if (/blue/i.test(said) && !/magenta|pink|purple|fuchsia/i.test(said)) {
         throw new Error("IT GUESSED FROM THE FILE NAME — the picture is magenta and is called " +
           `ocean-blue.png, and ${who} said: "${said.slice(0, 200)}"`);
@@ -3796,13 +3859,53 @@ async function walk(page) {
     });
 
     await check(EXPECTED_CHECKS[40], async () => {
+      /* STOPPING STANDS ON ITS OWN, whatever the picture did.
+         The check above can end with a thread panel open over the room and a
+         picture still sitting in the message box — and if it does, this check
+         types into a composer that is not the one it thinks it is, and sends a
+         second copy of the picture with it. That is how a real Stop failure and
+         a leftover from the previous check become impossible to tell apart. So
+         the room is put back to plain first, using the app's own visible
+         controls, and nothing here reads any result of the check before it. */
+      const strayThread = page.locator(".threadpanel .threadclose");
+      if (await strayThread.count()) {
+        await strayThread.first().click().catch(() => { /* already closing */ });
+        await page.waitForSelector(".threadpanel", { state: "detached", timeout: 20000 })
+          .catch(() => { /* said below if it really matters */ });
+      }
+      for (const tile of await page.locator(".uploadtray .uptile .upx").all()) {
+        await tile.click().catch(() => { /* the tray emptied itself */ });
+      }
+      await until("the message box to be empty of files before the stop is asked for", async () =>
+        (await page.locator(".uploadtray .uptile").count()) === 0, { timeout: 30000 })
+        .catch(() => { throw new Error("could not clear the message box before asking for a " +
+          "stoppable turn, so a Stop result here would not be about stopping"); });
+      await page.fill(".composer textarea", "");
+
       const ask = `@${who} !bg take your time and write me a long, careful comparison of ` +
         "every villa you can think of";
       await page.fill(".composer textarea", ask);
       await page.press(".composer textarea", "Enter");
       await page.waitForSelector("button.stopnow[data-stop-agent]", { timeout: 120000 })
-        .catch(() => { throw new Error("NOT ON SCREEN — an agent was set working and no Stop " +
-          "control ever appeared, so there is no way for him to pull the plug"); });
+        .catch(async () => {
+          /* WHY THERE IS NO BUTTON, said before blaming the button. A Stop
+             control is only ever drawn over a turn that is really running: the
+             engine opens the handle it kills AFTER it has a provider, so an
+             agent that refused the turn never had anything to stop. Read what
+             the agent actually said, so a genuine Stop defect and a refusal are
+             never reported as the same thing. Both are failures. */
+          const refused = await page.evaluate(() => [...document.querySelectorAll(
+            ".msgs .msg.from-agent")].slice(-4)
+            .map(m => m.innerText.replace(/\s+/g, " ").trim()).join(" · "));
+          if (/engine isn't connected/i.test(refused)) {
+            throw new Error("NOT ABOUT STOPPING — the agent refused the turn because its engine " +
+              "is not connected on this computer, so no turn was ever running for a Stop control " +
+              `to appear over. It said: "${refused.slice(0, 250)}"`);
+          }
+          throw new Error("NOT ON SCREEN — an agent was set working and no Stop " +
+            "control ever appeared, so there is no way for him to pull the plug" +
+            (refused ? `. The room last said: "${refused.slice(0, 200)}"` : ""));
+        });
       await shot(page, "stop-offered-while-working");
       await page.click("button.stopnow[data-stop-agent]");
       await until("the running turn to really stop", async () =>

@@ -52,8 +52,9 @@ import { ApprovalDesk, ApprovalOutcome, ApprovalWaitChange } from "./approvaldes
 import { GitHubClient, GitHubOptions } from "./github.js";
 import { BrakeConfig, DEFAULT_BRAKE, isBraked, shouldReply } from "./chatter.js";
 import {
-  ClaudeProvider, HarnessUnavailableError, InstructionsNotSavedError, MockProvider,
-  PlanNotOfferedError, redactForSharing, sanitizeForChat, SpendCapReachedError, ThreadContinuity,
+  ClaudeProvider, HarnessReadiness, HarnessUnavailableError, InstructionsNotSavedError,
+  MockProvider, PlanNotOfferedError, redactForSharing, sanitizeForChat, SpendCapReachedError,
+  ThreadContinuity,
 } from "./provider.js";
 import { sessionKeyId } from "./sessionresume.js";
 import { PendingAsk, rememberAsk, takeAsk, workEmoji } from "./reactions.js";
@@ -405,6 +406,15 @@ export class Engine {
    * not get a turn, so an unknown id can never reach a command line.
    */
   harnessModels?: (harness: HarnessName) => string[];
+  /**
+   * WHAT THIS COMPUTER WAS FOUND TO HAVE, supplied by the same host and from
+   * the same live detection as `harnessModels`. Used for one thing only: when a
+   * turn is refused because no harness is attached, the agent's reply names the
+   * real situation instead of always saying "open Settings and sign in".
+   * Absent means nobody looked, and the generic sentence is used — see
+   * `harnessDisconnectedReply` in `provider.ts`.
+   */
+  harnessReadiness?: (harness: HarnessName) => HarnessReadiness | undefined;
 
   constructor(opts: EngineOptions) {
     this.opts = opts;
@@ -1483,7 +1493,9 @@ export class Engine {
       if (problem) throw new Error(`refusing to run agent ${agent.id}: ${problem}`);
       const provider = this.providerFor(agent);
       if (!provider) {
-        throw new HarnessUnavailableError(harness, `${harness} is not connected on this machine`);
+        throw new HarnessUnavailableError(
+          harness, `${harness} is not connected on this machine`,
+          this.harnessReadiness?.(harness));
       }
       const responseCapable = canSignal && provider.canStreamResponse?.() === true;
       // ASKED TO SHOW A PLAN BY A HARNESS THAT HAS NO PLAN MODE. Refused out

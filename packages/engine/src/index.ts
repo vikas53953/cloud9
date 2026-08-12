@@ -4,6 +4,8 @@ export {
   AbilityNotSupportedHereError,
   ProviderOutputMissingError,
   HARNESS_DISCONNECTED_REPLY,
+  // The same refusal, said truthfully about THIS computer — see the note there.
+  harnessDisconnectedReply, type HarnessReadiness,
   buildAgentPrompt, promptTurnKind, renderSkills, sanitizeForChat, redactForSharing,
   // THE PROMPT, CUT IN TWO (gap A) — the standing half a harness can send as a
   // real system prompt, and the half that is only about this turn.

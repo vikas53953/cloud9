@@ -316,6 +316,32 @@ export function startEngineHost(opts: EngineHostOptions): EngineHost {
   // the engine's last gate reads the same live list the providers do
   engine.harnessModels = modelsFor;
 
+  /* AND THE SAME LIVE FACTS WHEN A TURN IS REFUSED (2026-08-12).
+   *
+   * `applyProviders` above decides whether there IS a provider. This hands the
+   * engine the reason, so the agent's refusal says what is actually true of
+   * this computer rather than always "open Settings and sign in" — see
+   * `harnessDisconnectedReply`. Read fresh, from the very state the providers
+   * were built from, so the sentence and the decision can never disagree.
+   *
+   * `undefined` until this computer has been looked at once: `lastState` is a
+   * placeholder before that, and reporting a placeholder as a finding is the
+   * same lie `engine.reportHarness`'s honesty gate exists to prevent. A held
+   * credential counts as signed in because it is what a turn would really run
+   * on, exactly as `applyProviders` treats it. */
+  engine.harnessReadiness = (h: HarnessName) => {
+    if (!harness.hasDetected || !lastState) return undefined;
+    const info = lastState[h];
+    const held = !!creds[h]?.value;
+    return {
+      installed: info.installed || held,
+      signedIn: info.signedIn || held,
+      // a held credential settles the question, so nothing is "unsure" then
+      unsure: held ? false : info.unsure === true,
+      detected: true,
+    };
+  };
+
   // Every action is named explicitly. The old `else` branch treated ANY action
   // that carried a harness name as "sign in", so a new action would have
   // silently started a browser sign-in instead of doing its own job.
