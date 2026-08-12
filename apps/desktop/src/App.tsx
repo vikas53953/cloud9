@@ -16174,7 +16174,7 @@ function HarnessCard({
             the state that really was proved, and the unproved one says so. */}
         <span className={signedIn ? "yes" : "no"}>
           {signedIn ? "✓ signed in"
-            : info?.unsure ? "· sign-in not confirmed"
+            : (info?.unsure || !installed) ? "· sign-in not confirmed"
             : "✗ not signed in"}
         </span>
         {authWords && <span>{authWords}</span>}
