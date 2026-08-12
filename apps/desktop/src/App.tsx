@@ -2154,6 +2154,12 @@ function applyTheme(mode: AppearanceMode, palette: PaletteName, customAccent = "
      system mode resolves to the selected palette's family while the mode
      remains independently durable and visible in Settings. */
   const dark = resolvedAppearanceMode(mode) === "dark";
+  /* THE RESOLVED APPEARANCE, WRITTEN DOWN. `data-appearance-mode` can say
+     "system", and the palette name alone cannot answer "is this a light
+     screen?" — a chosen light palette under a dark OS is still a light screen.
+     Stylesheet rules that only apply to a dark screen key off this rather than
+     off the OS query, so no light palette can be repainted by the OS. */
+  root.setAttribute("data-appearance", dark ? "dark" : "light");
   const effectivePalette = paletteMode(palette) === (dark ? "dark" : "light")
     ? palette : defaultPalette(dark ? "dark" : "light");
   root.setAttribute("data-theme", effectivePalette);
@@ -2649,6 +2655,28 @@ function Workspace(): React.JSX.Element {
     }
   }, [world.connected, world.channels]);
 
+  /* WHAT A SCREEN ASKS FOR ON THE WAY IN, IN ONE PLACE.
+   *
+   * Some screens are records and some are running totals. A running total held
+   * over from the last visit is out of date the moment anything happens, so
+   * those screens ask the hub again every time they are entered. That used to
+   * live only inside the handler on each rail button, which meant any OTHER
+   * way of arriving — Back, Forward, a link — showed the stale figure. This is
+   * the single owner of the question "what does entering this screen need?",
+   * so a new route cannot forget it. Screens that are pure records ask for
+   * nothing and are absent on purpose. */
+  const askOnEnter = useCallback((s: ScreenName) => {
+    if (s === "spending") client.askSpending();
+    else if (s === "projects") client.askProjects();
+    else if (s === "updates") client.askPublicUpdates();
+    else if (s === "social") client.askSocialProjects();
+    else if (s === "forums") client.askForumProjects();
+    else if (s === "huddles") client.askHuddles();
+    else if (s === "canvas") client.askProjects();
+    else if (s === "activity") client.send({ type: "activity", limit: 100 });
+    else if (s === "pulse") { client.askProjects(); client.askPulse(); }
+  }, []);
+
   useEffect(() => {
     const previous = screenHistoryRef.current;
     if (previous === screen) return;
@@ -2668,9 +2696,10 @@ function Workspace(): React.JSX.Element {
       historyJumpRef.current = true;
       setScreenPast(items => items.slice(0, -1));
       setScreenFuture(items => [screen, ...items].slice(0, 20));
+      askOnEnter(previous);
       setScreen(previous);
     });
-  }, [screen, screenPast]);
+  }, [screen, screenPast, askOnEnter]);
 
   const goForward = useCallback(() => {
     const next = screenFuture[0];
@@ -2679,9 +2708,10 @@ function Workspace(): React.JSX.Element {
       historyJumpRef.current = true;
       setScreenFuture(items => items.slice(1));
       setScreenPast(items => [...items, screen].slice(-20));
+      askOnEnter(next);
       setScreen(next);
     });
-  }, [screen, screenFuture]);
+  }, [screen, screenFuture, askOnEnter]);
   const openInvite = useCallback(() => {
     client.send({ type: "createInvite" });
     setModal("invite");
@@ -2761,7 +2791,11 @@ function Workspace(): React.JSX.Element {
    * did before.
    */
   const leaveThen = useCallback((then: () => void) => attemptLeave(then), []);
-  const goScreen = useCallback((s: ScreenName) => attemptLeave(() => setScreen(s)), []);
+
+  const goScreen = useCallback((s: ScreenName) => attemptLeave(() => {
+    askOnEnter(s);
+    setScreen(s);
+  }), [askOnEnter]);
   const goChannel = useCallback((id: ID) => attemptLeave(() => {
     setActiveId(id);
     setScreen("chat");
@@ -3565,11 +3599,11 @@ function Workspace(): React.JSX.Element {
           <button className="iconbtn" aria-label="Go forward" title="Go forward" disabled={screenFuture.length === 0} onClick={goForward}>→</button>
         </div>
         <button className="global-search" type="button" onClick={() => leaveThen(() => { setScreen("chat"); setSearchOpen(true); })}
-          aria-label="Search messages, rooms, agents, files and activity" title="Global search (Ctrl Shift F)">
-          <IconSearch /><span>Search messages, rooms, agents, files and activity</span><kbd>Ctrl Shift F</kbd>
+          aria-label="Search messages, replies and files" title="Global search (Ctrl Shift F)">
+          <IconSearch /><span>Search messages, replies and files</span><kbd>Ctrl Shift F</kbd>
         </button>
         <div className="global-actions">
-          <button className="iconbtn" aria-label="Help" title="Help and shortcuts" onClick={() => client.notify("Ctrl K opens the command launcher. Ctrl Shift F searches messages, rooms, agents, files and activity.")}>?</button>
+          <button className="iconbtn" aria-label="Help" title="Help and shortcuts" onClick={() => client.notify("Ctrl K opens the command launcher. Ctrl Shift F searches messages, replies and files.")}>?</button>
           <button className="iconbtn" aria-label="Notifications" title="Notifications" onClick={openNotifications}><IconBell />{unreadNotifications > 0 && <b>{unreadNotifications}</b>}</button>
           <button className="global-profile" aria-label="Connection and profile" title={world.hubConn.line || "Connection and profile"} onClick={() => setModal("friends")}>
             <span className={`rail-lamp ${world.connected ? "ok" : ""}`} /><span>{world.me?.name ?? "Profile"}</span>
@@ -9396,8 +9430,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = `${ta.scrollHeight}px`;
-  }, [text]);
+    ta.style.height = `${Math.min(ta.scrollHeight, inThreadPanel ? 180 : 240)}px`;
+  }, [text, inThreadPanel]);
 
   const mentionQuery = useMemo(() => {
     const m = /(?:^|\s)@([^\s@]*)$/.exec(text);
@@ -10209,12 +10243,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
           aria-controls={mentionOpen ? `mention-list-${channel.id}` : undefined}
           aria-activedescendant={mentionOpen && suggestions[acIndex]
             ? `mention-option-${channel.id}-${suggestions[acIndex].id}` : undefined}
-          onChange={e => {
-            setText(e.target.value); setAcIndex(0);
-            const box = e.currentTarget;
-            box.style.height = "auto";
-            box.style.height = `${Math.min(box.scrollHeight, inThreadPanel ? 180 : 240)}px`;
-          }}
+          onChange={e => { setText(e.target.value); setAcIndex(0); }}
           onKeyDown={e => {
             if (mentionOpen) {
               if (e.key === "ArrowDown") { e.preventDefault(); setAcIndex(i => (i + 1) % suggestions.length); return; }

@@ -29,13 +29,13 @@
 // ---------------------------------------------------------------------------
 
 /** Buzz's measured default, on his own maximised window. Cloud9's today is 280. */
-export const THREAD_DEFAULT = 460;
+export const THREAD_DEFAULT = 388;
 
 /** The thread never goes below this. Buzz's own floor measured at 308. */
 export const THREAD_FLOOR = 300;
 
 /** The room never goes below this. Buzz's own floor measured at 301. */
-export const ROOM_FLOOR = 520;
+export const ROOM_FLOOR = 300;
 
 /** The rail of buttons down the left (`styles.css` `--rail-w`). */
 export const RAIL_W = 78;
