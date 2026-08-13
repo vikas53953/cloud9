@@ -1,0 +1,282 @@
+<!doctype html><meta charset=utf-8><title>Cloud9 colour audit</title>
+<style>
+body{font:15px/1.55 system-ui,Segoe UI,sans-serif;margin:0;background:#f6f7f9;color:#16202b}
+.wrap{max-width:1000px;margin:0 auto;padding:32px 24px 120px}
+h1{font-size:26px;margin:0 0 6px}h2{font-size:18px;margin:34px 0 10px}
+.sub{color:#5b6875;margin:0 0 22px}
+.card{background:#fff;border:1px solid #dfe4ea;border-radius:12px;padding:18px 20px;margin:14px 0}
+.big{font-size:17px;font-weight:600}
+table{border-collapse:collapse;width:100%;font-size:13px;background:#fff}
+th,td{border:1px solid #e3e7ec;padding:7px 8px;text-align:center}
+th{background:#eef1f5;font-weight:600;font-size:12px}
+td.nm{text-align:left;white-space:nowrap;font-weight:600}
+td.nm i{font-weight:400;color:#7b8796;font-style:normal;font-size:11px}
+.sw{display:block;padding:3px 6px;border-radius:5px;font-size:12px;font-weight:600;margin-bottom:3px;border:1px solid rgba(0,0,0,.15)}
+td b{font-size:11px;font-weight:600}
+.ok{background:#f2fbf5}.ok b{color:#137a3d}
+.bad{background:#fff7e8}.bad b{color:#96590a}
+.dead{background:#fdecec}.dead b{color:#b3261e}
+.legend{font-size:13px;color:#5b6875;margin-top:8px}
+ul{margin:8px 0 0 20px}li{margin:5px 0}
+code{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12.5px}
+.warn{border-left:4px solid #b3261e;background:#fdecec}
+.note{border-left:4px solid #96590a;background:#fff7e8}
+</style>
+<div class=wrap>
+<h1>Cloud9 — why the buttons look greyed out</h1>
+<p class=sub>Colour audit of the <b>installed</b> app, 13 Aug 2026. Measured, not guessed.</p>
+
+<div class="card warn" data-fb="Headline verdict">
+<p class=big>Your report is correct, and it is not your eyes.</p>
+<p>On this PC the main action button really is painted <b>dark text on a dark slab</b> — a contrast of <b>1.16 to 1</b>. Anything under 4.5 to 1 is considered unreadable; 1 to 1 means the two colours are identical. The button is fully working. It just has no visible label. Every one of the <b>6 light palettes</b> does this.</p>
+</div>
+
+<div class=card data-fb="Did the app get driven?">
+<h2 style=margin-top:0>Honest note: the app was not clicked through</h2>
+<p>Cloud9 was already open when this started, so it was left alone rather than killed, and no second copy was opened. Instead the exact stylesheet the installed app ships was loaded into a browser engine and every palette measured directly. That gives real numbers but <b>no screenshots and no walk of the screens</b>.</p>
+</div>
+
+<h2>Every palette, on your PC (Windows set to dark)</h2>
+<table data-fb="Palette table">
+<tr><th>Palette</th><th>Main action button</th><th>Send arrow</th><th>Selected room</th><th>Helper text</th><th>Box outlines</th></tr>
+<tr><td class=nm>Daylight <i>light</i></td><td class=dead><span class=sw style="background:#24201B;color:#0F1512">Save</span><b>1.14:1</b></td><td class=bad><span class=sw style="background:#2D6B5D;color:#08120F">Save</span><b>3.06:1</b></td><td class=dead><span class=sw style="background:#F6E6C4;color:#F7FBF5">Save</span><b>1.18:1</b></td><td class=bad><span class=sw style="background:#FFFDF8;color:#91877B">Save</span><b>3.47:1</b></td><td class=dead><span class=sw style="background:#FFFDF8;color:#D8D0C0">Save</span><b>1.51:1</b></td></tr><tr><td class=nm>Cloud9 Pine <i>light</i></td><td class=dead><span class=sw style="background:#10261E;color:#0F1512">Save</span><b>1.16:1</b></td><td class=bad><span class=sw style="background:#0E6653;color:#08120F">Save</span><b>2.76:1</b></td><td class=dead><span class=sw style="background:#CDE8DB;color:#F0FBF5">Save</span><b>1.23:1</b></td><td class=bad><span class=sw style="background:#F8FCF9;color:#758E82">Save</span><b>3.41:1</b></td><td class=dead><span class=sw style="background:#F8FCF9;color:#BFD4C9">Save</span><b>1.51:1</b></td></tr><tr><td class=nm>Porcelain <i>light</i></td><td class=dead><span class=sw style="background:#1D2430;color:#0F1512">Save</span><b>1.19:1</b></td><td class=bad><span class=sw style="background:#3867C8;color:#08120F">Save</span><b>3.57:1</b></td><td class=dead><span class=sw style="background:#DDE7FF;color:#FFFFFF">Save</span><b>1.24:1</b></td><td class=bad><span class=sw style="background:#FFFFFF;color:#7B8592">Save</span><b>3.74:1</b></td><td class=dead><span class=sw style="background:#FFFFFF;color:#CBD0D9">Save</span><b>1.55:1</b></td></tr><tr><td class=nm>Warm Paper <i>light</i></td><td class=dead><span class=sw style="background:#33271D;color:#0F1512">Save</span><b>1.27:1</b></td><td class=bad><span class=sw style="background:#8A4D22;color:#08120F">Save</span><b>2.87:1</b></td><td class=dead><span class=sw style="background:#F1D6A8;color:#FFF8EF">Save</span><b>1.34:1</b></td><td class=bad><span class=sw style="background:#FFF9F0;color:#947D68">Save</span><b>3.72:1</b></td><td class=dead><span class=sw style="background:#FFF9F0;color:#D9C8B3">Save</span><b>1.56:1</b></td></tr><tr><td class=nm>Solarized Light <i>light</i></td><td class=dead><span class=sw style="background:#073642;color:#0F1512">Save</span><b>1.42:1</b></td><td class=ok><span class=sw style="background:#268BD2;color:#08120F">Save</span><b>5.17:1</b></td><td class=dead><span class=sw style="background:#D9EAD3;color:#FDF6E3">Save</span><b>1.17:1</b></td><td class=bad><span class=sw style="background:#FFFBEF;color:#839496">Save</span><b>3.06:1</b></td><td class=dead><span class=sw style="background:#FFFBEF;color:#D5CCB8">Save</span><b>1.54:1</b></td></tr><tr><td class=nm>High Contrast Light <i>light</i></td><td class=dead><span class=sw style="background:#000000;color:#0F1512">Save</span><b>1.14:1</b></td><td class=bad><span class=sw style="background:#005FCC;color:#08120F">Save</span><b>3.18:1</b></td><td class=ok><span class=sw style="background:#FFFFFF;color:#000000">Save</span><b>21:1</b></td><td class=ok><span class=sw style="background:#FFFFFF;color:#222222">Save</span><b>15.91:1</b></td><td class=ok><span class=sw style="background:#FFFFFF;color:#000000">Save</span><b>21:1</b></td></tr><tr><td class=nm>Midnight <i>dark</i></td><td class=ok><span class=sw style="background:#EEF4ED;color:#0F1512">Save</span><b>16.54:1</b></td><td class=ok><span class=sw style="background:#61D1AF;color:#08120F">Save</span><b>10.19:1</b></td><td class=ok><span class=sw style="background:#23483E;color:#EEF4ED">Save</span><b>9.09:1</b></td><td class=ok><span class=sw style="background:#1A2420;color:#7D9085">Save</span><b>4.71:1</b></td><td class=dead><span class=sw style="background:#1A2420;color:#34453D">Save</span><b>1.57:1</b></td></tr><tr><td class=nm>Aubergine <i>dark</i></td><td class=ok><span class=sw style="background:#F5EDF8;color:#0F1512">Save</span><b>16.15:1</b></td><td class=ok><span class=sw style="background:#D9A7E6;color:#08120F">Save</span><b>9.62:1</b></td><td class=ok><span class=sw style="background:#53345E;color:#EEF4ED">Save</span><b>9.3:1</b></td><td class=ok><span class=sw style="background:#261A2B;color:#9B82A1">Save</span><b>4.82:1</b></td><td class=dead><span class=sw style="background:#261A2B;color:#4B3553">Save</span><b>1.53:1</b></td></tr><tr><td class=nm>Solarized dark <i>dark</i></td><td class=ok><span class=sw style="background:#EEE8D5;color:#0F1512">Save</span><b>15.08:1</b></td><td class=ok><span class=sw style="background:#2AA198;color:#08120F">Save</span><b>6.02:1</b></td><td class=ok><span class=sw style="background:#164C55;color:#EEF4ED">Save</span><b>8.55:1</b></td><td class=bad><span class=sw style="background:#073642;color:#829A9A">Save</span><b>4.36:1</b></td><td class=dead><span class=sw style="background:#073642;color:#23515A">Save</span><b>1.48:1</b></td></tr><tr><td class=nm>Rose Pine <i>dark</i></td><td class=ok><span class=sw style="background:#E0DEF4;color:#0F1512">Save</span><b>14.01:1</b></td><td class=ok><span class=sw style="background:#9CCFD8;color:#08120F">Save</span><b>11.17:1</b></td><td class=ok><span class=sw style="background:#453F62;color:#EEF4ED">Save</span><b>8.78:1</b></td><td class=bad><span class=sw style="background:#26233A;color:#8884A4">Save</span><b>4.25:1</b></td><td class=dead><span class=sw style="background:#26233A;color:#4A4560">Save</span><b>1.67:1</b></td></tr><tr><td class=nm>Catppuccin <i>dark</i></td><td class=ok><span class=sw style="background:#CDD6F4;color:#0F1512">Save</span><b>12.78:1</b></td><td class=ok><span class=sw style="background:#94E2D5;color:#08120F">Save</span><b>12.77:1</b></td><td class=ok><span class=sw style="background:#45476A;color:#EEF4ED">Save</span><b>7.96:1</b></td><td class=bad><span class=sw style="background:#24243A;color:#8589A5">Save</span><b>4.41:1</b></td><td class=dead><span class=sw style="background:#24243A;color:#4A4A64">Save</span><b>1.77:1</b></td></tr><tr><td class=nm>Nord <i>dark</i></td><td class=ok><span class=sw style="background:#ECEFF4;color:#0F1512">Save</span><b>16.03:1</b></td><td class=ok><span class=sw style="background:#88C0D0;color:#08120F">Save</span><b>9.51:1</b></td><td class=ok><span class=sw style="background:#4C566A;color:#EEF4ED">Save</span><b>6.6:1</b></td><td class=ok><span class=sw style="background:#3B4252;color:#AAB3C0">Save</span><b>4.75:1</b></td><td class=dead><span class=sw style="background:#3B4252;color:#4C566A">Save</span><b>1.36:1</b></td></tr><tr><td class=nm>Dracula <i>dark</i></td><td class=ok><span class=sw style="background:#F8F8F2;color:#0F1512">Save</span><b>17.34:1</b></td><td class=ok><span class=sw style="background:#50FA7B;color:#08120F">Save</span><b>13.86:1</b></td><td class=ok><span class=sw style="background:#44475A;color:#EEF4ED">Save</span><b>8.19:1</b></td><td class=ok><span class=sw style="background:#343746;color:#A5A7B8">Save</span><b>4.95:1</b></td><td class=bad><span class=sw style="background:#343746;color:#6272A4">Save</span><b>2.51:1</b></td></tr><tr><td class=nm>Tokyo Night <i>dark</i></td><td class=ok><span class=sw style="background:#C0CAF5;color:#0F1512">Save</span><b>11.45:1</b></td><td class=ok><span class=sw style="background:#7DCFFF;color:#08120F">Save</span><b>11.09:1</b></td><td class=ok><span class=sw style="background:#33467C;color:#EEF4ED">Save</span><b>8.15:1</b></td><td class=bad><span class=sw style="background:#24283B;color:#7982A9">Save</span><b>3.87:1</b></td><td class=dead><span class=sw style="background:#24283B;color:#414868">Save</span><b>1.63:1</b></td></tr><tr><td class=nm>Graphite <i>dark</i></td><td class=ok><span class=sw style="background:#F1F3F4;color:#0F1512">Save</span><b>16.6:1</b></td><td class=ok><span class=sw style="background:#8AB4F8;color:#08120F">Save</span><b>9.03:1</b></td><td class=ok><span class=sw style="background:#3C4043;color:#EEF4ED">Save</span><b>9.37:1</b></td><td class=ok><span class=sw style="background:#2A2B2E;color:#9AA0A6">Save</span><b>5.36:1</b></td><td class=dead><span class=sw style="background:#2A2B2E;color:#505156">Save</span><b>1.79:1</b></td></tr><tr><td class=nm>High Contrast Dark <i>dark</i></td><td class=ok><span class=sw style="background:#FFFFFF;color:#0F1512">Save</span><b>18.48:1</b></td><td class=ok><span class=sw style="background:#00FFFF;color:#08120F">Save</span><b>15.17:1</b></td><td class=ok><span class=sw style="background:#222222;color:#EEF4ED">Save</span><b>14.24:1</b></td><td class=ok><span class=sw style="background:#111111;color:#E8E8E8">Save</span><b>15.41:1</b></td><td class=ok><span class=sw style="background:#111111;color:#FFFFFF">Save</span><b>18.88:1</b></td></tr>
+</table>
+<p class=legend>Each cell shows the control painted in its real colours, then its contrast. <b style=color:#137a3d>Green</b> = readable. <b style=color:#96590a>Amber</b> = too faint. <b style=color:#b3261e>Red</b> = effectively invisible.</p>
+
+<div class=card data-fb="Root cause">
+<h2 style=margin-top:0>The cause, in one sentence</h2>
+<p>A palette says what colour a button <i>is</i>, but never says what colour the <i>writing on it</i> should be — so the writing is taken from whatever mode Windows is in.</p>
+<ul>
+<li>Each of the 16 palettes sets its own backgrounds, lines and text.</li>
+<li>None of them set <code>--on-ink</code>, <code>--on-pine</code> or <code>--on-gold</code> — the ink that sits <i>on top of</i> a coloured button.</li>
+<li>Those three come only from a <code>@media (prefers-color-scheme: dark)</code> rule, i.e. from <b>Windows</b>, not from the palette.</li>
+<li>Your Windows is in dark mode, so a light palette gets dark writing on its dark button. Black on black.</li>
+</ul>
+<p>This is <b>bad colour maths, not a disabled control</b>. The buttons are live; users simply never click them.</p>
+</div>
+
+<div class="card note" data-fb="Warning about the pending fix">
+<h2 style=margin-top:0>Careful: the fix already on this branch makes it worse</h2>
+<p>The working copy adds a guard to that rule. Measured against the same test, it does fix the light palettes — but it raises the rule's priority so it now overrides the named dark palettes entirely. <b>Nord, Dracula, Tokyo Night, Catppuccin, Rose Pine, Solarized dark, Graphite, Aubergine, Midnight and High Contrast Dark all collapse into one identical grey-green theme</b> on a dark-mode PC. Ten palettes become one. It also still leaves the dark palettes broken for anyone whose Windows is in light mode (Dracula's main button measures 1.00 to 1 there).</p>
+<p>The durable fix is for <b>each palette to state its own on-colours</b>, so nothing is ever borrowed from the operating system.</p>
+</div>
+
+<div class=card data-fb="Other problems found">
+<h2 style=margin-top:0>Other things that will read as broken</h2>
+<ul>
+<li><b>Box outlines are nearly invisible in 14 of 16 palettes</b> (as low as 1.36 to 1). Text boxes, buttons and cards lose their edges, which is most of the "everything looks flat and dead" feeling.</li>
+<li><b>Small helper text fails in 10 palettes</b> — the sentences under settings are the ones explaining what a control does.</li>
+<li><b>The selected room in the left rail is invisible in 5 light palettes</b> (1.17 to 1.34 to 1), so you cannot see which room you are in.</li>
+<li><b>"Disabled" is only ever a fade</b>, at ten different strengths (0.32 up to 0.75) with no single rule. Two tokens meant for this, <code>--disabled-bg</code> and <code>--disabled-text</code>, are defined and never used. So a genuinely disabled button and a badly-coloured live one look the same.</li>
+<li><b>High Contrast Light and High Contrast Dark are not high contrast</b> where it matters — High Contrast Light's main button measures 1.14 to 1, the joint worst score in the whole app.</li>
+</ul>
+</div>
+
+<div class=card data-fb="What I did not check">
+<h2 style=margin-top:0>What was not checked</h2>
+<ul>
+<li>No screen was opened or clicked — no dead buttons, clipped layouts or stale-data checks were possible.</li>
+<li>Your currently chosen palette could not be read (the app's settings store was locked). The findings hold for all 6 light palettes regardless, and the app's default, Cloud9 Pine, is one of them.</li>
+<li>Hover and focus states beyond the ones listed were not measured.</li>
+</ul>
+</div>
+</div>
+<script>/* ============================================================
+   Vikas review kit — feedback layer for every HTML review page.
+   Paste this <script> at the end of any artifact I hand him.
+
+   What it gives him:
+     - click any section marked data-fb="<label>" to attach a note
+     - thumbs up / down per section
+     - a floating panel listing everything he has said
+     - ONE button that copies it all as plain text to paste back
+
+   Why it exists: published artifacts cannot send data back into a
+   Claude session (no such capability). This turns "read a wall and
+   retype your thoughts" into "click, type, copy once".
+
+   Usage:
+     1. mark reviewable blocks:  <section data-fb="Option A — Slack True">
+     2. include this script once, at the end of the page.
+   ============================================================ */
+(function () {
+  "use strict";
+  var STORE = "vikas-fb-" + (document.title || location.pathname);
+  var notes = {};
+  try { notes = JSON.parse(localStorage.getItem(STORE) || "{}"); } catch (e) { notes = {}; }
+
+  function save() { try { localStorage.setItem(STORE, JSON.stringify(notes)); } catch (e) {} }
+
+  var css = document.createElement("style");
+  css.textContent = [
+    ':root{--fb-ink:#16232e;--fb-bg:#fff;--fb-line:#d8e0e8;--fb-accent:#2c7fc4;',
+    '--fb-yes:#1e7d4f;--fb-yes-bg:#e3f3ea;--fb-no:#b03535;--fb-no-bg:#fbe7e7;--fb-muted:#5a6b7a;}',
+    '@media (prefers-color-scheme:dark){:root{--fb-ink:#e6edf3;--fb-bg:#18232e;--fb-line:#2f3d4a;',
+    '--fb-accent:#5aa5dd;--fb-yes:#5cc78f;--fb-yes-bg:#14372a;--fb-no:#e07a7a;--fb-no-bg:#3d1d1d;--fb-muted:#93a4b3;}}',
+    '[data-fb]{position:relative;}',
+    '[data-fb].fb-has{outline:2px solid var(--fb-accent);outline-offset:3px;border-radius:8px;}',
+    '.fb-tools{position:absolute;top:.4rem;right:.4rem;display:flex;gap:.25rem;opacity:.45;',
+    'transition:opacity .15s;z-index:5;}',
+    '[data-fb]:hover .fb-tools,[data-fb]:focus-within .fb-tools{opacity:1;}',
+    '@media (prefers-reduced-motion:reduce){.fb-tools{transition:none;}}',
+    '.fb-tools button{font:600 .78rem/1 system-ui,sans-serif;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);border-radius:99px;padding:.3rem .6rem;cursor:pointer;}',
+    '.fb-tools button:hover{border-color:var(--fb-accent);color:var(--fb-accent);}',
+    '.fb-tools button.on-yes{background:var(--fb-yes-bg);color:var(--fb-yes);border-color:var(--fb-yes);}',
+    '.fb-tools button.on-no{background:var(--fb-no-bg);color:var(--fb-no);border-color:var(--fb-no);}',
+    '.fb-note{margin-top:.6rem;width:100%;box-sizing:border-box;font:.92rem/1.5 system-ui,sans-serif;',
+    'color:var(--fb-ink);background:var(--fb-bg);border:1px dashed var(--fb-line);border-radius:8px;',
+    'padding:.55rem .7rem;resize:vertical;min-height:2.6rem;}',
+    '.fb-note:focus{outline:2px solid var(--fb-accent);outline-offset:1px;border-style:solid;}',
+    '.fb-bar{position:fixed;right:1rem;bottom:1rem;z-index:9999;display:flex;flex-direction:column;',
+    'align-items:flex-end;gap:.5rem;font:14px/1.5 system-ui,sans-serif;}',
+    '.fb-bar button{cursor:pointer;border-radius:99px;border:1px solid var(--fb-line);',
+    'background:var(--fb-bg);color:var(--fb-ink);padding:.55rem 1rem;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.14);}',
+    '.fb-bar .fb-copy{background:var(--fb-accent);color:#fff;border-color:transparent;}',
+    '.fb-panel{background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;',
+    'padding:.9rem 1rem;max-width:min(380px,90vw);max-height:50vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.2);display:none;}',
+    '.fb-panel.open{display:block;}',
+    '.fb-panel h4{margin:0 0 .5rem;font-size:.95rem;}',
+    '.fb-panel li{margin-bottom:.5rem;font-size:.88rem;}',
+    '.fb-panel .lbl{font-weight:600;}',
+    '.fb-empty{color:var(--fb-muted);font-size:.88rem;margin:0;}',
+    '@media print{.fb-bar,.fb-tools{display:none;}}'
+  ].join("");
+  document.head.appendChild(css);
+
+  // The floating bar is built FIRST: per-section wiring calls render(), which
+  // needs these to exist. (Building it after the loop threw on the first
+  // section and left every later section without its buttons.)
+  var bar = document.createElement("div");
+  bar.className = "fb-bar";
+  var panel = document.createElement("div");
+  panel.className = "fb-panel";
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  var copy = document.createElement("button");
+  copy.type = "button"; copy.className = "fb-copy"; copy.textContent = "📋 Copy my feedback";
+  bar.appendChild(panel); bar.appendChild(toggle); bar.appendChild(copy);
+  document.body.appendChild(bar);
+
+  var blocks = [].slice.call(document.querySelectorAll("[data-fb]"));
+
+  // Standalone mode: a page with no marked-up blocks (e.g. a full-screen
+  // prototype we did not author) still gets a working note box, so the layer
+  // can be injected into ANY page rather than only pages we wrote.
+  if (!blocks.length) {
+    var solo = document.createElement("div");
+    solo.setAttribute("data-fb", document.title || "this page");
+    solo.setAttribute("data-fb-solo", "");
+    solo.style.cssText = "position:fixed;left:1rem;bottom:1rem;z-index:9998;width:min(320px,80vw);" +
+      "background:var(--fb-bg);color:var(--fb-ink);border:1px solid var(--fb-line);border-radius:12px;" +
+      "padding:2.2rem .8rem .8rem;box-shadow:0 8px 30px rgba(0,0,0,.2);font:14px/1.5 system-ui,sans-serif;";
+    var cap = document.createElement("div");
+    cap.textContent = "Notes on this page";
+    cap.style.cssText = "font-weight:600;font-size:.85rem;margin-bottom:.3rem;";
+    solo.appendChild(cap);
+    document.body.appendChild(solo);
+    blocks = [solo];
+  }
+  blocks.forEach(function (el) {
+    var key = el.getAttribute("data-fb");
+    if (!notes[key]) notes[key] = { verdict: "", text: "" };
+
+    var tools = document.createElement("div");
+    tools.className = "fb-tools";
+    var yes = document.createElement("button");
+    yes.type = "button"; yes.textContent = "👍 like"; yes.title = "I like this";
+    var no = document.createElement("button");
+    no.type = "button"; no.textContent = "👎 no"; no.title = "Not this";
+    var add = document.createElement("button");
+    add.type = "button"; add.textContent = "💬 note"; add.title = "Write a note";
+    tools.appendChild(yes); tools.appendChild(no); tools.appendChild(add);
+    el.appendChild(tools);
+
+    var note = document.createElement("textarea");
+    note.className = "fb-note";
+    note.placeholder = "Your note on “" + key + "”…";
+    note.value = notes[key].text || "";
+    // in standalone mode the box is the whole point — always show it
+    var solo = el.hasAttribute("data-fb-solo");
+    note.style.display = notes[key].text || solo ? "block" : "none";
+    el.appendChild(note);
+
+    function paint() {
+      yes.className = notes[key].verdict === "yes" ? "on-yes" : "";
+      no.className = notes[key].verdict === "no" ? "on-no" : "";
+      el.classList.toggle("fb-has", !!(notes[key].verdict || notes[key].text));
+      render();
+    }
+    yes.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "yes" ? "" : "yes"; save(); paint();
+    });
+    no.addEventListener("click", function () {
+      notes[key].verdict = notes[key].verdict === "no" ? "" : "no"; save(); paint();
+    });
+    add.addEventListener("click", function () {
+      note.style.display = "block"; note.focus();
+    });
+    note.addEventListener("input", function () {
+      notes[key].text = note.value.trim(); save(); paint();
+    });
+    paint();
+  });
+
+  function collected() {
+    return Object.keys(notes)
+      .filter(function (k) { return notes[k].verdict || notes[k].text; })
+      .map(function (k) { return { key: k, v: notes[k].verdict, t: notes[k].text }; });
+  }
+
+  function asText() {
+    var items = collected();
+    if (!items.length) return "";
+    var out = ["FEEDBACK ON: " + (document.title || "this page"), ""];
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "LIKE" : i.v === "no" ? "NO" : "NOTE";
+      out.push("- [" + mark + "] " + i.key + (i.t ? " — " + i.t : ""));
+    });
+    return out.join("\n");
+  }
+
+  function render() {
+    var items = collected();
+    toggle.textContent = items.length ? "🗒 " + items.length + " marked" : "🗒 no marks yet";
+    if (!items.length) { panel.innerHTML = '<p class="fb-empty">Hover any section, then use 👍 / 👎 / 💬.</p>'; return; }
+    var html = "<h4>What you've said</h4><ul>";
+    items.forEach(function (i) {
+      var mark = i.v === "yes" ? "👍" : i.v === "no" ? "👎" : "💬";
+      html += '<li>' + mark + ' <span class="lbl">' + escapeHtml(i.key) + "</span>" +
+        (i.t ? " — " + escapeHtml(i.t) : "") + "</li>";
+    });
+    panel.innerHTML = html + "</ul>";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  toggle.addEventListener("click", function () { panel.classList.toggle("open"); });
+  copy.addEventListener("click", function () {
+    var text = asText();
+    if (!text) { copy.textContent = "nothing marked yet"; setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 1600); return; }
+    var done = function () {
+      copy.textContent = "✅ copied — paste it to Claude";
+      setTimeout(function () { copy.textContent = "📋 Copy my feedback"; }, 2600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { window.prompt("Copy this:", text); }
+      document.body.removeChild(ta);
+    }
+  });
+
+  render();
+})();
+</script>

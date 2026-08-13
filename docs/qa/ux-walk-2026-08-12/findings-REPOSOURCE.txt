@@ -1,0 +1,53 @@
+Cloud9 palette contrast audit — installed stylesheet styles.css
+Rows: 512  (16 palettes x 16 controls x 2 OS modes)
+
+== OS dark: distinct looks among the 10 DARK palettes: 1/10
+   IDENTICAL: Midnight, Aubergine, Solarized dark, Rose Pine, Catppuccin, Nord, Dracula, Tokyo Night, Graphite, High Contrast Dark
+
+== OS light: distinct looks among the 10 DARK palettes: 10/10
+
+== ENABLED controls below the readable floor (the owner's bug) ==
+  Control border vs surface (3:1 UI)  [.btn border]
+     fails in 29 palette/OS combos; worst 1.36:1 (Nord, OS light, --line #4C566A on --surface #3B4252)
+  Muted helper text  [.sec-note / --text-muted]
+     fails in 24 palette/OS combos; worst 3.06:1 (Solarized Light, OS dark, --ink-3 #839496 on --surface #FFFBEF)
+  Composer send button (ENABLED)  [.composer .tools .sendbtn]
+     fails in 12 palette/OS combos; worst 1.25:1 (High Contrast Dark, OS light, --on-pine #FFFFFF on --pine #00FFFF)
+  Primary button HOVER  [.primary:hover:not(:disabled)]
+     fails in 12 palette/OS combos; worst 1.25:1 (High Contrast Dark, OS light, --on-pine #FFFFFF on --pine #00FFFF)
+  Primary button at rest  [.primary]
+     fails in 10 palette/OS combos; worst 1:1 (Dracula, OS light, --on-ink #F7F8F3 on --ink #F8F8F2)
+
+== ENABLED controls dimmer than the same palette's DISABLED send button ==
+  Daylight (OS dark) — disabled send reads 2.68:1, yet these ENABLED controls are worse: Control border vs surface (3:1 UI) 1.51:1
+  Cloud9 Pine (OS dark) — disabled send reads 2.62:1, yet these ENABLED controls are worse: Control border vs surface (3:1 UI) 1.51:1
+  Porcelain (OS dark) — disabled send reads 2.82:1, yet these ENABLED controls are worse: Control border vs surface (3:1 UI) 1.55:1
+  Warm Paper (OS dark) — disabled send reads 2.93:1, yet these ENABLED controls are worse: Control border vs surface (3:1 UI) 1.56:1
+  Solarized Light (OS dark) — disabled send reads 2.38:1, yet these ENABLED controls are worse: Control border vs surface (3:1 UI) 1.54:1
+  High Contrast Light (OS dark) — disabled send reads 11.98:1, yet these ENABLED controls are worse: Composer send button (ENABLED) 5.98:1; Primary button HOVER 5.98:1; Go / confirm button 8.11:1; Composer @mention button 7.11:1; Danger button HOVER 4.88:1
+  Midnight (OS dark) — disabled send reads 4.47:1, yet these ENABLED controls are worse: Muted helper text 4.18:1; Control border vs surface (3:1 UI) 1.38:1
+  Aubergine (OS dark) — disabled send reads 4.47:1, yet these ENABLED controls are worse: Muted helper text 4.18:1; Control border vs surface (3:1 UI) 1.38:1
+  Solarized dark (OS dark) — disabled send reads 4.47:1, yet these ENABLED controls are worse: Muted helper text 4.18:1; Control border vs surface (3:1 UI) 1.38:1
+  Rose Pine (OS dark) — disabled send reads 4.47:1, yet these ENABLED controls are worse: Muted helper text 4.18:1; Control border vs surface (3:1 UI) 1.38:1
+  Catppuccin (OS dark) — disabled send reads 4.47:1, yet these ENABLED controls are worse: Muted helper text 4.18:1; Control border vs surface (3:1 UI) 1.38:1
+  Nord (OS dark) — disabled send reads 4.47:1, yet these ENABLED controls are worse: Muted helper text 4.18:1; Control border vs surface (3:1 UI) 1.38:1
+  Dracula (OS dark) — disabled send reads 4.47:1, yet these ENABLED controls are worse: Muted helper text 4.18:1; Control border vs surface (3:1 UI) 1.38:1
+  Tokyo Night (OS dark) — disabled send reads 4.47:1, yet these ENABLED controls are worse: Muted helper text 4.18:1; Control border vs surface (3:1 UI) 1.38:1
+  Graphite (OS dark) — disabled send reads 4.47:1, yet these ENABLED controls are worse: Muted helper text 4.18:1; Control border vs surface (3:1 UI) 1.38:1
+  High Contrast Dark (OS dark) — disabled send reads 4.47:1, yet these ENABLED controls are worse: Muted helper text 4.18:1; Control border vs surface (3:1 UI) 1.38:1
+  Daylight (OS light) — disabled send reads 2.68:1, yet these ENABLED controls are worse: Control border vs surface (3:1 UI) 1.51:1
+  Cloud9 Pine (OS light) — disabled send reads 2.62:1, yet these ENABLED controls are worse: Control border vs surface (3:1 UI) 1.51:1
+  Porcelain (OS light) — disabled send reads 2.82:1, yet these ENABLED controls are worse: Control border vs surface (3:1 UI) 1.55:1
+  Warm Paper (OS light) — disabled send reads 2.93:1, yet these ENABLED controls are worse: Control border vs surface (3:1 UI) 1.56:1
+  Solarized Light (OS light) — disabled send reads 2.38:1, yet these ENABLED controls are worse: Control border vs surface (3:1 UI) 1.54:1
+  High Contrast Light (OS light) — disabled send reads 11.98:1, yet these ENABLED controls are worse: Composer send button (ENABLED) 5.98:1; Primary button HOVER 5.98:1; Go / confirm button 8.11:1; Composer @mention button 7.11:1; Danger button HOVER 4.88:1
+  Midnight (OS light) — disabled send reads 5.08:1, yet these ENABLED controls are worse: Composer send button (ENABLED) 1.87:1; Primary button at rest 1.05:1; Primary button HOVER 1.87:1; Muted helper text 4.71:1; Danger button HOVER 4.88:1; Control border vs surface (3:1 UI) 1.57:1
+  Aubergine (OS light) — disabled send reads 5:1, yet these ENABLED controls are worse: Composer send button (ENABLED) 1.98:1; Primary button at rest 1.07:1; Primary button HOVER 1.98:1; Muted helper text 4.82:1; Danger button HOVER 4.88:1; Control border vs surface (3:1 UI) 1.53:1
+  Solarized dark (OS light) — disabled send reads 5.77:1, yet these ENABLED controls are worse: Composer send button (ENABLED) 3.16:1; Primary button at rest 1.15:1; Primary button HOVER 3.16:1; Muted helper text 4.36:1; Danger button HOVER 4.88:1; Control border vs surface (3:1 UI) 1.48:1
+  Rose Pine (OS light) — disabled send reads 4.82:1, yet these ENABLED controls are worse: Composer send button (ENABLED) 1.7:1; Primary button at rest 1.24:1; Primary button HOVER 1.7:1; Muted helper text 4.25:1; Control border vs surface (3:1 UI) 1.67:1
+  Catppuccin (OS light) — disabled send reads 5.02:1, yet these ENABLED controls are worse: Composer send button (ENABLED) 1.49:1; Primary button at rest 1.36:1; Primary button HOVER 1.49:1; Muted helper text 4.41:1; Danger button HOVER 4.88:1; Control border vs surface (3:1 UI) 1.77:1
+  Nord (OS light) — disabled send reads 8.13:1, yet these ENABLED controls are worse: Composer send button (ENABLED) 2:1; Primary button at rest 1.08:1; Primary button HOVER 2:1; Subtle/text button label 7.45:1; Muted helper text 4.75:1; Topbar icon button 6.64:1; Go / confirm button 8.11:1; Composer @mention button 7.11:1; Danger button HOVER 4.88:1; Rail selected item 6.6:1; Control border vs surface (3:1 UI) 1.36:1
+  Dracula (OS light) — disabled send reads 7.23:1, yet these ENABLED controls are worse: Composer send button (ENABLED) 1.37:1; Primary button at rest 1:1; Primary button HOVER 1.37:1; Muted helper text 4.95:1; Composer @mention button 7.11:1; Danger button HOVER 4.88:1; Control border vs surface (3:1 UI) 2.51:1
+  Tokyo Night (OS light) — disabled send reads 4.57:1, yet these ENABLED controls are worse: Composer send button (ENABLED) 1.72:1; Primary button at rest 1.51:1; Primary button HOVER 1.72:1; Muted helper text 3.87:1; Control border vs surface (3:1 UI) 1.63:1
+  Graphite (OS light) — disabled send reads 6.52:1, yet these ENABLED controls are worse: Composer send button (ENABLED) 2.11:1; Primary button at rest 1.04:1; Primary button HOVER 2.11:1; Muted helper text 5.36:1; Danger button HOVER 4.88:1; Control border vs surface (3:1 UI) 1.79:1
+  High Contrast Dark (OS light) — disabled send reads 14.05:1, yet these ENABLED controls are worse: Composer send button (ENABLED) 1.25:1; Primary button at rest 1.07:1; Primary button HOVER 1.25:1; Topbar icon button 9.57:1; Go / confirm button 8.11:1; Composer @mention button 7.11:1; Danger button HOVER 4.88:1
