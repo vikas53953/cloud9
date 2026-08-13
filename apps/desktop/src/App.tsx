@@ -4909,7 +4909,18 @@ function WorkspaceLayoutPanel({ channel, layout, onClose }: {
      stopped, so no other Escape can be taken from anything. In a narrow window
      this panel becomes an overlay (`styles.css`, the 860px rule), and Escape
      still closes it there — to be using an overlay you are focused inside it.
-     Anyone who is not has the picker and the panel's own × instead. */
+     Anyone who is not has the picker and the panel's own × instead.
+     WHY NOT `useEscapeCloses(onClose, focusIsInside)` INSTEAD. Gating the push
+     would also keep the key honest, but it puts this panel back on the shared
+     stack for as long as the focus is in it — and `qa.mjs` asserts EXACT stack
+     counts (`cloud9Escape.stacked() === 1` for the actions menu, and others),
+     which a persistent panel would read one too high. Staying off the stack
+     entirely is also what the escape-stack notes prescribe for a surface beside
+     the conversation. It still composes: while ANYTHING is on the stack that
+     listener runs first, in the capture phase, and stops the event — so this
+     one never sees it and the newest thing closes alone, which is what a live
+     drag's cancel or a palette needs. Measured both ways, including with the
+     focus forced in here while a stack entry was open. */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== "Escape") return;
