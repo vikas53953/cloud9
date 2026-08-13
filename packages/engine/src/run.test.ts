@@ -137,6 +137,75 @@ test("a short path does not smuggle a metacharacter past the guard", () => {
   assert.throws(() => safeArg("C:\\Users\\RUNNER~1\\~/x"), UnsafeArgumentError);
 });
 
+// The five shapes below are PINS. They all behave correctly today; they are
+// written down so that a later widening of the rule cannot change any of them
+// without a test going red. Review of PR #48 asked for each one by name.
+
+test("PIN: a tilde straight after a flag's `=` is refused", () => {
+  // `--flag=~1` has digits after the tilde, so it is close to the accepted
+  // shape — but nothing precedes the tilde inside the segment, and in bash a
+  // tilde right after an unquoted `=` really does expand.
+  assert.throws(() => safeArg("--flag=~1"), UnsafeArgumentError);
+  assert.throws(() => shellQuote("--flag=~1"), UnsafeArgumentError);
+});
+
+test("PIN: the colon family is refused", () => {
+  // bash also expands a tilde straight after a `:` in an assignment-shaped word,
+  // and a drive-relative `C:~1` is not a path segment either. None of these has
+  // a name character before the tilde that follows a path separator.
+  for (const value of [":~1", "a:b~1", "C:~1"]) {
+    assert.throws(() => safeArg(value), UnsafeArgumentError, `accepted: ${value}`);
+    assert.throws(() => shellQuote(value), UnsafeArgumentError, `accepted: ${value}`);
+  }
+});
+
+test("PIN: a tilde anchored on a space is refused", () => {
+  // a space ends a word, so `~1` here IS word-initial and would expand.
+  assert.throws(() => shellQuote("a ~1"), UnsafeArgumentError);
+  assert.throws(() => safeArg("a ~1"), UnsafeArgumentError);
+});
+
+test("PIN: a checked FRAGMENT cannot smuggle a tilde into the finished argument", () => {
+  // `safeArg` is called on fragments that are then pasted into a bigger string
+  // (codex.ts:581 `…url=${safeArg(ticket.url)}`, codex.ts:727
+  // `model_reasoning_effort=${safeArg(effort)}`), so the `^` in the pattern
+  // anchors the FRAGMENT, not the argument. What protects the finished argument
+  // is the invariant — a name character immediately left of the tilde — plus
+  // `commandLine` checking the composed string all over again.
+
+  // 1. nothing before the tilde: refused at the fragment gate, so the fragment
+  //    can never contribute a leading tilde to whatever it is pasted into.
+  assert.throws(() => safeArg("~1"), UnsafeArgumentError);
+
+  // 2. a name character before the tilde: the fragment passes on its own...
+  assert.equal(safeArg("A~1"), "A~1");
+  // ...and the COMPOSED argument is then refused by the real gate, because
+  // there the `A` follows an `=` rather than a path separator.
+  assert.throws(
+    () => commandLine("codex", ["-c", "model_reasoning_effort=A~1"]),
+    UnsafeArgumentError,
+  );
+
+  // 3. the case the rule actually exists for — a tilde genuinely inside a path
+  //    segment — passes both the fragment gate and the composed gate.
+  const url = "mcp_servers.cloud9.url=C:\\Users\\RUNNER~1\\sock";
+  assert.equal(safeArg(url), url);
+  assert.equal(commandLine("codex", ["-c", url]), `codex -c ${url}`);
+});
+
+test("PIN: a backslash counts as a separator on every platform, and that is safe", () => {
+  // The pattern treats `\` as a path separator unconditionally, so `a\b~1` is
+  // masked and accepted even on Linux, where `\` is an escape character rather
+  // than a separator. That is deliberate and it is safe: the tilde still has
+  // `b` immediately to its left, so it is mid-word in every shell, and `sh`
+  // resolving `a\b~1` to `ab~1` leaves it mid-word too.
+  assert.equal(safeArg("a\\b~1"), "a\\b~1");
+  assert.equal(shellQuote("a\\b~1"), "a\\b~1");
+  // the invariant is what carries it — remove the character before the tilde
+  // and it is refused again, on this platform and every other one.
+  assert.throws(() => safeArg("a\\~1"), UnsafeArgumentError);
+});
+
 test("run() no longer refuses its own short temp path", async () => {
   // The class, at the boundary that actually broke. `run()` REJECTS an unsafe
   // argument before it spawns anything (the "refuses to execute an unsafe
