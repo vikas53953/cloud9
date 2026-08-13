@@ -114,47 +114,79 @@
   color-scheme:light;
 }
 
+/* ONE OWNER FOR "IS THIS A DARK SCREEN": THE RESOLVED APPEARANCE.
+ *
+ * `applyTheme` writes `data-appearance` — light or dark, never "system" —
+ * before the first paint, so this attribute is the whole truth about which
+ * screen a person is looking at. The operating system's own preference is NOT
+ * that truth: choosing Dark inside Cloud9 on a light Windows is a dark screen,
+ * and choosing a light palette on a dark Windows is a light one.
+ *
+ * This block used to live inside `@media (prefers-color-scheme:dark)` behind
+ * `:root:not([data-appearance="light"]):not([data-theme="light"])`, and that
+ * cost us the bug this comment exists to prevent, in BOTH directions:
+ *
+ *   • Two `:not()`s made it a 0-3-0 selector, which outranks every named
+ *     palette block below (`:root[data-theme="nord"]`, 0-2-0). Under a dark
+ *     Windows all ten dark palettes were repainted with the values here —
+ *     Nord and Dracula came out byte-identical, and High Contrast Dark lost
+ *     its `--line:#FFF`.
+ *   • Under a light Windows it did not apply at all, so a dark palette fell
+ *     through to the LIGHT ink above it. The selected rail item then measured
+ *     1.32–2.11:1 — fainter than a disabled button. That is exactly the
+ *     "clicking Home greys it out" report.
+ *
+ * Keyed off the resolved appearance at 0-2-0, it completes every dark palette
+ * on both operating systems while each named palette, later in this file,
+ * still wins its own pigments.
+ */
+:root[data-appearance="dark"]{
+  --bg:#0F1512;
+  --bg-2:#0A0F0D;
+  --surface:#171F1B;
+  --surface-2:#1E2723;
+  --sunk:#121815;
+  --line:#2C3833;
+  --line-soft:#232D29;
+  --ink:#ECEFE5;
+  --ink-2:#A3B0A8;
+  --ink-3:#74827A;
+
+  --pine:#4FC7A6;
+  --pine-soft:#16332C;
+  --marigold:#EFB447;
+  --marigold-hi:#F5C463;
+  --marigold-soft:#3A2C10;
+  --ultra:#96A6FF;
+  --ultra-soft:#1D2352;
+  --madder:#F4788C;
+  --madder-soft:#40151F;
+
+  --on-pine:#08120F;
+  --on-gold:#221703;
+  --on-ink:#0F1512;
+  --rail-bg:#080E0C;
+  --rail-ink:#ECEFE5;
+  --rail-muted:#8FA098;
+  --rail-hover:#17231F;
+  --rail-active:#23483F;
+  --rail-active-ink:var(--rail-ink);
+
+  --shadow:0 1px 2px rgba(0,0,0,.5), 0 14px 34px -20px rgba(0,0,0,.9);
+  --shadow-lg:0 2px 6px rgba(0,0,0,.5), 0 40px 70px -34px rgba(0,0,0,1);
+  --scrim:rgba(0,0,0,.62);
+  --tooth:rgba(236,239,229,.55);
+  --grain:.09;
+
+  color-scheme:dark;
+}
+/* The one job the operating system still has: the split second before the app
+   has said anything. `data-appearance` is absent only until `applyTheme` runs,
+   so this paints the empty window instead of flashing white on a dark screen —
+   and it can never fight the palettes, because the moment the attribute exists
+   this stops matching. */
 @media (prefers-color-scheme:dark){
-  :root:not([data-appearance="light"]):not([data-theme="light"]){
-    --bg:#0F1512;
-    --bg-2:#0A0F0D;
-    --surface:#171F1B;
-    --surface-2:#1E2723;
-    --sunk:#121815;
-    --line:#2C3833;
-    --line-soft:#232D29;
-    --ink:#ECEFE5;
-    --ink-2:#A3B0A8;
-    --ink-3:#74827A;
-
-    --pine:#4FC7A6;
-    --pine-soft:#16332C;
-    --marigold:#EFB447;
-    --marigold-hi:#F5C463;
-    --marigold-soft:#3A2C10;
-    --ultra:#96A6FF;
-    --ultra-soft:#1D2352;
-    --madder:#F4788C;
-    --madder-soft:#40151F;
-
-    --on-pine:#08120F;
-    --on-gold:#221703;
-    --on-ink:#0F1512;
-    --rail-bg:#080E0C;
-    --rail-ink:#ECEFE5;
-    --rail-muted:#8FA098;
-    --rail-hover:#17231F;
-    --rail-active:#23483F;
-    --rail-active-ink:var(--rail-ink);
-
-    --shadow:0 1px 2px rgba(0,0,0,.5), 0 14px 34px -20px rgba(0,0,0,.9);
-    --shadow-lg:0 2px 6px rgba(0,0,0,.5), 0 40px 70px -34px rgba(0,0,0,1);
-    --scrim:rgba(0,0,0,.62);
-    --tooth:rgba(236,239,229,.55);
-    --grain:.09;
-
-    color-scheme:dark;
-  }
+  :root:not([data-appearance]){color-scheme:dark;--bg:#0F1512;--bg-2:#0A0F0D;--ink:#ECEFE5;}
 }
 :root[data-theme="dark"]{
   --bg:#0F1512; --bg-2:#0A0F0D; --surface:#171F1B; --surface-2:#1E2723; --sunk:#121815;
@@ -218,11 +250,11 @@ body::before{
   background-image:radial-gradient(circle at 1px 1px, var(--tooth) .5px, transparent 0);
   background-size:3px 3px;
 }
-@media (prefers-color-scheme:dark){
-  :root:not([data-appearance="light"]):not([data-theme="light"]) body::before{mix-blend-mode:screen;}
-}
-:root[data-theme="dark"] body::before{mix-blend-mode:screen;}
-:root[data-theme="light"] body::before{mix-blend-mode:multiply;}
+/* Same one owner: the paper tooth lightens a dark screen and darkens a light
+   one, and "dark screen" means the resolved appearance — not the OS, and not
+   the single palette that happens to be called "dark". */
+:root[data-appearance="dark"] body::before{mix-blend-mode:screen;}
+:root[data-appearance="light"] body::before{mix-blend-mode:multiply;}
 
 h1,h2,h3,h4{font-family:var(--display);font-weight:600;letter-spacing:-.012em;}
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;}
@@ -422,10 +454,16 @@ a{color:var(--ultra);}
   stroke-linecap:round;stroke-linejoin:round;}
 .rail-btn:hover{background:var(--rail-hover);color:var(--rail-ink);}
 .rail-btn:focus-visible{outline:2px solid var(--marigold-hi);outline-offset:2px;}
-.rail-btn[aria-current="true"]{background:var(--rail-active);color:var(--rail-bg);box-shadow:var(--shadow);}
-:root[data-theme="dark"] .rail-btn[aria-current="true"]{color:var(--rail-ink);}
-@media (prefers-color-scheme:dark){
-  :root:not([data-appearance="light"]):not([data-theme="light"]) .rail-btn[aria-current="true"]{color:var(--rail-ink);}
+/* THE ITEM YOU ARE ON IS THE MOST READABLE ITEM ON THE RAIL, IN EVERY PALETTE.
+   Its ink is not guessed here and then patched back per theme: `--rail-active-ink`
+   (published as `--rail-selected-text`) is the one place that answers "what
+   colour is the writing on the selected rail chip", and every palette sets it.
+   The old shape — assume `--rail-bg`, then repair it in a `[data-theme="dark"]`
+   rule and again inside an OS media query — left the ten named dark palettes
+   repaired by neither, which is how a clicked Home came out near-black on
+   near-black and read as disabled. */
+.rail-btn[aria-current="true"]{
+  background:var(--rail-selected-bg);color:var(--rail-selected-text);box-shadow:var(--shadow);
 }
 .rail-badge b{
   position:absolute;top:2px;right:6px;min-width:16px;height:16px;border-radius:99px;
@@ -727,16 +765,33 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
 .chathead .iconbtn:hover,.chathead .header-members:hover{background:var(--surface-2);color:var(--ink);}
 .chatgrid,.chatgrid h1,.chatgrid h2,.chatgrid h3,.chatgrid h4,.chatgrid .who b{font-family:var(--body);}
 .chatgrid h1,.chatgrid h2,.chatgrid h3,.chatgrid h4{font-weight:650;letter-spacing:-.01em;}
+/* THE WORKSPACE MODE SELECTOR ("Focus chat" / "Chat + Files") SITS ON THE
+   CANVAS, SO IT IS PAINTED IN CANVAS INK.
+   `.chathead` is `background:var(--shell-canvas)`. This control used to read
+   `--rail-muted` / `--rail-ink` / `--rail-hover` — the navigation family, which
+   is drawn to sit on the DARK rail. In every light palette those are pale
+   colours, so the mode this room is in was written in near-white on near-white:
+   1.52:1 in Cloud9 Pine, fainter than the disabled-button treatment (2.77:1).
+   That is the same fault as the greyed-out rail item, one surface over: a
+   control borrowing the wrong surface's foreground family. The icon buttons
+   beside it were already corrected (`.chathead .iconbtn`, above); this one was
+   missed because it is a `select`, not a `button`. */
 .chathead select{
-  border:1px solid transparent;background:transparent;color:var(--rail-muted);
+  border:1px solid transparent;background:transparent;color:var(--ink-2);
   border-radius:var(--radius-s);padding:4px 8px;font-size:12.5px;max-width:150px;cursor:pointer;
 }
-.chathead select:hover{background:var(--rail-hover);border-color:var(--rail-hover);color:var(--rail-ink);}
+.chathead select:hover{background:var(--surface-2);border-color:var(--line);color:var(--ink);}
+.chathead select:focus-visible{outline:2px solid var(--focus-ring);outline-offset:1px;}
 .iconbtn{width:28px;height:28px;flex:none;display:grid;place-items:center;
   border-radius:var(--radius-s);color:var(--rail-muted);font-size:14px;}
 .iconbtn:hover{background:var(--rail-hover);color:var(--rail-ink);}
-.header-members{padding:4px 9px;min-height:28px;gap:5px;color:var(--rail-muted);}
-.header-members span{font-size:9px;color:var(--rail-ink);}
+/* The members button only ever renders inside `.chathead`, i.e. on the canvas —
+   so it too is painted in canvas ink. Its label was already repaired one rule
+   at a time (`.chathead .header-members`), but the COUNT inside it was not, and
+   `--rail-ink` on a light palette's `--surface` chip is 1.03:1: the number of
+   people in the room was invisible. Same fault, same fix. */
+.header-members{padding:4px 9px;min-height:28px;gap:5px;color:var(--ink-2);}
+.header-members span{font-size:9px;color:var(--ink);}
 .header-menu-wrap{position:relative;display:flex;align-items:center;}
 .header-overflow{font-size:20px;letter-spacing:2px;line-height:1;}
 .header-menu{position:absolute;right:0;top:calc(100% + 7px);z-index:15;min-width:230px;padding:6px;
@@ -1306,10 +1361,11 @@ button.side-item:hover{background:var(--surface-2);color:var(--ink);}
   transition:background .15s var(--ease),color .15s var(--ease);}
 .seg button:hover{color:var(--ink);}
 .seg button[aria-pressed="true"]{background:var(--ink);color:var(--on-ink);}
-:root[data-theme="dark"] .seg button[aria-pressed="true"]{background:var(--pine);color:var(--on-pine);}
-@media (prefers-color-scheme:dark){
-  :root:not([data-appearance="light"]):not([data-theme="light"]) .seg button[aria-pressed="true"]{background:var(--pine);color:var(--on-pine);}
-}
+/* One rule for the dark screen, keyed off the resolved appearance — the two it
+   replaces (`[data-theme="dark"]` plus an OS media query) both missed the ten
+   named dark palettes, which left the chosen segment painted in the light
+   theme's ink on a dark screen. */
+:root[data-appearance="dark"] .seg button[aria-pressed="true"]{background:var(--pine);color:var(--on-pine);}
 .crew-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(288px,1fr));gap:20px;padding:0 46px 52px;}
 .cast{
   position:relative;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);
