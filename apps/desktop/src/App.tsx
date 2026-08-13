@@ -4508,10 +4508,22 @@ function ChatScreen({
   const threading = p.replies !== "inline";
   const workspaceAccess = !!active && !!world.me && active.memberIds.includes(world.me.id)
     && world.channels.some(channel => channel.id === active.id);
+  /* NOT KNOWN YET IS NOT THE SAME AS REFUSED — the second half of "a chosen
+     layout stays chosen". `workspaceAccess` is false during every ordinary
+     start-up and reconnect, simply because the room list has not answered yet.
+     Reading that silence as "this room is not yours" wrote Focus over the saved
+     preference on EVERY launch, so Chat + Files never survived closing the app.
+     The room list has its own answer for this — `channelListLoaded`, the same
+     signal the sidebar's pinned rooms wait for (see `useSidebarLayout`) — so
+     the durable choice is only overwritten when a room is actually open and
+     this person is demonstrably not in it. While the answer is still missing
+     the panel simply does not draw (it is gated on `workspaceAccess` below),
+     which fails closed on screen without touching what he chose. */
+  const workspaceAccessRefused = channelListLoaded && !!active && !!world.me && !workspaceAccess;
   const closeWorkspace = useCallback(() => { prefs.set({ workspaceLayout: "focus" }); }, []);
   useEffect(() => {
-    if (!workspaceAccess && workspaceLayout !== "focus") closeWorkspace();
-  }, [workspaceAccess, workspaceLayout, closeWorkspace]);
+    if (workspaceAccessRefused && workspaceLayout !== "focus") closeWorkspace();
+  }, [workspaceAccessRefused, workspaceLayout, closeWorkspace]);
   useEffect(() => {
     const enteredFocus = priorWorkspaceLayout.current !== "focus" && workspaceLayout === "focus";
     priorWorkspaceLayout.current = workspaceLayout;
@@ -4880,15 +4892,61 @@ function WorkspaceLayoutPanel({ channel, layout, onClose }: {
   onClose: () => void;
 }): React.JSX.Element {
   const panelRef = useRef<HTMLElement>(null);
-  useEscapeCloses(onClose, true);
-  // Pointer-away begins before the clicked control's `click` event. Closing a
-  // split workspace immediately can hide the Studio sidebar under the pointer
-  // and swallow the navigation the person actually chose. Let that click land,
-  // then return the room to Focus.
-  const closeAfterOutsideClick = useCallback(() => {
-    window.setTimeout(onClose, 0);
+  /* ESCAPE, BUT ONLY WHEN THE WORKSPACE HAS THE KEYBOARD.
+     This panel used to call `useEscapeCloses`, which is for OVERLAYS: it puts a
+     close on one window-level stack that answers Escape from anywhere, in the
+     capture phase, and calls `stopPropagation` (see the escape-stack notes near
+     the top of this file). That is the wrong shape for a panel that sits BESIDE
+     the conversation, and the escape-stack notes say so themselves — a message
+     being edited has its own Escape ("put my words back") and stealing it is a
+     worse bug. It was being stolen: with a workspace open, Escape while editing
+     a message left the words changed AND rewrote `prefs.workspaceLayout` to
+     Focus. That is this PR's own bug — an ordinary keystroke undoing a durable
+     choice — by keyboard instead of pointer, and it got easier to hit the
+     moment a chosen layout started surviving the next click.
+     So Escape here is scoped to the panel's own keyboard: it acts only while
+     the focus is actually inside the panel. Nothing is captured and nothing is
+     stopped, so no other Escape can be taken from anything. In a narrow window
+     this panel becomes an overlay (`styles.css`, the 860px rule), and Escape
+     still closes it there — to be using an overlay you are focused inside it.
+     Anyone who is not has the picker and the panel's own × instead.
+     WHY NOT `useEscapeCloses(onClose, focusIsInside)` INSTEAD. Gating the push
+     would also keep the key honest, but it puts this panel back on the shared
+     stack for as long as the focus is in it — and `qa.mjs` asserts EXACT stack
+     counts (`cloud9Escape.stacked() === 1` for the actions menu, and others),
+     which a persistent panel would read one too high. Staying off the stack
+     entirely is also what the escape-stack notes prescribe for a surface beside
+     the conversation. It still composes: while ANYTHING is on the stack that
+     listener runs first, in the capture phase, and stops the event — so this
+     one never sees it and the newest thing closes alone, which is what a live
+     drag's cancel or a palette needs. Measured both ways, including with the
+     focus forced in here while a stack entry was open. */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      const panel = panelRef.current;
+      const focused = document.activeElement;
+      if (!panel || !focused || !panel.contains(focused)) return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
-  useClickAwayCloses(panelRef, closeAfterOutsideClick, true);
+  /* NO CLICK-AWAY HERE, ON PURPOSE — and this is the whole bug it fixes.
+     A workspace layout is not a popover. It is a durable choice made in the
+     "Workspace layout" picker and it lives in `prefs.workspaceLayout`, the same
+     per-user/device preference file as appearance and thread width. This panel
+     only DRAWS that choice; it does not own it.
+     While a pointer-away close was wired here, any click outside the panel —
+     in the conversation, on the sidebar, on empty space — rewrote that saved
+     preference back to Focus. Focus was reachable by ordinary use, so "Chat +
+     Files" never survived the next click and a deliberate view read as a
+     popover that had lost interest.
+     The layout now changes only the ways it was chosen: the picker, this
+     panel's own × ("Focus chat"), Escape, or losing access to the room.
+     `useClickAwayCloses` stays where it belongs — trays and menus whose entire
+     existence is that one open moment. */
   const world = useWorld(w => ({
     connected: w.connected,
     channels: w.channels,
@@ -5958,6 +6016,21 @@ function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
   );
 }
 
+/**
+ * THIS PICKER SITS IN A ROOM HEADER AND IS DELIBERATELY NOT PER-ROOM.
+ *
+ * `workspaceLayout` is ONE field in `Prefs` — a per-user/device choice, kept
+ * beside appearance, thread width and message density, and written to the same
+ * durable preferences. Choosing "Chat + Files" in one room chooses it in every
+ * room, and it stays chosen across restarts. That is the intended behaviour and
+ * matches how every other viewing preference in Cloud9 already works.
+ *
+ * It is written down here because the control's PLACE argues the opposite: it
+ * lives in `.chathead`, so it reads like a setting about this room. If that ever
+ * gets reported as "I set it in one room and it changed in all of them", this is
+ * the cause and it is a design decision, not a new bug — the answer would be to
+ * make the scope visible (or make it per-room on purpose), not to hunt a leak.
+ */
 function WorkspaceLayoutControl({ layout, onChange, selectRef }: {
   layout: WorkspaceLayout;
   onChange: (layout: WorkspaceLayout) => void;
