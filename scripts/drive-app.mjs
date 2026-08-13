@@ -300,6 +300,60 @@ function cliOnThisComputer(cmd) {
   }
 }
 
+/**
+ * IS THIS CLI SIGNED IN, asked by the walk itself.
+ *
+ * ================================================================
+ * WHY (2026-08-12) — check 37 was asserting half a card.
+ * ================================================================
+ *
+ * The Settings card draws TWO independent facts and check 37 only ever compared
+ * one of them: it matched "✓ app found" against `<cli> --version` and never
+ * asked about signing in. Detection can return `installed:true, signedIn:false`
+ * — and every agent then answers "my engine isn't connected" — while that check
+ * passes. Blocker 3 was exactly that machine, and 36/36 said nothing about it.
+ *
+ * The leashes are long on purpose, and generous compared with the app's own:
+ * `claude auth status` was MEASURED at 77 seconds on this computer with Cloud9
+ * running (`harness.ts`). A walk whose own probe gave up early would accuse the
+ * card of lying whenever the machine was busy, which is a flaky check — worse
+ * than a weak one.
+ *
+ * `answered: false` is returned for a probe that did not come back, and the
+ * caller treats that as "this walk does not know", never as "signed out".
+ */
+function signedInOnThisComputer(name) {
+  const args = name === "codex" ? ["login", "status"] : ["auth", "status"];
+  try {
+    const out = execFileSync(name, args, {
+      encoding: "utf8", shell: true, timeout: 240000, stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (name === "codex") {
+      // the same reading `detectCodex` does: exit 0 and no "not logged in"
+      return { answered: true, signedIn: !/not logged in/i.test(out) };
+    }
+    /* And the same reading `detectClaude` does — the JSON is the answer when
+       there is one, so the walk and the app cannot disagree about what the CLI
+       said, only about what each of them saw. */
+    const parsed = (() => { try { return JSON.parse(out.trim()); } catch { return null; } })();
+    if (parsed && typeof parsed.loggedIn === "boolean") {
+      return { answered: true, signedIn: parsed.loggedIn };
+    }
+    return { answered: true, signedIn: true }; // exit 0 with no verdict in it
+  } catch (err) {
+    if (err?.signal === "SIGTERM" || /ETIMEDOUT|timed? out/i.test(String(err?.message ?? ""))) {
+      return { answered: false, why: "this computer did not answer in time either" };
+    }
+    const said = `${err?.stdout ?? ""} ${err?.stderr ?? ""}`;
+    const parsed = (() => { try { return JSON.parse(String(err?.stdout ?? "").trim()); } catch { return null; } })();
+    if (parsed && typeof parsed.loggedIn === "boolean") {
+      return { answered: true, signedIn: parsed.loggedIn };
+    }
+    // a non-zero exit with something to say IS an answer: not signed in
+    return { answered: true, signedIn: false, why: said.replace(/\s+/g, " ").trim().slice(0, 120) };
+  }
+}
+
 /* ---------------------------------------------------------------- results */
 
 const results = [];
@@ -2665,25 +2719,197 @@ async function walk(page) {
     });
 
     await check(EXPECTED_CHECKS[37], async () => {
+      /* ================================================================
+       * BOTH FACTS THE CARD DRAWS, IN BOTH DIRECTIONS. (2026-08-12)
+       * ================================================================
+       *
+       * This check used to compare ONE of the card's two facts — "✓ app found"
+       * against `<cli> --version` — and never asked about signing in. That is
+       * how blocker 3 passed a 36/36 walk: detection can return
+       * `installed:true, signedIn:false`, the card says "app found", this check
+       * agrees, and EVERY AGENT IN THE APP answers "my engine isn't connected".
+       * The card that decides whether anything can run was half-asserted.
+       *
+       * THE CARD HAS THREE STATES, NOT TWO, and this asserts all three
+       * truthfully. Sign-in reads `✓ signed in`, `✗ not signed in`, or
+       * `· sign-in not confirmed` — the last meaning the probe never answered,
+       * which is a real and different thing from a no. The app-found fact has
+       * only two (`✓ app found` / `· app not confirmed`), because `installed`
+       * alone genuinely cannot tell "not here" from "did not answer", so its
+       * negative deliberately claims neither.
+       *
+       * What is asserted:
+       *   · `✓ app found`      ⟺ `<cli> --version` really answers. Both ways.
+       *   · `✓ signed in`      ⟺ the CLI really reports a signed-in account.
+       *   · `✗ not signed in`  ⟹ the CLI really said no. A HARD CLAIM THAT IS
+       *                          WRONG IS THE EXPENSIVE ONE — it is the
+       *                          2026-08-05 report, and it costs a diagnosis
+       *                          round every time.
+       *   · `· not confirmed`  ⟹ only that the card claims neither ✓ nor ✗.
+       *                          Not failed against a signed-in CLI: the app's
+       *                          probe can legitimately have given up where
+       *                          this walk's longer one did not, and failing
+       *                          that would make this check flaky, which is
+       *                          worse than weak. It is reported in the detail
+       *                          so a person can still see it.
+       *
+       * AND IT IS LET TO SETTLE FIRST. The card's own "Re-check" is pressed and
+       * the button is waited out, so a card caught mid-probe is never mistaken
+       * for a card that disagrees. */
       const wrong = [];
       const agreed = [];
+      const noted = [];
       for (const name of HARNESS_CARDS) {
-        const truth = cliOnThisComputer(name);
         const card = page.locator(`.harnesscard[data-harness="${name}"]`).first();
-        const words = await card.innerText();
-        const cardFound = /✓\s*app found/.test(words);
-        if (truth.present && !cardFound) {
-          wrong.push(`${name}: this computer answers "${truth.version}", and Settings tells him ` +
-            "to install an app he already has");
-        } else if (!truth.present && cardFound) {
-          wrong.push(`${name}: Settings claims the app is here, but this computer cannot run it ` +
-            `(${truth.why})`);
-        } else {
-          agreed.push(`${name} ${truth.present ? `found (${truth.version})` : "genuinely absent"}`);
+        if (await card.count() === 0) throw new Error(`Settings has no ${name} card at all`);
+
+        /* Press the app's own Re-check and let it finish.
+         *
+         * WAIT FOR IT TO START BEFORE WAITING FOR IT TO STOP (2026-08-13).
+         * Waiting only for "Checking…" to go away is a wait that can do nothing
+         * at all: `until` runs its question immediately, and the button only
+         * says "Checking…" after `refreshHarness` has crossed the socket, the
+         * engine has set the flag and the screen has redrawn. Land the first
+         * poll before that round-trip and the button still says "Re-check", the
+         * wait returns satisfied on poll zero, and the comparison below reads a
+         * card that is about to correct itself — hard-failing on a stale
+         * "✗ not signed in", which is precisely the flakiness this settle step
+         * was added to prevent.
+         *
+         * A MISSED START IS NOT A FAILURE. A quick harness can finish before we
+         * can see it begin, so not observing the start is treated as "already
+         * settled" — never as a fault. The check must not be able to go red
+         * because of its own timing either way.
+         *
+         * The button is named rather than positioned: the card has a second
+         * `.harnessbtns` block whose button is "Remove saved key", and a
+         * positional selector one DOM reorder away from deleting a real
+         * credential is not something to leave in a walk that also runs in
+         * `--real-data` mode. */
+        const recheck = card.getByRole("button", { name: /^(Re-check|Checking…)$/ });
+        if (await recheck.count()) {
+          const label = async () =>
+            (await recheck.first().innerText().catch(() => "")).trim();
+          await recheck.first().click().catch(() => { /* already looking */ });
+          await until(`the ${name} card to start looking at this computer`,
+            async () => /checking/i.test(await label()),
+            { timeout: 5000, every: 100 })
+            .catch(() => { /* it answered before we could see it start — fine */ });
+          /* 3 minutes, not 5. A full detection round costs about 30 seconds and
+             five child processes, so this is already six times the measured
+             worst case — and this check's total budget is worth watching: two
+             cards × (this wait + a sign-in probe below) is the largest single
+             cost in the walk. */
+          await until(`the ${name} card to finish looking at this computer`,
+            async () => !/checking/i.test(await label()),
+            { timeout: 180000, every: 500 })
+            .catch(() => { throw new Error(`the ${name} card never finished re-checking, so ` +
+              "nothing it says can be compared with this computer"); });
         }
+        await until(`the ${name} card to say what it found`, async () =>
+          !/^checking/i.test(((await card.locator(".harnessstate").innerText()) ?? "").trim()),
+          { timeout: 120000 }).catch(() => {
+          throw new Error(`the ${name} card is still "checking…" after two minutes`);
+        });
+
+        const words = (await card.locator(".harnessfacts").innerText()).replace(/\s+/g, " ");
+        const state = (await card.locator(".harnessstate").innerText()).replace(/\s+/g, " ").trim();
+        const saysFound = /✓ app found/.test(words);
+        const saysSignedIn = /✓ signed in/.test(words);
+        const saysSignedOut = /✗ not signed in/.test(words);
+        const saysSignInUnknown = /· sign-in not confirmed/.test(words);
+        const savedKey = /✓ key saved on this computer/.test(words);
+
+        // ---- fact one: is the app here at all
+        const found = cliOnThisComputer(name);
+        if (found.present && !saysFound) {
+          wrong.push(`${name}: this computer answers "${found.version}", and the card will not ` +
+            `say the app is here — it reads "${state}"`);
+          continue;
+        }
+        if (!found.present && saysFound) {
+          wrong.push(`${name}: the card claims the app is here, but this computer cannot run it ` +
+            `(${found.why})`);
+          continue;
+        }
+
+        /* ================================================================
+         * A SAVED KEY SETTLES THE SIGN-IN, WHATEVER THE CLI SITUATION IS.
+         * ================================================================
+         *
+         * Read straight off `applyProviders` in `host.ts`, which is the code
+         * that actually decides whether a turn can run: it builds an
+         * `SdkProvider` from a held credential BEFORE it ever looks at
+         * `lastState.installed`. So "a key saved in Settings and no CLI on the
+         * machine at all" is a fully working configuration, and the harness
+         * manager's merge correctly draws `✓ signed in` + `✓ key saved` +
+         * `· app not confirmed` for it.
+         *
+         * This escape used to live below, inside the branch for a CLI that IS
+         * present, so it could never be reached on that machine — and the check
+         * then failed with "the card claims a signed-in account for an app this
+         * computer cannot even run" while every agent in the app worked
+         * perfectly. A gating check calling a correct app a liar is the exact
+         * failure this whole PR is about, so the order here mirrors the order
+         * in `host.ts` rather than an order that reads naturally. */
+        if (savedKey && saysSignedIn) {
+          agreed.push(`${name} runs on a key saved in Settings` +
+            `${found.present ? ` (the app is here too: ${found.version})` : " — the app itself " +
+              "is not on this computer, and it does not need to be"}`);
+          continue;
+        }
+
+        if (!found.present) {
+          if (saysSignedIn) {
+            wrong.push(`${name}: the card claims a signed-in account with no saved key and no ` +
+              "app on this computer to hold one");
+            continue;
+          }
+          agreed.push(`${name} genuinely absent, and the card claims nothing it cannot know`);
+          continue;
+        }
+
+        // ---- fact two: is it signed in. Only asked when the app really is here.
+        const login = signedInOnThisComputer(name);
+        if (!login.answered) {
+          /* This walk could not get an answer either. It refuses to accuse the
+             card of anything on the strength of its own timeout — but a card
+             claiming a HARD verdict it cannot have is still wrong. */
+          if (saysSignedIn || saysSignedOut) {
+            wrong.push(`${name}: the card states "${saysSignedIn ? "signed in" : "not signed in"}" ` +
+              "as a fact, and this computer would not answer the same question at all");
+            continue;
+          }
+          noted.push(`${name} found (${found.version}); neither the app nor this walk could get ` +
+            "a sign-in answer out of it");
+          continue;
+        }
+        if (login.signedIn && saysSignedOut) {
+          wrong.push(`${name}: this computer IS signed in, and Settings tells him it is not — ` +
+            "the 2026-08-05 report, and the direction that costs a whole diagnosis round");
+          continue;
+        }
+        if (!login.signedIn && saysSignedIn) {
+          wrong.push(`${name}: the card claims a signed-in account, and this computer says ` +
+            `otherwise (${login.why ?? "no account reported"}) — every turn will refuse`);
+          continue;
+        }
+        if (saysSignInUnknown) {
+          if (saysSignedIn || saysSignedOut) {
+            wrong.push(`${name}: the card says the sign-in is unconfirmed AND states a verdict ` +
+              `in the same breath: "${words.trim()}"`);
+            continue;
+          }
+          noted.push(`${name} found (${found.version}); the app has not confirmed its sign-in ` +
+            `(this computer says ${login.signedIn ? "signed in" : "signed out"}), and the card ` +
+            "honestly claims neither");
+          continue;
+        }
+        agreed.push(`${name} found (${found.version}), and ` +
+          `${login.signedIn ? "signed in" : "genuinely signed out"} — the card agrees on both`);
       }
       if (wrong.length) throw new Error(wrong.join("; "));
-      return agreed.join(" · ");
+      return [...agreed, ...noted].join(" · ");
     });
   } catch (err) {
     failGroup([EXPECTED_CHECKS[18], EXPECTED_CHECKS[36], EXPECTED_CHECKS[37]]
@@ -3827,10 +4053,87 @@ async function walk(page) {
     }
     const leaveAsk2 = page.locator(".overlay.leaveask .discardwork");
     if (await leaveAsk2.count()) await leaveAsk2.first().click();
+
+    /* ================================================================
+     * CAN THIS COMPUTER RUN A TURN AT ALL — ASKED BEFORE EITHER CHECK
+     * ================================================================
+     *
+     * 2026-08-12, and the reason both of these were misread for a round.
+     * The picture check reported "it never said what is actually in the
+     * picture" and the stop check reported "no Stop control ever appeared".
+     * BOTH SENTENCES WERE TRUE AND BOTH WERE ABOUT THE WRONG THING: the agent
+     * had answered "my engine isn't connected", so no model ever saw the
+     * bytes and no child process was ever started for a Stop button to kill.
+     * Two features were left looking broken by a machine whose engine simply
+     * had no harness attached.
+     *
+     * The two harness checks earlier in this walk did not catch it either: [37]
+     * now compares both of the card's facts, but it runs long before this
+     * section and against whatever the machine looked like then.
+     *
+     * So the app's OWN visible card is read here, on the Settings screen a
+     * person would look at, and if it says the engine cannot run then that is
+     * what these two checks report. It is still a FAILURE — nothing here is
+     * skipped or counted green, and `AGENTS.md` is explicit that a cascading
+     * unavailable check is not green. What changes is that the failure now
+     * names the real cause instead of blaming the picture or the button. */
     await page.click('.rail .rail-btn[data-go="chat"]');
     await page.waitForSelector(".composer textarea", { timeout: 30000 });
     const who = await page.evaluate(() => (window.cloud9Wire.agents() ?? [])[0]?.name ?? "");
     if (!who) throw new Error("the fresh app has no agent to ask");
+
+    /* WHICH ENGINE THIS PARTICULAR AGENT RUNS ON, asked rather than assumed.
+       The checks below address `agents()[0]`, whose harness the screen's QA hook
+       does not report — so it is read from the hub's own opening picture of the
+       world, the same way section 10 reads the stored agent. Reading the Claude
+       card while the chosen agent is a Codex one would test a card that has
+       nothing to do with the turn, and would go on being quietly right for
+       exactly as long as nobody seeds a Codex agent. */
+    let whoHarness = "claude";
+    const harnessProbe = await connectInstalledEngine(page);
+    try {
+      const welcome = harnessProbe.frames.find(f => f.type === "welcome");
+      const mine = (welcome?.state?.agents ?? []).find(a => a.name === who);
+      if (!mine) throw new Error(`the hub does not know an agent called ${who}`);
+      whoHarness = mine.provider ?? "claude";
+    } finally {
+      try { await harnessProbe.close(); } catch { /* the walk's own socket */ }
+    }
+    if (!HARNESS_CARDS.includes(whoHarness)) {
+      throw new Error(`${who} runs on "${whoHarness}", which this walk has no card to read — ` +
+        "add it to HARNESS_CARDS rather than letting it be treated as Claude");
+    }
+
+    await page.click('.rail .rail-btn[data-go="settings"]');
+    await page.waitForSelector(`.harnesscard[data-harness="${whoHarness}"]`, { timeout: 30000 });
+    const engineCard = await page.evaluate(harness => {
+      const card = document.querySelector(`.harnesscard[data-harness="${harness}"]`);
+      if (!card) return null;
+      const facts = card.querySelector(".harnessfacts");
+      return {
+        state: (card.querySelector(".harnessstate")?.innerText ?? "").replace(/\s+/g, " ").trim(),
+        facts: (facts?.innerText ?? "").replace(/\s+/g, " ").trim(),
+      };
+    }, whoHarness);
+    if (!engineCard) throw new Error(`the Settings screen has no ${whoHarness} card to read`);
+    /* The card's own words, not this harness's opinion: "✓ signed in" is the
+       very line the card draws, and a saved key is the app's other way of
+       being able to run. Either one means a turn can really start. Anything
+       else — including the card's honest "· sign-in not confirmed" — means it
+       cannot, and that is exactly the state blocker 3 was in. */
+    const engineCanRun = /✓ signed in/.test(engineCard.facts)
+      || /✓ key saved on this computer/.test(engineCard.facts);
+    await shot(page, "engine-readiness-before-picture-and-stop");
+    if (!engineCanRun) {
+      throw new Error("NOT PROVED, AND NOT ABOUT EITHER FEATURE — this computer's engine " +
+        `cannot run a turn for ${who} right now, so no model can be shown a picture and no ` +
+        `real turn exists to stop. Cloud9's own ${whoHarness} card says: "${engineCard.state}" · ` +
+        `"${engineCard.facts}". Sign in (or save a key in Settings) and run this walk again; ` +
+        "these two checks are unproven either way until then");
+    }
+
+    await page.click('.rail .rail-btn[data-go="chat"]');
+    await page.waitForSelector(".composer textarea", { timeout: 30000 });
 
     await check(EXPECTED_CHECKS[39], async () => {
       /* MAGENTA BYTES IN A FILE CALLED ocean-blue. An answer taken from the
@@ -3861,6 +4164,17 @@ async function walk(page) {
       await shot(page, "picture-seen-not-guessed");
       const close = page.locator(".threadpanel .threadclose");
       if (await close.count()) await close.click();
+      /* THE AGENT REFUSED, AND IT IS NOT A PICTURE PROBLEM. Its engine said so
+         itself, in the one sentence `@cloud9/engine` uses for a harness that is
+         not attached. Reported as what it is — the alternative reads "it never
+         said what is in the picture", which sends the next person hunting
+         through image handling for a bug that is not there. Still a failure:
+         nothing about seeing a picture was proved. */
+      if (/engine isn't connected/i.test(said)) {
+        throw new Error("NOT ABOUT THE PICTURE — the agent refused the turn because its engine " +
+          `is not connected on this computer, so nothing ever looked at the bytes. ${who} said: ` +
+          `"${said.slice(0, 250)}"`);
+      }
       if (/blue/i.test(said) && !/magenta|pink|purple|fuchsia/i.test(said)) {
         throw new Error("IT GUESSED FROM THE FILE NAME — the picture is magenta and is called " +
           `ocean-blue.png, and ${who} said: "${said.slice(0, 200)}"`);
@@ -3874,13 +4188,53 @@ async function walk(page) {
     });
 
     await check(EXPECTED_CHECKS[40], async () => {
+      /* STOPPING STANDS ON ITS OWN, whatever the picture did.
+         The check above can end with a thread panel open over the room and a
+         picture still sitting in the message box — and if it does, this check
+         types into a composer that is not the one it thinks it is, and sends a
+         second copy of the picture with it. That is how a real Stop failure and
+         a leftover from the previous check become impossible to tell apart. So
+         the room is put back to plain first, using the app's own visible
+         controls, and nothing here reads any result of the check before it. */
+      const strayThread = page.locator(".threadpanel .threadclose");
+      if (await strayThread.count()) {
+        await strayThread.first().click().catch(() => { /* already closing */ });
+        await page.waitForSelector(".threadpanel", { state: "detached", timeout: 20000 })
+          .catch(() => { /* said below if it really matters */ });
+      }
+      for (const tile of await page.locator(".uploadtray .uptile .upx").all()) {
+        await tile.click().catch(() => { /* the tray emptied itself */ });
+      }
+      await until("the message box to be empty of files before the stop is asked for", async () =>
+        (await page.locator(".uploadtray .uptile").count()) === 0, { timeout: 30000 })
+        .catch(() => { throw new Error("could not clear the message box before asking for a " +
+          "stoppable turn, so a Stop result here would not be about stopping"); });
+      await page.fill(".composer textarea", "");
+
       const ask = `@${who} !bg take your time and write me a long, careful comparison of ` +
         "every villa you can think of";
       await page.fill(".composer textarea", ask);
       await page.press(".composer textarea", "Enter");
       await page.waitForSelector("button.stopnow[data-stop-agent]", { timeout: 120000 })
-        .catch(() => { throw new Error("NOT ON SCREEN — an agent was set working and no Stop " +
-          "control ever appeared, so there is no way for him to pull the plug"); });
+        .catch(async () => {
+          /* WHY THERE IS NO BUTTON, said before blaming the button. A Stop
+             control is only ever drawn over a turn that is really running: the
+             engine opens the handle it kills AFTER it has a provider, so an
+             agent that refused the turn never had anything to stop. Read what
+             the agent actually said, so a genuine Stop defect and a refusal are
+             never reported as the same thing. Both are failures. */
+          const refused = await page.evaluate(() => [...document.querySelectorAll(
+            ".msgs .msg.from-agent")].slice(-4)
+            .map(m => m.innerText.replace(/\s+/g, " ").trim()).join(" · "));
+          if (/engine isn't connected/i.test(refused)) {
+            throw new Error("NOT ABOUT STOPPING — the agent refused the turn because its engine " +
+              "is not connected on this computer, so no turn was ever running for a Stop control " +
+              `to appear over. It said: "${refused.slice(0, 250)}"`);
+          }
+          throw new Error("NOT ON SCREEN — an agent was set working and no Stop " +
+            "control ever appeared, so there is no way for him to pull the plug" +
+            (refused ? `. The room last said: "${refused.slice(0, 200)}"` : ""));
+        });
       await shot(page, "stop-offered-while-working");
       await page.click("button.stopnow[data-stop-agent]");
       await until("the running turn to really stop", async () =>

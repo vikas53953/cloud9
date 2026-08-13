@@ -37,18 +37,32 @@ const MAGIC = Buffer.from([0x43, 0x39, 0x45, 0x4e]); // "C9EN"
  *                                kill can land in the middle of a real write
  * @param {boolean} [opts.packaged]
  * @param {boolean} [opts.canEncrypt]
+ * @param {string} [opts.openPathProblem]  what `shell.openPath` refuses with —
+ *                                Electron reports a failure as a NON-EMPTY
+ *                                STRING and success as "", so a stand-in that
+ *                                only ever returns "" cannot reach any caller's
+ *                                failure branch
+ * @param {string[]} [opts.getPathThrowsFor]  which `app.getPath` names blow up.
+ *                                Real Electron has refused `logs` until the
+ *                                folder exists, and `main.cjs` has a fallback
+ *                                for exactly that which was otherwise untested
  */
 function fakeElectron(opts) {
   const pad = opts.pad ?? 0;
   const state = {
     quit: 0,
     errorBoxes: [],
+    /** every `dialog.showMessageBox` the app raised, in order */
+    messageBoxes: [],
     userData: opts.userData,
+    /** folders handed to the OS file manager */
+    openedPaths: [],
     /** Links handed to the person's OWN browser, outside this app. */
     openedExternally: [],
     /** every `ipcMain.handle(name, fn)` main.cjs registered, by name */
     ipcHandlers: {},
   };
+  const throwsFor = new Set(opts.getPathThrowsFor ?? []);
   const noop = () => {};
   const electron = {
     app: {
@@ -56,7 +70,10 @@ function fakeElectron(opts) {
       setAppUserModelId: noop,
       isPackaged: opts.packaged !== false,
       getVersion: () => "0.0.0-test",
-      getPath: (what) => (what === "userData" ? state.userData : path.join(state.userData, what)),
+      getPath: (what) => {
+        if (throwsFor.has(what)) throw new Error(`Electron refuses to give you '${what}' yet`);
+        return what === "userData" ? state.userData : path.join(state.userData, what);
+      },
       // false keeps the whole startup block from running, so requiring
       // `main.cjs` is inert and the test drives it a function at a time
       requestSingleInstanceLock: () => false,
@@ -68,7 +85,7 @@ function fakeElectron(opts) {
     Menu: { setApplicationMenu: noop, buildFromTemplate: (t) => t },
     dialog: {
       showErrorBox: (title, body) => { state.errorBoxes.push({ title, body }); },
-      showMessageBox: async () => ({ response: 0 }),
+      showMessageBox: async (options) => { state.messageBoxes.push(options); return { response: 0 }; },
     },
     globalShortcut: { unregisterAll: noop, register: () => true, unregister: noop },
     /* The handlers are KEPT rather than thrown away, so a test can call the
@@ -81,7 +98,8 @@ function fakeElectron(opts) {
       removeHandler: (name) => { delete state.ipcHandlers[name]; },
     },
     shell: {
-      openPath: async () => "",
+      // "" is success; a non-empty string is Electron's way of refusing
+      openPath: async (p) => { state.openedPaths.push(p); return opts.openPathProblem ?? ""; },
       openExternal: async (url) => { state.openedExternally.push(url); },
     },
     safeStorage: {
