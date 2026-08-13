@@ -17,7 +17,9 @@ test("dragging a sidebar row shows where it lands and only claims what it stored
      passed the grab threshold, so a plain click still opens the room. */
   assert.match(app, /if \(Math\.abs\(ev\.clientY - startY\) < DRAG_GRAB_PX\) return;/,
     "a drag must not begin before the pointer has actually travelled");
-  assert.match(app, /if \(channelDrag\.moved\.current\) \{ channelDrag\.moved\.current = false; return; \}/,
+  assert.match(app, /const fromPointer = e\.detail !== 0;/,
+    "a keyboard activation must never be mistaken for a drag's leftover click");
+  assert.match(app, /if \(fromPointer && channelDrag\.moved\.current\) \{ channelDrag\.moved\.current = false; return; \}/,
     "a finished drag must not also open the room it landed on");
   /* Escape must abandon the drag, and through the app's ONE escape owner — a
      private key listener never sees the press once the stack has stopped it. */
@@ -26,6 +28,14 @@ test("dragging a sidebar row shows where it lands and only claims what it stored
   assert.match(app, /const at = escapeStack\.lastIndexOf\(abandon\);/);
   assert.doesNotMatch(app, /addEventListener\("keydown", key, true\)/,
     "the drag must not keep a private Escape listener beside the escape stack");
+  /* A sidebar taken away mid-drag must take its listeners and its escape-stack
+     entry with it — a dead cancel left on the stack eats the next Escape
+     anywhere in the app. */
+  assert.match(app, /useEffect\(\(\) => \(\) => \{ release\.current\?\.\(\); release\.current = null; \}, \[\]\);/,
+    "a live drag must be released when the list unmounts");
+  assert.match(app, /release\.current = letGo;/);
+  assert.match(app, /const letGo = \(\): void => \{[\s\S]*?escapeStack\.splice\(at, 1\);[\s\S]*?release\.current = null;/,
+    "releasing must drop the escape-stack entry too");
   /* The drop line is real UI, not a promise: it is drawn on the row under the
      pointer and says which edge. */
   assert.match(app, /data-drop-edge.*drag\.after \? "after" : "before"/);

@@ -4509,7 +4509,12 @@ function useDragReorder(onDrop: (dragId: string, overId: string, after: boolean)
   const moved = useRef(false);
   const dropRef = useRef(onDrop);
   useEffect(() => { dropRef.current = onDrop; }, [onDrop]);
-  useEffect(() => () => document.body.classList.remove("dragging-row"), []);
+  /* EVERYTHING A LIVE DRAG PUT ON THE PAGE, in one function this component can
+     call while unmounting. A sidebar taken away mid-drag used to leave three
+     document listeners and — worse — a dead cancel on the app's escape stack,
+     which would silently eat the next Escape anywhere in Cloud9. */
+  const release = useRef<(() => void) | null>(null);
+  useEffect(() => () => { release.current?.(); release.current = null; }, []);
 
   const grab = useCallback((list: string, id: string) => (e: React.PointerEvent<HTMLElement>) => {
     if (e.button !== 0) return;
@@ -4533,13 +4538,18 @@ function useDragReorder(onDrop: (dragId: string, overId: string, after: boolean)
       return null;
     };
 
-    const settle = (commit: boolean): void => {
+    const letGo = (): void => {
       document.removeEventListener("pointermove", move);
       document.removeEventListener("pointerup", up);
       document.removeEventListener("pointercancel", cancel);
       const at = escapeStack.lastIndexOf(abandon);
       if (at >= 0) escapeStack.splice(at, 1);
       document.body.classList.remove("dragging-row");
+      release.current = null;
+    };
+
+    const settle = (commit: boolean): void => {
+      letGo();
       setDrag(NO_DRAG);
       if (commit && live && over && over.id !== id) dropRef.current(id, over.id, over.after);
     };
@@ -4571,6 +4581,7 @@ function useDragReorder(onDrop: (dragId: string, overId: string, after: boolean)
     document.addEventListener("pointermove", move);
     document.addEventListener("pointerup", up);
     document.addEventListener("pointercancel", cancel);
+    release.current = letGo;
   }, []);
 
   return { drag, moved, grab };
@@ -4590,12 +4601,14 @@ function dropEdge(drag: DragReorderState, id: string): Record<string, string> {
  * him — the same up/down move on the arrow keys once it has focus.
  */
 function SidebarSectionOrder({
-  section, label, position, count, onMove, grab, dragging,
+  section, label, position, count, onMove, grab, dragging, say,
 }: {
   section: SidebarSectionId; label: string; position: number; count: number;
   onMove: (section: SidebarSectionId, direction: -1 | 1) => void;
   grab: (e: React.PointerEvent<HTMLElement>) => void;
   dragging: boolean;
+  /** What the move did, for the sidebar's one live region to speak. */
+  say: (words: string) => void;
 }): React.JSX.Element {
   const words = `Reorder the ${label} section — drag it, or press the up and down arrow keys`;
   return (
@@ -4605,8 +4618,17 @@ function SidebarSectionOrder({
         aria-keyshortcuts="ArrowUp ArrowDown"
         onPointerDown={grab}
         onKeyDown={e => {
-          if (e.key === "ArrowUp" && position > 0) { e.preventDefault(); onMove(section, -1); }
-          else if (e.key === "ArrowDown" && position < count - 1) { e.preventDefault(); onMove(section, 1); }
+          if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+          e.preventDefault();
+          const up = e.key === "ArrowUp";
+          /* At the end of the list, say THAT rather than nothing — silence is
+             indistinguishable from a key that was not received. */
+          if (up ? position <= 0 : position >= count - 1) {
+            say(`${label} section is already ${up ? "first" : "last"}`);
+            return;
+          }
+          onMove(section, up ? -1 : 1);
+          say(`${label} section moved to position ${up ? position : position + 2} of ${count}`);
         }}>⠿</button>
     </span>
   );
@@ -4804,15 +4826,19 @@ function ChatScreen({
   };
   /* The keyboard's version of the same drag: one step at a time, on the row
      itself, so reordering never depends on a hand that can hold a mouse. */
-  const nudgeChannel = (id: string, direction: -1 | 1): void => {
+  const nudgeChannel = (id: string, name: string, direction: -1 | 1): void => {
     const isPinnedGroup = pinned.has(id);
     const ids = (isPinnedGroup ? pinnedChannels : looseChannels).map(c => c.id);
     const from = ids.indexOf(id);
     const to = from + direction;
-    if (from < 0 || to < 0 || to >= ids.length) return;
+    if (from < 0 || to < 0 || to >= ids.length) {
+      setReorderSaid(`${name} is already ${direction < 0 ? "first" : "last"}`);
+      return;
+    }
     const next = [...ids];
     [next[from], next[to]] = [next[to]!, next[from]!];
     commitChannelGroup(isPinnedGroup, next);
+    setReorderSaid(`${name} moved to position ${to + 1} of ${ids.length}`);
   };
   const dropSectionById = (dragId: string, overId: string, after: boolean): void => {
     const known = (id: string): id is SidebarSectionId => (SIDEBAR_SECTIONS as readonly string[]).includes(id);
@@ -4820,11 +4846,20 @@ function ChatScreen({
   };
   const sectionDrag = useDragReorder(dropSectionById);
   const channelDrag = useDragReorder(dropChannel);
+  /* WHAT A KEYBOARD MOVE DID, SPOKEN ONCE. A row that moves under a screen
+     reader is silent otherwise: the focus never left the control, so nothing is
+     re-announced and the press feels ignored. */
+  const [reorderSaid, setReorderSaid] = useState("");
   const visibleChannels = channels.filter(c => matchesWorkspace(c.name));
   const renderChannel = (c: Channel): React.JSX.Element => {
     const unread = unreadFor(c);
     const isPinned = pinned.has(c.id);
     const list = isPinned ? "channels-pinned" : "channels-loose";
+    const group = isPinned ? pinnedChannels : looseChannels;
+    /* WHERE THIS ROW SITS, SAID OUT LOUD — the same thing the section grip says.
+       A screen reader hearing only "bravo" after Alt+Arrow has no way to know
+       whether the press did anything; the position is the answer. */
+    const place = `position ${group.findIndex(row => row.id === c.id) + 1} of ${group.length}`;
     const reorderWords = `Drag to reorder ${c.name}, or hold Alt and press the up and down arrow keys`;
     return (
       <div key={c.id} className={`channel-row${channelDrag.drag.dragId === c.id ? " is-dragging" : ""}`}
@@ -4840,11 +4875,17 @@ ${reorderWords}`}
           onKeyDown={e => {
             if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
             e.preventDefault();
-            nudgeChannel(c.id, e.key === "ArrowUp" ? -1 : 1);
+            nudgeChannel(c.id, c.name, e.key === "ArrowUp" ? -1 : 1);
           }}
-          onClick={() => {
-            /* A drag that ended on this row is not a click on it. */
-            if (channelDrag.moved.current) { channelDrag.moved.current = false; return; }
+          onClick={e => {
+            /* A drag that ended on this row is not a click on it. A KEYBOARD
+               activation (`detail` 0) never followed a pointer, so it cannot be
+               a drag's leftover click — reading the flag there is what swallowed
+               the first Enter after a cross-row drag, because that drag's click
+               lands on the shared ancestor and never clears the flag here. */
+            const fromPointer = e.detail !== 0;
+            if (fromPointer && channelDrag.moved.current) { channelDrag.moved.current = false; return; }
+            channelDrag.moved.current = false;
             if (active?.id === c.id && detailsOpen) toggleDetails();
             else setActiveId(c.id);
           }}>
@@ -4853,6 +4894,7 @@ ${reorderWords}`}
           <RoomVisibility channel={c} size="mark" />
           <MutedMark channelId={c.id} />
           <UnreadMarks n={unread} />
+          <span className="sr-only">, {place}</span>
         </button>
         <button type="button" className={`channel-pin${isPinned ? " is-pinned" : ""}`}
           aria-label={isPinned ? `Unpin ${c.name}` : `Pin ${c.name}`}
@@ -4889,6 +4931,7 @@ ${reorderWords}`}
               Sidebar changes stay on this screen because device storage is unavailable.
             </div>
           )}
+          <div className="sr-only" role="status" aria-live="polite">{reorderSaid}</div>
           {sidebarLayout.layout.sections.map(section => {
             if (section === "channels") return (
           <div key="channels" className={`side-group${sectionDrag.drag.dragId === "channels" ? " is-dragging" : ""}`}
@@ -4899,7 +4942,7 @@ ${reorderWords}`}
               <SidebarSectionOrder section="channels" label="Channels" position={sectionPosition("channels")}
                 count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection}
                 grab={sectionDrag.grab("sidebar-sections", "channels")}
-                dragging={sectionDrag.drag.dragId === "channels"} />
+                dragging={sectionDrag.drag.dragId === "channels"} say={setReorderSaid} />
               <button className="browsebtn" title="Browse rooms you could join"
                 aria-label="Browse rooms" onClick={onBrowseRooms}>⌕</button>
               <button title="New channel" aria-label="New channel" onClick={onNewChannel}>＋</button>
@@ -4925,7 +4968,7 @@ ${reorderWords}`}
               <SidebarSectionOrder section="direct" label="Direct" position={sectionPosition("direct")}
                 count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection}
                 grab={sectionDrag.grab("sidebar-sections", "direct")}
-                dragging={sectionDrag.drag.dragId === "direct"} />
+                dragging={sectionDrag.drag.dragId === "direct"} say={setReorderSaid} />
               {/* The same pair as Channels above: browse what exists, or make
                   one. This is where he already comes to add an agent, so this
                   is where the casting room has to be. */}
@@ -5000,7 +5043,7 @@ Open your chat with ${a.name}`}>
               <SidebarSectionOrder section="people" label="People" position={sectionPosition("people")}
                 count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection}
                 grab={sectionDrag.grab("sidebar-sections", "people")}
-                dragging={sectionDrag.drag.dragId === "people"} />
+                dragging={sectionDrag.drag.dragId === "people"} say={setReorderSaid} />
               {/* Only the owner can mint an invite (the relay refuses everyone
                   else), so only the owner is offered one. */}
               {owner && <button title="Invite a friend" aria-label="Invite a friend" onClick={onInvite}>＋</button>}

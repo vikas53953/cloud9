@@ -20,11 +20,16 @@ test("sidebar layout is account/device scoped with keyboard-safe reorder and pin
   assert.match(app, /className=\{`drag-grip\$\{dragging \? " is-dragging" : ""\}`\}/);
   assert.match(app, /aria-keyshortcuts="ArrowUp ArrowDown"/,
     "the section grip must announce its keyboard reorder");
-  assert.match(app, /e\.key === "ArrowUp" && position > 0/);
-  assert.match(app, /e\.key === "ArrowDown" && position < count - 1/);
+  assert.match(app, /if \(e\.key !== "ArrowUp" && e\.key !== "ArrowDown"\) return;/);
+  assert.match(app, /if \(up \? position <= 0 : position >= count - 1\) \{/,
+    "the ends of the list must be respected, not wrapped");
+  assert.match(app, /say\(`\$\{label\} section is already \$\{up \? "first" : "last"\}`\)/,
+    "a move that cannot happen must say so rather than go silent");
   assert.match(app, /aria-keyshortcuts="Alt\+ArrowUp Alt\+ArrowDown"/,
     "a channel row must announce its keyboard reorder");
-  assert.match(app, /nudgeChannel\(c\.id, e\.key === "ArrowUp" \? -1 : 1\)/);
+  assert.match(app, /nudgeChannel\(c\.id, c\.name, e\.key === "ArrowUp" \? -1 : 1\)/);
+  assert.match(app, /<div className="sr-only" role="status" aria-live="polite">\{reorderSaid\}<\/div>/,
+    "a keyboard move must be spoken, not silent");
   assert.match(app, /aria-pressed=\{isPinned\}/);
   assert.match(app, /aria-label=\{isPinned \? `Unpin \$\{c\.name\}` : `Pin \$\{c\.name\}`\}/);
   assert.match(app, /data-sidebar-section="channels"/);
