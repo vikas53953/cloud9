@@ -4634,6 +4634,17 @@ function SidebarSectionOrder({
   );
 }
 
+/**
+ * WHAT THIS FLOOR IS CALLED — written once.
+ *
+ * The header, its tooltip and its accessible label all read this, so a name
+ * the header has had to shorten can still be read in full from the tooltip
+ * and heard in full by a screen reader. They used to be three separate
+ * literals, and the tooltip said "Workspace options" — which meant a clipped
+ * name had nowhere left to be read at all.
+ */
+const WORKSPACE_NAME = "Studio floor";
+
 function ChatScreen({
   active, setActiveId, channels, humanDms, agents, people, unreadFor, peerOf, owner,
   onNewChannel, onBrowseRooms, onNewAgent, onBrowseMarket, onInvite, onEditAgent, onOpenDm,
@@ -4924,7 +4935,8 @@ ${reorderWords}`}
       style={{ "--thread-w": `${drawnWidth}px` } as React.CSSProperties}>
       <aside className="sidebar" aria-label="Studio floor">
         <div className="sidebar-head">
-          <button className="workspace-name" aria-label="Workspace options" title="Workspace options" onClick={onBrowseRooms}>Studio floor <span aria-hidden="true">⌄</span></button>
+          <button className="workspace-name" aria-label={`${WORKSPACE_NAME} — workspace options`}
+            title={`${WORKSPACE_NAME} — workspace options`} onClick={onBrowseRooms}>{WORKSPACE_NAME} <span aria-hidden="true">⌄</span></button>
           {/* The relay does not report who is at their desk, so this counts who
               is IN this Cloud9 — never "online", which we cannot know. */}
           <span className="chip workspace-members"
@@ -4932,9 +4944,14 @@ ${reorderWords}`}
               `${countOf(people.length, "person", "people")} in this Cloud9`}>
             {people.length + agents.length} here
           </span>
-          <button className="iconbtn workspace-menu" aria-label="Workspace options" title="Workspace options" onClick={onBrowseRooms}>⌄</button>
-          <button className="iconbtn workspace-new" aria-label="Create a channel" title="Create a channel" onClick={onNewChannel}>＋</button>
-          <button className="iconbtn workspace-agent" aria-label="Create an agent" title="Create an agent" onClick={onNewAgent}>✦</button>
+          {/* THE CONTROLS MOVE AS ONE BLOCK. Loose in the row they wrapped one
+              at a time and left a ragged half-row; held together they either
+              sit beside the name or step down under it, whole. */}
+          <div className="sidebar-head-actions">
+            <button className="iconbtn workspace-menu" aria-label="Workspace options" title="Workspace options" onClick={onBrowseRooms}>⌄</button>
+            <button className="iconbtn workspace-new" aria-label="Create a channel" title="Create a channel" onClick={onNewChannel}>＋</button>
+            <button className="iconbtn workspace-agent" aria-label="Create an agent" title="Create an agent" onClick={onNewAgent}>✦</button>
+          </div>
         </div>
         <div className="side-scroll">
           <label className="workspace-search"><IconSearch /><input value={workspaceQuery} onChange={e => setWorkspaceQuery(e.target.value)} placeholder="Search this workspace" aria-label="Search channels and people" /></label>
