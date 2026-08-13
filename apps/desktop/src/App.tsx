@@ -2025,9 +2025,14 @@ const SIDEBAR_SECTIONS: readonly SidebarSectionId[] = ["channels", "direct", "pe
 interface SidebarLayoutPrefs {
   sections: SidebarSectionId[];
   pinnedChannelIds: string[];
+  /* The hand-chosen channel order, on the SAME device-local shelf as the
+     section order above. The relay has no ordering of its own to defer to, so
+     a channel this list has never heard of keeps the position the account's
+     own channel list gave it rather than being invented a rank. */
+  channelOrder: string[];
 }
 const DEFAULT_SIDEBAR_LAYOUT: SidebarLayoutPrefs = {
-  sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [],
+  sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [], channelOrder: [],
 };
 
 function sidebarLayoutKey(userId: string): string {
@@ -2039,15 +2044,26 @@ interface SidebarLayoutRead {
   unavailable: boolean;
 }
 
+/** Channel ids as stored: strings only, deduplicated, and bounded. */
+function readChannelIdList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const id of value) {
+    if (typeof id === "string" && id.length > 0 && id.length <= 180 && !out.includes(id)) out.push(id);
+  }
+  return out.slice(0, 200);
+}
+
 function readSidebarLayout(userId: string | undefined): SidebarLayoutRead {
-  if (!userId) return { layout: { sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [] }, unavailable: false };
+  if (!userId) return { layout: { sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [], channelOrder: [] }, unavailable: false };
   try {
     const raw = localStorage.getItem(sidebarLayoutKey(userId));
-    if (!raw) return { layout: { sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [] }, unavailable: false };
-    const parsed = JSON.parse(raw) as { sections?: unknown; pinnedChannelIds?: unknown };
+    if (!raw) return { layout: { sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [], channelOrder: [] }, unavailable: false };
+    const parsed = JSON.parse(raw) as { sections?: unknown; pinnedChannelIds?: unknown; channelOrder?: unknown };
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
       || (parsed.sections !== undefined && !Array.isArray(parsed.sections))
-      || (parsed.pinnedChannelIds !== undefined && !Array.isArray(parsed.pinnedChannelIds))) {
+      || (parsed.pinnedChannelIds !== undefined && !Array.isArray(parsed.pinnedChannelIds))
+      || (parsed.channelOrder !== undefined && !Array.isArray(parsed.channelOrder))) {
       throw new Error("sidebar preferences are not a usable object");
     }
     const sections: SidebarSectionId[] = [];
@@ -2062,15 +2078,17 @@ function readSidebarLayout(userId: string | undefined): SidebarLayoutRead {
     const pinnedChannelIds = Array.isArray(parsed.pinnedChannelIds)
       ? parsed.pinnedChannelIds.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 180).slice(0, 200)
       : [];
-    return { layout: { sections, pinnedChannelIds }, unavailable: false };
+    return { layout: { sections, pinnedChannelIds, channelOrder: readChannelIdList(parsed.channelOrder) }, unavailable: false };
   } catch {
-    return { layout: { ...DEFAULT_SIDEBAR_LAYOUT, sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [] }, unavailable: true };
+    return { layout: { ...DEFAULT_SIDEBAR_LAYOUT, sections: [...SIDEBAR_SECTIONS], pinnedChannelIds: [], channelOrder: [] }, unavailable: true };
   }
 }
 
 function useSidebarLayout(userId: string | undefined, channelIds: readonly string[], channelListLoaded: boolean): {
   layout: SidebarLayoutPrefs;
   moveSection: (section: SidebarSectionId, direction: -1 | 1) => void;
+  dropSection: (section: SidebarSectionId, target: SidebarSectionId, after: boolean) => void;
+  setChannelOrder: (ids: readonly string[]) => void;
   togglePinned: (channelId: string) => void;
   storageUnavailable: boolean;
 } {
@@ -2108,8 +2126,10 @@ function useSidebarLayout(userId: string | undefined, channelIds: readonly strin
     const visible = new Set(channelIds);
     setLayout(current => {
       const pinnedChannelIds = current.pinnedChannelIds.filter(id => visible.has(id));
+      const channelOrder = current.channelOrder.filter(id => visible.has(id));
       return pinnedChannelIds.length === current.pinnedChannelIds.length
-        ? current : { ...current, pinnedChannelIds };
+        && channelOrder.length === current.channelOrder.length
+        ? current : { ...current, pinnedChannelIds, channelOrder };
     });
   }, [channelIds, channelListLoaded, scope]);
 
@@ -2124,13 +2144,35 @@ function useSidebarLayout(userId: string | undefined, channelIds: readonly strin
     });
   }, []);
 
+  /* The same move the arrow keys make, expressed as "put this one next to that
+     one" — which is what a dropped row means. A drop onto itself, or onto a
+     section this window does not know, changes nothing rather than guessing. */
+  const dropSection = useCallback((section: SidebarSectionId, target: SidebarSectionId, after: boolean) => {
+    setLayout(current => {
+      if (section === target) return current;
+      const rest = current.sections.filter(id => id !== section);
+      const at = rest.indexOf(target);
+      if (at < 0 || !current.sections.includes(section)) return current;
+      const sections = [...rest.slice(0, at + (after ? 1 : 0)), section, ...rest.slice(at + (after ? 1 : 0))];
+      return { ...current, sections };
+    });
+  }, []);
+
+  const setChannelOrder = useCallback((ids: readonly string[]) => {
+    setLayout(current => {
+      const channelOrder = readChannelIdList([...ids]);
+      return JSON.stringify(channelOrder) === JSON.stringify(current.channelOrder)
+        ? current : { ...current, channelOrder };
+    });
+  }, []);
+
   const togglePinned = useCallback((channelId: string) => {
     setLayout(current => current.pinnedChannelIds.includes(channelId)
       ? { ...current, pinnedChannelIds: current.pinnedChannelIds.filter(id => id !== channelId) }
       : { ...current, pinnedChannelIds: [...current.pinnedChannelIds, channelId].slice(-200) });
   }, []);
 
-  return { layout, moveSection, togglePinned, storageUnavailable: storageStatus !== "ok" };
+  return { layout, moveSection, dropSection, setChannelOrder, togglePinned, storageUnavailable: storageStatus !== "ok" };
 }
 
 /* Read state used to live in `localStorage` here. It does not any more: the
@@ -4433,20 +4475,161 @@ function focusThreadTarget(root: HTMLElement | null, opener: HTMLElement | null)
   return document.activeElement === target;
 }
 
+/**
+ * DRAG TO REORDER, THE WAY THE THREAD DIVIDER ALREADY WORKS.
+ *
+ * Pointer events, not HTML5 `draggable` — the app's one existing grab-and-move
+ * control (`ThreadDivider`) is built this way, it keeps the drop line ours to
+ * draw, and it survives the Electron window where a native drag image does not.
+ *
+ * NOTHING HAPPENS UNTIL THE HAND HAS ACTUALLY TRAVELLED. Below the threshold no
+ * pointer is captured and no default is prevented, so a plain click on a
+ * channel is an ordinary click and still opens the room. `moved` is what a row
+ * asks afterwards to know whether its click was really a drag.
+ */
+const DRAG_GRAB_PX = 5;
+
+interface DragReorderState {
+  /** The row in his hand, once the grab passed the threshold. */
+  dragId: string | null;
+  /** The row the line is drawn against, or null when there is nowhere to drop. */
+  overId: string | null;
+  /** True when the line belongs under `overId` rather than above it. */
+  after: boolean;
+}
+const NO_DRAG: DragReorderState = { dragId: null, overId: null, after: false };
+
+function useDragReorder(onDrop: (dragId: string, overId: string, after: boolean) => void): {
+  drag: DragReorderState;
+  /** True while the last grab was a real drag — a row reads it to drop its click. */
+  moved: React.MutableRefObject<boolean>;
+  grab: (list: string, id: string) => (e: React.PointerEvent<HTMLElement>) => void;
+} {
+  const [drag, setDrag] = useState<DragReorderState>(NO_DRAG);
+  const moved = useRef(false);
+  const dropRef = useRef(onDrop);
+  useEffect(() => { dropRef.current = onDrop; }, [onDrop]);
+  /* EVERYTHING A LIVE DRAG PUT ON THE PAGE, in one function this component can
+     call while unmounting. A sidebar taken away mid-drag used to leave three
+     document listeners and — worse — a dead cancel on the app's escape stack,
+     which would silently eat the next Escape anywhere in Cloud9. */
+  const release = useRef<(() => void) | null>(null);
+  useEffect(() => () => { release.current?.(); release.current = null; }, []);
+
+  const grab = useCallback((list: string, id: string) => (e: React.PointerEvent<HTMLElement>) => {
+    if (e.button !== 0) return;
+    const startY = e.clientY;
+    const pointerId = e.pointerId;
+    let live = false;
+    let over: { id: string; after: boolean } | null = null;
+    moved.current = false;
+
+    /* Only rows of the SAME list answer, so a channel can never be dropped into
+       the section list and a pinned row can never land among the unpinned. */
+    const hit = (x: number, y: number): { id: string; after: boolean } | null => {
+      for (const el of document.elementsFromPoint(x, y)) {
+        const row = (el as HTMLElement).closest?.(`[data-drag-list="${list}"][data-drag-item]`) as HTMLElement | null;
+        const rowId = row?.dataset.dragItem;
+        if (row && rowId) {
+          const box = row.getBoundingClientRect();
+          return { id: rowId, after: y > box.top + box.height / 2 };
+        }
+      }
+      return null;
+    };
+
+    const letGo = (): void => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", up);
+      document.removeEventListener("pointercancel", cancel);
+      const at = escapeStack.lastIndexOf(abandon);
+      if (at >= 0) escapeStack.splice(at, 1);
+      document.body.classList.remove("dragging-row");
+      release.current = null;
+    };
+
+    const settle = (commit: boolean): void => {
+      letGo();
+      setDrag(NO_DRAG);
+      if (commit && live && over && over.id !== id) dropRef.current(id, over.id, over.after);
+    };
+
+    /* Escape puts the row back where it was — a drag he changed his mind about
+       must never leave the list rearranged behind his back. It goes on the app's
+       ONE escape stack rather than on a listener of its own: the stack owner
+       stops the press reaching anything below it, and the newest thing (this
+       drag) is what Escape should reach first anyway. */
+    const abandon = (): void => settle(false);
+
+    const move = (ev: PointerEvent): void => {
+      if (ev.pointerId !== pointerId) return;
+      if (!live) {
+        if (Math.abs(ev.clientY - startY) < DRAG_GRAB_PX) return;
+        live = true;
+        moved.current = true;
+        escapeStack.push(abandon);
+        document.body.classList.add("dragging-row");
+      }
+      ev.preventDefault();
+      const found = hit(ev.clientX, ev.clientY);
+      over = found && found.id !== id ? found : null;
+      setDrag({ dragId: id, overId: over?.id ?? null, after: over?.after ?? false });
+    };
+    const up = (ev: PointerEvent): void => { if (ev.pointerId === pointerId) settle(true); };
+    const cancel = (ev: PointerEvent): void => { if (ev.pointerId === pointerId) settle(false); };
+
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", up);
+    document.addEventListener("pointercancel", cancel);
+    release.current = letGo;
+  }, []);
+
+  return { drag, moved, grab };
+}
+
+/** The line the list draws while a row is over this one, as data the CSS reads. */
+function dropEdge(drag: DragReorderState, id: string): Record<string, string> {
+  if (drag.overId !== id) return {};
+  return { "data-drop-edge": drag.after ? "after" : "before" };
+}
+
+/**
+ * THE GRIP ON A SECTION HEADING.
+ *
+ * It replaces the two arrow buttons that used to sit here: one control he can
+ * drag, and — because a control only a mouse can reach is not something to hand
+ * him — the same up/down move on the arrow keys once it has focus.
+ */
 function SidebarSectionOrder({
-  section, label, position, count, onMove,
+  section, label, position, count, onMove, grab, dragging, say,
 }: {
   section: SidebarSectionId; label: string; position: number; count: number;
   onMove: (section: SidebarSectionId, direction: -1 | 1) => void;
+  grab: (e: React.PointerEvent<HTMLElement>) => void;
+  dragging: boolean;
+  /** What the move did, for the sidebar's one live region to speak. */
+  say: (words: string) => void;
 }): React.JSX.Element {
+  const words = `Reorder the ${label} section — drag it, or press the up and down arrow keys`;
   return (
-    <span className="sidebar-section-order" aria-label={`${label} section order`}>
-      <button type="button" disabled={position <= 0}
-        aria-label={`Move ${label} section up`} title={`Move ${label} section up`}
-        onClick={() => onMove(section, -1)}>↑</button>
-      <button type="button" disabled={position >= count - 1}
-        aria-label={`Move ${label} section down`} title={`Move ${label} section down`}
-        onClick={() => onMove(section, 1)}>↓</button>
+    <span className="sidebar-section-order">
+      <button type="button" className={`drag-grip${dragging ? " is-dragging" : ""}`}
+        aria-label={`${words}. Position ${position + 1} of ${count}.`} title={words}
+        aria-keyshortcuts="ArrowUp ArrowDown"
+        onPointerDown={grab}
+        onKeyDown={e => {
+          if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+          e.preventDefault();
+          const up = e.key === "ArrowUp";
+          /* At the end of the list, say THAT rather than nothing — silence is
+             indistinguishable from a key that was not received. */
+          if (up ? position <= 0 : position >= count - 1) {
+            say(`${label} section is already ${up ? "first" : "last"}`);
+            return;
+          }
+          onMove(section, up ? -1 : 1);
+          say(`${label} section moved to position ${up ? position : position + 2} of ${count}`);
+        }}>⠿</button>
     </span>
   );
 }
@@ -4630,16 +4813,91 @@ function ChatScreen({
     return position < 0 ? SIDEBAR_SECTIONS.indexOf(section) : position;
   };
   const pinned = new Set(sidebarLayout.layout.pinnedChannelIds);
+  /* HIS ORDER FIRST, THE ACCOUNT'S ORDER FOR EVERYTHING ELSE. A channel he has
+     never dragged has no rank of its own, so it keeps the place the channel
+     list gave it — `sort` is stable, so that order is preserved exactly. */
+  const channelRank = new Map(sidebarLayout.layout.channelOrder.map((id, index) => [id, index]));
+  const rankOf = (id: string): number => channelRank.get(id) ?? Number.MAX_SAFE_INTEGER;
+  const inChosenOrder = (list: Channel[]): Channel[] => [...list].sort((a, b) => rankOf(a.id) - rankOf(b.id));
+  const pinnedChannels = inChosenOrder(channels.filter(c => pinned.has(c.id)));
+  const looseChannels = inChosenOrder(channels.filter(c => !pinned.has(c.id)));
+  /* Written back as the WHOLE list, pinned group then the rest, so the stored
+     order still means something after a pin is added or taken away. */
+  const commitChannelGroup = (isPinnedGroup: boolean, ids: string[]): void => {
+    sidebarLayout.setChannelOrder(isPinnedGroup
+      ? [...ids, ...looseChannels.map(c => c.id)]
+      : [...pinnedChannels.map(c => c.id), ...ids]);
+  };
+  const dropChannel = (dragId: string, overId: string, after: boolean): void => {
+    const isPinnedGroup = pinned.has(dragId);
+    const ids = (isPinnedGroup ? pinnedChannels : looseChannels).map(c => c.id);
+    if (!ids.includes(dragId) || !ids.includes(overId)) return;
+    const rest = ids.filter(id => id !== dragId);
+    const at = rest.indexOf(overId) + (after ? 1 : 0);
+    commitChannelGroup(isPinnedGroup, [...rest.slice(0, at), dragId, ...rest.slice(at)]);
+  };
+  /* The keyboard's version of the same drag: one step at a time, on the row
+     itself, so reordering never depends on a hand that can hold a mouse. */
+  const nudgeChannel = (id: string, name: string, direction: -1 | 1): void => {
+    const isPinnedGroup = pinned.has(id);
+    const ids = (isPinnedGroup ? pinnedChannels : looseChannels).map(c => c.id);
+    const from = ids.indexOf(id);
+    const to = from + direction;
+    if (from < 0 || to < 0 || to >= ids.length) {
+      setReorderSaid(`${name} is already ${direction < 0 ? "first" : "last"}`);
+      return;
+    }
+    const next = [...ids];
+    [next[from], next[to]] = [next[to]!, next[from]!];
+    commitChannelGroup(isPinnedGroup, next);
+    setReorderSaid(`${name} moved to position ${to + 1} of ${ids.length}`);
+  };
+  const dropSectionById = (dragId: string, overId: string, after: boolean): void => {
+    const known = (id: string): id is SidebarSectionId => (SIDEBAR_SECTIONS as readonly string[]).includes(id);
+    if (known(dragId) && known(overId)) sidebarLayout.dropSection(dragId, overId, after);
+  };
+  const sectionDrag = useDragReorder(dropSectionById);
+  const channelDrag = useDragReorder(dropChannel);
+  /* WHAT A KEYBOARD MOVE DID, SPOKEN ONCE. A row that moves under a screen
+     reader is silent otherwise: the focus never left the control, so nothing is
+     re-announced and the press feels ignored. */
+  const [reorderSaid, setReorderSaid] = useState("");
   const visibleChannels = channels.filter(c => matchesWorkspace(c.name));
   const renderChannel = (c: Channel): React.JSX.Element => {
     const unread = unreadFor(c);
     const isPinned = pinned.has(c.id);
+    const list = isPinned ? "channels-pinned" : "channels-loose";
+    const group = isPinned ? pinnedChannels : looseChannels;
+    /* WHERE THIS ROW SITS, SAID OUT LOUD — the same thing the section grip says.
+       A screen reader hearing only "bravo" after Alt+Arrow has no way to know
+       whether the press did anything; the position is the answer. */
+    const place = `position ${group.findIndex(row => row.id === c.id) + 1} of ${group.length}`;
+    const reorderWords = `Drag to reorder ${c.name}, or hold Alt and press the up and down arrow keys`;
     return (
-      <div key={c.id} className="channel-row" data-pinned={isPinned ? "true" : "false"}>
+      <div key={c.id} className={`channel-row${channelDrag.drag.dragId === c.id ? " is-dragging" : ""}`}
+        data-pinned={isPinned ? "true" : "false"}
+        data-drag-list={list} data-drag-item={c.id} {...dropEdge(channelDrag.drag, c.id)}>
         <button className={`side-item${c.archivedAt ? " is-archived" : ""}`}
           data-channel={c.name} data-vis={c.archivedAt ? "archived" : c.visibility ?? "private"}
           aria-current={active?.id === c.id ? "true" : "false"}
-          onClick={() => {
+          aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+          title={`Open #${c.name}
+${reorderWords}`}
+          onPointerDown={channelDrag.grab(list, c.id)}
+          onKeyDown={e => {
+            if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+            e.preventDefault();
+            nudgeChannel(c.id, c.name, e.key === "ArrowUp" ? -1 : 1);
+          }}
+          onClick={e => {
+            /* A drag that ended on this row is not a click on it. A KEYBOARD
+               activation (`detail` 0) never followed a pointer, so it cannot be
+               a drag's leftover click — reading the flag there is what swallowed
+               the first Enter after a cross-row drag, because that drag's click
+               lands on the shared ancestor and never clears the flag here. */
+            const fromPointer = e.detail !== 0;
+            if (fromPointer && channelDrag.moved.current) { channelDrag.moved.current = false; return; }
+            channelDrag.moved.current = false;
             if (active?.id === c.id && detailsOpen) toggleDetails();
             else setActiveId(c.id);
           }}>
@@ -4648,6 +4906,7 @@ function ChatScreen({
           <RoomVisibility channel={c} size="mark" />
           <MutedMark channelId={c.id} />
           <UnreadMarks n={unread} />
+          <span className="sr-only">, {place}</span>
         </button>
         <button type="button" className={`channel-pin${isPinned ? " is-pinned" : ""}`}
           aria-label={isPinned ? `Unpin ${c.name}` : `Pin ${c.name}`}
@@ -4684,13 +4943,18 @@ function ChatScreen({
               Sidebar changes stay on this screen because device storage is unavailable.
             </div>
           )}
+          <div className="sr-only" role="status" aria-live="polite">{reorderSaid}</div>
           {sidebarLayout.layout.sections.map(section => {
             if (section === "channels") return (
-          <div key="channels" className="side-group" data-sidebar-section="channels">
+          <div key="channels" className={`side-group${sectionDrag.drag.dragId === "channels" ? " is-dragging" : ""}`}
+            data-sidebar-section="channels"
+            data-drag-list="sidebar-sections" data-drag-item="channels" {...dropEdge(sectionDrag.drag, "channels")}>
             <div className="side-head">
               <span className="eyebrow">Channels</span>
               <SidebarSectionOrder section="channels" label="Channels" position={sectionPosition("channels")}
-                count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection} />
+                count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection}
+                grab={sectionDrag.grab("sidebar-sections", "channels")}
+                dragging={sectionDrag.drag.dragId === "channels"} say={setReorderSaid} />
               <button className="browsebtn" title="Browse rooms you could join"
                 aria-label="Browse rooms" onClick={onBrowseRooms}>⌕</button>
               <button title="New channel" aria-label="New channel" onClick={onNewChannel}>＋</button>
@@ -4699,20 +4963,24 @@ function ChatScreen({
               ? <RailEmpty text="No channels yet." action="Make the first one" onAction={onNewChannel} />
               : <>
                 {visibleChannels.some(c => pinned.has(c.id)) && <div className="side-subhead">Pinned</div>}
-                {visibleChannels.filter(c => pinned.has(c.id)).map(renderChannel)}
+                {pinnedChannels.filter(c => matchesWorkspace(c.name)).map(renderChannel)}
                 {visibleChannels.some(c => !pinned.has(c.id)) && <div className="side-subhead">All channels</div>}
-                {visibleChannels.filter(c => !pinned.has(c.id)).map(renderChannel)}
+                {looseChannels.filter(c => matchesWorkspace(c.name)).map(renderChannel)}
               </>}
             <button className="browserooms" onClick={onBrowseRooms}>Browse rooms to join</button>
           </div>
 
             );
             if (section === "direct") return (
-          <div key="direct" className="side-group" data-sidebar-section="direct">
+          <div key="direct" className={`side-group${sectionDrag.drag.dragId === "direct" ? " is-dragging" : ""}`}
+            data-sidebar-section="direct"
+            data-drag-list="sidebar-sections" data-drag-item="direct" {...dropEdge(sectionDrag.drag, "direct")}>
             <div className="side-head">
               <span className="eyebrow">Direct</span>
               <SidebarSectionOrder section="direct" label="Direct" position={sectionPosition("direct")}
-                count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection} />
+                count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection}
+                grab={sectionDrag.grab("sidebar-sections", "direct")}
+                dragging={sectionDrag.drag.dragId === "direct"} say={setReorderSaid} />
               {/* The same pair as Channels above: browse what exists, or make
                   one. This is where he already comes to add an agent, so this
                   is where the casting room has to be. */}
@@ -4779,11 +5047,15 @@ Open your chat with ${a.name}`}>
 
             );
             return (
-          <div key="people" className="side-group" data-sidebar-section="people">
+          <div key="people" className={`side-group${sectionDrag.drag.dragId === "people" ? " is-dragging" : ""}`}
+            data-sidebar-section="people"
+            data-drag-list="sidebar-sections" data-drag-item="people" {...dropEdge(sectionDrag.drag, "people")}>
             <div className="side-head">
               <span className="eyebrow">People</span>
               <SidebarSectionOrder section="people" label="People" position={sectionPosition("people")}
-                count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection} />
+                count={SIDEBAR_SECTIONS.length} onMove={sidebarLayout.moveSection}
+                grab={sectionDrag.grab("sidebar-sections", "people")}
+                dragging={sectionDrag.drag.dragId === "people"} say={setReorderSaid} />
               {/* Only the owner can mint an invite (the relay refuses everyone
                   else), so only the owner is offered one. */}
               {owner && <button title="Invite a friend" aria-label="Invite a friend" onClick={onInvite}>＋</button>}
