@@ -567,7 +567,16 @@ a{color:var(--ultra);}
 }
 .workspace-layout-title{min-width:0;flex:1;display:grid;gap:3px;}
 .workspace-layout-title h3{font-family:var(--display);font-size:15px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.workspace-layout-close{color:var(--ink-2);}
+/* THE SAME FAULT, ONE MORE SURFACE OVER — AND THIS ONE WAS ALREADY MEANT TO BE
+   RIGHT. This rule always said "canvas ink", but at 0-1-0 it sat ABOVE the
+   shared `.iconbtn` base rule (also 0-1-0, `color:var(--rail-muted)`), and at
+   equal weight the later rule wins. So the close button on the Chat + Files
+   panel was painted in the navigation family on `--surface-2`: 1.59:1 in Cloud9
+   Pine — fainter than a disabled button (2.16:1). Scoping it to the head it
+   lives in makes it 0-2-0, so the intent this line always had now survives the
+   cascade. */
+.workspace-layout-head .workspace-layout-close{color:var(--ink-2);}
+.workspace-layout-head .workspace-layout-close:hover{background:var(--surface);color:var(--ink);}
 .workspace-layout-state,.workspace-layout-note{margin:12px 14px;color:var(--ink-2);font-size:12.5px;line-height:1.45;overflow-wrap:anywhere;}
 .workspace-layout-state{padding:12px;border:1px dashed var(--line);border-radius:var(--radius-s);background:var(--surface-2);}
 .workspace-layout-state.is-offline{margin:10px 14px 0;border-style:solid;color:var(--marigold);background:var(--marigold-soft);}

@@ -177,3 +177,35 @@ test("a control on the canvas is painted in canvas ink, never in rail ink", () =
     `${selector} sits on the canvas, so it may not borrow the rail's foreground family — `
     + "on a light palette those tokens are near-white on near-white");
 });
+
+test("an icon button's own ink rule is never overruled by the shared rail-family base", () => {
+  /* `.iconbtn` is one class shared by icon buttons on the rail AND on the
+     canvas, and its base rule hands out `--rail-muted`. A control that says
+     "no, paint me in canvas ink" only wins if its rule OUTWEIGHS that base or
+     comes after it — at equal weight the later rule takes it. The Chat + Files
+     close button lost exactly that way: `.workspace-layout-close{color:var(--ink-2)}`
+     sat above `.iconbtn{color:var(--rail-muted)}`, so it measured 1.59:1 on
+     Cloud9 Pine, fainter than a disabled button. This checks the whole class:
+     every extra class an `.iconbtn` carries in the app, against the base. */
+  const rules = topLevelRules(bare);
+  const base = rules.findIndex(rule => rule.selector === ".iconbtn" && /--rail-muted/.test(rule.body));
+  assert.ok(base >= 0, "the shared .iconbtn base rule that hands out rail ink must be findable");
+
+  const extras = new Set();
+  for (const [, classes] of app.matchAll(/className="iconbtn([^"]*)"/g)) {
+    for (const name of classes.trim().split(/\s+/)) if (name) extras.add(name);
+  }
+  assert.ok(extras.size >= 3, `expected the app's icon buttons to be found, saw ${extras.size}`);
+
+  const losers = [];
+  for (const name of extras) {
+    rules.forEach((rule, index) => {
+      if (rule.selector !== `.${name}`) return;
+      if (!/(^|;)\s*color\s*:/.test(rule.body)) return;
+      if (index < base) losers.push(`.${name}`);
+    });
+  }
+  assert.deepEqual(losers, [],
+    "these rules name an icon button's own ink but are outranked by `.iconbtn`'s rail ink — "
+    + "scope them to the surface they sit on (0-2-0) so the colour they ask for is the colour drawn");
+});
