@@ -287,9 +287,8 @@ const SHORT_NAME_SEGMENT_RE =
  * `C:\Users\RUNNER~1\AppData\Local\Temp`. The engine passes its own temp and
  * worktree paths as arguments (`git worktree add <target>`, `codex -C <cwd>`),
  * so on any machine whose username is over eight characters THE ENGINE REFUSED
- * ITS OWN PATHS — dozens of tests red on `windows-latest`, for a path the
- * operating system itself handed us. That is a whole class of machine, not one
- * runner.
+ * ITS OWN PATHS — 36 tests red on `windows-latest`, for a path the operating
+ * system handed us. That is a whole class of machine, not one runner.
  *
  * WHY MASK RATHER THAN ADD `~` TO THE ALLOWLIST. Adding the character would let
  * a tilde appear ANYWHERE, including at the start of an argument — which is

@@ -144,9 +144,12 @@ test("a short path does not smuggle a metacharacter past the guard", () => {
 test("PIN: a tilde straight after a flag's `=` is refused", () => {
   // `--flag=~1` has digits after the tilde, so it is close to the accepted
   // shape — but nothing precedes the tilde inside the segment, and in bash a
-  // tilde right after an unquoted `=` really does expand.
-  assert.throws(() => safeArg("--flag=~1"), UnsafeArgumentError);
-  assert.throws(() => shellQuote("--flag=~1"), UnsafeArgumentError);
+  // tilde right after an unquoted `=` really does expand. It is the shape most
+  // likely to be waved through as "just a short name", so it is pinned first.
+  for (const value of ["--flag=~1", "--flag=~/x", "=~1"]) {
+    assert.throws(() => safeArg(value), UnsafeArgumentError, `accepted: ${value}`);
+    assert.throws(() => shellQuote(value), UnsafeArgumentError, `accepted: ${value}`);
+  }
 });
 
 test("PIN: the colon family is refused", () => {
