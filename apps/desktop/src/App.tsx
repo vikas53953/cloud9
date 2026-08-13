@@ -4892,7 +4892,36 @@ function WorkspaceLayoutPanel({ channel, layout, onClose }: {
   onClose: () => void;
 }): React.JSX.Element {
   const panelRef = useRef<HTMLElement>(null);
-  useEscapeCloses(onClose, true);
+  /* ESCAPE, BUT ONLY WHEN THE WORKSPACE HAS THE KEYBOARD.
+     This panel used to call `useEscapeCloses`, which is for OVERLAYS: it puts a
+     close on one window-level stack that answers Escape from anywhere, in the
+     capture phase, and calls `stopPropagation` (see the escape-stack notes near
+     the top of this file). That is the wrong shape for a panel that sits BESIDE
+     the conversation, and the escape-stack notes say so themselves — a message
+     being edited has its own Escape ("put my words back") and stealing it is a
+     worse bug. It was being stolen: with a workspace open, Escape while editing
+     a message left the words changed AND rewrote `prefs.workspaceLayout` to
+     Focus. That is this PR's own bug — an ordinary keystroke undoing a durable
+     choice — by keyboard instead of pointer, and it got easier to hit the
+     moment a chosen layout started surviving the next click.
+     So Escape here is scoped to the panel's own keyboard: it acts only while
+     the focus is actually inside the panel. Nothing is captured and nothing is
+     stopped, so no other Escape can be taken from anything. In a narrow window
+     this panel becomes an overlay (`styles.css`, the 860px rule), and Escape
+     still closes it there — to be using an overlay you are focused inside it.
+     Anyone who is not has the picker and the panel's own × instead. */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      const panel = panelRef.current;
+      const focused = document.activeElement;
+      if (!panel || !focused || !panel.contains(focused)) return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
   /* NO CLICK-AWAY HERE, ON PURPOSE — and this is the whole bug it fixes.
      A workspace layout is not a popover. It is a durable choice made in the
      "Workspace layout" picker and it lives in `prefs.workspaceLayout`, the same
@@ -5976,6 +6005,21 @@ function RememberedNotes({ agentId }: { agentId: ID }): React.JSX.Element {
   );
 }
 
+/**
+ * THIS PICKER SITS IN A ROOM HEADER AND IS DELIBERATELY NOT PER-ROOM.
+ *
+ * `workspaceLayout` is ONE field in `Prefs` — a per-user/device choice, kept
+ * beside appearance, thread width and message density, and written to the same
+ * durable preferences. Choosing "Chat + Files" in one room chooses it in every
+ * room, and it stays chosen across restarts. That is the intended behaviour and
+ * matches how every other viewing preference in Cloud9 already works.
+ *
+ * It is written down here because the control's PLACE argues the opposite: it
+ * lives in `.chathead`, so it reads like a setting about this room. If that ever
+ * gets reported as "I set it in one room and it changed in all of them", this is
+ * the cause and it is a design decision, not a new bug — the answer would be to
+ * make the scope visible (or make it per-room on purpose), not to hunt a leak.
+ */
 function WorkspaceLayoutControl({ layout, onChange, selectRef }: {
   layout: WorkspaceLayout;
   onChange: (layout: WorkspaceLayout) => void;
