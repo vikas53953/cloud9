@@ -38,6 +38,21 @@ installer, and give Vikas a visual HTML review page. Everything in §6 waits.
 
 ## 2. Open PRs — exact status, what each needs
 
+> **UPDATE (final, ~01:45 IST):** a finishing wave completed after this
+> document was first written. **PRs #48, #49, #50 and #51 are now all verified,
+> reviewed and MERGED** — the table below is kept for the evidence trail, but
+> none of these PRs needs work anymore. Eight lanes total are folded
+> (A, B, C, D, E, F1, G, H). What actually remains: the §4 release chain
+> (first job), f2/f3 (header dedup + the "V" control, briefs in the #51 row),
+> Lane J (§3), the relay flake (§5 last bullet), and the §6 deferred list.
+> New non-blocking tickets from the final reviews, added to §6: drag-and-drop
+> guard tests assert the live region exists but not that it's fed; keyboard
+> reorder under an active sidebar search announces moves among hidden rows;
+> repeated boundary presses go silent (React state bail-out); DMs/More-tools
+> clicks leave the previous rail item marked current; the two-row sidebar
+> header is a deliberate visible change awaiting the owner's verdict
+> (screenshots in docs/qa/lane-f1/).
+
 | PR | Branch | Status | To finish |
 |---|---|---|---|
 | **#48** | codex/pr43-lane-d | **APPROVED conditionally** (reviewer ran 28 adversarial cases; 28/28 refused). Windows 8.3 short-path fix in the engine's security guard. | 3 conditions, all small, spelled out in the last conductor comment expectations + review: (1) remove the pre-existing NUL byte at `packages/engine/src/run.ts` offset ~7917 (cache-key separator) → printable separator, verify file greps as text; (2) restate the mask's safety comment in terms of the real invariant (≥1 name char immediately before the tilde — `safeArg` is called on fragments, so `^` anchors the fragment); (3) add 5 pin tests: `--flag=~1`, colon family (`:~1`, `a:b~1`, `C:~1`), space-anchored `a ~1`, a codex.ts fragment-composition case, `a\b~1` on POSIX. Then rebuild CLEAN (`rm -rf dist` first — stale-dist artifact bit the reviewer), engine suite, push, re-review, merge. |
