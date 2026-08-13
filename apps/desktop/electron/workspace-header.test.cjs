@@ -38,15 +38,43 @@ test("the header gives the name the row before anything else is measured", () =>
 
   const name = /\n\.workspace-name\{([^}]*)\}/.exec(css);
   assert.ok(name, ".workspace-name must still be styled here");
-  assert.match(name[1], /min-width:min\(100%,max-content\)/,
-    "the name must ask for its natural width, and never for more than one row");
-  assert.doesNotMatch(name[1], /min-width:0/,
-    "min-width:0 is what let every other control take the name's room first");
+  assert.match(name[1], /flex:1 1 auto/,
+    "the name's flex base size must be its natural width — that is what makes " +
+    "the header break rather than squeeze the name");
   assert.match(name[1], /text-overflow:ellipsis/,
     "a name longer than a whole row must still end cleanly");
 
   assert.match(css, /\.sidebar-head-actions\{[^}]*flex:none/,
     "the header's controls must move as one block, not wrap one at a time");
+});
+
+/*
+ * A DECLARATION THE BROWSER THROWS AWAY IS WORSE THAN NO DECLARATION — it
+ * reads like a guarantee and gives none. This header shipped for a day with
+ * `min-width:min(100%,max-content)`, which looks like "ask for your natural
+ * width, never more than a row" and is in fact invalid: CSS math functions
+ * take lengths and percentages, never an intrinsic keyword. Chromium dropped
+ * the whole declaration and nobody could see it. This guard is written for
+ * the CLASS, not that one line — it fails on any `min()`, `max()` or
+ * `clamp()` anywhere in the sheet that is handed an intrinsic size keyword.
+ */
+test("no CSS math function is handed an intrinsic keyword it cannot take", () => {
+  // Comments are blanked first (keeping the line count) so that the note
+  // above this rule can name the mistake without tripping the guard.
+  const css = read("styles.css").replace(/\/\*[\s\S]*?\*\//g,
+    c => c.replace(/[^\n]/g, " "));
+  // `min(`/`max(`/`clamp(` only when not part of a longer word, so the many
+  // legitimate `minmax(0,1fr)` grid tracks are left alone.
+  const MATH = /(?<![-\w])(?:min|max|clamp)\(((?:[^()]|\([^()]*\))*)\)/g;
+  const INTRINSIC = /(?<![-\w])(?:max-content|min-content|fit-content)(?![-\w])/;
+  const offenders = [];
+  for (const m of css.matchAll(MATH)) {
+    if (!INTRINSIC.test(m[1])) continue;
+    offenders.push(`line ${css.slice(0, m.index).split("\n").length}: ${m[0]}`);
+  }
+  assert.deepEqual(offenders, [],
+    "these declarations are invalid and the browser silently discards them — " +
+    "use a wrap, a grid track or a plain length instead");
 });
 
 test("the header's controls are one block in the markup, not loose in the row", () => {

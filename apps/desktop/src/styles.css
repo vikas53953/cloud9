@@ -662,12 +662,25 @@ body.dragging-thread *{cursor:col-resize !important;}
    while there is a row to be had; a name longer than a whole row still
    ellipsizes, and its tooltip and accessible label carry it in full.
 
-   `min(100%,max-content)` is the whole mechanism: the name asks for
-   exactly as much as it needs, and never for more than the row has. */
+   WHAT ACTUALLY CARRIES IT is `flex-wrap:wrap` on this header plus the
+   button block below: the name's flex base size is its natural width, so
+   when the name and the buttons cannot share a line the header breaks and
+   the name keeps the first line to itself, whole. It is never squeezed,
+   because nothing else is on its line to squeeze it.
+
+   DO NOT reach for `min-width:min(100%,max-content)` here. It reads as if
+   it says "ask for your natural width, never more than a row", but CSS
+   math functions take lengths and percentages only — an intrinsic keyword
+   inside `min()` makes the whole declaration invalid and the browser drops
+   it on the floor (`CSS.supports('min-width','min(100%,max-content)')` is
+   false in Chromium). This rule shipped with that declaration for a day
+   and it never did anything; the wrap was doing all the work. The name
+   carries no min-width at all now, which is exactly what the browser has
+   been using: `auto` on an `overflow:hidden` flex item resolves to 0. */
 .sidebar-head{padding:16px 16px 10px;display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0;background:color-mix(in srgb,var(--shell-sidebar) 88%,var(--surface));}
 .sidebar-head h2{font-size:17px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .sidebar-head-actions{display:flex;align-items:center;gap:8px;flex:none;margin-left:auto;}
-.workspace-name{min-width:min(100%,max-content);flex:1 1 auto;text-align:left;border:0;background:transparent;color:var(--sidebar-text);font:600 17px var(--display);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.workspace-name{flex:1 1 auto;text-align:left;border:0;background:transparent;color:var(--sidebar-text);font:600 17px var(--display);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .workspace-name span{color:var(--sidebar-muted);font-family:var(--body);}
 .sidebar-head .workspace-members{display:none;}
 .sidebar-head .workspace-menu,.sidebar-head .workspace-new,.sidebar-head .workspace-agent{width:32px;height:32px;padding:0;flex:none;color:var(--sidebar-text);border:1px solid var(--border);background:var(--surface);}.sidebar-head .workspace-new{font-size:16px;}
