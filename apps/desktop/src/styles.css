@@ -665,7 +665,24 @@ body.dragging-thread *{cursor:col-resize !important;}
 .side-head button:hover{color:var(--pine);background:var(--surface-2);}
 .sidebar-section-order{display:inline-flex;align-items:center;gap:1px;flex:none;}
 .sidebar-section-order button{min-width:22px!important;min-height:24px!important;padding:1px 3px!important;font-size:12px!important;}
-.sidebar-section-order button:disabled{opacity:.32;cursor:default;}
+/* THE GRIP. Faint until the heading is hovered or it takes focus, so a resting
+   sidebar stays quiet, and it never disappears entirely for a keyboard. */
+.drag-grip{cursor:grab;opacity:.4;touch-action:none;transition:opacity .12s var(--ease);}
+.side-head:hover .drag-grip,.drag-grip:focus-visible,.drag-grip.is-dragging{opacity:1;}
+.drag-grip.is-dragging{cursor:grabbing;color:var(--pine);}
+/* THE LINE HE IS DROPPING ONTO — one edge, drawn on the row the pointer is
+   over, so where it will land is never a guess. */
+[data-drop-edge]{position:relative;}
+[data-drop-edge]::after{
+  content:"";position:absolute;left:4px;right:4px;height:2px;border-radius:2px;
+  background:var(--pine);box-shadow:0 0 0 1px color-mix(in srgb,var(--pine) 35%,transparent);
+  pointer-events:none;z-index:3;
+}
+[data-drop-edge="before"]::after{top:-1px;}
+[data-drop-edge="after"]::after{bottom:-1px;}
+.channel-row.is-dragging,.side-group.is-dragging{opacity:.55;}
+body.dragging-row{user-select:none;}
+body.dragging-row *{cursor:grabbing!important;}
 .sidebar-pref-note{margin:4px 6px 0;padding:7px 9px;border:1px dashed var(--line);border-radius:var(--radius-xs);font-size:11px;line-height:1.35;color:var(--ink-3);}
 .side-subhead{padding:4px 9px 3px;color:var(--ink-3);font:600 10px var(--mono);letter-spacing:.08em;text-transform:uppercase;}
 .channel-row{display:flex;align-items:center;gap:2px;min-width:0;}
