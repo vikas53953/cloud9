@@ -4949,7 +4949,6 @@ ${reorderWords}`}
               sit beside the name or step down under it, whole. */}
           <div className="sidebar-head-actions">
             <button className="iconbtn workspace-menu" aria-label="Workspace options" title="Workspace options" onClick={onBrowseRooms}>⌄</button>
-            <button className="iconbtn workspace-new" aria-label="Create a channel" title="Create a channel" onClick={onNewChannel}>＋</button>
             <button className="iconbtn workspace-agent" aria-label="Create an agent" title="Create an agent" onClick={onNewAgent}>✦</button>
           </div>
         </div>
