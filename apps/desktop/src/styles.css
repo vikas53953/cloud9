@@ -5308,9 +5308,9 @@ button.chip{cursor:pointer;}
 .composer .tools .sendbtn:active:not(:disabled){transform:translateY(1px);}
 .composer .tools .sendbtn:disabled{
   opacity:1;
-  background:var(--sunk);
-  border-color:var(--line);
-  color:var(--ink-3);
+  background:var(--disabled-bg);
+  border-color:var(--disabled-border);
+  color:var(--disabled-text);
   box-shadow:none;
 }
 .composer .tools .sendbtn[data-waiting="file"]{
@@ -5352,5 +5352,5 @@ button.chip{cursor:pointer;}
 .task-inline select, .task-inline input, .task-inline textarea { width: 100%; box-sizing: border-box; }
 .task-inline-actions { display: flex; gap: 8px; }
 .task-inline-state { margin: 0; font-size: 12px; }
-.task-inline-state.success { color: var(--success, #16734a); }
+.task-inline-state.success { color: var(--pine); }
 .task-source-card { display: grid; gap: 3px; margin-top: 8px; padding: 8px 10px; border-left: 3px solid var(--accent); background: var(--surface-2); font-size: 12px; }
