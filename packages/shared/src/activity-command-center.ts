@@ -1,5 +1,5 @@
 import type {
-  ActivityKind, ActivityRecord, Approval, Channel, ID, RunRecord, Task,
+  ActivityKind, ActivityRecord, Approval, Channel, ID, RunRecord, RunStep, Task,
 } from "./index.js";
 
 /** Filters for the command-center's durable, server-authorized work rows. */
@@ -93,7 +93,9 @@ export interface ActivityFeedWorld {
   channels: readonly Pick<Channel, "id" | "name" | "kind">[];
   tasks: readonly Pick<Task, "id" | "title" | "channelId" | "runId" | "approvalId" | "status">[];
   approvals: readonly Pick<Approval, "id" | "taskId" | "channelId" | "status" | "action" | "detail">[];
-  runs: Readonly<Record<string, Pick<RunRecord, "id" | "channelId" | "taskId" | "files" | "tests" | "steps" | "outcome" | "ask" | "branch" | "commit" | "pullRequest" | "truncated">>>;
+  runs: Readonly<Record<string, Pick<RunRecord, "id" | "channelId" | "taskId" | "files" | "tests" | "outcome" | "ask" | "branch" | "commit" | "pullRequest" | "truncated"> & {
+    steps?: readonly RunStep[];
+  }>>;
   messages: Readonly<Record<string, readonly { id: ID }[]>>;
 }
 
@@ -251,8 +253,8 @@ export function activityOutcomeChips(linked: ActivityLinkedFacts): ActivityOutco
 }
 
 export function activityInspectableSteps(
-  steps: ActivityFeedWorld["runs"][string]["steps"] | undefined,
-): NonNullable<ActivityFeedWorld["runs"][string]["steps"]> {
+  steps: readonly RunStep[] | undefined,
+): RunStep[] {
   if (!steps?.length) return [];
   return steps.filter(step => INSPECTABLE_STEP_KINDS.has(step.kind));
 }

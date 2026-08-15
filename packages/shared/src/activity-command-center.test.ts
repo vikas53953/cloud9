@@ -4,16 +4,19 @@ import {
   activityHasDetails, activityInspectableSteps, activityKindWords,
   activityOutcomeChips, linkActivityRow, taskMatchesCommandCenterFilter,
 } from "./activity-command-center.js";
+import type { RunStep } from "./index.js";
 
 const task = (patch: Record<string, unknown> = {}) => ({
   id: "task-1", requesterId: "u-1", status: "working" as const,
-  approvalId: "approval-1", runId: "run-1", ...patch,
+  approvalId: "approval-1", runId: "run-1", title: "Ship it", channelId: "ch-ops", ...patch,
 });
 const approval = (patch: Record<string, unknown> = {}) => ({
-  id: "approval-1", taskId: "task-1", ownerId: "u-1", status: "pending" as const, ...patch,
+  id: "approval-1", taskId: "task-1", ownerId: "u-1", status: "pending" as const,
+  action: "push", ...patch,
 });
 const run = (patch: Record<string, unknown> = {}) => ({
-  id: "run-1", taskId: "task-1", outcome: "failed" as const, ...patch,
+  id: "run-1", taskId: "task-1", outcome: "failed" as const,
+  ask: "Ship it", steps: [] as { seq: number; kind: "command" | "thinking" | "message"; label: string; detail?: string; ok?: boolean }[], ...patch,
 });
 
 test("command-center filters use explicit public task/run/approval facts", () => {
@@ -40,7 +43,7 @@ const feed = (patch: {
   messages?: Record<string, { id: string }[]>;
 } = {}) => ({
   channels: patch.channels ?? [{ id: "ch-ops", name: "ops", kind: "channel" as const }],
-  tasks: patch.tasks ?? [task({ channelId: "ch-ops" })],
+  tasks: patch.tasks ?? [task()],
   approvals: patch.approvals ?? [approval({ channelId: "ch-ops" })],
   runs: patch.runs ?? { "run-1": run({ channelId: "ch-ops", files: ["a.ts", "b.ts"] }) },
   messages: patch.messages ?? { "ch-ops": [{ id: "m-1" }] },
@@ -76,7 +79,7 @@ test("activity trail stays silent when the room, run, or message is not in world
 
 test("activity outcome chips only name facts the run or go-ahead already holds", () => {
   assert.deepEqual(activityOutcomeChips({}), []);
-  assert.deepEqual(activityOutcomeChips({ run: run({ files: [] }) }), []);
+  assert.deepEqual(activityOutcomeChips({ run: run({ files: [] }) }).map(chip => chip.key), ["outcome"]);
   const chips = activityOutcomeChips({
     run: run({
       files: ["a.ts", "b.ts"],

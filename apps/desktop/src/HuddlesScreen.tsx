@@ -22,7 +22,8 @@ export function HuddlesScreen({ onLink }: { onLink: (link: HuddleLink, projectId
   const latest = Object.values(world.huddleMutations).sort((a, b) => a.state === "pending" ? -1 : b.state === "pending" ? 1 : 0)[0];
   const loaded = world.huddleProjects.asked && world.huddles.asked;
   const noProjects = loaded && world.huddleProjects.list.length === 0;
-  const mePresent = !!(active && world.me && active.participants.some(p => p.id === world.me.id && p.present));
+  const meId = world.me?.id;
+  const mePresent = !!(active && meId && active.participants.some(p => p.id === meId && p.present));
   const live = active?.state === "active";
   const showStartForm = !!projectId && (creating || (!sessionId && !active));
   const showUnavailable = !!sessionId && !active && !creating;

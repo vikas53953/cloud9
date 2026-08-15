@@ -146,7 +146,7 @@ test("the View selector looks selected after a click, not disabled", () => {
   assert.match(bare, /\.chathead \.workspace-layout-control select\{[^}]*color:var\(--ink\)/);
   assert.match(bare, /\.chathead \.workspace-layout-control select\{[^}]*opacity:1/);
   assert.match(bare, /\.chathead \.workspace-layout-control select:disabled\{[^}]*opacity:\.45/);
-  assert.match(bare, /\.chathead label\.workspace-layout-control\{color:var\(--ink\)\}/);
+  assert.match(bare, /\.chathead label\.workspace-layout-control\s*\{[^}]*color:var\(--ink\)/);
   assert.match(read("App.tsx"), /<span className="view-label">View<\/span>/);
 });
 
