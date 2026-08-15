@@ -106,7 +106,7 @@ test("the shared dark base comes before the named palettes, so each palette stil
 
   assert.ok(declares("nord", /--bg:#2E3440/), "Nord keeps its own paper");
   assert.ok(declares("dracula", /--bg:#282A36/), "Dracula keeps its own paper, and it is not Nord's");
-  assert.ok(declares("high-contrast-dark", /--line:#FFF/),
+  assert.ok(declares("high-contrast-dark", /--line:#FFF(?:FFF)?/),
     "High Contrast Dark keeps the white rule that makes it high contrast");
 });
 
@@ -116,14 +116,14 @@ test("one owner answers 'is this a dark screen': the resolved appearance", () =>
     + "instead. (Negating the bare attribute — `:not([data-appearance])`, the pre-paint guard — "
     + "is 0-2-0 and fine.)");
 
-  /* The operating system keeps exactly one job — the blank window before
-     `applyTheme` has spoken. It may not hand out palette pigments. */
+  /* applyTheme writes data-appearance before first paint. The OS media query
+     must not hand out colour tokens — that leak is how on-ink/on-pine painted
+     at 1:1 under a light Windows. */
   const media = bare.match(/@media \(prefers-color-scheme:dark\)\{([\s\S]*?)\n\}/g) || [];
-  assert.equal(media.length, 1, "there is one OS dark block left, and it is the pre-paint guard");
-  assert.match(media[0], /:root:not\(\[data-appearance\]\)/,
-    "the OS may only paint the window while the app has not yet said which appearance it is");
-  assert.doesNotMatch(media[0], /--rail-|--surface|--line|--pine/,
-    "the OS block must not hand out palette pigments — it stops matching the moment the app speaks");
+  for (const block of media) {
+    assert.doesNotMatch(block, /--[a-z0-9-]+:/,
+      "no OS media query may hand out palette tokens");
+  }
 
   /* Dark-screen component rules key off the appearance, not off one palette. */
   for (const rule of [
@@ -154,7 +154,12 @@ test("the selected rail item reads its ink from the one token every palette sets
   assert.match(bare, /--rail-selected-text:var\(--rail-active-ink\)/);
   assert.match(bare, /:root\{[\s\S]*?--rail-active-ink:var\(--rail-bg\)/);
   const darkFamily = bare.slice(bare.indexOf(':root[data-theme="midnight"]'));
-  assert.match(darkFamily.slice(0, darkFamily.indexOf("}")), /--rail-active-ink:var\(--rail-ink\)/);
+  const midnightBody = darkFamily.slice(0, darkFamily.indexOf("}"));
+  const railInk = midnightBody.match(/--rail-ink:(#[0-9A-Fa-f]+)/);
+  const railActiveInk = midnightBody.match(/--rail-active-ink:(#[0-9A-Fa-f]+)/);
+  assert.ok(railInk && railActiveInk, "midnight must declare rail ink and selected-rail ink");
+  assert.equal(railActiveInk[1].toUpperCase(), railInk[1].toUpperCase(),
+    "on midnight the selected rail ink is the rail's own ink, not a leaked light on-color");
 });
 
 test("a control on the canvas is painted in canvas ink, never in rail ink", () => {
