@@ -7113,7 +7113,7 @@ function ChatView({
               <ChannelMemoryControl channel={channel} agents={channelAgents}
                 policies={policyRows}
                 canManage={mayAdministerChannel(myRole) && !channel.archivedAt}
-                viewerId={world.me?.id} inline />
+                viewerId={world.me?.id} plain />
             </div>
           </div>
           {activePinCount > 0 && (
@@ -7151,6 +7151,11 @@ function ChatView({
                 <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Room details</button>
                 <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Members, agents, and pinned items</button>
                 <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Memory policy</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onWorkspaceLayout("focus"); }}>Focus chat</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onWorkspaceLayout("chat-files"); }}>Files</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onWorkspaceLayout("chat-diff"); }}>Diff</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onWorkspaceLayout("review"); }}>Review</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onWorkspaceLayout("incident"); }}>Incident</button>
                 {owner && !channel.archivedAt && <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onInvite(); }}>Invite people</button>}
                 {!channel.archivedAt && <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Add people or agents</button>}
                 <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onOpenHuddles(); }}>Open Huddle notes</button>
@@ -19912,7 +19917,13 @@ function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine; where?:
          left here to get wrong. */
       last,
     });
-    return { agent, line };
+    const channelId = work?.channelId
+      ?? asking?.channelId
+      ?? queued?.channelId
+      ?? (last ? world.runs[last.id]?.channelId : undefined);
+    const room = activityRoomName(channelId, world.channels);
+    const where = room ? (room === "Direct message" ? room : `#${room}`) : undefined;
+    return { agent, line, ...(where ? { where } : {}) };
     /* `world.runLists` IS IN THIS LIST BECAUSE THE ANSWER ARRIVES LATER.
        The run history is read through `client` (one spelling of a history's
        key, rather than two), but it is WORLD state — so leaving it out of the
@@ -20749,118 +20760,6 @@ function ActivityScreen({ openAt, onOpened }: {
   );
 }
 
-function activityWhereLabel(name?: string): string | undefined {
-  if (!name) return undefined;
-  return name === "Direct message" ? name : `#${name}`;
-}
-
-function ActivityClipped({ text, kind }: { text: string; kind?: RunStepKind }): React.JSX.Element {
-  const trimmed = text.trim();
-  if (kind === "web" && isLink(trimmed)) {
-    return <a className="act-clip-inline lnk" href={trimmed} target="_blank" rel="noreferrer noopener">{quoteOf(trimmed, 140)}</a>;
-  }
-  if (trimmed.length <= 140) return <span className="act-clip-inline">{trimmed}</span>;
-  return (
-    <details className="act-raw">
-      <summary>{quoteOf(trimmed, 140)}</summary>
-      <pre className="act-clip">{trimmed}</pre>
-    </details>
-  );
-}
-
-function ActivityTrailRow({ row, world }: {
-  row: World["activity"][number]; world: World;
-}): React.JSX.Element {
-  const linked = linkActivityRow(row, {
-    channels: world.channels, tasks: world.tasks, approvals: world.approvals,
-    runs: world.runs, messages: world.messages,
-  });
-  const tests = linked.run?.tests ?? (linked.run?.steps ? testFactsFromSteps(linked.run.steps) : undefined);
-  const chips = activityOutcomeChips({
-    ...linked,
-    run: linked.run ? { ...linked.run, ...(tests?.length ? { tests } : {}) } : linked.run,
-  });
-  const steps = activityInspectableSteps(linked.run?.steps);
-  const files = linked.run?.files;
-  const canInspect = activityHasDetails(linked, row.kind);
-  const where = activityWhereLabel(linked.channelName);
-  const gone = row.kind === "run_recorded" && row.refId ? !!world.runsGone[row.refId] : false;
-  const waiting = row.kind === "run_recorded" && !!row.refId && !linked.run && !gone;
-  const by = row.actorKind === "agent" ? "by-agent" : row.actorKind === "human" ? "by-human" : "by-system";
-  return (
-    <div className={`actrow ${by}`} data-kind={row.kind} data-actor={row.actorKind}
-      {...(linked.run?.outcome ? { "data-outcome": linked.run.outcome } : {})}>
-      <span className="actwho">
-        {row.actorKind === "agent"
-          ? <AgentFace name={row.actorName} size={28} />
-          : <PersonFace name={row.actorName} size={28} />}
-      </span>
-      <span className="actdetail">
-        <span className="act-kind">{activityKindWords(row.kind)}</span>
-        <b>{row.actorName}</b>
-        <span className="act-what">{row.detail}</span>
-        {where && <span className="act-where">in {where}</span>}
-        {chips.length > 0 && (
-          <span className="act-facts" aria-label="What happened">
-            {chips.map(chip => (
-              <span key={chip.key} className={`act-fact is-${chip.key}`}>{chip.label}</span>
-            ))}
-          </span>
-        )}
-        {canInspect && (
-          <details className="act-inspect" onToggle={event => {
-            if (event.currentTarget.open && row.kind === "run_recorded" && row.refId) client.askRun(row.refId);
-          }}>
-            <summary>Commands, logs and files</summary>
-            {gone && <p className="act-inspect-empty">That record isn't there any more.</p>}
-            {waiting && <p className="act-inspect-empty">Fetching what it did…</p>}
-            {!gone && !waiting && !files?.length && !tests?.length && steps.length === 0 && !linked.approval?.detail && (
-              <p className="act-inspect-empty">No commands, logs or file list on this record.</p>
-            )}
-            {files && files.length > 0 && (
-              <div className="act-inspect-block">
-                <span className="eyebrow">Files changed</span>
-                <ul className="act-file-list">{files.map(file => <li key={file}>{file}</li>)}</ul>
-              </div>
-            )}
-            {tests && tests.length > 0 && (
-              <div className="act-inspect-block">
-                <span className="eyebrow">Tests</span>
-                <ul className="act-file-list">{tests.map((test, i) => (
-                  <li key={`${test.command}-${i}`}>
-                    {test.command}{test.ok === true ? " · passed" : test.ok === false ? " · failed" : " · outcome not reported"}
-                  </li>
-                ))}</ul>
-              </div>
-            )}
-            {linked.approval?.detail && (
-              <div className="act-inspect-block">
-                <span className="eyebrow">Go-ahead</span>
-                <ActivityClipped text={linked.approval.detail} />
-              </div>
-            )}
-            {steps.length > 0 && (
-              <ol className="act-step-list">
-                {steps.map(step => (
-                  <li key={step.seq} className={step.ok === false ? "bad" : undefined}
-                    data-kind={step.kind} data-ok={step.ok === undefined ? "unsaid" : String(step.ok)}>
-                    <span className="act-step-label">{step.label}</span>
-                    {step.detail && <ActivityClipped text={step.detail} kind={step.kind} />}
-                    {step.ok === true && <span className="act-step-mark" title="the app said this worked">✓</span>}
-                    {step.ok === false && <span className="act-step-mark no" title="the app said this failed">✕</span>}
-                  </li>
-                ))}
-              </ol>
-            )}
-            {linked.run?.truncated && <p className="act-inspect-empty">Some steps were left out to keep this small.</p>}
-          </details>
-        )}
-      </span>
-      <span className="actwhen">{clock(row.ts)}</span>
-    </div>
-  );
-}
-
 const blankPulseDraft = (): EngineeringPulseDraft => ({
   done: "", doing: "", blocked: "", decisions: "", helpNeeded: "",
 });
@@ -21293,6 +21192,168 @@ or(why));
 "Blocked", decisions: "Decisions", helpNeeded: "Help needed" }[key]}</dt><dd>{update[key]}</dd></div>)}
                 </dl>
                 {(update.relatedTaskId || update.relatedRunId || related) && <p className="pulse-related">Related: {update.relatedTaskId && <button type="button" className="linkbtn" onClick={() => onOpenTask(update.relatedTaskId!)} aria-label={`Open related task ${update.relatedTaskId}`}>task {update.relatedTaskId}</button>}{update.relatedRunId && <button type="button" className="linkbtn" onClick={() => onOpenRun(update.relatedRunId!)} aria-label={`Open related run ${update.relatedRunId}`}>run {update.relatedRunId}</button>}{related && <button type="button" className="linkbtn" onClick={() => onOpenProject(update.projectId, related)} aria-label={`Open related ${related.kind === "pull" ? "pull request" : "issue"} ${related.number}`}>{item ? `${item.kind === "pull" ? "PR" : "issue"} #${item.number}` : `${related.kind === "pull" ? "PR" : "issue"} #${related.number} (not loaded)`}</button>}</p>}
+                {mine && <div className="pulse-actions"><button className="quiet" onClick={() => beginEdit(update)} disabled={!!pendingSaveRequest || !!pendingDeleteRequest}>Edit</button><button className="quiet danger" disabled={pendingDelete === update.id} onClick={() => {
+                  if (!window.confirm("Delete this update? It will stay in the feed as a deleted update.")) return;
+                  setAnnouncement("Deleting Engineering Pulse update...");
+                  const sent = client.deletePulse(update.id, why => setFormError(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+    </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+atedRunId && <button type="button" className="linkbtn" onClick={() => onOpenRun(update.relatedRunId!)} aria-label={`Open related run ${update.relatedRunId}`}>run {update.relatedRunId}</button>}{related && <button type="button" className="linkbtn" onClick={() => onOpenProject(update.projectId, related)} aria-label={`Open related ${related.kind === "pull" ? "pull request" : "issue"} ${related.number}`}>{item ? `${item.kind === "pull" ? "PR" : "issue"} #${item.number}` : `${related.kind === "pull" ? "PR" : "issue"} #${related.number} (not loaded)`}</button>}</p>}
+                {mine && <div className="pulse-actions"><button className="quiet" onClick={() => beginEdit(update)} disabled={!!pendingSaveRequest || !!pendingDeleteRequest}>Edit</button><button className="quiet danger" disabled={pendingDelete === update.id} onClick={() => {
+                  if (!window.confirm("Delete this update? It will stay in the feed as a deleted update.")) return;
+                  setAnnouncement("Deleting Engineering Pulse update...");
+                  const sent = client.deletePulse(update.id, why => setFormError(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+    </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+         setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+    </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+       </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+    </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+  </div>
+    </div>
+  );
+}
+v>
+  );
+}
+" : "issue"} #${item.number}` : `${related.kind === "pull" ? "PR" : "issue"} #${related.number} (not loaded)`}</button>}</p>}
                 {mine && <div className="pulse-actions"><button className="quiet" onClick={() => beginEdit(update)} disabled={!!pendingSaveRequest || !!pendingDeleteRequest}>Edit</button><button className="quiet danger" disabled={pendingDelete === update.id} onClick={() => {
                   if (!window.confirm("Delete this update? It will stay in the feed as a deleted update.")) return;
                   setAnnouncement("Deleting Engineering Pulse update...");
