@@ -5199,11 +5199,10 @@ Open your chat with ${a.name}`}>
  * current room. It never treats a local preference, a message sentence, or an
  * absent response as a file/diff/incident fact. Focus is the safe fallback.
  */
-function WorkspaceLayoutPanel({ channel, layout, onClose, hidden }: {
+function WorkspaceLayoutPanel({ channel, layout, onClose }: {
   channel: Channel;
   layout: Exclude<WorkspaceLayout, "focus">;
   onClose: () => void;
-  hidden?: boolean;
 }): React.JSX.Element {
   const panelRef = useRef<HTMLElement>(null);
   /* ESCAPE, BUT ONLY WHEN THE WORKSPACE HAS THE KEYBOARD.
@@ -11025,7 +11024,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
                 way Buzz's composer hides them; they stay IN the DOM either way,
                 so the thread-box parity check reads them as ever. */}
             <span className="emojihold" ref={emojiHoldRef}>
-              <button className="mini" title="Emoji" aria-expanded={emojiOpen}
+              <button className="mini" title="Emoji" aria-label="Insert emoji"
+                aria-haspopup="menu" aria-expanded={emojiOpen}
                 onClick={() => { setEmojiOpen(o => !o); setFmtOpen(false); }}>🙂</button>
               {emojiOpen && (
                 <div className="emojipop" role="menu" aria-label="Add an emoji">
@@ -11879,18 +11879,23 @@ function ChannelMemoryControl({ channel, agents, policies, canManage, viewerId, 
     : mode === "none" ? "None"
     : mode === "summary" ? "Summaries"
     : "Explicit";
+  const asText = plain;
+  const inline = plain;
+  const memoryDialogId = `memory-policy-${channel.id}`;
   return (
     <div ref={controlRef} className={`memory-policy-control${asText ? " is-inline" : ""}`} data-memory-policy={mode ?? "mixed"}>
         <button ref={buttonRef} type="button"
         className={compact ? "iconbtn memory-icon" : asText ? "header-memory" : "chip"}
         aria-label={`Memory: ${modeLabel}`}
         aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-controls={memoryDialogId}
         title={mode ? `Memory: ${modeLabel}. ${channelMemoryPolicyWords(mode)}` : `Memory: ${modeLabel}. Each agent has its own Cloud9 storage rule.`}
         onClick={() => setOpen(value => !value)}>
-        {compact ? "◉" : inline ? `Memory: ${inlineLabel}` : `◉ Memory: ${modeLabel}`}
+        {compact ? <span aria-hidden="true">◉</span> : inline ? `Memory: ${inlineLabel}` : `◉ Memory: ${modeLabel}`}
       </button>
       {open && (
-        <div className="memory-policy-popover" role="dialog" aria-label="Channel memory policy details">
+        <div id={memoryDialogId} className="memory-policy-popover" role="dialog" aria-label="Channel memory policy details">
           <strong>What Cloud9 may remember here</strong>
           <p>{mode ? channelMemoryPolicyWords(mode) : "Each agent has its own Cloud9 storage rule in this conversation. See the rows below."}</p>
           <p className="d-empty">This is Cloud9 storage only; it cannot make a model forget text already shown to it.</p>
@@ -16544,13 +16549,7 @@ function SettingsScreen(): React.JSX.Element {
           </section>
 
           <section id="set-diag" className="setsect" data-settings-layer="diagnostics">
-            <h3>Advanced / Diagnostics</h3>
-            <p className="sec-note">
-              CLI versions, runtime, model discovery and connection probes.
-              Everyday sign-in stays under Connected apps.
-            </p>
-            <SettingsDiagnostics
-              connected={world.connected}
+            <h3>Advanced / Diagnostics</h3cted={world.connected}
               hubLine={world.hubConn.line}
               hubPhase={world.hubConn.phase}
               claude={claudeInfo}
@@ -16648,6 +16647,10 @@ function SettingsDiagnostics({
                   <span className="diag-chip">{countOf(info!.models!.length, "model")} available</span>
                 )}
                 {info?.modelsDetail
+                  ? <div className="diag-modelsource" datadels?.length ?? 0) > 0 && (
+                  <span className="diag-chip">{countOf(info!.models!.length, "model")} available</span>
+                )}
+                {info?.modelsDetail
                   ? <div className="diag-modelsource" data-checked={info.modelsChecked ? "yes" : "no"}>
                       <span className="ms-mark" aria-hidden="true">{info.modelsChecked ? "✓" : "·"}</span>
                       <span>{info.modelsDetail}</span>
@@ -16722,10 +16725,7 @@ function DangerZone({ stored, onStoredChanged }: {
   return (
     <>
       <div className="dangerbox">
-        <div className="toggle-row">
-          <span className="tx"><b>Saved API keys</b><span>Only the fallback keys — your app logins are untouched.</span></span>
-          <span className="dangerbtns">
-            <button className="btn small danger" disabled={!stored?.claude?.hasCredential}
+        <div classNamstored?.claude?.hasCredential}
               onClick={() => void removeKey("claude")}>Remove Claude key</button>
             <button className="btn small danger" disabled={!stored?.codex?.hasCredential}
               onClick={() => void removeKey("codex")}>Remove Codex key</button>
@@ -16900,6 +16900,11 @@ function HarnessCard({
         </span>
         {authWords && <span>{authWords}</span>}
         {(info?.models?.length ?? 0) > 0 && <span>{countOf(info!.models!.length, "model")} available</span>}
+        {savedKey && <span>✓ key saved on this computer</span>}
+      </div>
+
+      {/* WHERE THAT MODEL LIST CAME FROM, in the engine's own sentence.
+          A list proved by runningountOf(info!.models!.length, "model")} available</span>}
         {savedKey && <span>✓ key saved on this computer</span>}
       </div>
 
@@ -17665,11 +17670,7 @@ function FilesScreen({ onOpenChannel, openAt, onOpened }: {
                   onClick={() => selectFile({ artifactId: item.artifactId })}>
                   <span className="file-index-glyph" aria-hidden="true">{fileKind(item.name)}</span>
                   <span className="file-index-copy">
-                    <span className="file-index-name">{item.name}</span>
-                    <span className="file-index-room">{workspaceRoomName(item, world)}</span>
-                    <span className="file-index-maker">
-                      {item.latest.agentName}
-                      {item.latest.runId && (
+                    <span className="file-    {item.latest.runId && (
                         <span className="file-index-turn" title={item.latest.runId}>
                           from a turn <code>{item.latest.runId}</code>
                         </span>
@@ -17732,6 +17733,9 @@ function FilesScreen({ onOpenChannel, openAt, onOpened }: {
                       {describeArtifactVersion(shownDetail)}
                       {selected?.version !== undefined && newest && selected.version !== newest.version
                         ? ` · exact version ${selected.version}, newest is version ${newest.version}`
+                        : " · newest"}
+                      {" · "}{fileDate(shownDetail.producedAt)} · {countOf(entry?.versionCount ?? newest?.version ?? shownDetail.version, "version")}
+              }, newest is version ${newest.version}`
                         : " · newest"}
                       {" · "}{fileDate(shownDetail.producedAt)} · {countOf(entry?.versionCount ?? newest?.version ?? shownDetail.version, "version")}
                     </p>
@@ -18111,10 +18115,7 @@ function WorkflowEditor({ draft, setDraft, titleRef, announce, setAnnounce, save
               aria-describedby={validation?.field === "workflow-step-" + step.id + "-instruction" ? "workflow-step-" + step.id + "-instruction-error" : undefined} placeholder="Describe the work in plain words." rows={3} />
               {validation?.field === "workflow-step-" + step.id + "-instruction" && <span id={"workflow-step-" + step.id + "-instruction-error"} className="field-error" role="alert">{validation.message}</span>}</label></div>
           <div className="step-actions"><button className="iconbtn" title="Move step up" aria-label={"Move step " + (index + 1) + " up"}
-            disabled={index === 0} onClick={() => moveStep(index, -1)}>↑</button>
-            <button className="iconbtn" title="Move step down" aria-label={"Move step " + (index + 1) + " down"}
-              disabled={index === draft.steps.length - 1} onClick={() => moveStep(index, 1)}>↓</button>
-            <button className="iconbtn danger" title={"Remove step " + (index + 1)} aria-label={"Remove step " + (index + 1)}
+            disabled={index === 0} onClick={() => moveStep(index, -1)}>↑on className="iconbtn danger" title={"Remove step " + (index + 1)} aria-label={"Remove step " + (index + 1)}
               onClick={() => setDraft({ ...draft, steps: draft.steps.filter(s => s.id !== step.id) })}>×</button></div>
         </li>)}
       </ol>
@@ -18472,6 +18473,10 @@ function BranchRibbon({ branch, base, agent }: {
         strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <circle cx="6.5" cy="5.5" r="2" /><circle cx="6.5" cy="18.5" r="2" /><circle cx="17.5" cy="9" r="2" />
         <path d="M6.5 7.5v9M17.5 11v.6a3 3 0 0 1-3 3h-2a3 3 0 0 0-3 3" />
+      </svg>
+      <code className="bname">{branch}</code>
+      {/* The trunk is only named when the hub told us what it is. Guessing
+          "main" would point his one protected branch at som5v9M17.5 11v.6a3 3 0 0 1-3 3h-2a3 3 0 0 0-3 3" />
       </svg>
       <code className="bname">{branch}</code>
       {/* The trunk is only named when the hub told us what it is. Guessing
@@ -19246,9 +19251,7 @@ function PollsScreen(): React.JSX.Element {
   );
 }
 
-function PollCard({ poll, summary, onSummary }: { poll: ProjectPollView; summary: string; onSummary: (v: string) => void }): React.JSX.Element {
-  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const [choice, setChoice] = useState(poll.myOptionId ?? "");
+fun useState(poll.myOptionId ?? "");
   useEffect(() => setChoice(poll.myOptionId ?? ""), [poll.myOptionId]);
   const ownerName = studioPersonName(poll.authorId, world.users, world.agents);
   const owner = ownerName ?? (poll.authorKind === "agent" ? "Agent" : "Teammate");
@@ -19346,11 +19349,12 @@ function CanvasScreen({ onOpenLink, initialProjectId }: {
               </div>
               <button className="btn" onClick={() => client.askCanvasHistory(canvas.id)}>History →</button>
             </header>
-            <form className="canvas-add" onSubmit={add} aria-label="Add canvas block"><label className="field"><span>Section type</span><select value={kind} onChange={e => setKind(e.target.value as CanvasBlockKind)}>{CANVAS_BLOCK_KINDS.map(k => <option key={k} value={k}>{canvasBlockKindLabel(k)}</option>)}</select></label><label className="field"><span>Content</span><textarea value={text} maxLength={20000} onChange={e => setText(e.target.value)} placeholder="Write the decision or requirement…" /></label><details className="canvas-advanced"><summary>Advanced</summary><div className="canvas-link"><label className="field"><span>Link type (optional)</span><select value={linkKind} onChange={e => setLinkKind(e.target.value as typeof linkKind)}><option value="">No linked record</option><option value="task">Task</option><option value="run">Run</option><option value="pullRequest">Pull request</option><option value="artifact">Artifact</option></select></label><label className="field"><span>Link id</span><input value={linkId} onChange={e => setLinkId(e.target.value)} placeholder="Only an accessible id is accepted" /></label></div></details><button className="btn primary" type="submit">Add block</button></form>
-            <div className="canvas-blocks">{canvas.blocks.map(block => block.deletedAt ? <article className="canvas-block tombstone" key={block.id}><span className="meta">Removed{block.deletedByName ? ` by ${block.deletedByName}` : ""} · kept in History{block.deletedAt ? ` · ${new Date(block.deletedAt).toLocaleString()}` : ""}</span>{block.link && <details className="canvas-advanced"><summary>Advanced</summary><p className="meta canvas-id-row">{canvasLinkKindLabel(block.link.kind)} id <code>{block.link.id}</code><CopyTechnicalId value={block.link.id} /></p></details>}</article> : <article className="canvas-block" key={block.id}><header><span className="eyebrow">{canvasBlockKindLabel(block.kind)}</span><span className="meta">{canvasActorName(block.authorId, block.authorKind, world.users, world.agents, block.authorName) || (block.authorKind === "agent" ? "Agent" : "Project member")}{block.updatedAt ? ` · ${new Date(block.updatedAt).toLocaleString()}` : ""}</span></header><textarea aria-label={`${canvasBlockKindLabel(block.kind)} block`} value={editing[block.id] ?? block.text} onChange={e => setEditing(s => ({ ...s, [block.id]: e.target.value }))} /><div className="canvas-actions"><button className="btn" disabled={editing[block.id] === undefined || editing[block.id] === block.text} onClick={() => { const draft = editing[block.id] ?? block.text; client.editCanvasBlock(canvas.id, block.id, draft, block.kind, { onSaved: () => setEditing(s => { const n = { ...s }; delete n[block.id]; return n; }) }); }}>Save edit</button><button className="btn danger" title="Remove this block; it stays in History" onClick={() => client.tombstoneCanvasBlock(canvas.id, block.id)}>Remove</button>{block.link && <button className="btn linkbtn" onClick={() => onOpenLink(block.link!, canvas.projectId)}>Open {block.link.label?.trim() || canvasLinkKindLabel(block.link.kind)}</button>}{block.linkUnavailable && <span className="meta">Linked record unavailable to you</span>}</div>{block.link && <details className="canvas-advanced"><summary>Advanced</summary><p className="meta canvas-id-row">{canvasLinkKindLabel(block.link.kind)} id <code>{block.link.id}</code><CopyTechnicalId value={block.link.id} /></p></details>}</article>)}</div>
+            <form className="canvas-add" onSubmit={add} aria-label="Add canvas block"><label className="field"><span>Section type</span><select value={kind} onChange={e => setKind(e.target.value as CanvasBlockKind)}>{CANVAS_BLOCK_KINDS.map(k => <option key={k} value={k}>{canvasBlockKindLabel(k)}</option>)}</select></label><label className="field"><span>Content</span><textarea value={text} maxLength={20000} onChange={e => setText(e.target.value)} placeholder="Write the decision or requirement…" /></label><details className="canvas-advanced"><summary>Advanced</summary><div className="canvas-link"><label className="field"><span>Link type (optional)</span><select value={linkKind} onChange={e => setLinkKind(e.target.value as typeof linkKind)}><option value="">No linked record</option><option value="task">Task</option><option value="run">Run</option><option value="pullRequest">Pull request</option><option value="artifact">Artifact</option></select></label><label className="field"><span>Link id</span><input value={linkId} onChange={e => setLinkId(e.target.value)} placeholder="Only an accessible id is accepted" /></label></div></details><button className="btn primary" type="submit">Add section</button></form>
+            <div className="canvas-blocks">{canvas.blocks.map(block => block.deletedAt ? <article className="canvas-block tombstone" key={block.id}><span className="meta">Removed{block.deletedByName ? ` by ${block.deletedByName}` : ""} · kept in History{block.deletedAt ? ` · ${new Date(block.deletedAt).toLocaleString()}` : ""}</span>{block.link && <details className="canvas-advanced"><summary>Advanced</summary><p className="meta canvas-id-row">{canvasLinkKindLabel(block.link.kind)} id <code>{block.link.id}</code><CopyTechnicalId value={block.link.id} /></p></details>}</article> : <article className="canvas-block" key={block.id}><header><span className="eyebrow">{canvasBlockKindLabel(block.kind)}</span><span className="meta">{canvasActorName(block.authorId, block.authorKind, world.users, world.agents, block.authorName) || (block.authorKind === "agent" ? "Agent" : "Project member")}{block.updatedAt ? ` · ${new Date(block.updatedAt).toLocaleString()}` : ""}</span></header><textarea aria-label={`${canvasBlockKindLabel(block.kind)} block`} value={editing[block.id] ?? block.text} onChange={e => setEditing(s => ({ ...s, [block.id]: e.target.value }))} /><div className="canvas-actions"><button className="btn" disabled={editing[block.id] === undefined || editing[block.id] === block.text} onClick={() => { const draft = editing[block.id] ?? block.text; client.editCanvasBlock(canvas.id, block.id, draft, block.kind, { onSaved: () => setEditing(s => { const n = { ...s }; delete n[block.id]; return n; }) }); }}>Save edit</button><button className="btn danger" title="Remove this block; it stays in History" onClick={() => client.tombstoneCanvasBlock(canvas.id, block.id)}>Remove</button>{block.link && <button className="btn linkbtn" onClick={() => onOpenLink(block.link!, canvas.projectId)}>Open linked {block.link.label?.trim() || canvasLinkKindLabel(block.link.kind)}</button>}{block.linkUnavailable && <span className="meta">Linked record unavailable to you</span>}</div>{block.link && <details className="canvas-advanced"><summary>Advanced</summary><p className="meta canvas-id-row">{canvasLinkKindLabel(block.link.kind)} id <code>{block.link.id}</code><CopyTechnicalId value={block.link.id} /></p></details>}</article>)}</div>
             {world.canvases.historyCanvasId === canvas.id && world.canvases.historyLoading && <div className="runwait" role="status">Loading History…</div>}
             {world.canvases.historyCanvasId === canvas.id && world.canvases.historyProblem && <p className="problem" role="alert">{world.canvases.historyProblem}</p>}
             {world.canvases.historyCanvasId === canvas.id && world.canvases.historyAsked && !world.canvases.historyLoading && !world.canvases.historyProblem && world.canvases.historyRequestId === undefined && world.canvases.history.length === 0 && <p className="meta" role="status">No History has been recorded yet.</p>}
+            {world.canvases.historyCanvasId === canvas.id && world.canvases.history.length > 0 && <details className="canvas-history"><summary>History<history.length === 0 && <p className="meta" role="status">No History has been recorded yet.</p>}
             {world.canvases.historyCanvasId === canvas.id && world.canvases.history.length > 0 && <details className="canvas-history"><summary>History</summary>{world.canvases.history.map(r => <div key={r.revision} className="meta">v{r.revision} · {canvasHistorySummary(r.summary)}{r.changedByName ? ` · ${r.changedByName}` : ""} · {new Date(r.changedAt).toLocaleString()}</div>)}<details className="canvas-advanced"><summary>Advanced</summary><p className="meta">Cloud9 keeps the last {CANVAS_LIMITS.history} versions.</p></details></details>}
           </section>}
         </div>}
@@ -19674,12 +19678,7 @@ function SpendingRow({ row }: {
               change to an agent is made — on the agent's own page — or by
               accepting the card an agent raises. Putting a second "apply"
               button here would be a second path to the same write, and this app
-              has spent a great deal of effort making sure there is only one of
-              anything that changes something. */}
-          {f.change && (
-            <p className="meta">
-              You can change this on {f.agentName}&rsquo;s own page. Your agents can also
-              offer it to you as a card — they can never change it themselves.
+              has spent a great deal of effort making sure there is a card — they can never change it themselves.
             </p>
           )}
         </div>
@@ -19690,6 +19689,9 @@ function SpendingRow({ row }: {
 
 function HooksScreen(): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [name, setName] = useState("");
+  const [event, setEvent] = useState<StoredHook["event"]>("turn.finished");
+  const [action, setAction] = useState<StoredHook["action"]["do"]>("say"eSyncExternalStore(client.subscribe, client.getSnapshot);
   const [name, setName] = useState("");
   const [event, setEvent] = useState<StoredHook["event"]>("turn.finished");
   const [action, setAction] = useState<StoredHook["action"]["do"]>("say");
@@ -19931,7 +19933,7 @@ function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine; where?:
        board would never redraw to show it. The row would sit on "Ready" for
        ever with the record already in memory. */
   }), [mine, world.presence, world.agentStatus, world.tasks, world.runLists,
-    world.channels, world.runs, liveApprovals, liveWork, askOf]);
+    world.channels, world.runs, world.messages, world.approvals, liveApprovals, liveWork, askOf]);
 }
 
 /**
@@ -20188,9 +20190,7 @@ function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => vo
       </header>
       {world.socialProblem ? <p className="state error" role="alert">{world.socialProblem}</p> : null}
       {Object.keys(world.socialPending).length ? <p className="state loading" role="status" aria-live="polite">Saving your project update…</p> : null}
-      {!world.socialProjects.asked ? <div className="state loading" role="status">Loading projects…</div>
-        : projects.length === 0 ? <div className="state empty">No project is connected yet. Connect one in Projects to start an internal feed.</div>
-        : !feed ? <div className="state loading" role="status">Loading feed…</div>
+      {!world.soc : !feed ? <div className="state loading" role="status">Loading feed…</div>
         : feed.problem ? <div className="state error" role="alert">{feed.problem}</div>
         : <>
           <div className="social-feed" role="feed" aria-live="polite" aria-busy={feed.loading ? "true" : "false"}>
@@ -20210,6 +20210,8 @@ function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => vo
             ))}
           </div>
           {feed.hasMore ? <button className="social-more" onClick={() => client.askSocialFeed(selectedId, true)} disabled={feed.loading}>Load older posts</button> : null}
+          <form className="social-composer" onSubmit={e => { e.preventDefault(); submit(); }} aria-label={replyTo ? "Write a comment" : "Write a project post"}>
+            <divdId, true)} disabled={feed.loading}>Load older posts</button> : null}
           <form className="social-composer" onSubmit={e => { e.preventDefault(); submit(); }} aria-label={replyTo ? "Write a comment" : "Write a project post"}>
             <div className="social-composer-heading">{replyTo ? <><span>Commenting on a post</span><button type="button" onClick={() => setReplyTo(undefined)}>Cancel comment</button></> : <span>Share with this project</span>}</div>
             <label htmlFor="social-composer-text">{replyTo ? "Comment" : "Post"}</label><textarea id="social-composer-text" value={text} onChange={e => setText(e.target.value)} placeholder={replyTo ? "Add a useful follow-up…" : "What should the team know?"} rows={4} maxLength={SOCIAL_LIMITS.text} />
@@ -20756,6 +20758,94 @@ function ActivityScreen({ openAt, onOpened }: {
           </React.Fragment>
         ))}
       </div>
+    </div>
+  );
+}
+
+
+const ACTIVITY_STEP_PREVIEW = 140;
+const ACTIVITY_STEPS_SHOWN = 12;
+
+/** One trail row: who, what, where, and what happened. Commands stay closed. */
+function ActivityTrailRow({ row, world }: {
+  row: ActivityRecord; world: World;
+}): React.JSX.Element {
+  const linked = linkActivityRow(row, {
+    channels: world.channels,
+    tasks: world.tasks,
+    approvals: world.approvals,
+    runs: world.runs,
+    messages: world.messages,
+  });
+  const run = linked.run ?? (row.refId ? world.runs[row.refId] : undefined);
+  const facts = run && !linked.run ? { ...linked, run } : linked;
+  const gone = !!(row.refId && world.runsGone[row.refId]);
+  const chips = activityOutcomeChips(facts);
+  const inspectable = activityInspectableSteps(run?.steps);
+  const needsFetch = row.kind === "run_recorded" && !!row.refId && !run && !gone;
+  const canExpand = activityHasDetails(facts, row.kind) || needsFetch
+    || !!(run?.pullRequest || run?.branch || run?.commit);
+  const shownSteps = inspectable.slice(0, ACTIVITY_STEPS_SHOWN).map(step => ({
+    ...step,
+    detail: step.detail ? quoteOf(step.detail, ACTIVITY_STEP_PREVIEW) : undefined,
+  }));
+  const whoClass = row.actorKind === "agent" ? "by-agent"
+    : row.actorKind === "human" ? "by-human" : "by-system";
+
+  return (
+    <div className={`actrow ${whoClass}`} data-kind={row.kind} data-actor={row.actorKind}>
+      <span className="actwho">
+        {row.actorKind === "agent"
+          ? <AgentFace name={row.actorName} size={28} />
+          : <PersonFace name={row.actorName} size={28} />}
+      </span>
+      <div className="actdetail">
+        <b>{row.actorName}</b>
+        <span className="actwhat">
+          <span className="actkind">{activityKindWords(row.kind)}</span>
+          {row.detail}
+        </span>
+        {(facts.channelName || chips.length > 0) && (
+          <span className="actmeta">
+            {facts.channelName && <span className="actwhere">{facts.channelName}</span>}
+            {chips.map(chip => <span key={chip.key} className="acthappened">{chip.label}</span>)}
+          </span>
+        )}
+        {canExpand && (
+          <details className="act-disclose" onToggle={event => {
+            if ((event.currentTarget as HTMLDetailsElement).open && row.kind === "run_recorded" && row.refId) {
+              client.askRun(row.refId);
+            }
+          }}>
+            <summary>Commands, logs, and files</summary>
+            {needsFetch && <p className="act-wait">Fetching what it did…</p>}
+            {gone && <p className="act-wait">That record isn't there any more.</p>}
+            {run?.files && run.files.length > 0 && (
+              <p className="act-fact" data-act-files={run.files.length}>Files changed: {run.files.join(", ")}</p>
+            )}
+            {run?.tests && run.tests.length > 0 && (
+              <ul className="act-tests">
+                {run.tests.map((test, i) => (
+                  <li key={`${test.command}-${i}`}>
+                    {test.command}{test.ok === true ? " · passed" : test.ok === false ? " · failed" : " · outcome not reported"}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {run?.pullRequest && (
+              <p className="act-fact">{isLink(run.pullRequest)
+                ? <a href={run.pullRequest} target="_blank" rel="noreferrer noopener">{run.pullRequest}</a>
+                : run.pullRequest}</p>
+            )}
+            {run?.branch && <p className="act-fact">Branch {run.branch}</p>}
+            {run?.commit && <p className="act-fact">Commit {run.commit}</p>}
+            {shownSteps.length > 0 && (
+              <RunSteps steps={shownSteps} truncated={!!run?.truncated || inspectable.length > ACTIVITY_STEPS_SHOWN} />
+            )}
+          </details>
+        )}
+      </div>
+      <span className="actwhen">{clock(row.ts)}</span>
     </div>
   );
 }

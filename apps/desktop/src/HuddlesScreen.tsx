@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ID, HuddleNoteKind, HuddleLink, huddleStateWords, huddleNoteKindWords, huddleLinkWords } from "@cloud9/shared";
+import { ID, HuddleNoteKind, HuddleLink } from "@cloud9/shared";
 import { client } from "./store.js";
+import { huddleLinkWords, huddleNoteKindWords, huddleStateWords } from "./huddle-copy.js";
 import "./huddles.css";
 
 export function HuddlesScreen({ onLink }: { onLink: (link: HuddleLink, projectId?: ID) => void }): React.JSX.Element {

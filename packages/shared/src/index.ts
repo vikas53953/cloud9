@@ -1763,7 +1763,6 @@ export interface HuddleReadEntry { sessionId: ID; lastReadAt: number; unread: nu
 export const HUDDLE_LIMITS = { title: 160, agenda: 4000, note: 12000, links: 20 } as const;
 export function validateHuddleText(value: unknown, what: "title"|"agenda"|"note"): string|null { if(typeof value!=="string"||!value.trim())return `${what} cannot be empty`; if(value.length>HUDDLE_LIMITS[what])return `${what} is too long`; return null; }
 export function validateHuddleLinks(value: unknown): string|null { if(!Array.isArray(value)||value.length>HUDDLE_LIMITS.links)return "too many huddle links"; for(const l of value as HuddleLink[]){if(!l||!["task","run","artifact","projectItem"].includes(l.kind))return "invalid huddle link"; if(l.label!==undefined&&(typeof l.label!=="string"||!l.label.trim()||l.label.length>240))return "invalid huddle link label"; if((l.kind==="task"||l.kind==="run")&&!l.id)return "invalid huddle link id"; if(l.kind==="artifact"&&!((l.artifactId??l.id)))return "invalid artifact link id"; if(l.kind==="projectItem"&&(!["pull","issue"].includes(l.projectItemKind??"")||!Number.isSafeInteger(l.projectItemNumber)||l.projectItemNumber! <= 0))return "invalid project item link";} return null; }
-export { huddleStateWords, huddleNoteKindWords, huddleLinkWords } from "./huddle-copy.js";
 // ---------- internal team social feed ----------
 //
 // A project feed is deliberately separate from channel messages. It is a
