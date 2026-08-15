@@ -4769,10 +4769,11 @@ function ChatScreen({
   /* Files keep their column while a thread is open, so the room+thread
      arithmetic has to leave that column out of the shared strip. */
   const workspaceCol = showWorkspace ? 320 : 0;
-  const tooNarrowToSplit = space > 0 && cannotSplit(Math.max(0, space - workspaceCol));
+  const threadSpace = Math.max(0, space - workspaceCol);
+  const tooNarrowToSplit = threadSpace > 0 && cannotSplit(threadSpace);
   const takeover = !!threadRoot && (tooNarrowToSplit || p.threadLayout === "focus");
   const previousTakeover = useRef(takeover);
-  const drawnWidth = widthToDraw(p.threadWidth, space);
+  const drawnWidth = widthToDraw(p.threadWidth, threadSpace);
   const chooseWidth = useCallback((px: number) => { prefs.set({ threadWidth: px }); }, []);
   const resetWidth = useCallback(() => { prefs.set({ threadWidth: THREAD_DEFAULT }); }, []);
   const requestThreadFocusRestore = useCallback(() => {
@@ -4965,7 +4966,7 @@ ${reorderWords}`}
     <div ref={gridRef}
       className={`chatgrid${studioCollapsed ? " studio-collapsed" : ""}${workspaceLayout === "focus" ? " focus-workspace" : ""}${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}${
         threadRoot ? " withthread" : ""}${detailsOpen ? " withdetails" : ""}${takeover ? " takeover" : ""}${
-        showWorkspace && !workspaceYields ? " withworkspace" : ""}`}
+        showWorkspace ? " withworkspace" : ""}`}
       style={{ "--thread-w": `${drawnWidth}px` } as React.CSSProperties}>
       <aside className="sidebar" aria-label="Studio floor">
         <div className="sidebar-head">
@@ -6379,10 +6380,12 @@ function WorkspaceLayoutButtons({ layout, onChange, filesRef }: {
       <button ref={filesRef} type="button"
         className="header-layout-btn"
         aria-pressed={layout === "chat-files"}
+        aria-label="Show files beside this conversation"
         onClick={() => pick("chat-files")}>Files</button>
       <button type="button"
         className="header-layout-btn"
         aria-pressed={layout === "chat-diff"}
+        aria-label="Show diff beside this conversation"
         onClick={() => pick("chat-diff")}>Diff</button>
     </div>
   );
@@ -10511,6 +10514,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
      through the one hook above. Registered only while it is open. */
   useEscapeCloses(() => setEmojiOpen(false), emojiOpen);
   useClickAwayCloses(emojiHoldRef, () => setEmojiOpen(false), emojiOpen);
+  /* Aa formatting is a popover too: Escape must close it via the same stack. */
+  useEscapeCloses(() => setFmtOpen(false), fmtOpen);
 
   /* WHICH REPOSITORIES ARE CONNECTED, asked the moment the menu opens — the
      same way the Projects screen asks, and for the same reason: a list cached
@@ -11015,7 +11020,8 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               onClick={() => insert("@")}>
               @
             </button>
-            <button className="mini attach" title={`Attach a file — or paste one, or drop one on the box (up to ${ATTACHMENT_LIMITS.perMessage}, ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB each)`}
+            <button className="mini attach" aria-label="Attach a file"
+              title={`Attach a file — or paste one, or drop one on the box (up to ${ATTACHMENT_LIMITS.perMessage}, ${Math.floor(ATTACHMENT_LIMITS.bytes / 1_000_000)} MB each)`}
               onClick={() => fileRef.current?.click()}>📎</button>
             {/* ONE ROW, THE BUZZ SHAPE (F1): attach, emoji, formatting, send.
                 "Delegate as a job" is not lost — it is the `!bg` row in the ＋
@@ -19223,7 +19229,7 @@ function PollsScreen(): React.JSX.Element {
   };
   return (
     <div className="polls">
-      <header className="topbar"><h2>Project polls</h2><span className="sub">Decisions for signed-in project members</span></header>
+      <header className="topbar"><h2>Decisions</h2><span className="sub">Question, alternatives, and a recorded choice for signed-in project members</span></header>
       <div className="polls-body">
         <label className="field"><span>Project</span><select value={project?.id ?? ""} onChange={e => { setProjectId(e.target.value); if (e.target.value) client.askPolls(e.target.value); }} aria-label="Poll project">
           <option value="">Choose a project</option>{world.projects.list.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -19251,7 +19257,9 @@ function PollsScreen(): React.JSX.Element {
   );
 }
 
-fun useState(poll.myOptionId ?? "");
+function PollCard({ poll, summary, onSummary }: { poll: ProjectPollView; summary: string; onSummary: (v: string) => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
+  const [choice, setChoice] = useState(poll.myOptionId ?? "");
   useEffect(() => setChoice(poll.myOptionId ?? ""), [poll.myOptionId]);
   const ownerName = studioPersonName(poll.authorId, world.users, world.agents);
   const owner = ownerName ?? (poll.authorKind === "agent" ? "Agent" : "Teammate");
@@ -19297,7 +19305,6 @@ fun useState(poll.myOptionId ?? "");
     </details>
   </article>;
 }
-
 
 function CanvasScreen({ onOpenLink, initialProjectId }: {
   onOpenLink: (link: CanvasLink, projectId: ID) => void; initialProjectId?: ID;
@@ -19933,7 +19940,7 @@ function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine; where?:
        board would never redraw to show it. The row would sit on "Ready" for
        ever with the record already in memory. */
   }), [mine, world.presence, world.agentStatus, world.tasks, world.runLists,
-    world.channels, world.runs, world.messages, world.approvals, liveApprovals, liveWork, askOf]);
+    world.channels, world.runs, liveApprovals, liveWork, askOf]);
 }
 
 /**
@@ -20674,6 +20681,13 @@ function ActivityScreen({ openAt, onOpened }: {
     onOpened?.();
   }, [openAt?.at, openAt?.runId, onOpened]);
 
+  useEffect(() => {
+    const newest = [...world.activity].reverse()
+      .filter(row => row.kind === "run_recorded" && row.refId)
+      .slice(0, RUN_HISTORY_LIMIT);
+    for (const row of newest) if (row.refId) client.askRun(row.refId);
+  }, [world.activity]);
+
   const focusRun = focusRunId ? world.runs[focusRunId] : undefined;
   const focusGone = focusRunId ? !!world.runsGone[focusRunId] : false;
 
@@ -20762,7 +20776,6 @@ function ActivityScreen({ openAt, onOpened }: {
   );
 }
 
-
 const ACTIVITY_STEP_PREVIEW = 140;
 const ACTIVITY_STEPS_SHOWN = 12;
 
@@ -20793,7 +20806,8 @@ function ActivityTrailRow({ row, world }: {
     : row.actorKind === "human" ? "by-human" : "by-system";
 
   return (
-    <div className={`actrow ${whoClass}`} data-kind={row.kind} data-actor={row.actorKind}>
+    <div className={`actrow ${whoClass}`} data-kind={row.kind} data-actor={row.actorKind}
+      data-outcome={run?.outcome}>
       <span className="actwho">
         {row.actorKind === "agent"
           ? <AgentFace name={row.actorName} size={28} />
@@ -20801,46 +20815,70 @@ function ActivityTrailRow({ row, world }: {
       </span>
       <div className="actdetail">
         <b>{row.actorName}</b>
-        <span className="actwhat">
-          <span className="actkind">{activityKindWords(row.kind)}</span>
-          {row.detail}
-        </span>
-        {(facts.channelName || chips.length > 0) && (
-          <span className="actmeta">
-            {facts.channelName && <span className="actwhere">{facts.channelName}</span>}
-            {chips.map(chip => <span key={chip.key} className="acthappened">{chip.label}</span>)}
+        <span className="act-kind">{activityKindWords(row.kind)}</span>
+        <span className="act-what">{row.detail}</span>
+        {facts.channelName && <span className="act-where">{facts.channelName}</span>}
+        {chips.length > 0 && (
+          <span className="act-facts">
+            {chips.map(chip => (
+              <span key={chip.key} className={`act-fact${chip.key === "outcome" ? " is-outcome" : ""}`}>{chip.label}</span>
+            ))}
           </span>
         )}
         {canExpand && (
-          <details className="act-disclose" onToggle={event => {
+          <details className="act-inspect" onToggle={event => {
             if ((event.currentTarget as HTMLDetailsElement).open && row.kind === "run_recorded" && row.refId) {
               client.askRun(row.refId);
             }
           }}>
             <summary>Commands, logs, and files</summary>
-            {needsFetch && <p className="act-wait">Fetching what it did…</p>}
-            {gone && <p className="act-wait">That record isn't there any more.</p>}
+            {needsFetch && <p className="act-inspect-empty">Fetching what it did…</p>}
+            {gone && <p className="act-inspect-empty">That record isn't there any more.</p>}
             {run?.files && run.files.length > 0 && (
-              <p className="act-fact" data-act-files={run.files.length}>Files changed: {run.files.join(", ")}</p>
+              <div className="act-inspect-block">
+                <span className="act-kind">Files</span>
+                <ul className="act-file-list" data-act-files={run.files.length}>
+                  {run.files.map(file => <li key={file}>{file}</li>)}
+                </ul>
+              </div>
             )}
             {run?.tests && run.tests.length > 0 && (
-              <ul className="act-tests">
-                {run.tests.map((test, i) => (
-                  <li key={`${test.command}-${i}`}>
-                    {test.command}{test.ok === true ? " · passed" : test.ok === false ? " · failed" : " · outcome not reported"}
+              <div className="act-inspect-block">
+                <span className="act-kind">Tests</span>
+                <ul className="act-file-list">
+                  {run.tests.map((test, i) => (
+                    <li key={`${test.command}-${i}`}>
+                      {test.command}{test.ok === true ? " · passed" : test.ok === false ? " · failed" : " · outcome not reported"}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {(run?.pullRequest || run?.branch || run?.commit) && (
+              <div className="act-inspect-block">
+                {run.pullRequest && <p className="act-clip-inline">{isLink(run.pullRequest)
+                  ? <a href={run.pullRequest} target="_blank" rel="noreferrer noopener">{run.pullRequest}</a>
+                  : run.pullRequest}</p>}
+                {run.branch && <p className="act-clip-inline">Branch {run.branch}</p>}
+                {run.commit && <p className="act-clip-inline">Commit {run.commit}</p>}
+              </div>
+            )}
+            {shownSteps.length > 0 && (
+              <ol className="act-step-list">
+                {shownSteps.map(step => (
+                  <li key={step.seq} className={step.ok === false ? "bad" : undefined}>
+                    <span>
+                      <span className="act-step-label">{step.label}</span>
+                      {step.detail && <span className="act-clip-inline">{step.detail}</span>}
+                    </span>
+                    {step.ok === true && <span className="act-step-mark">✓</span>}
+                    {step.ok === false && <span className="act-step-mark no">✕</span>}
                   </li>
                 ))}
-              </ul>
+              </ol>
             )}
-            {run?.pullRequest && (
-              <p className="act-fact">{isLink(run.pullRequest)
-                ? <a href={run.pullRequest} target="_blank" rel="noreferrer noopener">{run.pullRequest}</a>
-                : run.pullRequest}</p>
-            )}
-            {run?.branch && <p className="act-fact">Branch {run.branch}</p>}
-            {run?.commit && <p className="act-fact">Commit {run.commit}</p>}
-            {shownSteps.length > 0 && (
-              <RunSteps steps={shownSteps} truncated={!!run?.truncated || inspectable.length > ACTIVITY_STEPS_SHOWN} />
+            {(!!run?.truncated || inspectable.length > ACTIVITY_STEPS_SHOWN) && (
+              <p className="act-inspect-empty">Some steps were left out to keep this small.</p>
             )}
           </details>
         )}
