@@ -34,6 +34,28 @@ test("poll form has no impossible desktop agent-author selector and explains clo
   const screen = app.slice(start, end);
   assert.equal(screen.includes("authorAgentId"), false);
   assert.match(screen, /role="status">Loading polls…/);
+  assert.match(screen, /Alternative \{i \+ 1\}/);
   assert.match(app, /poll\.decision\.reason/);
   assert.match(app, /poll\.decision\.closedAt/);
+});
+
+test("poll cards speak decision language from stored fields only", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "src", "App.tsx"), "utf8");
+  const start = app.indexOf("function PollCard");
+  const end = app.indexOf("function CanvasScreen", start);
+  assert.ok(start >= 0 && end > start);
+  const card = app.slice(start, end);
+  assert.match(card, /<h3>\{poll\.question\}<\/h3>/);
+  assert.match(card, /<legend>Alternatives<\/legend>/);
+  assert.match(card, /Participants ·/);
+  assert.match(card, /Owner ·/);
+  assert.match(card, /Chosen option ·/);
+  assert.match(card, /poll\.createdAt/);
+  assert.match(card, /studio-advanced/);
+  assert.match(card, /pollChosenLabel/);
+  assert.doesNotMatch(card, /\{poll\.status\}/);
+  assert.doesNotMatch(card, /participantNames|fakeVoters|invented/);
+  const helpers = app.slice(app.indexOf("function pollChosenLabel"), app.indexOf("function CopyTechnicalId"));
+  assert.match(helpers, /poll\.myOptionId/);
+  assert.doesNotMatch(helpers, /Math\.max|leading|winner/);
 });

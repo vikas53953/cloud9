@@ -85,3 +85,25 @@ test("a room says what each agent in it can reach, and offers the door only wher
   assert.doesNotMatch(app, /<ChannelRail\b/,
     "ChannelRail stays out of the tree; RoomPanel is where this lives now");
 });
+
+test("the crew card projects presenceSays once and does not invent a second status system", () => {
+  const app = read("App.tsx");
+  const crew = bodyOf(app, "CrewScreen");
+
+  assert.match(crew, /presenceSays\(world, a\.id, pres\)/,
+    "the crew card must read the same presence owner every other surface reads");
+  assert.match(crew, /\{says\.word\}/,
+    "the primary flag uses presenceSays.word rather than a hand-typed Ready/Failed");
+  assert.doesNotMatch(crew, /\$\{says\.word\} — \$\{says\.reason\}/,
+    "the status word must not be repeated on a second line");
+  assert.doesNotMatch(crew, /Needs approval/,
+    "Needs approval is not a second vocabulary; waitingOn already owns that state");
+  assert.match(crew, /Waiting on you/,
+    "an unanswered go-ahead still uses the existing Waiting on you phrase");
+  assert.match(crew, /cast-runtime/,
+    "provider/model stay available as a secondary runtime line");
+  assert.match(crew, /className="cast crewcast"/,
+    "crew cards use the compact face-beside-facts layout");
+  assert.match(crew, /Waiting on your word before it carries on/,
+    "an unanswered go-ahead still says the existing why, not a new Needs approval line");
+});

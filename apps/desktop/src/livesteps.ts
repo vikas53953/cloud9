@@ -273,6 +273,8 @@ export interface LiveWork {
   doing: string;
   /** the message this work is answering, so a caller can name the ask */
   messageId: ID;
+  /** the room this turn is in — already on the live row, not guessed */
+  channelId: ID;
 }
 
 const NO_WORK: Readonly<Record<ID, LiveWork>> = Object.freeze({});
@@ -291,7 +293,7 @@ function buildWork(): Readonly<Record<ID, LiveWork>> {
       if (held && held.stamp >= stamp) continue;
       const newest = row.steps[row.steps.length - 1];
       if (!newest) continue;
-      best.set(row.agentId, { stamp, work: { doing: newest.label, messageId } });
+      best.set(row.agentId, { stamp, work: { doing: newest.label, messageId, channelId: row.channelId } });
     }
   }
   if (best.size === 0) return NO_WORK;

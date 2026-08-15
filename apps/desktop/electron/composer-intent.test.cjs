@@ -79,3 +79,21 @@ test("composer keeps one send path while exposing contextual accessible wording"
   assert.match(app, /data-waiting=\{busy \? "file"/);
   assert.match(app, /disabled=\{busy \|\| \(!text\.trim\(\) && ready === 0\)\}/);
 });
+
+test("empty composer stays compact and still auto-grows with content", () => {
+  const fs = require("node:fs");
+  const app = fs.readFileSync(path.join(__dirname, "..", "src", "App.tsx"), "utf8");
+  const css = fs.readFileSync(path.join(__dirname, "..", "src", "styles.css"), "utf8");
+  assert.match(app, /<textarea\s+ref=\{taRef\}\s+rows=\{1\}/);
+  assert.match(app, /ta\.style\.height = `\$\{Math\.min\(ta\.scrollHeight, inThreadPanel \? 180 : 240\)\}px`/);
+  assert.match(app, /data-writing=\{armed \? "yes" : "no"\}/);
+  assert.match(app, /<span aria-hidden="true">↑<\/span><span className="sr-only">/);
+  const heights = [];
+  const re = /(?:^|[^\w-])\.composer(?:\.threadcomposer)? textarea\{[^}]*min-height:(\d+)px/g;
+  for (const match of css.matchAll(re)) heights.push(Number(match[1]));
+  assert.ok(heights.length >= 2, `expected composer textarea min-heights, got ${JSON.stringify(heights)}`);
+  for (const height of heights) {
+    assert.ok(height >= 36 && height <= 44,
+      `empty composer min-height ${height}px is outside 36–44px (${heights.join(",")})`);
+  }
+});

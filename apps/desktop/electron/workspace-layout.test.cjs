@@ -107,8 +107,9 @@ test("a saved layout is not overwritten while the room list has not answered yet
   assert.match(app, /if \(workspaceAccessRefused && workspaceLayout !== "focus"\) closeWorkspace\(\)/);
   assert.doesNotMatch(app, /if \(!workspaceAccess && workspaceLayout !== "focus"\)/);
   /* Nothing is shown while the answer is missing: drawing still fails closed on
-     `workspaceAccess` itself, and the panel keeps its own membership gate. */
-  assert.match(app, /active && workspaceAccess && !threadRoot && !detailsOpen && !takeover && workspaceLayout !== "focus"/);
+     `workspaceAccess` itself (`showWorkspace`), and the panel keeps its own
+     membership gate. A thread or details panel must not be part of that gate. */
+  assert.match(app, /const showWorkspace = !!active && workspaceAccess && workspaceLayout !== "focus"/);
   assert.match(app, /hasAccess = !!world\.meId && !!currentChannel && currentChannel\.memberIds\.includes\(world\.meId\)/);
 });
 

@@ -12,15 +12,20 @@ import {
   channelMemoryModeWords, channelMemoryPolicyWords, DEMO_MODE_BANNER, downloadContentType,
   GitHubAccountInfo, HarnessInfo, ID, isInlineViewable, isSafeFileName, mayAdministerChannel, mayDriveAgent,
   MENU_ACTIONS, MenuAction, Message, Project, ProjectItem, ProjectPollView, PublicUpdateDraft, ProjectItemKind, ProjectItemState,
-  REMOTE_ACTIONS, isGitHubWriteKind, RunListEntry, RunRecord, RunStep, RunStepKind,
+  REMOTE_ACTIONS, isGitHubWriteKind, ActivityRecord, RunListEntry, RunRecord, RunStep, RunStepKind,
   EverywhereHit, SearchKind,
   SearchHit, ServerFrame, SKILL_LIMITS, SOCIAL_LIMITS, SocialLink, SocialPost, summarizeRun, testFactsFromSteps, Task, User, humanDuration, humanMoney,
   MessageStatus,
-  HuddleSession, HuddleNote, HuddleNoteKind, HuddleLink,
+  HuddleLink,
   StoredHook, HOOK_EVENTS, HOOK_ACTIONS,
   NotificationInboxEntry,
-   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringCanvasView, CanvasBlockKind, CanvasLink,
+   EngineeringPulseUpdate, EngineeringPulseDraft, EngineeringCanvasView, CanvasBlock, CanvasBlockKind, CanvasLink, CanvasLinkKind, CANVAS_LIMITS,
   Workflow, WorkflowRun,
+  latestWorkflowRun, workflowAgentLine, workflowAgentNames, workflowApprovalWords,
+  workflowApprovalsForRun, workflowCurrentStep, workflowCurrentStepWords,
+  workflowFailureWords, workflowLatestOutput, workflowPurposeWords, workflowReadyWords,
+  workflowRoomWords, workflowRowNowWords, workflowStatusWords, workflowStepOutput,
+  workflowTriggerWords,
   validateMessageText, validateName,
   /* spending limits, "show me the plan first", stand-in models (2026-08-05) —
      the words and the rules come from shared, so the screen and the engine
@@ -78,6 +83,8 @@ import {
   cannotSplit, dividerSpokenWords, dividerWords, widestThread, widthHeChose, widthToDraw,
   ForumTopic, ForumReply, ForumStatus, ForumLink, ClientFrame, RunComparison,
   RichLinkPreview, findRichLinkRefs, richLinkToken,
+  activityHasDetails, activityInspectableSteps, activityKindWords,
+  activityOutcomeChips, activityRoomName, linkActivityRow,
   taskMatchesCommandCenterFilter, type CommandCenterFilter,
   DEFAULT_CHAT_PERSONALIZATION, channelNotificationModeFor, channelNotificationModeWords,
   chatAvatarScale, chatAvatarSizePx,
@@ -88,6 +95,7 @@ import {
 } from "@cloud9/shared";
 import { client, RELAY_URL, UNREAD_CEILING, unreadLabel, uploadPreviewKind, useWorld, World, type HandoffRequestState } from "./store.js";
 import { Markdown } from "./markdown.js";
+import { HuddlesScreen } from "./HuddlesScreen.js";
 import {
   microphoneLevel, voiceDuration, voiceRecordingAllowed, voiceRecordingFailure,
   voiceRecordingOwnsResources, voiceRecordingRequestStillCurrent, voiceRecordingSessionToken,
@@ -713,6 +721,24 @@ function useClickAwayCloses(
     window.addEventListener("pointerdown", onDown, true);
     return () => window.removeEventListener("pointerdown", onDown, true);
   }, [enabled, ref]);
+}
+
+/** Arrow keys walk a `role="menu"`. Home / End jump the ends. */
+function handleMenuKeys(e: React.KeyboardEvent<HTMLElement>): void {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+  const items = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')];
+  if (items.length === 0) return;
+  e.preventDefault();
+  const at = items.indexOf(e.target as HTMLButtonElement);
+  const next = e.key === "Home" ? 0
+    : e.key === "End" ? items.length - 1
+    : e.key === "ArrowDown" ? (at + 1 + items.length) % items.length
+    : (at < 0 ? items.length - 1 : (at - 1 + items.length) % items.length);
+  items[next]?.focus();
+}
+
+function focusFirstMenuItem(root: HTMLElement | null): void {
+  root?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus();
 }
 
 /* ============ MAY THIS SCREEN BE LEFT WHILE IT HOLDS UNSAVED WORK? ========
@@ -4712,8 +4738,13 @@ function ChatScreen({
      the durable choice is only overwritten when a room is actually open and
      this person is demonstrably not in it. While the answer is still missing
      the panel simply does not draw (it is gated on `workspaceAccess` below),
-     which fails closed on screen without touching what he chose. */
+     which fails closed on screen without touching what he chose.
+     A thread or room-details panel is NOT a reason to hide it, and not a
+     reason to rewrite the preference. Those surfaces stack beside the
+     workspace; only the picker, the panel's own ×, Escape-in-panel, or a
+     known access loss may put him back on Focus. */
   const workspaceAccessRefused = channelListLoaded && !!active && !!world.me && !workspaceAccess;
+  const showWorkspace = !!active && workspaceAccess && workspaceLayout !== "focus";
   const closeWorkspace = useCallback(() => { prefs.set({ workspaceLayout: "focus" }); }, []);
   useEffect(() => {
     if (workspaceAccessRefused && workspaceLayout !== "focus") closeWorkspace();
@@ -4735,7 +4766,10 @@ function ChatScreen({
   const threadOpener = useRef<HTMLElement | null>(null);
   const restoreFocusPending = useRef(false);
   const space = useSpaceToShare(gridRef, `${workspaceLayout}:${studioCollapsed}`);
-  const tooNarrowToSplit = space > 0 && cannotSplit(space);
+  /* Files keep their column while a thread is open, so the room+thread
+     arithmetic has to leave that column out of the shared strip. */
+  const workspaceCol = showWorkspace ? 320 : 0;
+  const tooNarrowToSplit = space > 0 && cannotSplit(Math.max(0, space - workspaceCol));
   const takeover = !!threadRoot && (tooNarrowToSplit || p.threadLayout === "focus");
   const previousTakeover = useRef(takeover);
   const drawnWidth = widthToDraw(p.threadWidth, space);
@@ -4931,26 +4965,17 @@ ${reorderWords}`}
     <div ref={gridRef}
       className={`chatgrid${studioCollapsed ? " studio-collapsed" : ""}${workspaceLayout === "focus" ? " focus-workspace" : ""}${isDm && !threadRoot && !detailsOpen ? " no-aside" : ""}${
         threadRoot ? " withthread" : ""}${detailsOpen ? " withdetails" : ""}${takeover ? " takeover" : ""}${
-        active && !threadRoot && !detailsOpen && !takeover && workspaceLayout !== "focus" ? " withworkspace" : ""}`}
+        showWorkspace && !workspaceYields ? " withworkspace" : ""}`}
       style={{ "--thread-w": `${drawnWidth}px` } as React.CSSProperties}>
       <aside className="sidebar" aria-label="Studio floor">
         <div className="sidebar-head">
-          <button className="workspace-name" aria-label={`${WORKSPACE_NAME} — workspace options`}
-            title={`${WORKSPACE_NAME} — workspace options`} onClick={onBrowseRooms}>{WORKSPACE_NAME} <span aria-hidden="true">⌄</span></button>
-          {/* The relay does not report who is at their desk, so this counts who
-              is IN this Cloud9 — never "online", which we cannot know. */}
-          <span className="chip workspace-members"
-            title={`${countOf(agents.length, "agent")} and ` +
-              `${countOf(people.length, "person", "people")} in this Cloud9`}>
-            {people.length + agents.length} here
-          </span>
-          {/* THE CONTROLS MOVE AS ONE BLOCK. Loose in the row they wrapped one
-              at a time and left a ragged half-row; held together they either
-              sit beside the name or step down under it, whole. */}
-          <div className="sidebar-head-actions">
-            <button className="iconbtn workspace-menu" aria-label="Workspace options" title="Workspace options" onClick={onBrowseRooms}>⌄</button>
-            <button className="iconbtn workspace-agent" aria-label="Create an agent" title="Create an agent" onClick={onNewAgent}>✦</button>
-          </div>
+          {/* ONE control: the floor's name. Both leftover V glyphs called the
+              same browse-rooms action the name already does; the extra + / ✦
+              duplicated Channels and Direct. The name keeps the row. */}
+          <button className="workspace-name" aria-label={`${WORKSPACE_NAME} — browse rooms`}
+            title={`${WORKSPACE_NAME} — browse rooms`} onClick={onBrowseRooms}>
+            {WORKSPACE_NAME} <span aria-hidden="true">▾</span>
+          </button>
         </div>
         <div className="side-scroll">
           <label className="workspace-search"><IconSearch /><input value={workspaceQuery} onChange={e => setWorkspaceQuery(e.target.value)} placeholder="Search this workspace" aria-label="Search channels and people" /></label>
@@ -5129,7 +5154,7 @@ Open your chat with ${a.name}`}>
         </div>
       )}
 
-      {active && workspaceAccess && !threadRoot && !detailsOpen && !takeover && workspaceLayout !== "focus" && (
+      {active && showWorkspace && workspaceLayout !== "focus" && (
         <WorkspaceLayoutPanel channel={active} layout={workspaceLayout}
           onClose={closeWorkspace} />
       )}
@@ -5174,10 +5199,11 @@ Open your chat with ${a.name}`}>
  * current room. It never treats a local preference, a message sentence, or an
  * absent response as a file/diff/incident fact. Focus is the safe fallback.
  */
-function WorkspaceLayoutPanel({ channel, layout, onClose }: {
+function WorkspaceLayoutPanel({ channel, layout, onClose, hidden }: {
   channel: Channel;
   layout: Exclude<WorkspaceLayout, "focus">;
   onClose: () => void;
+  hidden?: boolean;
 }): React.JSX.Element {
   const panelRef = useRef<HTMLElement>(null);
   /* ESCAPE, BUT ONLY WHEN THE WORKSPACE HAS THE KEYBOARD.
@@ -6326,7 +6352,7 @@ function WorkspaceLayoutControl({ layout, onChange, selectRef }: {
 }): React.JSX.Element {
   return (
     <label className="workspace-layout-control">
-      <span className="sr-only">Workspace layout</span>
+      <span className="view-label">View</span>
       <select ref={selectRef} aria-label="Workspace layout" value={layout}
         onChange={event => {
           const next = event.target.value;
@@ -6337,6 +6363,29 @@ function WorkspaceLayoutControl({ layout, onChange, selectRef }: {
         ))}
       </select>
     </label>
+  );
+}
+
+/** Files and Diff set the durable workspace layout. Review/Incident stay in ⋯. */
+function WorkspaceLayoutButtons({ layout, onChange, filesRef }: {
+  layout: WorkspaceLayout;
+  onChange: (layout: WorkspaceLayout) => void;
+  filesRef?: React.RefObject<HTMLButtonElement>;
+}): React.JSX.Element {
+  const pick = (next: "chat-files" | "chat-diff") => {
+    onChange(layout === next ? "focus" : next);
+  };
+  return (
+    <div className="header-view-btns" role="group" aria-label="Workspace layout">
+      <button ref={filesRef} type="button"
+        className="header-layout-btn"
+        aria-pressed={layout === "chat-files"}
+        onClick={() => pick("chat-files")}>Files</button>
+      <button type="button"
+        className="header-layout-btn"
+        aria-pressed={layout === "chat-diff"}
+        onClick={() => pick("chat-diff")}>Diff</button>
+    </div>
   );
 }
 
@@ -6458,8 +6507,18 @@ function ChatView({
   const [replyingTo, setReplyingTo] = useState<ID | null>(null);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const headerMenuRef = useRef<HTMLDivElement>(null);
-  useEscapeCloses(() => setHeaderMenuOpen(false), headerMenuOpen);
+  const headerOverflowRef = useRef<HTMLButtonElement>(null);
+  const closeHeaderMenu = useCallback(() => {
+    setHeaderMenuOpen(false);
+    queueMicrotask(() => headerOverflowRef.current?.focus());
+  }, []);
+  useEscapeCloses(closeHeaderMenu, headerMenuOpen);
   useClickAwayCloses(headerMenuRef, () => setHeaderMenuOpen(false), headerMenuOpen);
+  useEffect(() => {
+    if (!headerMenuOpen) return;
+    const frame = requestAnimationFrame(() => focusFirstMenuItem(headerMenuRef.current));
+    return () => cancelAnimationFrame(frame);
+  }, [headerMenuOpen]);
   useEffect(() => { setHeaderMenuOpen(false); }, [channel.id]);
   useEffect(() => { setReplyingTo(null); }, [channel.id]);
   useEffect(() => { if (threading) setReplyingTo(null); }, [threading]);
@@ -6960,9 +7019,9 @@ function ChatView({
   const canManagePins = !isDm && mayAdministerChannel(myRole);
   const policyRows = (world.channelMemoryPolicies ?? []).filter(policy => policy.channelId === channel.id);
   const channelAgents = agents;
-  const canManageMemory = !isDm && mayAdministerChannel(myRole);
   useEffect(() => { if (!isDm) client.askChannelMemoryPolicies(channel.id); }, [channel.id, isDm]);
   const pinnedIds = useMemo(() => new Set((world.channelPins?.entries ?? []).map(entry => entry.messageId)), [world.channelPins?.entries]);
+  const activePinCount = (world.channelPins?.entries ?? []).filter(entry => entry.state === "active").length;
 
   /* The same fact as the sidebar row, from the same one place, so the rail and
      the conversation can never disagree about whether anyone is home. */
@@ -7013,7 +7072,7 @@ function ChatView({
                 conversation with that somebody: they can read it. */}
             {peerAgent && <AgentOwnerTag agent={peerAgent} place="conversation" />}
             <ChannelMemoryControl channel={channel} agents={peerAgent ? [peerAgent] : []}
-              policies={policyRows} canManage={false} viewerId={world.me?.id} />
+              policies={policyRows} canManage={false} viewerId={world.me?.id} compact />
           </div>
           <WorkspaceLayoutControl layout={workspaceLayout} onChange={onWorkspaceLayout} selectRef={workspaceLayoutRef} />
           <div className="grow" />
@@ -7035,69 +7094,71 @@ function ChatView({
         </header>
       ) : (
         <header className="topbar chathead">
-          <h2 className="ch-title"><span className="h">#</span><span className="n">{channel.name}</span></h2>
-          <button className="chip header-members" aria-label="Show channel members and details"
-            aria-expanded={detailsOpen} onClick={onToggleDetails}>
-            <span aria-hidden="true">●</span>
-            {countOf(people.length + agents.length, "member", "members")}
-          </button>
-          <button className="chip header-pins" aria-label="Show pinned messages"
-            title="Show pinned messages" aria-expanded={detailsOpen} onClick={onToggleDetails}>
-            📌 Pinned
-          </button>
-          <span className="sub">
-            {countOf(people.length, "person", "people")} ·{" "}
-            {countOf(agents.length, "agent")}
-          </span>
-          <ChannelMemoryControl channel={channel} agents={channelAgents}
-            policies={policyRows} canManage={canManageMemory} viewerId={world.me?.id} />
-          {/* Open or shut, said where the room is named. A room that anyone in
-              this Cloud9 can find and let themselves into is a different thing
-              from one you were put in, and that must never be a guess. */}
-          <RoomVisibility channel={channel} />
-          {channel.topic && (
-            <span className="ch-topic" title={`Topic: ${channel.topic}`}>{channel.topic}</span>
-          )}
-          <ChannelContextSummary channel={channel} agents={agents} messages={all}
-            pins={world.channelPins} connected={world.connected}
-            onToggleDetails={onToggleDetails} detailsOpen={detailsOpen} />
-          <WorkspaceLayoutControl layout={workspaceLayout} onChange={onWorkspaceLayout} selectRef={workspaceLayoutRef} />
-          <div className="grow" />
-          <div className="header-menu-wrap" ref={headerMenuRef}>
-            <button className="iconbtn header-overflow" aria-label="More channel actions"
-              aria-haspopup="menu" aria-expanded={headerMenuOpen}
-              onClick={() => setHeaderMenuOpen(open => !open)}>⋯</button>
-            {headerMenuOpen && (
-              <div className="header-menu" role="menu" aria-label="Channel actions">
-                <button role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Room details</button>
-                {owner && !channel.archivedAt && <button role="menuitem" onClick={() => { setHeaderMenuOpen(false); onInvite(); }}>Invite people</button>}
-                <button role="menuitem" onClick={() => { setHeaderMenuOpen(false); onOpenHuddles(); }}>Open Huddle notes</button>
-                <button role="menuitem" onClick={copyChannelRef}>Copy channel name and ID</button>
-                {!channel.archivedAt && <button role="menuitem" onClick={prefillSummary}>Draft a channel summary request</button>}
-              </div>
+          <div className="ch-identity">
+            <h2 className="ch-title"><span className="h">#</span><span className="n">{channel.name}</span></h2>
+            {channel.topic && (
+              <span className="ch-topic" title={`Topic: ${channel.topic}`}>{channel.topic}</span>
             )}
+            <div className="ch-meta">
+              <button className="header-members" aria-label="Show channel members and details"
+                aria-expanded={detailsOpen} onClick={onToggleDetails}>
+                <span>
+                  {countOf(people.length, "human")} ·{" "}
+                  {countOf(agents.length, "agent")}
+                </span>
+              </button>
+              <span className="ch-meta-dot" aria-hidden="true">·</span>
+              <RoomVisibility channel={channel} />
+              <span className="ch-meta-dot" aria-hidden="true">·</span>
+              <ChannelMemoryControl channel={channel} agents={channelAgents}
+                policies={policyRows}
+                canManage={mayAdministerChannel(myRole) && !channel.archivedAt}
+                viewerId={world.me?.id} inline />
+            </div>
           </div>
-          {/* THE ONE PLACE A STUCK AGENT IS SAID IN EVERY LAYOUT. The Studio
-              sidebar carries the same state and Focus hides the sidebar, so
-              without this the room is silent about it — see the component. */}
+          {activePinCount > 0 && (
+            <button className="chip header-pins" aria-label={`${countOf(activePinCount, "pinned message")}`}
+              title="Show pinned messages" aria-expanded={detailsOpen} onClick={onToggleDetails}>
+              📌 {activePinCount}
+            </button>
+          )}
+          <div className="grow" />
           <AgentTroubleChip agents={agents} world={world} onOpenTasks={onOpenTasks} />
-          {/* Counts what is genuinely WAITING. An expired card is still drawn
-              below, but nothing is waiting on him for it any more. */}
           {waitingHere.length > 0 && (
             <button className="chip is-gold approvalpill" onClick={onOpenTasks}>
               <span className="dot wait" />
               {countOf(waitingHere.length, "approval")} waiting
             </button>
           )}
-          {!channel.archivedAt && <AddToChannel channel={channel} />}
-          {/* A QUIET ICON, not a furniture button (L3 — the Buzz-shaped header).
-              The words moved into the tip; the accessible name stays "Room
-              details", so every check and every screen reader finds it exactly
-              where it always was. */}
-          <button className="iconbtn roomdetailsbtn" aria-expanded={detailsOpen}
-            aria-label="Room details"
-            title="Room details — what this room is for, who is in it, and how it is run"
-            onClick={onToggleDetails}>ⓘ</button>
+          <ChannelContextSummary channel={channel} agents={agents} messages={all}
+            pins={world.channelPins} connected={world.connected}
+            onToggleDetails={onToggleDetails} detailsOpen={detailsOpen} />
+          <WorkspaceLayoutButtons layout={workspaceLayout} onChange={onWorkspaceLayout}
+            filesRef={workspaceLayoutRef as unknown as React.RefObject<HTMLButtonElement>} />
+          <div className="header-menu-wrap" ref={headerMenuRef}>
+            <button type="button" className="iconbtn header-overflow" aria-label="More channel actions"
+              title="More channel actions" aria-haspopup="menu" aria-expanded={headerMenuOpen}
+              aria-controls={`channel-menu-${channel.id}`} ref={headerOverflowRef}
+              onClick={() => setHeaderMenuOpen(open => !open)}
+              onKeyDown={e => {
+                if (e.key !== "ArrowDown" || headerMenuOpen) return;
+                e.preventDefault();
+                setHeaderMenuOpen(true);
+              }}>⋯</button>
+            {headerMenuOpen && (
+              <div id={`channel-menu-${channel.id}`} className="header-menu" role="menu"
+                aria-label="Channel actions" onKeyDown={handleMenuKeys}>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Room details</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Members, agents, and pinned items</button>
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Memory policy</button>
+                {owner && !channel.archivedAt && <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onInvite(); }}>Invite people</button>}
+                {!channel.archivedAt && <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onToggleDetails(); }}>Add people or agents</button>}
+                <button type="button" role="menuitem" onClick={() => { setHeaderMenuOpen(false); onOpenHuddles(); }}>Open Huddle notes</button>
+                <button type="button" role="menuitem" onClick={copyChannelRef}>Copy channel name and ID</button>
+                {!channel.archivedAt && <button type="button" role="menuitem" onClick={prefillSummary}>Draft a channel summary request</button>}
+              </div>
+            )}
+          </div>
         </header>
       )}
 
@@ -7114,7 +7175,7 @@ function ChatView({
               ? countOf(messages.length, "message")
               : `${all.length} in this conversation`}
           </span>
-          <button className="find-x" aria-label="Close find" onClick={onCloseFind}>✕</button>
+          <button className="find-x" aria-label="Close find" title="Close find" onClick={onCloseFind}>✕</button>
         </div>
       )}
 
@@ -7869,6 +7930,14 @@ function ArtifactCard({ artifactId, version, place = "chat", historyOpen = false
             {fileSize(shown.size)} · {shown.text ? "text" : "a file to save"}
             {" · "}{dayStamp(shown.producedAt)} {clock(shown.producedAt)}
           </span>
+          {place === "workspace" && (
+            <span className="meta artpin"
+              data-file-pin={version !== undefined && shown.version !== newest.version ? "exact" : "newest"}>
+              {version !== undefined && shown.version !== newest.version
+                ? `Exact version ${shown.version} · newest is version ${newest.version}`
+                : shown.version > 1 ? `Newest · version ${shown.version}` : "Newest"}
+            </span>
+          )}
         </span>
         <span className="act">
           {held?.state === "opening" ? (
@@ -7967,6 +8036,14 @@ function ArtifactCard({ artifactId, version, place = "chat", historyOpen = false
       {/* THE JOIN THE ATTRIBUTION EXISTS FOR: the turn that produced these bytes.
           Drawn only when the version names one — never a button that would ask
           about a run nobody recorded. */}
+      {shown.taskId && (
+        <p className="arttask" data-related-task={shown.taskId}>
+          <span className="arttask-label">Related task</span>
+          <span className="arttask-name">
+            {world.tasks.find(t => t.id === shown.taskId)?.title ?? "A delegated job"}
+          </span>
+        </p>
+      )}
       {shown.runId && (
         <>
           <button className="runmore artrun" aria-expanded={showRun} data-run={shown.runId}
@@ -8113,6 +8190,107 @@ function RoomMute({ channel, isRoom }: { channel: Channel; isRoom: boolean }): R
  * a week later without scrolling for it. Asked when the panel opens, and every
  * `artifact` frame that lands afterwards replaces the row with the same id.
  */
+
+const CANVAS_BLOCK_KINDS: CanvasBlockKind[] = ["markdown", "architecture", "requirements", "decision", "link", "task", "run", "pullRequest", "artifact"];
+const CANVAS_BLOCK_KIND_LABEL: Record<CanvasBlockKind, string> = {
+  markdown: "Note",
+  architecture: "Architecture",
+  requirements: "Requirements",
+  decision: "Decision",
+  link: "Link",
+  task: "Task",
+  run: "Run",
+  pullRequest: "Pull request",
+  artifact: "Artifact",
+};
+
+function canvasBlockKindLabel(kind: CanvasBlockKind): string {
+  return CANVAS_BLOCK_KIND_LABEL[kind] ?? kind;
+}
+
+function canvasLinkKindLabel(kind: CanvasLinkKind): string {
+  if (kind === "pullRequest") return "Pull request";
+  if (kind === "artifact") return "Artifact";
+  if (kind === "task") return "Task";
+  return "Run";
+}
+
+function studioPersonName(id: ID, users: User[], agents: AgentDef[]): string | undefined {
+  return users.find(user => user.id === id)?.name ?? agents.find(agent => agent.id === id)?.name;
+}
+
+function canvasActorName(
+  id: ID, kind: "human" | "agent", users: User[], agents: AgentDef[], stored?: string,
+): string | undefined {
+  const named = stored?.trim();
+  if (named) return named;
+  return studioPersonName(id, users, agents);
+}
+
+function liveCanvasBlocks(canvas: EngineeringCanvasView): CanvasBlock[] {
+  return canvas.blocks.filter(block => !block.deletedAt);
+}
+
+function canvasFocusKind(canvas: EngineeringCanvasView): CanvasBlockKind | undefined {
+  const live = liveCanvasBlocks(canvas);
+  if (live.length === 0) return undefined;
+  const counts = new Map<CanvasBlockKind, number>();
+  for (const block of live) counts.set(block.kind, (counts.get(block.kind) ?? 0) + 1);
+  let best: CanvasBlockKind | undefined;
+  let bestCount = 0;
+  for (const block of live) {
+    const n = counts.get(block.kind) ?? 0;
+    if (n > bestCount) {
+      best = block.kind;
+      bestCount = n;
+    }
+  }
+  return best;
+}
+
+function canvasLastUpdatedBy(canvas: EngineeringCanvasView, users: User[], agents: AgentDef[]): string | undefined {
+  if (canvas.blocks.length === 0) return undefined;
+  const latest = canvas.blocks.reduce((a, b) => a.updatedAt >= b.updatedAt ? a : b);
+  return canvasActorName(latest.authorId, latest.authorKind, users, agents, latest.authorName);
+}
+
+function canvasVersionLine(canvas: EngineeringCanvasView, users: User[], agents: AgentDef[]): string {
+  const kind = canvasFocusKind(canvas);
+  const version = `v${canvas.revision}`;
+  const head = kind ? `${canvasBlockKindLabel(kind)} · ${version}` : version;
+  const lastBy = canvasLastUpdatedBy(canvas, users, agents);
+  return lastBy ? `${head} · Last updated by ${lastBy}` : head;
+}
+
+function canvasHistorySummary(summary: string): string {
+  if (summary === "created canvas") return "Created";
+  if (summary === "renamed canvas") return "Renamed";
+  if (summary === "edited canvas block") return "Edited";
+  if (summary === "tombstoned canvas block") return "Removed";
+  const added = /^added ([a-zA-Z]+) block$/.exec(summary);
+  if (added && added[1] in CANVAS_BLOCK_KIND_LABEL) {
+    return `Added ${canvasBlockKindLabel(added[1] as CanvasBlockKind)}`;
+  }
+  return summary;
+}
+
+function pollChosenLabel(poll: ProjectPollView): string | undefined {
+  if (!poll.myOptionId) return undefined;
+  return poll.options.find(option => option.id === poll.myOptionId)?.label;
+}
+
+function CopyTechnicalId({ value }: { value: string }): React.JSX.Element {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button type="button" className="btn canvas-copy-id" onClick={() => {
+      void navigator.clipboard?.writeText(value).then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1600);
+      });
+    }}>{copied ? "Copied" : "Copy id"}</button>
+  );
+}
+
 function RoomCanvases({ channel, onOpen }: { channel: Channel; onOpen: (projectId?: ID) => void }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const visible = channel.memberIds.includes(world.me?.id ?? "") || channel.memberIds.some(id =>
@@ -8138,7 +8316,7 @@ function RoomCanvases({ channel, onOpen }: { channel: Channel; onOpen: (projectI
       {visible && project && canvasAsked && canvases.length === 0 && <p className="sec-note">No Canvas has been created for {project.name}.</p>}
       {canvases.length > 0 && <div className="roomcanvas-list" aria-label="Room canvases">
         {canvases.slice(0, 3).map(canvas => <button key={canvas.id} type="button" className="roomcanvas-row" onClick={() => onOpen(project?.id)}>
-          <span><strong>{canvas.title}</strong><small>Revision {canvas.revision} · {canvas.blocks.filter(block => !block.deletedAt).length} active blocks</small></span>
+          <span><strong>{canvas.title}</strong><small>{canvasVersionLine(canvas, world.users, world.agents)}</small></span>
           {canvas.unread && <span className="badge" aria-label="unread Canvas updates">New</span>}
         </button>)}
       </div>}
@@ -8402,6 +8580,7 @@ const MessageRow = React.memo(function MessageRow({
   const recentEmojis = useRecentEmojis(me?.id);
   const pendingReactionRef = useRef<Set<string>>(new Set());
   const [turnTaskOpen, setTurnTaskOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [taskTitle, setTaskTitle] = useState(m.text);
   const [taskAgentId, setTaskAgentId] = useState(agents[0]?.id ?? "");
   const [taskDeadline, setTaskDeadline] = useState("");
@@ -8411,14 +8590,35 @@ const MessageRow = React.memo(function MessageRow({
   const reactHoldRef = useRef<HTMLSpanElement>(null);
   const handHoldRef = useRef<HTMLSpanElement>(null);
   const handButtonRef = useRef<HTMLButtonElement>(null);
+  const moreHoldRef = useRef<HTMLSpanElement>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
+  const taskTitleRef = useRef<HTMLTextAreaElement>(null);
   const closeHand = useCallback(() => {
     setHandOpen(false);
     queueMicrotask(() => handButtonRef.current?.focus());
+  }, []);
+  const closeMore = useCallback(() => {
+    setMoreOpen(false);
+    queueMicrotask(() => moreButtonRef.current?.focus());
+  }, []);
+  const closeTask = useCallback(() => {
+    setTurnTaskOpen(false);
   }, []);
   useEscapeCloses(() => setPickEmoji(false), pickEmoji);
   useClickAwayCloses(reactHoldRef, () => setPickEmoji(false), pickEmoji);
   useEscapeCloses(closeHand, handOpen);
   useClickAwayCloses(handHoldRef, closeHand, handOpen);
+  useEscapeCloses(closeMore, moreOpen && !handOpen && !turnTaskOpen);
+  useClickAwayCloses(moreHoldRef, () => setMoreOpen(false), moreOpen && !handOpen && !turnTaskOpen);
+  useEscapeCloses(closeTask, turnTaskOpen);
+  useEffect(() => {
+    if (turnTaskOpen) taskTitleRef.current?.focus();
+  }, [turnTaskOpen]);
+  useEffect(() => {
+    if (!moreOpen || handOpen || turnTaskOpen) return;
+    const frame = requestAnimationFrame(() => focusFirstMenuItem(moreHoldRef.current));
+    return () => cancelAnimationFrame(frame);
+  }, [moreOpen, handOpen, turnTaskOpen]);
 
   const copy = () => {
     void navigator.clipboard?.writeText(m.text).then(() => {
@@ -8707,6 +8907,22 @@ const MessageRow = React.memo(function MessageRow({
     return next.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   }, [artifactRefs.length, m.text, richPreviews]);
 
+  const taskAction = !deleted && !task && !isAgent && mine && !archived && channelId && availableTaskAgents.length > 0 ? (
+    <button type="button" role="menuitem" className="task-action" title="Turn this message into a task"
+      aria-haspopup="dialog" onClick={() => {
+        setTaskTitle(m.text); setTaskAgentId(availableTaskAgents[0]?.id ?? ""); setTaskDeadline("");
+        setTurnTaskOpen(true);
+      }}>Turn into task</button>
+  ) : null;
+
+  const taskUnavailable = !deleted && !task && !isAgent && mine && !archived && channelId && agents.length > 0 && availableTaskAgents.length === 0 ? (
+    <button type="button" role="menuitem" className="task-inline-state" disabled
+      title="No available room agent can take this task right now.">
+      Turn into task
+      <span className="sr-only" role="status">No available room agent can take this task right now.</span>
+    </button>
+  ) : null;
+
   /* A tombstone has no actions: there is nothing left to react to, copy, edit
      or reply to, and a button that always errors is a dead click. */
   /* Nothing new can be put into an archived room — reacting, editing, deleting
@@ -8722,7 +8938,16 @@ const MessageRow = React.memo(function MessageRow({
       <button className="ma" title="Keep it" onClick={() => setConfirmDelete(false)}>Keep</button>
     </div>
   ) : (
-    <div className="msgactions">
+    <div className={`msgactions${moreOpen || pickEmoji || handOpen || turnTaskOpen ? " is-open" : ""}`}>
+      {!inThread && (onOpenThread || onInlineReply) && (
+        <button className="ma reply"
+          title={onOpenThread ? "Reply in a thread on this message" : "Reply to this, here in the conversation"}
+          onClick={() => onOpenThread
+            ? onOpenThread(m.replyTo ?? m.id)
+            : onInlineReply!(m.id)}>
+          <span className="arrow" aria-hidden="true">↳</span>Reply
+        </button>
+      )}
       <span className="reacthold" ref={reactHoldRef}>
         <button className="ma react" title="React to this" aria-label="React to this message"
           aria-expanded={pickEmoji} aria-haspopup="menu"
@@ -8756,7 +8981,7 @@ const MessageRow = React.memo(function MessageRow({
           only door to a thread was an unlabelled icon that appears on hover —
           which is a fair description of a feature nobody can find. It carries
           the word now, and it says which of the two things it will do. */}
-      {!isAgent && mine && handAllowed && (
+      {!isAgent && mine && handAllowed && handOpen && (
         <span className="handhold" ref={handHoldRef}>
           <button className="ma hand" type="button" title="Hand this message to a room agent"
             aria-label="Hand this message to a room agent" aria-expanded={handOpen}
@@ -8821,52 +9046,63 @@ const MessageRow = React.memo(function MessageRow({
           )}
         </span>
       )}
-      {!inThread && (onOpenThread || onInlineReply) && (
-        <button className="ma reply"
-          title={onOpenThread ? "Reply in a thread on this message" : "Reply to this, here in the conversation"}
-          onClick={() => onOpenThread
-            ? onOpenThread(m.replyTo ?? m.id)
-            : onInlineReply!(m.id)}>
-          <span className="arrow" aria-hidden="true">↳</span>Reply
-        </button>
-      )}
-      <button className="ma" title={`Write back to ${m.authorName}`}
-        onClick={() => composerInsert?.(`@${m.authorName} `)}>↩</button>
-      <button className="ma" title="Copy this message" onClick={copy}>{copied ? "✓" : "⧉"}</button>
-      <button className="ma" title={savedPending ? "Updating saved message" : saved ? "Remove from saved" : "Save for later"}
-        aria-pressed={saved} aria-busy={savedPending} disabled={savedPending}
-        onClick={() => saved ? client.unsaveForLater(m.id) : client.saveForLater(m.id)}>
-        {saved ? "★" : "☆"}
-      </button>
-      {canManagePins && channelId && (
-        <button className="ma pin-action" title={pinPending ? "Updating pinned message" : pinned ? "Unpin from channel" : "Pin in channel"}
-          aria-pressed={pinned} aria-busy={pinPending} disabled={pinPending}
-          onClick={() => pinned ? client.unpinChannelMessage(channelId, m.id) : client.pinChannelMessage(channelId, m.id)}>
-          {pinned ? "📌" : "📍"}
-        </button>
-      )}
-      {mine && (
-        <button className="ma edit" title="Change what this says"
-          onClick={() => { setDraft(m.text); setEditing(true); }}>✎</button>
-      )}
-      {mine && (
-        <button className="ma del" title="Take this message back"
-          onClick={() => setConfirmDelete(true)}>🗑</button>
-      )}
+      <span className="msg-more" ref={moreHoldRef}>
+        <button className="ma more" type="button" title="More message actions"
+          aria-label="More message actions" aria-haspopup="menu" aria-expanded={moreOpen && !turnTaskOpen}
+          aria-controls={`msg-more-${m.id}`} ref={moreButtonRef}
+          onClick={() => setMoreOpen(open => !open)}
+          onKeyDown={e => {
+            if (e.key !== "ArrowDown" || moreOpen) return;
+            e.preventDefault();
+            setMoreOpen(true);
+          }}>⋯</button>
+        {moreOpen && !turnTaskOpen && (
+          <div id={`msg-more-${m.id}`} className="msg-more-menu" role="menu"
+            aria-label="More message actions" onKeyDown={handleMenuKeys}>
+            {taskAction}
+            {taskUnavailable}
+            {!isAgent && mine && handAllowed && (
+              <button type="button" role="menuitem"
+                onClick={() => { setMoreOpen(false); setHandOpen(true); }}>
+                {handTask || handoff?.state === "succeeded" ? "Handoff status"
+                  : handoff?.state === "lost" || handoff?.state === "refused" ? "Retry handoff" : "Hand this to…"}
+              </button>
+            )}
+            <button type="button" role="menuitem"
+              onClick={() => { setMoreOpen(false); composerInsert?.(`@${m.authorName} `); }}>
+              Mention {m.authorName}
+            </button>
+            <button type="button" role="menuitem"
+              onClick={() => { setMoreOpen(false); copy(); }}>
+              {copied ? "Copied" : "Copy message"}
+            </button>
+            <button type="button" role="menuitem" aria-pressed={saved} disabled={savedPending}
+              onClick={() => { setMoreOpen(false); saved ? client.unsaveForLater(m.id) : client.saveForLater(m.id); }}>
+              {saved ? "Remove from saved" : "Save for later"}
+            </button>
+            {canManagePins && channelId && (
+              <button type="button" role="menuitem" aria-pressed={pinned} disabled={pinPending}
+                onClick={() => { setMoreOpen(false); pinned ? client.unpinChannelMessage(channelId, m.id) : client.pinChannelMessage(channelId, m.id); }}>
+                {pinned ? "Unpin from channel" : "Pin in channel"}
+              </button>
+            )}
+            {mine && (
+              <button type="button" role="menuitem"
+                onClick={() => { setMoreOpen(false); setDraft(m.text); setEditing(true); }}>
+                Edit message
+              </button>
+            )}
+            {mine && (
+              <button type="button" role="menuitem"
+                onClick={() => { setMoreOpen(false); setConfirmDelete(true); }}>
+                Take this back
+              </button>
+            )}
+          </div>
+        )}
+      </span>
     </div>
   );
-
-  const taskAction = !deleted && !task && !isAgent && mine && !archived && channelId && availableTaskAgents.length > 0 ? (
-    <button className="ma task-action" title="Turn this message into a task"
-      aria-expanded={turnTaskOpen} onClick={() => {
-        setTaskTitle(m.text); setTaskAgentId(availableTaskAgents[0]?.id ?? ""); setTaskDeadline("");
-        setTurnTaskOpen(open => !open);
-      }}>Turn into task</button>
-  ) : null;
-
-  const taskUnavailable = !deleted && !task && !isAgent && mine && !archived && channelId && agents.length > 0 && availableTaskAgents.length === 0 ? (
-    <span className="task-inline-state" role="status">No available room agent can take this task right now.</span>
-  ) : null;
 
   const taskComposer = turnTaskOpen && !task && !deleted && !isAgent && mine && !archived && availableTaskAgents.length > 0 && channelId ? (
     <div className="task-inline" role="dialog" aria-label="Turn message into a task">
@@ -8880,7 +9116,7 @@ const MessageRow = React.memo(function MessageRow({
         </select>
       </label>
       <label><span>Task title</span>
-        <textarea value={taskTitle} rows={2} maxLength={4000}
+        <textarea ref={taskTitleRef} value={taskTitle} rows={2} maxLength={4000}
           onChange={event => setTaskTitle(event.target.value)} />
       </label>
       <label><span>Deadline (optional)</span>
@@ -8890,7 +9126,7 @@ const MessageRow = React.memo(function MessageRow({
       <div className="task-inline-actions">
         <button className="btn primary small" disabled={taskState === "pending" || !taskAgentId || !taskTitle.trim()}
           onClick={submitTask}>{taskState === "pending" ? "Creating…" : "Create task"}</button>
-        <button className="btn ghost small" onClick={() => setTurnTaskOpen(false)}>Cancel</button>
+        <button className="btn ghost small" onClick={closeTask}>Cancel</button>
       </div>
       {taskState === "succeeded" && <p role="status" className="task-inline-state success">Task created{taskMutation?.taskId ? ` · ${taskMutation.taskId}` : ""}.</p>}
       {(taskState === "refused" || taskState === "lost") && <p role="alert" className="task-inline-state">{taskMutation?.problem ?? "The task could not be created."}</p>}
@@ -8954,10 +9190,10 @@ const MessageRow = React.memo(function MessageRow({
               ASKED, which is where the 👀 already is, and gone when it ends */}
           {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} task={task} />}
           {threadLine}
+          {taskComposer}
+          {taskCard}
+          {actions}
         </div>
-        {actions}
-        <div className="task-affordance">{taskAction}{taskUnavailable}{taskComposer}</div>
-        {taskCard}
       </article>
     );
   }
@@ -9041,10 +9277,10 @@ const MessageRow = React.memo(function MessageRow({
         {/* same, on a full message — see the note on the continuation above */}
         {!deleted && <LiveWork messageId={m.id} agents={agents} channelId={channelId} task={task} />}
         {threadLine}
+        {taskComposer}
+        {taskCard}
+        {actions}
       </div>
-      {actions}
-      <div className="task-affordance">{taskAction}{taskUnavailable}{taskComposer}</div>
-      {taskCard}
     </article>
   );
 }, areMessageRowPropsEqual);
@@ -9165,7 +9401,7 @@ function ThreadPanel({ channel, rootId, onClose, takeover, forced, onToggleTakeo
             onClick={onToggleTakeover}>⤢</button>
         )}
         {!forced && (
-          <button className="iconbtn threadclose" aria-label="Close the thread" onClick={onClose}>✕</button>
+          <button className="iconbtn threadclose" aria-label="Close the thread" title="Close the thread" onClick={onClose}>✕</button>
         )}
       </div>
       <div className="threadbody" ref={bodyRef} onScroll={noteScrolled}>
@@ -10249,7 +10485,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
     [emojiCatalog, emojiCategory, emojiQuery]);
 
   /** he is writing — the row of tools is worth its space; see `focused` above */
-  const armed = focused || text.length > 0 || scopedUploads.length > 0 || menuOpen || emojiOpen;
+  const armed = focused || text.length > 0 || scopedUploads.length > 0 || menuOpen || emojiOpen || fmtOpen;
 
   /* THE ONE OWNER OF "ESCAPE CLOSES WHAT IT OPENED" (see `useEscapeCloses`).
      Registered only while the menu is on screen, so a closed menu adds nothing
@@ -10668,14 +10904,10 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
                 )}
                 <button type="button" className="btn small ghost voice-cancel" onClick={cancelVoiceRecording}>
                   {recordingStatus === "starting" ? "Cancel" : "Cancel recording"}
-                </button>
-              </div>
-            )}
-          </section>
-        )}
+   )}
         <textarea
           ref={taRef}
-          rows={inThreadPanel ? 2 : 3}
+          rows={1}
           value={text}
           placeholder={placeholder}
           aria-autocomplete="list"
@@ -10819,12 +11051,12 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               )}
             </span>
             <button className="mini fmtbtn" title="Formatting — bold, italic, code"
-              aria-expanded={fmtOpen}
+              aria-label="Formatting — bold, italic, code" aria-expanded={fmtOpen}
               onClick={() => { setFmtOpen(o => !o); setEmojiOpen(false); }}>Aa</button>
             <span className={`fmtset${fmtOpen ? " on" : ""}`}>
-              <button className="mini" title="Bold" onClick={() => wrap("**")}><b>B</b></button>
-              <button className="mini ital" title="Italic" onClick={() => wrap("_")}>I</button>
-              <button className="mini" title="Code" onClick={() => wrap("`")}>{"</>"}</button>
+              <button className="mini" title="Bold" aria-label="Bold" onClick={() => wrap("**")}><b>B</b></button>
+              <button className="mini ital" title="Italic" aria-label="Italic" onClick={() => wrap("_")}>I</button>
+              <button className="mini" title="Code" aria-label="Code" onClick={() => wrap("`")}>{"</>"}</button>
             </span>
           </span>
           {/* Active-state contract retained for structural QA: aria-label={recording ? "Stop audio recording" : "Record an audio message"}. */}
@@ -10968,23 +11200,9 @@ function ChannelContextSummary({ channel, agents, messages, pins, connected,
     return work && messageIds.has(work.messageId) ? { agent, work } : undefined;
   }).filter((row): row is { agent: AgentDef; work: { doing: string; messageId: ID } } => !!row),
   [agents, liveWork, messageIds]);
-  const activePins = (pins?.entries ?? []).filter(entry => entry.state === "active");
-  const pinPreview = activePins.find(entry => entry.message?.text)?.message?.text;
-  const goal = channel.topic || channel.description;
   const detailId = `room-context-${channel.id}`;
   return (
     <div className="channel-context-summary" data-context-summary={channel.id}>
-      <span className="channel-context-goal" title={goal ? `Room goal: ${goal}` : "No room topic or goal has been set"}>
-        <span className="eyebrow">{channel.topic ? "Topic" : "Goal"}</span>
-        <span>{goal || "No topic or goal set"}</span>
-      </span>
-      {isRoom && <span className="channel-context-pins" title={pinPreview ? `Pinned: ${pinPreview}` : "Pinned context"}>
-        <span aria-hidden="true">📌</span>{pins?.asked ? `${activePins.length} pinned` : "Pinned context"}
-        {pinPreview && <span className="channel-context-pin-preview">{quoteOf(pinPreview, 72)}</span>}
-      </span>}
-      {agents.length > 0 && <span className="channel-context-agents" title={agents.map(agent => agent.name).join(", ")}>
-        <span aria-hidden="true">✦</span>{agents.length} agent{agents.length === 1 ? "" : "s"} here
-      </span>}
       {working.length > 0 && <span className="channel-context-working" data-working-count={working.length}
         title={working.map(({ agent, work }) => `${agent.name}: ${work.doing}`).join(" · ")}>
         <span className="dot live" aria-hidden="true" />
@@ -11143,7 +11361,7 @@ function RoomPanel({ channel, onClose, onOpenDm, onEditAgent, onLeft, onOpenCanv
       <div className="threadhead">
         <span className="eyebrow">Room details</span>
         <div className="grow" />
-        <button className="iconbtn roomclose" aria-label="Close room details" onClick={requestClose}>✕</button>
+        <button className="iconbtn roomclose" aria-label="Close room details" title="Close room details" onClick={requestClose}>✕</button>
       </div>
 
       <div className="roombody">
@@ -11251,6 +11469,7 @@ function RoomPanel({ channel, onClose, onOpenDm, onEditAgent, onLeft, onOpenCanv
 
         <div className="aside-sec roommembers">
           <span className="eyebrow">Who's here ({rows.length})</span>
+          <AddToChannel channel={channel} />
           {rows.length === 0 && <div className="d-empty">Fetching who is in this room…</div>}
           {rows.map(m => {
             const who = nameOf(m.memberId);
@@ -11404,6 +11623,10 @@ function RoomPanel({ channel, onClose, onOpenDm, onEditAgent, onLeft, onOpenCanv
 
         <div className="aside-sec roomcontrols">
           <span className="eyebrow">How this room is run</span>
+          <ChannelMemoryControl channel={channel}
+            agents={channel.memberIds.map(id => world.agents.find(a => a.id === id)).filter(Boolean) as AgentDef[]}
+            policies={(world.channelMemoryPolicies ?? []).filter(policy => policy.channelId === channel.id)}
+            canManage={mayRun && !archived} viewerId={world.me?.id} />
           {mayRun ? (
             <>
               <div className="roomctl">
@@ -11619,34 +11842,24 @@ function SupplyGapBadge({ agent, onEdit, where }: {
   );
 }
 
-function ChannelMemoryControl({ channel, agents, policies, canManage, viewerId }: {
+function ChannelMemoryControl({ channel, agents, policies, canManage, viewerId, compact = false, plain = false }: {
   channel: Channel;
   agents: AgentDef[];
   policies: ChannelMemoryPolicy[];
   canManage: boolean;
   viewerId?: ID;
+  compact?: boolean;
+  plain?: boolean;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const controlRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const closeOutside = (event: PointerEvent) => {
-      if (controlRef.current && !controlRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setOpen(false);
-      buttonRef.current?.focus();
-    };
-    document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [open]);
+  const closeMemory = useCallback(() => {
+    setOpen(false);
+    queueMicrotask(() => buttonRef.current?.focus());
+  }, []);
+  useEscapeCloses(closeMemory, open);
+  useClickAwayCloses(controlRef, () => setOpen(false), open);
   const effectiveModes = agents.map(agent => policies.find(item => item.agentId === agent.id)?.mode
     ?? (channel.kind === "dm" ? "none" : "explicit" as ChannelMemoryMode));
   const firstMode = effectiveModes[0] as ChannelMemoryMode | undefined;
@@ -11657,12 +11870,19 @@ function ChannelMemoryControl({ channel, agents, policies, canManage, viewerId }
     ? "none" as ChannelMemoryMode
     : firstMode && effectiveModes.every(value => value === firstMode) ? firstMode : undefined;
   const modeLabel = mode ? channelMemoryModeWords(mode) : "Mixed";
+  const inlineLabel = !mode ? "Mixed"
+    : mode === "none" ? "None"
+    : mode === "summary" ? "Summaries"
+    : "Explicit";
   return (
-    <div ref={controlRef} className="memory-policy-control" data-memory-policy={mode ?? "mixed"}>
-      <button ref={buttonRef} type="button" className="chip" aria-label="Current channel memory policy"
-        aria-expanded={open} title={mode ? channelMemoryPolicyWords(mode) : "Each agent has its own Cloud9 storage rule."}
+    <div ref={controlRef} className={`memory-policy-control${asText ? " is-inline" : ""}`} data-memory-policy={mode ?? "mixed"}>
+        <button ref={buttonRef} type="button"
+        className={compact ? "iconbtn memory-icon" : asText ? "header-memory" : "chip"}
+        aria-label={`Memory: ${modeLabel}`}
+        aria-expanded={open}
+        title={mode ? `Memory: ${modeLabel}. ${channelMemoryPolicyWords(mode)}` : `Memory: ${modeLabel}. Each agent has its own Cloud9 storage rule.`}
         onClick={() => setOpen(value => !value)}>
-        ◉ Memory: {modeLabel}
+        {compact ? "◉" : inline ? `Memory: ${inlineLabel}` : `◉ Memory: ${modeLabel}`}
       </button>
       {open && (
         <div className="memory-policy-popover" role="dialog" aria-label="Channel memory policy details">
@@ -12063,6 +12283,7 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
 
   const shown = agents.filter(a => {
     /* THE FILTER AND THE NUMBER ABOVE IT MUST MEAN THE SAME THING. Pressing
+       "Working" and getting more rows than the "WorkiT MUST MEAN THE SAME THING. Pressing
        "Working" and getting more rows than the "Working now" figure said is the
        same contradiction, one click later. */
     if (filter === "working") return activityOf(a).state === "working";
@@ -12147,83 +12368,79 @@ function CrewScreen({ onHire, onEdit, onOpen, onMarket, justHired }: {
             const pres = presenceOf(world, a.id);
             const busy = pres?.presence === "working";
             const says = presenceSays(world, a.id, pres);
-            /* Waiting on him beats everything, because it is the only one he can
-               do something about. Then a job that is stuck or fell over — the
-               same one owner every other presence line asks. Otherwise the hub's
-               own word, never ours. */
-            const flag = waiting
-              ? <span className="chip is-gold"><span className="dot wait" />Waiting on you</span>
+            /* ONE PRIMARY STATUS. Waiting on him (useMyApprovals) still beats
+               everything — that is the same ladder `agentActivityLine` climbs,
+               not a second vocabulary. Then `presenceSays.word`, which already
+               folds agentTrouble into Failed / Stuck. The flag is the only
+               place those words print; provider/model sit on a muted line.
+               Ready + "signed in to Claude" is the runtime line — a why is
+               only for a go-ahead, trouble, or a presence that is not Ready. */
+            const why = waiting
+              ? "Waiting on your word before it carries on"
               : says.trouble
-                ? <span className={`chip presencepill introuble is-${says.trouble}`}>{says.word}</span>
-                : <span className={`chip presencepill p-${pres?.presence ?? "unknown"}`}>
-                  <span className={`pdot p-${pres?.presence ?? "unknown"}`} />
-                  {pres ? PRESENCE_WORDS[pres.presence] : "Not looked yet"}
+                ? says.reason
+                : pres && pres.presence !== "ready"
+                  ? (says.reason || says.word)
+                  : "";
+            const flag = waiting
+              ? <span className="chip is-gold presencepill p-waiting" title="Waiting on you">
+                  <span className="dot wait" />Waiting on you
+                </span>
+              : <span
+                  className={`chip presencepill${says.trouble ? ` introuble is-${says.trouble}` : ` p-${pres?.presence ?? "unknown"}`}`}
+                  title={says.title}>
+                  {!says.trouble && <span className={`pdot p-${pres?.presence ?? "unknown"}`} />}
+                  {says.word}
                 </span>;
             return (
-              <article className="cast" key={a.id} data-crew={a.name}
-                data-presence={pres?.presence ?? "unknown"} data-trouble={says.trouble ?? ""}>
+              <article className="cast crewcast" key={a.id} data-crew={a.name}
+                data-presence={pres?.presence ?? "unknown"} data-trouble={says.trouble ?? ""}
+                data-waiting={waiting ? "you" : undefined}>
                 <div className="plate">
                   <Portrait identity={a.name} fill working={busy} />
                   <span className="no">No. {String(i + 1).padStart(2, "0")}</span>
                   <span className="flag">{flag}</span>
                 </div>
-                <div className="info">
-                  <h3>{a.name}</h3>
-                  <div className="role">{roleOf(a.persona)}</div>
-                  <div className="runs">
-                    <span className={`chip ${provider === "claude" ? "is-gold" : "is-ultra"}`}>
-                      {PROVIDER_LABEL[provider]}
-                    </span>
-                    <span className="chip" title={a.model ? undefined : MODEL_UNSET_HINT}>{modelWords(a.model)}</span>
-                    {(a.skills?.length ?? 0) > 0 &&
-                      <span className="chip">{countOf(a.skills!.length, "skill")}</span>}
+                <div className="castbody">
+                  <div className="info">
+                    <h3>{a.name}</h3>
+                    <div className="role">{roleOf(a.persona)}</div>
+                    <div className="cast-runtime" title={a.model ? undefined : MODEL_UNSET_HINT}>
+                      {PROVIDER_LABEL[provider]} · {modelWords(a.model)}
+                      {(a.skills?.length ?? 0) > 0 && <> · {countOf(a.skills!.length, "skill")}</>}
+                    </div>
+                    {why && (
+                      <div className="cast-why" title={waiting ? why : says.title}>{why}</div>
+                    )}
+                    {/* HOW MUCH THIS ONE MAY DO UNATTENDED, ON THE CARD ITSELF.
+                        A setting that only exists inside an editor is a setting he
+                        has to remember he made — and this is the one setting where
+                        forgetting means being surprised by what an agent did while
+                        he was not looking. Only for HIS agents, like the supply
+                        gap below: somebody else's trust setting is not his to
+                        read or to change. One press on it opens the file at the
+                        choice. */}
+                    {a.ownerId === world.me?.id && (
+                      <button className="now trustline" data-trust={trustOf(a)}
+                        onClick={() => onEdit(a)} title="Change how much this agent does on its own">
+                        <MarkGate />
+                        <span>{trustWords(a)}</span>
+                      </button>
+                    )}
+                    {/* A SWITCH ON WITH NOTHING BEHIND IT, ON THE CARD ITSELF.
+                        He should never have to open an agent's file to find out
+                        that a power he switched on is handing it nothing — that
+                        is exactly how he ended up believing the app was broken.
+                        Only for HIS agents: nobody else can fix somebody's
+                        settings, so telling them about it is noise. */}
+                    {a.ownerId === world.me?.id &&
+                      <SupplyGapBadge agent={a} onEdit={() => onEdit(a)} where="card" />}
                   </div>
-                  <div className="now whocan" data-respond={a.respondTo ?? "owner"}>
-                    <MarkGate />
-                    <span>
-                      {respondWords(a, a.ownerId === world.me?.id
-                        ? "you"
-                        : world.users.find(u => u.id === a.ownerId)?.name ?? "its owner")}
-                    </span>
+                  <div className="castbtns">
+                    <button className="btn small" onClick={() => onOpen(a.id, a.name)}>Talk to {a.name}</button>
+                    {a.ownerId === world.me?.id &&
+                      <button className="btn small" onClick={() => onEdit(a)}>Edit</button>}
                   </div>
-                  {/* HOW MUCH THIS ONE MAY DO UNATTENDED, ON THE CARD ITSELF.
-                      A setting that only exists inside an editor is a setting he
-                      has to remember he made — and this is the one setting where
-                      forgetting means being surprised by what an agent did while
-                      he was not looking. Only for HIS agents, like the supply
-                      gap below: somebody else's trust setting is not his to
-                      read or to change. One press on it opens the file at the
-                      choice. */}
-                  {a.ownerId === world.me?.id && (
-                    <button className="now trustline" data-trust={trustOf(a)}
-                      onClick={() => onEdit(a)} title="Change how much this agent does on its own">
-                      <MarkGate />
-                      <span>{trustWords(a)}</span>
-                    </button>
-                  )}
-                  <div className="now nowpresence">
-                    <MarkClock />
-                    <span>
-                      {waiting
-                        ? "Waiting on your word before it carries on"
-                        : says.trouble || pres
-                          ? says.reason ? `${says.word} — ${says.reason}` : says.word
-                          : NOT_YET_LOOKED}
-                    </span>
-                  </div>
-                  {/* A SWITCH ON WITH NOTHING BEHIND IT, ON THE CARD ITSELF.
-                      He should never have to open an agent's file to find out
-                      that a power he switched on is handing it nothing — that
-                      is exactly how he ended up believing the app was broken.
-                      Only for HIS agents: nobody else can fix somebody's
-                      settings, so telling them about it is noise. */}
-                  {a.ownerId === world.me?.id &&
-                    <SupplyGapBadge agent={a} onEdit={() => onEdit(a)} where="card" />}
-                </div>
-                <div className="castbtns">
-                  <button className="btn small" onClick={() => onOpen(a.id, a.name)}>Talk to {a.name}</button>
-                  {a.ownerId === world.me?.id &&
-                    <button className="btn small" onClick={() => onEdit(a)}>Edit</button>}
                 </div>
               </article>
             );
@@ -12329,11 +12546,8 @@ function MarketScreen({ onHired, onBack, onWriteMyOwn }: {
                 <div className="info">
                   <h3>{t.title}</h3>
                   <div className="role">{t.tagline}</div>
-                  <div className="runs">
-                    <span className={`chip ${t.suggestedApp === "claude" ? "is-gold" : "is-ultra"}`}>
-                      Suggested: {PROVIDER_LABEL[t.suggestedApp]}
-                    </span>
-                    <span className="chip">@{t.name}</span>
+                  <div className="cast-runtime">
+                    Suggested {PROVIDER_LABEL[t.suggestedApp]} · @{t.name}
                   </div>
                   <ul className="roleasks">
                     {t.askItFor.map(a => <li key={a}>{a}</li>)}
@@ -12860,8 +13074,7 @@ function SkillsEditor({ skills, onChange, agentName, roleId }: {
    * does its own job: `instructions` is what the agent is told in the prompt,
    * `files[]` is what actually lands in the agent's folder.
    */
-  const readSkillFile = async (file: File): Promise<{ skill?: AgentSkill; problem?: string }> => {
-    if (!/\.(md|txt)$/i.test(file.name)) {
+  const readSkillFile = async (filet(file.name)) {
       return { problem: "Only .md and .txt files can be read." };
     }
     const body = (await file.text()).trim();
@@ -14000,6 +14213,8 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
   const [skills, setSkills] = useState<AgentSkill[]>(Array.isArray(agent?.skills) ? agent!.skills! : []);
   const [confirmDelete, setConfirmDelete] = useState(false);
   /* WHO MAY SET THIS AGENT WORKING. Absent means "owner" — an agent made
+    e(false);
+  /* WHO MAY SET THIS AGENT WORKING. Absent means "owner" — an agent made
      before this setting existed must never be more open than one made after. */
   const [respondTo, setRespondTo] = useState<AgentRespondTo>(agent?.respondTo ?? "owner");
   const [allowlist, setAllowlist] = useState<ID[]>(agent?.respondToAllowlist ?? []);
@@ -14217,8 +14432,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
              whole save. */
           trust,
           /* Said explicitly, always — the hub treats silence as "leave it as he
-             set it", so an edit that meant to turn his own setup OFF has to say
-             so out loud rather than hoping a missing field is read as a no. */
+          loud rather than hoping a missing field is read as a no. */
           useOwnerSetup: ownerSetup,
           /* Said explicitly rather than left to the spread above, because
              FORGETTING the file has to travel too. `undefined` is dropped on the
@@ -14424,7 +14638,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
               <span className="fh-tx">
                 <b>Not sure what to write?</b>
                 <span>
-                  {countOf(MARKET_TEMPLATES.length, "role")} {plural(MARKET_TEMPLATES.length, "is", "are")} already written — architect, backend,
+                  {countOf(MARKET_TEMPLATES.length, "role")} {plural(MARKET_TEMPLATES.length, "is", "are")} alrcountOf(MARKET_TEMPLATES.length, "role")} {plural(MARKET_TEMPLATES.length, "is", "are")} already written — architect, backend,
                   QA and more. Hire one and change it here afterwards.
                 </span>
               </span>
@@ -14491,13 +14705,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                       <span className="ms">
                         {info?.signedIn ? "Signed in" : info?.installed ? "Not signed in" : "Not found"}
                         {(info?.models?.length ?? 0) > 0 ? ` · ${countOf(info!.models!.length, "model")}` : ""}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-            <div className="two" style={{ marginTop: 14 }}>
+                      </sp}>
               <div className="field-row">
                 <label htmlFor="f-model">Model</label>
                 <select className="select modelpick" id="f-model" value={ids.includes(model) ? model : preferred}
@@ -14560,8 +14768,7 @@ function AgentEditor({ agent, onDone, onLeave, onMarket, justHired }: {
                   disabled={provider === "codex"}
                   checked={planFirst && provider !== "codex"}
                   onChange={e => setPlanFirst(e.target.checked)} />
-              </label>
-              {/* THE MOST THIS AGENT MAY SPEND. Both boxes blank by default and
+           d
                   blank on every agent he already has, so nothing changes for
                   them. Only the Claude app reports what a turn cost — one owner
                   for that fact, `providerCanBeCapped` — so a Codex agent is told
@@ -15886,6 +16093,7 @@ const SET_SECTIONS = [
   ["set-notify", "Notifications"],
   ["set-apps", "Connected apps"],
   ["set-workspace", "Workspace administration"],
+  ["set-diag", "Advanced / Diagnostics"],
   ["set-danger", "Danger zone"],
 ] as const;
 
@@ -16160,7 +16368,7 @@ function SettingsScreen(): React.JSX.Element {
             </div>
           </section>
 
-          <section id="set-agents" className="setsect">
+          <section id="set-agents" className="setsect" data-settings-layer="normal">
             <h3>Agents</h3>
             <p className="sec-note">What a brand new agent starts with. You can change it per agent afterwards.</p>
             <div className="two">
@@ -16260,6 +16468,13 @@ function SettingsScreen(): React.JSX.Element {
                 Cloud9 runs your agents through apps already installed on this computer.
                 Sign in once here and your agents can work. Connect your AI apps below.
               </p>
+              <div className="set-conn" data-connected={world.connected ? "yes" : "no"} role="status">
+                <span className={`harnessdot ${world.connected ? "ok" : "off"}`} />
+                <span>{world.hubConn.line || (world.connected ? "Connected" : "Disconnected")}</span>
+                <button type="button" className="linkbtn" onClick={() => goTo("set-diag")}>
+                  CLI versions and diagnostics
+                </button>
+              </div>
               <HarnessCard
                 harness="claude" title="Claude" mark={<MarkClaude />}
                 info={claudeInfo}
@@ -16323,6 +16538,26 @@ function SettingsScreen(): React.JSX.Element {
             <WorkspaceAdministration />
           </section>
 
+          <section id="set-diag" className="setsect" data-settings-layer="diagnostics">
+            <h3>Advanced / Diagnostics</h3>
+            <p className="sec-note">
+              CLI versions, runtime, model discovery and connection probes.
+              Everyday sign-in stays under Connected apps.
+            </p>
+            <SettingsDiagnostics
+              connected={world.connected}
+              hubLine={world.hubConn.line}
+              hubPhase={world.hubConn.phase}
+              claude={claudeInfo}
+              codex={codexInfo}
+              github={world.harness?.github}
+              checking={world.harness?.checking}
+              demo={world.harness?.demo}
+              verifyClaims={world.harness?.verifyClaims}
+              owner={owner}
+            />
+          </section>
+
           <section id="set-danger" className="setsect danger">
             <h3>Danger zone</h3>
             <p className="sec-note">These cannot be undone from here.</p>
@@ -16330,6 +16565,126 @@ function SettingsScreen(): React.JSX.Element {
           </section>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** CLI versions, runtime, model discovery, connection probes — not the sign-in cards. */
+function SettingsDiagnostics({
+  connected, hubLine, hubPhase, claude, codex, github, checking, demo, verifyClaims, updatedAt, owner,
+}: {
+  connected: boolean;
+  hubLine: string;
+  hubPhase: string;
+  claude?: HarnessInfo;
+  codex?: HarnessInfo;
+  github?: GitHubAccountInfo;
+  checking?: boolean;
+  demo?: boolean;
+  verifyClaims?: boolean;
+  updatedAt?: number;
+  owner: boolean;
+}): React.JSX.Element {
+  const cliLine = (title: string, info?: HarnessInfo): string => {
+    if (!info) return `${title}: not reported yet`;
+    if (info.version) return `${title}: ${info.version}`;
+    if (info.installed) return `${title}: found, version not reported`;
+    return `${title}: ${info.detail || "not confirmed on this computer"}`;
+  };
+  const looked = (github?.checkedAt ?? 0) > 0;
+  const askAgain = () => {
+    client.send({ type: "refreshHarness" });
+    client.send({ type: "harnessStatus" });
+  };
+
+  return (
+    <div className="diag-panel" data-settings-diagnostics="true">
+      <div className="diag-box" data-diag="runtime">
+        <h4>Runtime</h4>
+        <div className="diag-rows">
+          <div className="diag-row"><span className="diag-k">Cloud9</span>
+            <span data-diag-field="connection">{hubLine || (connected ? "Connected" : "Disconnected")}</span></div>
+          <div className="diag-row"><span className="diag-k">Phase</span>
+            <span data-diag-field="phase">{hubPhase || "idle"}</span></div>
+          <div className="diag-row"><span className="diag-k">Demo answers</span>
+            <span data-diag-field="demo">{demo ? DEMO_MODE_BANNER : "Off — answers come from the connected apps."}</span></div>
+          <div className="diag-row"><span className="diag-k">Claim check</span>
+            <span data-diag-field="verify">{verifyClaims === true
+              ? "This engine checks what agents say against what they did."
+              : verifyClaims === false
+                ? "This engine is not checking agent claims."
+                : "Not known — this engine never said whether it checks claims."}</span></div>
+        </div>
+      </div>
+
+      {owner ? (
+        <>
+          <div className="diag-box" data-diag="cli">
+            <h4>CLI versions</h4>
+            <div className="diag-rows">
+              <div className="diag-row" data-diag-cli="claude"><span className="diag-k">Claude</span>
+                <span>{cliLine("Claude", claude).replace(/^Claude: /, "")}</span></div>
+              <div className="diag-row" data-diag-cli="codex"><span className="diag-k">Codex</span>
+                <span>{cliLine("Codex", codex).replace(/^Codex: /, "")}</span></div>
+              <div className="diag-row" data-diag-cli="github"><span className="diag-k">GitHub</span>
+                <span>{!looked ? "Cloud9 hasn't asked this computer yet."
+                  : github?.installed ? "GitHub's program found"
+                    : "GitHub's program not found"}</span></div>
+            </div>
+          </div>
+
+          <div className="diag-box" data-diag="models">
+            <h4>Model discovery</h4>
+            <p className="sec-note">Printed in the engine's own words. Absent means absent.</p>
+            {([["claude", "Claude", claude], ["codex", "Codex", codex]] as const).map(([id, title, info]) => (
+              <div key={id} className="diag-model" data-diag-models={id}>
+                <span className="diag-k">{title}</span>
+                {(info?.models?.length ?? 0) > 0 && (
+                  <span className="diag-chip">{countOf(info!.models!.length, "model")} available</span>
+                )}
+                {info?.modelsDetail
+                  ? <div className="diag-modelsource" data-checked={info.modelsChecked ? "yes" : "no"}>
+                      <span className="ms-mark" aria-hidden="true">{info.modelsChecked ? "✓" : "·"}</span>
+                      <span>{info.modelsDetail}</span>
+                    </div>
+                  : <span className="diag-absent">nothing claimed</span>}
+              </div>
+            ))}
+          </div>
+
+          <div className="diag-box" data-diag="connection">
+            <h4>Connection diagnostics</h4>
+            <div className="diag-rows">
+              <div className="diag-row"><span className="diag-k">Probe</span>
+                <span>{checking ? "Looking at this computer now." : "Idle."}</span></div>
+              {updatedAt ? (
+                <div className="diag-row"><span className="diag-k">Last frame</span>
+                  <span>{new Date(updatedAt).toLocaleTimeString()}</span></div>
+              ) : null}
+              {([["claude", "Claude", claude], ["codex", "Codex", codex]] as const).map(([id, title, info]) => (
+                <div key={id} className="diag-row" data-diag-conn={id}>
+                  <span className="diag-k">{title}</span>
+                  <span>{!info ? "not reported yet"
+                    : [info.detail, info.unsure ? "sign-in not confirmed" : "", info.problem].filter(Boolean).join(" · ")}</span>
+                </div>
+              ))}
+              <div className="diag-row" data-diag-conn="github">
+                <span className="diag-k">GitHub</span>
+                <span>{looked
+                  ? `Cloud9 asked this computer at ${new Date(github!.checkedAt).toLocaleTimeString()}.`
+                  : "Cloud9 hasn't asked this computer yet."}</span>
+              </div>
+            </div>
+            <div className="harnessbtns">
+              <button className="ghostbtn" disabled={checking} onClick={askAgain}>
+                {checking ? "Checking…" : "Re-check"}
+              </button>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="notice">CLI versions and model discovery live on the owner's computer. There is nothing here to probe.</div>
+      )}
     </div>
   );
 }
@@ -16551,10 +16906,30 @@ function HarnessCard({
           what actually happened. Absent means absent: nothing is drawn until
           the harness has something to say. */}
       {info?.modelsDetail && (
-        <div className="modelsource" data-checked={info.modelsChecked ? "yes" : "no"}>
-          <span className="ms-mark" aria-hidden="true">{info.modelsChecked ? "✓" : "·"}</span>
-          <span className="ms-tx">{info.modelsDetail}</span>
-        </div>
+        <details className="harness-diag">
+          <summary>Diagnostics</summary>
+          <div className="harnessfacts">
+            <span className={installed ? "yes" : "no"}>
+              {installed ? `✓ app found${info?.version ? ` (${info.version})` : ""}`
+                : "· app not confirmed"}
+            </span>
+          </div>
+          <div className="modelsource" data-checked={info.modelsChecked ? "yes" : "no"}>
+            <span className="ms-mark" aria-hidden="true">{info.modelsChecked ? "✓" : "·"}</span>
+            <span className="ms-tx">{info.modelsDetail}</span>
+          </div>
+        </details>
+      )}
+      {!info?.modelsDetail && (
+        <details className="harness-diag">
+          <summary>Diagnostics</summary>
+          <div className="harnessfacts">
+            <span className={installed ? "yes" : "no"}>
+              {installed ? `✓ app found${info?.version ? ` (${info.version})` : ""}`
+                : "· app not confirmed"}
+            </span>
+          </div>
+        </details>
       )}
 
       {signedIn && !waiting && (
@@ -16686,15 +17061,19 @@ function GitHubCard({ info, checking }: {
 
       {/* WHEN THIS WAS ACTUALLY ASKED. A card that says "signed in" without
           saying when it looked is telling you about the past in the present
-          tense. The engine stamps the time; this prints it. */}
-      <div className="checkedline" data-checked={looked ? "yes" : "no"}>
-        <span className="ms-mark" aria-hidden="true">{looked ? "✓" : "·"}</span>
-        <span className="ms-tx">
-          {looked
-            ? `Cloud9 asked this computer at ${new Date(info!.checkedAt).toLocaleTimeString()}.`
-            : "Cloud9 hasn't asked this computer yet."}
-        </span>
-      </div>
+          tense. The engine stamps the time; this prints it. Folded under
+          diagnostics so the card's first answer stays account + way in. */}
+      <details className="harness-diag">
+        <summary>Connection diagnostics</summary>
+        <div className="checkedline" data-checked={looked ? "yes" : "no"}>
+          <span className="ms-mark" aria-hidden="true">{looked ? "✓" : "·"}</span>
+          <span className="ms-tx">
+            {looked
+              ? `Cloud9 asked this computer at ${new Date(info!.checkedAt).toLocaleTimeString()}.`
+              : "Cloud9 hasn't asked this computer yet."}
+          </span>
+        </div>
+      </details>
 
       {signedIn && !waiting && (
         <div className="signedinline" data-state="signed-in">
@@ -16797,17 +17176,39 @@ function workspaceRoomName(entry: ArtifactWorkspaceEntry, world: World): string 
 
 type FileSelection = { artifactId: ID; version?: number };
 
-function CopyFileRef({ value, kind }: { value: string; kind: "newest" | "exact" }): React.JSX.Element {
+function CopyFileRef({ value, kind, version }: {
+  value: string;
+  kind: "newest" | "exact";
+  version?: number;
+}): React.JSX.Element {
   const [copied, setCopied] = useState(false);
+  const label = kind === "newest"
+    ? "Copy newest reference"
+    : version !== undefined ? `Copy exact version ${version}` : "Copy exact version";
   return (
-    <button className="btn small ghost filerefcopy" data-copy-ref={kind}
+    <button className="btn small ghost filerefcopy" type="button" data-copy-ref={kind}
       title={value} onClick={() => {
         void navigator.clipboard?.writeText(value).then(() => {
           setCopied(true);
           window.setTimeout(() => setCopied(false), 1600);
         });
       }}>
-      {copied ? "Copied" : kind === "newest" ? "Copy newest reference" : "Copy exact version"}
+      {copied ? "Copied" : label}
+    </button>
+  );
+}
+
+function CopyLabeledId({ value, label }: { value: string; label: string }): React.JSX.Element {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button className="btn small ghost fileidcopy" data-copy-id={label} title={value}
+      onClick={() => {
+        void navigator.clipboard?.writeText(value).then(() => {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1600);
+        });
+      }}>
+      {copied ? "Copied" : label}
     </button>
   );
 }
@@ -16830,8 +17231,13 @@ function FileRelations({ artifactId, loaded, relations, truncated, problem, onRe
   problem?: string;
   onRetry: () => void;
   onOpen: (ref: ArtifactVersionRef) => void;
-}): React.JSX.Element {
-  const state = problem ? "error" : loaded ? (relations.length === 0 ? "empty" : "some") : "loading";
+}): React.JSX.Element | null {
+  /* Empty is absent: a "How this file connects" box with nothing in it is
+     chrome, not provenance. Loading and errors still draw, because those are
+     answers. The Files screen keeps `data-relations-state="empty"` on the
+     detail wrapper so the walk can still see that zero links were declared. */
+  if (!problem && loaded && relations.length === 0) return null;
+  const state = problem ? "error" : loaded ? "some" : "loading";
   return (
     <section className="callout filedetail-sec filerelations" data-relation-artifact={artifactId}
       data-file-relations={loaded ? relations.length : state}>
@@ -16843,10 +17249,6 @@ function FileRelations({ artifactId, loaded, relations, truncated, problem, onRe
         </div>
       ) : !loaded ? (
         <p className="filedetail-wait" data-relations-state="loading">Looking for file links…</p>
-      ) : relations.length === 0 ? (
-        <p className="filedetail-empty" data-relations-state="empty">
-          No Made from or Goes with links were declared for the versions kept here.
-        </p>
       ) : (
         <>
           <div className="relationlist" data-relations-state="some">
@@ -17185,6 +17587,9 @@ function FilesScreen({ onOpenChannel, openAt, onOpened }: {
   const channelId = artifact?.channelId ?? entry?.channelId;
   const channel = world.channels.find(c => c.id === channelId);
   const newest = artifact ? latestVersion(artifact) : entry?.latest;
+  const shownDetail = artifact
+    ? (selected?.version !== undefined ? (versionOf(artifact, selected.version) ?? newest) : newest)
+    : newest;
   const exactVersion = selected?.version ?? newest?.version;
   const state = page.problem ? "error"
     : !page.asked && page.loading ? "loading"
@@ -17259,7 +17664,11 @@ function FilesScreen({ onOpenChannel, openAt, onOpened }: {
                     <span className="file-index-room">{workspaceRoomName(item, world)}</span>
                     <span className="file-index-maker">
                       {item.latest.agentName}
-                      {item.latest.runId && <code title={item.latest.runId}>turn {item.latest.runId}</code>}
+                      {item.latest.runId && (
+                        <span className="file-index-turn" title={item.latest.runId}>
+                          from a turn <code>{item.latest.runId}</code>
+                        </span>
+                      )}
                     </span>
                     <span className="file-index-date">{fileDate(item.updatedAt)}</span>
                   </span>
@@ -17308,24 +17717,82 @@ function FilesScreen({ onOpenChannel, openAt, onOpened }: {
               )}
             </div>
           ) : (
-            <div className="files-detail-inner">
+            <div className="files-detail-inner" data-relations-state={!detailProblem && relations !== undefined && relations.length === 0 ? "empty" : undefined}>
               <div className="filedetail-head">
                 <div className="filedetail-title">
                   <span className="eyebrow">{channel ? (channel.kind === "dm" ? "Direct conversation" : `Room · #${channel.name}`) : "Source room"}</span>
                   <h3>{artifact?.name ?? entry?.name ?? "Looking for that file…"}</h3>
-                  {newest && (
-                    <p>{describeArtifactVersion(newest)} · {fileDate(newest.producedAt)} · {countOf(entry?.versionCount ?? newest.version, "version")}</p>
+                  {shownDetail && (
+                    <p>
+                      {describeArtifactVersion(shownDetail)}
+                      {selected?.version !== undefined && newest && selected.version !== newest.version
+                        ? ` · exact version ${selected.version}, newest is version ${newest.version}`
+                        : " · newest"}
+                      {" · "}{fileDate(shownDetail.producedAt)} · {countOf(entry?.versionCount ?? newest?.version ?? shownDetail.version, "version")}
+                    </p>
                   )}
                 </div>
                 <div className="filedetail-actions">
-                  {channelId && <button className="btn small ghost" data-open-file-room
+                  {channelId && <button className="primary small" data-open-file-room
                     onClick={() => onOpenChannel(channelId)}>Open room</button>}
-                  {selected && <CopyFileRef kind="newest" value={artifactRef(selected.artifactId)} />}
-                  {selected && exactVersion !== undefined && (
-                    <CopyFileRef kind="exact" value={artifactRef(selected.artifactId, exactVersion)} />
-                  )}
                 </div>
               </div>
+              {selected && (
+                <details className="filedetail-advanced" data-file-advanced>
+                  <summary>References and IDs</summary>
+                  <div className="filedetail-advanced-body">
+                    <p className="filedetail-note">
+                      Newest reference always follows the latest version. Exact version pins these bytes.
+                    </p>
+                    <div className="filedetail-ref-actions">
+                      <CopyFileRef kind="newest" value={artifactRef(selected.artifactId)} />
+                      {exactVersion !== undefined && (
+                        <CopyFileRef kind="exact" version={exactVersion}
+                          value={artifactRef(selected.artifactId, exactVersion)} />
+                      )}
+                    </div>
+                    <dl className="filedetail-ids">
+                      <div>
+                        <dt>File</dt>
+                        <dd>
+                          <code title={selected.artifactId}>{selected.artifactId}</code>
+                          <CopyLabeledId value={selected.artifactId} label="Copy file id" />
+                        </dd>
+                      </div>
+                      {shownDetail?.runId && (
+                        <div>
+                          <dt>Originating turn</dt>
+                          <dd>
+                            <span>{selected?.version !== undefined && newest && selected.version !== newest.version
+                              ? "The turn that made this exact version"
+                              : "The turn that made the newest version"}</span>
+                            <code title={shownDetail.runId}>{shownDetail.runId}</code>
+                            <CopyLabeledId value={shownDetail.runId} label="Copy turn id" />
+                          </dd>
+                        </div>
+                      )}
+                      {shownDetail?.taskId && (
+                        <div>
+                          <dt>Related task</dt>
+                          <dd>
+                            <span>{world.tasks.find(t => t.id === shownDetail.taskId)?.title ?? "A delegated job"}</span>
+                            <code title={shownDetail.taskId}>{shownDetail.taskId}</code>
+                            <CopyLabeledId value={shownDetail.taskId} label="Copy task id" />
+                          </dd>
+                        </div>
+                      )}
+                      {channel && (
+                        <div>
+                          <dt>Source</dt>
+                          <dd>
+                            <span>{channel.kind === "dm" ? "Direct conversation" : `#${channel.name}`}</span>
+                          </dd>
+                        </div>
+                      )}
+                    </dl>
+                  </div>
+                </details>
+              )}
 
               {(!detailProblem || artifact) && (
                 /* Keyed by WHICH EXACT THING is being shown, so choosing a
@@ -17387,18 +17854,6 @@ type WorkflowDraft = {
 const workflowStepId = (): ID =>
   "wfs_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
 
-function workflowStatusWords(status: WorkflowRun["status"]): string {
-  switch (status) {
-    case "queued": return "Queued";
-    case "running": return "Running";
-    case "waiting_you": return "Waiting for you";
-    case "succeeded": return "Succeeded";
-    case "failed": return "Failed";
-    case "stopped": return "Stopped";
-    case "interrupted": return "Interrupted after restart";
-  }
-}
-
 function WorkflowsScreen(): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const owner = isOwner(world.me);
@@ -17455,7 +17910,7 @@ function WorkflowsScreen(): React.JSX.Element {
     const steps = draft.steps.map(s => ({ ...s, instruction: s.instruction.trim() }));
     setValidation(null);
     if (!name) { invalid("workflow-name", "Workflow name is required"); return; }
-    if (!draft.channelId) { invalid("workflow-channel", "Choose a channel before saving"); return; }
+    if (!draft.channelId) { invalid("workflow-channel", "Choose a room before saving"); return; }
     if (!steps.length) { invalid("workflow-empty-steps", "Add at least one step before saving"); return; }
     const missingAgent = steps.find(s => !s.agentId);
     if (missingAgent) { invalid("workflow-step-" + missingAgent.id + "-agent", "Choose an agent for every step"); return; }
@@ -17534,35 +17989,39 @@ function WorkflowsScreen(): React.JSX.Element {
   };
 
   if (!owner) return <section className="workspace-screen workflow-screen" aria-labelledby="workflows-heading">
-    <div className="screen-head"><div><span className="eyebrow">Runbooks</span><h1 id="workflows-heading">Workflows</h1></div></div>
-    <div className="emptyplate"><h4>Workflows belong to the owner</h4><p>You can read tasks, but only the owner can save or run a workflow.</p></div>
+    <div className="screen-head"><div><span className="eyebrow">Workflows</span><h1 id="workflows-heading">Workflows</h1></div></div>
+    <div className="emptyplate"><h4>Only the owner can save or run a workflow</h4><p>You can still read the jobs a workflow starts.</p></div>
   </section>;
   if ((!world.connected || world.workflowLoading) && !draft) return <section className="workspace-screen workflow-screen" aria-labelledby="workflows-heading">
-    <div className="screen-head"><div><span className="eyebrow">Runbooks</span><h1 id="workflows-heading">Workflows</h1></div></div>
+    <div className="screen-head"><div><span className="eyebrow">Workflows</span><h1 id="workflows-heading">Workflows</h1></div></div>
     <div className="workflow-loading" role="status" aria-live="polite"><span>Loading workflows…</span><i /><i /><i /></div>
   </section>;
   const selected = workflows.find(w => w.id === selectedId);
   const selectedRuns = runs.filter(r => r.workflowId === selectedId);
   return <section className="workspace-screen workflow-screen" aria-labelledby="workflows-heading">
     <header className="workflow-head screen-head">
-      <div><span className="eyebrow">Manual runbooks</span><h1 id="workflows-heading">Workflows</h1>
-        <p className="screen-note">A saved list of agent steps. Nothing starts until you press Run.</p></div>
+      <div><span className="eyebrow">Workflows</span><h1 id="workflows-heading">Workflows</h1>
+        <p className="screen-note">Saved steps your crew can run again. Nothing starts until you press Run.</p></div>
       <button ref={newWorkflowRef} className="primary" onClick={() => openDraft()}><span aria-hidden="true">＋</span> New workflow</button>
     </header>
     {(announce !== "Workflows" || world.workflowNotice) && <p className="workflow-announcement" role="status">{world.workflowNotice?.text ?? announce}</p>}
     <div className="workflow-layout">
       <aside className="workflow-list" aria-label="Saved workflows">
         {workflows.length === 0 ? <div className="workflow-empty"><span className="workflow-empty-mark" aria-hidden="true">↗</span>
-          <h2>No workflows yet</h2><p>Create a runbook for work you ask your crew to repeat.</p>
+          <h2>No workflows yet</h2><p>Save a set of steps you ask your crew to repeat.</p>
           <button className="primary small" onClick={() => openDraft()}>Create your first workflow</button></div>
           : workflows.map(w => {
-            const latest = runs.find(r => r.workflowId === w.id);
+            const latest = latestWorkflowRun(runs, w.id);
+            const agents = workflowAgentLine(workflowAgentNames(w.steps, world.agents));
+            const failure = workflowFailureWords(latest);
             return <button key={w.id} className={"workflow-row" + (selectedId === w.id ? " selected" : "")}
               aria-current={selectedId === w.id ? "true" : undefined}
               data-workflow-row={w.id}
               onClick={() => { setSelectedId(w.id); setDraft(null); }}>
               <span className="workflow-row-top"><b>{w.name}</b><span className={"chip workflow-" + (latest?.status ?? "idle")}>{latest ? workflowStatusWords(latest.status) : "Not run"}</span></span>
-              <span className="workflow-row-sub">{w.steps.length} {w.steps.length === 1 ? "step" : "steps"} · {w.archivedAt ? "Archived" : w.enabled ? "Ready to run" : "Switched off"}</span>
+              <span className="workflow-row-purpose">{workflowPurposeWords(w)}</span>
+              <span className="workflow-row-sub">{agents} · {workflowTriggerWords()}</span>
+              <span className={"workflow-row-now" + (failure ? " is-fail" : "")}>{failure ?? workflowRowNowWords(w, latest)}</span>
             </button>;
           })}
       </aside>
@@ -17572,7 +18031,8 @@ function WorkflowsScreen(): React.JSX.Element {
           moveStep={moveStep} onCancel={() => setDraft(null)} world={world} validation={validation} />
           : selected ? <WorkflowDetail workflow={selected} runs={selectedRuns}
             onEdit={() => openDraft(selected)}
-            agents={world.agents}
+            agents={world.agents} channels={world.channels}
+            tasks={world.tasks} approvals={world.approvals}
             onRun={() => {
               const requestId = client.sendWorkflow({ type: "runWorkflow", workflowId: selected.id });
               setAnnounce(requestId ? "Run requested; waiting for Cloud9" : "Cloud9 is offline; run was not sent");
@@ -17593,7 +18053,7 @@ function WorkflowsScreen(): React.JSX.Element {
               const requestId = client.sendWorkflow({ type: "retryWorkflow", workflowRunId: run.id, stepId });
               setAnnounce(requestId ? "Retry requested; waiting for Cloud9" : "Cloud9 is offline; retry was not sent");
             }} />
-          : <div className="workflow-state" role="status">Choose a workflow to see its steps and run history.</div>}
+          : <div className="workflow-state" role="status">Choose a workflow to see what it does, who runs it, and its history.</div>}
       </div>
     </div>
     {world.workflowError && <p id="workflow-error" className="problem workflow-problem" role="alert" tabIndex={-1}>
@@ -17610,23 +18070,29 @@ function WorkflowEditor({ draft, setDraft, titleRef, announce, setAnnounce, save
   moveStep: (index: number, delta: number) => void; onCancel: () => void; world: World;
   validation?: { field: string; message: string } | null;
 }): React.JSX.Element {
+  const involved = workflowAgentLine(workflowAgentNames(draft.steps, world.agents));
   return <div className="workflow-editor">
-    <div className="workflow-editor-head"><div><span className="eyebrow">Builder</span><h2>{draft.id ? "Edit workflow" : "New workflow"}</h2></div>
+    <div className="workflow-editor-head"><div><span className="eyebrow">Workflow</span><h2>{draft.id ? "Edit workflow" : "New workflow"}</h2></div>
       <button className="ghost" onClick={onCancel}>Cancel</button></div>
     <div className="workflow-form">
       <label>Workflow name<input id="workflow-name" ref={titleRef} value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })}
         placeholder="e.g. Weekly release notes" aria-required="true" aria-describedby={validation?.field === "workflow-name" ? "workflow-name-error" : undefined} />
         {validation?.field === "workflow-name" && <span id="workflow-name-error" className="field-error" role="alert">{validation.message}</span>}</label>
-      <label>Description <span className="optional">(optional)</span><textarea value={draft.description}
-        onChange={e => setDraft({ ...draft, description: e.target.value })} placeholder="What does this runbook do?" rows={2} /></label>
-      <label>Channel<select id="workflow-channel" value={draft.channelId} onChange={e => setDraft({ ...draft, channelId: e.target.value })}
-        aria-describedby={validation?.field === "workflow-channel" ? "workflow-channel-help workflow-channel-error" : "workflow-channel-help"}><option value="">Choose a channel</option>
+      <label>What it does <span className="optional">(optional)</span><textarea value={draft.description}
+        onChange={e => setDraft({ ...draft, description: e.target.value })} placeholder="What should someone see this workflow do?" rows={2} /></label>
+      <div className="workflow-editor-facts" role="group" aria-label="How this workflow starts">
+        <div><span className="workflow-fact-label">Starts when</span><b>{workflowTriggerWords()}</b>
+          <span className="field-help">Nothing starts on its own.</span></div>
+        <div><span className="workflow-fact-label">Agents</span><b>{involved}</b></div>
+      </div>
+      <label>Room<select id="workflow-channel" value={draft.channelId} onChange={e => setDraft({ ...draft, channelId: e.target.value })}
+        aria-describedby={validation?.field === "workflow-channel" ? "workflow-channel-help workflow-channel-error" : "workflow-channel-help"}><option value="">Choose a room</option>
         {world.channels.filter(c => c.kind === "channel").map(c => <option key={c.id} value={c.id}>#{c.name}</option>)}</select>
-        <span id="workflow-channel-help" className="field-help">Steps use this room for context and task history.</span>
+        <span id="workflow-channel-help" className="field-help">Steps use this room for context and history.</span>
         {validation?.field === "workflow-channel" && <span id="workflow-channel-error" className="field-error" role="alert">{validation.message}</span>}</label>
       <label className="workflow-toggle"><input type="checkbox" checked={draft.enabled}
         onChange={e => setDraft({ ...draft, enabled: e.target.checked })} /> Ready to run</label>
-      <div className="workflow-steps-head"><div><h3>Ordered steps</h3><p>One agent at a time. The next starts only after the previous succeeds.</p></div>
+      <div className="workflow-steps-head"><div><h3>Ordered steps</h3><p>One agent at a time. The next starts only after the previous finishes. Use ↑↓ to change step order.</p></div>
         <button className="secondary small" onClick={() => setDraft({ ...draft, steps: [...draft.steps,
           { id: workflowStepId(), agentId: world.agents.find(a => a.ownerId === world.me?.id)?.id ?? "", instruction: "" }] })}>＋ Add step</button></div>
       <ol className="workflow-steps">
@@ -17652,27 +18118,77 @@ function WorkflowEditor({ draft, setDraft, titleRef, announce, setAnnounce, save
   </div>;
 }
 
-function WorkflowDetail({ workflow, runs, onEdit, onRun, onArchive, onStop, onRetry, agents }: {
+function WorkflowDetail({ workflow, runs, onEdit, onRun, onArchive, onStop, onRetry, agents, channels, tasks, approvals }: {
   workflow: Workflow; runs: WorkflowRun[]; onEdit: () => void; onRun: () => void;
   onStop: (run: WorkflowRun) => void; onRetry: (run: WorkflowRun, stepId: ID) => void;
-  onArchive: () => void; agents: AgentDef[];
+  onArchive: () => void; agents: AgentDef[]; channels: Channel[]; tasks: Task[]; approvals: Approval[];
 }): React.JSX.Element {
   const latest = runs[0];
+  const current = workflowCurrentStep(latest);
+  const failure = workflowFailureWords(latest);
+  const involved = workflowAgentLine(workflowAgentNames(workflow.steps, agents));
+  const output = workflowLatestOutput(latest);
+  const waiting = latest
+    ? workflowApprovalsForRun(latest.id, tasks, approvals).filter(item => item.status === "pending")
+    : [];
   return <div className="workflow-detail-inner"><header className="workflow-detail-head"><div>
-    <span className="eyebrow">{workflow.archivedAt ? "Archived" : workflow.enabled ? "Ready to run" : "Switched off"}</span><h2>{workflow.name}</h2>
-    {workflow.description && <p>{workflow.description}</p>}</div><div className="workflow-detail-actions">
+    <span className="eyebrow">{workflowReadyWords(workflow)}</span><h2>{workflow.name}</h2>
+    <p>{workflowPurposeWords(workflow)}</p></div><div className="workflow-detail-actions">
     <button className="secondary" onClick={onEdit}>Edit</button><button className="ghost" onClick={onArchive}>{workflow.archivedAt ? "Restore" : "Archive"}</button><button className="primary" disabled={Boolean(workflow.archivedAt) || !workflow.enabled || workflow.steps.length === 0} onClick={onRun}>Run workflow</button></div></header>
-    <div className="workflow-meta"><span>Channel {workflow.channelId}</span><span>{workflow.steps.length} {workflow.steps.length === 1 ? "step" : "steps"}</span><span>No automatic triggers in v1 · press Run manually</span><span>Separate from the agent Workflow tool</span><span>Archive keeps history</span></div>
-    <ol className="workflow-preview">{workflow.steps.map((step, i) => <li key={step.id}><span className="step-number">{i + 1}</span><div><b>{step.instruction}</b><span>{agents.find(agent => agent.id === step.agentId)?.name ?? "Agent removed"}</span></div></li>)}</ol>
-    <section className="workflow-history" aria-labelledby="workflow-history-heading"><div className="workflow-section-head"><div><span className="eyebrow">Receipts</span><h3 id="workflow-history-heading">Run history</h3></div>
+    <dl className="workflow-facts">
+      <div><dt>What it does</dt><dd>{workflowPurposeWords(workflow)}</dd></div>
+      <div><dt>Agents</dt><dd>{involved}</dd></div>
+      <div><dt>Starts when</dt><dd>{workflowTriggerWords()}</dd></div>
+      <div><dt>Status</dt><dd>{latest ? workflowStatusWords(latest.status) : "Not run yet"}</dd></div>
+      <div><dt>Current step</dt><dd>{workflowCurrentStepWords(latest)}</dd></div>
+      <div><dt>Room</dt><dd>{workflowRoomWords(workflow.channelId, channels)}</dd></div>
+      {waiting.length > 0 && <div className="is-wait"><dt>Needs you</dt><dd>{waiting.map(item => item.action).join(" · ")}</dd></div>}
+    </dl>
+    {failure && <p className="workflow-run-error" role="alert">{failure}</p>}
+    {output && latest?.status === "succeeded" && <p className="workflow-run-output"><b>Last output</b>{output}</p>}
+    <ol className="workflow-preview">{workflow.steps.map((step, i) => {
+      const live = !!current && !!latest && !["succeeded", "failed", "stopped", "interrupted"].includes(latest.status)
+        && current.index === i + 1;
+      return <li key={step.id} className={live ? "is-current" : undefined}>
+        <span className="step-number">{i + 1}</span>
+        <div><b>{step.instruction}</b>
+          <span>{agents.find(agent => agent.id === step.agentId)?.name ?? "Agent removed"}{live ? " · now" : ""}</span></div>
+      </li>;
+    })}</ol>
+    <section className="workflow-history" aria-labelledby="workflow-history-heading"><div className="workflow-section-head"><div><span className="eyebrow">History</span><h3 id="workflow-history-heading">Run history</h3></div>
       {latest && <span className={"chip workflow-" + latest.status}>{workflowStatusWords(latest.status)}</span>}</div>
-      {!runs.length ? <p className="workflow-state">No runs yet. Press Run when you are ready.</p> : runs.slice(0, 8).map(run => <article className="workflow-run" key={run.id}>
+      {!runs.length ? <p className="workflow-state">No runs yet. Press Run when you are ready.</p> : runs.slice(0, 8).map(run => {
+        const runApprovals = workflowApprovalsForRun(run.id, tasks, approvals);
+        const runFail = workflowFailureWords(run);
+        return <article className="workflow-run" key={run.id}>
         <div className="workflow-run-head"><b>{workflowStatusWords(run.status)}</b><span>{new Date(run.createdAt).toLocaleString()}</span>
+          <span className="workflow-run-now">{workflowCurrentStepWords(run)}</span>
           {!["succeeded", "failed", "stopped", "interrupted"].includes(run.status) && <button className="linkbtn" onClick={() => onStop(run)}>Stop</button>}</div>
-        {run.steps.map(step => <div className="workflow-run-step" key={step.id}><span className={"run-dot run-" + step.status} aria-hidden="true" /><span>{step.instruction}</span>
-          <span className="run-step-status">{workflowStatusWords(step.status as WorkflowRun["status"])}</span>
-          {(step.status === "failed" || step.status === "stopped" || step.status === "interrupted") && <button className="linkbtn" onClick={() => onRetry(run, step.id)}>Retry from here</button>}</div>)}
-        {run.error && <p className="workflow-run-error" role="alert">{run.error}</p>}</article>)}
+        {runApprovals.map(approval => <div className="workflow-run-approval" key={approval.id}>
+          <span className={"chip workflow-" + (approval.status === "pending" ? "waiting_you" : approval.status)}>{workflowApprovalWords(approval.status)}</span>
+          <span>{approval.action}</span>
+          {approval.status === "pending" && <ApprovalCheckpointControls approval={approval}
+            midRun={approval.kind === "action" || approval.kind === "plan" || approval.kind === "saving"}
+            dead={approvalIsDead(approval)} />}
+        </div>)}
+        {run.steps.map(step => {
+          const stepOut = workflowStepOutput(step);
+          const live = run.currentStepId === step.id;
+          return <div className={"workflow-run-step" + (live ? " is-current" : "")} key={step.id}>
+            <div className="workflow-run-step-row">
+              <span className={"run-dot run-" + step.status} aria-hidden="true" />
+              <span>{step.instruction}<i>{agents.find(agent => agent.id === step.agentId)?.name ?? "Agent removed"}</i></span>
+              <span className="run-step-status">{workflowStatusWords(step.status)}</span>
+              {(step.status === "failed" || step.status === "stopped" || step.status === "interrupted") && <button className="linkbtn" onClick={() => onRetry(run, step.id)}>Retry from here</button>}
+            </div>
+            {step.error && <p className="workflow-run-error" role="alert">{step.error}</p>}
+            {stepOut && <p className="workflow-run-output"><b>Output</b>{stepOut}</p>}
+          </div>;
+        })}
+        {runFail && <p className="workflow-run-error" role="alert">{runFail}</p>}
+      </article>;
+      })}
+      {runs.length > 8 && <p className="field-help">Showing the last 8 runs.</p>}
     </section>
   </div>;
 }
@@ -17815,12 +18331,7 @@ function TasksScreen({ onOpenChannel, openAt, onOpened }: {
               empty panel on its own reads as "nothing ever happened". */}
           {world.tasks.length > 0 && shown.length === 0 && (
             <EmptyTray title="No jobs of that kind"
-              line={<>No server-recorded jobs match this filter right now. Pick “All” to see every job.</>} />
-          )}
-          {stuck.length > 0 && (
-            <span className="eyebrow stucklabel" style={{ display: "block", marginBottom: 12 }}>
-              Stuck — waiting on something · {stuck.length}
-            </span>
+              line={<>No server-recorded jobs match this filte          </span>
           )}
           {stuck.map(taskCard)}
           {running.length > 0 && (
@@ -18094,14 +18605,17 @@ function ConnectProject({ onConnected }: { onConnected: (repo: string) => void }
           </button>
         </div>
 
+    </span>
+          )}
+          <button className="btn small" data-repolist-again disabled={choices.asking}
+            onClick={() => client.askRepositories()}>
+            {choices.asking ? "Asking…" : "Ask again"}
+          </button>
+        </div>
+
         {choices.asking && (
           <div className="runwait">Asking the GitHub sign-in on this computer…</div>
-        )}
-
-        {/* WHY there is no list, in the hub's own words — never an empty list
-            reading like "you have no repositories". The typed field below still
-            works, and this says so. */}
-        {!choices.asking && choices.problem && (
+   
           <div className="rp-problem" role="status">
             <b>Cloud9 could not ask GitHub for your repositories</b>
             <span className="problemtext">{plainError(choices.problem)}</span>
@@ -18446,6 +18960,12 @@ function ProjectDetail({ project, onOpenChannel, openItem }: {
       )}
 
       <div className="pd-facts">
+        {/* Each of these is drawn ONLY whe         Disconnecting forgets Cloud9's copy of these lists. <b>Your repository is not
+          touched</b> — Cloud9 has no way to delete anything on GitHub.
+        </p>
+      )}
+
+      <div className="pd-facts">
         {/* Each of these is drawn ONLY when the hub told us. A repository nobody
             has looked at has no branch chip and no "last looked" chip, and says
             that in words instead. */}
@@ -18704,8 +19224,8 @@ function PollsScreen(): React.JSX.Element {
           <form className="poll-create" onSubmit={submit} aria-label="Create project poll">
             <h3>New decision</h3>
             <label className="field"><span>Question</span><input value={question} maxLength={240} onChange={e => setQuestion(e.target.value)} placeholder="What should we ship next?" /></label>
-            {options.map((value, i) => <label className="field" key={i}><span>Option {i + 1}</span><input value={value} maxLength={120} onChange={e => setOptions(xs => xs.map((x, j) => j === i ? e.target.value : x))} /></label>)}
-            {options.length < 10 && <button type="button" className="btn" onClick={() => setOptions(xs => [...xs, ""])}>Add option</button>}
+            {options.map((value, i) => <label className="field" key={i}><span>Alternative {i + 1}</span><input value={value} maxLength={120} onChange={e => setOptions(xs => xs.map((x, j) => j === i ? e.target.value : x))} /></label>)}
+            {options.length < 10 && <button type="button" className="btn" onClick={() => setOptions(xs => [...xs, ""])}>Add alternative</button>}
             <label className="field"><span>Deadline (optional)</span><input type="datetime-local" value={deadline} onChange={e => setDeadline(e.target.value)} /></label>
             <button className="btn primary" type="submit">Create poll</button>
             <p className="meta">Only signed-in project members can view or vote. Votes can change until the poll closes.</p>
@@ -18722,22 +19242,54 @@ function PollsScreen(): React.JSX.Element {
 }
 
 function PollCard({ poll, summary, onSummary }: { poll: ProjectPollView; summary: string; onSummary: (v: string) => void }): React.JSX.Element {
+  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [choice, setChoice] = useState(poll.myOptionId ?? "");
   useEffect(() => setChoice(poll.myOptionId ?? ""), [poll.myOptionId]);
-  return <article className="poll-card" data-poll={poll.id}>
-    <header><h3>{poll.question}</h3><span className="meta">{poll.authorKind === "agent" ? "Agent" : "Human"} · {poll.status}</span></header>
-    <fieldset disabled={poll.status !== "open"}><legend className="sr-only">Options</legend>{poll.options.map(option => <label key={option.id} className="poll-option"><input type="radio" name={`poll-${poll.id}`} checked={choice === option.id} onChange={() => setChoice(option.id)} /> <span>{option.label}</span><b>{poll.results.find(r => r.optionId === option.id)?.votes ?? 0}</b></label>)}</fieldset>
+  const ownerName = studioPersonName(poll.authorId, world.users, world.agents);
+  const owner = ownerName ?? (poll.authorKind === "agent" ? "Agent" : "Teammate");
+  const status = poll.status === "open" ? "Open" : "Closed";
+  const chosen = pollChosenLabel(poll);
+  const closer = poll.decision ? studioPersonName(poll.decision.closedBy, world.users, world.agents) : undefined;
+  const participants = `${poll.totalVotes} ${poll.totalVotes === 1 ? "vote" : "votes"}`;
+  return <article className="poll-card" data-poll={poll.id} data-status={poll.status}>
+    <header>
+      <div>
+        <h3>{poll.question}</h3>
+        <p className="meta poll-facts">
+          Owner · {owner}
+          {poll.createdAt ? ` · ${new Date(poll.createdAt).toLocaleString()}` : ""}
+        </p>
+      </div>
+      <span className="poll-status" data-status={poll.status}>{status}</span>
+    </header>
+    <fieldset disabled={poll.status !== "open"}>
+      <legend>Alternatives</legend>
+      {poll.options.map(option => {
+        const votes = poll.results.find(r => r.optionId === option.id)?.votes ?? 0;
+        const mine = poll.myOptionId === option.id;
+        const picked = chosen === option.label;
+        return <label key={option.id} className="poll-option" data-chosen={picked ? "true" : "false"}>
+          <input type="radio" name={`poll-${poll.id}`} checked={choice === option.id} onChange={() => setChoice(option.id)} />
+          <span>{option.label}{mine && poll.status === "open" ? " · your choice" : ""}{picked && poll.status === "closed" ? " · chosen" : ""}</span>
+          <b>{votes}</b>
+        </label>;
+      })}
+    </fieldset>
+    <p className="meta">Participants · {participants}</p>
+    {chosen && <p className="meta poll-chosen">Chosen option · {chosen}</p>}
     <div className="poll-actions">{poll.status === "open" && <button className="btn" disabled={!choice} onClick={() => client.votePoll(poll.id, choice)}>Vote / change vote</button>}{poll.canClose && poll.status === "open" && <><input aria-label="Decision note" maxLength={500} value={summary} onChange={e => onSummary(e.target.value)} placeholder="Decision note (optional)" /><button className="btn" onClick={() => client.closePoll(poll.id, summary)}>Close and record result</button></>}</div>
     {poll.status === "closed" && poll.decision && <p className="meta poll-decision" data-reason={poll.decision.reason} data-closed-at={poll.decision.closedAt}>
-      Decision recorded: {poll.decision.reason === "deadline" ? "deadline reached" : "closed by owner"} · {new Date(poll.decision.closedAt).toLocaleString()}
+      Decision recorded: {poll.decision.reason === "deadline" ? "deadline reached" : (closer ? `closed by ${closer}` : "closed by owner")} · {new Date(poll.decision.closedAt).toLocaleString()}
       {poll.decision.summary ? ` · ${poll.decision.summary}` : ""}
     </p>}
-    <p className="meta">{poll.status === "closed" ? `${poll.totalVotes} vote${poll.totalVotes === 1 ? "" : "s"}` : `${poll.totalVotes} vote${poll.totalVotes === 1 ? "" : "s"} · open until ${poll.deadlineAt ? new Date(poll.deadlineAt).toLocaleString() : "closed by owner"}`}</p>
+    {poll.status === "open" && <p className="meta">Open until {poll.deadlineAt ? new Date(poll.deadlineAt).toLocaleString() : "closed by owner"}</p>}
+    <details className="studio-advanced">
+      <summary>Advanced</summary>
+      <p className="meta">Poll id · <code>{poll.id}</code> <button type="button" className="linkish" onClick={() => { void navigator.clipboard?.writeText(poll.id); }}>Copy</button></p>
+    </details>
   </article>;
 }
 
-
-const CANVAS_BLOCK_KINDS: CanvasBlockKind[] = ["markdown", "architecture", "requirements", "decision", "link", "task", "run", "pullRequest", "artifact"];
 
 function CanvasScreen({ onOpenLink, initialProjectId }: {
   onOpenLink: (link: CanvasLink, projectId: ID) => void; initialProjectId?: ID;
@@ -18782,13 +19334,19 @@ function CanvasScreen({ onOpenLink, initialProjectId }: {
         {canvases.length > 0 && <div className="canvas-layout">
           <aside className="canvas-list" aria-label="Canvas list">{canvases.map(c => <button className="side-item" key={c.id} aria-current={canvas?.id === c.id ? "true" : "false"} onClick={() => setCanvasId(c.id)}><span className="txt">{c.title}</span>{c.unread && <span className="cnt hot" aria-label="unread updates">•</span>}</button>)}</aside>
           {canvas && <section className="canvas-editor" aria-live="polite">
-            <header><div><h3>{canvas.title}</h3><span className="meta">Revision {canvas.revision} · {canvas.blocks.filter(b => !b.deletedAt).length} active blocks · recent 100 revisions retained</span></div><button className="btn" onClick={() => client.askCanvasHistory(canvas.id)}>History (recent 100)</button></header>
-            <form className="canvas-add" onSubmit={add} aria-label="Add canvas block"><label className="field"><span>Block type</span><select value={kind} onChange={e => setKind(e.target.value as CanvasBlockKind)}>{CANVAS_BLOCK_KINDS.map(k => <option key={k} value={k}>{k}</option>)}</select></label><label className="field"><span>Content</span><textarea value={text} maxLength={20000} onChange={e => setText(e.target.value)} placeholder="Write the decision or requirement…" /></label><div className="canvas-link"><label className="field"><span>Link type (optional)</span><select value={linkKind} onChange={e => setLinkKind(e.target.value as typeof linkKind)}><option value="">No linked record</option><option value="task">Task</option><option value="run">Run</option><option value="pullRequest">Pull request</option><option value="artifact">Artifact</option></select></label><label className="field"><span>Link id</span><input value={linkId} onChange={e => setLinkId(e.target.value)} placeholder="Only an accessible id is accepted" /></label></div><button className="btn primary" type="submit">Add block</button></form>
-            <div className="canvas-blocks">{canvas.blocks.map(block => block.deletedAt ? <article className="canvas-block tombstone" key={block.id}><span className="meta">Tombstoned block · retained in history</span></article> : <article className="canvas-block" key={block.id}><header><span className="eyebrow">{block.kind}</span><span className="meta">{block.authorKind === "agent" ? "Agent" : "Human"}</span></header><textarea aria-label={`${block.kind} block`} value={editing[block.id] ?? block.text} onChange={e => setEditing(s => ({ ...s, [block.id]: e.target.value }))} /><div className="canvas-actions"><button className="btn" disabled={editing[block.id] === undefined || editing[block.id] === block.text} onClick={() => { const draft = editing[block.id] ?? block.text; client.editCanvasBlock(canvas.id, block.id, draft, block.kind, { onSaved: () => setEditing(s => { const n = { ...s }; delete n[block.id]; return n; }) }); }}>Save edit</button><button className="btn danger" onClick={() => client.tombstoneCanvasBlock(canvas.id, block.id)}>Remove (keep history)</button>{block.link && <button className="btn linkbtn" onClick={() => onOpenLink(block.link!, canvas.projectId)}>Open linked {block.link.kind}</button>}{block.linkUnavailable && <span className="meta">Linked record unavailable to you</span>}</div></article>)}</div>
-            {world.canvases.historyCanvasId === canvas.id && world.canvases.historyLoading && <div className="runwait" role="status">Loading revision history…</div>}
+            <header>
+              <div>
+                <h3>{canvas.title}</h3>
+                <span className="meta">{canvasVersionLine(canvas, world.users, world.agents)}</span>
+              </div>
+              <button className="btn" onClick={() => client.askCanvasHistory(canvas.id)}>History →</button>
+            </header>
+            <form className="canvas-add" onSubmit={add} aria-label="Add canvas block"><label className="field"><span>Section type</span><select value={kind} onChange={e => setKind(e.target.value as CanvasBlockKind)}>{CANVAS_BLOCK_KINDS.map(k => <option key={k} value={k}>{canvasBlockKindLabel(k)}</option>)}</select></label><label className="field"><span>Content</span><textarea value={text} maxLength={20000} onChange={e => setText(e.target.value)} placeholder="Write the decision or requirement…" /></label><details className="canvas-advanced"><summary>Advanced</summary><div className="canvas-link"><label className="field"><span>Link type (optional)</span><select value={linkKind} onChange={e => setLinkKind(e.target.value as typeof linkKind)}><option value="">No linked record</option><option value="task">Task</option><option value="run">Run</option><option value="pullRequest">Pull request</option><option value="artifact">Artifact</option></select></label><label className="field"><span>Link id</span><input value={linkId} onChange={e => setLinkId(e.target.value)} placeholder="Only an accessible id is accepted" /></label></div></details><button className="btn primary" type="submit">Add block</button></form>
+            <div className="canvas-blocks">{canvas.blocks.map(block => block.deletedAt ? <article className="canvas-block tombstone" key={block.id}><span className="meta">Removed{block.deletedByName ? ` by ${block.deletedByName}` : ""} · kept in History{block.deletedAt ? ` · ${new Date(block.deletedAt).toLocaleString()}` : ""}</span>{block.link && <details className="canvas-advanced"><summary>Advanced</summary><p className="meta canvas-id-row">{canvasLinkKindLabel(block.link.kind)} id <code>{block.link.id}</code><CopyTechnicalId value={block.link.id} /></p></details>}</article> : <article className="canvas-block" key={block.id}><header><span className="eyebrow">{canvasBlockKindLabel(block.kind)}</span><span className="meta">{canvasActorName(block.authorId, block.authorKind, world.users, world.agents, block.authorName) || (block.authorKind === "agent" ? "Agent" : "Project member")}{block.updatedAt ? ` · ${new Date(block.updatedAt).toLocaleString()}` : ""}</span></header><textarea aria-label={`${canvasBlockKindLabel(block.kind)} block`} value={editing[block.id] ?? block.text} onChange={e => setEditing(s => ({ ...s, [block.id]: e.target.value }))} /><div className="canvas-actions"><button className="btn" disabled={editing[block.id] === undefined || editing[block.id] === block.text} onClick={() => { const draft = editing[block.id] ?? block.text; client.editCanvasBlock(canvas.id, block.id, draft, block.kind, { onSaved: () => setEditing(s => { const n = { ...s }; delete n[block.id]; return n; }) }); }}>Save edit</button><button className="btn danger" title="Remove this block; it stays in History" onClick={() => client.tombstoneCanvasBlock(canvas.id, block.id)}>Remove</button>{block.link && <button className="btn linkbtn" onClick={() => onOpenLink(block.link!, canvas.projectId)}>Open {block.link.label?.trim() || canvasLinkKindLabel(block.link.kind)}</button>}{block.linkUnavailable && <span className="meta">Linked record unavailable to you</span>}</div>{block.link && <details className="canvas-advanced"><summary>Advanced</summary><p className="meta canvas-id-row">{canvasLinkKindLabel(block.link.kind)} id <code>{block.link.id}</code><CopyTechnicalId value={block.link.id} /></p></details>}</article>)}</div>
+            {world.canvases.historyCanvasId === canvas.id && world.canvases.historyLoading && <div className="runwait" role="status">Loading History…</div>}
             {world.canvases.historyCanvasId === canvas.id && world.canvases.historyProblem && <p className="problem" role="alert">{world.canvases.historyProblem}</p>}
-            {world.canvases.historyCanvasId === canvas.id && world.canvases.historyAsked && !world.canvases.historyLoading && !world.canvases.historyProblem && world.canvases.historyRequestId === undefined && world.canvases.history.length === 0 && <p className="meta" role="status">No revision history has been recorded yet.</p>}
-            {world.canvases.historyCanvasId === canvas.id && world.canvases.history.length > 0 && <details className="canvas-history"><summary>Recent revision history ({world.canvases.history.length} of 100 max)</summary>{world.canvases.history.map(r => <div key={r.revision} className="meta">Revision {r.revision} · {r.summary} · {new Date(r.changedAt).toLocaleString()}</div>)}</details>}
+            {world.canvases.historyCanvasId === canvas.id && world.canvases.historyAsked && !world.canvases.historyLoading && !world.canvases.historyProblem && world.canvases.historyRequestId === undefined && world.canvases.history.length === 0 && <p className="meta" role="status">No History has been recorded yet.</p>}
+            {world.canvases.historyCanvasId === canvas.id && world.canvases.history.length > 0 && <details className="canvas-history"><summary>History</summary>{world.canvases.history.map(r => <div key={r.revision} className="meta">v{r.revision} · {canvasHistorySummary(r.summary)}{r.changedByName ? ` · ${r.changedByName}` : ""} · {new Date(r.changedAt).toLocaleString()}</div>)}<details className="canvas-advanced"><summary>Advanced</summary><p className="meta">Cloud9 keeps the last {CANVAS_LIMITS.history} versions.</p></details></details>}
           </section>}
         </div>}
       </>}
@@ -19283,7 +19841,7 @@ function SpendingScreen(): React.JSX.Element {
  * Now there is one list of lines and everything on the screen is derived from
  * it. A second way to count agents is, from here on, a bug.
  */
-function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine }[] {
+function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine; where?: string }[] {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const liveWork = useLiveWorkByAgent();
 
@@ -19362,7 +19920,7 @@ function useAgentActivity(): { agent: AgentDef; line: AgentActivityLine }[] {
        board would never redraw to show it. The row would sit on "Ready" for
        ever with the record already in memory. */
   }), [mine, world.presence, world.agentStatus, world.tasks, world.runLists,
-    liveApprovals, liveWork, askOf]);
+    world.channels, world.runs, liveApprovals, liveWork, askOf]);
 }
 
 /**
@@ -19451,13 +20009,14 @@ function RightNowBoard(): React.JSX.Element {
       </div>
       {ordered.length > 0 && (
         <div className="rn-rows">
-          {ordered.map(({ agent, line }) => (
+          {ordered.map(({ agent, line, where }) => (
             <div className="rn-row" key={agent.id}
               data-agent={agent.id} data-state={line.state}>
               <span className="rn-face"><AgentFace name={agent.name} size={30} /></span>
               <span className="rn-tx">
                 <b>{agent.name}</b>
                 <span className="rn-detail">{line.detail}</span>
+                {where && <span className="rn-where">in {where}</span>}
               </span>
               {/* THE TICK IS ONLY DRAWN WHEN THERE IS ONE. A quiet state has no
                   tick in the chat either, and printing a dash in its place put
@@ -19544,45 +20103,6 @@ function socialLinkLabel(link: SocialLink): string {
   return `${link.kind} ${link.id}`;
 }
 
-
-function HuddlesScreen({ onLink }: { onLink: (link: HuddleLink, projectId?: ID) => void }): React.JSX.Element {
-  const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const [projectId, setProjectId] = useState<ID>("");
-  const [sessionId, setSessionId] = useState<ID>();
-  const [title, setTitle] = useState("");
-  const [agenda, setAgenda] = useState("");
-  const [body, setBody] = useState("");
-  const [kind, setKind] = useState<HuddleNoteKind>("note");
-  const startRequest = useRef<ID | undefined>(undefined);
-  const noteRequest = useRef<ID | undefined>(undefined);
-  const noteDraft = useRef("");
-  useEffect(() => { client.askHuddleProjects(); client.askHuddles(); }, []);
-  useEffect(() => {
-    if (!projectId && world.huddleProjects.list[0]) setProjectId(world.huddleProjects.list[0].id);
-    if (projectId) client.askHuddles(projectId);
-    if (!sessionId && world.huddles.sessions[0]) setSessionId(world.huddles.sessions[0].id);
-  }, [projectId, sessionId, world.huddleProjects.list, world.huddles.sessions]);
-  // Open durable history + clear unread when a session is selected (reconnect/reopen path).
-  useEffect(() => {
-    if (!sessionId) return;
-    client.askHuddle(sessionId);
-    client.huddleSend({ type: "huddleMarkRead", sessionId });
-  }, [sessionId]);
-  const active = world.huddles.sessions.find(s => s.id === sessionId);
-  const notes = active ? world.huddleNotes[active.id] ?? [] : [];
-  const latest = Object.values(world.huddleMutations).sort((a, b) => a.state === "pending" ? -1 : b.state === "pending" ? 1 : 0)[0];
-  useEffect(() => { const id = startRequest.current; if (id && world.huddleMutations[id]?.state === "succeeded") { setTitle(""); setAgenda(""); startRequest.current = undefined; } }, [world.huddleMutations]);
-  useEffect(() => { const id = noteRequest.current; if (id && world.huddleMutations[id]?.state === "succeeded") { setBody(current => current === noteDraft.current ? "" : current); noteRequest.current = undefined; } }, [world.huddleMutations]);
-  const start = (e: React.FormEvent) => { e.preventDefault(); if (projectId && title.trim() && agenda.trim()) { startRequest.current = client.huddleSend({ type: "huddleStart", projectId, title, agenda }); } };
-  // Notes are project-scoped: any project member may write without joining presence.
-  const addNote = (e: React.FormEvent) => { e.preventDefault(); if (active && active.state === "active" && body.trim()) { noteDraft.current = body; noteRequest.current = client.huddleSend({ type: "huddleNote", sessionId: active.id, kind, body }); } };
-  return <section className="huddle-screen" aria-labelledby="huddles-heading"><header className="screen-head"><div><span className="eyebrow">Project presence</span><h1 id="huddles-heading">Huddles</h1><p className="muted">Shared notes for the project team — join only marks you present. No audio or video in v1.</p></div></header>
-    <label className="field-label" htmlFor="huddle-project">Project</label><select id="huddle-project" className="input" value={projectId} onChange={e => { setProjectId(e.target.value); setSessionId(undefined); }} aria-label="Choose huddle project"><option value="">Choose a project</option>{world.huddleProjects.list.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
-    {world.lastError && <div role="alert" aria-live="polite">{world.lastError.text}</div>}
-    {latest?.state === "pending" && <div role="status" aria-live="polite">Saving huddle action…</div>}{latest?.state === "lost" && <div role="alert">{latest.problem}</div>}{latest?.state === "refused" && <div role="alert">{latest.problem}</div>}
-    {!world.huddleProjects.asked || !world.huddles.asked ? <div className="empty-state" role="status">Loading huddles…</div> : <div className="huddle-layout"><aside className="huddle-list" aria-label="Huddle sessions">{world.huddles.sessions.filter(s => !projectId || s.projectId === projectId).length === 0 ? <div className="empty-state">No huddles yet.</div> : world.huddles.sessions.filter(s => !projectId || s.projectId === projectId).map(s => <button className={`huddle-row${s.id === sessionId ? " selected" : ""}`} key={s.id} type="button" onClick={() => setSessionId(s.id)}><strong>{s.title}</strong><span>{s.state} · {s.unread ? `${s.unread} new notes` : "read"}</span><small>{new Date(s.startedAt).toLocaleString()}</small></button>)}</aside><div className="huddle-detail" aria-live="polite">{active ? <><div className="huddle-head"><span className="status-pill">{active.state}</span><h2>{active.title}</h2><p className="muted">{active.agenda}</p><div className="huddle-actions">{active.state === "active" && !active.participants.some(p => p.id === world.me?.id && p.present) && <button className="btn small" type="button" onClick={() => client.huddleSend({ type: "huddleJoin", sessionId: active.id })}>Join</button>}{active.state === "active" && active.participants.some(p => p.id === world.me?.id && p.present) && <button className="btn small" type="button" onClick={() => client.huddleSend({ type: "huddleLeave", sessionId: active.id })}>Leave</button>}{active.state === "active" && active.ownerId === world.me?.id && <button className="btn small" type="button" onClick={() => client.huddleSend({ type: "huddleEnd", sessionId: active.id })}>End huddle</button>}</div></div><div className="huddle-presence" aria-label="Participants">{active.participants.map(p => <span className={p.present ? "present" : "left"} key={`${p.id}-${p.joinedAt}`}>{p.name} · {p.kind} {p.present ? "present" : "left"}</span>)}</div><div className="huddle-notes" role="feed" aria-label="Shared notes">{notes.length === 0 ? <div className="empty-state">No notes yet.</div> : notes.map(n => <article className="huddle-note" key={n.id}><strong>{n.deletedAt ? "Deleted note" : n.kind}</strong><span className="muted">{n.authorName} ({n.authorKind}) · {new Date(n.createdAt).toLocaleString()}</span><p>{n.body}</p>{n.links?.length > 0 && <div className="huddle-links" aria-label="Related links">{n.links.map((link, i) => <button key={`${n.id}-link-${i}`} className="linkish" type="button" disabled={link.available === false} title={link.available === false ? "Unavailable" : "Open related item"} onClick={() => onLink(link, active.projectId)}>{link.label ?? link.kind}{link.available === false ? " (unavailable)" : ""}</button>)}</div>}{!n.deletedAt && (n.authorId === world.me?.id || active.ownerId === world.me?.id) && <button className="linkish" type="button" onClick={() => client.huddleSend({ type: "huddleDeleteNote", noteId: n.id })}>Delete note</button>}</article>)}</div><form className="huddle-composer" onSubmit={addNote}><label className="field-label" htmlFor="huddle-kind">Type</label><select id="huddle-kind" className="input" value={kind} onChange={e => setKind(e.target.value as HuddleNoteKind)} disabled={active.state !== "active"}><option value="note">Note</option><option value="decision">Decision</option><option value="action">Action item</option></select><label className="field-label" htmlFor="huddle-note">Shared note</label><textarea id="huddle-note" className="input" value={body} onChange={e => setBody(e.target.value)} placeholder="Write a note for the team" required disabled={active.state !== "active"} /><button className="btn primary" disabled={active.state !== "active"}>Add note</button></form></> : <div className="empty-state">Choose a huddle.</div>}</div></div>}
-    <form className="huddle-start" onSubmit={start}><h2>Start a huddle</h2><label className="field-label" htmlFor="huddle-title">Title</label><input id="huddle-title" className="input" value={title} onChange={e => setTitle(e.target.value)} required /><label className="field-label" htmlFor="huddle-agenda">Agenda</label><textarea id="huddle-agenda" className="input" value={agenda} onChange={e => setAgenda(e.target.value)} required /><button className="btn primary" disabled={!projectId}>Start huddle</button></form></section>;
-}
 
 function SocialFeedScreen({ onOpenLink }: { onOpenLink: (link: SocialLink) => void }): React.JSX.Element {
   const world = useSyncExternalStore(client.subscribe, client.getSnapshot);
@@ -19738,47 +20258,7 @@ function SavedScreen({ onOpen }: { onOpen: (entry: import("@cloud9/shared").Save
   }, [world.savedNotice?.requestId, world.savedNotice?.messageId, world.me?.id]);
 
   const entries = world.savedMessages.filter(entry =>
-    filter === "all" || (filter === "active" ? entry.state === "active" : entry.state !== "active"));
-  const detailsDirty = Object.entries(editing).some(([id, draft]) => {
-    const entry = world.savedMessages.find(item => item.id === id);
-    if (!entry) return false;
-    return draft.note !== (entry.note ?? "") || draft.remindAt !== safeReminderDate(entry.remindAt);
-  });
-  useUnsavedWork("Saved message details", detailsDirty);
-  const loading = !world.savedAsked || world.savedLoading;
-  return (
-    <div className="notifications saved-screen" data-testid="saved-screen">
-      <header className="topbar">
-        <h2>Saved for later</h2>
-        <span className="sub">Private notes you kept from rooms and threads</span>
-        <div className="grow" />
-        <div className="filters" aria-label="Saved message filter">
-          {(["all", "active", "unavailable"] as const).map(value => (
-            <button key={value} className="chip" aria-pressed={filter === value}
-              onClick={() => setFilter(value)}>{value === "all" ? "All" : value === "active" ? "Available" : "Unavailable"}</button>
-          ))}
-        </div>
-      </header>
-      {(world.savedNotice || world.savedProblem) && (
-        <p className="workflow-announcement" role="status" aria-live="polite">
-          {world.savedProblem ?? world.savedNotice?.text}
-          {world.savedProblem && <button className="linkbtn" onClick={() => client.askSaved()}>Try again</button>}
-        </p>
-      )}
-      <div className="notifications-body" ref={listRef} tabIndex={-1}
-        aria-live="polite" aria-label="Saved messages">
-        {!world.connected && <Problem tone="notice" text="Cloud9 is reconnecting. Saved messages will return when the relay answers." />}
-        {loading && world.connected && <div className="notification-loading" role="status">Loading saved messagesâ€¦</div>}
-        {!loading && !world.savedProblem && world.connected && entries.length === 0 && (
-          <EmptyTray title={filter === "all" ? "Nothing saved yet" : "No saved messages here"}
-            line="Save a message from any room when you want to come back to it." />
-        )}
-        {!loading && entries.length > 0 && (
-          <div className="notification-list">
-            {entries.map(entry => {
-              const available = entry.state === "active" && !!entry.message;
-              const pending = world.savedPending.includes(entry.messageId);
-              const source = entry.state === "deleted" ? "Source deleted" : entry.state === "inaccessible" ? "Source unavailable" : "Open source";
+    filter === "all" || (filter =lable" : "Open source";
               const draft = editing[entry.id] ?? { note: entry.note ?? "", remindAt: safeReminderDate(entry.remindAt) };
               return <article key={entry.id} className={`notification-row source-${entry.state}`}>
                 <button className="notification-main" type="button" disabled={!available}
@@ -20214,7 +20694,7 @@ function ActivityScreen({ openAt, onOpened }: {
     <div className="activity">
       <header className="topbar">
         <h2>Activity</h2>
-        <span className="sub">What your agents are doing now, and everything they did before</span>
+        <span className="sub">Who did what, where, and what happened</span>
         <div className="grow" />
         <div className="filters">
           <div className="seg command-center-filters" role="group" aria-label="Command center filters">
@@ -20259,15 +20739,7 @@ function ActivityScreen({ openAt, onOpened }: {
             <div className="act-day"><span className="eyebrow">{day.label}</span></div>
             <div className="timeline">
               {day.rows.map(r => (
-                <div key={r.id} className={`actrow ${r.actorKind === "agent" ? "by-agent" : "by-human"}`}>
-                  <span className="actwho">
-                    {r.actorKind === "agent"
-                      ? <AgentFace name={r.actorName} size={28} />
-                      : <PersonFace name={r.actorName} size={28} />}
-                  </span>
-                  <span className="actdetail"><b>{r.actorName}</b>{r.detail}</span>
-                  <span className="actwhen">{clock(r.ts)}</span>
-                </div>
+                <ActivityTrailRow key={r.id} row={r} world={world} />
               ))}
             </div>
           </React.Fragment>
@@ -20525,5 +20997,348 @@ function EngineeringPulseScreen({
         </div>
       </div>
     </div>
+  );
+}
+                   onChange={e => updateDraft(key, e.target.value)}
+                    aria-describedby={formError ? "pulse-form-error" : undefined}
+                    placeholder={key === "done" ? "What moved forward?" : "Optional"} />
+                </label>;
+              })}
+            </div>
+            <div className="pulse-links">
+              <label>Related task (optional)<input value={draft.relatedTaskId ?? ""}
+                onChange={e => setDraft(d => ({ ...d, relatedTaskId: e.target.value || null }))} /></label>
+              <label>Related run (optional)<input value={draft.relatedRunId ?? ""}
+                onChange={e => setDraft(d => ({ ...d, relatedRunId: e.target.value || null }))} /></label>
+              <label>Pull request or issue number (optional)<input inputMode="numeric"
+                value={draft.relatedProjectItem?.number ?? ""}
+                onChange={e => { const number = Number(e.target.value); setDraft(d => ({ ...d,
+                  relatedProjectItem: number > 0 ? { kind: d.relatedProjectItem?.kind ?? "pull", number } : null })); }} /></label>
+              <label>Link type<select value={draft.relatedProjectItem?.kind ?? "pull"}
+                onChange={e => setDraft(d => ({ ...d, relatedProjectItem: d.relatedProjectItem
+                  ? { kind: e.target.value as ProjectItemKind, number: d.relatedProjectItem.number } : null }))}>
+                <option value="pull">Pull request</option><option value="issue">Issue</option>
+              </select></label>
+            </div>
+            {formError && <p id="pulse-form-error" className="field-error" role="alert">{formError}</p>}
+            <div className="pulse-compose-foot">
+              <span className="muted">Updates are visible to this project’s owner and room members.</span>
+              <button className="primary" type="submit" disabled={world.pulse.loading || !!pendingSaveRequest}>{editing ? "Save changes" : "Post update"}</button>
+            </div>
+            <div className="sr-only" role="status" aria-live="polite">{world.pulse.loading ? "Saving Engineering Pulse update..." : announcement}</div>
+          </form>
+        )}
+
+        {world.pulse.asked && projects.length > 0 && !world.pulse.loading && visible.length === 0 && (
+          <EmptyTray title="No updates yet" line="Post the first update when the team has something to share." />
+        )}
+        <div className="pulse-feed" aria-label="Engineering Pulse updates">
+          {visible.map(update => {
+            const mine = update.authorId === world.me?.id;
+            const related = update.relatedProjectItem;
+            const item = related ? world.projectItems[update.projectId]?.items.find(i => i.kind === related.kind && i.number === related.number) : undefined;
+            return <article className={`pulse-card${update.deletedAt ? " is-deleted" : ""}`} key={update.id}>
+              <header className="pulse-card-head">
+                <div><strong>{update.deletedAt ? "Deleted update" : update.authorName}</strong>
+                  {!update.deletedAt && <span className="pulse-author-kind">{update.authorKind === "agent" ? "Agent" : "Human"}</span>}
+                  <span className="pulse-project">{projectName(update.projectId)}</span></div>
+                <time dateTime={new Date(update.createdAt).toISOString()}>{pulseDate(update.createdAt)}</time>
+              </header>
+              {update.deletedAt ? <p className="muted">This update was deleted, but its place in the feed remains.</p> : <>
+                <dl className="pulse-sections">
+                  {(["done", "doing", "blocked", "decisions", "helpNeeded"] as const).map(key => update[key] && <div key={key}><dt>{{ done: "Done", doing: "Doing", blocked: "Blocked", decisions: "Decisions", helpNeeded: "Help needed" }[key]}</dt><dd>{update[key]}</dd></div>)}
+                </dl>
+                {(update.relatedTaskId || update.relatedRunId || related) && <p className="pulse-related">Related: {update.relatedTaskId && <button type="button" className="linkbtn" onClick={() => onOpenTask(update.relatedTaskId!)} aria-label={`Open related task ${update.relatedTaskId}`}>task {update.relatedTaskId}</button>}{update.relatedRunId && <button type="button" className="linkbtn" onClick={() => onOpenRun(update.relatedRunId!)} aria-label={`Open related run ${update.relatedRunId}`}>run {update.relatedRunId}</button>}{related && <button type="button" className="linkbtn" onClick={() => onOpenProject(update.projectId, related)} aria-label={`Open related ${related.kind === "pull" ? "pull request" : "issue"} ${related.number}`}>{item ? `${item.kind === "pull" ? "PR" : "issue"} #${item.number}` : `${related.kind === "pull" ? "PR" : "issue"} #${related.number} (not loaded)`}</button>}</p>}
+                {mine && <div className="pulse-actions"><button className="quiet" onClick={() => beginEdit(update)} disabled={!!pendingSaveRequest || !!pendingDeleteRequest}>Edit</button><button className="quiet danger" disabled={pendingDelete === update.id} onClick={() => {
+                  if (!window.confirm("Delete this update? It will stay in the feed as a deleted update.")) return;
+                  setAnnouncement("Deleting Engineering Pulse update...");
+                  const sent = client.deletePulse(update.id, why => setFormError(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+m-error" : undefined}
+                    placeholder={key === "done" ? "What moved forward?" : "Optional"} />
+                </label>;
+              })}
+            </div>
+            <div className="pulse-links">
+              <label>Related task (optional)<input value={draft.relatedTaskId ?? ""}
+                onChange={e => setDraft(d => ({ ...d, relatedTaskId: e.target.value || null }))} /></label>
+              <label>Related run (optional)<input value={draft.relatedRunId ?? ""}
+                onChange={e => setDraft(d => ({ ...d, relatedRunId: e.target.value || null }))} /></label>
+              <label>Pull request or issue number (optional)<input inputMode="numeric"
+                value={draft.relatedProjectItem?.number ?? ""}
+                onChange={e => { const number = Number(e.target.value); setDraft(d => ({ ...d,
+                  relatedProjectItem: number > 0 ? { kind: d.relatedProjectItem?.kind ?? "pull", number } : null })); }} /></label>
+              <label>Link type<select value={draft.relatedProjectItem?.kind ?? "pull"}
+                onChange={e => setDraft(d => ({ ...d, relatedProjectItem: d.relatedProjectItem
+                  ? { kind: e.target.value as ProjectItemKind, number: d.relatedProjectItem.number } : null }))}>
+                <option value="pull">Pull request</option><option value="issue">Issue</option>
+              </select></label>
+            </div>
+            {formError && <p id="pulse-form-error" className="field-error" role="alert">{formError}</p>}
+            <div className="pulse-compose-foot">
+              <span className="muted">Updates are visible to this project’s owner and room members.</span>
+              <button className="primary" type="submit" disabled={world.pulse.loading || !!pendingSaveRequest}>{editing ? "Save changes" : "Post update"}</button>
+            </div>
+            <div className="sr-only" role="status" aria-live="polite">{world.pulse.loading ? "Saving Engineering Pulse update..." : announcement}</div>
+          </form>
+        )}
+
+        {world.pulse.asked && projects.length > 0 && !world.pulse.loading && visible.length === 0 && (
+          <EmptyTray title="No updates yet" line="Post the first update when the team has something to share." />
+        )}
+        <div className="pulse-feed" aria-label="Engineering Pulse updates">
+          {visible.map(update => {
+            const mine = update.authorId === world.me?.id;
+            const related = update.relatedProjectItem;
+            const item = related ? world.projectItems[update.projectId]?.items.find(i => i.kind === related.kind && i.number === related.number) : undefined;
+            return <article className={`pulse-card${update.deletedAt ? " is-deleted" : ""}`} key={update.id}>
+              <header className="pulse-card-head">
+                <div><strong>{update.deletedAt ? "Deleted update" : update.authorName}</strong>
+                  {!update.deletedAt && <span className="pulse-author-kind">{update.authorKind === "agent" ? "Agent" : "Human"}</span>}
+                  <span className="pulse-project">{projectName(update.projectId)}</span></div>
+                <time dateTime={new Date(update.createdAt).toISOString()}>{pulseDate(update.createdAt)}</time>
+              </header>
+              {update.deletedAt ? <p className="muted">This update was deleted, but its place in the feed remains.</p> : <>
+                <dl className="pulse-sections">
+                  {(["done", "doing", "blocked", "decisions", "helpNeeded"] as const).map(key => update[key] && <div key={key}><dt>{{ done: "Done", doing: "Doing", blocked: "Blocked", decisions: "Decisions", helpNeeded: "Help needed" }[key]}</dt><dd>{update[key]}</dd></div>)}
+                </dl>
+                {(update.relatedTaskId || update.relatedRunId || related) && <p className="pulse-related">Related: {update.relatedTaskId && <button type="button" className="linkbtn" onClick={() => onOpenTask(update.relatedTaskId!)} aria-label={`Open related task ${update.relatedTaskId}`}>task {update.relatedTaskId}</button>}{update.relatedRunId && <button type="button" className="linkbtn" onClick={() => onOpenRun(update.relatedRunId!)} aria-label={`Open related run ${update.relatedRunId}`}>run {update.relatedRunId}</button>}{related && <button type="button" className="linkbtn" onClick={() => onOpenProject(update.projectId, related)} aria-label={`Open related ${related.kind === "pull" ? "pull request" : "issue"} ${related.number}`}>{item ? `${item.kind === "pull" ? "PR" : "issue"} #${item.number}` : `${related.kind === "pull" ? "PR" : "issue"} #${related.number} (not loaded)`}</button>}</p>}
+                {mine && <div className="pulse-actions"><button className="quiet" onClick={() => beginEdit(update)} disabled={!!pendingSaveRequest || !!pendingDeleteRequest}>Edit</button><button className="quiet danger" disabled={pendingDelete === update.id} onClick={() => {
+                  if (!window.confirm("Delete this update? It will stay in the feed as a deleted update.")) return;
+                  setAnnouncement("Deleting Engineering Pulse update...");
+                  const sent = client.deletePulse(update.id, why => setFormError(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+    </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+"Blocked", decisions: "Decisions", helpNeeded: "Help needed" }[key]}</dt><dd>{update[key]}</dd></div>)}
+                </dl>
+                {(update.relatedTaskId || update.relatedRunId || related) && <p className="pulse-related">Related: {update.relatedTaskId && <button type="button" className="linkbtn" onClick={() => onOpenTask(update.relatedTaskId!)} aria-label={`Open related task ${update.relatedTaskId}`}>task {update.relatedTaskId}</button>}{update.relatedRunId && <button type="button" className="linkbtn" onClick={() => onOpenRun(update.relatedRunId!)} aria-label={`Open related run ${update.relatedRunId}`}>run {update.relatedRunId}</button>}{related && <button type="button" className="linkbtn" onClick={() => onOpenProject(update.projectId, related)} aria-label={`Open related ${related.kind === "pull" ? "pull request" : "issue"} ${related.number}`}>{item ? `${item.kind === "pull" ? "PR" : "issue"} #${item.number}` : `${related.kind === "pull" ? "PR" : "issue"} #${related.number} (not loaded)`}</button>}</p>}
+                {mine && <div className="pulse-actions"><button className="quiet" onClick={() => beginEdit(update)} disabled={!!pendingSaveRequest || !!pendingDeleteRequest}>Edit</button><button className="quiet danger" disabled={pendingDelete === update.id} onClick={() => {
+                  if (!window.confirm("Delete this update? It will stay in the feed as a deleted update.")) return;
+                  setAnnouncement("Deleting Engineering Pulse update...");
+                  const sent = client.deletePulse(update.id, why => setFormError(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+    </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+atedRunId && <button type="button" className="linkbtn" onClick={() => onOpenRun(update.relatedRunId!)} aria-label={`Open related run ${update.relatedRunId}`}>run {update.relatedRunId}</button>}{related && <button type="button" className="linkbtn" onClick={() => onOpenProject(update.projectId, related)} aria-label={`Open related ${related.kind === "pull" ? "pull request" : "issue"} ${related.number}`}>{item ? `${item.kind === "pull" ? "PR" : "issue"} #${item.number}` : `${related.kind === "pull" ? "PR" : "issue"} #${related.number} (not loaded)`}</button>}</p>}
+                {mine && <div className="pulse-actions"><button className="quiet" onClick={() => beginEdit(update)} disabled={!!pendingSaveRequest || !!pendingDeleteRequest}>Edit</button><button className="quiet danger" disabled={pendingDelete === update.id} onClick={() => {
+                  if (!window.confirm("Delete this update? It will stay in the feed as a deleted update.")) return;
+                  setAnnouncement("Deleting Engineering Pulse update...");
+                  const sent = client.deletePulse(update.id, why => setFormError(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+    </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+         setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+    </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+       </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+    </div>
+    </div>
+  );
+}
+or(why));
+                  if (sent) {
+                    setPendingDelete(update.id);
+                    setPendingDeleteRequest(sent);
+                  }
+                }}>Delete</button></div>}
+              </>}
+            </article>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+  </div>
+    </div>
+  );
+}
+v>
   );
 }
