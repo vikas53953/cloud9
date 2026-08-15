@@ -113,6 +113,43 @@ test("a saved layout is not overwritten while the room list has not answered yet
   assert.match(app, /hasAccess = !!world\.meId && !!currentChannel && currentChannel\.memberIds\.includes\(world\.meId\)/);
 });
 
+test("opening a thread or room details does not unmount Chat + Files or flip View to Focus", () => {
+  const app = read("App.tsx");
+  const css = read("styles.css");
+  const appCode = codeOnly(app);
+  /* The remaining half of "Chat + Files reset": a click on a message (opens a
+     thread) or on members (opens details) used to unmount the files panel and
+     drop `withworkspace`, so the room looked like Focused Chat while the
+     durable preference was still chat-files. The panel stays mounted, the
+     grid keeps `withworkspace`, and the picker stays bound to the preference. */
+  assert.match(appCode, /const showWorkspace = !!active && workspaceAccess && workspaceLayout !== "focus"/);
+  assert.match(appCode, /showWorkspace \? " withworkspace"/);
+  assert.match(appCode, /active && showWorkspace && workspaceLayout !== "focus"/);
+  assert.doesNotMatch(appCode, /workspaceAccess && !threadRoot && !detailsOpen && !takeover && workspaceLayout/);
+  assert.doesNotMatch(appCode, /!threadRoot && !detailsOpen && !takeover && workspaceLayout !== "focus"/);
+  assert.doesNotMatch(appCode, /showWorkspace && !workspaceYields/);
+  assert.doesNotMatch(appCode, /hidden=\{workspaceYields\}/);
+  assert.match(app, /<WorkspaceLayoutControl layout=\{workspaceLayout\}/);
+  assert.match(app, /closeWorkspace = useCallback\(\(\) => \{ prefs\.set\(\{ workspaceLayout: "focus" \}\); \}/);
+  assert.match(css, /\.chatgrid\.withworkspace\.withthread\{/);
+  assert.match(css, /\.chatgrid\.withworkspace\.withdetails\{/);
+});
+
+test("the View selector looks selected after a click, not disabled", () => {
+  const bare = read("styles.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  /* Mouse click leaves :focus without :focus-visible. That state must use full
+     ink and must not use opacity — selected is not disabled. */
+  assert.match(bare, /\.chathead select:focus\{[^}]*color:var\(--ink\)/);
+  assert.match(bare, /\.chathead select:focus\{[^}]*opacity:1/);
+  assert.doesNotMatch(bare, /\.chathead select:focus\{[^}]*opacity:\s*0?\.\d/);
+  assert.match(bare, /\.chathead \.workspace-layout-control select\{[^}]*border:1px solid var\(--line\)/);
+  assert.match(bare, /\.chathead \.workspace-layout-control select\{[^}]*color:var\(--ink\)/);
+  assert.match(bare, /\.chathead \.workspace-layout-control select\{[^}]*opacity:1/);
+  assert.match(bare, /\.chathead \.workspace-layout-control select:disabled\{[^}]*opacity:\.45/);
+  assert.match(bare, /\.chathead label\.workspace-layout-control\{color:var\(--ink\)\}/);
+  assert.match(read("App.tsx"), /<span className="view-label">View<\/span>/);
+});
+
 test("Escape belongs to whatever has the keyboard, so a workspace cannot steal it", () => {
   const app = read("App.tsx");
   const panel = codeOnly(bodyOf(app, "WorkspaceLayoutPanel"));

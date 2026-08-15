@@ -5181,8 +5181,8 @@ Open your chat with ${a.name}`}>
           window cannot split — a handle that refuses him in silence is the
           thing he likes least, and the take-over above is the real answer at
           that size rather than a dead control with an explanation bolted on. */}
-      {active && threading && threadRoot && !takeover && space > 0 && (
-        <ThreadDivider stored={p.threadWidth} drawn={drawnWidth} space={space}
+      {active && threading && threadRoot && !takeover && threadSpace > 0 && (
+        <ThreadDivider stored={p.threadWidth} drawn={drawnWidth} space={threadSpace}
           onChoose={chooseWidth} onReset={resetWidth} />
       )}
       {active && !threadRoot && detailsOpen && (
@@ -11062,7 +11062,7 @@ function Composer({ channel, replyTo, answering, onStopAnswering, onSent }: {
               )}
             </span>
             <button className="mini fmtbtn" title="Formatting — bold, italic, code"
-              aria-label="Formatting — bold, italic, code" aria-expanded={fmtOpen}
+              aria-label="Formatting — bold, italic, code" aria-haspopup="true" aria-expanded={fmtOpen}
               onClick={() => { setFmtOpen(o => !o); setEmojiOpen(false); }}>Aa</button>
             <span className={`fmtset${fmtOpen ? " on" : ""}`}>
               <button className="mini" title="Bold" aria-label="Bold" onClick={() => wrap("**")}><b>B</b></button>
@@ -20793,7 +20793,11 @@ function ActivityTrailRow({ row, world }: {
   const run = linked.run ?? (row.refId ? world.runs[row.refId] : undefined);
   const facts = run && !linked.run ? { ...linked, run } : linked;
   const gone = !!(row.refId && world.runsGone[row.refId]);
-  const chips = activityOutcomeChips(facts);
+  const tests = run?.tests ?? (run?.steps ? testFactsFromSteps(run.steps) : undefined);
+  const chips = activityOutcomeChips({
+    ...facts,
+    run: facts.run ? { ...facts.run, ...(tests?.length ? { tests } : {}) } : facts.run,
+  });
   const inspectable = activityInspectableSteps(run?.steps);
   const needsFetch = row.kind === "run_recorded" && !!row.refId && !run && !gone;
   const canExpand = activityHasDetails(facts, row.kind) || needsFetch
@@ -20804,6 +20808,14 @@ function ActivityTrailRow({ row, world }: {
   }));
   const whoClass = row.actorKind === "agent" ? "by-agent"
     : row.actorKind === "human" ? "by-human" : "by-system";
+  const tests = run?.tests ?? (run?.steps ? testFactsFromSteps(run.steps) : undefined);
+  const chips = activityOutcomeChips({
+    ...facts,
+    run: facts.run ? { ...facts.run, ...(tests?.length ? { tests } : {}) } : facts.run,
+  });
+  const where = facts.channelName
+    ? (facts.channelName === "Direct message" ? "Direct message" : `#${facts.channelName}`)
+    : undefined;
 
   return (
     <div className={`actrow ${whoClass}`} data-kind={row.kind} data-actor={row.actorKind}
@@ -20817,9 +20829,9 @@ function ActivityTrailRow({ row, world }: {
         <b>{row.actorName}</b>
         <span className="act-kind">{activityKindWords(row.kind)}</span>
         <span className="act-what">{row.detail}</span>
-        {facts.channelName && <span className="act-where">{facts.channelName}</span>}
+        {where && <span className="act-where">in {where}</span>}
         {chips.length > 0 && (
-          <span className="act-facts">
+          <span className="act-facts" aria-label="What happened">
             {chips.map(chip => (
               <span key={chip.key} className={`act-fact${chip.key === "outcome" ? " is-outcome" : ""}`}>{chip.label}</span>
             ))}
@@ -20854,7 +20866,7 @@ function ActivityTrailRow({ row, world }: {
                 </ul>
               </div>
             )}
-            {(run?.pullRequest || run?.branch || run?.commit) && (
+            {(run?.pullRequest || run?.branch || run?.commit) && run && (
               <div className="act-inspect-block">
                 {run.pullRequest && <p className="act-clip-inline">{isLink(run.pullRequest)
                   ? <a href={run.pullRequest} target="_blank" rel="noreferrer noopener">{run.pullRequest}</a>

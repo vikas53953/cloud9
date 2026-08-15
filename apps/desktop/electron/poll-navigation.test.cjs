@@ -53,7 +53,8 @@ test("poll cards speak decision language from stored fields only", () => {
   assert.match(card, /poll\.createdAt/);
   assert.match(card, /studio-advanced/);
   assert.match(card, /pollChosenLabel/);
-  assert.doesNotMatch(card, /\{poll\.status\}/);
+  assert.doesNotMatch(card, /Human\} · \{poll\.status\}/);
+  assert.match(card, /poll\.status === "open" \? "Open" : "Closed"/);
   assert.doesNotMatch(card, /participantNames|fakeVoters|invented/);
   const helpers = app.slice(app.indexOf("function pollChosenLabel"), app.indexOf("function CopyTechnicalId"));
   assert.match(helpers, /poll\.myOptionId/);
