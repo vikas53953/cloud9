@@ -7849,6 +7849,19 @@ export {
 } from "./composer-commands.js";
 
 export {
-  taskMatchesCommandCenterFilter,
+  activityHasDetails, activityInspectableSteps, activityKindWords,
+  activityOutcomeChips, activityRoomName, linkActivityRow, taskMatchesCommandCenterFilter,
+  type ActivityFeedWorld, type ActivityLinkedFacts, type ActivityOutcomeChip,
   type CommandCenterFilter, type CommandCenterFacts,
 } from "./activity-command-center.js";
+
+// WHAT A SAVED WORKFLOW IS DOING — purpose, agents, trigger, current step,
+// failures, approvals, outputs. The screen draws; these functions own the words.
+export {
+  latestWorkflowRun, workflowAgentLine, workflowAgentNames, workflowApprovalWords,
+  workflowApprovalsForRun, workflowCurrentStep, workflowCurrentStepWords,
+  workflowFailureWords, workflowLatestOutput, workflowPurposeWords, workflowReadyWords,
+  workflowRoomWords, workflowRowNowWords, workflowStatusWords, workflowStepOutput,
+  workflowTriggerWords,
+  type WorkflowRunStatusWord,
+} from "./workflow-view.js";

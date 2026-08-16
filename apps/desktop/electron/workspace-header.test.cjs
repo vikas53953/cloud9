@@ -7,8 +7,10 @@
  * pinned at `flex:none`, so the name was the only item allowed to shrink and
  * paid the whole shortfall on its own.
  *
- * These assertions are on the source, so they hold for ANY workspace name and
- * any sidebar width — nothing here depends on the name being "Studio floor".
+ * The competing 32px buttons are gone. The header is the floor's name, which
+ * opens the room list. These assertions are on the source, so they hold for
+ * ANY workspace name and any sidebar width — nothing here depends on the
+ * name being "Studio floor".
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -21,10 +23,12 @@ test("the workspace name is written once and carried into its tooltip and label"
   const app = read("App.tsx");
   assert.match(app, /const WORKSPACE_NAME = "/,
     "the floor's name must have one source, so the header and its tooltip cannot drift");
-  assert.match(app, /aria-label=\{`\$\{WORKSPACE_NAME\} — workspace options`\}/,
+  assert.match(app, /aria-label=\{`\$\{WORKSPACE_NAME\} — browse rooms`\}/,
     "a name the header shortened must still be announced in full");
-  assert.match(app, /title=\{`\$\{WORKSPACE_NAME\} — workspace options`\}/,
+  assert.match(app, /title=\{`\$\{WORKSPACE_NAME\} — browse rooms`\}/,
     "a name the header shortened must still be readable in full from its tooltip");
+  assert.match(app, /\{WORKSPACE_NAME\} <span aria-hidden="true">▾<\/span>/,
+    "the visible label must read the same constant the tooltip does");
   assert.doesNotMatch(app, /className="workspace-name"[^>]*>Studio floor/,
     "the header must not hard-code the name a second time");
 });
@@ -43,9 +47,6 @@ test("the header gives the name the row before anything else is measured", () =>
     "the header break rather than squeeze the name");
   assert.match(name[1], /text-overflow:ellipsis/,
     "a name longer than a whole row must still end cleanly");
-
-  assert.match(css, /\.sidebar-head-actions\{[^}]*flex:none/,
-    "the header's controls must move as one block, not wrap one at a time");
 });
 
 /*
@@ -77,8 +78,18 @@ test("no CSS math function is handed an intrinsic keyword it cannot take", () =>
     "use a wrap, a grid track or a plain length instead");
 });
 
-test("the header's controls are one block in the markup, not loose in the row", () => {
+test("the header is the floor's name, not a row of icon buttons", () => {
   const app = read("App.tsx");
-  const block = /<div className="sidebar-head-actions">([\s\S]*?)<\/div>/.exec(app);
-  assert.ok(block, "the header controls must sit inside .sidebar-head-actions");
+  const block = /<div className="sidebar-head">([\s\S]*?)<\/div>/.exec(app);
+  assert.ok(block, "the floor still has a header");
+  assert.match(block[1], /className="workspace-name"/,
+    "the header that remains is the name");
+  assert.doesNotMatch(block[1], /workspace-menu/,
+    "the leftover V must not sit beside the name");
+  assert.doesNotMatch(block[1], /workspace-new/,
+    "the leftover + must not sit beside the name");
+  assert.doesNotMatch(block[1], /workspace-agent/,
+    "the leftover star must not sit beside the name");
+  assert.doesNotMatch(block[1], /sidebar-head-actions/,
+    "the header is the name, not a button cluster");
 });

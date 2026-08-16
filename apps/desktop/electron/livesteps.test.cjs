@@ -33,7 +33,7 @@ test("live activity cache keeps only ordered public steps and closes determinist
     assert.deepEqual(liveStepsFor("m")[0].steps.map(step => step.seq), [1, 2]);
     noteLiveSteps({ ...base, steps: [{ seq: 2, kind: "read", label: "Read b", ok: true }] });
     assert.equal(liveStepsFor("m")[0].steps[1].ok, true);
-    assert.deepEqual(liveWorkByAgent(), { a: { doing: "Read b", messageId: "m" } });
+    assert.deepEqual(liveWorkByAgent(), { a: { doing: "Read b", messageId: "m", channelId: "c" } });
 
     // The wire has one ending vocabulary (done); repeated endings are no-ops.
     noteLiveSteps({ ...base, done: true });

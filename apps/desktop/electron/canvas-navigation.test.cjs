@@ -17,7 +17,28 @@ test("Canvas desktop surface is human-authored and accessible", () => {
   assert.match(canvas, /Open linked/);
   assert.match(canvas, /onOpenLink/);
   assert.match(canvas, /Saving Canvas change/);
+  assert.match(canvas, /History →/);
+  assert.match(canvas, /canvasVersionLine/);
+  assert.match(canvas, /canvasBlockKindLabel/);
+  assert.match(canvas, /kept in History/);
+  assert.match(canvas, /canvas-advanced/);
+  assert.doesNotMatch(canvas, /Tombstoned block/);
+  assert.doesNotMatch(canvas, /active blocks/);
+  assert.doesNotMatch(canvas, /Revision \{canvas\.revision\}/);
+  assert.doesNotMatch(canvas, /History \(recent 100\)/);
   assert.match(css, /@media \(max-width:720px\).*canvas-layout/);
+});
+
+test("Canvas room summary and helpers speak engineering language", () => {
+  const helpers = app.slice(app.indexOf("const CANVAS_BLOCK_KINDS"), app.indexOf("function RoomCanvases"));
+  assert.match(helpers, /Architecture/);
+  assert.match(helpers, /Last updated by/);
+  assert.match(helpers, /function canvasVersionLine/);
+  assert.match(helpers, /function studioPersonName/);
+  const room = app.slice(app.indexOf("function RoomCanvases"), app.indexOf("function RoomFiles"));
+  assert.match(room, /canvasVersionLine\(canvas, world\.users, world\.agents\)/);
+  assert.doesNotMatch(room, /active blocks/);
+  assert.doesNotMatch(room, /Revision \{canvas\.revision\}/);
 });
 
 test("Canvas clients correlate list/history and purge access revocations", () => {

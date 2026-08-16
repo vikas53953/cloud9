@@ -42,6 +42,10 @@ test("dragging a sidebar row shows where it lands and only claims what it stored
   assert.match(css, /\[data-drop-edge\]::after/, "the drop indicator must be visible");
   assert.match(css, /\[data-drop-edge="before"\]::after/);
   assert.match(css, /\[data-drop-edge="after"\]::after/);
+  assert.match(css, /\.channel-row\[data-drop-edge\]::after/,
+    "a channel row's drop edge is its own louder line, not the section hairline");
+  assert.match(css, /\.channel-row\[data-drop-edge="before"\]::after/);
+  assert.match(css, /\.channel-row\[data-drop-edge="after"\]::after/);
   assert.match(css, /\.drag-grip\{/);
   /* Rows only accept rows of their OWN list, so nothing can be dropped into a
      list whose order the drop would not actually change. */
